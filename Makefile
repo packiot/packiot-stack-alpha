@@ -67,7 +67,7 @@ update:
 	git submodule update --remote --merge
 
 # ── Full stack ────────────────────────────────────────────────────────────────
-up: setup
+up:
 	$(COMPOSE) up -d --build
 
 down:
@@ -85,16 +85,16 @@ build:
 	$(COMPOSE) build
 
 # ── Partial stacks ────────────────────────────────────────────────────────────
-up-infra: setup
+up-infra:
 	$(COMPOSE) up -d $(INFRA_SVCS)
 
-up-edge: setup
+up-edge:
 	$(COMPOSE) up -d $(INFRA_SVCS) edge-nodered
 
-up-oeecloud: setup
+up-oeecloud:
 	$(COMPOSE) up -d $(INFRA_SVCS) oeecloud
 
-up-api: setup
+up-api:
 	$(COMPOSE) up -d postgres edge-api
 
 # ── Individual builds ─────────────────────────────────────────────────────────

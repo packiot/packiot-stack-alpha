@@ -139,7 +139,9 @@ services:
       context: ./edge-api
       target: production
     restart: unless-stopped
-    env_file: .env.local
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       NODE_ENV: production
       NEW_RELIC_ENABLED: "false"
@@ -164,10 +166,19 @@ services:
     build:
       context: ./edge-node-red
     restart: unless-stopped
-    env_file: .env.local
+    env_file:
+      - path: .env.local
+        required: false
     environment:
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      # ── Required vars — all pre-filled for emulator-based integration dev ────
+      NODE_RED_CREDENTIAL_SECRET: dev-credential-secret-32chars-long!
       PUBSUB_TOPIC: projects/packiot-dev/topics/oee-topic
+      ID_PUBSUB_NODE: machine-01
+      API_KEY: dev-api-key        # matches enterprises.api_key in 01-seed.sql
+      ID_ENTERPRISE: "1"
+      LOG_LEVEL: info
+      # ── Infra wiring ─────────────────────────────────────────────────────────
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: packiot-dev
       HASURA_URL: http://hasura:8080/v1/graphql
       HASURA_ADMIN_SECRET: dev-admin-secret
@@ -192,19 +203,33 @@ services:
     build:
       context: ./oeecloud-node-red
     restart: unless-stopped
-    env_file: .env.local
+    env_file:
+      - path: .env.local
+        required: false
     environment:
+      # ── Required vars — all pre-filled for emulator-based integration dev ────
+      NODE_RED_CREDENTIAL_SECRET: dev-credential-secret-32chars-long!
+      ID_ENTERPRISE: "1"
+      API_KEY: dev-api-key
+      LOG_LEVEL: info
+      # ── DB ───────────────────────────────────────────────────────────────────
       PG_HOST: postgres
       PG_PORT: "5432"
       PG_USER: postgres
       PG_PASSWORD: packiot
       PG_DATABASE: packiot
       PG_SSL: "false"
+      # ── Infra wiring ─────────────────────────────────────────────────────────
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_SUBSCRIPTION: projects/packiot-dev/subscriptions/oeecloud-sub
       GCP_PROJECT_ID: packiot-dev
       OEE_SERVER_NAME: integration-dev
       OEE_SERVER_URL: http://edge-nodered:1880
+      PING_API_URL: http://edge-api:8080/devices/ping
+      # ── Alerting (dev placeholders — override via .env.local to test emails) ─
+      ALERT_EMAIL_TO: dev@example.com
+      ALERT_EMAIL_FROM: support@packiot.com
+      SENDGRID_API_KEY: SG.dev-placeholder
       DISABLE_EDITOR: "false"
     ports:
       - "1881:1880"
