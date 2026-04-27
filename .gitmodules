@@ -7,3 +7,4 @@
 [submodule "edge-api"]
 	path = edge-api
 	url = https://github.com/packiot/edge-api.git
+	branch = development
