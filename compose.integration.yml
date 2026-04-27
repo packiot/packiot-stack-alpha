@@ -1,0 +1,221 @@
+# Full integration stack — all Packiot services sharing one network.
+#
+# Service map:
+#   pubsub-emulator  :8085   — GCP PubSub emulator (edge → oeecloud message bus)
+#   postgres         :5433   — TimescaleDB (single DB for edge-api + oeecloud)
+#   hasura           :8081   — Hasura GraphQL (proxies postgres for edge-nodered)
+#   edge-api         :8080   — NestJS REST/admin API
+#   edge-nodered     :1880   — Edge Node-RED (reads PLCs, publishes to PubSub)
+#   oeecloud         :1881   — Cloud Node-RED (consumes PubSub, writes to DB)
+#
+# Usage:
+#   make up              — start everything
+#   make up-edge         — infra + edge-nodered only
+#   make up-oeecloud     — infra + oeecloud only
+#   make up-api          — postgres + edge-api only
+#
+# Secrets: copy .env.example → .env.local and fill in before running.
+
+networks:
+  packiot-net:
+    driver: bridge
+
+volumes:
+  pg-data:
+  nr-edge-data:
+  nr-oeecloud-data:
+
+services:
+  # ── PubSub emulator ─────────────────────────────────────────────────────────
+  pubsub-emulator:
+    image: thekevjames/gcloud-pubsub-emulator:latest
+    environment:
+      PUBSUB_PROJECT1: packiot-dev,oee-topic:oeecloud-sub
+    ports:
+      - "8085:8085"
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8085/v1/projects/packiot-dev/topics"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  pubsub-init:
+    image: curlimages/curl:latest
+    networks: [packiot-net]
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+    environment:
+      BASE: http://pubsub-emulator:8085/v1/projects/packiot-dev
+      TOPIC: oee-topic
+      SUB: oeecloud-sub
+    entrypoint:
+      - sh
+      - -c
+      - |
+        curl -sf -X PUT "$${BASE}/topics/$${TOPIC}"
+        curl -sf -X PUT "$${BASE}/subscriptions/$${SUB}" \
+          -H 'Content-Type: application/json' \
+          -d "{\"topic\":\"projects/packiot-dev/topics/$${TOPIC}\"}"
+        echo "PubSub topic + subscription ready"
+    restart: "no"
+
+  # ── Database (TimescaleDB) ───────────────────────────────────────────────────
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: packiot
+      POSTGRES_DB: packiot
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./edge-node-red/db/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+      - ./edge-node-red/db/01-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]
+      interval: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Hasura GraphQL ───────────────────────────────────────────────────────────
+  hasura:
+    image: hasura/graphql-engine:v2.44.0
+    restart: unless-stopped
+    environment:
+      HASURA_GRAPHQL_DATABASE_URL: postgres://postgres:packiot@postgres:5432/packiot
+      HASURA_GRAPHQL_ADMIN_SECRET: dev-admin-secret
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+      HASURA_GRAPHQL_DEV_MODE: "true"
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log,query-log
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  hasura-init:
+    image: curlimages/curl:latest
+    networks: [packiot-net]
+    depends_on:
+      hasura:
+        condition: service_healthy
+    volumes:
+      - ./edge-node-red/hasura/metadata.json:/metadata.json:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        printf '{"type":"replace_metadata","version":2,"args":' > /tmp/payload.json
+        cat /metadata.json >> /tmp/payload.json
+        printf '}' >> /tmp/payload.json
+        curl -sf -X POST http://hasura:8080/v1/metadata \
+          -H 'Content-Type: application/json' \
+          -H 'X-Hasura-Admin-Secret: dev-admin-secret' \
+          -d @/tmp/payload.json
+        echo "Hasura metadata applied"
+    restart: "no"
+
+  # ── Edge API (NestJS) ────────────────────────────────────────────────────────
+  edge-api:
+    build:
+      context: ./edge-api
+      target: production
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      NODE_ENV: production
+      NEW_RELIC_ENABLED: "false"
+      NEW_RELIC_NO_CONFIG_FILE: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: packiot
+      POSTGRES_DB: packiot
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── Edge Node-RED ────────────────────────────────────────────────────────────
+  edge-nodered:
+    build:
+      context: ./edge-node-red
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_TOPIC: projects/packiot-dev/topics/oee-topic
+      GCP_PROJECT_ID: packiot-dev
+      HASURA_URL: http://hasura:8080/v1/graphql
+      HASURA_ADMIN_SECRET: dev-admin-secret
+      FIREBASE_API_KEY: dev-placeholder-bypassed-by-admin-secret
+      DISABLE_EDITOR: "false"
+    ports:
+      - "1880:1880"
+    depends_on:
+      pubsub-init:
+        condition: service_completed_successfully
+      hasura-init:
+        condition: service_completed_successfully
+    networks: [packiot-net]
+    volumes:
+      - nr-edge-data:/data
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── OEECloud Node-RED ────────────────────────────────────────────────────────
+  oeecloud:
+    build:
+      context: ./oeecloud-node-red
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_PASSWORD: packiot
+      PG_DATABASE: packiot
+      PG_SSL: "false"
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_SUBSCRIPTION: projects/packiot-dev/subscriptions/oeecloud-sub
+      GCP_PROJECT_ID: packiot-dev
+      OEE_SERVER_NAME: integration-dev
+      OEE_SERVER_URL: http://edge-nodered:1880
+      DISABLE_EDITOR: "false"
+    ports:
+      - "1881:1880"
+    depends_on:
+      pubsub-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    volumes:
+      - nr-oeecloud-data:/data
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}

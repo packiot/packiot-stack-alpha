@@ -1,0 +1,9 @@
+[submodule "edge-node-red"]
+	path = edge-node-red
+	url = https://github.com/packiot/edge-node-red.git
+[submodule "oeecloud-node-red"]
+	path = oeecloud-node-red
+	url = https://github.com/packiot/oeecloud-node-red.git
+[submodule "edge-api"]
+	path = edge-api
+	url = https://github.com/packiot/edge-api.git
