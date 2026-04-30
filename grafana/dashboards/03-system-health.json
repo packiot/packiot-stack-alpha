@@ -1,0 +1,217 @@
+{
+  "uid": "system-health",
+  "title": "System Health — DB & Pipeline",
+  "description": "Row counts, pipeline throughput, events, UNS metrics, downtimes — filtered by hierarchy",
+  "tags": ["packiot", "health", "monitoring"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "enterprise",
+        "label": "Enterprise",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_enterprise AS __text, id_enterprise AS __value FROM enterprises ORDER BY nm_enterprise",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_site AS __text, id_site AS __value FROM sites WHERE id_enterprise IN ($enterprise) ORDER BY nm_site",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "area",
+        "label": "Area",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_area AS __text, id_area AS __value FROM areas WHERE id_site IN ($site) ORDER BY nm_area",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "equipment",
+        "label": "Equipment",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_equipment AS __text, id_equipment AS __value FROM equipments WHERE id_area IN ($area) ORDER BY nm_equipment",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "bargauge",
+      "title": "Table Row Counts (filtered scope)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT NOW() AS time, (SELECT COUNT(*) FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)) AS \"equipment_values\", (SELECT COUNT(*) FROM equipment_events WHERE id_enterprise IN ($enterprise) AND id_equipment IN ($equipment)) AS \"equipment_events\", (SELECT COUNT(*) FROM uns_metrics WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)) AS \"uns_metrics\", (SELECT COUNT(*) FROM production_orders WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)) AS \"production_orders\", (SELECT COUNT(*) FROM packml_register WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)) AS \"packml_register\"",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Pipeline Throughput — Rows/min",
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 0 },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "gradientMode": "opacity", "spanNulls": false },
+          "unit": "short"
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT $__timeGroupAlias(ts_value, '1m'), COUNT(*) AS \"Rows/min\" FROM equipment_values WHERE $__timeFilter(ts_value) AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) GROUP BY 1 ORDER BY 1",
+        "format": "time_series", "refId": "A"
+      }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Rows Written (Last Hour)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 1 }, { "color": "green", "value": 10 }] } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Rows/hr\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '1 hour' AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Distinct Equipment Reporting",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT NOW() AS time, COUNT(DISTINCT id_equipment) AS \"Reporting\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes' AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Equipment Events",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Events\" FROM equipment_events WHERE id_enterprise IN ($enterprise) AND id_equipment IN ($equipment)",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "UNS Metrics",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"UNS Metrics\" FROM uns_metrics WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Metric Type Breakdown Over Time",
+      "description": "Which PackML parameters are flowing through the pipeline",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 12 },
+      "options": { "legend": { "displayMode": "list", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": false }, "unit": "short" }
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT $__timeGroupAlias(ts_value, '1m'), SUM(CASE WHEN net_production_incr IS NOT NULL THEN 1 ELSE 0 END) AS \"ProdProcessed\", SUM(CASE WHEN scrap_incr IS NOT NULL THEN 1 ELSE 0 END) AS \"ProdDefective\", SUM(CASE WHEN state IS NOT NULL THEN 1 ELSE 0 END) AS \"StateCurrent\", SUM(CASE WHEN mode IS NOT NULL THEN 1 ELSE 0 END) AS \"UnitMode\", SUM(CASE WHEN speed IS NOT NULL AND net_production_incr IS NULL THEN 1 ELSE 0 END) AS \"MachSpeed\" FROM equipment_values WHERE $__timeFilter(ts_value) AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) GROUP BY 1 ORDER BY 1",
+        "format": "time_series", "refId": "A"
+      }]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Recent Equipment Events",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 12 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "ts_event", "desc": true }], "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [{ "matcher": { "id": "byName", "options": "ts_event" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }, { "id": "custom.width", "value": 160 }] }]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT ee.ts_event, ent.nm_enterprise, e.nm_equipment, ee.status, ee.txt_downtime_notes, ee.ts_end, ee.duration, CASE WHEN ee.planned_downtime THEN 'Planned' WHEN ee.change_over THEN 'Changeover' WHEN ee.status = 6 THEN 'Running' ELSE 'Unplanned' END AS type FROM equipment_events ee LEFT JOIN equipments e ON e.id_equipment = ee.id_equipment LEFT JOIN enterprises ent ON ent.id_enterprise = ee.id_enterprise WHERE ee.id_enterprise IN ($enterprise) AND ee.id_equipment IN ($equipment) ORDER BY ee.ts_event DESC LIMIT 30",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Recent UNS Metrics",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 21 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "ts_value", "desc": true }], "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [{ "matcher": { "id": "byName", "options": "ts_value" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }, { "id": "custom.width", "value": 160 }] }]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT um.ts_value, ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment, um.metric_name, um.metric_value, um.metric_type FROM uns_metrics um LEFT JOIN equipments e ON e.id_equipment = um.id_equipment LEFT JOIN areas a ON a.id_area = um.id_area LEFT JOIN sites s ON s.id_site = um.id_site LEFT JOIN enterprises ent ON ent.id_enterprise = um.id_enterprise WHERE um.id_enterprise IN ($enterprise) AND um.id_site IN ($site) AND um.id_area IN ($area) AND um.id_equipment IN ($equipment) ORDER BY um.ts_value DESC LIMIT 30",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Downtime Events",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 21 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "ts_start", "desc": true }], "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ts_start" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
+          { "matcher": { "id": "byName", "options": "ts_end" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
+          { "matcher": { "id": "byName", "options": "duration_min" }, "properties": [{ "id": "unit", "value": "m" }, { "id": "custom.displayMode", "value": "gradient-gauge" }, { "id": "color", "value": { "mode": "continuous-GrYlRd" } }] }
+        ]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT ee.id_equipment_event, ent.nm_enterprise, e.nm_equipment, ee.ts_event AS ts_start, ee.ts_end, ROUND(COALESCE(ee.duration, EXTRACT(EPOCH FROM (NOW() - ee.ts_event))::integer) / 60.0, 1) AS duration_min, ee.txt_downtime_notes, CASE WHEN ee.planned_downtime THEN 'Planned' WHEN ee.change_over THEN 'Changeover' ELSE 'Unplanned' END AS type FROM equipment_events ee LEFT JOIN equipments e ON e.id_equipment = ee.id_equipment LEFT JOIN enterprises ent ON ent.id_enterprise = ee.id_enterprise WHERE ee.id_enterprise IN ($enterprise) AND ee.id_equipment IN ($equipment) AND ee.status != 6 ORDER BY ee.ts_event DESC LIMIT 30",
+        "format": "table", "refId": "A"
+      }]
+    }
+  ]
+}

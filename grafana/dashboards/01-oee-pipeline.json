@@ -1,0 +1,917 @@
+{
+  "uid": "oee-pipeline",
+  "title": "OEE Pipeline — Live Monitor",
+  "description": "Real-time view of the SparkPlug B → PubSub → TimescaleDB data pipeline",
+  "tags": [
+    "packiot",
+    "oee",
+    "live"
+  ],
+  "timezone": "browser",
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "enterprise",
+        "label": "Enterprise",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "packiot-postgres"
+        },
+        "query": "SELECT nm_enterprise AS __text, id_enterprise AS __value FROM enterprises ORDER BY nm_enterprise",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "packiot-postgres"
+        },
+        "query": "SELECT nm_site AS __text, id_site AS __value FROM sites WHERE id_enterprise IN ($enterprise) ORDER BY nm_site",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "area",
+        "label": "Area",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "packiot-postgres"
+        },
+        "query": "SELECT nm_area AS __text, id_area AS __value FROM areas WHERE id_site IN ($site) ORDER BY nm_area",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "equipment",
+        "label": "Equipment",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "packiot-postgres"
+        },
+        "query": "SELECT nm_equipment AS __text, id_equipment AS __value FROM equipments WHERE id_area IN ($area) ORDER BY nm_equipment",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "ideal_speed",
+        "label": "Ideal Speed (units/min)",
+        "type": "textbox",
+        "current": {
+          "value": "120"
+        },
+        "query": "120",
+        "description": "Machine ideal speed for Performance % calculation. Adjust per equipment."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total Rows Ingested",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Total Rows\" FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Rows (Last 5 min)",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 5,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 5
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Rows/5min\" FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) AND ts_value > NOW() - INTERVAL '5 minutes'",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Last Message",
+      "gridPos": {
+        "h": 4,
+        "w": 7,
+        "x": 10,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "dateTimeAsLocal",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, EXTRACT(EPOCH FROM MAX(ts_value)) * 1000 AS \"Last Message\" FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Active PLC Registrations",
+      "gridPos": {
+        "h": 4,
+        "w": 7,
+        "x": 17,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Active\" FROM packml_register WHERE active = true AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Quality %",
+      "description": "Net / (Net + Scrap) over selected time window. Target: ≥ 98%",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 97
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, ROUND( (SUM(net_production_incr) / NULLIF(SUM(net_production_incr) + SUM(scrap_incr), 0) * 100)::numeric, 1) AS \"Quality %\" FROM equipment_values WHERE $__timeFilter(ts_value) AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) AND net_production_incr IS NOT NULL",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Performance %",
+      "description": "Avg actual speed / production_speed from equipments table. Target: ≥ 95%",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "green",
+                "value": 94
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, ROUND( (SUM(ev.speed) / NULLIF(SUM(e.production_speed), 0) * 100)::numeric, 1) AS \"Performance %\" FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.speed > 0 AND e.production_speed > 0",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Availability %",
+      "description": "Fraction of reporting ticks in Execute state (state=6). Target: ≥ 90%",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "green",
+                "value": 90
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, ROUND( (SUM(CASE WHEN state = 6 THEN 1.0 ELSE 0.0 END) / NULLIF(COUNT(*), 0) * 100)::numeric, 1) AS \"Availability %\" FROM equipment_values WHERE $__timeFilter(ts_value) AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) AND state IS NOT NULL",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "OEE %",
+      "description": "Availability × Performance × Quality. World-class: ≥ 85%",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 65
+              },
+              {
+                "color": "green",
+                "value": 85
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, ROUND( ( (SUM(ev.net_production_incr) / NULLIF(SUM(ev.net_production_incr) + SUM(ev.scrap_incr), 0)) * (SUM(CASE WHEN ev.speed > 0 THEN ev.speed ELSE 0 END) / NULLIF(SUM(CASE WHEN ev.speed > 0 THEN e.production_speed ELSE 0 END), 0)) * (SUM(CASE WHEN ev.state = 6 THEN 1.0 ELSE 0.0 END) / NULLIF(COUNT(*), 0)) * 100 )::numeric, 1) AS \"OEE %\" FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.net_production_incr IS NOT NULL AND ev.state IS NOT NULL AND e.production_speed > 0",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Production Count — net_production_incr",
+      "description": "Incremental production count per message, per equipment",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, SUM(ev.net_production_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.net_production_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Machine Speed",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, AVG(ev.speed) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.speed IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Scrap / Defective Count",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Scrap"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, SUM(ev.scrap_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.scrap_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "state-timeline",
+      "title": "Machine State (PackML StateCurrent)",
+      "description": "6=Running  10=Stopped",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "options": {
+        "alignValue": "center",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": {
+          "mode": "single"
+        },
+        "mergeValues": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "range",
+              "options": {
+                "from": 6,
+                "to": 6,
+                "result": {
+                  "text": "Running",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 10,
+                "to": 10,
+                "result": {
+                  "text": "Stopped",
+                  "color": "red",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 70
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, LAST(ev.state, ev.ts_value) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.state IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Latest equipment_values (last 50 rows)",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ts_value"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "enterprise"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "site"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "area"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "6": {
+                        "text": "Running",
+                        "color": "green"
+                      },
+                      "10": {
+                        "text": "Stopped",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "net_production_incr"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "gradient-gauge"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-BlYlRd"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT ev.ts_value, ent.nm_enterprise AS enterprise, s.nm_site AS site, a.nm_area AS area, e.nm_equipment AS equipment, ev.net_production_incr, ev.scrap_incr, ev.state, ev.mode, ev.speed, ev.signal_quality FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN areas a ON a.id_area = ev.id_area JOIN sites s ON s.id_site = ev.id_site JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) ORDER BY ev.ts_value DESC LIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

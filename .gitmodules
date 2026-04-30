@@ -8,3 +8,7 @@
 	path = edge-api
 	url = https://github.com/packiot/edge-api.git
 	branch = development
+[submodule "operator"]
+	path = operator
+	url = git@github.com:packiot/operator4
+	branch = refactor/decompose-components

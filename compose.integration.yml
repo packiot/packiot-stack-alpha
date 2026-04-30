@@ -3,10 +3,14 @@
 # Service map:
 #   pubsub-emulator  :8085   — GCP PubSub emulator (edge → oeecloud message bus)
 #   postgres         :5433   — TimescaleDB (single DB for edge-api + oeecloud)
+#   grafana          :3000   — Grafana dashboards (OEE pipeline, routing, health)
+#   adminer          :8082   — Adminer DB GUI (postgres browser)
 #   hasura           :8081   — Hasura GraphQL (proxies postgres for edge-nodered)
 #   edge-api         :8080   — NestJS REST/admin API
-#   edge-nodered     :1880   — Edge Node-RED (reads PLCs, publishes to PubSub)
+#   edge-nodered     :1880   — Edge Node-RED (reads PLCs, publishes to PubSub; serves operator API)
 #   oeecloud         :1881   — Cloud Node-RED (consumes PubSub, writes to DB)
+#   operator         :3002   — React SPA operator UI (factory floor interface)
+#   simulator        (opt)   — Operator activity simulator (Simulator Corp enterprise; profile=simulator)
 #
 # Usage:
 #   make up              — start everything
@@ -24,6 +28,8 @@ volumes:
   pg-data:
   nr-edge-data:
   nr-oeecloud-data:
+  grafana-data:
+  loki-data:
 
 services:
   # ── PubSub emulator ─────────────────────────────────────────────────────────
@@ -32,10 +38,10 @@ services:
     environment:
       PUBSUB_PROJECT1: packiot-dev,oee-topic:oeecloud-sub
     ports:
-      - "8085:8085"
+      - "8085:8681"
     networks: [packiot-net]
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8085/v1/projects/packiot-dev/topics"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8681/v1/projects/packiot-dev/topics"]
       interval: 3s
       timeout: 3s
       retries: 10
@@ -51,7 +57,7 @@ services:
       pubsub-emulator:
         condition: service_healthy
     environment:
-      BASE: http://pubsub-emulator:8085/v1/projects/packiot-dev
+      BASE: http://pubsub-emulator:8681/v1/projects/packiot-dev
       TOPIC: oee-topic
       SUB: oeecloud-sub
     entrypoint:
@@ -67,7 +73,7 @@ services:
 
   # ── Database (TimescaleDB) ───────────────────────────────────────────────────
   postgres:
-    image: timescale/timescaledb:latest-pg16
+    image: timescale/timescaledb:2.25.2-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -79,6 +85,7 @@ services:
       - pg-data:/var/lib/postgresql/data
       - ./edge-node-red/db/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
       - ./edge-node-red/db/01-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+      - ./edge-node-red/db/02-production-objects.sql:/docker-entrypoint-initdb.d/02-production-objects.sql:ro
     networks: [packiot-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]
@@ -87,6 +94,55 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
+
+  # ── Grafana (dashboards) ──────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.5.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: packiot
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Adminer (DB GUI) ─────────────────────────────────────────────────────────
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "2"}
 
   # ── Hasura GraphQL ───────────────────────────────────────────────────────────
   hasura:
@@ -178,14 +234,22 @@ services:
       ID_ENTERPRISE: "1"
       LOG_LEVEL: info
       # ── Infra wiring ─────────────────────────────────────────────────────────
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
       GCP_PROJECT_ID: packiot-dev
       HASURA_URL: http://hasura:8080/v1/graphql
       HASURA_ADMIN_SECRET: dev-admin-secret
       FIREBASE_API_KEY: dev-placeholder-bypassed-by-admin-secret
       DISABLE_EDITOR: "false"
+      # ── Operator UI wiring ────────────────────────────────────────────────────
+      EDGE_API_BASE_URL: http://edge-api:8080  # used by API.json HTTP request nodes
     ports:
       - "1880:1880"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:1880/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     depends_on:
       pubsub-init:
         condition: service_completed_successfully
@@ -197,6 +261,31 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
+
+  # ── Operator UI (React SPA factory floor operator interface) ─────────────────
+  operator:
+    build:
+      context: ./operator
+    restart: unless-stopped
+    environment:
+      # Browser SPA: this URL is resolved by the user's browser, so it must be
+      # a host-accessible address. edge-nodered is exposed on localhost:1880.
+      VITE_API_URL: http://localhost:1880
+    ports:
+      - "3002:3000"   # 3000 is taken by Grafana
+    depends_on:
+      edge-nodered:
+        condition: service_healthy
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
 
   # ── OEECloud Node-RED ────────────────────────────────────────────────────────
   oeecloud:
@@ -220,7 +309,7 @@ services:
       PG_DATABASE: packiot
       PG_SSL: "false"
       # ── Infra wiring ─────────────────────────────────────────────────────────
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
       PUBSUB_SUBSCRIPTION: projects/packiot-dev/subscriptions/oeecloud-sub
       GCP_PROJECT_ID: packiot-dev
       OEE_SERVER_NAME: integration-dev
@@ -233,6 +322,14 @@ services:
       DISABLE_EDITOR: "false"
     ports:
       - "1881:1880"
+    healthcheck:
+      # Pipeline-freshness check — see /healthcheck.sh in oeecloud-node-red/.
+      # Catches "process up but pipeline silently broken" failures.
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     depends_on:
       pubsub-init:
         condition: service_completed_successfully
@@ -244,3 +341,93 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
+
+  # ── Loki (log aggregation) ─────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.4.2
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki/loki-local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Promtail (Docker log collector → Loki) ─────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.4.2
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yaml
+    volumes:
+      - ./monitoring/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [packiot-net]
+    depends_on:
+      loki:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── PLC Simulator ────────────────────────────────────────────────────────────
+  # Sends SparkPlug-style metric bursts to edge-nodered /plc-data on every tick.
+  # edge-nodered forwards through pack-queue → pubsub-out → oeecloud → DB.
+  # Operator actions (start/stop PO, justify) are NOT simulated here — use
+  # the operator UI or test_operator_pipeline.py for those.
+  # Start with: make up-simulator   Stop with: docker compose stop simulator
+  simulator:
+    build:
+      context: ./simulator
+    restart: unless-stopped
+    environment:
+      EDGE_NODERED_URL: http://edge-nodered:1880
+      DB_URL: postgresql://postgres:packiot@postgres:5432/packiot
+      SIM_INTERVAL: "5"
+    depends_on:
+      edge-nodered:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    # No profile — simulator is the canonical PLC source for dev.
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Integration test runner ──────────────────────────────────────────────────
+  # Layer-2 end-to-end tests: publish → DB lands, edge-api → user_logs lands.
+  # Profile-gated so it only runs on `make test-integration`. Resolves service
+  # names directly via the docker network (no host port mappings needed).
+  tests:
+    build:
+      context: ./tests/integration
+    environment:
+      DB_URL: postgresql://postgres:packiot@postgres:5432/packiot
+      EDGE_NODERED_URL: http://edge-nodered:1880
+      EDGE_API_URL: http://edge-api:8080
+      INT_POLL_TIMEOUT: "30"
+      INT_POLL_INTERVAL: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      edge-nodered:
+        condition: service_healthy
+      edge-api:
+        condition: service_started
+      oeecloud:
+        condition: service_healthy
+    networks: [packiot-net]
+    profiles: [tests]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "1"}

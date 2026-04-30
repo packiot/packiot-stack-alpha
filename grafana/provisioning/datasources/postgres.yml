@@ -1,0 +1,21 @@
+apiVersion: 1
+
+datasources:
+  - name: Packiot PostgreSQL
+    type: postgres
+    uid: packiot-postgres
+    url: postgres:5432
+    user: postgres
+    secureJsonData:
+      password: packiot
+    jsonData:
+      database: packiot
+      sslmode: disable
+      maxOpenConns: 25
+      maxIdleConns: 10
+      connMaxLifetime: 14400
+      postgresVersion: 1600
+      timescaledb: true
+      queryTimeout: "60"
+    isDefault: true
+    editable: false

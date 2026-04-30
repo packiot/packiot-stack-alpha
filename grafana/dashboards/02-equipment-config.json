@@ -1,0 +1,228 @@
+{
+  "uid": "equipment-config",
+  "title": "Equipment & PackML Routing",
+  "description": "Configuration tables: hierarchy, equipment registry, packml_register routing, production orders",
+  "tags": ["packiot", "config", "routing"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "enterprise",
+        "label": "Enterprise",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_enterprise AS __text, id_enterprise AS __value FROM enterprises ORDER BY nm_enterprise",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_site AS __text, id_site AS __value FROM sites WHERE id_enterprise IN ($enterprise) ORDER BY nm_site",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "area",
+        "label": "Area",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_area AS __text, id_area AS __value FROM areas WHERE id_site IN ($site) ORDER BY nm_area",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "equipment",
+        "label": "Equipment",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "query": "SELECT nm_equipment AS __text, id_equipment AS __value FROM equipments WHERE id_area IN ($area) ORDER BY nm_equipment",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Enterprises",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "active" }, "properties": [{ "id": "custom.displayMode", "value": "color-background" }, { "id": "mappings", "value": [{ "type": "value", "options": { "true": { "text": "active", "color": "green" }, "false": { "text": "inactive", "color": "red" } } }] }] }
+        ]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT id_enterprise, nm_enterprise, active FROM enterprises WHERE id_enterprise IN ($enterprise) ORDER BY nm_enterprise",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Sites",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT s.id_site, ent.nm_enterprise, s.nm_site FROM sites s JOIN enterprises ent ON ent.id_enterprise = s.id_enterprise WHERE s.id_enterprise IN ($enterprise) AND s.id_site IN ($site) ORDER BY ent.nm_enterprise, s.nm_site",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Areas",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT a.id_area, ent.nm_enterprise, s.nm_site, a.nm_area, a.day_begin FROM areas a JOIN sites s ON s.id_site = a.id_site JOIN enterprises ent ON ent.id_enterprise = a.id_enterprise WHERE a.id_enterprise IN ($enterprise) AND a.id_site IN ($site) AND a.id_area IN ($area) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Equipments",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "tp_equipment" }, "properties": [
+            { "id": "mappings", "value": [{ "type": "value", "options": { "1": { "text": "Machine", "color": "blue" }, "2": { "text": "Sector", "color": "purple" }, "3": { "text": "Line", "color": "green" } } }] },
+            { "id": "custom.displayMode", "value": "color-background" }
+          ]}
+        ]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT eq.id_equipment, ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment, CASE eq.tp_equipment WHEN 1 THEN 'Machine' WHEN 2 THEN 'Sector' WHEN 3 THEN 'Line' ELSE eq.tp_equipment::text END AS tp_equipment, eq.status_type, eq.lead_machine, lm.nm_equipment AS nm_lead_machine FROM equipments eq JOIN areas a ON a.id_area = eq.id_area JOIN sites s ON s.id_site = eq.id_site JOIN enterprises ent ON ent.id_enterprise = eq.id_enterprise LEFT JOIN equipments lm ON lm.id_equipment = eq.lead_machine WHERE eq.id_enterprise IN ($enterprise) AND eq.id_site IN ($site) AND eq.id_area IN ($area) AND eq.id_equipment IN ($equipment) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "PackML Register — Topic Routing",
+      "description": "Maps SparkPlug B topics → equipment. active=true means oeecloud processes this topic.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 14 },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "packml_topic" }, "properties": [{ "id": "custom.width", "value": 360 }] },
+          { "matcher": { "id": "byName", "options": "active" }, "properties": [
+            { "id": "custom.displayMode", "value": "color-background" },
+            { "id": "mappings", "value": [{ "type": "value", "options": { "true": { "text": "ACTIVE", "color": "green" }, "false": { "text": "INACTIVE", "color": "red" } } }] }
+          ]},
+          { "matcher": { "id": "byName", "options": "signal_quality" }, "properties": [
+            { "id": "custom.displayMode", "value": "gradient-gauge" },
+            { "id": "min", "value": 0 }, { "id": "max", "value": 200 },
+            { "id": "color", "value": { "mode": "continuous-GrYlRd" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "timestamp" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] }
+        ]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT pr.id_packml_register, ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment, pr.packml_topic, pr.active, pr.id_unit, pr.signal_quality, pr.timestamp FROM packml_register pr JOIN equipments e ON e.id_equipment = pr.id_equipment JOIN areas a ON a.id_area = e.id_area JOIN sites s ON s.id_site = e.id_site JOIN enterprises ent ON ent.id_enterprise = e.id_enterprise WHERE pr.id_enterprise IN ($enterprise) AND pr.id_site IN ($site) AND pr.id_area IN ($area) AND pr.id_equipment IN ($equipment) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Production Orders",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 24 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "id_production_order", "desc": true }], "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ts_start" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
+          { "matcher": { "id": "byName", "options": "ts_end" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
+          { "matcher": { "id": "byName", "options": "status" }, "properties": [
+            { "id": "custom.displayMode", "value": "color-background" },
+            { "id": "mappings", "value": [{ "type": "value", "options": { "1": { "text": "Available", "color": "blue" }, "2": { "text": "Running", "color": "green" }, "3": { "text": "Finished", "color": "grey" }, "4": { "text": "Paused", "color": "orange" } } }] }
+          ]}
+        ]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT po.id_production_order, ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment, po.status, po.nm_production_order, po.ts_start, po.ts_end, po.production_final FROM production_orders po LEFT JOIN equipments e ON e.id_equipment = po.id_equipment LEFT JOIN areas a ON a.id_area = po.id_area LEFT JOIN sites s ON s.id_site = po.id_site LEFT JOIN enterprises ent ON ent.id_enterprise = po.id_enterprise WHERE po.id_enterprise IN ($enterprise) AND po.id_site IN ($site) AND po.id_area IN ($area) AND po.id_equipment IN ($equipment) ORDER BY po.id_production_order DESC LIMIT 100",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Shifts",
+      "description": "Shift definitions and hours. begin_time/end_time are seconds from week_begin (Monday 00:00 = 0).",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 33 },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT sh.id_shift, s.nm_site, a.nm_area, sh.cd_shift, sh.nm_shift, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.begin_time || ' seconds')::interval, 'Dy HH24:MI') AS begin_day_time, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.end_time || ' seconds')::interval, 'Dy HH24:MI') AS end_day_time, sh2.begin_time, sh2.end_time FROM shifts sh JOIN sites s ON s.id_site = sh.id_site LEFT JOIN areas a ON a.id_area = sh.id_area JOIN shift_hours sh2 ON sh2.id_shift = sh.id_shift WHERE s.id_site IN ($site) ORDER BY sh.id_shift, sh2.begin_time",
+        "format": "table", "refId": "A"
+      }]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Production Order Runtimes",
+      "description": "One row per PO run segment. Open ts_end = currently running. Paused PO = all segments closed, PO status ≠ 3.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 43 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "id_production_order_runtime", "desc": true }], "footer": { "show": false } },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ts_start" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
+          { "matcher": { "id": "byName", "options": "ts_end" },   "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
+          { "matcher": { "id": "byName", "options": "recalc_needed" }, "properties": [
+            { "id": "custom.displayMode", "value": "color-background" },
+            { "id": "mappings", "value": [{ "type": "value", "options": {
+              "true":  { "text": "PENDING", "color": "orange" },
+              "false": { "text": "OK",      "color": "green"  }
+            }}]}
+          ]},
+          { "matcher": { "id": "byName", "options": "po_status" }, "properties": [
+            { "id": "custom.displayMode", "value": "color-background" },
+            { "id": "mappings", "value": [{ "type": "value", "options": {
+              "1": { "text": "Available", "color": "blue"   },
+              "2": { "text": "Running",   "color": "green"  },
+              "3": { "text": "Finished",  "color": "grey"   },
+              "4": { "text": "Paused",    "color": "orange" }
+            }}]}
+          ]}
+        ]
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+        "rawSql": "SELECT por.id_production_order_runtime, po.nm_production_order, po.status AS po_status, e.nm_equipment, por.ts_start, por.ts_end, por.net_production, por.scrap, por.recalc_needed FROM production_orders_runtime por JOIN production_orders po ON po.id_production_order = por.id_production_order LEFT JOIN equipments e ON e.id_equipment = por.id_equipment WHERE po.id_enterprise IN ($enterprise) AND po.id_site IN ($site) AND po.id_area IN ($area) AND por.id_equipment IN ($equipment) ORDER BY por.id_production_order_runtime DESC LIMIT 100",
+        "format": "table", "refId": "A"
+      }]
+    }
+  ]
+}
