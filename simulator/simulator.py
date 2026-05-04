@@ -397,7 +397,7 @@ class OperatorSimulator:
             """, (self._ent["id_enterprise"],))
             return cur.fetchall()
 
-    def _alloc_id_order(self, _conn) -> int:
+    def _alloc_id_order(self) -> int:
         """Return the next safe id_order for this session.
 
         Seeds from the current epoch-second so each simulator restart gets a
@@ -570,7 +570,7 @@ class OperatorSimulator:
         if not eqs:
             return False
         eq       = random.choice(eqs)
-        id_order = self._alloc_id_order(conn)
+        id_order = self._alloc_id_order()
         qty      = random.randint(500, 5000)
         return self._post("/api/production-orders/create-and-start", {
             "idEnterprise":            self._ent["id_enterprise"],
