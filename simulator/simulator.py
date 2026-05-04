@@ -406,7 +406,8 @@ class OperatorSimulator:
                     "FROM production_orders WHERE id_enterprise = %s",
                     (self._ent["id_enterprise"],),
                 )
-                self._next_id_order = cur.fetchone()[0]
+                self._next_id_order = int(cur.fetchone()[0])
+        assert self._next_id_order is not None
         val = self._next_id_order
         self._next_id_order += 1
         return val
