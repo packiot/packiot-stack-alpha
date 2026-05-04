@@ -487,11 +487,11 @@ class OperatorSimulator:
             return False
         ev       = random.choice(candidates)
         source   = ev["source"]
-        duration = ev["duration"]
-        mid_secs = duration // 2
         ts_start = ev["ts_event"].astimezone(timezone.utc)
-        ts_mid   = ts_start + timedelta(seconds=mid_secs)
         ts_end   = ev["ts_end"].astimezone(timezone.utc)
+        total_secs = int((ts_end - ts_start).total_seconds())
+        mid_secs   = total_secs // 2
+        ts_mid     = ts_start + timedelta(seconds=mid_secs)
         machine  = ev["machine_code"] or "MCH"
         cd1, desc1, sub1, sdesc1 = random.choice(CATEGORIES)
         cd2, desc2, sub2, sdesc2 = random.choice(CATEGORIES)
