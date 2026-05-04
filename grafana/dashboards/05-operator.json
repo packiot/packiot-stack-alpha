@@ -26,7 +26,7 @@
           "type": "postgres",
           "uid": "packiot-postgres"
         },
-        "query": "SELECT nm_enterprise FROM enterprises WHERE active = true ORDER BY nm_enterprise",
+        "query": "SELECT nm_enterprise AS __text, nm_enterprise AS __value FROM enterprises WHERE active = true ORDER BY nm_enterprise",
         "refresh": 2,
         "sort": 1,
         "multi": false,
@@ -321,7 +321,7 @@
       "id": 6,
       "type": "stat",
       "title": "Pending Events Right Now",
-      "description": "Open equipment events with no ts_end — awaiting justification",
+      "description": "Open equipment events with no ts_end \u2014 awaiting justification",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -378,7 +378,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "Operator Actions Over Time",
-      "description": "Stacked: PO starts, event justifications, manual events — shows when the floor is active",
+      "description": "Stacked: PO starts, event justifications, manual events \u2014 shows when the floor is active",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -443,7 +443,7 @@
       "id": 8,
       "type": "bargauge",
       "title": "Actions per User",
-      "description": "Total operator actions broken down by username — shows who is most active",
+      "description": "Total operator actions broken down by username \u2014 shows who is most active",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -454,7 +454,9 @@
         "orientation": "horizontal",
         "reduceOptions": {
           "values": true,
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "limit": 20
         },
         "displayMode": "gradient",
@@ -502,7 +504,10 @@
       },
       "options": {
         "pieType": "donut",
-        "displayLabels": ["name", "percent"],
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
           "displayMode": "list",
           "placement": "right"
@@ -512,7 +517,9 @@
         },
         "reduceOptions": {
           "values": true,
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "limit": 20
         }
       },
@@ -539,7 +546,7 @@
     {
       "id": 10,
       "type": "table",
-      "title": "Downtime Backlog — Longest Pending Events",
+      "title": "Downtime Backlog \u2014 Longest Pending Events",
       "description": "Events open with no justification, ordered by how long they have been open. Highlights gaps in operator responsiveness.",
       "gridPos": {
         "h": 8,
@@ -620,7 +627,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Downtime Events — Pending vs Justified per Hour",
+      "title": "Downtime Events \u2014 Pending vs Justified per Hour",
       "description": "Tracks how quickly operators close the justification backlog. A rising 'pending' line means the floor is falling behind.",
       "gridPos": {
         "h": 8,
@@ -685,7 +692,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroup(ts_event,'1h',0) AS time, COUNT(*) AS \"Pending\" FROM equipment_events WHERE ts_event BETWEEN $__timeFrom() AND $__timeTo() AND ts_end IS NULL GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroup(ts_end,'1h',0) AS time, COUNT(*) AS \"Pending\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND cd_category IS NULL AND status = 10 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         },
@@ -694,7 +701,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroup(ts_end,'1h',0) AS time, COUNT(*) AS \"Justified\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND cd_category IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroup(ts_end,'1h',0) AS time, COUNT(*) AS \"Justified\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND cd_category IS NOT NULL AND status = 10 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "B"
         }
@@ -704,7 +711,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "Production Orders Started / Stopped per Hour",
-      "description": "When operators kick off or close POs — correlate with shift schedules to spot idle periods.",
+      "description": "When operators kick off or close POs \u2014 correlate with shift schedules to spot idle periods.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -864,37 +871,62 @@
           "refId": "A"
         }
       ]
+    }
+  ],
+  "links": [
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "OEE Pipeline",
+      "url": "/d/oee-pipeline",
+      "tooltip": "OEE Pipeline \u2014 Live Monitor"
     },
     {
-      "id": 14,
-      "type": "logs",
-      "title": "Operator Service Logs",
-      "description": "Live container logs from the operator service (React Vite dev server)",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 38
-      },
-      "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
-          },
-          "expr": "{service=\"operator\"}",
-          "refId": "A"
-        }
-      ]
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Equipment Config",
+      "url": "/d/equipment-config",
+      "tooltip": "Equipment & PackML Routing"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "System Health",
+      "url": "/d/system-health",
+      "tooltip": "System Health \u2014 DB & Pipeline"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Stack Overview",
+      "url": "/d/packiot-logs",
+      "tooltip": "Stack Overview \u2014 log volumes & pipeline health"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "PLC Pipeline Logs",
+      "url": "/d/packiot-pipeline-logs",
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Services Logs",
+      "url": "/d/packiot-services-logs",
+      "tooltip": "Services Logs \u2014 edge-api, operator, simulator"
     }
   ]
 }
