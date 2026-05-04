@@ -397,16 +397,16 @@ class OperatorSimulator:
             """, (self._ent["id_enterprise"],))
             return cur.fetchall()
 
-    def _alloc_id_order(self, conn) -> int:
-        """Return the next safe id_order, initialised once from MAX(id_order) in the DB."""
+    def _alloc_id_order(self, _conn) -> int:
+        """Return the next safe id_order for this session.
+
+        Seeds from the current epoch-second so each simulator restart gets a
+        fresh base — avoids collisions with POs created in previous sessions
+        without requiring a DB query (id_order is VARCHAR so MAX arithmetic
+        would need an explicit cast anyway).
+        """
         if self._next_id_order is None:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE(MAX(id_order), 1000) + 1 "
-                    "FROM production_orders WHERE id_enterprise = %s",
-                    (self._ent["id_enterprise"],),
-                )
-                self._next_id_order = int(cur.fetchone()[0])
+            self._next_id_order = int(time.time())
         assert self._next_id_order is not None
         val = self._next_id_order
         self._next_id_order += 1
