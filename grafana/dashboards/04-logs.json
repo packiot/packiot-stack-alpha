@@ -1,12 +1,16 @@
 {
   "uid": "packiot-logs",
-  "title": "Stack Logs",
-  "description": "Live log streams from all Packiot services via Loki + Promtail",
-  "tags": ["packiot", "logs", "observability"],
-  "timezone": "browser",
-  "refresh": "10s",
+  "title": "Stack Overview",
+  "tags": [
+    "packiot",
+    "logs"
+  ],
   "schemaVersion": 38,
-  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "timepicker": {},
   "templating": {
     "list": [
@@ -14,214 +18,433 @@
         "name": "service",
         "label": "Service",
         "type": "query",
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "query": {
-          "label": "service",
-          "refId": "LokiVariableQueryEditor-VariableQuery",
-          "stream": "",
-          "type": "labelValues"
+        "datasource": {
+          "type": "loki",
+          "uid": "packiot-loki"
         },
-        "multi": true,
+        "query": {
+          "type": "labelValues",
+          "label": "service"
+        },
         "includeAll": true,
-        "allValue": ".+",
+        "multi": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {}
       },
       {
         "name": "search",
         "label": "Search",
         "type": "textbox",
-        "query": "",
-        "hide": 0
+        "current": {
+          "value": ""
+        },
+        "query": ""
       }
     ]
   },
+  "links": [
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "OEE Pipeline",
+      "url": "/d/oee-pipeline",
+      "tooltip": "OEE Pipeline \u2014 Live Monitor"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Equipment Config",
+      "url": "/d/equipment-config",
+      "tooltip": "Equipment & PackML Routing"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "System Health",
+      "url": "/d/system-health",
+      "tooltip": "System Health \u2014 DB & Pipeline"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Operator Activity",
+      "url": "/d/packiot-operator",
+      "tooltip": "Operator Activity \u2014 per-user actions & downtimes"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "PLC Pipeline Logs",
+      "url": "/d/packiot-pipeline-logs",
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Services Logs",
+      "url": "/d/packiot-services-logs",
+      "tooltip": "Services Logs \u2014 edge-api, operator, simulator"
+    }
+  ],
   "panels": [
     {
       "id": 1,
       "type": "stat",
-      "title": "Log Volume (selected range)",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "title": "Log Volume",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 0
+      },
       "options": {
-        "reduceOptions": { "calcs": ["sum"] },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
         "colorMode": "background",
-        "graphMode": "none",
-        "orientation": "auto"
+        "graphMode": "area"
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "fixed", "fixedColor": "blue" },
           "unit": "short",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          "color": {
+            "fixedColor": "purple",
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          }
         }
       },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "sum(count_over_time({service=~\"$service\"} [$__interval]))",
-        "legendFormat": "log lines",
-        "refId": "A"
-      }]
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum(count_over_time({service=~\"$service\"} [$__interval]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 2,
       "type": "stat",
       "title": "Error Count",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 5,
+        "y": 0
+      },
       "options": {
-        "reduceOptions": { "calcs": ["sum"] },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
         "colorMode": "background",
-        "graphMode": "none"
+        "graphMode": "area"
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
           "unit": "short",
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "orange", "value": 1 },
-            { "color": "red", "value": 10 }
-          ]}
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "0"
         }
       },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "sum(count_over_time({service=~\"$service\"} |~ \"(?i)(error|exception|failed|critical)\" [$__interval]))",
-        "legendFormat": "errors",
-        "refId": "A"
-      }]
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum(count_over_time({service=~\"$service\"} |~ \"(?i)(error|exception|failed|critical)\" [$__interval]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "PubSub Published \u2014 5m",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 10,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum(count_over_time({service=\"edge-nodered\"} |~ \"pubsub_pub\" [5m]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "PubSub Received \u2014 5m",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 15,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum(count_over_time({service=\"oeecloud\"} |~ \"pubsub_rcv\" [5m]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "equipment_values Written \u2014 5m",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "packiot-postgres"
+          },
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Rows/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes'",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 3,
       "type": "timeseries",
       "title": "Log Volume Over Time by Service",
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 4 },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 0, "stacking": { "mode": "normal", "group": "A" } }
+          "color": {
+            "mode": "palette-classic"
+          }
         }
       },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "packiot-loki" },
-          "expr": "sum by (service) (count_over_time({service=~\"$service\"} [$__interval]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum by (service) (count_over_time({service=~\"$service\", service!~\"loki|hasura-init\"} [$__interval]))",
           "legendFormat": "{{service}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 4,
-      "type": "logs",
-      "title": "postgres",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 11 },
-      "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
+      "id": 15,
+      "type": "timeseries",
+      "title": "PubSub Message Flow \u2014 Published vs Received",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 11
       },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "{service=\"postgres\"} |~ \"$search\"",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 5,
-      "type": "logs",
-      "title": "edge-api",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 11 },
       "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "{service=\"edge-api\"} |~ \"$search\"",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 6,
-      "type": "logs",
-      "title": "edge-nodered",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 21 },
-      "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "gradientMode": "opacity"
+          }
+        }
       },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "{service=\"edge-nodered\"} |~ \"$search\"",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 7,
-      "type": "logs",
-      "title": "oeecloud",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 21 },
-      "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
-      },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "{service=\"oeecloud\"} |~ \"$search\"",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 9,
-      "type": "logs",
-      "title": "operator",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 31 },
-      "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
-      },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "{service=\"operator\"} |~ \"$search\"",
-        "refId": "A"
-      }]
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum(rate({service=\"edge-nodered\"} |~ \"pubsub_pub\" [$__interval]))",
+          "legendFormat": "edge \u2192 PubSub (published)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "sum(rate({service=\"oeecloud\"} |~ \"pubsub_rcv\" [$__interval]))",
+          "legendFormat": "PubSub \u2192 oeecloud (received)",
+          "refId": "B"
+        }
+      ]
     },
     {
       "id": 8,
       "type": "logs",
-      "title": "All Services — Errors & Warnings",
-      "description": "Filtered to error/warn/exception lines across the whole stack",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 41 },
+      "title": "All Services \u2014 Errors & Warnings",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
       "options": {
-        "showLabels": true,
+        "showLabels": false,
         "showTime": true,
         "sortOrder": "Descending",
         "wrapLogMessage": true,
@@ -229,12 +452,16 @@
         "enableLogDetails": true,
         "dedupStrategy": "none"
       },
-      "targets": [{
-        "datasource": { "type": "loki", "uid": "packiot-loki" },
-        "expr": "{service=~\"$service\"} |~ \"(?i)(error|warn|exception|failed|critical)\" |~ \"$search\"",
-        "legendFormat": "{{service}}",
-        "refId": "A"
-      }]
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=~\"$service\"} |~ \"(?i)(error|warn|exception|failed|critical)\" |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

@@ -1,0 +1,225 @@
+{
+  "uid": "packiot-services-logs",
+  "title": "Services Logs",
+  "tags": [
+    "packiot",
+    "logs",
+    "services"
+  ],
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "packiot-loki"
+        },
+        "query": {
+          "type": "labelValues",
+          "label": "service"
+        },
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "sort": 1,
+        "current": {}
+      },
+      {
+        "name": "search",
+        "label": "Search",
+        "type": "textbox",
+        "current": {
+          "value": ""
+        },
+        "query": ""
+      }
+    ]
+  },
+  "links": [
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "OEE Pipeline",
+      "url": "/d/oee-pipeline",
+      "tooltip": "OEE Pipeline \u2014 Live Monitor"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Equipment Config",
+      "url": "/d/equipment-config",
+      "tooltip": "Equipment & PackML Routing"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "System Health",
+      "url": "/d/system-health",
+      "tooltip": "System Health \u2014 DB & Pipeline"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Stack Overview",
+      "url": "/d/packiot-logs",
+      "tooltip": "Stack Overview \u2014 log volumes & pipeline health"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Operator Activity",
+      "url": "/d/packiot-operator",
+      "tooltip": "Operator Activity \u2014 per-user actions & downtimes"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "PLC Pipeline Logs",
+      "url": "/d/packiot-pipeline-logs",
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "logs",
+      "title": "edge-api",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=\"edge-api\"} |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "postgres",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=\"postgres\"} |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "operator",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=\"operator\"} |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "simulator",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=\"simulator\"} |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

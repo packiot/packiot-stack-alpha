@@ -651,9 +651,11 @@
             "mode": "palette-classic"
           },
           "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "spanNulls": false
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "drawStyle": "bars",
+            "barAlignment": 0,
+            "gradientMode": "none"
           },
           "unit": "short"
         },
@@ -912,6 +914,62 @@
           "refId": "A"
         }
       ]
+    }
+  ],
+  "links": [
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Equipment Config",
+      "url": "/d/equipment-config",
+      "tooltip": "Equipment & PackML Routing"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "System Health",
+      "url": "/d/system-health",
+      "tooltip": "System Health — DB & Pipeline"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Stack Overview",
+      "url": "/d/packiot-logs",
+      "tooltip": "Stack Overview — log volumes & pipeline health"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Operator Activity",
+      "url": "/d/packiot-operator",
+      "tooltip": "Operator Activity — per-user actions & downtimes"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "PLC Pipeline Logs",
+      "url": "/d/packiot-pipeline-logs",
+      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud"
+    },
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "type": "link",
+      "title": "Services Logs",
+      "url": "/d/packiot-services-logs",
+      "tooltip": "Services Logs — edge-api, operator, simulator"
     }
   ]
 }

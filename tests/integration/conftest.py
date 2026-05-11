@@ -20,12 +20,14 @@ import pytest
 
 # ── connection details (overridable for host-side runs) ──────────────────────
 
-PG_DSN           = os.environ.get("DB_URL",
-                                  "postgresql://postgres:packiot@localhost:5433/packiot")
-EDGE_NODERED_URL = os.environ.get("EDGE_NODERED_URL", "http://localhost:1880")
-EDGE_API_URL     = os.environ.get("EDGE_API_URL",     "http://localhost:8080")
-POLL_TIMEOUT     = float(os.environ.get("INT_POLL_TIMEOUT", "30"))
-POLL_INTERVAL    = float(os.environ.get("INT_POLL_INTERVAL", "1"))
+PG_DSN              = os.environ.get("DB_URL",
+                                     "postgresql://postgres:packiot@localhost:5433/packiot")
+EDGE_NODERED_URL    = os.environ.get("EDGE_NODERED_URL",    "http://localhost:1880")
+EDGE_API_URL        = os.environ.get("EDGE_API_URL",        "http://localhost:8080")
+HASURA_URL          = os.environ.get("HASURA_URL",          "http://localhost:8081")
+HASURA_ADMIN_SECRET = os.environ.get("HASURA_ADMIN_SECRET", "dev-admin-secret")
+POLL_TIMEOUT        = float(os.environ.get("INT_POLL_TIMEOUT", "30"))
+POLL_INTERVAL       = float(os.environ.get("INT_POLL_INTERVAL", "1"))
 
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
@@ -117,3 +119,18 @@ def edge_api_post(path: str, body: dict, api_key: str, enterprise_id: int,
         timeout=15,
     )
     return r
+
+
+def hasura_query(query: str, variables: dict | None = None):
+    """Run a GraphQL query against Hasura and return the parsed response."""
+    r = requests.post(
+        f"{HASURA_URL}/v1/graphql",
+        json={"query": query, "variables": variables or {}},
+        headers={
+            "Content-Type": "application/json",
+            "X-Hasura-Admin-Secret": HASURA_ADMIN_SECRET,
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()

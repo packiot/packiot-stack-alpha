@@ -86,6 +86,8 @@ services:
       - ./edge-node-red/db/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
       - ./edge-node-red/db/01-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
       - ./edge-node-red/db/02-production-objects.sql:/docker-entrypoint-initdb.d/02-production-objects.sql:ro
+      - ./edge-node-red/db/03-operator-simulator.sql:/docker-entrypoint-initdb.d/03-operator-simulator.sql:ro
+      - ./edge-node-red/db/04-operator-views.sql:/docker-entrypoint-initdb.d/04-operator-views.sql:ro
     networks: [packiot-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]
@@ -109,7 +111,7 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: packiot
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
       GF_SERVER_ROOT_URL: http://localhost:3000
       GF_USERS_DEFAULT_THEME: dark
@@ -179,14 +181,17 @@ services:
       - sh
       - -c
       - |
-        printf '{"type":"replace_metadata","version":2,"args":' > /tmp/payload.json
-        cat /metadata.json >> /tmp/payload.json
-        printf '}' >> /tmp/payload.json
-        curl -sf -X POST http://hasura:8080/v1/metadata \
-          -H 'Content-Type: application/json' \
-          -H 'X-Hasura-Admin-Secret: dev-admin-secret' \
-          -d @/tmp/payload.json
-        echo "Hasura metadata applied"
+        METADATA=$$(sed '1s/{/{\"allow_inconsistent_metadata\":true,/' /metadata.json)
+        PAYLOAD="{\"type\":\"replace_metadata\",\"version\":2,\"args\":$${METADATA}}"
+        for i in 1 2 3 4 5; do
+          curl -sf -X POST http://hasura:8080/v1/metadata \
+            -H 'Content-Type: application/json' \
+            -H 'X-Hasura-Admin-Secret: dev-admin-secret' \
+            -d "$${PAYLOAD}" && echo "Hasura metadata applied" && exit 0
+          echo "Attempt $$i failed — retrying in 3s..."
+          sleep 3
+        done
+        echo "Hasura metadata apply FAILED after 5 attempts" && exit 1
     restart: "no"
 
   # ── Edge API (NestJS) ────────────────────────────────────────────────────────
@@ -307,7 +312,7 @@ services:
       PG_USER: postgres
       PG_PASSWORD: packiot
       PG_DATABASE: packiot
-      PG_SSL: "false"
+      PG_SSL: ""
       # ── Infra wiring ─────────────────────────────────────────────────────────
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
       PUBSUB_SUBSCRIPTION: projects/packiot-dev/subscriptions/oeecloud-sub
@@ -379,11 +384,11 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
-  # ── PLC Simulator ────────────────────────────────────────────────────────────
-  # Sends SparkPlug-style metric bursts to edge-nodered /plc-data on every tick.
-  # edge-nodered forwards through pack-queue → pubsub-out → oeecloud → DB.
-  # Operator actions (start/stop PO, justify) are NOT simulated here — use
-  # the operator UI or test_operator_pipeline.py for those.
+  # ── PLC + Operator Simulator ──────────────────────────────────────────────────
+  # PLC layer: sends SparkPlug-style metric bursts to edge-nodered /plc-data.
+  # Operator layer: rotates through ana.operator / joao.supervisor / maria.operator
+  #   and drives realistic actions (justify, manual event, start/stop PO) against
+  #   edge-api so the "Actions per User" Grafana panel stays balanced.
   # Start with: make up-simulator   Stop with: docker compose stop simulator
   simulator:
     build:
@@ -391,13 +396,17 @@ services:
     restart: unless-stopped
     environment:
       EDGE_NODERED_URL: http://edge-nodered:1880
+      EDGE_API_URL: http://edge-api:8080
       DB_URL: postgresql://postgres:packiot@postgres:5432/packiot
       SIM_INTERVAL: "5"
+      OP_INTERVAL: "15"
     depends_on:
       edge-nodered:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      edge-api:
+        condition: service_started
     networks: [packiot-net]
     # No profile — simulator is the canonical PLC source for dev.
     logging:
@@ -415,6 +424,8 @@ services:
       DB_URL: postgresql://postgres:packiot@postgres:5432/packiot
       EDGE_NODERED_URL: http://edge-nodered:1880
       EDGE_API_URL: http://edge-api:8080
+      HASURA_URL: http://hasura:8080
+      HASURA_ADMIN_SECRET: dev-admin-secret
       INT_POLL_TIMEOUT: "30"
       INT_POLL_INTERVAL: "1"
     depends_on:
@@ -424,6 +435,8 @@ services:
         condition: service_healthy
       edge-api:
         condition: service_started
+      hasura:
+        condition: service_healthy
       oeecloud:
         condition: service_healthy
     networks: [packiot-net]

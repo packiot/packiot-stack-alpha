@@ -2,11 +2,12 @@
         down logs logs-edge logs-oeecloud logs-api logs-infra logs-postgres logs-pubsub logs-adminer logs-operator logs-simulator \
         build build-edge build-oeecloud build-api build-operator build-simulator build-tests \
         restart clean status psql shell-edge shell-oeecloud shell-api shell-operator \
-        publish-test update \
+        publish-test update devctl \
         db-equipments db-equipment-values db-packml db-enterprises db-sites db-areas \
-        db-events db-uns db-orders db-count \
+        db-events db-uns db-orders db-count apply-views \
         watch-values watch-plc watch-pubsub \
-        stress-db sim-seed test-integration
+        stress-db sim-seed test-integration \
+        reset-events reset-sim
 
 COMPOSE     = docker compose -f compose.integration.yml
 ENV_FILE    = .env.local
@@ -82,6 +83,9 @@ help:
 	@echo "    shell-api        sh into edge-api container"
 	@echo "    publish-test     Publish a minimal test SparkPlug message to PubSub"
 	@echo "    stress-db        Stress test: 1000 batch inserts + expensive aggregate"
+	@echo "    devctl           Interactive dev-user CLI (start/stop/justify POs, no sim deps)"
+	@echo "    reset-events     Clear unjustified Sim Corp events (guardian re-seeds ~4 in 30s)"
+	@echo "    reset-sim        Full reset: drop all sim events + re-seed 8h historical data"
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -133,6 +137,17 @@ up-operator:
 
 up-simulator:
 	$(COMPOSE) up -d simulator
+
+# ── DevCtl — interactive dev-user action CLI ──────────────────────────────────
+# Runs devctl.py inside the simulator image (psycopg2 + requests already there).
+# Bind-mounts devctl.py so you always get the latest without rebuilding.
+# Stack must be running (make up or make up-api + make up-infra).
+devctl:
+	$(COMPOSE) run --rm -it \
+		-e EDGE_API_URL=http://edge-api:8080 \
+		-e DB_URL=postgresql://postgres:packiot@postgres:5432/packiot \
+		-v "$$(pwd)/simulator/devctl.py:/devctl.py:ro" \
+		--entrypoint python3 simulator /devctl.py
 
 # ── Individual builds ─────────────────────────────────────────────────────────
 build-edge:
@@ -230,6 +245,13 @@ db-uns:
 db-orders:
 	@$(PSQL) -c "SELECT id_production_order, id_equipment, status, ts_start, ts_end FROM production_orders ORDER BY id_production_order DESC LIMIT 20;"
 
+apply-views:
+	@echo "Applying operator UI views to running postgres..."
+	@$(COMPOSE) exec -T postgres psql -U postgres -d packiot \
+		< edge-node-red/db/04-operator-views.sql
+	@echo "Views applied. Restart hasura-init if Hasura still reports missing fields:"
+	@echo "  docker compose -f compose.integration.yml restart hasura hasura-init"
+
 db-count:
 	@$(PSQL) -c "\
 		SELECT 'equipment_values'  AS tbl, COUNT(*) FROM equipment_values  UNION ALL \
@@ -272,6 +294,31 @@ sim-seed:
 	@echo "Seeding Simulator Corp enterprise with historical operator data..."
 	@$(PSQL) -f /dev/stdin < edge-node-red/db/03-operator-simulator.sql
 	@echo "Done. Start live simulator with: make up-simulator"
+
+# ── Simulator reset helpers ───────────────────────────────────────────────────
+# reset-events: wipe unjustified events so devs start fresh; guardian auto-seeds
+#               PENDING_MIN (4) forced events within one AUTO_INTERVAL (30s).
+# reset-sim:    full slate — removes all Sim Corp events, re-seeds 8h historical.
+reset-events:
+	@echo "Clearing unjustified events for Simulator Corp..."
+	@$(PSQL) -c "\
+		DELETE FROM equipment_events ee \
+		USING enterprises e \
+		WHERE ee.id_enterprise = e.id_enterprise \
+		  AND e.nm_enterprise = 'Simulator Corp' \
+		  AND ee.status = 10 \
+		  AND (ee.cd_category IS NULL OR ee.cd_category = '');"
+	@echo "Done — guardian re-seeds fresh pending events within ~30s"
+
+reset-sim:
+	@echo "Full simulator reset for Simulator Corp..."
+	@$(PSQL) -c "\
+		DELETE FROM equipment_events ee \
+		USING enterprises e \
+		WHERE ee.id_enterprise = e.id_enterprise \
+		  AND e.nm_enterprise = 'Simulator Corp';"
+	@$(PSQL) -f /dev/stdin < edge-node-red/db/03-operator-simulator.sql
+	@echo "Done. Historical data re-seeded."
 
 # ── DB stress simulation ───────────────────────────────────────────────────────
 # Inserts 1000 synthetic rows via generate_series, then runs an expensive
