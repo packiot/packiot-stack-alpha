@@ -7,10 +7,17 @@
         db-events db-uns db-orders db-count apply-views \
         watch-values watch-plc watch-pubsub \
         stress-db sim-seed test-integration \
-        reset-events reset-sim
+        reset-events reset-sim \
+        tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate
 
 COMPOSE     = docker compose -f compose.integration.yml
 ENV_FILE    = .env.local
+
+TF_DIR      = terraform/staging
+TF_BOOT_DIR = terraform/staging/bootstrap
+# Account ID is resolved once and reused — avoids repeated aws sts calls.
+AWS_ACCOUNT_ID  := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
+TF_STATE_BUCKET := packiot-terraform-state-$(AWS_ACCOUNT_ID)
 
 INFRA_SVCS  = pubsub-emulator pubsub-init postgres hasura hasura-init
 
@@ -86,6 +93,16 @@ help:
 	@echo "    devctl           Interactive dev-user CLI (start/stop/justify POs, no sim deps)"
 	@echo "    reset-events     Clear unjustified Sim Corp events (guardian re-seeds ~4 in 30s)"
 	@echo "    reset-sim        Full reset: drop all sim events + re-seed 8h historical data"
+	@echo ""
+	@echo "  Terraform — staging infrastructure (terraform/staging/)"
+	@echo "    tf-bootstrap     Create S3 state bucket (run once per AWS account)"
+	@echo "    tf-init          Init Terraform with remote S3 backend"
+	@echo "    tf-plan          Show execution plan (no changes applied)"
+	@echo "    tf-apply         Apply infrastructure changes (prompts for confirmation)"
+	@echo "    tf-destroy       Destroy all staging resources (prompts for confirmation)"
+	@echo "    tf-output        Print all Terraform outputs (IPs, NS records, URLs)"
+	@echo "    tf-fmt           Format all .tf files in-place"
+	@echo "    tf-validate      Validate Terraform configuration"
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -352,3 +369,38 @@ build-tests:
 
 test-integration: build-tests
 	$(COMPOSE) --profile tests run --rm tests
+
+# ── Terraform — staging infrastructure ────────────────────────────────────────
+# Requires: terraform >= 1.10, aws CLI configured with the packiot account.
+# Run tf-bootstrap once per account, then tf-init, tf-plan, tf-apply.
+
+tf-bootstrap:
+	@echo "Creating S3 state bucket for account $(AWS_ACCOUNT_ID)..."
+	cd $(TF_BOOT_DIR) && terraform init && terraform apply
+
+tf-init:
+	@echo "Initialising Terraform with S3 backend (bucket: $(TF_STATE_BUCKET))..."
+	cd $(TF_DIR) && terraform init \
+		-backend-config="bucket=$(TF_STATE_BUCKET)" \
+		-backend-config="key=staging/terraform.tfstate" \
+		-backend-config="region=us-east-1" \
+		-backend-config="use_lockfile=true" \
+		-backend-config="encrypt=true"
+
+tf-validate: tf-fmt
+	cd $(TF_DIR) && terraform validate
+
+tf-plan:
+	cd $(TF_DIR) && terraform plan
+
+tf-apply:
+	cd $(TF_DIR) && terraform apply
+
+tf-destroy:
+	cd $(TF_DIR) && terraform destroy
+
+tf-output:
+	cd $(TF_DIR) && terraform output
+
+tf-fmt:
+	terraform fmt -recursive $(TF_DIR)

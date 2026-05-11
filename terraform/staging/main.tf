@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.6"
+  required_version = ">= 1.10" # S3 native locking requires 1.10+
 
   required_providers {
     aws = {
@@ -12,8 +12,8 @@ terraform {
     }
   }
 
-  # Backend values are supplied at init time (see bootstrap/outputs.tf).
-  # Do not hardcode account IDs or bucket names here.
+  # Backend values supplied at init time via `make tf-init` — not hardcoded here.
+  # use_lockfile=true enables S3 native locking (no DynamoDB needed).
   backend "s3" {}
 }
 
