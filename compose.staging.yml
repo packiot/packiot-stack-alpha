@@ -34,47 +34,7 @@ volumes:
   rabbitmq-data:
 
 services:
-  # ── PubSub emulator ────────────────────────────────────────────────────────────
-  # Bridges edge-nodered → oeecloud. A future migration to native RabbitMQ/AMQP
-  # will require updating the Node-RED flows to use the rabbitmq service below.
-  pubsub-emulator:
-    image: thekevjames/gcloud-pubsub-emulator:latest
-    restart: unless-stopped
-    environment:
-      PUBSUB_PROJECT1: packiot-staging,oee-topic:oeecloud-sub
-    networks: [packiot-net]
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8681/v1/projects/packiot-staging/topics"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-    logging:
-      driver: json-file
-      options: {max-size: "5m", max-file: "3"}
-
-  pubsub-init:
-    image: curlimages/curl:latest
-    networks: [packiot-net]
-    depends_on:
-      pubsub-emulator:
-        condition: service_healthy
-    environment:
-      BASE: http://pubsub-emulator:8681/v1/projects/packiot-staging
-      TOPIC: oee-topic
-      SUB: oeecloud-sub
-    entrypoint:
-      - sh
-      - -c
-      - |
-        curl -sf -X PUT "$${BASE}/topics/$${TOPIC}"
-        curl -sf -X PUT "$${BASE}/subscriptions/$${SUB}" \
-          -H 'Content-Type: application/json' \
-          -d "{\"topic\":\"projects/packiot-staging/topics/$${TOPIC}\"}"
-        echo "PubSub topic + subscription ready"
-    restart: "no"
-
-  # ── RabbitMQ ───────────────────────────────────────────────────────────────────
+  # ── RabbitMQ (message bus) ─────────────────────────────────────────────────────
   # Provisioned for the future PubSub → AMQP migration.
   # Management UI at rabbitmq.staging.packiot.com (port 15672 via Nginx).
   # Internal AMQP port 5672 is available to services on packiot-net.
@@ -176,11 +136,9 @@ services:
     restart: unless-stopped
     env_file: [.env]
     environment:
-      PUBSUB_TOPIC: projects/packiot-staging/topics/oee-topic
+      RABBITMQ_HOST: rabbitmq
       ID_PUBSUB_NODE: staging-app-ec2
       LOG_LEVEL: info
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
-      GCP_PROJECT_ID: packiot-staging
       HASURA_URL: http://hasura:8080/v1/graphql
       HASURA_ADMIN_SECRET: ${HASURA_GRAPHQL_ADMIN_SECRET}
       API_KEY: ${EDGE_API_KEY}
@@ -196,8 +154,8 @@ services:
       retries: 5
       start_period: 60s
     depends_on:
-      pubsub-init:
-        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
       hasura-init:
         condition: service_completed_successfully
     networks: [packiot-net]
@@ -214,6 +172,7 @@ services:
     restart: unless-stopped
     env_file: [.env]
     environment:
+      RABBITMQ_HOST: rabbitmq
       LOG_LEVEL: info
       PG_HOST: ${POSTGRES_HOST}
       PG_PORT: "5432"
@@ -222,9 +181,6 @@ services:
       PG_PASSWORD: ${POSTGRES_PASSWORD}
       PG_SSL: ""
       API_KEY: ${EDGE_API_KEY}
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
-      PUBSUB_SUBSCRIPTION: projects/packiot-staging/subscriptions/oeecloud-sub
-      GCP_PROJECT_ID: packiot-staging
       OEE_SERVER_NAME: staging
       OEE_SERVER_URL: http://edge-nodered:1880
       PING_API_URL: http://edge-api:8080/devices/ping
@@ -239,8 +195,8 @@ services:
       retries: 3
       start_period: 120s
     depends_on:
-      pubsub-init:
-        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
       edge-nodered:
         condition: service_healthy
     networks: [packiot-net]

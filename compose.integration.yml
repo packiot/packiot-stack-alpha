@@ -30,46 +30,31 @@ volumes:
   nr-oeecloud-data:
   grafana-data:
   loki-data:
+  rabbitmq-data:
 
 services:
-  # ── PubSub emulator ─────────────────────────────────────────────────────────
-  pubsub-emulator:
-    image: thekevjames/gcloud-pubsub-emulator:latest
+  # ── RabbitMQ (message bus) ───────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    restart: unless-stopped
     environment:
-      PUBSUB_PROJECT1: packiot-dev,oee-topic:oeecloud-sub
+      RABBITMQ_DEFAULT_USER: packiot
+      RABBITMQ_DEFAULT_PASS: packiot
     ports:
-      - "8085:8681"
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
     networks: [packiot-net]
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8681/v1/projects/packiot-dev/topics"]
-      interval: 3s
-      timeout: 3s
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
       retries: 10
-      start_period: 5s
+      start_period: 30s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
-
-  pubsub-init:
-    image: curlimages/curl:latest
-    networks: [packiot-net]
-    depends_on:
-      pubsub-emulator:
-        condition: service_healthy
-    environment:
-      BASE: http://pubsub-emulator:8681/v1/projects/packiot-dev
-      TOPIC: oee-topic
-      SUB: oeecloud-sub
-    entrypoint:
-      - sh
-      - -c
-      - |
-        curl -sf -X PUT "$${BASE}/topics/$${TOPIC}"
-        curl -sf -X PUT "$${BASE}/subscriptions/$${SUB}" \
-          -H 'Content-Type: application/json' \
-          -d "{\"topic\":\"projects/packiot-dev/topics/$${TOPIC}\"}"
-        echo "PubSub topic + subscription ready"
-    restart: "no"
 
   # ── Database (TimescaleDB) ───────────────────────────────────────────────────
   postgres:
@@ -231,22 +216,19 @@ services:
       - path: .env.local
         required: false
     environment:
-      # ── Required vars — all pre-filled for emulator-based integration dev ────
       NODE_RED_CREDENTIAL_SECRET: dev-credential-secret-32chars-long!
-      PUBSUB_TOPIC: projects/packiot-dev/topics/oee-topic
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: packiot
+      RABBITMQ_PASSWORD: packiot
       ID_PUBSUB_NODE: machine-01
       API_KEY: dev-api-key        # matches enterprises.api_key in 01-seed.sql
       ID_ENTERPRISE: "1"
       LOG_LEVEL: info
-      # ── Infra wiring ─────────────────────────────────────────────────────────
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
-      GCP_PROJECT_ID: packiot-dev
       HASURA_URL: http://hasura:8080/v1/graphql
       HASURA_ADMIN_SECRET: dev-admin-secret
       FIREBASE_API_KEY: dev-placeholder-bypassed-by-admin-secret
       DISABLE_EDITOR: "false"
-      # ── Operator UI wiring ────────────────────────────────────────────────────
-      EDGE_API_BASE_URL: http://edge-api:8080  # used by API.json HTTP request nodes
+      EDGE_API_BASE_URL: http://edge-api:8080
     ports:
       - "1880:1880"
     healthcheck:
@@ -256,8 +238,8 @@ services:
       retries: 5
       start_period: 60s
     depends_on:
-      pubsub-init:
-        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
       hasura-init:
         condition: service_completed_successfully
     networks: [packiot-net]
@@ -301,26 +283,22 @@ services:
       - path: .env.local
         required: false
     environment:
-      # ── Required vars — all pre-filled for emulator-based integration dev ────
       NODE_RED_CREDENTIAL_SECRET: dev-credential-secret-32chars-long!
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: packiot
+      RABBITMQ_PASSWORD: packiot
       ID_ENTERPRISE: "1"
       API_KEY: dev-api-key
       LOG_LEVEL: info
-      # ── DB ───────────────────────────────────────────────────────────────────
       PG_HOST: postgres
       PG_PORT: "5432"
       PG_USER: postgres
       PG_PASSWORD: packiot
       PG_DATABASE: packiot
       PG_SSL: ""
-      # ── Infra wiring ─────────────────────────────────────────────────────────
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
-      PUBSUB_SUBSCRIPTION: projects/packiot-dev/subscriptions/oeecloud-sub
-      GCP_PROJECT_ID: packiot-dev
       OEE_SERVER_NAME: integration-dev
       OEE_SERVER_URL: http://edge-nodered:1880
       PING_API_URL: http://edge-api:8080/devices/ping
-      # ── Alerting (dev placeholders — override via .env.local to test emails) ─
       ALERT_EMAIL_TO: dev@example.com
       ALERT_EMAIL_FROM: support@packiot.com
       SENDGRID_API_KEY: SG.dev-placeholder
@@ -336,8 +314,8 @@ services:
       retries: 3
       start_period: 120s
     depends_on:
-      pubsub-init:
-        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
       postgres:
         condition: service_healthy
     networks: [packiot-net]
