@@ -1,0 +1,341 @@
+# compose.staging.yml — App EC2 service stack (staging, us-east-1)
+#
+# Service map:
+#   pubsub-emulator   (internal)  — GCP PubSub emulator (edge-nodered → oeecloud message bus)
+#   rabbitmq          :5672/:15672 — Future AMQP broker; management UI at rabbitmq.staging.packiot.com
+#   hasura            :8081        — Hasura GraphQL → hasura.staging.packiot.com
+#   edge-api          :8080        — NestJS REST/admin API → api.staging.packiot.com
+#   edge-nodered      :1880        — Edge Node-RED → nodered.staging.packiot.com
+#   oeecloud          (internal)  — Cloud OEE Node-RED (no public vhost needed)
+#   grafana           :3000        — Grafana dashboards → grafana.staging.packiot.com
+#   operator          :3001        — React SPA operator UI → operator.staging.packiot.com
+#   loki              (internal)  — Log aggregation (Grafana datasource)
+#   promtail          (internal)  — Docker log collector → Loki
+#
+# Differences from compose.integration.yml:
+#   - No postgres: DB runs on a separate private-subnet EC2
+#   - No adminer, simulator, tests (dev-only)
+#   - All ports bound to 127.0.0.1 — Nginx terminates TLS externally
+#   - RabbitMQ added (future PubSub → AMQP migration)
+#   - DISABLE_EDITOR=true on Node-RED instances (production mode)
+#   - Secrets loaded from /opt/packiot/.env (symlinked to .env by app_init.sh)
+#
+# Deploy: docker compose -f compose.staging.yml up -d --build
+
+networks:
+  packiot-net:
+    driver: bridge
+
+volumes:
+  nr-edge-data:
+  nr-oeecloud-data:
+  grafana-data:
+  loki-data:
+  rabbitmq-data:
+
+services:
+  # ── PubSub emulator ────────────────────────────────────────────────────────────
+  # Bridges edge-nodered → oeecloud. A future migration to native RabbitMQ/AMQP
+  # will require updating the Node-RED flows to use the rabbitmq service below.
+  pubsub-emulator:
+    image: thekevjames/gcloud-pubsub-emulator:latest
+    restart: unless-stopped
+    environment:
+      PUBSUB_PROJECT1: packiot-staging,oee-topic:oeecloud-sub
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8681/v1/projects/packiot-staging/topics"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  pubsub-init:
+    image: curlimages/curl:latest
+    networks: [packiot-net]
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+    environment:
+      BASE: http://pubsub-emulator:8681/v1/projects/packiot-staging
+      TOPIC: oee-topic
+      SUB: oeecloud-sub
+    entrypoint:
+      - sh
+      - -c
+      - |
+        curl -sf -X PUT "$${BASE}/topics/$${TOPIC}"
+        curl -sf -X PUT "$${BASE}/subscriptions/$${SUB}" \
+          -H 'Content-Type: application/json' \
+          -d "{\"topic\":\"projects/packiot-staging/topics/$${TOPIC}\"}"
+        echo "PubSub topic + subscription ready"
+    restart: "no"
+
+  # ── RabbitMQ ───────────────────────────────────────────────────────────────────
+  # Provisioned for the future PubSub → AMQP migration.
+  # Management UI at rabbitmq.staging.packiot.com (port 15672 via Nginx).
+  # Internal AMQP port 5672 is available to services on packiot-net.
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Hasura GraphQL ─────────────────────────────────────────────────────────────
+  hasura:
+    image: hasura/graphql-engine:v2.44.0
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+      HASURA_GRAPHQL_DEV_MODE: "false"
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log
+    ports:
+      - "127.0.0.1:8081:8080"
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  hasura-init:
+    image: curlimages/curl:latest
+    networks: [packiot-net]
+    env_file: [.env]
+    depends_on:
+      hasura:
+        condition: service_healthy
+    volumes:
+      - ./edge-node-red/hasura/metadata.json:/metadata.json:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        METADATA=$$(sed '1s/{/{\"allow_inconsistent_metadata\":true,/' /metadata.json)
+        PAYLOAD="{\"type\":\"replace_metadata\",\"version\":2,\"args\":$${METADATA}}"
+        for i in 1 2 3 4 5; do
+          curl -sf -X POST http://hasura:8080/v1/metadata \
+            -H 'Content-Type: application/json' \
+            -H "X-Hasura-Admin-Secret: $${HASURA_GRAPHQL_ADMIN_SECRET}" \
+            -d "$${PAYLOAD}" && echo "Hasura metadata applied" && exit 0
+          echo "Attempt $$i failed — retrying in 3s..."
+          sleep 3
+        done
+        echo "Hasura metadata apply FAILED after 5 attempts" && exit 1
+    restart: "no"
+
+  # ── Edge API (NestJS) ──────────────────────────────────────────────────────────
+  edge-api:
+    build:
+      context: ./edge-api
+      target: production
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      NODE_ENV: production
+      NEW_RELIC_ENABLED: "false"
+      NEW_RELIC_NO_CONFIG_FILE: "true"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [packiot-net]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── Edge Node-RED ──────────────────────────────────────────────────────────────
+  edge-nodered:
+    build:
+      context: ./edge-node-red
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      PUBSUB_TOPIC: projects/packiot-staging/topics/oee-topic
+      ID_PUBSUB_NODE: staging-app-ec2
+      LOG_LEVEL: info
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
+      GCP_PROJECT_ID: packiot-staging
+      HASURA_URL: http://hasura:8080/v1/graphql
+      HASURA_ADMIN_SECRET: ${HASURA_GRAPHQL_ADMIN_SECRET}
+      API_KEY: ${EDGE_API_KEY}
+      FIREBASE_API_KEY: bypassed-by-hasura-admin-secret
+      DISABLE_EDITOR: "true"
+      EDGE_API_BASE_URL: http://edge-api:8080
+    ports:
+      - "127.0.0.1:1880:1880"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:1880/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      pubsub-init:
+        condition: service_completed_successfully
+      hasura-init:
+        condition: service_completed_successfully
+    networks: [packiot-net]
+    volumes:
+      - nr-edge-data:/data
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── OEECloud Node-RED ──────────────────────────────────────────────────────────
+  oeecloud:
+    build:
+      context: ./oeecloud-node-red
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      PG_HOST: ${POSTGRES_HOST}
+      PG_PORT: "5432"
+      PG_USER: ${POSTGRES_USER}
+      PG_DATABASE: ${POSTGRES_DB}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      PG_SSL: ""
+      API_KEY: ${EDGE_API_KEY}
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8681
+      PUBSUB_SUBSCRIPTION: projects/packiot-staging/subscriptions/oeecloud-sub
+      GCP_PROJECT_ID: packiot-staging
+      OEE_SERVER_NAME: staging
+      OEE_SERVER_URL: http://edge-nodered:1880
+      PING_API_URL: http://edge-api:8080/devices/ping
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-ops@packiot.com}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-support@packiot.com}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-SG.staging-placeholder}
+      DISABLE_EDITOR: "true"
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      pubsub-init:
+        condition: service_completed_successfully
+      edge-nodered:
+        condition: service_healthy
+    networks: [packiot-net]
+    volumes:
+      - nr-oeecloud-data:/data
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── Grafana ────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.5.0
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [packiot-net]
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Operator UI (React SPA) ────────────────────────────────────────────────────
+  # VITE_API_URL is resolved by the user's browser — must be the public nodered URL.
+  # The Operator build injects it at build time via Vite; the container re-reads it
+  # if the Dockerfile does a runtime env injection (see operator/Dockerfile).
+  operator:
+    build:
+      context: ./operator
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: https://nodered.${STAGING_DOMAIN}
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      edge-nodered:
+        condition: service_healthy
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Loki ───────────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.4.2
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./monitoring/loki/loki-local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Promtail ───────────────────────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.4.2
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yaml
+    volumes:
+      - ./monitoring/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [packiot-net]
+    depends_on:
+      loki:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

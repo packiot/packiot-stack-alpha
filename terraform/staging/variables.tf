@@ -73,6 +73,7 @@ variable "services" {
     hasura   = 8081
     grafana  = 3000
     operator = 3001
+    nodered  = 1880  # edge-nodered — operator SPA calls this from the browser
     rabbitmq = 15672 # RabbitMQ management UI
   }
 }

@@ -181,6 +181,7 @@ resource "aws_instance" "app" {
   user_data = base64encode(templatefile("${path.module}/user_data/app_init.sh", {
     db_private_ip  = aws_instance.db.private_ip
     db_name        = var.db_name
+    db_user        = var.db_user
     staging_domain = var.staging_domain
     services       = var.services
     aws_region     = var.aws_region
