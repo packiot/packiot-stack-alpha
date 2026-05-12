@@ -1,5 +1,5 @@
 .PHONY: help init setup up up-infra up-edge up-oeecloud up-api up-operator up-simulator \
-        down logs logs-edge logs-oeecloud logs-api logs-infra logs-postgres logs-pubsub logs-adminer logs-operator logs-simulator \
+        down logs logs-edge logs-oeecloud logs-api logs-infra logs-postgres logs-rabbitmq logs-adminer logs-operator logs-simulator \
         build build-edge build-oeecloud build-api build-operator build-simulator build-tests \
         restart clean status psql shell-edge shell-oeecloud shell-api shell-operator \
         publish-test update devctl \
@@ -8,18 +8,20 @@
         watch-values watch-plc watch-pubsub \
         stress-db sim-seed test-integration \
         reset-events reset-sim \
-        tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate
+        tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate \
+        staging-deploy-key
 
 COMPOSE     = docker compose -f compose.integration.yml
 ENV_FILE    = .env.local
 
 TF_DIR      = terraform/staging
 TF_BOOT_DIR = terraform/staging/bootstrap
+GITHUB_REPO = packiot/packiot-stack-alpha
 # Account ID is resolved once and reused — avoids repeated aws sts calls.
 AWS_ACCOUNT_ID  := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 TF_STATE_BUCKET := packiot-terraform-state-$(AWS_ACCOUNT_ID)
 
-INFRA_SVCS  = pubsub-emulator pubsub-init postgres hasura hasura-init
+INFRA_SVCS  = rabbitmq postgres hasura hasura-init
 
 # ── Default ───────────────────────────────────────────────────────────────────
 help:
@@ -40,7 +42,7 @@ help:
 	@echo "    build            Build all service images"
 	@echo ""
 	@echo "  Partial stacks (infra always included)"
-	@echo "    up-infra         PubSub emulator + TimescaleDB + Hasura only"
+	@echo "    up-infra         RabbitMQ + TimescaleDB + Hasura only"
 	@echo "    up-edge          Infra + edge-nodered"
 	@echo "    up-oeecloud      Infra + oeecloud"
 	@echo "    up-api           Postgres + edge-api"
@@ -60,9 +62,9 @@ help:
 	@echo "    logs-oeecloud    Tail oeecloud"
 	@echo "    logs-api         Tail edge-api"
 	@echo "    logs-postgres    Tail TimescaleDB"
-	@echo "    logs-pubsub      Tail PubSub emulator"
+	@echo "    logs-rabbitmq    Tail RabbitMQ"
 	@echo "    logs-adminer     Tail Adminer"
-	@echo "    logs-infra       Tail pubsub + postgres + hasura"
+	@echo "    logs-infra       Tail rabbitmq + postgres + hasura"
 	@echo "    logs-simulator   Tail operator simulator"
 	@echo ""
 	@echo "  Database queries (one-shot)"
@@ -80,7 +82,7 @@ help:
 	@echo "  Live monitoring (Ctrl+C to stop)"
 	@echo "    watch-values     Refresh equipment_values every 2s"
 	@echo "    watch-plc        Refresh PLC metric breakdown every 2s"
-	@echo "    watch-pubsub     Stream oeecloud logs (shows PubSub activity)"
+	@echo "    watch-pubsub     Stream oeecloud logs (shows RabbitMQ/AMQP activity)"
 	@echo ""
 	@echo "  Utilities"
 	@echo "    psql             Open psql shell in the postgres container"
@@ -88,11 +90,14 @@ help:
 	@echo "    shell-operator   sh into operator container"
 	@echo "    shell-oeecloud   sh into oeecloud container"
 	@echo "    shell-api        sh into edge-api container"
-	@echo "    publish-test     Publish a minimal test SparkPlug message to PubSub"
+	@echo "    publish-test     Publish a minimal test SparkPlug message to RabbitMQ"
 	@echo "    stress-db        Stress test: 1000 batch inserts + expensive aggregate"
 	@echo "    devctl           Interactive dev-user CLI (start/stop/justify POs, no sim deps)"
 	@echo "    reset-events     Clear unjustified Sim Corp events (guardian re-seeds ~4 in 30s)"
 	@echo "    reset-sim        Full reset: drop all sim events + re-seed 8h historical data"
+	@echo ""
+	@echo "  Staging one-time setup"
+	@echo "    staging-deploy-key  Generate + register GitHub deploy key → Secrets Manager"
 	@echo ""
 	@echo "  Terraform — staging infrastructure (terraform/staging/)"
 	@echo "    tf-bootstrap     Create S3 state bucket (run once per AWS account)"
@@ -196,13 +201,13 @@ logs-api:
 	$(COMPOSE) logs -f edge-api
 
 logs-infra:
-	$(COMPOSE) logs -f pubsub-emulator postgres hasura
+	$(COMPOSE) logs -f rabbitmq postgres hasura
 
 logs-postgres:
 	$(COMPOSE) logs -f postgres
 
-logs-pubsub:
-	$(COMPOSE) logs -f pubsub-emulator
+logs-rabbitmq:
+	$(COMPOSE) logs -f rabbitmq
 
 logs-adminer:
 	$(COMPOSE) logs -f adminer
@@ -348,17 +353,18 @@ stress-db:
 	@$(PSQL) -c "SELECT id_equipment, date_trunc('minute', ts_value) AS bucket, SUM(net_production_incr) AS net, SUM(scrap_incr) AS scrap, ROUND((AVG(speed))::numeric, 1) AS avg_speed, ROUND((SUM(CASE WHEN state=6 THEN 1.0 ELSE 0 END) / NULLIF(COUNT(*),0) * 100)::numeric, 1) AS avail_pct FROM equipment_values WHERE ts_value > NOW() - INTERVAL '1 hour' GROUP BY id_equipment, bucket ORDER BY id_equipment, bucket DESC LIMIT 30;"
 	@echo "Stress test complete. Run 'make db-count' to see updated row counts."
 
-# Publish a minimal test SparkPlug message to the shared PubSub emulator.
-# The payload simulates a machine-01 metric update (counter reset, speed=100).
-# Adjust topic + data to match your packml_register entries.
+# Publish a minimal test SparkPlug message to RabbitMQ (oee exchange).
+# Uses the RabbitMQ management HTTP API on localhost:15672.
+# Credentials default to packiot/packiot (dev); adjust if changed in .env.local.
 publish-test:
-	@echo "Publishing test SparkPlug message to PubSub emulator..."
-	@DATA=$$(printf '{"timestamp":%s,"metrics":[{"name":"30700","value":1},{"name":"30701","value":100}]}' \
-		$$(date +%s%3N) | base64 -w0); \
-	curl -sf -X POST \
-		http://localhost:8085/v1/projects/packiot-dev/topics/oee-topic:publish \
+	@echo "Publishing test SparkPlug message to RabbitMQ..."
+	@PAYLOAD=$$(printf \
+		'{"properties":{},"routing_key":"sparkplug.data","payload_encoding":"string","payload":"{\"timestamp\":%s,\"metrics\":[{\"name\":\"30700\",\"value\":1},{\"name\":\"30701\",\"value\":100}],\"gateway\":\"machine-01\"}"}' \
+		$$(date +%s%3N)); \
+	curl -sf -u packiot:packiot -X POST \
+		http://localhost:15672/api/exchanges/%2F/oee/publish \
 		-H 'Content-Type: application/json' \
-		-d "{\"messages\":[{\"data\":\"$$DATA\",\"attributes\":{\"topic\":\"Dev Enterprise/Dev Site/Dev Area/Line-01/Machine-01/Status/Metric[30700]***TRIGDevice\"}}]}" \
+		-d "$$PAYLOAD" \
 	&& echo "Message published"
 
 # ── Integration tests (Layer 2 — end-to-end against live stack) ───────────────
@@ -404,3 +410,27 @@ tf-output:
 
 tf-fmt:
 	terraform fmt -recursive $(TF_DIR)
+
+# ── Staging one-time setup helpers ────────────────────────────────────────────
+
+# Generate a GitHub deploy key, register it on the repo (read-only), and
+# store the private key in Secrets Manager. Run once before make tf-apply.
+# Requires: gh (authenticated), aws CLI (packiot account), jq.
+staging-deploy-key:
+	@echo "Generating ed25519 deploy key..."
+	ssh-keygen -t ed25519 -C "staging-ec2-deploy" -f /tmp/staging_deploy_key -N ""
+	@echo "Adding public key to $(GITHUB_REPO) deploy keys..."
+	gh repo deploy-key add /tmp/staging_deploy_key.pub \
+		--title "staging-ec2-deploy" \
+		--repo $(GITHUB_REPO)
+	@echo "Storing private key in Secrets Manager (packiot/staging/github-deploy-key)..."
+	aws secretsmanager create-secret \
+		--name packiot/staging/github-deploy-key \
+		--region us-east-1 \
+		--secret-string "$$(jq -n --arg k "$$(cat /tmp/staging_deploy_key)" '{private_key: $$k}')" \
+		|| aws secretsmanager put-secret-value \
+			--secret-id packiot/staging/github-deploy-key \
+			--region us-east-1 \
+			--secret-string "$$(jq -n --arg k "$$(cat /tmp/staging_deploy_key)" '{private_key: $$k}')"
+	rm /tmp/staging_deploy_key /tmp/staging_deploy_key.pub
+	@echo "Done. Private key is in Secrets Manager; local copy removed."

@@ -8,6 +8,14 @@ resource "aws_security_group" "app" {
   vpc_id = aws_vpc.staging.id
 
   ingress {
+    description = "SSH - emergency/debug access"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     description = "HTTP (redirected to HTTPS by Nginx)"
     from_port   = 80
     to_port     = 80
@@ -16,7 +24,7 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description = "HTTPS — all staging service endpoints"
+    description = "HTTPS - all staging service endpoints"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -24,7 +32,7 @@ resource "aws_security_group" "app" {
   }
 
   egress {
-    description = "All outbound — Docker Hub pulls, GitHub, AWS APIs, DB"
+    description = "All outbound - Docker Hub pulls, GitHub, AWS APIs, DB"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

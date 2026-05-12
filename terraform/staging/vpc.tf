@@ -46,13 +46,12 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private route: 0.0.0.0/0 → fck-nat ENI.
-# The fck-nat instance ID is referenced here; the module outputs it.
+# Private route: 0.0.0.0/0 → NAT instance ENI.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.staging.id
   route {
     cidr_block           = "0.0.0.0/0"
-    network_interface_id = module.fck_nat.interface_id
+    network_interface_id = aws_instance.nat.primary_network_interface_id
   }
   tags = { Name = "packiot-staging-private-rt" }
 }

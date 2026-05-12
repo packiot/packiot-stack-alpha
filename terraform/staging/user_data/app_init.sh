@@ -4,14 +4,24 @@
 set -euo pipefail
 exec > >(tee /var/log/packiot-app-init.log | logger -t packiot-app-init) 2>&1
 
+# Cloud-init doesn't set HOME; git and ssh need it.
+export HOME=/root
+export PATH="/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/sbin:/bin:$PATH"
+
 echo "=== Packiot App init starting $(date -u) ==="
 AWS_REGION="${aws_region}"
 STAGING_DOMAIN="${staging_domain}"
 GITHUB_REPO="${github_repo}"
 
+# ── SSM agent — NOT pre-installed on AL2023 arm64; install it first ──────────
+dnf install -y amazon-ssm-agent
+systemctl enable amazon-ssm-agent
+systemctl start  amazon-ssm-agent
+
 # ── System ────────────────────────────────────────────────────────────────────
-dnf update -y
-dnf install -y git curl unzip jq python3-pip
+# AL2023 ships with curl-minimal which conflicts with curl; --allowerasing lets dnf replace it.
+dnf update -y --allowerasing
+dnf install -y git curl unzip jq python3-pip --allowerasing
 
 # ── Docker + Docker Compose ───────────────────────────────────────────────────
 dnf install -y docker
@@ -96,10 +106,47 @@ GF_SERVER_ROOT_URL=https://grafana.$STAGING_DOMAIN
 STAGING_DOMAIN=$STAGING_DOMAIN
 ENV
 
+# ── GitHub auth ───────────────────────────────────────────────────────────────
+# Deploy key: SSH auth for the main packiot-stack-alpha repo (git@ URL).
+# PAT: HTTPS auth for submodules (edge-api, edge-node-red, oeecloud-node-red).
+# GitHub deploy keys are per-repo and can't be shared, so submodules use a PAT.
+DEPLOY_KEY_SECRET=$(get_secret "packiot/staging/github-deploy-key")
+DEPLOY_KEY=$(echo "$DEPLOY_KEY_SECRET" | jq -r '.private_key')
+GITHUB_PAT=$(get_secret "packiot/staging/github-pat" | jq -r '.token')
+
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+printf '%s\n' "$DEPLOY_KEY" > /root/.ssh/github_deploy_key
+chmod 600 /root/.ssh/github_deploy_key
+
+cat >> /root/.ssh/config <<SSH_CFG
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile /root/.ssh/github_deploy_key
+    StrictHostKeyChecking accept-new
+SSH_CFG
+chmod 600 /root/.ssh/config
+
+echo "GitHub auth configured"
+
 # ── Clone / update repo ───────────────────────────────────────────────────────
+export GIT_SSH_COMMAND="ssh -i /root/.ssh/github_deploy_key -o StrictHostKeyChecking=accept-new"
+# Rewrite HTTPS submodule URLs to authenticated HTTPS using the PAT.
+git config --global url."https://x-access-token:$GITHUB_PAT@github.com/".insteadOf "https://github.com/"
+
 cd /opt/packiot
-git clone --recurse-submodules https://github.com/$GITHUB_REPO.git stack 2>/dev/null || \
-  (cd stack && git pull && git submodule update --init --recursive)
+if [ -d "stack/.git" ]; then
+  cd stack
+  git pull
+  git submodule update --init -- edge-api edge-node-red oeecloud-node-red
+  cd /opt/packiot
+else
+  git clone git@github.com:$GITHUB_REPO.git stack
+  cd stack
+  git submodule update --init -- edge-api edge-node-red oeecloud-node-red
+  cd /opt/packiot
+fi
 
 # Symlink .env into the repo so Docker Compose auto-loads it for variable substitution.
 ln -sf /opt/packiot/.env /opt/packiot/stack/.env
@@ -181,6 +228,9 @@ NGINX
 fi
 
 # Auto-renew cert (Let's Encrypt certs expire after 90 days).
+# AL2023 doesn't include cronie by default — install it before writing to /etc/cron.d.
+dnf install -y cronie
+systemctl enable --now crond
 echo "0 3 * * * root certbot renew --quiet && nginx -s reload" \
   > /etc/cron.d/certbot-renew
 

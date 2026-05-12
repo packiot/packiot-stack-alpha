@@ -9,7 +9,7 @@ variable "aws_region" {
 variable "az" {
   description = "Single AZ for staging (multi-AZ is a production upgrade)"
   type        = string
-  default     = "us-east-1a"
+  default     = "us-east-1c"
 }
 
 # ── Network ────────────────────────────────────────────────────────────────────
@@ -41,9 +41,9 @@ variable "db_instance_type" {
 }
 
 variable "app_instance_type" {
-  description = "Spot pricing gives ~70% discount; acceptable for stateless staging services"
+  description = "On-demand Graviton2 — t4g.small saves ~$12/mo vs medium; upgrade if OOM"
   type        = string
-  default     = "t4g.medium" # 2 vCPU / 4 GB — ~$7/mo spot
+  default     = "t4g.small" # 2 vCPU / 2 GB — ~$12/mo on-demand
 }
 
 variable "db_volume_size_gb" {
@@ -53,15 +53,15 @@ variable "db_volume_size_gb" {
 
 variable "app_volume_size_gb" {
   type    = number
-  default = 10 # gp3 → $0.80/mo
+  default = 20 # gp3 → $1.60/mo; on-box Docker builds need headroom for images/layers
 }
 
 # ── DNS / Domain ───────────────────────────────────────────────────────────────
 
 variable "staging_domain" {
-  description = "Route53 hosted zone. After apply, delegate NS records at register.it."
+  description = "Route53 hosted zone for staging services."
   type        = string
-  default     = "staging.packiot.com"
+  default     = "staging.packiot.app"
 }
 
 # Services exposed via Nginx — each gets <service>.staging.packiot.com
@@ -72,8 +72,7 @@ variable "services" {
     api      = 8080
     hasura   = 8081
     grafana  = 3000
-    operator = 3001
-    nodered  = 1880  # edge-nodered — operator SPA calls this from the browser
+    nodered  = 1880
     rabbitmq = 15672 # RabbitMQ management UI
   }
 }
@@ -88,6 +87,14 @@ variable "db_name" {
 variable "db_user" {
   type    = string
   default = "postgres"
+}
+
+# ── SSH access ────────────────────────────────────────────────────────────────
+
+variable "ops_ssh_public_key" {
+  description = "SSH public key for emergency/debug access to EC2 instances"
+  type        = string
+  default     = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPGa1heG3kozz4jYnkqPmV1oSZ/XarVFWqRb9ZfUv9VA epodesta158@gmail.com"
 }
 
 # ── GitHub Actions runner ──────────────────────────────────────────────────────
