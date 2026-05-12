@@ -1,14 +1,12 @@
 # compose.staging.yml — App EC2 service stack (staging, us-east-1)
 #
 # Service map:
-#   pubsub-emulator   (internal)  — GCP PubSub emulator (edge-nodered → oeecloud message bus)
-#   rabbitmq          :5672/:15672 — Future AMQP broker; management UI at rabbitmq.staging.packiot.com
+#   rabbitmq          :5672/:15672 — AMQP message bus; management UI at rabbitmq.staging.packiot.com
 #   hasura            :8081        — Hasura GraphQL → hasura.staging.packiot.com
 #   edge-api          :8080        — NestJS REST/admin API → api.staging.packiot.com
 #   edge-nodered      :1880        — Edge Node-RED → nodered.staging.packiot.com
 #   oeecloud          (internal)  — Cloud OEE Node-RED (no public vhost needed)
 #   grafana           :3000        — Grafana dashboards → grafana.staging.packiot.com
-#   operator          :3001        — React SPA operator UI → operator.staging.packiot.com
 #   loki              (internal)  — Log aggregation (Grafana datasource)
 #   promtail          (internal)  — Docker log collector → Loki
 #
@@ -16,7 +14,6 @@
 #   - No postgres: DB runs on a separate private-subnet EC2
 #   - No adminer, simulator, tests (dev-only)
 #   - All ports bound to 127.0.0.1 — Nginx terminates TLS externally
-#   - RabbitMQ added (future PubSub → AMQP migration)
 #   - DISABLE_EDITOR=true on Node-RED instances (production mode)
 #   - Secrets loaded from /opt/packiot/.env (symlinked to .env by app_init.sh)
 #
@@ -35,7 +32,8 @@ volumes:
 
 services:
   # ── RabbitMQ (message bus) ─────────────────────────────────────────────────────
-  # Provisioned for the future PubSub → AMQP migration.
+  # AMQP 0.9.1 broker: edge-nodered publishes to the `oee` exchange,
+  # oeecloud subscribes via the `oeecloud-q` durable queue.
   # Management UI at rabbitmq.staging.packiot.com (port 15672 via Nginx).
   # Internal AMQP port 5672 is available to services on packiot-net.
   rabbitmq:
@@ -197,8 +195,6 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      edge-nodered:
-        condition: service_healthy
     networks: [packiot-net]
     volumes:
       - nr-oeecloud-data:/data
@@ -231,32 +227,6 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
-    logging:
-      driver: json-file
-      options: {max-size: "5m", max-file: "3"}
-
-  # ── Operator UI (React SPA) ────────────────────────────────────────────────────
-  # VITE_API_URL is resolved by the user's browser — must be the public nodered URL.
-  # The Operator build injects it at build time via Vite; the container re-reads it
-  # if the Dockerfile does a runtime env injection (see operator/Dockerfile).
-  operator:
-    build:
-      context: ./operator
-    restart: unless-stopped
-    environment:
-      VITE_API_URL: https://nodered.${STAGING_DOMAIN}
-    ports:
-      - "127.0.0.1:3001:3000"
-    depends_on:
-      edge-nodered:
-        condition: service_healthy
-    networks: [packiot-net]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
