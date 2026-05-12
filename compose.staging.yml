@@ -94,12 +94,12 @@ services:
       - -c
       - |
         METADATA=$$(sed '1s/{/{\"allow_inconsistent_metadata\":true,/' /metadata.json)
-        PAYLOAD="{\"type\":\"replace_metadata\",\"version\":2,\"args\":$${METADATA}}"
+        printf '%s' "{\"type\":\"replace_metadata\",\"version\":2,\"args\":$${METADATA}}" > /tmp/payload.json
         for i in 1 2 3 4 5; do
           curl -sf -X POST http://hasura:8080/v1/metadata \
             -H 'Content-Type: application/json' \
             -H "X-Hasura-Admin-Secret: $${HASURA_GRAPHQL_ADMIN_SECRET}" \
-            -d "$${PAYLOAD}" && echo "Hasura metadata applied" && exit 0
+            -d @/tmp/payload.json && echo "Hasura metadata applied" && exit 0
           echo "Attempt $$i failed — retrying in 3s..."
           sleep 3
         done
