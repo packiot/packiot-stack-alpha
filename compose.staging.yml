@@ -87,6 +87,8 @@ services:
     depends_on:
       hasura:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     volumes:
       - ./edge-node-red/hasura/metadata.json:/metadata.json:ro
     entrypoint:
@@ -106,6 +108,25 @@ services:
         echo "Hasura metadata apply FAILED after 5 attempts" && exit 1
     restart: "no"
 
+  # ── DB Migrations (one-shot) ──────────────────────────────────────────────────
+  # Applies all pending Knex migrations against the external Postgres DB.
+  # Uses the development Docker target so knex + ts-node (devDeps) are available.
+  # edge-api and hasura-init both wait for this to succeed before starting.
+  db-migrate:
+    build:
+      context: ./edge-api
+      target: migrate
+    env_file: [.env]
+    environment:
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    networks: [packiot-net]
+    restart: "no"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── Edge API (NestJS) ──────────────────────────────────────────────────────────
   edge-api:
     build:
@@ -123,6 +144,9 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     networks: [packiot-net]
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
