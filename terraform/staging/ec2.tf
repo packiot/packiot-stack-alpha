@@ -14,9 +14,20 @@ resource "aws_s3_object" "app_init" {
     db_name        = var.db_name
     db_user        = var.db_user
     staging_domain = var.staging_domain
-    services       = var.services
     aws_region     = var.aws_region
     github_repo    = var.github_repo
+    state_bucket   = local.state_bucket
+  })
+}
+
+# nginx_setup.sh is kept as a separate S3 object so it can also be run
+# standalone for cert renewal or Nginx repairs on a live EC2.
+resource "aws_s3_object" "nginx_setup" {
+  bucket = local.state_bucket
+  key    = "scripts/nginx_setup.sh"
+  content = templatefile("${path.module}/user_data/nginx_setup.sh", {
+    staging_domain = var.staging_domain
+    services       = var.services
   })
 }
 
@@ -229,8 +240,8 @@ resource "aws_instance" "app" {
 
   tags = { Name = "packiot-staging-app" }
 
-  # app_init.sh must exist in S3 before the instance boots and tries to fetch it.
-  depends_on = [aws_s3_object.app_init]
+  # Both S3 objects must exist before the instance boots and app_init.sh runs.
+  depends_on = [aws_s3_object.app_init, aws_s3_object.nginx_setup]
 
   lifecycle {
     # associate_public_ip_address drifts when EIP is re-associated after replacement;
