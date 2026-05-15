@@ -188,6 +188,10 @@ resource "aws_instance" "db" {
   iam_instance_profile   = aws_iam_instance_profile.db.name
   key_name               = aws_key_pair.ops.key_name
 
+  credit_specification {
+    cpu_credits = "standard"
+  }
+
   root_block_device {
     volume_size           = var.db_volume_size_gb
     volume_type           = "gp3"
