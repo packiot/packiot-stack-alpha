@@ -50,6 +50,7 @@ get_secret() {
 DB_SECRET=$(get_secret "packiot/staging/db")
 APP_SECRET=$(get_secret "packiot/staging/app")
 HASURA_SECRET=$(get_secret "packiot/staging/hasura")
+NR_AUTH=$(get_secret "packiot/staging/nodered-auth")
 
 DB_URL=$(echo "$DB_SECRET"     | jq -r '.url')
 DB_PASS=$(echo "$DB_SECRET"    | jq -r '.password')
@@ -61,6 +62,12 @@ API_KEY=$(echo "$APP_SECRET"   | jq -r '.edge_api_key')
 MQ_USER=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_user')
 MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
+NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
+NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
+
+# Bcrypt hash for Node-RED adminAuth — settings.js expects $2b$ format (rounds=8).
+pip3 install bcrypt --quiet
+NR_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$NR_PASS', bcrypt.gensalt(rounds=8)).decode())")
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
@@ -95,6 +102,8 @@ HASURA_GRAPHQL_DEV_MODE=false
 EDGE_API_KEY=$API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
+NODE_RED_ADMIN_USERNAME=$NR_USER
+NODE_RED_ADMIN_PASSWORD_HASH=$NR_HASH
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
 ID_ENTERPRISE=

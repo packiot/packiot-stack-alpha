@@ -90,6 +90,30 @@ resource "aws_secretsmanager_secret_version" "app" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ── Node-RED admin auth ────────────────────────────────────────────────────────
+# Both edge-nodered and oeecloud use this single credential pair.
+# settings.js reads NODE_RED_ADMIN_USERNAME + NODE_RED_ADMIN_PASSWORD_HASH from env.
+# app_init.sh fetches the plaintext password and generates the bcrypt hash at boot.
+
+resource "random_password" "nodered_admin" {
+  length  = 24
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "nodered_auth" {
+  name                    = "packiot/staging/nodered-auth"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "nodered_auth" {
+  secret_id = aws_secretsmanager_secret.nodered_auth.id
+  secret_string = jsonencode({
+    username = "packiot"
+    password = random_password.nodered_admin.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
 # ── Nginx basic auth ──────────────────────────────────────────────────────────
 # All staging service vhosts require this credential pair.
 # nginx_setup.sh fetches this at runtime and writes /etc/nginx/.htpasswd.

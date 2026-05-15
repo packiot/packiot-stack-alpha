@@ -73,6 +73,7 @@ variable "services" {
     hasura   = 8081
     grafana  = 3000
     nodered  = 1880
+    oeecloud = 1881  # OEECloud Node-RED (mapped to host port 1881, container port 1880)
     rabbitmq = 15672 # RabbitMQ management UI
   }
 }
