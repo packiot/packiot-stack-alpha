@@ -166,15 +166,12 @@ services:
       RABBITMQ_HOST: rabbitmq
       ID_PUBSUB_NODE: staging-app-ec2
       LOG_LEVEL: info
-      # HASURA_URL intentionally unset in staging: the GraphQL polling flow
-      # queries production views (v_operator_po_list_setup_4, v_operator_entities_2,
-      # piot_get_shift_hours_by_packml_topic_2, etc.) that don't exist in the
-      # staging DB. Each failed call takes 2-5s and the 10s trigger burns all
-      # CPU credits. The OEE pipeline (SparkPlug→RabbitMQ→oeecloud→PG) does not
-      # depend on these queries — they are operator-UI-only.
-      # Re-enable once the production schema views are applied to staging.
-      #HASURA_URL: http://hasura:8080/v1/graphql
-      #HASURA_ADMIN_SECRET: ${HASURA_GRAPHQL_ADMIN_SECRET}
+      # GraphQL polling flows query production views that don't exist in staging
+      # (v_operator_po_list_setup_4 etc.) — each failed call takes 2-5s.
+      # Now that the editor is enabled, disable those flows directly in Node-RED
+      # UI to stop the CPU burn without hiding HASURA_URL from the container.
+      HASURA_URL: http://hasura:8080/v1/graphql
+      HASURA_ADMIN_SECRET: ${HASURA_GRAPHQL_ADMIN_SECRET}
       API_KEY: ${EDGE_API_KEY}
       FIREBASE_API_KEY: bypassed-by-hasura-admin-secret
       EDGE_API_BASE_URL: http://edge-api:8080
