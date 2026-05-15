@@ -1,7 +1,17 @@
+# ── CloudFront managed prefix list ────────────────────────────────────────────
+# AWS-maintained list of all CloudFront origin-facing IP ranges.
+# Using this instead of 0.0.0.0/0 ensures only CloudFront can reach port 80.
+# The list updates automatically — no manual maintenance needed.
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 # ── App EC2 SG ────────────────────────────────────────────────────────────────
-# Receives HTTP/HTTPS from internet.
-# Sends PostgreSQL traffic to DB SG.
-# SSM Session Manager uses 443 outbound (to SSM endpoints via IGW) — no SSH needed.
+# Port 80 (HTTP): CloudFront origin traffic only — restricted to CF prefix list.
+# Port 443 (HTTPS): NOT exposed — CloudFront uses HTTP origin (port 80).
+#   Let's Encrypt cert + port 443 on Nginx exist for emergency direct access
+#   but are unreachable from the internet via this SG.
+# SSH: kept open for emergency SSM-free access (ops key pair, not password).
 
 resource "aws_security_group" "app" {
   name   = "packiot-staging-app"
@@ -16,19 +26,11 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description = "HTTP (redirected to HTTPS by Nginx)"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "HTTPS - all staging service endpoints"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "HTTP - CloudFront origin traffic only (WAF + CF handle TLS)"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
   }
 
   egress {

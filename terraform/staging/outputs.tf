@@ -18,8 +18,18 @@ output "route53_nameservers" {
 }
 
 output "service_urls" {
-  description = "HTTPS URLs for each staging service (available after DNS delegation + cert issue)"
+  description = "HTTPS URLs for each staging service (proxied via CloudFront + WAF)"
   value       = { for svc in keys(var.services) : svc => "https://${svc}.${var.staging_domain}" }
+}
+
+output "nginx_auth_credentials" {
+  description = "How to retrieve Nginx basic auth credentials"
+  value       = "aws secretsmanager get-secret-value --secret-id packiot/staging/nginx-auth --region ${var.aws_region} --query SecretString --output text"
+}
+
+output "cloudfront_domain" {
+  description = "Raw CloudFront distribution domain (use service_urls instead for HTTPS access)"
+  value       = aws_cloudfront_distribution.staging.domain_name
 }
 
 output "ssm_connect_app" {
@@ -50,14 +60,14 @@ output "github_runner_next_step" {
 output "estimated_monthly_cost" {
   description = "Approximate AWS bill for this staging environment"
   value = {
-    db_ec2_on_demand = "$24.00  (t4g.medium, 730h)"
+    db_ec2_on_demand  = "$24.00  (t4g.medium, 730h)"
     app_ec2_on_demand = "~$12.00 (t4g.small on-demand, 730h)"
-    fck_nat_ec2      = "$3.00   (t4g.nano, 730h)"
-    ebs_total        = "$2.40   (20GB + 10GB gp3)"
-    secrets_manager  = "$1.20   (4 secrets × $0.40/secret/mo)"
-    route53          = "$0.50   (hosted zone)"
-    cloudwatch_logs  = "~$2.00  (basic ingestion)"
-    data_transfer    = "~$1.00  (egress estimate)"
-    total            = "~$41/mo"
+    fck_nat_ec2       = "$3.00   (t4g.nano, 730h)"
+    ebs_total         = "$2.40   (20GB + 10GB gp3)"
+    secrets_manager   = "$1.20   (4 secrets × $0.40/secret/mo)"
+    route53           = "$0.50   (hosted zone)"
+    cloudwatch_logs   = "~$2.00  (basic ingestion)"
+    data_transfer     = "~$1.00  (egress estimate)"
+    total             = "~$41/mo"
   }
 }

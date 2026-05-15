@@ -28,6 +28,7 @@ resource "aws_s3_object" "nginx_setup" {
   content = templatefile("${path.module}/user_data/nginx_setup.sh", {
     staging_domain = var.staging_domain
     services       = var.services
+    aws_region     = var.aws_region
   })
 }
 
