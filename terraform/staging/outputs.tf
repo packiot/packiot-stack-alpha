@@ -35,14 +35,15 @@ output "ssm_connect_db" {
 output "github_runner_next_step" {
   description = "How to activate the GitHub Actions self-hosted runner"
   value       = <<-EOT
-    1. Go to: https://github.com/${var.github_repo}/settings/actions/runners/new
-    2. Copy the registration token
-    3. Run:
+    1. Create a classic GitHub PAT with 'repo' scope at:
+       https://github.com/settings/tokens/new
+    2. Run:
          aws secretsmanager put-secret-value \
            --secret-id packiot/staging/github-runner \
-           --secret-string '{"registration_token":"<TOKEN>","repo":"${var.github_repo}"}' \
+           --secret-string '{"pat":"ghp_YOURTOKEN","repo":"${var.github_repo}"}' \
            --region ${var.aws_region}
-    4. SSM into the App EC2 and run: sudo /opt/packiot/register-runner.sh
+    3. SSM into the App EC2 and run: sudo /opt/packiot/register-runner.sh
+       (the script calls the GitHub API to get a fresh 1-hour token from the PAT)
   EOT
 }
 
@@ -50,7 +51,7 @@ output "estimated_monthly_cost" {
   description = "Approximate AWS bill for this staging environment"
   value = {
     db_ec2_on_demand = "$24.00  (t4g.medium, 730h)"
-    app_ec2_spot     = "~$7.00  (t4g.medium spot, ~70% discount)"
+    app_ec2_on_demand = "~$12.00 (t4g.small on-demand, 730h)"
     fck_nat_ec2      = "$3.00   (t4g.nano, 730h)"
     ebs_total        = "$2.40   (20GB + 10GB gp3)"
     secrets_manager  = "$1.20   (4 secrets × $0.40/secret/mo)"
