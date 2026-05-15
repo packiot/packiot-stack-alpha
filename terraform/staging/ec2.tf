@@ -224,6 +224,12 @@ resource "aws_instance" "app" {
   key_name                    = aws_key_pair.ops.key_name
   associate_public_ip_address = false # using static EIP (see vpc.tf)
 
+  # T4G defaults to unlimited burst; standard avoids surprise overage charges
+  # on staging. Production should use unlimited (availability > cost).
+  credit_specification {
+    cpu_credits = "standard"
+  }
+
   root_block_device {
     volume_size           = var.app_volume_size_gb
     volume_type           = "gp3"
