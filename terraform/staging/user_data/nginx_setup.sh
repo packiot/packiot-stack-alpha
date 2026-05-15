@@ -26,8 +26,18 @@ NGINX_PASS=$(echo "$NGINX_AUTH" | python3 -c "import sys,json; print(json.load(s
 
 printf '%s:%s\n' "$NGINX_USER" "$(openssl passwd -apr1 "$NGINX_PASS")" \
   > /etc/nginx/.htpasswd
-chmod 600 /etc/nginx/.htpasswd
+# nginx workers run as the 'nginx' user — group-read is required.
+chown root:nginx /etc/nginx/.htpasswd
+chmod 640 /etc/nginx/.htpasswd
 echo "htpasswd written for user: $NGINX_USER"
+
+# ── WebSocket connection map ───────────────────────────────────────────────────
+# Sets $ws_connection = "upgrade" only when the client sends an Upgrade header.
+# For plain HTTP requests (Upgrade is empty), $ws_connection = "close".
+# This avoids sending Connection: upgrade on non-WebSocket requests, which
+# confuses Grafana's Go HTTP server and causes 500 errors.
+printf 'map $http_upgrade $ws_connection {\n    default upgrade;\n    "" close;\n}\n' \
+  > /etc/nginx/conf.d/00-websocket.conf
 
 # ── Write HTTP vhosts (port 80) — temporary until cert is obtained ────────────
 %{ for svc, port in services ~}
@@ -49,7 +59,7 @@ server {
 
         proxy_http_version 1.1;
         proxy_set_header   Upgrade    \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Connection \$ws_connection;
     }
 }
 NGINX
@@ -109,7 +119,7 @@ server {
 
         proxy_http_version 1.1;
         proxy_set_header   Upgrade    \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Connection \$ws_connection;
     }
 }
 NGINX
