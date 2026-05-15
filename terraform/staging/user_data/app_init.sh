@@ -103,7 +103,9 @@ EDGE_API_KEY=$API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 NODE_RED_ADMIN_USERNAME=$NR_USER
-NODE_RED_ADMIN_PASSWORD_HASH=$NR_HASH
+# Single-quoted: Docker Compose interpolates $ in unquoted .env values, which
+# truncates the bcrypt hash ($2b$08$... → $2b). Single quotes prevent that.
+NODE_RED_ADMIN_PASSWORD_HASH='$NR_HASH'
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
 ID_ENTERPRISE=
