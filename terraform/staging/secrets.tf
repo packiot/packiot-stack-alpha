@@ -90,20 +90,21 @@ resource "aws_secretsmanager_secret_version" "app" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
-# ── GitHub Actions runner token ───────────────────────────────────────────────
-# Populate manually after apply:
-#   1. Go to github.com/<org>/<repo>/settings/actions/runners
-#   2. "New self-hosted runner" → copy the token
-#   3. aws secretsmanager put-secret-value \
-#        --secret-id packiot/staging/github-runner \
-#        --secret-string '{"registration_token":"<TOKEN>","repo":"<ORG/REPO>"}'
+# ── GitHub Actions runner ─────────────────────────────────────────────────────
+# Populate manually after apply — store a long-lived PAT (not a short-lived
+# registration token). register-runner.sh exchanges the PAT for a fresh 1-hour
+# token via the GitHub API each time it runs, so re-registration is safe.
 #
-# The token is short-lived (1h). The app_init.sh script reads it at boot
-# and uses it to register the runner. After registration, the runner uses
-# a long-lived credential stored in ~/.config/actions-runner/.credentials.
+#   1. Create a classic GitHub PAT with 'repo' scope at github.com → Settings →
+#      Developer settings → Personal access tokens → Tokens (classic).
+#   2. aws secretsmanager put-secret-value \
+#        --secret-id packiot/staging/github-runner \
+#        --region us-east-1 \
+#        --secret-string '{"pat":"ghp_YOURTOKEN","repo":"packiot/packiot-stack-alpha"}'
+#   3. SSH/SSM into the App EC2 and run: sudo /opt/packiot/register-runner.sh
 
 resource "aws_secretsmanager_secret" "github_runner" {
   name                    = "packiot/staging/github-runner"
   recovery_window_in_days = 0
-  description             = "GitHub Actions self-hosted runner registration token — populate manually"
+  description             = "GitHub Actions runner — PAT + repo (populate manually, see comment above)"
 }

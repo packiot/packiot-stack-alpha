@@ -22,6 +22,9 @@
 networks:
   packiot-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24
 
 volumes:
   nr-edge-data:
@@ -47,7 +50,9 @@ services:
       - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.5
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -208,7 +213,11 @@ services:
       PING_API_URL: http://edge-api:8080/devices/ping
       ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-ops@packiot.com}
       ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-support@packiot.com}
-      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-SG.staging-placeholder}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
       DISABLE_EDITOR: "true"
     healthcheck:
       test: ["CMD-SHELL", "pidof node > /dev/null || exit 1"]

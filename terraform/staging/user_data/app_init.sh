@@ -192,19 +192,32 @@ SECRET=$(aws secretsmanager get-secret-value \
   --region "${aws_region}" \
   --query SecretString \
   --output text)
-TOKEN=$(echo "$SECRET" | jq -r '.registration_token')
-REPO=$(echo  "$SECRET" | jq -r '.repo')
+PAT=$(echo  "$SECRET" | jq -r '.pat')
+REPO=$(echo "$SECRET" | jq -r '.repo')
+
+# Exchange long-lived PAT for a short-lived (1h) registration token via GitHub API
+REG_TOKEN=$(curl -sf -X POST \
+  -H "Authorization: token $PAT" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$REPO/actions/runners/registration-token" \
+  | jq -r '.token')
 
 cd /opt/actions-runner
+
+# Idempotent: stop and uninstall existing service before re-registering
+if [ -f /opt/actions-runner/.service ]; then
+  ./svc.sh stop    || true
+  ./svc.sh uninstall || true
+fi
+
 ./config.sh \
   --url "https://github.com/$REPO" \
-  --token "$TOKEN" \
+  --token "$REG_TOKEN" \
   --name "staging-$(hostname)" \
   --labels "self-hosted,staging,linux,arm64" \
   --unattended \
   --replace
 
-# Install and start as a systemd service
 ./svc.sh install root
 ./svc.sh start
 echo "Runner registered and running"
