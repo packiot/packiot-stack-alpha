@@ -1,17 +1,6 @@
-# ── CloudFront managed prefix list ────────────────────────────────────────────
-# AWS-maintained list of all CloudFront origin-facing IP ranges.
-# Using this instead of 0.0.0.0/0 ensures only CloudFront can reach port 80.
-# The list updates automatically — no manual maintenance needed.
-data "aws_ec2_managed_prefix_list" "cloudfront" {
-  name = "com.amazonaws.global.cloudfront.origin-facing"
-}
-
 # ── App EC2 SG ────────────────────────────────────────────────────────────────
-# Port 80 (HTTP): CloudFront origin traffic only — restricted to CF prefix list.
-# Port 443 (HTTPS): NOT exposed — CloudFront uses HTTP origin (port 80).
-#   Let's Encrypt cert + port 443 on Nginx exist for emergency direct access
-#   but are unreachable from the internet via this SG.
-# SSH: kept open for emergency SSM-free access (ops key pair, not password).
+# HTTP/HTTPS open to internet — Nginx basic auth is the access control layer.
+# SSH kept open for emergency ops access (key pair only, no password auth).
 
 resource "aws_security_group" "app" {
   name   = "packiot-staging-app"
@@ -26,11 +15,19 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description     = "HTTP - CloudFront origin traffic only (WAF + CF handle TLS)"
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
+    description = "HTTP (redirected to HTTPS by Nginx)"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS - all staging service endpoints"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {

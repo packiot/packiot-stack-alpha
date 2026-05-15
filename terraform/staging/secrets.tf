@@ -114,27 +114,6 @@ resource "aws_secretsmanager_secret_version" "nginx_auth" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
-# ── CloudFront shared secret ───────────────────────────────────────────────────
-# CloudFront injects X-CloudFront-Secret on every origin request.
-# Nginx rejects requests missing this header — prevents anyone from bypassing
-# CloudFront by hitting origin.staging.packiot.app directly.
-# nginx_setup.sh fetches this at runtime and embeds it in the Nginx map block.
-
-resource "random_password" "cloudfront_secret" {
-  length  = 32
-  special = false
-}
-
-resource "aws_secretsmanager_secret" "cloudfront_secret" {
-  name                    = "packiot/staging/cloudfront-secret"
-  recovery_window_in_days = 0
-}
-
-resource "aws_secretsmanager_secret_version" "cloudfront_secret" {
-  secret_id     = aws_secretsmanager_secret.cloudfront_secret.id
-  secret_string = random_password.cloudfront_secret.result
-}
-
 # ── GitHub Actions runner ─────────────────────────────────────────────────────
 # Populate manually after apply — store a long-lived PAT (not a short-lived
 # registration token). register-runner.sh exchanges the PAT for a fresh 1-hour

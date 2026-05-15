@@ -27,11 +27,6 @@ output "nginx_auth_credentials" {
   value       = "aws secretsmanager get-secret-value --secret-id packiot/staging/nginx-auth --region ${var.aws_region} --query SecretString --output text"
 }
 
-output "cloudfront_domain" {
-  description = "Raw CloudFront distribution domain (use service_urls instead for HTTPS access)"
-  value       = aws_cloudfront_distribution.staging.domain_name
-}
-
 output "ssm_connect_app" {
   description = "Connect to App EC2 via SSM (no SSH/bastion needed)"
   value       = "aws ssm start-session --target ${aws_instance.app.id} --region ${var.aws_region}"
