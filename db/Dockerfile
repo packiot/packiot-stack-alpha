@@ -12,12 +12,10 @@ RUN git clone --depth 1 --branch ${PGCRON_VERSION} \
         https://github.com/citusdata/pg_cron.git /pg_cron
 
 WORKDIR /pg_cron
-# Patch Makefile.global to disable LLVM JIT: the timescale image bakes in
-# with_llvm=yes and clang-19, but Alpine packages only have clang up to 16.
-# make with_llvm=no is ignored because pgxs uses `ifdef with_llvm`, which is
-# true for any non-empty value — patching the file is the only reliable fix.
-RUN sed -i 's/^with_llvm = .*/with_llvm = no/' \
-        /usr/local/lib/postgresql/pgxs/src/Makefile.global \
+# PG15 bakes CLANG=clang-19 into Makefile.global; Alpine only ships clang≤16.
+# clang-16 is already present (transitive dep of postgresql15-dev). Alias it
+# so pgxs can invoke it by the expected name for .bc JIT bitcode generation.
+RUN ln -sf /usr/bin/clang-16 /usr/local/bin/clang-19 \
     && make && make install
 
 # Stage 2 — clean runtime image with pg_cron extension copied in.
