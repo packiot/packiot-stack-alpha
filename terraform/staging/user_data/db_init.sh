@@ -52,7 +52,9 @@ docker run -d \
   -e POSTGRES_USER=${db_user} \
   -e TIMESCALEDB_TELEMETRY=off \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
-  ghcr.io/packiot/packiot-postgres:latest
+  ghcr.io/packiot/packiot-postgres:latest \
+  -c "shared_preload_libraries=timescaledb,pg_cron" \
+  -c "cron.database_name=${db_name}"
 
 echo "TimescaleDB container started, waiting for PostgreSQL to accept connections..."
 until docker exec timescaledb pg_isready -U ${db_user} 2>/dev/null; do sleep 5; done

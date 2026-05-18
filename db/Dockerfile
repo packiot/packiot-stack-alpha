@@ -34,12 +34,9 @@ COPY --from=builder \
     /usr/local/share/postgresql/extension/ \
     /usr/local/share/postgresql/extension/
 
-# Append pg_cron to shared_preload_libraries via a conf.d drop-in.
-# timescaledb is already set by the base image; we extend it here.
-RUN mkdir -p /etc/postgresql/postgresql.conf.d && \
-    echo "shared_preload_libraries = 'timescaledb,pg_cron'" \
-        > /etc/postgresql/postgresql.conf.d/pg_cron.conf && \
-    echo "cron.database_name = 'packiot'" \
-        >> /etc/postgresql/postgresql.conf.d/pg_cron.conf
+# shared_preload_libraries and cron.database_name are passed via the
+# docker run -c "..." flags in db_init.sh / compose, NOT baked into the
+# image. The timescale base image reads only $PGDATA/postgresql.conf,
+# not /etc/postgresql/postgresql.conf.d, so conf.d drop-ins are ignored.
 
 COPY docker-entrypoint-initdb.d/ /docker-entrypoint-initdb.d/
