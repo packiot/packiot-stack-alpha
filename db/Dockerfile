@@ -4,8 +4,6 @@ FROM timescale/timescaledb:latest-pg15 AS builder
 
 RUN apk add --no-cache \
         build-base \
-        clang15 \
-        llvm15 \
         postgresql15-dev \
         git
 
@@ -14,7 +12,7 @@ RUN git clone --depth 1 --branch ${PGCRON_VERSION} \
         https://github.com/citusdata/pg_cron.git /pg_cron
 
 WORKDIR /pg_cron
-RUN make && make install
+RUN make USE_BITCODE=0 && make install
 
 # Stage 2 — clean runtime image with pg_cron extension copied in.
 FROM timescale/timescaledb:latest-pg15
