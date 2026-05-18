@@ -184,8 +184,12 @@ bash /tmp/nginx_setup.sh
 # Registration token is short-lived; it's fetched from Secrets Manager and
 # used once. Subsequent runner auth uses ~/.config/actions-runner/.credentials.
 
-RUNNER_VERSION="2.316.1"
+RUNNER_VERSION="2.334.0"
 RUNNER_ARCH="arm64"
+
+# libicu is required by the .NET Core runtime embedded in the runner
+dnf install -y libicu
+
 mkdir -p /opt/actions-runner
 cd /opt/actions-runner
 
@@ -221,7 +225,8 @@ if [ -f /opt/actions-runner/.service ]; then
   ./svc.sh uninstall || true
 fi
 
-./config.sh \
+# RUNNER_ALLOW_RUNASROOT=1: bootstrap runs as root; runner allows this for staging
+RUNNER_ALLOW_RUNASROOT=1 ./config.sh \
   --url "https://github.com/$REPO" \
   --token "$REG_TOKEN" \
   --name "staging-$(hostname)" \
