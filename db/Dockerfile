@@ -17,7 +17,11 @@ WORKDIR /pg_cron
 # and clang-16 rejects GCC-only flags as errors. pg_cron is a background
 # worker — JIT bitcode (.bc) files are never used at runtime. The stub
 # creates empty .bc output files so pgxs completes; only the .so matters.
-RUN chmod +x /usr/local/bin/clang-19 && make && make install
+RUN chmod +x /usr/local/bin/clang-19 \
+    && mkdir -p /usr/lib/llvm19/bin \
+    && printf '#!/bin/sh\nexit 0\n' > /usr/lib/llvm19/bin/llvm-lto \
+    && chmod +x /usr/lib/llvm19/bin/llvm-lto \
+    && make && make install
 
 # Stage 2 — clean runtime image with pg_cron extension copied in.
 FROM timescale/timescaledb:latest-pg15
