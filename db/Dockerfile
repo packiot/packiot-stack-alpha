@@ -12,7 +12,13 @@ RUN git clone --depth 1 --branch ${PGCRON_VERSION} \
         https://github.com/citusdata/pg_cron.git /pg_cron
 
 WORKDIR /pg_cron
-RUN make with_llvm=no && make install
+# Patch Makefile.global to disable LLVM JIT: the timescale image bakes in
+# with_llvm=yes and clang-19, but Alpine packages only have clang up to 16.
+# make with_llvm=no is ignored because pgxs uses `ifdef with_llvm`, which is
+# true for any non-empty value — patching the file is the only reliable fix.
+RUN sed -i 's/^with_llvm = .*/with_llvm = no/' \
+        /usr/local/lib/postgresql/pgxs/src/Makefile.global \
+    && make && make install
 
 # Stage 2 — clean runtime image with pg_cron extension copied in.
 FROM timescale/timescaledb:latest-pg15
