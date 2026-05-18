@@ -74,7 +74,9 @@ services:
       HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log
     ports:
       - "127.0.0.1:8081:8080"
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.2
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 5s
@@ -148,7 +150,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "127.0.0.1:8080:8080"
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.3
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -190,7 +194,9 @@ services:
         condition: service_healthy
       hasura-init:
         condition: service_completed_successfully
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.4
     volumes:
       - nr-edge-data:/data
     logging:
@@ -234,7 +240,9 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.6
     volumes:
       - nr-oeecloud-data:/data
     logging:
@@ -255,7 +263,9 @@ services:
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     ports:
       - "127.0.0.1:3000:3000"
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.7
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -278,7 +288,9 @@ services:
     volumes:
       - ./monitoring/loki/loki-local-config.yaml:/etc/loki/local-config.yaml:ro
       - loki-data:/loki
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.8
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
       interval: 10s
@@ -297,7 +309,9 @@ services:
     volumes:
       - ./monitoring/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock
-    networks: [packiot-net]
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.9
     depends_on:
       loki:
         condition: service_healthy
