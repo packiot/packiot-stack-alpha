@@ -1,14 +1,14 @@
 # Full integration stack — all Packiot services sharing one network.
 #
 # Service map:
-#   pubsub-emulator  :8085   — GCP PubSub emulator (edge → oeecloud message bus)
+#   rabbitmq         :5672   — AMQP message bus (edge-nodered → oeecloud)
 #   postgres         :5433   — TimescaleDB (single DB for edge-api + oeecloud)
 #   grafana          :3000   — Grafana dashboards (OEE pipeline, routing, health)
 #   adminer          :8082   — Adminer DB GUI (postgres browser)
 #   hasura           :8081   — Hasura GraphQL (proxies postgres for edge-nodered)
 #   edge-api         :8080   — NestJS REST/admin API
-#   edge-nodered     :1880   — Edge Node-RED (reads PLCs, publishes to PubSub; serves operator API)
-#   oeecloud         :1881   — Cloud Node-RED (consumes PubSub, writes to DB)
+#   edge-nodered     :1880   — Edge Node-RED (reads PLCs, publishes to RabbitMQ; serves operator API)
+#   oeecloud         :1881   — Cloud Node-RED (consumes RabbitMQ, writes to DB)
 #   operator         :3002   — React SPA operator UI (factory floor interface)
 #   simulator        (opt)   — Operator activity simulator (Simulator Corp enterprise; profile=simulator)
 #
@@ -297,6 +297,7 @@ services:
       PG_DATABASE: packiot
       PG_SSL: ""
       OEE_SERVER_NAME: integration-dev
+      HEALTHCHECK_MAX_AGE_SEC: "999999"
       OEE_SERVER_URL: http://edge-nodered:1880
       PING_API_URL: http://edge-api:8080/devices/ping
       ALERT_EMAIL_TO: dev@example.com
