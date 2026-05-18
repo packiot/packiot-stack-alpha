@@ -164,6 +164,8 @@ services:
     env_file: [.env]
     environment:
       RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       ID_PUBSUB_NODE: staging-app-ec2
       LOG_LEVEL: info
       # GraphQL polling flows query production views that don't exist in staging
