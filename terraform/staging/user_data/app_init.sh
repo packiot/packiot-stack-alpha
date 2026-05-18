@@ -156,14 +156,16 @@ git config --global url."https://x-access-token:$GITHUB_PAT@github.com/".instead
 cd /opt/packiot
 if [ -d "stack/.git" ]; then
   cd stack
-  git pull
+  git fetch origin
+  git checkout staging
+  git pull origin staging
   # Non-fatal: if the submodule pointer references a not-yet-pushed commit,
   # warn and continue with the already-checked-out state rather than aborting.
   git submodule update --init -- edge-api edge-node-red oeecloud-node-red \
     || echo "WARNING: submodule update failed — continuing with existing state"
   cd /opt/packiot
 else
-  git clone git@github.com:$GITHUB_REPO.git stack
+  git clone --branch staging git@github.com:$GITHUB_REPO.git stack
   cd stack
   git submodule update --init -- edge-api edge-node-red oeecloud-node-red
   cd /opt/packiot
