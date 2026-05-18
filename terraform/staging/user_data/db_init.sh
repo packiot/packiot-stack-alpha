@@ -1,9 +1,8 @@
 #!/bin/bash
 # DB EC2 bootstrap — runs TimescaleDB + pg_cron via Docker on AL2023 ARM64.
-# Uses ghcr.io/packiot/packiot-postgres:latest — a custom image built from
-# db/Dockerfile that compiles pg_cron from source on top of the official
-# timescale/timescaledb:latest-pg15 Alpine base.
-# Built by .github/workflows/build-postgres.yml on push to main.
+# Builds the custom postgres image (db/Dockerfile: timescale + pg_cron) locally from
+# the packiot-stack-alpha repo rather than pulling from GHCR, which requires
+# packages:read PAT scope not currently in the staging PAT.
 # Runs once on first boot via EC2 user data. Logs to /var/log/packiot-db-init.log.
 set -euo pipefail
 exec > >(tee /var/log/packiot-db-init.log | logger -t packiot-db-init) 2>&1
@@ -22,24 +21,45 @@ echo "SSM agent started"
 # ── System update ──────────────────────────────────────────────────────────────
 dnf update -y
 
-# ── Docker ─────────────────────────────────────────────────────────────────────
-dnf install -y docker
+# ── Tools ─────────────────────────────────────────────────────────────────────
+dnf install -y docker git jq
 systemctl enable docker
 systemctl start docker
-echo "Docker installed"
+echo "Docker + tools installed"
 
-# ── Fetch DB password from Secrets Manager ────────────────────────────────────
-DB_SECRET=$(aws secretsmanager get-secret-value \
-  --secret-id packiot/staging/db \
-  --region ${aws_region} \
-  --query SecretString \
-  --output text)
+# ── Fetch secrets ─────────────────────────────────────────────────────────────
+get_secret() {
+  aws secretsmanager get-secret-value \
+    --secret-id "$1" \
+    --region ${aws_region} \
+    --query SecretString \
+    --output text
+}
 
-DB_PASS=$(echo "$DB_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")
+DB_SECRET=$(get_secret "packiot/staging/db")
+DB_PASS=$(echo "$DB_SECRET" | jq -r '.password')
+
+GITHUB_PAT=$(get_secret "packiot/staging/github-pat" | jq -r '.token')
+
+# ── Clone repo and build image locally ────────────────────────────────────────
+# GHCR pull requires packages:read scope; the staging PAT only has repo scope.
+# Clone with HTTPS using the PAT (repo scope is sufficient for private repos).
+# Only db/ is needed; --no-recurse-submodules skips unneeded submodules.
+REPO_URL="https://x-access-token:$GITHUB_PAT@github.com/${github_repo}.git"
+git clone --depth 1 --no-recurse-submodules "$REPO_URL" /tmp/packiot-stack
+echo "Repo cloned"
+
+docker build \
+  --platform linux/arm64 \
+  -t packiot-postgres:local \
+  /tmp/packiot-stack/db
+echo "packiot-postgres image built"
+
+rm -rf /tmp/packiot-stack
 
 # ── Run TimescaleDB + pg_cron via Docker ───────────────────────────────────────
-# Custom image adds pg_cron on top of the official timescale base (see db/Dockerfile).
-# Port 5432 exposed on all interfaces; security group restricts access to App SG.
+# shared_preload_libraries and cron.database_name must be passed via -c args:
+# the timescale Alpine image reads only $PGDATA/postgresql.conf (no conf.d).
 mkdir -p /var/lib/postgresql/data
 
 docker run -d \
@@ -52,7 +72,7 @@ docker run -d \
   -e POSTGRES_USER=${db_user} \
   -e TIMESCALEDB_TELEMETRY=off \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
-  ghcr.io/packiot/packiot-postgres:latest \
+  packiot-postgres:local \
   -c "shared_preload_libraries=timescaledb,pg_cron" \
   -c "cron.database_name=${db_name}"
 

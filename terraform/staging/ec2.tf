@@ -79,7 +79,11 @@ resource "aws_iam_policy" "db_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/db*"
+      Resource = [
+        "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/db*",
+        # github-pat is needed by db_init.sh to clone the repo and build the postgres image locally.
+        "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/github-pat*",
+      ]
     }]
   })
 }
@@ -201,10 +205,11 @@ resource "aws_instance" "db" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data/db_init.sh", {
-    db_name    = var.db_name
-    db_user    = var.db_user
-    aws_region = var.aws_region
-    vpc_cidr   = var.vpc_cidr
+    db_name     = var.db_name
+    db_user     = var.db_user
+    aws_region  = var.aws_region
+    vpc_cidr    = var.vpc_cidr
+    github_repo = var.github_repo
   }))
 
   tags = { Name = "packiot-staging-db" }
