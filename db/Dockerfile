@@ -27,12 +27,12 @@ RUN chmod +x /usr/local/bin/clang-19 \
 FROM timescale/timescaledb:latest-pg15
 
 COPY --from=builder \
-    /usr/lib/postgresql15/pg_cron.so \
-    /usr/lib/postgresql15/pg_cron.so
+    /usr/local/lib/postgresql/pg_cron.so \
+    /usr/local/lib/postgresql/pg_cron.so
 
 COPY --from=builder \
-    /usr/share/postgresql15/extension/pg_cron* \
-    /usr/share/postgresql15/extension/
+    /usr/local/share/postgresql/extension/ \
+    /usr/local/share/postgresql/extension/
 
 # Append pg_cron to shared_preload_libraries via a conf.d drop-in.
 # timescaledb is already set by the base image; we extend it here.
