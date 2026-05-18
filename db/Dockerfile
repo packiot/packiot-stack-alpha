@@ -36,7 +36,8 @@ COPY --from=builder \
 
 # Append pg_cron to shared_preload_libraries via a conf.d drop-in.
 # timescaledb is already set by the base image; we extend it here.
-RUN echo "shared_preload_libraries = 'timescaledb,pg_cron'" \
+RUN mkdir -p /etc/postgresql/postgresql.conf.d && \
+    echo "shared_preload_libraries = 'timescaledb,pg_cron'" \
         > /etc/postgresql/postgresql.conf.d/pg_cron.conf && \
     echo "cron.database_name = 'packiot'" \
         >> /etc/postgresql/postgresql.conf.d/pg_cron.conf
