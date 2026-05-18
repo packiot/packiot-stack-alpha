@@ -12,10 +12,13 @@ RUN git clone --depth 1 --branch ${PGCRON_VERSION} \
         https://github.com/citusdata/pg_cron.git /pg_cron
 
 WORKDIR /pg_cron
-# PG15 bakes CLANG=clang-19 into Makefile.global; Alpine only ships clang≤16.
-# clang-16 is already present (transitive dep of postgresql15-dev). Alias it
-# so pgxs can invoke it by the expected name for .bc JIT bitcode generation.
-RUN ln -sf /usr/bin/clang-16 /usr/local/bin/clang-19 \
+# PG15 bakes CLANG=clang-19 into Makefile.global; Alpine only ships clang≤16
+# and clang-16 rejects GCC-only flags (-Wno-format-truncation) as errors.
+# pg_cron is a background worker — JIT bitcode (.bc) files are never used.
+# Stub clang-19 to create empty .bc output files and exit 0; only the .so matters.
+RUN printf '#!/bin/sh\nn=0;for a;do [ "$n"=1 ]&&{ touch "$a";n=0; };[ "$a"="-o" ]&&n=1;done\n' \
+        > /usr/local/bin/clang-19 \
+    && chmod +x /usr/local/bin/clang-19 \
     && make && make install
 
 # Stage 2 — clean runtime image with pg_cron extension copied in.
