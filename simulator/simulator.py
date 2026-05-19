@@ -131,11 +131,6 @@ AUTO_CATEGORIES = [
 AUTO_JUSTIFY_PROB = 0.10   # fraction of pending events auto-justified per sweep
 AUTO_INTERVAL    = 30      # seconds between guardian + auto-justify sweeps
 
-def _next_wo_number(base: int) -> str:
-    """Format a work-order number as WO-YYMMDD-NNN."""
-    today = datetime.now(timezone.utc).strftime("%y%m%d")
-    return f"WO-{today}-{base % 1000:03d}"
-
 # Action type pool — drawn with replacement; each action appears in proportion.
 # justify (30 %) > manual (17 %) > start-PO (15 %) > stop-PO (10 %) > split (8 %)
 # > change_status (4 %) > change_time (4 %) > replace (4 %) > setup (4 %) > edit (4 %)
@@ -421,7 +416,7 @@ class OperatorSimulator:
         """
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT ee.id_equipment_events_man AS id_event, ee.id_equipment,
+                SELECT ee.id_equipment_event AS id_event, ee.id_equipment,
                        ee.ts_event, ee.ts_end, ee.duration,
                        COALESCE(ee.cd_machine, eq.nm_equipment) AS machine_code,
                        ee.cd_category, ee.desc_category,
@@ -475,7 +470,7 @@ class OperatorSimulator:
         """Recently-closed manual downtime events (for edit simulation)."""
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT ee.id_equipment_events_man AS id_event, ee.id_equipment,
+                SELECT ee.id_equipment_event AS id_event, ee.id_equipment,
                        ee.ts_event, ee.ts_end,
                        COALESCE(ee.cd_machine, eq.nm_equipment) AS machine_code
                 FROM equipment_events_man ee
@@ -850,7 +845,7 @@ class OperatorSimulator:
                 "idSite":                  eq["id_site"],
                 "idArea":                  eq["id_area"],
                 "idEquipment":             id_equip,
-                "idOrder":                 _next_wo_number(id_order_int),
+                "idOrder":                 id_order_int,
                 "nmProductionOrder":       product,
                 "txtProductionOrderNotes": client,
                 "productionOrderQuantity": random.randint(500, 3000),
@@ -900,7 +895,7 @@ class OperatorSimulator:
             "shouldCreatePo":              True,
             "oldIdProductionOrder":        po["id_production_order"],
             "oldProductionOrderProdFinal": int(po["qty"]),
-            "idOrder":                     _next_wo_number(id_order_int),
+            "idOrder":                     id_order_int,
             "nmProductionOrder":           product,
             "txtProductionOrderNotes":     client,
             "productionOrderQuantity":     qty,
@@ -930,7 +925,7 @@ class OperatorSimulator:
                 "idSite":                  self._ent["id_site"],
                 "idArea":                  self._ent["id_area"],
                 "idEquipment":             eq["id_equipment"],
-                "idOrder":                 _next_wo_number(id_order_int),
+                "idOrder":                 id_order_int,
                 "nmProductionOrder":       product,
                 "txtProductionOrderNotes": client,
                 "productionOrderQuantity": qty,
@@ -977,7 +972,7 @@ class OperatorSimulator:
                 "idSite":                  self._ent["id_site"],
                 "idArea":                  self._ent["id_area"],
                 "idEquipment":             eq["id_equipment"],
-                "idOrder":                 _next_wo_number(id_order_int),
+                "idOrder":                 id_order_int,
                 "nmProductionOrder":       product,
                 "txtProductionOrderNotes": client,
                 "productionOrderQuantity": random.randint(500, 5000),
