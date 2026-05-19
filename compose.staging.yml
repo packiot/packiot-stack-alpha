@@ -12,7 +12,7 @@
 #
 # Differences from compose.integration.yml:
 #   - No postgres: DB runs on a separate private-subnet EC2
-#   - No adminer, simulator, tests (dev-only)
+#   - No adminer, tests (dev-only)
 #   - All ports bound to 127.0.0.1 — Nginx terminates TLS externally
 #   - DISABLE_EDITOR=true on Node-RED instances (production mode)
 #   - Secrets loaded from /opt/packiot/.env (symlinked to .env by app_init.sh)
@@ -315,6 +315,31 @@ services:
     depends_on:
       loki:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Simulator ──────────────────────────────────────────────────────────────────
+  # PLC + Operator simulator for staging. Reads packml_register from DB, posts
+  # machine metrics to edge-nodered /plc-data, and simulates operator actions
+  # against edge-api. Requires the Simulator Corp enterprise + packml_register
+  # entries to be seeded (see edge-node-red/db/03-operator-simulator.sql).
+  simulator:
+    build:
+      context: ./simulator
+    restart: unless-stopped
+    environment:
+      EDGE_NODERED_URL: http://edge-nodered:1880
+      EDGE_API_URL: http://edge-api:8080
+      DB_URL: ${POSTGRES_URL}
+      SIM_INTERVAL: "5"
+      OP_INTERVAL: "15"
+    depends_on:
+      edge-nodered:
+        condition: service_healthy
+      edge-api:
+        condition: service_started
+    networks: [packiot-net]
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
