@@ -948,11 +948,11 @@ class OperatorSimulator:
         """
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT nm_production_order FROM production_orders
+                SELECT COALESCE(id_order_text, id_production_order::text) AS nm
+                FROM production_orders
                 WHERE id_enterprise = %s AND status = 2
-                  AND nm_production_order IS NOT NULL
             """, (self._ent["id_enterprise"],))
-            running = {row["nm_production_order"] for row in cur.fetchall()}
+            running = {row["nm"] for row in cur.fetchall()}
         available = [p for p in PRODUCTS if p[0] not in running]
         return available if available else list(PRODUCTS)
 
