@@ -175,7 +175,11 @@ services:
           curl -sf -X POST http://hasura:8080/v1/metadata \
             -H 'Content-Type: application/json' \
             -H 'X-Hasura-Admin-Secret: dev-admin-secret' \
-            -d @/tmp/payload.json && echo "Hasura metadata applied" && exit 0
+            -d @/tmp/payload.json && echo "Hasura metadata applied" && \
+          curl -sf -X POST http://hasura:8080/v1/metadata \
+            -H 'Content-Type: application/json' \
+            -H 'X-Hasura-Admin-Secret: dev-admin-secret' \
+            -d '{"type":"reload_metadata","args":{}}' && echo "Hasura metadata reloaded" && exit 0
           echo "Attempt $$i failed — retrying in 3s..."
           sleep 3
         done
