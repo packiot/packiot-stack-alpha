@@ -271,8 +271,8 @@ apply-views:
 	@echo "Applying operator UI views to running postgres..."
 	@$(COMPOSE) exec -T postgres psql -U postgres -d packiot \
 		< edge-node-red/db/04-operator-views.sql
-	@echo "Views applied. Restart hasura-init if Hasura still reports missing fields:"
-	@echo "  docker compose -f compose.integration.yml restart hasura hasura-init"
+	@echo "Reloading Hasura metadata..."
+	@$(COMPOSE) restart hasura-init
 
 db-count:
 	@$(PSQL) -c "\
