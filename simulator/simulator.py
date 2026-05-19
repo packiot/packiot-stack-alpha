@@ -573,8 +573,7 @@ class OperatorSimulator:
 
         Seeds from the current epoch-second so each simulator restart gets a
         fresh base — avoids collisions with POs created in previous sessions
-        without requiring a DB query (id_order is VARCHAR so MAX arithmetic
-        would need an explicit cast anyway).
+        without requiring a DB query.
         """
         if self._next_id_order is None:
             self._next_id_order = int(time.time())
