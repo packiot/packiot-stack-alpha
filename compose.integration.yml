@@ -68,7 +68,6 @@ services:
       - "5433:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ./edge-node-red/db/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
       - ./edge-node-red/db/01-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
       - ./edge-node-red/db/02-production-objects.sql:/docker-entrypoint-initdb.d/02-production-objects.sql:ro
       - ./edge-node-red/db/03-operator-simulator.sql:/docker-entrypoint-initdb.d/03-operator-simulator.sql:ro
