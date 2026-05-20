@@ -942,7 +942,7 @@ class OperatorSimulator:
         """
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT COALESCE(id_order_text, id_production_order::text) AS nm
+                SELECT COALESCE(nm_production_order, id_production_order::text) AS nm
                 FROM production_orders
                 WHERE id_enterprise = %s AND status = 2
             """, (self._ent["id_enterprise"],))

@@ -230,8 +230,8 @@ services:
       RABBITMQ_USER: packiot
       RABBITMQ_PASSWORD: packiot
       ID_PUBSUB_NODE: machine-01
-      API_KEY: dev-api-key        # matches enterprises.api_key in 01-seed.sql
-      ID_ENTERPRISE: "1"
+      API_KEY: sim-api-key-dev-0000  # matches Simulator Corp (enterprise 5) in 01-seed.sql
+      ID_ENTERPRISE: "5"
       LOG_LEVEL: info
       HASURA_URL: http://hasura:8080/v1/graphql
       HASURA_ADMIN_SECRET: dev-admin-secret
