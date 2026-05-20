@@ -163,8 +163,9 @@
     },
     {
       "id": 3,
-      "type": "logs",
-      "title": "edge-nodered \u2192 PubSub (published)",
+      "type": "timeseries",
+      "title": "edge-nodered \u2192 AMQP (writes/min by machine)",
+      "description": "equipment_values rows written per minute per machine \u2014 proxy for messages published from edge-nodered through RabbitMQ to oeecloud.",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -172,29 +173,43 @@
         "y": 10
       },
       "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "gradientMode": "opacity"
+          }
+        }
       },
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
+            "type": "postgres",
+            "uid": "packiot-postgres"
           },
-          "expr": "{service=\"edge-nodered\"} |~ \"pubsub_pub\"",
+          "rawSql": "SELECT time_bucket('1 minute', ev.ts_value) AS time, split_part(pr.packml_topic, '/', -1) AS metric, COUNT(*) AS value FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
           "refId": "A"
         }
       ]
     },
     {
       "id": 4,
-      "type": "logs",
-      "title": "oeecloud \u2190 PubSub (received)",
+      "type": "timeseries",
+      "title": "oeecloud \u2190 AMQP (PO starts/min)",
+      "description": "production_orders_runtime rows per minute \u2014 measures PO lifecycle events driven by the AMQP pipeline through oeecloud.",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -202,30 +217,43 @@
         "y": 10
       },
       "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "spanNulls": false,
+            "gradientMode": "none"
+          }
+        }
       },
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
+            "type": "postgres",
+            "uid": "packiot-postgres"
           },
-          "expr": "{service=\"oeecloud\"} |~ \"pubsub_rcv\"",
+          "rawSql": "SELECT time_bucket('1 minute', lower(runtime_timerange)) AS time, COUNT(*) AS \"PO events\" FROM production_orders_runtime WHERE $__timeFilter(lower(runtime_timerange)) GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
           "refId": "A"
         }
       ]
     },
     {
       "id": 5,
-      "type": "logs",
-      "title": "PubSub Message Body \u2014 Full Payload",
-      "description": "Full JSON payload from each PubSub message received by oeecloud. Click any line to expand. Fields: topic, gateway, ts, metric_count, metrics[].",
+      "type": "table",
+      "title": "Recent Pipeline Messages (last 20 equipment_values)",
+      "description": "Most recent rows written to equipment_values by oeecloud \u2014 shows the actual data flowing through the AMQP pipeline.",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -233,21 +261,33 @@
         "y": 20
       },
       "options": {
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true,
-        "prettifyLogMessage": true,
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "ts_value"
+          }
+        ],
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        }
       },
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
+            "type": "postgres",
+            "uid": "packiot-postgres"
           },
-          "expr": "{service=\"oeecloud\"} |~ \"pubsub_payload\"",
+          "rawSql": "SELECT ev.ts_value, split_part(pr.packml_topic, '/', -1) AS machine, ev.state, ev.speed, ev.net_production_incr, ev.gross_production_incr FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment ORDER BY ev.ts_value DESC LIMIT 20",
+          "format": "table",
           "refId": "A"
         }
       ]

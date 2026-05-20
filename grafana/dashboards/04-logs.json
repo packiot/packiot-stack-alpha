@@ -202,7 +202,7 @@
     {
       "id": 12,
       "type": "stat",
-      "title": "PubSub Published \u2014 5m",
+      "title": "AMQP Published \u2014 5m",
       "gridPos": {
         "h": 4,
         "w": 5,
@@ -239,11 +239,11 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
+            "type": "postgres",
+            "uid": "packiot-postgres"
           },
-          "expr": "sum(count_over_time({service=\"edge-nodered\"} |~ \"pubsub_pub\" [5m]))",
-          "instant": true,
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"AMQP/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes'",
+          "format": "time_series",
           "refId": "A"
         }
       ]
@@ -251,7 +251,7 @@
     {
       "id": 13,
       "type": "stat",
-      "title": "PubSub Received \u2014 5m",
+      "title": "AMQP Received \u2014 5m",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -288,11 +288,11 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
+            "type": "postgres",
+            "uid": "packiot-postgres"
           },
-          "expr": "sum(count_over_time({service=\"oeecloud\"} |~ \"pubsub_rcv\" [5m]))",
-          "instant": true,
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"AMQP/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes'",
+          "format": "time_series",
           "refId": "A"
         }
       ]
@@ -384,7 +384,7 @@
     {
       "id": 15,
       "type": "timeseries",
-      "title": "PubSub Message Flow \u2014 Published vs Received",
+      "title": "AMQP Message Flow \u2014 equipment_values writes/min by machine",
       "gridPos": {
         "h": 7,
         "w": 24,
@@ -415,21 +415,12 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
+            "type": "postgres",
+            "uid": "packiot-postgres"
           },
-          "expr": "sum(rate({service=\"edge-nodered\"} |~ \"pubsub_pub\" [$__interval]))",
-          "legendFormat": "edge \u2192 PubSub (published)",
+          "rawSql": "SELECT time_bucket('1 minute', ev.ts_value) AS time, split_part(pr.packml_topic, '/', -1) AS metric, COUNT(*) AS value FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "packiot-loki"
-          },
-          "expr": "sum(rate({service=\"oeecloud\"} |~ \"pubsub_rcv\" [$__interval]))",
-          "legendFormat": "PubSub \u2192 oeecloud (received)",
-          "refId": "B"
         }
       ]
     },
