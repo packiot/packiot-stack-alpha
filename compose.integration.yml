@@ -68,13 +68,13 @@ services:
       - "5433:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ./edge-node-red/db/01-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
-      - ./edge-node-red/db/02-production-objects.sql:/docker-entrypoint-initdb.d/02-production-objects.sql:ro
-      - ./edge-node-red/db/03-operator-simulator.sql:/docker-entrypoint-initdb.d/03-operator-simulator.sql:ro
-      - ./edge-node-red/db/04-operator-views.sql:/docker-entrypoint-initdb.d/04-operator-views.sql:ro
-      - ./edge-node-red/db/05-staging-functions.sql:/docker-entrypoint-initdb.d/05-staging-functions.sql:ro
-      - ./edge-node-red/db/06-staging-shifts.sql:/docker-entrypoint-initdb.d/06-staging-shifts.sql:ro
-      - ./edge-node-red/db/07-staging-companion-tables.sql:/docker-entrypoint-initdb.d/07-staging-companion-tables.sql:ro
+      - ./edge-node-red/db/02-production-objects.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./edge-node-red/db/01-seed.sql:/docker-entrypoint-initdb.d/11-seed.sql:ro
+      - ./edge-node-red/db/03-operator-simulator.sql:/docker-entrypoint-initdb.d/12-operator-simulator.sql:ro
+      - ./edge-node-red/db/04-operator-views.sql:/docker-entrypoint-initdb.d/13-operator-views.sql:ro
+      - ./edge-node-red/db/05-staging-functions.sql:/docker-entrypoint-initdb.d/14-staging-functions.sql:ro
+      - ./edge-node-red/db/06-staging-shifts.sql:/docker-entrypoint-initdb.d/15-staging-shifts.sql:ro
+      - ./edge-node-red/db/07-staging-companion-tables.sql:/docker-entrypoint-initdb.d/16-staging-companion-tables.sql:ro
     networks: [packiot-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]
