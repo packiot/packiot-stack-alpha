@@ -262,6 +262,7 @@ services:
   operator:
     build:
       context: ./operator
+      network: host
     restart: unless-stopped
     environment:
       # Browser SPA: this URL is resolved by the user's browser, so it must be
