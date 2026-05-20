@@ -1,4 +1,4 @@
-.PHONY: help init setup up up-infra up-edge up-oeecloud up-api up-operator up-simulator \
+.PHONY: help init setup dev-setup up up-infra up-edge up-oeecloud up-api up-operator up-simulator \
         down logs logs-edge logs-oeecloud logs-api logs-infra logs-postgres logs-rabbitmq logs-adminer logs-operator logs-simulator \
         build build-edge build-oeecloud build-api build-operator build-simulator build-tests \
         restart clean status psql shell-edge shell-oeecloud shell-api shell-operator \
@@ -30,6 +30,7 @@ help:
 	@echo ""
 	@echo "  Setup"
 	@echo "    init             Clone/update submodules + copy env examples"
+	@echo "    dev-setup        First-time dev setup: checkout submodule development branches + wipe volumes"
 	@echo "    setup            Copy .env.example → .env.local (safe, won't overwrite)"
 	@echo "    update           Pull latest commit for all submodules"
 	@echo ""
@@ -114,6 +115,17 @@ help:
 init:
 	git submodule update --init --recursive
 	@$(MAKE) setup
+
+# dev-setup: first-time developer setup on the development branch.
+# Checks out each submodule to its own 'development' branch (not detached HEAD),
+# then wipes volumes so the fresh schema is applied on next 'make up'.
+dev-setup:
+	git submodule update --init --recursive
+	git submodule foreach 'git checkout development 2>/dev/null || echo "[SKIP] no development branch in $$name"'
+	@$(MAKE) setup
+	@echo ""
+	@echo "  Volumes wiped — DB will be re-initialised with the current schema on next 'make up'."
+	$(COMPOSE) down --volumes --remove-orphans
 
 setup:
 	@[ -f $(ENV_FILE) ] \
