@@ -191,6 +191,7 @@ services:
     build:
       context: ./edge-api
       target: production
+      network: host
     restart: unless-stopped
     env_file:
       - path: .env.local
@@ -218,6 +219,7 @@ services:
   edge-nodered:
     build:
       context: ./edge-node-red
+      network: host
     restart: unless-stopped
     env_file:
       - path: .env.local
@@ -285,6 +287,7 @@ services:
   oeecloud:
     build:
       context: ./oeecloud-node-red
+      network: host
     restart: unless-stopped
     env_file:
       - path: .env.local
