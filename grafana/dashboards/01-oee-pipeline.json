@@ -909,7 +909,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT ev.ts_value, ent.nm_enterprise AS enterprise, s.nm_site AS site, a.nm_area AS area, e.nm_equipment AS equipment, ev.net_production_incr, ev.scrap_incr, ev.state, ev.mode, ev.speed, ev.signal_quality FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN areas a ON a.id_area = ev.id_area JOIN sites s ON s.id_site = ev.id_site JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) ORDER BY ev.ts_value DESC LIMIT 50",
+          "rawSql": "SELECT ev.ts_value, ent.nm_enterprise AS enterprise, s.nm_site AS site, a.nm_area AS area, e.nm_equipment AS equipment, ev.net_production_incr, ev.gross_production_incr, ev.scrap_incr, ev.state, ev.mode, ev.speed, ev.signal_quality FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN areas a ON a.id_area = ev.id_area JOIN sites s ON s.id_site = ev.id_site JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) ORDER BY ev.ts_value DESC LIMIT 50",
           "format": "table",
           "refId": "A"
         }
