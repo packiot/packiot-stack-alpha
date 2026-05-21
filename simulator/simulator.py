@@ -279,6 +279,13 @@ class MachineState:
                             "timestamp": ts_ms, "value": incr,
                             "counter": self.counter, "curspeed": speed})
 
+            # Gross = net + defective — oeecloud maps ProdConsumedCount → gross_production_incr
+            gross_incr  = incr + scrap
+            gross_total = self.counter + self.scrap_ctr
+            metrics.append({"name": self._metric_name("ProdConsumedCount"),
+                            "timestamp": ts_ms, "value": gross_incr,
+                            "counter": gross_total, "curspeed": speed})
+
             if scrap:
                 metrics.append({"name": self._metric_name("ProdDefectiveCount"),
                                 "timestamp": ts_ms, "value": scrap,
