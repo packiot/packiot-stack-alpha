@@ -59,13 +59,13 @@ MODE_PRODUCTION, MODE_MANUAL = 1, 3
 # Per-enterprise PLC profile — drives speed/scrap/downtime variability so
 # dashboards see realistic diversity across enterprises.
 ENTERPRISE_PROFILES = {
-    "Dev Enterprise":    dict(ideal_speed=120, scrap_rate=0.03, stop_prob=0.001,  start_prob=0.006),
-    "Demo Factory":      dict(ideal_speed=120, scrap_rate=0.06, stop_prob=0.0015, start_prob=0.005),
-    "AutoParts Corp":    dict(ideal_speed=80,  scrap_rate=0.02, stop_prob=0.0008, start_prob=0.006),
-    "FoodCo Industries": dict(ideal_speed=200, scrap_rate=0.04, stop_prob=0.001,  start_prob=0.005),
-    "Simulator Corp":    dict(ideal_speed=120, scrap_rate=0.04, stop_prob=0.001,  start_prob=0.005),
+    "Dev Enterprise":    dict(ideal_speed=120, scrap_rate=0.03, stop_prob=0.001,  start_prob=0.006, stuck_max=120),
+    "Demo Factory":      dict(ideal_speed=120, scrap_rate=0.06, stop_prob=0.0015, start_prob=0.005, stuck_max=120),
+    "AutoParts Corp":    dict(ideal_speed=80,  scrap_rate=0.02, stop_prob=0.0008, start_prob=0.006, stuck_max=120),
+    "FoodCo Industries": dict(ideal_speed=200, scrap_rate=0.04, stop_prob=0.001,  start_prob=0.005, stuck_max=120),
+    "Simulator Corp":    dict(ideal_speed=120, scrap_rate=0.04, stop_prob=0.001,  start_prob=0.005, stuck_max=120),
 }
-DEFAULT_PROFILE = dict(ideal_speed=120, scrap_rate=0.03, stop_prob=0.07, start_prob=0.25)
+DEFAULT_PROFILE = dict(ideal_speed=120, scrap_rate=0.03, stop_prob=0.07, start_prob=0.25, stuck_max=120)
 
 # Per-machine overrides — each Simulator Corp machine has a distinct character:
 #   A: fast throughput, low scrap, reliable  (hero machine)
@@ -205,7 +205,7 @@ class MachineState:
         self.scrap_rate  = prof["scrap_rate"]
         self.stop_prob   = prof["stop_prob"]
         self.start_prob  = prof["start_prob"]
-        self._stuck_max  = prof.get("stuck_max", 36)   # max ticks in prolonged fault
+        self._stuck_max  = max(60, prof.get("stuck_max", 120))  # max ticks in prolonged fault (floor=60)
         self.state       = STATE_RUNNING
         self.counter     = 0
         self.scrap_ctr   = 0
