@@ -81,6 +81,7 @@ services:
       - ./edge-node-red/db/10-missing-tables.sql:/docker-entrypoint-initdb.d/20-missing-tables.sql:ro
       - ./edge-node-red/db/11-uns-tables.sql:/docker-entrypoint-initdb.d/21-uns-tables.sql:ro
       - ./edge-node-red/db/12-production-triggers.sql:/docker-entrypoint-initdb.d/22-production-triggers.sql:ro
+      - ./edge-node-red/db/13-downtime-reasons-seed.sql:/docker-entrypoint-initdb.d/23-downtime-reasons-seed.sql:ro
     networks: [packiot-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]

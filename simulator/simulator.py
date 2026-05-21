@@ -103,6 +103,21 @@ CATEGORIES = [
     ("MAT", "Material",   "SHORTAGE", "Material shortage"),
 ]
 
+# Category codes seeded by 13-downtime-reasons-seed.sql — used by edge-nodered endpoints
+# that look up categories from global._downtime_reasons by code.
+NR_CATEGORIES = [
+    ("EQUIP_FAIL", "MECH"),
+    ("EQUIP_FAIL", "ELEC"),
+    ("EQUIP_FAIL", "SENSOR"),
+    ("PROC_ISSUE", "QUAL_REJ"),
+    ("IDLE",       "WAIT_OP"),
+    ("IDLE",       "WAIT_MAT"),
+    ("PLANNED",    "PREV_MAINT"),
+    ("CHANGEOVER", ""),
+]
+
+PROBE_INTERVAL = 60  # seconds between endpoint health probe sweeps
+
 # Realistic product + client data for PO generation
 PRODUCTS = [
     ("Alpha-Widget-A",   "AlphaComp Ltd"),
@@ -341,6 +356,7 @@ class OperatorSimulator:
     def __init__(self):
         self._user_idx: int = 0
         self._ent: Any = None          # Simulator Corp row (RealDictRow), loaded on first act()
+        self._topics: dict | None = None  # id_equipment → packml_topic, populated alongside _ent
         self._next_id_order: int | None = None  # auto-incrementing PO id_order, seeded from DB on first use
 
     # ── DB queries ──────────────────────────────────────────────────────────
@@ -358,6 +374,17 @@ class OperatorSimulator:
             """, (SIMCORP_NAME,))
             return cur.fetchone()
 
+    def _load_topics(self, conn) -> dict:
+        """id_equipment → packml_topic for all active machines in this enterprise."""
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT pr.id_equipment, pr.packml_topic
+                FROM packml_register pr
+                JOIN equipments eq ON eq.id_equipment = pr.id_equipment
+                WHERE eq.id_enterprise = %s AND eq.tp_equipment = 1 AND pr.active = true
+            """, (self._ent["id_enterprise"],))
+            return {row["id_equipment"]: row["packml_topic"] for row in cur.fetchall()}
+
     @staticmethod
     def _iso(dt) -> str:
         """Format datetime as millisecond-precision UTC ISO (matches JS toISOString)."""
@@ -374,7 +401,7 @@ class OperatorSimulator:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT ee.id_equipment_event, ee.id_equipment,
-                       eq.nm_equipment
+                       eq.nm_equipment, ee.ts_event, ee.ts_end
                 FROM equipment_events ee
                 JOIN equipments eq ON eq.id_equipment = ee.id_equipment
                 WHERE ee.id_enterprise = %s
@@ -628,6 +655,32 @@ class OperatorSimulator:
             return True
         except requests.exceptions.RequestException as e:
             log.warning("edge-api %s failed: %s", path, e)
+            return False
+
+    def _get_nr(self, path: str) -> bool:
+        """Fire a GET to edge-nodered. Returns True on HTTP 2xx/3xx."""
+        try:
+            r = requests.get(f"{EDGE_NODERED_URL}{path}", timeout=5)
+            if r.status_code >= 400:
+                log.warning("edge-nodered GET %s → %d", path, r.status_code)
+                return False
+            return True
+        except requests.exceptions.RequestException as e:
+            log.warning("edge-nodered GET %s failed: %s", path, e)
+            return False
+
+    def _post_nr(self, path: str, body: dict, user: str) -> bool:
+        """Fire a POST to edge-nodered with operator-style payload (no auth params)."""
+        headers = {"Content-Type": "application/json", "X-User": user}
+        try:
+            r = requests.post(f"{EDGE_NODERED_URL}{path}", json=body,
+                              headers=headers, timeout=10)
+            if r.status_code >= 400:
+                log.warning("edge-nodered %s → %d %s", path, r.status_code, r.text[:200])
+                return False
+            return True
+        except requests.exceptions.RequestException as e:
+            log.warning("edge-nodered %s failed: %s", path, e)
             return False
 
     # ── Individual actions ────────────────────────────────────────────────────
@@ -1210,6 +1263,279 @@ class OperatorSimulator:
             "productionOrderQuantity": int(po["qty"]),
         }, user)
 
+    # ── Edge-nodered operator actions (operator-style payloads) ──────────────
+
+    def _justify_nr(self, conn, user) -> bool:
+        events = self._justifiable_events(conn)
+        if not events:
+            return self._manual_nr(conn, user)
+        ev    = random.choice(events)
+        topic = (self._topics or {}).get(ev["id_equipment"])
+        if not topic:
+            return self._manual_nr(conn, user)
+        cd, sub = random.choice(NR_CATEGORIES)
+        now_ms  = int(datetime.now(timezone.utc).timestamp() * 1000)
+        ts_e_ms = int(ev["ts_event"].timestamp() * 1000) if ev["ts_event"] else now_ms - 3600000
+        ts_d_ms = int(ev["ts_end"].timestamp() * 1000)   if ev["ts_end"]   else now_ms
+        return self._post_nr("/set-event", {
+            "packmlTopic":      topic,
+            "eventType":        "downtime",
+            "idMachine":        ev["nm_equipment"],
+            "idDwtCategory":    cd,
+            "idDwtSubcategory": sub,
+            "eventNotes":       f"Justified via NR by {user}",
+            "tsEvent":          ts_e_ms,
+            "tsEnd":            ts_d_ms,
+            "idEquipmentEvent": ev["id_equipment_event"],
+            "idEquipment":      ev["id_equipment"],
+            "userName":         user,
+        }, user)
+
+    def _manual_nr(self, conn, user) -> bool:
+        eqs = self._equipments(conn)
+        if not eqs:
+            return False
+        eq    = random.choice(eqs)
+        topic = (self._topics or {}).get(eq["id_equipment"])
+        if not topic:
+            return False
+        cd, sub = random.choice(NR_CATEGORIES)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        dur = random.randint(900, 3600)
+        return self._post_nr("/add-manual-event", {
+            "packmlTopic":      topic,
+            "eventType":        "manual",
+            "idMachine":        eq["nm_equipment"],
+            "idDwtCategory":    cd,
+            "idDwtSubcategory": sub,
+            "eventNotes":       f"Manual via NR by {user}",
+            "tsEvent":          self._iso(now - timedelta(seconds=dur)),
+            "tsEnd":            self._iso(now),
+            "idEnterprise":     self._ent["id_enterprise"],
+            "idEquipment":      eq["id_equipment"],
+            "userName":         user,
+        }, user)
+
+    def _split_nr(self, conn, user) -> bool:
+        candidates = self._splittable_std_events(conn)
+        if not candidates:
+            log.info("Operator %-20s split-NR — skipped (no splittable std events)", user)
+            return False
+        ev    = random.choice(candidates)
+        topic = (self._topics or {}).get(ev["id_equipment"])
+        if not topic:
+            return False
+        ts_start = ev["ts_event"].astimezone(timezone.utc)
+        ts_end   = ev["ts_end"].astimezone(timezone.utc)
+        mid      = (ts_start + (ts_end - ts_start) / 2).replace(microsecond=0)
+        machine  = ev["machine_code"] or "MCH"
+        cd_a, sub_a = random.choice(NR_CATEGORIES)
+        cd_b, sub_b = random.choice(NR_CATEGORIES)
+        return self._post_nr("/split-events", {
+            "packmlTopic":                topic,
+            "idEquipment":                ev["id_equipment"],
+            "id_enterprise":              self._ent["id_enterprise"],
+            "id_equipment_event":         ev["id_event"],
+            "first_event_machine_code":   machine,
+            "first_event_cd_category":    cd_a,
+            "first_event_cd_subcategory": sub_a,
+            "first_event_start_time":     self._iso(ts_start),
+            "first_event_end_time":       self._iso(mid),
+            "first_event_notes":          f"Split-A via NR by {user}",
+            "second_event_machine_code":  machine,
+            "second_event_cd_category":   cd_b,
+            "second_event_cd_subcategory": sub_b,
+            "second_event_start_time":    self._iso(mid),
+            "second_event_end_time":      self._iso(ts_end),
+            "second_event_notes":         f"Split-B via NR by {user}",
+            "event_type":                 "downtime",
+            "userName":                   user,
+        }, user)
+
+    def _edit_manual_nr(self, conn, user) -> bool:
+        events = self._closed_manual_events(conn)
+        if not events:
+            return False
+        ev    = random.choice(events)
+        topic = (self._topics or {}).get(ev["id_equipment"])
+        if not topic:
+            return False
+        cd, sub = random.choice(NR_CATEGORIES)
+        machine = ev["machine_code"] or "MCH"
+        return self._post_nr("/edit-manual-event", {
+            "packmlTopic":      topic,
+            "eventType":        "manual-edition",
+            "idMachine":        machine,
+            "idDwtCategory":    cd,
+            "idDwtSubcategory": sub,
+            "eventNotes":       f"Corrected via NR by {user}",
+            "tsEvent":          self._iso(ev["ts_event"].astimezone(timezone.utc)),
+            "tsEnd":            self._iso(ev["ts_end"].astimezone(timezone.utc)),
+            "idEquipmentEvent": ev["id_event"],
+            "idEquipment":      ev["id_equipment"],
+            "userName":         user,
+        }, user)
+
+    def _start_po_nr(self, conn, user) -> bool:
+        pos = self._available_pos(conn)
+        if not pos:
+            return self._create_and_start_po_nr(conn, user)
+        po    = random.choice(pos)
+        topic = (self._topics or {}).get(po["id_equipment"])
+        if not topic:
+            return False
+        return self._post_nr("/start-po", {
+            "packmlTopic":          topic,
+            "newIdProductionOrder": po["id_production_order"],
+            "idEquipment":          po["id_equipment"],
+            "idEnterprise":         self._ent["id_enterprise"],
+            "idSite":               po["id_site"],
+            "idArea":               po["id_area"],
+            "userName":             user,
+            "unitMultiplier":       None,
+            "equipmentSetup":       None,
+        }, user)
+
+    def _create_and_start_po_nr(self, conn, user) -> bool:
+        eqs = self._free_equipments(conn)
+        if not eqs:
+            log.info("Operator %-20s start-NR — skipped (all equipment busy)", user)
+            return False
+        available     = self._available_products(conn)
+        products_pool = random.sample(available, len(available))
+        ok = False
+        for i, eq in enumerate(eqs):
+            topic = (self._topics or {}).get(eq["id_equipment"])
+            if not topic:
+                continue
+            id_order_int    = self._alloc_id_order()
+            qty             = random.randint(500, 5000)
+            _, _ = products_pool[i % len(products_pool)]
+            result = self._post_nr("/create-start", {
+                "packmlTopic":             topic,
+                "idOrder":                 id_order_int,
+                "idEquipment":             eq["id_equipment"],
+                "idEnterprise":            self._ent["id_enterprise"],
+                "idSite":                  self._ent["id_site"],
+                "idArea":                  self._ent["id_area"],
+                "productionOrderQuantity": qty,
+                "timestamp":               datetime.now(timezone.utc).isoformat(),
+                "userName":                user,
+                "unitMultiplier":          None,
+                "equipmentSetup":          None,
+            }, user)
+            ok = ok or result
+        return ok
+
+    def _replace_po_nr(self, conn, user) -> bool:
+        running = self._running_pos(conn)
+        if not running:
+            log.info("Operator %-20s replace-NR — skipped (no running POs)", user)
+            return False
+        po_running = random.choice(running)
+        id_equip   = po_running["id_equipment"]
+        topic      = (self._topics or {}).get(id_equip)
+        if not topic:
+            return False
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_production_order FROM production_orders
+                WHERE id_enterprise = %s AND id_equipment = %s AND status = 1
+                LIMIT 1
+            """, (self._ent["id_enterprise"], id_equip))
+            avail = cur.fetchone()
+
+        if not avail:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id_site, id_area FROM equipments WHERE id_equipment = %s",
+                    (id_equip,))
+                eq = cur.fetchone()
+            if not eq:
+                return False
+            id_order_int    = self._alloc_id_order()
+            product, client = random.choice(PRODUCTS)
+            ok = self._post("/api/production-orders/create", {
+                "idEnterprise":            self._ent["id_enterprise"],
+                "idSite":                  eq["id_site"],
+                "idArea":                  eq["id_area"],
+                "idEquipment":             id_equip,
+                "idOrder":                 id_order_int,
+                "nmProductionOrder":       product,
+                "txtProductionOrderNotes": client,
+                "productionOrderQuantity": random.randint(500, 3000),
+            }, user)
+            if not ok:
+                return False
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id_production_order FROM production_orders
+                    WHERE id_enterprise = %s AND id_equipment = %s AND status = 1
+                    ORDER BY id_production_order DESC LIMIT 1
+                """, (self._ent["id_enterprise"], id_equip))
+                avail = cur.fetchone()
+            if not avail:
+                return False
+
+        return self._post_nr("/replace-po", {
+            "packmlTopic":          topic,
+            "newIdProductionOrder": avail["id_production_order"],
+            "oldIdProductionOrder": po_running["id_production_order"],
+            "idEnterprise":         self._ent["id_enterprise"],
+            "idEquipment":          id_equip,
+            "userName":             user,
+            "unitMultiplier":       None,
+            "equipmentSetup":       None,
+        }, user)
+
+    def _setup_po_nr(self, conn, user) -> bool:
+        pos = self._running_pos_with_hierarchy(conn)
+        if not pos:
+            log.info("Operator %-20s setup-NR — skipped (no running POs)", user)
+            return False
+        po    = random.choice(pos)
+        topic = (self._topics or {}).get(po["id_equipment"])
+        if not topic:
+            return False
+        id_order_int = self._alloc_id_order()
+        qty          = random.randint(500, 5000)
+        return self._post_nr("/change-po", {
+            "packmlTopic":                  topic,
+            "timestamp":                    datetime.now(timezone.utc).isoformat(),
+            "shouldOpenNewPo":              True,
+            "stopType":                     "finish",
+            "idEnterprise":                 self._ent["id_enterprise"],
+            "idSite":                       po["id_site"],
+            "idArea":                       po["id_area"],
+            "idEquipment":                  po["id_equipment"],
+            "oldIdProductionOrder":         po["id_production_order"],
+            "oldProductionOrderProdFinal":  int(po["qty"]),
+            "newIdOrder":                   id_order_int,
+            "newIdProductionOrder":         None,
+            "newIdProductionOrderQuantity": qty,
+            "userName":                     user,
+            "unitMultiplier":               None,
+        }, user)
+
+    def _probe_endpoints(self) -> None:
+        """Exercise all edge-nodered read endpoints once to verify health."""
+        topics  = list(self._topics.values()) if self._topics else []
+        topic   = topics[0] if topics else "SimCorp/SimFactory/Assembly/Sim-Machine-A"
+        eq_id   = next(iter(self._topics or {}), 22)
+
+        self._get_nr("/health")
+        self._get_nr("/logo")
+        self._get_nr("/language-pack")
+        self._get_nr(f"/machines/{eq_id}")
+        self._post_nr("/downtime-reasons",            {"packmlTopic": topic}, "probe")
+        self._post_nr("/pending-events",              {"packmlTopic": topic}, "probe")
+        self._post_nr("/solved-events",               {"packmlTopic": topic}, "probe")
+        self._post_nr("/production",                  {"packmlTopic": topic}, "probe")
+        self._post_nr("/available-production-orders", {"packmlTopic": topic}, "probe")
+        self._post_nr("/recommended-change-times",    {"packmlTopic": topic}, "probe")
+        log.info("Probe                  endpoint sweep complete")
+
     # ── Public interface ──────────────────────────────────────────────────────
 
     def act(self, conn):
@@ -1219,6 +1545,8 @@ class OperatorSimulator:
             if not self._ent:
                 log.warning("Simulator Corp not found — operator sim idle")
                 return
+        if self._topics is None:
+            self._topics = self._load_topics(conn)
 
         user   = USERS[self._user_idx % len(USERS)]
         self._user_idx += 1
@@ -1226,27 +1554,27 @@ class OperatorSimulator:
 
         try:
             if action == "justify":
-                ok = self._justify(conn, user)
+                ok = self._justify_nr(conn, user)
             elif action == "manual":
-                ok = self._manual(conn, user)
+                ok = self._manual_nr(conn, user)
             elif action == "start":
-                ok = self._start_po(conn, user)
+                ok = self._start_po_nr(conn, user)
             elif action == "stop":
                 ok = self._stop_po(conn, user)
             elif action == "split":
-                ok = self._split(conn, user)
+                ok = self._split_nr(conn, user)
             elif action == "change_status":
                 ok = self._change_status_po(conn, user)
             elif action == "change_time":
                 ok = self._change_time_po(conn, user)
             elif action == "replace":
-                ok = self._replace_po(conn, user)
+                ok = self._replace_po_nr(conn, user)
             elif action == "setup":
-                ok = self._setup_po(conn, user)
+                ok = self._setup_po_nr(conn, user)
             elif action == "resume":
                 ok = self._resume_po(conn, user)
             else:
-                ok = self._edit_manual(conn, user)
+                ok = self._edit_manual_nr(conn, user)
             if ok:
                 log.info("Operator %-20s %s", user, action)
         except Exception as e:
@@ -1295,15 +1623,30 @@ def main():
         log.info("  %-20s %d topics", ent, n)
 
     op_sim     = OperatorSimulator()
-    op_ticks   = max(1, OP_INTERVAL  // INTERVAL)
-    auto_ticks = max(1, AUTO_INTERVAL // INTERVAL)
+    op_ticks     = max(1, OP_INTERVAL    // INTERVAL)
+    auto_ticks   = max(1, AUTO_INTERVAL  // INTERVAL)
+    probe_ticks  = max(1, PROBE_INTERVAL // INTERVAL)
     op_counter   = 0
     auto_counter = 0
+    probe_counter = 0
+
+    # Register the SimCorp API key with edge-nodered so write endpoints can auth.
+    # The flow also reads API_KEY env var as fallback, but this exercises /set-api-key.
+    _api_key = os.environ.get("EDGE_API_KEY", "sim-api-key-dev-0000")
+    try:
+        resp = requests.post(f"{EDGE_NODERED_URL}/set-api-key",
+                             json={"apiKey": _api_key},
+                             headers={"Content-Type": "application/json"},
+                             timeout=5)
+        log.info("POST /set-api-key → %d", resp.status_code)
+    except Exception as e:
+        log.warning("POST /set-api-key failed (edge-nodered not ready yet): %s", e)
 
     log.info("Operator simulation: %d users, action every %d ticks (%ds)",
              len(USERS), op_ticks, op_ticks * INTERVAL)
     log.info("Auto-processor: rule-engine every %d ticks (%ds); guardian every tick",
              auto_ticks, auto_ticks * INTERVAL)
+    log.info("Endpoint probes: every %d ticks (%ds)", probe_ticks, probe_ticks * INTERVAL)
 
     while True:
         try:
@@ -1326,6 +1669,14 @@ def main():
             if auto_counter >= auto_ticks:
                 auto_counter = 0
                 op_sim.auto_act(conn)
+
+            probe_counter += 1
+            if probe_counter >= probe_ticks and op_sim._ent and op_sim._topics is not None:
+                probe_counter = 0
+                try:
+                    op_sim._probe_endpoints()
+                except Exception as e:
+                    log.warning("Probe sweep failed: %s", e)
 
         except Exception as e:
             log.error("Tick error: %s", e, exc_info=True)
