@@ -134,6 +134,7 @@ AUTO_INTERVAL    = 30      # seconds between guardian + auto-justify sweeps
 # Action type pool — drawn with replacement; each action appears in proportion.
 # justify (30 %) > manual (17 %) > start-PO (15 %) > stop-PO (10 %) > split (8 %)
 # > change_status (4 %) > change_time (4 %) > replace (4 %) > setup (4 %) > edit (4 %)
+# > resume (4 %) — resumes a paused PO, creating a second runtime row
 _ACTIONS = (
     ["justify"]        * 30 +
     ["manual"]         * 17 +
@@ -144,7 +145,8 @@ _ACTIONS = (
     ["change_time"]    *  4 +
     ["replace"]        *  4 +
     ["setup"]          *  4 +
-    ["edit_manual"]    *  4
+    ["edit_manual"]    *  4 +
+    ["resume"]         *  4
 )
 
 
@@ -526,6 +528,28 @@ class OperatorSimulator:
             """, (self._ent["id_enterprise"],))
             return cur.fetchall()
 
+    def _resumable_pos(self, conn):
+        """Paused POs (status=4) whose equipment has no currently-running PO.
+
+        A paused PO can only be resumed when its equipment is idle — the edge-api
+        /start endpoint rejects the call if another PO is already running there.
+        """
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT po.id_production_order, po.id_equipment,
+                       eq.id_site, eq.id_area
+                FROM production_orders po
+                JOIN equipments eq ON eq.id_equipment = po.id_equipment
+                WHERE po.id_enterprise = %s AND po.status = 4
+                  AND po.id_equipment NOT IN (
+                    SELECT id_equipment FROM production_orders
+                    WHERE id_enterprise = %s AND status = 2
+                  )
+                ORDER BY po.id_production_order
+                LIMIT 5
+            """, (self._ent["id_enterprise"], self._ent["id_enterprise"]))
+            return cur.fetchall()
+
     def _running_pos_with_runtime(self, conn):
         """Running POs joined with their currently-open runtime row (for change-time)."""
         with conn.cursor() as cur:
@@ -758,6 +782,28 @@ class OperatorSimulator:
         return self._post("/api/production-orders/change-status", {
             "idProductionOrder": po["id_production_order"],
             "idEquipment":       po["id_equipment"],
+        }, user)
+
+    def _resume_po(self, conn, user) -> bool:
+        """Resume a paused PO — calls /start, which creates a second runtime row.
+
+        This exercises the 1:N production_orders → production_orders_runtime
+        relationship: the PO ends up with [ts1, ts_pause) and [ts_resume, ts2)
+        as two separate runtime intervals.  The recalc trigger on
+        production_orders_runtime picks up each interval independently.
+        """
+        pos = self._resumable_pos(conn)
+        if not pos:
+            log.info("Operator %-20s resume — skipped (no resumable paused POs)", user)
+            return False
+        po = random.choice(pos)
+        return self._post("/api/production-orders/start", {
+            "timestamp":         datetime.now(timezone.utc).isoformat(),
+            "idEnterprise":      self._ent["id_enterprise"],
+            "idSite":            po["id_site"],
+            "idArea":            po["id_area"],
+            "idEquipment":       po["id_equipment"],
+            "idProductionOrder": po["id_production_order"],
         }, user)
 
     def _change_time_po(self, conn, user) -> bool:
@@ -1197,6 +1243,8 @@ class OperatorSimulator:
                 ok = self._replace_po(conn, user)
             elif action == "setup":
                 ok = self._setup_po(conn, user)
+            elif action == "resume":
+                ok = self._resume_po(conn, user)
             else:
                 ok = self._edit_manual(conn, user)
             if ok:
