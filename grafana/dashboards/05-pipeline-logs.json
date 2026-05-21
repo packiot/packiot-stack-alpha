@@ -243,7 +243,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT time_bucket('1 minute', lower(runtime_timerange)) AS time, COUNT(*) AS \"PO events\" FROM production_orders_runtime WHERE $__timeFilter(lower(runtime_timerange)) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT time_bucket('1 minute', lower(runtime_timerange)) AS time, COUNT(*) AS \"PO events\" FROM production_orders_runtime WHERE lower(runtime_timerange) >= $__timeFrom() AND lower(runtime_timerange) < $__timeTo() GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
