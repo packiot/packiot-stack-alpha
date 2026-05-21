@@ -4,7 +4,7 @@
         restart clean status psql shell-edge shell-oeecloud shell-api shell-operator \
         publish-test update devctl \
         db-equipments db-equipment-values db-packml db-enterprises db-sites db-areas \
-        db-events db-uns db-orders db-count apply-views \
+        db-events db-uns db-orders db-count db-rebuild apply-views \
         watch-values watch-plc watch-pubsub \
         stress-db sim-seed test-integration \
         reset-events reset-sim \
@@ -68,7 +68,8 @@ help:
 	@echo "    logs-infra       Tail rabbitmq + postgres + hasura"
 	@echo "    logs-simulator   Tail operator simulator"
 	@echo ""
-	@echo "  Database queries (one-shot)"
+	@echo "  Database"
+	@echo "    db-rebuild          Wipe pg-data volume + rebuild from init scripts (schema parity)"
 	@echo "    db-equipments       List all equipments"
 	@echo "    db-packml           List packml_register routing table"
 	@echo "    db-enterprises      List enterprises + api keys"
@@ -250,6 +251,36 @@ shell-operator:
 	$(COMPOSE) exec operator sh
 
 PSQL = $(COMPOSE) exec -T postgres psql -U postgres -d packiot
+
+# ── Database rebuild ─────────────────────────────────────────────────────────
+# Wipes the pg-data volume and restarts only postgres so all initdb.d scripts
+# re-run in order (00-schema → ... → 22-production-triggers).  All other
+# services (RabbitMQ, Grafana, edge-api, etc.) stay running.  Hasura is
+# restarted at the end so it picks up the fresh schema.
+db-rebuild:
+	@echo ""
+	@echo "  WARNING: this will wipe all database data and rebuild from schema scripts."
+	@echo "  RabbitMQ, Grafana, and other service data are NOT affected."
+	@echo "  Press Ctrl+C within 5s to abort."
+	@sleep 5
+	@echo ""
+	@echo "  Stopping postgres + hasura..."
+	$(COMPOSE) --env-file $(ENV_FILE) stop hasura hasura-init postgres
+	@echo "  Removing pg-data volume..."
+	docker volume rm packiot-stack-alpha_pg-data 2>/dev/null || true
+	@echo "  Starting postgres (init scripts will run)..."
+	$(COMPOSE) --env-file $(ENV_FILE) up -d postgres
+	@echo "  Waiting for postgres to be healthy..."
+	@until $(COMPOSE) --env-file $(ENV_FILE) exec -T postgres pg_isready -U postgres -d packiot >/dev/null 2>&1; do \
+		printf '.'; sleep 2; \
+	done
+	@echo ""
+	@echo "  Restarting hasura..."
+	$(COMPOSE) --env-file $(ENV_FILE) up -d hasura hasura-init
+	@echo ""
+	@echo "  Done. DB rebuilt with full production parity schema (65 tables)."
+	@echo "  Run 'make db-count' to verify row counts."
+	@echo ""
 
 # ── Database queries ──────────────────────────────────────────────────────────
 db-equipments:
