@@ -210,7 +210,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT a.id_area, ent.nm_enterprise, s.nm_site, a.nm_area, a.day_begin FROM areas a JOIN sites s ON s.id_site = a.id_site JOIN enterprises ent ON ent.id_enterprise = a.id_enterprise WHERE a.id_enterprise IN ($enterprise) AND a.id_site IN ($site) AND a.id_area IN ($area) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area",
+          "rawSql": "SELECT a.id_area, ent.nm_enterprise, s.nm_site, a.nm_area, a.week_begin, a.week_size FROM areas a JOIN sites s ON s.id_site = a.id_site JOIN enterprises ent ON ent.id_enterprise = a.id_enterprise WHERE a.id_enterprise IN ($enterprise) AND a.id_site IN ($site) AND a.id_area IN ($area) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area",
           "format": "table",
           "refId": "A"
         }
@@ -282,7 +282,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT eq.id_equipment, ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment, CASE eq.tp_equipment WHEN 1 THEN 'Machine' WHEN 2 THEN 'Sector' WHEN 3 THEN 'Line' ELSE eq.tp_equipment::text END AS tp_equipment, eq.status_type, eq.lead_machine, lm.nm_equipment AS nm_lead_machine FROM equipments eq JOIN areas a ON a.id_area = eq.id_area JOIN sites s ON s.id_site = eq.id_site JOIN enterprises ent ON ent.id_enterprise = eq.id_enterprise LEFT JOIN equipments lm ON lm.id_equipment = eq.lead_machine WHERE eq.id_enterprise IN ($enterprise) AND eq.id_site IN ($site) AND eq.id_area IN ($area) AND eq.id_equipment IN ($equipment) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment",
+          "rawSql": "SELECT eq.id_equipment, ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment, CASE eq.tp_equipment WHEN 1 THEN 'Machine' WHEN 2 THEN 'Sector' WHEN 3 THEN 'Line' ELSE eq.tp_equipment::text END AS tp_equipment, eq.status_type, eq.ideal_speed, eq.lead_machine, lm.nm_equipment AS nm_lead_machine FROM equipments eq JOIN areas a ON a.id_area = eq.id_area JOIN sites s ON s.id_site = eq.id_site JOIN enterprises ent ON ent.id_enterprise = eq.id_enterprise LEFT JOIN equipments lm ON lm.id_equipment = eq.lead_machine WHERE eq.id_enterprise IN ($enterprise) AND eq.id_site IN ($site) AND eq.id_area IN ($area) AND eq.id_equipment IN ($equipment) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment",
           "format": "table",
           "refId": "A"
         }

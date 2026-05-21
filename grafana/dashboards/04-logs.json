@@ -51,7 +51,7 @@
       "type": "link",
       "title": "OEE Pipeline",
       "url": "/d/oee-pipeline",
-      "tooltip": "OEE Pipeline \u2014 Live Monitor"
+      "tooltip": "OEE Pipeline — Live Monitor"
     },
     {
       "icon": "external link",
@@ -69,7 +69,7 @@
       "type": "link",
       "title": "System Health",
       "url": "/d/system-health",
-      "tooltip": "System Health \u2014 DB & Pipeline"
+      "tooltip": "System Health — DB & Pipeline"
     },
     {
       "icon": "external link",
@@ -78,7 +78,7 @@
       "type": "link",
       "title": "Operator Activity",
       "url": "/d/packiot-operator",
-      "tooltip": "Operator Activity \u2014 per-user actions & downtimes"
+      "tooltip": "Operator Activity — per-user actions & downtimes"
     },
     {
       "icon": "external link",
@@ -87,7 +87,7 @@
       "type": "link",
       "title": "PLC Pipeline Logs",
       "url": "/d/packiot-pipeline-logs",
-      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
+      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud"
     },
     {
       "icon": "external link",
@@ -96,7 +96,7 @@
       "type": "link",
       "title": "Services Logs",
       "url": "/d/packiot-services-logs",
-      "tooltip": "Services Logs \u2014 edge-api, operator, simulator"
+      "tooltip": "Services Logs — edge-api, operator, simulator"
     }
   ],
   "panels": [
@@ -143,7 +143,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "sum(count_over_time({service=~\"$service\"} [$__interval]))",
+          "expr": "sum(count_over_time({service=~\"$service\"} [$__range]))",
           "instant": true,
           "refId": "A"
         }
@@ -193,7 +193,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "sum(count_over_time({service=~\"$service\"} |~ \"(?i)(error|exception|failed|critical)\" [$__interval]))",
+          "expr": "sum(count_over_time({service=~\"$service\"} |~ \"(?i)(error|exception|failed|critical)\" [$__range]))",
           "instant": true,
           "refId": "A"
         }
@@ -202,7 +202,7 @@
     {
       "id": 12,
       "type": "stat",
-      "title": "AMQP Published \u2014 5m",
+      "title": "AMQP Published — 5m",
       "gridPos": {
         "h": 4,
         "w": 5,
@@ -242,7 +242,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"AMQP/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes'",
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Published/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes' AND tp_equipment = 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -251,7 +251,7 @@
     {
       "id": 13,
       "type": "stat",
-      "title": "AMQP Received \u2014 5m",
+      "title": "AMQP Received — 1m",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -291,7 +291,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"AMQP/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes'",
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Received/1min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '1 minute'",
           "format": "time_series",
           "refId": "A"
         }
@@ -300,7 +300,7 @@
     {
       "id": 14,
       "type": "stat",
-      "title": "equipment_values Written \u2014 5m",
+      "title": "equipment_values Written — 5m",
       "gridPos": {
         "h": 4,
         "w": 5,
@@ -375,7 +375,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "sum by (service) (count_over_time({service=~\"$service\", service!~\"loki|hasura-init\"} [$__interval]))",
+          "expr": "sum by (service) (count_over_time({service=~\"$service\", service!~\"loki|promtail\"} [$__interval]))",
           "legendFormat": "{{service}}",
           "refId": "A"
         }
@@ -384,7 +384,7 @@
     {
       "id": 15,
       "type": "timeseries",
-      "title": "AMQP Message Flow \u2014 equipment_values writes/min by machine",
+      "title": "AMQP Message Flow — equipment_values writes/min by machine",
       "gridPos": {
         "h": 7,
         "w": 24,
@@ -418,7 +418,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT time_bucket('1 minute', ev.ts_value) AS time, split_part(pr.packml_topic, '/', -1) AS metric, COUNT(*) AS value FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT time_bucket('1 minute', ev.ts_value) AS time, split_part(pr.packml_topic, '/', -1) AS metric, COUNT(*) AS value FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment AND pr.active = true WHERE $__timeFilter(ev.ts_value) GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -427,7 +427,7 @@
     {
       "id": 8,
       "type": "logs",
-      "title": "All Services \u2014 Errors & Warnings",
+      "title": "All Services — Errors & Warnings",
       "gridPos": {
         "h": 12,
         "w": 24,

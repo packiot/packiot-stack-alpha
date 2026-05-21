@@ -636,7 +636,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT e.id_equipment, COALESCE(pr.packml_topic, eq.nm_equipment) AS topic, ROUND(EXTRACT(EPOCH FROM (now() - e.ts_event)) / 60.0) AS \"Open (min)\", e.ts_event FROM equipment_events e LEFT JOIN packml_register pr ON pr.id_equipment = e.id_equipment JOIN equipments eq ON eq.id_equipment = e.id_equipment WHERE e.ts_end IS NOT NULL AND (e.cd_category IS NULL OR e.cd_category = '') AND e.status = 10 AND ('${enterprise:csv}' = '.*' OR e.id_enterprise IN (SELECT e.id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) ORDER BY e.ts_event ASC LIMIT 20",
+          "rawSql": "SELECT e.id_equipment, COALESCE(pr.packml_topic, eq.nm_equipment) AS topic, ROUND(EXTRACT(EPOCH FROM (now() - e.ts_event)) / 60.0) AS \"Open (min)\", e.ts_event FROM equipment_events e LEFT JOIN packml_register pr ON pr.id_equipment = e.id_equipment JOIN equipments eq ON eq.id_equipment = e.id_equipment WHERE e.ts_end IS NOT NULL AND (e.cd_category IS NULL OR e.cd_category = '') AND e.status = 10 AND ('${enterprise:csv}' = '.*' OR e.id_enterprise IN (SELECT ent.id_enterprise FROM enterprises ent WHERE ent.nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) ORDER BY e.ts_event ASC LIMIT 20",
           "format": "table",
           "refId": "A"
         }
@@ -712,7 +712,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroup(ts_end,'$__interval',0) AS time, COUNT(*) AS \"Pending\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND cd_category IS NULL AND status = 10 GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroup(ts_end,'$__interval',0) AS time, COUNT(*) AS \"Pending\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND ts_end IS NOT NULL AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND (cd_category IS NULL OR cd_category = '') AND status = 10 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         },
