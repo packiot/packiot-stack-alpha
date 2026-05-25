@@ -82,6 +82,7 @@ services:
       - ./edge-node-red/db/11-uns-tables.sql:/docker-entrypoint-initdb.d/21-uns-tables.sql:ro
       - ./edge-node-red/db/12-production-triggers.sql:/docker-entrypoint-initdb.d/22-production-triggers.sql:ro
       - ./edge-node-red/db/13-downtime-reasons-seed.sql:/docker-entrypoint-initdb.d/23-downtime-reasons-seed.sql:ro
+      - ./edge-node-red/db/14-oee-uns-compute.sql:/docker-entrypoint-initdb.d/24-oee-uns-compute.sql:ro
     networks: [packiot-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]
@@ -349,6 +350,37 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
+
+  # ── OEE cron (dev-only pg_cron substitute) ────────────────────────────────
+  # Calls oee_compute_uns_metrics() every 30s — the SQL equivalent of the
+  # "Trigger: OEE Metrics (30s)" chain in oeecloud flows/04-simulation.json.
+  # In production/staging this is handled by pg_cron inside PostgreSQL itself.
+  # Uses the same postgres image already pulled for the postgres service.
+  oee-cron:
+    image: timescale/timescaledb:2.25.2-pg16
+    restart: unless-stopped
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -U postgres -d packiot; do sleep 2; done
+        echo "[oee-cron] DB ready — starting 30s OEE refresh loop"
+        while true; do
+          psql -h postgres -U postgres -d packiot \
+            -c "SELECT oee_compute_uns_metrics();" \
+            && echo "[oee-cron] $(date -u +%H:%M:%SZ) refreshed" \
+            || echo "[oee-cron] $(date -u +%H:%M:%SZ) WARN: compute failed"
+          sleep 30
+        done
+    environment:
+      PGPASSWORD: packiot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [packiot-net]
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "2"}
 
   # ── Loki (log aggregation) ─────────────────────────────────────────────────
   loki:
