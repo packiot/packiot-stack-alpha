@@ -241,7 +241,7 @@ Copy `.env.example` to `.env.local` (`make setup` does this automatically):
 cp .env.example .env.local
 ```
 
-**All infrastructure connection strings are hard-coded in `compose.integration.yml`**
+**All infrastructure connection strings are hard-coded in `compose.development.yml`**
 and require no configuration. `.env.local` is for secrets and identifiers that
 differ per deployment.
 
@@ -254,7 +254,7 @@ differ per deployment.
 | `ALERT_EMAIL_TO` | `dev@example.com` | oeecloud — silent in dev |
 | `SENDGRID_API_KEY` | `SG.dev-placeholder` | oeecloud — leave as-is in dev |
 
-The `compose.integration.yml` pre-fills safe defaults for all connection details
+The `compose.development.yml` pre-fills safe defaults for all connection details
 (DB host/port/credentials, PubSub emulator URL, Hasura URL) so the stack works
 out of the box with an empty `.env.local`.
 
@@ -574,7 +574,7 @@ To push a new or updated tab to a running container:
 # Replace an existing tab (use the exact tab filename):
 docker cp edge-node-red/flows/PLCs.json \
     packiot-stack-alpha-edge-nodered-1:/data/flows/PLCs.json
-docker compose -f compose.integration.yml restart edge-nodered
+docker compose -f compose.development.yml restart edge-nodered
 ```
 
 The `entrypoint.sh` in each Node-RED service wipes per-tab files on startup
@@ -623,7 +623,7 @@ make publish-test
 ```
 
 If the topic or subscription is missing, `pubsub-init` failed on startup.
-Check: `docker compose -f compose.integration.yml logs pubsub-init`.
+Check: `docker compose -f compose.development.yml logs pubsub-init`.
 
 ### `make db-*` commands return empty results
 

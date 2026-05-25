@@ -10,7 +10,7 @@
 #   loki              (internal)  — Log aggregation (Grafana datasource)
 #   promtail          (internal)  — Docker log collector → Loki
 #
-# Differences from compose.integration.yml:
+# Differences from compose.development.yml:
 #   - No postgres: DB runs on a separate private-subnet EC2
 #   - No adminer, tests (dev-only)
 #   - All ports bound to 127.0.0.1 — Nginx terminates TLS externally
@@ -108,7 +108,11 @@ services:
           curl -sf -X POST http://hasura:8080/v1/metadata \
             -H 'Content-Type: application/json' \
             -H "X-Hasura-Admin-Secret: $${HASURA_GRAPHQL_ADMIN_SECRET}" \
-            -d @/tmp/payload.json && echo "Hasura metadata applied" && exit 0
+            -d @/tmp/payload.json && echo "Hasura metadata applied" && \
+          curl -sf -X POST http://hasura:8080/v1/metadata \
+            -H 'Content-Type: application/json' \
+            -H "X-Hasura-Admin-Secret: $${HASURA_GRAPHQL_ADMIN_SECRET}" \
+            -d '{"type":"reload_metadata","args":{}}' && echo "Hasura metadata reloaded" && exit 0
           echo "Attempt $$i failed — retrying in 3s..."
           sleep 3
         done
@@ -211,6 +215,8 @@ services:
     env_file: [.env]
     environment:
       RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       LOG_LEVEL: info
       PG_HOST: ${POSTGRES_HOST}
       PG_PORT: "5432"
@@ -232,7 +238,7 @@ services:
     ports:
       - "127.0.0.1:1881:1880"
     healthcheck:
-      test: ["CMD-SHELL", "pidof node > /dev/null || exit 1"]
+      test: ["CMD", "/healthcheck.sh"]
       interval: 30s
       timeout: 10s
       retries: 3

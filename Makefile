@@ -11,7 +11,7 @@
         tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate \
         staging-deploy-key
 
-COMPOSE     = docker compose -f compose.integration.yml
+COMPOSE     = docker compose -f compose.development.yml
 ENV_FILE    = .env.local
 
 TF_DIR      = terraform/staging
@@ -329,13 +329,13 @@ db-count:
 
 # ── Live monitoring ───────────────────────────────────────────────────────────
 watch-values:
-	watch -n 2 'docker compose -f compose.integration.yml exec -T postgres \
+	watch -n 2 'docker compose -f compose.development.yml exec -T postgres \
 		psql -U postgres -d packiot -c \
 		"SELECT ts_value, id_equipment, net_production_incr, scrap_incr, state, mode, speed \
 		 FROM equipment_values ORDER BY ts_value DESC LIMIT 15;"'
 
 watch-plc:
-	watch -n 2 'docker compose -f compose.integration.yml exec -T postgres \
+	watch -n 2 'docker compose -f compose.development.yml exec -T postgres \
 		psql -U postgres -d packiot -c \
 		"SELECT \
 		   CASE WHEN net_production_incr IS NOT NULL THEN '"'"'ProdProcessed'"'"' \
