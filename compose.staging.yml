@@ -52,7 +52,7 @@ services:
   # Services routed here: edge-api, oeecloud, simulator.
   # Services kept direct: hasura (prepared stmts), db-migrate (DDL/advisory locks).
   pgbouncer:
-    image: edoburu/pgbouncer:1.22.1
+    image: edoburu/pgbouncer:1.22.1-p0
     restart: unless-stopped
     environment:
       DB_HOST: ${POSTGRES_HOST}
