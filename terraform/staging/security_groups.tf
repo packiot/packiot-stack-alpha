@@ -30,6 +30,14 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "AMQPS - factory edge clients publishing to RabbitMQ via Nginx TLS proxy"
+    from_port   = 5671
+    to_port     = 5671
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     description = "All outbound - Docker Hub pulls, GitHub, AWS APIs, DB"
     from_port   = 0

@@ -33,7 +33,44 @@ volumes:
   loki-data:
   rabbitmq-data:
 
+# ── IP allocation ──────────────────────────────────────────────────────────────
+# .2  hasura      .3  edge-api     .4  edge-nodered  .5  rabbitmq
+# .6  oeecloud    .7  grafana      .8  loki           .9  promtail
+# .10 pgbouncer
+
 services:
+  # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
+  # Sits between app services and the external TimescaleDB EC2.
+  # Pool mode: transaction — each query borrows a server connection and releases it
+  # immediately. Multiplexes up to MAX_CLIENT_CONN=100 app connections onto
+  # DEFAULT_POOL_SIZE=5 real PostgreSQL connections.
+  #
+  # ⚠ Hasura does NOT use PgBouncer: it relies on prepared statements that are
+  # incompatible with transaction-mode pooling. Cap its pool directly instead
+  # via HASURA_GRAPHQL_PG_CONNECTIONS.
+  #
+  # Services routed here: edge-api, oeecloud, simulator.
+  # Services kept direct: hasura (prepared stmts), db-migrate (DDL/advisory locks).
+  pgbouncer:
+    image: edoburu/pgbouncer:1.22.1
+    restart: unless-stopped
+    environment:
+      DB_HOST: ${POSTGRES_HOST}
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "5"
+      MAX_CLIENT_CONN: "100"
+      AUTH_TYPE: md5
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.10
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── RabbitMQ (message bus) ─────────────────────────────────────────────────────
   # AMQP 0.9.1 broker: edge-nodered publishes to the `oee` exchange,
   # oeecloud subscribes via the `oeecloud-q` durable queue.
@@ -72,6 +109,10 @@ services:
       HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
       HASURA_GRAPHQL_DEV_MODE: "false"
       HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log
+      # Cap pool: Hasura defaults to 50 connections which alone saturates
+      # TimescaleDB's max_connections=50. Keep Hasura direct (no PgBouncer)
+      # because it uses prepared statements incompatible with transaction pooling.
+      HASURA_GRAPHQL_PG_CONNECTIONS: "5"
     ports:
       - "127.0.0.1:8081:8080"
     networks:
@@ -152,6 +193,7 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: pgbouncer
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -160,6 +202,8 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_started
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
@@ -218,7 +262,7 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       LOG_LEVEL: info
-      PG_HOST: ${POSTGRES_HOST}
+      PG_HOST: pgbouncer
       PG_PORT: "5432"
       PG_USER: ${POSTGRES_USER}
       PG_DATABASE: ${POSTGRES_DB}
@@ -246,6 +290,8 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
     networks:
       packiot-net:
         ipv4_address: 172.18.0.6
@@ -337,7 +383,7 @@ services:
     environment:
       EDGE_NODERED_URL: http://edge-nodered:1880
       EDGE_API_URL: http://edge-api:8080
-      DB_URL: ${POSTGRES_URL}
+      DB_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DB}"
       SIM_INTERVAL: "5"
       OP_INTERVAL: "15"
     depends_on:

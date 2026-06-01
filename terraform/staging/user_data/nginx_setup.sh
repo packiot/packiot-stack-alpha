@@ -128,6 +128,78 @@ NGINX
 nginx -t && nginx -s reload
 echo "HTTPS with basic auth configured for all services"
 
+# ── AMQPS TCP proxy (Nginx stream module) ────────────────────────────────────
+# The stream module provides a TCP/UDP proxy separate from the http {} block.
+# On AL2023 nginx is compiled with --with-stream; nginx-mod-stream provides
+# the dynamic module on distros that ship it as a separate package (no-op if absent).
+dnf install -y nginx-mod-stream 2>/dev/null || true
+
+mkdir -p /etc/nginx/stream.d
+
+# AMQP connections are long-lived (heartbeats every ~60s); set a generous
+# proxy_timeout so Nginx doesn't close idle-but-healthy AMQP connections.
+cat > /etc/nginx/stream.d/amqps.conf <<NGINX
+server {
+    listen      5671 ssl;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    proxy_pass            127.0.0.1:5672;
+    proxy_timeout         3600s;
+    proxy_connect_timeout 5s;
+}
+NGINX
+
+# stream {} must live at the top level of nginx.conf (NOT inside http {}).
+# Append it once; the guard prevents duplicate blocks on re-runs.
+if ! grep -q 'stream.d' /etc/nginx/nginx.conf; then
+    printf '\nstream {\n    include /etc/nginx/stream.d/*.conf;\n}\n' \
+        >> /etc/nginx/nginx.conf
+fi
+
+nginx -t && nginx -s reload
+echo "AMQPS stream proxy configured on port 5671"
+
+# ── RabbitMQ management API HTTPS proxy ──────────────────────────────────────
+# Exposed as mq.$STAGING_DOMAIN → 127.0.0.1:15672.
+# No nginx basic auth — RabbitMQ management plugin authenticates with its own
+# user/password. The edge-client user (tags: management) can call the HTTP
+# publish API from factory edges that don't have amqplib.
+# Idempotent: guard prevents duplicate vhost on re-runs.
+if ! grep -q "mq.$STAGING_DOMAIN" /etc/nginx/conf.d/mq.conf 2>/dev/null; then
+cat > /etc/nginx/conf.d/mq.conf <<NGINX
+server {
+    listen 80;
+    server_name mq.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name mq.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass         http://127.0.0.1:15672;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+}
+NGINX
+fi
+
+nginx -t && nginx -s reload
+echo "RabbitMQ management API proxy configured at https://mq.$STAGING_DOMAIN"
+
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.
 dnf install -y cronie

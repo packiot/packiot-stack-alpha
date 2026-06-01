@@ -34,3 +34,26 @@ resource "aws_route53_record" "services" {
   ttl      = 60
   records  = [aws_eip.app.public_ip]
 }
+
+# Dedicated DNS name for the AMQPS TCP proxy (port 5671).
+# Not in var.services because stream-proxy (TCP) doesn't need an HTTP vhost.
+# Factory edge clients connect to: amqps://amqp.staging.packiot.app:5671
+resource "aws_route53_record" "amqp" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "amqp.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
+# RabbitMQ management HTTP API — exposed via Nginx HTTPS proxy (port 443).
+# Used by factory edges that lack amqplib: they POST to this endpoint to publish
+# SparkPlug messages. No nginx basic auth — RabbitMQ handles its own auth.
+# Client user must have the 'management' tag to access this endpoint.
+resource "aws_route53_record" "mq" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "mq.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}

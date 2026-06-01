@@ -256,4 +256,52 @@ echo "Docker Compose stack started"
 echo "NOTE: set ID_ENTERPRISE in /opt/packiot/.env after enterprise onboarding, then:"
 echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud"
 
+# ── RabbitMQ: dedicated client user for external factory edges ────────────────
+# Requires the secret packiot/staging/rabbitmq-client-creds to exist:
+#   {"username":"edge-client","password":"<strong-password>"}
+# If the secret is absent, this block is skipped; run manually later via SSM.
+#
+# The client user gets write-only access to the default vhost '/':
+#   configure="" — cannot create/delete exchanges or queues
+#   write=".*"   — can publish to any exchange (what a factory edge needs)
+#   read=""      — cannot consume (oeecloud holds the consumer role)
+if aws secretsmanager describe-secret \
+    --secret-id packiot/staging/rabbitmq-client-creds \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+
+  CLIENT_CREDS=$(get_secret "packiot/staging/rabbitmq-client-creds")
+  CLIENT_USER=$(echo "$CLIENT_CREDS" | jq -r '.username')
+  CLIENT_PASS=$(echo "$CLIENT_CREDS" | jq -r '.password')
+
+  # Wait for RabbitMQ to accept management API calls (up to 120s)
+  echo "Waiting for RabbitMQ management API..."
+  for i in $(seq 1 24); do
+    if curl -sf "http://127.0.0.1:15672/api/healthchecks/node" \
+        -u "$MQ_USER:$MQ_PASS" > /dev/null; then
+      echo "RabbitMQ ready"
+      break
+    fi
+    sleep 5
+  done
+
+  # Create user (PUT is idempotent — safe to re-run; updates password if changed).
+  # Tags: "management" allows the user to call the management HTTP API (including
+  # the /api/exchanges/publish endpoint). AMQP permissions below restrict to write-only.
+  curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
+    "http://127.0.0.1:15672/api/users/$CLIENT_USER" \
+    -H "Content-Type: application/json" \
+    -d "{\"password\":\"$CLIENT_PASS\",\"tags\":\"management\"}"
+
+  # Grant write-only permissions on default vhost '/'
+  # URL-encode '/' as '%2F' — RabbitMQ management API requires this.
+  curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
+    "http://127.0.0.1:15672/api/permissions/%2F/$CLIENT_USER" \
+    -H "Content-Type: application/json" \
+    -d '{"configure":"","write":".*","read":""}'
+
+  echo "RabbitMQ client user '$CLIENT_USER' created with write-only access to vhost '/'"
+else
+  echo "SKIP: packiot/staging/rabbitmq-client-creds not found — create it in Secrets Manager then re-run this block via SSM"
+fi
+
 echo "=== App init complete $(date -u) ==="
