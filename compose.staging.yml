@@ -64,6 +64,14 @@ services:
       DEFAULT_POOL_SIZE: "20"
       MAX_CLIENT_CONN: "200"
       AUTH_TYPE: scram-sha-256
+      # Clean up open transactions when server connections are returned.
+      # Prevents idle-in-transaction buildup that exhausts the server pool.
+      SERVER_RESET_QUERY: "ROLLBACK"
+      SERVER_RESET_QUERY_ALWAYS: "1"
+      # Cancel queries waiting >60s in PgBouncer (prevents oeecloud pool exhaustion).
+      QUERY_TIMEOUT: "60"
+      # Reclaim idle server connections after 120s (default 600s).
+      SERVER_IDLE_TIMEOUT: "120"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.10
