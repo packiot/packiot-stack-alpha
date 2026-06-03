@@ -41,8 +41,8 @@ services:
       RABBITMQ_DEFAULT_USER: packiot
       RABBITMQ_DEFAULT_PASS: packiot
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     networks: [packiot-net]
@@ -65,7 +65,7 @@ services:
       POSTGRES_PASSWORD: packiot
       POSTGRES_DB: packiot
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
       - ./oeecloud-node-red/db/00-schema.sql:/docker-entrypoint-initdb.d/10-base-schema.sql:ro
@@ -99,7 +99,7 @@ services:
     image: grafana/grafana:11.5.0
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -132,7 +132,7 @@ services:
     image: adminer:4.8.1
     restart: unless-stopped
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,7 +154,7 @@ services:
       HASURA_GRAPHQL_DEV_MODE: "true"
       HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log,query-log
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -218,7 +218,7 @@ services:
       POSTGRES_PASSWORD: packiot
       POSTGRES_DB: packiot
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -251,7 +251,7 @@ services:
       DISABLE_EDITOR: "false"
       EDGE_API_BASE_URL: http://edge-api:8080
     ports:
-      - "1880:1880"
+      - "127.0.0.1:1880:1880"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:1880/"]
       interval: 30s
@@ -281,7 +281,7 @@ services:
       # a host-accessible address. edge-nodered is exposed on localhost:1880.
       VITE_API_URL: http://localhost:1880
     ports:
-      - "3002:3000"   # 3000 is taken by Grafana
+      - "127.0.0.1:3002:3000"   # 3000 is taken by Grafana
     depends_on:
       edge-nodered:
         condition: service_healthy
@@ -332,7 +332,7 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       DISABLE_EDITOR: "false"
     ports:
-      - "1881:1880"
+      - "127.0.0.1:1881:1880"
     healthcheck:
       # Pipeline-freshness check — see /healthcheck.sh in oeecloud-node-red/.
       # Catches "process up but pipeline silently broken" failures.
@@ -390,7 +390,7 @@ services:
     restart: unless-stopped
     command: -config.file=/etc/loki/local-config.yaml
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     volumes:
       - ./monitoring/loki/loki-local-config.yaml:/etc/loki/local-config.yaml:ro
       - loki-data:/loki

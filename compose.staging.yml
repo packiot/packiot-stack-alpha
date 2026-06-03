@@ -237,6 +237,13 @@ services:
       API_KEY: ${EDGE_API_KEY}
       FIREBASE_API_KEY: bypassed-by-hasura-admin-secret
       EDGE_API_BASE_URL: http://edge-api:8080
+    # Bypass Docker's embedded DNS (intermittent EAI_AGAIN under load) by
+    # resolving all intra-stack hostnames via /etc/hosts instead.
+    extra_hosts:
+      - "hasura:172.18.0.2"
+      - "rabbitmq:172.18.0.5"
+      - "edge-api:172.18.0.3"
+      - "pgbouncer:172.18.0.10"
     ports:
       - "127.0.0.1:1880:1880"
     healthcheck:
@@ -295,6 +302,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+    # Bypass Docker's embedded DNS (intermittent EAI_AGAIN under load).
+    extra_hosts:
+      - "pgbouncer:172.18.0.10"
+      - "rabbitmq:172.18.0.5"
+      - "edge-nodered:172.18.0.4"
+      - "edge-api:172.18.0.3"
     depends_on:
       rabbitmq:
         condition: service_healthy
