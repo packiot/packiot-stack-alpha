@@ -138,6 +138,32 @@ resource "aws_secretsmanager_secret_version" "nginx_auth" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ── Authentik SSO ────────────────────────────────────────────────────────────
+
+resource "random_password" "authentik_db" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "authentik_secret_key" {
+  length  = 64
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "authentik" {
+  name                    = "packiot/staging/authentik"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "authentik" {
+  secret_id = aws_secretsmanager_secret.authentik.id
+  secret_string = jsonencode({
+    db_password = random_password.authentik_db.result
+    secret_key  = random_password.authentik_secret_key.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
 # ── GitHub Actions runner ─────────────────────────────────────────────────────
 # Populate manually after apply — store a long-lived PAT (not a short-lived
 # registration token). register-runner.sh exchanges the PAT for a fresh 1-hour

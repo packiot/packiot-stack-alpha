@@ -51,6 +51,7 @@ DB_SECRET=$(get_secret "packiot/staging/db")
 APP_SECRET=$(get_secret "packiot/staging/app")
 HASURA_SECRET=$(get_secret "packiot/staging/hasura")
 NR_AUTH=$(get_secret "packiot/staging/nodered-auth")
+AUTHENTIK_SECRET=$(get_secret "packiot/staging/authentik")
 
 DB_URL=$(echo "$DB_SECRET"     | jq -r '.url')
 DB_PASS=$(echo "$DB_SECRET"    | jq -r '.password')
@@ -64,6 +65,8 @@ MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
+AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
+AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET" | jq -r '.secret_key')
 
 # Bcrypt hash for Node-RED adminAuth — settings.js expects $2b$ format (rounds=8).
 pip3 install bcrypt --quiet
@@ -121,6 +124,10 @@ GF_SERVER_ROOT_URL=https://grafana.$STAGING_DOMAIN
 
 # Compose substitution helpers
 STAGING_DOMAIN=$STAGING_DOMAIN
+
+# Authentik SSO
+AUTHENTIK_DB_PASSWORD=$AUTHENTIK_DB_PASS
+AUTHENTIK_SECRET_KEY=$AUTHENTIK_SK
 ENV
 fi
 

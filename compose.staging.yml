@@ -32,11 +32,13 @@ volumes:
   grafana-data:
   loki-data:
   rabbitmq-data:
+  authentik-media:
+  authentik-certs:
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
-# .2  hasura      .3  edge-api     .4  edge-nodered  .5  rabbitmq
-# .6  oeecloud    .7  grafana      .8  loki           .9  promtail
-# .10 pgbouncer
+# .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
+# .6  oeecloud     .7  grafana       .8  loki            .9  promtail
+# .10 pgbouncer    .11 authentik-redis  .12 authentik-server  .13 authentik-worker
 
 services:
   # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
@@ -416,3 +418,75 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
+
+  # ── Authentik SSO ──────────────────────────────────────────────────────────────
+  # Self-hosted IdP providing browser SSO for all staging service vhosts via Nginx
+  # forward auth. The embedded outpost inside authentik-server handles
+  # /outpost.goauthentik.io/auth/nginx subrequests from Nginx.
+  #
+  # DB: dedicated 'authentik' database on the existing TimescaleDB EC2 (not a
+  # separate postgres container — avoids ~100 MB overhead on the t4g.small).
+  # Credentials: AUTHENTIK_DB_PASSWORD + AUTHENTIK_SECRET_KEY from .env.
+  #
+  # First-run setup (one-time, after stack starts):
+  #   https://auth.staging.packiot.app/if/flow/initial-setup/
+  authentik-redis:
+    image: redis:7-alpine
+    container_name: authentik-redis
+    restart: unless-stopped
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.11
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2024.12.3
+    container_name: authentik-server
+    command: server
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_LOG_LEVEL: info
+    volumes:
+      - authentik-media:/media
+      - authentik-certs:/certs
+    ports:
+      - "127.0.0.1:9000:9000"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.12
+    depends_on: [authentik-redis]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2024.12.3
+    container_name: authentik-worker
+    command: worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.13
+    depends_on: [authentik-redis, authentik-server]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

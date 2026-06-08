@@ -57,3 +57,13 @@ resource "aws_route53_record" "mq" {
   ttl     = 60
   records = [aws_eip.app.public_ip]
 }
+
+# Authentik SSO login page — browser entry point for all staging SSO flows.
+# No Nginx auth_request on this vhost (it IS the authentication endpoint).
+resource "aws_route53_record" "auth" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "auth.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
