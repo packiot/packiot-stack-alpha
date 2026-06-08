@@ -38,7 +38,7 @@ volumes:
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
 # .6  oeecloud     .7  grafana       .8  loki            .9  promtail
-# .10 pgbouncer    .11 authentik-redis  .12 authentik-server  .13 authentik-worker
+# .10 pgbouncer    .11 simulator         .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 
 services:
   # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
@@ -436,7 +436,7 @@ services:
     restart: unless-stopped
     networks:
       packiot-net:
-        ipv4_address: 172.18.0.11
+        ipv4_address: 172.18.0.14
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
