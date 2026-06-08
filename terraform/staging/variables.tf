@@ -43,7 +43,7 @@ variable "db_instance_type" {
 variable "app_instance_type" {
   description = "On-demand Graviton2 — t4g.small saves ~$12/mo vs medium; upgrade if OOM"
   type        = string
-  default     = "t4g.small" # 2 vCPU / 2 GB — ~$12/mo on-demand
+  default     = "t4g.medium" # 2 vCPU / 4 GB — ~$24/mo; upgraded from t4g.small due to Authentik OOM
 }
 
 variable "db_volume_size_gb" {

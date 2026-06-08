@@ -66,7 +66,9 @@ GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
-AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET" | jq -r '.secret_key')
+AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
+AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
+AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
 
 # Bcrypt hash for Node-RED adminAuth — settings.js expects $2b$ format (rounds=8).
 pip3 install bcrypt --quiet
@@ -128,6 +130,10 @@ STAGING_DOMAIN=$STAGING_DOMAIN
 # Authentik SSO
 AUTHENTIK_DB_PASSWORD=$AUTHENTIK_DB_PASS
 AUTHENTIK_SECRET_KEY=$AUTHENTIK_SK
+AUTHENTIK_WEB__WORKERS=1
+AUTHENTIK_BOOTSTRAP_EMAIL=admin@packiot.com
+AUTHENTIK_BOOTSTRAP_PASSWORD=$AUTHENTIK_BOOT_PASS
+AUTHENTIK_BOOTSTRAP_TOKEN=$AUTHENTIK_BOOT_TOK
 ENV
 fi
 

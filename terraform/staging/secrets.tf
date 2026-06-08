@@ -150,6 +150,16 @@ resource "random_password" "authentik_secret_key" {
   special = false
 }
 
+resource "random_password" "authentik_bootstrap_password" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "authentik_bootstrap_token" {
+  length  = 64
+  special = false
+}
+
 resource "aws_secretsmanager_secret" "authentik" {
   name                    = "packiot/staging/authentik"
   recovery_window_in_days = 0
@@ -158,8 +168,10 @@ resource "aws_secretsmanager_secret" "authentik" {
 resource "aws_secretsmanager_secret_version" "authentik" {
   secret_id = aws_secretsmanager_secret.authentik.id
   secret_string = jsonencode({
-    db_password = random_password.authentik_db.result
-    secret_key  = random_password.authentik_secret_key.result
+    db_password        = random_password.authentik_db.result
+    secret_key         = random_password.authentik_secret_key.result
+    bootstrap_password = random_password.authentik_bootstrap_password.result
+    bootstrap_token    = random_password.authentik_bootstrap_token.result
   })
   lifecycle { ignore_changes = [secret_string] }
 }
