@@ -296,6 +296,7 @@ services:
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
+      HEALTHCHECK_MAX_AGE_SEC: "999999"
     ports:
       - "127.0.0.1:1881:1880"
     healthcheck:

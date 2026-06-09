@@ -90,4 +90,21 @@ GRANT USAGE ON SCHEMA cron TO "${db_user}";
 SQL
 echo "Database '${db_name}' ready with TimescaleDB + pg_cron"
 
+# ── OEECloud tables ────────────────────────────────────────────────────────────
+# uns_equipment_current_metrics: one row per equipment, tracks latest UNS state.
+# The oeecloud UPSERT batch includes this table; if it's missing the entire
+# multi-statement transaction rolls back silently (PostgreSQL implicit txn).
+docker exec timescaledb psql -U ${db_user} -d ${db_name} <<SQL
+CREATE TABLE IF NOT EXISTS public.uns_equipment_current_metrics (
+  id_enterprise  INTEGER,
+  id_site        INTEGER,
+  id_area        INTEGER,
+  id_equipment   INTEGER UNIQUE,
+  state          INTEGER,
+  speed          NUMERIC(12,4),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+SQL
+echo "OEECloud tables created"
+
 echo "=== DB init complete $(date -u) ==="
