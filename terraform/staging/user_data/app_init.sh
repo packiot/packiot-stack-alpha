@@ -138,26 +138,23 @@ ENV
 fi
 
 # ── GitHub auth ───────────────────────────────────────────────────────────────
-# Deploy key: SSH auth for the main repo AND the three private submodules
+# Single deploy key covers the main repo + all three private submodules
 # (edge-api, edge-node-red, oeecloud-node-red).  The same public key must be
-# added as a read-only deploy key to each of those repos on GitHub.
-# PAT: kept as HTTPS fallback for non-packiot repos; packiot HTTPS URLs are
-# overridden to SSH below so the deploy key takes precedence.
+# added as a read-only deploy key to all four repos on GitHub.
 DEPLOY_KEY_SECRET=$(get_secret "packiot/staging/github-deploy-key")
 DEPLOY_KEY=$(echo "$DEPLOY_KEY_SECRET" | jq -r '.private_key')
-GITHUB_PAT=$(get_secret "packiot/staging/github-pat" | jq -r '.token')
 
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 printf '%s\n' "$DEPLOY_KEY" > /root/.ssh/github_deploy_key
 chmod 600 /root/.ssh/github_deploy_key
 
-# Derive the public key so it's readable later via SSM for adding to submodule repos.
+# Derive the public key so it's readable later via SSM.
 ssh-keygen -y -f /root/.ssh/github_deploy_key > /root/.ssh/github_deploy_key.pub
-echo "Deploy key public key (add as read-only deploy key to packiot/edge-api, packiot/edge-node-red, packiot/oeecloud-node-red):"
+echo "Deploy key public key (must be added as read-only deploy key to packiot/packiot-stack-alpha, packiot/edge-api, packiot/edge-node-red, packiot/oeecloud-node-red):"
 cat /root/.ssh/github_deploy_key.pub
 
-cat >> /root/.ssh/config <<SSH_CFG
+cat > /root/.ssh/config <<SSH_CFG
 Host github.com
     HostName github.com
     User git
@@ -170,11 +167,8 @@ echo "GitHub auth configured"
 
 # ── Clone / update repo ───────────────────────────────────────────────────────
 export GIT_SSH_COMMAND="ssh -i /root/.ssh/github_deploy_key -o StrictHostKeyChecking=accept-new"
-# Rewrite HTTPS submodule URLs to authenticated HTTPS using the PAT (fallback for
-# non-packiot repos).  The packiot-specific SSH rewrite below takes precedence for
-# all packiot org repos via longest-prefix matching — the deploy key must be added
-# as a read-only deploy key to each submodule repo on GitHub.
-git config --global url."https://x-access-token:$GITHUB_PAT@github.com/".insteadOf "https://github.com/"
+# Rewrite HTTPS submodule URLs (.gitmodules uses HTTPS) to SSH.
+# git longest-prefix matching ensures only packiot org repos are rewritten.
 git config --global url."git@github.com:packiot/".insteadOf "https://github.com/packiot/"
 
 cd /opt/packiot

@@ -9,9 +9,11 @@ jobs:
   deploy:
     runs-on: [self-hosted, staging, linux, arm64]
     env:
-      # The deploy key at this path is already registered for packiot-stack-alpha.
-      # Once added to edge-api / edge-node-red / oeecloud-node-red as a read-only
-      # deploy key on GitHub, this covers all submodule checkouts too.
+      # Deploy key at this path is registered as a read-only deploy key on
+      # packiot-stack-alpha + the three private submodule repos (edge-api,
+      # edge-node-red, oeecloud-node-red).  The gitconfig URL rewrite in
+      # /root/.gitconfig rewrites HTTPS submodule URLs to SSH so this one
+      # key covers both the main repo checkout and submodule init.
       GIT_SSH_COMMAND: "ssh -i /root/.ssh/github_deploy_key -o StrictHostKeyChecking=accept-new"
 
     steps:
