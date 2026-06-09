@@ -8,21 +8,16 @@ on:
 jobs:
   deploy:
     runs-on: [self-hosted, staging, linux, arm64]
-    env:
-      # Deploy key at this path is registered as a read-only deploy key on
-      # packiot-stack-alpha + the three private submodule repos (edge-api,
-      # edge-node-red, oeecloud-node-red).  The gitconfig URL rewrite in
-      # /root/.gitconfig rewrites HTTPS submodule URLs to SSH so this one
-      # key covers both the main repo checkout and submodule init.
-      GIT_SSH_COMMAND: "ssh -i /root/.ssh/github_deploy_key -o StrictHostKeyChecking=accept-new"
 
     steps:
       - name: Checkout with submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          # Don't let the action inject a GITHUB_TOKEN credential helper — we rely
-          # entirely on the SSH deploy key for both the main repo and submodules.
+          # Don't inject a GITHUB_TOKEN credential helper — submodule auth comes
+          # from the PAT URL rewrite in /root/.gitconfig (set by app_init.sh).
+          # GITHUB_TOKEN only covers the calling repo; it can't fetch submodules
+          # in separate private repos.
           persist-credentials: false
 
       - name: Link .env

@@ -138,39 +138,18 @@ ENV
 fi
 
 # ── GitHub auth ───────────────────────────────────────────────────────────────
-# Single deploy key covers the main repo + all three private submodules
-# (edge-api, edge-node-red, oeecloud-node-red).  The same public key must be
-# added as a read-only deploy key to all four repos on GitHub.
-DEPLOY_KEY_SECRET=$(get_secret "packiot/staging/github-deploy-key")
-DEPLOY_KEY=$(echo "$DEPLOY_KEY_SECRET" | jq -r '.private_key')
+# PAT covers all four repos (main + submodules) via a single HTTPS URL rewrite.
+# Avoids the per-repo deploy key restriction: GitHub deploy keys are scoped to
+# one repo each, making multi-repo submodule setups require N separate keys.
+GITHUB_PAT=$(get_secret "packiot/staging/github-pat" | jq -r '.token')
 
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
-printf '%s\n' "$DEPLOY_KEY" > /root/.ssh/github_deploy_key
-chmod 600 /root/.ssh/github_deploy_key
-
-# Derive the public key so it's readable later via SSM.
-ssh-keygen -y -f /root/.ssh/github_deploy_key > /root/.ssh/github_deploy_key.pub
-echo "Deploy key public key (must be added as read-only deploy key to packiot/packiot-stack-alpha, packiot/edge-api, packiot/edge-node-red, packiot/oeecloud-node-red):"
-cat /root/.ssh/github_deploy_key.pub
-
-cat > /root/.ssh/config <<SSH_CFG
-Host github.com
-    HostName github.com
-    User git
-    IdentityFile /root/.ssh/github_deploy_key
-    StrictHostKeyChecking accept-new
-SSH_CFG
-chmod 600 /root/.ssh/config
+# Rewrite packiot HTTPS URLs to embed the PAT.  Longest-prefix matching ensures
+# this only applies to packiot org repos, not github.com at large.
+git config --global url."https://x-access-token:${GITHUB_PAT}@github.com/packiot/".insteadOf "https://github.com/packiot/"
 
 echo "GitHub auth configured"
 
 # ── Clone / update repo ───────────────────────────────────────────────────────
-export GIT_SSH_COMMAND="ssh -i /root/.ssh/github_deploy_key -o StrictHostKeyChecking=accept-new"
-# Rewrite HTTPS submodule URLs (.gitmodules uses HTTPS) to SSH.
-# git longest-prefix matching ensures only packiot org repos are rewritten.
-git config --global url."git@github.com:packiot/".insteadOf "https://github.com/packiot/"
-
 cd /opt/packiot
 if [ -d "stack/.git" ]; then
   cd stack
@@ -183,7 +162,7 @@ if [ -d "stack/.git" ]; then
     || echo "WARNING: submodule update failed — continuing with existing state"
   cd /opt/packiot
 else
-  git clone --branch staging git@github.com:$GITHUB_REPO.git stack
+  git clone --branch staging "https://x-access-token:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git" stack
   cd stack
   git submodule update --init -- edge-api edge-node-red oeecloud-node-red
   cd /opt/packiot
