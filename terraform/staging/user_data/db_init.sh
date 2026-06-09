@@ -107,4 +107,88 @@ CREATE TABLE IF NOT EXISTS public.uns_equipment_current_metrics (
 SQL
 echo "OEECloud tables created"
 
+# ── OEE aggregation function + pg_cron job ────────────────────────────────────
+# oee_compute_uns_metrics() is the staging equivalent of production's
+# piot_proc_refresh_runtime.  It reads the last 5 min of equipment_values,
+# computes Quality/Performance/Availability/OEE, and upserts into uns_metrics.
+# plpgsql resolves table names at call time, so this is safe to create before
+# the app schema is loaded on a fresh deploy — the cron job silently no-ops
+# until equipment_values / uns_metrics / equipments exist.
+# cron.schedule() is idempotent: same job name replaces the existing entry.
+docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
+CREATE OR REPLACE FUNCTION public.oee_compute_uns_metrics()
+RETURNS void
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+    _now TIMESTAMPTZ := NOW();
+BEGIN
+    INSERT INTO uns_metrics (
+        ts_value, id_enterprise, id_site, id_area, id_equipment,
+        metric_name, metric_value, metric_type
+    )
+    SELECT
+        _now,
+        agg.id_enterprise, agg.id_site, agg.id_area, agg.id_equipment,
+        m.metric_name, m.metric_value, m.metric_type
+    FROM (
+        SELECT
+            ev.id_equipment, ev.id_enterprise, ev.id_site, ev.id_area,
+            COALESCE(SUM(ev.net_production_incr), 0)           AS net_prod,
+            COALESCE(SUM(ev.scrap_incr),           0)           AS scrap,
+            COALESCE(AVG(ev.speed),                0)           AS avg_speed,
+            COUNT(*)                                            AS ticks,
+            SUM(CASE WHEN ev.state = 6 THEN 1 ELSE 0 END)      AS exec_ticks,
+            COALESCE(MAX(e.production_speed),     120)          AS ideal_speed
+        FROM equipment_values ev
+        JOIN equipments e ON e.id_equipment = ev.id_equipment
+        WHERE ev.ts_value > NOW() - INTERVAL '5 minutes'
+        GROUP BY ev.id_equipment, ev.id_enterprise, ev.id_site, ev.id_area
+    ) agg
+    CROSS JOIN LATERAL (
+        VALUES
+            ('quality_percent',
+             CASE WHEN (agg.net_prod + agg.scrap) > 0
+                  THEN ROUND(((agg.net_prod / (agg.net_prod + agg.scrap)) * 100)::numeric, 2)
+                  ELSE 100.0 END,
+             'percent'),
+            ('performance_percent',
+             CASE WHEN agg.ideal_speed > 0
+                  THEN ROUND((LEAST(agg.avg_speed / agg.ideal_speed, 1.0) * 100)::numeric, 2)
+                  ELSE 0.0 END,
+             'percent'),
+            ('availability_percent',
+             CASE WHEN agg.ticks > 0
+                  THEN ROUND(((agg.exec_ticks::numeric / agg.ticks) * 100)::numeric, 2)
+                  ELSE 0.0 END,
+             'percent'),
+            ('oee_percent',
+             CASE WHEN agg.ticks > 0 AND agg.ideal_speed > 0
+                  THEN ROUND((
+                          (CASE WHEN (agg.net_prod + agg.scrap) > 0
+                                THEN agg.net_prod / (agg.net_prod + agg.scrap)
+                                ELSE 1.0 END)
+                        * LEAST(agg.avg_speed / agg.ideal_speed, 1.0)
+                        * (agg.exec_ticks::numeric / agg.ticks)
+                        * 100
+                  )::numeric, 2)
+                  ELSE 0.0 END,
+             'percent'),
+            ('total_production', ROUND(agg.net_prod::numeric, 0), 'count'),
+            ('total_scrap',      ROUND(agg.scrap::numeric,    0), 'count'),
+            ('avg_speed',        ROUND(agg.avg_speed::numeric, 2), 'units_per_min')
+    ) AS m(metric_name, metric_value, metric_type)
+    ON CONFLICT (ts_value, id_equipment, metric_name)
+        DO UPDATE SET metric_value = EXCLUDED.metric_value;
+END;
+$BODY$;
+
+SELECT cron.schedule(
+    'oee-compute',
+    '* * * * *',
+    'SELECT public.oee_compute_uns_metrics()'
+);
+SQL
+echo "OEE function created + pg_cron job scheduled (every minute)"
+
 echo "=== DB init complete $(date -u) ==="
