@@ -1,0 +1,38 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [development]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, staging, linux, arm64]
+    env:
+      # The deploy key at this path is already registered for packiot-stack-alpha.
+      # Once added to edge-api / edge-node-red / oeecloud-node-red as a read-only
+      # deploy key on GitHub, this covers all submodule checkouts too.
+      GIT_SSH_COMMAND: "ssh -i /root/.ssh/github_deploy_key -o StrictHostKeyChecking=accept-new"
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # Don't let the action inject a GITHUB_TOKEN credential helper — we rely
+          # entirely on the SSH deploy key for both the main repo and submodules.
+          persist-credentials: false
+
+      - name: Link .env
+        # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
+        # Symlinking makes it available as .env so Docker Compose picks it up.
+        run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
+
+      - name: Build images
+        run: docker compose -f compose.staging.yml -p stack build
+
+      - name: Deploy
+        run: docker compose -f compose.staging.yml -p stack up -d
+
+      - name: Prune old images
+        run: docker image prune -f
