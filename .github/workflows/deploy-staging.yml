@@ -26,7 +26,12 @@ jobs:
       - name: Fetch submodules
         # No GITHUB_TOKEN extraheader active here — git uses the PAT rewrite
         # in /root/.gitconfig: url."https://PAT@github.com/packiot/".insteadOf
-        run: git submodule update --init --recursive
+        # The 'operator' submodule uses SSH format (git@github.com:packiot/operator4)
+        # so we add an SSH→HTTPS rewrite here; the PAT rewrite in .gitconfig
+        # then picks it up: git@github.com: → https://github.com/ → https://PAT@github.com/
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
