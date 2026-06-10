@@ -10,15 +10,23 @@ jobs:
     runs-on: [self-hosted, staging, linux, arm64]
 
     steps:
-      - name: Checkout with submodules
+      - name: Checkout main repo
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          # Don't inject a GITHUB_TOKEN credential helper — submodule auth comes
-          # from the PAT URL rewrite in /root/.gitconfig (set by app_init.sh).
-          # GITHUB_TOKEN only covers the calling repo; it can't fetch submodules
-          # in separate private repos.
+          submodules: false
+          # persist-credentials: false so checkout@v4 removes its GITHUB_TOKEN
+          # extraheader before we fetch submodules. If submodules: recursive is
+          # used here, checkout@v4 sets http.extraheader=GITHUB_TOKEN during the
+          # submodule fetch — that token only covers this repo, not private
+          # submodule repos, causing "Repository not found". Splitting into two
+          # steps means git falls back to the PAT URL rewrite in
+          # /root/.gitconfig (set by app_init.sh) for the submodule fetch.
           persist-credentials: false
+
+      - name: Fetch submodules
+        # No GITHUB_TOKEN extraheader active here — git uses the PAT rewrite
+        # in /root/.gitconfig: url."https://PAT@github.com/packiot/".insteadOf
+        run: git submodule update --init --recursive
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
