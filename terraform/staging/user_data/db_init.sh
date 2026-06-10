@@ -191,4 +191,29 @@ SELECT cron.schedule(
 SQL
 echo "OEE function created + pg_cron job scheduled (every minute)"
 
+# ── Periodic data cleanup via pg_cron ────────────────────────────────────
+# Deletes staging rows older than 90 days from high-volume time-series tables.
+# Uses a function so pg_cron only needs one command string; plpgsql silently
+# no-ops if a table doesn't exist yet (fresh deploy before app schema loads).
+# cron.schedule() is idempotent: same job name replaces an existing entry.
+docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
+CREATE OR REPLACE FUNCTION public.cleanup_old_staging_data()
+RETURNS void LANGUAGE plpgsql AS $BODY$
+BEGIN
+    DELETE FROM equipment_values WHERE ts_value < NOW() - INTERVAL '90 days';
+    DELETE FROM equipment_events WHERE ts_event < NOW() - INTERVAL '90 days';
+    DELETE FROM uns_metrics      WHERE ts_value < NOW() - INTERVAL '90 days';
+EXCEPTION WHEN undefined_table THEN
+    NULL;  -- app schema not yet loaded; pg_cron will retry tomorrow
+END;
+$BODY$;
+
+SELECT cron.schedule(
+    'cleanup-old-data',
+    '0 3 * * *',
+    'SELECT public.cleanup_old_staging_data()'
+);
+SQL
+echo "pg_cron daily cleanup registered (03:00 UTC, keeps last 90 days of equipment_values / equipment_events / uns_metrics)"
+
 echo "=== DB init complete $(date -u) ==="
