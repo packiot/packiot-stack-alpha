@@ -29,7 +29,10 @@ jobs:
         #   url."https://PAT@github.com/packiot/".insteadOf = https://github.com/packiot/
         #   url."https://PAT@github.com/packiot/".insteadOf = git@github.com:packiot/
         # Both HTTPS and SSH-format submodule URLs are covered.
-        run: git submodule update --init --recursive
+        # Only init submodules that staging compose.staging.yml actually builds.
+        # 'operator' (frontend) is not built in staging and points to an
+        # unpushable local commit, so we skip it.
+        run: git submodule update --init edge-api edge-node-red oeecloud-node-red
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
