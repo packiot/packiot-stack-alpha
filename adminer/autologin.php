@@ -1,5 +1,5 @@
 <?php
-class AutoLogin extends Adminer {
+class AutoLogin extends \Adminer\Adminer {
     private $server;
     private $username;
     private $password;
