@@ -12,7 +12,7 @@
 #
 # Differences from compose.development.yml:
 #   - No postgres: DB runs on a separate private-subnet EC2
-#   - No adminer, tests (dev-only)
+#   - No tests (dev-only)
 #   - All ports bound to 127.0.0.1 — Nginx terminates TLS externally
 #   - DISABLE_EDITOR=true on Node-RED instances (production mode)
 #   - Secrets loaded from /opt/packiot/.env (symlinked to .env by app_init.sh)
@@ -38,8 +38,9 @@ volumes:
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
 # .6  oeecloud     .7  grafana       .8  loki            .9  promtail
-# .10 pgbouncer    .11 simulator         .12 authentik-server  .13 authentik-worker  .14 authentik-redis
-# .15 hasura-init  .16 db-migrate    (one-shot; static IP prevents IPAM race with .3)
+# .10 pgbouncer    .11 simulator     .12 authentik-server  .13 authentik-worker  .14 authentik-redis
+# .15 hasura-init  .16 db-migrate    .17 adminer
+# (one-shot; static IP prevents IPAM race with .3)
 
 services:
   # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
@@ -498,3 +499,24 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+
+  # ── Adminer (PostgreSQL web UI) ───────────────────────────────────────────────
+  # Lightweight single-PHP-file DB browser. Connects to the packiot DB via
+  # PgBouncer (transaction-pooled). Access at adminer.staging.packiot.app behind
+  # Authentik SSO. Login: System=PostgreSQL, Server=pgbouncer, User=postgres,
+  # Password=<POSTGRES_PASSWORD from .env>, Database=packiot.
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: pgbouncer
+    ports:
+      - "127.0.0.1:8082:8080"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.17
+    depends_on: [pgbouncer]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

@@ -69,12 +69,13 @@ variable "services" {
   description = "Nginx virtual-host names; each maps to a local Docker port"
   type        = map(number)
   default = {
-    api      = 8080
-    hasura   = 8081
-    grafana  = 3000
+    api              = 8080
+    hasura           = 8081
+    grafana          = 3000
     edge-nodered     = 1880
     oeecloud-nodered = 1881  # OEECloud Node-RED (mapped to host port 1881, container port 1880)
-    rabbitmq = 15672 # RabbitMQ management UI
+    rabbitmq         = 15672 # RabbitMQ management UI
+    adminer          = 8082  # PostgreSQL web UI (Adminer)
   }
 }
 
