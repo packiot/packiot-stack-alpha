@@ -22,12 +22,12 @@ class AutoLogin extends \Adminer\Adminer {
         return true;
     }
 
-    // Two-step auto-login that avoids nested-form issues:
+    // Two-step auto-login:
     // Step 1 (no ?pgsql in URL): redirect to ?pgsql=server&db=db so Adminer
-    //   pre-fills the database field from the URL, then return false to let
-    //   Adminer render its own form with credentials() filling server/user/pass.
-    // Step 2 (has ?pgsql in URL): DOMContentLoaded auto-submits Adminer's
-    //   own pre-filled form, bypassing the nested-form problem entirely.
+    //   pre-fills the DB field from the URL query param.
+    // Step 2 (has ?pgsql): inject auto-submit script, then call parent to
+    //   render the actual server/user/pass/db input fields inside the form.
+    //   DOMContentLoaded submits the now-populated #content form.
     public function loginForm() {
         $server = urlencode($this->server);
         $db     = urlencode($this->database);
@@ -42,6 +42,6 @@ class AutoLogin extends \Adminer\Adminer {
            .   "});"
            . "}"
            . "</script>";
-        return false;
+        return parent::loginForm();
     }
 }
