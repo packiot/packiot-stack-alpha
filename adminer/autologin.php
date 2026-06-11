@@ -22,14 +22,20 @@ class AutoLogin extends \Adminer\Adminer {
         return true;
     }
 
-    // Auto-submit the login form and land directly on the target database.
+    // Render a hidden form with all auth fields and immediately submit it.
     public function loginForm() {
         $server = htmlspecialchars($this->server,   ENT_QUOTES);
+        $user   = htmlspecialchars($this->username, ENT_QUOTES);
+        $pass   = htmlspecialchars($this->password, ENT_QUOTES);
         $db     = htmlspecialchars($this->database, ENT_QUOTES);
-        echo "<script>document.addEventListener('DOMContentLoaded',function(){"
-           . "var f=document.querySelector('#content form');"
-           . "if(f){f.setAttribute('action','?pgsql={$server}&db={$db}');f.submit();}"
-           . "});</script>";
+        echo "<form id='_al' method='post' action='?pgsql={$server}&db={$db}'>"
+           . "<input type='hidden' name='auth[driver]'   value='pgsql'>"
+           . "<input type='hidden' name='auth[server]'   value='{$server}'>"
+           . "<input type='hidden' name='auth[username]' value='{$user}'>"
+           . "<input type='hidden' name='auth[password]' value='{$pass}'>"
+           . "<input type='hidden' name='auth[db]'       value='{$db}'>"
+           . "</form>"
+           . "<script>document.getElementById('_al').submit();</script>";
         return true;
     }
 }
