@@ -502,15 +502,16 @@ services:
 
   # ── Adminer (PostgreSQL web UI) ───────────────────────────────────────────────
   # Lightweight single-PHP-file DB browser. Connects to the packiot DB via
-  # PgBouncer (transaction-pooled). Access at adminer.staging.packiot.app behind
-  # Authentik SSO. Login: System=PostgreSQL, Server=pgbouncer, User=postgres,
+  # TimescaleDB directly (bypasses pgbouncer — transaction pooling breaks Adminer's
+  # SET search_path calls). Access at adminer.staging.packiot.app behind Authentik
+  # SSO. Login: System=PostgreSQL, Server=<POSTGRES_HOST>, User=postgres,
   # Password=<POSTGRES_PASSWORD from .env>, Database=packiot.
   adminer:
     image: adminer:latest
     container_name: adminer
     restart: unless-stopped
     environment:
-      ADMINER_DEFAULT_SERVER: pgbouncer
+      ADMINER_DEFAULT_SERVER: ${POSTGRES_HOST}
     ports:
       - "127.0.0.1:8082:8080"
     networks:
