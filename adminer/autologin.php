@@ -22,22 +22,26 @@ class AutoLogin extends \Adminer\Adminer {
         return true;
     }
 
-    // Render a hidden form and auto-submit it with the request nonce so it
-    // passes Adminer 5's strict-dynamic CSP (which ignores 'unsafe-inline').
+    // Two-step auto-login that avoids nested-form issues:
+    // Step 1 (no ?pgsql in URL): redirect to ?pgsql=server&db=db so Adminer
+    //   pre-fills the database field from the URL, then return false to let
+    //   Adminer render its own form with credentials() filling server/user/pass.
+    // Step 2 (has ?pgsql in URL): DOMContentLoaded auto-submits Adminer's
+    //   own pre-filled form, bypassing the nested-form problem entirely.
     public function loginForm() {
-        $server = htmlspecialchars($this->server,   ENT_QUOTES);
-        $user   = htmlspecialchars($this->username, ENT_QUOTES);
-        $pass   = htmlspecialchars($this->password, ENT_QUOTES);
-        $db     = htmlspecialchars($this->database, ENT_QUOTES);
+        $server = urlencode($this->server);
+        $db     = urlencode($this->database);
         $nonce  = \Adminer\get_nonce();
-        echo "<form id='_al' method='post' action='?pgsql={$server}&db={$db}'>"
-           . "<input type='hidden' name='auth[driver]'   value='pgsql'>"
-           . "<input type='hidden' name='auth[server]'   value='{$server}'>"
-           . "<input type='hidden' name='auth[username]' value='{$user}'>"
-           . "<input type='hidden' name='auth[password]' value='{$pass}'>"
-           . "<input type='hidden' name='auth[db]'       value='{$db}'>"
-           . "</form>"
-           . "<script nonce='{$nonce}'>var f=document.getElementById('_al');document.body.appendChild(f);f.submit();</script>";
-        return true;
+        echo "<script nonce='{$nonce}'>"
+           . "if(location.search.indexOf('pgsql')<0){"
+           .   "location.replace('?pgsql={$server}&db={$db}');"
+           . "}else{"
+           .   "document.addEventListener('DOMContentLoaded',function(){"
+           .     "var f=document.querySelector('#content form');"
+           .     "if(f)f.submit();"
+           .   "});"
+           . "}"
+           . "</script>";
+        return false;
     }
 }
