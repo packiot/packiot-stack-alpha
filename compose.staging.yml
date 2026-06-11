@@ -104,10 +104,10 @@ services:
         ipv4_address: 172.18.0.5
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
