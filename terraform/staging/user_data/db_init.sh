@@ -199,12 +199,54 @@ echo "OEE function created + pg_cron job scheduled (every minute)"
 docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
 CREATE OR REPLACE FUNCTION public.cleanup_old_staging_data()
 RETURNS void LANGUAGE plpgsql AS $BODY$
+DECLARE
+    deleted_count int;
+    cutoff_ev   TIMESTAMPTZ := NOW() - INTERVAL '90 days';
+    cutoff_uns  TIMESTAMPTZ := NOW() - INTERVAL '90 days';
 BEGIN
-    DELETE FROM equipment_values WHERE ts_value < NOW() - INTERVAL '90 days';
-    DELETE FROM equipment_events WHERE ts_event < NOW() - INTERVAL '90 days';
-    DELETE FROM uns_metrics      WHERE ts_value < NOW() - INTERVAL '90 days';
-EXCEPTION WHEN undefined_table THEN
-    NULL;  -- app schema not yet loaded; pg_cron will retry tomorrow
+    -- Batch-delete 5000 rows at a time to avoid long table locks on
+    -- equipment_values (which can have millions of rows).  A full-table DELETE
+    -- in a single transaction held a lock for ~56 minutes, breaking the
+    -- oeecloud DB pool.  Each 5000-row batch commits immediately and releases
+    -- the lock, keeping write latency under ~100 ms per chunk.
+    LOOP
+        BEGIN
+            DELETE FROM equipment_values WHERE ts_value IN (
+                SELECT ts_value FROM equipment_values WHERE ts_value < cutoff_ev LIMIT 5000
+            );
+            GET DIAGNOSTICS deleted_count = ROW_COUNT;
+        EXCEPTION WHEN undefined_table THEN
+            EXIT;
+        END;
+        EXIT WHEN deleted_count = 0;
+        PERFORM pg_sleep(0.05);
+    END LOOP;
+
+    LOOP
+        BEGIN
+            DELETE FROM equipment_events WHERE ts_event IN (
+                SELECT ts_event FROM equipment_events WHERE ts_event < cutoff_ev LIMIT 5000
+            );
+            GET DIAGNOSTICS deleted_count = ROW_COUNT;
+        EXCEPTION WHEN undefined_table THEN
+            EXIT;
+        END;
+        EXIT WHEN deleted_count = 0;
+        PERFORM pg_sleep(0.05);
+    END LOOP;
+
+    LOOP
+        BEGIN
+            DELETE FROM uns_metrics WHERE ts_value IN (
+                SELECT ts_value FROM uns_metrics WHERE ts_value < cutoff_uns LIMIT 5000
+            );
+            GET DIAGNOSTICS deleted_count = ROW_COUNT;
+        EXCEPTION WHEN undefined_table THEN
+            EXIT;
+        END;
+        EXIT WHEN deleted_count = 0;
+        PERFORM pg_sleep(0.05);
+    END LOOP;
 END;
 $BODY$;
 

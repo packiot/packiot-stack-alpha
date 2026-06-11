@@ -301,7 +301,9 @@ services:
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      HEALTHCHECK_MAX_AGE_SEC: "999999"
+      # 7200s = 2h grace covers the ~1h batched pg_cron cleanup window during
+      # which equipment_values writes pause.  Remove once cleanup is proven stable.
+      HEALTHCHECK_MAX_AGE_SEC: "7200"
     ports:
       - "127.0.0.1:1881:1880"
     healthcheck:

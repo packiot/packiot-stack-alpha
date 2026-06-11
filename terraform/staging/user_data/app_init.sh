@@ -70,9 +70,6 @@ AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
 AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
 AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
 
-# Bcrypt hash for Node-RED adminAuth — settings.js expects $2b$ format (rounds=8).
-pip3 install bcrypt --quiet
-NR_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$NR_PASS', bcrypt.gensalt(rounds=8)).decode())")
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
@@ -107,10 +104,10 @@ HASURA_GRAPHQL_DEV_MODE=false
 EDGE_API_KEY=$API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
-NODE_RED_ADMIN_USERNAME=$NR_USER
-# Single-quoted: Docker Compose interpolates $ in unquoted .env values, which
-# truncates the bcrypt hash ($2b$08$... → $2b). Single quotes prevent that.
-NODE_RED_ADMIN_PASSWORD_HASH='$NR_HASH'
+# NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward
+# auth) handles browser access to the Node-RED editor.  Omitting this env var
+# leaves settings.js adminAuth = undefined, making the admin API accessible
+# from inside the Docker network without credentials (FlowManager, auto-deploy).
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
 ID_ENTERPRISE=

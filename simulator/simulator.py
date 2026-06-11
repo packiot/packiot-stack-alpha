@@ -358,6 +358,7 @@ class OperatorSimulator:
         self._ent: Any = None          # Simulator Corp row (RealDictRow), loaded on first act()
         self._topics: dict | None = None  # id_equipment → packml_topic, populated alongside _ent
         self._next_id_order: int | None = None  # auto-incrementing PO id_order, seeded from DB on first use
+        self._api_key_registered: bool = False  # set to True after /set-api-key with the DB api_key
 
     # ── DB queries ──────────────────────────────────────────────────────────
 
@@ -1149,6 +1150,18 @@ class OperatorSimulator:
             self._ent = self._load_enterprise(conn)
             if not self._ent:
                 return
+        if not self._api_key_registered:
+            # Re-register the correct api_key from the DB, overriding the
+            # env-var default set at startup (which may differ from the DB value).
+            try:
+                requests.post(f"{EDGE_NODERED_URL}/set-api-key",
+                              json={"apiKey": self._ent["api_key"]},
+                              headers={"Content-Type": "application/json"},
+                              timeout=5)
+                self._api_key_registered = True
+                log.info("POST /set-api-key (from DB api_key) → OK")
+            except Exception as e:
+                log.warning("POST /set-api-key (DB key) failed: %s", e)
         try:
             self._ensure_machines_running(conn)
         except Exception as e:
