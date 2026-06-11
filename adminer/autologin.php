@@ -22,12 +22,14 @@ class AutoLogin extends \Adminer\Adminer {
         return true;
     }
 
-    // Render a hidden form with all auth fields and immediately submit it.
+    // Render a hidden form and auto-submit it with the request nonce so it
+    // passes Adminer 5's strict-dynamic CSP (which ignores 'unsafe-inline').
     public function loginForm() {
         $server = htmlspecialchars($this->server,   ENT_QUOTES);
         $user   = htmlspecialchars($this->username, ENT_QUOTES);
         $pass   = htmlspecialchars($this->password, ENT_QUOTES);
         $db     = htmlspecialchars($this->database, ENT_QUOTES);
+        $nonce  = get_nonce();
         echo "<form id='_al' method='post' action='?pgsql={$server}&db={$db}'>"
            . "<input type='hidden' name='auth[driver]'   value='pgsql'>"
            . "<input type='hidden' name='auth[server]'   value='{$server}'>"
@@ -35,7 +37,7 @@ class AutoLogin extends \Adminer\Adminer {
            . "<input type='hidden' name='auth[password]' value='{$pass}'>"
            . "<input type='hidden' name='auth[db]'       value='{$db}'>"
            . "</form>"
-           . "<script>document.getElementById('_al').submit();</script>";
+           . "<script nonce='{$nonce}'>document.getElementById('_al').submit();</script>";
         return true;
     }
 }
