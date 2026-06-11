@@ -29,7 +29,7 @@ class AutoLogin extends \Adminer\Adminer {
         $user   = htmlspecialchars($this->username, ENT_QUOTES);
         $pass   = htmlspecialchars($this->password, ENT_QUOTES);
         $db     = htmlspecialchars($this->database, ENT_QUOTES);
-        $nonce  = get_nonce();
+        $nonce  = \Adminer\get_nonce();
         echo "<form id='_al' method='post' action='?pgsql={$server}&db={$db}'>"
            . "<input type='hidden' name='auth[driver]'   value='pgsql'>"
            . "<input type='hidden' name='auth[server]'   value='{$server}'>"
