@@ -37,7 +37,7 @@ class AutoLogin extends \Adminer\Adminer {
            . "<input type='hidden' name='auth[password]' value='{$pass}'>"
            . "<input type='hidden' name='auth[db]'       value='{$db}'>"
            . "</form>"
-           . "<script nonce='{$nonce}'>document.getElementById('_al').submit();</script>";
+           . "<script nonce='{$nonce}'>var f=document.getElementById('_al');document.body.appendChild(f);f.submit();</script>";
         return true;
     }
 }
