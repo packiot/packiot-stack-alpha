@@ -142,7 +142,7 @@ GITHUB_PAT=$(get_secret "packiot/staging/github-pat" | jq -r '.token')
 
 # Rewrite packiot HTTPS URLs to embed the PAT.  Longest-prefix matching ensures
 # this only applies to packiot org repos, not github.com at large.
-git config --global url."https://x-access-token:${GITHUB_PAT}@github.com/packiot/".insteadOf "https://github.com/packiot/"
+git config --global url."https://x-access-token:$${GITHUB_PAT}@github.com/packiot/".insteadOf "https://github.com/packiot/"
 
 echo "GitHub auth configured"
 
@@ -159,7 +159,7 @@ if [ -d "stack/.git" ]; then
     || echo "WARNING: submodule update failed — continuing with existing state"
   cd /opt/packiot
 else
-  git clone --branch staging "https://x-access-token:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git" stack
+  git clone --branch staging "https://x-access-token:$${GITHUB_PAT}@github.com/$${GITHUB_REPO}.git" stack
   cd stack
   git submodule update --init -- edge-api edge-node-red oeecloud-node-red
   cd /opt/packiot
