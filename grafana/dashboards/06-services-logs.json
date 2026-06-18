@@ -134,7 +134,7 @@
     {
       "id": 2,
       "type": "logs",
-      "title": "postgres",
+      "title": "pgbouncer (DB proxy)",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -156,7 +156,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "{service=\"postgres\"} |~ \"$search\"",
+          "expr": "{service=\"pgbouncer\"} |~ \"$search\"",
           "refId": "A"
         }
       ]
@@ -224,7 +224,7 @@
     {
       "id": 3,
       "type": "logs",
-      "title": "operator",
+      "title": "authentik-server (SSO)",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -246,7 +246,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "{service=\"operator\"} |~ \"$search\"",
+          "expr": "{service=\"authentik-server\"} |~ \"$search\"",
           "refId": "A"
         }
       ]

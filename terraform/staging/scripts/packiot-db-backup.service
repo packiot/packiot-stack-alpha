@@ -1,0 +1,25 @@
+[Unit]
+Description=Packiot staging DB nightly backup (pg_dump → S3)
+Documentation=https://github.com/packiot/packiot-stack-alpha/blob/main/terraform/staging/scripts/backup-db.sh
+After=network-online.target docker.service
+Wants=network-online.target
+# Don't even try if Docker isn't running — pg_dump is via `docker exec`
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/packiot/backup.env
+ExecStart=/opt/packiot/scripts/backup-db.sh
+# Log to journal under the "packiot-db-backup" tag (matches the logger -t in
+# backup-db.sh) so `journalctl -t packiot-db-backup` shows the full history.
+StandardOutput=journal
+StandardError=journal
+# Backup runs are short (seconds-to-minutes on staging) but pg_dump can stall
+# if the DB is under heavy write load. 30 min ceiling avoids zombie processes.
+TimeoutStartSec=1800
+# Retry on transient S3 / pg_dump failures. 60s gap, max 3 attempts before
+# letting the next scheduled run handle it.
+Restart=on-failure
+RestartSec=60
+StartLimitBurst=3
+StartLimitIntervalSec=600

@@ -544,7 +544,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT sh.id_shift, s.nm_site, a.nm_area, sh.cd_shift, sh.nm_shift, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.begin_time || ' seconds')::interval, 'Dy HH24:MI') AS begin_day_time, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.end_time || ' seconds')::interval, 'Dy HH24:MI') AS end_day_time, sh2.begin_time, sh2.end_time FROM shifts sh JOIN sites s ON s.id_site = sh.id_site LEFT JOIN areas a ON a.id_area = sh.id_area JOIN shift_hours sh2 ON sh2.id_shift = sh.id_shift WHERE s.id_site IN ($site) ORDER BY sh.id_shift, sh2.begin_time",
+          "rawSql": "SELECT sh.id_shift, s.nm_site, a.nm_area, sh.cd_shift, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.begin_time || ' seconds')::interval, 'Dy HH24:MI') AS begin_day_time, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.end_time || ' seconds')::interval, 'Dy HH24:MI') AS end_day_time, sh2.begin_time, sh2.end_time FROM shifts sh JOIN sites s ON s.id_site = sh.id_site LEFT JOIN areas a ON a.id_area = sh.id_area JOIN shift_hours sh2 ON sh2.id_shift = sh.id_shift WHERE s.id_site IN ($site) ORDER BY sh.id_shift, sh2.begin_time",
           "format": "table",
           "refId": "A"
         }
@@ -681,7 +681,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT por.id_production_order_runtime, po.nm_production_order, po.status AS po_status, e.nm_equipment, por.ts_start, por.ts_end, por.net_production, por.scrap, por.recalc_needed FROM production_orders_runtime por JOIN production_orders po ON po.id_production_order = por.id_production_order LEFT JOIN equipments e ON e.id_equipment = por.id_equipment WHERE po.id_enterprise IN ($enterprise) AND po.id_site IN ($site) AND po.id_area IN ($area) AND por.id_equipment IN ($equipment) ORDER BY por.id_production_order_runtime DESC LIMIT 100",
+          "rawSql": "SELECT por.id_production_order_runtime, po.nm_production_order, po.status AS po_status, e.nm_equipment, lower(por.runtime_timerange) AS ts_start, upper(por.runtime_timerange) AS ts_end, por.net_production, (por.gross_production - por.net_production) AS scrap, por.recalc_needed FROM production_orders_runtime por JOIN production_orders po ON po.id_production_order = por.id_production_order LEFT JOIN equipments e ON e.id_equipment = por.id_equipment WHERE po.id_enterprise IN ($enterprise) AND po.id_site IN ($site) AND po.id_area IN ($area) AND por.id_equipment IN ($equipment) ORDER BY por.id_production_order_runtime DESC LIMIT 100",
           "format": "table",
           "refId": "A"
         }

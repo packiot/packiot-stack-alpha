@@ -1,0 +1,16 @@
+[Unit]
+Description=Nightly trigger for packiot-db-backup.service
+Documentation=https://github.com/packiot/packiot-stack-alpha/blob/main/terraform/staging/scripts/backup-db.sh
+
+[Timer]
+# 02:00 UTC nightly — runs BEFORE the pg_cron retention DELETE at 03:00 UTC,
+# so the backup captures the day's data before pruning. Random jitter keeps
+# us from hammering S3 at exactly XX:00 in case other AWS jobs cluster there.
+OnCalendar=*-*-* 02:00:00 UTC
+RandomizedDelaySec=300
+# Catch up if the EC2 was off when the timer should have fired (e.g. after a
+# stop/start cycle). Without this, missed runs are silently skipped.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

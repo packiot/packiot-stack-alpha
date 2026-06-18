@@ -15,9 +15,14 @@ scrape_configs:
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
     relabel_configs:
+      # Compose project name on staging EC2 is "stack" (set by docker-compose CLI
+       # from the directory name /opt/.../stack — not the repo name). Earlier this
+       # regex was hardcoded to "packiot-stack-alpha" which never matched, so every
+       # container was dropped at relabel-keep → 108k+ entries lost between deploy
+       # and 2026-06-18. Allow either name to survive a future rename.
       - source_labels: [__meta_docker_container_label_com_docker_compose_project]
         action: keep
-        regex: packiot-stack-alpha
+        regex: stack|packiot-stack-alpha
       - source_labels: [__meta_docker_container_name]
         regex: /(.*)
         target_label: container
