@@ -1,7 +1,7 @@
 {
   "uid": "oee-pipeline",
-  "title": "OEE Pipeline — Live Monitor",
-  "description": "Real-time view of the SparkPlug B → PubSub → TimescaleDB data pipeline",
+  "title": "OEE Pipeline \u2014 Live Monitor",
+  "description": "Real-time view of the SparkPlug B \u2192 PubSub \u2192 TimescaleDB data pipeline",
   "tags": [
     "packiot",
     "oee",
@@ -29,7 +29,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "site",
@@ -43,7 +52,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "area",
@@ -57,7 +75,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "equipment",
@@ -71,7 +98,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "ideal_speed",
@@ -303,7 +339,7 @@
       "id": 10,
       "type": "stat",
       "title": "Quality %",
-      "description": "Net / (Net + Scrap) over selected time window. Target: ≥ 98%",
+      "description": "Net / (Net + Scrap) over selected time window. Target: \u2265 98%",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -362,7 +398,7 @@
       "id": 11,
       "type": "stat",
       "title": "Performance %",
-      "description": "Avg actual speed / ideal_speed from equipments table. Target: ≥ 95%",
+      "description": "Avg actual speed / ideal_speed from equipments table. Target: \u2265 95%",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -420,7 +456,7 @@
       "id": 12,
       "type": "stat",
       "title": "Availability %",
-      "description": "Fraction of reporting ticks in Execute state (state=6). Target: ≥ 90%",
+      "description": "Fraction of reporting ticks in Execute state (state=6). Target: \u2265 90%",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -478,7 +514,7 @@
       "id": 13,
       "type": "stat",
       "title": "OEE %",
-      "description": "Availability × Performance × Quality. World-class: ≥ 85%",
+      "description": "Availability \u00d7 Performance \u00d7 Quality. World-class: \u2265 85%",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -535,7 +571,7 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Production Count — net_production_incr",
+      "title": "Production Count \u2014 net_production_incr",
       "description": "Incremental production count per message, per equipment",
       "gridPos": {
         "h": 8,
@@ -573,7 +609,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, SUM(ev.net_production_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.net_production_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, SUM(ev.net_production_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.net_production_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -619,7 +655,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, AVG(ev.speed) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.speed IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, AVG(ev.speed) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.speed IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -683,7 +719,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, SUM(ev.scrap_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.scrap_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, SUM(ev.scrap_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.scrap_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -771,7 +807,7 @@
             "type": "postgres",
             "uid": "packiot-postgres"
           },
-          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' › ' || e.nm_equipment AS metric, LAST(ev.state, ev.ts_value) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.state IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, LAST(ev.state, ev.ts_value) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.state IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -933,7 +969,7 @@
       "type": "link",
       "title": "System Health",
       "url": "/d/system-health",
-      "tooltip": "System Health — DB & Pipeline"
+      "tooltip": "System Health \u2014 DB & Pipeline"
     },
     {
       "icon": "external link",
@@ -942,7 +978,7 @@
       "type": "link",
       "title": "Stack Overview",
       "url": "/d/packiot-logs",
-      "tooltip": "Stack Overview — log volumes & pipeline health"
+      "tooltip": "Stack Overview \u2014 log volumes & pipeline health"
     },
     {
       "icon": "external link",
@@ -951,7 +987,7 @@
       "type": "link",
       "title": "Operator Activity",
       "url": "/d/packiot-operator",
-      "tooltip": "Operator Activity — per-user actions & downtimes"
+      "tooltip": "Operator Activity \u2014 per-user actions & downtimes"
     },
     {
       "icon": "external link",
@@ -960,7 +996,7 @@
       "type": "link",
       "title": "PLC Pipeline Logs",
       "url": "/d/packiot-pipeline-logs",
-      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud"
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
     },
     {
       "icon": "external link",
@@ -969,7 +1005,7 @@
       "type": "link",
       "title": "Services Logs",
       "url": "/d/packiot-services-logs",
-      "tooltip": "Services Logs — edge-api, operator, simulator"
+      "tooltip": "Services Logs \u2014 edge-api, operator, simulator"
     }
   ]
 }

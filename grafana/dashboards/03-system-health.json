@@ -29,7 +29,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "site",
@@ -43,7 +52,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "area",
@@ -57,7 +75,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       },
       {
         "name": "equipment",
@@ -71,7 +98,16 @@
         "multi": true,
         "includeAll": true,
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       }
     ]
   },
