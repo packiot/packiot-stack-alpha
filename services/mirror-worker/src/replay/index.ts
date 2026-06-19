@@ -1,5 +1,6 @@
 import { PoolClient } from 'pg';
 import { ProdUserLog } from '../db/prod';
+import { replayEventEdited } from './event-edited';
 import { replayEventJustified } from './event-justified';
 
 export type Replayer = (client: PoolClient, row: ProdUserLog) => Promise<void>;
@@ -8,10 +9,13 @@ export type Replayer = (client: PoolClient, row: ProdUserLog) => Promise<void>;
 // purpose — we want the cursor to advance past unknown rows rather than
 // piling them all into the DLQ.
 //
-// Phase A4: only event-justified is wired. Phase A5 expansion is mechanical
-// once each event-type's payload + endpoint + translation are codified.
+// downtime-event-created is deliberately skipped: those rows come from the
+// factory edge-NR auto-publishing PLC state changes, and the SparkPlug AMQP
+// mirror (real-client-data Step 4) already brings those into staging via
+// equipment_values + triggers. Replaying them would create duplicates.
 const handlers: Record<string, Replayer> = {
   'event-justified': replayEventJustified,
+  'event-edited': replayEventEdited,
 };
 
 export function lookupReplayer(category: string | null): Replayer | undefined {
