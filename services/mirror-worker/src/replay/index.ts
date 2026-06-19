@@ -2,6 +2,7 @@ import { PoolClient } from 'pg';
 import { ProdUserLog } from '../db/prod';
 import { replayEventEdited } from './event-edited';
 import { replayEventJustified } from './event-justified';
+import { replayEventSplitted } from './event-splitted';
 import { replayOrderChanged } from './order-changed';
 
 export type Replayer = (client: PoolClient, row: ProdUserLog) => Promise<void>;
@@ -17,6 +18,7 @@ export type Replayer = (client: PoolClient, row: ProdUserLog) => Promise<void>;
 const handlers: Record<string, Replayer> = {
   'event-justified': replayEventJustified,
   'event-edited': replayEventEdited,
+  'event-splitted': replayEventSplitted,
   'order-changed': replayOrderChanged,
 };
 
