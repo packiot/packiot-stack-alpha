@@ -32,7 +32,7 @@ jobs:
         # Only init submodules that staging compose.staging.yml actually builds.
         # 'operator' (frontend) is not built in staging and points to an
         # unpushable local commit, so we skip it.
-        run: git submodule update --init edge-api edge-node-red oeecloud-node-red
+        run: git submodule update --init edge-api edge-node-red oeecloud-node-red operator
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
