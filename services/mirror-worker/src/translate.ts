@@ -1,6 +1,7 @@
 import { config } from './config';
 import { prodSelectOne } from './db/prod';
 import { lookupMapping, stagingSelectOne } from './db/staging';
+import { log } from './log';
 
 // CPACK SparkPlug topics are remapped during the AMQP mirror (Step 4 of the
 // real-client-data initiative): every leading `C-PACK/` becomes `CPACK/` on
@@ -161,18 +162,23 @@ export async function translateEquipmentEventId(
 
   const stagingEquipmentId = await translateEquipmentId(prodRow.id_equipment);
 
-  // Match on (id_equipment, ts_event) within a 5-second window to tolerate
-  // tiny timestamp drift between the AMQP mirror and prod's writer. status
-  // is the tiebreaker if two events fire on the same equipment in that
-  // window.
-  const stagingRow = await stagingSelectOne<{ id_equipment_event: string }>(
-    `SELECT id_equipment_event::text
+  // Match on (id_equipment, status, ts_event ± window). Prod aggregates some
+  // events to round-minute marks (CPAC 5-min algorithm) while staging carries
+  // the raw transition timestamp — empirical drift is ~1 minute, so we accept
+  // a wider window than the obvious "few seconds" guess. status as a hard
+  // filter is the dedup safety net when two events land close.
+  const stagingRow = await stagingSelectOne<{
+    id_equipment_event: string;
+    drift_seconds: number;
+  }>(
+    `SELECT id_equipment_event::text,
+            abs(extract(epoch FROM (ts_event - $4::timestamptz)))::int AS drift_seconds
        FROM equipment_events
       WHERE id_equipment = $1
         AND id_enterprise = $2
         AND status = $3
-        AND ts_event BETWEEN $4::timestamptz - interval '5 seconds'
-                         AND $4::timestamptz + interval '5 seconds'
+        AND ts_event BETWEEN $4::timestamptz - ($5 || ' seconds')::interval
+                         AND $4::timestamptz + ($5 || ' seconds')::interval
       ORDER BY abs(extract(epoch FROM (ts_event - $4::timestamptz))) ASC
       LIMIT 1`,
     [
@@ -180,7 +186,50 @@ export async function translateEquipmentEventId(
       config.stagingEnterpriseId,
       prodRow.status,
       prodRow.ts_event.toISOString(),
+      config.eventMatchWindowSec,
     ],
   );
-  return stagingRow ? BigInt(stagingRow.id_equipment_event) : undefined;
+  if (stagingRow) {
+    log.debug(
+      {
+        prodEventId: prodEventId.toString(),
+        stagingEventId: stagingRow.id_equipment_event,
+        driftSeconds: stagingRow.drift_seconds,
+      },
+      'equipment_event business-key match',
+    );
+    return BigInt(stagingRow.id_equipment_event);
+  }
+
+  // Diagnostic: how far off is the closest same-equipment same-status event?
+  // Helps us catch calibration drift early without sifting through DLQ payloads.
+  const closest = await stagingSelectOne<{ drift_seconds: number }>(
+    `SELECT abs(extract(epoch FROM (ts_event - $3::timestamptz)))::int AS drift_seconds
+       FROM equipment_events
+      WHERE id_equipment = $1
+        AND id_enterprise = $2
+        AND status = $4
+        AND ts_event BETWEEN $3::timestamptz - interval '1 hour'
+                         AND $3::timestamptz + interval '1 hour'
+      ORDER BY abs(extract(epoch FROM (ts_event - $3::timestamptz))) ASC
+      LIMIT 1`,
+    [
+      stagingEquipmentId,
+      config.stagingEnterpriseId,
+      prodRow.ts_event.toISOString(),
+      prodRow.status,
+    ],
+  );
+  log.warn(
+    {
+      prodEventId: prodEventId.toString(),
+      stagingEquipmentId,
+      prodTs: prodRow.ts_event.toISOString(),
+      prodStatus: prodRow.status,
+      windowSec: config.eventMatchWindowSec,
+      closestDriftSeconds: closest?.drift_seconds ?? null,
+    },
+    'no equipment_event business-key match (closest same-status candidate noted)',
+  );
+  return undefined;
 }

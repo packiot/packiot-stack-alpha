@@ -59,7 +59,7 @@ export async function replayEventJustified(
   );
   if (stagingEventId === undefined) {
     throw new Error(
-      `equipment_event ${payload.idEquipmentEvent} unmapped (no business-key match within 5s window)`,
+      `equipment_event ${payload.idEquipmentEvent} unmapped (no staging row within ${config.eventMatchWindowSec}s window; see worker WARN log for closest-candidate drift)`,
     );
   }
 

@@ -27,6 +27,13 @@ export const config = {
   prodEnterpriseId: optInt('PROD_ENTERPRISE_ID', 1),
   stagingEnterpriseId: optInt('STAGING_ENTERPRISE_ID', 3),
 
+  // ts_event drift between prod and staging on the equipment_event business
+  // key match. Empirically ~60s because prod rolls some events up to
+  // round-minute boundaries (CPAC 5-min aggregation start times) while
+  // staging keeps the raw PLC transition time. 90s leaves headroom; widen
+  // further only if monitoring shows persistent misses.
+  eventMatchWindowSec: optInt('EVENT_MATCH_WINDOW_SEC', 90),
+
   // Prod DB — creds resolved from Secrets Manager at startup.
   awsRegion: process.env.AWS_REGION ?? 'us-east-1',
   prodDbSecretId: process.env.PROD_DB_SECRET_ID ?? 'databaseCredentials',
