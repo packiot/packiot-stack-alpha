@@ -1,0 +1,199 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Replay freshness — seconds since worker last polled",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 120 },
+              { "color": "red",    "value": 300 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+          "rawSql": "SELECT NOW() AS time, EXTRACT(EPOCH FROM (NOW() - last_run_at))::int AS \"seconds since last poll\" FROM mirror_replay_cursor WHERE source = 'cpack-prod';",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Cursor position (last replayed prod user_logs.id)",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "none", "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+          "rawSql": "SELECT NOW() AS time, last_log_id::bigint AS \"cursor\" FROM mirror_replay_cursor WHERE source = 'cpack-prod';",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "DLQ depth (total)",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+      "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red",    "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+          "rawSql": "SELECT NOW() AS time, COUNT(*)::int AS \"DLQ rows\" FROM mirror_replay_dlq WHERE source = 'cpack-prod';",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mapping growth (mirror_id_map cumulative, 5-min buckets)",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "pointSize": 3 },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+          "rawSql": "SELECT bucket AS time, entity_type, SUM(c) OVER (PARTITION BY entity_type ORDER BY bucket) AS cumulative FROM (SELECT date_trunc('minute', created_at) - (EXTRACT(MINUTE FROM created_at)::int % 5 || ' minutes')::interval AS bucket, entity_type, COUNT(*) AS c FROM mirror_id_map WHERE source = 'cpack-prod' AND $__timeFilter(created_at) GROUP BY 1, 2) sub ORDER BY bucket, entity_type;",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "barchart",
+      "title": "Mappings by entity_type (filtered range)",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "id": 5,
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+          "rawSql": "SELECT entity_type, COUNT(*)::int AS rows FROM mirror_id_map WHERE source = 'cpack-prod' AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 2 DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Recent DLQ rows (last 20)",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 13 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "left" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "error" }, "properties": [{ "id": "custom.width", "value": 600 }] },
+          { "matcher": { "id": "byName", "options": "created_at" }, "properties": [{ "id": "custom.width", "value": 200 }] }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": { "show": false, "reducer": ["sum"], "fields": "" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+          "rawSql": "SELECT id, created_at, category, subcategory, source_log_id, error FROM mirror_replay_dlq WHERE source = 'cpack-prod' ORDER BY id DESC LIMIT 20;",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["mirror-worker", "operations"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Mirror Worker — prod → staging replay",
+  "uid": "mirror-worker",
+  "version": 1,
+  "weekStart": ""
+}
