@@ -522,3 +522,43 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
+
+  # ── Mirror Worker (prod→staging user_logs replay) ─────────────────────────────
+  # Polls prod user_logs via SELECT-only awslambda creds (from `databaseCredentials`
+  # Secrets Manager), translates IDs (enterprise hardcoded, equipment via
+  # packml_topic, equipment_event via business key, PO via mirror_id_map), and
+  # POSTs each operator action to staging edge-api. Stateful via mirror_replay_cursor
+  # on staging DB. Internal HTTP to edge-api avoids the host nginx round-trip.
+  # See project_real_client_data_initiative memory for the full architecture.
+  mirror-worker:
+    build: ./services/mirror-worker
+    container_name: mirror-worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      PROD_DB_SECRET_ID: databaseCredentials
+      SOURCE_NAME: cpack-prod
+      PROD_ENTERPRISE_ID: "1"
+      STAGING_ENTERPRISE_ID: "3"
+      POLL_INTERVAL_SEC: "60"
+      BATCH_SIZE: "50"
+      PER_POST_DELAY_MS: "50"
+      STAGING_DB_HOST: pgbouncer
+      STAGING_DB_PORT: "5432"
+      STAGING_DB_USER: ${POSTGRES_USER}
+      STAGING_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      STAGING_DB_NAME: ${POSTGRES_DB}
+      STAGING_API_URL: http://edge-api:8080
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.18
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      edge-api:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
