@@ -134,9 +134,24 @@ export async function translateProductionOrderId(
   return stagingRow ? BigInt(stagingRow.id_production_order) : undefined;
 }
 
-// Equipment-event translation: cached mapping → business key
-// (id_equipment + ts_event + status), recorded into mirror_id_map on first
-// hit so subsequent justify/edit operations don't repeat the SELECT.
+// Equipment-event translation: cached mapping → interval-overlap business key.
+//
+// Phase A4b finding: prod and staging produce STRUCTURALLY DIFFERENT
+// equipment_events from the same SparkPlug stream. Prod runs CPAC 5-min
+// smoothing + writes operator metadata (cd_machine, cd_category) back into
+// the row, so prod events are minute-aligned, fewer, and shorter. Staging
+// has the raw PLC transitions — precise-to-the-second, more events, longer
+// durations. Matching by ts_event proximity therefore can't work; matching
+// by interval overlap can.
+//
+// For prod event `[t1, t2]` with status S on equipment E:
+//   pick the staging event with same (E, S) whose interval `[s1, s2]`
+//   has the largest overlap with [t1, t2], requiring at least
+//   EVENT_MIN_OVERLAP_SEC of overlap to count as a match.
+//
+// Staging events without ts_end (still running) treat ts_end as now().
+// The first match gets cached in mirror_id_map so subsequent operations
+// (event-edited, event-splitted) on the same prod event skip the SELECT.
 export async function translateEquipmentEventId(
   prodEventId: bigint,
 ): Promise<bigint | undefined> {
@@ -150,9 +165,10 @@ export async function translateEquipmentEventId(
   const prodRow = await prodSelectOne<{
     id_equipment: number;
     ts_event: Date;
+    ts_end: Date | null;
     status: number;
   }>(
-    `SELECT id_equipment, ts_event, status
+    `SELECT id_equipment, ts_event, ts_end, status
        FROM equipment_events
       WHERE id_equipment_event = $1
         AND id_enterprise = $2`,
@@ -162,61 +178,79 @@ export async function translateEquipmentEventId(
 
   const stagingEquipmentId = await translateEquipmentId(prodRow.id_equipment);
 
-  // Match on (id_equipment, status, ts_event ± window). Prod aggregates some
-  // events to round-minute marks (CPAC 5-min algorithm) while staging carries
-  // the raw transition timestamp — empirical drift is ~1 minute, so we accept
-  // a wider window than the obvious "few seconds" guess. status as a hard
-  // filter is the dedup safety net when two events land close.
+  // Effective prod end: if the prod event is still ongoing (ts_end NULL),
+  // cap at now(). Same on the staging side via COALESCE.
+  const prodStartIso = prodRow.ts_event.toISOString();
+  const prodEndIso = (prodRow.ts_end ?? new Date()).toISOString();
+
   const stagingRow = await stagingSelectOne<{
     id_equipment_event: string;
-    drift_seconds: number;
+    overlap_seconds: number;
   }>(
     `SELECT id_equipment_event::text,
-            abs(extract(epoch FROM (ts_event - $4::timestamptz)))::int AS drift_seconds
+            extract(epoch FROM (
+              LEAST(COALESCE(ts_end, now()), $4::timestamptz)
+              - GREATEST(ts_event, $3::timestamptz)
+            ))::int AS overlap_seconds
        FROM equipment_events
       WHERE id_equipment = $1
         AND id_enterprise = $2
-        AND status = $3
-        AND ts_event BETWEEN $4::timestamptz - ($5 || ' seconds')::interval
-                         AND $4::timestamptz + ($5 || ' seconds')::interval
-      ORDER BY abs(extract(epoch FROM (ts_event - $4::timestamptz))) ASC
+        AND status = $5
+        AND ts_event < $4::timestamptz
+        AND (ts_end IS NULL OR ts_end > $3::timestamptz)
+      ORDER BY overlap_seconds DESC
       LIMIT 1`,
     [
       stagingEquipmentId,
       config.stagingEnterpriseId,
+      prodStartIso,
+      prodEndIso,
       prodRow.status,
-      prodRow.ts_event.toISOString(),
-      config.eventMatchWindowSec,
     ],
   );
-  if (stagingRow) {
+  if (stagingRow && stagingRow.overlap_seconds >= config.eventMinOverlapSec) {
     log.debug(
       {
         prodEventId: prodEventId.toString(),
         stagingEventId: stagingRow.id_equipment_event,
-        driftSeconds: stagingRow.drift_seconds,
+        overlapSeconds: stagingRow.overlap_seconds,
       },
-      'equipment_event business-key match',
+      'equipment_event interval-overlap match',
     );
     return BigInt(stagingRow.id_equipment_event);
   }
 
-  // Diagnostic: how far off is the closest same-equipment same-status event?
-  // Helps us catch calibration drift early without sifting through DLQ payloads.
-  const closest = await stagingSelectOne<{ drift_seconds: number }>(
-    `SELECT abs(extract(epoch FROM (ts_event - $3::timestamptz)))::int AS drift_seconds
-       FROM equipment_events
+  // Diagnostic: closest same-status event on staging (by midpoint distance)
+  // when no qualifying overlap. Lets us see whether the structural mismatch
+  // is "no event at all in the area" or "events but with insufficient
+  // overlap" — different fixes apply to each.
+  const closest = await stagingSelectOne<{
+    id_equipment_event: string;
+    overlap_seconds: number;
+    drift_seconds: number;
+  }>(
+    `WITH prod_range AS (
+       SELECT $3::timestamptz AS p_start, $4::timestamptz AS p_end
+     )
+     SELECT id_equipment_event::text,
+            extract(epoch FROM (
+              LEAST(COALESCE(ts_end, now()), p_end)
+              - GREATEST(ts_event, p_start)
+            ))::int AS overlap_seconds,
+            extract(epoch FROM abs(ts_event - p_start))::int AS drift_seconds
+       FROM equipment_events, prod_range
       WHERE id_equipment = $1
         AND id_enterprise = $2
-        AND status = $4
-        AND ts_event BETWEEN $3::timestamptz - interval '1 hour'
-                         AND $3::timestamptz + interval '1 hour'
-      ORDER BY abs(extract(epoch FROM (ts_event - $3::timestamptz))) ASC
+        AND status = $5
+        AND ts_event BETWEEN p_start - interval '1 hour'
+                         AND p_end   + interval '1 hour'
+      ORDER BY drift_seconds ASC
       LIMIT 1`,
     [
       stagingEquipmentId,
       config.stagingEnterpriseId,
-      prodRow.ts_event.toISOString(),
+      prodStartIso,
+      prodEndIso,
       prodRow.status,
     ],
   );
@@ -224,12 +258,15 @@ export async function translateEquipmentEventId(
     {
       prodEventId: prodEventId.toString(),
       stagingEquipmentId,
-      prodTs: prodRow.ts_event.toISOString(),
+      prodStart: prodStartIso,
+      prodEnd: prodEndIso,
       prodStatus: prodRow.status,
-      windowSec: config.eventMatchWindowSec,
-      closestDriftSeconds: closest?.drift_seconds ?? null,
+      minOverlapSec: config.eventMinOverlapSec,
+      candidateOverlapSec: stagingRow?.overlap_seconds ?? null,
+      closestDriftSec: closest?.drift_seconds ?? null,
+      closestOverlapSec: closest?.overlap_seconds ?? null,
     },
-    'no equipment_event business-key match (closest same-status candidate noted)',
+    'no equipment_event interval-overlap match (closest same-status candidate noted)',
   );
   return undefined;
 }

@@ -27,12 +27,13 @@ export const config = {
   prodEnterpriseId: optInt('PROD_ENTERPRISE_ID', 1),
   stagingEnterpriseId: optInt('STAGING_ENTERPRISE_ID', 3),
 
-  // ts_event drift between prod and staging on the equipment_event business
-  // key match. Empirically ~60s because prod rolls some events up to
-  // round-minute boundaries (CPAC 5-min aggregation start times) while
-  // staging keeps the raw PLC transition time. 90s leaves headroom; widen
-  // further only if monitoring shows persistent misses.
-  eventMatchWindowSec: optInt('EVENT_MATCH_WINDOW_SEC', 90),
+  // Minimum overlap (in seconds) between prod and staging equipment_event
+  // intervals to call it a match. Set above zero so a 1-second touch at a
+  // boundary doesn't qualify. Empirically prod and staging produce
+  // structurally different event shapes from the same SparkPlug stream
+  // (prod runs CPAC 5-min smoothing + operator metadata writeback; staging
+  // carries raw PLC transitions) — see Phase A4b investigation.
+  eventMinOverlapSec: optInt('EVENT_MIN_OVERLAP_SEC', 30),
 
   // Prod DB — creds resolved from Secrets Manager at startup.
   awsRegion: process.env.AWS_REGION ?? 'us-east-1',
