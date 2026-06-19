@@ -11,4 +11,4 @@
 [submodule "operator"]
 	path = operator
 	url = https://github.com/packiot/operator4.git
-	branch = refactor/decompose-components
+	branch = staging
