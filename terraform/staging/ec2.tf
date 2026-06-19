@@ -126,7 +126,12 @@ resource "aws_iam_policy" "app_custom" {
         Sid      = "ReadStagingSecrets"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*"
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*",
+          # databaseCredentials holds the prod SELECT-only awslambda user creds,
+          # read by the mirror-worker to replay prod user_logs onto staging.
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:databaseCredentials-*",
+        ]
       },
       {
         Sid      = "ReadInitScript"
