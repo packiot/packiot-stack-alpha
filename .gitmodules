@@ -10,5 +10,5 @@
 	branch = development
 [submodule "operator"]
 	path = operator
-	url = git@github.com:packiot/operator4
+	url = https://github.com/packiot/operator4.git
 	branch = refactor/decompose-components
