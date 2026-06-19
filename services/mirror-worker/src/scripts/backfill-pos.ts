@@ -158,7 +158,14 @@ async function backfillOne(po: ProdPo, stats: Stats): Promise<void> {
   }
 
   // (3) Create-and-start on staging, then look up + map.
-  const tsStartIso = (po.ts_start ?? new Date()).toISOString();
+  //
+  // ts_start = now - 5s (in the past to satisfy edge-api's "no future
+  // timestamps" check, but recent enough to dodge getOrderDateConflict
+  // against historical finished POs on this equipment). Prod's actual
+  // ts_start would be more faithful but creates conflicts when staging
+  // had prior test POs on the same equipment that covered prod's start
+  // window — see Phase A6 dev notes.
+  const tsStartIso = new Date(Date.now() - 5000).toISOString();
   const body = {
     idEnterprise: stagingEnterpriseId,
     idSite: stagingSiteId,
