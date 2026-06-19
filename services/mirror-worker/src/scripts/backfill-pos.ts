@@ -16,7 +16,7 @@ import axios from 'axios';
 import { config } from '../config';
 import { log } from '../log';
 import { loadProdDbCreds } from '../secrets';
-import { initProdPool, prodSelectOne } from '../db/prod';
+import { initProdPool, prodSelectMany } from '../db/prod';
 import {
   fetchStagingApiToken,
   insertMapping,
@@ -58,27 +58,25 @@ interface Stats {
 async function fetchProdActivePos(): Promise<ProdPo[]> {
   // status=2 (running). 7-day window is generous; CPACK POs are typically
   // long-running so this catches everything an operator might still act on.
-  const rows = await prodSelectOne<ProdPo & { rows: ProdPo[] }>(
-    `SELECT json_agg(t.*) AS rows FROM (
-       SELECT id_production_order::text AS id_production_order,
-              id_order,
-              id_enterprise,
-              id_site,
-              id_area,
-              id_equipment,
-              status,
-              production_programmed::text AS production_programmed,
-              ts_start
-         FROM production_orders
-        WHERE id_enterprise = $1
-          AND status = 2
-          AND last_update > now() - interval '7 days'
-        ORDER BY id_production_order
-     ) t`,
+  // Use prodSelectMany rather than the json_agg trick so pg's native Date
+  // type is preserved on ts_start (json_agg serialises it to a string).
+  return prodSelectMany<ProdPo>(
+    `SELECT id_production_order::text AS id_production_order,
+            id_order,
+            id_enterprise,
+            id_site,
+            id_area,
+            id_equipment,
+            status,
+            production_programmed::text AS production_programmed,
+            ts_start
+       FROM production_orders
+      WHERE id_enterprise = $1
+        AND status = 2
+        AND last_update > now() - interval '7 days'
+      ORDER BY id_production_order`,
     [config.prodEnterpriseId],
   );
-  // PG json_agg returns null when no rows match; coerce to [].
-  return (rows?.rows ?? []) as ProdPo[];
 }
 
 async function backfillOne(po: ProdPo, stats: Stats): Promise<void> {

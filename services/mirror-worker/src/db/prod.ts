@@ -87,3 +87,13 @@ export async function prodSelectOne<T extends QueryResultRow>(
     return rows[0];
   });
 }
+
+export async function prodSelectMany<T extends QueryResultRow>(
+  sql: string,
+  params: unknown[],
+): Promise<T[]> {
+  return withReadOnly(async (c) => {
+    const { rows } = await c.query<T>(sql, params);
+    return rows;
+  });
+}
