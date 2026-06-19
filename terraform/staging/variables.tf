@@ -76,6 +76,7 @@ variable "services" {
     oeecloud-nodered = 1881  # OEECloud Node-RED (mapped to host port 1881, container port 1880)
     rabbitmq         = 15672 # RabbitMQ management UI
     adminer          = 8082  # PostgreSQL web UI (Adminer)
+    operator         = 8083  # Dev operator SPA (Vite + nginx, container port 80)
   }
 }
 

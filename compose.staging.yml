@@ -562,3 +562,27 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+
+  # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
+  # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
+  # over the docker network so the browser sees a single origin (no CORS).
+  # Devs land at operator.staging.packiot.app behind Authentik SSO and log in
+  # with `dev.cpack` / `packiot` (configured in edge-node-red/flows/Configuration.json
+  # with endpoints scoped to CPACK staging machines).
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.staging
+    container_name: operator
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8083:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.19
+    depends_on:
+      edge-nodered:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
