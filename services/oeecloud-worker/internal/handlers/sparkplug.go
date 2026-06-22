@@ -35,12 +35,18 @@ type SparkplugHandler struct {
 	writeErrors atomic.Uint64
 
 	equipmentValues *writers.EquipmentValues
+	unsMetrics      *writers.UnsMetrics
 	logger          *slog.Logger
 }
 
-func NewSparkplugHandler(ev *writers.EquipmentValues, logger *slog.Logger) *SparkplugHandler {
+func NewSparkplugHandler(
+	ev *writers.EquipmentValues,
+	uns *writers.UnsMetrics,
+	logger *slog.Logger,
+) *SparkplugHandler {
 	return &SparkplugHandler{
 		equipmentValues: ev,
+		unsMetrics:      uns,
 		logger:          logger,
 	}
 }
@@ -71,10 +77,18 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 				continue
 			}
 			h.written.Add(1)
+		case h.unsMetrics.CanWrite(kind):
+			if err := h.unsMetrics.Write(ctx, m, p.Gateway); err != nil {
+				h.writeErrors.Add(1)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			h.written.Add(1)
 		default:
-			// Kinds handled by other (not-yet-written) writers fall through
-			// to the unknown bucket. Once equipment_events / uns_metrics /
-			// PO writers exist, expand the switch.
+			// PO-control parameter and any unrecognised kinds. Tracked but
+			// not nacked — retry won't change the classification.
 			h.skippedUnk.Add(1)
 		}
 	}

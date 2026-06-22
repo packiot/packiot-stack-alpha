@@ -39,14 +39,17 @@ func NewEquipmentValues(pool *pgxpool.Pool, r *sparkplug.Resolver, logger *slog.
 	return &EquipmentValues{pool: pool, resolver: r, logger: logger}
 }
 
-// CanWrite returns true for the three production-counter kinds. The
-// dispatcher should call this before Write so unsupported kinds get
-// routed elsewhere instead of attempted-then-skipped.
+// CanWrite returns true for kinds whose values land in equipment_values.
+// State/Mode/Counters share the same UPSERT key (ts_value, id_equipment);
+// postgres triggers on equipment_values then populate equipment_events
+// from state column changes (so we don't write equipment_events directly).
 func (w *EquipmentValues) CanWrite(kind sparkplug.MetricKind) bool {
 	switch kind {
 	case sparkplug.KindProdProcessedCount,
 		sparkplug.KindProdConsumedCount,
-		sparkplug.KindProdDefectiveCount:
+		sparkplug.KindProdDefectiveCount,
+		sparkplug.KindStateCurrent,
+		sparkplug.KindUnitModeCurrent:
 		return true
 	}
 	return false
@@ -107,6 +110,19 @@ func (w *EquipmentValues) Write(ctx context.Context, m *sparkplug.Metric, gatewa
 		return w.upsertConsumed(ctx, ts, info, tpEquipment, value, m.Counter, m.CurSpeed)
 	case sparkplug.KindProdDefectiveCount:
 		return w.upsertDefective(ctx, ts, info, tpEquipment, value, m.Counter)
+	case sparkplug.KindStateCurrent:
+		return w.upsertState(ctx, ts, info, tpEquipment, int(value))
+	case sparkplug.KindUnitModeCurrent:
+		// UnitModeCurrent payload may carry sub_mode in metric.alias —
+		// extract as string if present and non-null.
+		var subMode *string
+		if len(m.Alias) > 0 && string(m.Alias) != "null" {
+			var s string
+			if err := json.Unmarshal(m.Alias, &s); err == nil && s != "" {
+				subMode = &s
+			}
+		}
+		return w.upsertMode(ctx, ts, info, tpEquipment, int(value), subMode)
 	}
 	return nil
 }
@@ -183,6 +199,55 @@ func (w *EquipmentValues) upsertDefective(
 	)
 	if err != nil {
 		return fmt.Errorf("upsert equipment_values (defective) eq=%d ts=%s: %w",
+			info.IDEquipment, ts.Format(time.RFC3339), err)
+	}
+	return nil
+}
+
+func (w *EquipmentValues) upsertState(
+	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+	tpEquipment, state int,
+) error {
+	const q = `
+		INSERT INTO public.equipment_values
+			(ts_value, id_enterprise, id_site, id_area, id_equipment,
+			 tp_equipment, state, signal_quality)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
+			state          = EXCLUDED.state,
+			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
+	`
+	_, err := w.pool.Exec(ctx, q,
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, state, info.SignalQuality,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert equipment_values (state) eq=%d ts=%s: %w",
+			info.IDEquipment, ts.Format(time.RFC3339), err)
+	}
+	return nil
+}
+
+func (w *EquipmentValues) upsertMode(
+	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+	tpEquipment, mode int, subMode *string,
+) error {
+	const q = `
+		INSERT INTO public.equipment_values
+			(ts_value, id_enterprise, id_site, id_area, id_equipment,
+			 tp_equipment, mode, sub_mode, signal_quality)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
+			mode           = EXCLUDED.mode,
+			sub_mode       = COALESCE(EXCLUDED.sub_mode, equipment_values.sub_mode),
+			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
+	`
+	_, err := w.pool.Exec(ctx, q,
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, mode, subMode, info.SignalQuality,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert equipment_values (mode) eq=%d ts=%s: %w",
 			info.IDEquipment, ts.Format(time.RFC3339), err)
 	}
 	return nil
