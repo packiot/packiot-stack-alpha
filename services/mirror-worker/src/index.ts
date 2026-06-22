@@ -10,6 +10,7 @@ import {
   withStagingTx,
 } from './db/staging';
 import { writeDlq } from './dlq';
+import { recordTickError, recordTickSuccess, startHealthServer } from './health';
 import { handledCategories, lookupReplayer } from './replay';
 import { setStagingApiToken } from './runtime';
 
@@ -120,14 +121,21 @@ async function main(): Promise<void> {
     'fetched staging api token',
   );
 
+  // /health on 9100. Listens for the lifetime of the process; Grafana polls
+  // it via Promtail or directly. Started before the loop so the first tick
+  // grace window starts ticking from listen-time.
+  startHealthServer(config.healthPort);
+
   // Single-instance, sequential. 155 mutations/day = ~0.002/sec, polling
   // every 60s drains comfortably with the batch+delay tuning above.
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       await tick();
+      recordTickSuccess();
     } catch (err) {
       log.error({ err: (err as Error).message }, 'tick failed');
+      recordTickError(err as Error);
     }
     await sleep(config.pollIntervalSec * 1_000);
   }

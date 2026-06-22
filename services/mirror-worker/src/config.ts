@@ -56,6 +56,11 @@ export const config = {
   stagingApi: {
     baseUrl: process.env.STAGING_API_URL ?? 'http://edge-api:8080',
   },
+
+  // Internal /health HTTP server. Read by Grafana/uptime probes and by the
+  // compose healthcheck. Defaults to 9100 (host-side mapping is up to the
+  // compose file).
+  healthPort: optInt('HEALTH_PORT', 9100),
 };
 
 export type Config = typeof config;

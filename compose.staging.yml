@@ -554,6 +554,7 @@ services:
       POLL_INTERVAL_SEC: "60"
       BATCH_SIZE: "50"
       PER_POST_DELAY_MS: "50"
+      HEALTH_PORT: "9100"
       STAGING_DB_HOST: pgbouncer
       STAGING_DB_PORT: "5432"
       STAGING_DB_USER: ${POSTGRES_USER}
@@ -568,6 +569,17 @@ services:
         condition: service_started
       edge-api:
         condition: service_started
+    # /health on 9100 (json). status=healthy|degraded|unhealthy.
+    # Healthcheck passes only on "healthy" — degraded keeps the container up
+    # but Grafana watches the json status field for warnings. start_period
+    # gives time for the first prod-DB connect + first tick to land before
+    # the orchestrator considers the container unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9100/health | grep -q '\"status\":\"healthy\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
