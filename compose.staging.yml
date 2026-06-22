@@ -433,6 +433,16 @@ services:
       edge-api:
         condition: service_started
     networks: [packiot-net]
+    # Bypass docker-embedded DNS for the two hot endpoints — the simulator's
+    # /plc-data poller was throwing intermittent NameResolutionError(
+    # 'Failed to resolve edge-nodered') every 5-7s, which silenced the
+    # equipment_values pipeline for ~2.5h on 2026-06-22. Other services
+    # (edge-nodered, oeecloud) use the same extra_hosts pattern for
+    # pgbouncer/rabbitmq — fixed IPs on packiot-net make this safe.
+    extra_hosts:
+      - "edge-nodered:172.18.0.4"
+      - "edge-api:172.18.0.3"
+      - "pgbouncer:172.18.0.10"
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
