@@ -173,19 +173,25 @@ func (m *Metric) CanonicalTopic() string {
 // TopicForRegister returns the topic to look up in packml_register, applying
 // the Prep node's special-cases:
 //
-//   - If segment 4 is "Status" (i.e. a Line-level status metric like
-//     CPACK/SC/SLEEVE/SLEEVE1/Status/StateCurrent), drop the trailing
-//     /Status — packml_register row is CPACK/SC/SLEEVE/SLEEVE1 (4 segments).
-//   - Else use CanonicalTopic (first 5 segments).
+//   - If segment 4 is one of {Admin, Status, Command} (i.e. a LINE-level
+//     metric like CPACK/SC/SLEEVE/SLEEVE1/Status/StateCurrent or
+//     CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount/N/Unit), the packml_register
+//     row is the 4-segment line topic — drop everything from segment 4 on.
+//   - Else use CanonicalTopic (first 5 segments) — this handles UNIT
+//     topics like CPACK/SC/CELULA1/HOTMADAG/HOTMADAG/Admin/...
 //
-// This matches the Prep node's `topicStrArr.splice(5,splice); topic_name =
-// topicStrArr.join("/"); topic_name = topic_name.split("/").slice(0, 5)`
-// for the Line-with-Status case.
+// Matches the Prep node's `if topicStr[4] in {Admin,Status,Command} →
+// topic_name = topicStr[0..3].join("/")`. Strips with EqualFold for
+// case-insensitive matching (Sparkplug topics vary in case across PLCs).
 func (m *Metric) TopicForRegister() string {
 	parts := strings.Split(m.Name, "/")
-	if len(parts) >= 5 && strings.EqualFold(parts[4], "Status") {
-		// Line-level status — drop /Status, look up the 4-segment line topic
-		return strings.Join(parts[:4], "/")
+	if len(parts) >= 5 {
+		switch strings.ToLower(parts[4]) {
+		case "admin", "status", "command":
+			// Line-level metric — drop the proc segment and everything after.
+			// packml_register row is the 4-segment line topic.
+			return strings.Join(parts[:4], "/")
+		}
 	}
 	if len(parts) > 5 {
 		parts = parts[:5]

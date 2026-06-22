@@ -2,10 +2,12 @@ package sparkplug
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -94,9 +96,7 @@ func (r *Resolver) query(ctx context.Context, topic string) (*EquipmentInfo, err
 	err := row.Scan(&info.IDEnterprise, &info.IDSite, &info.IDArea,
 		&info.IDEquipment, &info.SignalQuality, &info.DayBegin)
 	if err != nil {
-		// pgx.ErrNoRows wraps to a specific error; we treat any scan miss
-		// as "not registered" rather than splitting the error path.
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
