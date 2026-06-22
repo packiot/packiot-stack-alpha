@@ -56,9 +56,11 @@ async function buildBody(): Promise<HealthBody> {
     log.warn({ err: (err as Error).message }, 'health: readCursor failed');
   }
   try {
+    // DLQ is append-only — every row counts toward depth. Filter by source
+    // so future multi-tenant deployments don't conflate other workers' DLQs.
     const row = await stagingSelectOne<{ c: string }>(
-      `SELECT COUNT(*)::text AS c FROM mirror_replay_dlq WHERE resolved_at IS NULL`,
-      [],
+      `SELECT COUNT(*)::text AS c FROM mirror_replay_dlq WHERE source = $1`,
+      [config.sourceName],
     );
     dlqDepth = row ? Number(row.c) : null;
   } catch (err) {
