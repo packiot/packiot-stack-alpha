@@ -245,6 +245,15 @@ services:
       API_KEY: ${EDGE_API_KEY}
       FIREBASE_API_KEY: bypassed-by-hasura-admin-secret
       EDGE_API_BASE_URL: http://edge-api:8080
+      # Scope edge-nodered's GraphQL entities query (GraphQL.json:240) to
+      # CPACK-Staging (id_enterprise=3). Otherwise the unscoped query
+      # `v_operator_entities_2[0]` lands on whichever enterprise is first
+      # in the view's natural ordering — on staging that's SimCorp,
+      # making /machines/:lineId etc. return SimCorp data even for the
+      # CPACK-permission user. Hardcoded because edge-nodered's design is
+      # one-enterprise-per-edge; this overrides for the multi-tenant
+      # staging shape.
+      ID_ENTERPRISE: "3"
     # Bypass Docker's embedded DNS (intermittent EAI_AGAIN under load) by
     # resolving all intra-stack hostnames via /etc/hosts instead.
     extra_hosts:
