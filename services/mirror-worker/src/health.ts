@@ -67,10 +67,13 @@ async function buildBody(): Promise<HealthBody> {
     log.warn({ err: (err as Error).message }, 'health: dlq count failed');
   }
 
-  // Classification: start with healthy, downgrade as signals worsen. We treat
-  // the DB read failures above as soft signals (dlqDepth=null doesn't tip
-  // unhealthy on its own — the cursor read or tick freshness would catch a
-  // real outage).
+  // Classification: tick freshness + last-tick error only. DLQ depth is
+  // surfaced in the body for Grafana to alert on with its own thresholds
+  // (Grafana can distinguish historic-accumulated DLQ from recently-added
+  // rows via the created_at column; /health can't cheaply). The DB read
+  // failures above are soft signals (dlqDepth=null doesn't tip unhealthy
+  // on its own — the cursor read or tick freshness would catch a real
+  // outage).
   let status: HealthBody['status'] = 'healthy';
   let reason: string | undefined;
 
@@ -86,9 +89,6 @@ async function buildBody(): Promise<HealthBody> {
   } else if (state.lastTickError) {
     status = 'degraded';
     reason = `last tick errored: ${state.lastTickError}`;
-  } else if (dlqDepth !== null && dlqDepth > 0) {
-    status = 'degraded';
-    reason = `${dlqDepth} unresolved DLQ rows`;
   }
 
   return {
