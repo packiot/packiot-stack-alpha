@@ -13,8 +13,14 @@ COPY internal ./internal
 
 # CGO disabled → fully static; -trimpath strips local paths from stack
 # traces; -ldflags '-s -w' drops symbol + debug for a smaller binary.
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath -ldflags "-s -w" \
+#
+# -p=1 caps the compiler to one job at a time. The staging actions-runner
+# has 2 CPUs and modest RAM (saw an 18-min OOM-kill on the parallel
+# build of pgx + amqp091-go at deploy 27984146678). One job at a time
+# trades wall-clock for predictable memory; the small dep set still
+# builds in ~60s.
+RUN CGO_ENABLED=0 GOOS=linux GOMAXPROCS=1 go build \
+    -p=1 -trimpath -ldflags "-s -w" \
     -o /out/oeecloud-worker ./cmd/oeecloud-worker
 
 # Distroless `static` image: just the binary + ca-certs + a non-root user.
