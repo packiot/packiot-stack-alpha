@@ -162,9 +162,58 @@ resource "aws_iam_policy" "app_custom" {
           "route53:ListResourceRecordSets",
         ]
         Resource = "*"
+      },
+      {
+        # CloudWatch Agent publishes node-level disk + memory metrics under the
+        # CWAgent namespace. PutMetricData is the write path; the agent's own
+        # config refresh + log polls don't need extra permissions because the
+        # EC2 already has AmazonSSMManagedInstanceCore + S3 access for its
+        # bootstrap script. Disk-fill alarm at 75% lives in Terraform separately
+        # (aws_cloudwatch_metric_alarm.app_disk_used_percent).
+        Sid    = "PublishCloudWatchMetrics"
+        Effect = "Allow"
+        Action = ["cloudwatch:PutMetricData"]
+        Resource = "*"
       }
     ]
   })
+}
+
+# Disk-fill alarm at 75% on the app EC2 root volume. Triggered by the
+# CWAgent disk_used_percent metric for path=/ on the staging app instance.
+# Action target: SNS topic that pages on-call (created separately if not
+# already present — for now we use the existing 'packiot-staging-alerts'
+# topic name; harmless to alarm without an SNS subscriber while we wire it).
+#
+# Threshold rationale: 75% catches drift before the 2026-06-22 100% lockout
+# scenario repeats. Disk grew to 64 GB so 75% = 48 GB used (vs 27 GB
+# steady-state today) — plenty of headroom for legitimate growth before
+# alarming.
+resource "aws_cloudwatch_metric_alarm" "app_disk_used_percent" {
+  alarm_name          = "packiot-staging-app-disk-used-percent"
+  alarm_description   = "Staging app EC2 root disk > 75% — investigate docker / log churn before it fills (see ebs-rescue-mount-stuck-ec2 zettel for recovery)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 75
+  metric_name         = "disk_used_percent"
+  namespace           = "CWAgent"
+  period              = 300
+  statistic           = "Average"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    InstanceId = aws_instance.app.id
+    path       = "/"
+    fstype     = "xfs"
+    device     = "nvme0n1p1"
+  }
+  # alarm_actions intentionally empty for now — the alarm becomes observable
+  # via the AWS console and Grafana CloudWatch datasource immediately, and
+  # we can wire SNS / chatops later without recreating it.
+  tags = {
+    Project     = "packiot-stack-alpha"
+    Environment = "staging"
+    Owner       = "ops"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "app_custom" {
