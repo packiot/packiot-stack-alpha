@@ -19,9 +19,12 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
 
 func main() {
@@ -44,23 +47,30 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Postgres pool. Declared but no handlers use it yet (placeholder
-	// LogOnly only acks). Wired in advance so adding the first real
-	// handler next session is a one-import change.
-	//
-	// NOTE: commented out for the scaffold-only commit — the pgx import
-	// adds ~5 MB to the binary and we don't need it until a real handler
-	// lands. Uncomment together with the first real handler.
-	//
-	// pool, err := db.New(ctx, cfg, logger)
-	// if err != nil {
-	//     logger.Error("postgres pool init failed", slog.String("err", err.Error()))
-	//     os.Exit(1)
-	// }
-	// defer pool.Close()
+	// Postgres pool — used by writers. The pool is sized to the worker's
+	// AMQP prefetch + some headroom so handlers never block on pool acquire.
+	pool, err := db.New(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("postgres pool init failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
+	// changes rarely — CS Admin re-onboards). 30 s negative TTL so unknown
+	// topics don't hammer the DB on noisy publishers.
+	resolver := sparkplug.NewResolver(pool, 5*time.Minute, 30*time.Second)
+
+	// Per-table writers. Add one per migrated handler.
+	equipmentValuesWriter := writers.NewEquipmentValues(pool, resolver, logger)
+
+	// Sparkplug handler — top-level for routing-key "sparkplug.data".
+	// Parses the AMQP payload, dispatches each metric by kind to the
+	// matching writer. Unknown kinds increment a counter and skip.
+	sparkplugHandler := handlers.NewSparkplugHandler(equipmentValuesWriter, logger)
 
 	dispatcher := handlers.NewDispatcher(logger)
-	// Future: dispatcher.Register("sparkplug.equipment_values", writers.NewEquipmentValuesHandler(pool, logger))
+	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
 
 	consumer := amqp.NewConsumer(cfg, dispatcher, logger)
 
