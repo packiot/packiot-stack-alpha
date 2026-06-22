@@ -594,6 +594,59 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── oeecloud Worker (Go — replaces oeecloud-node-red over time) ───────────────
+  # AMQP consumer with manual ack + DLX + retry topology. Runs in PARALLEL with
+  # the existing stack-oeecloud-1 (Node-RED) by binding a SEPARATE queue
+  # (`oeecloud-worker-q`) to the same `oee` topic exchange. Both consumers see
+  # every published message — neither competes with the other.
+  #
+  # Scaffold-only phase: placeholder LogOnly handler that just logs+acks every
+  # message. No DB writes yet. Future sessions add per-routing-key handlers
+  # one at a time; once at parity, decommission Node-RED's queue + container.
+  #
+  # See services/oeecloud-worker/internal/amqp/topology.go for the
+  # exchange/queue/binding graph (with ASCII diagram).
+  oeecloud-worker:
+    build: ./services/oeecloud-worker
+    container_name: oeecloud-worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: oee
+      WORKER_QUEUE: oeecloud-worker-q
+      RETRY_EXCHANGE: oee-retry
+      RETRY_QUEUE: oeecloud-worker-q-retry-30s
+      FAILED_EXCHANGE: oee-failed
+      FAILED_QUEUE: oeecloud-worker-q-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      PG_HOST: pgbouncer
+      PG_PORT: "5432"
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      PG_DATABASE: ${POSTGRES_DB}
+      HEALTH_PORT: "9101"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.20
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    # Distroless image has no wget/curl; healthcheck below uses the binary
+    # itself to probe (not implemented yet — until then, the docker
+    # healthcheck is left off and we rely on /health via Grafana for ops).
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
   # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
   # over the docker network so the browser sees a single origin (no CORS).
