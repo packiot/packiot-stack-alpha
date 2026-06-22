@@ -36,17 +36,20 @@ type SparkplugHandler struct {
 
 	equipmentValues *writers.EquipmentValues
 	unsMetrics      *writers.UnsMetrics
+	poParameter     *writers.POParameter
 	logger          *slog.Logger
 }
 
 func NewSparkplugHandler(
 	ev *writers.EquipmentValues,
 	uns *writers.UnsMetrics,
+	po *writers.POParameter,
 	logger *slog.Logger,
 ) *SparkplugHandler {
 	return &SparkplugHandler{
 		equipmentValues: ev,
 		unsMetrics:      uns,
+		poParameter:     po,
 		logger:          logger,
 	}
 }
@@ -86,9 +89,21 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 				continue
 			}
 			h.written.Add(1)
+		case h.poParameter.CanWrite(kind):
+			if err := h.poParameter.Write(ctx, m, p.Gateway); err != nil {
+				h.writeErrors.Add(1)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			// Writer returns nil for the not-yet-ported sub-ranges (30700,
+			// 30800-30899) without writing. The internal stats counter
+			// tracks how often each branch fires so we can size the next
+			// porting effort. Don't double-count "written" here for the
+			// skip paths.
+			h.written.Add(1)
 		default:
-			// PO-control parameter and any unrecognised kinds. Tracked but
-			// not nacked — retry won't change the classification.
 			h.skippedUnk.Add(1)
 		}
 	}

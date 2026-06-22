@@ -64,11 +64,14 @@ func main() {
 	// Per-table writers. Add one per migrated handler.
 	equipmentValuesWriter := writers.NewEquipmentValues(pool, resolver, logger)
 	unsMetricsWriter := writers.NewUnsMetrics(pool, resolver, logger)
+	poParameterWriter := writers.NewPOParameter(pool, resolver, logger)
 
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
 	// Parses the AMQP payload, dispatches each metric by kind to the
 	// matching writer. Unknown kinds increment a counter and skip.
-	sparkplugHandler := handlers.NewSparkplugHandler(equipmentValuesWriter, unsMetricsWriter, logger)
+	sparkplugHandler := handlers.NewSparkplugHandler(
+		equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
+	)
 
 	dispatcher := handlers.NewDispatcher(logger)
 	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
