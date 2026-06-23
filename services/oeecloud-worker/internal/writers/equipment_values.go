@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 )
@@ -253,6 +252,3 @@ func (w *EquipmentValues) upsertMode(
 	return nil
 }
 
-// quiet pgx lint — we don't use this import directly but pgx might be needed
-// for batch later. Keeps the import block stable across writer additions.
-var _ = pgx.ErrNoRows

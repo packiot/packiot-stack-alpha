@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
@@ -65,6 +66,20 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		return err
 	}
 	h.parsed.Add(1)
+
+	// Per-metric timestamp fallback — Sparkplug spec allows metrics without
+	// their own timestamp (only payload-level required). Node-RED's Prep
+	// node falls back to payload timestamp, then to now(). Without this,
+	// writers' time.UnixMilli(0).Truncate(...) lands rows at 1970-01-01.
+	nowMs := time.Now().UnixMilli()
+	for i := range p.Metrics {
+		if p.Metrics[i].Timestamp == 0 {
+			p.Metrics[i].Timestamp = p.Timestamp
+		}
+		if p.Metrics[i].Timestamp == 0 {
+			p.Metrics[i].Timestamp = nowMs
+		}
+	}
 
 	var firstErr error
 	for i := range p.Metrics {

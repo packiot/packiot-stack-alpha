@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -85,21 +86,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 func backoff(attempt int) time.Duration {
-	// 1s base, doubles, capped 30s. Jitter halves to ¾–1.25x to avoid
-	// thundering herd on broker restart.
-	max := 30 * time.Second
-	base := time.Duration(1<<minInt(attempt, 5)) * time.Second
-	if base > max {
-		base = max
+	// 1s base, doubles to a 30s cap, then ¾–1.25x random jitter to avoid
+	// thundering-herd when multiple workers reconnect after a broker
+	// restart. Single-worker today but cheap to do correctly.
+	const maxDelay = 30 * time.Second
+	base := time.Duration(1<<min(attempt, 5)) * time.Second
+	if base > maxDelay {
+		base = maxDelay
 	}
-	return base
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	// rand.Float64() ∈ [0,1) → factor ∈ [0.75, 1.25)
+	factor := 0.75 + rand.Float64()*0.5
+	return time.Duration(float64(base) * factor)
 }
 
 // connectAndConsume does one full dial → declare → consume cycle.

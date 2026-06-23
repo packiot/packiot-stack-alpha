@@ -25,7 +25,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -82,10 +81,3 @@ func LogOnly(logger *slog.Logger) Handler {
 	}
 }
 
-// AlwaysFail is a test-only handler that always returns an error.
-// Useful for exercising the retry path manually.
-func AlwaysFail() Handler {
-	return func(_ context.Context, _ *amqp.Delivery) error {
-		return fmt.Errorf("AlwaysFail (test handler)")
-	}
-}
