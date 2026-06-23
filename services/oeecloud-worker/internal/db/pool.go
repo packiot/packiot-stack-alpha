@@ -23,9 +23,12 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*pgxpool
 	if err != nil {
 		return nil, fmt.Errorf("parse pg url: %w", err)
 	}
-	// Pool size: prefetch + some headroom for parallel handler work.
-	// pgbouncer in front of postgres makes this almost free.
-	pc.MaxConns = int32(cfg.Prefetch) + 5
+	// Pool size: handleDelivery runs sequentially in a single goroutine
+	// (the AMQP consume loop is one channel-reader), so at most ONE query
+	// is in flight at any moment. 5 keeps a warm pool with headroom for
+	// the resolver's occasional second query without competing with the
+	// active write. Larger pools waste pgbouncer client slots.
+	pc.MaxConns = 5
 	pc.MinConns = 1
 
 	// pgbouncer in the stack runs in TRANSACTION pooling mode (each tx

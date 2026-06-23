@@ -33,10 +33,8 @@ func (w *UnsMetrics) CanWrite(kind sparkplug.MetricKind) bool {
 }
 
 func (w *UnsMetrics) Write(ctx context.Context, m *sparkplug.Metric, _ string) error {
-	if m.Classify() != sparkplug.KindCurMachSpeed {
-		return fmt.Errorf("UnsMetrics.Write called with unsupported kind %s", m.Classify())
-	}
-
+	// Dispatcher already verified Classify() == KindCurMachSpeed via CanWrite;
+	// no defensive re-check needed here.
 	topic := m.TopicForRegister()
 	info, err := w.resolver.Resolve(ctx, topic)
 	if err != nil {

@@ -31,24 +31,38 @@ type EquipmentInfo struct {
 // Cache key is the topic string (post-canonicalisation). Negative results
 // (topic not in packml_register) are cached briefly too — otherwise a
 // chatty unknown topic would hammer the DB.
+//
+// Bounded at maxCacheEntries to defend against a misbehaving publisher
+// flooding unique topic names (which would otherwise grow the negative
+// cache unboundedly). When over, all entries are dropped — coarse but
+// O(n) only on the overflow event. CPACK has ~100 real topics so this
+// effectively never fires in normal operation.
 type Resolver struct {
-	pool      *pgxpool.Pool
-	ttl       time.Duration
-	negTTL    time.Duration
-	mu        sync.RWMutex
-	cache     map[string]cacheEntry
+	pool   *pgxpool.Pool
+	ttl    time.Duration
+	negTTL time.Duration
+	maxN   int
+	mu     sync.RWMutex
+	cache  map[string]cacheEntry
 }
 
 type cacheEntry struct {
-	info     *EquipmentInfo // nil for negative cache
-	expires  time.Time
+	info    *EquipmentInfo // nil for negative cache
+	expires time.Time
 }
+
+// maxCacheEntries caps the in-memory resolver cache. ~100× the real CPACK
+// topic count is the defensive ceiling — high enough that legit growth
+// (new equipment onboarding) never trips it; low enough that a runaway
+// publisher can't OOM the worker.
+const maxCacheEntries = 10_000
 
 func NewResolver(pool *pgxpool.Pool, ttl, negTTL time.Duration) *Resolver {
 	return &Resolver{
 		pool:   pool,
 		ttl:    ttl,
 		negTTL: negTTL,
+		maxN:   maxCacheEntries,
 		cache:  make(map[string]cacheEntry),
 	}
 }
@@ -71,6 +85,13 @@ func (r *Resolver) Resolve(ctx context.Context, topic string) (*EquipmentInfo, e
 	}
 
 	r.mu.Lock()
+	// Bounded-cache: drop everything if we're over the cap before adding
+	// the new entry. CPACK has ~100 real topics so this branch effectively
+	// never fires; the defense is against a publisher flooding unique
+	// names (worst case = re-warm the cache from scratch).
+	if len(r.cache) >= r.maxN {
+		r.cache = make(map[string]cacheEntry, r.maxN)
+	}
 	if info == nil {
 		r.cache[topic] = cacheEntry{info: nil, expires: time.Now().Add(r.negTTL)}
 	} else {

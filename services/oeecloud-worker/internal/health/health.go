@@ -5,17 +5,18 @@ package health
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 )
 
-// Snapshotter is what /health needs from the consumer (interface to avoid
-// pkg cycles between handlers→amqp).
+// Snapshotter produces the body + healthy flag directly. Callers (e.g.
+// amqp.Consumer) own the struct shape AND the marshal step; health.go
+// just writes the bytes. This avoids the marshal→unmarshal→remarshal
+// dance an `any`-returning interface forces.
 type Snapshotter interface {
-	Snapshot() any
+	Snapshot() (body []byte, healthy bool, err error)
 }
 
 // Server wraps an http.Server so main can shutdown gracefully.
@@ -25,27 +26,20 @@ type Server struct {
 }
 
 // New returns a Server bound to addr (e.g. ":9101"). Healthy snapshots
-// return 200, unhealthy (or build error) return 503 — same convention as
+// return 200, unhealthy or build-error return 503 — same convention as
 // mirror-worker. Degraded states still return 200 so a single missed
 // delivery doesn't trip orchestration; Grafana alerts on the JSON fields.
 func New(addr string, snap Snapshotter, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		s := snap.Snapshot()
+		body, healthy, err := snap.Snapshot()
 		w.Header().Set("Content-Type", "application/json")
-		body, err := json.Marshal(s)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, `{"healthy":false,"error":%q}`, err.Error())
 			return
 		}
-		// Inspect healthy field. If map has Healthy=false → 503.
-		// snap.Snapshot() returns a struct value; we re-parse for the field.
-		var meta struct {
-			Healthy bool `json:"healthy"`
-		}
-		_ = json.Unmarshal(body, &meta)
-		if !meta.Healthy {
+		if !healthy {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		_, _ = w.Write(body)

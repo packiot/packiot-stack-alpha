@@ -47,8 +47,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Postgres pool — used by writers. The pool is sized to the worker's
-	// AMQP prefetch + some headroom so handlers never block on pool acquire.
+	// Postgres pool — used by writers. Sized small (see db.New) because
+	// the consume loop is single-goroutine; at most one query is in flight
+	// at any time.
 	pool, err := db.New(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("postgres pool init failed", slog.String("err", err.Error()))
@@ -78,11 +79,9 @@ func main() {
 
 	consumer := amqp.NewConsumer(cfg, dispatcher, logger)
 
-	healthSrv := health.New(
-		fmt.Sprintf(":%d", cfg.HealthPort),
-		snapshotAdapter{consumer: consumer},
-		logger,
-	)
+	// *amqp.Consumer.Snapshot() satisfies health.Snapshotter directly
+	// since the redesigned interface uses concrete types.
+	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), consumer, logger)
 	healthSrv.Start()
 
 	// Consumer.Run blocks until ctx cancelled.
@@ -97,12 +96,3 @@ func main() {
 
 	logger.Info("oeecloud-worker stopped")
 }
-
-// snapshotAdapter implements health.Snapshotter by returning the
-// consumer's Snapshot struct as `any` (so health pkg stays unaware of
-// consumer-specific shape).
-type snapshotAdapter struct {
-	consumer *amqp.Consumer
-}
-
-func (a snapshotAdapter) Snapshot() any { return a.consumer.Snapshot() }

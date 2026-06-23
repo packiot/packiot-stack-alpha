@@ -2,6 +2,7 @@ package amqp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -254,9 +255,11 @@ type Snapshot struct {
 	LastDeliveryAgoMs int64  `json:"last_delivery_ago_ms,omitempty"`
 }
 
-func (c *Consumer) Snapshot() Snapshot {
+// Snapshot returns the marshaled JSON body, the healthy flag, and any
+// marshal error. Satisfies health.Snapshotter — health.go writes the
+// bytes directly without a re-parse.
+func (c *Consumer) Snapshot() ([]byte, bool, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	s := Snapshot{
 		Healthy:           c.healthy,
 		StartedAt:         c.startedAt.UTC().Format(time.RFC3339),
@@ -269,5 +272,11 @@ func (c *Consumer) Snapshot() Snapshot {
 	if last := c.lastDelivery.Load(); last > 0 {
 		s.LastDeliveryAgoMs = (time.Now().UnixNano() - last) / int64(time.Millisecond)
 	}
-	return s
+	c.mu.RUnlock()
+
+	body, err := json.Marshal(s)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal snapshot: %w", err)
+	}
+	return body, s.Healthy, nil
 }
