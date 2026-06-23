@@ -25,6 +25,11 @@ type Consumer struct {
 	dispatcher *handlers.Dispatcher
 	logger     *slog.Logger
 
+	// Optional callback letting writers contribute to /health JSON
+	// without forcing Consumer to import the writers package. main wires
+	// it; nil means "no writers section".
+	writerStats func() any
+
 	// Metrics — read by /health for the JSON body.
 	delivered     atomic.Uint64
 	acked         atomic.Uint64
@@ -49,6 +54,10 @@ func NewConsumer(cfg *config.Config, amqpURL string, d *handlers.Dispatcher, log
 		startedAt:  time.Now(),
 	}
 }
+
+// SetWriterStats registers a callback that returns any JSON-marshalable
+// value to embed under the "writers" key of /health. Call before Run.
+func (c *Consumer) SetWriterStats(fn func() any) { c.writerStats = fn }
 
 // Run blocks until ctx is cancelled. On any connection/channel failure,
 // it logs + sleeps with exponential backoff (capped at 30s) and reconnects.
@@ -255,6 +264,7 @@ type Snapshot struct {
 	NackedToRetry     uint64 `json:"nacked_to_retry"`
 	PublishedToFailed uint64 `json:"published_to_failed"`
 	LastDeliveryAgoMs int64  `json:"last_delivery_ago_ms,omitempty"`
+	Writers           any    `json:"writers,omitempty"`
 }
 
 // Snapshot returns the marshaled JSON body, the healthy flag, and any
@@ -273,6 +283,9 @@ func (c *Consumer) Snapshot() ([]byte, bool, error) {
 	}
 	if last := c.lastDelivery.Load(); last > 0 {
 		s.LastDeliveryAgoMs = (time.Now().UnixNano() - last) / int64(time.Millisecond)
+	}
+	if c.writerStats != nil {
+		s.Writers = c.writerStats()
 	}
 	c.mu.RUnlock()
 

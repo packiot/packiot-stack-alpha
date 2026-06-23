@@ -114,6 +114,11 @@ func main() {
 	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
 
 	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, logger)
+	// Surface PO Parameter skipped-id counters on /health so #32 (port
+	// 30700 / 30800-30899) can be measured-then-decided instead of guessed.
+	consumer.SetWriterStats(func() any {
+		return map[string]any{"po_parameter": poParameterWriter.Stats()}
+	})
 
 	// *amqp.Consumer.Snapshot() satisfies health.Snapshotter directly
 	// since the redesigned interface uses concrete types.
