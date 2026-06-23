@@ -1,6 +1,7 @@
-// Package writers owns the postgres-write side of each handler. One file
-// per target table keeps the topic-routing logic in handlers/sparkplug.go
-// clean and lets writers be reused across routing keys.
+// Package writers builds the postgres queries each handler needs. Writers
+// no longer execute (since #9 / commit batching refactor) — they return
+// *Query for the handler to enqueue into a pgx.Batch. Handler executes
+// all of a delivery's queries as one batched round-trip.
 package writers
 
 import (
@@ -10,38 +11,35 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 )
 
-// EquipmentValues writes production counter metrics (ProdProcessedCount /
-// ProdConsumedCount / ProdDefectiveCount) to public.equipment_values.
+// EquipmentValues builds production-counter + state/mode UPSERTs for
+// public.equipment_values. Mirrors the columns the Node-RED "UPSERT:
+// equipment_values / ..." node writes:
 //
-// Mirrors the columns the Node-RED "UPSERT: equipment_values / ..." node
-// writes for these three kinds:
-//
-//   ProdProcessedCount → net_production_incr, net_production_val, curspeed
-//   ProdConsumedCount  → gross_production_incr, gross_production_val, curspeed
+//   ProdProcessedCount → net_production_incr, net_production_val, speed
+//   ProdConsumedCount  → gross_production_incr, gross_production_val, speed
 //   ProdDefectiveCount → scrap_incr, scrap_val
+//   StateCurrent       → state
+//   UnitModeCurrent    → mode, sub_mode
 //
 // All UPSERT on (ts_value, id_equipment). tp_equipment is set from
-// metric.IsLineTopic() to match Prep's `topic_unit == 0 → 3, else 1`.
-// ts_value is bucketed to whole seconds (matches Node-RED's
-// Math.round(parseInt(ts)/1000)*1000).
+// metric.IsLineTopic() (3 for line, 1 for unit). ts_value bucketed to
+// whole seconds — matches Node-RED's Math.round(ts/1000)*1000.
 type EquipmentValues struct {
-	pool     *pgxpool.Pool
 	resolver *sparkplug.Resolver
 	logger   *slog.Logger
 }
 
-func NewEquipmentValues(pool *pgxpool.Pool, r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
-	return &EquipmentValues{pool: pool, resolver: r, logger: logger}
+func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
+	return &EquipmentValues{resolver: r, logger: logger}
 }
 
 // CanWrite returns true for kinds whose values land in equipment_values.
 // State/Mode/Counters share the same UPSERT key (ts_value, id_equipment);
-// postgres triggers on equipment_values then populate equipment_events
-// from state column changes (so we don't write equipment_events directly).
+// postgres triggers on equipment_values populate equipment_events from
+// state column changes — so we don't write equipment_events directly.
 func (w *EquipmentValues) CanWrite(kind sparkplug.MetricKind) bool {
 	switch kind {
 	case sparkplug.KindProdProcessedCount,
@@ -54,20 +52,19 @@ func (w *EquipmentValues) CanWrite(kind sparkplug.MetricKind) bool {
 	return false
 }
 
-// Write inserts (or updates on conflict) one row. Returns nil on success
-// or a wrapped error the caller propagates upward — the AMQP consumer
-// nacks → DLX → retry on error, so writers should only return errors for
-// transient failures. Missing packml_register rows return nil (skip).
-func (w *EquipmentValues) Write(ctx context.Context, m *sparkplug.Metric, gateway string) error {
+// Build returns the *Query for one metric, or (nil, nil) when the topic
+// is not in packml_register (skip — not a write error). Returns an error
+// for unexpected kinds or unparseable values.
+func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ string) (*Query, error) {
 	kind := m.Classify()
 	if !w.CanWrite(kind) {
-		return fmt.Errorf("EquipmentValues.Write called with unsupported kind %s", kind)
+		return nil, fmt.Errorf("EquipmentValues.Build called with unsupported kind %s", kind)
 	}
 
 	topic := m.TopicForRegister()
 	info, err := w.resolver.Resolve(ctx, topic)
 	if err != nil {
-		return fmt.Errorf("resolve topic %s: %w", topic, err)
+		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
 	if info == nil {
 		w.logger.Debug("equipment_values: topic not registered, skipping",
@@ -75,22 +72,14 @@ func (w *EquipmentValues) Write(ctx context.Context, m *sparkplug.Metric, gatewa
 			slog.String("name", m.Name),
 			slog.String("kind", kind.String()),
 		)
-		return nil
+		return nil, nil
 	}
 
-	// Bucket to whole seconds so multiple metrics arriving in the same
-	// second UPSERT into one row (matches Node-RED's behaviour).
 	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
 
-	// Parse value as float (Sparkplug metric.value is a JSON number — but
-	// some sources serialise as string). pgx accepts both via Encode.
 	var value float64
 	if err := json.Unmarshal(m.Value, &value); err != nil {
-		// Some metric values are non-numeric (e.g. faults as JSON). For
-		// production counters we expect numeric; bail with an error so
-		// retry catches it (could be a transient producer bug worth
-		// investigating via DLQ).
-		return fmt.Errorf("parse value as float (kind=%s, name=%s): %w", kind, m.Name, err)
+		return nil, fmt.Errorf("parse value as float (kind=%s, name=%s): %w", kind, m.Name, err)
 	}
 
 	tpEquipment := 1
@@ -98,19 +87,15 @@ func (w *EquipmentValues) Write(ctx context.Context, m *sparkplug.Metric, gatewa
 		tpEquipment = 3
 	}
 
-	// Build the UPSERT. ON CONFLICT (ts_value, id_equipment) is the
-	// existing equipment_values uniqueness constraint — running this
-	// alongside Node-RED's writer is safe (whichever wrote last wins,
-	// and the values are derived from the same source).
 	switch kind {
 	case sparkplug.KindProdProcessedCount:
-		return w.upsertProcessed(ctx, ts, info, tpEquipment, value, m.Counter, m.CurSpeed)
+		return buildProcessed(ts, info, tpEquipment, value, m.Counter, m.CurSpeed), nil
 	case sparkplug.KindProdConsumedCount:
-		return w.upsertConsumed(ctx, ts, info, tpEquipment, value, m.Counter, m.CurSpeed)
+		return buildConsumed(ts, info, tpEquipment, value, m.Counter, m.CurSpeed), nil
 	case sparkplug.KindProdDefectiveCount:
-		return w.upsertDefective(ctx, ts, info, tpEquipment, value, m.Counter)
+		return buildDefective(ts, info, tpEquipment, value, m.Counter), nil
 	case sparkplug.KindStateCurrent:
-		return w.upsertState(ctx, ts, info, tpEquipment, int(value))
+		return buildState(ts, info, tpEquipment, int(value)), nil
 	case sparkplug.KindUnitModeCurrent:
 		// UnitModeCurrent payload may carry sub_mode in metric.alias —
 		// extract as string if present and non-null.
@@ -121,16 +106,16 @@ func (w *EquipmentValues) Write(ctx context.Context, m *sparkplug.Metric, gatewa
 				subMode = &s
 			}
 		}
-		return w.upsertMode(ctx, ts, info, tpEquipment, int(value), subMode)
+		return buildMode(ts, info, tpEquipment, int(value), subMode), nil
 	}
-	return nil
+	return nil, nil
 }
 
-func (w *EquipmentValues) upsertProcessed(
-	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+func buildProcessed(
+	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment int, value float64, counter, curspeed *float64,
-) error {
-	const q = `
+) *Query {
+	const sql = `
 		INSERT INTO public.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality)
@@ -141,22 +126,22 @@ func (w *EquipmentValues) upsertProcessed(
 			speed               = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality      = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
 	`
-	_, err := w.pool.Exec(ctx, q,
-		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		tpEquipment, value, counter, curspeed, info.SignalQuality,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert equipment_values (processed) eq=%d ts=%s: %w",
-			info.IDEquipment, ts.Format(time.RFC3339), err)
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			tpEquipment, value, counter, curspeed, info.SignalQuality,
+		},
+		Desc: fmt.Sprintf("upsert equipment_values (processed) eq=%d ts=%s",
+			info.IDEquipment, ts.Format(time.RFC3339)),
 	}
-	return nil
 }
 
-func (w *EquipmentValues) upsertConsumed(
-	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+func buildConsumed(
+	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment int, value float64, counter, curspeed *float64,
-) error {
-	const q = `
+) *Query {
+	const sql = `
 		INSERT INTO public.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality)
@@ -167,22 +152,22 @@ func (w *EquipmentValues) upsertConsumed(
 			speed                 = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality        = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
 	`
-	_, err := w.pool.Exec(ctx, q,
-		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		tpEquipment, value, counter, curspeed, info.SignalQuality,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert equipment_values (consumed) eq=%d ts=%s: %w",
-			info.IDEquipment, ts.Format(time.RFC3339), err)
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			tpEquipment, value, counter, curspeed, info.SignalQuality,
+		},
+		Desc: fmt.Sprintf("upsert equipment_values (consumed) eq=%d ts=%s",
+			info.IDEquipment, ts.Format(time.RFC3339)),
 	}
-	return nil
 }
 
-func (w *EquipmentValues) upsertDefective(
-	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+func buildDefective(
+	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment int, value float64, counter *float64,
-) error {
-	const q = `
+) *Query {
+	const sql = `
 		INSERT INTO public.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 tp_equipment, scrap_incr, scrap_val, signal_quality)
@@ -192,22 +177,22 @@ func (w *EquipmentValues) upsertDefective(
 			scrap_val      = COALESCE(EXCLUDED.scrap_val, equipment_values.scrap_val),
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
 	`
-	_, err := w.pool.Exec(ctx, q,
-		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		tpEquipment, value, counter, info.SignalQuality,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert equipment_values (defective) eq=%d ts=%s: %w",
-			info.IDEquipment, ts.Format(time.RFC3339), err)
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			tpEquipment, value, counter, info.SignalQuality,
+		},
+		Desc: fmt.Sprintf("upsert equipment_values (defective) eq=%d ts=%s",
+			info.IDEquipment, ts.Format(time.RFC3339)),
 	}
-	return nil
 }
 
-func (w *EquipmentValues) upsertState(
-	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+func buildState(
+	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment, state int,
-) error {
-	const q = `
+) *Query {
+	const sql = `
 		INSERT INTO public.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 tp_equipment, state, signal_quality)
@@ -216,22 +201,22 @@ func (w *EquipmentValues) upsertState(
 			state          = EXCLUDED.state,
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
 	`
-	_, err := w.pool.Exec(ctx, q,
-		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		tpEquipment, state, info.SignalQuality,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert equipment_values (state) eq=%d ts=%s: %w",
-			info.IDEquipment, ts.Format(time.RFC3339), err)
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			tpEquipment, state, info.SignalQuality,
+		},
+		Desc: fmt.Sprintf("upsert equipment_values (state) eq=%d ts=%s",
+			info.IDEquipment, ts.Format(time.RFC3339)),
 	}
-	return nil
 }
 
-func (w *EquipmentValues) upsertMode(
-	ctx context.Context, ts time.Time, info *sparkplug.EquipmentInfo,
+func buildMode(
+	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment, mode int, subMode *string,
-) error {
-	const q = `
+) *Query {
+	const sql = `
 		INSERT INTO public.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 tp_equipment, mode, sub_mode, signal_quality)
@@ -241,14 +226,13 @@ func (w *EquipmentValues) upsertMode(
 			sub_mode       = COALESCE(EXCLUDED.sub_mode, equipment_values.sub_mode),
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
 	`
-	_, err := w.pool.Exec(ctx, q,
-		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		tpEquipment, mode, subMode, info.SignalQuality,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert equipment_values (mode) eq=%d ts=%s: %w",
-			info.IDEquipment, ts.Format(time.RFC3339), err)
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			tpEquipment, mode, subMode, info.SignalQuality,
+		},
+		Desc: fmt.Sprintf("upsert equipment_values (mode) eq=%d ts=%s",
+			info.IDEquipment, ts.Format(time.RFC3339)),
 	}
-	return nil
 }
-

@@ -62,16 +62,18 @@ func main() {
 	// topics don't hammer the DB on noisy publishers.
 	resolver := sparkplug.NewResolver(pool, 5*time.Minute, 30*time.Second)
 
-	// Per-table writers. Add one per migrated handler.
-	equipmentValuesWriter := writers.NewEquipmentValues(pool, resolver, logger)
-	unsMetricsWriter := writers.NewUnsMetrics(pool, resolver, logger)
-	poParameterWriter := writers.NewPOParameter(pool, resolver, logger)
+	// Per-table writers. Writers no longer hold the pool — they Build()
+	// *writers.Query objects that the handler collects into a pgx.Batch
+	// and sends as ONE round-trip per AMQP delivery.
+	equipmentValuesWriter := writers.NewEquipmentValues(resolver, logger)
+	unsMetricsWriter := writers.NewUnsMetrics(resolver, logger)
+	poParameterWriter := writers.NewPOParameter(resolver, logger)
 
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
-	// Parses the AMQP payload, dispatches each metric by kind to the
-	// matching writer. Unknown kinds increment a counter and skip.
+	// Parses the AMQP payload, builds one Query per metric via the right
+	// writer, and sends them as a single pgx.Batch.
 	sparkplugHandler := handlers.NewSparkplugHandler(
-		equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
+		pool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
 	)
 
 	dispatcher := handlers.NewDispatcher(logger)

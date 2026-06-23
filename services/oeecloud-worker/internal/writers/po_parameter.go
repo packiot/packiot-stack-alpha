@@ -8,121 +8,96 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 )
 
-// POParameter handles KindParameter — sparkplug metrics whose metric.ID
-// falls in 30700-30899 (line config + PO control).
+// POParameter handles KindParameter (metric.ID in 30700-30899 — line
+// config + PO control).
 //
 // Phased port:
 //
-//	30700  line order              → ❌ not yet — needs packml_register lookup +
-//	                                  multi-row equipment_values UPDATE
+//	30700  line order              → ❌ not yet — needs packml_register lookup
+//	                                  + multi-row equipment_values UPDATE
 //	30701  ideal_production_speed  → ✅ implemented (single equipment_values UPSERT)
-//	30810-30819, 30850
-//	       PO setup parameters     → ❌ not yet — multi-table
 //	30800-30899
 //	       PO control (start/stop) → ❌ not yet — touches production_orders +
 //	                                  production_orders_runtime via complex
-//	                                  SELECT-then-decide logic in the Node-RED
-//	                                  Prep node (~200 lines)
+//	                                  SELECT-then-decide logic in Node-RED
+//	                                  (~200 lines)
 //
-// Unhandled IDs in range are LOGGED with a counter so we can measure their
-// real frequency under live CPACK traffic before investing porting effort.
-// The mirror-worker already replays operator-side PO actions via user_logs
-// polling, so PLC-side PO Parameter signals are mostly redundant on staging
-// for PO lifecycle — but they're needed for "complete the worker".
+// Unhandled IDs are LOGGED with a counter so we can measure their real
+// frequency under live CPACK traffic before investing porting effort.
 type POParameter struct {
-	pool     *pgxpool.Pool
 	resolver *sparkplug.Resolver
 	logger   *slog.Logger
 
-	// Per-ID counters help size the work needed for each branch.
-	wroteIdealSpeed atomic.Uint64
+	wroteIdealSpeed  atomic.Uint64
 	skippedLineOrder atomic.Uint64
-	skippedPOCtl    atomic.Uint64
-	skippedOther    atomic.Uint64
+	skippedPOCtl     atomic.Uint64
+	skippedOther     atomic.Uint64
 }
 
-func NewPOParameter(pool *pgxpool.Pool, r *sparkplug.Resolver, logger *slog.Logger) *POParameter {
-	return &POParameter{pool: pool, resolver: r, logger: logger}
+func NewPOParameter(r *sparkplug.Resolver, logger *slog.Logger) *POParameter {
+	return &POParameter{resolver: r, logger: logger}
 }
 
 func (w *POParameter) CanWrite(kind sparkplug.MetricKind) bool {
 	return kind == sparkplug.KindParameter
 }
 
-func (w *POParameter) Write(ctx context.Context, m *sparkplug.Metric, _ string) error {
+func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string) (*Query, error) {
 	if m.ID == nil {
-		// Parameter metric without metric.ID — can't route. Log + skip.
 		w.skippedOther.Add(1)
-		return nil
+		return nil, nil
 	}
 	id := *m.ID
 
 	switch {
 	case id == 30701:
-		return w.writeIdealProductionSpeed(ctx, m)
+		return w.buildIdealProductionSpeed(ctx, m)
 	case id == 30700:
 		w.skippedLineOrder.Add(1)
 		w.logger.Debug("po-parameter: 30700 line-order not yet ported, skipping",
-			slog.String("name", m.Name),
-			slog.Int("id", id),
-		)
-		return nil
+			slog.String("name", m.Name), slog.Int("id", id))
+		return nil, nil
 	case id >= 30800 && id <= 30899:
 		w.skippedPOCtl.Add(1)
 		w.logger.Debug("po-parameter: 30800-30899 PO control not yet ported, skipping",
-			slog.String("name", m.Name),
-			slog.Int("id", id),
-		)
-		return nil
+			slog.String("name", m.Name), slog.Int("id", id))
+		return nil, nil
 	default:
 		w.skippedOther.Add(1)
 		w.logger.Debug("po-parameter: unrecognised id, skipping",
-			slog.String("name", m.Name),
-			slog.Int("id", id),
-		)
-		return nil
+			slog.String("name", m.Name), slog.Int("id", id))
+		return nil, nil
 	}
 }
 
-// writeIdealProductionSpeed mirrors Node-RED's Prep for parameter 30701:
-//
-//	INSERT INTO equipment_values (ts_value,id_enterprise,id_site,id_area,
-//	  id_equipment, ideal_production_speed)
-//	VALUES (...)
-//	ON CONFLICT (ts_value, id_equipment) DO UPDATE
-//	  SET ideal_production_speed = EXCLUDED.ideal_production_speed
-func (w *POParameter) writeIdealProductionSpeed(ctx context.Context, m *sparkplug.Metric) error {
+// buildIdealProductionSpeed mirrors Node-RED's Prep for parameter 30701:
+// UPSERT equipment_values.ideal_production_speed for (ts_value, id_equipment).
+func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplug.Metric) (*Query, error) {
 	topic := m.TopicForRegister()
 	info, err := w.resolver.Resolve(ctx, topic)
 	if err != nil {
-		return fmt.Errorf("resolve topic %s: %w", topic, err)
+		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
 	if info == nil {
 		w.logger.Debug("po-parameter 30701: topic not registered, skipping",
-			slog.String("topic", topic),
-			slog.String("name", m.Name),
-		)
-		return nil
+			slog.String("topic", topic), slog.String("name", m.Name))
+		return nil, nil
 	}
 
 	var speed float64
 	if err := json.Unmarshal(m.Value, &speed); err != nil {
-		return fmt.Errorf("parse 30701 ideal_production_speed value (name=%s): %w", m.Name, err)
+		return nil, fmt.Errorf("parse 30701 ideal_production_speed value (name=%s): %w", m.Name, err)
 	}
-
 	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
 
-	// ideal_production_speed is integer; Sparkplug sometimes carries it as
-	// a float (e.g. 100.0). Round to nearest int rather than truncating —
-	// matches Node-RED's implicit Number → integer coercion at the
-	// postgres boundary.
+	// ideal_production_speed is integer; Sparkplug sometimes carries float
+	// (100.0). Round to nearest int — matches Node-RED's implicit coercion.
 	speedInt := int(speed + 0.5)
 
-	const q = `
+	const sql = `
 		INSERT INTO public.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 ideal_production_speed, signal_quality)
@@ -131,16 +106,16 @@ func (w *POParameter) writeIdealProductionSpeed(ctx context.Context, m *sparkplu
 			ideal_production_speed = EXCLUDED.ideal_production_speed,
 			signal_quality         = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
 	`
-	_, err = w.pool.Exec(ctx, q,
-		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		speedInt, info.SignalQuality,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert equipment_values (ideal_production_speed) eq=%d ts=%s: %w",
-			info.IDEquipment, ts.Format(time.RFC3339), err)
-	}
 	w.wroteIdealSpeed.Add(1)
-	return nil
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			speedInt, info.SignalQuality,
+		},
+		Desc: fmt.Sprintf("upsert equipment_values (ideal_production_speed) eq=%d ts=%s",
+			info.IDEquipment, ts.Format(time.RFC3339)),
+	}, nil
 }
 
 // Stats returns per-ID counters for /health expansion later.
