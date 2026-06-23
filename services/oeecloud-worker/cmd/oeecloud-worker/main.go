@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -58,10 +59,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Fetch secrets at startup. CO-5: secrets live in AWS Secrets Manager,
-	// not env vars (which leak via `docker inspect` and EB platform-event
-	// logs). Failure here is fatal — there's nothing useful the worker can
-	// do without DB + AMQP creds.
+	// Fetch DB creds from AWS Secrets Manager — CO-5 partial. RabbitMQ
+	// creds stay in env until a dedicated least-privilege consumer user
+	// lands on the broker (the existing packiot/staging/rabbitmq-client-creds
+	// secret carries `edge-client`, a write-only publisher user that the
+	// broker doesn't actually know — see config package comment).
 	secretsCtx, secretsCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer secretsCancel()
 	dbCreds, err := secrets.FetchDBCreds(secretsCtx, cfg.AWSRegion, cfg.PGSecretID)
@@ -71,16 +73,11 @@ func main() {
 			slog.String("secret_id", cfg.PGSecretID))
 		os.Exit(1)
 	}
-	amqpCreds, err := secrets.FetchAMQPCreds(secretsCtx, cfg.AWSRegion, cfg.RabbitMQSecretID, cfg.AMQPHost, cfg.AMQPPort)
-	if err != nil {
-		logger.Error("fetch rabbitmq secret failed",
-			slog.String("err", err.Error()),
-			slog.String("secret_id", cfg.RabbitMQSecretID))
-		os.Exit(1)
-	}
-	logger.Info("secrets fetched",
+	amqpURL := buildAMQPURL(cfg.AMQPUser, cfg.AMQPPassword, cfg.AMQPHost, cfg.AMQPPort)
+	logger.Info("creds ready",
 		slog.String("db", dbCreds.Redacted("oeecloud-worker")),
-		slog.String("amqp", amqpCreds.Redacted()))
+		slog.String("amqp_user", cfg.AMQPUser),
+		slog.String("amqp_host", cfg.AMQPHost))
 
 	// Postgres pool — used by writers. Sized small (see db.New) because
 	// the consume loop is single-goroutine; at most one query is in flight
@@ -114,7 +111,7 @@ func main() {
 	dispatcher := handlers.NewDispatcher(logger)
 	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
 
-	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, logger)
+	consumer := amqp.NewConsumer(cfg, amqpURL, dispatcher, logger)
 
 	// *amqp.Consumer.Snapshot() satisfies health.Snapshotter directly
 	// since the redesigned interface uses concrete types.
@@ -132,6 +129,19 @@ func main() {
 	_ = healthSrv.Shutdown(shutdownCtx)
 
 	logger.Info("oeecloud-worker stopped")
+}
+
+// buildAMQPURL percent-encodes user + password via net/url so passwords
+// with URL-syntactic chars (':', '@', '<' …) don't poison the DSN parser.
+// Same fix mirror-worker-go's secrets.DBCreds.URL() applies for postgres.
+func buildAMQPURL(user, password, host string, port int) string {
+	u := &url.URL{
+		Scheme: "amqp",
+		User:   url.UserPassword(user, password),
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   "/",
+	}
+	return u.String()
 }
 
 // runHealthcheck does an HTTP GET against the in-process /health endpoint

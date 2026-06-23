@@ -1,6 +1,9 @@
-// Package secrets fetches DB + AMQP creds from AWS Secrets Manager at
-// startup. CO-5 — no plaintext POSTGRES_PASSWORD / RABBITMQ_PASSWORD in
-// compose env vars (visible via `docker inspect`).
+// Package secrets fetches DB creds from AWS Secrets Manager at startup.
+// CO-5 partial: removes plaintext POSTGRES_PASSWORD from compose env
+// (visible via `docker inspect`). RabbitMQ creds stay in env until a
+// dedicated least-privilege consumer user lands on the broker — the
+// existing packiot/staging/rabbitmq-client-creds secret is for the
+// `edge-client` write-only publisher, not for an oeecloud consumer.
 //
 // Two secret shapes supported by FetchDBCreds (so this same code works
 // against staging's packiot/staging/db AND prod's databaseCredentials):
@@ -28,13 +31,6 @@ type DBCreds struct {
 	User     string
 	Password string
 	Database string
-}
-
-type AMQPCreds struct {
-	Username string
-	Password string
-	Host     string
-	Port     int
 }
 
 func pick(m map[string]any, keys ...string) string {
@@ -125,25 +121,6 @@ func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error
 	return c, nil
 }
 
-// FetchAMQPCreds reads {username, password} from the secret + takes
-// host/port from the caller (those are docker-network constants).
-func FetchAMQPCreds(ctx context.Context, region, secretID, host string, port int) (*AMQPCreds, error) {
-	raw, err := getSecretJSON(ctx, region, secretID)
-	if err != nil {
-		return nil, err
-	}
-	c := &AMQPCreds{
-		Username: pick(raw, "username", "user", "AMQP_USER", "RABBITMQ_USER"),
-		Password: pick(raw, "password", "AMQP_PASSWORD", "RABBITMQ_PASSWORD"),
-		Host:     host,
-		Port:     port,
-	}
-	if c.Username == "" || c.Password == "" {
-		return nil, fmt.Errorf("secret %s: missing username or password", secretID)
-	}
-	return c, nil
-}
-
 // URL builds a postgres DSN with proper percent-encoding so passwords
 // containing URL-syntactic chars (':', '@', '<', '?', '#', '/' …) don't
 // corrupt the parse. Hand-rolling fmt.Sprintf breaks here — pgx parses
@@ -167,17 +144,3 @@ func (c *DBCreds) Redacted(appName string) string {
 		url.PathEscape(c.User), c.Host, c.Port, c.Database, appName)
 }
 
-// URL builds an AMQP DSN with proper percent-encoding.
-func (a *AMQPCreds) URL() string {
-	u := &url.URL{
-		Scheme: "amqp",
-		User:   url.UserPassword(a.Username, a.Password),
-		Host:   fmt.Sprintf("%s:%d", a.Host, a.Port),
-		Path:   "/",
-	}
-	return u.String()
-}
-
-func (a *AMQPCreds) Redacted() string {
-	return fmt.Sprintf("amqp://%s:***@%s:%d/", url.PathEscape(a.Username), a.Host, a.Port)
-}

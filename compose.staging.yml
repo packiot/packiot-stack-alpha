@@ -672,12 +672,15 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
-      # CO-5: AMQP + DB credentials fetched from AWS Secrets Manager at
-      # startup. The EC2 instance role grants packiot/staging/* access.
-      # No plaintext passwords in env / `docker inspect` / .env.
+      # CO-5 partial: DB password from Secrets Manager. RabbitMQ stays on
+      # env until a least-privilege consumer user lands on the broker —
+      # the existing packiot/staging/rabbitmq-client-creds carries
+      # `edge-client` (a write-only publisher user the broker doesn't
+      # actually know).
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
-      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-client-creds
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: oee
