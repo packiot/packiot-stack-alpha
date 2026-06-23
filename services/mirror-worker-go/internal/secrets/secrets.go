@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -120,15 +121,27 @@ func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error
 	}, nil
 }
 
-// URL builds a postgres connection string from the creds. application_name
-// is set so pg_stat_activity shows which client is connected.
+// URL builds a postgres connection string from the creds. Uses net/url
+// so passwords with URL-unsafe chars (':', '@', '<', '?', '#', '/' …)
+// get percent-encoded properly. Hand-rolling fmt.Sprintf would break:
+// the prod awslambda password contains '<' + ':' which pgx then tries
+// to interpret as a port number ("invalid port" error).
 func (c *DBCreds) URL(appName string) string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable&application_name=%s",
-		c.User, c.Password, c.Host, c.Port, c.Database, appName)
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.User, c.Password),
+		Host:   fmt.Sprintf("%s:%d", c.Host, c.Port),
+		Path:   "/" + c.Database,
+	}
+	q := u.Query()
+	q.Set("sslmode", "disable")
+	q.Set("application_name", appName)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Redacted returns a URL with the password masked, for logging.
 func (c *DBCreds) Redacted(appName string) string {
 	return fmt.Sprintf("postgres://%s:***@%s:%d/%s?application_name=%s",
-		c.User, c.Host, c.Port, c.Database, appName)
+		url.PathEscape(c.User), c.Host, c.Port, c.Database, appName)
 }
