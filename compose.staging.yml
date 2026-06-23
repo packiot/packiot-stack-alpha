@@ -672,8 +672,12 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      # CO-5: AMQP + DB credentials fetched from AWS Secrets Manager at
+      # startup. The EC2 instance role grants packiot/staging/* access.
+      # No plaintext passwords in env / `docker inspect` / .env.
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: packiot/staging/db
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-client-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: oee
@@ -685,11 +689,6 @@ services:
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
-      PG_HOST: pgbouncer
-      PG_PORT: "5432"
-      PG_USER: ${POSTGRES_USER}
-      PG_PASSWORD: ${POSTGRES_PASSWORD}
-      PG_DATABASE: ${POSTGRES_DB}
       HEALTH_PORT: "9101"
     networks:
       packiot-net:

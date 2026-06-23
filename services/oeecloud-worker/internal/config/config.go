@@ -1,19 +1,22 @@
 // Package config loads runtime configuration from environment variables.
-// Mirrors the env-driven pattern used by mirror-worker.
+// Secrets (DB password, RabbitMQ password) are NOT in env — they are
+// fetched from AWS Secrets Manager by main.go at startup. See CO-5.
 package config
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 )
 
 type Config struct {
-	// AMQP
-	AMQPUser     string
-	AMQPPassword string
-	AMQPHost     string
-	AMQPPort     int
+	// AWS Secrets Manager
+	AWSRegion        string
+	PGSecretID       string // packiot/staging/db
+	RabbitMQSecretID string // packiot/staging/rabbitmq-client-creds
+
+	// AMQP — host/port only. Username + password come from Secrets Manager.
+	AMQPHost string
+	AMQPPort int
 
 	// Exchanges + queues. The worker SHARES the live `oee` topic exchange
 	// (where edge-nodered publishes) but binds a SEPARATE queue so it can
@@ -33,13 +36,6 @@ type Config struct {
 	// Consumer tuning
 	Prefetch int // 50 — bounded outstanding ack count
 
-	// Postgres (placeholder for next session — handlers will use it)
-	PGHost     string
-	PGPort     int
-	PGUser     string
-	PGPassword string
-	PGDatabase string
-
 	// HTTP
 	HealthPort int
 
@@ -48,37 +44,24 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	cfg := &Config{
-		AMQPUser:       getenv("RABBITMQ_USER", "packiot"),
-		AMQPPassword:   getenv("RABBITMQ_PASSWORD", ""),
-		AMQPHost:       getenv("RABBITMQ_HOST", "rabbitmq"),
-		AMQPPort:       getenvInt("RABBITMQ_PORT", 5672),
-		SourceExchange: getenv("SOURCE_EXCHANGE", "oee"),
-		WorkerQueue:    getenv("WORKER_QUEUE", "oeecloud-worker-q"),
-		RetryExchange:  getenv("RETRY_EXCHANGE", "oee-retry"),
-		RetryQueue:     getenv("RETRY_QUEUE", "oeecloud-worker-q-retry-30s"),
-		FailedExchange: getenv("FAILED_EXCHANGE", "oee-failed"),
-		FailedQueue:    getenv("FAILED_QUEUE", "oeecloud-worker-q-failed"),
-		RetryTTLMs:     getenvInt("RETRY_TTL_MS", 30000),
-		MaxRetries:     getenvInt("MAX_RETRIES", 5),
-		Prefetch:       getenvInt("PREFETCH", 50),
-		PGHost:         getenv("PG_HOST", "pgbouncer"),
-		PGPort:         getenvInt("PG_PORT", 5432),
-		PGUser:         getenv("PG_USER", "postgres"),
-		PGPassword:     getenv("PG_PASSWORD", ""),
-		PGDatabase:     getenv("PG_DATABASE", "packiot"),
-		HealthPort:     getenvInt("HEALTH_PORT", 9101),
-		LogLevel:       getenv("LOG_LEVEL", "info"),
-	}
-	if cfg.AMQPPassword == "" {
-		return nil, fmt.Errorf("RABBITMQ_PASSWORD required")
-	}
-	return cfg, nil
-}
-
-func (c *Config) AMQPURL() string {
-	return fmt.Sprintf("amqp://%s:%s@%s:%d/",
-		c.AMQPUser, c.AMQPPassword, c.AMQPHost, c.AMQPPort)
+	return &Config{
+		AWSRegion:        getenv("AWS_REGION", "us-east-1"),
+		PGSecretID:       getenv("PG_SECRET_ID", "packiot/staging/db"),
+		RabbitMQSecretID: getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-client-creds"),
+		AMQPHost:         getenv("RABBITMQ_HOST", "rabbitmq"),
+		AMQPPort:         getenvInt("RABBITMQ_PORT", 5672),
+		SourceExchange:   getenv("SOURCE_EXCHANGE", "oee"),
+		WorkerQueue:      getenv("WORKER_QUEUE", "oeecloud-worker-q"),
+		RetryExchange:    getenv("RETRY_EXCHANGE", "oee-retry"),
+		RetryQueue:       getenv("RETRY_QUEUE", "oeecloud-worker-q-retry-30s"),
+		FailedExchange:   getenv("FAILED_EXCHANGE", "oee-failed"),
+		FailedQueue:      getenv("FAILED_QUEUE", "oeecloud-worker-q-failed"),
+		RetryTTLMs:       getenvInt("RETRY_TTL_MS", 30000),
+		MaxRetries:       getenvInt("MAX_RETRIES", 5),
+		Prefetch:         getenvInt("PREFETCH", 50),
+		HealthPort:       getenvInt("HEALTH_PORT", 9101),
+		LogLevel:         getenv("LOG_LEVEL", "info"),
+	}, nil
 }
 
 func getenv(name, fallback string) string {

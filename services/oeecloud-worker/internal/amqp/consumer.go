@@ -21,6 +21,7 @@ import (
 // so broker restarts heal automatically.
 type Consumer struct {
 	cfg        *config.Config
+	amqpURL    string // built from secrets at startup; not in cfg to keep cfg secret-free
 	dispatcher *handlers.Dispatcher
 	logger     *slog.Logger
 
@@ -39,9 +40,10 @@ type Consumer struct {
 	startedAt time.Time
 }
 
-func NewConsumer(cfg *config.Config, d *handlers.Dispatcher, logger *slog.Logger) *Consumer {
+func NewConsumer(cfg *config.Config, amqpURL string, d *handlers.Dispatcher, logger *slog.Logger) *Consumer {
 	return &Consumer{
 		cfg:        cfg,
+		amqpURL:    amqpURL,
 		dispatcher: d,
 		logger:     logger,
 		startedAt:  time.Now(),
@@ -103,7 +105,7 @@ func backoff(attempt int) time.Duration {
 // connectAndConsume does one full dial → declare → consume cycle.
 // Returns when the connection drops (nil for clean close, error otherwise).
 func (c *Consumer) connectAndConsume(ctx context.Context) error {
-	conn, err := amqp.Dial(c.cfg.AMQPURL())
+	conn, err := amqp.Dial(c.amqpURL)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
@@ -57,10 +58,34 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Fetch secrets at startup. CO-5: secrets live in AWS Secrets Manager,
+	// not env vars (which leak via `docker inspect` and EB platform-event
+	// logs). Failure here is fatal — there's nothing useful the worker can
+	// do without DB + AMQP creds.
+	secretsCtx, secretsCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer secretsCancel()
+	dbCreds, err := secrets.FetchDBCreds(secretsCtx, cfg.AWSRegion, cfg.PGSecretID)
+	if err != nil {
+		logger.Error("fetch db secret failed",
+			slog.String("err", err.Error()),
+			slog.String("secret_id", cfg.PGSecretID))
+		os.Exit(1)
+	}
+	amqpCreds, err := secrets.FetchAMQPCreds(secretsCtx, cfg.AWSRegion, cfg.RabbitMQSecretID, cfg.AMQPHost, cfg.AMQPPort)
+	if err != nil {
+		logger.Error("fetch rabbitmq secret failed",
+			slog.String("err", err.Error()),
+			slog.String("secret_id", cfg.RabbitMQSecretID))
+		os.Exit(1)
+	}
+	logger.Info("secrets fetched",
+		slog.String("db", dbCreds.Redacted("oeecloud-worker")),
+		slog.String("amqp", amqpCreds.Redacted()))
+
 	// Postgres pool — used by writers. Sized small (see db.New) because
 	// the consume loop is single-goroutine; at most one query is in flight
 	// at any time.
-	pool, err := db.New(ctx, cfg, logger)
+	pool, err := db.New(ctx, dbCreds, logger)
 	if err != nil {
 		logger.Error("postgres pool init failed", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -89,7 +114,7 @@ func main() {
 	dispatcher := handlers.NewDispatcher(logger)
 	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
 
-	consumer := amqp.NewConsumer(cfg, dispatcher, logger)
+	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, logger)
 
 	// *amqp.Consumer.Snapshot() satisfies health.Snapshotter directly
 	// since the redesigned interface uses concrete types.
