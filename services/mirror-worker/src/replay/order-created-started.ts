@@ -7,7 +7,6 @@ import {
   insertMapping,
   lookupMapping,
   stagingSelectOne,
-  withStagingTx,
 } from '../db/staging';
 import { getStagingApiToken } from '../runtime';
 import {
@@ -51,7 +50,7 @@ interface OrderCreatedStartedPayload {
 }
 
 export async function replayOrderCreatedStarted(
-  _client: PoolClient,
+  client: PoolClient,
   row: ProdUserLog,
 ): Promise<void> {
   const payload = row.payload as OrderCreatedStartedPayload;
@@ -71,12 +70,15 @@ export async function replayOrderCreatedStarted(
   const stagingSiteId = await translateSiteId(payload.idSite);
   const stagingAreaId = await translateAreaId(payload.idArea);
 
+  // ts_event window guards against accidentally binding to a much-older
+  // PO that happens to reuse the same (id_enterprise, id_order) pair.
   const prodPoRow = await prodSelectOne<{ id_production_order: string }>(
     `SELECT id_production_order::text
        FROM production_orders
       WHERE id_enterprise = $1 AND id_order = $2
+        AND created_at >= $3::timestamptz - interval '1 minute'
       ORDER BY id_production_order DESC LIMIT 1`,
-    [config.prodEnterpriseId, idOrderNum],
+    [config.prodEnterpriseId, idOrderNum, row.ts_event.toISOString()],
   );
   if (!prodPoRow) {
     throw new Error(
@@ -139,14 +141,14 @@ export async function replayOrderCreatedStarted(
     );
   }
   const stagingPoId = BigInt(created.id_production_order);
-  await withStagingTx(async (c) => {
-    await insertMapping(c, {
-      entityType: 'production_order',
-      source: config.sourceName,
-      prodId: prodPoId,
-      stagingId: stagingPoId,
-      sourceLogId: BigInt(row.id_user_logs),
-    });
+  // Insert via the outer transaction's client — see comment in
+  // order-created.ts; nested withStagingTx broke atomicity.
+  await insertMapping(client, {
+    entityType: 'production_order',
+    source: config.sourceName,
+    prodId: prodPoId,
+    stagingId: stagingPoId,
+    sourceLogId: BigInt(row.id_user_logs),
   });
 
   log.info(
