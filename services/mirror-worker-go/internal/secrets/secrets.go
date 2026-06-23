@@ -12,52 +12,57 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
-// DBCreds is the shape both packiot/staging/db and databaseCredentials use.
-// Slight diff: packiot/staging/db has 'name' (database), databaseCredentials
-// has 'db'. We accept both via json tag aliases on a custom Unmarshal.
+// DBCreds is the unified shape after normalisation. Different secrets
+// in this project use different key names — we parse via a flexible
+// map and pick whichever variant of each field is populated.
 type DBCreds struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	Database string `json:"-"`
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Database string
 }
 
-// rawDBCreds catches both 'name' and 'db' database-name fields. Either
-// can be present; non-empty wins. Port can be string or int in different
-// secret schemas; intOrString normalises.
-type rawDBCreds struct {
-	Host     string `json:"host"`
-	Port     intOrString `json:"port"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	Name     string `json:"name"`
-	DB       string `json:"db"`
-}
-
-// intOrString accepts either a JSON number or a JSON string-encoded
-// number. Some secret managers normalise everything to strings.
-type intOrString int
-
-func (i *intOrString) UnmarshalJSON(b []byte) error {
-	var n int
-	if err := json.Unmarshal(b, &n); err == nil {
-		*i = intOrString(n)
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(b, &s); err == nil {
-		var nn int
-		if _, err := fmt.Sscanf(s, "%d", &nn); err != nil {
-			return fmt.Errorf("port string %q is not an integer: %w", s, err)
+// pick returns the first non-empty value from a list of keys looked up
+// in the raw secret map. Lets one parser handle multiple key naming
+// conventions ('host' vs 'DB_HOST', 'name' vs 'DB_NAME' vs 'db', etc).
+func pick(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch x := v.(type) {
+			case string:
+				if x != "" {
+					return x
+				}
+			case float64:
+				return fmt.Sprintf("%v", int64(x))
+			}
 		}
-		*i = intOrString(nn)
-		return nil
 	}
-	return fmt.Errorf("port: not a number or string-number")
+	return ""
 }
 
-// FetchDBCreds pulls + parses a JSON secret into DBCreds.
+func pickInt(m map[string]any, keys ...string) (int, error) {
+	s := pick(m, keys...)
+	if s == "" {
+		return 0, nil
+	}
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return 0, fmt.Errorf("not an integer: %q", s)
+	}
+	return n, nil
+}
+
+// FetchDBCreds pulls + parses a JSON secret into DBCreds. Tolerates
+// both naming conventions used in this project:
+//
+//   packiot/staging/db   → {host, port, user, password, name}
+//   databaseCredentials  → {DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME}
+//
+// pick() walks each candidate key in order and returns the first
+// non-empty value. Adding more secrets later = add more aliases to
+// the candidate lists.
 func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error) {
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
@@ -73,23 +78,45 @@ func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error
 	if out.SecretString == nil {
 		return nil, fmt.Errorf("secret %s: no SecretString", secretID)
 	}
-	var raw rawDBCreds
+	var raw map[string]any
 	if err := json.Unmarshal([]byte(*out.SecretString), &raw); err != nil {
 		return nil, fmt.Errorf("parse secret %s: %w", secretID, err)
 	}
-	dbName := raw.Name
-	if dbName == "" {
-		dbName = raw.DB
+
+	host := pick(raw, "host", "DB_HOST")
+	port, perr := pickInt(raw, "port", "DB_PORT")
+	if perr != nil {
+		return nil, fmt.Errorf("secret %s: %w", secretID, perr)
 	}
-	if dbName == "" {
-		return nil, fmt.Errorf("secret %s: missing 'name' or 'db' field", secretID)
+	user := pick(raw, "user", "DB_USER")
+	password := pick(raw, "password", "DB_PASSWORD")
+	database := pick(raw, "name", "db", "DB_NAME", "database")
+
+	missing := []string{}
+	if host == "" {
+		missing = append(missing, "host/DB_HOST")
+	}
+	if port == 0 {
+		missing = append(missing, "port/DB_PORT")
+	}
+	if user == "" {
+		missing = append(missing, "user/DB_USER")
+	}
+	if password == "" {
+		missing = append(missing, "password/DB_PASSWORD")
+	}
+	if database == "" {
+		missing = append(missing, "name/db/DB_NAME/database")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("secret %s: missing fields %v", secretID, missing)
 	}
 	return &DBCreds{
-		Host:     raw.Host,
-		Port:     int(raw.Port),
-		User:     raw.User,
-		Password: raw.Password,
-		Database: dbName,
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: database,
 	}, nil
 }
 
