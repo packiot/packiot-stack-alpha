@@ -10,8 +10,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,6 +31,13 @@ import (
 )
 
 func main() {
+	// Docker healthcheck path. Distroless has no shell/curl/wget, so the
+	// binary self-probes via HTTP. Exit 0 = healthy, non-zero = not.
+	// Invoked via compose `healthcheck: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]`.
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
@@ -97,4 +107,43 @@ func main() {
 	_ = healthSrv.Shutdown(shutdownCtx)
 
 	logger.Info("oeecloud-worker stopped")
+}
+
+// runHealthcheck does an HTTP GET against the in-process /health endpoint
+// and returns a process exit code: 0 if the body parses + healthy=true,
+// 1 otherwise. Honors HEALTH_PORT just like the server side. Used by
+// docker's HEALTHCHECK directive because distroless has no shell/wget.
+//
+// 2-second timeout — if /health takes longer than that to answer, the
+// worker is probably unhealthy anyway.
+func runHealthcheck() int {
+	port := 9101
+	if p := os.Getenv("HEALTH_PORT"); p != "" {
+		fmt.Sscanf(p, "%d", &port)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: GET %s: %v\n", url, err)
+		return 1
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: read body: %v\n", err)
+		return 1
+	}
+	var meta struct {
+		Healthy bool `json:"healthy"`
+	}
+	if err := json.Unmarshal(body, &meta); err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: parse body: %v\n", err)
+		return 1
+	}
+	if !meta.Healthy {
+		fmt.Fprintf(os.Stderr, "healthcheck: not healthy: %s\n", string(body))
+		return 1
+	}
+	return 0
 }

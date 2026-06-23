@@ -130,7 +130,11 @@ resource "aws_iam_policy" "app_custom" {
           "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*",
           # databaseCredentials holds the prod SELECT-only awslambda user creds,
           # read by the mirror-worker to replay prod user_logs onto staging.
-          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:databaseCredentials-*",
+          # ?????? matches the 6-char alphanumeric suffix AWS auto-appends —
+          # constraining to the canonical name only. A future secret like
+          # `databaseCredentials-prod-foo-XXXXXX` would NOT match (12 chars
+          # after the literal `databaseCredentials-` instead of 6).
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:databaseCredentials-??????",
         ]
       },
       {

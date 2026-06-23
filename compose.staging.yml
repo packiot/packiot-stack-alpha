@@ -443,6 +443,8 @@ services:
       - "edge-nodered:172.18.0.4"
       - "edge-api:172.18.0.3"
       - "pgbouncer:172.18.0.10"
+    mem_limit: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
@@ -590,6 +592,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 90s
+    mem_limit: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
@@ -640,9 +644,22 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_started
-    # Distroless image has no wget/curl; healthcheck below uses the binary
-    # itself to probe (not implemented yet — until then, the docker
-    # healthcheck is left off and we rely on /health via Grafana for ops).
+      db-migrate:
+        # Wait for migrations before consuming — otherwise the first
+        # ~10s of resolver queries fail (packml_register may not exist),
+        # producing spurious nacks until db-migrate catches up.
+        condition: service_completed_successfully
+    # Worker self-probes via `--healthcheck` subcommand (distroless image
+    # has no shell/wget/curl, so the binary handles HTTP probe of its own
+    # in-process /health server). Exit 0 = healthy, non-zero = not.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
@@ -666,7 +683,11 @@ services:
         ipv4_address: 172.18.0.19
     depends_on:
       edge-nodered:
-        condition: service_started
+        # Wait for edge-nodered's healthcheck — without it, the SPA's
+        # initial API calls 5xx until the Node-RED flows are loaded.
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
