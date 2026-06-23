@@ -1,7 +1,7 @@
 # Multi-stage build: compile to a static binary on Alpine, then ship a
 # distroless runtime. Same pattern as mirror-worker for consistency.
 
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 WORKDIR /src
 
 # Pull deps first so the layer caches when source changes but deps don't.
