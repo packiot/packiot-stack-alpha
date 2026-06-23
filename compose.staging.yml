@@ -598,6 +598,61 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── Mirror Worker (Go — MW-2 port of services/mirror-worker TS) ───────────────
+  # Parallel-run with the TS mirror-worker via independent cursor source
+  # ('cpack-prod-go' vs 'cpack-prod'). Both fetch the same prod user_logs
+  # rows and replay independently to staging edge-api — but each tracks
+  # its own mirror_replay_cursor + mirror_id_map rows. Staging POs created
+  # by either look up via the mapping (cache hit) on subsequent operator
+  # actions; deduplication is via the lookupMapping check at the top of
+  # each create handler.
+  #
+  # CO-5: fetches DB creds from AWS Secrets Manager at startup
+  # (databaseCredentials + packiot/staging/db) — no plaintext passwords
+  # in env vars.
+  #
+  # PHASE 1 of the port: ships with only order-status-changed handler
+  # registered. Other categories advance the cursor without acting (the
+  # TS worker handles them). PHASE 2 ports the remaining 9 handlers +
+  # the interval-overlap event matcher. Cut over after parity: rename
+  # source to 'cpack-prod' and stop the TS one.
+  mirror-worker-go:
+    build: ./services/mirror-worker-go
+    container_name: mirror-worker-go
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      PROD_DB_SECRET_ID: databaseCredentials
+      STAGING_DB_SECRET_ID: packiot/staging/db
+      SOURCE_NAME: cpack-prod-go
+      PROD_ENTERPRISE_ID: "1"
+      STAGING_ENTERPRISE_ID: "3"
+      POLL_INTERVAL_SEC: "60"
+      BATCH_SIZE: "50"
+      PER_POST_DELAY_MS: "50"
+      STAGING_API_URL: http://edge-api:8080
+      HEALTH_PORT: "9102"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.21
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      edge-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mirror-worker-go", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── oeecloud Worker (Go — replaces oeecloud-node-red over time) ───────────────
   # AMQP consumer with manual ack + DLX + retry topology. Runs in PARALLEL with
   # the existing stack-oeecloud-1 (Node-RED) by binding a SEPARATE queue
