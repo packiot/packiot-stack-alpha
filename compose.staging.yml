@@ -28,7 +28,6 @@ networks:
 
 volumes:
   nr-edge-data:
-  nr-oeecloud-data:
   grafana-data:
   loki-data:
   rabbitmq-data:
@@ -283,64 +282,15 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── OEECloud Node-RED ──────────────────────────────────────────────────────────
-  oeecloud:
-    build:
-      context: ./oeecloud-node-red
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      LOG_LEVEL: info
-      PG_HOST: pgbouncer
-      PG_PORT: "5432"
-      PG_USER: ${POSTGRES_USER}
-      PG_DATABASE: ${POSTGRES_DB}
-      PG_PASSWORD: ${POSTGRES_PASSWORD}
-      PG_SSL: ""
-      API_KEY: ${EDGE_API_KEY}
-      OEE_SERVER_NAME: staging
-      OEE_SERVER_URL: http://edge-nodered:1880
-      PING_API_URL: http://edge-api:8080/devices/ping
-      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-ops@packiot.com}
-      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-support@packiot.com}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_SECURE: ${SMTP_SECURE:-false}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      # 7200s = 2h grace covers the ~1h batched pg_cron cleanup window during
-      # which equipment_values writes pause.  Remove once cleanup is proven stable.
-      HEALTHCHECK_MAX_AGE_SEC: "7200"
-    ports:
-      - "127.0.0.1:1881:1880"
-    healthcheck:
-      test: ["CMD", "/healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    # Bypass Docker's embedded DNS (intermittent EAI_AGAIN under load).
-    extra_hosts:
-      - "pgbouncer:172.18.0.10"
-      - "rabbitmq:172.18.0.5"
-      - "edge-nodered:172.18.0.4"
-      - "edge-api:172.18.0.3"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      pgbouncer:
-        condition: service_started
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.6
-    volumes:
-      - nr-oeecloud-data:/data
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "5"}
+  # ── OEECloud Node-RED — DECOMMISSIONED 2026-06-23 ─────────────────────────────
+  # Replaced by `oeecloud-worker` (Go) below. Removal flow:
+  #   1. 24h parity-check passed (parity-check.sql sections A-E all green)
+  #   2. 5-min isolation test: stopped this service, worker carried 100% of
+  #      delivered messages (6074 acked, 0 nacks/failures) with no drop in
+  #      equipment_values throughput (~570 rows/min, freshness <1.9s)
+  #   3. AMQP queue oeecloud-q deleted (rabbitmqctl delete_queue)
+  #   4. Docker volume stack_nr-oeecloud-data removed (~9 GB SQLite buffer reclaim)
+  # See [[project_oeecloud_worker_migration]] for the full timeline.
 
   # ── Grafana ────────────────────────────────────────────────────────────────────
   grafana:
