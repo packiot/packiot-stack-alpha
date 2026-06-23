@@ -26,6 +26,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
@@ -120,9 +121,36 @@ func main() {
 		return map[string]any{"po_parameter": poParameterWriter.Stats()}
 	})
 
+	// Prometheus instrumentation. Registry + collectors are wired in
+	// the metrics pkg; consumer + main provide read closures via the
+	// SetMetrics / RegisterXCollector callback pattern so amqp/writers
+	// stay decoupled from prometheus.
+	mx := metrics.New()
+	mx.RegisterConsumerCollector(func() metrics.ConsumerSnapshot {
+		return metrics.ConsumerSnapshot{
+			Delivered:         consumer.DeliveredCount(),
+			Acked:             consumer.AckedCount(),
+			NackedToRetry:     consumer.NackedToRetryCount(),
+			PublishedToFailed: consumer.PublishedToFailedCount(),
+		}
+	})
+	mx.RegisterPOParameterCollector(func() metrics.POParameterSnapshot {
+		s := poParameterWriter.Stats()
+		return metrics.POParameterSnapshot{
+			WroteIdealSpeed:  s.WroteIdealSpeed,
+			SkippedLineOrder: s.SkippedLineOrder,
+			SkippedPOCtl:     s.SkippedPOCtl,
+			SkippedOther:     s.SkippedOther,
+		}
+	})
+	consumer.SetMetrics(
+		func(rk, result string) { mx.Deliveries.WithLabelValues(rk, result).Inc() },
+		func(rk string, secs float64) { mx.Duration.WithLabelValues(rk).Observe(secs) },
+	)
+
 	// *amqp.Consumer.Snapshot() satisfies health.Snapshotter directly
 	// since the redesigned interface uses concrete types.
-	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), consumer, logger)
+	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), consumer, mx.Registry, logger)
 	healthSrv.Start()
 
 	// Consumer.Run blocks until ctx cancelled.

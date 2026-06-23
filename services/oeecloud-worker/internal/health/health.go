@@ -9,6 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Snapshotter produces the body + healthy flag directly. Callers (e.g.
@@ -29,8 +32,15 @@ type Server struct {
 // return 200, unhealthy or build-error return 503 — same convention as
 // mirror-worker. Degraded states still return 200 so a single missed
 // delivery doesn't trip orchestration; Grafana alerts on the JSON fields.
-func New(addr string, snap Snapshotter, logger *slog.Logger) *Server {
+//
+// promReg may be nil — if non-nil, /metrics serves the Prometheus
+// gather output from that registry on the same port. Optional so the
+// health server stays usable without prom dep.
+func New(addr string, snap Snapshotter, promReg *prometheus.Registry, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
+	if promReg != nil {
+		mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{Registry: promReg}))
+	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		body, healthy, err := snap.Snapshot()
 		w.Header().Set("Content-Type", "application/json")

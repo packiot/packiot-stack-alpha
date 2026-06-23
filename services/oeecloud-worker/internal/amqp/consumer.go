@@ -30,6 +30,11 @@ type Consumer struct {
 	// it; nil means "no writers section".
 	writerStats func() any
 
+	// Optional Prometheus hooks — nil-safe. Set via SetMetrics.
+	// Same decoupling pattern as writerStats: amqp doesn't import metrics.
+	metricsDeliveries func(routingKey, result string)
+	metricsDuration   func(routingKey string, seconds float64)
+
 	// Metrics — read by /health for the JSON body.
 	delivered     atomic.Uint64
 	acked         atomic.Uint64
@@ -58,6 +63,20 @@ func NewConsumer(cfg *config.Config, amqpURL string, d *handlers.Dispatcher, log
 // SetWriterStats registers a callback that returns any JSON-marshalable
 // value to embed under the "writers" key of /health. Call before Run.
 func (c *Consumer) SetWriterStats(fn func() any) { c.writerStats = fn }
+
+// SetMetrics wires Prometheus recording callbacks. Both args may be nil.
+// Call before Run.
+func (c *Consumer) SetMetrics(deliveries func(routingKey, result string), duration func(routingKey string, seconds float64)) {
+	c.metricsDeliveries = deliveries
+	c.metricsDuration = duration
+}
+
+// Snapshot getter accessors so the metrics package can read counters
+// without importing the Snapshot struct or holding a lock-aware copy.
+func (c *Consumer) DeliveredCount() uint64      { return c.delivered.Load() }
+func (c *Consumer) AckedCount() uint64          { return c.acked.Load() }
+func (c *Consumer) NackedToRetryCount() uint64  { return c.nackedRetry.Load() }
+func (c *Consumer) PublishedToFailedCount() uint64 { return c.publishedFail.Load() }
 
 // Run blocks until ctx is cancelled. On any connection/channel failure,
 // it logs + sleeps with exponential backoff (capped at 30s) and reconnects.
@@ -183,6 +202,17 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.Delivery) {
 	c.delivered.Add(1)
 	c.lastDelivery.Store(time.Now().UnixNano())
+	start := time.Now()
+
+	// Defer the duration recording so it covers EVERY exit path including
+	// the early returns below (failed-exchange publish errors, etc.). The
+	// histogram represents "time we spent on this message before deciding
+	// ack/nack/republish" — useful regardless of outcome.
+	defer func() {
+		if c.metricsDuration != nil {
+			c.metricsDuration(d.RoutingKey, time.Since(start).Seconds())
+		}
+	}()
 
 	retries := xDeathCount(d.Headers)
 	if retries >= c.cfg.MaxRetries {
@@ -202,6 +232,9 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 		}
 		_ = d.Ack(false)
 		c.publishedFail.Add(1)
+		if c.metricsDeliveries != nil {
+			c.metricsDeliveries(d.RoutingKey, "exhausted_failed")
+		}
 		c.logger.Warn("message exceeded retry limit, sent to failed queue",
 			slog.Int("retries", retries),
 			slog.String("routing_key", d.RoutingKey),
@@ -214,6 +247,9 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 		// nack with requeue=false → DLX (retry exchange) → retry queue → TTL → back to source.
 		_ = d.Nack(false, false)
 		c.nackedRetry.Add(1)
+		if c.metricsDeliveries != nil {
+			c.metricsDeliveries(d.RoutingKey, "nacked_retry")
+		}
 		c.logger.Warn("handler error, nacked to retry",
 			slog.String("err", err.Error()),
 			slog.Int("retries_so_far", retries),
@@ -227,6 +263,9 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 		return
 	}
 	c.acked.Add(1)
+	if c.metricsDeliveries != nil {
+		c.metricsDeliveries(d.RoutingKey, "acked")
+	}
 }
 
 // xDeathCount sums the count fields of all x-death header entries.
