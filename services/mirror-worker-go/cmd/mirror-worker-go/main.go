@@ -111,7 +111,24 @@ func main() {
 	disp := replay.NewDispatcher()
 	disp.Register("order-status-changed",
 		replay.OrderStatusChanged(cfg, t, tok.Get, httpc, logger))
-	// Other categories no-op (cursor still advances) — phase 2 ports the rest.
+	disp.Register("order-created",
+		replay.OrderCreated(cfg, t, prodDB, stagingDB, tok.Get, httpc, logger))
+	disp.Register("order-created-started",
+		replay.OrderCreatedStarted(cfg, t, prodDB, stagingDB, tok.Get, httpc, logger))
+	disp.Register("order-started",
+		replay.OrderStarted(cfg, t, tok.Get, httpc, logger))
+	disp.Register("order-changed",
+		replay.OrderChanged(cfg, t, tok.Get, httpc, logger))
+	disp.Register("order-stopped",
+		replay.OrderStopped(cfg, t, tok.Get, httpc, logger))
+	disp.Register("order-replaced",
+		replay.OrderReplaced(cfg, t, tok.Get, httpc, logger))
+	disp.Register("event-justified",
+		replay.EventJustified(cfg, t, tok.Get, httpc, logger))
+	disp.Register("event-edited",
+		replay.EventEdited(cfg, t, prodDB, tok.Get, httpc, logger))
+	disp.Register("event-splitted",
+		replay.EventSplitted(cfg, t, tok.Get, httpc, logger))
 
 	logger.Info("dispatcher ready",
 		slog.Any("handled_categories", disp.HandledCategories()),

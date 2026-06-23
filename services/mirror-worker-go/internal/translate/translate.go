@@ -14,10 +14,13 @@ package translate
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
@@ -166,13 +169,147 @@ func (t *Translator) ProductionOrder(ctx context.Context, prodPOID int64) (int64
 	return sid, nil
 }
 
-// EquipmentEvent — TODO phase 2 of MW-2 port.
-// The TS version uses an interval-overlap matcher keyed on
-// (equipment, status) with a minimum-overlap threshold. Defer the port
-// because the SQL with NULL ts_end fallback needs careful pgx handling.
-// Until ported, the event-* handlers will throw ErrUnmapped and rely on
-// the TS mirror-worker (parallel-running) to handle event replays.
-func (t *Translator) EquipmentEvent(_ context.Context, prodEventID int64) (int64, error) {
-	return 0, fmt.Errorf("EquipmentEvent translator not yet ported (TS handles for now); prodEventID=%d: %w",
-		prodEventID, ErrUnmapped)
+// EquipmentEvent: cached mapping → interval-overlap business key.
+//
+// Phase A4b finding: prod and staging produce STRUCTURALLY DIFFERENT
+// equipment_events from the same SparkPlug stream. Prod runs CPAC 5-min
+// smoothing + writes operator metadata (cd_machine, cd_category) back into
+// the row, so prod events are minute-aligned, fewer, and shorter. Staging
+// has the raw PLC transitions — precise-to-the-second, more events,
+// longer durations. ts_event proximity therefore can't match — interval
+// overlap can.
+//
+// For prod event [t1, t2] with status S on equipment E:
+//
+//	pick the staging event with same (E, S) whose interval [s1, s2]
+//	has the largest overlap with [t1, t2], requiring at least
+//	cfg.EventMinOverlapSec of overlap to count as a match.
+//
+// Staging events without ts_end (still running) treat ts_end as now().
+// First match gets cached in mirror_id_map so subsequent ops on the same
+// prod event (event-edited, event-splitted) skip the SELECT.
+func (t *Translator) EquipmentEvent(ctx context.Context, prodEventID int64) (int64, error) {
+	mapped, found, err := t.staging.LookupMapping(ctx, "equipment_event", t.cfg.SourceName, prodEventID)
+	if err != nil {
+		return 0, fmt.Errorf("mapping lookup: %w", err)
+	}
+	if found {
+		return mapped, nil
+	}
+
+	var (
+		prodEqID  int
+		prodStart time.Time
+		prodEnd   sql.NullTime
+		prodStat  int
+	)
+	found, err = t.prod.SelectOne(ctx,
+		`SELECT id_equipment, ts_event, ts_end, status
+		   FROM equipment_events
+		  WHERE id_equipment_event = $1 AND id_enterprise = $2`,
+		[]any{prodEventID, t.cfg.ProdEnterpriseID},
+		&prodEqID, &prodStart, &prodEnd, &prodStat)
+	if err != nil {
+		return 0, fmt.Errorf("prod equipment_event read: %w", err)
+	}
+	if !found {
+		return 0, fmt.Errorf("no prod equipment_event %d: %w", prodEventID, ErrUnmapped)
+	}
+
+	stagingEqID, err := t.Equipment(ctx, prodEqID)
+	if err != nil {
+		return 0, fmt.Errorf("translate equipment for event lookup: %w", err)
+	}
+
+	// Effective prod end — if prod event still running, cap at now().
+	prodEndEffective := time.Now().UTC()
+	if prodEnd.Valid {
+		prodEndEffective = prodEnd.Time
+	}
+
+	var (
+		stagingEventIDStr string
+		overlapSec        int
+	)
+	found, err = t.staging.SelectOne(ctx,
+		`SELECT id_equipment_event::text,
+		        extract(epoch FROM (
+		          LEAST(COALESCE(ts_end, now()), $4::timestamptz)
+		          - GREATEST(ts_event, $3::timestamptz)
+		        ))::int AS overlap_seconds
+		   FROM equipment_events
+		  WHERE id_equipment = $1
+		    AND id_enterprise = $2
+		    AND status = $5
+		    AND ts_event < $4::timestamptz
+		    AND (ts_end IS NULL OR ts_end > $3::timestamptz)
+		  ORDER BY overlap_seconds DESC
+		  LIMIT 1`,
+		[]any{stagingEqID, t.cfg.StagingEnterpriseID, prodStart, prodEndEffective, prodStat},
+		&stagingEventIDStr, &overlapSec)
+	if err != nil {
+		return 0, fmt.Errorf("staging interval-overlap lookup: %w", err)
+	}
+	if found && overlapSec >= t.cfg.EventMinOverlapSec {
+		stagingID, parseErr := strconv.ParseInt(stagingEventIDStr, 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("parse staging event id: %w", parseErr)
+		}
+		t.logger.Debug("equipment_event interval-overlap match",
+			slog.Int64("prodEventID", prodEventID),
+			slog.Int64("stagingEventID", stagingID),
+			slog.Int("overlapSeconds", overlapSec))
+		return stagingID, nil
+	}
+
+	// Diagnostic: closest same-status staging event by midpoint distance,
+	// within ±1h window — tells us whether the structural mismatch is "no
+	// event at all in the area" or "events but with insufficient overlap".
+	// Different fixes apply to each.
+	var (
+		closestIDStr        string
+		closestOverlapSec   int
+		closestDriftSec     int
+	)
+	closestFound, _ := t.staging.SelectOne(ctx,
+		`WITH prod_range AS (
+		   SELECT $3::timestamptz AS p_start, $4::timestamptz AS p_end
+		 )
+		 SELECT id_equipment_event::text,
+		        extract(epoch FROM (
+		          LEAST(COALESCE(ts_end, now()), p_end)
+		          - GREATEST(ts_event, p_start)
+		        ))::int AS overlap_seconds,
+		        extract(epoch FROM abs(ts_event - p_start))::int AS drift_seconds
+		   FROM equipment_events, prod_range
+		  WHERE id_equipment = $1
+		    AND id_enterprise = $2
+		    AND status = $5
+		    AND ts_event BETWEEN p_start - interval '1 hour'
+		                     AND p_end   + interval '1 hour'
+		  ORDER BY drift_seconds ASC
+		  LIMIT 1`,
+		[]any{stagingEqID, t.cfg.StagingEnterpriseID, prodStart, prodEndEffective, prodStat},
+		&closestIDStr, &closestOverlapSec, &closestDriftSec)
+
+	attrs := []any{
+		slog.Int64("prodEventID", prodEventID),
+		slog.Int("stagingEquipmentID", stagingEqID),
+		slog.Time("prodStart", prodStart),
+		slog.Time("prodEnd", prodEndEffective),
+		slog.Int("prodStatus", prodStat),
+		slog.Int("minOverlapSec", t.cfg.EventMinOverlapSec),
+	}
+	if found {
+		attrs = append(attrs, slog.Int("candidateOverlapSec", overlapSec))
+	}
+	if closestFound {
+		attrs = append(attrs,
+			slog.String("closestEventID", closestIDStr),
+			slog.Int("closestDriftSec", closestDriftSec),
+			slog.Int("closestOverlapSec", closestOverlapSec))
+	}
+	t.logger.Warn("no equipment_event interval-overlap match (closest same-status candidate noted)", attrs...)
+	return 0, fmt.Errorf("no staging equipment_event with >=%ds overlap for prod event %d: %w",
+		t.cfg.EventMinOverlapSec, prodEventID, ErrUnmapped)
 }

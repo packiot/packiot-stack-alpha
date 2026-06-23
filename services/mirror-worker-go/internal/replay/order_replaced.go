@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,12 +14,14 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/translate"
 )
 
-type OrderStatusChangedPayload struct {
+type OrderReplacedPayload struct {
 	IDEquipment       int   `json:"idEquipment"`
 	IDProductionOrder int64 `json:"idProductionOrder"`
 }
 
-func OrderStatusChanged(
+// OrderReplaced — swap the current running PO with a different pre-existing
+// one (distinct from create-and-start which makes a new PO).
+func OrderReplaced(
 	cfg *config.Config,
 	t *translate.Translator,
 	apiToken func() string,
@@ -26,12 +29,12 @@ func OrderStatusChanged(
 	logger *slog.Logger,
 ) Handler {
 	return func(ctx context.Context, _ pgx.Tx, row db.ProdUserLog) error {
-		var p OrderStatusChangedPayload
+		var p OrderReplacedPayload
 		if err := json.Unmarshal(row.Payload, &p); err != nil {
-			return fmt.Errorf("parse order-status-changed payload: %w", err)
+			return fmt.Errorf("parse order-replaced payload: %w", err)
 		}
 		if p.IDEquipment == 0 || p.IDProductionOrder == 0 {
-			return fmt.Errorf("order-status-changed payload missing fields: %+v", p)
+			return fmt.Errorf("order-replaced payload missing fields: %+v", p)
 		}
 
 		stagingEqID, err := t.Equipment(ctx, p.IDEquipment)
@@ -40,24 +43,27 @@ func OrderStatusChanged(
 		}
 		stagingPOID, err := t.ProductionOrder(ctx, p.IDProductionOrder)
 		if err != nil {
+			if errors.Is(err, translate.ErrUnmapped) {
+				return fmt.Errorf("production_order %d unmapped: %w", p.IDProductionOrder, err)
+			}
 			return fmt.Errorf("translate production_order: %w", err)
 		}
 
 		body := map[string]any{
-			"idProductionOrder": stagingPOID,
+			"idEnterprise":      cfg.StagingEnterpriseID,
 			"idEquipment":       stagingEqID,
+			"idProductionOrder": stagingPOID,
 		}
 		status, _, err := PostStaging(ctx, cfg, httpc, apiToken(), row,
-			"/api/production-orders/change-status", body)
+			"/api/production-orders/replace", body)
 		if err != nil {
 			return err
 		}
-		logger.Info("replayed order-status-changed",
+		logger.Info("replayed order-replaced",
 			slog.Int64("sourceLogID", row.IDUserLogs),
 			slog.Int64("prodPOID", p.IDProductionOrder),
 			slog.Int64("stagingPOID", stagingPOID),
-			slog.Int("status", status),
-		)
+			slog.Int("status", status))
 		return nil
 	}
 }
