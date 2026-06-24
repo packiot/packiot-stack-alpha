@@ -6,6 +6,12 @@ Design doc for issue **#41** of the oeecloud-worker scaling roadmap.
 > fires. Current load is ~10 msg/s; the single-goroutine ceiling is
 > ~252 msg/s, so we have ~25× headroom.
 
+> **Revision (2026-06-24, post-review):** v1 of this doc had a shutdown
+> deadlock bug in the pump (§6), wrong arithmetic in §5, hand-waved
+> the PgBouncer pool ceiling, and overstated the per-equipment ordering
+> guarantee. All fixed inline. See §11 (Review log) for the audit
+> trail.
+
 ---
 
 ## 1. Why this exists
@@ -58,6 +64,17 @@ These are NOT negotiable; the design must keep them intact:
 5. **Memory bound** — staging app EC2 has finite RAM (4 GB total, of
    which docker compose sets `mem_limit=256m` on the worker container).
    Goroutine count must stay bounded.
+6. **CPU budget** — the worker container has `cpus: 0.5` (half a CPU)
+   in `compose.staging.yml`. At N goroutines with default
+   `GOMAXPROCS=NumCPU()`, the Go runtime sees the host's CPU count
+   (likely 2) and over-schedules against the CFS quota, burning the
+   gain on context switches. **Ship with `GOMAXPROCS=1`** (or
+   `go.uber.org/automaxprocs` to auto-derive from cgroups).
+7. **PgBouncer transaction-mode** — pgx is forced to
+   `QueryExecModeSimpleProtocol` (no prepared statements) to coexist
+   with PgBouncer's transaction pooling. This caps per-connection
+   throughput by ~10-15%. Already in place; calling out so future
+   N-tuning doesn't try to "fix" it.
 
 ---
 
@@ -69,9 +86,11 @@ The good news: **almost everything is already thread-safe.**
 |-----------|-----------|-----------------------------|
 | `Resolver.cache` | `sync.RWMutex` (resolver.go:45) | ✅ already |
 | Counter atomics (`delivered`, `acked`, etc.) | `atomic.Uint64` | ✅ already |
-| `pgx` pool | pool hands out per-goroutine conns | ✅ already |
+| `pgx` pool | pool hands out per-goroutine conns *— but pool size must be ≥ N or conns queue* | ⚠ size check needed |
 | Writers (`equipment_values`, `uns_metrics`, `po_parameter`) | pure builders, no state | ✅ already |
 | Prometheus counters/histograms | client-side mutex internal | ✅ already |
+| `*slog.Logger` | stdlib goroutine-safe | ✅ already |
+| `Dispatcher.handlers` map | read-only after init (built in `Register` calls at startup) | ✅ already |
 | `Consumer.lastDelivery` | `atomic.Int64` | ✅ already |
 | **AMQP channel send** (ack/nack/publish) | **`*amqp.Channel` is NOT goroutine-safe** | ⚠ **must serialize** |
 
@@ -127,33 +146,54 @@ delivered it, which is still the single Channel we hold.
 | Alternative | Why we rejected it |
 |-------------|--------------------|
 | `go c.handleDelivery(...)` (unbounded) | No goroutine cap. Stalled handlers (DB outage) could spawn thousands of pending goroutines exhausting RAM. |
-| Partition-by-equipment-id | Adds complexity for a problem we don't have: per-equipment ordering doesn't matter (writers UPSERT by `(ts_value, id_equipment)` which is monotonic from PLC, ON CONFLICT makes duplicates idempotent). Reconsider only if a future write surface introduces non-idempotent state. |
+| Partition-by-equipment-id | Adds complexity for a problem we mostly don't have today: writers UPSERT by `(ts_value, id_equipment)` and write disjoint columns per message kind, so concurrent execution rarely produces a "wrong" final state. **Residual race**: two messages with the same `(ts_value, id_equipment)` AND same column (rare — Sparkplug coalescing usually makes this not happen) can land in either order; for monotonic counters this gives either snapshot value, both downstream-correct. **Becomes load-bearing** only if a future writer adds read-modify-write semantics — that's the trigger to reconsider this. |
 | Per-tenant queues (Strategy C) | Different problem (isolation between tenants, not throughput). Out of scope for #41. |
+| Single ack-writer goroutine (option B from §3) | Lock-free but adds latency (chan send + receive + dispatch per ack) and complexity. Mutex contention at our ack rate is negligible — picked simpler design. Revisit if mutex shows up in profiling. |
 
 ---
 
 ## 5. Sizing N — how many workers?
 
-Two upper bounds:
+Three upper bounds, in order of how-hard-they-bind:
 
 - **Prefetch ceiling** — Rabbit will only hand out up to
   `prefetch` unacked messages at once. With `prefetch=50` we cap at
-  50 in-flight; more workers than 50 just sit idle waiting for the
-  channel.
-- **DB pool ceiling** — every concurrent handler holds a `pgx`
-  connection during its `Batch.SendBatch()`. PgBouncer is configured
-  `MAX_CLIENT_CONN=100`, `DEFAULT_POOL_SIZE=5` (transaction-mode). The
-  worker shares this pool with edge-api + simulator. Real ceiling is
-  whatever fraction we're entitled to — call it ~10 connections.
+  50 in-flight; more workers than 50 just sit idle.
+- **PgBouncer pool ceiling** (the *real* bottleneck) — PgBouncer is
+  in transaction mode with `DEFAULT_POOL_SIZE=5` **server-side**
+  conns. That's the true ceiling regardless of how many client conns
+  we open. The worker shares those 5 server slots with **edge-api,
+  simulator, mirror-worker, mirror-worker-go** — five clients
+  competing for five server conns. At N worker goroutines all calling
+  `SendBatch` simultaneously, we'll queue at the PgBouncer side.
+  `MAX_CLIENT_CONN=100` controls how big the queue can be before
+  PgBouncer refuses connections — not how many can run concurrently.
+- **CPU budget** — container has `cpus: 0.5`. With `GOMAXPROCS=1`
+  (recommended, per Constraint 6), the runtime won't try to schedule
+  more than one OS thread; goroutines time-slice via Go's
+  cooperative scheduler. DB-bound handlers spend most of their time
+  in syscall wait, so N>1 still helps — but the gain is sublinear
+  much faster than on a 4-CPU host.
 
-So `N` should be `min(prefetch, db_pool_share)`. Reasonable defaults:
+Realistic per-N expected throughput (rule-of-thumb, real measurement
+required before shipping):
+
+| N | Ideal (N / p_avg) | Realistic (PgBouncer + GOMAXPROCS=1) | Notes |
+|---|---|---|---|
+| 1 | 252 msg/s | ~250 msg/s (measured) | Today's state |
+| 2 | 500 msg/s | ~450 msg/s | Likely linear (DB pool not yet saturated) |
+| 4 | 1000 msg/s | ~700-800 msg/s | Probable PgBouncer queue pressure begins |
+| 8 | 2000 msg/s | ~900-1100 msg/s | Likely flat — needs dedicated PgBouncer slice to push higher |
+
+So `N` should be `min(prefetch, sane_pgbouncer_share)`. Reasonable
+defaults to ship with:
 
 | Scenario | Recommended N | Reasoning |
 |----------|---------------|-----------|
-| Today (1 tenant, 10 msg/s) | 1 (current) | No need |
-| ≥100 msg/s sustained | 4 | 4 × 252 / 4 ≈ 252 msg/s with comfortable per-worker latency |
-| 2+ tenants, < 100 msg/s | 4 | Same reasoning; lets bursty tenants not starve quiet ones |
-| ≥500 msg/s sustained | 8 (and reconsider Strategy C) | Approaches pgx pool cap; needs PgBouncer pool review |
+| Today (1 tenant, 10 msg/s) | 1 (current) | 25× headroom; no need |
+| ≥100 msg/s sustained | 4 | ~10× margin from trigger; well below PgBouncer saturation |
+| 2+ tenants, < 100 msg/s | 4 | Same N; lets bursty tenants not starve quiet ones |
+| ≥500 msg/s sustained | 8 + dedicated PgBouncer pool slice | Worker gets its own `pool_size` block in PgBouncer config; sized to ~10 |
 
 Knob exposed as env var `WORKER_POOL_SIZE`, default `1` (== current
 behavior, opt-in). Adding the knob is the first concrete change; the
@@ -175,6 +215,7 @@ func (c *Consumer) consume(ctx context.Context, ch *amqp091.Channel,
     var wg sync.WaitGroup
 
     workCh := make(chan amqp091.Delivery)
+    defer func() { close(workCh); wg.Wait() }() // shutdown drain — runs on every exit
 
     // Worker goroutines
     for i := 0; i < c.cfg.PoolSize; i++ {
@@ -187,25 +228,25 @@ func (c *Consumer) consume(ctx context.Context, ch *amqp091.Channel,
         }()
     }
 
-    // Pump deliveries → workers. Drains workCh on shutdown.
+    // Pump deliveries → workers.
     for {
         select {
         case <-ctx.Done():
-            close(workCh)
-            wg.Wait()
             return ctx.Err()
         case e := <-closeCh:
-            close(workCh)
-            wg.Wait()
             if e == nil { return nil }
             return fmt.Errorf("channel closed: %w", e)
         case d, ok := <-deliveries:
-            if !ok {
-                close(workCh)
-                wg.Wait()
-                return errors.New("delivery channel closed")
+            if !ok { return errors.New("delivery channel closed") }
+            // NESTED select on the workCh send — without this, the pump
+            // can block here forever if all workers are saturated AND
+            // ctx cancels in the meantime.  v1 of this doc had the bare
+            // `workCh <- d` and was deadlock-prone on shutdown.
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            case workCh <- d:
             }
-            workCh <- d
         }
     }
 }
@@ -228,25 +269,41 @@ they ping-pong. Negligible overhead.
 
 ## 7. Benchmark plan
 
-Before shipping the impl, run an isolated benchmark to confirm scaling
-is real (Amdahl's law eats early throughput gains if there's hidden
+Before shipping the impl, run a benchmark to confirm scaling is real
+(Amdahl's law eats early throughput gains if there's hidden
 serialization).
+
+**Commit to ONE approach: testcontainers-go + real Postgres.** Mock
+benchmarks only measure coordination overhead and are misleading
+because the bottleneck (PgBouncer share) is downstream of the worker.
 
 ```
 services/oeecloud-worker/internal/amqp/consumer_bench_test.go
 ```
 
-The benchmark feeds N pre-built Sparkplug payloads into a mock channel
-and times `BenchmarkConsume_PoolN` for N ∈ {1, 2, 4, 8, 16}.
+Setup per benchmark run:
+1. `testcontainers-go` spins up Timescale + populated `packml_register`.
+2. Manually start a PgBouncer container in front (transaction mode,
+   `pool_size=5` mirroring staging).
+3. Feed N pre-built Sparkplug payloads into a mock AMQP channel.
+4. Time `BenchmarkConsume_PoolN` for N ∈ {1, 2, 4, 8, 16}.
 
-Expected curve: roughly linear up to ~4 (handler is mostly DB-bound, so
-parallel DB writes scale until pgx pool saturates), then sublinear, then
-flat at ~8-10 depending on pool tuning.
+Expected curve (rule-of-thumb, see §5 table):
 
-Real benchmark needs the staging DB or a pgx-mock; if the latter, we're
-benchmarking the *coordination overhead*, not the real ceiling. The
-former is more honest but harder to run in CI. Start with mock for
-unit tests, run real benchmark manually before shipping.
+```
+N=1   →  ~250 msg/s   (baseline)
+N=2   →  ~450 msg/s
+N=4   →  ~700-800 msg/s
+N=8   →  ~900-1100 msg/s    (flat — PgBouncer saturated, need slice)
+```
+
+If you see flat-from-N=2, profile for hidden serialization (`go tool
+pprof` mutex profile + block profile). The likely culprit then is the
+`chanMu` (unlikely to dominate at our ack rate) or PgBouncer queue
+depth (much more likely).
+
+Manual run, not in CI — testcontainers is too slow/flaky for default
+CI. Required only before shipping a new N default.
 
 ---
 
@@ -261,7 +318,18 @@ Watch via the new Prometheus dashboard (`08-oeecloud-worker`):
 
 - `rate(oeecloud_worker_amqp_delivered_total[5m])` — current rate
 - Active tenants: query `packml_register WHERE active=true GROUP BY
-  enterprise_id`
+  enterprise_id` (no Prometheus exporter for this yet — manual SQL check)
+
+**Concrete alert rule to ship alongside Strategy A**:
+
+```yaml
+# grafana/alerts/oeecloud-worker-load.yml (future)
+expr: avg_over_time(rate(oeecloud_worker_amqp_acked_total[5m])[1h:5m]) > 100
+for: 30m
+labels: { severity: action_required }
+annotations:
+  summary: "oeecloud-worker > 100 msg/s sustained — time to consider WORKER_POOL_SIZE bump"
+```
 
 Don't ship preemptively. The default-`1` change is no-op; the value
 of having Strategy A coded is that when a trigger fires, deploy is
@@ -288,6 +356,17 @@ of having Strategy A coded is that when a trigger fires, deploy is
    (gauge), `oeecloud_worker_pool_active` (gauge for in-flight
    workers). The /metrics surface is the source of truth for "did
    the impl actually do what we said it would."
+6. **Hot-reload of pool size?** No — startup config only. Avoids the
+   "what does increasing N do to in-flight messages" question. Bump
+   via `WORKER_POOL_SIZE` env + container restart.
+7. **Tracing context propagation** — each goroutine could carry a
+   trace span ID (OpenTelemetry) to make latency drill-down easier.
+   Deferred — we don't have a tracing backend deployed yet.
+8. **AMQP heartbeat behavior under N saturation** — amqp091-go runs
+   the heartbeat on its own goroutine, separate from consumer
+   delivery. Even if all N workers stall on DB, the heartbeat keeps
+   the connection alive. Worth verifying with a fault-injection test
+   (DB pause for 30s, observe heartbeat continues) before shipping.
 
 ---
 
@@ -306,3 +385,50 @@ of having Strategy A coded is that when a trigger fires, deploy is
   "Strategy C" of this design. Kafka's choice of per-partition single-
   consumer + multi-partition fan-out is what we'd evolve toward at
   much higher scale (~thousands of msg/s).
+
+---
+
+## 11. Review log
+
+### v1 → v2 (2026-06-24, same-day post-write review)
+
+Self-critique pass found **5 real issues** + 3 smaller ones. All
+applied inline. Lessons worth remembering:
+
+1. **Shutdown deadlock bug in §6 pump** — bare `workCh <- d` outside
+   a select can deadlock during shutdown if workers are saturated.
+   Fix: nested select on `workCh <- d` vs `<-ctx.Done()`. The
+   `defer close(workCh); wg.Wait()` pattern at the top of the
+   function ensures drain happens on every exit path. *Senior-grade
+   pattern: every blocking send in a long-lived goroutine needs
+   a cancellation escape.*
+2. **Hand-waved PgBouncer share** — said "~10 DB conns" without
+   measuring. Reality: PgBouncer transaction-mode pool is 5 server
+   conns shared with 4 other services. The ceiling isn't connection
+   count, it's queue depth at PgBouncer. Updated §5 with realistic
+   bounds + a per-N expected throughput table.
+3. **Arithmetic error in §5 table** — "4 × 252 / 4 ≈ 252 msg/s"
+   was nonsense. Fixed to per-N realistic estimates.
+4. **Overstated per-equipment ordering safety** — claimed UPSERT
+   makes ordering "not matter"; actually it makes *exact duplicates*
+   idempotent. Same `(ts_value, id_equipment)` + same column from
+   two messages still races (rare; bounded; downstream-correct for
+   monotonic counters). Re-framed as a *constraint on future
+   writers* rather than a property of message ordering.
+5. **Missing CPU-budget constraint** — container has `cpus: 0.5`;
+   default GOMAXPROCS=NumCPU() over-schedules against the CFS quota.
+   Added Constraint 6: ship with `GOMAXPROCS=1` or `automaxprocs`.
+
+Smaller fixes:
+- Added `*slog.Logger`, `Dispatcher.handlers` to the safety audit.
+- Flagged pgx pool size ≥ N requirement.
+- Added single-ack-writer alternative to §4 rejection table.
+- Picked testcontainers-go for §7 (committed to one approach).
+- Added a concrete PromQL alert rule in §8.
+- Three new entries in §9 open questions (hot-reload, tracing, heartbeat behavior).
+
+**Process note** — this self-review took ~30 minutes and found a
+deadlock bug that would have shipped in v1. The lesson is the same
+one I wrote about in [[../../../zettel/observe-then-port-vs-port-then-deprecate]]:
+write the design, *then* attack it from the user's-going-to-find-this-bug
+angle BEFORE shipping. Cheaper than the post-incident review.
