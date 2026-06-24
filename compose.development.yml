@@ -304,10 +304,22 @@ services:
 
   # ── OEECloud Node-RED — DECOMMISSIONED 2026-06-24 ────────────────────────────
   # Replaced by `services/oeecloud-worker` (Go) in staging/prod (see
-  # compose.staging.yml). Not yet ported into compose.development.yml because
-  # local dev has no PLC to drive it — drop in a worker service here if you
-  # need to exercise the AMQP→DB write path locally.
-  # See [[project_oeecloud_worker_migration]] for the full timeline.
+  # compose.staging.yml). NOT yet wired into compose.development.yml.
+  #
+  # The blocker is `services/oeecloud-worker/internal/secrets/secrets.go`
+  # — both Go workers fetch DB + AMQP creds from AWS Secrets Manager at
+  # startup with no env-var fallback. Adding them here without code
+  # changes will crash at startup (the EC2 IAM role isn't present locally).
+  #
+  # To enable local-dev parity, add an env-var fallback path in each
+  # worker's secrets package (gated by e.g. `CREDS_SOURCE=env`) that
+  # reads from compose-provided env vars instead of SM. Then drop in
+  # `oeecloud-worker:` + `mirror-worker-go:` blocks mirroring
+  # compose.staging.yml's shape, with `extra_hosts` for rabbitmq+postgres
+  # and the simulator as the upstream message source.
+  #
+  # See [[project_oeecloud_worker_migration]] for the full timeline and
+  # `services/README.md` for the per-worker architectural overview.
 
   # ── OEE cron (dev-only pg_cron substitute) ────────────────────────────────
   # Calls oee_compute_uns_metrics() every 30s — the SQL equivalent of the
