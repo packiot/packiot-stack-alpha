@@ -689,7 +689,7 @@ services:
   # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
   # over the docker network so the browser sees a single origin (no CORS).
   # Devs land at operator.staging.packiot.app behind Authentik SSO and log in
-  # with `dev.cpack` / `packiot` (configured in edge-node-red/flows/Configuration.json
+  # with `packiot` / `packiot` (configured in edge-node-red/flows/Configuration.json
   # with endpoints scoped to CPACK staging machines).
   operator:
     build:
