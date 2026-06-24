@@ -69,22 +69,24 @@ to these services because they're first-party, not submodules.
 
 ## Open gaps (follow-up issues to file)
 
-1. **Local-dev compose parity**: neither worker is in `compose.development.yml`
-   because both rely on AWS Secrets Manager at startup. Adding env-var
-   fallback paths in each `internal/secrets/secrets.go` would let local
-   dev run them against the in-stack postgres + rabbitmq. ~40 lines of
-   Go per worker + dev compose service blocks.
-2. **mirror-worker-go observability parity**: add `internal/metrics/`
+1. **mirror-worker-go observability parity**: add `internal/metrics/`
    matching oeecloud-worker's pattern (Prometheus counters + histograms),
    wire `/metrics` endpoint, update `prometheus.yml` scrape config, port
    dashboard `07-mirror-worker.json` queries.
-3. **mirror-worker-go test coverage**: oeecloud-worker has
+2. **mirror-worker-go test coverage**: oeecloud-worker has
    `internal/sparkplug/parse_test.go`. mirror-worker-go has no tests.
    The replay handlers (10 eventTypes in `internal/replay/`) are
    particularly worth testing given they touch ID translation.
-4. **mirror-worker-go architectural docs**: oeecloud-worker has 3
+3. **mirror-worker-go architectural docs**: oeecloud-worker has 3
    strategy documents. mirror-worker-go has none. Worth at least a
    `docs/architecture.md` explaining the cursor-advance loop, ID
    translation flow, and dual-cursor approach (`cpack-prod` TS-source
    vs `cpack-prod-go` Go-source — though the TS worker is now retired,
    the source label persists for replay-history forensics).
+
+Closed gaps:
+
+- ~~Local-dev compose parity~~ — closed by #52 (CREDS_SOURCE=env
+  fallback in both `internal/secrets/secrets.go` + dev compose blocks).
+  Both workers now boot under `make up` with `make up-workers` available
+  as a partial-stack convenience.

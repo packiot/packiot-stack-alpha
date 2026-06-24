@@ -8,10 +8,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
+
+// credsSourceEnv is the literal value of $CREDS_SOURCE that switches
+// FetchDBCreds from AWS Secrets Manager to plain env vars. Used ONLY
+// in compose.development.yml — never in staging/prod.
+//
+// Why this gate exists (issue #52): mirror-worker-go fetches creds for
+// TWO postgres clusters (prod via PROD_DB_SECRET_ID, staging via
+// STAGING_DB_SECRET_ID). On staging EC2 the IAM role grants both. On a
+// laptop neither is reachable, so the worker can't even reach
+// main()'s polling loop without SM.
+//
+// In env mode, the dispatch routes to PROD_* or STAGING_* env vars
+// based on whether the secretID looks like the prod or staging one
+// (see envPrefixForSecretID). The user supplies whichever set they
+// want — for local-dev, "prod = staging postgres" is a reasonable
+// degenerate case (the worker will just see no new rows to replay).
+//
+// SECURITY: this is NOT the prod path because plaintext passwords land
+// in `docker inspect` output and any process on the host can read them
+// via /proc/<pid>/environ. Keep CREDS_SOURCE unset in staging/prod.
+const credsSourceEnv = "env"
 
 // DBCreds is the unified shape after normalisation. Different secrets
 // in this project use different key names — we parse via a flexible
@@ -65,6 +89,9 @@ func pickInt(m map[string]any, keys ...string) (int, error) {
 // non-empty value. Adding more secrets later = add more aliases to
 // the candidate lists.
 func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error) {
+	if os.Getenv("CREDS_SOURCE") == credsSourceEnv {
+		return fetchDBCredsFromEnv(secretID)
+	}
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("aws config: %w", err)
@@ -144,4 +171,70 @@ func (c *DBCreds) URL(appName string) string {
 func (c *DBCreds) Redacted(appName string) string {
 	return fmt.Sprintf("postgres://%s:***@%s:%d/%s?application_name=%s",
 		url.PathEscape(c.User), c.Host, c.Port, c.Database, appName)
+}
+
+// envPrefixForSecretID picks the env-var prefix based on whether the
+// requested secret looks like the prod or staging one. Heuristic:
+//
+//   - secretID containing "staging" (case-insensitive) → STAGING_DB_*
+//   - everything else                                  → PROD_DB_*
+//
+// This matches the defaults in internal/config (ProdDBSecretID =
+// "databaseCredentials", StagingDBSecretID = "packiot/staging/db") so
+// callers don't need to change. If you override either secretID via env
+// to something exotic, set CREDS_SOURCE back to the SM path or rename
+// to include "staging" / not.
+func envPrefixForSecretID(secretID string) string {
+	if strings.Contains(strings.ToLower(secretID), "staging") {
+		return "STAGING_DB_"
+	}
+	return "PROD_DB_"
+}
+
+// fetchDBCredsFromEnv is the CREDS_SOURCE=env path. Reads <prefix>HOST,
+// <prefix>PORT, <prefix>USER, <prefix>PASSWORD, <prefix>NAME where the
+// prefix is derived from the requested secretID.
+//
+// Defaults match compose.development.yml's postgres service. User +
+// password have NO defaults — if either is empty we error out instead
+// of silently connecting with insecure creds.
+func fetchDBCredsFromEnv(secretID string) (*DBCreds, error) {
+	prefix := envPrefixForSecretID(secretID)
+	host := envOr(prefix+"HOST", "postgres")
+	port, err := envInt(prefix+"PORT", 5432)
+	if err != nil {
+		return nil, fmt.Errorf("CREDS_SOURCE=env (%s): %w", secretID, err)
+	}
+	user := os.Getenv(prefix + "USER")
+	password := os.Getenv(prefix + "PASSWORD")
+	database := envOr(prefix+"NAME", "packiot")
+	if user == "" || password == "" {
+		return nil, fmt.Errorf("CREDS_SOURCE=env (%s): %sUSER and %sPASSWORD must be set", secretID, prefix, prefix)
+	}
+	return &DBCreds{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: database,
+	}, nil
+}
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt(name string, fallback int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q: not an integer", name, v)
+	}
+	return n, nil
 }
