@@ -37,10 +37,11 @@ volumes:
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
-# .6  oeecloud     .7  grafana       .8  loki            .9  promtail
+# .7  grafana      .8  loki          .9  promtail
 # .10 pgbouncer    .11 simulator     .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init  .16 db-migrate    .17 adminer
-# .18 mirror-worker  .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
+# .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
+# .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
 services:
@@ -304,7 +305,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-06-24-strategy-c-tenant-dashboard-v2"
+      - "provisioning_rev=2026-06-24-decommission-oeecloud-nr-relabel"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -550,59 +551,18 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
-  # ── Mirror Worker (prod→staging user_logs replay) ─────────────────────────────
-  # Polls prod user_logs via SELECT-only awslambda creds (from `databaseCredentials`
-  # Secrets Manager), translates IDs (enterprise hardcoded, equipment via
-  # packml_topic, equipment_event via business key, PO via mirror_id_map), and
-  # POSTs each operator action to staging edge-api. Stateful via mirror_replay_cursor
-  # on staging DB. Internal HTTP to edge-api avoids the host nginx round-trip.
-  # See project_real_client_data_initiative memory for the full architecture.
-  mirror-worker:
-    build: ./services/mirror-worker
-    container_name: mirror-worker
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      LOG_LEVEL: info
-      AWS_REGION: us-east-1
-      PROD_DB_SECRET_ID: databaseCredentials
-      SOURCE_NAME: cpack-prod
-      PROD_ENTERPRISE_ID: "1"
-      STAGING_ENTERPRISE_ID: "3"
-      POLL_INTERVAL_SEC: "60"
-      BATCH_SIZE: "50"
-      PER_POST_DELAY_MS: "50"
-      HEALTH_PORT: "9100"
-      STAGING_DB_HOST: pgbouncer
-      STAGING_DB_PORT: "5432"
-      STAGING_DB_USER: ${POSTGRES_USER}
-      STAGING_DB_PASSWORD: ${POSTGRES_PASSWORD}
-      STAGING_DB_NAME: ${POSTGRES_DB}
-      STAGING_API_URL: http://edge-api:8080
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.18
-    depends_on:
-      pgbouncer:
-        condition: service_started
-      edge-api:
-        condition: service_started
-    # /health on 9100 (json). status=healthy|degraded|unhealthy.
-    # Healthcheck passes only on "healthy" — degraded keeps the container up
-    # but Grafana watches the json status field for warnings. start_period
-    # gives time for the first prod-DB connect + first tick to land before
-    # the orchestrator considers the container unhealthy.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9100/health | grep -q '\"status\":\"healthy\"'"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 90s
-    mem_limit: 256m
-    cpus: 0.5
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
+  # ── Mirror Worker (TS) — DECOMMISSIONED 2026-06-24 ────────────────────────────
+  # Replaced by `mirror-worker-go` (Go) below. Removal flow:
+  #   1. MW-2 phase 2 shipped 18591d7 (2026-06-23) — all 10 operator eventTypes
+  #      replayed by the Go worker (order-status-changed, order-created,
+  #      order-created-started, order-started, order-changed, order-stopped,
+  #      order-replaced, event-justified, event-edited, event-splitted).
+  #   2. Parity verified: cursor advancing, 0 DLQ, both workers wrote identical
+  #      staging POs + events for ~24h via parallel `source` ('cpack-prod' vs
+  #      'cpack-prod-go') against the same mirror_id_map.
+  #   3. Go worker promoted to `source='cpack-prod'`; TS worker stopped + image
+  #      removed; `./services/mirror-worker` source tree deleted (this commit).
+  # See [[project_mirror_gaps_and_plan]] for the MW-2 timeline.
 
   # ── Mirror Worker (Go — MW-2 port of services/mirror-worker TS) ───────────────
   # Parallel-run with the TS mirror-worker via independent cursor source

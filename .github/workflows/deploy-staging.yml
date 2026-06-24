@@ -5,6 +5,15 @@ on:
     branches: [staging]
   workflow_dispatch:
 
+# Serialize deploys. Two near-simultaneous bump-PR auto-merges (e.g. edge-api
+# and edge-node-red bots merging within seconds of each other) would otherwise
+# race on `docker compose build && up -d` — the second invocation can clobber
+# half-built layers or leave the project in an inconsistent state. Queue them
+# instead of canceling; we want every staging commit to actually deploy.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: [self-hosted, staging, linux, arm64]
@@ -29,12 +38,14 @@ jobs:
         #   url."https://PAT@github.com/packiot/".insteadOf = https://github.com/packiot/
         #   url."https://PAT@github.com/packiot/".insteadOf = git@github.com:packiot/
         # Both HTTPS and SSH-format submodule URLs are covered.
-        # Only init submodules that staging compose.staging.yml actually builds.
-        # 'operator' (frontend) is not built in staging and points to an
-        # unpushable local commit, so we skip it.
+        # Init every submodule staging compose.staging.yml builds:
+        #   edge-api, edge-nodered, operator (frontend, built since the
+        #   operator.staging.packiot.app SPA went live). oeecloud-node-red
+        #   was removed in the 2026-06-24 decommission (replaced by the Go
+        #   worker baked into services/oeecloud-worker).
         run: |
-          git submodule sync edge-api edge-node-red oeecloud-node-red operator
-          git submodule update --init edge-api edge-node-red oeecloud-node-red operator
+          git submodule sync edge-api edge-node-red operator
+          git submodule update --init edge-api edge-node-red operator
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).

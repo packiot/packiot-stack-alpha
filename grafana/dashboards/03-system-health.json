@@ -715,7 +715,7 @@
       "type": "link",
       "title": "PLC Pipeline Logs",
       "url": "/d/packiot-pipeline-logs",
-      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud-worker"
     },
     {
       "icon": "external link",

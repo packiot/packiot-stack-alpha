@@ -1,7 +1,7 @@
-.PHONY: help init setup dev-setup up up-infra up-edge up-oeecloud up-api up-operator up-simulator \
-        down logs logs-edge logs-oeecloud logs-api logs-infra logs-postgres logs-rabbitmq logs-adminer logs-operator logs-simulator \
-        build build-edge build-oeecloud build-api build-operator build-simulator build-tests \
-        restart clean status psql shell-edge shell-oeecloud shell-api shell-operator \
+.PHONY: help init setup dev-setup up up-infra up-edge up-api up-operator up-simulator \
+        down logs logs-edge logs-api logs-infra logs-postgres logs-rabbitmq logs-adminer logs-operator logs-simulator \
+        build build-edge build-api build-operator build-simulator build-tests \
+        restart clean status psql shell-edge shell-api shell-operator \
         publish-test update devctl \
         db-equipments db-equipment-values db-packml db-enterprises db-sites db-areas \
         db-events db-uns db-orders db-count db-rebuild apply-views \
@@ -45,14 +45,12 @@ help:
 	@echo "  Partial stacks (infra always included)"
 	@echo "    up-infra         RabbitMQ + TimescaleDB + Hasura only"
 	@echo "    up-edge          Infra + edge-nodered"
-	@echo "    up-oeecloud      Infra + oeecloud"
 	@echo "    up-api           Postgres + edge-api"
 	@echo "    up-operator      Infra + edge-api + edge-nodered + operator UI"
 	@echo "    up-simulator     Start operator activity simulator (Simulator Corp)"
 	@echo ""
 	@echo "  Individual image builds"
 	@echo "    build-edge       Build edge-nodered image"
-	@echo "    build-oeecloud   Build oeecloud image"
 	@echo "    build-api        Build edge-api image"
 	@echo "    build-operator   Build operator UI image"
 	@echo "    build-simulator  Build simulator image"
@@ -60,7 +58,6 @@ help:
 	@echo "  Logs (follow mode — Ctrl+C to stop)"
 	@echo "    logs             Tail all services"
 	@echo "    logs-edge        Tail edge-nodered"
-	@echo "    logs-oeecloud    Tail oeecloud"
 	@echo "    logs-api         Tail edge-api"
 	@echo "    logs-postgres    Tail TimescaleDB"
 	@echo "    logs-rabbitmq    Tail RabbitMQ"
@@ -84,13 +81,12 @@ help:
 	@echo "  Live monitoring (Ctrl+C to stop)"
 	@echo "    watch-values     Refresh equipment_values every 2s"
 	@echo "    watch-plc        Refresh PLC metric breakdown every 2s"
-	@echo "    watch-pubsub     Stream oeecloud logs (shows RabbitMQ/AMQP activity)"
+	@echo "    watch-pubsub     Stream edge-nodered logs (RabbitMQ/AMQP publish path)"
 	@echo ""
 	@echo "  Utilities"
 	@echo "    psql             Open psql shell in the postgres container"
 	@echo "    shell-edge       sh into edge-nodered container"
 	@echo "    shell-operator   sh into operator container"
-	@echo "    shell-oeecloud   sh into oeecloud container"
 	@echo "    shell-api        sh into edge-api container"
 	@echo "    publish-test     Publish a minimal test SparkPlug message to RabbitMQ"
 	@echo "    stress-db        Stress test: 1000 batch inserts + expensive aggregate"
@@ -161,9 +157,6 @@ up-infra:
 up-edge:
 	$(COMPOSE) up -d $(INFRA_SVCS) edge-nodered
 
-up-oeecloud:
-	$(COMPOSE) up -d $(INFRA_SVCS) oeecloud
-
 up-api:
 	$(COMPOSE) up -d postgres edge-api
 
@@ -188,9 +181,6 @@ devctl:
 build-edge:
 	$(COMPOSE) build edge-nodered
 
-build-oeecloud:
-	$(COMPOSE) build oeecloud
-
 build-api:
 	$(COMPOSE) build edge-api
 
@@ -206,9 +196,6 @@ logs:
 
 logs-edge:
 	$(COMPOSE) logs -f edge-nodered
-
-logs-oeecloud:
-	$(COMPOSE) logs -f oeecloud
 
 logs-api:
 	$(COMPOSE) logs -f edge-api
@@ -240,9 +227,6 @@ psql:
 
 shell-edge:
 	$(COMPOSE) exec edge-nodered sh
-
-shell-oeecloud:
-	$(COMPOSE) exec oeecloud sh
 
 shell-api:
 	$(COMPOSE) exec edge-api sh
@@ -350,7 +334,7 @@ watch-plc:
 		 GROUP BY 1 ORDER BY latest DESC;"'
 
 watch-pubsub:
-	$(COMPOSE) logs -f oeecloud
+	$(COMPOSE) logs -f edge-nodered
 
 # ── Operator simulator ────────────────────────────────────────────────────────
 # Seed Simulator Corp enterprise with 8 hours of historical operator activity.

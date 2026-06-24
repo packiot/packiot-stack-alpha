@@ -1,1 +1,19 @@
 .env.local
+
+# Terraform plan files — never committed (contain credentials and rapidly stale)
+terraform/staging/tfplan*
+terraform/staging/*.tfplan
+
+# Python bytecode (simulator + any future Python tooling)
+__pycache__/
+*.pyc
+
+# LaTeX / Pandoc presentation build artifacts.
+# `presentation/` is a working scratch dir for slide decks; not part of the stack.
+presentation/
+
+# Stray shell-expansion accidents — keep these patterns ignored so a bad
+# `grep -o '{print …'` or `aws … --query '{{.Destination}}…'` doesn't get
+# re-committed. Cleaned up in the 2026-06-24 decommission PR.
+0{print
+{{.Destination}}*
