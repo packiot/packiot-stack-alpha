@@ -38,6 +38,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/log"
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/replay"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/translate"
@@ -178,6 +179,11 @@ func (t *tokenHolder) Get() string {
 // tick polls one batch + processes each row. Returns the first
 // row-level error encountered; the cursor still advances per-row so
 // one bad row doesn't block the queue.
+//
+// Also updates the cursor_lag_seconds + id_map_cache_size gauges once
+// per tick. Both queries are best-effort — failures are logged but
+// don't fail the tick. Stale gauge values are clearly better than a
+// crashed worker.
 func tick(
 	ctx context.Context,
 	cfg *config.Config,
@@ -190,6 +196,12 @@ func tick(
 	if err != nil {
 		return fmt.Errorf("read cursor: %w", err)
 	}
+
+	// Update gauges before fetching new logs so they reflect the state
+	// AT this cursor position. Both run inside the tick to amortise the
+	// poll-interval cost; calling per-row would be cheap but pointless.
+	updateGauges(ctx, cfg, prodDB, stagingDB, cursor, logger)
+
 	rows, err := prodDB.FetchNewLogs(ctx, cursor, cfg.ProdEnterpriseID, cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("fetch new logs: %w", err)
@@ -217,9 +229,43 @@ func tick(
 	return nil
 }
 
+// updateGauges refreshes cursor_lag_seconds + id_map_cache_size from
+// the DB. Both are best-effort — log on error, keep going. We never
+// want a transient prod hiccup or a metrics call to crash the worker;
+// stale gauge values are far better than no replay loop.
+func updateGauges(
+	ctx context.Context,
+	cfg *config.Config,
+	prodDB *db.Prod,
+	stagingDB *db.Staging,
+	cursor int64,
+	logger *slog.Logger,
+) {
+	// cursor_lag_seconds — distance between now() and the prod ts_event
+	// of the last replayed row. Zero time means the worker is fresh +
+	// hasn't replayed anything yet; skip the gauge so it doesn't read 0.
+	if ts, err := prodDB.LatestLogTimestamp(ctx, cursor, cfg.ProdEnterpriseID); err == nil {
+		if !ts.IsZero() {
+			metrics.CursorLagSeconds.Set(time.Since(ts).Seconds())
+		}
+	} else {
+		logger.Warn("cursor lag update failed", slog.String("err", err.Error()))
+	}
+	// id_map_cache_size — total mirror_id_map rows for this source.
+	if n, err := stagingDB.CountIDMap(ctx, cfg.SourceName); err == nil {
+		metrics.IDMapCacheSize.Set(float64(n))
+	} else {
+		logger.Warn("id_map_cache_size update failed", slog.String("err", err.Error()))
+	}
+}
+
 // processRow wraps one row in a staging transaction: dispatch handler →
 // commit on success, OR write DLQ + commit on handler error. Cursor
 // advances either way. Same shape as TS processRow.
+//
+// Metrics: dispatch records polled + replayed + duration. The
+// idempotency-hit path goes through disp.MarkAlreadyReplayed so the
+// polled/replayed counters stay consistent for ratio queries.
 func processRow(
 	ctx context.Context,
 	cfg *config.Config,
@@ -235,24 +281,21 @@ func processRow(
 			return fmt.Errorf("isAlreadyReplayed: %w", err)
 		}
 		if already {
+			disp.MarkAlreadyReplayed(row.Category)
 			return db.AdvanceCursor(ctx, tx, cfg.SourceName, row.IDUserLogs)
 		}
 
-		h := disp.Lookup(row.Category)
-		if h == nil {
-			// Unknown category — advance and move on. Same as TS.
-			return db.AdvanceCursor(ctx, tx, cfg.SourceName, row.IDUserLogs)
-		}
-
-		if err := h(ctx, tx, row); err != nil {
-			// Per-row failure → DLQ + cursor advance, both in this tx.
+		// Dispatch records all three replay metrics (polled, replayed,
+		// duration) + returns the handler's error verbatim. We keep the
+		// existing DLQ-and-advance behaviour here.
+		if dispErr := disp.Dispatch(ctx, tx, row); dispErr != nil {
 			logger.Warn("replay failed, writing DLQ row",
 				slog.String("category", row.Category),
 				slog.Int64("source_log_id", row.IDUserLogs),
-				slog.String("err", err.Error()))
+				slog.String("err", dispErr.Error()))
 			if dlqErr := db.WriteDLQ(ctx, tx, cfg.SourceName, row.IDUserLogs,
-				row.Category, row.Subcategory, row.Payload, err.Error()); dlqErr != nil {
-				return fmt.Errorf("DLQ write: %w (original: %v)", dlqErr, err)
+				row.Category, row.Subcategory, row.Payload, dispErr.Error()); dlqErr != nil {
+				return fmt.Errorf("DLQ write: %w (original: %v)", dlqErr, dispErr)
 			}
 		}
 		return db.AdvanceCursor(ctx, tx, cfg.SourceName, row.IDUserLogs)

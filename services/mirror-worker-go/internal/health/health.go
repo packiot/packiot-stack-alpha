@@ -1,5 +1,8 @@
 // Package health serves a small /health JSON endpoint. Same convention
 // as the TS mirror-worker /health: healthy|degraded|unhealthy + counters.
+//
+// /metrics is mounted on the same mux — Prometheus scrape target. See
+// internal/metrics for the registry + collectors.
 package health
 
 import (
@@ -11,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
 )
 
 type State struct {
@@ -88,6 +93,8 @@ type Server struct {
 
 func New(addr string, state *State, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
+	// /metrics — Prometheus scrape endpoint. Same pattern as oeecloud-worker.
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		b := state.snapshot()
 		raw, err := json.Marshal(b)

@@ -8,14 +8,23 @@
   "liveNow": false,
   "panels": [
     {
+      "id": 100,
+      "type": "row",
+      "title": "Replay freshness + cursor state",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
       "type": "stat",
-      "title": "Replay freshness — seconds since worker last polled",
-      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
+      "title": "Cursor lag (seconds behind prod)",
+      "description": "now() - ts_event of the last replayed prod user_logs row. Green <=2 min, yellow <=5 min, red beyond. From mirror-worker /metrics, not SQL — distinguishes 'cursor advanced but data stale' from 'no recent poll'.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 1 },
       "id": 1,
       "options": {
         "colorMode": "background",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "horizontal",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
@@ -31,25 +40,23 @@
               { "color": "yellow", "value": 120 },
               { "color": "red",    "value": 300 }
             ]
-          },
-          "mappings": []
+          }
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-          "rawSql": "SELECT NOW() AS time, EXTRACT(EPOCH FROM (NOW() - last_run_at))::int AS \"seconds since last poll\" FROM mirror_replay_cursor WHERE source = 'cpack-prod';",
-          "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "expr": "mirror_worker_cursor_lag_seconds"
         }
       ]
     },
     {
       "type": "stat",
       "title": "Cursor position (last replayed prod user_logs.id)",
+      "description": "From staging mirror_replay_cursor — the worker's /metrics doesn't expose the row id directly (only the timestamp lag).",
       "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 1 },
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -66,7 +73,7 @@
       "targets": [
         {
           "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-          "rawSql": "SELECT NOW() AS time, last_log_id::bigint AS \"cursor\" FROM mirror_replay_cursor WHERE source = 'cpack-prod';",
+          "rawSql": "SELECT NOW() AS time, last_log_id::bigint AS \"cursor\" FROM mirror_replay_cursor WHERE source = 'cpack-prod-go';",
           "format": "table",
           "refId": "A"
         }
@@ -74,10 +81,136 @@
     },
     {
       "type": "stat",
-      "title": "DLQ depth (total)",
-      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+      "title": "ID-map cache size (rows)",
+      "description": "mirror_id_map row count for source='cpack-prod-go'. Reflects accumulated translation mappings (equipment, equipment_event, production_order). Grows with replay; shouldn't shrink.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
       "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mirror_worker_id_map_cache_size"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Replay throughput + outcomes",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Replay rate by event_type (5m rate)",
+      "description": "sum by(event_type)(rate(replayed)). Bursty: each operator click on the prod UI produces 1+ user_logs row.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(event_type)(rate(mirror_worker_user_logs_replayed_total[5m]))",
+          "legendFormat": "{{event_type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Replay outcomes (ok / failed / skipped)",
+      "description": "failed > 0 means DLQ writes happening — investigate via Postgres datasource panel below. skipped is normal (unknown categories + idempotency hits).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ok" },      "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "failed" },  "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "skipped" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(outcome)(rate(mirror_worker_user_logs_replayed_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Replay latency p50 / p95 / p99 (handler duration)",
+      "description": "Per-handler time: ID translation SELECTs + HTTP POST to staging edge-api. p99 spikes typically = interval-overlap equipment_event matcher fanning out across the staging events table.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le)(rate(mirror_worker_replay_duration_seconds_bucket[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le)(rate(mirror_worker_replay_duration_seconds_bucket[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le)(rate(mirror_worker_replay_duration_seconds_bucket[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Postgres-side replay state",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "DLQ depth (total rows for cpack-prod-go)",
+      "description": "From staging mirror_replay_dlq — counts permanently-failed replay rows. Different from mirror_worker_user_logs_replayed_total{outcome=\"failed\"}, which is a rate.",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 24 },
+      "id": 7,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -103,34 +236,8 @@
       "targets": [
         {
           "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-          "rawSql": "SELECT NOW() AS time, COUNT(*)::int AS \"DLQ rows\" FROM mirror_replay_dlq WHERE source = 'cpack-prod';",
+          "rawSql": "SELECT NOW() AS time, COUNT(*)::int AS \"DLQ rows\" FROM mirror_replay_dlq WHERE source = 'cpack-prod-go';",
           "format": "table",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Mapping growth (mirror_id_map cumulative, 5-min buckets)",
-      "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
-      "id": 4,
-      "fieldConfig": {
-        "defaults": {
-          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "pointSize": 3 },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-          "rawSql": "SELECT bucket AS time, entity_type, SUM(c) OVER (PARTITION BY entity_type ORDER BY bucket) AS cumulative FROM (SELECT date_trunc('minute', created_at) - (EXTRACT(MINUTE FROM created_at)::int % 5 || ' minutes')::interval AS bucket, entity_type, COUNT(*) AS c FROM mirror_id_map WHERE source = 'cpack-prod' AND $__timeFilter(created_at) GROUP BY 1, 2) sub ORDER BY bucket, entity_type;",
-          "format": "time_series",
           "refId": "A"
         }
       ]
@@ -138,9 +245,10 @@
     {
       "type": "barchart",
       "title": "Mappings by entity_type (filtered range)",
+      "description": "Counts of mirror_id_map rows created in the current Grafana time window, by entity_type. Equipment + production_order + equipment_event dominate.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
-      "id": 5,
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 24 },
+      "id": 8,
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "options": {
         "orientation": "auto",
@@ -151,7 +259,7 @@
       "targets": [
         {
           "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-          "rawSql": "SELECT entity_type, COUNT(*)::int AS rows FROM mirror_id_map WHERE source = 'cpack-prod' AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 2 DESC;",
+          "rawSql": "SELECT entity_type, COUNT(*)::int AS rows FROM mirror_id_map WHERE source = 'cpack-prod-go' AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 2 DESC;",
           "format": "table",
           "refId": "A"
         }
@@ -160,9 +268,10 @@
     {
       "type": "table",
       "title": "Recent DLQ rows (last 20)",
+      "description": "Drill-down for failed replays. Use the error column to triage — typical issues are unmapped equipment_event (interval-overlap matcher couldn't pair a prod event with a staging one) or edge-api 4xx responses.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 13 },
-      "id": 6,
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 32 },
+      "id": 9,
       "fieldConfig": {
         "defaults": { "custom": { "align": "left" } },
         "overrides": [
@@ -177,10 +286,43 @@
       "targets": [
         {
           "datasource": { "type": "postgres", "uid": "packiot-postgres" },
-          "rawSql": "SELECT id, created_at, category, subcategory, source_log_id, error FROM mirror_replay_dlq WHERE source = 'cpack-prod' ORDER BY id DESC LIMIT 20;",
+          "rawSql": "SELECT id, created_at, category, subcategory, source_log_id, error FROM mirror_replay_dlq WHERE source = 'cpack-prod-go' ORDER BY id DESC LIMIT 20;",
           "format": "table",
           "refId": "A"
         }
+      ]
+    },
+    {
+      "id": 103,
+      "type": "row",
+      "title": "Go runtime",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Goroutines + heap",
+      "description": "Goroutine count should stay near a low constant (worker is single-loop). RSS climb = leak suspect.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 42 },
+      "id": 10,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "RSS (bytes)" }, "properties": [{ "id": "unit", "value": "bytes" }] }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "go_goroutines{job=\"mirror-worker-go\"}", "legendFormat": "goroutines" },
+        { "refId": "B", "expr": "process_resident_memory_bytes{job=\"mirror-worker-go\"}", "legendFormat": "RSS (bytes)" }
       ]
     }
   ],
@@ -194,6 +336,6 @@
   "timezone": "",
   "title": "Mirror Worker — prod → staging replay",
   "uid": "mirror-worker",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

@@ -158,6 +158,21 @@ func (s *Staging) IsAlreadyReplayed(ctx context.Context, source string, sourceLo
 	return exists, err
 }
 
+// CountIDMap returns the row count of mirror_id_map for this source.
+// Powers the id_map_cache_size gauge — a growth signal + sanity check
+// that the worker is actually producing mappings.
+//
+// COUNT(*) is O(n); today the table has ~2k rows for cpack-prod-go,
+// well under 1ms. If it grows to 100k+, switch to pg_class.reltuples
+// for an approximate count.
+func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) {
+	var n int64
+	_, err := s.SelectOne(ctx,
+		`SELECT COUNT(*) FROM mirror_id_map WHERE source = $1`,
+		[]any{source}, &n)
+	return n, err
+}
+
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
 // caller's tx so we don't lose visibility into a bad row that crashed
 // before the outer commit.

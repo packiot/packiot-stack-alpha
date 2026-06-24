@@ -112,6 +112,43 @@ func (p *Prod) FetchNewLogs(ctx context.Context, cursor int64, enterpriseID, lim
 	return out, nil
 }
 
+// LatestLogTimestamp returns the ts_event of the row at id=cursor.
+// Used by the cursor_lag_seconds gauge — distance between now() and the
+// last-replayed prod ts_event tells operators "is staging within N
+// seconds of prod?".
+//
+// Returns zero time + nil error when cursor=0 (worker just started, no
+// replay yet) or when the cursor row no longer exists — caller treats
+// either as "skip the metric update this tick".
+func (p *Prod) LatestLogTimestamp(ctx context.Context, cursor int64, enterpriseID int) (time.Time, error) {
+	if cursor <= 0 {
+		return time.Time{}, nil
+	}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var ts time.Time
+	err = tx.QueryRow(ctx,
+		`SELECT ts_event FROM user_logs
+		  WHERE id_user_logs = $1 AND id_enterprise = $2`,
+		cursor, enterpriseID,
+	).Scan(&ts)
+	if err == pgx.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("ts_event lookup: %w", err)
+	}
+	return ts, nil
+}
+
 // SelectOne runs a single SELECT under a READ ONLY tx + scans into dst.
 // dst is treated as a struct whose fields receive the columns in order
 // (caller passes &field args via dest slice).

@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Handler func(ctx context.Context, tx pgx.Tx, row db.ProdUserLog) error
@@ -45,4 +47,51 @@ func (d *Dispatcher) HandledCategories() []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Dispatch runs the appropriate handler for row.Category and records
+// the three core replay metrics (polled, replayed, duration). Single
+// instrumentation choke point — avoids 10× the boilerplate that putting
+// metrics inside each handler would create + keeps event-type labels
+// uniform.
+//
+// Outcome semantics:
+//   - "skipped" — no handler registered for this category. Caller still
+//                 advances the cursor.
+//   - "ok"      — handler returned nil.
+//   - "failed"  — handler returned non-nil. Caller writes DLQ + still
+//                 advances the cursor (existing behaviour).
+//
+// Returns the handler's return value (or nil for unknown categories) so
+// callers preserve the existing DLQ-and-advance flow.
+func (d *Dispatcher) Dispatch(ctx context.Context, tx pgx.Tx, row db.ProdUserLog) error {
+	eventType := row.Category
+	metrics.UserLogsPolledTotal.WithLabelValues(eventType).Inc()
+
+	h := d.handlers[eventType]
+	if h == nil {
+		metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "skipped").Inc()
+		return nil
+	}
+
+	// Histogram observation wraps the handler call. NewTimer + observe-
+	// on-return guarantees the bucket increment even on panic.
+	timer := prometheus.NewTimer(metrics.ReplayDurationSeconds.WithLabelValues(eventType))
+	err := h(ctx, tx, row)
+	timer.ObserveDuration()
+
+	outcome := "ok"
+	if err != nil {
+		outcome = "failed"
+	}
+	metrics.UserLogsReplayedTotal.WithLabelValues(eventType, outcome).Inc()
+	return err
+}
+
+// MarkAlreadyReplayed records an idempotency skip on mirror_id_map.
+// Called by the caller before Dispatch when the row was already
+// replayed in a prior tick. Keeps polled vs replayed counters honest.
+func (d *Dispatcher) MarkAlreadyReplayed(eventType string) {
+	metrics.UserLogsPolledTotal.WithLabelValues(eventType).Inc()
+	metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "skipped").Inc()
 }
