@@ -67,18 +67,31 @@ func DeclareTopology(ctx context.Context, ch *amqp.Channel, cfg *config.Config, 
 		}
 	}
 
-	// 2. Legacy single-queue topology — still the worker's CONSUME target
-	//    during Strategy C Phase 1. edge-nodered publishes "sparkplug.data"
-	//    (no tenant suffix) → matches the `#` binding here. Per-tenant
-	//    queues below are declared but receive nothing until Phase 2 (when
-	//    edge-nodered switches to "sparkplug.data.<group_id>" keys).
+	// 2. Legacy queue — Phase 2b cutover preparation. Originally bound
+	//    to `#` (catch-all). We replace that with an EXACT binding to
+	//    `sparkplug.data` so:
+	//      - Today: edge-nodered publishes `sparkplug.data` → matches exact
+	//        binding → still lands in legacy (no traffic change yet)
+	//      - After edge-nodered's Phase 2b deploy publishes
+	//        `sparkplug.data.<gateway>` → 3-segment key does NOT match
+	//        the 2-segment exact binding → legacy stops getting new
+	//        traffic → per-tenant queues take over.
+	//    Decoupled deploys: worker can ship first or last; either order
+	//    keeps the legacy queue receiving messages until edge-nodered's
+	//    side flips. No double-routing.
+	//
+	//    QueueUnbind is idempotent (no-op if `#` already unbound) so this
+	//    runs safely on every reconnect.
 	if _, err := ch.QueueDeclare(cfg.WorkerQueue, true, false, false, false, amqp.Table{
 		"x-dead-letter-exchange": cfg.RetryExchange,
 	}); err != nil {
 		return fmt.Errorf("declare worker queue: %w", err)
 	}
-	if err := ch.QueueBind(cfg.WorkerQueue, "#", cfg.SourceExchange, false, nil); err != nil {
-		return fmt.Errorf("bind worker queue: %w", err)
+	if err := ch.QueueUnbind(cfg.WorkerQueue, "#", cfg.SourceExchange, nil); err != nil {
+		return fmt.Errorf("unbind legacy # binding: %w", err)
+	}
+	if err := ch.QueueBind(cfg.WorkerQueue, "sparkplug.data", cfg.SourceExchange, false, nil); err != nil {
+		return fmt.Errorf("bind legacy queue to sparkplug.data: %w", err)
 	}
 
 	// 3. Legacy retry queue with TTL + DLX back to source.
