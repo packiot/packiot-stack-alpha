@@ -143,7 +143,7 @@ not blocking anything.
 
 ---
 
-## The 10 eventTypes
+## The 11 eventTypes
 
 Each replays a different prod operator action into staging. All live in
 `internal/replay/<event_type>.go`.
@@ -160,6 +160,7 @@ Each replays a different prod operator action into staging. All live in
 | `event-justified`              | Operator justified a downtime with category + sub-category       | POST /api/downtimes/justify                 |
 | `event-edited`                 | Operator edited a previously-justified downtime                  | POST /api/downtimes/edit                    |
 | `event-splitted`               | Operator split a single downtime into N smaller intervals        | POST /api/downtimes/split                   |
+| `downtime-event-created`       | Auto-upserted batch of equipment status events from edge devices (status=running/stopped). Payload is `{events: [{topic, status, timestamp, idEquipment}]}`. Each event's `idEquipment` is translated prod→staging; `topic` is `C-PACK/` → `CPACK/` remapped (cosmetic — staging's upsert ignores it but DB-side audit logs stay consistent). | POST /api/downtimes                         |
 
 One eventType is **not** ported: `order-time-changed`. Prod has no UI
 that emits it currently — defer until the feature lands on prod.
