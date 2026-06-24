@@ -13,6 +13,7 @@ package replay
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
@@ -56,14 +57,18 @@ func (d *Dispatcher) HandledCategories() []string {
 // uniform.
 //
 // Outcome semantics:
-//   - "skipped" — no handler registered for this category. Caller still
-//                 advances the cursor.
+//   - "skipped" — no handler registered for this category, OR a registered
+//                 handler returned an error matching replay.ErrSkipReplay
+//                 (structural mismatch — upstream entity not mirrorable).
+//                 Caller still advances the cursor and does NOT write DLQ.
 //   - "ok"      — handler returned nil.
-//   - "failed"  — handler returned non-nil. Caller writes DLQ + still
-//                 advances the cursor (existing behaviour).
+//   - "failed"  — handler returned a non-skip error. Caller writes DLQ +
+//                 still advances the cursor (existing behaviour).
 //
-// Returns the handler's return value (or nil for unknown categories) so
-// callers preserve the existing DLQ-and-advance flow.
+// Returns nil when the handler's error was ErrSkipReplay so the caller
+// (processRow) takes its success branch — i.e. no mirror_replay_dlq insert.
+// Returns the handler's error verbatim for genuine failures so the caller
+// continues writing DLQ + advancing the cursor.
 func (d *Dispatcher) Dispatch(ctx context.Context, tx pgx.Tx, row db.ProdUserLog) error {
 	eventType := row.Category
 	metrics.UserLogsPolledTotal.WithLabelValues(eventType).Inc()
@@ -80,11 +85,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, tx pgx.Tx, row db.ProdUserLog
 	err := h(ctx, tx, row)
 	timer.ObserveDuration()
 
-	outcome := "ok"
-	if err != nil {
-		outcome = "failed"
+	if err == nil {
+		metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "ok").Inc()
+		return nil
 	}
-	metrics.UserLogsReplayedTotal.WithLabelValues(eventType, outcome).Inc()
+	if errors.Is(err, ErrSkipReplay) {
+		// Structural mismatch — record skipped and swallow the error so
+		// the caller's success path runs (advance cursor, no DLQ insert).
+		// The handler is expected to have logged the diagnostic detail
+		// before returning ErrSkipReplay.
+		metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "skipped").Inc()
+		return nil
+	}
+	metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "failed").Inc()
 	return err
 }
 

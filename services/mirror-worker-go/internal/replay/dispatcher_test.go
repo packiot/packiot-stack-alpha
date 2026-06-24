@@ -16,6 +16,7 @@ package replay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -89,6 +90,66 @@ func TestDispatcher_Skipped_UnknownCategory(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped")); got != beforeSkipped+1 {
 		t.Errorf("skipped = %f, want %f", got, beforeSkipped+1)
+	}
+}
+
+func TestDispatcher_Skipped_HandlerReturnsErrSkipReplay(t *testing.T) {
+	// Handler returns an error wrapping ErrSkipReplay → dispatcher must:
+	//   - increment outcome=skipped (NOT outcome=failed)
+	//   - return nil to the caller so processRow takes its success branch
+	//     (advance cursor, no mirror_replay_dlq insert).
+	const evt = "test-event-skip"
+	beforePolled := testutil.ToFloat64(metrics.UserLogsPolledTotal.WithLabelValues(evt))
+	beforeSkipped := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped"))
+	beforeFailed := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed"))
+
+	d := NewDispatcher()
+	d.Register(evt, func(_ context.Context, _ pgx.Tx, _ db.ProdUserLog) error {
+		// Wrap so errors.Is(err, ErrSkipReplay) returns true — same shape
+		// the real handlers (order_changed, downtime_event_created) emit.
+		return fmt.Errorf("structural mismatch: %w", ErrSkipReplay)
+	})
+
+	err := d.Dispatch(context.Background(), nil, db.ProdUserLog{Category: evt})
+	if err != nil {
+		t.Fatalf("Dispatch err = %v, want nil (skip-replay errors are swallowed so caller takes success path)", err)
+	}
+
+	if got := testutil.ToFloat64(metrics.UserLogsPolledTotal.WithLabelValues(evt)); got != beforePolled+1 {
+		t.Errorf("polled = %f, want %f", got, beforePolled+1)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped")); got != beforeSkipped+1 {
+		t.Errorf("skipped = %f, want %f", got, beforeSkipped+1)
+	}
+	// failed counter must NOT have advanced.
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed")); got != beforeFailed {
+		t.Errorf("failed = %f, want %f (skip path must not bump failed)", got, beforeFailed)
+	}
+}
+
+func TestDispatcher_NonSkipErrorStillFailed(t *testing.T) {
+	// Guard: a regular error must NOT be swallowed by the skip path —
+	// network/parse/5xx failures still need to land in DLQ via the caller's
+	// non-nil-error branch in processRow.
+	const evt = "test-event-non-skip-error"
+	beforeFailed := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed"))
+	beforeSkipped := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped"))
+
+	wantErr := errors.New("edge-api 500")
+	d := NewDispatcher()
+	d.Register(evt, func(_ context.Context, _ pgx.Tx, _ db.ProdUserLog) error {
+		return wantErr
+	})
+
+	gotErr := d.Dispatch(context.Background(), nil, db.ProdUserLog{Category: evt})
+	if !errors.Is(gotErr, wantErr) {
+		t.Errorf("Dispatch err = %v, want %v (non-skip errors must propagate)", gotErr, wantErr)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed")); got != beforeFailed+1 {
+		t.Errorf("failed = %f, want %f", got, beforeFailed+1)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped")); got != beforeSkipped {
+		t.Errorf("skipped = %f, want %f (non-skip errors must not bump skipped)", got, beforeSkipped)
 	}
 }
 
