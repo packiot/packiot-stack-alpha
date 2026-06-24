@@ -1,0 +1,48 @@
+name: PR Validation
+
+# Required status check for PRs into `staging` (and `development` once auto-bump
+# is wired for that branch too). Acts as the gate that the parent-only branch
+# protection model leans on: submodule bumps land in parent via a bot-opened PR
+# (see each submodule's bump-stack-submodule.yml), and this workflow decides
+# whether the PR is safe to auto-merge.
+#
+# v0 is intentionally cheap — no submodule checkout, no PAT required, no docker
+# image builds. It validates that compose.staging.yml + compose.development.yml
+# are structurally well-formed via `docker compose config --no-interpolate`,
+# which parses the YAML and resolves $-references *without* needing .env or
+# the submodule build contexts to exist on disk. Catches:
+#   - YAML syntax errors
+#   - malformed service definitions (bad keys, wrong types)
+#   - duplicate IP addresses on the same network
+#   - missing required fields
+#
+# What it does NOT catch (yet — ratchet up in later iterations):
+#   - broken Dockerfiles  → add `compose build` later (needs submodule PAT)
+#   - runtime startup failures → add `compose up + health` later
+#   - undefined env vars → drop --no-interpolate + provide a CI .env
+
+on:
+  pull_request:
+    branches: [staging, development]
+  # Allow manual re-runs on demand (e.g. flaky network during compose pull).
+  workflow_dispatch:
+
+jobs:
+  validate-compose:
+    name: Validate compose files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Validate compose.staging.yml
+        # --no-interpolate skips ${VAR} expansion, so we don't need .env to
+        # be present. -q exits non-zero on any structural error; output is
+        # silent on success.
+        run: docker compose -f compose.staging.yml config --no-interpolate -q
+
+      - name: Validate compose.development.yml
+        run: docker compose -f compose.development.yml config --no-interpolate -q
