@@ -28,9 +28,9 @@ networks:
 
 volumes:
   nr-edge-data:
-  nr-oeecloud-data:
   grafana-data:
   loki-data:
+  prom-data:
   rabbitmq-data:
   authentik-media:
   authentik-certs:
@@ -40,6 +40,7 @@ volumes:
 # .6  oeecloud     .7  grafana       .8  loki            .9  promtail
 # .10 pgbouncer    .11 simulator     .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init  .16 db-migrate    .17 adminer
+# .18 mirror-worker  .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
 # (one-shot; static IP prevents IPAM race with .3)
 
 services:
@@ -245,6 +246,15 @@ services:
       API_KEY: ${EDGE_API_KEY}
       FIREBASE_API_KEY: bypassed-by-hasura-admin-secret
       EDGE_API_BASE_URL: http://edge-api:8080
+      # Scope edge-nodered's GraphQL entities query (GraphQL.json:240) to
+      # CPACK-Staging (id_enterprise=3). Otherwise the unscoped query
+      # `v_operator_entities_2[0]` lands on whichever enterprise is first
+      # in the view's natural ordering — on staging that's SimCorp,
+      # making /machines/:lineId etc. return SimCorp data even for the
+      # CPACK-permission user. Hardcoded because edge-nodered's design is
+      # one-enterprise-per-edge; this overrides for the multi-tenant
+      # staging shape.
+      ID_ENTERPRISE: "3"
     # Bypass Docker's embedded DNS (intermittent EAI_AGAIN under load) by
     # resolving all intra-stack hostnames via /etc/hosts instead.
     extra_hosts:
@@ -274,70 +284,27 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── OEECloud Node-RED ──────────────────────────────────────────────────────────
-  oeecloud:
-    build:
-      context: ./oeecloud-node-red
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      LOG_LEVEL: info
-      PG_HOST: pgbouncer
-      PG_PORT: "5432"
-      PG_USER: ${POSTGRES_USER}
-      PG_DATABASE: ${POSTGRES_DB}
-      PG_PASSWORD: ${POSTGRES_PASSWORD}
-      PG_SSL: ""
-      API_KEY: ${EDGE_API_KEY}
-      OEE_SERVER_NAME: staging
-      OEE_SERVER_URL: http://edge-nodered:1880
-      PING_API_URL: http://edge-api:8080/devices/ping
-      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-ops@packiot.com}
-      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-support@packiot.com}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_SECURE: ${SMTP_SECURE:-false}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      # 7200s = 2h grace covers the ~1h batched pg_cron cleanup window during
-      # which equipment_values writes pause.  Remove once cleanup is proven stable.
-      HEALTHCHECK_MAX_AGE_SEC: "7200"
-    ports:
-      - "127.0.0.1:1881:1880"
-    healthcheck:
-      test: ["CMD", "/healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    # Bypass Docker's embedded DNS (intermittent EAI_AGAIN under load).
-    extra_hosts:
-      - "pgbouncer:172.18.0.10"
-      - "rabbitmq:172.18.0.5"
-      - "edge-nodered:172.18.0.4"
-      - "edge-api:172.18.0.3"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      pgbouncer:
-        condition: service_started
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.6
-    volumes:
-      - nr-oeecloud-data:/data
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "5"}
+  # ── OEECloud Node-RED — DECOMMISSIONED 2026-06-23 ─────────────────────────────
+  # Replaced by `oeecloud-worker` (Go) below. Removal flow:
+  #   1. 24h parity-check passed (parity-check.sql sections A-E all green)
+  #   2. 5-min isolation test: stopped this service, worker carried 100% of
+  #      delivered messages (6074 acked, 0 nacks/failures) with no drop in
+  #      equipment_values throughput (~570 rows/min, freshness <1.9s)
+  #   3. AMQP queue oeecloud-q deleted (rabbitmqctl delete_queue)
+  #   4. Docker volume stack_nr-oeecloud-data removed (~9 GB SQLite buffer reclaim)
+  # See [[project_oeecloud_worker_migration]] for the full timeline.
 
   # ── Grafana ────────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:11.5.0
     restart: unless-stopped
     env_file: [.env]
+    # Bump `provisioning_rev` whenever grafana/provisioning/ files change.
+    # Compose only recreates a service when its spec changes — provisioning
+    # files are read at container boot, so without this marker Grafana would
+    # silently ignore new datasources/dashboards on `docker compose up -d`.
+    labels:
+      - "provisioning_rev=2026-06-24-strategy-c-tenant-dashboard-v2"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -403,6 +370,54 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  # Pull-based metrics collector for in-cluster services. Scrapes /metrics
+  # endpoints listed in monitoring/prometheus/prometheus.yml. Retention is
+  # capped both by time (15d) and size (2GB) — staging disk is finite; size
+  # cap wins if cardinality ever spikes. Grafana datasource UID is
+  # `packiot-prometheus` (see grafana/provisioning/datasources/prometheus.yml).
+  #
+  # Why pull over push: if a target dies, Prometheus notices the absent
+  # scrape — no need to wait for a push to never arrive. Same observability
+  # primitive as systemd-journald: the collector drives cadence and treats
+  # silence as a signal.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    restart: unless-stopped
+    # Bump `config_rev` whenever monitoring/prometheus/prometheus.yml
+    # changes. Bind mounts to a single FILE bind to the source's INODE;
+    # git rewrites the file with a new inode on checkout, so the running
+    # container reads stale content until recreated. Same trap as the
+    # grafana `provisioning_rev` pattern.
+    labels:
+      - "config_rev=2026-06-24-tenant-relabel"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.22
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── Simulator ──────────────────────────────────────────────────────────────────
   # PLC + Operator simulator for staging. Reads packml_register from DB, posts
   # machine metrics to edge-nodered /plc-data, and simulates operator actions
@@ -424,6 +439,18 @@ services:
       edge-api:
         condition: service_started
     networks: [packiot-net]
+    # Bypass docker-embedded DNS for the two hot endpoints — the simulator's
+    # /plc-data poller was throwing intermittent NameResolutionError(
+    # 'Failed to resolve edge-nodered') every 5-7s, which silenced the
+    # equipment_values pipeline for ~2.5h on 2026-06-22. Other services
+    # (edge-nodered, oeecloud) use the same extra_hosts pattern for
+    # pgbouncer/rabbitmq — fixed IPs on packiot-net make this safe.
+    extra_hosts:
+      - "edge-nodered:172.18.0.4"
+      - "edge-api:172.18.0.3"
+      - "pgbouncer:172.18.0.10"
+    mem_limit: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
@@ -519,6 +546,209 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.17
     depends_on: [pgbouncer]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Mirror Worker (prod→staging user_logs replay) ─────────────────────────────
+  # Polls prod user_logs via SELECT-only awslambda creds (from `databaseCredentials`
+  # Secrets Manager), translates IDs (enterprise hardcoded, equipment via
+  # packml_topic, equipment_event via business key, PO via mirror_id_map), and
+  # POSTs each operator action to staging edge-api. Stateful via mirror_replay_cursor
+  # on staging DB. Internal HTTP to edge-api avoids the host nginx round-trip.
+  # See project_real_client_data_initiative memory for the full architecture.
+  mirror-worker:
+    build: ./services/mirror-worker
+    container_name: mirror-worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      PROD_DB_SECRET_ID: databaseCredentials
+      SOURCE_NAME: cpack-prod
+      PROD_ENTERPRISE_ID: "1"
+      STAGING_ENTERPRISE_ID: "3"
+      POLL_INTERVAL_SEC: "60"
+      BATCH_SIZE: "50"
+      PER_POST_DELAY_MS: "50"
+      HEALTH_PORT: "9100"
+      STAGING_DB_HOST: pgbouncer
+      STAGING_DB_PORT: "5432"
+      STAGING_DB_USER: ${POSTGRES_USER}
+      STAGING_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      STAGING_DB_NAME: ${POSTGRES_DB}
+      STAGING_API_URL: http://edge-api:8080
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.18
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      edge-api:
+        condition: service_started
+    # /health on 9100 (json). status=healthy|degraded|unhealthy.
+    # Healthcheck passes only on "healthy" — degraded keeps the container up
+    # but Grafana watches the json status field for warnings. start_period
+    # gives time for the first prod-DB connect + first tick to land before
+    # the orchestrator considers the container unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9100/health | grep -q '\"status\":\"healthy\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Mirror Worker (Go — MW-2 port of services/mirror-worker TS) ───────────────
+  # Parallel-run with the TS mirror-worker via independent cursor source
+  # ('cpack-prod-go' vs 'cpack-prod'). Both fetch the same prod user_logs
+  # rows and replay independently to staging edge-api — but each tracks
+  # its own mirror_replay_cursor + mirror_id_map rows. Staging POs created
+  # by either look up via the mapping (cache hit) on subsequent operator
+  # actions; deduplication is via the lookupMapping check at the top of
+  # each create handler.
+  #
+  # CO-5: fetches DB creds from AWS Secrets Manager at startup
+  # (databaseCredentials + packiot/staging/db) — no plaintext passwords
+  # in env vars.
+  #
+  # PHASE 1 of the port: ships with only order-status-changed handler
+  # registered. Other categories advance the cursor without acting (the
+  # TS worker handles them). PHASE 2 ports the remaining 9 handlers +
+  # the interval-overlap event matcher. Cut over after parity: rename
+  # source to 'cpack-prod' and stop the TS one.
+  mirror-worker-go:
+    build: ./services/mirror-worker-go
+    container_name: mirror-worker-go
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      PROD_DB_SECRET_ID: databaseCredentials
+      STAGING_DB_SECRET_ID: packiot/staging/db
+      SOURCE_NAME: cpack-prod-go
+      PROD_ENTERPRISE_ID: "1"
+      STAGING_ENTERPRISE_ID: "3"
+      POLL_INTERVAL_SEC: "60"
+      BATCH_SIZE: "50"
+      PER_POST_DELAY_MS: "50"
+      STAGING_API_URL: http://edge-api:8080
+      HEALTH_PORT: "9102"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.21
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      edge-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mirror-worker-go", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── oeecloud Worker (Go — replaces oeecloud-node-red over time) ───────────────
+  # AMQP consumer with manual ack + DLX + retry topology. Runs in PARALLEL with
+  # the existing stack-oeecloud-1 (Node-RED) by binding a SEPARATE queue
+  # (`oeecloud-worker-q`) to the same `oee` topic exchange. Both consumers see
+  # every published message — neither competes with the other.
+  #
+  # Scaffold-only phase: placeholder LogOnly handler that just logs+acks every
+  # message. No DB writes yet. Future sessions add per-routing-key handlers
+  # one at a time; once at parity, decommission Node-RED's queue + container.
+  #
+  # See services/oeecloud-worker/internal/amqp/topology.go for the
+  # exchange/queue/binding graph (with ASCII diagram).
+  oeecloud-worker:
+    build: ./services/oeecloud-worker
+    container_name: oeecloud-worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      # CO-5 phase 2: DB + AMQP both via Secrets Manager. AMQP user
+      # `oeecloud-worker` was provisioned on staging broker with
+      # least-privilege perms (own topology only, no admin reach, no
+      # access to oeecloud-q). EC2 IAM role grants packiot/staging/*.
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: packiot/staging/db
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-oeecloud-creds
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: oee
+      WORKER_QUEUE: oeecloud-worker-q
+      RETRY_EXCHANGE: oee-retry
+      RETRY_QUEUE: oeecloud-worker-q-retry-30s
+      FAILED_EXCHANGE: oee-failed
+      FAILED_QUEUE: oeecloud-worker-q-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      HEALTH_PORT: "9101"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.20
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      db-migrate:
+        # Wait for migrations before consuming — otherwise the first
+        # ~10s of resolver queries fail (packml_register may not exist),
+        # producing spurious nacks until db-migrate catches up.
+        condition: service_completed_successfully
+    # Worker self-probes via `--healthcheck` subcommand (distroless image
+    # has no shell/wget/curl, so the binary handles HTTP probe of its own
+    # in-process /health server). Exit 0 = healthy, non-zero = not.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
+  # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
+  # over the docker network so the browser sees a single origin (no CORS).
+  # Devs land at operator.staging.packiot.app behind Authentik SSO and log in
+  # with `dev.cpack` / `packiot` (configured in edge-node-red/flows/Configuration.json
+  # with endpoints scoped to CPACK staging machines).
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.staging
+    container_name: operator
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8083:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.19
+    depends_on:
+      edge-nodered:
+        # Wait for edge-nodered's healthcheck — without it, the SPA's
+        # initial API calls 5xx until the Node-RED flows are loaded.
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}

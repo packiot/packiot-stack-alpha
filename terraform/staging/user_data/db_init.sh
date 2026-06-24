@@ -258,4 +258,21 @@ SELECT cron.schedule(
 SQL
 echo "pg_cron daily cleanup registered (03:00 UTC, keeps last 90 days of equipment_values / equipment_events / uns_metrics)"
 
+# ── OEE engine orchestrator via pg_cron ───────────────────────────────────
+# piot_proc_refresh_runtime (db/20-oee-engine-parity.sql) is prod's master OEE
+# orchestrator: drains production_orders_runtime.recalc_needed and fills the
+# equipment/area/site runtime tables. It is a PROCEDURE with internal COMMITs,
+# so it MUST be scheduled as a top-level CALL — wrapping it in a guard function
+# would fail with "invalid transaction termination". On a fresh deploy the runs
+# fail (recorded in cron.job_run_details) until the app schema loads; harmless.
+# cron.schedule() is idempotent: same job name replaces an existing entry.
+docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
+SELECT cron.schedule(
+    'oee-refresh-runtime',
+    '* * * * *',
+    'CALL piot_proc_refresh_runtime();'
+);
+SQL
+echo "pg_cron OEE orchestrator registered (every minute: CALL piot_proc_refresh_runtime)"
+
 echo "=== DB init complete $(date -u) ==="

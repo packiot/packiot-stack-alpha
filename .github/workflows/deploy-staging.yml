@@ -32,7 +32,9 @@ jobs:
         # Only init submodules that staging compose.staging.yml actually builds.
         # 'operator' (frontend) is not built in staging and points to an
         # unpushable local commit, so we skip it.
-        run: git submodule update --init edge-api edge-node-red oeecloud-node-red
+        run: |
+          git submodule sync edge-api edge-node-red oeecloud-node-red operator
+          git submodule update --init edge-api edge-node-red oeecloud-node-red operator
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
@@ -43,7 +45,12 @@ jobs:
         run: docker compose -f compose.staging.yml -p stack build
 
       - name: Deploy
-        run: docker compose -f compose.staging.yml -p stack up -d
+        # --remove-orphans so removing a service from compose actually
+        # decommissions it. Without this, `up -d` only warns "Found orphan
+        # containers" and leaves them running, silently leaving zombie
+        # services behind. Safe here because this compose file owns the
+        # whole project — no other stack co-tenants on the host.
+        run: docker compose -f compose.staging.yml -p stack up -d --remove-orphans
 
       - name: Prune old images
         run: docker image prune -f

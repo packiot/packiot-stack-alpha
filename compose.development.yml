@@ -85,6 +85,7 @@ services:
       - ./edge-node-red/db/14-oee-uns-compute.sql:/docker-entrypoint-initdb.d/24-oee-uns-compute.sql:ro
       - ./edge-node-red/db/15-equipment-events-state-triggers.sql:/docker-entrypoint-initdb.d/25-equipment-events-state-triggers.sql:ro
       - ./edge-node-red/db/16-cpack-staging-fixtures.sql:/docker-entrypoint-initdb.d/26-cpack-staging-fixtures.sql:ro
+      - ./edge-node-red/db/24-enterprise-anchor-topics.sql:/docker-entrypoint-initdb.d/27-enterprise-anchor-topics.sql:ro
     networks: [packiot-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d packiot"]

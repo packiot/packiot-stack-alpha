@@ -32,6 +32,22 @@ resource "aws_s3_object" "nginx_setup" {
   })
 }
 
+# db_init.sh outgrew the AWS user_data 16 KB hard limit (the templated script
+# exceeds 12 KB raw → ~17 KB base64). Mirror the app pattern: tiny bootstrap
+# in user_data, full script fetched from S3 at first boot. The DB EC2's
+# `lifecycle.ignore_changes = [user_data]` block already prevents Terraform
+# from replacing the running instance when this rendering changes.
+resource "aws_s3_object" "db_init" {
+  bucket = local.state_bucket
+  key    = "scripts/db_init.sh"
+  content = templatefile("${path.module}/user_data/db_init.sh", {
+    db_name     = var.db_name
+    db_user     = var.db_user
+    aws_region  = var.aws_region
+    github_repo = var.github_repo
+  })
+}
+
 # Amazon Linux 2023 ARM64 — official AWS AMI, updated regularly.
 # Graviton2 (arm64) is required to use t4g instances.
 data "aws_ami" "al2023_arm64" {
@@ -76,15 +92,38 @@ resource "aws_iam_policy" "db_secrets" {
   name = "packiot-staging-db-secrets"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-      Resource = [
-        "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/db*",
-        # github-pat is needed by db_init.sh to clone the repo and build the postgres image locally.
-        "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/github-pat*",
-      ]
-    }]
+    Statement = [
+      {
+        Sid    = "ReadStagingSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/db*",
+          # github-pat is needed by db_init.sh to clone the repo and build the postgres image locally.
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/github-pat*",
+        ]
+      },
+      {
+        # db_bootstrap.sh fetches db_init.sh from S3 at first boot (mirrors the
+        # app pattern). Object-level grant is scoped to scripts/* so the role
+        # cannot read terraform state files in the same bucket.
+        Sid      = "ReadInitScript"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${local.state_bucket}/scripts/*"
+      },
+      {
+        # s3:ListBucket is bucket-level — separate ARN required. bootstrap.sh
+        # uses `aws s3 ls s3://bucket/scripts/` as a readiness probe.
+        Sid      = "ListInitScripts"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = "arn:aws:s3:::${local.state_bucket}"
+        Condition = {
+          StringLike = { "s3:prefix" = ["scripts/*"] }
+        }
+      }
+    ]
   })
 }
 
@@ -126,7 +165,16 @@ resource "aws_iam_policy" "app_custom" {
         Sid      = "ReadStagingSecrets"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*"
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*",
+          # databaseCredentials holds the prod SELECT-only awslambda user creds,
+          # read by the mirror-worker to replay prod user_logs onto staging.
+          # ?????? matches the 6-char alphanumeric suffix AWS auto-appends —
+          # constraining to the canonical name only. A future secret like
+          # `databaseCredentials-prod-foo-XXXXXX` would NOT match (12 chars
+          # after the literal `databaseCredentials-` instead of 6).
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:databaseCredentials-??????",
+        ]
       },
       {
         Sid      = "ReadInitScript"
@@ -157,9 +205,58 @@ resource "aws_iam_policy" "app_custom" {
           "route53:ListResourceRecordSets",
         ]
         Resource = "*"
+      },
+      {
+        # CloudWatch Agent publishes node-level disk + memory metrics under the
+        # CWAgent namespace. PutMetricData is the write path; the agent's own
+        # config refresh + log polls don't need extra permissions because the
+        # EC2 already has AmazonSSMManagedInstanceCore + S3 access for its
+        # bootstrap script. Disk-fill alarm at 75% lives in Terraform separately
+        # (aws_cloudwatch_metric_alarm.app_disk_used_percent).
+        Sid    = "PublishCloudWatchMetrics"
+        Effect = "Allow"
+        Action = ["cloudwatch:PutMetricData"]
+        Resource = "*"
       }
     ]
   })
+}
+
+# Disk-fill alarm at 75% on the app EC2 root volume. Triggered by the
+# CWAgent disk_used_percent metric for path=/ on the staging app instance.
+# Action target: SNS topic that pages on-call (created separately if not
+# already present — for now we use the existing 'packiot-staging-alerts'
+# topic name; harmless to alarm without an SNS subscriber while we wire it).
+#
+# Threshold rationale: 75% catches drift before the 2026-06-22 100% lockout
+# scenario repeats. Disk grew to 64 GB so 75% = 48 GB used (vs 27 GB
+# steady-state today) — plenty of headroom for legitimate growth before
+# alarming.
+resource "aws_cloudwatch_metric_alarm" "app_disk_used_percent" {
+  alarm_name          = "packiot-staging-app-disk-used-percent"
+  alarm_description   = "Staging app EC2 root disk > 75% — investigate docker / log churn before it fills (see ebs-rescue-mount-stuck-ec2 zettel for recovery)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 75
+  metric_name         = "disk_used_percent"
+  namespace           = "CWAgent"
+  period              = 300
+  statistic           = "Average"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    InstanceId = aws_instance.app.id
+    path       = "/"
+    fstype     = "xfs"
+    device     = "nvme0n1p1"
+  }
+  # alarm_actions intentionally empty for now — the alarm becomes observable
+  # via the AWS console and Grafana CloudWatch datasource immediately, and
+  # we can wire SNS / chatops later without recreating it.
+  tags = {
+    Project     = "packiot-stack-alpha"
+    Environment = "staging"
+    Owner       = "ops"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "app_custom" {
@@ -204,15 +301,19 @@ resource "aws_instance" "db" {
     delete_on_termination = false # preserve data on accidental termination
   }
 
-  user_data = base64encode(templatefile("${path.module}/user_data/db_init.sh", {
-    db_name     = var.db_name
-    db_user     = var.db_user
-    aws_region  = var.aws_region
-    vpc_cidr    = var.vpc_cidr
-    github_repo = var.github_repo
+  # Tiny bootstrapper only — fetches the real init script from S3 at runtime.
+  # db_init.sh is uploaded as aws_s3_object.db_init (rendered with all vars).
+  # See user_data/db_bootstrap.sh and the explanatory comment on the
+  # aws_s3_object.db_init resource for the reason this is split.
+  user_data = base64encode(templatefile("${path.module}/user_data/db_bootstrap.sh", {
+    state_bucket = local.state_bucket
+    aws_region   = var.aws_region
   }))
 
   tags = { Name = "packiot-staging-db" }
+
+  # S3 object must exist before the instance boots and db_bootstrap.sh runs.
+  depends_on = [aws_s3_object.db_init]
 
   lifecycle {
     # Prevent Terraform from replacing the instance when the AMI updates.

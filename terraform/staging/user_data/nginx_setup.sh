@@ -88,6 +88,21 @@ server {
         proxy_set_header        Host              auth.$STAGING_DOMAIN;
     }
 
+%{ if svc == "api" ~}
+    # edge-api's AuthMiddleware enforces ?token= API key auth on /api/*,
+    # so the Authentik gate is redundant here. Skipping auth_request lets
+    # external clients (prod nginx mirror, factory edges) reach /api/* directly,
+    # matching prod's behavior. Operator UI continues to use Authentik via /.
+    location ~ ^/api/ {
+        proxy_pass         http://127.0.0.1:${port};
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+%{ endif ~}
+
     location / {
         auth_request /outpost.goauthentik.io/auth/nginx;
         auth_request_set \$authentik_set_cookie \$upstream_http_set_cookie;

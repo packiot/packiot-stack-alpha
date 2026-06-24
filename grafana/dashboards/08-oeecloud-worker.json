@@ -1,0 +1,191 @@
+{
+  "title": "oeecloud-worker",
+  "uid": "oeecloud-worker",
+  "schemaVersion": 39,
+  "version": 2,
+  "tags": ["workers", "amqp", "multi-tenant"],
+  "timezone": "browser",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+        "definition": "label_values(oeecloud_worker_amqp_deliveries_total, tenant)",
+        "query": { "qryType": 1, "query": "label_values(oeecloud_worker_amqp_deliveries_total, tenant)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "includeAll": true,
+        "allValue": ".+",
+        "multi": true,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "refresh": 2,
+        "regex": "",
+        "options": [],
+        "hide": 0,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Fleet overview (per-tenant)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Per-tenant throughput (acked msg/s)",
+      "description": "rate(acked) broken down by tenant. Phase 1 today: all traffic is tenant=legacy. Phase 2 cutover: lines split into cpack / simcorp / staging / etc.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by(tenant)(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"}[5m]))", "legendFormat": "{{tenant}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Per-tenant latency p95 (s)",
+      "description": "histogram_quantile by tenant. Compare tenants to spot one consuming disproportionate handler time.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, tenant)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))", "legendFormat": "{{tenant}} p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Worker totals (filtered by $tenant)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Acked (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"})",
+        "legendFormat": "acked"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Nacked → retry (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\", tenant=~\"$tenant\"})"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 }] } }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Published to oee-failed (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"exhausted_failed\", tenant=~\"$tenant\"})"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Throughput last 1m (msgs)",
+      "description": "increase(delivered) over 1m. Drops to 0 = stalled stream.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "sum(increase(oeecloud_worker_amqp_deliveries_total{tenant=~\"$tenant\"}[1m]))"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Throughput (msg/s) — filtered",
+      "description": "rate() over 5m, summed across selected tenants. delivered should track acked closely; gap = errors in flight.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{tenant=~\"$tenant\"}[5m]))", "legendFormat": "delivered" },
+        { "refId": "B", "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"}[5m]))", "legendFormat": "acked" },
+        { "refId": "C", "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\", tenant=~\"$tenant\"}[5m]))", "legendFormat": "nacked → retry" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Handler latency p50 / p95 / p99 — filtered",
+      "description": "histogram_quantile across selected tenants. p99 spike usually = pgbouncer hiccup; persistent p50 climb = capacity warning (Strategy A trigger near ~100 ms p_avg).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.5, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Process-wide (not per-tenant)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "PO Parameter ops (the #32 alarm)",
+      "description": "All zero = CPACK PLC not emitting Parameter range messages. Any non-zero on skipped_* = signal to revisit #32 (port deferred 2026-06-24). Process-wide (no tenant breakdown — writer counter, not AMQP-tagged).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(oeecloud_worker_writer_po_parameter_ops_total[5m])", "legendFormat": "{{op}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Go runtime — goroutines + RSS",
+      "description": "goroutine count should be flat (~10-30). Memory growth signals leak. GC pause sustained > 10ms = GOGC tuning needed. Process-wide.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "go_goroutines", "legendFormat": "goroutines" },
+        { "refId": "B", "expr": "process_resident_memory_bytes / 1024 / 1024", "legendFormat": "RSS (MiB)" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    }
+  ]
+}

@@ -1,14 +1,16 @@
 [submodule "edge-node-red"]
 	path = edge-node-red
 	url = https://github.com/packiot/edge-node-red.git
+	branch = staging
 [submodule "oeecloud-node-red"]
 	path = oeecloud-node-red
 	url = https://github.com/packiot/oeecloud-node-red.git
+	branch = staging
 [submodule "edge-api"]
 	path = edge-api
 	url = https://github.com/packiot/edge-api.git
-	branch = development
+	branch = staging
 [submodule "operator"]
 	path = operator
-	url = git@github.com:packiot/operator4
-	branch = refactor/decompose-components
+	url = https://github.com/packiot/operator4.git
+	branch = staging

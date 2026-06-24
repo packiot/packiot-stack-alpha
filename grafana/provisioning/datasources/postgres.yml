@@ -1,15 +1,20 @@
 apiVersion: 1
 
+# The DB lives on a separate EC2 (10.10.10.89), not in the Docker network.
+# Hostname + password come from env_file: [.env] on the grafana service
+# (POSTGRES_HOST / POSTGRES_PASSWORD set by Terraform in app_init.sh).
+# Grafana 7+ natively interpolates $VAR in provisioning YAML.
+
 datasources:
   - name: Packiot PostgreSQL
     type: postgres
     uid: packiot-postgres
-    url: postgres:5432
-    user: postgres
+    url: $POSTGRES_HOST:$POSTGRES_PORT
+    user: $POSTGRES_USER
     secureJsonData:
-      password: packiot
+      password: $POSTGRES_PASSWORD
     jsonData:
-      database: packiot
+      database: $POSTGRES_DB
       sslmode: disable
       maxOpenConns: 25
       maxIdleConns: 10

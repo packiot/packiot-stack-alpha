@@ -24,6 +24,21 @@ systemctl start  amazon-ssm-agent
 dnf update -y --allowerasing
 dnf install -y git curl unzip jq python3-pip --allowerasing
 
+# ── Swap ──────────────────────────────────────────────────────────────────────
+# Instance has 3.7 GiB RAM. Multi-stage Docker builds (especially Go's parallel
+# compiler when building oeecloud-worker) can OOM-kill the actions-runner
+# without headroom — happened on 2026-06-22 deploy 27984146678: 18-min Go
+# build then runner shutdown signal. 4 GiB swap absorbs the spike.
+# Idempotent: skip if /swapfile exists; ensure /etc/fstab entry persists.
+if [ ! -f /swapfile ]; then
+  fallocate -l 4G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+fi
+swapon /swapfile 2>/dev/null || true
+grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+echo "Swap: $(free -h | awk '/Swap:/ {print $2}') configured"
+
 # ── Docker + Docker Compose ───────────────────────────────────────────────────
 dnf install -y docker
 systemctl enable docker
