@@ -1,6 +1,8 @@
-.PHONY: help init setup dev-setup up up-infra up-edge up-api up-operator up-simulator \
+.PHONY: help init setup dev-setup up up-infra up-edge up-api up-operator up-simulator up-workers \
         down logs logs-edge logs-api logs-infra logs-postgres logs-rabbitmq logs-adminer logs-operator logs-simulator \
+        logs-oeecloud-worker logs-mirror-worker \
         build build-edge build-api build-operator build-simulator build-tests \
+        build-oeecloud-worker build-mirror-worker \
         restart clean status psql shell-edge shell-api shell-operator \
         publish-test update devctl \
         db-equipments db-equipment-values db-packml db-enterprises db-sites db-areas \
@@ -22,6 +24,7 @@ AWS_ACCOUNT_ID  := $(shell aws sts get-caller-identity --query Account --output 
 TF_STATE_BUCKET := packiot-terraform-state-$(AWS_ACCOUNT_ID)
 
 INFRA_SVCS  = rabbitmq postgres hasura hasura-init
+WORKER_SVCS = oeecloud-worker mirror-worker-go
 
 # ── Default ───────────────────────────────────────────────────────────────────
 help:
@@ -48,22 +51,27 @@ help:
 	@echo "    up-api           Postgres + edge-api"
 	@echo "    up-operator      Infra + edge-api + edge-nodered + operator UI"
 	@echo "    up-simulator     Start operator activity simulator (Simulator Corp)"
+	@echo "    up-workers       Start both Go workers (oeecloud-worker + mirror-worker-go)"
 	@echo ""
 	@echo "  Individual image builds"
-	@echo "    build-edge       Build edge-nodered image"
-	@echo "    build-api        Build edge-api image"
-	@echo "    build-operator   Build operator UI image"
-	@echo "    build-simulator  Build simulator image"
+	@echo "    build-edge             Build edge-nodered image"
+	@echo "    build-api              Build edge-api image"
+	@echo "    build-operator         Build operator UI image"
+	@echo "    build-simulator        Build simulator image"
+	@echo "    build-oeecloud-worker  Build oeecloud-worker (Go) image"
+	@echo "    build-mirror-worker    Build mirror-worker-go image"
 	@echo ""
 	@echo "  Logs (follow mode — Ctrl+C to stop)"
-	@echo "    logs             Tail all services"
-	@echo "    logs-edge        Tail edge-nodered"
-	@echo "    logs-api         Tail edge-api"
-	@echo "    logs-postgres    Tail TimescaleDB"
-	@echo "    logs-rabbitmq    Tail RabbitMQ"
-	@echo "    logs-adminer     Tail Adminer"
-	@echo "    logs-infra       Tail rabbitmq + postgres + hasura"
-	@echo "    logs-simulator   Tail operator simulator"
+	@echo "    logs                    Tail all services"
+	@echo "    logs-edge               Tail edge-nodered"
+	@echo "    logs-api                Tail edge-api"
+	@echo "    logs-postgres           Tail TimescaleDB"
+	@echo "    logs-rabbitmq           Tail RabbitMQ"
+	@echo "    logs-adminer            Tail Adminer"
+	@echo "    logs-infra              Tail rabbitmq + postgres + hasura"
+	@echo "    logs-simulator          Tail operator simulator"
+	@echo "    logs-oeecloud-worker    Tail oeecloud-worker (Go AMQP consumer)"
+	@echo "    logs-mirror-worker      Tail mirror-worker-go (user_logs replay)"
 	@echo ""
 	@echo "  Database"
 	@echo "    db-rebuild          Wipe pg-data volume + rebuild from init scripts (schema parity)"
@@ -166,6 +174,9 @@ up-operator:
 up-simulator:
 	$(COMPOSE) up -d simulator
 
+up-workers:
+	$(COMPOSE) up -d $(WORKER_SVCS)
+
 # ── DevCtl — interactive dev-user action CLI ──────────────────────────────────
 # Runs devctl.py inside the simulator image (psycopg2 + requests already there).
 # Bind-mounts devctl.py so you always get the latest without rebuilding.
@@ -189,6 +200,12 @@ build-operator:
 
 build-simulator:
 	$(COMPOSE) build simulator
+
+build-oeecloud-worker:
+	$(COMPOSE) build oeecloud-worker
+
+build-mirror-worker:
+	$(COMPOSE) build mirror-worker-go
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs:
@@ -220,6 +237,12 @@ logs-operator:
 
 logs-simulator:
 	$(COMPOSE) logs -f simulator
+
+logs-oeecloud-worker:
+	$(COMPOSE) logs -f oeecloud-worker
+
+logs-mirror-worker:
+	$(COMPOSE) logs -f mirror-worker-go
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 psql:
