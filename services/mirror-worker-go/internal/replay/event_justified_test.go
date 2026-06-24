@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -139,3 +140,32 @@ func TestEventJustified_FailedDispatch_RecordsFailed(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// TestEventJustified_SkipReplay_DispatcherRecordsSkipped — justify.service.ts
+// throws NotFoundException('Downtime does not exist') (404, not 400 like
+// edit-manual-event). Pin that the skip wires through for the 404 variant.
+func TestEventJustified_SkipReplay_DispatcherRecordsSkipped(t *testing.T) {
+	const evt = "event-justified"
+	beforeSkipped := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped"))
+	beforeFailed := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed"))
+
+	d := NewDispatcher()
+	d.Register(evt, func(_ context.Context, _ pgx.Tx, _ db.ProdUserLog) error {
+		return fmt.Errorf("staging /api/downtimes/justify returned 404: parent downtime/event missing — child replay skipped: %w",
+			ErrSkipReplay)
+	})
+
+	err := d.Dispatch(context.Background(), nil, db.ProdUserLog{
+		Category: evt,
+		Payload:  []byte(`{"idEquipment":42,"idEquipmentEvent":12345}`),
+	})
+	if err != nil {
+		t.Fatalf("Dispatch err = %v, want nil for skip-replay", err)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped")); got != beforeSkipped+1 {
+		t.Errorf("event-justified skipped = %f, want %f", got, beforeSkipped+1)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed")); got != beforeFailed {
+		t.Errorf("event-justified failed = %f, want %f (skip must not bump failed)", got, beforeFailed)
+	}
+}
