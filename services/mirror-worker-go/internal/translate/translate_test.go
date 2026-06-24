@@ -5,7 +5,7 @@
 // integration-shaped tests would need a Postgres fixture and are out of
 // scope here. What's testable in isolation:
 //
-//   - remapTopic       — pure string substitution
+//   - RemapTopic       — pure string substitution (exported for handler use)
 //   - Translator.Enterprise — config-only, no DB
 //
 // If we ever add a fake *db.Prod / *db.Staging behind an interface (the
@@ -15,12 +15,14 @@ package translate
 
 import (
 	"log/slog"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/config"
 )
 
-func TestRemapTopic(t *testing.T) {
+func TestRemapTopicExported(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -42,9 +44,9 @@ func TestRemapTopic(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := remapTopic(c.in)
+			got := RemapTopic(c.in)
 			if got != c.want {
-				t.Errorf("remapTopic(%q) = %q, want %q", c.in, got, c.want)
+				t.Errorf("RemapTopic(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}
@@ -77,4 +79,57 @@ func TestEnterprise(t *testing.T) {
 			t.Errorf("Enterprise(99) err = nil, want non-nil")
 		}
 	})
+}
+
+// TestProductionOrderQueryUsesIDOrder pins the column name in the
+// ProductionOrder SQL. The original TS port referenced a fictional column
+// `nu_production_order` that doesn't exist on prod (or staging) — the live
+// /metrics DLQ surfaced ~120 SQLSTATE 42703 failures from this exact code
+// path. The actual human PO number column is `id_order` (integer, unique
+// per id_enterprise — see prod's `production_orders_un` constraint).
+//
+// We can't easily exercise the SQL at unit-test time (it needs a live pg
+// pool), so we instead read the source file and assert the textual SQL
+// uses the right column. Crude but effective — catches a regression at
+// `go test` time with zero infra cost.
+//
+// We scan only the SQL string literals (text between back-ticks) so the
+// fix's explanatory comments are free to reference the bug-string by
+// name without tripping the guard.
+func TestProductionOrderQueryUsesIDOrder(t *testing.T) {
+	src, err := os.ReadFile("translate.go")
+	if err != nil {
+		t.Fatalf("read translate.go: %v", err)
+	}
+	body := string(src)
+
+	// Carve out the SQL string literals — anything between back-ticks.
+	// A regex would also work; manual scan keeps the dep surface tiny.
+	var sqlOnly strings.Builder
+	inBacktick := false
+	for _, ch := range body {
+		if ch == '`' {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inBacktick {
+			sqlOnly.WriteRune(ch)
+		}
+	}
+	sqlBlob := sqlOnly.String()
+
+	if strings.Contains(sqlBlob, "nu_production_order") {
+		t.Errorf("translate.go SQL still references nu_production_order — prod uses id_order; the column nu_production_order does not exist (SQLSTATE 42703 in DLQ)")
+	}
+	// Positive guard — both the prod-side and staging-side queries must
+	// filter on id_order.
+	wantSubs := []string{
+		"SELECT id_order FROM production_orders",
+		"WHERE id_order = $1 AND id_enterprise = $2",
+	}
+	for _, s := range wantSubs {
+		if !strings.Contains(sqlBlob, s) {
+			t.Errorf("translate.go SQL missing expected substring %q after id_order fix", s)
+		}
+	}
 }

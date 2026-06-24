@@ -50,7 +50,7 @@ func OrderChanged(
 		stagingPOID, err := t.ProductionOrder(ctx, p.OldIDProductionOrder)
 		if err != nil {
 			if errors.Is(err, translate.ErrUnmapped) {
-				return fmt.Errorf("production_order %d unmapped (no mirror_id_map row and no nu_production_order business-key match — run backfill-pos): %w",
+				return fmt.Errorf("production_order %d unmapped (no mirror_id_map row and no id_order business-key match — run backfill-pos): %w",
 					p.OldIDProductionOrder, err)
 			}
 			return fmt.Errorf("translate production_order: %w", err)
