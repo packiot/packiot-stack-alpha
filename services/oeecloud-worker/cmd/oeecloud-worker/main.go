@@ -129,7 +129,24 @@ func main() {
 	)
 
 	dispatcher := handlers.NewDispatcher(logger)
+	// Register the sparkplug handler for BOTH the legacy 2-segment key
+	// (`sparkplug.data` — still emitted by any edge-nodered that hasn't
+	// flipped to Strategy C Phase 2b yet) AND the per-tenant 3-segment
+	// keys (`sparkplug.data.<tenant>`) that the per-tenant queues
+	// declared in DeclareTopology actually deliver.
+	//
+	// Before this registration, only `sparkplug.data` was in the map.
+	// On staging edge-nodered already publishes `sparkplug.data.cpack`,
+	// so every delivery missed the map and fell through to the LogOnly
+	// fallback — acks succeeded but NO write ever happened. The Strategy
+	// C Phase 2a topology change moved per-tenant traffic onto the new
+	// queues, but the dispatcher registration was left at the legacy
+	// key. Symptom matched perfectly: /metrics counted ~17.5k acked on
+	// `sparkplug.data.cpack` while `equipment_values` had 0 new rows.
 	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
+	for _, t := range activeTenants {
+		dispatcher.Register(fmt.Sprintf("sparkplug.data.%s", t), sparkplugHandler.Handle)
+	}
 
 	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, activeTenants, logger)
 	// Surface PO Parameter skipped-id counters on /health so #32 (port
