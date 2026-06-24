@@ -2,12 +2,12 @@
 
 Design doc for issue **#42** of the oeecloud-worker scaling roadmap.
 
-> **Status (2026-06-24):** **DESIGN + STAGING IMPLEMENTATION**. Unlike
-> Strategy A (which stays design-only until load triggers fire), Strategy
-> C is being shaped into the staging code now so the Q3/Q4 2026
-> production migration is architecturally a no-op. The production stack
-> has ~10 tenants today; we don't want to discover topology surprises
-> during cutover.
+> **Status (2026-06-24):** **DESIGN + PHASE 1 SHIPPED to staging**.
+> Per-tenant queues declared alongside the legacy `oeecloud-worker-q`.
+> Worker still consumes legacy queue — no traffic change yet. Phase 2
+> (edge-nodered publisher cutover) and Phase 3 (legacy cleanup) remain
+> open. Q3/Q4 2026 production migration is now architecturally a no-op
+> at the topology layer.
 
 ---
 
@@ -415,11 +415,16 @@ we can run both in parallel during the cutover.
 - Legacy queue keeps its `#` binding. Per-tenant queues bind
   `sparkplug.data.{tenant_id}` — but since edge-nodered still publishes
   the bare `sparkplug.data` key, nothing routes to them yet.
-- **Also declare a catch-all safety queue** `oeecloud-worker-q-unrouted`
-  bound to `sparkplug.data.*` on the source exchange. This catches
-  traffic from any tenant whose queue *isn't* declared yet (newly
-  onboarded between deploys, misconfigured publisher, etc.).
-  Alert fires if `unrouted` queue depth > 0.
+- **Catch-all safety queue (DEFERRED, see v3 review log).** The v2 plan
+  was to bind a queue to `sparkplug.data.*` on the source exchange. On
+  closer reading this is wrong — `sparkplug.data.*` is a wildcard that
+  matches EVERY per-tenant key (e.g. `sparkplug.data.cpack` matches the
+  `*`), so the catch-all would receive a duplicate of every legitimate
+  message. The correct AMQP pattern is an **Alternate Exchange (AE)** on
+  the `oee` exchange, which captures only messages with NO matching
+  binding. But adding `alternate-exchange` to an existing exchange
+  requires recreating it (downtime for edge-nodered publishes). Deferred
+  to a separate task; document the gap in the operator runbook.
 - Worker consumes from the legacy queue only at this phase.
 - **Validates**: queue topology declares correctly; permissions work;
   per-tenant /metrics labels exist (with zero values).
@@ -545,11 +550,15 @@ func DiscoverFromDB(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 
 ## 12. Open questions / followups
 
-1. **Catch-all queue for unrouted tenants** — ✅ **DECIDED v2**: yes,
-   ship from day 1 (see §10 Phase 1). Bound to `sparkplug.data.*` on
-   the source exchange. Worker does NOT consume it — it's an alarm
-   reservoir, not a processing path. Grafana alert on
-   `rabbitmq_queue_messages{queue="oeecloud-worker-q-unrouted"} > 0`.
+1. **Catch-all queue for unrouted tenants** — ⚠ **DECIDED v2 → REVISED v3**:
+   the v2 "bind to `sparkplug.data.*`" approach would have duplicated
+   every legitimate per-tenant message. Correct pattern is Alternate
+   Exchange on `oee`, which requires recreating the exchange (downtime
+   for edge-nodered publishes). Deferred to a separate task.
+   **Mitigation today**: monitor RabbitMQ's `unroutable_dropped` metric
+   (counter increments when an `oee` publish has no binding match) and
+   alert on it. That's at least a signal that *something* is unrouted,
+   even without queueing the offending messages.
 2. **RabbitMQ Prometheus exporter** — needed for per-tenant queue-depth
    panel. Filed separately (not in this design's scope).
 3. **Dynamic tenant addition without restart** — periodic poll vs
@@ -691,3 +700,35 @@ issues; all fixed inline.
 in the migration plan that v1 had (Phase 2 ordering). Same lesson as
 Strategy A v2: 30 min of self-critique is cheaper than a post-cutover
 "why did we lose 4 hours of CPACK data?" incident review.
+
+### v2 → v3 (2026-06-24, implementation-driven revision)
+
+While implementing Phase 1, discovered v2's catch-all design was wrong:
+a queue bound to `sparkplug.data.*` would match every per-tenant
+routing key (`*` matches exactly one segment, which is exactly what
+`cpack` / `acme` / etc. are). The catch-all would have received a
+duplicate of every legitimate message — making it both noisy and a
+load multiplier.
+
+**Fix**: catch-all needs the Alternate Exchange (AE) pattern, not a
+wildcard binding. AE catches messages with NO matching binding; perfect
+for "unknown tenant" detection. But adding `alternate-exchange` to an
+existing exchange means recreating it, which interrupts the live
+edge-nodered publish path. Deferred to a follow-up task.
+
+**Phase 1 SHIPPED (commit f535d3e):**
+- NEW: `internal/tenants/discovery.go` — DB query for active group_ids
+- UPDATED: `internal/amqp/topology.go` — declares per-tenant queues
+  alongside legacy
+- UPDATED: `internal/amqp/consumer.go` — takes `tenants []string`,
+  passes to DeclareTopology
+- UPDATED: `cmd/oeecloud-worker/main.go` — discovers tenants then
+  constructs Consumer
+- Broker-side: RabbitMQ user `oeecloud-worker` perms broadened from
+  exact queue names to `oeecloud-worker-q.*` regex (via SSM)
+- Catch-all queue deferred (per above).
+
+**Lesson**: implementation-driven design revisions are common. The
+v2→v3 catch-all bug existed because the design was "obvious-looking"
+without testing it against AMQP topic-exchange semantics. Writing the
+declaration code forced me to consider what each binding matches.
