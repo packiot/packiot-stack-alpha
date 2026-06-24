@@ -9,13 +9,13 @@
 #   edge-api         :8080   — NestJS REST/admin API
 #   edge-nodered     :1880   — Edge Node-RED (reads PLCs, publishes to RabbitMQ; serves operator API)
 #   operator         :3002   — React SPA operator UI (factory floor interface)
+#   oeecloud-worker          — Go AMQP consumer (replaces oeecloud-node-red)
+#   mirror-worker-go         — Go user_logs replay worker (degenerate locally; no prod creds)
 #   simulator        (opt)   — Operator activity simulator (Simulator Corp enterprise; profile=simulator)
 #
-# Note: the `oeecloud` Node-RED service was decommissioned 2026-06-24, replaced
-# by `services/oeecloud-worker` (Go) in staging/prod. Local dev currently runs
-# without an OEE consumer; messages published by edge-nodered to RabbitMQ pile
-# up in the `oee` exchange unless you point a worker at it. Add the Go worker
-# here if you need end-to-end pipeline tests locally.
+# Both Go workers fetch creds via AWS Secrets Manager in staging/prod; locally
+# they take the CREDS_SOURCE=env fallback in services/<name>/internal/secrets
+# and read DB_*/RABBITMQ_* straight from the env vars below. See issue #52.
 #
 # Usage:
 #   make up              — start everything
@@ -302,24 +302,119 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
 
-  # ── OEECloud Node-RED — DECOMMISSIONED 2026-06-24 ────────────────────────────
-  # Replaced by `services/oeecloud-worker` (Go) in staging/prod (see
-  # compose.staging.yml). NOT yet wired into compose.development.yml.
-  #
-  # The blocker is `services/oeecloud-worker/internal/secrets/secrets.go`
-  # — both Go workers fetch DB + AMQP creds from AWS Secrets Manager at
-  # startup with no env-var fallback. Adding them here without code
-  # changes will crash at startup (the EC2 IAM role isn't present locally).
-  #
-  # To enable local-dev parity, add an env-var fallback path in each
-  # worker's secrets package (gated by e.g. `CREDS_SOURCE=env`) that
-  # reads from compose-provided env vars instead of SM. Then drop in
-  # `oeecloud-worker:` + `mirror-worker-go:` blocks mirroring
-  # compose.staging.yml's shape, with `extra_hosts` for rabbitmq+postgres
-  # and the simulator as the upstream message source.
-  #
-  # See [[project_oeecloud_worker_migration]] for the full timeline and
-  # `services/README.md` for the per-worker architectural overview.
+  # ── Go workers (replace decommissioned oeecloud-node-red + mirror-worker TS) ─
+  # Both use CREDS_SOURCE=env to skip AWS Secrets Manager and read DB +
+  # AMQP creds straight from the env vars below. See issue #52 for the
+  # design rationale and services/<name>/internal/secrets/secrets.go for
+  # the fallback dispatch.
+
+  # oeecloud-worker: AMQP consumer on the `oee` topic exchange. Resolves
+  # SparkPlug topics → equipment via packml_register, writes raw data
+  # to equipment_values/equipment_events/uns_metrics. Locally this lets
+  # `make up` close the PLC → DB loop end-to-end without Node-RED.
+  oeecloud-worker:
+    build: ./services/oeecloud-worker
+    container_name: oeecloud-worker
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      CREDS_SOURCE: env
+      # DB — direct postgres (no pgbouncer in dev). Matches the `postgres`
+      # service env vars above.
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: packiot
+      DB_NAME: packiot
+      # AMQP — uses the dev rabbitmq user (packiot/packiot) since the
+      # least-priv `oeecloud-worker` user isn't provisioned locally.
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: packiot
+      RABBITMQ_PASSWORD: packiot
+      # Exchange / queue names — suffixed `-dev` so this never collides
+      # with the staging broker if you ever cross-wire (defensive; the
+      # `oee` exchange is shared across envs in name but lives on a
+      # different broker).
+      SOURCE_EXCHANGE: oee
+      WORKER_QUEUE: oeecloud-worker-q-dev
+      RETRY_EXCHANGE: oee-retry-dev
+      RETRY_QUEUE: oeecloud-worker-q-dev-retry-30s
+      FAILED_EXCHANGE: oee-failed-dev
+      FAILED_QUEUE: oeecloud-worker-q-dev-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      HEALTH_PORT: "9101"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # mirror-worker-go: polls prod user_logs and replays operator actions
+  # against staging edge-api. Locally there's no prod DB to point at, so
+  # PROD_DB_* points at the same postgres as STAGING_DB_* — the worker
+  # boots cleanly, polls, sees no new rows, and goes idle. Useful for
+  # exercising its /health endpoint + container lifecycle without
+  # needing real prod creds.
+  mirror-worker-go:
+    build: ./services/mirror-worker-go
+    container_name: mirror-worker-go
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      CREDS_SOURCE: env
+      # Prod-side DB (degenerate: same as staging in dev — no real prod
+      # accessible from a laptop).
+      PROD_DB_HOST: postgres
+      PROD_DB_PORT: "5432"
+      PROD_DB_USER: postgres
+      PROD_DB_PASSWORD: packiot
+      PROD_DB_NAME: packiot
+      # Staging-side DB.
+      STAGING_DB_HOST: postgres
+      STAGING_DB_PORT: "5432"
+      STAGING_DB_USER: postgres
+      STAGING_DB_PASSWORD: packiot
+      STAGING_DB_NAME: packiot
+      SOURCE_NAME: cpack-dev-go
+      PROD_ENTERPRISE_ID: "5"  # Simulator Corp — closest dev analogue to CPACK
+      STAGING_ENTERPRISE_ID: "5"
+      POLL_INTERVAL_SEC: "60"
+      BATCH_SIZE: "50"
+      PER_POST_DELAY_MS: "50"
+      STAGING_API_URL: http://edge-api:8080
+      HEALTH_PORT: "9102"
+    depends_on:
+      postgres:
+        condition: service_started
+      edge-api:
+        condition: service_started
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mirror-worker-go", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
 
   # ── OEE cron (dev-only pg_cron substitute) ────────────────────────────────
   # Calls oee_compute_uns_metrics() every 30s — the SQL equivalent of the
