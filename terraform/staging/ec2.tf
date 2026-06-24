@@ -32,6 +32,22 @@ resource "aws_s3_object" "nginx_setup" {
   })
 }
 
+# db_init.sh outgrew the AWS user_data 16 KB hard limit (the templated script
+# exceeds 12 KB raw → ~17 KB base64). Mirror the app pattern: tiny bootstrap
+# in user_data, full script fetched from S3 at first boot. The DB EC2's
+# `lifecycle.ignore_changes = [user_data]` block already prevents Terraform
+# from replacing the running instance when this rendering changes.
+resource "aws_s3_object" "db_init" {
+  bucket = local.state_bucket
+  key    = "scripts/db_init.sh"
+  content = templatefile("${path.module}/user_data/db_init.sh", {
+    db_name     = var.db_name
+    db_user     = var.db_user
+    aws_region  = var.aws_region
+    github_repo = var.github_repo
+  })
+}
+
 # Amazon Linux 2023 ARM64 — official AWS AMI, updated regularly.
 # Graviton2 (arm64) is required to use t4g instances.
 data "aws_ami" "al2023_arm64" {
@@ -76,15 +92,38 @@ resource "aws_iam_policy" "db_secrets" {
   name = "packiot-staging-db-secrets"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-      Resource = [
-        "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/db*",
-        # github-pat is needed by db_init.sh to clone the repo and build the postgres image locally.
-        "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/github-pat*",
-      ]
-    }]
+    Statement = [
+      {
+        Sid    = "ReadStagingSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/db*",
+          # github-pat is needed by db_init.sh to clone the repo and build the postgres image locally.
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/github-pat*",
+        ]
+      },
+      {
+        # db_bootstrap.sh fetches db_init.sh from S3 at first boot (mirrors the
+        # app pattern). Object-level grant is scoped to scripts/* so the role
+        # cannot read terraform state files in the same bucket.
+        Sid      = "ReadInitScript"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${local.state_bucket}/scripts/*"
+      },
+      {
+        # s3:ListBucket is bucket-level — separate ARN required. bootstrap.sh
+        # uses `aws s3 ls s3://bucket/scripts/` as a readiness probe.
+        Sid      = "ListInitScripts"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = "arn:aws:s3:::${local.state_bucket}"
+        Condition = {
+          StringLike = { "s3:prefix" = ["scripts/*"] }
+        }
+      }
+    ]
   })
 }
 
@@ -262,15 +301,19 @@ resource "aws_instance" "db" {
     delete_on_termination = false # preserve data on accidental termination
   }
 
-  user_data = base64encode(templatefile("${path.module}/user_data/db_init.sh", {
-    db_name     = var.db_name
-    db_user     = var.db_user
-    aws_region  = var.aws_region
-    vpc_cidr    = var.vpc_cidr
-    github_repo = var.github_repo
+  # Tiny bootstrapper only — fetches the real init script from S3 at runtime.
+  # db_init.sh is uploaded as aws_s3_object.db_init (rendered with all vars).
+  # See user_data/db_bootstrap.sh and the explanatory comment on the
+  # aws_s3_object.db_init resource for the reason this is split.
+  user_data = base64encode(templatefile("${path.module}/user_data/db_bootstrap.sh", {
+    state_bucket = local.state_bucket
+    aws_region   = var.aws_region
   }))
 
   tags = { Name = "packiot-staging-db" }
+
+  # S3 object must exist before the instance boots and db_bootstrap.sh runs.
+  depends_on = [aws_s3_object.db_init]
 
   lifecycle {
     # Prevent Terraform from replacing the instance when the AMI updates.

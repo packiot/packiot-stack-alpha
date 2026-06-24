@@ -48,7 +48,7 @@ variable "app_instance_type" {
 
 variable "db_volume_size_gb" {
   type    = number
-  default = 32 # gp3: $0.08/GB/mo → $2.56/mo. Currently 71% used (9.4 G free); grow to 64 when comfortable.
+  default = 64 # gp3 → $5.12/mo. Grown 32 → 64 in session 64 (was 71% used). Requires SSM-side growpart + xfs_growfs post-apply.
 }
 
 variable "app_volume_size_gb" {
