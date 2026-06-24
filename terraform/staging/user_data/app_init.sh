@@ -170,13 +170,15 @@ if [ -d "stack/.git" ]; then
   git pull origin staging
   # Non-fatal: if the submodule pointer references a not-yet-pushed commit,
   # warn and continue with the already-checked-out state rather than aborting.
-  git submodule update --init -- edge-api edge-node-red oeecloud-node-red \
+  # oeecloud-node-red removed 2026-06-24 (decommissioned; replaced by
+  # services/oeecloud-worker, which is in-repo not a submodule).
+  git submodule update --init -- edge-api edge-node-red operator \
     || echo "WARNING: submodule update failed — continuing with existing state"
   cd /opt/packiot
 else
   git clone --branch staging "https://x-access-token:$${GITHUB_PAT}@github.com/$${GITHUB_REPO}.git" stack
   cd stack
-  git submodule update --init -- edge-api edge-node-red oeecloud-node-red
+  git submodule update --init -- edge-api edge-node-red operator
   cd /opt/packiot
 fi
 
@@ -263,7 +265,7 @@ cd /opt/packiot/stack
 docker compose -f compose.staging.yml up -d --build
 echo "Docker Compose stack started"
 echo "NOTE: set ID_ENTERPRISE in /opt/packiot/.env after enterprise onboarding, then:"
-echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud"
+echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud-worker"
 
 # ── RabbitMQ: dedicated client user for external factory edges ────────────────
 # Requires the secret packiot/staging/rabbitmq-client-creds to exist:
@@ -273,7 +275,7 @@ echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud"
 # The client user gets write-only access to the default vhost '/':
 #   configure="" — cannot create/delete exchanges or queues
 #   write=".*"   — can publish to any exchange (what a factory edge needs)
-#   read=""      — cannot consume (oeecloud holds the consumer role)
+#   read=""      — cannot consume (oeecloud-worker holds the consumer role)
 if aws secretsmanager describe-secret \
     --secret-id packiot/staging/rabbitmq-client-creds \
     --region "$AWS_REGION" > /dev/null 2>&1; then

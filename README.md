@@ -190,7 +190,6 @@ grafana           grafana:3000              3000        OEE dashboards
 loki              loki:3100                 3100        Log aggregation
 edge-api          edge-api:8080             8080        NestJS admin / CRUD API
 edge-nodered      edge-nodered:1880         1880        Factory Node-RED
-oeecloud          oeecloud:1880             1881        Cloud Node-RED
 operator          operator:3000             3002        React operator SPA
 simulator         —                         —           Python PLC simulator
 ```
@@ -520,8 +519,13 @@ and CI.
 |---|---|---|---|
 | `edge-api` | `github.com/packiot/edge-api` | `staging` | NestJS REST/Admin API |
 | `edge-node-red` | `github.com/packiot/edge-node-red` | `staging` | Factory-floor Node-RED (SparkPlug B → AMQP) |
-| `oeecloud-node-red` | `github.com/packiot/oeecloud-node-red` | `staging` | **Decommissioned 2026-06-23** — replaced by `services/oeecloud-worker` (Go). Submodule kept for historical reference. |
 | `operator` | `github.com/packiot/operator4` | `staging` | React SPA for shop-floor operators |
+
+> The historical `oeecloud-node-red` submodule was decommissioned 2026-06-24,
+> replaced by `services/oeecloud-worker` (Go). The new worker lives in-repo as
+> a regular subdir, not a submodule. Same path for the TS `services/mirror-worker`,
+> retired on the same date once `services/mirror-worker-go` reached parity
+> (MW-2 phase 2, all 10 operator eventTypes replayed, 0 DLQ).
 
 > See [CONTRIBUTING.md](./CONTRIBUTING.md) for the canonical workflow doc —
 > branch model, auto-bump chain, hotfix protocol, and common operations.

@@ -1,6 +1,6 @@
 # Contributing to packiot-stack-alpha
 
-This repo is the **aggregator** for the Packiot stack. It pins 4 service
+This repo is the **aggregator** for the Packiot stack. It pins 3 service
 repos as submodules and is the only thing deployed to AWS staging EC2. The
 service repos do their own testing in isolation; this repo runs the
 integration via `docker compose`.
@@ -61,15 +61,18 @@ Promote to staging:
 
 ## Submodules — the auto-bump chain
 
-The 4 service repos are submodules. The parent's `.gitmodules` tracks each
+The 3 service repos are submodules. The parent's `.gitmodules` tracks each
 on `staging` as their default branch:
 
 ```
 edge-api          → packiot/edge-api
 edge-node-red     → packiot/edge-node-red
-oeecloud-node-red → packiot/oeecloud-node-red
 operator          → packiot/operator4   (note: repo name ≠ path name)
 ```
+
+> Historically there was a 4th submodule, `oeecloud-node-red`. It was
+> decommissioned 2026-06-24 — replaced by `services/oeecloud-worker` (Go),
+> which lives in-repo as a regular subdir (not a submodule).
 
 Each submodule has a workflow `bump-stack-submodule.yml` that fires on push
 to its own `staging` or `development` branches. The workflow opens a PR on
@@ -231,11 +234,6 @@ bump failed silently.
 4. Update `compose.staging.yml` and `compose.development.yml` to reference
    the new service.
 5. Open a PR to parent `staging` adding the gitlink + compose changes.
-
-### Skip the deploy on a staging push
-
-Currently not supported — every merge to `staging` deploys. If you need
-this, add a `[skip ci]` or `[skip deploy]` check to `deploy-staging.yml`.
 
 ---
 

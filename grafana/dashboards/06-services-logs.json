@@ -97,7 +97,7 @@
       "type": "link",
       "title": "PLC Pipeline Logs",
       "url": "/d/packiot-pipeline-logs",
-      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud"
+      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud-worker"
     }
   ],
   "panels": [
@@ -194,7 +194,7 @@
     {
       "id": 6,
       "type": "logs",
-      "title": "oeecloud",
+      "title": "oeecloud-worker",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -216,7 +216,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "{service=\"oeecloud\"} |~ \"$search\"",
+          "expr": "{service=\"oeecloud-worker\"} |~ \"$search\"",
           "refId": "A"
         }
       ]
