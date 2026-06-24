@@ -25,6 +25,13 @@ type Consumer struct {
 	dispatcher *handlers.Dispatcher
 	logger     *slog.Logger
 
+	// tenants is the snapshot of active group_ids resolved at startup
+	// (via tenants.DiscoverActive on packml_register). Used by
+	// DeclareTopology to declare per-tenant queues + bindings on each
+	// reconnect — same list reused; new tenants require a worker restart
+	// (Strategy C v1 behaviour, see strategy-c-per-tenant-queues.md §6).
+	tenants []string
+
 	// Optional callback letting writers contribute to /health JSON
 	// without forcing Consumer to import the writers package. main wires
 	// it; nil means "no writers section".
@@ -50,11 +57,12 @@ type Consumer struct {
 	startedAt time.Time
 }
 
-func NewConsumer(cfg *config.Config, amqpURL string, d *handlers.Dispatcher, logger *slog.Logger) *Consumer {
+func NewConsumer(cfg *config.Config, amqpURL string, d *handlers.Dispatcher, tenants []string, logger *slog.Logger) *Consumer {
 	return &Consumer{
 		cfg:        cfg,
 		amqpURL:    amqpURL,
 		dispatcher: d,
+		tenants:    tenants,
 		logger:     logger,
 		startedAt:  time.Now(),
 	}
@@ -145,7 +153,7 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 	}
 	defer ch.Close()
 
-	if err := DeclareTopology(ctx, ch, c.cfg, c.logger); err != nil {
+	if err := DeclareTopology(ctx, ch, c.cfg, c.tenants, c.logger); err != nil {
 		return fmt.Errorf("topology: %w", err)
 	}
 

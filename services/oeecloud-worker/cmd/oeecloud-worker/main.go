@@ -29,6 +29,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tenants"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
 
@@ -97,6 +98,22 @@ func main() {
 	// topics don't hammer the DB on noisy publishers.
 	resolver := sparkplug.NewResolver(pool, 5*time.Minute, 30*time.Second)
 
+	// Tenant discovery — Strategy C Phase 1. Queries packml_register for
+	// the lowercased set of active group_ids. The AMQP topology declares
+	// per-tenant queues for each (legacy queue still receives all traffic
+	// for now). New tenants require a worker restart in Phase 1; we'll
+	// add dynamic discovery later if onboarding cadence demands it.
+	discoverCtx, discoverCancel := context.WithTimeout(ctx, 10*time.Second)
+	activeTenants, err := tenants.DiscoverActive(discoverCtx, pool)
+	discoverCancel()
+	if err != nil {
+		logger.Error("tenant discovery failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	logger.Info("tenants discovered from packml_register",
+		slog.Int("count", len(activeTenants)),
+		slog.Any("tenants", activeTenants))
+
 	// Per-table writers. Writers no longer hold the pool — they Build()
 	// *writers.Query objects that the handler collects into a pgx.Batch
 	// and sends as ONE round-trip per AMQP delivery.
@@ -114,7 +131,7 @@ func main() {
 	dispatcher := handlers.NewDispatcher(logger)
 	dispatcher.Register("sparkplug.data", sparkplugHandler.Handle)
 
-	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, logger)
+	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, activeTenants, logger)
 	// Surface PO Parameter skipped-id counters on /health so #32 (port
 	// 30700 / 30800-30899) can be measured-then-decided instead of guessed.
 	consumer.SetWriterStats(func() any {
