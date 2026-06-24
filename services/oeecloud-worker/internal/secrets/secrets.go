@@ -22,10 +22,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
+
+// credsSourceEnv is the literal value of $CREDS_SOURCE that switches
+// FetchDBCreds + FetchAMQPCreds from AWS Secrets Manager to plain env
+// vars. Used ONLY in compose.development.yml — never in staging/prod.
+//
+// Why this gate exists (issue #52): both workers are first-party Go
+// services that need DB + AMQP creds at boot. On staging the EC2 IAM
+// role grants packiot/staging/* and the SM call works. On a local dev
+// laptop there's no IAM role + no SM reachability, so the call blocks
+// for ~30s then fails — making `make up` unusable for the OEE pipeline.
+// CREDS_SOURCE=env tells the worker "trust the compose env vars" so
+// you can wire it against the in-stack postgres + rabbitmq.
+//
+// SECURITY: this is NOT the prod path because plaintext passwords land
+// in `docker inspect` output and any process on the host can read them
+// via /proc/<pid>/environ. Keep CREDS_SOURCE unset (or absent) in
+// staging/prod so the SM path stays canonical. CO-5 phase 2 is
+// specifically about removing plaintext creds from the production
+// surface — this fallback is dev-only ergonomics.
+const credsSourceEnv = "env"
 
 type DBCreds struct {
 	Host     string
@@ -92,7 +114,14 @@ func getSecretJSON(ctx context.Context, region, secretID string) (map[string]any
 
 // FetchDBCreds tolerates both lowercase ({host,...}) and uppercase-
 // prefixed ({DB_HOST,...}) field naming conventions.
+//
+// When $CREDS_SOURCE=env, skip the SM call entirely and read from env
+// vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME. Used only in
+// compose.development.yml — see credsSourceEnv doc above.
 func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error) {
+	if os.Getenv("CREDS_SOURCE") == credsSourceEnv {
+		return fetchDBCredsFromEnv()
+	}
 	raw, err := getSecretJSON(ctx, region, secretID)
 	if err != nil {
 		return nil, err
@@ -132,7 +161,15 @@ func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error
 
 // FetchAMQPCreds reads {username, password} from the secret + uses
 // caller-supplied host/port (docker-network constants).
+//
+// When $CREDS_SOURCE=env, skip the SM call entirely and read from env
+// vars: RABBITMQ_USER, RABBITMQ_PASSWORD, RABBITMQ_HOST (optional —
+// falls back to the host arg), RABBITMQ_PORT (optional — falls back
+// to the port arg). Used only in compose.development.yml.
 func FetchAMQPCreds(ctx context.Context, region, secretID, host string, port int) (*AMQPCreds, error) {
+	if os.Getenv("CREDS_SOURCE") == credsSourceEnv {
+		return fetchAMQPCredsFromEnv(host, port)
+	}
 	raw, err := getSecretJSON(ctx, region, secretID)
 	if err != nil {
 		return nil, err
@@ -185,5 +222,77 @@ func (c *DBCreds) URL(appName string) string {
 func (c *DBCreds) Redacted(appName string) string {
 	return fmt.Sprintf("postgres://%s:***@%s:%d/%s?application_name=%s",
 		url.PathEscape(c.User), c.Host, c.Port, c.Database, appName)
+}
+
+// fetchDBCredsFromEnv is the CREDS_SOURCE=env path. Reads DB_* env
+// vars with sensible defaults for host/port/database (matching
+// compose.development.yml's postgres service). User + password have
+// no defaults — if either is empty we error out instead of silently
+// connecting with insecure creds. Better a loud crash at boot than
+// a worker that mysteriously can't auth.
+func fetchDBCredsFromEnv() (*DBCreds, error) {
+	host := envOr("DB_HOST", "postgres")
+	port, err := envInt("DB_PORT", 5432)
+	if err != nil {
+		return nil, fmt.Errorf("CREDS_SOURCE=env: %w", err)
+	}
+	user := os.Getenv("DB_USER")
+	password := os.Getenv("DB_PASSWORD")
+	database := envOr("DB_NAME", "packiot")
+	if user == "" || password == "" {
+		return nil, fmt.Errorf("CREDS_SOURCE=env: DB_USER and DB_PASSWORD must be set (empty defaults are not allowed)")
+	}
+	return &DBCreds{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: database,
+	}, nil
+}
+
+// fetchAMQPCredsFromEnv is the CREDS_SOURCE=env path for AMQP. The
+// caller-supplied host/port act as defaults — RABBITMQ_HOST /
+// RABBITMQ_PORT in the env will override them, which matches how
+// dev compose tends to set the broker address.
+func fetchAMQPCredsFromEnv(host string, port int) (*AMQPCreds, error) {
+	user := os.Getenv("RABBITMQ_USER")
+	password := os.Getenv("RABBITMQ_PASSWORD")
+	if user == "" || password == "" {
+		return nil, fmt.Errorf("CREDS_SOURCE=env: RABBITMQ_USER and RABBITMQ_PASSWORD must be set")
+	}
+	if h := os.Getenv("RABBITMQ_HOST"); h != "" {
+		host = h
+	}
+	p, err := envInt("RABBITMQ_PORT", port)
+	if err != nil {
+		return nil, fmt.Errorf("CREDS_SOURCE=env: %w", err)
+	}
+	port = p
+	return &AMQPCreds{
+		Username: user,
+		Password: password,
+		Host:     host,
+		Port:     port,
+	}, nil
+}
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt(name string, fallback int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q: not an integer", name, v)
+	}
+	return n, nil
 }
 

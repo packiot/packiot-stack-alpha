@@ -72,10 +72,23 @@ parent's normal staging-gated flow:
 The auto-bump submodule chain (`bump-stack-submodule.yml`) does NOT apply
 to these services because they're first-party, not submodules.
 
-## Open gaps (follow-up issues to file)
+## Closed gaps
 
-1. **Local-dev compose parity**: neither worker is in `compose.development.yml`
-   because both rely on AWS Secrets Manager at startup. Adding env-var
-   fallback paths in each `internal/secrets/secrets.go` would let local
-   dev run them against the in-stack postgres + rabbitmq. ~40 lines of
-   Go per worker + dev compose service blocks. (Tracked as issue #52.)
+- **Local-dev compose parity** — closed by #52 (CREDS_SOURCE=env
+  fallback in both `internal/secrets/secrets.go` + dev compose blocks).
+  Both workers now boot under `make up` with `make up-workers` available
+  as a partial-stack convenience.
+- **mirror-worker-go observability parity** — closed by #53. Added
+  `internal/metrics/` with five worker-domain Prometheus metrics, wired
+  `/metrics` on the health server, registered the new scrape job in
+  `monitoring/prometheus/prometheus.yml`, and ported
+  `grafana/dashboards/07-mirror-worker.json` queries from the retired TS
+  worker's metric names to the new Go metric names.
+- **mirror-worker-go test coverage** — closed by #53. Added
+  `internal/replay/dispatcher_test.go` (metrics outcome paths),
+  `event_justified_test.go` + `order_status_changed_test.go` (payload
+  unmarshal edge cases incl. bigint, plus dispatch outcome assertions),
+  and `internal/translate/translate_test.go` (pure-function coverage of
+  `remapTopic` + `Translator.Enterprise`).
+- **mirror-worker-go architectural docs** — closed by #53. See
+  [`mirror-worker-go/docs/architecture.md`](./mirror-worker-go/docs/architecture.md).
