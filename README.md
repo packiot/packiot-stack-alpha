@@ -512,19 +512,65 @@ Utilities
 
 ## 13. Submodule management
 
-This repo uses Git submodules for the four main services:
+This repo aggregates four service repos as Git submodules. The aggregator owns
+docker-compose orchestration + deploys; each submodule owns its own service code
+and CI.
 
-| Submodule | Remote | Branch |
-|-----------|--------|--------|
-| `edge-api` | `github.com/packiot/edge-api` | `development` |
-| `edge-node-red` | `github.com/packiot/edge-node-red` | default |
-| `oeecloud-node-red` | `github.com/packiot/oeecloud-node-red` | default |
-| `operator` | `github.com/packiot/operator4` | `refactor/decompose-components` |
+| Submodule path | GitHub repo | Tracked branch | Service role |
+|---|---|---|---|
+| `edge-api` | `github.com/packiot/edge-api` | `staging` | NestJS REST/Admin API |
+| `edge-node-red` | `github.com/packiot/edge-node-red` | `staging` | Factory-floor Node-RED (SparkPlug B → AMQP) |
+| `oeecloud-node-red` | `github.com/packiot/oeecloud-node-red` | `staging` | **Decommissioned 2026-06-23** — replaced by `services/oeecloud-worker` (Go). Submodule kept for historical reference. |
+| `operator` | `github.com/packiot/operator4` | `staging` | React SPA for shop-floor operators |
+
+> See [CONTRIBUTING.md](./CONTRIBUTING.md) for the canonical workflow doc —
+> branch model, auto-bump chain, hotfix protocol, and common operations.
+
+### Branch model (TL;DR)
+
+Two branches, both on parent and submodules:
+
+- **`staging`** — alpha-production. Deploys automatically to the AWS staging EC2
+  on every push. **Protected** on parent (ruleset `Protect staging`, id 18079945):
+  direct push rejected; PRs required; `Validate compose files` check required.
+- **`development`** — local scratchpad / integration branch. Devs do feature
+  work here, merge to `staging` to promote. Not deployed. Not protected.
+
+`main` is reserved for a future production tier and isn't currently used.
+
+### The auto-bump chain
+
+Pushing to a submodule's `staging` or `development` branch triggers
+`bump-stack-submodule.yml` (in that submodule), which opens a PR on
+**this** repo bumping the submodule pointer:
+
+```
+push to <submodule>:staging
+  │
+  ▼
+bump-stack-submodule.yml on the submodule
+  │  - creates bot/bump-<sub>-staging-<sha>
+  │  - opens PR on packiot-stack-alpha (base: staging)
+  │  - enables auto-merge (gh pr merge --auto --squash)
+  ▼
+PR Validation (this repo) — docker compose config --no-interpolate -q
+  │
+  ▼  (green)
+Auto-merge fires → parent staging advances → Deploy to Staging fires →
+docker compose -f compose.staging.yml up -d --build on the AWS EC2 runner
+```
+
+Symmetric flow exists for `development`: each push bumps parent's
+`development` pointer (with a direct-merge fallback, since dev isn't
+protected). No deploy on `development`.
+
+**Token requirement:** each submodule needs a `PARENT_REPO_TOKEN` secret with
+`contents:write` AND `pull-requests:write` on `packiot/packiot-stack-alpha`.
 
 ### First-time clone
 
 ```bash
-git clone --recurse-submodules git@github.com:packiot/packiot-stack-alpha.git
+git clone --recurse-submodules https://github.com/packiot/packiot-stack-alpha.git
 ```
 
 If you already cloned without `--recurse-submodules`:
@@ -535,24 +581,25 @@ git submodule update --init --recursive
 make init
 ```
 
-### Updating submodules to latest
+### Updating submodules to the latest tracked-branch tip
 
 ```bash
 make update
 # equivalent to: git submodule update --remote --merge
 ```
 
-This pulls the latest commit from each submodule's tracked branch. After
-updating, rebuild affected images:
+This pulls the latest commit from each submodule's tracked branch
+(`staging` by default). After updating, rebuild affected images:
 
 ```bash
 make build-edge     # or build-api, build-operator, etc.
 ```
 
-### Pinning a submodule to a specific commit
+### Pinning a submodule to a specific commit (manual override)
 
-Submodules are pinned to a commit SHA in `packiot-stack-alpha`'s index. If you
-need a specific version:
+Submodules are pinned to a commit SHA in this repo's index. The auto-bump
+chain handles this for you on every submodule push, but you can override
+manually:
 
 ```bash
 cd edge-api
@@ -560,6 +607,7 @@ git checkout <sha-or-tag>
 cd ..
 git add edge-api
 git commit -m "chore: pin edge-api to <sha>"
+git push   # via PR if pushing to staging
 ```
 
 ### Updating Node-RED flows in a running container
@@ -582,7 +630,6 @@ The `entrypoint.sh` in each Node-RED service wipes per-tab files on startup
 fresh `flows.json` baked into the image.
 
 ---
-
 ## 14. Common failure modes
 
 ### `equipment_values` not updating after 90 s
