@@ -29,3 +29,12 @@ scrape_configs:
         regex: 'sparkplug\.data'
         target_label: tenant
         replacement: 'legacy'
+
+  - job_name: mirror-worker-go
+    # Single-instance Go worker — no tenant concept (replays a single
+    # source: cpack-prod-go). Metrics carry an `event_type` label
+    # (user_logs.category) which is naturally bounded by the 10
+    # handled categories + "unknown" for unmapped rows — no relabel
+    # rules needed.
+    static_configs:
+      - targets: ['mirror-worker-go:9102']
