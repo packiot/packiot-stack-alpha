@@ -48,12 +48,12 @@ variable "app_instance_type" {
 
 variable "db_volume_size_gb" {
   type    = number
-  default = 32 # gp3: $0.08/GB/mo → $2.56/mo; resized live to match Docker image build headroom
+  default = 32 # gp3: $0.08/GB/mo → $2.56/mo. Currently 71% used (9.4 G free); grow to 64 when comfortable.
 }
 
 variable "app_volume_size_gb" {
   type    = number
-  default = 32 # gp3 → $2.56/mo; resized live to match Docker image build headroom
+  default = 64 # gp3 → $5.12/mo. Grown from 32 → 64 after 2026-06-22 disk-full incident.
 }
 
 # ── DNS / Domain ───────────────────────────────────────────────────────────────

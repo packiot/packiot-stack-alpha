@@ -30,6 +30,7 @@ volumes:
   nr-edge-data:
   grafana-data:
   loki-data:
+  prom-data:
   rabbitmq-data:
   authentik-media:
   authentik-certs:
@@ -39,6 +40,7 @@ volumes:
 # .6  oeecloud     .7  grafana       .8  loki            .9  promtail
 # .10 pgbouncer    .11 simulator     .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init  .16 db-migrate    .17 adminer
+# .18 mirror-worker  .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
 # (one-shot; static IP prevents IPAM race with .3)
 
 services:
@@ -297,6 +299,12 @@ services:
     image: grafana/grafana:11.5.0
     restart: unless-stopped
     env_file: [.env]
+    # Bump `provisioning_rev` whenever grafana/provisioning/ files change.
+    # Compose only recreates a service when its spec changes — provisioning
+    # files are read at container boot, so without this marker Grafana would
+    # silently ignore new datasources/dashboards on `docker compose up -d`.
+    labels:
+      - "provisioning_rev=2026-06-24-prometheus"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -358,6 +366,47 @@ services:
     depends_on:
       loki:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  # Pull-based metrics collector for in-cluster services. Scrapes /metrics
+  # endpoints listed in monitoring/prometheus/prometheus.yml. Retention is
+  # capped both by time (15d) and size (2GB) — staging disk is finite; size
+  # cap wins if cardinality ever spikes. Grafana datasource UID is
+  # `packiot-prometheus` (see grafana/provisioning/datasources/prometheus.yml).
+  #
+  # Why pull over push: if a target dies, Prometheus notices the absent
+  # scrape — no need to wait for a push to never arrive. Same observability
+  # primitive as systemd-journald: the collector drives cadence and treats
+  # silence as a signal.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.22
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}

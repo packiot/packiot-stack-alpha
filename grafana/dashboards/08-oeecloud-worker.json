@@ -1,0 +1,122 @@
+{
+  "title": "oeecloud-worker",
+  "uid": "oeecloud-worker",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["workers", "amqp"],
+  "timezone": "browser",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Acked (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "oeecloud_worker_amqp_acked_total",
+        "legendFormat": "acked"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Nacked → retry (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "oeecloud_worker_amqp_nacked_retry_total"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 }] } }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Published to oee-failed (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "oeecloud_worker_amqp_published_to_failed_total"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Last delivery ago (s)",
+      "description": "Stale if growing — worker is healthy when this stays near scrape_interval.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [{
+        "refId": "A",
+        "expr": "increase(oeecloud_worker_amqp_delivered_total[1m])"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Throughput (msg/s)",
+      "description": "rate() over 5m. delivered should track acked closely; gap = errors in flight.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(oeecloud_worker_amqp_delivered_total[5m])", "legendFormat": "delivered" },
+        { "refId": "B", "expr": "rate(oeecloud_worker_amqp_acked_total[5m])", "legendFormat": "acked" },
+        { "refId": "C", "expr": "rate(oeecloud_worker_amqp_nacked_retry_total[5m])", "legendFormat": "nacked → retry" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Handler latency (s) — p50 / p95 / p99",
+      "description": "histogram_quantile on duration_seconds_bucket. p99 spike usually = pgbouncer hiccup; persistent p50 climb = capacity warning (Strategy A trigger near ~100 ms p_avg).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.5, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "PO Parameter ops (the #32 alarm)",
+      "description": "All zero = CPACK PLC not emitting Parameter range messages. Any non-zero on skipped_* = signal to revisit #32 (port deferred 2026-06-24).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(oeecloud_worker_writer_po_parameter_ops_total[5m])", "legendFormat": "{{op}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Go runtime — goroutines + RSS",
+      "description": "goroutine count should be flat (~10-30). Memory growth signals leak. GC pause sustained > 10ms = GOGC tuning needed.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "go_goroutines", "legendFormat": "goroutines" },
+        { "refId": "B", "expr": "process_resident_memory_bytes / 1024 / 1024", "legendFormat": "RSS (MiB)" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 } }, "overrides": [] }
+    }
+  ]
+}
