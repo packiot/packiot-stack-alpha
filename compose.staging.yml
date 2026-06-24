@@ -304,7 +304,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-06-24-strategy-c-tenant-dashboard"
+      - "provisioning_rev=2026-06-24-strategy-c-tenant-dashboard-v2"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -385,6 +385,13 @@ services:
     image: prom/prometheus:v3.1.0
     container_name: prometheus
     restart: unless-stopped
+    # Bump `config_rev` whenever monitoring/prometheus/prometheus.yml
+    # changes. Bind mounts to a single FILE bind to the source's INODE;
+    # git rewrites the file with a new inode on checkout, so the running
+    # container reads stale content until recreated. Same trap as the
+    # grafana `provisioning_rev` pattern.
+    labels:
+      - "config_rev=2026-06-24-tenant-relabel"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus

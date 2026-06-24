@@ -14,8 +14,8 @@
         "label": "Tenant",
         "type": "query",
         "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
-        "definition": "label_values(oeecloud_worker_amqp_acked_total, tenant)",
-        "query": { "qryType": 1, "query": "label_values(oeecloud_worker_amqp_acked_total, tenant)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "definition": "label_values(oeecloud_worker_amqp_deliveries_total, tenant)",
+        "query": { "qryType": 1, "query": "label_values(oeecloud_worker_amqp_deliveries_total, tenant)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
         "includeAll": true,
         "allValue": ".+",
         "multi": true,
@@ -45,7 +45,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "targets": [
-        { "refId": "A", "expr": "sum by(tenant)(rate(oeecloud_worker_amqp_acked_total{tenant=~\"$tenant\"}[5m]))", "legendFormat": "{{tenant}}" }
+        { "refId": "A", "expr": "sum by(tenant)(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"}[5m]))", "legendFormat": "{{tenant}}" }
       ],
       "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] }
     },
@@ -77,7 +77,7 @@
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "targets": [{
         "refId": "A",
-        "expr": "sum(oeecloud_worker_amqp_acked_total{tenant=~\"$tenant\"})",
+        "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"})",
         "legendFormat": "acked"
       }],
       "options": {
@@ -94,7 +94,7 @@
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "targets": [{
         "refId": "A",
-        "expr": "sum(oeecloud_worker_amqp_nacked_retry_total{tenant=~\"$tenant\"})"
+        "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\", tenant=~\"$tenant\"})"
       }],
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 }] } }, "overrides": [] }
@@ -107,7 +107,7 @@
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "targets": [{
         "refId": "A",
-        "expr": "sum(oeecloud_worker_amqp_published_to_failed_total{tenant=~\"$tenant\"})"
+        "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"exhausted_failed\", tenant=~\"$tenant\"})"
       }],
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] }
@@ -121,7 +121,7 @@
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "targets": [{
         "refId": "A",
-        "expr": "sum(increase(oeecloud_worker_amqp_delivered_total{tenant=~\"$tenant\"}[1m]))"
+        "expr": "sum(increase(oeecloud_worker_amqp_deliveries_total{tenant=~\"$tenant\"}[1m]))"
       }],
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } }, "overrides": [] }
@@ -134,9 +134,9 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(oeecloud_worker_amqp_delivered_total{tenant=~\"$tenant\"}[5m]))", "legendFormat": "delivered" },
-        { "refId": "B", "expr": "sum(rate(oeecloud_worker_amqp_acked_total{tenant=~\"$tenant\"}[5m]))", "legendFormat": "acked" },
-        { "refId": "C", "expr": "sum(rate(oeecloud_worker_amqp_nacked_retry_total{tenant=~\"$tenant\"}[5m]))", "legendFormat": "nacked → retry" }
+        { "refId": "A", "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{tenant=~\"$tenant\"}[5m]))", "legendFormat": "delivered" },
+        { "refId": "B", "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"}[5m]))", "legendFormat": "acked" },
+        { "refId": "C", "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\", tenant=~\"$tenant\"}[5m]))", "legendFormat": "nacked → retry" }
       ],
       "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } }, "overrides": [] }
     },
