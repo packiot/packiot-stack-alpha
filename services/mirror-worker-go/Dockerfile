@@ -1,17 +1,37 @@
-FROM golang:1.23-alpine AS builder
+# Multi-stage build: compile to a static binary on Alpine, then ship a
+# distroless runtime. Same pattern as oeecloud-worker for consistency.
+
+FROM golang:1.24-alpine AS builder
 WORKDIR /src
+
+# Pull deps first so the layer caches when source changes but deps don't.
 COPY go.mod go.sum* ./
 RUN go mod download
+
 COPY cmd ./cmd
 COPY internal ./internal
-# -p=1 + GOMAXPROCS=1: staging runner has 2 CPUs + modest RAM (see
-# oeecloud-worker's Dockerfile for the OOM-kill backstory).
+
+# CGO disabled → fully static; -trimpath strips local paths from stack
+# traces; -ldflags '-s -w' drops symbol + debug for a smaller binary.
+#
+# -p=1 caps the compiler to one job at a time. The staging actions-runner
+# has 2 CPUs and modest RAM (saw an 18-min OOM-kill on the parallel
+# build of pgx + amqp091-go at deploy 27984146678). One job at a time
+# trades wall-clock for predictable memory; the small dep set still
+# builds in ~60s.
 RUN CGO_ENABLED=0 GOOS=linux GOMAXPROCS=1 go build \
     -p=1 -trimpath -ldflags "-s -w" \
     -o /out/mirror-worker-go ./cmd/mirror-worker-go
 
+# Distroless `static` image: just the binary + ca-certs + a non-root user.
+# No shell, no package manager — minimal attack surface.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/mirror-worker-go /usr/local/bin/mirror-worker-go
 USER nonroot:nonroot
+
+# /health on 9102 by default (matches HEALTH_PORT in config). Distinct
+# port from oeecloud-worker (9101) so both expose health on the same
+# packiot-net without collision.
 EXPOSE 9102
+
 ENTRYPOINT ["/usr/local/bin/mirror-worker-go"]

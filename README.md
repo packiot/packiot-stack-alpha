@@ -179,20 +179,51 @@ If `net_production_incr` is null after 90 s, check [§14 Common failure modes](#
 
 ## 5. Service map
 
+### Local dev (`compose.development.yml`)
+
 ```
 Service           Internal host:port        Host port   Purpose
 ─────────────────────────────────────────────────────────────────────────────
-pubsub-emulator   pubsub-emulator:8681      8085        GCP PubSub emulator
 postgres          postgres:5432             5433        TimescaleDB (OEE DB)
 hasura            hasura:8080               8081        Hasura GraphQL proxy
 adminer           adminer:8080              8082        DB browser GUI
 grafana           grafana:3000              3000        OEE dashboards
 loki              loki:3100                 3100        Log aggregation
+rabbitmq          rabbitmq:5672             —           AMQP message bus
 edge-api          edge-api:8080             8080        NestJS admin / CRUD API
 edge-nodered      edge-nodered:1880         1880        Factory Node-RED
 operator          operator:3000             3002        React operator SPA
 simulator         —                         —           Python PLC simulator
+oee-cron          —                         —           dev-only pg_cron substitute
 ```
+
+### Staging first-party Go services (`services/`, deployed via `compose.staging.yml`)
+
+```
+Service           Internal host:port        Health port  Purpose
+─────────────────────────────────────────────────────────────────────────────
+oeecloud-worker   oeecloud-worker:9101      9101         AMQP consumer →
+                                                         equipment_values/_events/uns_metrics.
+                                                         Replaces decommissioned
+                                                         oeecloud-node-red (2026-06-23).
+mirror-worker-go  mirror-worker-go:9102     9102         prod→staging user_logs replay
+                                                         (HTTP to staging edge-api).
+                                                         Replaces decommissioned TS
+                                                         services/mirror-worker (2026-06-24).
+prometheus        prometheus:9090           —            Metrics scrape — pulls
+                                                         /metrics from oeecloud-worker.
+```
+
+> Both Go workers live in `services/` (not as Git submodules — first-party
+> code with no independent release cycle). See
+> [`services/README.md`](./services/README.md) for shared architectural
+> patterns + open follow-up gaps.
+>
+> **Local-dev parity is currently missing**: both Go workers fetch creds
+> from AWS Secrets Manager at startup with no env-var fallback. Adding
+> them to `compose.development.yml` would crash without the EC2 IAM role.
+> See the gated TODO in `compose.development.yml` (around line 305) for
+> the design sketch to close this gap.
 
 > **Why 5433 for Postgres?** Port 5432 is the system Postgres default on most
 > Linux installs. 5433 avoids conflict without requiring the developer to stop
@@ -213,7 +244,6 @@ make up-infra
 
 # Test the SparkPlug pipeline without the operator UI
 make up-edge        # infra + edge-nodered
-make up-oeecloud    # infra + oeecloud (PubSub consumer)
 
 # Test edge-api in isolation (only needs Postgres — no PubSub, no Node-RED)
 make up-api
