@@ -83,7 +83,22 @@ func DowntimeEventCreated(
 			stagingEqID, err := t.Equipment(ctx, e.IDEquipment)
 			if err != nil {
 				if errors.Is(err, translate.ErrUnmapped) {
-					return fmt.Errorf("event[%d] equipment %d unmapped on staging: %w", i, e.IDEquipment, err)
+					// The topic isn't on staging's packml_register — most
+					// commonly because the prod packml_topic has bogus
+					// content an upstream edge-nodered emits (e.g. the
+					// LLLLL-prefix bursts we see in prod). Fixing that is
+					// not this worker's job; record outcome=skipped and
+					// keep it out of mirror_replay_dlq. Match the existing
+					// fail-fast style: ANY unmappable event in the batch
+					// skips the whole row (consistent with how a malformed
+					// event aborts the whole row).
+					logger.Info("skipping downtime-event-created: equipment unmappable on staging",
+						slog.Int64("sourceLogID", row.IDUserLogs),
+						slog.Int("eventIndex", i),
+						slog.Int("prodEquipmentID", e.IDEquipment),
+						slog.String("prodTopic", e.Topic),
+						slog.String("translatorErr", err.Error()))
+					return fmt.Errorf("event[%d] equipment %d unmapped on staging: %w", i, e.IDEquipment, ErrSkipReplay)
 				}
 				return fmt.Errorf("translate equipment for event[%d]: %w", i, err)
 			}

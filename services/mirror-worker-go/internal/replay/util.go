@@ -3,8 +3,25 @@ package replay
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strconv"
 )
+
+// ErrSkipReplay is returned by a handler when the row is intentionally not
+// replayed because the upstream entity is unmappable by design — e.g. a prod
+// production_order that was never mirrored to staging (operator touched it
+// before our mirror cursor began), or a junk SparkPlug topic (the LLLLL-
+// prefix garbage that an upstream edge-nodered occasionally emits).
+//
+// Dispatcher recognises this sentinel via errors.Is and records
+// outcome=skipped on mirror_worker_user_logs_replayed_total. The row is NOT
+// written to mirror_replay_dlq because no amount of retrying will fix the
+// underlying mismatch — these failures are structural, not transient.
+//
+// Only the translator's ErrUnmapped should be promoted to ErrSkipReplay.
+// Random failures (network errors, edge-api 5xx, JSON parse errors) MUST
+// stay as plain errors so they land in DLQ and get human attention.
+var ErrSkipReplay = errors.New("skip replay: upstream entity structurally unmappable on staging")
 
 // parseBigint accepts either a JSON number or a bigint-as-text column —
 // the staging/prod queries cast id_production_order::text + ::text on

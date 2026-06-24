@@ -50,8 +50,17 @@ func OrderChanged(
 		stagingPOID, err := t.ProductionOrder(ctx, p.OldIDProductionOrder)
 		if err != nil {
 			if errors.Is(err, translate.ErrUnmapped) {
-				return fmt.Errorf("production_order %d unmapped (no mirror_id_map row and no id_order business-key match — run backfill-pos): %w",
-					p.OldIDProductionOrder, err)
+				// Structural mismatch: the PO exists on prod but was never
+				// mirrored to staging (operator touched it before our cursor
+				// began). No retry will fix this; record outcome=skipped and
+				// keep the row out of mirror_replay_dlq. Log the diagnostic
+				// here so operators still see WHY in the worker logs.
+				logger.Info("skipping order-changed: production_order unmappable on staging",
+					slog.Int64("sourceLogID", row.IDUserLogs),
+					slog.Int64("prodPOID", p.OldIDProductionOrder),
+					slog.String("translatorErr", err.Error()))
+				return fmt.Errorf("production_order %d unmapped (no mirror_id_map row and no id_order business-key match): %w",
+					p.OldIDProductionOrder, ErrSkipReplay)
 			}
 			return fmt.Errorf("translate production_order: %w", err)
 		}
