@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +23,12 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// Real DLQ-shape payload — the LLLLL-prefix garbage an upstream edge-nodered
+// occasionally emits. Topic is structurally absent from staging's
+// packml_register (and absent from prod's too — that's the point: nothing to
+// mirror). DLQ id 228, source_log_id 2498904 carried this exact shape.
+const llllllPrefixDowntimeEventCreatedRaw = `{"events":[{"topic":"LLLLLC-PACK/SC/LINHAS/L4/TEXA/Admin/ProdConsumedCount/10/Unit","status":10,"timestamp":1782000000000,"idEquipment":84}]}`
 
 // Real prod-shape payload, taken via SSM from prod's user_logs row
 // id_user_logs=2501637 (2026-06-24).
@@ -159,5 +166,59 @@ func TestDowntimeEventCreated_FailedDispatch_RecordsFailed(t *testing.T) {
 	got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed"))
 	if got != beforeFailed+1 {
 		t.Errorf("downtime-event-created failed count = %f, want %f", got, beforeFailed+1)
+	}
+}
+
+func TestDowntimeEventCreatedPayload_Unmarshal_LLLLLGarbageTopic(t *testing.T) {
+	// Decode-side check: the bad-topic payload still parses cleanly — what
+	// makes it unmappable is the staging packml_register lookup downstream,
+	// not the JSON structure. Pinning this so a future "JSON guard" PR
+	// doesn't accidentally reject these rows at the parse step (we want
+	// them flowing through to the skip path).
+	var p DowntimeEventCreatedPayload
+	if err := json.Unmarshal([]byte(llllllPrefixDowntimeEventCreatedRaw), &p); err != nil {
+		t.Fatalf("unmarshal LLLLL fixture: %v", err)
+	}
+	if len(p.Events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(p.Events))
+	}
+	e := p.Events[0]
+	if e.IDEquipment != 84 {
+		t.Errorf("IDEquipment = %d, want 84", e.IDEquipment)
+	}
+	wantTopic := "LLLLLC-PACK/SC/LINHAS/L4/TEXA/Admin/ProdConsumedCount/10/Unit"
+	if e.Topic != wantTopic {
+		t.Errorf("Topic = %q, want %q", e.Topic, wantTopic)
+	}
+}
+
+func TestDowntimeEventCreated_SkipReplay_DispatcherRecordsSkipped(t *testing.T) {
+	// The LLLLL-prefix DLQ pattern (DLQ id 228, error "no staging
+	// packml_register row for topic=...") now flows through the handler
+	// returning an error wrapping ErrSkipReplay. Verify the dispatcher
+	// labels this as outcome=skipped under event_type=downtime-event-created
+	// — and does NOT bump outcome=failed.
+	const evt = "downtime-event-created"
+	beforeSkipped := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped"))
+	beforeFailed := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed"))
+
+	d := NewDispatcher()
+	d.Register(evt, func(_ context.Context, _ pgx.Tx, _ db.ProdUserLog) error {
+		// Same wrap shape as the real handler emits for translate.ErrUnmapped.
+		return fmt.Errorf("event[0] equipment 84 unmapped on staging: %w", ErrSkipReplay)
+	})
+
+	err := d.Dispatch(context.Background(), nil, db.ProdUserLog{
+		Category: evt,
+		Payload:  []byte(llllllPrefixDowntimeEventCreatedRaw),
+	})
+	if err != nil {
+		t.Fatalf("Dispatch err = %v, want nil for skip-replay", err)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped")); got != beforeSkipped+1 {
+		t.Errorf("downtime-event-created skipped = %f, want %f", got, beforeSkipped+1)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed")); got != beforeFailed {
+		t.Errorf("downtime-event-created failed = %f, want %f (skip must not bump failed)", got, beforeFailed)
 	}
 }
