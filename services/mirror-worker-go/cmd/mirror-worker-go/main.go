@@ -130,6 +130,8 @@ func main() {
 		replay.EventEdited(cfg, t, prodDB, tok.Get, httpc, logger))
 	disp.Register("event-splitted",
 		replay.EventSplitted(cfg, t, tok.Get, httpc, logger))
+	disp.Register("downtime-event-created",
+		replay.DowntimeEventCreated(cfg, t, tok.Get, httpc, logger))
 
 	logger.Info("dispatcher ready",
 		slog.Any("handled_categories", disp.HandledCategories()),

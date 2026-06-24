@@ -6,7 +6,7 @@
 //   site         — business key 'nm_site'
 //   area         — business key 'nm_area'
 //   equipment    — business key 'packml_topic' (canonical, post-remap)
-//   PO           — mirror_id_map cache first, business key 'nu_production_order' fallback
+//   PO           — mirror_id_map cache first, business key 'id_order' fallback
 //   event        — TODO phase 2 — mirror_id_map cache first, interval-overlap fallback (A4b)
 //
 // Mirrors the TS translate.ts faithfully.
@@ -41,8 +41,13 @@ func New(prod *db.Prod, staging *db.Staging, cfg *config.Config, logger *slog.Lo
 // DLQ rather than retrying forever.
 var ErrUnmapped = errors.New("entity unmapped on staging")
 
-// remapTopic: prod's 'C-PACK/' prefix → staging's 'CPACK/'.
-func remapTopic(prodTopic string) string {
+// RemapTopic: prod's 'C-PACK/' prefix → staging's 'CPACK/'.
+//
+// Exported so handlers that need to forward a topic string verbatim (e.g.
+// downtime-event-created carries the SparkPlug topic alongside idEquipment
+// in its payload) can use the same canonical mapping that Equipment() uses
+// to look up packml_register rows.
+func RemapTopic(prodTopic string) string {
 	return strings.Replace(prodTopic, "C-PACK/", "CPACK/", 1)
 }
 
@@ -117,7 +122,7 @@ func (t *Translator) Equipment(ctx context.Context, prodEquipmentID int) (int, e
 		return 0, fmt.Errorf("no prod packml_register row for id_equipment=%d: %w",
 			prodEquipmentID, ErrUnmapped)
 	}
-	stagingTopic := remapTopic(prodTopic)
+	stagingTopic := RemapTopic(prodTopic)
 	var stagingID int
 	found, err = t.staging.SelectOne(ctx,
 		`SELECT id_equipment FROM packml_register
@@ -134,7 +139,14 @@ func (t *Translator) Equipment(ctx context.Context, prodEquipmentID int) (int, e
 	return stagingID, nil
 }
 
-// ProductionOrder: cache first, business-key fallback on nu_production_order.
+// ProductionOrder: cache first, business-key fallback on id_order.
+//
+// Prod's production_orders table has NO column called nu_production_order.
+// The human PO number is id_order (integer, unique per id_enterprise — see
+// production_orders_un unique constraint on prod). The TS worker's first
+// revision referenced nu_production_order and that string got ported verbatim
+// into this Go file. DLQ showed: column "nu_production_order" does not exist
+// (SQLSTATE 42703), from this exact code path.
 func (t *Translator) ProductionOrder(ctx context.Context, prodPOID int64) (int64, error) {
 	stagingID, found, err := t.staging.LookupMapping(ctx, "production_order", t.cfg.SourceName, prodPOID)
 	if err != nil {
@@ -143,11 +155,11 @@ func (t *Translator) ProductionOrder(ctx context.Context, prodPOID int64) (int64
 	if found {
 		return stagingID, nil
 	}
-	var nu string
+	var idOrder int
 	found, err = t.prod.SelectOne(ctx,
-		`SELECT nu_production_order::text FROM production_orders
+		`SELECT id_order FROM production_orders
 		  WHERE id_production_order = $1 AND id_enterprise = $2`,
-		[]any{prodPOID, t.cfg.ProdEnterpriseID}, &nu)
+		[]any{prodPOID, t.cfg.ProdEnterpriseID}, &idOrder)
 	if err != nil {
 		return 0, fmt.Errorf("prod PO lookup: %w", err)
 	}
@@ -157,14 +169,14 @@ func (t *Translator) ProductionOrder(ctx context.Context, prodPOID int64) (int64
 	var sid int64
 	found, err = t.staging.SelectOne(ctx,
 		`SELECT id_production_order FROM production_orders
-		  WHERE nu_production_order = $1 AND id_enterprise = $2
+		  WHERE id_order = $1 AND id_enterprise = $2
 		  ORDER BY id_production_order DESC LIMIT 1`,
-		[]any{nu, t.cfg.StagingEnterpriseID}, &sid)
+		[]any{idOrder, t.cfg.StagingEnterpriseID}, &sid)
 	if err != nil {
 		return 0, fmt.Errorf("staging PO lookup: %w", err)
 	}
 	if !found {
-		return 0, fmt.Errorf("no staging PO with nu_production_order=%q: %w", nu, ErrUnmapped)
+		return 0, fmt.Errorf("no staging PO with id_order=%d: %w", idOrder, ErrUnmapped)
 	}
 	return sid, nil
 }
