@@ -3,7 +3,6 @@ package amqp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -14,6 +13,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"golang.org/x/sync/errgroup"
 )
 
 // Consumer owns the lifecycle of a single AMQP connection + channel +
@@ -139,7 +139,18 @@ func backoff(attempt int) time.Duration {
 }
 
 // connectAndConsume does one full dial → declare → consume cycle.
-// Returns when the connection drops (nil for clean close, error otherwise).
+// Returns when ANY consumer goroutine drops (nil for clean close, error
+// otherwise). The outer Run() loop then reconnects with backoff.
+//
+// Strategy C Phase 2a: declares topology on a dedicated channel, then
+// spawns one consumer goroutine per queue. Each goroutine owns its own
+// AMQP Channel — no cross-tenant lock contention. Channel writes
+// (ack/nack/publish) are single-goroutine per Channel so no chanMu
+// needed yet (Strategy A adds it when N goroutines share one Channel).
+//
+// Shutdown: errgroup.WithContext means when ANY goroutine returns an
+// error, egctx cancels and the others wind down. eg.Wait returns the
+// first error. Conn.Close (defer) closes all Channels.
 func (c *Consumer) connectAndConsume(ctx context.Context) error {
 	conn, err := amqp.Dial(c.amqpURL)
 	if err != nil {
@@ -147,37 +158,61 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	ch, err := conn.Channel()
+	// Topology declaration uses its own short-lived channel. Once declared
+	// we close it; each consumer opens its own.
+	declCh, err := conn.Channel()
 	if err != nil {
-		return fmt.Errorf("channel: %w", err)
+		return fmt.Errorf("decl channel: %w", err)
 	}
-	defer ch.Close()
-
-	if err := DeclareTopology(ctx, ch, c.cfg, c.tenants, c.logger); err != nil {
+	if err := DeclareTopology(ctx, declCh, c.cfg, c.tenants, c.logger); err != nil {
+		declCh.Close()
 		return fmt.Errorf("topology: %w", err)
 	}
+	declCh.Close()
 
-	if err := ch.Qos(c.cfg.Prefetch, 0, false); err != nil {
-		return fmt.Errorf("qos prefetch: %w", err)
-	}
-
-	// Consumer tag empty → broker generates one. autoAck=false → we ack
-	// manually after handler success.
-	deliveries, err := ch.Consume(c.cfg.WorkerQueue, "", false, false, false, false, nil)
-	if err != nil {
-		return fmt.Errorf("consume: %w", err)
-	}
+	// Build the queue list: legacy first (still receives all current
+	// traffic via the `#` binding), then one per tenant (currently empty
+	// — receives traffic only after edge-nodered's Phase 2b cutover).
+	queues := append([]string{c.cfg.WorkerQueue}, c.perTenantQueueNames()...)
 
 	c.mu.Lock()
 	c.healthy = true
 	c.lastErr = ""
 	c.mu.Unlock()
 	c.logger.Info("consuming",
-		slog.String("queue", c.cfg.WorkerQueue),
+		slog.Any("queues", queues),
 		slog.Int("prefetch", c.cfg.Prefetch),
 	)
 
-	// Watch for unexpected channel close in parallel with the delivery loop.
+	eg, egctx := errgroup.WithContext(ctx)
+	for _, q := range queues {
+		queue := q // capture for closure
+		eg.Go(func() error {
+			return c.consumeOne(egctx, conn, queue)
+		})
+	}
+	return eg.Wait()
+}
+
+// consumeOne owns one AMQP Channel + ch.Consume on one queue. Returns
+// when its channel drops or ctx cancels.
+func (c *Consumer) consumeOne(ctx context.Context, conn *amqp.Connection, queue string) error {
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("channel for %s: %w", queue, err)
+	}
+	defer ch.Close()
+
+	if err := ch.Qos(c.cfg.Prefetch, 0, false); err != nil {
+		return fmt.Errorf("qos for %s: %w", queue, err)
+	}
+
+	// Consumer tag empty → broker generates one. autoAck=false → manual ack.
+	deliveries, err := ch.Consume(queue, "", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume %s: %w", queue, err)
+	}
+
 	closeCh := ch.NotifyClose(make(chan *amqp.Error, 1))
 
 	for {
@@ -188,14 +223,24 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 			if e == nil {
 				return nil // clean close
 			}
-			return fmt.Errorf("channel closed: %w", e)
+			return fmt.Errorf("channel closed for %s: %w", queue, e)
 		case d, ok := <-deliveries:
 			if !ok {
-				return errors.New("delivery channel closed")
+				return fmt.Errorf("delivery channel closed for %s", queue)
 			}
 			c.handleDelivery(ctx, ch, d)
 		}
 	}
+}
+
+// perTenantQueueNames builds "<prefix>-<tenant>" for every active tenant.
+// Matches the queue names declared in DeclareTopology.
+func (c *Consumer) perTenantQueueNames() []string {
+	out := make([]string, 0, len(c.tenants))
+	for _, t := range c.tenants {
+		out = append(out, fmt.Sprintf("%s-%s", c.cfg.WorkerQueue, t))
+	}
+	return out
 }
 
 // handleDelivery is the per-message decision tree:
