@@ -173,6 +173,50 @@ func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) 
 	return n, err
 }
 
+// ActivePOIDOrders returns the set of id_order values for staging POs
+// currently in status=2 (running). Used by the reconciler to diff against
+// prod's active set without pulling every column.
+//
+// Returning a map[int64]int64 (id_order → id_production_order) instead
+// of a set so the caller can also check whether a finished mirror of the
+// same id_order exists at a different staging PO id — useful for future
+// log lines but not strictly needed by the diff itself.
+func (s *Staging) ActivePOIDOrders(ctx context.Context, enterpriseID int) (map[int64]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id_order, id_production_order
+		   FROM production_orders
+		  WHERE id_enterprise = $1 AND status = 2`,
+		enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active staging POs: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var idOrder, idPO int64
+		if err := rows.Scan(&idOrder, &idPO); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[idOrder] = idPO
+	}
+	return out, rows.Err()
+}
+
+// LookupStagingPOByIDOrder returns the most recent staging PO matching
+// (enterprise, id_order). Called by the reconciler after POSTing
+// /api/production-orders/create to capture the new id_production_order
+// the way the order-created handler does.
+func (s *Staging) LookupStagingPOByIDOrder(ctx context.Context, enterpriseID int, idOrder int64) (int64, bool, error) {
+	var stagingPOID int64
+	found, err := s.SelectOne(ctx,
+		`SELECT id_production_order FROM production_orders
+		  WHERE id_enterprise = $1 AND id_order = $2
+		  ORDER BY id_production_order DESC LIMIT 1`,
+		[]any{enterpriseID, idOrder}, &stagingPOID)
+	return stagingPOID, found, err
+}
+
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
 // caller's tx so we don't lose visibility into a bad row that crashed
 // before the outer commit.

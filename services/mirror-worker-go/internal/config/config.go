@@ -45,6 +45,17 @@ type Config struct {
 	// HTTP /health server.
 	HealthPort int
 
+	// Active-PO reconciliation loop. Closes the ~95% gap left by
+	// user_logs-based PO replay: most prod CPACK POs are created by PLC
+	// SparkPlug parameter writes (30800–30899) that bypass edge-api's
+	// audit middleware, so order-created / order-started rows are rare in
+	// user_logs. The reconciler periodically diffs prod active POs vs
+	// staging active POs (by id_order) and backfills the missing ones via
+	// the same /create + /start endpoints we use in the user_logs handlers.
+	ReconcileEnabled     bool
+	ReconcileIntervalSec int
+	ReconcileMaxPerRun   int
+
 	// Logging.
 	LogLevel string
 }
@@ -64,6 +75,9 @@ func Load() (*Config, error) {
 		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
 		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
 		HealthPort:          getenvInt("HEALTH_PORT", 9102),
+		ReconcileEnabled:     getenvBool("RECONCILE_ENABLED", true),
+		ReconcileIntervalSec: getenvInt("RECONCILE_INTERVAL_SEC", 300),
+		ReconcileMaxPerRun:   getenvInt("RECONCILE_MAX_PER_RUN", 20),
 		LogLevel:            getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
@@ -93,4 +107,18 @@ func getenvInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvBool(name string, fallback bool) bool {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "TRUE", "True", "yes":
+		return true
+	case "0", "false", "FALSE", "False", "no":
+		return false
+	}
+	return fallback
 }

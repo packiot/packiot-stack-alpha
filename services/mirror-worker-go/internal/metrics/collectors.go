@@ -74,6 +74,34 @@ var (
 		Name: "mirror_worker_id_map_cache_size",
 		Help: "Rows in mirror_id_map for this worker's source. Updated on poll.",
 	})
+
+	// ReconcilerRunsTotal — bumps once per reconciliation pass, regardless
+	// of outcome. outcome=ok: pass completed (may have created 0 POs if
+	// staging was already in sync); outcome=failed: top-level error (prod
+	// fetch died, staging fetch died) before any individual ensure ran.
+	ReconcilerRunsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_reconciler_runs_total",
+		Help: "EnsureActivePOs passes by outcome (ok|failed).",
+	}, []string{"outcome"})
+
+	// ReconcilerPOsTotal — per-PO outcomes within a pass. created=PO was
+	// missing on staging + create+start+map all succeeded; skipped=PO was
+	// already active on staging (no work); failed=translate/POST/map err.
+	// Pair with ReconcilerRunsTotal{outcome="ok"} to derive per-pass
+	// success ratio.
+	ReconcilerPOsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_reconciler_pos_total",
+		Help: "Per-PO reconciliation outcomes (created|failed|skipped).",
+	}, []string{"outcome"})
+
+	// ReconcilerActiveDriftPOs — gauge of prod active POs missing from
+	// staging at the end of the last reconciliation pass. Zero means
+	// we caught up; non-zero on a sustained basis means the per-pass
+	// cap is too low or staging edge-api is rejecting some POs.
+	ReconcilerActiveDriftPOs = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_reconciler_active_drift_pos",
+		Help: "Prod active POs missing on staging at end of last reconciler pass.",
+	})
 )
 
 func init() {
@@ -84,12 +112,15 @@ func init() {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
-	// The 5 worker-domain metrics.
+	// The 5 worker-domain metrics + 3 reconciler metrics.
 	Registry.MustRegister(
 		UserLogsPolledTotal,
 		UserLogsReplayedTotal,
 		ReplayDurationSeconds,
 		CursorLagSeconds,
 		IDMapCacheSize,
+		ReconcilerRunsTotal,
+		ReconcilerPOsTotal,
+		ReconcilerActiveDriftPOs,
 	)
 }

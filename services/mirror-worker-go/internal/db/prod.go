@@ -149,6 +149,70 @@ func (p *Prod) LatestLogTimestamp(ctx context.Context, cursor int64, enterpriseI
 	return ts, nil
 }
 
+// ProdActivePO is the projection the reconciler needs: enough to do the
+// /api/production-orders/create + /start round-trip against staging
+// without a second prod hit.
+type ProdActivePO struct {
+	IDProductionOrder    int64
+	IDOrder              int64
+	IDEquipment          int
+	IDSite               int
+	IDArea               int
+	ProductionProgrammed float64
+}
+
+// FetchActivePOs returns currently-active POs (status=2) for the given
+// enterprise. Used by the reconciler to drive the diff against staging's
+// active set. Always wrapped in BEGIN READ ONLY for defense-in-depth on
+// top of the awslambda role.
+//
+// production_programmed is the SQL column for what the API surfaces as
+// productionOrderQuantity (see CLAUDE.md: edge-api maps the camelCase
+// DTO field → snake_case prod schema). Reading it directly avoids a
+// second SELECT during reconciler.ensureOnePO.
+func (p *Prod) FetchActivePOs(ctx context.Context, enterpriseID int) ([]ProdActivePO, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	rows, err := tx.Query(ctx,
+		`SELECT id_production_order, id_order, id_equipment, id_site, id_area,
+		        COALESCE(production_programmed, 0)
+		   FROM production_orders
+		  WHERE id_enterprise = $1 AND status = 2
+		  ORDER BY id_production_order ASC`,
+		enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active POs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProdActivePO
+	for rows.Next() {
+		var r ProdActivePO
+		if err := rows.Scan(&r.IDProductionOrder, &r.IDOrder, &r.IDEquipment,
+			&r.IDSite, &r.IDArea, &r.ProductionProgrammed); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // SelectOne runs a single SELECT under a READ ONLY tx + scans into dst.
 // dst is treated as a struct whose fields receive the columns in order
 // (caller passes &field args via dest slice).
