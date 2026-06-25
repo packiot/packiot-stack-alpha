@@ -18,12 +18,16 @@ import (
 // "change order" action stops the current PO; setup of the new one is a
 // separate user_logs row). The DTO ignores the extra payload fields prod
 // sends (shouldCreatePo etc.) — class-validator default behavior.
+//
+// productionOrderQuantity uses RawMessage + parseFlexFloat because prod
+// inconsistently sends it as a bare number, a quoted number, or "" (the
+// "stop the old PO without starting a new one" case — DLQ id 280 hit this).
 type OrderChangedPayload struct {
-	StopType                string      `json:"stopType"`
-	Timestamp               string      `json:"timestamp"`
-	IDEquipment             int         `json:"idEquipment"`
-	OldIDProductionOrder    int64       `json:"oldIdProductionOrder"`
-	ProductionOrderQuantity json.Number `json:"productionOrderQuantity"`
+	StopType                string          `json:"stopType"`
+	Timestamp               string          `json:"timestamp"`
+	IDEquipment             int             `json:"idEquipment"`
+	OldIDProductionOrder    int64           `json:"oldIdProductionOrder"`
+	ProductionOrderQuantity json.RawMessage `json:"productionOrderQuantity"`
 }
 
 func OrderChanged(
@@ -41,7 +45,10 @@ func OrderChanged(
 		if p.IDEquipment == 0 || p.OldIDProductionOrder == 0 || p.StopType == "" {
 			return fmt.Errorf("order-changed payload missing fields: %+v", p)
 		}
-		qty, _ := p.ProductionOrderQuantity.Float64()
+		qty, err := parseFlexFloat(p.ProductionOrderQuantity)
+		if err != nil {
+			return fmt.Errorf("productionOrderQuantity not numeric: %w", err)
+		}
 
 		stagingEqID, err := t.Equipment(ctx, p.IDEquipment)
 		if err != nil {
