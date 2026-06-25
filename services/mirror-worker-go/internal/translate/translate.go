@@ -333,3 +333,25 @@ func (t *Translator) EquipmentEvent(ctx context.Context, prodEventID int64) (int
 	return 0, fmt.Errorf("no staging equipment_event with >=%ds overlap for prod event %d: %w",
 		t.cfg.EventMinOverlapSec, prodEventID, ErrUnmapped)
 }
+
+// EquipmentEventBoundaries returns the staging event's ts_event and ts_end.
+// Handlers use this after EquipmentEvent translation to align operator-
+// supplied payload timestamps to staging's actual boundaries — prod and
+// staging detect the same physical event at slightly different times due
+// to CPAC 5-min smoothing on prod and raw PLC transitions on staging.
+// Without alignment, split.service.ts's strict-equality check
+// (originalEvent.ts_event === events[0].startTime) 400s on legitimate splits.
+func (t *Translator) EquipmentEventBoundaries(ctx context.Context, stagingEventID int64) (time.Time, sql.NullTime, error) {
+	var tsEvent time.Time
+	var tsEnd sql.NullTime
+	found, err := t.staging.SelectOne(ctx,
+		`SELECT ts_event, ts_end FROM equipment_events WHERE id_equipment_event = $1`,
+		[]any{stagingEventID}, &tsEvent, &tsEnd)
+	if err != nil {
+		return time.Time{}, sql.NullTime{}, fmt.Errorf("staging event boundaries: %w", err)
+	}
+	if !found {
+		return time.Time{}, sql.NullTime{}, fmt.Errorf("staging equipment_event %d not found (just-translated race?)", stagingEventID)
+	}
+	return tsEvent, tsEnd, nil
+}
