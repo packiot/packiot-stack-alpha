@@ -65,3 +65,57 @@ jobs:
 
       - name: Prune old images
         run: docker image prune -f
+
+      - name: Smoke test — wait for critical services to report healthy
+        # Without this, the previous step (compose up -d) returns the
+        # moment the containers are CREATED, not when they're actually
+        # serving traffic. A bad commit that builds clean but crashes at
+        # startup would otherwise look like a successful deploy until
+        # someone notices Grafana 15 min later.
+        #
+        # Each critical service has a healthcheck declared in
+        # compose.staging.yml — we just wait for `healthy` status with a
+        # bounded timeout. Service list = the ones whose unavailability
+        # would be a real-world incident (edge-api serving operator +
+        # mirror writes, rabbitmq carrying the SparkPlug stream, hasura
+        # serving the operator UI, the two Go workers).
+        #
+        # If any service doesn't reach healthy within 120s, dumps the
+        # last 50 log lines for that container so the actions-summary
+        # email tells the operator exactly what's wrong.
+        timeout-minutes: 3
+        run: |
+          set -e
+          deadline=$(($(date +%s) + 120))
+          services="stack-edge-api-1 mirror-worker-go oeecloud-worker stack-rabbitmq-1 stack-hasura-1 stack-edge-nodered-1"
+          for svc in $services; do
+            echo "Waiting for $svc..."
+            while true; do
+              status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$svc" 2>/dev/null || echo "missing")
+              case "$status" in
+                healthy)
+                  echo "  $svc: healthy"
+                  break
+                  ;;
+                no-healthcheck)
+                  echo "  $svc: no healthcheck defined — assuming OK"
+                  break
+                  ;;
+                missing)
+                  echo "  $svc: container not found!"
+                  docker ps --format '{{.Names}}\t{{.Status}}'
+                  exit 1
+                  ;;
+                *)
+                  if [ "$(date +%s)" -ge "$deadline" ]; then
+                    echo "  $svc: TIMEOUT after 120s — last status: $status"
+                    echo "  --- last 50 log lines ---"
+                    docker logs --tail 50 "$svc" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 3
+                  ;;
+              esac
+            done
+          done
+          echo "All critical services healthy."
