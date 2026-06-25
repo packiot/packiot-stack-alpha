@@ -56,6 +56,23 @@ type Config struct {
 	ReconcileIntervalSec int
 	ReconcileMaxPerRun   int
 
+	// Value-sync layer. The existence pass (above) tracks which POs are
+	// active. The value pass tracks WHAT they show: production_real,
+	// gross_production, net_production, qt_stops, OEE rollups. Without
+	// this, staging POs would display simulator-driven counters because
+	// staging's per-minute pg_cron (piot_proc_refresh_runtime) recomputes
+	// production_orders_runtime from staging's simulator-generated
+	// equipment_values. The cron will overwrite our UPDATEs within 60 s,
+	// so we sync at 30 s — values briefly diverge between syncs but snap
+	// back to prod-correct on every reconciler tick.
+	//
+	// ReconcileValuesEnabled defaults TRUE — without it the existence
+	// pass alone leaves staging POs showing simulator counter values
+	// indistinguishable from a healthy run, which is misleading for
+	// CS / QA reviews.
+	ReconcileValuesEnabled     bool
+	ReconcileValuesIntervalSec int
+
 	// Logging.
 	LogLevel string
 }
@@ -78,6 +95,8 @@ func Load() (*Config, error) {
 		ReconcileEnabled:     getenvBool("RECONCILE_ENABLED", true),
 		ReconcileIntervalSec: getenvInt("RECONCILE_INTERVAL_SEC", 300),
 		ReconcileMaxPerRun:   getenvInt("RECONCILE_MAX_PER_RUN", 20),
+		ReconcileValuesEnabled:     getenvBool("RECONCILE_VALUES_ENABLED", true),
+		ReconcileValuesIntervalSec: getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
 		LogLevel:            getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
