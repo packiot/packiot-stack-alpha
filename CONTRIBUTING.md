@@ -239,11 +239,49 @@ bump failed silently.
 
 ## CI checks reference
 
+### Parent (this repo)
+
 | Workflow | Trigger | Job name | Required? |
 |---|---|---|---|
-| `pr-validation.yml` | PR to `staging` or `development` | `Validate compose files` | Yes (on `staging`) |
-| `deploy-staging.yml` | push to `staging` | `deploy` | (post-merge, not a check) |
+| `pr-validation.yml` | PR to `staging` or `development` | `Validate compose files` | **Yes** (on `staging`) |
+| `go-services.yml` | PR to `staging`/`development` touching `services/**` | `<service> — vet/test/build` (matrix) | No (convention) |
+| `deploy-staging.yml` | push to `staging` | `deploy` (includes smoke check on container health) | (post-merge) |
 | `build-postgres.yml` | push to `main` (path `db/**`) | `build-and-push` | No |
+
+### Submodules
+
+| Submodule | Workflow | Job name | Required? |
+|---|---|---|---|
+| `edge-api` | `pullrequests.yml` | `ciCoverage` (Jest + lint + coverage) | **No — convention only** |
+| `operator` | `pr-validation.yml` | `Lint, test, build` (vitest + eslint + vite build) | **No — convention only** |
+| `edge-node-red` | `ci.yml` | `Validate Node-RED flows` (JSON + creds scan) | **No — convention only** |
+
+### Why "convention only" on submodules?
+
+The submodule repos are private and the org is on GitHub Free, which does
+not allow branch protection (neither rulesets nor classic) on private
+repos. The parent stack has the only enforced check because it's public.
+
+**The convention**: don't merge a submodule PR to `staging` if its CI is
+red. The auto-bump fires immediately on push; a red commit deployed to
+staging will trip the smoke check in `deploy-staging.yml`, but you've
+already shipped the broken submodule pointer.
+
+If discipline isn't enough, three escapes (in order of cost):
+
+1. **Defer** — the current state. Cheapest, surfaces issues at the cost
+   of relying on human judgment.
+2. **Make the submodule public** — unlocks branch protection on the Free
+   plan. Audit git history for accidental secrets first (`gitleaks` is
+   the standard tool).
+3. **Upgrade org to Team** — ~$4/user/mo unlocks branch protection on
+   private repos. Also gets you required reviewers, code-owner
+   enforcement, etc.
+
+A fourth option exists but is custom code: a parent-side workflow that
+polls each submodule's CI status at the pinned SHA and rejects the bot
+bump PR if red. Approximates the gate without native protection;
+worth ~2-4h of work if discipline keeps slipping.
 
 ---
 
