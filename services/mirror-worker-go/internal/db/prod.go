@@ -213,6 +213,66 @@ func (p *Prod) FetchActivePOs(ctx context.Context, enterpriseID int) ([]ProdActi
 	return out, nil
 }
 
+// ProdRuntimeValues is the slim projection the value-sync needs: the
+// canonical "current production" counters from production_orders_runtime
+// (the per-minute cron-recomputed table, which is what operator UI and
+// dashboards read). One row per active PO.
+//
+// We deliberately do NOT pull production_orders.* counters — those are
+// less consistently maintained and the cron source of truth lives in
+// production_orders_runtime.
+type ProdRuntimeValues struct {
+	IDProductionOrder int64
+	NetProduction     *float64
+	GrossProduction   *float64
+}
+
+// FetchRuntimeValues batches the value-sync prod read. ANY-array binding
+// (pg-native, the awslambda role allows it) lets one SELECT cover all
+// mapped active POs in a single round-trip.
+func (p *Prod) FetchRuntimeValues(ctx context.Context, prodPOIDs []int64) (map[int64]ProdRuntimeValues, error) {
+	if len(prodPOIDs) == 0 {
+		return map[int64]ProdRuntimeValues{}, nil
+	}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	rows, err := tx.Query(ctx,
+		`SELECT id_production_order, net_production, gross_production
+		   FROM production_orders_runtime
+		  WHERE id_production_order = ANY($1::bigint[])`,
+		prodPOIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query prod runtime values: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]ProdRuntimeValues, len(prodPOIDs))
+	for rows.Next() {
+		var r ProdRuntimeValues
+		if err := rows.Scan(&r.IDProductionOrder, &r.NetProduction, &r.GrossProduction); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[r.IDProductionOrder] = r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // SelectOne runs a single SELECT under a READ ONLY tx + scans into dst.
 // dst is treated as a struct whose fields receive the columns in order
 // (caller passes &field args via dest slice).

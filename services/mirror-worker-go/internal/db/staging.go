@@ -217,6 +217,89 @@ func (s *Staging) LookupStagingPOByIDOrder(ctx context.Context, enterpriseID int
 	return stagingPOID, found, err
 }
 
+// MappedActivePO is a per-PO view the value-sync uses: the mapping +
+// the staging PO's current equipment + the latest staging runtime
+// counters. One SELECT-with-JOIN replaces N round-trips while the
+// reconciler walks mirror_id_map.
+type MappedActivePO struct {
+	ProdPOID                 int64
+	StagingPOID              int64
+	StagingEquipment         int
+	StagingSite              int
+	StagingArea              int
+	StagingNetProduction     *float64
+	StagingGrossProduction   *float64
+}
+
+// FetchMappedActiveCPACKPOs returns every mirror_id_map row for active
+// staging CPACK POs joined with their equipment + current runtime
+// counters. Used by the value-sync to compute deltas vs prod.
+//
+// Filters by source so a future second mirror source (e.g., azpack-prod)
+// won't accidentally accumulate inserts here.
+func (s *Staging) FetchMappedActiveCPACKPOs(ctx context.Context, source string, enterpriseID int) ([]MappedActivePO, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT m.prod_id, m.staging_id,
+		        po.id_equipment, po.id_site, po.id_area,
+		        por.net_production, por.gross_production
+		   FROM mirror_id_map m
+		   JOIN production_orders po
+		     ON po.id_production_order = m.staging_id
+		   LEFT JOIN production_orders_runtime por
+		     ON por.id_production_order = m.staging_id
+		  WHERE m.entity_type = 'production_order'
+		    AND m.source = $1
+		    AND po.id_enterprise = $2
+		    AND po.status = 2`,
+		source, enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query mapped active POs: %w", err)
+	}
+	defer rows.Close()
+	var out []MappedActivePO
+	for rows.Next() {
+		var r MappedActivePO
+		if err := rows.Scan(&r.ProdPOID, &r.StagingPOID,
+			&r.StagingEquipment, &r.StagingSite, &r.StagingArea,
+			&r.StagingNetProduction, &r.StagingGrossProduction); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// InsertEquipmentValueDelta writes one synthetic equipment_values row
+// carrying a net/gross production increment. The per-minute pg_cron
+// (piot_proc_refresh_runtime) sums equipment_values per equipment +
+// active-PO window into production_orders_runtime, so this row makes the
+// cron compute prod-anchored values WITHOUT us racing it.
+//
+// Single writer per CPACK equipment is guaranteed by the simulator's
+// SIM_SKIP_ENTERPRISE_IDS=3 default (added in the same change set).
+// If the simulator skip is misconfigured the cron will sum both sources
+// and counters will run hot — log + a follow-up alarm should flag that.
+//
+// id_shift gets populated by the piot_set_shift_before_insert trigger.
+// Other operational columns (state, mode, speed, id_order, id_production_
+// order) intentionally left NULL — this row is a counter delta, not a
+// PLC snapshot.
+func (s *Staging) InsertEquipmentValueDelta(
+	ctx context.Context,
+	stagingEqID, stagingSiteID, stagingAreaID, enterpriseID int,
+	netDelta, grossDelta float64,
+) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO equipment_values
+		       (id_equipment, ts_value, id_enterprise, id_site, id_area,
+		        net_production_incr, gross_production_incr)
+		 VALUES ($1, now(), $2, $3, $4, $5, $6)`,
+		stagingEqID, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta,
+	)
+	return err
+}
+
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
 // caller's tx so we don't lose visibility into a bad row that crashed
 // before the outer commit.

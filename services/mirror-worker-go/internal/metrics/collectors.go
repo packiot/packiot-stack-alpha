@@ -102,6 +102,16 @@ var (
 		Name: "mirror_worker_reconciler_active_drift_pos",
 		Help: "Prod active POs missing on staging at end of last reconciler pass.",
 	})
+
+	// ReconcilerValuesSyncedTotal — bumps once per (prod_po, staging_po)
+	// equipment_values delta INSERT during a value-sync tick. outcome=ok
+	// when the delta was applied; outcome=failed when the INSERT errored
+	// (transient DB hiccup, schema drift, etc.). Pair with the value-sync
+	// log line "value sync tick complete" for tick-level visibility.
+	ReconcilerValuesSyncedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_reconciler_values_synced_total",
+		Help: "equipment_values delta INSERTs by outcome (ok|failed) during value sync.",
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -122,5 +132,6 @@ func init() {
 		ReconcilerRunsTotal,
 		ReconcilerPOsTotal,
 		ReconcilerActiveDriftPOs,
+		ReconcilerValuesSyncedTotal,
 	)
 }

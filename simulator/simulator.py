@@ -45,6 +45,16 @@ DB_URL           = os.environ.get("DB_URL", "postgresql://postgres:packiot@postg
 INTERVAL         = int(os.environ.get("SIM_INTERVAL", "5"))
 OP_INTERVAL      = int(os.environ.get("OP_INTERVAL",  "15"))
 
+# Tenants whose packml_register topics should NOT receive synthetic PLC traffic.
+# Default skip-list is enterprise 3 (CPACK-Staging) — that tenant mirrors real
+# prod CPACK and its equipment_values are owned by mirror-worker-go's
+# reconciler. Mixing simulator noise with reconciler-derived deltas would
+# break the cron's piot_proc_refresh_runtime → production_orders_runtime
+# attribution, so the simulator stays out of CPACK entirely.
+SKIP_ENTERPRISE_IDS = {
+    int(x) for x in os.environ.get("SIM_SKIP_ENTERPRISE_IDS", "3").split(",") if x.strip()
+}
+
 # Minimum ticks a machine must stay stopped before it can recover.
 # Guarantees all PLC-generated downtime events are >12 min in the historic.
 MIN_STOP_TICKS = max(1, 720 // INTERVAL)   # 720 s = 12 min
@@ -174,23 +184,48 @@ def get_conn():
 
 
 def load_plc_topics(conn) -> list[Any]:
-    """Every active packml_register entry becomes one MachineState.
+    """Every active packml_register entry becomes one MachineState — EXCEPT
+    rows whose enterprise is in SIM_SKIP_ENTERPRISE_IDS (default: 3 = CPACK).
 
     We publish at whatever granularity packml_register defines (line, sector,
     or machine) — oeecloud matches the first 4 segments of the metric name to
     pick id_equipment, so we honour the existing topology instead of guessing.
+
+    Why skip CPACK by default: CPACK-Staging equipment_values are owned by
+    mirror-worker-go's reconciler, which inserts prod-derived deltas so the
+    per-minute cron (piot_proc_refresh_runtime) computes production_orders_
+    runtime values that track real prod. Simulator-generated rows would
+    co-mingle with reconciler deltas and the cron would sum both → staging
+    PO counters would show synthetic noise + prod values, indistinguishable
+    + non-reproducible.
     """
+    skip_ids = list(SKIP_ENTERPRISE_IDS)
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT pr.packml_topic, pr.id_equipment, pr.id_unit,
-                   e.nm_enterprise, eq.nm_equipment, eq.tp_equipment
-            FROM packml_register pr
-            JOIN equipments  eq ON eq.id_equipment = pr.id_equipment
-            JOIN enterprises e  ON e.id_enterprise = eq.id_enterprise
-            WHERE pr.active = true
-            ORDER BY pr.id_packml_register
-        """)
-        return list(cur.fetchall())
+        if skip_ids:
+            cur.execute("""
+                SELECT pr.packml_topic, pr.id_equipment, pr.id_unit,
+                       e.nm_enterprise, eq.nm_equipment, eq.tp_equipment
+                FROM packml_register pr
+                JOIN equipments  eq ON eq.id_equipment = pr.id_equipment
+                JOIN enterprises e  ON e.id_enterprise = eq.id_enterprise
+                WHERE pr.active = true
+                  AND eq.id_enterprise <> ALL(%s::int[])
+                ORDER BY pr.id_packml_register
+            """, (skip_ids,))
+        else:
+            cur.execute("""
+                SELECT pr.packml_topic, pr.id_equipment, pr.id_unit,
+                       e.nm_enterprise, eq.nm_equipment, eq.tp_equipment
+                FROM packml_register pr
+                JOIN equipments  eq ON eq.id_equipment = pr.id_equipment
+                JOIN enterprises e  ON e.id_enterprise = eq.id_enterprise
+                WHERE pr.active = true
+                ORDER BY pr.id_packml_register
+            """)
+        rows = list(cur.fetchall())
+    if skip_ids:
+        log.info("PLC simulation: skipping enterprise IDs %s (mirror-managed)", sorted(skip_ids))
+    return rows
 
 
 # ── PLC simulation ────────────────────────────────────────────────────────────

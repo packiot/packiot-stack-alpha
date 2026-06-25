@@ -150,10 +150,19 @@ func main() {
 	reconCtx, reconCancel := context.WithCancel(ctx)
 	defer reconCancel()
 	recon := reconcile.New(cfg, prodDB, stagingDB, t, tok.Get, httpc, logger)
-	reconWG.Add(1)
+	reconWG.Add(2)
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunForever(reconCtx)
+	}()
+	// Value sync runs on its own cadence (~30s by default) so prod-anchored
+	// equipment_values deltas land between cron ticks. The existence loop
+	// (RunForever above) is at a 5-min cadence; running them as one loop
+	// would lose either the value-sync responsiveness or pay the existence
+	// overhead 10× more often than needed.
+	go func() {
+		defer reconWG.Done()
+		_ = recon.RunValueSyncForever(reconCtx)
 	}()
 
 	// Main loop. Polls cursor → fetches batch → processes per row in
