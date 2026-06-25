@@ -39,6 +39,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/reconcile"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/replay"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/translate"
@@ -141,6 +142,20 @@ func main() {
 	hsrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), state, logger)
 	hsrv.Start()
 
+	// EnsureActivePOs reconciler — closes the ~95% gap left by user_logs
+	// replay (most prod CPACK POs are PLC-created, bypass edge-api audit).
+	// Runs in its own goroutine on its own cadence; tick loop below is
+	// unaffected.
+	var reconWG sync.WaitGroup
+	reconCtx, reconCancel := context.WithCancel(ctx)
+	defer reconCancel()
+	recon := reconcile.New(cfg, prodDB, stagingDB, t, tok.Get, httpc, logger)
+	reconWG.Add(1)
+	go func() {
+		defer reconWG.Done()
+		_ = recon.RunForever(reconCtx)
+	}()
+
 	// Main loop. Polls cursor → fetches batch → processes per row in
 	// its own staging tx → advances cursor or writes DLQ + advances.
 	for {
@@ -158,6 +173,12 @@ func main() {
 		case <-ctx.Done():
 		}
 	}
+
+	// Cancel the reconciler and wait for it to drain before shutting
+	// down the health server. The reconciler may be in the middle of an
+	// HTTP POST — give it a beat.
+	reconCancel()
+	reconWG.Wait()
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
