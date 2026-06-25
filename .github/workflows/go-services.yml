@@ -1,0 +1,70 @@
+name: Go Services CI
+
+# Runs vet/test/build/security/lint on the two Go services that live in
+# services/ (mirror-worker-go and oeecloud-worker). Previously these had
+# zero CI — tests only ran when someone manually invoked `go test ./...`.
+#
+# Path filter: only fires on changes under services/ and this workflow
+# file. Avoids paying ~2 min per submodule bump that doesn't touch Go.
+#
+# Matrix over the two services so adding a third Go service is one line.
+#
+# Soft-fail on golangci-lint + govulncheck initially because the
+# codebases have never been gated on either — expected to surface a
+# backlog. test + vet + build are hard gates from day one (we verified
+# they pass during the 2026-06-25 session).
+#
+# Not a merge gate yet — flipping that requires a branch protection
+# ruleset rule referencing this check name. Separate change.
+
+on:
+  pull_request:
+    branches: [staging, development]
+    paths:
+      - 'services/mirror-worker-go/**'
+      - 'services/oeecloud-worker/**'
+      - '.github/workflows/go-services.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.service }} — vet/test/build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [mirror-worker-go, oeecloud-worker]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/${{ matrix.service }}/go.mod
+          cache: true
+          cache-dependency-path: services/${{ matrix.service }}/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race -timeout 60s ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: govulncheck (non-blocking — see workflow comment)
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: golangci-lint (non-blocking — see workflow comment)
+        uses: golangci/golangci-lint-action@v6
+        continue-on-error: true
+        with:
+          version: v1.62
+          working-directory: services/${{ matrix.service }}
