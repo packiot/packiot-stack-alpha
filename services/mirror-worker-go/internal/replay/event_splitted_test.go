@@ -15,10 +15,12 @@ package replay
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
@@ -127,5 +129,115 @@ func TestEventSplitted_SkipReplay_DispatcherRecordsSkipped(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed")); got != beforeFailed {
 		t.Errorf("event-splitted failed = %f, want %f (skip must not bump failed)", got, beforeFailed)
+	}
+}
+
+// TestAlignSplitEventsToStaging — the alignment helper isolated. Covers the
+// real DLQ-282 shape (closed staging event, prod first-start drifts -3h35m),
+// the entry-283 / open-staging shape (ts_end IS NULL), and a couple of
+// defensive corner cases.
+func TestAlignSplitEventsToStaging(t *testing.T) {
+	stagingStart := time.Date(2026, 6, 22, 20, 41, 7, 0, time.UTC)
+	stagingEnd := time.Date(2026, 6, 25, 6, 54, 0, 0, time.UTC)
+
+	cases := []struct {
+		name              string
+		events            []any
+		stagingTsEvent    time.Time
+		stagingTsEnd      sql.NullTime
+		wantFirstStart    string
+		wantLastEnd       any // may be nil if leave-alone
+		wantStartDriftSec int
+		wantEndDriftSec   int
+	}{
+		{
+			// DLQ id 282 — closed staging event, big start drift, end matches.
+			name: "dlq-282-shape-closed-staging-with-start-drift",
+			events: []any{
+				map[string]any{"startTime": "2026-06-22T17:06:00.000Z", "endTime": "2026-06-25T05:50:00.000Z"},
+				map[string]any{"startTime": "2026-06-25T05:50:00.000Z", "endTime": "2026-06-25T06:54:00.000Z"},
+			},
+			stagingTsEvent:    stagingStart,
+			stagingTsEnd:      sql.NullTime{Time: stagingEnd, Valid: true},
+			wantFirstStart:    "2026-06-22T20:41:07.000Z",
+			wantLastEnd:       "2026-06-25T06:54:00.000Z",
+			wantStartDriftSec: 3*3600 + 35*60 + 7, // 3h35m07s
+			wantEndDriftSec:   0,
+		},
+		{
+			// Open-staging — operator's last endTime preserved (could be null
+			// or a closing timestamp; staging will close at whatever they sent).
+			name: "open-staging-leaves-operator-endtime-alone",
+			events: []any{
+				map[string]any{"startTime": "2026-06-25T11:13:00.000Z", "endTime": "2026-06-25T11:58:00.000Z"},
+				map[string]any{"startTime": "2026-06-25T11:58:00.000Z", "endTime": nil},
+			},
+			stagingTsEvent:    time.Date(2026, 6, 25, 11, 13, 0, 0, time.UTC),
+			stagingTsEnd:      sql.NullTime{Valid: false},
+			wantFirstStart:    "2026-06-25T11:13:00.000Z",
+			wantLastEnd:       nil,
+			wantStartDriftSec: 0,
+			wantEndDriftSec:   0,
+		},
+		{
+			// Interior split-point is preserved — only outer boundaries shift.
+			name: "interior-split-point-untouched",
+			events: []any{
+				map[string]any{"startTime": "2026-06-25T10:00:00.000Z", "endTime": "2026-06-25T10:30:00.000Z", "note": "A"},
+				map[string]any{"startTime": "2026-06-25T10:30:00.000Z", "endTime": "2026-06-25T11:00:00.000Z", "note": "B"},
+			},
+			stagingTsEvent: time.Date(2026, 6, 25, 9, 55, 0, 0, time.UTC),
+			stagingTsEnd:   sql.NullTime{Time: time.Date(2026, 6, 25, 11, 5, 0, 0, time.UTC), Valid: true},
+			wantFirstStart: "2026-06-25T09:55:00.000Z",
+			wantLastEnd:    "2026-06-25T11:05:00.000Z",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			startDrift, endDrift := alignSplitEventsToStaging(c.events, c.stagingTsEvent, c.stagingTsEnd)
+
+			first := c.events[0].(map[string]any)
+			if got := first["startTime"]; got != c.wantFirstStart {
+				t.Errorf("first.startTime = %v, want %s", got, c.wantFirstStart)
+			}
+			last := c.events[len(c.events)-1].(map[string]any)
+			if got := last["endTime"]; got != c.wantLastEnd {
+				t.Errorf("last.endTime = %v, want %v", got, c.wantLastEnd)
+			}
+			// Interior split-points must not be touched.
+			if len(c.events) >= 3 {
+				t.Fatalf("test fixture has %d events; this assertion expects exactly 2-event payloads", len(c.events))
+			}
+			// Drift only checked for the case that pinned them.
+			if c.wantStartDriftSec != 0 && startDrift != c.wantStartDriftSec {
+				t.Errorf("startDriftSec = %d, want %d", startDrift, c.wantStartDriftSec)
+			}
+			if c.wantEndDriftSec != 0 && endDrift != c.wantEndDriftSec {
+				t.Errorf("endDriftSec = %d, want %d", endDrift, c.wantEndDriftSec)
+			}
+		})
+	}
+}
+
+// Defensive — malformed events array (not a map) must not panic.
+func TestAlignSplitEventsToStaging_NonMapElementSkipsCleanly(t *testing.T) {
+	events := []any{"not-a-map", map[string]any{"endTime": "2026-06-25T07:44:00.000Z"}}
+	startDrift, endDrift := alignSplitEventsToStaging(
+		events,
+		time.Date(2026, 6, 25, 6, 28, 0, 0, time.UTC),
+		sql.NullTime{Time: time.Date(2026, 6, 25, 7, 44, 0, 0, time.UTC), Valid: true},
+	)
+	// Did not panic; drift returned zero because the first element couldn't
+	// be inspected.
+	if startDrift != 0 {
+		t.Errorf("startDriftSec = %d, want 0 for non-map first element", startDrift)
+	}
+	if endDrift != 0 {
+		t.Errorf("endDriftSec = %d, want 0 for last with no parsable prev value", endDrift)
+	}
+	// Last element WAS rewritten (it's a real map).
+	if got := events[1].(map[string]any)["endTime"]; got != "2026-06-25T07:44:00.000Z" {
+		t.Errorf("last.endTime = %v, want unchanged-equal-to-staging", got)
 	}
 }
