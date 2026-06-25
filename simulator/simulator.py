@@ -1301,6 +1301,7 @@ class OperatorSimulator:
             "tsEnd":            ts_d_ms,
             "idEquipmentEvent": ev["id_equipment_event"],
             "idEquipment":      ev["id_equipment"],
+            "idEnterprise":     self._ent["id_enterprise"],
             "userName":         user,
         }, user)
 
@@ -1386,6 +1387,7 @@ class OperatorSimulator:
             "tsEnd":            self._iso(ev["ts_end"].astimezone(timezone.utc)),
             "idEquipmentEvent": ev["id_event"],
             "idEquipment":      ev["id_equipment"],
+            "idEnterprise":     self._ent["id_enterprise"],
             "userName":         user,
         }, user)
 
@@ -1538,7 +1540,8 @@ class OperatorSimulator:
         eq_id   = next(iter(self._topics or {}), 22)
 
         self._get_nr("/health")
-        self._get_nr("/logo")
+        # /logo intentionally not probed: the Node-RED flow reads a non-existent
+        # logo.png; the read takes >5s and the file-in node logs ENOENT every hit.
         self._get_nr("/language-pack")
         self._get_nr(f"/machines/{eq_id}")
         self._post_nr("/downtime-reasons",            {"packmlTopic": topic}, "probe")
