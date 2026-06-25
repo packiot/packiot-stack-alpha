@@ -133,3 +133,40 @@ func TestProductionOrderQueryUsesIDOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestEquipmentEventMatcherHasStartDriftGuard pins the lower-bound on
+// staging.ts_event introduced to fix DLQ ids 259 + 283 — stale open-
+// ended staging events (ts_end IS NULL, opened days ago) were matching
+// every later prod event via COALESCE(ts_end, now()) overlap. Without
+// the lower bound, the matcher returns absurd cross-day mismatches.
+//
+// Same shape of guard as TestProductionOrderQueryUsesIDOrder: scan SQL
+// blobs only, fail if the predicate is missing.
+func TestEquipmentEventMatcherHasStartDriftGuard(t *testing.T) {
+	src, err := os.ReadFile("translate.go")
+	if err != nil {
+		t.Fatalf("read translate.go: %v", err)
+	}
+	body := string(src)
+
+	var sqlOnly strings.Builder
+	inBacktick := false
+	for _, ch := range body {
+		if ch == '`' {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inBacktick {
+			sqlOnly.WriteRune(ch)
+		}
+	}
+	sqlBlob := sqlOnly.String()
+
+	// The strict-match query MUST bound staging.ts_event from below.
+	// We anchor on the parameterized form to avoid false positives from
+	// any other `ts_event >=` predicates that might appear later.
+	want := "ts_event >= $3::timestamptz - ($6::int * interval '1 second')"
+	if !strings.Contains(sqlBlob, want) {
+		t.Errorf("translate.go matcher SQL missing start-drift lower bound %q — without it, stale open-ended staging events match unrelated later prod events (DLQ ids 259, 283)", want)
+	}
+}
