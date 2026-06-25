@@ -33,8 +33,14 @@ type Config struct {
 	// Staging edge-api — reached on the packiot-net docker network.
 	StagingAPIBaseURL string
 
-	// Event-event interval-overlap matcher threshold (Phase A4b).
-	EventMinOverlapSec int
+	// Event-event interval-overlap matcher thresholds (Phase A4b).
+	// EventMinOverlapSec — minimum overlap to count as a match.
+	// EventMaxStartDriftSec — staging.ts_event must be no earlier than
+	// prod.ts_event - this. Prevents long-stale open staging events
+	// (ts_end IS NULL, opened days ago) from matching every later prod
+	// event by virtue of the "open window matches everything" overlap.
+	EventMinOverlapSec    int
+	EventMaxStartDriftSec int
 
 	// HTTP /health server.
 	HealthPort int
@@ -55,7 +61,8 @@ func Load() (*Config, error) {
 		BatchSize:           getenvInt("BATCH_SIZE", 50),
 		PerPostDelayMs:      getenvInt("PER_POST_DELAY_MS", 50),
 		StagingAPIBaseURL:   getenv("STAGING_API_URL", "http://edge-api:8080"),
-		EventMinOverlapSec:  getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
+		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
+		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
 		HealthPort:          getenvInt("HEALTH_PORT", 9102),
 		LogLevel:            getenv("LOG_LEVEL", "info"),
 	}

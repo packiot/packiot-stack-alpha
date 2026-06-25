@@ -243,6 +243,12 @@ func (t *Translator) EquipmentEvent(ctx context.Context, prodEventID int64) (int
 		stagingEventIDStr string
 		overlapSec        int
 	)
+	// The `ts_event >= $3 - $6 sec` lower bound rejects stale open-ended
+	// staging events that started long before the prod event. Without it,
+	// any open (ts_end IS NULL) staging event from days ago "overlaps"
+	// every later prod event via COALESCE(ts_end, now()) — DLQ ids 259,
+	// 283 hit exactly this shape (staging event 1-2 days older, still
+	// open, picked as the "best overlap" for unrelated prod events).
 	found, err = t.staging.SelectOne(ctx,
 		`SELECT id_equipment_event::text,
 		        extract(epoch FROM (
@@ -254,10 +260,11 @@ func (t *Translator) EquipmentEvent(ctx context.Context, prodEventID int64) (int
 		    AND id_enterprise = $2
 		    AND status = $5
 		    AND ts_event < $4::timestamptz
+		    AND ts_event >= $3::timestamptz - ($6::int * interval '1 second')
 		    AND (ts_end IS NULL OR ts_end > $3::timestamptz)
 		  ORDER BY overlap_seconds DESC
 		  LIMIT 1`,
-		[]any{stagingEqID, t.cfg.StagingEnterpriseID, prodStart, prodEndEffective, prodStat},
+		[]any{stagingEqID, t.cfg.StagingEnterpriseID, prodStart, prodEndEffective, prodStat, t.cfg.EventMaxStartDriftSec},
 		&stagingEventIDStr, &overlapSec)
 	if err != nil {
 		return 0, fmt.Errorf("staging interval-overlap lookup: %w", err)
@@ -311,6 +318,7 @@ func (t *Translator) EquipmentEvent(ctx context.Context, prodEventID int64) (int
 		slog.Time("prodEnd", prodEndEffective),
 		slog.Int("prodStatus", prodStat),
 		slog.Int("minOverlapSec", t.cfg.EventMinOverlapSec),
+		slog.Int("maxStartDriftSec", t.cfg.EventMaxStartDriftSec),
 	}
 	if found {
 		attrs = append(attrs, slog.Int("candidateOverlapSec", overlapSec))
