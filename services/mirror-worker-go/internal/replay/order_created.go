@@ -30,7 +30,7 @@ type OrderCreatedPayload struct {
 // order-created-started, only differs by endpoint + body.
 //
 // Idempotency: prod payload doesn't carry id_production_order, so we look
-// it up post-hoc via (id_enterprise, id_order, created_at >= ts_event - 1m).
+// it up post-hoc via (id_enterprise, id_order, ts_creation >= ts_event - 1m).
 // If a mapping row already exists for that prod PO id, skip.
 func OrderCreated(
 	cfg *config.Config,
@@ -74,10 +74,12 @@ func OrderCreated(
 		// Find the prod PO we're mirroring — most recent one matching
 		// (enterprise, id_order) created near this user_logs row.
 		var prodPOIDStr string
+		// ts_creation: prod's production_orders has no created_at column
+		// (SQLSTATE 42703 in DLQ id 284).
 		found, err := prodDB.SelectOne(ctx,
 			`SELECT id_production_order::text FROM production_orders
 			  WHERE id_enterprise = $1 AND id_order = $2
-			    AND created_at >= $3::timestamptz - interval '1 minute'
+			    AND ts_creation >= $3::timestamptz - interval '1 minute'
 			  ORDER BY id_production_order DESC LIMIT 1`,
 			[]any{cfg.ProdEnterpriseID, idOrderNum, row.TsEvent}, &prodPOIDStr)
 		if err != nil {

@@ -70,10 +70,11 @@ func OrderCreatedStarted(
 		}
 
 		var prodPOIDStr string
+		// ts_creation: see comment in order_created.go (same prod-vs-staging column drift).
 		found, err := prodDB.SelectOne(ctx,
 			`SELECT id_production_order::text FROM production_orders
 			  WHERE id_enterprise = $1 AND id_order = $2
-			    AND created_at >= $3::timestamptz - interval '1 minute'
+			    AND ts_creation >= $3::timestamptz - interval '1 minute'
 			  ORDER BY id_production_order DESC LIMIT 1`,
 			[]any{cfg.ProdEnterpriseID, idOrderNum, row.TsEvent}, &prodPOIDStr)
 		if err != nil {

@@ -44,7 +44,15 @@ func OrderReplaced(
 		stagingPOID, err := t.ProductionOrder(ctx, p.IDProductionOrder)
 		if err != nil {
 			if errors.Is(err, translate.ErrUnmapped) {
-				return fmt.Errorf("production_order %d unmapped: %w", p.IDProductionOrder, err)
+				// Same structural-mismatch shape as order-changed: the PO
+				// exists on prod but was never mirrored to staging. No
+				// retry will fix it; skip + advance cursor instead of DLQ.
+				logger.Info("skipping order-replaced: production_order unmappable on staging",
+					slog.Int64("sourceLogID", row.IDUserLogs),
+					slog.Int64("prodPOID", p.IDProductionOrder),
+					slog.String("translatorErr", err.Error()))
+				return fmt.Errorf("production_order %d unmapped (no mirror_id_map row and no id_order business-key match): %w",
+					p.IDProductionOrder, ErrSkipReplay)
 			}
 			return fmt.Errorf("translate production_order: %w", err)
 		}

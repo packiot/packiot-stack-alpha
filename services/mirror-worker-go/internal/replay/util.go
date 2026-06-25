@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 )
 
 // ErrSkipReplay is returned by a handler when the row is intentionally not
@@ -38,4 +39,17 @@ func decodeWithNumbers(raw []byte, dest any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	return dec.Decode(dest)
+}
+
+// parseFlexFloat parses a json.RawMessage that may contain a number, a
+// quoted number, an empty string, or null. Returns (0, nil) for the
+// empty / null / missing cases — prod emits these when an operator stops
+// a PO without starting a new one (order-changed with empty new-PO fields).
+// Returns an error only for genuinely non-numeric input.
+func parseFlexFloat(raw json.RawMessage) (float64, error) {
+	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if s == "" || s == "null" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(s, 64)
 }

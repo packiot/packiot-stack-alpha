@@ -50,13 +50,76 @@ func TestOrderChangedPayload_Unmarshal_RealProdShape(t *testing.T) {
 	if p.StopType != "unplanned-stop" {
 		t.Errorf("StopType = %q, want %q", p.StopType, "unplanned-stop")
 	}
-	// productionOrderQuantity goes through json.Number → Float64.
-	qty, err := p.ProductionOrderQuantity.Float64()
+	qty, err := parseFlexFloat(p.ProductionOrderQuantity)
 	if err != nil {
-		t.Fatalf("qty.Float64: %v", err)
+		t.Fatalf("parseFlexFloat: %v", err)
 	}
 	if qty != 120 {
 		t.Errorf("qty = %f, want 120", qty)
+	}
+}
+
+// DLQ id 280 (source_log_id 2503189) hit "json: invalid number literal,
+// trying to unmarshal \"\"\" into Number" because prod emits empty-string
+// productionOrderQuantity when the operator finishes a PO without starting
+// a new one. The payload below is the exact shape from that DLQ row.
+const dlq280OrderChangedRaw = `{` +
+	`"idArea":20,"idSite":1,"idOrder":"","stopType":"finish",` +
+	`"timestamp":"2026-06-25T06:12:00-03:00","idEquipment":333,` +
+	`"idEnterprise":1,"equipmentSetup":[],"shouldCreatePo":null,` +
+	`"unitMultiplier":1,"shouldOpenNewPo":false,` +
+	`"idProductionOrder":"","oldIdProductionOrder":1644385,` +
+	`"productionOrderQuantity":"","oldProductionOrderProdFinal":"23357"` +
+	`}`
+
+func TestOrderChangedPayload_Unmarshal_EmptyQuantity_DLQ280(t *testing.T) {
+	var p OrderChangedPayload
+	if err := decodeWithNumbers([]byte(dlq280OrderChangedRaw), &p); err != nil {
+		t.Fatalf("decode (this is the bug we're fixing — see DLQ 280): %v", err)
+	}
+	if p.IDEquipment != 333 {
+		t.Errorf("IDEquipment = %d, want 333", p.IDEquipment)
+	}
+	if p.OldIDProductionOrder != 1644385 {
+		t.Errorf("OldIDProductionOrder = %d, want 1644385", p.OldIDProductionOrder)
+	}
+	if p.StopType != "finish" {
+		t.Errorf("StopType = %q, want %q", p.StopType, "finish")
+	}
+	qty, err := parseFlexFloat(p.ProductionOrderQuantity)
+	if err != nil {
+		t.Fatalf("parseFlexFloat on empty string must not error: %v", err)
+	}
+	if qty != 0 {
+		t.Errorf("qty on empty string = %f, want 0", qty)
+	}
+}
+
+func TestParseFlexFloat_ShapeMatrix(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want float64
+		err  bool
+	}{
+		{"bare number", `120`, 120, false},
+		{"quoted number", `"120"`, 120, false},
+		{"empty string", `""`, 0, false},
+		{"null literal", `null`, 0, false},
+		{"missing field (empty RawMessage)", ``, 0, false},
+		{"whitespace-padded number", `  42  `, 42, false},
+		{"garbage", `"not-a-number"`, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseFlexFloat(json.RawMessage(c.raw))
+			if (err != nil) != c.err {
+				t.Fatalf("err = %v, want err=%v", err, c.err)
+			}
+			if got != c.want {
+				t.Errorf("got %f, want %f", got, c.want)
+			}
+		})
 	}
 }
 
@@ -72,17 +135,17 @@ func TestOrderChangedPayload_StructuralGuardRejectsMissingFields(t *testing.T) {
 		{
 			"missing idEquipment",
 			`{"stopType":"x","oldIdProductionOrder":1,"productionOrderQuantity":1}`,
-			OrderChangedPayload{StopType: "x", OldIDProductionOrder: 1, ProductionOrderQuantity: "1"},
+			OrderChangedPayload{StopType: "x", OldIDProductionOrder: 1, ProductionOrderQuantity: json.RawMessage("1")},
 		},
 		{
 			"missing oldIdProductionOrder",
 			`{"stopType":"x","idEquipment":1,"productionOrderQuantity":1}`,
-			OrderChangedPayload{StopType: "x", IDEquipment: 1, ProductionOrderQuantity: "1"},
+			OrderChangedPayload{StopType: "x", IDEquipment: 1, ProductionOrderQuantity: json.RawMessage("1")},
 		},
 		{
 			"missing stopType",
 			`{"idEquipment":1,"oldIdProductionOrder":1,"productionOrderQuantity":1}`,
-			OrderChangedPayload{IDEquipment: 1, OldIDProductionOrder: 1, ProductionOrderQuantity: "1"},
+			OrderChangedPayload{IDEquipment: 1, OldIDProductionOrder: 1, ProductionOrderQuantity: json.RawMessage("1")},
 		},
 	}
 	for _, c := range cases {
