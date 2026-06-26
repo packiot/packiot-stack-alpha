@@ -273,6 +273,95 @@ func (p *Prod) FetchRuntimeValues(ctx context.Context, prodPOIDs []int64) (map[i
 	return out, nil
 }
 
+// ProdEquipmentEvent is the wire shape between prod and the events
+// reconciler. Includes every non-defaulted, replay-meaningful column on
+// the equipment_events table. We pull cd_machine / cd_category / etc.
+// because prod's operator UI writes those back into the row after
+// justify/edit and they're the whole reason for mirroring — if we only
+// copied (ts_event, ts_end, status, id_equipment) the matcher would
+// succeed but staging would still display empty downtime metadata.
+//
+// Nullable columns use *T so we can distinguish "not set" from "set to
+// zero value" when re-inserting on staging.
+type ProdEquipmentEvent struct {
+	IDEquipmentEvent    int64
+	IDEquipment         int
+	TsEvent             time.Time
+	TsEnd               *time.Time
+	Status              *int
+	TxtDowntimeNotes    *string
+	Idle                *string
+	Fault               *int
+	CdMachine           *string
+	CdCategory          *string
+	CdSubcategory       *string
+	ChangeOver          *bool
+	PlannedDowntime     *bool
+	Duration            *int
+	DescCategory        *string
+	DescSubcategory     *string
+	CdCategoryClient    *int
+	CdSubcategoryClient *int
+	IgnoreCost          *bool
+}
+
+// FetchNewEquipmentEvents pulls prod equipment_events for the given
+// enterprise whose id_equipment_event > cursor, in ascending order.
+// Bounded by limit so a backlog can't OOM us — the reconciler advances
+// per pass and catches up incrementally.
+//
+// Wrapped in BEGIN READ ONLY as defense-in-depth on the awslambda role.
+func (p *Prod) FetchNewEquipmentEvents(ctx context.Context, cursor int64, enterpriseID, limit int) ([]ProdEquipmentEvent, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	rows, err := tx.Query(ctx,
+		`SELECT id_equipment_event, id_equipment, ts_event, ts_end, status,
+		        txt_downtime_notes, idle, fault, cd_machine, cd_category,
+		        cd_subcategory, change_over, planned_downtime, duration,
+		        desc_category, desc_subcategory, cd_category_client,
+		        cd_subcategory_client, ignore_cost
+		   FROM equipment_events
+		  WHERE id_enterprise = $1
+		    AND id_equipment_event > $2
+		  ORDER BY id_equipment_event ASC
+		  LIMIT $3`,
+		enterpriseID, cursor, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query equipment_events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProdEquipmentEvent
+	for rows.Next() {
+		var r ProdEquipmentEvent
+		if err := rows.Scan(&r.IDEquipmentEvent, &r.IDEquipment, &r.TsEvent, &r.TsEnd, &r.Status,
+			&r.TxtDowntimeNotes, &r.Idle, &r.Fault, &r.CdMachine, &r.CdCategory,
+			&r.CdSubcategory, &r.ChangeOver, &r.PlannedDowntime, &r.Duration,
+			&r.DescCategory, &r.DescSubcategory, &r.CdCategoryClient,
+			&r.CdSubcategoryClient, &r.IgnoreCost); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // SelectOne runs a single SELECT under a READ ONLY tx + scans into dst.
 // dst is treated as a struct whose fields receive the columns in order
 // (caller passes &field args via dest slice).

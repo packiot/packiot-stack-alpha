@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -222,13 +223,13 @@ func (s *Staging) LookupStagingPOByIDOrder(ctx context.Context, enterpriseID int
 // counters. One SELECT-with-JOIN replaces N round-trips while the
 // reconciler walks mirror_id_map.
 type MappedActivePO struct {
-	ProdPOID                 int64
-	StagingPOID              int64
-	StagingEquipment         int
-	StagingSite              int
-	StagingArea              int
-	StagingNetProduction     *float64
-	StagingGrossProduction   *float64
+	ProdPOID               int64
+	StagingPOID            int64
+	StagingEquipment       int
+	StagingSite            int
+	StagingArea            int
+	StagingNetProduction   *float64
+	StagingGrossProduction *float64
 }
 
 // FetchMappedActiveCPACKPOs returns every mirror_id_map row for active
@@ -298,6 +299,104 @@ func (s *Staging) InsertEquipmentValueDelta(
 		stagingEqID, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta,
 	)
 	return err
+}
+
+// EnsureEventCursor seeds a mirror_replay_cursor row for the events
+// reconciler if one doesn't exist yet. Returns the current cursor value.
+// Uses ON CONFLICT DO NOTHING so it's safe to call on every boot.
+//
+// The events reconciler uses its OWN cursor source (e.g. cpack-prod-go-events)
+// distinct from the user_logs cursor (cpack-prod-go). Two replay streams,
+// two cursors — same table, same shape.
+func (s *Staging) EnsureEventCursor(ctx context.Context, source string) (int64, error) {
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO mirror_replay_cursor (source, last_log_id, last_run_at)
+		 VALUES ($1, 0, now())
+		 ON CONFLICT (source) DO NOTHING`,
+		source); err != nil {
+		return 0, fmt.Errorf("seed event cursor: %w", err)
+	}
+	return s.ReadCursor(ctx, source)
+}
+
+// AdvanceCursorPool advances a cursor row outside any tx. Used by the
+// events reconciler which doesn't run inside the per-row tx the user_logs
+// dispatcher does (events are inserted with their mapping in one tx per
+// row; the cursor advances at the end of the batch).
+func (s *Staging) AdvanceCursorPool(ctx context.Context, source string, toID int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE mirror_replay_cursor
+		    SET last_log_id = $1, last_run_at = now()
+		  WHERE source = $2
+		    AND last_log_id < $1`,
+		toID, source)
+	return err
+}
+
+// InsertEquipmentEventArgs is the parameter bundle for InsertEquipmentEvent.
+// Using a struct (vs 18 positional args) so callers + tests can't transpose
+// fields silently when adding columns later.
+type InsertEquipmentEventArgs struct {
+	IDEquipment         int
+	IDEnterprise        int
+	TsEvent             time.Time
+	TsEnd               *time.Time
+	Status              *int
+	TxtDowntimeNotes    *string
+	Idle                *string
+	Fault               *int
+	CdMachine           *string
+	CdCategory          *string
+	CdSubcategory       *string
+	ChangeOver          *bool
+	PlannedDowntime     *bool
+	Duration            *int
+	DescCategory        *string
+	DescSubcategory     *string
+	CdCategoryClient    *int
+	CdSubcategoryClient *int
+	IgnoreCost          *bool
+}
+
+// InsertEquipmentEvent INSERTs an equipment_events row carrying prod's
+// metadata into staging. Returns the staging-side id_equipment_event
+// (sequence-assigned). Always sets forced_creation_system=true so the
+// piot_trig_equipment_events_update_prev trigger takes the bypass branch:
+// close prior open events without dedup-rejecting our INSERT.
+//
+// Runs in caller's tx so the mirror_id_map INSERT lands atomically with
+// the equipment_events row — no partial state if either fails.
+func InsertEquipmentEvent(ctx context.Context, tx pgx.Tx, a InsertEquipmentEventArgs) (int64, error) {
+	var stagingID int64
+	err := tx.QueryRow(ctx,
+		`INSERT INTO equipment_events
+		       (id_equipment, ts_event, ts_end, status,
+		        txt_downtime_notes, idle, fault,
+		        cd_machine, cd_category, cd_subcategory,
+		        change_over, planned_downtime, duration,
+		        desc_category, desc_subcategory,
+		        cd_category_client, cd_subcategory_client,
+		        ignore_cost, id_enterprise, forced_creation_system)
+		 VALUES ($1, $2, $3, $4,
+		         $5, $6, $7,
+		         $8, $9, $10,
+		         $11, $12, $13,
+		         $14, $15,
+		         $16, $17,
+		         $18, $19, true)
+		 RETURNING id_equipment_event`,
+		a.IDEquipment, a.TsEvent, a.TsEnd, a.Status,
+		a.TxtDowntimeNotes, a.Idle, a.Fault,
+		a.CdMachine, a.CdCategory, a.CdSubcategory,
+		a.ChangeOver, a.PlannedDowntime, a.Duration,
+		a.DescCategory, a.DescSubcategory,
+		a.CdCategoryClient, a.CdSubcategoryClient,
+		a.IgnoreCost, a.IDEnterprise,
+	).Scan(&stagingID)
+	if err != nil {
+		return 0, fmt.Errorf("insert equipment_event: %w", err)
+	}
+	return stagingID, nil
 }
 
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
