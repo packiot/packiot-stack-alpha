@@ -2,12 +2,13 @@
 
 ## What it is
 
-A periodic loop inside `mirror-worker-go` that keeps staging's set of CPACK production orders in sync with prod, AND keeps their production counters tracking prod's values. Two passes on independent cadences:
+A periodic loop inside `mirror-worker-go` that keeps staging's set of CPACK production orders in sync with prod, keeps their production counters tracking prod's values, AND keeps the equipment_events history mirrored 1:1 so operator-action replay always has a target. Three passes on independent cadences:
 
 | Pass | Cadence | What it does |
 |---|---|---|
 | **Existence** | every 5 min (`RECONCILE_INTERVAL_SEC`) | diffs prod active POs vs staging active POs by `id_order`; POSTs `/api/production-orders/create` + `/start` for any missing one; persists the mapping in `mirror_id_map`. |
 | **Value sync** | every 30 s (`RECONCILE_VALUES_INTERVAL_SEC`) | for each mapped active CPACK PO, inserts one `equipment_values` row carrying the `(prod − staging)` net/gross delta. The per-minute pg_cron sums equipment_values into `production_orders_runtime` and the staging counter snaps to prod. |
+| **Events sync** | every 60 s (`RECONCILE_EVENTS_INTERVAL_SEC`) | fetches prod `equipment_events` past the events-cursor, INSERTs each into staging with `forced_creation_system=true` (bypasses the dedup trigger), persists the mapping. Restores the equipment_events history that vanished when value-sync became the sole writer of equipment_values. |
 
 ## Why it exists
 
@@ -15,11 +16,15 @@ A periodic loop inside `mirror-worker-go` that keeps staging's set of CPACK prod
 
 Even after we close the existence gap, staging's `production_orders_runtime.net_production` was computed from synthetic simulator `equipment_values` data — visible counters had no relationship to real prod values. Mixing simulator data with reconciler deltas would not give reproducible state, so the simulator now skips CPACK entirely (`SIM_SKIP_ENTERPRISE_IDS=3` default) and the reconciler is the sole writer of `equipment_values` for CPACK equipment.
 
-## Architecture invariant
+## Architecture invariants
 
-> **For any CPACK equipment row in `packml_register`, there is exactly one writer of `equipment_values`: the reconciler.**
+> **(1) For any CPACK equipment row in `packml_register`, there is exactly one writer of `equipment_values`: the value-sync pass.**
+>
+> **(2) For any CPACK equipment row in `packml_register`, there is exactly one writer of `equipment_values.equipment_events`: the events-sync pass.**
 
-If you violate this — by re-enabling the simulator for CPACK, or by adding another producer to the CPACK queue — the pg_cron job will sum BOTH sources and counters will run hot. The system reports this as a hard-to-debug "staging values higher than prod" symptom, not as an explicit error.
+If you violate (1) — by re-enabling the simulator for CPACK, or by adding another producer — the pg_cron job will sum BOTH sources and counters will run hot. Hard-to-debug "staging values higher than prod" symptom.
+
+If you violate (2) — by reintroducing state/mode/speed-bearing equipment_values writes for CPACK, or by re-enabling the simulator for CPACK — `piot_trig_equipment_events_update_prev` will fire on the foreign writer, producing equipment_events that the events-sync didn't author. The dedup branch may also reject the reconciler's INSERTs on the next prev_status match, leaving holes in the mirror. (We sidestep the dedup branch via `forced_creation_system=true` on our INSERTs, but a foreign writer wouldn't.)
 
 ## Configuration (env vars)
 
@@ -30,6 +35,9 @@ If you violate this — by re-enabling the simulator for CPACK, or by adding ano
 | `RECONCILE_MAX_PER_RUN` | `20` | Per-pass cap on the existence backfill — so a bad run can't hammer edge-api |
 | `RECONCILE_VALUES_ENABLED` | `true` | Kill-switch for the value-sync pass only |
 | `RECONCILE_VALUES_INTERVAL_SEC` | `30` | Value-sync cadence. Must be ≤ the cron interval (60 s) to stay ahead. |
+| `RECONCILE_EVENTS_ENABLED` | `true` | Kill-switch for the events-sync pass only |
+| `RECONCILE_EVENTS_INTERVAL_SEC` | `60` | Events-sync cadence. 60 s ≈ "matcher cache hit before the next operator action lands". |
+| `RECONCILE_EVENTS_BATCH_SIZE` | `200` | Per-tick cap on prod `equipment_events` rows pulled. Cold-start backlog drains over multiple ticks. |
 | `SIM_SKIP_ENTERPRISE_IDS` | `3` (CPACK) | Tenants the simulator MUST NOT generate PLC traffic for. Comma-separated. |
 
 ## What you see in logs
@@ -48,9 +56,15 @@ If you violate this — by re-enabling the simulator for CPACK, or by adding ano
 
 # value sync each tick:
 {"msg":"value sync tick complete","mapped":11,"synced":9,"skipped":2,"elapsed":210ms}
+
+# events sync starting + first tick:
+{"msg":"events sync starting","interval_sec":60,"batch_size":200,"cursor_at_boot":2450158586}
+{"msg":"events sync tick complete","cursor_from":2450158586,"cursor_to":2450158602,"fetched":16,"created":14,"skipped":2,"failed":0,"elapsed":340ms}
 ```
 
 Skipped during value sync = either the prod runtime row was NULL (cron hasn't computed it yet on prod side) OR delta was 0 (already in sync).
+
+Skipped during events sync = either the equipment isn't in `packml_register` on staging (logged at WARN with prod_equipment_id) OR a mapping already exists for the prod event id (idempotency hit from a prior pass).
 
 ## Prometheus metrics
 
@@ -59,6 +73,8 @@ mirror_worker_reconciler_runs_total{outcome="ok|failed"}
 mirror_worker_reconciler_pos_total{outcome="created|failed|skipped"}
 mirror_worker_reconciler_active_drift_pos     # gauge — should settle to 0
 mirror_worker_reconciler_values_synced_total{outcome="ok|failed"}
+mirror_worker_reconciler_events_total{outcome="created|failed|skipped"}
+mirror_worker_reconciler_events_cursor        # gauge — monotonically increases
 ```
 
 Healthy steady state:
@@ -66,6 +82,8 @@ Healthy steady state:
 - `runs_total{outcome="ok"}` increments every 5 min
 - `values_synced_total{outcome="ok"}` accumulates ~22/min (11 active POs × 2 syncs/min, modulo "already in sync" skips)
 - `pos_total` only ticks when prod creates a new PO
+- `events_cursor` monotonically increases at roughly prod's events-emission rate (~10–50 per minute during a normal CPACK shift)
+- `events_total{outcome="created"}` accumulates near `events_cursor` delta; `skipped` is non-zero only when packml_register is missing an entry; `failed` should be ~0
 
 ## When something goes wrong
 
@@ -90,6 +108,25 @@ If that line is missing, `SIM_SKIP_ENTERPRISE_IDS` was overridden — restore th
 ### Staging values run lower than prod by a fixed amount
 
 Value sync is failing for one direction. Check `values_synced_total{outcome="failed"}` and the worker log for the `value sync: insert delta failed` warning. Usually a transient DB issue; if it persists, the equipment_values schema may have drifted and an INSERT column is now NOT NULL.
+
+### DLQ filling with `equipment_event NNN unmapped (no staging interval overlap)`
+
+This is the symptom that motivated the events sync. It means the matcher (`translate.EquipmentEvent`) ran for an operator-action handler (event-justified / event-edited / event-splitted) and found no staging equipment_event row to match against, AND no `mirror_id_map` entry for the prod event id. Two diagnostics:
+
+```sql
+-- Is the events reconciler producing mappings at all?
+SELECT entity_type, COUNT(*) FROM mirror_id_map
+ WHERE source = 'cpack-prod-go' GROUP BY entity_type;
+-- equipment_event should be the largest bucket after a few hours of runtime.
+
+-- Where is the events cursor relative to the prod event id in the DLQ?
+SELECT source, last_log_id FROM mirror_replay_cursor
+ WHERE source = 'cpack-prod-go-events';
+```
+
+If `events_cursor` is far behind the prod event id in the DLQ, the events reconciler is broken or disabled. Check `RECONCILE_EVENTS_ENABLED` + the worker log for `events sync starting`.
+
+If `events_cursor` is past the prod event id and the mapping is still missing, the equipment's `packml_register` row is absent on staging — the events reconciler logged "equipment unmapped, skipping". Fix the staging packml_register row, then either restart the worker or wait for the next user_logs replay to retry the matcher.
 
 ### Cron is overwriting my deltas
 

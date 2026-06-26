@@ -73,31 +73,50 @@ type Config struct {
 	ReconcileValuesEnabled     bool
 	ReconcileValuesIntervalSec int
 
+	// Events-sync layer. The interval-overlap matcher (translate.EquipmentEvent)
+	// can only match if staging has an equipment_event row that overlaps the
+	// prod event's interval. After PR #75 made the value-sync the sole writer
+	// of CPACK equipment_values (writing NULL state/mode/speed), the
+	// piot_set_event trigger pipeline stopped producing equipment_events for
+	// CPACK machines — so the matcher started failing on every operator
+	// action (event-justified/edited/splitted), DLQ-ing 28 rows by 2026-06-26.
+	//
+	// This loop mirrors prod equipment_events directly into staging with a
+	// mirror_id_map entry, so the matcher's cache hit path takes over and
+	// no overlap math is needed. Sole-writer invariant for CPACK
+	// equipment_events on staging.
+	ReconcileEventsEnabled     bool
+	ReconcileEventsIntervalSec int
+	ReconcileEventsBatchSize   int
+
 	// Logging.
 	LogLevel string
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		AWSRegion:           getenv("AWS_REGION", "us-east-1"),
-		ProdDBSecretID:      getenv("PROD_DB_SECRET_ID", "databaseCredentials"),
-		StagingDBSecretID:   getenv("STAGING_DB_SECRET_ID", "packiot/staging/db"),
-		SourceName:          getenv("SOURCE_NAME", "cpack-prod-go"),
-		ProdEnterpriseID:    getenvInt("PROD_ENTERPRISE_ID", 1),
-		StagingEnterpriseID: getenvInt("STAGING_ENTERPRISE_ID", 3),
-		PollIntervalSec:     getenvInt("POLL_INTERVAL_SEC", 60),
-		BatchSize:           getenvInt("BATCH_SIZE", 50),
-		PerPostDelayMs:      getenvInt("PER_POST_DELAY_MS", 50),
-		StagingAPIBaseURL:   getenv("STAGING_API_URL", "http://edge-api:8080"),
-		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
-		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
-		HealthPort:          getenvInt("HEALTH_PORT", 9102),
-		ReconcileEnabled:     getenvBool("RECONCILE_ENABLED", true),
-		ReconcileIntervalSec: getenvInt("RECONCILE_INTERVAL_SEC", 300),
-		ReconcileMaxPerRun:   getenvInt("RECONCILE_MAX_PER_RUN", 20),
+		AWSRegion:                  getenv("AWS_REGION", "us-east-1"),
+		ProdDBSecretID:             getenv("PROD_DB_SECRET_ID", "databaseCredentials"),
+		StagingDBSecretID:          getenv("STAGING_DB_SECRET_ID", "packiot/staging/db"),
+		SourceName:                 getenv("SOURCE_NAME", "cpack-prod-go"),
+		ProdEnterpriseID:           getenvInt("PROD_ENTERPRISE_ID", 1),
+		StagingEnterpriseID:        getenvInt("STAGING_ENTERPRISE_ID", 3),
+		PollIntervalSec:            getenvInt("POLL_INTERVAL_SEC", 60),
+		BatchSize:                  getenvInt("BATCH_SIZE", 50),
+		PerPostDelayMs:             getenvInt("PER_POST_DELAY_MS", 50),
+		StagingAPIBaseURL:          getenv("STAGING_API_URL", "http://edge-api:8080"),
+		EventMinOverlapSec:         getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
+		EventMaxStartDriftSec:      getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
+		HealthPort:                 getenvInt("HEALTH_PORT", 9102),
+		ReconcileEnabled:           getenvBool("RECONCILE_ENABLED", true),
+		ReconcileIntervalSec:       getenvInt("RECONCILE_INTERVAL_SEC", 300),
+		ReconcileMaxPerRun:         getenvInt("RECONCILE_MAX_PER_RUN", 20),
 		ReconcileValuesEnabled:     getenvBool("RECONCILE_VALUES_ENABLED", true),
 		ReconcileValuesIntervalSec: getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
-		LogLevel:            getenv("LOG_LEVEL", "info"),
+		ReconcileEventsEnabled:     getenvBool("RECONCILE_EVENTS_ENABLED", true),
+		ReconcileEventsIntervalSec: getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
+		ReconcileEventsBatchSize:   getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
+		LogLevel:                   getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
 	if cfg.ProdEnterpriseID <= 0 {

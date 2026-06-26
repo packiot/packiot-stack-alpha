@@ -112,6 +112,25 @@ var (
 		Name: "mirror_worker_reconciler_values_synced_total",
 		Help: "equipment_values delta INSERTs by outcome (ok|failed) during value sync.",
 	}, []string{"outcome"})
+
+	// ReconcilerEventsTotal — bumps once per prod equipment_event processed
+	// by the events sync. outcome=created: row inserted on staging + mapping
+	// written; outcome=skipped: equipment unmapped (no packml_register) or
+	// mapping already exists from an earlier pass; outcome=failed: INSERT
+	// errored (FK violation, trigger refusal, etc.).
+	ReconcilerEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_reconciler_events_total",
+		Help: "Per-prod-event outcomes during equipment_events sync (created|skipped|failed).",
+	}, []string{"outcome"})
+
+	// ReconcilerEventsCursor — gauge of the highest prod id_equipment_event
+	// the events reconciler has processed. Monotonically increasing while
+	// the worker runs. Zero means the worker hasn't done a successful pass
+	// yet OR the cursor was reset to 0 in mirror_replay_cursor.
+	ReconcilerEventsCursor = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_reconciler_events_cursor",
+		Help: "Highest prod id_equipment_event the events reconciler has processed.",
+	})
 )
 
 func init() {
@@ -122,7 +141,8 @@ func init() {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
-	// The 5 worker-domain metrics + 3 reconciler metrics.
+	// The 5 worker-domain metrics + 6 reconciler metrics (PO existence x3,
+	// values x1, events x2).
 	Registry.MustRegister(
 		UserLogsPolledTotal,
 		UserLogsReplayedTotal,
@@ -133,5 +153,7 @@ func init() {
 		ReconcilerPOsTotal,
 		ReconcilerActiveDriftPOs,
 		ReconcilerValuesSyncedTotal,
+		ReconcilerEventsTotal,
+		ReconcilerEventsCursor,
 	)
 }

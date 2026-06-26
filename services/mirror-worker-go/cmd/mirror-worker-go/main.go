@@ -150,7 +150,7 @@ func main() {
 	reconCtx, reconCancel := context.WithCancel(ctx)
 	defer reconCancel()
 	recon := reconcile.New(cfg, prodDB, stagingDB, t, tok.Get, httpc, logger)
-	reconWG.Add(2)
+	reconWG.Add(3)
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunForever(reconCtx)
@@ -163,6 +163,15 @@ func main() {
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunValueSyncForever(reconCtx)
+	}()
+	// Events sync runs on a 60s cadence (configurable). Mirrors prod
+	// equipment_events to staging 1:1 with mirror_id_map entries so the
+	// interval-overlap matcher (translate.EquipmentEvent) takes the cache
+	// hit path on every operator-action replay — eliminating the dominant
+	// DLQ failure class as of 2026-06-26.
+	go func() {
+		defer reconWG.Done()
+		_ = recon.RunEventsSyncForever(reconCtx)
 	}()
 
 	// Main loop. Polls cursor → fetches batch → processes per row in
@@ -364,4 +373,3 @@ func runHealthcheck() int {
 	}
 	return 0
 }
-
