@@ -85,10 +85,37 @@ func TestClassifyStagingError_TableDriven(t *testing.T) {
 			wantSkip: false,
 		},
 		{
-			// 5xx is always DLQ-able (transient or upstream crash).
+			// 5xx is always DLQ-able for downtime/event-missing — that
+			// shape ONLY matches 400/404 to avoid swallowing real 5xx
+			// upstream crashes that happen to mention the phrase.
 			name:     "500 + Downtime does not exist body → keep error (not 4xx)",
 			status:   500,
 			body:     `{"statusCode":500,"message":"Downtime does not exist"}`,
+			wantSkip: false,
+		},
+		{
+			// New rule: stop-already-satisfied is status-agnostic. Edge-api
+			// returns BadRequestException → 400 per the source, but real DLQ
+			// samples show 500 (cause unconfirmed: NestJS wrap, translator
+			// stale-mapping path, etc.). Match on message text alone.
+			name:     "500 + Production order can not be stopped → skip",
+			status:   500,
+			body:     `{"statusCode":500,"message":"Production order can not be stopped"}`,
+			wantSkip: true,
+		},
+		{
+			// 400 path — same rule, narrower status, still matches.
+			name:     "400 + Production order can not be stopped → skip",
+			status:   400,
+			body:     `{"statusCode":400,"message":"Production order can not be stopped"}`,
+			wantSkip: true,
+		},
+		{
+			// Substring guard for the new rule too — the literal must match
+			// exactly, not be embedded in a larger message.
+			name:     "400 + body merely mentions stop phrase → keep error",
+			status:   400,
+			body:     `{"statusCode":400,"message":"validation: Production order can not be stopped due to FK"}`,
 			wantSkip: false,
 		},
 		{

@@ -40,6 +40,31 @@ var downtimeMissingMessages = map[string]struct{}{
 	"Event does not exist":    {},
 }
 
+// stopAlreadySatisfiedMessages are the EXACT edge-api error messages
+// emitted by /api/production-orders/stop when the PO is in a state where
+// it can't be stopped (status != 2 / "running"):
+//
+//   - edge-api/src/usecases/production-orders/stop-production-order/...service.ts
+//       throw new BadRequestException('Production order can not be stopped');
+//
+// In our cross-system replay context this is *intent already satisfied*,
+// not an error — the operator's intent ("make this PO not running") is
+// met because the staging PO is already non-running. Treating these as
+// hard failures fills DLQ with rows that will never become replayable
+// (no retry will run staging time backwards). Same skip class as
+// downtimeMissingMessages — log + advance cursor, no DLQ.
+//
+// Note: edge-api's HttpExceptionFilter is correctly returning 400 for
+// BadRequestException, but our DLQ samples show 500 in the wire log —
+// likely a NestJS wrap around an upstream throw, or a translator-cached
+// staging PO that no longer matches its mapping. The classifier matches
+// on message text alone for both reasons (a) status code isn't reliable
+// for cross-system "already satisfied" semantics, (b) the message is a
+// stable string literal in the service source.
+var stopAlreadySatisfiedMessages = map[string]struct{}{
+	"Production order can not be stopped": {},
+}
+
 // edgeAPIError matches the JSON body emitted by edge-api's global
 // HttpExceptionFilter: { statusCode, message, error? }. We only care
 // about `message` for the skip decision.
@@ -49,13 +74,18 @@ type edgeAPIError struct {
 
 // classifyStagingError inspects an edge-api error response and returns
 // either an error wrapping ErrSkipReplay (chicken-and-egg parent-missing
-// case), or the original verbatim error. Only HTTP 400/404 with an EXACT
-// known-message match is promoted; everything else passes through.
+// case, or stop-already-satisfied), or the original verbatim error.
+// Both 4xx and 5xx are considered: 4xx for the downtime/event-missing
+// shape (404/400), 5xx for the stop-already-satisfied shape that some
+// edge-api code paths surface as 500 instead of 400.
 //
 // Exposed as a free function (not a method) so the tests can exercise the
 // match logic without spinning up a full http.Server.
 func classifyStagingError(status int, body []byte, path string, origErr error) error {
-	if status != http.StatusBadRequest && status != http.StatusNotFound {
+	// Only attempt to reclassify error responses (>= 400). Other status
+	// codes shouldn't be reaching this function in practice, but guard
+	// anyway so a 2xx never gets promoted to skip.
+	if status < http.StatusBadRequest {
 		return origErr
 	}
 	var parsed edgeAPIError
@@ -65,11 +95,22 @@ func classifyStagingError(status int, body []byte, path string, origErr error) e
 		// proxy junk; safer to DLQ + investigate.
 		return origErr
 	}
-	if _, ok := downtimeMissingMessages[parsed.Message]; !ok {
-		return origErr
+	// 400/404 — parent downtime/event missing (existing rule).
+	if status == http.StatusBadRequest || status == http.StatusNotFound {
+		if _, ok := downtimeMissingMessages[parsed.Message]; ok {
+			return fmt.Errorf("staging %s returned %d: parent downtime/event missing — child replay skipped: %w",
+				path, status, ErrSkipReplay)
+		}
 	}
-	return fmt.Errorf("staging %s returned %d: parent downtime/event missing — child replay skipped: %w",
-		path, status, ErrSkipReplay)
+	// Any status — PO stop-already-satisfied. Status-agnostic because
+	// edge-api inconsistently returns 400 vs 500 for this case depending
+	// on the upstream throw path (BadRequestException vs uncaught throw
+	// wrapped by NestJS). Message literal is what we match on.
+	if _, ok := stopAlreadySatisfiedMessages[parsed.Message]; ok {
+		return fmt.Errorf("staging %s returned %d: PO already non-running, stop intent already satisfied: %w",
+			path, status, ErrSkipReplay)
+	}
+	return origErr
 }
 
 // PostStaging is the shared POST-to-staging-edge-api boilerplate every
