@@ -194,3 +194,48 @@ resource "aws_secretsmanager_secret" "github_runner" {
   recovery_window_in_days = 0
   description             = "GitHub Actions runner — PAT + repo (populate manually, see comment above)"
 }
+
+# ── EC2 Serial Console rescue password ────────────────────────────────────────
+# Set on the root account at app_init.sh time. Used ONLY for EC2 Serial Console
+# login when in-band paths (SSM, SSH, EC2 Instance Connect) have died —
+# typically because /var/lib/docker filled the root FS and userspace went
+# down (2026-06-22 incident shape).
+#
+# Serial Console expects password auth (not SSH keys). Without this password,
+# root has no usable credential on AL2023 (no default password set), so the
+# Console login prompt rejects every attempt and an EBS detach-attach-rescue
+# is the only path back in. With this password, Serial Console becomes a
+# 30-second "tail /var/log/...; df -h; systemctl status docker" recovery
+# vs the 25-minute EBS rescue.
+#
+# Account-level requirement: AWS Serial Console must be enabled for the
+# account — `aws ec2 enable-serial-console-access --region us-east-1`.
+# That call is idempotent + one-time; not codified in TF because there's
+# no first-class resource for the per-account toggle (the GetSerialConsoleAccessStatus
+# / EnableSerialConsoleAccess API pair is account-scoped, not resource-scoped).
+
+resource "random_password" "ec2_rescue_root" {
+  length  = 32
+  special = false # Serial Console QWERTY input — avoid characters that
+  # require shift-keys + nation-specific layouts (keyboards in a Serial
+  # Console session are sometimes US-only). Length 32 still gives ~190
+  # bits of entropy with [A-Za-z0-9], well above the threshold to make
+  # online brute-force impractical.
+}
+
+resource "aws_secretsmanager_secret" "ec2_rescue" {
+  name                    = "packiot/staging/ec2-rescue"
+  recovery_window_in_days = 0
+  description             = "Root password for EC2 Serial Console rescue access (in-band paths down)"
+}
+
+resource "aws_secretsmanager_secret_version" "ec2_rescue" {
+  secret_id = aws_secretsmanager_secret.ec2_rescue.id
+  secret_string = jsonencode({
+    root_password = random_password.ec2_rescue_root.result
+    # Operator instructions, embedded in the secret so a panicked engineer
+    # gets the playbook in the same response as the password.
+    how_to_use = "1) AWS Console → EC2 → packiot-staging-app → Connect → Serial Console. 2) Hit Enter to get login prompt. 3) Login as root with this password. 4) Diagnose: df -h, journalctl -xe, systemctl status docker."
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
