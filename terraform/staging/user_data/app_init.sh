@@ -260,6 +260,84 @@ echo "  (after populating packiot/staging/github-runner in Secrets Manager)"
 systemctl enable amazon-ssm-agent
 systemctl start amazon-ssm-agent
 
+# ── Serial Console rescue: set root password from Secrets Manager ─────────────
+# AL2023 ships with no root password set; the Serial Console login prompt
+# rejects every attempt. Without this, when an in-band path is dead
+# (docker.service failed → SSM agent crashed → sshd unhappy after a
+# disk-full incident) there is NO viable rescue except EBS detach-attach.
+# Setting a strong password here makes Serial Console a 30-second
+# diagnostic option for the same failure mode.
+#
+# Idempotent: chpasswd overwrites any existing password. Skipped (with a
+# log line) if the rescue secret isn't populated yet — happens on the
+# very first apply before the secret has propagated through Secrets
+# Manager replication.
+if aws secretsmanager describe-secret \
+    --secret-id packiot/staging/ec2-rescue \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+  RESCUE_SECRET=$(get_secret "packiot/staging/ec2-rescue")
+  RESCUE_ROOT_PASS=$(echo "$RESCUE_SECRET" | jq -r '.root_password')
+  if [ -n "$RESCUE_ROOT_PASS" ] && [ "$RESCUE_ROOT_PASS" != "null" ]; then
+    echo "root:$RESCUE_ROOT_PASS" | chpasswd
+    echo "Root password set from packiot/staging/ec2-rescue for Serial Console access"
+  else
+    echo "SKIP: packiot/staging/ec2-rescue.root_password is empty"
+  fi
+else
+  echo "SKIP: packiot/staging/ec2-rescue not in Secrets Manager — Serial Console rescue unavailable"
+fi
+
+# ── Weekly docker-prune systemd timer ─────────────────────────────────────────
+# Bounds /var/lib/docker growth so the 2026-06-22 disk-full incident doesn't
+# repeat. Each deploy iteration writes a few hundred MB of new image layers
+# (yarn install + Vite build + nginx layer for the operator alone). Without
+# pruning, four deploys in a day used ~3 GB and after ~10 days the disk
+# filled (overlay2 → 13 GB → docker.service refused to start → sshd, SSM
+# all in-band paths went dark → only EBS-detach-rescue worked).
+#
+# CRITICAL FLAG: --volumes=false. The named volumes hold Authentik users,
+# Grafana dashboards, RabbitMQ queues, Node-RED context. Pruning volumes
+# would nuke staging-only state we can't recover from S3 backups (the DB
+# backups cover the timescaledb container only).
+#
+# Idempotent: the unit files are owned by this script; subsequent runs of
+# user_data overwrite them and re-enable the timer — same end state.
+cat > /etc/systemd/system/docker-prune.service <<'UNIT'
+[Unit]
+Description=Prune docker images, build cache, stopped containers (KEEP volumes)
+Documentation=https://docs.docker.com/engine/reference/commandline/system_prune/
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker system prune -af --volumes=false
+# Hard kill after 10 min — a hung prune shouldn't block the next deploy.
+TimeoutStartSec=600
+UNIT
+
+cat > /etc/systemd/system/docker-prune.timer <<'UNIT'
+[Unit]
+Description=Weekly docker-prune to bound /var/lib/docker growth
+
+[Timer]
+# Sunday 04:17 UTC — off-hours for both deploys and humans inspecting staging.
+OnCalendar=Sun *-*-* 04:17:00
+# Persistent + RandomizedDelaySec means the timer still fires if the host
+# was down at the scheduled time (caught up on next boot) and avoids
+# coordinated startup load if we ever run multiple staging EC2s.
+Persistent=true
+RandomizedDelaySec=300
+Unit=docker-prune.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now docker-prune.timer
+echo "docker-prune.timer enabled (next: $(systemctl show docker-prune.timer -p NextElapseUSecRealtime --value 2>/dev/null || echo 'pending'))"
+
 # ── Start Docker Compose stack ────────────────────────────────────────────────
 cd /opt/packiot/stack
 docker compose -f compose.staging.yml up -d --build
