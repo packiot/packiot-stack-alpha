@@ -131,6 +131,27 @@ var (
 		Name: "mirror_worker_reconciler_events_cursor",
 		Help: "Highest prod id_equipment_event the events reconciler has processed.",
 	})
+
+	// DLQRetryAttemptsTotal — bumps once per attempted DLQ retry. outcome=
+	// succeeded: replay succeeded → row deleted from mirror_replay_dlq;
+	// failed: replay returned an error → retry_attempts bumped, last_retry_at
+	// set; permanent: row's prod user_log no longer exists (gone after a
+	// data purge) → DLQ row stays, won't retry further;
+	// exhausted: retry_attempts hit the cap → no further attempts will fire
+	// (counted once per tick when the row is observed past the cap).
+	DLQRetryAttemptsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_dlq_retry_attempts_total",
+		Help: "DLQ retry outcomes (succeeded|failed|permanent|exhausted).",
+	}, []string{"outcome"})
+
+	// DLQDepth — gauge of mirror_replay_dlq rows for this worker's source.
+	// At-a-glance health indicator on the Grafana mirror dashboard. Healthy
+	// steady state should hover near zero — non-zero is either stuck rows
+	// (permanent failures) or a backlog the retry loop is working through.
+	DLQDepth = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_dlq_depth",
+		Help: "Current count of mirror_replay_dlq rows for this worker's source.",
+	})
 )
 
 func init() {
@@ -155,5 +176,7 @@ func init() {
 		ReconcilerValuesSyncedTotal,
 		ReconcilerEventsTotal,
 		ReconcilerEventsCursor,
+		DLQRetryAttemptsTotal,
+		DLQDepth,
 	)
 }

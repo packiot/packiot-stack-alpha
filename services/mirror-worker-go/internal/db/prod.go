@@ -362,6 +362,43 @@ func (p *Prod) FetchNewEquipmentEvents(ctx context.Context, cursor int64, enterp
 	return out, nil
 }
 
+// FetchUserLogByID reads ONE prod user_logs row by id, for DLQ retry.
+// Returns (zero, false, nil) when the row no longer exists — DLQ retry
+// then treats it as "permanent miss" and gives up. Wrapped in BEGIN
+// READ ONLY for the same defense-in-depth reason as FetchNewLogs.
+func (p *Prod) FetchUserLogByID(ctx context.Context, idUserLogs int64, enterpriseID int) (ProdUserLog, bool, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return ProdUserLog{}, false, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return ProdUserLog{}, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var r ProdUserLog
+	var payloadStr string
+	err = tx.QueryRow(ctx,
+		`SELECT id_user_logs, ts_event, category, subcategory,
+		        id_enterprise, id_site, id_area, id_equipment,
+		        nm_user, payload::text
+		   FROM user_logs
+		  WHERE id_user_logs = $1 AND id_enterprise = $2`,
+		idUserLogs, enterpriseID,
+	).Scan(&r.IDUserLogs, &r.TsEvent, &r.Category, &r.Subcategory,
+		&r.IDEnterprise, &r.IDSite, &r.IDArea, &r.IDEquipment, &r.NmUser, &payloadStr)
+	if err == pgx.ErrNoRows {
+		return ProdUserLog{}, false, nil
+	}
+	if err != nil {
+		return ProdUserLog{}, false, fmt.Errorf("scan: %w", err)
+	}
+	r.Payload = []byte(payloadStr)
+	return r, true, nil
+}
+
 // SelectOne runs a single SELECT under a READ ONLY tx + scans into dst.
 // dst is treated as a struct whose fields receive the columns in order
 // (caller passes &field args via dest slice).
