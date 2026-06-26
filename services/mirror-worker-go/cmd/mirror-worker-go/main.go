@@ -150,7 +150,8 @@ func main() {
 	reconCtx, reconCancel := context.WithCancel(ctx)
 	defer reconCancel()
 	recon := reconcile.New(cfg, prodDB, stagingDB, t, tok.Get, httpc, logger)
-	reconWG.Add(3)
+	dlqRetrier := replay.NewDLQRetrier(cfg, prodDB, stagingDB, disp, logger)
+	reconWG.Add(4)
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunForever(reconCtx)
@@ -172,6 +173,16 @@ func main() {
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunEventsSyncForever(reconCtx)
+	}()
+	// DLQ retry runs on a 5-min cadence (configurable). Picks up DLQ rows
+	// past their backoff window and re-dispatches them through the same
+	// handler chain a fresh poll would. Replaces "human inspects DLQ and
+	// re-replays manually" for transient failures (connection refused
+	// during a deploy, prod race conditions). Bounded by
+	// DLQ_RETRY_MAX_ATTEMPTS so permanent failures stop churning.
+	go func() {
+		defer reconWG.Done()
+		_ = dlqRetrier.RunForever(reconCtx)
 	}()
 
 	// Main loop. Polls cursor → fetches batch → processes per row in

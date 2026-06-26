@@ -39,6 +39,10 @@ If you violate (2) — by reintroducing state/mode/speed-bearing equipment_value
 | `RECONCILE_EVENTS_INTERVAL_SEC` | `60` | Events-sync cadence. 60 s ≈ "matcher cache hit before the next operator action lands". |
 | `RECONCILE_EVENTS_BATCH_SIZE` | `200` | Per-tick cap on prod `equipment_events` rows pulled. Cold-start backlog drains over multiple ticks. |
 | `SIM_SKIP_ENTERPRISE_IDS` | `3` (CPACK) | Tenants the simulator MUST NOT generate PLC traffic for. Comma-separated. |
+| `DLQ_RETRY_ENABLED` | `true` | Kill-switch for the DLQ retry loop |
+| `DLQ_RETRY_INTERVAL_SEC` | `300` | DLQ retry cadence (5 min) |
+| `DLQ_RETRY_MAX_ATTEMPTS` | `5` | Per-row attempt cap. Backoff schedule: +1m, +2m, +4m, +8m, +16m. After 5, row stays in DLQ for human inspection. |
+| `DLQ_RETRY_BATCH_SIZE` | `50` | Per-pass cap on rows examined — a giant DLQ backlog can't hammer edge-api in one tick |
 
 ## What you see in logs
 
@@ -60,6 +64,11 @@ If you violate (2) — by reintroducing state/mode/speed-bearing equipment_value
 # events sync starting + first tick:
 {"msg":"events sync starting","interval_sec":60,"batch_size":200,"cursor_at_boot":2450158586}
 {"msg":"events sync tick complete","cursor_from":2450158586,"cursor_to":2450158602,"fetched":16,"created":14,"skipped":2,"failed":0,"elapsed":340ms}
+
+# DLQ retry tick:
+{"msg":"DLQ retry starting","interval_sec":300,"max_attempts":5,"batch_size":50}
+{"msg":"DLQ retry succeeded — row deleted","dlq_id":287,"source_log_id":2502318,"category":"event-justified","attempts_used":1}
+{"msg":"DLQ retry tick complete","examined":3,"succeeded":3,"failed":0,"permanent":0,"elapsed":120ms}
 ```
 
 Skipped during value sync = either the prod runtime row was NULL (cron hasn't computed it yet on prod side) OR delta was 0 (already in sync).
@@ -75,6 +84,8 @@ mirror_worker_reconciler_active_drift_pos     # gauge — should settle to 0
 mirror_worker_reconciler_values_synced_total{outcome="ok|failed"}
 mirror_worker_reconciler_events_total{outcome="created|failed|skipped"}
 mirror_worker_reconciler_events_cursor        # gauge — monotonically increases
+mirror_worker_dlq_retry_attempts_total{outcome="succeeded|failed|permanent"}
+mirror_worker_dlq_depth                       # gauge — should hover near zero
 ```
 
 Healthy steady state:
@@ -127,6 +138,27 @@ SELECT source, last_log_id FROM mirror_replay_cursor
 If `events_cursor` is far behind the prod event id in the DLQ, the events reconciler is broken or disabled. Check `RECONCILE_EVENTS_ENABLED` + the worker log for `events sync starting`.
 
 If `events_cursor` is past the prod event id and the mapping is still missing, the equipment's `packml_register` row is absent on staging — the events reconciler logged "equipment unmapped, skipping". Fix the staging packml_register row, then either restart the worker or wait for the next user_logs replay to retry the matcher.
+
+### A DLQ row is stuck at retry_attempts=5
+
+The retry loop has given up on this row — it failed 5 times in a row across ~31 minutes of backoff. Inspect it by hand:
+```sql
+SELECT id, source_log_id, category, error, created_at, retry_attempts, last_retry_at
+  FROM mirror_replay_dlq
+ WHERE retry_attempts >= 5
+ ORDER BY id DESC LIMIT 20;
+```
+Most permanent-stuck rows fall into one of three categories:
+1. **Entity unmapped** — equipment/site/area missing from `packml_register` or `sites`/`areas`. Add the entity on staging, then `UPDATE mirror_replay_dlq SET retry_attempts = 0, last_retry_at = NULL WHERE id = $X` to re-arm the row.
+2. **Edge-api 400 / business-rule rejection** — e.g. "Production order can not be stopped" when the staging PO is in a non-running state. May indicate prod-vs-staging state drift; usually safe to delete the row after inspection.
+3. **Schema drift** — payload references a column edge-api no longer accepts. Fix the migration, redeploy edge-api, re-arm the row.
+
+### DLQ depth keeps climbing
+
+If `mirror_worker_dlq_depth` is monotonically increasing, the retry loop isn't winning. Causes in priority order:
+1. Edge-api unreachable on the docker network → check `docker exec mirror-worker-go nc -zv edge-api 8080`
+2. New systemic failure mode → look at `mirror_worker_dlq_retry_attempts_total{outcome="failed"}` rate-of-increase vs `succeeded`; if failed >> succeeded for >15min, the retry loop is just stamping `retry_attempts++` without progress
+3. Staging DB write contention → check `pg_stat_activity` for long-running INSERTs blocking the per-row tx
 
 ### Cron is overwriting my deltas
 

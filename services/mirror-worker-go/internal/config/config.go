@@ -89,6 +89,21 @@ type Config struct {
 	ReconcileEventsIntervalSec int
 	ReconcileEventsBatchSize   int
 
+	// DLQ retry loop. Periodically re-runs the dispatcher on
+	// mirror_replay_dlq rows whose backoff window has elapsed. Drains
+	// transient failures (connection refused during a deploy, prod
+	// race conditions) without human intervention. Bounded by
+	// DLQRetryMaxAttempts so permanent failures stay in DLQ for
+	// inspection rather than churning forever.
+	//
+	// Backoff schedule = (1 << retry_attempts) minutes: 1, 2, 4, 8, 16
+	// → ~31 minutes of retry coverage total per row over 5 attempts.
+	// Tunable via env if a noisy edge-api forces a wider window.
+	DLQRetryEnabled     bool
+	DLQRetryIntervalSec int
+	DLQRetryMaxAttempts int
+	DLQRetryBatchSize   int
+
 	// Logging.
 	LogLevel string
 }
@@ -116,6 +131,10 @@ func Load() (*Config, error) {
 		ReconcileEventsEnabled:     getenvBool("RECONCILE_EVENTS_ENABLED", true),
 		ReconcileEventsIntervalSec: getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
 		ReconcileEventsBatchSize:   getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
+		DLQRetryEnabled:            getenvBool("DLQ_RETRY_ENABLED", true),
+		DLQRetryIntervalSec:        getenvInt("DLQ_RETRY_INTERVAL_SEC", 300),
+		DLQRetryMaxAttempts:        getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
+		DLQRetryBatchSize:          getenvInt("DLQ_RETRY_BATCH_SIZE", 50),
 		LogLevel:                   getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks

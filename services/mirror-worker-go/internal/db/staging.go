@@ -399,6 +399,84 @@ func InsertEquipmentEvent(ctx context.Context, tx pgx.Tx, a InsertEquipmentEvent
 	return stagingID, nil
 }
 
+// DLQRetryRow is the slim projection the retry loop needs. Same shape
+// as mirror_replay_dlq columns the retrier touches; full payload + error
+// stay in the table and never get round-tripped in memory.
+type DLQRetryRow struct {
+	ID            int64
+	SourceLogID   int64
+	Category      string
+	RetryAttempts int
+}
+
+// FetchRetriableDLQ returns DLQ rows due for retry: under the attempt cap
+// AND past their backoff window. Backoff = (1 << retry_attempts) minutes
+// applied to last_retry_at; rows with last_retry_at IS NULL are
+// immediately eligible (i.e. the row was just DLQ'd, no retry attempted
+// yet).
+//
+// Ordered by id so a partial-progress batch makes forward progress —
+// same idea as the existence reconciler's stable sort.
+func (s *Staging) FetchRetriableDLQ(ctx context.Context, source string, maxAttempts, limit int) ([]DLQRetryRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, source_log_id, category, retry_attempts
+		   FROM mirror_replay_dlq
+		  WHERE source = $1
+		    AND retry_attempts < $2
+		    AND (last_retry_at IS NULL
+		         OR last_retry_at + (interval '1 minute' * (1 << retry_attempts)) < now())
+		  ORDER BY id
+		  LIMIT $3`,
+		source, maxAttempts, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query retriable DLQ rows: %w", err)
+	}
+	defer rows.Close()
+	var out []DLQRetryRow
+	for rows.Next() {
+		var r DLQRetryRow
+		if err := rows.Scan(&r.ID, &r.SourceLogID, &r.Category, &r.RetryAttempts); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteDLQRow removes one DLQ row by id. Called by the retry loop when
+// a re-replay succeeds — DLQ should reflect the CURRENT state of stuck
+// rows, not the historical state. Run in caller's tx so it's atomic
+// with whatever the successful replay wrote.
+func DeleteDLQRow(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `DELETE FROM mirror_replay_dlq WHERE id = $1`, id)
+	return err
+}
+
+// MarkDLQRetried bumps retry_attempts + sets last_retry_at on a row that
+// failed re-replay. Outside any tx because the failed replay's tx will
+// have rolled back — we want this UPDATE to land regardless.
+func (s *Staging) MarkDLQRetried(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE mirror_replay_dlq
+		    SET retry_attempts = retry_attempts + 1,
+		        last_retry_at  = now()
+		  WHERE id = $1`,
+		id)
+	return err
+}
+
+// CountDLQ returns the count of DLQ rows for this source. Powers the
+// mirror_worker_dlq_depth gauge — at-a-glance "how many bad rows are
+// stuck right now" indicator on the Grafana mirror dashboard.
+func (s *Staging) CountDLQ(ctx context.Context, source string) (int64, error) {
+	var n int64
+	_, err := s.SelectOne(ctx,
+		`SELECT COUNT(*) FROM mirror_replay_dlq WHERE source = $1`,
+		[]any{source}, &n)
+	return n, err
+}
+
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
 // caller's tx so we don't lose visibility into a bad row that crashed
 // before the outer commit.
