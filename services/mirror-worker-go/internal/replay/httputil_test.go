@@ -119,6 +119,39 @@ func TestClassifyStagingError_TableDriven(t *testing.T) {
 			wantSkip: false,
 		},
 		{
+			// Real wire shape observed live for 500 + can-not-be-stopped:
+			// edge-api returned text/plain with the bare exception message,
+			// NOT the {statusCode,message} JSON envelope. Without the
+			// plain-text fallback the classifier returned origErr → DLQ.
+			name:     "500 + plain-text body 'Production order can not be stopped' → skip",
+			status:   500,
+			body:     `Production order can not be stopped`,
+			wantSkip: true,
+		},
+		{
+			// Same shape with trailing newline (some HTTP libs append).
+			name:     "500 + plain-text body with trailing newline → skip",
+			status:   500,
+			body:     "Production order can not be stopped\n",
+			wantSkip: true,
+		},
+		{
+			// HTML error page MUST NOT match — plain-text fallback only
+			// promotes EXACT (trimmed) literal matches, not substring.
+			name:     "500 + HTML error page mentioning phrase → keep error",
+			status:   500,
+			body:     `<html><body>Production order can not be stopped — please file a ticket</body></html>`,
+			wantSkip: false,
+		},
+		{
+			// Bound the plain-text path: a giant body shouldn't be dignified
+			// as a message even if it happens to start with the phrase.
+			name:     "500 + plain-text body > 256 bytes → keep error",
+			status:   500,
+			body:     `Production order can not be stopped — ` + strings.Repeat("x", 300),
+			wantSkip: false,
+		},
+		{
 			// Body that isn't the {statusCode,message} envelope (HTML, proxy
 			// junk) — we can't be confident it's parent-missing, so DLQ.
 			name:     "400 + non-JSON body → keep error",
