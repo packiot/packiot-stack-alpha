@@ -79,6 +79,14 @@ type edgeAPIError struct {
 // shape (404/400), 5xx for the stop-already-satisfied shape that some
 // edge-api code paths surface as 500 instead of 400.
 //
+// Body handling: tries JSON unmarshal first (the standard NestJS
+// {statusCode,message} envelope). If that fails — e.g. edge-api returned
+// the bare exception message as text/plain, observed live for the
+// /api/production-orders/stop 500 case — fall back to a TRIMMED EXACT
+// string match against the same message maps. Substring matching is
+// NOT used (a body like "validation: <phrase>" must keep its error so
+// real bugs DLQ).
+//
 // Exposed as a free function (not a method) so the tests can exercise the
 // match logic without spinning up a full http.Server.
 func classifyStagingError(status int, body []byte, path string, origErr error) error {
@@ -88,16 +96,28 @@ func classifyStagingError(status int, body []byte, path string, origErr error) e
 	if status < http.StatusBadRequest {
 		return origErr
 	}
+
+	// Extract the candidate message either from the JSON envelope or
+	// from the raw bytes when they ARE the message. msg ends up as ""
+	// when neither path produces a candidate — falls through to origErr.
+	var msg string
 	var parsed edgeAPIError
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		// Body wasn't the standard {statusCode,message} shape — don't
-		// claim it's a skip. Could be HTML, plain text, or upstream
-		// proxy junk; safer to DLQ + investigate.
-		return origErr
+	if json.Unmarshal(body, &parsed) == nil && parsed.Message != "" {
+		msg = parsed.Message
+	} else {
+		// Plain-text body — trim trailing newline(s) and treat the whole
+		// body as the candidate message. Bounded to a sane size so we
+		// don't dignify a 50KB HTML error page as a "message".
+		const maxPlainTextMsgLen = 256
+		trimmed := bytes.TrimSpace(body)
+		if len(trimmed) > 0 && len(trimmed) <= maxPlainTextMsgLen {
+			msg = string(trimmed)
+		}
 	}
+
 	// 400/404 — parent downtime/event missing (existing rule).
 	if status == http.StatusBadRequest || status == http.StatusNotFound {
-		if _, ok := downtimeMissingMessages[parsed.Message]; ok {
+		if _, ok := downtimeMissingMessages[msg]; ok {
 			return fmt.Errorf("staging %s returned %d: parent downtime/event missing — child replay skipped: %w",
 				path, status, ErrSkipReplay)
 		}
@@ -106,7 +126,7 @@ func classifyStagingError(status int, body []byte, path string, origErr error) e
 	// edge-api inconsistently returns 400 vs 500 for this case depending
 	// on the upstream throw path (BadRequestException vs uncaught throw
 	// wrapped by NestJS). Message literal is what we match on.
-	if _, ok := stopAlreadySatisfiedMessages[parsed.Message]; ok {
+	if _, ok := stopAlreadySatisfiedMessages[msg]; ok {
 		return fmt.Errorf("staging %s returned %d: PO already non-running, stop intent already satisfied: %w",
 			path, status, ErrSkipReplay)
 	}
