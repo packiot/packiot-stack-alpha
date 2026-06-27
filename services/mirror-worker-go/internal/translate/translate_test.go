@@ -134,6 +134,50 @@ func TestProductionOrderQueryUsesIDOrder(t *testing.T) {
 	}
 }
 
+// TestProductionOrderFallbackExcludesClaimedStagingPOs pins the
+// claimed-staging-PO guard (2026-06-26 fix): the business-key fallback
+// on staging must exclude POs already mapped to a different prod PO via
+// mirror_id_map. Without it, the same staging PO is returned for every
+// prod PO sharing an id_order — leading to wrong /stop calls + 500s in
+// DLQ. Real shape from session 68: 4 stuck order-changed entries all
+// targeting staging PO 12887 (claimed by prod PO 1642025) while the
+// real prod targets were 1645742/1642024/etc.
+//
+// Same SQL-blob-scan pattern as the id_order guard above.
+func TestProductionOrderFallbackExcludesClaimedStagingPOs(t *testing.T) {
+	src, err := os.ReadFile("translate.go")
+	if err != nil {
+		t.Fatalf("read translate.go: %v", err)
+	}
+	body := string(src)
+
+	var sqlOnly strings.Builder
+	inBacktick := false
+	for _, ch := range body {
+		if ch == '`' {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inBacktick {
+			sqlOnly.WriteRune(ch)
+		}
+	}
+	sqlBlob := sqlOnly.String()
+
+	// The NOT IN exclusion subquery must reference mirror_id_map. Match
+	// on key tokens that would survive a reasonable reformat.
+	wantSubs := []string{
+		"NOT IN",
+		"SELECT staging_id FROM mirror_id_map",
+		"WHERE entity_type = 'production_order'",
+	}
+	for _, s := range wantSubs {
+		if !strings.Contains(sqlBlob, s) {
+			t.Errorf("translate.go SQL missing claimed-staging-PO guard substring %q — the business-key fallback would pick already-mapped staging POs for prod POs sharing an id_order", s)
+		}
+	}
+}
+
 // TestEquipmentEventMatcherHasStartDriftGuard pins the lower-bound on
 // staging.ts_event introduced to fix DLQ ids 259 + 283 — stale open-
 // ended staging events (ts_end IS NULL, opened days ago) were matching

@@ -147,6 +147,19 @@ func (t *Translator) Equipment(ctx context.Context, prodEquipmentID int) (int, e
 // revision referenced nu_production_order and that string got ported verbatim
 // into this Go file. DLQ showed: column "nu_production_order" does not exist
 // (SQLSTATE 42703), from this exact code path.
+//
+// Claimed-staging-PO guard (2026-06-26): the business-key fallback excludes
+// staging POs already mapped to a DIFFERENT prod PO via mirror_id_map. On
+// prod, a single id_order can be reused across multiple id_production_order
+// rows (operator changes the order's qty mid-run → new id_production_order
+// with the SAME id_order). The mirror only ever maps the FIRST prod PO that
+// the worker observes for that id_order (whichever order-created /
+// order-replaced fires first). When a later prod PO with the same id_order
+// asks the translator for its staging counterpart, the un-guarded fallback
+// returned the already-claimed staging PO — leading to wrong /stop calls
+// on the wrong staging PO and 500s in DLQ (session 68: 4 stuck order-changed
+// rows). The guard returns ErrUnmapped instead, which the handlers wrap as
+// ErrSkipReplay → outcome=skipped, cursor advances, no DLQ.
 func (t *Translator) ProductionOrder(ctx context.Context, prodPOID int64) (int64, error) {
 	stagingID, found, err := t.staging.LookupMapping(ctx, "production_order", t.cfg.SourceName, prodPOID)
 	if err != nil {
@@ -170,13 +183,18 @@ func (t *Translator) ProductionOrder(ctx context.Context, prodPOID int64) (int64
 	found, err = t.staging.SelectOne(ctx,
 		`SELECT id_production_order FROM production_orders
 		  WHERE id_order = $1 AND id_enterprise = $2
+		    AND id_production_order NOT IN (
+		      SELECT staging_id FROM mirror_id_map
+		       WHERE entity_type = 'production_order'
+		         AND source = $3
+		    )
 		  ORDER BY id_production_order DESC LIMIT 1`,
-		[]any{idOrder, t.cfg.StagingEnterpriseID}, &sid)
+		[]any{idOrder, t.cfg.StagingEnterpriseID, t.cfg.SourceName}, &sid)
 	if err != nil {
 		return 0, fmt.Errorf("staging PO lookup: %w", err)
 	}
 	if !found {
-		return 0, fmt.Errorf("no staging PO with id_order=%d: %w", idOrder, ErrUnmapped)
+		return 0, fmt.Errorf("no unclaimed staging PO with id_order=%d (all candidates already mapped to other prod POs): %w", idOrder, ErrUnmapped)
 	}
 	return sid, nil
 }
