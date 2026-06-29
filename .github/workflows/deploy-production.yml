@@ -1,0 +1,90 @@
+name: Deploy to Production
+
+# Triggers:
+#   - Push to `production` branch (auto-deploy on merge)
+#   - Manual workflow_dispatch (for re-deploys without a code change)
+#
+# The production branch is the canonical deploy trigger for the new prod
+# stack (parallel to staging branch → deploy-staging.yml). Per memory rule
+# `leave-main-master-branches-alone`: do NOT add main/master to this trigger.
+# edge-api/master is the LEGACY EB prod deploy and must stay separate.
+on:
+  push:
+    branches: [production]
+  workflow_dispatch:
+
+# Serialize deploys. Same rationale as deploy-staging.yml: two near-
+# simultaneous bump-PR auto-merges on the production branch would
+# otherwise race on `docker compose build && up -d`. Queue instead of
+# cancel — we want every production commit to actually deploy.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+# OIDC token permissions — needed for any step that uses
+# aws-actions/configure-aws-credentials with role-to-assume.
+# Today's steps don't need this (self-hosted runner has EC2's
+# packiot-production-app IAM role). Foundational for future hosted-runner
+# steps per ADR-0006 phase 1.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, production, linux, arm64]
+
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          # persist-credentials: false so checkout@v4 removes its GITHUB_TOKEN
+          # extraheader before we fetch submodules. Without this, the
+          # submodule fetch tries to use GITHUB_TOKEN — which is scoped to
+          # this repo only — and fails on the private submodule repos.
+          # Splitting into two steps means git falls back to the PAT URL
+          # rewrite in /root/.gitconfig (set by app_init.sh).
+          persist-credentials: false
+
+      - name: Fetch submodules
+        # Production submodules: edge-api + operator only.
+        # edge-node-red is per-factory (not in the cloud stack — see
+        # docs/production-out-of-scope.md + docs/adr/0005-*.md).
+        # oeecloud-node-red was decommissioned 2026-06-24.
+        run: |
+          git submodule sync edge-api operator
+          git submodule update --init edge-api operator
+
+      - name: Link .env
+        # Secrets live in /opt/packiot/.env (written by app_init.sh from
+        # Secrets Manager — packiot/production/* namespace).
+        # Symlinking makes them available as .env so Docker Compose
+        # picks them up via variable substitution + env_file references.
+        run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
+
+      - name: Build images
+        run: docker compose -f compose.production.yml -p packiot-prod build
+
+      - name: Deploy
+        # --remove-orphans so removing a service from compose actually
+        # decommissions its container on the next deploy.
+        # --wait blocks until all services pass healthcheck (or timeout),
+        # making a green run actually mean "everything's up", not just
+        # "compose accepted the spec."
+        run: docker compose -f compose.production.yml -p packiot-prod up -d --wait --remove-orphans
+
+      - name: Post-deploy diagnostic
+        # Quick visibility on what landed. Non-blocking — if the diagnostic
+        # itself fails (e.g. docker ps API hiccup), don't fail the deploy.
+        if: always()
+        run: |
+          echo "=== Container status ==="
+          docker compose -f compose.production.yml -p packiot-prod ps || true
+          echo
+          echo "=== Recent ERROR logs (last 60s, any service) ==="
+          for svc in $(docker compose -f compose.production.yml -p packiot-prod ps --services 2>/dev/null); do
+            count=$(docker compose -f compose.production.yml -p packiot-prod logs --since 60s "$svc" 2>&1 | grep -cE '"level":"ERROR"|^ERROR' || echo 0)
+            [ "$count" -gt 0 ] && echo "  $svc: $count ERROR lines" || true
+          done
+          echo "(empty above = no ERROR-level logs in any service)"
