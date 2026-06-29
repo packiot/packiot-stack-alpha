@@ -56,8 +56,22 @@ func OrderStarted(
 		stagingPOID, err := t.ProductionOrder(ctx, p.IDProductionOrder)
 		if err != nil {
 			if errors.Is(err, translate.ErrUnmapped) {
+				// Same structural-mismatch shape as order-changed / order-replaced:
+				// the PO exists on prod but was never mirrored to staging
+				// (typically because operator touched it before our cursor
+				// began, OR because prod reused this id_order across
+				// multiple id_production_order rows and the earlier one
+				// already claimed the staging slot via mirror_id_map).
+				// No retry will fix this; skip + advance cursor instead
+				// of DLQ. The diagnostic log preserves the original "run
+				// backfill-pos or replay order-created/order-created-started
+				// first" hint for operators inspecting why a row was skipped.
+				logger.Info("skipping order-started: production_order unmappable on staging",
+					slog.Int64("sourceLogID", row.IDUserLogs),
+					slog.Int64("prodPOID", p.IDProductionOrder),
+					slog.String("translatorErr", err.Error()))
 				return fmt.Errorf("production_order %d unmapped (run backfill-pos or replay order-created/order-created-started first): %w",
-					p.IDProductionOrder, err)
+					p.IDProductionOrder, ErrSkipReplay)
 			}
 			return fmt.Errorf("translate production_order: %w", err)
 		}
