@@ -178,6 +178,54 @@ func TestProductionOrderFallbackExcludesClaimedStagingPOs(t *testing.T) {
 	}
 }
 
+// TestEquipmentQueryHasDeterministicOrderBy pins the deterministic
+// tie-break added 2026-06-29. Before the fix, the prod-side packml_register
+// SELECT used `ORDER BY active DESC NULLS LAST LIMIT 1`, which is
+// non-deterministic on ties: Postgres returned whichever row it scanned
+// first. Live data hit a worst case on prod equipment 84 (TEXA): 4 of
+// its 7 active packml_register rows carry a literal `LLLLL` typo prefix,
+// and the tie-break happened to pick one of the corrupted ones —
+// silently dropping every TEXA event from the staging mirror.
+//
+// The fix sorts by length(packml_topic) ASC to prefer canonical short
+// topics, then by id_packml_register ASC as a final unique tail.
+// Same SQL-blob-scan pattern as the other regression guards: we read
+// translate.go, extract the back-tick literals, and assert the strings
+// are present. A regex would work too; manual scan keeps deps tiny.
+func TestEquipmentQueryHasDeterministicOrderBy(t *testing.T) {
+	src, err := os.ReadFile("translate.go")
+	if err != nil {
+		t.Fatalf("read translate.go: %v", err)
+	}
+	body := string(src)
+
+	var sqlOnly strings.Builder
+	inBacktick := false
+	for _, ch := range body {
+		if ch == '`' {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inBacktick {
+			sqlOnly.WriteRune(ch)
+		}
+	}
+	sqlBlob := sqlOnly.String()
+
+	// Anchor on the canonical-shortness and unique-tail tokens. Match on
+	// the parameterized form so reformatting (whitespace / line wrapping)
+	// doesn't break the test.
+	wantSubs := []string{
+		"length(pr.packml_topic) ASC",
+		"pr.id_packml_register ASC",
+	}
+	for _, s := range wantSubs {
+		if !strings.Contains(sqlBlob, s) {
+			t.Errorf("translate.go Equipment SQL missing deterministic-order substring %q — without it, equipments with multiple active packml_register rows get a non-deterministic tie-break (prod equipment 84 hit this with `LLLLL`-prefixed corrupted topics)", s)
+		}
+	}
+}
+
 // TestEquipmentEventMatcherHasStartDriftGuard pins the lower-bound on
 // staging.ts_event introduced to fix DLQ ids 259 + 283 — stale open-
 // ended staging events (ts_end IS NULL, opened days ago) were matching
