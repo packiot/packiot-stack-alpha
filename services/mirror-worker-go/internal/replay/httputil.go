@@ -65,6 +65,58 @@ var stopAlreadySatisfiedMessages = map[string]struct{}{
 	"Production order can not be stopped": {},
 }
 
+// startAlreadySatisfiedMessages are the EXACT edge-api error messages
+// emitted by /api/production-orders/start when the PO is already running
+// on the equipment:
+//
+//   - edge-api/src/usecases/production-orders/start-production-order/...service.ts
+//       throw new BadRequestException('Production order already running');
+//
+// Same "intent already satisfied" semantics as the stop variant — the
+// operator's intent ("make this PO running") is already met because the
+// staging PO is already in status=2. Real-world trigger: the
+// EnsureActivePOs reconciler races ahead of user_logs replay and starts
+// a PO on staging before the operator's order-started event replays;
+// when the replay handler then POSTs /start, edge-api correctly rejects
+// with 400 — but it's not actually an error from the mirror's POV.
+// DLQ id 316 (2026-06-29) hit this exact shape after the order-started
+// handler's translator-skip fix (PR #87) made the OTHER failure mode
+// disappear. Added 2026-06-29 in the same session.
+var startAlreadySatisfiedMessages = map[string]struct{}{
+	"Production order already running": {},
+}
+
+// createAlreadySatisfiedMessages are the EXACT edge-api error messages
+// emitted when a /api/production-orders/{create,setup,create-and-start}
+// POST hits a PO that already exists for the same (id_enterprise,
+// id_order) tuple:
+//
+//   - edge-api/src/usecases/production-orders/create-production-order/...service.ts
+//       throw new BadRequestException('Production order already exists');
+//   - edge-api/src/usecases/production-orders/setup-production-order/...service.ts
+//       throw new BadRequestException('Production order already exists!');
+//   - edge-api/src/usecases/production-orders/create-and-start/...service.ts
+//       throw new BadRequestException('Production order already exists!');
+//
+// Note the trailing exclamation point in two of the three messages — kept
+// as separate map entries because the literal is what we match on (we
+// don't normalize punctuation; mismatch = keep as error).
+//
+// "Intent already satisfied" again — the operator wanted a PO to exist,
+// and it does. Real-world trigger: the EnsureActivePOs reconciler
+// regularly hits 400 with "Production order already exists" at startup
+// (seen in the recent post-deploy log:
+//   {"level":"WARN","msg":"reconciler: ensureOnePO failed — skipping,
+//    next pass will retry","err":"...returned 400 (status=400
+//    body={\"message\":\"Production order already exists\"})"}).
+// The reconciler already handles this gracefully (skip-and-retry-later),
+// but a future user_logs replay of order-created via this same code path
+// would currently DLQ. Pre-emptive coverage so it doesn't accumulate.
+var createAlreadySatisfiedMessages = map[string]struct{}{
+	"Production order already exists":  {},
+	"Production order already exists!": {},
+}
+
 // edgeAPIError matches the JSON body emitted by edge-api's global
 // HttpExceptionFilter: { statusCode, message, error? }. We only care
 // about `message` for the skip decision.
@@ -128,6 +180,27 @@ func classifyStagingError(status int, body []byte, path string, origErr error) e
 	// wrapped by NestJS). Message literal is what we match on.
 	if _, ok := stopAlreadySatisfiedMessages[msg]; ok {
 		return fmt.Errorf("staging %s returned %d: PO already non-running, stop intent already satisfied: %w",
+			path, status, ErrSkipReplay)
+	}
+	// Any status — PO start-already-satisfied (added 2026-06-29). Same
+	// status-agnostic logic as the stop variant: edge-api consistently
+	// returns 400 today but we don't rely on it. Real-world trigger:
+	// EnsureActivePOs reconciler started the PO before user_logs replay
+	// got there; the order-started replay POSTs /start to a PO already
+	// in status=2 → BadRequestException("Production order already running").
+	if _, ok := startAlreadySatisfiedMessages[msg]; ok {
+		return fmt.Errorf("staging %s returned %d: PO already running, start intent already satisfied: %w",
+			path, status, ErrSkipReplay)
+	}
+	// Any status — PO create-already-satisfied (added 2026-06-29).
+	// Covers /create, /setup, /create-and-start endpoints when the PO
+	// row already exists for the same (id_enterprise, id_order) tuple —
+	// typically because the EnsureActivePOs reconciler raced ahead of
+	// user_logs replay. The map intentionally carries BOTH "Production
+	// order already exists" and "Production order already exists!" — the
+	// trailing punctuation differs by endpoint and we match literally.
+	if _, ok := createAlreadySatisfiedMessages[msg]; ok {
+		return fmt.Errorf("staging %s returned %d: PO already exists, create intent already satisfied: %w",
 			path, status, ErrSkipReplay)
 	}
 	return origErr

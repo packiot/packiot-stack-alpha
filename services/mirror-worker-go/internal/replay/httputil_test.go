@@ -174,6 +174,75 @@ func TestClassifyStagingError_TableDriven(t *testing.T) {
 			body:     `{"statusCode":200,"message":"Downtime does not exist"}`,
 			wantSkip: false,
 		},
+
+		// ── start-already-satisfied (added 2026-06-29, DLQ id 316) ──────
+		{
+			// Real wire shape from DLQ 316: edge-api returns 400 with the
+			// JSON envelope when /api/production-orders/start hits a PO
+			// already in status=2 (running). Classifier must promote to
+			// skip — the operator's start-intent is satisfied.
+			name:     "400 + Production order already running → skip",
+			status:   400,
+			body:     `{"statusCode":400,"message":"Production order already running"}`,
+			wantSkip: true,
+		},
+		{
+			// Status-agnostic — same rule for 500. Documented in
+			// startAlreadySatisfiedMessages comment block.
+			name:     "500 + Production order already running → skip",
+			status:   500,
+			body:     `{"statusCode":500,"message":"Production order already running"}`,
+			wantSkip: true,
+		},
+		{
+			// Substring guard — literal-match only. A validation message
+			// that happens to contain the phrase MUST NOT be classified
+			// as skip, otherwise real validation failures get hidden.
+			name:     "400 + body merely mentions running phrase → keep error",
+			status:   400,
+			body:     `{"statusCode":400,"message":"validation: Production order already running on a different equipment"}`,
+			wantSkip: false,
+		},
+
+		// ── create-already-satisfied (added 2026-06-29) ─────────────────
+		{
+			// /api/production-orders/create returns this when the PO row
+			// for (id_enterprise, id_order) already exists. Real-world
+			// trigger: EnsureActivePOs reconciler raced ahead of the
+			// user_logs replay handler.
+			name:     "400 + Production order already exists (no bang) → skip",
+			status:   400,
+			body:     `{"statusCode":400,"message":"Production order already exists"}`,
+			wantSkip: true,
+		},
+		{
+			// /setup and /create-and-start both emit the SAME phrase with
+			// a trailing exclamation point. Two map entries cover the
+			// punctuation variants — we don't normalize, we match literal.
+			name:     "400 + Production order already exists! (with bang) → skip",
+			status:   400,
+			body:     `{"statusCode":400,"message":"Production order already exists!"}`,
+			wantSkip: true,
+		},
+		{
+			// Cross-variant guard: the "no-bang" and "with-bang" forms are
+			// independent map entries. If someone removes one, the other
+			// keeps working — pin both with explicit tests so a future
+			// "normalize trailing punctuation" refactor doesn't silently
+			// regress one of them.
+			name:     "500 + Production order already exists! (with bang) → skip",
+			status:   500,
+			body:     `{"statusCode":500,"message":"Production order already exists!"}`,
+			wantSkip: true,
+		},
+		{
+			// Substring guard — same shape as start-already-running.
+			// Validation messages that mention the phrase must NOT skip.
+			name:     "400 + body merely mentions exists phrase → keep error",
+			status:   400,
+			body:     `{"statusCode":400,"message":"validation: Production order already exists in another scope"}`,
+			wantSkip: false,
+		},
 	}
 
 	for _, c := range cases {
