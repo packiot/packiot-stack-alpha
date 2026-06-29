@@ -123,7 +123,7 @@ After **PR 4** deploys:
 - [ ] Operator can fetch `/production`, `/pending-events`, `/solved-events` (auth chain intact)
 - [ ] Operator can submit actions (justify, change PO, etc.) → mirror-worker picks them up in user_logs and replays to … wait, mirror reads PROD's user_logs, not staging's. Strike — irrelevant.
 - [ ] No `X-Hasura-Admin-Secret` headers in flow logs (bypass deactivated)
-- [ ] Token refresh after 1h actually fires (set short emulator TTL for the test) and operator stays logged in
+- [ ] Token refresh fires after 15 min (the locked-in staging TTL) and operator stays logged in transparently — verifiable by leaving a staging session open for ~20 min and watching edge-nodered logs for a POST to `securetoken.googleapis.com` path on the emulator
 
 ### Rollback
 
@@ -139,16 +139,16 @@ PRs 1–3 are non-breaking by design — they can stay merged.
 
 ---
 
-## Open questions
+## Resolved decisions (locked in 2026-06-29)
 
-These need resolution **before PR 4** (the flip-the-switch PR):
+All six original open questions have been answered during the design conversation. Recorded here as decisions the implementer should treat as load-bearing, not optional re-litigation points.
 
-1. **What's the canonical test-user list for staging?** Today: `dev.cpack` / `packiot`. Is that enough? Do we need per-role users (operator, supervisor, admin) for permission-flow testing?
-2. **Deterministic UID seeding.** Firebase Auth Emulator generates a random UID per user on first creation, unless we seed with a specific UID via the admin API. The DB seed SQL needs the right UID. Options: (a) seed users via the Admin SDK with explicit UIDs, (b) seed users via the public REST API and capture the returned UID, then write to DB. Option (a) is more deterministic.
-3. **Emulator persistence.** By default the emulator loses state on container restart. For staging this might be fine (re-seed on startup). For repeated debug sessions, mount a volume for user state — but then the seeded UIDs become "real" history and we should treat them like a small DB.
-4. **`FIREBASE_API_KEY` value in staging.** The emulator accepts any key string in the query param (it ignores key validation). We should still set it to something non-empty + non-prod to avoid accidental cross-talk: `staging-emulator-key` is clearer than `bypassed-by-hasura-admin-secret`.
-5. **How does the operator app know its API key?** It's baked into the operator SPA build via `VITE_API_URL` — the API key for `/session` POST is the user's password, not the Firebase API key. So no operator-side changes. *(Verified during scoping; documented here so reviewers don't worry.)*
-6. **Token TTLs for testing.** Real Firebase issues 1h tokens. The emulator defaults match. For verifying the refresh flow in PR 4 testing, we may want a shorter TTL during the test, then revert. Configurable via `FIREBASE_AUTH_EMULATOR_TOKEN_TTL` env var (need to verify exact name).
+1. **Canonical test-user list.** ✅ **Just `dev.cpack`** (single user, single role). Per-role permission-flow testing is out of scope; staging is for verifying the auth *mechanism*, not exercising the full RBAC matrix.
+2. **Deterministic UID seeding.** ✅ **Approach B — Firebase Admin SDK with an explicit constant UID.** Seed script calls `admin.auth().createUser({ uid: 'staging-dev-cpack-uid', email: 'dev.cpack@packiot', password: 'packiot' })`. The same constant `staging-dev-cpack-uid` appears in both the seed script and the SQL seed for the `users.id_user_firebase` column. No capture step, no timing dependency, survives any restart.
+3. **Emulator persistence.** ✅ **No persistence.** Re-seed on every container startup via the seeding script run in `depends_on`. Predictable, identical-across-deploys auth state. The cost — every container restart logs operators out — is acceptable for staging (deploys are infrequent and re-login is cheap). Persistence would be the wrong default because the value of staging is *reproducibility*, not *accreted state*.
+4. **`FIREBASE_API_KEY` value in staging.** ✅ **`staging-emulator-key`** (any non-empty, non-prod string). The emulator accepts any key in the query param — this value exists only to make logs + grep readable and to prevent accidental cross-talk if the URL ever leaks to a real Firebase endpoint.
+5. **Operator app reach-throughs.** ✅ **No operator-side changes.** Verified during scoping: the API key the operator SPA sends to `/session` is the *user's password*, not the Firebase API key. Operator code path is unchanged.
+6. **Token TTLs.** ✅ **Permanent 15-minute TTL on the staging emulator.** Configured via the emulator's `--token-ttl` flag (verify exact name during implementation). Turns every operator session into an implicit refresh-flow test: any bug in the refresh code path surfaces within ~15 minutes of use, with no deliberate testing required. Diverges from prod's 1h value but the *mechanism* is identical — refresh-on-expiry — and that's what we're testing.
 
 ---
 
