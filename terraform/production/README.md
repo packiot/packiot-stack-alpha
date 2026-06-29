@@ -4,7 +4,7 @@ Production environment Terraform workspace. **Status: WIP — foundation files o
 
 Companion to [`terraform/staging/`](../staging/). Built on the staging template; differences documented in [ADR-0003](../../docs/adr/0003-production-deployment-parent-stack.md).
 
-## Current state (as of 2026-06-29 — updated)
+## Current state (as of 2026-06-29 — Phase 1A COMPLETE)
 
 | File | Status | Notes |
 |---|---|---|
@@ -18,11 +18,19 @@ Companion to [`terraform/staging/`](../staging/). Built on the staging template;
 | `backups.tf` | ✅ Done | S3 bucket for future pg_dump (zero objects in dry-run) + IAM writer on app role |
 | `snapshots.tf` | ✅ Done | AWS Backup vault + plan, daily snapshots, 30-day retention |
 | `outputs.tf` | ✅ Done | EIP, NS records, service URLs, SSM connect, runner activation, cost estimate |
-| `user_data/app_bootstrap.sh` | ⏳ Next session | Tiny user_data script (fetches app_init.sh from S3 at first boot) |
-| `user_data/app_init.sh` | ⏳ Next session | The heavy lifter (~18K bash) — adapted from staging, dropping db-EC2 references; configures local postgres container, fetches secrets, registers runner |
-| `user_data/nginx_setup.sh` | ⏳ Next session | Adapted from staging — ACM certs for `prod.packiot.app`, vhost configs |
+| `user_data/app_bootstrap.sh` | ✅ Done | Tiny user_data script (fetches app_init.sh from S3 at first boot) |
+| `user_data/app_init.sh` | ✅ Done | The heavy lifter — adapted from staging, drops db-EC2 refs, uses local postgres via pgbouncer, no Node-RED secrets, production branch + compose |
+| `user_data/nginx_setup.sh` | ✅ Done | Adapted from staging — ACM certs for `prod.packiot.app`, vhost configs, no AMQPS / no mq.* vhost |
 
-**Do NOT run `terraform plan` against this workspace until the `user_data/` scripts land** — `ec2.tf` references `${path.module}/user_data/app_bootstrap.sh` etc. via templatefile().
+**`terraform plan` SHOULD work now**, assuming the parent hosted zone `packiot.app` exists in this AWS account.
+
+## What's still pending (separate PRs)
+
+| Item | PR | Status |
+|---|---|---|
+| `compose.production.yml` | #92 (planned) | Pending — Phase 1B |
+| `.github/workflows/deploy-production.yml` + OIDC IAM | #93 (planned) | Pending — Phase 1C/1D |
+| `db/seed-production-dryrun-schema.sql` | — | Deferred — see `project_tsp12_pgdump_blocked.md` memory; using staging-style migrations instead |
 
 ## Design summary
 
