@@ -108,12 +108,35 @@ func (t *Translator) Area(ctx context.Context, prodAreaID int) (int, error) {
 }
 
 // Equipment resolves prod equipment_id → staging via packml_topic.
+//
+// Deterministic tie-break (2026-06-29): an equipment can have several
+// packml_register rows — one per metric — and the canonical "this is the
+// equipment" topic is the shortest one (e.g. `C-PACK/SC/LINHAS/L4/TEXA`);
+// the rest extend it with `/Admin/...` or `/Status/...` segments. The
+// original `ORDER BY active DESC NULLS LAST LIMIT 1` was non-deterministic
+// when several rows tied on `active=true` — Postgres returned whichever
+// physical row it scanned first, an order that can shift with vacuum,
+// index rebuild, or pg version. Prod equipment 84 (TEXA) tripped the
+// worst case: 4 of its 7 active rows carry a literal `LLLLL` typo
+// prefix on the topic, and the implementation-defined tie-break
+// happened to pick one of the corrupted ones. After RemapTopic that
+// became `LLLLLCPACK/...`, which has no staging match — events for
+// TEXA were silently skipped by the events-reconciler (~3 WARN/min
+// in production, surfaced via the unmapped-equipment log path).
+// Sorting by `length(packml_topic) ASC` selects the canonical short
+// topic; `id_packml_register ASC` makes the result fully deterministic
+// when two clean topics happen to share a length. Industry rule:
+// any `LIMIT 1` whose `ORDER BY` doesn't end in a unique column is a
+// latent bug — it works until physical row order shifts.
 func (t *Translator) Equipment(ctx context.Context, prodEquipmentID int) (int, error) {
 	var prodTopic string
 	found, err := t.prod.SelectOne(ctx,
 		`SELECT pr.packml_topic FROM packml_register pr
 		  WHERE pr.id_equipment = $1 AND pr.id_enterprise = $2
-		  ORDER BY pr.active DESC NULLS LAST LIMIT 1`,
+		  ORDER BY pr.active DESC NULLS LAST,
+		           length(pr.packml_topic) ASC,
+		           pr.id_packml_register ASC
+		  LIMIT 1`,
 		[]any{prodEquipmentID, t.cfg.ProdEnterpriseID}, &prodTopic)
 	if err != nil {
 		return 0, fmt.Errorf("prod packml_register lookup: %w", err)
@@ -124,10 +147,16 @@ func (t *Translator) Equipment(ctx context.Context, prodEquipmentID int) (int, e
 	}
 	stagingTopic := RemapTopic(prodTopic)
 	var stagingID int
+	// Staging side: exact-match on packml_topic already returns at most
+	// one row per enterprise today, but the same deterministic tail
+	// guards against a future migration ever landing two active rows
+	// for the same (topic, enterprise).
 	found, err = t.staging.SelectOne(ctx,
 		`SELECT id_equipment FROM packml_register
 		  WHERE packml_topic = $1 AND id_enterprise = $2
-		  ORDER BY active DESC NULLS LAST LIMIT 1`,
+		  ORDER BY active DESC NULLS LAST,
+		           id_packml_register ASC
+		  LIMIT 1`,
 		[]any{stagingTopic, t.cfg.StagingEnterpriseID}, &stagingID)
 	if err != nil {
 		return 0, fmt.Errorf("staging packml_register lookup: %w", err)
