@@ -1,0 +1,556 @@
+# compose.production.yml — Single-EC2 production-dryrun service stack (us-east-1)
+#
+# Adapted from compose.staging.yml. Differences:
+#   - Adds `postgres` service (local TimescaleDB container) — staging uses an
+#     external DB-EC2 + `extra_hosts`, production-dryrun keeps everything on
+#     one box per ADR-0003 + the 2026-06-29 cost convo.
+#   - Removes `mirror-worker-go` — no upstream to mirror from (production IS
+#     the source). See docs/adr/0003-production-deployment-parent-stack.md.
+#   - Removes `simulator` — staging-only synthetic PLC.
+#   - Removes `edge-nodered` — handled per-factory via manual workflow_dispatch
+#     on customer-side self-hosted runners; not in the cloud stack.
+#   - NOT including `edge-api-db` despite the earlier ask: it's defined in
+#     `edge-api/docker-compose.yml` as a dev-only sidecar (postgres:15-alpine
+#     for local devs running edge-api standalone). The container observed
+#     running on staging was a vestigial manual run, NOT part of
+#     compose.staging.yml. The production edge-api connects to the main
+#     TimescaleDB via pgbouncer, same as staging.
+#
+# Dry-run phase: services boot against the local empty TimescaleDB. When phase 2
+# lands (real prod DB connection to tsp12), update packiot/production/db to
+# include host/port/url pointing at tsp12 and restart the affected services.
+#
+# Deploy: docker compose -f compose.production.yml up -d --build
+
+networks:
+  packiot-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24
+
+volumes:
+  pg-data:           # NEW for production: local TimescaleDB persistent storage
+  grafana-data:
+  loki-data:
+  prom-data:
+  rabbitmq-data:
+  authentik-media:
+  authentik-certs:
+
+# ── IP allocation ──────────────────────────────────────────────────────────────
+# .2  hasura          .3  edge-api      .5  rabbitmq
+# .7  grafana         .8  loki          .9  promtail
+# .10 pgbouncer       .12 authentik-server  .13 authentik-worker  .14 authentik-redis
+# .15 hasura-init     .16 db-migrate    .17 adminer
+# .19 operator        .20 oeecloud-worker  .22 prometheus
+# .30 postgres        ← NEW for production (local TimescaleDB)
+#
+# DELIBERATELY ABSENT vs staging:
+# .4  edge-nodered (per-factory, not cloud)
+# .11 simulator (staging-only)
+# .21 mirror-worker-go (no upstream to mirror)
+
+services:
+  # ── PostgreSQL (LOCAL TimescaleDB for the dry-run phase) ──────────────────────
+  # New for production: the staging stack uses an external DB EC2, while
+  # production-dryrun runs the DB as a Docker container on the single app EC2.
+  #
+  # When phase 2 lands (real connection to tsp12), this service still runs but
+  # is unused — services point at tsp12 via updated POSTGRES_HOST env var.
+  # Removing it then is one compose edit + restart.
+  #
+  # TimescaleDB 2.25.2 + Postgres 16 — same image as compose.development.yml.
+  # Schema-version note: prod tsp12 is on PG 12.11; this local container is
+  # on PG 16. For dry-run boot validation that's fine (knex migrations create
+  # the same schema). For phase 2 connecting to real tsp12, schema differences
+  # don't matter (we connect remotely, version is decided server-side).
+  postgres:
+    image: timescale/timescaledb:2.25.2-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      # Init scripts: extensions + initial schema. Same scripts staging uses;
+      # mounted under docker-entrypoint-initdb.d so they only run on first boot
+      # of an empty volume (postgres docker convention).
+      - ./db/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.30
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
+  # Points at the LOCAL postgres service (vs staging's external DB EC2).
+  # Same pool config as staging — transaction mode, multiplexes 200 clients
+  # onto 20 server connections.
+  #
+  # ⚠ Hasura still does NOT use PgBouncer — prepared statements incompatible
+  # with transaction pooling.
+  pgbouncer:
+    image: edoburu/pgbouncer:1.22.1-p0
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "20"
+      MAX_CLIENT_CONN: "200"
+      AUTH_TYPE: scram-sha-256
+      SERVER_RESET_QUERY: "ROLLBACK"
+      SERVER_RESET_QUERY_ALWAYS: "1"
+      QUERY_TIMEOUT: "60"
+      SERVER_IDLE_TIMEOUT: "120"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.10
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── RabbitMQ (message bus) ─────────────────────────────────────────────────────
+  # Same as staging. The oeecloud-worker consumes from this; in production-dryrun
+  # there's no publisher today (edge-nodered runs per-factory) so the queues
+  # will be empty until phase 2 wires real factory traffic.
+  #
+  # Management UI port 15672 is NOT exposed via Nginx in production (no
+  # external `mq.prod.packiot.app` vhost — see terraform/production/dns.tf).
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.5
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Hasura GraphQL ─────────────────────────────────────────────────────────────
+  hasura:
+    image: hasura/graphql-engine:v2.44.0
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+      HASURA_GRAPHQL_DEV_MODE: "false"
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log
+      HASURA_GRAPHQL_PG_CONNECTIONS: "5"
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.2
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  hasura-init:
+    image: curlimages/curl:latest
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.15
+    env_file: [.env]
+    depends_on:
+      hasura:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    # Hasura metadata source: edge-node-red repo carries the canonical
+    # metadata.json. In production we don't clone the edge-node-red submodule
+    # (it's per-factory). Use a placeholder no-op instead until the metadata
+    # gets relocated to the parent repo OR until the first phase-2 deploy
+    # syncs metadata from staging via a separate workflow.
+    #
+    # For dry-run boot validation, an empty Hasura is acceptable — the API
+    # responds to /healthz and we can iterate later.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "Hasura init: dry-run phase — no metadata applied (see comment in compose.production.yml)"
+        exit 0
+    restart: "no"
+
+  # ── DB Migrations (one-shot) ──────────────────────────────────────────────────
+  # Runs edge-api's knex migrations against the local postgres. Same Docker
+  # target as staging (the `migrate` stage in edge-api's Dockerfile bundles
+  # knex + ts-node as devDependencies).
+  db-migrate:
+    build:
+      context: ./edge-api
+      target: migrate
+    env_file: [.env]
+    environment:
+      POSTGRES_PORT: "5432"
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.16
+    restart: "no"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Edge API (NestJS) ──────────────────────────────────────────────────────────
+  edge-api:
+    build:
+      context: ./edge-api
+      target: production
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      NODE_ENV: production
+      NEW_RELIC_ENABLED: "false"
+      NEW_RELIC_NO_CONFIG_FILE: "true"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: pgbouncer
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.3
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # NOTE: edge-nodered is DELIBERATELY ABSENT — per-factory deployment via
+  # manual workflow_dispatch (see docs/production-out-of-scope.md +
+  # docs/adr/0005-edge-nodered-self-hosted-runner-deploys.md).
+  #
+  # NOTE: simulator is DELIBERATELY ABSENT — staging-only synthetic PLC.
+  #
+  # NOTE: mirror-worker-go is DELIBERATELY ABSENT — no upstream to mirror
+  # from in production (production IS the source).
+
+  # ── Grafana ────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.5.0
+    restart: unless-stopped
+    env_file: [.env]
+    labels:
+      - "provisioning_rev=2026-06-29-production-initial"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.7
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Loki ───────────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.4.2
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./monitoring/loki/loki-local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.8
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Promtail ───────────────────────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.4.2
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yaml
+    volumes:
+      - ./monitoring/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.9
+    depends_on:
+      loki:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    restart: unless-stopped
+    labels:
+      - "config_rev=2026-06-29-production-initial"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.22
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Authentik SSO ──────────────────────────────────────────────────────────────
+  # Production gets its own Authentik install (independent of staging's).
+  # Same shape as staging: redis + server + worker, dedicated `authentik`
+  # database on the local TimescaleDB. Auto-bootstrap admin user via
+  # AUTHENTIK_BOOTSTRAP_PASSWORD + AUTHENTIK_BOOTSTRAP_TOKEN from
+  # packiot/production/authentik (per user's locked decision 2026-06-29).
+  #
+  # First-run setup confirms via:
+  #   https://auth.prod.packiot.app/if/flow/initial-setup/
+  authentik-redis:
+    image: redis:7-alpine
+    container_name: authentik-redis
+    restart: unless-stopped
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.14
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2024.12.3
+    container_name: authentik-server
+    command: server
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_LOG_LEVEL: info
+    volumes:
+      - authentik-media:/media
+      - authentik-certs:/certs
+    ports:
+      - "127.0.0.1:9000:9000"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.12
+    depends_on:
+      authentik-redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2024.12.3
+    container_name: authentik-worker
+    command: worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.13
+    depends_on: [authentik-redis, authentik-server]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Adminer (PostgreSQL web UI) ───────────────────────────────────────────────
+  # Connects to local postgres directly (bypasses pgbouncer — transaction
+  # pooling breaks Adminer's SET search_path calls). Access via Authentik SSO
+  # at adminer.prod.packiot.app.
+  adminer:
+    build: ./adminer
+    container_name: adminer
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "127.0.0.1:8082:8080"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.17
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── oeecloud Worker (Go) ──────────────────────────────────────────────────────
+  # AMQP consumer for OEE events. In production-dryrun there's NO publisher
+  # today (edge-nodered runs per-factory, not in this stack) so the queues
+  # are empty — the worker idles. Kept in compose for parity so phase-2
+  # wiring is just an env var change + restart, not a new service deploy.
+  #
+  # Secrets: PG via packiot/production/db; AMQP via packiot/production/rabbitmq-oeecloud-creds
+  # (not yet provisioned — worker startup will retry until that secret exists).
+  oeecloud-worker:
+    build: ./services/oeecloud-worker
+    container_name: oeecloud-worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: packiot/production/db
+      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-oeecloud-creds
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: oee
+      WORKER_QUEUE: oeecloud-worker-q
+      RETRY_EXCHANGE: oee-retry
+      RETRY_QUEUE: oeecloud-worker-q-retry-30s
+      FAILED_EXCHANGE: oee-failed
+      FAILED_QUEUE: oeecloud-worker-q-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      HEALTH_PORT: "9101"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.20
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Operator (production-facing SPA) ──────────────────────────────────────────
+  # Vite-built React SPA + nginx. Same build as staging; behind Authentik SSO.
+  # In dry-run phase the SPA loads but back-end API calls return empty/no-data
+  # (DB is empty) — that's the validation: UI loads, auth works, no crashes.
+  operator:
+    build:
+      context: ./operator
+      # Reuses staging's Dockerfile — the build itself isn't environment-aware;
+      # env-specific values (VITE_API_URL) are injected at runtime by Nginx
+      # rewrite (operator/Dockerfile.staging entrypoint).
+      dockerfile: Dockerfile.staging
+    container_name: operator
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8083:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.19
+    depends_on:
+      edge-api:
+        condition: service_started
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
