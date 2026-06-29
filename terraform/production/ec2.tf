@@ -179,13 +179,25 @@ resource "aws_cloudwatch_metric_alarm" "app_disk_used_percent" {
 }
 
 # ── SSH Key Pair ──────────────────────────────────────────────────────────────
-# Emergency/debug SSH access — same key as staging for now (operator's
-# ~/.ssh/id_ed25519). Rotate to a production-dedicated key when a separate
-# operator role exists.
-
-resource "aws_key_pair" "ops" {
-  key_name   = "packiot-production-ops"
-  public_key = var.ops_ssh_public_key
+# REUSES staging's `packiot-staging-ops` key via data lookup — the public
+# key (var.ops_ssh_public_key) is identical to staging's, so creating a
+# second AWS-level aws_key_pair record would just duplicate the same bytes
+# under a different name. Saves one resource; semantically unchanged.
+#
+# Trade-off: staging + production share the SSH credential today. If/when
+# production carries real customer data (phase 3), split to a production-
+# dedicated key:
+#   1. Generate new keypair on the operator's machine
+#   2. Replace this `data` block with a `resource "aws_key_pair" "ops" {
+#      key_name = "packiot-production-ops"
+#      public_key = "<new key>" }`
+#   3. terraform apply (instance NOT replaced — aws_key_pair updates don't
+#      trigger EC2 replacement; only new SSH sessions use the new key)
+#
+# The var.ops_ssh_public_key is no longer referenced after this change.
+# Left in variables.tf for documentation and easy re-introduction.
+data "aws_key_pair" "ops" {
+  key_name = "packiot-staging-ops"
 }
 
 # ── App EC2 ───────────────────────────────────────────────────────────────────
@@ -207,7 +219,7 @@ resource "aws_instance" "app" {
   subnet_id                   = aws_subnet.public.id
   vpc_security_group_ids      = [aws_security_group.app.id]
   iam_instance_profile        = aws_iam_instance_profile.app.name
-  key_name                    = aws_key_pair.ops.key_name
+  key_name                    = data.aws_key_pair.ops.key_name
   associate_public_ip_address = false # using static EIP (see vpc.tf)
 
   # T4G unlimited burst — production prioritises availability over surprise
