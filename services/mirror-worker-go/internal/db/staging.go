@@ -477,6 +477,67 @@ func (s *Staging) CountDLQ(ctx context.Context, source string) (int64, error) {
 	return n, err
 }
 
+// ReanimateMappableEquipmentEventDLQ resets retry_attempts=0 +
+// last_retry_at=NULL on DLQ rows that:
+//
+//   - belong to this worker's source,
+//   - sit at or above the retry cap (so the DLQRetrier loop no longer
+//     touches them),
+//   - and carry a payload whose `idEquipmentEvent` is NOW present in
+//     mirror_id_map (the events reconciler caught up to that prod ID
+//     while the entry was waiting in the DLQ).
+//
+// After the reset, the row is immediately eligible for the existing
+// DLQRetrier loop (retry_attempts < cap AND last_retry_at IS NULL),
+// which will re-dispatch through the original handler. The handler
+// translates via translate.EquipmentEvent → mirror_id_map cache hit →
+// succeeds, DLQ row deleted in the same tx.
+//
+// Idempotent: a repeat run only matches rows still past the cap, so
+// already-reanimated rows aren't double-touched. Scoped to the four
+// equipment_event-shaped categories — order-* categories carry
+// `idProductionOrder` instead and would need a sibling reanimator.
+//
+// Returns the IDs of the rows reanimated, ordered by id, capped at
+// `limit` rows per pass so a backlog of thousands can't dominate a
+// single tick.
+func (s *Staging) ReanimateMappableEquipmentEventDLQ(ctx context.Context, source string, maxAttempts, limit int) ([]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`UPDATE mirror_replay_dlq d
+		    SET retry_attempts = 0,
+		        last_retry_at  = NULL
+		  WHERE d.id IN (
+		    SELECT id FROM mirror_replay_dlq
+		     WHERE source = $1
+		       AND retry_attempts >= $2
+		       AND category IN ('event-justified', 'event-edited',
+		                        'event-splitted', 'downtime-event-created')
+		       AND EXISTS (
+		         SELECT 1 FROM mirror_id_map m
+		          WHERE m.entity_type = 'equipment_event'
+		            AND m.source = mirror_replay_dlq.source
+		            AND m.prod_id = (mirror_replay_dlq.payload->>'idEquipmentEvent')::bigint
+		       )
+		     ORDER BY id
+		     LIMIT $3
+		  )
+		  RETURNING id`,
+		source, maxAttempts, limit)
+	if err != nil {
+		return nil, fmt.Errorf("reanimate mappable DLQ: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan reanimated id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
 // caller's tx so we don't lose visibility into a bad row that crashed
 // before the outer commit.

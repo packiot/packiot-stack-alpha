@@ -104,6 +104,27 @@ type Config struct {
 	DLQRetryMaxAttempts int
 	DLQRetryBatchSize   int
 
+	// DLQ reanimator loop. Periodically resets retry_attempts=0 on DLQ
+	// rows that exhausted the retry cap but became *newly mappable*
+	// because the events reconciler caught up to their underlying prod
+	// equipment_event ID. Solves the cohort that lands in DLQ during
+	// the events reconciler's cold-start backlog: row is DLQ'd via the
+	// interval-overlap fallback before the reconciler has mirrored the
+	// matching prod event, retry loop fires 5 times all failing the
+	// same way, retry_attempts hits the cap, row sits forever — even
+	// though by the time the reconciler catches up the entry would
+	// translate fine. The reanimator re-arms only those entries whose
+	// translation would now succeed (predicate: prod_id present in
+	// mirror_id_map), leaving genuinely-broken rows in their cap state
+	// for human triage.
+	//
+	// Cadence is long-ish (default 10 min) because the trigger event
+	// (reconciler crossing a stuck prod_id) happens on the scale of
+	// hours/days, not seconds.
+	DLQReanimateEnabled     bool
+	DLQReanimateIntervalSec int
+	DLQReanimateBatchSize   int
+
 	// Logging.
 	LogLevel string
 }
@@ -135,6 +156,9 @@ func Load() (*Config, error) {
 		DLQRetryIntervalSec:        getenvInt("DLQ_RETRY_INTERVAL_SEC", 300),
 		DLQRetryMaxAttempts:        getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
 		DLQRetryBatchSize:          getenvInt("DLQ_RETRY_BATCH_SIZE", 50),
+		DLQReanimateEnabled:        getenvBool("DLQ_REANIMATE_ENABLED", true),
+		DLQReanimateIntervalSec:    getenvInt("DLQ_REANIMATE_INTERVAL_SEC", 600),
+		DLQReanimateBatchSize:      getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
 		LogLevel:                   getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks

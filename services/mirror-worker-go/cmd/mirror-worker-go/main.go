@@ -151,7 +151,8 @@ func main() {
 	defer reconCancel()
 	recon := reconcile.New(cfg, prodDB, stagingDB, t, tok.Get, httpc, logger)
 	dlqRetrier := replay.NewDLQRetrier(cfg, prodDB, stagingDB, disp, logger)
-	reconWG.Add(4)
+	dlqReanimator := replay.NewDLQReanimator(cfg, stagingDB, logger)
+	reconWG.Add(5)
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunForever(reconCtx)
@@ -183,6 +184,18 @@ func main() {
 	go func() {
 		defer reconWG.Done()
 		_ = dlqRetrier.RunForever(reconCtx)
+	}()
+	// DLQ reanimator runs on a 10-min cadence (configurable). Resets
+	// retry_attempts=0 on DLQ rows whose underlying prod equipment_event
+	// became mappable AFTER the row hit the retry cap — typical when the
+	// events reconciler catches up to a stuck prod_id hours or days
+	// later. Without this, a row DLQ'd before its target was mirrored
+	// sits forever at retry_attempts=5 despite the translation now
+	// succeeding. Predicate is mirror_id_map EXISTS — genuinely-broken
+	// rows stay at the cap for human triage.
+	go func() {
+		defer reconWG.Done()
+		_ = dlqReanimator.RunForever(reconCtx)
 	}()
 
 	// Main loop. Polls cursor → fetches batch → processes per row in
