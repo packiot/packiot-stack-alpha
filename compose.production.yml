@@ -72,11 +72,17 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      # Passed through so db/docker-entrypoint-initdb.d/01-create-authentik-db.sh
+      # can create the `authentik` role with this password on first boot.
+      # Authentik-server/worker connect to that role; without this init the
+      # Authentik containers crash with `FATAL: role "authentik" does not exist`.
+      AUTHENTIK_DB_PASSWORD: ${AUTHENTIK_DB_PASSWORD}
     volumes:
       - pg-data:/var/lib/postgresql/data
-      # Init scripts: extensions + initial schema. Same scripts staging uses;
-      # mounted under docker-entrypoint-initdb.d so they only run on first boot
-      # of an empty volume (postgres docker convention).
+      # Init scripts run once on first boot of an empty data volume (postgres
+      # docker convention). Two scripts:
+      #   00-init-extensions.sh         — TimescaleDB + pg_cron extensions
+      #   01-create-authentik-db.sh     — `authentik` role + database
       - ./db/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
     networks:
       packiot-net:
