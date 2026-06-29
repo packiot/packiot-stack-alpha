@@ -152,6 +152,17 @@ var (
 		Name: "mirror_worker_dlq_depth",
 		Help: "Current count of mirror_replay_dlq rows for this worker's source.",
 	})
+
+	// DLQReanimatedTotal — counts DLQ rows the reanimator loop reset
+	// from retry_attempts >= cap back to retry_attempts=0 because their
+	// underlying entity became mappable (events reconciler caught up).
+	// A non-zero value here means "the retry-cap logic was tripped by
+	// a transient reconciler-catch-up gap, not a permanent failure" —
+	// the existing DLQRetrier picks each one up on its next tick.
+	DLQReanimatedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "mirror_worker_dlq_reanimated_total",
+		Help: "DLQ rows reset to retry_attempts=0 by the reanimator loop because their target became mappable.",
+	})
 )
 
 func init() {
@@ -178,5 +189,6 @@ func init() {
 		ReconcilerEventsCursor,
 		DLQRetryAttemptsTotal,
 		DLQDepth,
+		DLQReanimatedTotal,
 	)
 }
