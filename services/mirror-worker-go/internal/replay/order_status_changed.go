@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -40,6 +41,21 @@ func OrderStatusChanged(
 		}
 		stagingPOID, err := t.ProductionOrder(ctx, p.IDProductionOrder)
 		if err != nil {
+			if errors.Is(err, translate.ErrUnmapped) {
+				// Same structural-mismatch shape as order-changed / order-started /
+				// order-stopped: the PO exists on prod but was never mirrored to
+				// staging. No retry will fix this; skip + advance cursor instead
+				// of DLQ. Without this branch, every order-status-changed for an
+				// unmapped prod PO would land in DLQ as a "translate production_order"
+				// failure that retries 5 times and gets permanently stuck — same
+				// failure mode that DLQ #316 hit for order-started.
+				logger.Info("skipping order-status-changed: production_order unmappable on staging",
+					slog.Int64("sourceLogID", row.IDUserLogs),
+					slog.Int64("prodPOID", p.IDProductionOrder),
+					slog.String("translatorErr", err.Error()))
+				return fmt.Errorf("production_order %d unmapped (no mirror_id_map row and no id_order business-key match): %w",
+					p.IDProductionOrder, ErrSkipReplay)
+			}
 			return fmt.Errorf("translate production_order: %w", err)
 		}
 
