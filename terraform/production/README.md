@@ -4,22 +4,25 @@ Production environment Terraform workspace. **Status: WIP — foundation files o
 
 Companion to [`terraform/staging/`](../staging/). Built on the staging template; differences documented in [ADR-0003](../../docs/adr/0003-production-deployment-parent-stack.md).
 
-## Current state (as of 2026-06-29)
+## Current state (as of 2026-06-29 — updated)
 
 | File | Status | Notes |
 |---|---|---|
 | `main.tf` | ✅ Done | Provider, backend (values via `tf-init`), default tags |
 | `variables.tf` | ✅ Done | All inputs with documented defaults + sizing rationale |
 | `vpc.tf` | ✅ Done | Single public subnet (no private, no NAT — dry-run design) |
-| `ec2.tf` | ⏳ Next session | Will reference `aws_instance.app` already used in vpc.tf |
-| `security_groups.tf` | ⏳ Next session | Simpler than staging (no db-app SG pair needed) |
-| `secrets.tf` | ⏳ Next session | `packiot/production/*` namespace |
-| `dns.tf` | ⏳ Next session | Route53 records for `prod.packiot.app` |
-| `backups.tf` | ⏳ Next session | S3 bucket for the local-DB pg_dump pipeline |
-| `snapshots.tf` | ⏳ Next session | AWS Backup, 30d retention |
-| `outputs.tf` | ⏳ Next session | EIP, SSM connect strings, runner registration hint |
+| `ec2.tf` | ✅ Done | Single `aws_instance.app` (`t4g.medium`) + IAM role + EBS + CloudWatch disk alarm |
+| `security_groups.tf` | ✅ Done | Single SG (HTTP/HTTPS/SSH ingress); no db-app pair, no AMQPS |
+| `secrets.tf` | ✅ Done | `packiot/production/*` namespace, 7 secrets, 7-day recovery window |
+| `dns.tf` | ✅ Done | Route53 zone `prod.packiot.app` + per-service A records + Authentik vhost |
+| `backups.tf` | ✅ Done | S3 bucket for future pg_dump (zero objects in dry-run) + IAM writer on app role |
+| `snapshots.tf` | ✅ Done | AWS Backup vault + plan, daily snapshots, 30-day retention |
+| `outputs.tf` | ✅ Done | EIP, NS records, service URLs, SSM connect, runner activation, cost estimate |
+| `user_data/app_bootstrap.sh` | ⏳ Next session | Tiny user_data script (fetches app_init.sh from S3 at first boot) |
+| `user_data/app_init.sh` | ⏳ Next session | The heavy lifter (~18K bash) — adapted from staging, dropping db-EC2 references; configures local postgres container, fetches secrets, registers runner |
+| `user_data/nginx_setup.sh` | ⏳ Next session | Adapted from staging — ACM certs for `prod.packiot.app`, vhost configs |
 
-**Do NOT run `terraform plan` against this workspace until all files land** — `vpc.tf` references `aws_instance.app` from the not-yet-written `ec2.tf`.
+**Do NOT run `terraform plan` against this workspace until the `user_data/` scripts land** — `ec2.tf` references `${path.module}/user_data/app_bootstrap.sh` etc. via templatefile().
 
 ## Design summary
 
