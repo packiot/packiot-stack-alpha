@@ -122,6 +122,12 @@ func (c *Comparator) RunOnce(ctx context.Context) error {
 	} else {
 		ok++
 	}
+	if err := c.measureDLQAnomaly(ctx); err != nil {
+		failed++
+		c.logger.Warn("comparator measure failed", slog.String("metric", "dlq_anomaly_total"), slog.String("err", err.Error()))
+	} else {
+		ok++
+	}
 	// OEE divergence runs on its own (longer) cadence — internal gate, not
 	// a separate goroutine. Skip silently when not due; emit logs when run.
 	// First tick after boot always runs (zero-value lastOEERun is far enough
@@ -155,6 +161,55 @@ func (c *Comparator) RunOnce(ctx context.Context) error {
 	// Returning err here would only show up in tick-failed logs which are
 	// less actionable than the per-measure WARN above.
 	return nil
+}
+
+// measureDLQAnomaly counts staging DLQ rows whose source_log_id no
+// longer exists on prod. Healthy steady state: 0 (every DLQ row traces
+// back to a real prod user_log). Non-zero indicates orphaned entries
+// that the DLQ retry loop would mark as "permanent" forever — manual
+// triage is the only resolution path (inspect the row, then DELETE).
+//
+// Cost-bounded: staging DLQ is small (~100 rows typical, often near
+// zero post-PR-#94); a single ANY-array EXISTS check against prod's
+// PK-indexed user_logs is O(log n) per probe.
+func (c *Comparator) measureDLQAnomaly(ctx context.Context) error {
+	stagingIDs, err := c.staging.DistinctDLQSourceLogIDs(ctx, c.cfg.SourceName)
+	if err != nil {
+		return fmt.Errorf("staging dlq source_log_ids: %w", err)
+	}
+	if len(stagingIDs) == 0 {
+		// Empty DLQ — no anomalies possible. Emit 0 so the gauge stays
+		// fresh in Prometheus rather than going stale at its last value.
+		metrics.ComparatorDLQAnomalyTotal.Set(0)
+		return nil
+	}
+	prodExisting, err := c.prod.UserLogIDsExist(ctx, stagingIDs, c.cfg.ProdEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("prod user_logs exists check: %w", err)
+	}
+	anomalies := countAnomalies(stagingIDs, prodExisting)
+	metrics.ComparatorDLQAnomalyTotal.Set(float64(anomalies))
+	if anomalies > 0 {
+		c.logger.Warn("comparator dlq_anomaly: orphaned DLQ entries detected",
+			slog.Int("dlq_size", len(stagingIDs)),
+			slog.Int("anomalies", anomalies),
+		)
+	}
+	return nil
+}
+
+// countAnomalies is the pure-function set-diff: how many of stagingIDs
+// are NOT in prodExisting. Extracted for unit testability — the
+// in-memory set difference is the load-bearing logic; the DB round-trips
+// are just delivery.
+func countAnomalies(stagingIDs []int64, prodExisting map[int64]struct{}) int {
+	n := 0
+	for _, id := range stagingIDs {
+		if _, ok := prodExisting[id]; !ok {
+			n++
+		}
+	}
+	return n
 }
 
 // measureOEEDivergence walks the active mapped POs, fetches prod's

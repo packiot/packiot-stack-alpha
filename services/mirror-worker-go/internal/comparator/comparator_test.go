@@ -86,6 +86,73 @@ func TestComparatorOEEMeasuredMetric_Registered(t *testing.T) {
 	}
 }
 
+func TestComparatorDLQAnomalyTotalMetric_Registered(t *testing.T) {
+	if _, err := testutil.GatherAndCount(metrics.Registry, "mirror_worker_comparator_dlq_anomaly_total"); err != nil {
+		t.Errorf("mirror_worker_comparator_dlq_anomaly_total not gathered: %v", err)
+	}
+}
+
+// TestCountAnomalies covers the pure-function set-diff logic for
+// dlq_anomaly. The DB round-trips are delivery; the in-memory diff is
+// the load-bearing decision: how many staging IDs aren't in prod.
+func TestCountAnomalies(t *testing.T) {
+	cases := []struct {
+		name       string
+		stagingIDs []int64
+		prodExists []int64 // sugar: converted to map below
+		want       int
+	}{
+		{
+			name:       "all staging IDs present on prod → 0 anomalies",
+			stagingIDs: []int64{100, 200, 300},
+			prodExists: []int64{100, 200, 300},
+			want:       0,
+		},
+		{
+			name:       "one missing → 1 anomaly",
+			stagingIDs: []int64{100, 200, 300},
+			prodExists: []int64{100, 300}, // 200 missing
+			want:       1,
+		},
+		{
+			name:       "all missing → all anomalies",
+			stagingIDs: []int64{100, 200, 300},
+			prodExists: []int64{},
+			want:       3,
+		},
+		{
+			name:       "empty staging → 0 (nothing to check)",
+			stagingIDs: []int64{},
+			prodExists: []int64{500, 600},
+			want:       0,
+		},
+		{
+			name:       "prod has EXTRA IDs we don't probe → doesn't count (not an anomaly)",
+			stagingIDs: []int64{100},
+			prodExists: []int64{100, 200, 300, 400}, // 200-400 aren't in stagingIDs
+			want:       0,
+		},
+		{
+			name:       "duplicate staging IDs counted once each (caller dedupes upstream)",
+			stagingIDs: []int64{100, 100, 200}, // dedup happens at DB layer; this case shouldn't occur but math is safe
+			prodExists: []int64{},
+			want:       3, // each occurrence is a miss; caller relies on DISTINCT in SQL
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			set := make(map[int64]struct{}, len(c.prodExists))
+			for _, id := range c.prodExists {
+				set[id] = struct{}{}
+			}
+			got := countAnomalies(c.stagingIDs, set)
+			if got != c.want {
+				t.Errorf("countAnomalies = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 // TestComputeOEEDivergence covers the pure-function math directly — the
 // per-PO skip/emit decision matters more than the wire-level DB plumbing.
 // Each case names the production scenario it represents, not just the
@@ -221,6 +288,27 @@ func TestComparatorSQLInvariants(t *testing.T) {
 				"ts_event > now() - interval '1 hour'",
 				fname + " MaxRecentEventTs MUST scope to the last hour — without the window, the query scans the full equipment_events hypertable (billion rows on prod), violating the 'cheap query' design constraint of the comparator",
 			},
+		}
+		// DLQ anomaly only has methods on one side per file — staging has
+		// DistinctDLQSourceLogIDs, prod has UserLogIDsExist. Skip the
+		// invariant check for the file that doesn't carry the method.
+		switch fname {
+		case "../db/staging.go":
+			wantSubs = append(wantSubs, struct {
+				needle string
+				why    string
+			}{
+				"SELECT DISTINCT source_log_id FROM mirror_replay_dlq WHERE source = $1",
+				fname + " DistinctDLQSourceLogIDs must use DISTINCT to dedupe — the anomaly count would inflate if a single orphan source_log_id appeared on multiple DLQ rows",
+			})
+		case "../db/prod.go":
+			wantSubs = append(wantSubs, struct {
+				needle string
+				why    string
+			}{
+				"id_user_logs = ANY($1::bigint[])",
+				fname + " UserLogIDsExist must use ANY(bigint[]) batched lookup — N round-trips for N IDs would blow the comparator's query budget on prod",
+			})
 		}
 		for _, w := range wantSubs {
 			if !strings.Contains(sqlBlob, w.needle) {

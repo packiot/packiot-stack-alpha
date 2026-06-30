@@ -238,6 +238,23 @@ var (
 		Name: "mirror_worker_comparator_oee_measured_total",
 		Help: "OEE measurement outcomes per PO (ok|failed|skipped). ok = pct emitted; skipped = prod NetProduction null/zero (can't compute); failed = query error.",
 	}, []string{"outcome"})
+
+	// ComparatorDLQAnomalyTotal — fidelity gauge (ADR-0008 phase 2a.4).
+	// Count of staging mirror_replay_dlq entries whose source_log_id no
+	// longer exists in prod user_logs. Healthy steady state: 0 (every DLQ
+	// entry traces back to a real prod row). Non-zero is real-world rare
+	// but signals one of:
+	//   - prod did a data cleanup that purged the referenced user_log
+	//   - the writer that stamped source_log_id into DLQ used a wrong ID
+	//   - a race between DLQ retention policy + the worker's writes
+	// Either way, the row will retry forever (FetchUserLogByID returns
+	// 'permanent' → row keeps bumping its retry counter to no effect).
+	// Anomaly count > 0 is a manual-triage signal: inspect the row, then
+	// DELETE it from mirror_replay_dlq if it really IS orphaned.
+	ComparatorDLQAnomalyTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_dlq_anomaly_total",
+		Help: "Staging mirror_replay_dlq entries whose source_log_id no longer exists on prod user_logs. Healthy: 0. Non-zero = orphaned DLQ rows needing manual triage.",
+	})
 )
 
 func init() {
@@ -271,5 +288,6 @@ func init() {
 		ComparatorUserLogsLag,
 		ComparatorOEEDivergencePct,
 		ComparatorOEEMeasured,
+		ComparatorDLQAnomalyTotal,
 	)
 }
