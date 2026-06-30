@@ -237,6 +237,17 @@ func (r *Reconciler) ensureOnePO(ctx context.Context, p db.ProdActivePO) error {
 	}
 	createKey := fmt.Sprintf("%s/recon/create/%d", r.cfg.SourceName, p.IDProductionOrder)
 	if status, body, err := r.post(ctx, "/api/production-orders/create", createBody, createKey); err != nil {
+		// "Already exists" means a staging PO carries this id_order but
+		// isn't currently in status=2 (otherwise the existence diff would
+		// have filtered it out upstream — typically finished, sometimes
+		// paused). Without this branch the reconciler would WARN-loop
+		// forever on the same row (one WARN every RECONCILE_INTERVAL_SEC,
+		// for every prod active PO whose staging mirror got finished by a
+		// prior order-stopped replay while prod kept the PO running).
+		// Revive the existing row instead.
+		if status == http.StatusBadRequest && isAlreadyExists(body) {
+			return r.reviveExistingStagingPO(ctx, p, stagingEqID, stagingSiteID, stagingAreaID)
+		}
 		return fmt.Errorf("create POST: %w (status=%d body=%s)", err, status, truncate(body, 200))
 	}
 
@@ -302,4 +313,83 @@ func truncate(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "...[truncated]"
+}
+
+// reviveExistingStagingPO is called when /api/production-orders/create
+// rejects with "Production order already exists" — meaning a staging row
+// carries this prod id_order but isn't in status=2. Restores the active-PO
+// invariant by looking up the existing row, POSTing /start (revives a
+// finished PO, no-ops on an already-running one), and writing the mapping.
+//
+// Why not just skip + log: that leaves the staging mirror permanently out
+// of sync (no active PO mirroring prod's active PO), which defeats the
+// reconciler's purpose. The comparator's active_pos_diff gauge would
+// stay non-zero indefinitely. Reviving keeps the watchdog signal honest.
+//
+// /start with "Production order already running" is treated as success —
+// same intent-already-satisfied logic as the user_logs order-started
+// handler (replay/httputil.go startAlreadySatisfiedMessages). Race surface:
+// could fire when value-sync or another writer flipped the PO to status=2
+// between the existence check and the create attempt.
+func (r *Reconciler) reviveExistingStagingPO(ctx context.Context, p db.ProdActivePO, stagingEqID, stagingSiteID, stagingAreaID int) error {
+	stagingPOID, found, err := r.staging.LookupStagingPOByIDOrder(ctx, r.cfg.StagingEnterpriseID, p.IDOrder)
+	if err != nil {
+		return fmt.Errorf("revive lookup: %w", err)
+	}
+	if !found {
+		// Edge-api said "already exists" but our LookupStagingPOByIDOrder
+		// can't find it. Different enterprise scoping bug, or edge-api
+		// looks at a different uniqueness key than (enterprise, id_order).
+		// Surface clearly so the bug doesn't hide as a generic error.
+		return fmt.Errorf("revive: create rejected as already-exists but no staging PO with (enterprise=%d, id_order=%d) found",
+			r.cfg.StagingEnterpriseID, p.IDOrder)
+	}
+
+	// 1) Start (revive). Same ts_start - 5s trick as ensureOnePO so we
+	// dodge getOrderDateConflict against historical finished POs.
+	startTs := time.Now().UTC().Add(-5 * time.Second).Format(time.RFC3339)
+	startBody := map[string]any{
+		"idEnterprise":      r.cfg.StagingEnterpriseID,
+		"idSite":             stagingSiteID,
+		"idArea":             stagingAreaID,
+		"idEquipment":        stagingEqID,
+		"idProductionOrder":  stagingPOID,
+		"timestamp":          startTs,
+	}
+	startKey := fmt.Sprintf("%s/recon/revive/%d", r.cfg.SourceName, p.IDProductionOrder)
+	if status, body, err := r.post(ctx, "/api/production-orders/start", startBody, startKey); err != nil {
+		if !(status == http.StatusBadRequest && isAlreadyRunning(body)) {
+			return fmt.Errorf("revive start POST: %w (status=%d body=%s)", err, status, truncate(body, 200))
+		}
+		// "Already running" — intent already satisfied. Fall through to mapping.
+		r.logger.Info("reconciler: revive found staging PO already running — writing mapping only",
+			slog.Int64("prod_po", p.IDProductionOrder),
+			slog.Int64("staging_po", stagingPOID),
+			slog.Int64("id_order", p.IDOrder))
+	}
+
+	// 2) Persist the mapping. Same swallowing-of-mapping-error pattern as
+	// ensureOnePO — if it fails, the next pass will see the active staging
+	// PO via the diff and skip; user-visible state is already correct.
+	if err := r.staging.WithTx(ctx, func(tx pgx.Tx) error {
+		return db.InsertMapping(ctx, tx, db.MapInsert{
+			EntityType:  "production_order",
+			Source:      r.cfg.SourceName,
+			ProdID:      p.IDProductionOrder,
+			StagingID:   stagingPOID,
+			SourceLogID: 0,
+		})
+	}); err != nil {
+		r.logger.Warn("reconciler: revive mapping insert failed but PO revived — next pass will skip via diff",
+			slog.Int64("prod_po", p.IDProductionOrder),
+			slog.Int64("staging_po", stagingPOID),
+			slog.String("err", err.Error()))
+	}
+
+	r.logger.Info("reconciler: revived existing staging PO",
+		slog.Int64("prod_po", p.IDProductionOrder),
+		slog.Int64("staging_po", stagingPOID),
+		slog.Int64("id_order", p.IDOrder),
+		slog.Int("staging_equipment", stagingEqID))
+	return nil
 }
