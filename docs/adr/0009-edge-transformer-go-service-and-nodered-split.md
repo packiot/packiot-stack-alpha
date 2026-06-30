@@ -119,6 +119,7 @@ The two modes share 100% of the transform code; only the I/O perimeter differs. 
                                    │ AMQP publish
                                    │ exchange: edge.plc-normalized (topic)
                                    │ routing key: plc.normalized.<tenant>.equipment.<id>
+                                   │ payload: per docs/clients/_normalized-payload-schema.yaml v1.0
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │  RabbitMQ (already deployed per-factory)                               │
@@ -254,7 +255,7 @@ These are the rules whose violation creates the next generation of the problem t
 
 ## Open questions for review
 
-- **Q1 — Envelope format for `plc.normalized.<tenant>`: protobuf or JSON?** Protobuf is faster, schema-versioned, painful to debug in `rabbitmqctl list_messages`. JSON is slow, schema-via-convention, trivial to debug. oeecloud-worker landed on JSON; the message rates we've measured (CPack peak ~15 msg/s) don't justify protobuf yet. **Recommendation: JSON for Phase 2, revisit at Phase 3 if Calc_Counters processing pegs CPU.**
+- **Q1 — Envelope format for `plc.normalized.<tenant>`: protobuf or JSON?** Protobuf is faster, schema-versioned, painful to debug in `rabbitmqctl list_messages`. JSON is slow, schema-via-convention, trivial to debug. oeecloud-worker landed on JSON; the message rates we've measured (CPack peak ~15 msg/s) don't justify protobuf yet. **Recommendation: JSON for Phase 2, revisit at Phase 3 if Calc_Counters processing pegs CPU.** *(Update 2026-06-30: the v1.0 schema landed as `docs/clients/_normalized-payload-schema.yaml` — JSON-shaped, 5 payload types, envelope + extensions + topic-routing topology. Consumers and publishers MUST conform to this file; changes per its own versioning policy at the bottom.)*
 
 - **Q2 — Where does `edge-transformer` connect to the cloud?** Today edge-nodered POSTs to `back4-api` and `edge-api` cloud endpoints. The natural answer is "edge-transformer takes those calls over". But ADR-0007 is also routing critical writes through a cloud edge-api proxy — does `edge-transformer` send to cloud edge-api, or directly to cloud TSDB? **Likely answer: cloud edge-api, to keep ADR-0007's routing as the single API surface.** Confirm with the team before Phase 4.
 
