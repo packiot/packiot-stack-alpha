@@ -210,6 +210,34 @@ var (
 		Name: "mirror_worker_comparator_user_logs_lag",
 		Help: "prod max(user_logs.id_user_logs) - staging mirror_replay_cursor.last_log_id for this worker's source. Healthy: tiny. Large sustained = poll loop stalled.",
 	})
+
+	// ComparatorOEEDivergencePct — fidelity gauge (ADR-0008 phase 2a.3).
+	// Per active mapped PO: abs(prod.net_production - staging.net_production)
+	// / NULLIF(prod.net_production, 0). Healthy steady state: < 0.01 (1%
+	// divergence is within rounding noise for the per-minute pg_cron cycle).
+	// Label cardinality is bounded by the active-PO set (~10-15 typical),
+	// kept current by Reset()-ing the vec at the start of each measure
+	// pass — finished POs drop off automatically.
+	//
+	// Cadence is 30 min (configurable via COMPARATOR_OEE_INTERVAL_SEC), much
+	// longer than the 5-min comparator loop because: (a) the underlying
+	// staging value-sync also runs at minute-scale, so finer resolution
+	// adds noise without signal; (b) prod's production_orders_runtime is a
+	// pg_cron-refreshed table, sampled at sub-minute could read mid-update.
+	ComparatorOEEDivergencePct = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_oee_divergence_pct",
+		Help: "abs(prod.net_production - staging.net_production) / prod.net_production per active mapped PO. Healthy: < 0.01. Per-PO label; vec Reset() each pass to drop finished POs.",
+	}, []string{"id_production_order"})
+
+	// ComparatorOEEMeasured — bumps once per OEE measurement pass with the
+	// number of POs measured + the number skipped (prod = 0 / nil — can't
+	// compute pct). Lets the dashboard separate "measure didn't run" from
+	// "measured but everyone is at 0" from "PO is freshly started so no
+	// data yet". Outcome label: ok | failed | skipped.
+	ComparatorOEEMeasured = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_comparator_oee_measured_total",
+		Help: "OEE measurement outcomes per PO (ok|failed|skipped). ok = pct emitted; skipped = prod NetProduction null/zero (can't compute); failed = query error.",
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -241,5 +269,7 @@ func init() {
 		ComparatorRunsTotal,
 		ComparatorEventsLagSeconds,
 		ComparatorUserLogsLag,
+		ComparatorOEEDivergencePct,
+		ComparatorOEEMeasured,
 	)
 }

@@ -144,6 +144,15 @@ type Config struct {
 	ComparatorEnabled     bool
 	ComparatorIntervalSec int
 
+	// OEE divergence runs at its own (longer) cadence inside the comparator
+	// loop. The underlying prod data (production_orders_runtime) is
+	// pg_cron-refreshed at ~1-min intervals, so sub-minute sampling reads
+	// mid-update; 30 min smooths over a full handful of refresh cycles.
+	// Independent of ComparatorIntervalSec — the comparator tick fires
+	// every COMPARATOR_INTERVAL_SEC, but the OEE measure only runs every
+	// COMPARATOR_OEE_INTERVAL_SEC (gated internally by lastOEERun).
+	ComparatorOEEIntervalSec int
+
 	// Logging.
 	LogLevel string
 }
@@ -180,6 +189,7 @@ func Load() (*Config, error) {
 		DLQReanimateBatchSize:      getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
 		ComparatorEnabled:          getenvBool("COMPARATOR_ENABLED", true),
 		ComparatorIntervalSec:      getenvInt("COMPARATOR_INTERVAL_SEC", 300),
+		ComparatorOEEIntervalSec:   getenvInt("COMPARATOR_OEE_INTERVAL_SEC", 1800),
 		LogLevel:                   getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
