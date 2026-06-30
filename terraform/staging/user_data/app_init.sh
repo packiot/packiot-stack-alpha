@@ -426,10 +426,14 @@ if aws secretsmanager describe-secret \
   # The regex restricts edge-transformer to its own queues + the shared
   # publish exchange. Cannot touch other tenants' queues, management API,
   # or other exchanges. Bounded blast radius.
+  #
+  # Naming convention: hyphen-separated (matches oeecloud-worker's
+  # `oeecloud-worker-q-retry-30s` style). The `.` in the regex is a
+  # wildcard (any char) — matches `edge-transformer-q`, `edge-transformer-q-retry-30s`, etc.
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
     "http://127.0.0.1:15672/api/permissions/%2F/$ET_USER" \
     -H "Content-Type: application/json" \
-    -d '{"configure":"^(edge-transformer\\..*|outbox\\..*)$","write":"^(edge-transformer\\..*|outbox\\..*|edge\\.plc-normalized)$","read":"^(edge\\.plc-normalized|edge-transformer\\..*|outbox\\..*)$"}'
+    -d '{"configure":"^(edge-transformer.*|outbox.*)$","write":"^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*)$","read":"^(edge\\.plc-normalized|dlx\\.edge\\.plc-normalized|edge-transformer.*|outbox.*)$"}'
 
   echo "RabbitMQ user '$ET_USER' created with edge-transformer least-priv perms"
 
