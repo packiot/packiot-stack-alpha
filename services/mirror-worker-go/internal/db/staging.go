@@ -174,6 +174,23 @@ func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) 
 	return n, err
 }
 
+// CountActivePOs returns the number of staging production_orders currently
+// in status=2 (running) for the given enterprise. Used by the comparator
+// for the active_pos_diff fidelity metric (ADR-0008 phase 2a). Lighter
+// than ActivePOIDOrders — no row scan, one round-trip, COUNT(*).
+func (s *Staging) CountActivePOs(ctx context.Context, enterpriseID int) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM production_orders
+		  WHERE id_enterprise = $1 AND status = 2`,
+		enterpriseID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active staging POs: %w", err)
+	}
+	return n, nil
+}
+
 // ActivePOIDOrders returns the set of id_order values for staging POs
 // currently in status=2 (running). Used by the reconciler to diff against
 // prod's active set without pulling every column.

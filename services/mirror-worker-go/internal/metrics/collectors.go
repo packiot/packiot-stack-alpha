@@ -163,6 +163,28 @@ var (
 		Name: "mirror_worker_dlq_reanimated_total",
 		Help: "DLQ rows reset to retry_attempts=0 by the reanimator loop because their target became mappable.",
 	})
+
+	// ComparatorActivePosDiff — fidelity gauge (ADR-0008 phase 2a). Computed
+	// as prod count(active POs) - staging count(active POs), each scoped to
+	// their respective enterprise IDs. Healthy steady state is 0: the
+	// EnsureActivePOs reconciler keeps staging in sync. Non-zero on a
+	// sustained basis means the existence reconciler is misclassifying or
+	// behind. Sign communicates direction (positive = prod has more, staging
+	// behind; negative = staging has stale rows that should have closed).
+	ComparatorActivePosDiff = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_active_pos_diff",
+		Help: "prod count(active POs) - staging count(active POs). Healthy: 0. Positive: staging behind. Negative: staging stale.",
+	})
+
+	// ComparatorRunsTotal — bumps once per comparator pass with outcome
+	// ok|failed. Failed means the comparator couldn't query one of the two
+	// systems (prod or staging) and emitted no metric this tick. Pair with
+	// alert rules — sustained 'failed' increment means the watchdog itself
+	// is blind, which is worse than a divergent metric.
+	ComparatorRunsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_comparator_runs_total",
+		Help: "Comparator pass outcomes (ok|failed). Failed = couldn't measure; investigate before trusting the gauge.",
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -190,5 +212,7 @@ func init() {
 		DLQRetryAttemptsTotal,
 		DLQDepth,
 		DLQReanimatedTotal,
+		ComparatorActivePosDiff,
+		ComparatorRunsTotal,
 	)
 }

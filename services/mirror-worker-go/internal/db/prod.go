@@ -161,6 +161,38 @@ type ProdActivePO struct {
 	ProductionProgrammed float64
 }
 
+// CountActivePOs returns the number of prod production_orders currently
+// in status=2 (running) for the given enterprise. Used by the comparator
+// for the active_pos_diff fidelity metric (ADR-0008 phase 2a). Lighter
+// than FetchActivePOs — no rows pulled, just COUNT(*). Same BEGIN READ
+// ONLY defense-in-depth on top of the awslambda role.
+func (p *Prod) CountActivePOs(ctx context.Context, enterpriseID int) (int, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var n int
+	err = tx.QueryRow(ctx,
+		`SELECT count(*) FROM production_orders
+		  WHERE id_enterprise = $1 AND status = 2`,
+		enterpriseID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active prod POs: %w", err)
+	}
+	return n, nil
+}
+
 // FetchActivePOs returns currently-active POs (status=2) for the given
 // enterprise. Used by the reconciler to drive the diff against staging's
 // active set. Always wrapped in BEGIN READ ONLY for defense-in-depth on

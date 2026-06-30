@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/comparator"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/health"
@@ -153,7 +154,8 @@ func main() {
 	recon := reconcile.New(cfg, prodDB, stagingDB, t, tok.Get, httpc, logger)
 	dlqRetrier := replay.NewDLQRetrier(cfg, prodDB, stagingDB, disp, logger)
 	dlqReanimator := replay.NewDLQReanimator(cfg, stagingDB, logger)
-	reconWG.Add(5)
+	comp := comparator.New(cfg, prodDB, stagingDB, logger)
+	reconWG.Add(6)
 	go func() {
 		defer reconWG.Done()
 		_ = recon.RunForever(reconCtx)
@@ -197,6 +199,16 @@ func main() {
 	go func() {
 		defer reconWG.Done()
 		_ = dlqReanimator.RunForever(reconCtx)
+	}()
+	// Comparator (ADR-0008 phase 2a) runs on a 5-min cadence (configurable).
+	// Fidelity watchdog: SELECTs canonical values from BOTH prod and staging,
+	// emits divergence gauges. Pairs with the reconciler — reconciler closes
+	// gaps; comparator measures them. Pure observability; never mutates
+	// either system. Phase 2a.1 ships active_pos_diff; 2a.2-2a.5 add the
+	// remaining 4 metrics from ADR-0008.
+	go func() {
+		defer reconWG.Done()
+		_ = comp.RunForever(reconCtx)
 	}()
 
 	// Main loop. Polls cursor → fetches batch → processes per row in

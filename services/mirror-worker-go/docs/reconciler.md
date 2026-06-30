@@ -43,6 +43,8 @@ If you violate (2) — by reintroducing state/mode/speed-bearing equipment_value
 | `DLQ_RETRY_INTERVAL_SEC` | `300` | DLQ retry cadence (5 min) |
 | `DLQ_RETRY_MAX_ATTEMPTS` | `5` | Per-row attempt cap. Backoff schedule: +1m, +2m, +4m, +8m, +16m. After 5, row stays in DLQ for human inspection. |
 | `DLQ_RETRY_BATCH_SIZE` | `50` | Per-pass cap on rows examined — a giant DLQ backlog can't hammer edge-api in one tick |
+| `COMPARATOR_ENABLED` | `true` | Kill-switch for the comparator fidelity-watchdog loop (ADR-0008 phase 2a) |
+| `COMPARATOR_INTERVAL_SEC` | `300` | Comparator cadence (5 min). Matches existence reconciler — comparator watches what reconciler maintains. |
 
 ## What you see in logs
 
@@ -86,6 +88,8 @@ mirror_worker_reconciler_events_total{outcome="created|failed|skipped"}
 mirror_worker_reconciler_events_cursor        # gauge — monotonically increases
 mirror_worker_dlq_retry_attempts_total{outcome="succeeded|failed|permanent"}
 mirror_worker_dlq_depth                       # gauge — should hover near zero
+mirror_worker_comparator_active_pos_diff      # gauge — should be 0 (prod-staging diff)
+mirror_worker_comparator_runs_total{outcome="ok|failed"}
 ```
 
 Healthy steady state:
@@ -95,6 +99,28 @@ Healthy steady state:
 - `pos_total` only ticks when prod creates a new PO
 - `events_cursor` monotonically increases at roughly prod's events-emission rate (~10–50 per minute during a normal CPACK shift)
 - `events_total{outcome="created"}` accumulates near `events_cursor` delta; `skipped` is non-zero only when packml_register is missing an entry; `failed` should be ~0
+- `comparator_active_pos_diff` = 0 (prod count == staging count for active POs)
+- `comparator_runs_total{outcome="ok"}` increments every 5 min; `failed` ratio should stay low
+
+## Comparator (fidelity watchdog, ADR-0008 phase 2a)
+
+Periodic SELECT-only loop that runs alongside the reconcilers. Where reconcilers WRITE to staging to close gaps, the comparator READS both systems to MEASURE residual gaps. It validates that the reconciler is doing its job; the two together form the writer + watchdog pair.
+
+Phase 2a.1 ships one metric: `comparator_active_pos_diff`. Future phases (2a.2-2a.5) add 4 more: `events_lag_seconds`, `oee_divergence_pct{po}`, `dlq_anomaly_total`, `user_logs_lag`. Each plugs into the same RunOnce loop via a new measure-function.
+
+### When the comparator alerts
+
+If `comparator_active_pos_diff` is consistently non-zero:
+
+1. **Verify the comparator itself isn't broken.** Check `comparator_runs_total{outcome="failed"}` — if non-zero recently, the comparator couldn't query one of the two systems. Look at the worker log for `comparator tick failed`.
+2. **Identify direction.** Positive = prod has more (EnsureActivePOs reconciler is behind). Negative = staging has stale rows (something didn't close on staging). Sign tells you which side to investigate first.
+3. **Cross-check with `active_drift_pos`.** The two gauges measure the same underlying state from different angles — if they disagree, the reconciler's drift calculation is wrong.
+4. **Look at the reconciler.** Is the existence pass running? When was its last `reconciler pass complete`? Has it logged any failed PO creates?
+5. **Only then start digging into the data.** Most divergence is explained by step 3-4 before you need to inspect individual POs.
+
+### Why a separate loop, not merged into the reconciler
+
+Comparator failures should never block reconciler writes (and vice versa). Splitting at the goroutine boundary keeps their failure modes independent. The reconciler can be busy; the comparator can be querying tsp12; one's success doesn't gate the other's tick.
 
 ## When something goes wrong
 
