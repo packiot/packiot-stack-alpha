@@ -290,38 +290,71 @@ extensions:
 # with topic-based routing, NOT per-tenant exchanges. Multi-tenancy expressed
 # via the routing key pattern.
 routing:
+  # ── ERRATA 2026-06-30 (after Phase 2 live verification) ──────────────────
+  # Phase 2 end-to-end test surfaced a mismatch between this schema's documented
+  # routing-key pattern and the actual Go scaffold's binding behavior. The
+  # Go scaffold (services/edge-transformer/) won the runtime contract; this
+  # schema is updated below to reflect what's actually live.
+  #
+  # CURRENT RUNTIME (Phase 2 shipped, verified):
+  #   - Routing key:  edge.plc-normalized.<tenant>             ← LITERAL, no wildcards
+  #   - Queue:        edge-transformer-q-<tenant>              ← per-tenant
+  #   - Binding:      key=edge.plc-normalized.<tenant>          ← literal-match
+  #   - Granularity:  per-tenant only (NOT per-equipment)
+  #
+  # DEFERRED (was originally documented; Phase 3+ work to add):
+  #   - Per-equipment routing key (plc.normalized.<tenant>.equipment.<id>)
+  #   - Per-equipment binding patterns + consumer queues
+  #   - Equipment-level sequential processing guarantees
+  #
+  # Why defer per-equipment granularity: not required for shadow mode +
+  # Phase 3 (Calc Production Counters port). Per-equipment ordering becomes
+  # load-bearing if/when the Go port reads cumulative-counter state per
+  # equipment — at that point, change the Go binding to topic-pattern
+  # `edge.plc-normalized.<tenant>.equipment.*` and publishers add the
+  # equipment-id suffix. Backward-compat MINOR schema bump; consumers
+  # tolerate unknown extra dot-segments.
+
   exchange:
     name: "edge.plc-normalized"
-    type: topic                     # Standard AMQP topic exchange
+    type: topic
     durable: true
     description: |
       Single exchange at each factory's RabbitMQ. Publishers (Node-RED tabs)
-      write here; consumers (edge-transformer per-tenant queues) bind with
-      topic patterns.
+      write here; consumers (edge-transformer per-tenant queues) bind to
+      literal routing keys today.
 
   routing_key_format:
-    pattern: "plc.normalized.<tenant>.equipment.<equipment_id>"
-    example: "plc.normalized.cpack.equipment.84"
+    pattern: "edge.plc-normalized.<tenant>"        # was: "plc.normalized.<tenant>.equipment.<equipment_id>"
+    example: "edge.plc-normalized.cpack"           # was: "plc.normalized.cpack.equipment.84"
     description: |
-      Hierarchical key — supports cross-tenant consumers via `plc.normalized.#`
-      and per-equipment consumers via `plc.normalized.cpack.equipment.84`.
-      Equipment-level granularity is load-bearing: ensures per-equipment
-      sequential processing (consumer with prefetch=1 + queue-per-equipment
-      preserves order without needing consistent-hash).
+      Literal per-tenant routing key. The Go scaffold's binding is exact-
+      match (no wildcards). Publishers MUST emit with this exact key for
+      the message to reach the per-tenant queue.
+
+      Equipment-id granularity (originally documented as load-bearing) is
+      DEFERRED to a Phase 3+ minor-version bump when the Go consumer
+      actually needs per-equipment sequential processing. Today's shadow
+      handler doesn't care about per-equipment ordering.
 
   consumer_queue_naming:
-    name: "edge-transformer.<tenant>"
+    name: "edge-transformer-q-<tenant>"            # was: "edge-transformer.<tenant>"
     durable: true
-    binding_key: "plc.normalized.<tenant>.#"
+    binding_key: "edge.plc-normalized.<tenant>"    # was: "plc.normalized.<tenant>.#"
     arguments:
-      x-dead-letter-exchange: "dlx.edge.plc-normalized"
-      x-dead-letter-routing-key: "dlq.<tenant>"
+      x-dead-letter-exchange: "edge.plc-normalized-retry"
+      x-dead-letter-routing-key: "edge.plc-normalized.<tenant>"
       x-message-ttl: 86400000       # 24h — outbox pattern dedup window
     description: |
       One queue per tenant for the edge-transformer to consume. Per-tenant
-      isolation here (a tenant whose messages can't be processed doesn't
-      block other tenants). Reuses oeecloud-worker's per-tenant Channel
-      pattern (Strategy C Phase 2a).
+      isolation: a tenant whose messages can't be processed doesn't block
+      other tenants. Reuses oeecloud-worker's per-tenant Channel pattern
+      (Strategy C Phase 2a).
+
+      The Go scaffold also creates fallback queues `edge-transformer-q`,
+      `edge-transformer-q-retry-30s`, `edge-transformer-q-failed` for
+      messages without a tenant-specific binding. These should stay empty
+      in normal operation; their non-zero depth is a routing-bug signal.
 
   dlx:
     name: "dlx.edge.plc-normalized"
