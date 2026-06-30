@@ -12,3 +12,7 @@ client.local.yaml
 .idea/
 .vscode/
 *.swp
+
+# Local-only Go tool binaries installed via `GOBIN=$(pwd)/.tools go install ...`
+# (e.g., protoc-gen-go for ADR-0010 spike codegen). Per-developer, not committed.
+.tools/
