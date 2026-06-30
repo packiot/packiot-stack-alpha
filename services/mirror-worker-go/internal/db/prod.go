@@ -162,6 +162,55 @@ type ProdActivePO struct {
 	ProductionProgrammed float64
 }
 
+// UserLogIDsExist returns the subset of the given ids that exist in prod
+// user_logs for the given enterprise. Used by the comparator's
+// dlq_anomaly_total metric (ADR-0008 phase 2a.4) to detect staging DLQ
+// rows whose source_log_id no longer exists upstream.
+//
+// Batched as a single ANY($1::bigint[]) query — staging DLQ is small
+// (~100 rows typical), and prod's user_logs.id_user_logs is the PK so
+// every probe is an O(log n) index hit. Returns a set (map[int64]struct{})
+// so callers can iterate the original input doing membership checks
+// without re-allocating.
+func (p *Prod) UserLogIDsExist(ctx context.Context, ids []int64, enterpriseID int) (map[int64]struct{}, error) {
+	if len(ids) == 0 {
+		return map[int64]struct{}{}, nil
+	}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	rows, err := tx.Query(ctx,
+		`SELECT id_user_logs FROM user_logs
+		  WHERE id_user_logs = ANY($1::bigint[])
+		    AND id_enterprise = $2`,
+		ids, enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query user_logs exists: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]struct{}, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
 // MaxUserLogID returns max(id_user_logs) on prod scoped to enterprise.
 // Used by the comparator's user_logs_lag metric (ADR-0008 phase 2a.2) to
 // answer "how far behind is the main poll loop's cursor?". Single

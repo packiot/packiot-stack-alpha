@@ -175,6 +175,34 @@ func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) 
 	return n, err
 }
 
+// DistinctDLQSourceLogIDs returns the unique set of prod source_log_ids
+// currently in mirror_replay_dlq for this worker's source. Used by the
+// comparator's dlq_anomaly_total metric (ADR-0008 phase 2a.4) to detect
+// DLQ entries whose underlying prod user_log has disappeared (rare, but
+// real: prod data cleanup, or a bug that stamped wrong IDs).
+//
+// Returns an empty slice (not error) when the DLQ is empty — caller
+// treats that as the healthy steady state, 0 anomalies.
+func (s *Staging) DistinctDLQSourceLogIDs(ctx context.Context, source string) ([]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT source_log_id FROM mirror_replay_dlq WHERE source = $1`,
+		source,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query distinct dlq source_log_ids: %w", err)
+	}
+	defer rows.Close()
+	out := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // MaxRecentEventTs returns max(ts_event) on staging equipment_events
 // scoped to enterprise + the last hour. Same time-window discipline as
 // the prod-side query (avoid scanning the full hypertable). Used by the

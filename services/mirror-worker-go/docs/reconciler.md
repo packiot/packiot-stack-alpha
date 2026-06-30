@@ -95,6 +95,7 @@ mirror_worker_comparator_events_lag_seconds   # gauge — should be < 120s
 mirror_worker_comparator_user_logs_lag        # gauge — should be tiny
 mirror_worker_comparator_oee_divergence_pct{id_production_order}  # gauge per active PO — should be < 0.01
 mirror_worker_comparator_oee_measured_total{outcome="ok|skipped|failed"}
+mirror_worker_comparator_dlq_anomaly_total    # gauge — should be 0
 ```
 
 Healthy steady state:
@@ -110,6 +111,7 @@ Healthy steady state:
 - `comparator_user_logs_lag` < 100 (worker's main poll cursor stays within ~100 IDs of prod's max)
 - `comparator_oee_divergence_pct{id_production_order}` < 0.01 for every label (1% is within rounding noise for the per-minute pg_cron cycle)
 - `comparator_oee_measured_total{outcome="ok"}` increments every 30 min; `skipped` non-zero is expected when freshly-started POs have prod.net_production=0
+- `comparator_dlq_anomaly_total` = 0 (every staging DLQ entry has a matching prod user_log)
 
 ## Comparator (fidelity watchdog, ADR-0008 phase 2a)
 
@@ -149,6 +151,30 @@ Phase 2a.1 ships one metric: `comparator_active_pos_diff`. Future phases (2a.2-2
 #### `comparator_oee_divergence_pct{id_production_order}` > 0.05 for many POs simultaneously
 
 Likely a systemic value-sync outage, not per-PO. Check `mirror_worker_reconciler_values_synced_total` rate vs the period of the divergence — if the synced count dropped, the value-sync is broken or disabled. `RECONCILE_VALUES_ENABLED=true`?
+
+#### `comparator_dlq_anomaly_total` > 0
+
+Real-world rare. Staging has DLQ rows whose `source_log_id` no longer exists in prod's `user_logs`. The DLQ retry loop will mark these as "permanent" forever (the prod row is gone, can't replay). Resolution requires manual triage:
+
+```sql
+-- Find which staging DLQ entries are orphans:
+SELECT id, source_log_id, category, error, created_at
+  FROM mirror_replay_dlq d
+ WHERE d.source = 'cpack-prod-go'
+   AND NOT EXISTS (
+     -- Query prod via a separate connection (this is just illustrative)
+     SELECT 1 FROM user_logs WHERE id_user_logs = d.source_log_id
+   );
+
+-- After verifying the rows are truly orphaned (the prod user_log really is gone),
+-- DELETE them. They cannot be replayed; keeping them only inflates DLQ depth.
+DELETE FROM mirror_replay_dlq WHERE id = $N;
+```
+
+Common causes:
+1. **Prod data cleanup.** A scheduled prune on prod `user_logs` (retention policy, GDPR delete, etc.) removed rows that staging's DLQ still references.
+2. **Wrong ID stamped at DLQ-write time.** A bug in `processRow` recorded the wrong `source_log_id` — extremely unlikely but auditable via the DLQ row's `created_at` + git blame.
+3. **Race with prod's DBA-led row removal.** Prod admin manually deleted user_logs rows (e.g. cleaning test data).
 
 ### Why a separate loop, not merged into the reconciler
 
