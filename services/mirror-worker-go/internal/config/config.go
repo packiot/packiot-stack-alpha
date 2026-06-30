@@ -125,6 +125,25 @@ type Config struct {
 	DLQReanimateIntervalSec int
 	DLQReanimateBatchSize   int
 
+	// Comparator loop — fidelity watchdog (ADR-0008 phase 2a). Periodically
+	// SELECTs canonical values from BOTH prod and staging, computes
+	// divergence, emits Prometheus gauges. SELECT-only on both sides — never
+	// mutates either system. Honours the prod-db-select-only discipline by
+	// design (the entire pattern is observability, not reconciliation).
+	//
+	// Phase 2a.1 (this commit) ships the skeleton + the cheapest metric:
+	// comparator_active_pos_diff (count diff on production_orders WHERE
+	// status=2, scoped per-enterprise). Future metrics (events_lag_seconds,
+	// oee_divergence_pct, dlq_anomaly_total, user_logs_lag) land in 2a.2-2a.5
+	// without further config plumbing — they re-use this loop's cadence.
+	//
+	// Cadence default 5 min matches RECONCILE_INTERVAL_SEC — the comparator
+	// pairs naturally with the existence reconciler's cycle (active POs is
+	// what both touch). Heavier per-PO metrics (OEE divergence) will run on
+	// a longer interval handled internally by RunOnce, not a separate loop.
+	ComparatorEnabled     bool
+	ComparatorIntervalSec int
+
 	// Logging.
 	LogLevel string
 }
@@ -159,6 +178,8 @@ func Load() (*Config, error) {
 		DLQReanimateEnabled:        getenvBool("DLQ_REANIMATE_ENABLED", true),
 		DLQReanimateIntervalSec:    getenvInt("DLQ_REANIMATE_INTERVAL_SEC", 600),
 		DLQReanimateBatchSize:      getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
+		ComparatorEnabled:          getenvBool("COMPARATOR_ENABLED", true),
+		ComparatorIntervalSec:      getenvInt("COMPARATOR_INTERVAL_SEC", 300),
 		LogLevel:                   getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
