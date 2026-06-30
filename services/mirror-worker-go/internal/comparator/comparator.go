@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/config"
@@ -34,11 +35,19 @@ import (
 // Comparator owns the periodic fidelity-watchdog loop. One instance per
 // worker process. Reuses the shared prodDB + stagingDB pools — no
 // connection pressure beyond a single COUNT(*) per side per tick.
+//
+// lastOEERun gates the heavy OEE divergence measurement to its own
+// (longer) cadence. It's not protected by a mutex because RunOnce is
+// only called from a single goroutine inside RunForever — the comparator
+// loop is single-threaded by design (no fanout into per-metric goroutines
+// because the per-tick query budget is tiny).
 type Comparator struct {
 	cfg     *config.Config
 	prod    *db.Prod
 	staging *db.Staging
 	logger  *slog.Logger
+
+	lastOEERun time.Time
 }
 
 func New(cfg *config.Config, prod *db.Prod, staging *db.Staging, logger *slog.Logger) *Comparator {
@@ -113,6 +122,19 @@ func (c *Comparator) RunOnce(ctx context.Context) error {
 	} else {
 		ok++
 	}
+	// OEE divergence runs on its own (longer) cadence — internal gate, not
+	// a separate goroutine. Skip silently when not due; emit logs when run.
+	// First tick after boot always runs (zero-value lastOEERun is far enough
+	// in the past).
+	if time.Since(c.lastOEERun) >= time.Duration(c.cfg.ComparatorOEEIntervalSec)*time.Second {
+		if err := c.measureOEEDivergence(ctx); err != nil {
+			failed++
+			c.logger.Warn("comparator measure failed", slog.String("metric", "oee_divergence_pct"), slog.String("err", err.Error()))
+		} else {
+			ok++
+		}
+		c.lastOEERun = time.Now()
+	}
 
 	// Tick outcome: ok if any measurement landed, failed only if all errored.
 	// The runs counter is a coarse tick-level signal — the per-metric gauges
@@ -133,6 +155,114 @@ func (c *Comparator) RunOnce(ctx context.Context) error {
 	// Returning err here would only show up in tick-failed logs which are
 	// less actionable than the per-measure WARN above.
 	return nil
+}
+
+// measureOEEDivergence walks the active mapped POs, fetches prod's
+// net_production in a single round-trip via the existing
+// FetchRuntimeValues helper, and emits abs(prod-staging)/prod per PO.
+//
+// Label management: Reset()s the GaugeVec at the start of each pass so
+// labels for now-finished POs drop off automatically. Per-PO cardinality
+// stays bounded by the active set (~10-15 typical). The "metric briefly
+// disappears between Reset and Set" race is invisible at 30-min cadence
+// + 15s scrape — Prometheus catches a populated vec every time.
+//
+// Math (per PO):
+//   - prodNet nil or 0  → skip (can't compute pct without a denominator)
+//   - stagingNet nil    → treat as 0 (PO mapped but no runtime row yet)
+//   - else              → divergence = abs(prodNet - stagingNet) / prodNet
+//
+// Per-PO outcome counters give the dashboard separation between
+// "everyone healthy" and "we measured nothing because every PO is freshly
+// started" vs "the measure errored entirely".
+func (c *Comparator) measureOEEDivergence(ctx context.Context) error {
+	mapped, err := c.staging.FetchMappedActiveCPACKPOs(ctx, c.cfg.SourceName, c.cfg.StagingEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("fetch mapped active POs: %w", err)
+	}
+	if len(mapped) == 0 {
+		// No active POs → nothing to compare. Reset the vec so any stale
+		// labels from a prior tick disappear. Healthy state: 0 active POs
+		// means the line is idle, which is real information for dashboards.
+		metrics.ComparatorOEEDivergencePct.Reset()
+		c.logger.Debug("comparator oee_divergence: no active POs — vec reset, nothing to emit")
+		return nil
+	}
+
+	prodIDs := make([]int64, 0, len(mapped))
+	for _, m := range mapped {
+		prodIDs = append(prodIDs, m.ProdPOID)
+	}
+	prodRuntimes, err := c.prod.FetchRuntimeValues(ctx, prodIDs)
+	if err != nil {
+		return fmt.Errorf("fetch prod runtime values: %w", err)
+	}
+
+	// Reset vec so labels for finished POs (no longer in `mapped`) drop off.
+	// Then set labels for currently-active POs.
+	metrics.ComparatorOEEDivergencePct.Reset()
+	var emitted, skipped int
+	for _, m := range mapped {
+		prodVals, prodFound := prodRuntimes[m.ProdPOID]
+		divergence, ok := computeOEEDivergence(prodVals, prodFound, m.StagingNetProduction)
+		if !ok {
+			skipped++
+			metrics.ComparatorOEEMeasured.WithLabelValues("skipped").Inc()
+			continue
+		}
+		// Label uses the staging PO id (the side the operator UI shows).
+		// Using prod PO id would force operators to look up the mapping
+		// every time they investigate a divergence; staging id is the one
+		// they already see on dashboards.
+		labelVal := strconv.FormatInt(m.StagingPOID, 10)
+		metrics.ComparatorOEEDivergencePct.WithLabelValues(labelVal).Set(divergence)
+		metrics.ComparatorOEEMeasured.WithLabelValues("ok").Inc()
+		emitted++
+		// Only log when divergence exceeds an attention threshold —
+		// keeps the per-tick log volume tiny on the healthy path.
+		if divergence > 0.05 {
+			c.logger.Info("comparator oee_divergence above 5%",
+				slog.Int64("prod_po", m.ProdPOID),
+				slog.Int64("staging_po", m.StagingPOID),
+				slog.Float64("divergence_pct", divergence),
+				slog.Float64("prod_net", *prodVals.NetProduction),
+				slog.Float64("staging_net", floatOrZero(m.StagingNetProduction)),
+			)
+		}
+	}
+	c.logger.Info("comparator oee_divergence tick complete",
+		slog.Int("emitted", emitted),
+		slog.Int("skipped", skipped),
+		slog.Int("active_pos", len(mapped)),
+	)
+	return nil
+}
+
+// computeOEEDivergence is the pure-function math the measure delegates to.
+// Exposed at package-private scope (lowercase) so the unit tests can pin
+// the edge cases without touching the DB. Returns (pct, ok) where ok=false
+// means "skip this label — input is undefined for divergence pct".
+func computeOEEDivergence(prod db.ProdRuntimeValues, prodFound bool, stagingNet *float64) (float64, bool) {
+	if !prodFound || prod.NetProduction == nil || *prod.NetProduction == 0 {
+		// No denominator → divergence_pct undefined. The reasons differ
+		// (PO missing from prod runtime table vs PO freshly started with
+		// no production yet) but the outcome for the gauge is the same:
+		// skip the label this tick.
+		return 0, false
+	}
+	staging := floatOrZero(stagingNet)
+	diff := *prod.NetProduction - staging
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff / *prod.NetProduction, true
+}
+
+func floatOrZero(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // measureEventsLagSeconds queries both systems for max(ts_event) over the

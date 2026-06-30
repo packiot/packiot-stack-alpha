@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -70,6 +71,100 @@ func TestComparatorEventsLagSecondsMetric_Registered(t *testing.T) {
 func TestComparatorUserLogsLagMetric_Registered(t *testing.T) {
 	if _, err := testutil.GatherAndCount(metrics.Registry, "mirror_worker_comparator_user_logs_lag"); err != nil {
 		t.Errorf("mirror_worker_comparator_user_logs_lag not gathered: %v", err)
+	}
+}
+
+func TestComparatorOEEDivergencePctMetric_Registered(t *testing.T) {
+	if _, err := testutil.GatherAndCount(metrics.Registry, "mirror_worker_comparator_oee_divergence_pct"); err != nil {
+		t.Errorf("mirror_worker_comparator_oee_divergence_pct not gathered: %v", err)
+	}
+}
+
+func TestComparatorOEEMeasuredMetric_Registered(t *testing.T) {
+	if _, err := testutil.GatherAndCount(metrics.Registry, "mirror_worker_comparator_oee_measured_total"); err != nil {
+		t.Errorf("mirror_worker_comparator_oee_measured_total not gathered: %v", err)
+	}
+}
+
+// TestComputeOEEDivergence covers the pure-function math directly — the
+// per-PO skip/emit decision matters more than the wire-level DB plumbing.
+// Each case names the production scenario it represents, not just the
+// numerical inputs, so future readers can reason about WHY the decision
+// is what it is.
+func TestComputeOEEDivergence(t *testing.T) {
+	fp := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name        string
+		prod        db.ProdRuntimeValues
+		prodFound   bool
+		stagingNet  *float64
+		wantPct     float64
+		wantEmit    bool
+	}{
+		{
+			name:       "in sync — 1000 vs 1000 → 0%",
+			prod:       db.ProdRuntimeValues{IDProductionOrder: 1, NetProduction: fp(1000)},
+			prodFound:  true,
+			stagingNet: fp(1000),
+			wantPct:    0,
+			wantEmit:   true,
+		},
+		{
+			name:       "1% staging lag — 1000 vs 990 → 1%",
+			prod:       db.ProdRuntimeValues{IDProductionOrder: 1, NetProduction: fp(1000)},
+			prodFound:  true,
+			stagingNet: fp(990),
+			wantPct:    0.01,
+			wantEmit:   true,
+		},
+		{
+			name:       "staging ahead — 1000 vs 1050 → 5% (sign-agnostic, abs)",
+			prod:       db.ProdRuntimeValues{IDProductionOrder: 1, NetProduction: fp(1000)},
+			prodFound:  true,
+			stagingNet: fp(1050),
+			wantPct:    0.05,
+			wantEmit:   true,
+		},
+		{
+			name:       "freshly-started PO — prod 0 → SKIP (no denominator)",
+			prod:       db.ProdRuntimeValues{IDProductionOrder: 1, NetProduction: fp(0)},
+			prodFound:  true,
+			stagingNet: fp(0),
+			wantEmit:   false,
+		},
+		{
+			name:       "prod row missing entirely → SKIP",
+			prod:       db.ProdRuntimeValues{},
+			prodFound:  false,
+			stagingNet: fp(100),
+			wantEmit:   false,
+		},
+		{
+			name:       "prod NetProduction nil → SKIP (cron hasn't computed yet)",
+			prod:       db.ProdRuntimeValues{IDProductionOrder: 1, NetProduction: nil},
+			prodFound:  true,
+			stagingNet: fp(100),
+			wantEmit:   false,
+		},
+		{
+			name:       "staging missing — 1000 vs nil → 100% (treat as 0)",
+			prod:       db.ProdRuntimeValues{IDProductionOrder: 1, NetProduction: fp(1000)},
+			prodFound:  true,
+			stagingNet: nil,
+			wantPct:    1.0,
+			wantEmit:   true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pct, ok := computeOEEDivergence(c.prod, c.prodFound, c.stagingNet)
+			if ok != c.wantEmit {
+				t.Fatalf("emit decision = %v, want %v", ok, c.wantEmit)
+			}
+			if ok && pct != c.wantPct {
+				t.Errorf("pct = %v, want %v", pct, c.wantPct)
+			}
+		})
 	}
 }
 

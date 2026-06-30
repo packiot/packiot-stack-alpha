@@ -45,6 +45,7 @@ If you violate (2) — by reintroducing state/mode/speed-bearing equipment_value
 | `DLQ_RETRY_BATCH_SIZE` | `50` | Per-pass cap on rows examined — a giant DLQ backlog can't hammer edge-api in one tick |
 | `COMPARATOR_ENABLED` | `true` | Kill-switch for the comparator fidelity-watchdog loop (ADR-0008 phase 2a) |
 | `COMPARATOR_INTERVAL_SEC` | `300` | Comparator cadence (5 min). Matches existence reconciler — comparator watches what reconciler maintains. |
+| `COMPARATOR_OEE_INTERVAL_SEC` | `1800` | OEE divergence sub-cadence (30 min). Gated internally inside the comparator loop — heavier query, longer interval. Doesn't add a goroutine. |
 
 ## What you see in logs
 
@@ -92,6 +93,8 @@ mirror_worker_comparator_active_pos_diff      # gauge — should be 0 (prod-stag
 mirror_worker_comparator_runs_total{outcome="ok|failed"}
 mirror_worker_comparator_events_lag_seconds   # gauge — should be < 120s
 mirror_worker_comparator_user_logs_lag        # gauge — should be tiny
+mirror_worker_comparator_oee_divergence_pct{id_production_order}  # gauge per active PO — should be < 0.01
+mirror_worker_comparator_oee_measured_total{outcome="ok|skipped|failed"}
 ```
 
 Healthy steady state:
@@ -105,6 +108,8 @@ Healthy steady state:
 - `comparator_runs_total{outcome="ok"}` increments every 5 min; `failed` ratio should stay low
 - `comparator_events_lag_seconds` < 120s (events-sync reconciler cadence is 60s; one tick of lag is normal)
 - `comparator_user_logs_lag` < 100 (worker's main poll cursor stays within ~100 IDs of prod's max)
+- `comparator_oee_divergence_pct{id_production_order}` < 0.01 for every label (1% is within rounding noise for the per-minute pg_cron cycle)
+- `comparator_oee_measured_total{outcome="ok"}` increments every 30 min; `skipped` non-zero is expected when freshly-started POs have prod.net_production=0
 
 ## Comparator (fidelity watchdog, ADR-0008 phase 2a)
 
@@ -134,6 +139,16 @@ Phase 2a.1 ships one metric: `comparator_active_pos_diff`. Future phases (2a.2-2
 1. **The worker is stalled on the main poll loop.** Check `dispatcher` activity — `mirror_worker_user_logs_polled_total` rate should match prod's publish rate.
 2. **Check the most recent handler outcomes.** If `mirror_worker_user_logs_replayed_total{outcome="failed"}` is climbing, a handler is consistently erroring and the cursor isn't advancing past those rows. Inspect the DLQ.
 3. **Check for a stuck row inside the per-row tx.** Long-running `processRow` invocations (e.g. blocked on a staging DB write) hold the cursor at the row before them. `pg_stat_activity` on staging shows the blocked statement.
+
+#### `comparator_oee_divergence_pct{id_production_order}` > 0.05 for one PO
+
+1. **Single PO divergence is usually a value-sync gap on that specific equipment.** Check whether the reconciler's value-sync has been seeing the equipment — `mirror_worker_reconciler_values_synced_total{outcome="failed"}` rate is the right signal, but it's not labeled by equipment; cross-check via worker log search for `value sync: insert delta failed` near the affected PO.
+2. **Look at the underlying equipment_values rate on both sides.** If prod is producing equipment_values at a different rate than staging is receiving them, the value-sync delta will lag. Use the existing `mirror_worker_reconciler_values_synced_total` against the period.
+3. **Check for an OEE-trigger drift on staging.** The pg_cron job `piot_proc_refresh_runtime` rebuilds `production_orders_runtime` every minute on staging; if it errored on the affected PO, staging's net_production won't advance even with healthy equipment_values inserts.
+
+#### `comparator_oee_divergence_pct{id_production_order}` > 0.05 for many POs simultaneously
+
+Likely a systemic value-sync outage, not per-PO. Check `mirror_worker_reconciler_values_synced_total` rate vs the period of the divergence — if the synced count dropped, the value-sync is broken or disabled. `RECONCILE_VALUES_ENABLED=true`?
 
 ### Why a separate loop, not merged into the reconciler
 
