@@ -117,6 +117,8 @@ Healthy steady state:
 
 Periodic SELECT-only loop that runs alongside the reconcilers. Where reconcilers WRITE to staging to close gaps, the comparator READS both systems to MEASURE residual gaps. It validates that the reconciler is doing its job; the two together form the writer + watchdog pair.
 
+**Dashboard.** All 6 comparator gauges + the runs-rate counter render in the **Comparator — fidelity watchdog** row on the existing `/d/mirror-worker` Grafana dashboard (`grafana/dashboards/07-mirror-worker.json`). Each stat panel uses the thresholds documented in this runbook's healthy-state checklist (green/yellow/red bands). Alert-rule provisioning (Slack/ntfy/email delivery) is intentionally NOT in source today — the colorized panel thresholds catch divergence at a glance during operator review; a follow-up will wire alert rules once the team picks a delivery mechanism.
+
 Phase 2a.1 ships one metric: `comparator_active_pos_diff`. Future phases (2a.2-2a.5) add 4 more: `events_lag_seconds`, `oee_divergence_pct{po}`, `dlq_anomaly_total`, `user_logs_lag`. Each plugs into the same RunOnce loop via a new measure-function.
 
 ### When the comparator alerts
