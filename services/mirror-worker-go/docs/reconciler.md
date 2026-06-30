@@ -122,7 +122,7 @@ Value sync is failing for one direction. Check `values_synced_total{outcome="fai
 
 ### DLQ filling with `equipment_event NNN unmapped (no staging interval overlap)`
 
-This is the symptom that motivated the events sync. It means the matcher (`translate.EquipmentEvent`) ran for an operator-action handler (event-justified / event-edited / event-splitted) and found no staging equipment_event row to match against, AND no `mirror_id_map` entry for the prod event id. Two diagnostics:
+After PR retiring event-justified / event-edited / event-splitted handlers, this symptom should no longer appear from operator-action replay — those categories are no longer dispatched (the events-sync reconciler is the sole writer of equipment_events, per invariant 2 above). If you still see it, it's coming from `downtime-event-created`, which carries an equipment_event reference and still needs the matcher:
 
 ```sql
 -- Is the events reconciler producing mappings at all?

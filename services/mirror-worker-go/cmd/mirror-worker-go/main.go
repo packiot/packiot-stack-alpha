@@ -125,12 +125,13 @@ func main() {
 		replay.OrderStopped(cfg, t, tok.Get, httpc, logger))
 	disp.Register("order-replaced",
 		replay.OrderReplaced(cfg, t, tok.Get, httpc, logger))
-	disp.Register("event-justified",
-		replay.EventJustified(cfg, t, tok.Get, httpc, logger))
-	disp.Register("event-edited",
-		replay.EventEdited(cfg, t, prodDB, tok.Get, httpc, logger))
-	disp.Register("event-splitted",
-		replay.EventSplitted(cfg, t, tok.Get, httpc, logger))
+	// event-justified, event-edited, event-splitted are intentionally NOT
+	// registered: PR #76's events-sync reconciler is the sole writer of
+	// equipment_events for CPACK (see services/mirror-worker-go/docs/reconciler.md
+	// invariant 2). Re-executing operator actions via edge-api produces PK
+	// violations against the reconciler's already-inserted rows. Unregistered
+	// categories advance the cursor + record outcome=skipped on the dispatcher's
+	// fall-through path; the user_logs row itself is still mirrored.
 	disp.Register("downtime-event-created",
 		replay.DowntimeEventCreated(cfg, t, tok.Get, httpc, logger))
 
