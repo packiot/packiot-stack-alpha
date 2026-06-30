@@ -119,9 +119,52 @@ A companion spike lands in the same PR as this ADR:
   - `TestDataTypeEnumStable` — confirms enum integers match Sparkplug B wire format
 
 The spike proves the decode is **lossless and standards-compliant**. What it does NOT prove yet:
-- Performance vs Node-RED (deferred to ADR-0010 Phase 1)
+- ~~Performance vs Node-RED (deferred to ADR-0010 Phase 1)~~ **PARTIAL: Go side benchmarked — see "Phase 1 progress" section below. Node-RED side requires live capture.**
 - Bit-exact parity with Node-RED's decoded output (deferred to ADR-0010 Phase 1; requires capturing real factory MQTT payloads)
 - MQTT subscriber reliability (deferred to ADR-0010 Phase 2)
+
+### Phase 1 progress — decode benchmarks (2026-06-30)
+
+Realistic NBIRTH/NDATA fixtures (using actual CPACK packml_register topic names — same as Phase 2.5b consumes) + benchmarks shipped in same PR:
+
+- `internal/sparkplug/fixtures_test.go` — `newNBIRTH(N)`, `newNDATA(N, seq)` builders + `TestFixtureShapes` which asserts NDATA is ≥2× smaller than NBIRTH (measured: 4.36×)
+- `internal/sparkplug/benchmark_test.go` — Decode/Encode benchmarks at 1/10/100/1000 metric batch sizes
+
+Run:
+
+```bash
+cd services/edge-transformer
+go test -bench=. -benchmem -benchtime=2s ./internal/sparkplug/
+```
+
+**Results (Intel i5-1135G7 @ 2.4 GHz, single-core):**
+
+| Benchmark | Time / op | Throughput | Allocations |
+|---|---|---|---|
+| Decode NBIRTH(1)    | 1.74 μs | 48.3 MB/s | 392 B, 11 allocs |
+| Decode NBIRTH(10)   | 12.5 μs | 57.9 MB/s | 2.8 KB, 78 allocs |
+| Decode NBIRTH(100)  | 116 μs  | 60.3 MB/s | 25.8 KB, 711 allocs |
+| Decode NBIRTH(1000) | 1.19 ms | 59.5 MB/s | 252 KB, 7014 allocs |
+| Decode NDATA(1)     | 1.61 μs | 15.6 MB/s | 312 B, 9 allocs |
+| Decode NDATA(10)    | 11.0 μs | 15.4 MB/s | 2.0 KB, 58 allocs |
+| Decode NDATA(100)   | 95.6 μs | 16.8 MB/s | 18.3 KB, 511 allocs |
+| Decode NDATA(1000)  | 985 μs  | 17.1 MB/s | 178 KB, 5014 allocs |
+| Encode NBIRTH(100)  | 74.8 μs | 93.7 MB/s | 8.2 KB, **1 alloc** |
+| Encode NDATA(100)   | 64.6 μs | 24.9 MB/s | 1.8 KB, **1 alloc** |
+
+**Production-load translation**:
+
+- NDATA(100) decode = **~10,500 batches/sec/core** = **~1.04M metrics/sec/core**
+- CPACK staging produces ~0.8 msg/s × ~100 metrics ≈ 80 metrics/sec
+- **~13,000× headroom** on a single Go core for staging-scale load
+- Even worst-case factory load (~300 metrics/sec, per Phase 2.5b's Q4 estimate) sits at ~3% of one core
+
+**What this means for the ADR**: the "Go decoder is fast enough" argument is now grounded in measurement, not estimate. The decoder is never the bottleneck. The architectural concern at end-state production load is the MQTT subscriber connection management + alias-table state (Phase 2 work), not the decode hot path.
+
+**Still pending in Phase 1**:
+- Node-RED side benchmark (live capture via `node --prof` on staging)
+- Parity validation against real captured payloads
+- Multi-core scaling characterization (informs Phase 2's subscriber-per-tenant vs shared design)
 
 ### Why this seam, not others
 
