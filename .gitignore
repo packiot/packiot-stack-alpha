@@ -3,6 +3,8 @@
 # Terraform plan files — never committed (contain credentials and rapidly stale)
 terraform/staging/tfplan*
 terraform/staging/*.tfplan
+terraform/production/tfplan*
+terraform/production/*.tfplan
 
 # Python bytecode (simulator + any future Python tooling)
 __pycache__/
