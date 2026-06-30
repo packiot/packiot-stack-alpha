@@ -1,0 +1,28 @@
+# clients/cpack/client.yaml — RUNTIME-ACTIVE config for C-Pack Solutions
+#
+# This file is mounted into the edge-transformer container at
+# /etc/packiot/client.yaml and parsed by services/edge-transformer/internal/
+# clientconfig/loader.go at boot.
+#
+# Current schema = SKELETON-MINIMUM (loader.go Config struct as of Phase 2):
+#   tenant_id, customer, environment, equipments
+#
+# The full v1.0 schema documented in docs/clients/_schema.yaml is the Phase 2+
+# target; the loader will grow into that shape as port work lands. Until then,
+# only the fields below are honored at runtime. Adding more here is harmless
+# but ignored.
+#
+# Why we ship a real-customer config now (not just the .example.yaml):
+#   1. The compose mount source must exist or the container won't boot.
+#   2. The tenant_id drives per-tenant queue naming + Prometheus labels
+#      (avoids the silent-coverage-gap class of bugs — see PR #56 retrospective).
+#   3. CPack is the canonical Phase 2 test customer; their config landing
+#      here is the "we're really doing this" signal.
+
+tenant_id:    cpack
+customer:     "C-Pack Solutions"
+environment:  staging
+
+# equipments: will populate from packml_register exports in Phase 2.5;
+# left empty in skeleton boot so the loader returns a valid Config.
+equipments: []
