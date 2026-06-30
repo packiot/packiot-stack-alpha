@@ -61,6 +61,18 @@ func TestComparatorRunsTotalMetric_Registered(t *testing.T) {
 	}
 }
 
+func TestComparatorEventsLagSecondsMetric_Registered(t *testing.T) {
+	if _, err := testutil.GatherAndCount(metrics.Registry, "mirror_worker_comparator_events_lag_seconds"); err != nil {
+		t.Errorf("mirror_worker_comparator_events_lag_seconds not gathered: %v", err)
+	}
+}
+
+func TestComparatorUserLogsLagMetric_Registered(t *testing.T) {
+	if _, err := testutil.GatherAndCount(metrics.Registry, "mirror_worker_comparator_user_logs_lag"); err != nil {
+		t.Errorf("mirror_worker_comparator_user_logs_lag not gathered: %v", err)
+	}
+}
+
 // TestComparatorSQLInvariants pins the load-bearing predicates of the
 // CountActivePOs queries on both sides via a SQL-blob scan. Both COUNT(*)
 // queries must (a) scope to id_enterprise, (b) filter to status=2 (running).
@@ -106,11 +118,55 @@ func TestComparatorSQLInvariants(t *testing.T) {
 				"WHERE id_enterprise = $1 AND status = 2",
 				fname + " CountActivePOs must scope to (enterprise, status=2) — without enterprise scope the comparator would compare org-wide totals; without status=2 it would count finished/paused POs too",
 			},
+			{
+				"max(ts_event)",
+				fname + " MaxRecentEventTs must SELECT max(ts_event) — events_lag_seconds gauge depends on this exact aggregation; switching to min/avg would invert the lag semantics",
+			},
+			{
+				"ts_event > now() - interval '1 hour'",
+				fname + " MaxRecentEventTs MUST scope to the last hour — without the window, the query scans the full equipment_events hypertable (billion rows on prod), violating the 'cheap query' design constraint of the comparator",
+			},
 		}
 		for _, w := range wantSubs {
 			if !strings.Contains(sqlBlob, w.needle) {
 				t.Errorf("%s SQL missing comparator invariant %q — %s", fname, w.needle, w.why)
 			}
+		}
+	}
+
+	// Prod-side has one additional invariant the staging side doesn't:
+	// MaxUserLogID lives only on prod.go (the comparator reads the staging
+	// cursor instead of staging's user_logs max, since the cursor is the
+	// canonical "what staging has processed" value).
+	prodSrc, err := os.ReadFile("../db/prod.go")
+	if err != nil {
+		t.Fatalf("read ../db/prod.go: %v", err)
+	}
+	prodBody := string(prodSrc)
+	var prodSqlOnly strings.Builder
+	inBT := false
+	for _, ch := range prodBody {
+		if ch == '`' {
+			inBT = !inBT
+			continue
+		}
+		if inBT {
+			prodSqlOnly.WriteRune(ch)
+		}
+	}
+	prodSqlBlob := prodSqlOnly.String()
+	prodOnlyInvariants := []struct {
+		needle string
+		why    string
+	}{
+		{
+			"COALESCE(max(id_user_logs), 0)",
+			"MaxUserLogID must COALESCE max(id_user_logs) to 0 — without it, an empty user_logs table for the enterprise returns NULL and the comparator's int64 scan errors",
+		},
+	}
+	for _, w := range prodOnlyInvariants {
+		if !strings.Contains(prodSqlBlob, w.needle) {
+			t.Errorf("../db/prod.go SQL missing comparator invariant %q — %s", w.needle, w.why)
 		}
 	}
 }

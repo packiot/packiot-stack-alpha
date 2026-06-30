@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -172,6 +173,28 @@ func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) 
 		`SELECT COUNT(*) FROM mirror_id_map WHERE source = $1`,
 		[]any{source}, &n)
 	return n, err
+}
+
+// MaxRecentEventTs returns max(ts_event) on staging equipment_events
+// scoped to enterprise + the last hour. Same time-window discipline as
+// the prod-side query (avoid scanning the full hypertable). Used by the
+// comparator's events_lag_seconds metric (ADR-0008 phase 2a.2).
+func (s *Staging) MaxRecentEventTs(ctx context.Context, enterpriseID int) (time.Time, error) {
+	var ts sql.NullTime
+	err := s.pool.QueryRow(ctx,
+		`SELECT max(ts_event)
+		   FROM equipment_events
+		  WHERE id_enterprise = $1
+		    AND ts_event > now() - interval '1 hour'`,
+		enterpriseID,
+	).Scan(&ts)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("max recent staging ts_event: %w", err)
+	}
+	if !ts.Valid {
+		return time.Time{}, nil
+	}
+	return ts.Time, nil
 }
 
 // CountActivePOs returns the number of staging production_orders currently
