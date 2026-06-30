@@ -1,0 +1,19 @@
+# client.example.yaml — minimal client.yaml for local dev.
+#
+# ADR-0009 Phase 2 SKELETON schema. The full schema (ADR-0004) lands in
+# Phase 2 work; today this file only carries the fields the skeleton
+# loader actually parses. When Phase 2 expands the schema, this example
+# stays in lockstep with the real one at docs/clients/<id>.yaml.
+#
+# Secrets DO NOT live here. The convention is `*_env: VAR_NAME` for any
+# field whose value is a secret — the VAR_NAME is the key in the AWS
+# Secrets Manager JSON. The skeleton doesn't yet need any secrets here,
+# so no `*_env` fields are shown.
+
+tenant_id: dev
+customer: Local Dev
+environment: staging
+
+# equipments: empty for the skeleton. Phase 2 fills this from
+# packml_register exports or CS Admin onboarding output.
+equipments: []

@@ -1,0 +1,14 @@
+# Local Go build artifacts.
+/bin/
+/out/
+*.test
+*.out
+
+# Local dev scratch — keep client.yaml itself versioned in
+# packiot-stack-alpha/docs/clients/, but devs may want a local override.
+client.local.yaml
+
+# editor scratch
+.idea/
+.vscode/
+*.swp
