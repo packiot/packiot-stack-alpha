@@ -324,6 +324,198 @@
         { "refId": "A", "expr": "go_goroutines{job=\"mirror-worker-go\"}", "legendFormat": "goroutines" },
         { "refId": "B", "expr": "process_resident_memory_bytes{job=\"mirror-worker-go\"}", "legendFormat": "RSS (bytes)" }
       ]
+    },
+    {
+      "id": 104,
+      "type": "row",
+      "title": "Comparator — fidelity watchdog (ADR-0008 phase 2a)",
+      "description": "SELECT-only divergence measurements between prod and staging. Pairs with the reconciler — reconciler closes gaps; comparator measures them. Thresholds match the healthy-state checklist in services/mirror-worker-go/docs/reconciler.md.",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Active POs diff (prod - staging)",
+      "description": "comparator_active_pos_diff = prod count(active POs) - staging count(active POs). Healthy: 0. Positive: staging behind on EnsureActivePOs. Negative: staging has stale rows. Thresholds shown for the absolute value.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 51 },
+      "id": 200,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red",    "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "abs(mirror_worker_comparator_active_pos_diff)" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Events lag (sec, prod - staging max ts_event)",
+      "description": "comparator_events_lag_seconds. Healthy: < 120s (events-sync reconciler cadence is 60s). Yellow > 120s. Red > 300s = events-sync stuck.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 51 },
+      "id": 201,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 120 },
+              { "color": "red",    "value": 300 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "mirror_worker_comparator_events_lag_seconds" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "User_logs lag (IDs behind)",
+      "description": "comparator_user_logs_lag = prod max(user_logs.id_user_logs) - staging mirror_replay_cursor.last_log_id. Healthy: < 100. Large sustained = main poll loop stalled.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 51 },
+      "id": 202,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red",    "value": 1000 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "mirror_worker_comparator_user_logs_lag" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "DLQ anomaly (orphan rows)",
+      "description": "comparator_dlq_anomaly_total = count(staging DLQ rows whose source_log_id no longer exists on prod). Healthy: 0. Non-zero = manual triage needed (see runbook).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 51 },
+      "id": 203,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "mirror_worker_comparator_dlq_anomaly_total" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "OEE divergence per active PO (pct)",
+      "description": "comparator_oee_divergence_pct{id_production_order} = abs(prod.net_production - staging.net_production) / prod.net_production. Healthy: every line < 0.01 (1%). One PO drifting = value-sync gap on that equipment; multiple POs = systemic value-sync outage. 30-min cadence; line per active staging PO.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 18, "x": 0, "y": 56 },
+      "id": 204,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "auto" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red",    "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "mirror_worker_comparator_oee_divergence_pct", "legendFormat": "po {{id_production_order}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Comparator runs rate (ok vs failed)",
+      "description": "comparator_runs_total. ok = at least one measurement landed per tick. failed = every measurement errored (watchdog blind). Sustained 'failed' > 0 means the comparator can't reach prod or staging — investigate before trusting any of the gauges above.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 56 },
+      "id": 205,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "rate(mirror_worker_comparator_runs_total[5m])", "legendFormat": "{{outcome}}" }
+      ]
     }
   ],
   "refresh": "30s",
