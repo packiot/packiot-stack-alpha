@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation Hub
+    url: https://github.com/packiot/packiot-stack-alpha/blob/staging/docs/INDEX.md
+    about: Architecture, ADRs, operational guides, glossary. Start here.
+  - name: Architecture Decision Records (ADRs)
+    url: https://github.com/packiot/packiot-stack-alpha/tree/staging/docs/adr
+    about: The "why" behind every architectural choice
+  - name: Phase 2 / 2.5 / 3 runbooks
+    url: https://github.com/packiot/packiot-stack-alpha/tree/staging/docs
+    about: Step-by-step execution guides for in-flight work
