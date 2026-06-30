@@ -26,10 +26,12 @@ package replay
 // counter that gates its loop. Atomic UPDATE-RETURNING; no double-tx
 // gymnastics; pure data-plane operation.
 //
-// Scope: equipment_event-shaped categories only (event-justified,
-// event-edited, event-splitted, downtime-event-created). Order-*
-// categories carry idProductionOrder and need a sibling predicate —
-// none stuck today, so deferred until they actually appear.
+// Scope: equipment_event-shaped categories only — today that means
+// downtime-event-created. (event-justified, event-edited, event-splitted
+// are no longer registered handlers; the events-sync reconciler is the
+// sole writer of equipment_events.) Order-* categories carry
+// idProductionOrder and need a sibling predicate — none stuck today,
+// so deferred until they actually appear.
 //
 // What this is NOT: NOT a way to bypass retry caps for genuinely-
 // broken rows. The mappability predicate is the gate; if the source
