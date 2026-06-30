@@ -393,4 +393,60 @@ else
   echo "SKIP: packiot/staging/rabbitmq-client-creds not found — create it in Secrets Manager then re-run this block via SSM"
 fi
 
+# ── edge-transformer user + Phase 2 topology (ADR-0009) ──────────────────────
+# Provisions:
+#   1. RMQ user `edge-transformer` with least-priv perms scoped to
+#      ^(edge-transformer\..*|outbox\..*|edge\.plc-normalized)$
+#   2. Topic exchange `edge.plc-normalized` for normalized PLC payloads
+#      from Node-RED publishers (per docs/clients/_normalized-payload-schema.yaml).
+#   3. Topic exchange `dlx.edge.plc-normalized` for failed-after-retry messages.
+#
+# Both exchanges are durable + idempotent (PUT is upsert-shaped in the RMQ
+# management API). Declaring them early is harmless — they sit empty until
+# Phase 2's Node-RED publisher flow lands.
+#
+# When the secret is missing, skip cleanly (matches the pattern above). For
+# the live secret created 2026-06-30, this block runs end-to-end on next deploy.
+if aws secretsmanager describe-secret \
+    --secret-id packiot/staging/rabbitmq-edge-transformer-creds \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+
+  ET_CREDS=$(get_secret "packiot/staging/rabbitmq-edge-transformer-creds")
+  ET_USER=$(echo "$ET_CREDS" | jq -r '.username')
+  ET_PASS=$(echo "$ET_CREDS" | jq -r '.password')
+
+  # Idempotent user create. Tag "management" is needed if the service ever
+  # uses the HTTP API (the AMQP consumer pattern doesn't, but it's harmless).
+  curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
+    "http://127.0.0.1:15672/api/users/$ET_USER" \
+    -H "Content-Type: application/json" \
+    -d "{\"password\":\"$ET_PASS\",\"tags\":\"\"}"
+
+  # Least-priv perms — see docs/edge-transformer-phase-2-runbook.md §2.B.
+  # The regex restricts edge-transformer to its own queues + the shared
+  # publish exchange. Cannot touch other tenants' queues, management API,
+  # or other exchanges. Bounded blast radius.
+  curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
+    "http://127.0.0.1:15672/api/permissions/%2F/$ET_USER" \
+    -H "Content-Type: application/json" \
+    -d '{"configure":"^(edge-transformer\\..*|outbox\\..*)$","write":"^(edge-transformer\\..*|outbox\\..*|edge\\.plc-normalized)$","read":"^(edge\\.plc-normalized|edge-transformer\\..*|outbox\\..*)$"}'
+
+  echo "RabbitMQ user '$ET_USER' created with edge-transformer least-priv perms"
+
+  # Declare the Phase 2 topology — exchange + DLX. Topic-type, durable.
+  curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
+    "http://127.0.0.1:15672/api/exchanges/%2F/edge.plc-normalized" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"topic","durable":true,"auto_delete":false}'
+
+  curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
+    "http://127.0.0.1:15672/api/exchanges/%2F/dlx.edge.plc-normalized" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"topic","durable":true,"auto_delete":false}'
+
+  echo "RabbitMQ topology declared: edge.plc-normalized + dlx.edge.plc-normalized (topic, durable)"
+else
+  echo "SKIP: packiot/staging/rabbitmq-edge-transformer-creds not found — create it in Secrets Manager then re-run this block via SSM"
+fi
+
 echo "=== App init complete $(date -u) ==="
