@@ -1,0 +1,217 @@
+# clients/cpack/client.yaml
+#
+# Example populated client.yaml for C-Pack Solutions (Montreal site).
+# Derived from observed patterns in their real Node-RED instance
+# (1,003 nodes, 478 in Client tab — see Phase 0 catalog).
+#
+# This file replaces:
+#   - ~9,100 LOC of flow.set() data blobs in their Node-RED
+#   - 37+ hand-wired OPC-UA Item nodes
+#   - 14+ inject nodes with hardcoded intervals/cron
+#   - URL strings + credentials scattered across function nodes
+#   - GitHub-Secrets-per-customer drift
+
+schema_version: "1.0"
+
+# ── Customer identity ─────────────────────────────────────────────────
+client:
+  id:        cpack
+  name:      "C-Pack Solutions"
+  timezone:  "America/Montreal"
+  site_code: "MONTREAL"
+
+# ── PLC connectivity (SHAPE 1) ────────────────────────────────────────
+# Customer uses OPC-UA exclusively (B&R / Acopos PLCs).
+plc:
+  protocol: opcua
+  endpoints:
+    - name: line-25-bci
+      url: "opc.tcp://10.20.4.25:4840"
+      security: None
+      auth: { username_env: OPCUA_USERNAME, password_env: OPCUA_PASSWORD }
+      polling_interval: 1s
+      reconnect_backoff: 30s
+    - name: line-30-bci
+      url: "opc.tcp://10.20.4.30:4840"
+      security: None
+      auth: { username_env: OPCUA_USERNAME, password_env: OPCUA_PASSWORD }
+      polling_interval: 1s
+
+# ── Equipment mapping (SHAPE 1 cont.) ─────────────────────────────────
+# Maps OPC-UA tags to PackIOT equipment IDs + named parameters.
+# Replaces 37 hand-wired OPC-UA Item nodes in the customer's flows.
+# Add entries here when onboarding a new line; the Go layer
+# regenerates Node-RED config-nodes on next deploy.
+equipment_mapping:
+  # Line 25 — Counter readings
+  - source:       "ns=6;s=::bci_ini:stBci.Statistics.ProdConsumedCount"
+    equipment_id: 84
+    parameter:    counter_consumed
+    datatype:     int64
+  - source:       "ns=6;s=::bci_ini:stBci.Statistics.ProdProcessedCount"
+    equipment_id: 84
+    parameter:    counter_processed
+    datatype:     int64
+  # Line 25 — State
+  - source:       "ns=6;s=::bci_ini:stBci.Statistics.CurrentState"
+    equipment_id: 84
+    parameter:    machine_state
+    datatype:     int32
+  # Line 25 — Speed (PLC reports in RPM, Packiot canonical is units/min)
+  - source:       "ns=6;s=::bci_ini:stBci.Process.Speed"
+    equipment_id: 84
+    parameter:    speed
+    datatype:     float64
+    scale:        1.0       # 1 rpm = 1 unit/min for this equipment
+    units:        rpm
+
+  # Line 30 — same pattern
+  - source:       "ns=6;s=::bci_ini:stBci[0].Statistics.ProdConsumedCount"
+    equipment_id: 85
+    parameter:    counter_consumed
+    datatype:     int64
+  - source:       "ns=6;s=::bci_ini:stBci[0].Statistics.ProdProcessedCount"
+    equipment_id: 85
+    parameter:    counter_processed
+    datatype:     int64
+  # ... ~30 more entries; truncated for brevity
+
+# ── Data tables (SHAPE 3) ─────────────────────────────────────────────
+# Pure config files. Loaded once at startup by both Go + Node-RED.
+# These three files together replace the 9,134 LOC of JS-in-functions
+# in the customer's flows.json today.
+data_tables:
+  error_codes:        ./data/error-codes.yaml         # was: 8,113-line "set error list json"
+  machine_catalog:    ./data/machines.yaml            # was: SETTINGS JSON 0.52 (789 lines)
+  packml_thresholds:  ./data/packml-thresholds.yaml   # was: general PackML config (232 lines)
+
+# ── Schedules (SHAPE 5) ───────────────────────────────────────────────
+# Periodic actions. Maps to a built-in Go action OR a Node-RED hook.
+# Replaces the 14 real schedule inject nodes in the customer's flows.
+schedules:
+  - name: shift-validity-poll
+    interval: 30s
+    action: integration:shift_validity     # → calls integrations.shift_validity below
+    enabled: true
+
+  - name: counter-rollup-fast
+    interval: 60s
+    action: rollup_counters                # ← built-in Go action
+    args: { window: "1m", equipments: [84, 85] }
+    enabled: true
+
+  - name: counter-rollup-slow
+    interval: 600s
+    action: rollup_counters
+    args: { window: "10m", equipments: [84, 85] }
+    enabled: true
+
+  - name: weekend-mode-friday-night
+    cron: "0 22 * * 5"                     # Friday 22:00 Montreal time
+    action: nodered:weekend-mode-on        # ← Node-RED hook
+    enabled: true
+
+  - name: weekend-mode-sunday-night
+    cron: "0 23 * * 0"
+    action: nodered:weekend-mode-off
+    enabled: true
+
+  - name: device-ping
+    interval: 60s
+    action: integration:device_ping
+    enabled: true
+
+  - name: heartbeat-fast
+    interval: 110s
+    action: heartbeat
+    enabled: true
+
+  # ... more schedules
+
+# ── Time / shift configuration (SHAPE 4) ──────────────────────────────
+# CPack pulls shift definitions from the cloud DB (via Hasura) every
+# 30s; the schedule above triggers it. The local YAML is a fallback.
+shifts:
+  source: cloud_db                          # pulled via Hasura subscription
+
+# ── External integrations (SHAPE 8) ───────────────────────────────────
+integrations:
+  shift_validity:
+    enabled: true
+    type: http_poll
+    url_env: BACK4_API_URL                   # https://back4-api-dev.us-east-2.elasticbeanstalk.com
+    method: GET
+    parse: json
+    on_response: nodered:apply-shift-state
+    headers:
+      Authorization: "Bearer ${BACK4_API_TOKEN}"
+
+  device_ping:
+    enabled: true
+    type: heartbeat
+    url: "https://api4.packiot.com/devices/ping"
+    method: POST
+    headers:
+      X-Device-Id: "cpack-montreal-${HOSTNAME}"
+
+  job_report:
+    enabled: true
+    type: cloud_api_call
+    url_env: BACK4_API_URL
+    method: POST
+    on_call: nodered:build-job-report-payload   # custom-shaped payload built in Node-RED
+
+# ── Customization flows (SHAPE 2, 6, 7) ───────────────────────────────
+# The state machines + custom transforms CPack maintains in low-code.
+# Each path is a Node-RED tab JSON file (one tab per file, max 200 LOC
+# per function, no http in/out, no flow.set of big JSON).
+customization_flows:
+  - path: ./customizations/line-25-fsm.json
+    description: "Line 25 finite-state machine: idle → running → faulted"
+    owner: ana@cpack.example.com
+    contract:
+      inputs:
+        - "rmq:plc.normalized.cpack.equipment.84"
+      outputs:
+        - "rmq:edge.events.cpack.equipment.84"
+
+  - path: ./customizations/line-30-fsm.json
+    description: "Line 30 finite-state machine (similar to L25 but with KC variant handling)"
+    owner: ana@cpack.example.com
+    contract:
+      inputs:
+        - "rmq:plc.normalized.cpack.equipment.85"
+      outputs:
+        - "rmq:edge.events.cpack.equipment.85"
+
+  - path: ./customizations/weekend-mode.json
+    description: "Triggered by weekend-mode-* schedules; suppresses downtime alerts Fri 22:00 – Sun 23:00"
+    owner: ana@cpack.example.com
+    contract:
+      inputs:
+        - "scheduler:weekend-mode-on"
+        - "scheduler:weekend-mode-off"
+      outputs:
+        - "global:weekend_mode"
+
+  - path: ./customizations/apply-shift-state.json
+    description: "Receives shift-validity poll response; updates per-equipment shift bucket"
+    owner: ana@cpack.example.com
+    contract:
+      inputs:
+        - "integration_response:shift_validity"
+      outputs:
+        - "global:current_shift"
+
+# ── Cloud-side integration ────────────────────────────────────────────
+cloud:
+  edge_api_url:        "https://edge.api4.packiot.com/api"
+  edge_api_token_env:  EDGE_API_TOKEN
+  hasura_url:          "https://hasura.api4.packiot.com/v1/graphql"
+  pubsub_project:      "packiot-oee-prod"
+
+# ── Feature flags ─────────────────────────────────────────────────────
+features:
+  weekend_mode: true
+  use_legacy_event_split: false
+  send_box_scans_to_back4: true

@@ -1,0 +1,151 @@
+# client.yaml — Schema for per-customer Edge Stack configuration
+#
+# This file documents the schema. Each section maps to a customization
+# SHAPE identified in docs/edge-nodered-customization-shapes.md.
+#
+# Loaded by BOTH the Go transformer service AND Node-RED's init function.
+# Single source of truth per customer; replaces the historical sprawl of:
+#   - flow.set('config_thing', { ... }) data blobs in Node-RED
+#   - GitHub Secrets per-customer
+#   - compose env vars
+#   - transform_flows.py per-customer substitutions
+#   - manual packml_register DB inserts
+#
+# Schema version follows semver. Breaking changes bump major.
+# Validation: scripts/validate-client-yaml.sh <path>
+
+schema_version: "1.0"
+
+# ── Customer identity ─────────────────────────────────────────────────
+# Required. Used for tenant routing in RabbitMQ exchanges, queue names,
+# Prometheus metric labels, and structured logs.
+client:
+  id:          string   # slug; lowercase, hyphens; e.g. "cpack"
+  name:        string   # display name; e.g. "C-Pack Solutions"
+  timezone:    string   # IANA tz; e.g. "America/Montreal"
+  site_code:   string   # short code used in factory dashboards; e.g. "MONTREAL"
+
+# ── PLC connectivity (SHAPE 1) ────────────────────────────────────────
+# What PLC protocol(s) this customer uses + connection parameters.
+# The Go layer auto-generates Node-RED config-nodes for endpoints/clients
+# at startup; CS engineers do NOT hand-edit OPC-UA Client nodes anymore.
+plc:
+  protocol:    enum[opcua, sparkplug, s7, modbus_tcp, ethernet_ip]
+  endpoints:
+    - name:               string    # human label, used in Grafana
+      url:                string    # opc.tcp://... or mqtt://... etc.
+      security:           string?   # opcua-specific: "None" | "Basic256Sha256"
+      auth:               object?   # {username:, password_env:} or {certificate_env:, key_env:}
+      polling_interval:   duration  # "1s" | "500ms" | "5s"
+      reconnect_backoff:  duration? # default: "30s"
+
+# ── Equipment mapping (SHAPE 1 cont.) ─────────────────────────────────
+# Wires customer-specific PLC tags to PackIOT's equipment/parameter model.
+# Replaces the 37+ OPC-UA Item nodes that CS used to drag-and-drop per
+# customer. Each entry generates an Item node in Node-RED at startup
+# AND a routing entry in the Go transformer.
+equipment_mapping:
+  - source:        string    # PLC node ID (OPC-UA) or topic (SparkPlug)
+    equipment_id:  int       # packml_register.id_equipment
+    parameter:     string    # named param; mapped to PackML param ID via parameter_catalog
+    datatype:      enum[bool, int32, int64, float32, float64, string, json]
+    scale:         number?   # optional linear scaling; payload * scale
+    offset:        number?   # optional linear offset; payload * scale + offset
+    units:         string?   # informational; e.g. "celsius" | "rpm"
+
+# ── Data tables (SHAPE 3) ─────────────────────────────────────────────
+# Per-customer reference data. Each entry points at a YAML file in
+# data/. Files loaded by both Go (into typed structs) and Node-RED
+# (via a small init function exposing them on flow.error_codes, etc.).
+# Replaces the 9,000+ LOC of `flow.set('error_codes', { ... })`.
+data_tables:
+  error_codes:        ./data/error-codes.yaml         # machine → error ID → category mapping
+  machine_catalog:    ./data/machines.yaml            # canonical list of customer's equipment
+  packml_thresholds:  ./data/packml-thresholds.yaml   # per-equipment param defaults
+  shift_calendar:     ./data/shifts.yaml?             # optional: customer-specific holiday list
+  # Add more as needed; each becomes a flow.X.<name> in Node-RED + a
+  # typed Go module loaded from disk.
+
+# ── Schedules (SHAPE 5) ───────────────────────────────────────────────
+# Periodic actions. The action: field references either:
+#   - a built-in Go action (poll_shift_api, rollup_counters, heartbeat, ...)
+#   - a Node-RED hook (prefix "nodered:") referencing a named flow
+# Replaces 14+ inject nodes per customer.
+schedules:
+  - name:      string                  # human label, also Prom metric label
+    interval:  duration?               # mutually exclusive with cron
+    cron:      string?                 # standard 5-field cron
+    action:    string                  # built-in name | "nodered:<flow-name>"
+    args:      object?                 # passed to the action handler
+    enabled:   bool                    # default true; lets you turn schedules off without deleting
+
+# ── Time / shift configuration (SHAPE 4) ──────────────────────────────
+# Shift definitions used by the Go layer's time helpers.
+# Replaces the 20+ time/shift function nodes per customer.
+shifts:
+  source:  enum[cloud_db, local_yaml, http_api]
+  # If source == local_yaml:
+  schedule:
+    - name:        string         # e.g. "morning"
+      starts_at:   time           # "06:00" — interpreted in client.timezone
+      ends_at:     time           # "14:00"
+      days:        [int]?         # ISO weekdays; default = all
+  # If source == cloud_db: shifts pulled from edge-api/Hasura periodically
+  # If source == http_api: schedules: replaced by an integration: entry
+
+# ── External integrations (SHAPE 8) ───────────────────────────────────
+# Outbound HTTP / Kafka / SFTP / etc. Each entry selects a pre-built
+# Go connector by type: and supplies parameters. Custom connectors
+# are escalated to engineering (Go-layer change).
+integrations:
+  shift_validity:                  # arbitrary key; referenced from schedules.action
+    enabled:        bool
+    type:           enum[http_poll, http_webhook_in, heartbeat, cloud_api_call]
+    # type-specific fields below; validated against the chosen type
+    url:            string?
+    url_env:        string?         # OR: read URL from env var (secret-friendly)
+    method:         enum[GET, POST, PUT, DELETE]?
+    headers:        map[string,string]?
+    parse:          enum[json, text, xml, csv]?
+    on_response:    string?         # built-in action name | "nodered:<flow>"
+  device_ping:
+    enabled:        bool
+    type:           heartbeat
+    url:            string
+    interval:       duration
+
+# ── Customization flows (SHAPE 2, 6, 7) ───────────────────────────────
+# OPTIONAL Node-RED tabs the CS team maintains in low-code. The Go
+# layer auto-imports each at startup. These are where the per-equipment
+# state machines + customer-specific transforms live.
+#
+# Governance rules (enforced in CI):
+#   - Max 200 LOC per function node
+#   - No flow.set() of >50-line JSON objects (use data_tables instead)
+#   - No http in/out (use integrations: instead)
+#   - Must accept input from RabbitMQ + publish to RabbitMQ
+customization_flows:
+  - path:        string             # ./customizations/line-25-events.json
+    description: string             # what this flow does (for docs)
+    owner:       string             # email of CS engineer maintaining it
+    contract:    object             # declared inputs/outputs, validated at load
+
+# ── Cloud-side integration ────────────────────────────────────────────
+# Where this factory's data goes after Go transformer processes it.
+# Most customers will leave defaults; only multi-tenant / split-cloud
+# customers override.
+cloud:
+  edge_api_url:    string             # https://edge.api4.packiot.com/api
+  edge_api_token_env: string          # env var name holding the token
+  hasura_url:      string?            # for the rare Node-RED → Hasura direct path
+  pubsub_project:  string?            # GCP project for SparkPlug message bus
+
+# ── Feature flags ─────────────────────────────────────────────────────
+# Per-customer toggles. Use sparingly; if a feature requires its own
+# flag for >2 customers, it should be standardized or moved to a per-
+# environment config.
+features:
+  use_legacy_event_split:  bool?
+  send_box_scans_to_back4: bool?
+  weekend_mode:            bool?
+  # ...
