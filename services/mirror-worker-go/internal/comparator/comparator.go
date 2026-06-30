@@ -80,23 +80,128 @@ func (c *Comparator) RunForever(ctx context.Context) error {
 
 // RunOnce executes a single comparator pass — one measurement per metric.
 // Exported so future ad-hoc triggers (admin endpoint, signal handler) can
-// drive it without waiting for the next tick. Returns the first error it
-// encounters; downstream metrics for THIS tick are skipped on error.
+// drive it without waiting for the next tick.
 //
-// Phase 2a.1: only active_pos_diff. The pattern for adding 2a.2-2a.5 is:
-// each new measurement is its own helper method that updates its own
-// gauge + records its own outcome. Composition over a single mega-query
-// keeps the per-metric failure mode legible.
+// Each measure-function is independent: a failure in one does NOT short-
+// circuit the rest. This is the key composition property — a transient
+// prod hiccup on equipment_events shouldn't blind the active_pos_diff
+// signal, or vice versa. Per-measurement errors are logged + counted via
+// the runs counter; the tick-level outcome is "ok" if at least one
+// measurement landed, "failed" only if every measurement errored.
+//
+// Phase 2a.1: active_pos_diff. Phase 2a.2 (this commit): + events_lag_seconds,
+// + user_logs_lag. Phase 2a.3-2a.5 add the heavier metrics + Grafana wiring.
 func (c *Comparator) RunOnce(ctx context.Context) error {
 	start := time.Now()
+	var ok, failed int
+
 	if err := c.measureActivePOsDiff(ctx); err != nil {
-		metrics.ComparatorRunsTotal.WithLabelValues("failed").Inc()
-		return fmt.Errorf("active_pos_diff: %w", err)
+		failed++
+		c.logger.Warn("comparator measure failed", slog.String("metric", "active_pos_diff"), slog.String("err", err.Error()))
+	} else {
+		ok++
 	}
-	metrics.ComparatorRunsTotal.WithLabelValues("ok").Inc()
+	if err := c.measureEventsLagSeconds(ctx); err != nil {
+		failed++
+		c.logger.Warn("comparator measure failed", slog.String("metric", "events_lag_seconds"), slog.String("err", err.Error()))
+	} else {
+		ok++
+	}
+	if err := c.measureUserLogsLag(ctx); err != nil {
+		failed++
+		c.logger.Warn("comparator measure failed", slog.String("metric", "user_logs_lag"), slog.String("err", err.Error()))
+	} else {
+		ok++
+	}
+
+	// Tick outcome: ok if any measurement landed, failed only if all errored.
+	// The runs counter is a coarse tick-level signal — the per-metric gauges
+	// are the actionable values; this counter exists to flag "watchdog is
+	// blind" outages where every measurement is dying at once.
+	if ok == 0 && failed > 0 {
+		metrics.ComparatorRunsTotal.WithLabelValues("failed").Inc()
+	} else {
+		metrics.ComparatorRunsTotal.WithLabelValues("ok").Inc()
+	}
 	c.logger.Debug("comparator tick complete",
+		slog.Int("measures_ok", ok),
+		slog.Int("measures_failed", failed),
 		slog.Duration("elapsed", time.Since(start)),
 	)
+	// Return nil unconditionally so RunForever's loop continues — per-tick
+	// failures are surfaced via metrics + logs, not via the returned error.
+	// Returning err here would only show up in tick-failed logs which are
+	// less actionable than the per-measure WARN above.
+	return nil
+}
+
+// measureEventsLagSeconds queries both systems for max(ts_event) over the
+// last hour and updates the gauge with the lag in seconds (prod - staging).
+// Skips emission when prod has no recent events (zero time returned) —
+// avoids logging a false-positive lag when the line is simply idle.
+// Healthy: < 120s (events reconciler cadence is 60s; one tick of lag is
+// normal). > 300s sustained means the events-sync reconciler is stuck or
+// disabled.
+func (c *Comparator) measureEventsLagSeconds(ctx context.Context) error {
+	prodTs, err := c.prod.MaxRecentEventTs(ctx, c.cfg.ProdEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("prod max ts_event: %w", err)
+	}
+	if prodTs.IsZero() {
+		// No prod activity in the window → no signal to emit. Don't update
+		// the gauge; existing reading stays until the next non-empty tick.
+		c.logger.Debug("comparator events_lag: prod side empty in last hour — skipping emission")
+		return nil
+	}
+	stagingTs, err := c.staging.MaxRecentEventTs(ctx, c.cfg.StagingEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("staging max ts_event: %w", err)
+	}
+	if stagingTs.IsZero() {
+		// Prod has events but staging doesn't — full reconciler failure.
+		// Surface as a huge lag (window cap) so dashboards flag it.
+		c.logger.Warn("comparator events_lag: staging side empty in last hour while prod has events",
+			slog.Time("prod_max", prodTs))
+		metrics.ComparatorEventsLagSeconds.Set(3600) // cap = window size
+		return nil
+	}
+	lag := prodTs.Sub(stagingTs).Seconds()
+	metrics.ComparatorEventsLagSeconds.Set(lag)
+	if lag > 300 {
+		c.logger.Info("comparator events_lag above threshold",
+			slog.Time("prod_max", prodTs),
+			slog.Time("staging_max", stagingTs),
+			slog.Float64("lag_sec", lag))
+	}
+	return nil
+}
+
+// measureUserLogsLag queries prod for max(user_logs.id_user_logs) and
+// compares to the worker's mirror_replay_cursor.last_log_id. Result is
+// the count of unprocessed prod user_logs IDs ahead of the worker.
+// Healthy: tiny (the cursor advances on every poll tick; lag is bounded
+// by the prod publish rate during the tick interval). Large sustained
+// values mean the worker has stalled.
+func (c *Comparator) measureUserLogsLag(ctx context.Context) error {
+	prodMax, err := c.prod.MaxUserLogID(ctx, c.cfg.ProdEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("prod max user_logs id: %w", err)
+	}
+	stagingCursor, err := c.staging.ReadCursor(ctx, c.cfg.SourceName)
+	if err != nil {
+		return fmt.Errorf("staging cursor read: %w", err)
+	}
+	lag := prodMax - stagingCursor
+	metrics.ComparatorUserLogsLag.Set(float64(lag))
+	if lag > 100 {
+		// 100 is generous — at prod's ~1 user_log every few seconds, lag >100
+		// means the worker is well over a minute behind. Worth a log line for
+		// pattern analysis even before the alert threshold.
+		c.logger.Info("comparator user_logs_lag elevated",
+			slog.Int64("prod_max", prodMax),
+			slog.Int64("staging_cursor", stagingCursor),
+			slog.Int64("lag", lag))
+	}
 	return nil
 }
 

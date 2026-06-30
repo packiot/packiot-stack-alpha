@@ -90,6 +90,8 @@ mirror_worker_dlq_retry_attempts_total{outcome="succeeded|failed|permanent"}
 mirror_worker_dlq_depth                       # gauge — should hover near zero
 mirror_worker_comparator_active_pos_diff      # gauge — should be 0 (prod-staging diff)
 mirror_worker_comparator_runs_total{outcome="ok|failed"}
+mirror_worker_comparator_events_lag_seconds   # gauge — should be < 120s
+mirror_worker_comparator_user_logs_lag        # gauge — should be tiny
 ```
 
 Healthy steady state:
@@ -101,6 +103,8 @@ Healthy steady state:
 - `events_total{outcome="created"}` accumulates near `events_cursor` delta; `skipped` is non-zero only when packml_register is missing an entry; `failed` should be ~0
 - `comparator_active_pos_diff` = 0 (prod count == staging count for active POs)
 - `comparator_runs_total{outcome="ok"}` increments every 5 min; `failed` ratio should stay low
+- `comparator_events_lag_seconds` < 120s (events-sync reconciler cadence is 60s; one tick of lag is normal)
+- `comparator_user_logs_lag` < 100 (worker's main poll cursor stays within ~100 IDs of prod's max)
 
 ## Comparator (fidelity watchdog, ADR-0008 phase 2a)
 
@@ -110,13 +114,26 @@ Phase 2a.1 ships one metric: `comparator_active_pos_diff`. Future phases (2a.2-2
 
 ### When the comparator alerts
 
-If `comparator_active_pos_diff` is consistently non-zero:
+#### `comparator_active_pos_diff` consistently non-zero
 
-1. **Verify the comparator itself isn't broken.** Check `comparator_runs_total{outcome="failed"}` — if non-zero recently, the comparator couldn't query one of the two systems. Look at the worker log for `comparator tick failed`.
+1. **Verify the comparator itself isn't broken.** Check `comparator_runs_total{outcome="failed"}` — if non-zero recently, the comparator couldn't query one of the two systems. Look at the worker log for `comparator measure failed`.
 2. **Identify direction.** Positive = prod has more (EnsureActivePOs reconciler is behind). Negative = staging has stale rows (something didn't close on staging). Sign tells you which side to investigate first.
 3. **Cross-check with `active_drift_pos`.** The two gauges measure the same underlying state from different angles — if they disagree, the reconciler's drift calculation is wrong.
-4. **Look at the reconciler.** Is the existence pass running? When was its last `reconciler pass complete`? Has it logged any failed PO creates?
+4. **Look at the reconciler.** Is the existence pass running? When was its last `reconciler pass complete`? Has it logged any failed PO creates or `reconciler: revived existing staging PO` lines?
 5. **Only then start digging into the data.** Most divergence is explained by step 3-4 before you need to inspect individual POs.
+
+#### `comparator_events_lag_seconds > 300` sustained
+
+1. **First, check `comparator_events_lag_seconds` isn't stale.** The gauge intentionally doesn't update when prod has no events in the last hour (idle line) — confirm prod's max(ts_event) is recent by querying directly.
+2. **Check the events reconciler.** Is `RECONCILE_EVENTS_ENABLED=true`? When did `events sync tick complete` last log? Is `reconciler_events_cursor` advancing?
+3. **Check `reconciler_events_total{outcome="failed"}`.** If non-zero rate, the reconciler is failing to write — usually a FK violation from a missing staging packml_register row. Add the row (CS Admin path) and re-arm.
+4. **If reconciler looks healthy, check for trigger drift.** The events reconciler uses `forced_creation_system=true` to bypass dedup; if a schema migration broke that bypass, writes would silently fail. Check trigger function source against the runbook invariants.
+
+#### `comparator_user_logs_lag` growing without bound
+
+1. **The worker is stalled on the main poll loop.** Check `dispatcher` activity — `mirror_worker_user_logs_polled_total` rate should match prod's publish rate.
+2. **Check the most recent handler outcomes.** If `mirror_worker_user_logs_replayed_total{outcome="failed"}` is climbing, a handler is consistently erroring and the cursor isn't advancing past those rows. Inspect the DLQ.
+3. **Check for a stuck row inside the per-row tx.** Long-running `processRow` invocations (e.g. blocked on a staging DB write) hold the cursor at the row before them. `pg_stat_activity` on staging shows the blocked statement.
 
 ### Why a separate loop, not merged into the reconciler
 

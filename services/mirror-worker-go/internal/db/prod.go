@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
@@ -159,6 +160,83 @@ type ProdActivePO struct {
 	IDSite               int
 	IDArea               int
 	ProductionProgrammed float64
+}
+
+// MaxUserLogID returns max(id_user_logs) on prod scoped to enterprise.
+// Used by the comparator's user_logs_lag metric (ADR-0008 phase 2a.2) to
+// answer "how far behind is the main poll loop's cursor?". Single
+// round-trip; PK index makes it O(log n). BEGIN READ ONLY for defense in
+// depth on top of the awslambda role.
+//
+// Returns 0 (and no error) when the enterprise has no user_logs rows —
+// caller treats that as "lag = staging cursor's value" naturally.
+func (p *Prod) MaxUserLogID(ctx context.Context, enterpriseID int) (int64, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var n int64
+	err = tx.QueryRow(ctx,
+		`SELECT COALESCE(max(id_user_logs), 0)
+		   FROM user_logs
+		  WHERE id_enterprise = $1`,
+		enterpriseID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("max user_logs.id: %w", err)
+	}
+	return n, nil
+}
+
+// MaxRecentEventTs returns max(ts_event) on prod equipment_events scoped
+// to enterprise + the last hour. The time window is essential — without
+// it the query would scan a billion-row hypertable. With it, the planner
+// hits the most-recent TimescaleDB chunk(s) only — sub-second on prod.
+// Used by the comparator's events_lag_seconds metric (ADR-0008 phase 2a.2).
+//
+// Returns zero time when no events exist in the window (e.g. line stopped
+// for >1h) — caller should treat that as "no signal" not "lag = forever";
+// the comparator's measureEventsLag skips emission when prod side is zero.
+func (p *Prod) MaxRecentEventTs(ctx context.Context, enterpriseID int) (time.Time, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var ts sql.NullTime
+	err = tx.QueryRow(ctx,
+		`SELECT max(ts_event)
+		   FROM equipment_events
+		  WHERE id_enterprise = $1
+		    AND ts_event > now() - interval '1 hour'`,
+		enterpriseID,
+	).Scan(&ts)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("max recent ts_event: %w", err)
+	}
+	if !ts.Valid {
+		return time.Time{}, nil
+	}
+	return ts.Time, nil
 }
 
 // CountActivePOs returns the number of prod production_orders currently

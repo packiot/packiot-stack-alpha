@@ -185,6 +185,31 @@ var (
 		Name: "mirror_worker_comparator_runs_total",
 		Help: "Comparator pass outcomes (ok|failed). Failed = couldn't measure; investigate before trusting the gauge.",
 	}, []string{"outcome"})
+
+	// ComparatorEventsLagSeconds — fidelity gauge (ADR-0008 phase 2a.2).
+	// Computed as (prod max(ts_event) - staging max(ts_event)) over the
+	// last hour, scoped per-enterprise. Healthy steady state: < 120s
+	// (events reconciler cadence is 60s; one tick of lag is normal).
+	// Positive: staging behind. Sustained > 300s means the events-sync
+	// reconciler is stuck or disabled. Gauge is set to NaN when prod
+	// emits no events in the window (line stopped) — avoids logging
+	// false-positive lag when both sides are quiet.
+	ComparatorEventsLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_events_lag_seconds",
+		Help: "(prod max(ts_event) - staging max(ts_event)) in seconds, last-hour window. Healthy: < 120s. >300s sustained = events-sync stuck.",
+	})
+
+	// ComparatorUserLogsLag — fidelity gauge (ADR-0008 phase 2a.2).
+	// Computed as (prod max(user_logs.id_user_logs) - staging cursor
+	// last_log_id) for the worker's source. Healthy steady state: small
+	// integer (the cursor advances on every poll tick; lag is bounded by
+	// the prod publish rate during the tick interval). Positive: main
+	// poll loop is behind. Large sustained values mean the worker has
+	// stalled on a long-running handler or hit a recoverable error loop.
+	ComparatorUserLogsLag = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_user_logs_lag",
+		Help: "prod max(user_logs.id_user_logs) - staging mirror_replay_cursor.last_log_id for this worker's source. Healthy: tiny. Large sustained = poll loop stalled.",
+	})
 )
 
 func init() {
@@ -214,5 +239,7 @@ func init() {
 		DLQReanimatedTotal,
 		ComparatorActivePosDiff,
 		ComparatorRunsTotal,
+		ComparatorEventsLagSeconds,
+		ComparatorUserLogsLag,
 	)
 }
