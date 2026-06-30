@@ -41,6 +41,7 @@ volumes:
 # .10 pgbouncer    .11 simulator     .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init  .16 db-migrate    .17 adminer
 # .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
+# .23 edge-transformer (ADR-0009 Phase 2; reserved, NOT yet wired — see commented service block below)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -684,6 +685,74 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+
+  # ── edge-transformer (ADR-0009 Phase 2 — NOT WIRED YET) ────────────────────────
+  # Per-factory Go service that will consume from the local RabbitMQ exchange
+  # `plc.normalized.<tenant>` and replace the deterministic transform layer
+  # currently inside edge-node-red's Sparkplug subflow + Calc_Counters.
+  #
+  # Scaffold-only on this branch — the source tree under
+  # services/edge-transformer/ compiles + runs in shadow mode (logs+acks every
+  # delivery, writes nothing). The compose service entry below is a commented
+  # PLACEHOLDER showing what Phase 2 will look like once edge-node-red ships
+  # the publish-side cutover. DO NOT uncomment without:
+  #   1. landing the AMQP user secret packiot/staging/rabbitmq-edge-transformer-creds
+  #      in AWS Secrets Manager + granting EC2 IAM role access
+  #   2. landing edge-node-red's plc.normalized.<tenant> publisher
+  #   3. provisioning RabbitMQ user `edge-transformer` with least-privilege perms
+  #      (configure/write/read scoped to ^(plc\.normalized.*|edge-transformer-q.*)$)
+  #
+  # Reuse rule (ADR-0009 Errata Correction 2): everything below mirrors
+  # oeecloud-worker's service entry — same Secrets Manager pattern, same env
+  # var shape, same depends_on RabbitMQ healthcheck, same distroless image
+  # with --healthcheck self-probe. Only port + queue names differ.
+  #
+  # IP slot reserved: 172.18.0.23 (next free after .22 prometheus).
+  #
+  # edge-transformer:
+  #   build: ./services/edge-transformer
+  #   container_name: edge-transformer
+  #   restart: unless-stopped
+  #   env_file: [.env]
+  #   environment:
+  #     LOG_LEVEL: info
+  #     EDGE_TRANSFORMER_MODE: factory
+  #     AWS_REGION: us-east-1
+  #     RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-edge-transformer-creds
+  #     RABBITMQ_HOST: rabbitmq
+  #     RABBITMQ_PORT: "5672"
+  #     SOURCE_EXCHANGE: plc.normalized
+  #     WORKER_QUEUE: edge-transformer-q
+  #     RETRY_EXCHANGE: plc.normalized-retry
+  #     RETRY_QUEUE: edge-transformer-q-retry-30s
+  #     FAILED_EXCHANGE: plc.normalized-failed
+  #     FAILED_QUEUE: edge-transformer-q-failed
+  #     RETRY_TTL_MS: "30000"
+  #     MAX_RETRIES: "5"
+  #     PREFETCH: "50"
+  #     HEALTH_PORT: "9102"   # deliberately NOT 9101 — oeecloud-worker owns that
+  #     CLIENT_YAML_PATH: /etc/packiot/client.yaml
+  #   volumes:
+  #     # ADR-0004 — per-customer client.yaml lives in git under
+  #     # docs/clients/<tenant>.yaml; mount it read-only into the container.
+  #     - ./docs/clients/cpack.yaml:/etc/packiot/client.yaml:ro
+  #   networks:
+  #     packiot-net:
+  #       ipv4_address: 172.18.0.23
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "/usr/local/bin/edge-transformer", "--healthcheck"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 30s
+  #   mem_limit: 128m
+  #   cpus: 0.5
+  #   logging:
+  #     driver: json-file
+  #     options: {max-size: "10m", max-file: "3"}
 
   # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
   # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API

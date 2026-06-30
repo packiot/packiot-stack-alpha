@@ -1,0 +1,126 @@
+// Package config loads runtime configuration from environment variables.
+// Secrets (any future DB password, RabbitMQ password) are NOT in env — they
+// are fetched from AWS Secrets Manager by main.go at startup. Same shape
+// as services/oeecloud-worker/internal/config.
+//
+// ADR-0009 Phase 2: this skeleton ships shadow-mode only. Config fields
+// already encode the eventual Phase 2 surface (per-tenant queues, DLQ +
+// reanimator, dual-mode boot via EDGE_TRANSFORMER_MODE), so adding the real
+// handlers in later phases doesn't churn this file.
+//
+// TODO(ADR-0009 Phase 2): wire EDGE_TRANSFORMER_MODE to actually branch
+// boot behavior — `factory` (production runtime against local RabbitMQ)
+// vs `dev_replay` (local laptop, consume from a fixture queue). Today both
+// modes share identical behavior; only the log line differs.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+)
+
+// Mode selects the boot personality. Single binary, two modes — same trick
+// as ADR-0007's edge-api `EDGE_API_MODE=cloud_router|factory_local`. The
+// reuse rule (ADR-0009 Errata Correction 2) calls this out explicitly.
+type Mode string
+
+const (
+	ModeFactory   Mode = "factory"
+	ModeDevReplay Mode = "dev_replay"
+)
+
+type Config struct {
+	// Boot personality. See Mode constants.
+	Mode Mode
+
+	// AWS Secrets Manager
+	AWSRegion        string
+	RabbitMQSecretID string // packiot/<env>/rabbitmq-edge-transformer-creds (TBD Phase 2)
+
+	// AMQP — host/port only. Username + password come from Secrets Manager.
+	AMQPHost string
+	AMQPPort int
+
+	// Source exchange / queue topology. The transformer consumes from
+	// `plc.normalized.<tenant>` on the local factory broker. Per-tenant
+	// queues follow the same shape as oeecloud-worker's Strategy C
+	// Phase 2a topology (one queue per customer, shared Connection,
+	// per-tenant Channel via errgroup) — see internal/amqp/topology.go.
+	//
+	// Reuse rule: do NOT invent a new naming scheme. The `<base>-<tenant>`
+	// pattern matches oeecloud-worker's per-tenant queue names verbatim
+	// so operator runbooks transfer.
+	SourceExchange string // 'plc.normalized'
+	WorkerQueue    string // 'edge-transformer-q' (legacy/catch-all, kept for parity with oeecloud-worker pattern)
+	RetryExchange  string // 'plc.normalized-retry'
+	RetryQueue     string // 'edge-transformer-q-retry-30s'
+	FailedExchange string // 'plc.normalized-failed'
+	FailedQueue    string // 'edge-transformer-q-failed'
+	RetryTTLMs     int    // 30000
+	MaxRetries     int    // 5
+
+	// Consumer tuning
+	Prefetch int // 50 — bounded outstanding ack count
+
+	// HTTP — :9102 deliberately, to avoid clashing with oeecloud-worker's
+	// 9101 when both run on the same host (factory deployments may
+	// eventually colocate; staging today already does).
+	HealthPort int
+
+	// Logging
+	LogLevel string // 'debug' | 'info' | 'warn' | 'error'
+
+	// Path to the per-customer client.yaml (ADR-0009 Phase 1).
+	// Mounted into the container; not packaged into the image.
+	ClientYAMLPath string
+}
+
+func Load() (*Config, error) {
+	mode := Mode(strings.ToLower(getenv("EDGE_TRANSFORMER_MODE", string(ModeFactory))))
+	switch mode {
+	case ModeFactory, ModeDevReplay:
+	default:
+		return nil, fmt.Errorf("EDGE_TRANSFORMER_MODE=%q: must be one of [factory dev_replay]", mode)
+	}
+
+	return &Config{
+		Mode:             mode,
+		AWSRegion:        getenv("AWS_REGION", "us-east-1"),
+		RabbitMQSecretID: getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-edge-transformer-creds"),
+		AMQPHost:         getenv("RABBITMQ_HOST", "rabbitmq"),
+		AMQPPort:         getenvInt("RABBITMQ_PORT", 5672),
+		SourceExchange:   getenv("SOURCE_EXCHANGE", "plc.normalized"),
+		WorkerQueue:      getenv("WORKER_QUEUE", "edge-transformer-q"),
+		RetryExchange:    getenv("RETRY_EXCHANGE", "plc.normalized-retry"),
+		RetryQueue:       getenv("RETRY_QUEUE", "edge-transformer-q-retry-30s"),
+		FailedExchange:   getenv("FAILED_EXCHANGE", "plc.normalized-failed"),
+		FailedQueue:      getenv("FAILED_QUEUE", "edge-transformer-q-failed"),
+		RetryTTLMs:       getenvInt("RETRY_TTL_MS", 30000),
+		MaxRetries:       getenvInt("MAX_RETRIES", 5),
+		Prefetch:         getenvInt("PREFETCH", 50),
+		HealthPort:       getenvInt("HEALTH_PORT", 9102),
+		LogLevel:         getenv("LOG_LEVEL", "info"),
+		ClientYAMLPath:   getenv("CLIENT_YAML_PATH", "/etc/packiot/client.yaml"),
+	}, nil
+}
+
+func getenv(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func getenvInt(name string, fallback int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
