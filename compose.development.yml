@@ -77,7 +77,7 @@ services:
       - mosquitto-data:/mosquitto/data       # persistence — ADR-0011 P0-2
     networks: [packiot-net]
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0 -W 5"]
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0"]
       interval: 30s
       timeout: 10s
       retries: 3

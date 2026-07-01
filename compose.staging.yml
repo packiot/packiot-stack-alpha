@@ -142,9 +142,10 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.24
     healthcheck:
-      # Publish a heartbeat + require an ACK within 5s. Doesn't touch broker
-      # internals — same shape a real subscriber would use.
-      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0 -W 5"]
+      # Publish a heartbeat via mosquitto_pub — the exit code tells us the
+      # broker is accepting client connections. `-W` was mosquitto 1.x-only
+      # and got removed in 2.x. Timeout is enforced via the CMD-SHELL wrapper.
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -767,6 +768,15 @@ services:
       PREFETCH: "50"
       HEALTH_PORT: "9102"   # deliberately NOT 9101 — oeecloud-worker owns that
       CLIENT_YAML_PATH: /etc/packiot/client.yaml
+      # ADR-0010 Phase 2 MQTT subscriber — turned ON in staging for the
+      # end-to-end shadow-mode test. Default remains false in code (P0-safe).
+      # ADR-0011 rule 4: /healthz will surface degraded state when the
+      # subscriber can't reach mosquitto or hasn't received data in 60s.
+      MQTT_ENABLED: "true"
+      MQTT_BROKER_URL: "tcp://mosquitto:1883"
+      MQTT_CLIENT_ID: "edge-transformer-staging"
+      MQTT_USERNAME: ""
+      MQTT_PASSWORD: ""
     volumes:
       # ADR-0004 — per-customer client.yaml lives in git under
       # docs/clients/<tenant>.yaml; mount it read-only into the container.
@@ -776,6 +786,8 @@ services:
         ipv4_address: 172.18.0.23
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      mosquitto:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "/usr/local/bin/edge-transformer", "--healthcheck"]
