@@ -777,6 +777,12 @@ services:
       MQTT_CLIENT_ID: "edge-transformer-staging"
       MQTT_USERNAME: ""
       MQTT_PASSWORD: ""
+      # ADR-0010 Phase 3 shadow-mode port — ON in staging for the 30-day
+      # comparator soak. Shadow mode: Calc runs alongside Node-RED path but
+      # does NOT change shadowpub output. Prom counters expose divergence.
+      # calc_evaluations_total / calc_state_mutations_total / calc_errors_total
+      # scraped via /metrics. Default remains false in code (P0-safe).
+      USE_GO_PORT: "true"
     volumes:
       # ADR-0004 — per-customer client.yaml lives in git under
       # docs/clients/<tenant>.yaml; mount it read-only into the container.
