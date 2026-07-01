@@ -277,7 +277,11 @@ func main() {
 		// Phase 2.5b's Node-RED publisher output (source.type="nodered") on
 		// the same exchange.
 		var shadowErr error
-		shadowPub, shadowErr = shadowpub.New(amqpCreds.URL(), "edge.plc-normalized", logger)
+		// ADR-0010 Phase 3 shadow-mode DB comparison: publish to the same
+		// `oee` exchange oeecloud-node-red uses, with routing key
+		// `sparkplug.data.<tenant>`. The envelope's source_type="go" makes
+		// oeecloud-worker dispatch writes into shadow_go_port.* schema.
+		shadowPub, shadowErr = shadowpub.New(amqpCreds.URL(), "oee", logger)
 		if shadowErr != nil {
 			logger.Error("shadowpub: failed to open channel — MQTT disabled",
 				slog.String("err", shadowErr.Error()))
@@ -965,43 +969,44 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 		//      confirms + typed errors. Fastest but loses in-flight on
 		//      crash between decode and confirm.
 		if outboxStore != nil {
-			// Outbox path: per-metric envelopes marshaled + persisted.
+			// Outbox path: one envelope-per-payload marshaled + persisted.
+			// The new envelope shape is a single-message-many-metrics
+			// oeecloud-compatible payload (see shadowpub.BuildEnvelope).
+			// Routing key `sparkplug.data.<tenant>` on the `oee` exchange
+			// so oeecloud-worker's per-tenant queue picks it up. SourceType
+			// is stamped "go" inside BuildEnvelope so oeecloud dispatches
+			// writes into shadow_go_port.* (ADR-0010 Phase 3 DB comparison).
 			tenant := strings.ToLower(topic.GroupID)
-			routingKey := "edge.plc-normalized." + tenant
-			for _, m := range resolved.Metrics {
-				env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
-					Tenant:       tenant,
-					PublisherKey: key.String(),
-					Instance:     "outbox",
-					Metric:       m,
-					IngestedAt:   time.Now().UTC().Format(time.RFC3339Nano),
-					SourceTimestamp: time.Unix(0, int64(resolved.Timestamp)*int64(time.Millisecond)).
-						UTC().Format(time.RFC3339Nano),
-				})
-				body, err := json.Marshal(env)
-				if err != nil {
-					logger.Warn("outbox: marshal envelope failed",
-						slog.String("metric", m.Name),
-						slog.String("err", err.Error()))
-					continue
-				}
+			routingKey := "sparkplug.data." + tenant
+			env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
+				Tenant:          tenant,
+				PublisherKey:    key.String(),
+				Instance:        "outbox",
+				Metrics:         resolved.Metrics,
+				SourceTimestamp: int64(resolved.Timestamp),
+			})
+			body, err := json.Marshal(env)
+			if err != nil {
+				logger.Warn("outbox: marshal envelope failed",
+					slog.String("err", err.Error()))
+			} else {
+				messageID := fmt.Sprintf("outbox-%d", time.Now().UnixNano())
 				oxEnv := outboxEnvelope{
 					RoutingKey: routingKey,
-					MessageID:  env.Envelope.MessageID,
+					MessageID:  messageID,
 					Body:       body,
 				}
 				payload, err := json.Marshal(oxEnv)
-				if err != nil {
-					continue
-				}
-				if _, err := outboxStore.Enqueue(ctx, outbox.Message{
-					Tenant:  tenant,
-					Topic:   m.Name,
-					Payload: payload,
-				}); err != nil {
-					logger.Warn("outbox: enqueue failed",
-						slog.String("metric", m.Name),
-						slog.String("err", err.Error()))
+				if err == nil {
+					if _, err := outboxStore.Enqueue(ctx, outbox.Message{
+						Tenant:  tenant,
+						Topic:   key.String(),
+						Payload: payload,
+					}); err != nil {
+						logger.Warn("outbox: enqueue failed",
+							slog.String("publisher", key.String()),
+							slog.String("err", err.Error()))
+					}
 				}
 			}
 		} else if publisher != nil {

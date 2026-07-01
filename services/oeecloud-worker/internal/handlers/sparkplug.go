@@ -88,6 +88,12 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 	}
 
+	// ADR-0010 Phase 3 shadow-mode DB comparison: route writes by
+	// envelope.source_type. Whitelist to two known schemas — anything
+	// unknown falls back to public (fail-safe: won't accidentally write
+	// to a non-existent schema).
+	schema := schemaForSource(p.SourceType)
+
 	// Build phase — collect one Query per metric into the batch.
 	batch := &pgx.Batch{}
 	descs := make([]string, 0, len(p.Metrics))
@@ -100,11 +106,11 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		var buildErr error
 		switch {
 		case h.equipmentValues.CanWrite(kind):
-			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway)
+			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
 		case h.unsMetrics.CanWrite(kind):
-			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway)
+			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
 		case h.poParameter.CanWrite(kind):
-			q, buildErr = h.poParameter.Build(ctx, m, p.Gateway)
+			q, buildErr = h.poParameter.Build(ctx, m, p.Gateway, schema)
 		default:
 			h.skippedUnk.Add(1)
 			continue
@@ -150,6 +156,16 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	}
 
 	return firstErr
+}
+
+// schemaForSource maps the envelope's source_type to a Postgres schema.
+// Whitelist-driven — anything not "go" writes to public (safe default).
+// ADR-0010 Phase 3 shadow-mode DB comparison.
+func schemaForSource(sourceType string) string {
+	if sourceType == "go" {
+		return "shadow_go_port"
+	}
+	return "public"
 }
 
 // SparkplugStats — aggregate counters for /health JSON. Renamed fields

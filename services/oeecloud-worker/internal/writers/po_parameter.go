@@ -45,7 +45,7 @@ func (w *POParameter) CanWrite(kind sparkplug.MetricKind) bool {
 	return kind == sparkplug.KindParameter
 }
 
-func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string) (*Query, error) {
+func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string, schema string) (*Query, error) {
 	if m.ID == nil {
 		w.skippedOther.Add(1)
 		return nil, nil
@@ -54,7 +54,7 @@ func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string) 
 
 	switch {
 	case id == 30701:
-		return w.buildIdealProductionSpeed(ctx, m)
+		return w.buildIdealProductionSpeed(ctx, m, schema)
 	case id == 30700:
 		w.skippedLineOrder.Add(1)
 		w.logger.Debug("po-parameter: 30700 line-order not yet ported, skipping",
@@ -75,7 +75,7 @@ func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string) 
 
 // buildIdealProductionSpeed mirrors Node-RED's Prep for parameter 30701:
 // UPSERT equipment_values.ideal_production_speed for (ts_value, id_equipment).
-func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplug.Metric) (*Query, error) {
+func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
 	topic := m.TopicForRegister()
 	info, err := w.resolver.Resolve(ctx, topic)
 	if err != nil {
@@ -97,15 +97,15 @@ func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplu
 	// (100.0). Round to nearest int — matches Node-RED's implicit coercion.
 	speedInt := int(speed + 0.5)
 
-	const sql = `
-		INSERT INTO public.equipment_values
+	sql := fmt.Sprintf(`
+		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
 			 ideal_production_speed, signal_quality)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			ideal_production_speed = EXCLUDED.ideal_production_speed,
 			signal_quality         = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality)
-	`
+	`, schema)
 	w.wroteIdealSpeed.Add(1)
 	return &Query{
 		SQL: sql,
@@ -113,8 +113,8 @@ func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplu
 			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 			speedInt, info.SignalQuality,
 		},
-		Desc: fmt.Sprintf("upsert equipment_values (ideal_production_speed) eq=%d ts=%s",
-			info.IDEquipment, ts.Format(time.RFC3339)),
+		Desc: fmt.Sprintf("upsert %s.equipment_values (ideal_production_speed) eq=%d ts=%s",
+			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}, nil
 }
 

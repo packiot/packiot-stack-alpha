@@ -26,7 +26,10 @@ func (w *UnsMetrics) CanWrite(kind sparkplug.MetricKind) bool {
 	return kind == sparkplug.KindCurMachSpeed
 }
 
-func (w *UnsMetrics) Build(ctx context.Context, m *sparkplug.Metric, _ string) (*Query, error) {
+// Build returns the *Query for one CurMachSpeed metric. The `schema`
+// parameter selects the target schema (public vs shadow_go_port) —
+// ADR-0010 Phase 3 shadow-mode DB comparison.
+func (w *UnsMetrics) Build(ctx context.Context, m *sparkplug.Metric, _ string, schema string) (*Query, error) {
 	topic := m.TopicForRegister()
 	info, err := w.resolver.Resolve(ctx, topic)
 	if err != nil {
@@ -45,20 +48,20 @@ func (w *UnsMetrics) Build(ctx context.Context, m *sparkplug.Metric, _ string) (
 		return nil, fmt.Errorf("parse CurMachSpeed value (name=%s): %w", m.Name, err)
 	}
 
-	const sql = `
-		INSERT INTO public.uns_equipment_current_metrics
+	sql := fmt.Sprintf(`
+		INSERT INTO %s.uns_equipment_current_metrics
 			(id_enterprise, id_site, id_area, id_equipment, speed, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (id_equipment) DO UPDATE SET
 			speed      = EXCLUDED.speed,
 			updated_at = EXCLUDED.updated_at
-	`
+	`, schema)
 	return &Query{
 		SQL: sql,
 		Args: []any{
 			info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment, speed,
 		},
-		Desc: fmt.Sprintf("upsert uns_equipment_current_metrics eq=%d speed=%v",
-			info.IDEquipment, speed),
+		Desc: fmt.Sprintf("upsert %s.uns_equipment_current_metrics eq=%d speed=%v",
+			schema, info.IDEquipment, speed),
 	}, nil
 }
