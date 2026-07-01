@@ -808,6 +808,15 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 		}
 		msgs, err := store.Peek(ctx, batchSize)
 		if err != nil {
+			if errors.Is(err, outbox.ErrOutboxEmpty) {
+				// Empty outbox is the steady state — sleep + poll again.
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(idleSleep):
+				}
+				continue
+			}
 			logger.Warn("outbox: Peek failed", slog.String("err", err.Error()))
 			select {
 			case <-ctx.Done():
