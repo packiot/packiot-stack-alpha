@@ -17,7 +17,20 @@ import (
 // prefetch (so handlers never block on pool acquire). Caller closes via
 // pool.Close() at shutdown.
 func New(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*pgxpool.Pool, error) {
-	pc, err := pgxpool.ParseConfig(creds.URL("oeecloud-worker"))
+	return newWithDBName(ctx, creds, creds.Database, "oeecloud-worker", logger)
+}
+
+// NewForDatabase returns a pool against the same host/user/password as
+// creds but overriding the target database name. Used for the ADR-0012
+// shadow DB (packiot_shadow) sitting alongside the main packiot DB.
+// appName is set on the connection so pg_stat_activity shows which
+// consumer opened it (helpful during the refactor rollout).
+func NewForDatabase(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, logger *slog.Logger) (*pgxpool.Pool, error) {
+	return newWithDBName(ctx, creds, dbName, appName, logger)
+}
+
+func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, logger *slog.Logger) (*pgxpool.Pool, error) {
+	pc, err := pgxpool.ParseConfig(creds.URLForDatabase(appName, dbName))
 	if err != nil {
 		return nil, fmt.Errorf("parse pg url: %w", err)
 	}
@@ -52,7 +65,8 @@ func New(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*pgx
 	logger.Info("postgres pool ready",
 		slog.String("host", creds.Host),
 		slog.Int("port", creds.Port),
-		slog.String("db", creds.Database),
+		slog.String("db", dbName),
+		slog.String("application_name", appName),
 		slog.Int("max_conns", int(pc.MaxConns)),
 	)
 	return p, nil

@@ -206,11 +206,19 @@ func (a *AMQPCreds) Redacted() string {
 // corrupt the parse. Hand-rolling fmt.Sprintf breaks here — pgx parses
 // the DSN as a URL and would split on the wrong ':'.
 func (c *DBCreds) URL(appName string) string {
+	return c.URLForDatabase(appName, c.Database)
+}
+
+// URLForDatabase is URL() with the database name overridden. Used to
+// connect the same creds against a sibling DB (e.g. packiot_shadow for
+// the ADR-0012 refactor POC — same host, same user, same password,
+// different Path).
+func (c *DBCreds) URLForDatabase(appName, dbName string) string {
 	u := &url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(c.User, c.Password),
 		Host:   fmt.Sprintf("%s:%d", c.Host, c.Port),
-		Path:   "/" + c.Database,
+		Path:   "/" + dbName,
 	}
 	q := u.Query()
 	q.Set("sslmode", "disable")
