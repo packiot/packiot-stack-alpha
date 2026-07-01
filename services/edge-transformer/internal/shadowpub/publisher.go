@@ -477,18 +477,25 @@ func (p *Publisher) PublishBytes(ctx context.Context, routingKey, messageID stri
 
 // publishBytesOnce is the single-attempt inner. Callers wrap it with
 // retry semantics.
+//
+// Holds the WLock across BOTH publish AND wait-confirm. This closes a
+// race where reconnect() runs between the publish (on the old channel)
+// and the confirm-read (on the new, empty confirms). Symptom in chaos
+// tests: `shadowpub: confirms channel closed` after a successful
+// reconnect. Cost: reconnect blocks up to ConfirmTimeout (5s) waiting
+// for the in-flight publish to complete. Acceptable — publishes are
+// sequential from the drain goroutine.
 func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID string, body []byte) error {
 	timeout := p.ConfirmTimeout
 	if timeout <= 0 {
 		timeout = DefaultConfirmTimeout
 	}
-	p.mu.RLock()
-	ch := p.ch
-	p.mu.RUnlock()
-	if ch == nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ch == nil {
 		return fmt.Errorf("shadowpub: no channel")
 	}
-	err := ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
+	err := p.ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
@@ -500,7 +507,35 @@ func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID 
 		return fmt.Errorf("shadowpub: publish %s: %w", routingKey, err)
 	}
 	p.published.Add(1)
-	return p.waitConfirm(ctx, timeout)
+	// Read confirms via the CURRENT channel — same generation as the
+	// publish above, guaranteed by holding the lock.
+	return p.waitConfirmLocked(ctx, timeout)
+}
+
+// waitConfirmLocked assumes the caller holds p.mu. Reads p.confirms
+// directly (no lock re-acquisition). Same semantics as waitConfirm but
+// intended for the in-lock publish path.
+func (p *Publisher) waitConfirmLocked(ctx context.Context, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case c, ok := <-p.confirms:
+		if !ok {
+			p.failed.Add(1)
+			return fmt.Errorf("shadowpub: confirms channel closed")
+		}
+		if !c.Ack {
+			p.nacked.Add(1)
+			return ErrPublishNacked
+		}
+		p.confirmed.Add(1)
+		return nil
+	case <-timer.C:
+		p.confirmTimeouts.Add(1)
+		return ErrConfirmTimeout
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ReconnectCount is the number of times shadowpub has re-dialed the
