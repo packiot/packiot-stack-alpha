@@ -173,6 +173,36 @@ jobs:
             | grep -E '^(calc_|mqtt_|shadowpub_|outbox_)' \
             | head -80 || echo "(no matching metrics)"
 
+      - name: Extend RMQ perms for edge-transformer to include `oee` exchange (ADR-0010 Phase 3)
+        # Idempotent PUT to the RabbitMQ management API — extends the
+        # edge-transformer user's write+read regex to include the `oee`
+        # exchange used for shadow-mode DB comparison. Without this, every
+        # shadow publish returns 403 access-refused and the AMQP channel
+        # closes with 'shadowpub: confirms channel closed'.
+        #
+        # Idempotent: reapplying with same body is a no-op.
+        # The terraform user_data script (app_init.sh) already carries the
+        # matching pattern for fresh EC2 instances; this step handles the
+        # already-running instance (would need a full re-init otherwise).
+        continue-on-error: true
+        run: |
+          set +e
+          MQ_ADMIN_USER=$(grep -E '^RABBITMQ_ADMIN_USER=' /opt/packiot/.env | cut -d= -f2)
+          MQ_ADMIN_PASS=$(grep -E '^RABBITMQ_ADMIN_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
+          ET_USER="edge-transformer"
+          if [ -z "$MQ_ADMIN_PASS" ]; then
+            echo "(missing RABBITMQ_ADMIN_PASSWORD — skipping perm update)"
+            exit 0
+          fi
+          echo "Updating RabbitMQ permissions for $ET_USER to include 'oee' exchange..."
+          docker run --rm --network container:stack-rabbitmq-1 curlimages/curl:latest \
+            -sf -u "$MQ_ADMIN_USER:$MQ_ADMIN_PASS" -X PUT \
+            "http://127.0.0.1:15672/api/permissions/%2F/$ET_USER" \
+            -H "Content-Type: application/json" \
+            -d '{"configure":"^(edge-transformer.*|outbox.*)$","write":"^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$","read":"^(edge\\.plc-normalized|dlx\\.edge\\.plc-normalized|edge-transformer.*|outbox.*|oee)$"}' \
+            && echo "  perms updated" \
+            || echo "  perm update FAILED — investigate"
+
       - name: Shadow DB comparison — count shadow_go_port rows post-inject (ADR-0010 Phase 3)
         # Runs BEFORE the chaos test. Verifies that the pre-chaos inject
         # (from earlier step) landed row(s) in shadow_go_port.equipment_values
