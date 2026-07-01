@@ -68,7 +68,7 @@ type Config struct {
 	Password string
 
 	// TopicFilter — MQTT topic pattern to subscribe to. Default:
-	// TopicFilterAll ("spBv1.0/+/+/+/+"). Override for narrower testing.
+	// TopicFilterAll ("spBv1.0/#"). Override for narrower testing.
 	TopicFilter string
 
 	// QoS — MQTT QoS level. Sparkplug B data messages ARE published at
@@ -83,16 +83,34 @@ type Config struct {
 	// ConnectTimeout — how long to wait for the initial CONNECT to
 	// complete. Reconnects use exponential backoff internally.
 	ConnectTimeout time.Duration
+
+	// IngestQueueSize is the bounded buffered channel between paho's
+	// onMessage callback and the Handler goroutine (ADR-0011 P1). When
+	// the queue is full, incoming messages are DROPPED with a metric.
+	// This is the visible-drop pattern from ADR-0011 rule 5: better to
+	// alert on drops than to silently backpressure the broker (which,
+	// on QoS 0, drops too — but invisibly to us).
+	//
+	// Default: 10_000. At the CPACK-staging rate of ~1 msg/s that's ~10k
+	// seconds (~3 hours) of buffer if the Handler stalls entirely; at the
+	// worst-case factory 300 msg/s peak that's ~33 seconds of buffer.
+	IngestQueueSize int
 }
+
+// DefaultIngestQueueSize is the bounded-channel buffer between paho's
+// callback and the Handler goroutine. See Config.IngestQueueSize for
+// rationale.
+const DefaultIngestQueueSize = 10_000
 
 // DefaultConfig returns a Config with Sparkplug-spec-friendly defaults.
 // Caller must set BrokerURL + ClientID + Username/Password.
 func DefaultConfig() Config {
 	return Config{
-		TopicFilter:    TopicFilterAll,
-		QoS:            0,
-		KeepAlive:      30 * time.Second,
-		ConnectTimeout: 10 * time.Second,
+		TopicFilter:     TopicFilterAll,
+		QoS:             0,
+		KeepAlive:       30 * time.Second,
+		ConnectTimeout:  10 * time.Second,
+		IngestQueueSize: DefaultIngestQueueSize,
 	}
 }
 
@@ -138,6 +156,15 @@ func ParseTopic(s string) (Topic, error) {
 // Subscriber owns the paho.mqtt.golang Client lifecycle + reconnect state.
 // Mirrors internal/amqp/consumer.go's shape: single connection, N handlers,
 // reconnect-with-backoff, atomic counters, /health integration hooks.
+// queuedMsg is the on-wire representation on the bounded channel between
+// paho's callback and the drainer goroutine. Storing raw bytes + topic
+// avoids retaining the paho.Message interface (which pins its allocator
+// stack).
+type queuedMsg struct {
+	topic string
+	body  []byte
+}
+
 type Subscriber struct {
 	cfg     Config
 	handler Handler
@@ -147,13 +174,19 @@ type Subscriber struct {
 	metricsReceived func(msgType, groupID string)
 	metricsHandled  func(msgType, groupID, result string)
 	metricsConnect  func(outcome string) // "success" | "failure"
+	metricsDropped  func(reason string)  // ADR-0011 P1
+
+	// Bounded ingestion queue between paho onMessage and Handler goroutine
+	// (ADR-0011 P1). Constructed lazily in Run based on cfg.IngestQueueSize.
+	queue chan queuedMsg
 
 	// Counters — read by /health for the JSON body.
 	received     atomic.Uint64
 	handled      atomic.Uint64
 	handleErrors atomic.Uint64
 	reconnects   atomic.Uint64
-	lastMessage  atomic.Int64 // unix nano
+	dropped      atomic.Uint64 // ADR-0011 P1 — queue-full drops
+	lastMessage  atomic.Int64  // unix nano
 
 	mu        sync.RWMutex
 	client    paho.Client
@@ -169,6 +202,11 @@ func NewSubscriber(cfg Config, handler Handler, logger *slog.Logger) *Subscriber
 	if handler == nil {
 		handler = func(context.Context, Topic, []byte) error { return nil }
 	}
+	// Normalize queue size at construction so tests + main.go both see the
+	// same default.
+	if cfg.IngestQueueSize <= 0 {
+		cfg.IngestQueueSize = DefaultIngestQueueSize
+	}
 	return &Subscriber{
 		cfg:       cfg,
 		handler:   handler,
@@ -176,6 +214,10 @@ func NewSubscriber(cfg Config, handler Handler, logger *slog.Logger) *Subscriber
 		startedAt: time.Now(),
 	}
 }
+
+// DroppedCount returns the number of messages dropped because the ingestion
+// queue was full. Exposed for /health snapshots + Prometheus scrape.
+func (s *Subscriber) DroppedCount() uint64 { return s.dropped.Load() }
 
 // SetMetrics wires Prometheus callbacks. Safe to call before Run. Nil-safe.
 func (s *Subscriber) SetMetrics(
@@ -186,6 +228,14 @@ func (s *Subscriber) SetMetrics(
 	s.metricsReceived = received
 	s.metricsHandled = handled
 	s.metricsConnect = connect
+}
+
+// SetDroppedMetric wires the ADR-0011 P1 drop counter. Called when a
+// message arrives faster than the Handler can drain, and the bounded
+// queue is full. Reason label carries a stable identifier (currently
+// only "queue_full" but reserved for future backpressure sources).
+func (s *Subscriber) SetDroppedMetric(fn func(reason string)) {
+	s.metricsDropped = fn
 }
 
 // Snapshot exposes the same fields internal/amqp/consumer.go does — the
@@ -281,6 +331,15 @@ func (s *Subscriber) SnapshotJSON() Snapshot {
 // Run establishes the MQTT connection + subscribes + blocks until ctx
 // is cancelled. Reconnect logic is delegated to paho's built-in
 // AutoReconnect + our OnConnectionLost handler.
+//
+// ADR-0011 P1: a bounded ingestion queue sits between paho's callback
+// thread and a drainer goroutine that calls the Handler. This decouples
+// paho's async delivery from Handler processing latency — if the Handler
+// stalls (e.g., RabbitMQ slow-writes during confirm), paho keeps reading
+// from the socket up to IngestQueueSize messages, then drops with a
+// metric (visible-drop pattern). Without the queue, paho's internal
+// bounded buffer silently backpressures the broker on QoS 0 (which
+// then drops on ITS side, invisibly to us).
 func (s *Subscriber) Run(ctx context.Context) error {
 	if s.cfg.BrokerURL == "" {
 		return errors.New("mqtt: BrokerURL is required")
@@ -288,6 +347,17 @@ func (s *Subscriber) Run(ctx context.Context) error {
 	if s.cfg.ClientID == "" {
 		return errors.New("mqtt: ClientID is required")
 	}
+
+	// Construct the bounded ingestion queue. See DefaultIngestQueueSize
+	// for sizing rationale.
+	s.queue = make(chan queuedMsg, s.cfg.IngestQueueSize)
+
+	// Start the drainer goroutine — one at a time (single-goroutine
+	// serialization matches the alias-table state machine's per-publisher
+	// sequential expectation). If the Handler needs parallelism later, add
+	// N drainers here; alias-table's sync.RWMutex tolerates that.
+	drainerDone := make(chan struct{})
+	go s.drainQueue(ctx, drainerDone)
 
 	opts := paho.NewClientOptions().
 		AddBroker(s.cfg.BrokerURL).
@@ -324,7 +394,73 @@ func (s *Subscriber) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	client.Disconnect(250)
+	// Close the queue channel to signal drainer to exit after processing
+	// any pending messages.
+	close(s.queue)
+	<-drainerDone
 	return ctx.Err()
+}
+
+// drainQueue is the single-goroutine drainer that pulls from the bounded
+// ingestion queue and calls the Handler. Exits when the queue channel is
+// closed (in Run's shutdown path) OR when ctx is cancelled.
+//
+// Any Handler panic here would kill the goroutine + halt processing —
+// wrapped in a recover so an errant customer handler doesn't take the
+// whole subscriber down. Panic surfaces as an ERROR log line + metric bump.
+func (s *Subscriber) drainQueue(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	for m := range s.queue {
+		if ctx.Err() != nil {
+			return
+		}
+		s.processMessage(ctx, m)
+	}
+}
+
+// processMessage is the actual Handler-invoking path — extracted so the
+// drainer can call it in a for-range loop AND so panics recover cleanly.
+func (s *Subscriber) processMessage(ctx context.Context, m queuedMsg) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.handleErrors.Add(1)
+			if s.metricsHandled != nil {
+				s.metricsHandled("unknown", "unknown", "panic")
+			}
+			s.logger.Error("mqtt: handler panicked",
+				"topic", m.topic, "recover", fmt.Sprintf("%v", r))
+		}
+	}()
+
+	topic, err := ParseTopic(m.topic)
+	if err != nil {
+		s.handleErrors.Add(1)
+		if s.metricsHandled != nil {
+			s.metricsHandled("unknown", "unknown", "parse_error")
+		}
+		s.logger.Warn("mqtt: unparseable topic",
+			"topic", m.topic, "err", err)
+		return
+	}
+	if s.metricsReceived != nil {
+		s.metricsReceived(topic.MessageType, topic.GroupID)
+	}
+
+	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := s.handler(hctx, topic, m.body); err != nil {
+		s.handleErrors.Add(1)
+		if s.metricsHandled != nil {
+			s.metricsHandled(topic.MessageType, topic.GroupID, "error")
+		}
+		s.logger.Error("mqtt: handler failed",
+			"topic", m.topic, "err", err)
+		return
+	}
+	s.handled.Add(1)
+	if s.metricsHandled != nil {
+		s.metricsHandled(topic.MessageType, topic.GroupID, "ok")
+	}
 }
 
 // onConnect fires on every successful connect (including reconnects).
@@ -373,40 +509,39 @@ func (s *Subscriber) onConnectionLost(_ paho.Client, err error) {
 	s.logger.Warn("mqtt: connection lost — reconnecting", "err", err)
 }
 
-// onMessage is the per-message callback. Parses the topic + dispatches to
-// the Handler. Handler errors are logged + counted; we do NOT propagate
-// them upstream (there's no "nack" concept in MQTT QoS 0 anyway).
+// onMessage runs on paho's callback goroutine. To avoid blocking paho's
+// event loop (which would silently backpressure the broker on QoS 0),
+// we copy topic + body to a bounded channel and return immediately.
+// The actual Handler invocation happens in drainQueue.
+//
+// If the bounded queue is full, we DROP the message with a metric bump
+// (ADR-0011 rule 5 visible-drop pattern). Dropped is better than silent-
+// backpressure because backpressure eventually causes the broker to drop
+// on ITS side, invisibly to us.
 func (s *Subscriber) onMessage(_ paho.Client, msg paho.Message) {
 	s.received.Add(1)
 	s.lastMessage.Store(time.Now().UnixNano())
 
-	topic, err := ParseTopic(msg.Topic())
-	if err != nil {
-		s.handleErrors.Add(1)
-		if s.metricsHandled != nil {
-			s.metricsHandled("unknown", "unknown", "parse_error")
-		}
-		s.logger.Warn("mqtt: unparseable topic",
-			"topic", msg.Topic(), "err", err)
-		return
-	}
-	if s.metricsReceived != nil {
-		s.metricsReceived(topic.MessageType, topic.GroupID)
-	}
+	// Copy the payload — paho reuses its internal buffer after this
+	// callback returns, so we can't retain msg.Payload() past the send.
+	payload := make([]byte, len(msg.Payload()))
+	copy(payload, msg.Payload())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.handler(ctx, topic, msg.Payload()); err != nil {
-		s.handleErrors.Add(1)
-		if s.metricsHandled != nil {
-			s.metricsHandled(topic.MessageType, topic.GroupID, "error")
+	select {
+	case s.queue <- queuedMsg{topic: msg.Topic(), body: payload}:
+		// Enqueued cleanly.
+	default:
+		// Queue is full — drop with metric. See ADR-0011 rule 5.
+		s.dropped.Add(1)
+		if s.metricsDropped != nil {
+			s.metricsDropped("queue_full")
 		}
-		s.logger.Error("mqtt: handler failed",
-			"topic", msg.Topic(), "err", err)
-		return
-	}
-	s.handled.Add(1)
-	if s.metricsHandled != nil {
-		s.metricsHandled(topic.MessageType, topic.GroupID, "ok")
+		// Log at WARN, not ERROR — drops mean the Handler is slower
+		// than input rate, which ops should investigate but isn't a
+		// process-level failure.
+		s.logger.Warn("mqtt: ingestion queue full — dropping message",
+			"topic", msg.Topic(),
+			"queue_size", s.cfg.IngestQueueSize,
+			"total_dropped", s.dropped.Load())
 	}
 }

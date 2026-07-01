@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqp"
@@ -208,7 +209,13 @@ func main() {
 	var shadowPub *shadowpub.Publisher
 	if cfg.MQTTEnabled {
 		sparkplugStore = sparkplug.NewStateStore()
+
+		// ADR-0011 P1: sparkplug sequence-gap counter, labelled per publisher.
+		// The OnSeqGap callback below feeds this counter, so ops can graph
+		// "which factory edges are losing messages" as a per-edge time series.
+		gapCounter := mx.NewSparkplugGapsCounter()
 		sparkplugStore.OnSeqGap(func(key sparkplug.PublisherKey, expected, got uint64) {
+			gapCounter.WithLabelValues(key.GroupID, key.EdgeNodeID, key.DeviceID).Inc()
 			logger.Warn("sparkplug: sequence gap",
 				slog.String("publisher", key.String()),
 				slog.Uint64("expected", expected),
@@ -236,11 +243,48 @@ func main() {
 
 		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, logger), logger)
 
+		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
+		// overflow is Prometheus-visible.
+		droppedCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "edge_transformer_mqtt_dropped_events_total",
+			Help: "Individual drop events (for alerting on rate of drops, separate from cumulative counter in the subscriber snapshot).",
+		}, []string{"reason"})
+		mx.Registry.MustRegister(droppedCounter)
+		mqttSub.SetDroppedMetric(func(reason string) {
+			droppedCounter.WithLabelValues(reason).Inc()
+		})
+
+		// ADR-0011 P1: register subscriber-level snapshot collector.
+		mx.RegisterMQTTSubscriberCollector(func() metrics.MQTTSubscriberSnapshot {
+			snap := mqttSub.SnapshotJSON()
+			return metrics.MQTTSubscriberSnapshot{
+				Received:     snap.Received,
+				Handled:      snap.Handled,
+				HandleErrors: snap.HandleErrors,
+				Reconnects:   snap.Reconnects,
+				Dropped:      mqttSub.DroppedCount(),
+				Connected:    snap.Connected,
+			}
+		})
+
 		// ADR-0011 P0-4: register subscriber + publisher with the health
 		// aggregator so /healthz surfaces their degraded state.
 		multi.Add(mqttSub)
 		if shadowPub != nil {
 			multi.Add(shadowPub)
+
+			// ADR-0011 P1: register shadow publisher's publisher-confirms
+			// counters so ops can alert on nack/timeout rate.
+			mx.RegisterShadowPublisherCollector(func() metrics.ShadowPublisherSnapshot {
+				return metrics.ShadowPublisherSnapshot{
+					Published:       shadowPub.PublishedCount(),
+					Confirmed:       shadowPub.ConfirmedCount(),
+					Nacked:          shadowPub.NackedCount(),
+					ConfirmTimeouts: shadowPub.ConfirmTimeoutCount(),
+					Failed:          shadowPub.FailedCount(),
+					InFlight:        shadowPub.InFlightBacklog(),
+				}
+			})
 		}
 
 		modeDesc := "shadow (log resolved metrics; no rmq publish)"

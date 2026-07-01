@@ -210,3 +210,136 @@ func contains(hay, needle string) bool {
 
 // unusedErrors keeps `errors` import live for the future integration test.
 var _ = errors.New
+
+// ── ADR-0011 P1: bounded ingestion queue + drop metric ──────────────────────
+
+// TestBoundedQueueDropsWhenFull verifies the visible-drop pattern: when the
+// bounded queue is full, the onMessage callback drops with a metric bump
+// rather than blocking paho's callback goroutine (which would silently
+// backpressure the broker on QoS 0).
+func TestBoundedQueueDropsWhenFull(t *testing.T) {
+	// Build a subscriber with a queue of size 2 and a Handler that blocks
+	// so the queue fills quickly.
+	handlerBlock := make(chan struct{})
+	handler := func(ctx context.Context, topic Topic, body []byte) error {
+		<-handlerBlock
+		return nil
+	}
+	cfg := Config{
+		BrokerURL:       "tcp://example:1883",
+		ClientID:        "test",
+		IngestQueueSize: 2,
+	}
+	s := NewSubscriber(cfg, handler, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	// Manually spin up the queue + drainer (skip paho by not calling Run).
+	s.queue = make(chan queuedMsg, cfg.IngestQueueSize)
+
+	dropped := 0
+	s.SetDroppedMetric(func(reason string) {
+		if reason != "queue_full" {
+			t.Errorf("unexpected drop reason: %q", reason)
+		}
+		dropped++
+	})
+
+	// Fake paho callback path: send 5 messages when queue capacity is 2.
+	// The first 2 sit in the queue (Handler is blocked); the next 3 must drop.
+	fakeMsg := &fakePahoMessage{topic: "spBv1.0/CPACK/NDATA/edge-01", payload: []byte("x")}
+	for i := 0; i < 5; i++ {
+		s.onMessage(nil, fakeMsg)
+	}
+
+	if got := s.DroppedCount(); got != 3 {
+		t.Errorf("DroppedCount: got %d, want 3", got)
+	}
+	if dropped != 3 {
+		t.Errorf("SetDroppedMetric fired %d times, want 3", dropped)
+	}
+	// Received counter counts EVERY arrival, including drops — because
+	// the message reached us; we just couldn't ingest it.
+	if got := s.receivedTotal(); got != 5 {
+		t.Errorf("received_total: got %d, want 5 (drops still count as received)", got)
+	}
+
+	// Unblock the Handler so the drainer (if it were running) could drain.
+	close(handlerBlock)
+}
+
+// receivedTotal exposes the atomic for tests. Not part of the public API.
+func (s *Subscriber) receivedTotal() uint64 { return s.received.Load() }
+
+// TestBoundedQueueDoesNotBlockOnHandler proves the onMessage callback
+// returns fast even when the Handler blocks. Without the queue, this would
+// block paho's callback goroutine.
+func TestBoundedQueueDoesNotBlockOnHandler(t *testing.T) {
+	handlerBlock := make(chan struct{})
+	handler := func(ctx context.Context, topic Topic, body []byte) error {
+		<-handlerBlock
+		return nil
+	}
+	cfg := Config{
+		BrokerURL:       "tcp://example:1883",
+		ClientID:        "test",
+		IngestQueueSize: 100,
+	}
+	s := NewSubscriber(cfg, handler, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	s.queue = make(chan queuedMsg, cfg.IngestQueueSize)
+
+	fakeMsg := &fakePahoMessage{topic: "spBv1.0/CPACK/NDATA/edge-01", payload: []byte("x")}
+
+	// If onMessage blocked, this would take forever (Handler is blocked
+	// and queue would fill and block on send if it were unbuffered).
+	deadline := time.After(200 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			s.onMessage(nil, fakeMsg)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		// good
+	case <-deadline:
+		t.Fatal("onMessage blocked when it should be non-blocking")
+	}
+	close(handlerBlock)
+}
+
+// TestPayloadIsCopied verifies the callback copies msg.Payload() into an
+// owned buffer — paho reuses its internal buffer after the callback returns,
+// so retaining a reference would corrupt in-flight messages.
+func TestPayloadIsCopied(t *testing.T) {
+	handler := func(ctx context.Context, topic Topic, body []byte) error { return nil }
+	cfg := Config{BrokerURL: "tcp://x", ClientID: "test", IngestQueueSize: 4}
+	s := NewSubscriber(cfg, handler, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	s.queue = make(chan queuedMsg, cfg.IngestQueueSize)
+
+	// Reuse the same underlying byte slice between calls — simulates paho.
+	buf := []byte("initial")
+	m := &fakePahoMessage{topic: "spBv1.0/CPACK/NDATA/edge-01", payload: buf}
+	s.onMessage(nil, m)
+
+	// Mutate the underlying buffer — the queued message should NOT change.
+	copy(buf, []byte("mutated"))
+	queued := <-s.queue
+	if string(queued.body) != "initial" {
+		t.Errorf("payload should be defensively copied; got %q, want %q",
+			string(queued.body), "initial")
+	}
+}
+
+// fakePahoMessage satisfies the parts of paho.Message we call.
+type fakePahoMessage struct {
+	topic   string
+	payload []byte
+}
+
+func (m *fakePahoMessage) Duplicate() bool   { return false }
+func (m *fakePahoMessage) Qos() byte         { return 0 }
+func (m *fakePahoMessage) Retained() bool    { return false }
+func (m *fakePahoMessage) Topic() string     { return m.topic }
+func (m *fakePahoMessage) MessageID() uint16 { return 0 }
+func (m *fakePahoMessage) Payload() []byte   { return m.payload }
+func (m *fakePahoMessage) Ack()              {}
