@@ -481,6 +481,29 @@ func metricAsInt(v any) (int64, bool) {
 	return 0, false
 }
 
+// extractMetricValue pulls the concrete typed value out of a wire-format
+// sparkplug.Metric's oneof Value field. Duplicates the sparkplug package's
+// private extractValue since we can't import it — used to hand-craft a
+// ResolvedMetric from an NBIRTH so seedFromMetric can process it.
+func extractMetricValue(m *sparkplug.Metric) any {
+	switch v := m.GetValue().(type) {
+	case *sparkplug.Metric_IntValue:
+		return v.IntValue
+	case *sparkplug.Metric_LongValue:
+		return v.LongValue
+	case *sparkplug.Metric_FloatValue:
+		return v.FloatValue
+	case *sparkplug.Metric_DoubleValue:
+		return v.DoubleValue
+	case *sparkplug.Metric_BooleanValue:
+		return v.BooleanValue
+	case *sparkplug.Metric_StringValue:
+		return v.StringValue
+	default:
+		return nil
+	}
+}
+
 // metricAsFloat coerces a ResolvedMetric.Value to float64.
 func metricAsFloat(v any) (float64, bool) {
 	switch x := v.(type) {
@@ -649,7 +672,26 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			return fmt.Errorf("ingest: %w", err)
 		}
 		if resolved == nil {
-			// BIRTH/DEATH/CMD — state updated, no downstream output
+			// BIRTH/DEATH/CMD — state updated, no downstream output.
+			// EXCEPTION for Phase 3 shadow: seed non-counter parameters from
+			// NBIRTH so subsequent NDATA has the parameter context (MachSpeed,
+			// Parameter*) it needs. Without this, Phase 8's glitch guard
+			// (prodSpeed < 3*machspeed) suppresses every emission because
+			// machspeed defaults to 0.
+			if calc.enabled() && topic.MessageType == "NBIRTH" {
+				for _, m := range payload.GetMetrics() {
+					name := m.GetName()
+					if name == "" {
+						continue // skip metrics that only have alias (never in NBIRTH)
+					}
+					rm := sparkplug.ResolvedMetric{
+						Name:  name,
+						Alias: m.GetAlias(),
+						Value: extractMetricValue(m),
+					}
+					_ = calc.seedFromMetric(topic.GroupID, rm)
+				}
+			}
 			logger.Debug("sparkplug: state updated",
 				slog.String("publisher", key.String()),
 				slog.String("message_type", topic.MessageType),
