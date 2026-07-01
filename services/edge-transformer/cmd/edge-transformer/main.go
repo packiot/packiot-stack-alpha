@@ -177,11 +177,21 @@ func main() {
 		},
 	)
 
-	// Health server first — so /healthz answers 200 during the consumer's
-	// initial connect attempt. Without this the Docker healthcheck races
-	// the broker dial on a slow factory uplink and the container churns.
-	// Same trick used in mirror-worker-go's bootSnapshot path.
-	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), consumer, mx.Registry, logger)
+	// Health server aggregates per-component /healthz JSON (ADR-0011 P0-4).
+	// Every runtime component that satisfies health.ComponentSnapshotter is
+	// registered — currently: consumer, plus subscriber + shadowpub when
+	// MQTT_ENABLED. Each contributes its Degraded() reason to the response;
+	// overall healthy = every component healthy. Response is 503 with
+	// structured `degraded_components` when any component is degraded.
+	// ADR-0011 rule 4: silent-degrade is a bug.
+	//
+	// Health server starts first — so /healthz answers 200 during the
+	// consumer's initial connect attempt. Without this the Docker
+	// healthcheck races the broker dial on a slow factory uplink and the
+	// container churns. Same trick used in mirror-worker-go's bootSnapshot.
+	multi := health.NewMulti()
+	multi.Add(consumer)
+	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), multi, mx.Registry, logger)
 	healthSrv.Start()
 
 	// ── ADR-0010 Phase 2 wiring ─────────────────────────────────────────────
@@ -225,6 +235,14 @@ func main() {
 		mqttCfg.Password = cfg.MQTTPassword
 
 		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, logger), logger)
+
+		// ADR-0011 P0-4: register subscriber + publisher with the health
+		// aggregator so /healthz surfaces their degraded state.
+		multi.Add(mqttSub)
+		if shadowPub != nil {
+			multi.Add(shadowPub)
+		}
+
 		modeDesc := "shadow (log resolved metrics; no rmq publish)"
 		if shadowPub != nil {
 			modeDesc = "shadow (publish to edge.plc-normalized with source.type=go)"

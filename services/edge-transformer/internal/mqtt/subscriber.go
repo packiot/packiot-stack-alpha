@@ -193,6 +193,63 @@ type Snapshot struct {
 	LastErr      string `json:"last_error,omitempty"`
 }
 
+// StaleMessageThreshold is how long since the last received message before
+// we mark the subscriber degraded. Under a real Sparkplug workload, PLCs
+// publish DATA every ~1s; anything more than 60s of silence is either a
+// dead broker or a dead subscriber goroutine.
+const StaleMessageThreshold = 60 * time.Second
+
+// Component satisfies health.ComponentSnapshotter — returns the name used
+// in /healthz's aggregated JSON. ADR-0011 P0-4.
+func (s *Subscriber) Component() string { return "mqtt_subscriber" }
+
+// SnapshotDetail satisfies health.ComponentSnapshotter — returns the
+// per-component JSON body for /healthz aggregation.
+func (s *Subscriber) SnapshotDetail() any { return s.SnapshotJSON() }
+
+// Degraded returns a non-empty reason when the subscriber is unhealthy.
+// ADR-0011 rule 4: any degraded state MUST be surfaced with a reason.
+//
+// Degraded conditions:
+//   - Not connected to the broker (connection dropped, no auto-reconnect yet)
+//   - No message received in StaleMessageThreshold (broker went quiet OR
+//     goroutine is stuck OR PLCs all stopped publishing)
+//
+// Note: on a fresh start with zero messages ever received, we return
+// "no messages received yet" — this is technically degraded per the
+// factory-is-healthy standard, but ops should recognize the pattern.
+func (s *Subscriber) Degraded() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.connected {
+		if s.lastErr != "" {
+			return "not connected: " + s.lastErr
+		}
+		return "not connected to broker"
+	}
+	// received=0 → subscriber healthy at boot but never got a message
+	if s.received.Load() == 0 {
+		// Give the subscriber grace during boot — treat as degraded only
+		// if we've been running for > StaleMessageThreshold.
+		if time.Since(s.startedAt) > StaleMessageThreshold {
+			return fmt.Sprintf("no messages received in %v since start",
+				time.Since(s.startedAt).Round(time.Second))
+		}
+		return ""
+	}
+	// Check last-message age
+	lastNs := s.lastMessage.Load()
+	if lastNs == 0 {
+		return ""
+	}
+	age := time.Since(time.Unix(0, lastNs))
+	if age > StaleMessageThreshold {
+		return fmt.Sprintf("last message %v ago (threshold %v)",
+			age.Round(time.Second), StaleMessageThreshold)
+	}
+	return ""
+}
+
 // SnapshotJSON is the /health-shaped view of the Subscriber's state.
 func (s *Subscriber) SnapshotJSON() Snapshot {
 	s.mu.RLock()

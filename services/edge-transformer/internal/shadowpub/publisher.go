@@ -212,6 +212,66 @@ func (p *Publisher) NackedCount() uint64          { return p.nacked.Load() }
 func (p *Publisher) ConfirmTimeoutCount() uint64  { return p.confirmTimeouts.Load() }
 func (p *Publisher) FailedCount() uint64          { return p.failed.Load() }
 
+// InFlightBacklog is publishing sent minus confirmed. Under steady state
+// this hovers near zero; a growing gap means RabbitMQ is slow-writing or
+// the confirm goroutine is stuck.
+func (p *Publisher) InFlightBacklog() uint64 {
+	pub := p.published.Load()
+	conf := p.confirmed.Load()
+	if pub < conf {
+		// Should never happen but guard against reader race on the two
+		// atomics — treat as caught-up.
+		return 0
+	}
+	return pub - conf
+}
+
+// BacklogDegradedThreshold — publish count minus confirm count above this
+// number is considered degraded. Set for typical Sparkplug rates (~10 msg/s
+// per PLC × dozens of PLCs = hundreds/s peak). More than 100 outstanding
+// = confirms channel wedged or RMQ struggling.
+const BacklogDegradedThreshold = 100
+
+// ── ADR-0011 P0-4: ComponentSnapshotter for /healthz ─────────────────────────
+
+// Component satisfies health.ComponentSnapshotter.
+func (p *Publisher) Component() string { return "shadow_publisher" }
+
+// SnapshotDetail returns the per-component JSON body.
+func (p *Publisher) SnapshotDetail() any {
+	return map[string]any{
+		"exchange":                p.exchange,
+		"instance":                p.instance,
+		"published_total":         p.published.Load(),
+		"confirmed_total":         p.confirmed.Load(),
+		"nacked_total":            p.nacked.Load(),
+		"confirm_timeouts_total":  p.confirmTimeouts.Load(),
+		"failed_total":            p.failed.Load(),
+		"in_flight_backlog":       p.InFlightBacklog(),
+	}
+}
+
+// Degraded returns non-empty when publisher-side reliability is at risk.
+// ADR-0011 rule 4: silent-degrade is a bug.
+//
+// Degraded conditions:
+//   - In-flight backlog > BacklogDegradedThreshold (broker slow / stuck)
+//   - Non-zero nacks (broker resource alarm) → ops should investigate
+//   - Non-zero confirm timeouts (broker slow-write, may recover) → warn
+func (p *Publisher) Degraded() string {
+	if backlog := p.InFlightBacklog(); backlog > BacklogDegradedThreshold {
+		return fmt.Sprintf("in-flight backlog %d > threshold %d (broker may be slow)",
+			backlog, BacklogDegradedThreshold)
+	}
+	if nacked := p.nacked.Load(); nacked > 0 {
+		return fmt.Sprintf("RabbitMQ has NACKED %d publish(es) — check resource alarms",
+			nacked)
+	}
+	// Confirm timeouts are advisory but not degraded on their own — brief
+	// network wobbles cause a few. The nack path is the actionable one.
+	return ""
+}
+
 // Publish fans out a ResolvedPayload into per-metric envelopes and publishes
 // each to edge.plc-normalized.<tenant>, awaiting broker confirms per publish.
 //
