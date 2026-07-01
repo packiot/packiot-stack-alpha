@@ -112,6 +112,34 @@ func TestBuildEnvelopeMatchesOeecloudPayloadShape(t *testing.T) {
 	}
 }
 
+// TestBuildEnvelopeSourceTypeOverride — ADR-0012 Phase 3 lets callers
+// stamp the envelope with a non-default source_type. Empty → "go" (back-compat).
+func TestBuildEnvelopeSourceTypeOverride(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty defaults to go (ADR-0010 back-compat)", "", "go"},
+		{"explicit go still yields go", "go", "go"},
+		{"refactored routes to shadow DB (ADR-0012)", "refactored", "refactored"},
+		{"arbitrary custom value pass-through (worker fail-safes it)", "unknown", "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := BuildEnvelope(EnvelopeInput{
+				Tenant:       "cpack",
+				PublisherKey: "CPACK/edge-01",
+				Instance:     "test",
+				SourceType:   tc.input,
+			})
+			if env.SourceType != tc.want {
+				t.Errorf("SourceType(input=%q): got %q, want %q", tc.input, env.SourceType, tc.want)
+			}
+		})
+	}
+}
+
 // TestBuildEnvelopeEmptyMetrics — the builder handles the empty case.
 func TestBuildEnvelopeEmptyMetrics(t *testing.T) {
 	env := BuildEnvelope(EnvelopeInput{

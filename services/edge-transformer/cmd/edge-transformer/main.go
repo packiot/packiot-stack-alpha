@@ -339,7 +339,17 @@ func main() {
 			logger.Warn("outbox: enabled but shadowpub failed to init — outbox disabled")
 		}
 
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, logger), logger)
+		// ADR-0012 Phase 3 dual-emit: when SHADOW_EMIT_REFACTORED=true, for
+		// each inbound MQTT event we enqueue TWO envelopes to the outbox —
+		// one with source_type="go" (routes to shadow_go_port on packiot,
+		// existing ADR-0010 validation preserved) and one with
+		// source_type="refactored" (routes to packiot_shadow public, new
+		// ADR-0012 refactor POC). Default false → single-emit unchanged.
+		emitRefactored := os.Getenv("SHADOW_EMIT_REFACTORED") == "true"
+		if emitRefactored {
+			logger.Info("shadow dual-emit enabled: publishing source_type=go AND source_type=refactored envelopes")
+		}
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, logger), logger)
 
 		// ADR-0011 P0-4: register subscriber + publisher with the health
 		// aggregator so /healthz surfaces their degraded state.
@@ -896,7 +906,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored bool, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		payload, err := sparkplug.Decode(body)
 		if err != nil {
@@ -973,40 +983,55 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			// The new envelope shape is a single-message-many-metrics
 			// oeecloud-compatible payload (see shadowpub.BuildEnvelope).
 			// Routing key `sparkplug.data.<tenant>` on the `oee` exchange
-			// so oeecloud-worker's per-tenant queue picks it up. SourceType
-			// is stamped "go" inside BuildEnvelope so oeecloud dispatches
-			// writes into shadow_go_port.* (ADR-0010 Phase 3 DB comparison).
+			// so oeecloud-worker's per-tenant queue picks it up.
+			//
+			// Source types emitted (ADR-0012 Phase 3):
+			//   - "go"         → shadow_go_port.* on packiot DB (default,
+			//                    ADR-0010 comparison, always emitted)
+			//   - "refactored" → public.* on packiot_shadow DB (opt-in via
+			//                    SHADOW_EMIT_REFACTORED=true env)
 			tenant := strings.ToLower(topic.GroupID)
 			routingKey := "sparkplug.data." + tenant
-			env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
-				Tenant:          tenant,
-				PublisherKey:    key.String(),
-				Instance:        "outbox",
-				Metrics:         resolved.Metrics,
-				SourceTimestamp: int64(resolved.Timestamp),
-			})
-			body, err := json.Marshal(env)
-			if err != nil {
-				logger.Warn("outbox: marshal envelope failed",
-					slog.String("err", err.Error()))
-			} else {
-				messageID := fmt.Sprintf("outbox-%d", time.Now().UnixNano())
+
+			sourceTypes := []string{"go"}
+			if emitRefactored {
+				sourceTypes = append(sourceTypes, "refactored")
+			}
+			for _, st := range sourceTypes {
+				env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
+					Tenant:          tenant,
+					PublisherKey:    key.String(),
+					Instance:        "outbox",
+					Metrics:         resolved.Metrics,
+					SourceTimestamp: int64(resolved.Timestamp),
+					SourceType:      st,
+				})
+				body, err := json.Marshal(env)
+				if err != nil {
+					logger.Warn("outbox: marshal envelope failed",
+						slog.String("source_type", st),
+						slog.String("err", err.Error()))
+					continue
+				}
+				messageID := fmt.Sprintf("outbox-%s-%d", st, time.Now().UnixNano())
 				oxEnv := outboxEnvelope{
 					RoutingKey: routingKey,
 					MessageID:  messageID,
 					Body:       body,
 				}
 				payload, err := json.Marshal(oxEnv)
-				if err == nil {
-					if _, err := outboxStore.Enqueue(ctx, outbox.Message{
-						Tenant:  tenant,
-						Topic:   key.String(),
-						Payload: payload,
-					}); err != nil {
-						logger.Warn("outbox: enqueue failed",
-							slog.String("publisher", key.String()),
-							slog.String("err", err.Error()))
-					}
+				if err != nil {
+					continue
+				}
+				if _, err := outboxStore.Enqueue(ctx, outbox.Message{
+					Tenant:  tenant,
+					Topic:   key.String(),
+					Payload: payload,
+				}); err != nil {
+					logger.Warn("outbox: enqueue failed",
+						slog.String("publisher", key.String()),
+						slog.String("source_type", st),
+						slog.String("err", err.Error()))
 				}
 			}
 		} else if publisher != nil {
