@@ -50,6 +50,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/mqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
@@ -194,6 +195,7 @@ func main() {
 	// deferred to a follow-up PR alongside the AMQP publisher package.
 	var sparkplugStore *sparkplug.StateStore
 	var mqttSub *mqtt.Subscriber
+	var shadowPub *shadowpub.Publisher
 	if cfg.MQTTEnabled {
 		sparkplugStore = sparkplug.NewStateStore()
 		sparkplugStore.OnSeqGap(func(key sparkplug.PublisherKey, expected, got uint64) {
@@ -204,17 +206,33 @@ func main() {
 			)
 		})
 
+		// Shadow publisher — publishes resolved metrics to edge.plc-normalized
+		// with source.type="go" so ADR-0008-style comparator can diff against
+		// Phase 2.5b's Node-RED publisher output (source.type="nodered") on
+		// the same exchange.
+		var shadowErr error
+		shadowPub, shadowErr = shadowpub.New(amqpCreds.URL(), "edge.plc-normalized", logger)
+		if shadowErr != nil {
+			logger.Error("shadowpub: failed to open channel — MQTT disabled",
+				slog.String("err", shadowErr.Error()))
+			shadowPub = nil
+		}
+
 		mqttCfg := mqtt.DefaultConfig()
 		mqttCfg.BrokerURL = cfg.MQTTBrokerURL
 		mqttCfg.ClientID = cfg.MQTTClientID
 		mqttCfg.Username = cfg.MQTTUsername
 		mqttCfg.Password = cfg.MQTTPassword
 
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, logger), logger)
+		modeDesc := "shadow (log resolved metrics; no rmq publish)"
+		if shadowPub != nil {
+			modeDesc = "shadow (publish to edge.plc-normalized with source.type=go)"
+		}
 		logger.Info("mqtt subscriber wired",
 			slog.String("broker", cfg.MQTTBrokerURL),
 			slog.String("client_id", cfg.MQTTClientID),
-			slog.String("mode", "shadow (log resolved metrics; no rmq publish yet)"),
+			slog.String("mode", modeDesc),
 		)
 	} else {
 		logger.Info("mqtt subscriber disabled (MQTT_ENABLED=false)")
@@ -242,6 +260,10 @@ func main() {
 		logger.Error("worker group exited with error", slog.String("err", err.Error()))
 	}
 
+	if shadowPub != nil {
+		_ = shadowPub.Close()
+	}
+
 	// Graceful shutdown for the health server (5s budget).
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
@@ -256,7 +278,7 @@ func main() {
 // publisher, this handler additionally publishes a normalized envelope to
 // edge.plc-normalized.<tenant> for ADR-0008-style comparator validation
 // against Node-RED's Phase 2.5b publisher.
-func sparkplugHandler(store *sparkplug.StateStore, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		payload, err := sparkplug.Decode(body)
 		if err != nil {
@@ -289,7 +311,17 @@ func sparkplugHandler(store *sparkplug.StateStore, logger *slog.Logger) mqtt.Han
 			)
 			return nil
 		}
-		// DATA — log the resolved metrics (shadow mode)
+		// DATA — publish per-metric envelopes to edge.plc-normalized.<tenant>
+		// for ADR-0008 comparator validation. If shadowpub failed to
+		// initialize, fall back to log-only mode.
+		if publisher != nil {
+			if err := publisher.Publish(ctx, resolved); err != nil {
+				logger.Warn("shadowpub: publish failed",
+					slog.String("publisher", key.String()),
+					slog.String("err", err.Error()))
+				// don't fail the handler — keep alias table cursor advancing
+			}
+		}
 		logger.Info("sparkplug: data decoded",
 			slog.String("publisher", key.String()),
 			slog.Uint64("seq", resolved.Seq),
