@@ -40,8 +40,17 @@ const (
 	// Enterprise/Site/Area/Line/Unit/Admin/<CounterName>/<idx>/Unit
 	consumedMetricName = "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit"
 
+	// MachSpeed for the same unit — seeds the port's Phase 7 threshold
+	// config so Phase 8's glitch guard (`prodSpeed < 3*machspeed`) has
+	// a non-zero denominator. Without this, EVERY metric emission is
+	// suppressed because 0 < 3*0 is false.
+	machSpeedMetricName = "CPACK/SC/LINHAS/L5/BREYER/Status/MachSpeed"
+
 	// Sparkplug B alias — must fit in uint64. Any small integer works.
-	consumedAlias = uint64(1)
+	// Distinct aliases for distinct metrics so NDATA references are
+	// unambiguous.
+	consumedAlias  = uint64(1)
+	machSpeedAlias = uint64(2)
 )
 
 func main() {
@@ -89,6 +98,15 @@ func run(logger *slog.Logger, broker, clientID string, value int64) error {
 				Datatype:  proto32(uint32(sparkplug.DataType_Int64)),
 				Value: &sparkplug.Metric_LongValue{
 					LongValue: uint64(0), // NBIRTH publishes the last-known value
+				},
+			},
+			{
+				Name:      strPtr(machSpeedMetricName),
+				Alias:     proto64(machSpeedAlias),
+				Timestamp: &nbirthTs,
+				Datatype:  proto32(uint32(sparkplug.DataType_Double)),
+				Value: &sparkplug.Metric_DoubleValue{
+					DoubleValue: 1000.0, // 1000 parts/min nominal
 				},
 			},
 			{

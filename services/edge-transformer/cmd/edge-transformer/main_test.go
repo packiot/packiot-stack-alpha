@@ -36,6 +36,12 @@ func newTestCalcHooks(t *testing.T) calcHooks {
 		errors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "test_calc_errors_total",
 		}, []string{"tenant", "reason"}),
+		metricsEmitted: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_calc_metrics_emitted_total",
+		}, []string{"tenant", "kind"}),
+		stateSeeds: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_calc_state_seeds_total",
+		}, []string{"tenant", "seed_kind"}),
 	}
 }
 

@@ -224,6 +224,8 @@ func main() {
 	var calcEvals *prometheus.CounterVec
 	var calcMutations *prometheus.CounterVec
 	var calcErrors *prometheus.CounterVec
+	var calcMetricsEmitted *prometheus.CounterVec
+	var calcStateSeeds *prometheus.CounterVec
 	if cfg.UseGoPort {
 		calcState = calc_production_counters.NewMemState()
 		calcEvals = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -238,7 +240,15 @@ func main() {
 			Name: "calc_errors_total",
 			Help: "Calc Production Counters port evaluation errors (ADR-0010 Phase 3).",
 		}, []string{"tenant", "reason"})
-		mx.Registry.MustRegister(calcEvals, calcMutations, calcErrors)
+		calcMetricsEmitted = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "calc_metrics_emitted_total",
+			Help: "Calc port per-metric emissions (Decision.Metrics entries) — comparator diff target vs Node-RED emission rate.",
+		}, []string{"tenant", "kind"})
+		calcStateSeeds = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "calc_state_seeds_total",
+			Help: "Non-counter Sparkplug metrics that seeded Calc port State (MachSpeed, Parameter*).",
+		}, []string{"tenant", "seed_kind"})
+		mx.Registry.MustRegister(calcEvals, calcMutations, calcErrors, calcMetricsEmitted, calcStateSeeds)
 		logger.Info("calc_production_counters port ENABLED (shadow mode)",
 			slog.String("adr", "ADR-0010 Phase 3"),
 		)
@@ -278,10 +288,12 @@ func main() {
 		mqttCfg.Password = cfg.MQTTPassword
 
 		calcHooks := calcHooks{
-			state:     calcState,
-			evals:     calcEvals,
-			mutations: calcMutations,
-			errors:    calcErrors,
+			state:          calcState,
+			evals:          calcEvals,
+			mutations:      calcMutations,
+			errors:         calcErrors,
+			metricsEmitted: calcMetricsEmitted,
+			stateSeeds:     calcStateSeeds,
 		}
 		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, calcHooks, logger), logger)
 
@@ -347,6 +359,13 @@ type calcHooks struct {
 	evals     *prometheus.CounterVec
 	mutations *prometheus.CounterVec
 	errors    *prometheus.CounterVec
+	// metricsEmitted counts individual Metric entries the port would
+	// emit — increments for every entry in Decision.Metrics. This lets
+	// operators diff against Node-RED's actual emission rate at the same
+	// tenant/kind granularity.
+	metricsEmitted *prometheus.CounterVec
+	// stateSeeds counts non-counter metrics recognized by seedFromMetric.
+	stateSeeds *prometheus.CounterVec
 }
 
 // enabled reports whether shadow-mode Calc is on. All hooks are nil when off.
@@ -368,6 +387,121 @@ func isCounterMetricName(name string) calc_production_counters.CounterKind {
 	}
 }
 
+// seedFromMetric writes non-counter Sparkplug metrics into the Calc port's
+// State singleton so subsequent counter evaluations have the parameter
+// context they need (MachSpeed, Parameter*30761*, etc.). Silently no-ops
+// on unknown metric names. Returns true if the metric was recognized.
+func (h calcHooks) seedFromMetric(tenant string, metric sparkplug.ResolvedMetric) bool {
+	// MachSpeed: nominal machine speed used by Phase 7 threshold + Phase 8
+	// glitch guard (prodSpeed < 3*machspeed). Numeric; coerce to float64.
+	if strings.HasSuffix(metric.Name, "/Status/MachSpeed") {
+		var v float64
+		switch x := metric.Value.(type) {
+		case int64:
+			v = float64(x)
+		case uint64:
+			v = float64(x)
+		case int32:
+			v = float64(x)
+		case uint32:
+			v = float64(x)
+		case int:
+			v = float64(x)
+		case float64:
+			v = x
+		case float32:
+			v = float64(x)
+		default:
+			return false
+		}
+		_ = h.state.SetFloat(metric.Name, v)
+		h.stateSeeds.WithLabelValues(tenant, "machspeed").Inc()
+		return true
+	}
+	// Parameter*30750* (threshold_quant): percentage; float
+	if strings.HasSuffix(metric.Name, "/Status/Parameter*30750*") {
+		v, ok := metricAsFloat(metric.Value)
+		if !ok {
+			return false
+		}
+		_ = h.state.SetFloat(metric.Name, v)
+		h.stateSeeds.WithLabelValues(tenant, "threshold_quant").Inc()
+		return true
+	}
+	// Parameter30758 (threshold_mode): int enum
+	if strings.HasSuffix(metric.Name, "/Status/Parameter30758") {
+		v, ok := metricAsInt(metric.Value)
+		if !ok {
+			return false
+		}
+		_ = h.state.SetInt(metric.Name, v)
+		h.stateSeeds.WithLabelValues(tenant, "threshold_mode").Inc()
+		return true
+	}
+	// Parameter*30761* (external-speed flag): bool
+	if strings.HasSuffix(metric.Name, "/Status/Parameter*30761*") {
+		if b, ok := metric.Value.(bool); ok {
+			_ = h.state.SetBool(metric.Name, b)
+			h.stateSeeds.WithLabelValues(tenant, "external_speed_flag").Inc()
+			return true
+		}
+	}
+	// Parameter*30710* (counter multiplier): int
+	if strings.HasSuffix(metric.Name, "/Status/Parameter*30710*") {
+		v, ok := metricAsInt(metric.Value)
+		if !ok {
+			return false
+		}
+		_ = h.state.SetInt(metric.Name, v)
+		h.stateSeeds.WithLabelValues(tenant, "counter_multiplier").Inc()
+		return true
+	}
+	return false
+}
+
+// metricAsInt coerces a sparkplug ResolvedMetric.Value to int64, matching
+// JS parseInt truncation for floats and false-return for non-numerics.
+func metricAsInt(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case uint64:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	case uint32:
+		return int64(x), true
+	case int:
+		return int64(x), true
+	case float64:
+		return int64(x), true
+	case float32:
+		return int64(x), true
+	}
+	return 0, false
+}
+
+// metricAsFloat coerces a ResolvedMetric.Value to float64.
+func metricAsFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case uint32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	}
+	return 0, false
+}
+
 // runCalcShadow evaluates one ResolvedMetric through the Calc port in
 // shadow mode. State mutations are applied to the singleton state so
 // subsequent ticks see the accumulated deltas. Decision output is
@@ -376,6 +510,12 @@ func isCounterMetricName(name string) calc_production_counters.CounterKind {
 // Errors are logged + counted but never propagated — shadow mode must
 // not break the normal handler chain.
 func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplug.ResolvedMetric, ts time.Time, logger *slog.Logger) {
+	// First: try to seed non-counter state (MachSpeed, parameters).
+	// Recognized ones update State + increment stateSeeds; unknown ones
+	// fall through and the caller ignores non-counter metrics.
+	if h.seedFromMetric(tenant, metric) {
+		return
+	}
 	kind := isCounterMetricName(metric.Name)
 	if kind == calc_production_counters.CounterKindUnknown {
 		return
@@ -445,6 +585,22 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 			continue
 		}
 		h.mutations.WithLabelValues(tenant, m.Kind).Inc()
+	}
+	// Count the per-metric emissions from Decision.Metrics. This is the
+	// granularity ops need for comparator-style diffs against Node-RED.
+	for _, em := range dec.Metrics {
+		emKind := "unknown"
+		switch {
+		case strings.Contains(em.Name, "ProdProcessedCount"):
+			emKind = "ProdProcessedCount"
+		case strings.Contains(em.Name, "ProdConsumedCount"):
+			emKind = "ProdConsumedCount"
+		case strings.Contains(em.Name, "ProdDefectiveCount"):
+			emKind = "ProdDefectiveCount"
+		case strings.Contains(em.Name, "Status/StateCurrent"):
+			emKind = "StateCurrent"
+		}
+		h.metricsEmitted.WithLabelValues(tenant, emKind).Inc()
 	}
 	logger.Debug("calc_production_counters: shadow decision",
 		slog.String("tenant", tenant),
