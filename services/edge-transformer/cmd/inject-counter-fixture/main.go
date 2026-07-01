@@ -46,11 +46,21 @@ const (
 	// suppressed because 0 < 3*0 is false.
 	machSpeedMetricName = "CPACK/SC/LINHAS/L5/BREYER/Status/MachSpeed"
 
+	// Parameter30700 on the LINE topic — CSV of machine indices that
+	// participate in the line. When BREYER's counter (index 61) matches
+	// the first entry, Phase 9 line-aggregation fires the LINE Consumed
+	// emission. Sending "61" (single-machine line) is the simplest
+	// possible topology that fires both first-in-CSV AND last-in-CSV
+	// branches on the same metric.
+	lineTopicParam30700Name = "CPACK/SC/LINHAS/L5/Status/Parameter30700"
+	lineParam30700Value     = "61"
+
 	// Sparkplug B alias — must fit in uint64. Any small integer works.
 	// Distinct aliases for distinct metrics so NDATA references are
 	// unambiguous.
-	consumedAlias  = uint64(1)
-	machSpeedAlias = uint64(2)
+	consumedAlias    = uint64(1)
+	machSpeedAlias   = uint64(2)
+	param30700Alias  = uint64(3)
 )
 
 func main() {
@@ -107,6 +117,20 @@ func run(logger *slog.Logger, broker, clientID string, value int64) error {
 				Datatype:  proto32(uint32(sparkplug.DataType_Double)),
 				Value: &sparkplug.Metric_DoubleValue{
 					DoubleValue: 1000.0, // 1000 parts/min nominal
+				},
+			},
+			{
+				// Parameter30700 on the LINE topic — seeds Phase 9 line
+				// aggregation. Value "61" means BREYER (machine index 61)
+				// is both the first-in-CSV AND last-in-CSV (single-machine
+				// line), so both branches of Phase 9 can fire from one
+				// NDATA metric.
+				Name:      strPtr(lineTopicParam30700Name),
+				Alias:     proto64(param30700Alias),
+				Timestamp: &nbirthTs,
+				Datatype:  proto32(uint32(sparkplug.DataType_String)),
+				Value: &sparkplug.Metric_StringValue{
+					StringValue: lineParam30700Value,
 				},
 			},
 			{

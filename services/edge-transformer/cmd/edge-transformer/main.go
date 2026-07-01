@@ -533,6 +533,23 @@ func (h calcHooks) seedFromMetric(tenant string, metric sparkplug.ResolvedMetric
 		h.stateSeeds.WithLabelValues(tenant, "counter_multiplier").Inc()
 		return true
 	}
+	// Parameter30700 (line-machines CSV): string CSV like "61,62,63".
+	// Split and store as []string so Phase 9 line-aggregation can compare
+	// against machine index for first/last.
+	if strings.HasSuffix(metric.Name, "/Status/Parameter30700") {
+		s, ok := metric.Value.(string)
+		if !ok || s == "" {
+			return false
+		}
+		parts := strings.Split(s, ",")
+		// Trim any whitespace around each entry (defensive).
+		for i, p := range parts {
+			parts[i] = strings.TrimSpace(p)
+		}
+		_ = h.state.SetStrings(metric.Name, parts)
+		h.stateSeeds.WithLabelValues(tenant, "line_machines_csv").Inc()
+		return true
+	}
 	return false
 }
 
