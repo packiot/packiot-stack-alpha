@@ -587,15 +587,22 @@ type EnvelopeInput struct {
 	PublisherKey    string
 	Instance        string
 	Metrics         []sparkplug.ResolvedMetric
-	SourceTimestamp int64 // Unix millis — matches oeecloud Payload.Timestamp
+	SourceTimestamp int64  // Unix millis — matches oeecloud Payload.Timestamp
+	SourceType      string // empty → defaults to "go" (ADR-0010 back-compat)
 }
 
 // BuildEnvelope constructs an envelope matching oeecloud-worker's expected
 // shape: single message carrying N metrics under the `metrics` array.
-// SourceType is stamped as "go" so oeecloud-worker dispatches writes into
-// shadow_go_port.* instead of public.* — ADR-0010 Phase 3 shadow-mode DB
-// comparison.
+//
+// SourceType default is "go" — oeecloud-worker dispatches writes into
+// shadow_go_port.* (ADR-0010 Phase 3 shadow-mode DB comparison). Callers
+// override via EnvelopeInput.SourceType, e.g. "refactored" routes writes
+// into packiot_shadow public.* for the ADR-0012 refactor POC.
 func BuildEnvelope(in EnvelopeInput) Envelope {
+	sourceType := in.SourceType
+	if sourceType == "" {
+		sourceType = "go"
+	}
 	metrics := make([]Metric, 0, len(in.Metrics))
 	for _, m := range in.Metrics {
 		metrics = append(metrics, Metric{
@@ -610,7 +617,7 @@ func BuildEnvelope(in EnvelopeInput) Envelope {
 	return Envelope{
 		Timestamp:  in.SourceTimestamp,
 		Gateway:    fmt.Sprintf("edge-transformer:%s", in.Instance),
-		SourceType: "go",
+		SourceType: sourceType,
 		Metrics:    metrics,
 	}
 }
