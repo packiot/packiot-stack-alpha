@@ -161,10 +161,51 @@ go test -bench=. -benchmem -benchtime=2s ./internal/sparkplug/
 
 **What this means for the ADR**: the "Go decoder is fast enough" argument is now grounded in measurement, not estimate. The decoder is never the bottleneck. The architectural concern at end-state production load is the MQTT subscriber connection management + alias-table state (Phase 2 work), not the decode hot path.
 
-**Still pending in Phase 1**:
-- Node-RED side benchmark (live capture via `node --prof` on staging)
-- Parity validation against real captured payloads
-- Multi-core scaling characterization (informs Phase 2's subscriber-per-tenant vs shared design)
+### Cross-implementation parity harness (2026-06-30, same PR)
+
+Added `testdata/parity/` — a Node.js harness that decodes Go-produced Sparkplug bytes using **the exact library Node-RED wraps** (`sparkplug-payload` from `eclipse-tahu/tahu/javascript/core/`). Isolated behind a `//go:build parity` tag so the default `go test` doesn't require Node.js.
+
+Setup:
+
+```bash
+cd testdata/parity && npm install
+```
+
+Run:
+
+```bash
+go test -tags parity -run TestParity -v ./internal/sparkplug/
+```
+
+**Result — 2026-06-30**: PARITY CONFIRMED. The Go decoder encodes bytes that Node.js `sparkplug-payload` decodes into the identical logical shape (3 metrics, correct timestamp/seq/aliases, first metric decoded as `type=Int64 value=12345`, last metric as `type=String value="RUNNING"`).
+
+Notable JS-side quirks the harness normalizes:
+
+- `sparkplug-payload` uses Long.js (via protobufjs) for uint64 fields — arrive as `{high, low, unsigned}` objects, not numbers. The harness's `toNum()` normalizer coerces them back to JS-safe numbers or strings.
+- `sparkplug-payload` maps `DataType` enum ints back to string names (`"Int64"` instead of `4`). Direct-int comparison against Go's DataType_Int64 requires mapping through the enum name.
+
+Neither is a compatibility issue — both sides read the same protobuf wire bytes; they surface them in language-idiomatic shapes.
+
+### Multi-core parallel decode (2026-06-30, same PR)
+
+`benchmark_test.go` gained two `b.RunParallel` variants:
+
+| Benchmark | ns/op | Throughput |
+|---|---|---|
+| Decode NDATA(100) single-core | 106 μs | 15.13 MB/s |
+| Decode NDATA(100) parallel-8  | 52.5 μs (effective per-goroutine) | **30.62 MB/s aggregate** |
+| Decode NBIRTH(100) single-core| 138 μs | 50.82 MB/s |
+| Decode NBIRTH(100) parallel-8 | 77.4 μs | **90.65 MB/s aggregate** |
+
+**Interpretation**: 8-core aggregate throughput is 2-2× single-core, NOT 8×. Bottlenecks are GC pressure (5-7 allocs per metric adds up under sustained load) + memory bandwidth on the i5-1135G7 mobile chip. This is fine for Phase 2 sizing — even the constrained 2× headroom on a mobile-class CPU is plenty for factory-scale load.
+
+The architectural takeaway for Phase 2: **subscriber-per-tenant is embarrassingly parallel** (each Sparkplug publisher owns its alias table; no shared state). So we can shard decoders across cores without contention if we ever need to. But we probably won't need to.
+
+### Still pending in Phase 1
+
+- Node-RED side benchmark (`node --prof` on staging — captures the JS decode CPU cost for direct comparison)
+- Parity validation against **real captured factory payloads** (the Go-encoded-then-JS-decoded direction is proven; the JS-encoded-then-Go-decoded direction is the same wire spec; real factory bytes still need capture)
+- GC-pressure characterization under sustained load (24h soak with pprof memory profiling)
 
 ### Why this seam, not others
 

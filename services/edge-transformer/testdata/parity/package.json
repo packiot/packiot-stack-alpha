@@ -1,0 +1,10 @@
+{
+  "name": "sparkplug-parity-harness",
+  "private": true,
+  "description": "Cross-implementation parity harness for ADR-0010 Sparkplug B decode spike. Decodes a binary Sparkplug B payload using the same npm library node-red-contrib-sparkplug-payload wraps, so we can compare it against the Go decoder's output on the same bytes.",
+  "version": "1.0.0",
+  "dependencies": {
+    "protobufjs": "^8.6.5",
+    "sparkplug-payload": "^1.0.3"
+  }
+}

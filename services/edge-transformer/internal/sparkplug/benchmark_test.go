@@ -73,3 +73,45 @@ func BenchmarkDecode_NDATA_1000(b *testing.B) { benchDecode(b, newNDATA(1000, 17
 
 func BenchmarkEncode_NBIRTH_100(b *testing.B) { benchEncode(b, newNBIRTH(100, 1700000000000)) }
 func BenchmarkEncode_NDATA_100(b *testing.B)  { benchEncode(b, newNDATA(100, 1700000000000, 1)) }
+
+// ── Parallel scaling (validates we can shard decoders if needed) ─────────────
+//
+// Sparkplug B's per-publisher alias-table state means each subscriber goroutine
+// owns its own table — they don't share. So decoding is embarrassingly
+// parallel ACROSS publishers. b.RunParallel models that: GOMAXPROCS goroutines
+// each running the decode hot path independently. The ns/op should stay flat
+// (or improve) as GOMAXPROCS rises.
+
+func BenchmarkDecode_NDATA_100_Parallel(b *testing.B) {
+	p := newNDATA(100, 1700000000000, 1)
+	body, err := Encode(p)
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := Decode(body); err != nil {
+				b.Fatalf("decode: %v", err)
+			}
+		}
+	})
+}
+
+func BenchmarkDecode_NBIRTH_100_Parallel(b *testing.B) {
+	p := newNBIRTH(100, 1700000000000)
+	body, err := Encode(p)
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := Decode(body); err != nil {
+				b.Fatalf("decode: %v", err)
+			}
+		}
+	})
+}
