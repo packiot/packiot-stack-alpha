@@ -3,6 +3,14 @@
 //
 // /metrics is mounted on the same mux — Prometheus scrape target. See
 // internal/metrics for the registry + collectors.
+//
+// ADR-0011 P0-4 alignment (mirror gap 5, 2026-07-01):
+//   - Response body includes `cursor` (last-replayed prod user_logs id)
+//     and `dlqDepth` (bad-row count for this source) — the two numbers
+//     ops has been guessing via `docker exec ... psql` for months.
+//   - Response body includes `reason` when degraded — never silent-degrade.
+//   - Extends (not refactors) the existing shape so Grafana panels
+//     + curl-based smoke checks keep working with zero flag changes.
 package health
 
 import (
@@ -18,6 +26,12 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
 )
 
+// cursorFn returns the current mirror_replay_cursor.last_log_id for this
+// source. dlqDepthFn returns the count of live DLQ rows for this source.
+// Both are optional — nil-safe.
+type cursorFn func(ctx context.Context) (int64, error)
+type dlqDepthFn func(ctx context.Context) (int64, error)
+
 type State struct {
 	mu             sync.RWMutex
 	startedAt      time.Time
@@ -25,6 +39,10 @@ type State struct {
 	lastError      string
 	source         string
 	pollIntervalMs int64
+
+	// ADR-0011 P0-4 extensions — optional lookups populated from main.go.
+	cursor   cursorFn
+	dlqDepth dlqDepthFn
 }
 
 func NewState(source string, pollIntervalSec int) *State {
@@ -34,6 +52,13 @@ func NewState(source string, pollIntervalSec int) *State {
 		pollIntervalMs: int64(pollIntervalSec) * 1000,
 	}
 }
+
+// WithCursor wires the cursor-lookup callback. Safe to call before Start;
+// nil is treated as "not available."
+func (s *State) WithCursor(fn cursorFn) { s.cursor = fn }
+
+// WithDLQDepth wires the DLQ-depth-lookup callback. Same nil semantics.
+func (s *State) WithDLQDepth(fn dlqDepthFn) { s.dlqDepth = fn }
 
 func (s *State) RecordTickSuccess() {
 	s.lastTickAt.Store(time.Now().UnixNano())
@@ -50,14 +75,19 @@ func (s *State) RecordTickError(err error) {
 }
 
 type body struct {
-	Status      string `json:"status"`
-	Source      string `json:"source"`
-	UptimeSec   int64  `json:"uptimeSec"`
-	LastTickMs  int64  `json:"lastTickAgeMs,omitempty"`
-	LastError   string `json:"lastError,omitempty"`
+	Status     string `json:"status"`
+	Source     string `json:"source"`
+	UptimeSec  int64  `json:"uptimeSec"`
+	LastTickMs int64  `json:"lastTickAgeMs,omitempty"`
+	LastError  string `json:"lastError,omitempty"`
+
+	// ADR-0011 P0-4 additions (mirror gap 5).
+	Cursor   int64  `json:"cursor,omitempty"`
+	DLQDepth int64  `json:"dlqDepth"`
+	Reason   string `json:"reason,omitempty"`
 }
 
-func (s *State) snapshot() body {
+func (s *State) snapshot(ctx context.Context) body {
 	s.mu.RLock()
 	lastErr := s.lastError
 	s.mu.RUnlock()
@@ -73,15 +103,43 @@ func (s *State) snapshot() body {
 		switch {
 		case ageMs > s.pollIntervalMs*10:
 			out.Status = "unhealthy"
-		case ageMs > s.pollIntervalMs*3 || lastErr != "":
+			out.Reason = fmt.Sprintf("no tick in %dms (unhealthy threshold %dms)",
+				ageMs, s.pollIntervalMs*10)
+		case ageMs > s.pollIntervalMs*3:
 			out.Status = "degraded"
+			out.Reason = fmt.Sprintf("tick delayed %dms (degraded threshold %dms)",
+				ageMs, s.pollIntervalMs*3)
+		case lastErr != "":
+			out.Status = "degraded"
+			out.Reason = "last tick errored: " + lastErr
 		default:
 			out.Status = "healthy"
 		}
 	} else if out.UptimeSec > 2*s.pollIntervalMs/1000 {
 		out.Status = "unhealthy"
+		out.Reason = "no successful tick since start"
 	} else {
 		out.Status = "healthy" // warming up
+	}
+
+	// ADR-0011 P0-4 additions — best-effort. DB timeouts don't degrade
+	// the overall status because they'd flap under transient load; they're
+	// diagnostic-only. Zero-valued responses fall through as "not
+	// available" (omitempty on Cursor; DLQDepth defaults to 0 which is
+	// the correct healthy value).
+	if s.cursor != nil {
+		ctxDB, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if c, err := s.cursor(ctxDB); err == nil {
+			out.Cursor = c
+		}
+	}
+	if s.dlqDepth != nil {
+		ctxDB, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if d, err := s.dlqDepth(ctxDB); err == nil {
+			out.DLQDepth = d
+		}
 	}
 	return out
 }
@@ -96,7 +154,7 @@ func New(addr string, state *State, logger *slog.Logger) *Server {
 	// /metrics — Prometheus scrape endpoint. Same pattern as oeecloud-worker.
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		b := state.snapshot()
+		b := state.snapshot(r.Context())
 		raw, err := json.Marshal(b)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {

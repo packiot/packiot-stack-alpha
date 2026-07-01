@@ -141,6 +141,14 @@ func main() {
 		slog.Int("total_handlers", len(disp.HandledCategories())))
 
 	state := health.NewState(cfg.SourceName, cfg.PollIntervalSec)
+	// ADR-0011 P0-4 (mirror gap 5): expose cursor + DLQ depth on /health so
+	// ops has both numbers without shelling into the DB.
+	state.WithCursor(func(qctx context.Context) (int64, error) {
+		return stagingDB.ReadCursor(qctx, cfg.SourceName)
+	})
+	state.WithDLQDepth(func(qctx context.Context) (int64, error) {
+		return stagingDB.CountDLQ(qctx, cfg.SourceName)
+	})
 	hsrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), state, logger)
 	hsrv.Start()
 
