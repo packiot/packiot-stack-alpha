@@ -75,6 +75,20 @@ type Config struct {
 	// Path to the per-customer client.yaml (ADR-0009 Phase 1).
 	// Mounted into the container; not packaged into the image.
 	ClientYAMLPath string
+
+	// ── MQTT subscriber (ADR-0010 Phase 2) ────────────────────────────────
+	// Feature-flagged off by default so existing deployments don't get a
+	// new failure mode. Set MQTT_ENABLED=true to spawn the subscriber
+	// alongside the AMQP consumer.
+	//
+	// Creds are read from env for the MVP. A follow-up PR will move them
+	// to AWS Secrets Manager via a MQTTSecretID field (same shape as
+	// RabbitMQSecretID above).
+	MQTTEnabled  bool
+	MQTTBrokerURL string // tcp://mosquitto:1883 or ssl://broker.factory:8883
+	MQTTClientID  string // must be unique per subscriber; default: edge-transformer-<hostname>
+	MQTTUsername  string
+	MQTTPassword  string
 }
 
 func Load() (*Config, error) {
@@ -103,7 +117,28 @@ func Load() (*Config, error) {
 		HealthPort:       getenvInt("HEALTH_PORT", 9102),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
 		ClientYAMLPath:   getenv("CLIENT_YAML_PATH", "/etc/packiot/client.yaml"),
+
+		// MQTT subscriber (ADR-0010 Phase 2 — off by default for safety)
+		MQTTEnabled:   getenvBool("MQTT_ENABLED", false),
+		MQTTBrokerURL: getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
+		MQTTClientID:  getenv("MQTT_CLIENT_ID", "edge-transformer"),
+		MQTTUsername:  getenv("MQTT_USERNAME", ""),
+		MQTTPassword:  getenv("MQTT_PASSWORD", ""),
 	}, nil
+}
+
+func getenvBool(name string, fallback bool) bool {
+	v := strings.ToLower(os.Getenv(name))
+	switch v {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func getenv(name, fallback string) string {
