@@ -342,6 +342,8 @@ func Calc(msg Message, state State) (Decision, error) {
 	sendMsg = false
 	statusTopicName := ""
 	status := 0
+	prodConsumedSet := false
+	prodProcessedSet := false
 
 	// Consumed metric — also owns threshold logic in the base case.
 	if consIncr > 0 && curConsumed >= 0 && prodSpeed < 3*machSpeed {
@@ -372,6 +374,7 @@ func Calc(msg Message, state State) (Decision, error) {
 			}
 		}
 		sendMsg = true
+		prodConsumedSet = true
 	}
 
 	// Processed metric.
@@ -402,6 +405,7 @@ func Calc(msg Message, state State) (Decision, error) {
 			}
 		}
 		sendMsg = true
+		prodProcessedSet = true
 	}
 
 	// Defective metric. NB: JS also checks defIncr < 3*machspeed here (not
@@ -421,10 +425,21 @@ func Calc(msg Message, state State) (Decision, error) {
 	}
 
 	// ── Phase 9: line/sector aggregation ──────────────────────────────────
-	// DEFERRED to follow-up PR. See docs/phase-3-calc-production-counters-
-	// state-machine.md §7 — HIGH risk, ~180 LOC, needs line-topology
-	// fixtures the capture binary can't easily produce.
-	_ = resetLineScrap // keeps the reset flag alive for the deferred phase
+	// If the unit is part of a LINE (Parameter30700 CSV set on the LINE
+	// topic), and the unit's machine index is first-in-CSV or last-in-CSV,
+	// this bumps LINE-level Consumed / Processed / Defective aggregates.
+	// Also handles SECTOR::LINE units with a double pass.
+	//
+	// State-machine doc §1 Phase 9 + source.js lines 605-800.
+	runPhase9LineAggregation(
+		&dec, state, msg, unitTopic, timestampMs,
+		procIncr, consIncr, curProcessed, curConsumed,
+		prodConsumedSet, prodProcessedSet,
+		prodSpeed, flags.StateSpeedThis, resetLineScrap,
+	)
+	if len(dec.Metrics) > 0 {
+		sendMsg = true
+	}
 
 	// ── Phase 10: status metric ───────────────────────────────────────────
 	if status == 6 && statusTopicName != "" {
