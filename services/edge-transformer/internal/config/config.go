@@ -89,6 +89,17 @@ type Config struct {
 	MQTTClientID  string // must be unique per subscriber; default: edge-transformer-<hostname>
 	MQTTUsername  string
 	MQTTPassword  string
+
+	// UseGoPort — feature flag for ADR-0010 Phase 3. When true, the
+	// calc_production_counters Go port runs in SHADOW mode: it evaluates
+	// every counter-topic Sparkplug metric against its own State store,
+	// logs the Decision + emits Prometheus counters, but does NOT change
+	// the shadowpub output. This lets ops compare Go-port state to Node-
+	// RED's state via metrics BEFORE the actual cutover (Phase 4).
+	//
+	// Default false — port is opt-in until the 30-day comparator soak
+	// passes.
+	UseGoPort bool
 }
 
 func Load() (*Config, error) {
@@ -124,6 +135,9 @@ func Load() (*Config, error) {
 		MQTTClientID:  getenv("MQTT_CLIENT_ID", "edge-transformer"),
 		MQTTUsername:  getenv("MQTT_USERNAME", ""),
 		MQTTPassword:  getenv("MQTT_PASSWORD", ""),
+
+		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
+		UseGoPort: getenvBool("USE_GO_PORT", false),
 	}, nil
 }
 
