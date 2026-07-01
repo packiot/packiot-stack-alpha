@@ -277,12 +277,45 @@ jobs:
             # metadata column is json (not jsonb), so cast on both extractions.
             $PSQL -c "SELECT jsonb_array_elements(sources->'tables')->'table'->>'name' AS name FROM hdb_catalog.hdb_metadata, jsonb_array_elements(metadata::jsonb->'sources') AS sources ORDER BY name;" 2>&1 | head -50
           else
+            # Fetch the full tracked-tables list into a temp file so we
+            # can both (a) print it for the audit log AND (b) intersect
+            # against pg_stat_user_tables for orphan detection below.
             docker run --rm --network container:stack-hasura-1 curlimages/curl:latest \
               -sf -H "X-Hasura-Admin-Secret: $HASURA_ADMIN_SECRET" -X POST http://127.0.0.1:8080/v1/metadata \
               -H "Content-Type: application/json" \
               -d '{"type":"export_metadata","args":{}}' \
               | python3 -c "import json,sys; d=json.load(sys.stdin); [print('public.'+t['table']['name']) for s in d.get('sources',[]) for t in s.get('tables',[]) if t.get('table',{}).get('schema')=='public']" \
-              | sort | head -60 || echo "(hasura API call failed)"
+              | sort > /tmp/hasura_tracked.txt || echo "(hasura API call failed)"
+            wc -l /tmp/hasura_tracked.txt
+            echo "  (first 30 shown; full list used for orphan detection below)"
+            head -30 /tmp/hasura_tracked.txt
+            echo "  ..."
+            tail -30 /tmp/hasura_tracked.txt
+          fi
+
+          echo ""
+          echo "=== ORPHAN candidates: pg tables NOT tracked by Hasura AND not a view base AND >7d since analyze ==="
+          # Set-difference done in shell rather than SQL to avoid
+          # smuggling the tracked list into psql via COPY FROM STDIN
+          # inside a YAML run: block (that's the multi-line-heredoc
+          # trap that broke PRs #161-165).
+          #
+          # Three lists sorted → comm --23 → orphan names → re-query
+          # psql for size + row estimate on just those names.
+          if [ -s /tmp/hasura_tracked.txt ]; then
+            $PSQL -tAc "SELECT 'public.'||relname FROM pg_stat_user_tables WHERE schemaname='public' AND (last_autoanalyze IS NULL OR last_autoanalyze < now() - INTERVAL '7 days');" 2>/dev/null | sort > /tmp/stale_tables.txt
+            $PSQL -tAc "SELECT DISTINCT dep_ns.nspname||'.'||dep_class.relname FROM pg_depend d JOIN pg_rewrite r ON d.objid=r.oid JOIN pg_class view_class ON r.ev_class=view_class.oid JOIN pg_class dep_class ON d.refobjid=dep_class.oid JOIN pg_namespace dep_ns ON dep_class.relnamespace=dep_ns.oid WHERE d.deptype='n' AND view_class.relkind IN ('v','m') AND dep_class.relkind='r' AND dep_ns.nspname='public';" 2>/dev/null | sort -u > /tmp/view_bases.txt
+            # Orphans = stale-tables MINUS (hasura-tracked UNION view-bases)
+            comm -23 /tmp/stale_tables.txt <(sort -u /tmp/hasura_tracked.txt /tmp/view_bases.txt) > /tmp/orphans.txt
+            n=$(wc -l < /tmp/orphans.txt)
+            echo "Found $n orphan-candidate table(s)."
+            if [ "$n" -gt 0 ]; then
+              # Build a comma-list for a size-decorating IN clause.
+              IN_LIST=$(awk 'NF{print "\047"$0"\047"}' /tmp/orphans.txt | paste -sd,)
+              $PSQL -c "SELECT schemaname||'.'||relname AS name, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size, last_autoanalyze::date FROM pg_stat_user_tables WHERE schemaname='public' AND schemaname||'.'||relname IN ($IN_LIST) ORDER BY pg_total_relation_size(('public.'||relname)::regclass) DESC NULLS LAST LIMIT 30;"
+            fi
+          else
+            echo "(no /tmp/hasura_tracked.txt — orphan query skipped)"
           fi
 
           echo ""
