@@ -267,6 +267,7 @@ func (p *Publisher) connectionMonitor(ctx context.Context, logger *slog.Logger) 
 	}
 }
 
+
 // reconnect closes the current AMQP connection + channel and re-opens
 // them. Under the wlock — concurrent PublishBytes callers block until
 // reconnect completes.
