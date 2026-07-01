@@ -1,0 +1,52 @@
+name: Inspect edge-transformer (staging)
+
+# One-shot debug workflow — runs on the staging self-hosted runner (which
+# has docker compose access) and prints edge-transformer's current state.
+# Useful for verifying that env vars, config, and metrics match expectations
+# after a deploy.
+#
+# Triggered manually. Zero side effects: read-only queries + log tails.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: inspect-edge-transformer
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, staging, linux, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: edge-transformer container inspect
+        run: |
+          echo "=== docker ps ==="
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | grep -E 'edge-transformer|NAME'
+
+          echo ""
+          echo "=== env (USE_GO_PORT + MQTT flags) ==="
+          docker inspect edge-transformer \
+            --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -iE 'USE_GO_PORT|MQTT_|LOG_LEVEL' || echo "(no matching env vars)"
+
+          echo ""
+          echo "=== last 60 log lines ==="
+          docker logs --tail 60 edge-transformer 2>&1 || true
+
+          echo ""
+          echo "=== /healthz ==="
+          docker exec edge-transformer /usr/local/bin/edge-transformer --healthcheck; echo "exit=$?"
+
+      - name: Fetch /metrics filtered for calc_*
+        run: |
+          echo "=== /metrics (calc_ + mqtt_ scoped) ==="
+          # Use temporary sidecar with curl since edge-transformer is distroless.
+          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            -s http://localhost:9102/metrics \
+            | grep -E '^(calc_|mqtt_|shadowpub_|edge_transformer_)' \
+            | head -80 || echo "(no matching metrics)"
