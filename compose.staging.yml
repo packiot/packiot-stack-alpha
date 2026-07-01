@@ -698,6 +698,13 @@ services:
       MAX_RETRIES: "5"
       PREFETCH: "50"
       HEALTH_PORT: "9101"
+      # ADR-0012 Phase 3: route source_type="refactored" envelopes to the
+      # packiot_shadow DB (same host/user/password, different database).
+      # Empty = disabled (production default). packiot_shadow was
+      # provisioned via scripts/reprovision-refactor-sandbox.sh --db-name
+      # packiot_shadow and holds the refactored end-state schema
+      # (customer_dashboards pool, canonical CAggs, renames applied).
+      POSTGRES_SHADOW_DB_NAME: "packiot_shadow"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
@@ -792,6 +799,12 @@ services:
       OUTBOX_ENABLED: "true"
       OUTBOX_PATH: "/var/lib/edge-transformer/outbox.db"
       OUTBOX_CAP: "100000"
+      # ADR-0012 Phase 3 dual-emit: for each inbound MQTT event, publish
+      # BOTH source_type="go" (routes to shadow_go_port on packiot,
+      # existing ADR-0010 validation) AND source_type="refactored"
+      # (routes to packiot_shadow public via oeecloud-worker's shadow
+      # pool). Requires POSTGRES_SHADOW_DB_NAME set on oeecloud-worker.
+      SHADOW_EMIT_REFACTORED: "true"
     volumes:
       # ADR-0004 — per-customer client.yaml lives in git under
       # docs/clients/<tenant>.yaml; mount it read-only into the container.
