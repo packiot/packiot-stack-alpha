@@ -34,6 +34,7 @@ volumes:
   grafana-data:
   loki-data:
   rabbitmq-data:
+  mosquitto-data:  # ADR-0011 P0-2: retained NBIRTHs survive broker restart
 
 services:
   # ── RabbitMQ (message bus) ───────────────────────────────────────────────────
@@ -55,6 +56,32 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ───────────────────────
+  # Local dev instance. Anonymous auth OK — no factory PLC ever reaches this
+  # instance. edge-transformer's MQTT_ENABLED path (PR #124) subscribes here
+  # when running against compose.development.yml.
+  #
+  # ADR-0011 P0-2: persistence enabled via configs/mosquitto/mosquitto.conf
+  # so retained NBIRTHs survive `docker compose restart mosquitto`.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data       # persistence — ADR-0011 P0-2
+    networks: [packiot-net]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0 -W 5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
