@@ -51,51 +51,35 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
-// SchemaVersion is the docs/clients/_normalized-payload-schema.yaml version
-// this publisher emits. Bumped only on breaking envelope changes.
+// SchemaVersion is the version tag stamped in the SourceType field so
+// oeecloud-worker can distinguish the shadow-Go path from Node-RED.
 const SchemaVersion = "1.0"
 
-// Envelope is the outer JSON structure published to edge.plc-normalized.
-// Matches the shape Phase 2.5b's Node-RED publisher produces so the
-// comparator can diff both paths at the RMQ boundary.
+// Envelope is the JSON structure published to the `oee` exchange with
+// routing_key = "sparkplug.data.<tenant>". Matches the shape that
+// oeecloud-worker's sparkplug.Payload parser expects, so both Node-RED
+// AND the Go port produce envelopes that the same consumer can handle.
+//
+// The `source_type: "go"` field is the load-bearing distinction that
+// makes oeecloud-worker route writes into shadow_go_port.* instead of
+// public.* (ADR-0010 Phase 3 shadow-mode DB comparison).
 type Envelope struct {
-	SchemaVersion string      `json:"schema_version"`
-	Envelope      EnvMetadata `json:"envelope"`
-	Type          string      `json:"type"`
-	Payload       Payload     `json:"payload"`
+	Timestamp  int64    `json:"timestamp"`
+	Gateway    string   `json:"gateway"`
+	SourceType string   `json:"source_type"`
+	Metrics    []Metric `json:"metrics"`
 }
 
-// EnvMetadata is the always-present envelope metadata: source identity,
-// message + trace IDs (identical for shadow — no cross-service tracing yet),
-// and timing fields.
-type EnvMetadata struct {
-	Tenant          string       `json:"tenant"`
-	Source          SourceInfo   `json:"source"`
-	MessageID       string       `json:"message_id"`
-	TraceID         string       `json:"trace_id"`
-	OrderingKey     string       `json:"ordering_key"`
-	IngestedAt      string       `json:"ingested_at"`
-	SourceTimestamp string       `json:"source_timestamp"`
-	PublisherKey    string       `json:"publisher_key,omitempty"`
-}
-
-// SourceInfo identifies which pipeline produced this envelope. Comparator
-// uses source.type to distinguish Node-RED path vs Go path at diff time.
-type SourceInfo struct {
-	Type     string `json:"type"`
-	Instance string `json:"instance"`
-	Package  string `json:"package,omitempty"`
-}
-
-// Payload is the per-metric data body. equipment_id is 0 in shadow-mode until
-// the Phase 3 normalizer lands a name → equipment_id lookup.
-type Payload struct {
-	EquipmentID       int    `json:"equipment_id"`
-	Parameter         string `json:"parameter"`
-	Value             any    `json:"value"`
-	Datatype          string `json:"datatype"`
-	Quality           string `json:"quality"`
-	SourceMetricName  string `json:"source_metric_name,omitempty"` // full Sparkplug topic
+// Metric mirrors oeecloud-worker's sparkplug.Metric shape — same field
+// names, same JSON tags. counter/curspeed/id are pointer types so the
+// omitempty behavior matches when the fields are absent.
+type Metric struct {
+	Name      string   `json:"name"`
+	Timestamp int64    `json:"timestamp"`
+	Value     any      `json:"value"`
+	Counter   *float64 `json:"counter,omitempty"`
+	CurSpeed  *float64 `json:"curspeed,omitempty"`
+	ID        *int     `json:"id,omitempty"`
 }
 
 // DefaultConfirmTimeout is how long we wait for RabbitMQ to ack a publish
@@ -428,56 +412,35 @@ func (p *Publisher) Degraded() string {
 // Tenant is derived from the publisher key's GroupID (lowercased). This
 // matches the Phase 2.5b publisher's env-var-driven CLIENT_TENANT_ID default
 // of "cpack" when GroupID is "CPACK".
+// Publish publishes ONE oeecloud-compatible envelope per ResolvedPayload.
+// The envelope carries all metrics under `metrics[]` (matching Node-RED's
+// output shape), routed to `sparkplug.data.<tenant>` on the `oee`
+// exchange so oeecloud-worker's existing per-tenant queue picks it up.
+// SourceType="go" tells oeecloud-worker to dispatch writes into
+// shadow_go_port.* instead of public.* (ADR-0010 Phase 3 DB comparison).
 func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPayload) error {
 	tenant := strings.ToLower(resolved.PublisherKey.GroupID)
-	routingKey := fmt.Sprintf("%s.%s", p.exchange, tenant)
+	// oeecloud-worker's per-tenant queue binding is `sparkplug.data.<tenant>`
+	// on the `oee` exchange. The p.exchange field is passed at New() and
+	// must equal "oee" to match.
+	routingKey := fmt.Sprintf("sparkplug.data.%s", tenant)
 
-	now := time.Now().UTC()
-	sourceTs := time.Unix(0, int64(resolved.Timestamp)*int64(time.Millisecond)).UTC().Format(rfc3339Millis)
-	ingestedAt := now.Format(rfc3339Millis)
+	env := BuildEnvelope(EnvelopeInput{
+		Tenant:          tenant,
+		PublisherKey:    resolved.PublisherKey.String(),
+		Instance:        p.instance,
+		Metrics:         resolved.Metrics,
+		SourceTimestamp: int64(resolved.Timestamp),
+	})
 
-	timeout := p.ConfirmTimeout
-	if timeout <= 0 {
-		timeout = DefaultConfirmTimeout
+	body, err := json.Marshal(env)
+	if err != nil {
+		p.failed.Add(1)
+		return fmt.Errorf("shadowpub: marshal envelope: %w", err)
 	}
 
-	for _, m := range resolved.Metrics {
-		env := BuildEnvelope(EnvelopeInput{
-			Tenant:          tenant,
-			PublisherKey:    resolved.PublisherKey.String(),
-			Instance:        p.instance,
-			Metric:          m,
-			IngestedAt:      ingestedAt,
-			SourceTimestamp: sourceTs,
-		})
-
-		body, err := json.Marshal(env)
-		if err != nil {
-			p.failed.Add(1)
-			return fmt.Errorf("shadowpub: marshal envelope: %w", err)
-		}
-
-		err = p.ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
-			amqp.Publishing{
-				ContentType:  "application/json",
-				DeliveryMode: amqp.Persistent,
-				MessageId:    env.Envelope.MessageID,
-				Body:         body,
-			})
-		if err != nil {
-			p.failed.Add(1)
-			return fmt.Errorf("shadowpub: publish %s: %w", routingKey, err)
-		}
-		p.published.Add(1)
-
-		// Wait for the broker's ack. Confirms arrive in delivery-tag order
-		// on the same channel, so a sequential drain matches our sequential
-		// publish loop.
-		if err := p.waitConfirm(ctx, timeout); err != nil {
-			return err
-		}
-	}
-	return nil
+	msgID := newMessageID()
+	return p.publishBytesOnce(ctx, routingKey, msgID, body)
 }
 
 // PublishBytes publishes an already-encoded envelope body to the given
@@ -579,44 +542,41 @@ func (p *Publisher) waitConfirm(ctx context.Context, timeout time.Duration) erro
 
 // EnvelopeInput is the pure-function seam used by BuildEnvelope. Isolated
 // so unit tests don't need an AMQP connection.
+//
+// One EnvelopeInput describes ONE physical MQTT arrival (a
+// sparkplug.ResolvedPayload). It carries the metrics slice so BuildEnvelope
+// can emit a single-message-many-metrics envelope matching Node-RED's
+// output shape.
 type EnvelopeInput struct {
 	Tenant          string
 	PublisherKey    string
 	Instance        string
-	Metric          sparkplug.ResolvedMetric
-	IngestedAt      string
-	SourceTimestamp string
+	Metrics         []sparkplug.ResolvedMetric
+	SourceTimestamp int64 // Unix millis — matches oeecloud Payload.Timestamp
 }
 
-// BuildEnvelope constructs the envelope + payload for a single resolved
-// metric. Extracted so tests can assert JSON keys without AMQP wiring.
+// BuildEnvelope constructs an envelope matching oeecloud-worker's expected
+// shape: single message carrying N metrics under the `metrics` array.
+// SourceType is stamped as "go" so oeecloud-worker dispatches writes into
+// shadow_go_port.* instead of public.* — ADR-0010 Phase 3 shadow-mode DB
+// comparison.
 func BuildEnvelope(in EnvelopeInput) Envelope {
-	msgID := newMessageID()
+	metrics := make([]Metric, 0, len(in.Metrics))
+	for _, m := range in.Metrics {
+		metrics = append(metrics, Metric{
+			Name:      m.Name,
+			Timestamp: int64(m.Timestamp),
+			Value:     m.Value,
+			// Counter / CurSpeed / ID are populated only when the Sparkplug
+			// metric carried them; ResolvedMetric doesn't currently surface
+			// these separately, so they stay nil for now (omitempty).
+		})
+	}
 	return Envelope{
-		SchemaVersion: SchemaVersion,
-		Envelope: EnvMetadata{
-			Tenant: in.Tenant,
-			Source: SourceInfo{
-				Type:     "go",
-				Instance: in.Instance,
-				Package:  "sparkplug",
-			},
-			MessageID:       msgID,
-			TraceID:         msgID,
-			OrderingKey:     fmt.Sprintf("publisher_%s", strings.ReplaceAll(in.PublisherKey, "/", "_")),
-			IngestedAt:      in.IngestedAt,
-			SourceTimestamp: in.SourceTimestamp,
-			PublisherKey:    in.PublisherKey,
-		},
-		Type: "sparkplug.metric",
-		Payload: Payload{
-			EquipmentID:      0, // TODO Phase 3: name → equipment_id lookup
-			Parameter:        parameterFromMetricName(in.Metric.Name),
-			Value:            in.Metric.Value,
-			Datatype:         datatypeToString(in.Metric.Datatype),
-			Quality:          "good",
-			SourceMetricName: in.Metric.Name,
-		},
+		Timestamp:  in.SourceTimestamp,
+		Gateway:    fmt.Sprintf("edge-transformer:%s", in.Instance),
+		SourceType: "go",
+		Metrics:    metrics,
 	}
 }
 

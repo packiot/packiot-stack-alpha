@@ -30,6 +30,14 @@ type Payload struct {
 	Timestamp int64    `json:"timestamp"`
 	Gateway   string   `json:"gateway"`
 	Metrics   []Metric `json:"metrics"`
+	// SourceType identifies which upstream pipeline produced this envelope.
+	// Absent (empty) or "nodered" → oeecloud-node-red / edge-nodered SparkPlug
+	// subflow; routes to public.* tables.
+	// "go" → produced by edge-transformer's Calc Production Counters Go port
+	// (ADR-0010 Phase 3 shadow mode); routes to shadow_go_port.* tables so
+	// both paths can be compared row-by-row via shadow_diff.* views WITHOUT
+	// contaminating production data.
+	SourceType string `json:"source_type,omitempty"`
 }
 
 type Metric struct {
