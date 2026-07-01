@@ -37,7 +37,17 @@ import (
 // TopicFilterAll is the wildcard subscription that matches every Sparkplug B
 // message. Individual publishers within the tenant are distinguished by
 // GroupID / EdgeNodeID / DeviceID in the topic components.
-const TopicFilterAll = "spBv1.0/+/+/+/+"
+//
+// MUST be `spBv1.0/#` — the multi-level wildcard — because Sparkplug B has
+// BOTH node-level topics (4 segments: `spBv1.0/<Group>/<Type>/<EdgeNode>`)
+// AND device-level topics (5 segments: `spBv1.0/<Group>/<Type>/<EdgeNode>/<Device>`).
+// MQTT's single-level `+` matches EXACTLY one segment, so a filter like
+// `spBv1.0/+/+/+/+` matches 5-segment topics only, silently dropping every
+// NBIRTH/NDATA/NDEATH from an edge node that doesn't have a sub-device.
+// Discovered during ADR-0011 P0-4 end-to-end stack test on staging
+// (2026-07-01): retained NBIRTH sat in Mosquitto but never reached our
+// subscriber — /healthz correctly showed degraded, live-testing caught it.
+const TopicFilterAll = "spBv1.0/#"
 
 // Config controls the Subscriber's connection + subscription behavior.
 // Populated by the caller from client.yaml (per-tenant broker credentials)
