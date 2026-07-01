@@ -21,7 +21,7 @@ set -euo pipefail
 DB_EC2="i-064bb36d1c454d861"
 REGION="us-east-1"
 CONTAINER="timescaledb"
-SANDBOX_DB="packiot_refactor"
+SANDBOX_DB="${SANDBOX_DB:-packiot_refactor}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PARITY_SQL="${REPO_ROOT}/edge-node-red/db/17-hasura-metadata-parity.sql"
@@ -31,15 +31,18 @@ PHASE2_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase2-cagg-consolidation.sql"
 
 usage() {
     cat <<EOF
-Usage: $0 [--reset] [--skip-poc] [--skip-phase1] [--skip-phase2]
+Usage: $0 [--reset] [--db-name NAME] [--skip-poc] [--skip-phase1] [--skip-phase2]
 
 Provision the ADR-0012 sandbox DB on staging DB EC2. Idempotent.
 
-  --reset        DROP sandbox DB first if it exists, then rebuild.
-  --skip-poc     Skip loading customer_dashboards POC.
-  --skip-phase1  Skip Phase 1 renames + drops.
-  --skip-phase2  Skip Phase 2 CAgg consolidation lab.
-  -h, --help     Show this help.
+  --reset          DROP sandbox DB first if it exists, then rebuild.
+  --db-name NAME   Which DB to provision (default: \$SANDBOX_DB=$SANDBOX_DB).
+                   Use packiot_refactor for the design sandbox, packiot_shadow
+                   for the live-data proof-of-concept target.
+  --skip-poc       Skip loading customer_dashboards POC.
+  --skip-phase1    Skip Phase 1 renames + drops.
+  --skip-phase2    Skip Phase 2 CAgg consolidation lab.
+  -h, --help       Show this help.
 
 Environment:
   DB_EC2      = ${DB_EC2}
@@ -56,6 +59,7 @@ SKIP_PHASE2=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --reset) RESET=true; shift;;
+        --db-name) SANDBOX_DB="$2"; shift 2;;
         --skip-poc) SKIP_POC=true; shift;;
         --skip-phase1) SKIP_PHASE1=true; shift;;
         --skip-phase2) SKIP_PHASE2=true; shift;;
