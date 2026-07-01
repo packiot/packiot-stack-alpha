@@ -285,3 +285,16 @@ jobs:
           else
             echo "  RESULT: outbox did NOT drain — final_depth=$final_depth (investigate)"
           fi
+
+          echo ""
+          echo "=== Reconnect activity (proves NotifyClose monitor fired) ==="
+          docker logs --since 3m edge-transformer 2>&1 \
+            | grep -iE 'shadowpub: connection|shadowpub: reconnect|outbox: publish' \
+            | tail -30 || echo "  (no reconnect activity in logs — investigate)"
+
+          echo ""
+          echo "=== Final /metrics for outbox + shadowpub counters ==="
+          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            -s http://localhost:9102/metrics 2>/dev/null \
+            | grep -E '^(outbox_|shadowpub_reconnects|shadowpub_confirmed|shadowpub_published)' \
+            | head -20 || true
