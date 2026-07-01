@@ -203,6 +203,60 @@ jobs:
             && echo "  perms updated" \
             || echo "  perm update FAILED — investigate"
 
+      - name: DB schema audit — dump table sizes + views + PowerBI-referenced objects
+        # SELECT-only audit query. Produces a compact schema report so we
+        # can plan the "schema complexity" refactor without guessing. Runs
+        # on every deploy — the report is idempotent and cheap (~1s), and
+        # having it in the deploy log means we always have a fresh baseline
+        # to compare after a refactor commit.
+        #
+        # Includes: top 30 tables by size, view count, PowerBI's likely
+        # attack surface (any view/table with "powerbi", "report", "export"
+        # in the name), and role usage (which roles have SELECT grants on
+        # what).
+        #
+        # PowerBI queries via ODBC/DirectQuery through the postgres user
+        # (or a dedicated `powerbi_readonly` role if one exists) — we
+        # identify its objects here so the refactor knows what NOT to
+        # touch.
+        continue-on-error: true
+        run: |
+          set +e
+          MQ_USER=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_HOST=$(grep -E '^POSTGRES_HOST=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_USER=$(grep -E '^POSTGRES_USER=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_DB=$(grep -E '^POSTGRES_DB=' /opt/packiot/.env | cut -d= -f2)
+          if [ -z "$POSTGRES_PASSWORD" ]; then exit 0; fi
+          PSQL="docker run --rm --network stack_packiot-net -e PGPASSWORD=$POSTGRES_PASSWORD postgres:15-alpine psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB"
+
+          echo "=== Top 30 tables by total size (public schema) ==="
+          $PSQL -c "SELECT relname AS table, pg_size_pretty(pg_total_relation_size('public.'||relname)) AS total_size, pg_size_pretty(pg_relation_size('public.'||relname)) AS table_size, n_live_tup AS row_estimate FROM pg_stat_user_tables WHERE schemaname='public' ORDER BY pg_total_relation_size('public.'||relname) DESC LIMIT 30;"
+
+          echo ""
+          echo "=== Total tables + views + matviews per schema ==="
+          $PSQL -c "SELECT schemaname, COUNT(*) FILTER (WHERE relkind='r') AS tables, COUNT(*) FILTER (WHERE relkind='v') AS views, COUNT(*) FILTER (WHERE relkind='m') AS matviews FROM pg_class JOIN pg_namespace ON pg_namespace.oid=pg_class.relnamespace JOIN (SELECT schemaname FROM pg_stat_user_tables UNION SELECT schemaname FROM pg_stat_user_indexes UNION SELECT nspname AS schemaname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname != 'information_schema') sn ON sn.schemaname=nspname WHERE relkind IN ('r','v','m') GROUP BY schemaname ORDER BY schemaname;"
+
+          echo ""
+          echo "=== Tables with likely PowerBI-facing names ==="
+          $PSQL -c "SELECT n.nspname||'.'||c.relname AS name, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS kind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','v','m') AND (c.relname ILIKE '%powerbi%' OR c.relname ILIKE '%report%' OR c.relname ILIKE '%export%' OR c.relname ILIKE '%bi_%' OR c.relname ILIKE '%dashboard%') ORDER BY n.nspname, c.relname;"
+
+          echo ""
+          echo "=== TimescaleDB hypertables + continuous aggregates ==="
+          $PSQL -c "SELECT hypertable_schema||'.'||hypertable_name AS name, num_dimensions, num_chunks, pg_size_pretty(total_bytes) AS size FROM timescaledb_information.hypertables ORDER BY total_bytes DESC NULLS LAST LIMIT 20;" 2>&1 | head -25
+
+          echo ""
+          echo "=== Continuous aggregates (materialized views on hypertables) ==="
+          $PSQL -c "SELECT view_name, materialization_hypertable_name FROM timescaledb_information.continuous_aggregates ORDER BY view_name;" 2>&1 | head -20
+
+          echo ""
+          echo "=== Tables with 0 recent activity (candidates for archival) ==="
+          $PSQL -c "SELECT schemaname||'.'||relname AS name, n_live_tup AS rows, last_autovacuum, last_analyze FROM pg_stat_user_tables WHERE n_live_tup > 0 AND (last_autoanalyze IS NULL OR last_autoanalyze < now() - INTERVAL '30 days') AND schemaname='public' ORDER BY n_live_tup DESC LIMIT 20;"
+
+          echo ""
+          echo "=== Roles + likely PowerBI-facing role grants ==="
+          $PSQL -c "SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname ILIKE '%bi%' OR rolname ILIKE '%report%' OR rolname ILIKE '%export%' OR rolname ILIKE '%readonly%' OR rolname ILIKE '%readwrite%' ORDER BY rolname;"
+
       - name: Shadow DB comparison — count shadow_go_port rows post-inject (ADR-0010 Phase 3)
         # Runs BEFORE the chaos test. Verifies that the pre-chaos inject
         # (from earlier step) landed row(s) in shadow_go_port.equipment_values
