@@ -279,29 +279,21 @@ jobs:
           # Fetch prod credentials from AWS Secrets Manager. Field names
           # documented in services/mirror-worker-go/internal/secrets/secrets.go:
           #   databaseCredentials → { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME }
-          PROD_SECRET=$(aws secretsmanager get-secret-value --secret-id databaseCredentials --query SecretString --output text 2>&1)
-          if [ -z "$PROD_SECRET" ] || echo "$PROD_SECRET" | grep -qE "error|not found|denied|Unable"; then
-            echo "(cannot fetch databaseCredentials from Secrets Manager: $PROD_SECRET — skipping)"
+          # aws stderr redirected to /dev/null so we see failure via empty $PROD_SECRET
+          PROD_SECRET=$(aws secretsmanager get-secret-value --secret-id databaseCredentials --query SecretString --output text 2>/dev/null)
+          if [ -z "$PROD_SECRET" ]; then
+            echo "(cannot fetch databaseCredentials — check IAM role / secret name)"
             exit 0
           fi
-          # Extract all fields in one Python call — simpler + easier to debug.
-          # Prints KEY=value pairs; we source them into shell vars.
-          eval "$(echo "$PROD_SECRET" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-def get(*keys):
-    for k in keys:
-        if k in d and d[k]:
-            return str(d[k])
-    return ''
-print('PROD_HOST=\"' + get('DB_HOST','host') + '\"')
-print('PROD_USER=\"' + get('DB_USER','user','username') + '\"')
-print('PROD_PASS=\"' + get('DB_PASSWORD','password') + '\"')
-print('PROD_DB=\"' + get('DB_NAME','database','dbname') + '\"')
-print('PROD_PORT=\"' + (get('DB_PORT','port') or '5432') + '\"')
-print('AVAILABLE_KEYS=\"' + ','.join(sorted(d.keys())) + '\"')
-")"
-          echo "Available secret keys: $AVAILABLE_KEYS"
+          # Show available keys for debug (one-line python).
+          echo "Available secret keys: $(echo "$PROD_SECRET" | python3 -c 'import json,sys; print(",".join(sorted(json.load(sys.stdin).keys())))')"
+          # Extract each field with a separate python3 -c call. Simpler than
+          # eval; each is independent.
+          PROD_HOST=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_HOST") or d.get("host") or "")')
+          PROD_USER=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_USER") or d.get("user") or d.get("username") or "")')
+          PROD_PASS=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_PASSWORD") or d.get("password") or "")')
+          PROD_DB=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_NAME") or d.get("database") or d.get("dbname") or "")')
+          PROD_PORT=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_PORT") or d.get("port") or "5432")')
 
           if [ -z "$PROD_HOST" ] || [ -z "$PROD_PASS" ]; then
             echo "(prod credentials incomplete — skipping)"
