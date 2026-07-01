@@ -49,11 +49,13 @@ import (
 	logp "github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/mqtt"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/outbox"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/transforms/calc_production_counters"
 	"github.com/prometheus/client_golang/prometheus"
+	"path/filepath"
 	"strings"
 )
 
@@ -259,6 +261,7 @@ func main() {
 	var sparkplugStore *sparkplug.StateStore
 	var mqttSub *mqtt.Subscriber
 	var shadowPub *shadowpub.Publisher
+	var outboxStore *outbox.Store // hoisted so shutdown block can close it
 	if cfg.MQTTEnabled {
 		sparkplugStore = sparkplug.NewStateStore()
 		sparkplugStore.OnSeqGap(func(key sparkplug.PublisherKey, expected, got uint64) {
@@ -295,13 +298,76 @@ func main() {
 			metricsEmitted: calcMetricsEmitted,
 			stateSeeds:     calcStateSeeds,
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, calcHooks, logger), logger)
+
+		// ADR-0011 P2 outbox — store-and-forward between decode + publish.
+		// When enabled, decoded envelopes get persisted to SQLite BEFORE
+		// publish; the drain goroutine below handles the RMQ publish + retry.
+		// The handler skips the direct publish path — all output flows
+		// through the outbox.
+		if cfg.OutboxEnabled && shadowPub != nil {
+			if err := os.MkdirAll(filepath.Dir(cfg.OutboxPath), 0o755); err != nil {
+				logger.Error("outbox: mkdir failed — outbox disabled",
+					slog.String("path", cfg.OutboxPath),
+					slog.String("err", err.Error()))
+			} else {
+				var oerr error
+				outboxStore, oerr = outbox.Open(outbox.Config{Path: cfg.OutboxPath, Capacity: cfg.OutboxCap})
+				if oerr != nil {
+					logger.Error("outbox: open failed — outbox disabled",
+						slog.String("path", cfg.OutboxPath),
+						slog.String("err", oerr.Error()))
+					outboxStore = nil
+				} else {
+					logger.Info("outbox ENABLED (store-and-forward)",
+						slog.String("path", cfg.OutboxPath),
+						slog.Int("capacity", cfg.OutboxCap),
+						slog.String("adr", "ADR-0011 P2"))
+				}
+			}
+		} else if cfg.OutboxEnabled {
+			logger.Warn("outbox: enabled but shadowpub failed to init — outbox disabled")
+		}
+
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, logger), logger)
 
 		// ADR-0011 P0-4: register subscriber + publisher with the health
 		// aggregator so /healthz surfaces their degraded state.
 		multi.Add(mqttSub)
 		if shadowPub != nil {
 			multi.Add(shadowPub)
+		}
+		if outboxStore != nil {
+			// Wrap outbox as a ComponentSnapshotter so /healthz shows depth
+			// + degraded state when it backs up.
+			multi.Add(&outboxHealth{store: outboxStore})
+			// Prom collector — depth + oldest_age exposed via callback.
+			outboxDepthGauge := prometheus.NewGaugeFunc(
+				prometheus.GaugeOpts{
+					Name: "outbox_depth",
+					Help: "Current number of rows in the outbox awaiting drain.",
+				},
+				func() float64 {
+					n, err := outboxStore.Depth(context.Background())
+					if err != nil {
+						return -1
+					}
+					return float64(n)
+				},
+			)
+			outboxOldestGauge := prometheus.NewGaugeFunc(
+				prometheus.GaugeOpts{
+					Name: "outbox_oldest_age_seconds",
+					Help: "Age of the oldest row in the outbox, in seconds.",
+				},
+				func() float64 {
+					age, err := outboxStore.OldestAge(context.Background())
+					if err != nil {
+						return -1
+					}
+					return age.Seconds()
+				},
+			)
+			mx.Registry.MustRegister(outboxDepthGauge, outboxOldestGauge)
 		}
 
 		modeDesc := "shadow (log resolved metrics; no rmq publish)"
@@ -335,12 +401,23 @@ func main() {
 			return nil
 		})
 	}
+	if outboxStore != nil && shadowPub != nil {
+		g.Go(func() error {
+			if err := runOutboxDrain(gctx, outboxStore, shadowPub, logger); err != nil && !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("outbox drain: %w", err)
+			}
+			return nil
+		})
+	}
 	if err := g.Wait(); err != nil {
 		logger.Error("worker group exited with error", slog.String("err", err.Error()))
 	}
 
 	if shadowPub != nil {
 		_ = shadowPub.Close()
+	}
+	if outboxStore != nil {
+		_ = outboxStore.Close()
 	}
 
 	// Graceful shutdown for the health server (5s budget).
@@ -647,7 +724,142 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 // also runs through the Calc Production Counters Go port for shadow-mode
 // observability. State mutations are applied to the singleton state so
 // subsequent ticks see accumulated deltas; the shadowpub path is unchanged.
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, calc calcHooks, logger *slog.Logger) mqtt.Handler {
+// outboxHealth wraps outbox.Store as a health.ComponentSnapshotter so
+// /healthz shows depth + degraded state (backpressure).
+type outboxHealth struct {
+	store *outbox.Store
+}
+
+const (
+	outboxDepthDegradedThreshold = 5000
+	outboxOldestAgeDegraded      = 60 * time.Second
+)
+
+func (h *outboxHealth) Component() string { return "outbox" }
+
+func (h *outboxHealth) SnapshotDetail() any {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	depth, _ := h.store.Depth(ctx)
+	age, _ := h.store.OldestAge(ctx)
+	return map[string]any{
+		"depth":                depth,
+		"oldest_age_seconds":   age.Seconds(),
+		"degraded_threshold":   outboxDepthDegradedThreshold,
+		"oldest_age_threshold": outboxOldestAgeDegraded.Seconds(),
+	}
+}
+
+func (h *outboxHealth) Degraded() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	depth, err := h.store.Depth(ctx)
+	if err != nil {
+		return fmt.Sprintf("depth query failed: %v", err)
+	}
+	if depth > outboxDepthDegradedThreshold {
+		return fmt.Sprintf("outbox depth %d > threshold %d (drain lagging)", depth, outboxDepthDegradedThreshold)
+	}
+	age, err := h.store.OldestAge(ctx)
+	if err == nil && age > outboxOldestAgeDegraded {
+		return fmt.Sprintf("oldest row %s (threshold %s) — drain stuck", age, outboxOldestAgeDegraded)
+	}
+	return ""
+}
+
+// outboxEnvelope is the shape written to outbox.Message.Payload. Carries
+// enough info for the drain goroutine to publish without re-decoding the
+// original Sparkplug binary.
+type outboxEnvelope struct {
+	RoutingKey string `json:"routing_key"`
+	MessageID  string `json:"message_id"`
+	Body       []byte `json:"body"` // pre-marshaled envelope JSON
+}
+
+// runOutboxDrain is a long-running goroutine that peeks outbox rows,
+// publishes each to RMQ via shadowpub.PublishBytes, and deletes on
+// confirmed ACK. On failure it MarkAttempt's the row with exponential
+// backoff so the next Peek skips it until the backoff window elapses.
+//
+// One drain goroutine per Store — the Store's internal mutex serializes
+// its own operations, so this is safe. Sequential drain matches
+// shadowpub's sequential confirm handling.
+func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowpub.Publisher, logger *slog.Logger) error {
+	const (
+		batchSize       = 10
+		idleSleep       = 200 * time.Millisecond
+		initialBackoff  = 1 * time.Second
+		maxBackoff      = 60 * time.Second
+	)
+	backoff := func(attempts int) time.Duration {
+		d := initialBackoff
+		for i := 0; i < attempts && d < maxBackoff; i++ {
+			d *= 2
+		}
+		if d > maxBackoff {
+			d = maxBackoff
+		}
+		return d
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		msgs, err := store.Peek(ctx, batchSize)
+		if err != nil {
+			logger.Warn("outbox: Peek failed", slog.String("err", err.Error()))
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(idleSleep):
+			}
+			continue
+		}
+		if len(msgs) == 0 {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(idleSleep):
+			}
+			continue
+		}
+		for _, m := range msgs {
+			if err := ctx.Err(); err != nil {
+				return nil
+			}
+			var env outboxEnvelope
+			if err := json.Unmarshal(m.Payload, &env); err != nil {
+				// Poisoned row — can't unmarshal, no point retrying.
+				logger.Error("outbox: poisoned row (unmarshal) — deleting",
+					slog.Int64("id", m.ID),
+					slog.String("err", err.Error()))
+				_ = store.Delete(ctx, m.ID)
+				continue
+			}
+			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := publisher.PublishBytes(pubCtx, env.RoutingKey, env.MessageID, env.Body)
+			cancel()
+			if err != nil {
+				bo := backoff(m.Attempts + 1)
+				logger.Warn("outbox: publish failed — will retry",
+					slog.Int64("id", m.ID),
+					slog.Int("attempts", m.Attempts),
+					slog.Duration("backoff", bo),
+					slog.String("err", err.Error()))
+				_ = store.MarkAttempt(ctx, m.ID, bo)
+				continue
+			}
+			if err := store.Delete(ctx, m.ID); err != nil {
+				logger.Warn("outbox: delete failed post-confirm",
+					slog.Int64("id", m.ID),
+					slog.String("err", err.Error()))
+			}
+		}
+	}
+}
+
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		payload, err := sparkplug.Decode(body)
 		if err != nil {
@@ -711,13 +923,56 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 		}
 
 		// DATA — publish per-metric envelopes to edge.plc-normalized.<tenant>
-		// for ADR-0008 comparator validation. If shadowpub failed to
-		// initialize, fall back to log-only mode.
+		// for ADR-0008 comparator validation. Two paths:
 		//
-		// ADR-0011 rule 1 + rule 5: publisher confirms are on. Distinguish
-		// the failure modes explicitly so ops sees the CAUSE, not just "publish
-		// failed". Silent loss is a bug; loss with a typed alert is acceptable.
-		if publisher != nil {
+		//   1. Outbox path (ADR-0011 P2, when outboxStore != nil): build
+		//      envelope + marshal + Enqueue. Drain goroutine handles the
+		//      actual RMQ publish + retry-on-nack. Crash-consistent.
+		//   2. Direct path (default): publisher.Publish inline with
+		//      confirms + typed errors. Fastest but loses in-flight on
+		//      crash between decode and confirm.
+		if outboxStore != nil {
+			// Outbox path: per-metric envelopes marshaled + persisted.
+			tenant := strings.ToLower(topic.GroupID)
+			routingKey := "edge.plc-normalized." + tenant
+			for _, m := range resolved.Metrics {
+				env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
+					Tenant:       tenant,
+					PublisherKey: key.String(),
+					Instance:     "outbox",
+					Metric:       m,
+					IngestedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+					SourceTimestamp: time.Unix(0, int64(resolved.Timestamp)*int64(time.Millisecond)).
+						UTC().Format(time.RFC3339Nano),
+				})
+				body, err := json.Marshal(env)
+				if err != nil {
+					logger.Warn("outbox: marshal envelope failed",
+						slog.String("metric", m.Name),
+						slog.String("err", err.Error()))
+					continue
+				}
+				oxEnv := outboxEnvelope{
+					RoutingKey: routingKey,
+					MessageID:  env.Envelope.MessageID,
+					Body:       body,
+				}
+				payload, err := json.Marshal(oxEnv)
+				if err != nil {
+					continue
+				}
+				if _, err := outboxStore.Enqueue(ctx, outbox.Message{
+					Tenant:  tenant,
+					Topic:   m.Name,
+					Payload: payload,
+				}); err != nil {
+					logger.Warn("outbox: enqueue failed",
+						slog.String("metric", m.Name),
+						slog.String("err", err.Error()))
+				}
+			}
+		} else if publisher != nil {
+			// Direct-publish path (legacy — pre-outbox).
 			if err := publisher.Publish(ctx, resolved); err != nil {
 				switch {
 				case errors.Is(err, shadowpub.ErrPublishNacked):

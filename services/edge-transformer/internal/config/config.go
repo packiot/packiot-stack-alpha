@@ -100,6 +100,18 @@ type Config struct {
 	// Default false — port is opt-in until the 30-day comparator soak
 	// passes.
 	UseGoPort bool
+
+	// ADR-0011 P2 outbox — store-and-forward between decode and publish.
+	// When enabled, decoded Sparkplug DATA envelopes get written to a
+	// SQLite outbox before publishing. A separate drain goroutine
+	// publishes to RabbitMQ with confirms + retries. On confirm the row
+	// is deleted; on failure it stays for retry.
+	//
+	// Default false — feature-flagged so we canary the durability
+	// upgrade. When ON, the direct-publish path is bypassed entirely.
+	OutboxEnabled bool
+	OutboxPath    string // filesystem path to the SQLite DB
+	OutboxCap     int    // max rows before FIFO drop-oldest kicks in
 }
 
 func Load() (*Config, error) {
@@ -138,6 +150,11 @@ func Load() (*Config, error) {
 
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),
+
+		// ADR-0011 P2 outbox
+		OutboxEnabled: getenvBool("OUTBOX_ENABLED", false),
+		OutboxPath:    getenv("OUTBOX_PATH", "/var/lib/edge-transformer/outbox.db"),
+		OutboxCap:     getenvInt("OUTBOX_CAP", 100000),
 	}, nil
 }
 
