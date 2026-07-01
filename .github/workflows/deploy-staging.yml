@@ -173,6 +173,49 @@ jobs:
             | grep -E '^(calc_|mqtt_|shadowpub_|outbox_)' \
             | head -80 || echo "(no matching metrics)"
 
+      - name: Shadow DB comparison — count shadow_go_port rows post-inject (ADR-0010 Phase 3)
+        # Runs BEFORE the chaos test. Verifies that the pre-chaos inject
+        # (from earlier step) landed row(s) in shadow_go_port.equipment_values
+        # via oeecloud-worker's source_type='go' dispatch. If this returns 0
+        # rows, the shadow DB comparison pipeline is broken — investigate
+        # oeecloud-worker logs.
+        continue-on-error: true
+        run: |
+          set +e
+          # Wait a beat for oeecloud-worker to process the inject.
+          sleep 2
+
+          # Read the DB password from the mounted .env (used by pgbouncer +
+          # db-migrate). Same file lives at /opt/packiot/.env on the app EC2.
+          POSTGRES_HOST=$(grep -E '^POSTGRES_HOST=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_USER=$(grep -E '^POSTGRES_USER=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
+          POSTGRES_DB=$(grep -E '^POSTGRES_DB=' /opt/packiot/.env | cut -d= -f2)
+
+          if [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_PASSWORD" ]; then
+            echo "(missing POSTGRES env in /opt/packiot/.env — skipping shadow-DB check)"
+            exit 0
+          fi
+
+          echo "=== shadow_go_port row counts (target host: $POSTGRES_HOST) ==="
+          docker run --rm \
+            --network stack_packiot-net \
+            -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            postgres:15-alpine psql \
+              -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+              -c "SELECT 'shadow_go_port.equipment_values'::text AS tbl, COUNT(*)::text AS row_count FROM shadow_go_port.equipment_values UNION ALL SELECT 'shadow_go_port.uns_equipment_current_metrics', COUNT(*)::text FROM shadow_go_port.uns_equipment_current_metrics UNION ALL SELECT 'public.equipment_values (last 5 min)', COUNT(*)::text FROM public.equipment_values WHERE ts_value >= NOW() - INTERVAL '5 minutes';" \
+            2>&1 | head -20
+
+          echo ""
+          echo "=== 5 most recent shadow_go_port.equipment_values rows ==="
+          docker run --rm \
+            --network stack_packiot-net \
+            -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            postgres:15-alpine psql \
+              -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+              -c "SELECT ts_value, id_equipment, net_production_incr, gross_production_incr, scrap_incr, speed, state, mode FROM shadow_go_port.equipment_values ORDER BY ts_value DESC LIMIT 5;" \
+            2>&1 | head -12
+
       - name: Chaos test — kill RMQ, prove outbox durability (ADR-0011 P3)
         # Proves the store-and-forward payoff: with outbox enabled, an RMQ
         # outage doesn't drop messages. Sequence:
