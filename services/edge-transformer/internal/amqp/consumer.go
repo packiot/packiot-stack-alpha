@@ -355,7 +355,19 @@ type Snapshot struct {
 // marshal error. Satisfies health.Snapshotter — health.go writes the
 // bytes directly without a re-parse.
 func (c *Consumer) Snapshot() ([]byte, bool, error) {
+	s := c.snapshotStruct()
+	body, err := json.Marshal(s)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal snapshot: %w", err)
+	}
+	return body, s.Healthy, nil
+}
+
+// snapshotStruct is the internal shared helper — both Snapshot (bytes) and
+// the ComponentSnapshotter methods below rely on it.
+func (c *Consumer) snapshotStruct() Snapshot {
 	c.mu.RLock()
+	defer c.mu.RUnlock()
 	s := Snapshot{
 		Healthy:           c.healthy,
 		StartedAt:         c.startedAt.UTC().Format(time.RFC3339),
@@ -371,13 +383,31 @@ func (c *Consumer) Snapshot() ([]byte, bool, error) {
 	if c.writerStats != nil {
 		s.Writers = c.writerStats()
 	}
-	c.mu.RUnlock()
+	return s
+}
 
-	body, err := json.Marshal(s)
-	if err != nil {
-		return nil, false, fmt.Errorf("marshal snapshot: %w", err)
+// ── ADR-0011 P0-4: ComponentSnapshotter for /healthz aggregation ─────────────
+
+// Component satisfies health.ComponentSnapshotter — the name used in the
+// aggregated JSON response.
+func (c *Consumer) Component() string { return "amqp_consumer" }
+
+// SnapshotDetail returns the per-component JSON body — the Snapshot struct,
+// which json.Marshal handles natively.
+func (c *Consumer) SnapshotDetail() any { return c.snapshotStruct() }
+
+// Degraded surfaces the reason when the consumer is unhealthy.
+// ADR-0011 rule 4: silent-degrade is a bug.
+func (c *Consumer) Degraded() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.healthy {
+		if c.lastErr != "" {
+			return c.lastErr
+		}
+		return "consumer not healthy (no specific reason recorded)"
 	}
-	return body, s.Healthy, nil
+	return ""
 }
 
 // BootSnapshot is used by /health BEFORE Consumer.Run reaches steady

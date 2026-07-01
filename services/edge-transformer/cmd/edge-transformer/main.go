@@ -29,6 +29,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,6 +39,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/config"
@@ -45,7 +48,10 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/mqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
 func main() {
@@ -171,17 +177,109 @@ func main() {
 		},
 	)
 
-	// Health server first — so /healthz answers 200 during the consumer's
-	// initial connect attempt. Without this the Docker healthcheck races
-	// the broker dial on a slow factory uplink and the container churns.
-	// Same trick used in mirror-worker-go's bootSnapshot path.
-	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), consumer, mx.Registry, logger)
+	// Health server aggregates per-component /healthz JSON (ADR-0011 P0-4).
+	// Every runtime component that satisfies health.ComponentSnapshotter is
+	// registered — currently: consumer, plus subscriber + shadowpub when
+	// MQTT_ENABLED. Each contributes its Degraded() reason to the response;
+	// overall healthy = every component healthy. Response is 503 with
+	// structured `degraded_components` when any component is degraded.
+	// ADR-0011 rule 4: silent-degrade is a bug.
+	//
+	// Health server starts first — so /healthz answers 200 during the
+	// consumer's initial connect attempt. Without this the Docker
+	// healthcheck races the broker dial on a slow factory uplink and the
+	// container churns. Same trick used in mirror-worker-go's bootSnapshot.
+	multi := health.NewMulti()
+	multi.Add(consumer)
+	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), multi, mx.Registry, logger)
 	healthSrv.Start()
 
-	// Consumer.Run blocks until ctx cancelled. The errgroup inside Run
-	// owns the per-tenant goroutines.
-	if err := consumer.Run(ctx); err != nil && err != context.Canceled {
-		logger.Error("consumer exited with error", slog.String("err", err.Error()))
+	// ── ADR-0010 Phase 2 wiring ─────────────────────────────────────────────
+	// The Sparkplug B MQTT subscriber is feature-flagged behind MQTT_ENABLED.
+	// When on, it runs alongside the AMQP consumer under an errgroup — either
+	// exiting will cancel the shared context and wind the other down.
+	//
+	// The subscriber's Handler decodes the Sparkplug binary, resolves aliases
+	// via the per-publisher StateStore, and logs the resolved metric names.
+	// Shadow-mode: no downstream RMQ publish yet — that's Phase 2 completion,
+	// deferred to a follow-up PR alongside the AMQP publisher package.
+	var sparkplugStore *sparkplug.StateStore
+	var mqttSub *mqtt.Subscriber
+	var shadowPub *shadowpub.Publisher
+	if cfg.MQTTEnabled {
+		sparkplugStore = sparkplug.NewStateStore()
+		sparkplugStore.OnSeqGap(func(key sparkplug.PublisherKey, expected, got uint64) {
+			logger.Warn("sparkplug: sequence gap",
+				slog.String("publisher", key.String()),
+				slog.Uint64("expected", expected),
+				slog.Uint64("got", got),
+			)
+		})
+
+		// Shadow publisher — publishes resolved metrics to edge.plc-normalized
+		// with source.type="go" so ADR-0008-style comparator can diff against
+		// Phase 2.5b's Node-RED publisher output (source.type="nodered") on
+		// the same exchange.
+		var shadowErr error
+		shadowPub, shadowErr = shadowpub.New(amqpCreds.URL(), "edge.plc-normalized", logger)
+		if shadowErr != nil {
+			logger.Error("shadowpub: failed to open channel — MQTT disabled",
+				slog.String("err", shadowErr.Error()))
+			shadowPub = nil
+		}
+
+		mqttCfg := mqtt.DefaultConfig()
+		mqttCfg.BrokerURL = cfg.MQTTBrokerURL
+		mqttCfg.ClientID = cfg.MQTTClientID
+		mqttCfg.Username = cfg.MQTTUsername
+		mqttCfg.Password = cfg.MQTTPassword
+
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, logger), logger)
+
+		// ADR-0011 P0-4: register subscriber + publisher with the health
+		// aggregator so /healthz surfaces their degraded state.
+		multi.Add(mqttSub)
+		if shadowPub != nil {
+			multi.Add(shadowPub)
+		}
+
+		modeDesc := "shadow (log resolved metrics; no rmq publish)"
+		if shadowPub != nil {
+			modeDesc = "shadow (publish to edge.plc-normalized with source.type=go)"
+		}
+		logger.Info("mqtt subscriber wired",
+			slog.String("broker", cfg.MQTTBrokerURL),
+			slog.String("client_id", cfg.MQTTClientID),
+			slog.String("mode", modeDesc),
+		)
+	} else {
+		logger.Info("mqtt subscriber disabled (MQTT_ENABLED=false)")
+	}
+
+	// Run AMQP consumer + optional MQTT subscriber concurrently. First error
+	// (or ctx cancellation) tears both down. errgroup guarantees Wait blocks
+	// until every goroutine returns.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		if err := consumer.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			return fmt.Errorf("amqp consumer: %w", err)
+		}
+		return nil
+	})
+	if mqttSub != nil {
+		g.Go(func() error {
+			if err := mqttSub.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("mqtt subscriber: %w", err)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		logger.Error("worker group exited with error", slog.String("err", err.Error()))
+	}
+
+	if shadowPub != nil {
+		_ = shadowPub.Close()
 	}
 
 	// Graceful shutdown for the health server (5s budget).
@@ -190,6 +288,99 @@ func main() {
 	_ = healthSrv.Shutdown(shutdownCtx)
 
 	logger.Info("edge-transformer stopped")
+}
+
+// sparkplugHandler is the MQTT subscriber's Handler for ADR-0010 Phase 2
+// shadow mode. Decodes → resolves via the alias table → logs the resolved
+// metric names + values. In the follow-up PR that adds the shadow AMQP
+// publisher, this handler additionally publishes a normalized envelope to
+// edge.plc-normalized.<tenant> for ADR-0008-style comparator validation
+// against Node-RED's Phase 2.5b publisher.
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, logger *slog.Logger) mqtt.Handler {
+	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
+		payload, err := sparkplug.Decode(body)
+		if err != nil {
+			return fmt.Errorf("decode: %w", err)
+		}
+		key := sparkplug.PublisherKey{
+			GroupID:    topic.GroupID,
+			EdgeNodeID: topic.EdgeNodeID,
+			DeviceID:   topic.DeviceID,
+		}
+		resolved, err := store.Ingest(key, topic.MessageType, payload)
+		if err != nil {
+			// ErrNoBirth for DATA before BIRTH — expected on cold start until
+			// the next NBIRTH arrives. Log warn, don't error the handler.
+			if errors.Is(err, sparkplug.ErrNoBirth) {
+				logger.Warn("sparkplug: data before birth (waiting for NBIRTH)",
+					slog.String("publisher", key.String()),
+					slog.String("message_type", topic.MessageType),
+				)
+				return nil
+			}
+			return fmt.Errorf("ingest: %w", err)
+		}
+		if resolved == nil {
+			// BIRTH/DEATH/CMD — state updated, no downstream output
+			logger.Debug("sparkplug: state updated",
+				slog.String("publisher", key.String()),
+				slog.String("message_type", topic.MessageType),
+				slog.Int("metrics", len(payload.GetMetrics())),
+			)
+			return nil
+		}
+		// DATA — publish per-metric envelopes to edge.plc-normalized.<tenant>
+		// for ADR-0008 comparator validation. If shadowpub failed to
+		// initialize, fall back to log-only mode.
+		//
+		// ADR-0011 rule 1 + rule 5: publisher confirms are on. Distinguish
+		// the failure modes explicitly so ops sees the CAUSE, not just "publish
+		// failed". Silent loss is a bug; loss with a typed alert is acceptable.
+		if publisher != nil {
+			if err := publisher.Publish(ctx, resolved); err != nil {
+				switch {
+				case errors.Is(err, shadowpub.ErrPublishNacked):
+					// RabbitMQ actively refused — usually resource alarm
+					// (memory or disk). Ops should check RMQ status.
+					logger.Error("shadowpub: RabbitMQ NACKED message",
+						slog.String("publisher", key.String()),
+						slog.String("action", "check RabbitMQ resource alarms"),
+						slog.String("err", err.Error()))
+				case errors.Is(err, shadowpub.ErrConfirmTimeout):
+					// Broker didn't answer in time — likely slow-write under
+					// load or connection wobble. Broker may still commit;
+					// message state is ambiguous.
+					logger.Warn("shadowpub: RabbitMQ confirm timeout",
+						slog.String("publisher", key.String()),
+						slog.String("state", "ambiguous — RMQ may have committed"),
+						slog.String("err", err.Error()))
+				default:
+					// Other errors (marshal, channel-closed, ctx.Cancel, etc.)
+					logger.Warn("shadowpub: publish failed",
+						slog.String("publisher", key.String()),
+						slog.String("err", err.Error()))
+				}
+				// Don't fail the handler — keep alias table cursor advancing.
+				// The failure IS observable via metrics + logs (ADR-0011).
+				// ADR-0011 P2 will add a local outbox for the retry-and-persist
+				// case; this MVP just surfaces the failure loud + moves on.
+			}
+		}
+		logger.Info("sparkplug: data decoded",
+			slog.String("publisher", key.String()),
+			slog.Uint64("seq", resolved.Seq),
+			slog.Int("metric_count", len(resolved.Metrics)),
+			slog.String("first_metric", firstMetricName(resolved.Metrics)),
+		)
+		return nil
+	}
+}
+
+func firstMetricName(metrics []sparkplug.ResolvedMetric) string {
+	if len(metrics) == 0 {
+		return ""
+	}
+	return metrics[0].Name
 }
 
 // runHealthcheck does an HTTP GET against the in-process /healthz endpoint

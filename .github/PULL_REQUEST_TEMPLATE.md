@@ -61,6 +61,26 @@ Most sections can be deleted if not applicable — keep the PR focused.
 - [ ] No deploy-ordering constraint, OR
 - [ ] Deploy order documented: 1)  2)  3) 
 
+## Durability review — ADR-0011 (delete N/A rows; do NOT delete the whole block)
+
+<!--
+Per ADR-0011 rule 6, every PR touching a Packiot-owned publisher, consumer,
+or MQTT-receive path must address the rules explicitly. This is the fixed
+reviewer checklist.
+
+If none of the rows below apply, mark N/A on all of them. "Silent" is not
+an option. See docs/consumer-idempotency-checklist.md for the depth on
+rule 2.
+-->
+
+- [ ] **Rule 1 — publisher confirms**: N/A, or → PublishWithContext + wait for broker Ack; nack/timeout surfaces typed error + metric
+- [ ] **Rule 2 — consumer idempotency**: N/A, or → business-key + `INSERT ON CONFLICT` / UPSERT / SELECT-then-write. See docs/consumer-idempotency-checklist.md.
+      → Business key:
+      → Duplicate-delivery test:
+- [ ] **Rule 3 — MQTT receiver buffers to disk before ack** (once outbox lands, Phase 3): N/A / TODO / done
+- [ ] **Rule 4 — /healthz surfaces degraded state**: N/A, or → new component registered with health.MultiSnapshotter with a Degraded() reason
+- [ ] **Rule 5 — no silent loss**: every failure path logs ERROR/WARN + increments a metric (or is documented as intentional discard)
+
 <!--
 🤖 Generated with [Claude Code](https://claude.com/claude-code) — leave or remove this line at your discretion.
 -->

@@ -34,6 +34,7 @@ volumes:
   rabbitmq-data:
   authentik-media:
   authentik-certs:
+  mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
@@ -42,6 +43,7 @@ volumes:
 # .15 hasura-init  .16 db-migrate    .17 adminer
 # .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
 # .23 edge-transformer (ADR-0009 Phase 2; reserved, NOT yet wired — see commented service block below)
+# .24 mosquitto (ADR-0010 Phase 2 MQTT broker; ADR-0011 P0-2 durability config)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -111,6 +113,42 @@ services:
       timeout: 15s
       retries: 5
       start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ──────────────────────────
+  # Factory-side MQTT broker. PLCs publish Sparkplug B here; edge-transformer
+  # subscribes to `spBv1.0/+/+/+/+` and bridges the decoded data into RabbitMQ.
+  #
+  # ADR-0011 rule 1 + P0-2: persistence is enabled in the config file so
+  # retained NBIRTHs survive broker restart. Without this, every subscriber
+  # that reconnects after Mosquitto restarts silently under-reports metrics
+  # until the next NBIRTH — up to several minutes of blind spot per publisher.
+  #
+  # Anonymous auth for MVP staging; ADR-0011 P0-2b follow-up moves to
+  # password-file + ACL keyed to AWS Secrets Manager.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      # AMQP-adjacent: bind only to loopback on the host. Intra-stack traffic
+      # goes via packiot-net; external factory PLCs reach us via nginx/ALB.
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data       # persistence — ADR-0011 P0-2
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.24
+    healthcheck:
+      # Publish a heartbeat + require an ACK within 5s. Doesn't touch broker
+      # internals — same shape a real subscriber would use.
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0 -W 5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}

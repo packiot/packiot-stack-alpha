@@ -14,10 +14,17 @@
 // dedicated /healthz/ready (broker connected AND outbox loop running)
 // vs /healthz/live (process alive). Today the simple "consumer healthy"
 // boolean is enough.
+//
+// ADR-0011 rule 4: health endpoints MUST expose degraded states — never
+// silent-degrade. When a subscriber is enabled but hasn't received messages
+// in >60s, or when the publisher has unconfirmed messages backlog >
+// threshold, /healthz returns 503 with a structured `degraded_components`
+// field naming what's wrong. Ops learns of trouble before customers do.
 package health
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,6 +40,84 @@ import (
 // an `any`-returning interface forces.
 type Snapshotter interface {
 	Snapshot() (body []byte, healthy bool, err error)
+}
+
+// ComponentSnapshotter is a lighter interface for individual sub-components
+// (MQTT subscriber, shadow publisher, alias-table). Returns a JSON-shaped
+// struct + a per-component degraded reason (empty = healthy). MultiSnapshotter
+// aggregates N of these into the top-level /healthz response.
+//
+// ADR-0011 rule 4: the reason string MUST be non-empty when returning
+// degraded=true. Silent degradation is a bug.
+type ComponentSnapshotter interface {
+	// Component returns the display name used in the aggregated JSON body.
+	Component() string
+
+	// SnapshotDetail returns the JSON body for this component (unmarshaled
+	// to `any` — the aggregator re-marshals in the outer envelope).
+	SnapshotDetail() any
+
+	// Degraded returns a non-empty human-readable reason if the component
+	// is degraded, or empty string if healthy. Called every request.
+	Degraded() string
+}
+
+// MultiSnapshotter aggregates N per-component snapshots into a single
+// /healthz JSON body. Overall healthy = every component's Degraded() is
+// empty. The response body always includes a `components` map keyed by
+// each component's Component() name + a `degraded_components` array listing
+// the names + reasons of any degraded components (empty when healthy).
+//
+// ADR-0011 rule 4: when any component is degraded, HTTP status is 503,
+// AND the body identifies which one + why.
+type MultiSnapshotter struct {
+	components []ComponentSnapshotter
+	startedAt  time.Time
+}
+
+// NewMulti returns an empty MultiSnapshotter. Add components before passing
+// to health.New.
+func NewMulti() *MultiSnapshotter {
+	return &MultiSnapshotter{startedAt: time.Now()}
+}
+
+// Add registers a component. Order preserved in the JSON response for
+// deterministic dashboarding.
+func (m *MultiSnapshotter) Add(c ComponentSnapshotter) {
+	m.components = append(m.components, c)
+}
+
+type degradedItem struct {
+	Component string `json:"component"`
+	Reason    string `json:"reason"`
+}
+
+// Snapshot implements Snapshotter — aggregates each ComponentSnapshotter.
+func (m *MultiSnapshotter) Snapshot() ([]byte, bool, error) {
+	components := make(map[string]any, len(m.components))
+	var degraded []degradedItem
+	for _, c := range m.components {
+		components[c.Component()] = c.SnapshotDetail()
+		if reason := c.Degraded(); reason != "" {
+			degraded = append(degraded, degradedItem{
+				Component: c.Component(),
+				Reason:    reason,
+			})
+		}
+	}
+	healthy := len(degraded) == 0
+
+	body, err := json.MarshalIndent(map[string]any{
+		"healthy":             healthy,
+		"started_at":          m.startedAt.Format(time.RFC3339),
+		"uptime_seconds":      int(time.Since(m.startedAt).Seconds()),
+		"components":          components,
+		"degraded_components": degraded,
+	}, "", "  ")
+	if err != nil {
+		return nil, false, fmt.Errorf("health: marshal: %w", err)
+	}
+	return body, healthy, nil
 }
 
 // Server wraps an http.Server so main can shutdown gracefully.
