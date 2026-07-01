@@ -2,7 +2,7 @@
 # distroless runtime. Same pattern as oeecloud-worker + mirror-worker-go
 # per ADR-0009 reuse rule (Errata Correction 2).
 
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /src
 
 # Pull deps first so the layer caches when source changes but deps don't.
