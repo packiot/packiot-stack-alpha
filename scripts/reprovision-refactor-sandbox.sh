@@ -27,16 +27,18 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PARITY_SQL="${REPO_ROOT}/edge-node-red/db/17-hasura-metadata-parity.sql"
 POC_SQL="${REPO_ROOT}/docs/adr/reference/0012-poc-customer-dashboards.sql"
 PHASE1_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase1-renames-and-drops.sql"
+PHASE2_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase2-cagg-consolidation.sql"
 
 usage() {
     cat <<EOF
-Usage: $0 [--reset] [--skip-poc] [--skip-phase1]
+Usage: $0 [--reset] [--skip-poc] [--skip-phase1] [--skip-phase2]
 
 Provision the ADR-0012 sandbox DB on staging DB EC2. Idempotent.
 
   --reset        DROP sandbox DB first if it exists, then rebuild.
   --skip-poc     Skip loading customer_dashboards POC.
   --skip-phase1  Skip Phase 1 renames + drops.
+  --skip-phase2  Skip Phase 2 CAgg consolidation lab.
   -h, --help     Show this help.
 
 Environment:
@@ -50,11 +52,13 @@ EOF
 RESET=false
 SKIP_POC=false
 SKIP_PHASE1=false
+SKIP_PHASE2=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --reset) RESET=true; shift;;
         --skip-poc) SKIP_POC=true; shift;;
         --skip-phase1) SKIP_PHASE1=true; shift;;
+        --skip-phase2) SKIP_PHASE2=true; shift;;
         -h|--help) usage; exit 0;;
         *) echo "unknown arg: $1"; usage; exit 1;;
     esac
@@ -165,6 +169,11 @@ fi
 if ! $SKIP_PHASE1; then
     echo "[5b/5] apply Phase 1 renames + drops..."
     apply_sql_file "$PHASE1_SQL"
+fi
+
+if ! $SKIP_PHASE2; then
+    echo "[5c/5] apply Phase 2 CAgg consolidation lab..."
+    apply_sql_file "$PHASE2_SQL"
 fi
 
 # --- final summary -----------------------------------------------------
