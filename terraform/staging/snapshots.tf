@@ -18,6 +18,16 @@
 # more useful for actual point-in-time recovery than an EBS snapshot.
 # When the DB grows past 64G, revisit and add the DB EC2 to this plan as
 # a second selection.
+#
+# ADR-0011 P0-2 coverage (2026-07-01): the mosquitto data volume
+# (Docker named volume `mosquitto-data` from compose.staging.yml) lives
+# at /var/lib/docker/volumes/ on the app EC2's ROOT EBS (vol-083e14a9…).
+# The selection below targets the whole EC2 by tag — AWS Backup snapshots
+# ALL attached EBS volumes for a tagged instance — so retained Sparkplug
+# NBIRTHs persist across broker restart AND are recoverable if the app
+# EC2 root disk fails. No separate resource needed for Mosquitto.
+# If a future refactor moves mosquitto-data to a dedicated EBS volume,
+# THAT volume will need a `Backup=daily` tag + a second aws_backup_selection.
 
 # ── Backup vault ──────────────────────────────────────────────────────────────
 # Vault is the namespaced storage for recovery points. Default account-level
