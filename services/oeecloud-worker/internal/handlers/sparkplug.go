@@ -42,6 +42,7 @@ type SparkplugHandler struct {
 	execErrors   atomic.Uint64
 
 	pool            *pgxpool.Pool
+	shadowPool      *pgxpool.Pool // may be nil — set only if POSTGRES_SHADOW_DB_NAME configured
 	equipmentValues *writers.EquipmentValues
 	unsMetrics      *writers.UnsMetrics
 	poParameter     *writers.POParameter
@@ -50,6 +51,7 @@ type SparkplugHandler struct {
 
 func NewSparkplugHandler(
 	pool *pgxpool.Pool,
+	shadowPool *pgxpool.Pool,
 	ev *writers.EquipmentValues,
 	uns *writers.UnsMetrics,
 	po *writers.POParameter,
@@ -57,6 +59,7 @@ func NewSparkplugHandler(
 ) *SparkplugHandler {
 	return &SparkplugHandler{
 		pool:            pool,
+		shadowPool:      shadowPool,
 		equipmentValues: ev,
 		unsMetrics:      uns,
 		poParameter:     po,
@@ -88,11 +91,15 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 	}
 
-	// ADR-0010 Phase 3 shadow-mode DB comparison: route writes by
-	// envelope.source_type. Whitelist to two known schemas — anything
-	// unknown falls back to public (fail-safe: won't accidentally write
-	// to a non-existent schema).
-	schema := schemaForSource(p.SourceType)
+	// ADR-0010 Phase 3 + ADR-0012 shadow-mode routing.
+	// Route both pool + schema by envelope.source_type. Whitelist-driven.
+	//   ""           → (main pool, "public")             — production
+	//   "go"         → (main pool, "shadow_go_port")     — ADR-0010 Phase 3
+	//   "refactored" → (shadow pool, "public")           — ADR-0012 Phase 3
+	// Fail-safe: unknown source_type falls back to (main pool, public).
+	// Shadow pool nil-fallback: if source_type="refactored" but no shadow
+	// pool configured, silently downgrade to main pool. Logged.
+	pool, schema := h.routeForSource(p.SourceType)
 
 	// Build phase — collect one Query per metric into the batch.
 	batch := &pgx.Batch{}
@@ -137,7 +144,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	}
 
 	// Send phase — one round-trip for ALL collected queries.
-	br := h.pool.SendBatch(ctx, batch)
+	br := pool.SendBatch(ctx, batch)
 	defer br.Close()
 
 	h.queriesSent.Add(uint64(batch.Len()))
@@ -158,14 +165,32 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	return firstErr
 }
 
-// schemaForSource maps the envelope's source_type to a Postgres schema.
-// Whitelist-driven — anything not "go" writes to public (safe default).
-// ADR-0010 Phase 3 shadow-mode DB comparison.
-func schemaForSource(sourceType string) string {
-	if sourceType == "go" {
-		return "shadow_go_port"
+// routeForSource picks the (pool, schema) tuple based on envelope
+// source_type. Whitelist-driven — see comment at handler.
+//
+// ADR-0010 Phase 3 introduced source_type="go" → shadow_go_port schema on
+// the main pool. ADR-0012 adds source_type="refactored" → shadow pool
+// (packiot_shadow DB) writing to public schema, so the entire refactored
+// schema can be exercised end-to-end from real live traffic without
+// touching the packiot production DB.
+//
+// If shadowPool is nil (POSTGRES_SHADOW_DB_NAME unset) and source_type
+// is "refactored", we silently fall back to (main pool, public) — logged
+// as a warning. Fail-safe: never route to nil.
+func (h *SparkplugHandler) routeForSource(sourceType string) (*pgxpool.Pool, string) {
+	switch sourceType {
+	case "go":
+		return h.pool, "shadow_go_port"
+	case "refactored":
+		if h.shadowPool != nil {
+			return h.shadowPool, "public"
+		}
+		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
+			slog.String("source_type", sourceType))
+		return h.pool, "public"
+	default:
+		return h.pool, "public"
 	}
-	return "public"
 }
 
 // SparkplugStats — aggregate counters for /health JSON. Renamed fields

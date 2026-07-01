@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/db"
@@ -93,6 +94,25 @@ func main() {
 	}
 	defer pool.Close()
 
+	// ADR-0012 shadow DB (schema-refactor live POC). Only initialized
+	// when POSTGRES_SHADOW_DB_NAME is set — production deploys leave it
+	// unset and the handler routes source_type="refactored" back to the
+	// main pool (with a warn log). This keeps the code path additive:
+	// no live behavior change unless you opt-in via env.
+	var shadowPool *pgxpool.Pool
+	if cfg.PGShadowDBName != "" {
+		shadowPool, err = db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "oeecloud-worker-shadow", logger)
+		if err != nil {
+			logger.Error("shadow postgres pool init failed",
+				slog.String("err", err.Error()),
+				slog.String("shadow_db", cfg.PGShadowDBName))
+			os.Exit(1)
+		}
+		defer shadowPool.Close()
+		logger.Info("shadow pool ready — source_type=refactored envelopes route here",
+			slog.String("shadow_db", cfg.PGShadowDBName))
+	}
+
 	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
 	// changes rarely — CS Admin re-onboards). 30 s negative TTL so unknown
 	// topics don't hammer the DB on noisy publishers.
@@ -125,7 +145,7 @@ func main() {
 	// Parses the AMQP payload, builds one Query per metric via the right
 	// writer, and sends them as a single pgx.Batch.
 	sparkplugHandler := handlers.NewSparkplugHandler(
-		pool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
+		pool, shadowPool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
 	)
 
 	dispatcher := handlers.NewDispatcher(logger)

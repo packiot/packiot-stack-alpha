@@ -46,6 +46,15 @@ type Config struct {
 
 	// Logging
 	LogLevel string // 'debug' | 'info' | 'warn' | 'error'
+
+	// ADR-0012 shadow DB (schema refactor live POC). Empty string
+	// = disabled (default). When set, a second pgx pool is created
+	// against the same host/user/password but overriding the
+	// database name, and envelopes with source_type="refactored"
+	// are routed there instead of the main pool. Preserves the
+	// existing shadow_go_port routing (source_type="go" → schema
+	// swap on main pool) untouched.
+	PGShadowDBName string
 }
 
 func Load() (*Config, error) {
@@ -66,6 +75,7 @@ func Load() (*Config, error) {
 		Prefetch:         getenvInt("PREFETCH", 50),
 		HealthPort:       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
+		PGShadowDBName:   getenv("POSTGRES_SHADOW_DB_NAME", ""),
 	}, nil
 }
 
