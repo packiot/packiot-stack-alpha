@@ -242,8 +242,8 @@ jobs:
           $PSQL -c "SELECT n.nspname||'.'||c.relname AS name, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS kind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','v','m') AND (c.relname ILIKE '%powerbi%' OR c.relname ILIKE '%report%' OR c.relname ILIKE '%export%' OR c.relname ILIKE '%bi_%' OR c.relname ILIKE '%dashboard%') ORDER BY n.nspname, c.relname;"
 
           echo ""
-          echo "=== TimescaleDB hypertables + continuous aggregates ==="
-          $PSQL -c "SELECT hypertable_schema||'.'||hypertable_name AS name, num_dimensions, num_chunks, pg_size_pretty(total_bytes) AS size FROM timescaledb_information.hypertables ORDER BY total_bytes DESC NULLS LAST LIMIT 20;" 2>&1 | head -25
+          echo "=== TimescaleDB hypertables (via hypertable_detailed_size) ==="
+          $PSQL -c "SELECT h.hypertable_schema||'.'||h.hypertable_name AS name, h.num_chunks, pg_size_pretty(hypertable_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass)) AS size FROM timescaledb_information.hypertables h ORDER BY hypertable_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass) DESC NULLS LAST LIMIT 20;" 2>&1 | head -25
 
           echo ""
           echo "=== Continuous aggregates (materialized views on hypertables) ==="
@@ -256,6 +256,35 @@ jobs:
           echo ""
           echo "=== Roles + likely PowerBI-facing role grants ==="
           $PSQL -c "SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname ILIKE '%bi%' OR rolname ILIKE '%report%' OR rolname ILIKE '%export%' OR rolname ILIKE '%readonly%' OR rolname ILIKE '%readwrite%' ORDER BY rolname;"
+
+          echo ""
+          echo "=== Hasura-tracked tables (from hdb_catalog.hdb_table) ==="
+          # If Hasura tracks a table, it's exposed via GraphQL — DO NOT
+          # drop or rename it without a coordinated Hasura metadata update.
+          $PSQL -c "SELECT table_schema||'.'||table_name AS name FROM hdb_catalog.hdb_table WHERE table_schema='public' ORDER BY table_name;" 2>&1 | head -40
+
+          echo ""
+          echo "=== Views/matviews grouped by base table dependency ==="
+          # For each base table, count how many views depend on it.
+          # A table with 0 dependent views is EITHER safe-to-refactor
+          # (nothing reads through views) OR read directly by app code
+          # (still risky). Use as ranking signal, not oracle.
+          $PSQL -c "SELECT dep_class.relname AS base_table, COUNT(DISTINCT view_class.relname) AS dependent_views, STRING_AGG(DISTINCT view_class.relname, ', ' ORDER BY view_class.relname) AS view_names FROM pg_depend d JOIN pg_rewrite r ON d.objid = r.oid JOIN pg_class view_class ON r.ev_class = view_class.oid JOIN pg_class dep_class ON d.refobjid = dep_class.oid JOIN pg_namespace dep_ns ON dep_class.relnamespace = dep_ns.oid WHERE d.deptype = 'n' AND view_class.relkind IN ('v','m') AND dep_class.relkind = 'r' AND dep_ns.nspname = 'public' AND view_class.relname != dep_class.relname GROUP BY dep_class.relname ORDER BY dependent_views DESC LIMIT 30;"
+
+          echo ""
+          echo "=== ORPHAN candidates: not tracked by Hasura AND no dependent views AND >7d since analyze ==="
+          # The safe-to-drop candidate list. These are tables:
+          #   - Not exposed via Hasura (no GraphQL consumers)
+          #   - Not the base of any view (no SQL consumer via views)
+          #   - Haven't been analyzed in 7+ days (probably no write traffic)
+          # STILL requires manual verification that app code doesn't read
+          # them directly, but this list is the starting point.
+          $PSQL -c "WITH hasura_tracked AS (SELECT table_schema||'.'||table_name AS name FROM hdb_catalog.hdb_table), view_bases AS (SELECT DISTINCT dep_ns.nspname||'.'||dep_class.relname AS name FROM pg_depend d JOIN pg_rewrite r ON d.objid = r.oid JOIN pg_class view_class ON r.ev_class = view_class.oid JOIN pg_class dep_class ON d.refobjid = dep_class.oid JOIN pg_namespace dep_ns ON dep_class.relnamespace = dep_ns.oid WHERE d.deptype = 'n' AND view_class.relkind IN ('v','m') AND dep_class.relkind = 'r' AND dep_ns.nspname = 'public') SELECT s.schemaname||'.'||s.relname AS name, s.n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||s.relname)::regclass)) AS size, s.last_autoanalyze::date FROM pg_stat_user_tables s WHERE s.schemaname='public' AND s.schemaname||'.'||s.relname NOT IN (SELECT name FROM hasura_tracked) AND s.schemaname||'.'||s.relname NOT IN (SELECT name FROM view_bases) AND (s.last_autoanalyze IS NULL OR s.last_autoanalyze < now() - INTERVAL '7 days') ORDER BY pg_total_relation_size(('public.'||s.relname)::regclass) DESC NULLS LAST LIMIT 30;"
+
+          echo ""
+          echo "=== Portuguese-named tables (likely legacy from before English-only convention) ==="
+          # Common pt-BR words that indicate legacy naming
+          $PSQL -c "SELECT schemaname||'.'||relname AS name, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size FROM pg_stat_user_tables WHERE schemaname='public' AND (relname ~* 'producao|paradas|equipamento|apontamento|monitoramento|c35_|_pt$|_br$|montagem|fabrica|linha_' ) ORDER BY pg_total_relation_size(('public.'||relname)::regclass) DESC NULLS LAST LIMIT 20;"
 
       - name: Shadow DB comparison — count shadow_go_port rows post-inject (ADR-0010 Phase 3)
         # Runs BEFORE the chaos test. Verifies that the pre-chaos inject
