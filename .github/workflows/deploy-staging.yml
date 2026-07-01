@@ -264,10 +264,18 @@ jobs:
           # is the metadata HTTP API. This queries the running hasura
           # container inside the compose network for its export_metadata
           # response, then extracts source.tables[].table.name from the JSON.
-          HASURA_ADMIN_SECRET=$(grep -E '^HASURA_ADMIN_SECRET=' /opt/packiot/.env | cut -d= -f2)
+          # /opt/packiot/.env uses Hasura's canonical env var name
+          # HASURA_GRAPHQL_ADMIN_SECRET (see terraform/staging/user_data/app_init.sh
+          # line "HASURA_GRAPHQL_ADMIN_SECRET=$HASURA_ADMIN"). Earlier version
+          # of this step grepped for the shorter HASURA_ADMIN_SECRET alias
+          # (which the compose file exposes to the container but is NOT
+          # what lives in the host .env file) and always missed → fell
+          # through to a broken blob-fallback path.
+          HASURA_ADMIN_SECRET=$(grep -E '^HASURA_GRAPHQL_ADMIN_SECRET=' /opt/packiot/.env | cut -d= -f2)
           if [ -z "$HASURA_ADMIN_SECRET" ]; then
-            echo "(missing HASURA_ADMIN_SECRET — falling back to metadata blob)"
-            $PSQL -c "SELECT jsonb_array_elements(sources->'tables')->'table'->>'name' AS name FROM hdb_catalog.hdb_metadata, jsonb_array_elements(metadata->'sources') AS sources ORDER BY name;" 2>&1 | head -50
+            echo "(missing HASURA_GRAPHQL_ADMIN_SECRET — falling back to metadata blob)"
+            # metadata column is json (not jsonb), so cast on both extractions.
+            $PSQL -c "SELECT jsonb_array_elements(sources->'tables')->'table'->>'name' AS name FROM hdb_catalog.hdb_metadata, jsonb_array_elements(metadata::jsonb->'sources') AS sources ORDER BY name;" 2>&1 | head -50
           else
             docker run --rm --network container:stack-hasura-1 curlimages/curl:latest \
               -sf -H "X-Hasura-Admin-Secret: $HASURA_ADMIN_SECRET" -X POST http://127.0.0.1:8080/v1/metadata \
