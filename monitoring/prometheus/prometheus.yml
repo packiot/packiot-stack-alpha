@@ -38,3 +38,10 @@ scrape_configs:
     # rules needed.
     static_configs:
       - targets: ['mirror-worker-go:9102']
+
+  - job_name: edge-transformer
+    # ADR-0010 Phase 3 shadow-mode port + ADR-0011 P2 outbox.
+    # Exposes calc_*, outbox_*, shadowpub_*, mqtt_subscriber_* series.
+    # Consumed by grafana/dashboards/09-edge-transformer-shadow-mode.json.
+    static_configs:
+      - targets: ['edge-transformer:9102']

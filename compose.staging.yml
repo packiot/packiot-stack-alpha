@@ -346,7 +346,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-06-24-mirror-worker-observability"
+      - "provisioning_rev=2026-07-01-edge-transformer-shadow-mode"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -433,7 +433,7 @@ services:
     # container reads stale content until recreated. Same trap as the
     # grafana `provisioning_rev` pattern.
     labels:
-      - "config_rev=2026-06-24-mirror-worker-scrape"
+      - "config_rev=2026-07-01-edge-transformer-scrape"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
