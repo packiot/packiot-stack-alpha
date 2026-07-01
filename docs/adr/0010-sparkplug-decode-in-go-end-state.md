@@ -233,9 +233,57 @@ Shipped `internal/mqtt/` scaffold following the internal/amqp/consumer.go shape 
 - Wire the subscriber into `main.go` under an errgroup goroutine alongside the AMQP consumer
 - Per-tenant config from `client.yaml` (open Q1) — how many brokers per factory, TLS settings per broker
 - AWS Secrets Manager credential fetching (mirrors the AMQP consumer's `secrets` package pattern)
-- Sparkplug alias-table state machine (per-publisher table indexed by `(GroupID, EdgeNodeID, DeviceID)`, rebuilt on NBIRTH, invalidated on NDEATH — open Q3)
+- ~~Sparkplug alias-table state machine~~ **DONE — see below**
 - Integration test with a local mosquitto container (behind `mqtt_integration` build tag)
 - Shadow-mode plumbing that publishes the decoded normalized envelope to the same `edge.plc-normalized.<tenant>` exchange that Phase 2.5b's Node-RED publisher produces — enables ADR-0008-style comparator validation
+
+### Phase 2 progress — alias-table state machine (2026-06-30, same PR)
+
+Shipped `internal/sparkplug/aliastable.go` + `aliastable_test.go`. The load-bearing state machine that answers ADR-0010's open Q3: how does the decoder track per-publisher alias→name mappings across NBIRTH/NDATA/NDEATH.
+
+**Design**:
+
+- `PublisherKey{GroupID, EdgeNodeID, DeviceID}` — three-tuple identity for scope (DeviceID empty for node-level messages).
+- `StateStore` — the concurrent-safe in-memory table. `sync.RWMutex` for reader/writer isolation.
+- `Ingest(key, msgType, payload) (*ResolvedPayload, error)` — single-entry API. Returns `nil, nil` for BIRTH/DEATH/CMD; returns resolved metrics for DATA; returns typed errors on protocol violations.
+- `ResolvedPayload{Metrics: []ResolvedMetric{Name, Alias, Timestamp, Datatype, Value}}` — the caller-friendly output view.
+- `Snapshot()` — /health diagnostic surface (per-publisher alias count + last-seq + last-birth-at + last-message-at).
+- `OnSeqGap(callback)` — Prometheus hook for sequence-number gap detection.
+
+**Contract errors** (all returnable from Ingest):
+
+- `ErrNoBirth` — DATA arrived before any BIRTH established the table
+- `ErrUnknownAlias{PublisherKey, Alias}` — DATA references an alias not in the current table
+- `ErrUnknownMessageType` — topic MessageType is outside Sparkplug B's 8 valid types
+
+**Locked-in semantics**:
+
+1. **Rebirth replaces prior table** — a second NBIRTH for the same key wipes the alias map (Sparkplug spec: BIRTH is a full snapshot).
+2. **Death invalidates completely** — post-NDEATH DATA returns ErrNoBirth until a fresh BIRTH.
+3. **Datatype fallback** — DATA metrics may omit datatype (fixed per alias at BIRTH); the state machine restores from the BIRTH-established value.
+4. **Publishers are isolated** — two edge nodes may legally use alias=1 for different names. The (Group,Node,Device) key guarantees no cross-contamination.
+5. **Sequence-number wraparound is not a gap** — Sparkplug wraps seq at 256. `(255→0)` is NOT a gap; `(1→5)` IS.
+
+**Tests** (all pass with `-race`):
+
+| Test | Behavior verified |
+|---|---|
+| `TestBirthEstablishesAliases` | NBIRTH populates map, returns nil ResolvedPayload |
+| `TestDataResolvesAliases` | NDATA aliases → names + values (Int64, Float, String) |
+| `TestDataBeforeBirthFails` | ErrNoBirth returned |
+| `TestDataUnknownAliasFails` | ErrUnknownAlias carries the offending alias + key |
+| `TestUnknownMessageTypeFails` | Unknown MessageType returns ErrUnknownMessageType |
+| `TestDeathInvalidates` | Post-NDEATH DATA returns ErrNoBirth |
+| `TestBirthRefreshesTable` | Second NBIRTH replaces prior aliases wholesale |
+| `TestSequenceGapFiresCallback` | Gap triggers OnSeqGap with expected + got |
+| `TestSequenceWraparoundIsNotAGap` | 255→0 does NOT fire callback |
+| `TestDatatypeFallbackFromBirth` | DATA without datatype uses BIRTH's |
+| `TestPublishersAreIsolated` | Two publishers can reuse alias 1 without cross-talk |
+| `TestConcurrentPublishers` | 20 goroutines × 100 messages, race detector clean |
+| `TestSnapshotShape` | /health JSON keys stable |
+| `TestResetRemovesPublisher` | Reset() removes publisher entry |
+
+**Not yet in scope**: main.go wiring is now the last blocker for end-to-end shadow-mode operation. Everything else in Phase 2 (config, secrets, mosquitto integration test, shadow publish) either has an existing template (secrets/config mirror the AMQP consumer pattern) or is optional (mosquitto for local dev only).
 
 **Architectural decisions locked in via the scaffold**:
 
