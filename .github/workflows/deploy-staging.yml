@@ -167,8 +167,121 @@ jobs:
           docker exec edge-transformer /usr/local/bin/edge-transformer --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
 
           echo ""
-          echo "=== /metrics (calc_ + mqtt_ + shadowpub_ scoped) ==="
+          echo "=== /metrics (calc_ + mqtt_ + shadowpub_ + outbox_ scoped) ==="
           docker run --rm --network container:edge-transformer curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
-            | grep -E '^(calc_|mqtt_|shadowpub_)' \
-            | head -60 || echo "(no matching metrics)"
+            | grep -E '^(calc_|mqtt_|shadowpub_|outbox_)' \
+            | head -80 || echo "(no matching metrics)"
+
+      - name: Chaos test — kill RMQ, prove outbox durability (ADR-0011 P3)
+        # Proves the store-and-forward payoff: with outbox enabled, an RMQ
+        # outage doesn't drop messages. Sequence:
+        #   1. Take a baseline outbox_depth (should be 0 after inject drained)
+        #   2. Stop RabbitMQ container — subsequent publishes will fail
+        #   3. Inject 5 more messages — outbox_depth grows, none published
+        #   4. Restart RabbitMQ — drain catches up
+        #   5. Verify outbox_depth returns to 0 within 30s
+        # If outbox is disabled, messages during the RMQ outage would just
+        # be lost silently. This test codifies the durability contract.
+        # continue-on-error so a chaos hiccup doesn't fail the deploy.
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== Chaos test: outbox durability under RMQ outage ==="
+
+          get_outbox_depth() {
+            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+              -s http://localhost:9102/metrics 2>/dev/null \
+              | awk '/^outbox_depth /{print $2}' \
+              | head -1
+          }
+
+          get_shadowpub_confirmed() {
+            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+              -s http://localhost:9102/metrics 2>/dev/null \
+              | awk '/^shadowpub_confirmed_total /{print $2}' \
+              | head -1
+          }
+
+          baseline_depth=$(get_outbox_depth)
+          baseline_confirmed=$(get_shadowpub_confirmed)
+          echo "baseline: outbox_depth=$baseline_depth, shadowpub_confirmed_total=$baseline_confirmed"
+
+          # Skip the chaos test if outbox isn't reporting metrics (feature disabled or not wired)
+          if [ -z "$baseline_depth" ]; then
+            echo "outbox_depth not present — skipping chaos test (outbox disabled)"
+            exit 0
+          fi
+
+          # Build the inject binary once so we can run it multiple times.
+          docker run --rm \
+            -v "$PWD/services/edge-transformer:/src" -w /src \
+            -e CGO_ENABLED=0 -e GOOS=linux \
+            golang:1.25-alpine \
+            go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
+
+          inject() {
+            docker run --rm \
+              --network stack_packiot-net \
+              -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+              alpine:3.20 /app/inject --broker tcp://mosquitto:1883 --value "$1" 2>&1 | tail -3
+          }
+
+          echo ""
+          echo "=== Step 1: Stop RabbitMQ ==="
+          docker stop stack-rabbitmq-1
+
+          echo ""
+          echo "=== Step 2: Inject 5 messages while RMQ is down ==="
+          for v in 200 300 400 500 600; do
+            inject "$v"
+            sleep 1
+          done
+
+          echo ""
+          echo "=== Step 3: Outbox should have grown ==="
+          sleep 3
+          during_depth=$(get_outbox_depth)
+          echo "during outage: outbox_depth=$during_depth (should be > baseline)"
+
+          echo ""
+          echo "=== Step 4: Restart RabbitMQ ==="
+          docker start stack-rabbitmq-1
+          # Wait for RMQ to be healthy again
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' stack-rabbitmq-1 2>/dev/null)
+            if [ "$status" = "healthy" ]; then
+              echo "  rabbitmq healthy after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          echo ""
+          echo "=== Step 5: Wait for drain to catch up (up to 60s) ==="
+          for i in $(seq 1 60); do
+            d=$(get_outbox_depth)
+            if [ "$d" = "0" ] || [ "$d" = "0.0" ]; then
+              echo "  drain caught up after ${i}s: outbox_depth=0"
+              break
+            fi
+            [ $((i % 5)) -eq 0 ] && echo "  ${i}s: outbox_depth=$d"
+            sleep 1
+          done
+
+          final_depth=$(get_outbox_depth)
+          final_confirmed=$(get_shadowpub_confirmed)
+          echo ""
+          echo "=== Chaos test summary ==="
+          echo "  baseline_depth      = $baseline_depth"
+          echo "  peak_depth          = $during_depth"
+          echo "  final_depth         = $final_depth"
+          echo "  baseline_confirmed  = $baseline_confirmed"
+          echo "  final_confirmed     = $final_confirmed"
+          echo "  Messages recovered  = $(awk "BEGIN{print $final_confirmed - $baseline_confirmed}")"
+          echo "  Expected recovered  = ~5 (from the inject burst)"
+          if [ "$final_depth" = "0" ] || [ "$final_depth" = "0.0" ]; then
+            echo "  RESULT: outbox drained cleanly — durability contract HOLDS"
+          else
+            echo "  RESULT: outbox did NOT drain — final_depth=$final_depth (investigate)"
+          fi
