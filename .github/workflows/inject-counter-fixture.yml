@@ -44,7 +44,7 @@ jobs:
             -w /src \
             -e CGO_ENABLED=0 \
             -e GOOS=linux \
-            golang:1.24-alpine \
+            golang:1.25-alpine \
             go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
           ls -la services/edge-transformer/inject-counter-fixture
 

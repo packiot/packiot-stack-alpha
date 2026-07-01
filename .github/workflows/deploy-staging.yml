@@ -132,7 +132,7 @@ jobs:
             -v "$PWD/services/edge-transformer:/src" \
             -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
-            golang:1.24-alpine \
+            golang:1.25-alpine \
             go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
 
           docker run --rm \
