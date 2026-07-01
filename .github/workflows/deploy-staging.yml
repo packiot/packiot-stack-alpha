@@ -502,6 +502,72 @@ print('AVAILABLE_KEYS=\"' + ','.join(sorted(d.keys())) + '\"')
           echo "=== PROD: c35_* + c33_* dashboard tables — row counts (populated by cron?) ==="
           $PPSQL -c "BEGIN READ ONLY; SELECT relname, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size, last_analyze::date FROM pg_stat_user_tables WHERE schemaname='public' AND (relname LIKE 'c35_%' OR relname LIKE 'c33_%') ORDER BY relname LIMIT 20; COMMIT;" 2>&1 | head -25
 
+      - name: PROD tsp12 SELECT-only audit — verify findings against production
+        # ADR-0010 Phase 3 shadow-mode DB comparison verification: same
+        # audit queries run against prod tsp12 using the awslambda role
+        # (SELECT-only, no LOCK TABLE, no DDL). Compares prod bloat vs
+        # staging so the refactor plan is grounded in real production
+        # scale, not staging's smaller test data.
+        #
+        # HARD RULE: only SELECTs. Never any DDL, INSERT, UPDATE, DELETE.
+        # The awslambda role technically enforces this, but every query
+        # here is explicitly a SELECT — never trust the role alone.
+        continue-on-error: true
+        run: |
+          set +e
+          # Fetch prod credentials from AWS Secrets Manager. Field names
+          # documented in services/mirror-worker-go/internal/secrets/secrets.go:
+          #   databaseCredentials → { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME }
+          # aws stderr redirected to /dev/null so we see failure via empty $PROD_SECRET
+          PROD_SECRET=$(aws secretsmanager get-secret-value --secret-id databaseCredentials --query SecretString --output text 2>/dev/null)
+          if [ -z "$PROD_SECRET" ]; then
+            echo "(cannot fetch databaseCredentials — check IAM role / secret name)"
+            exit 0
+          fi
+          # Show available keys for debug (one-line python).
+          echo "Available secret keys: $(echo "$PROD_SECRET" | python3 -c 'import json,sys; print(",".join(sorted(json.load(sys.stdin).keys())))')"
+          # Extract each field with a separate python3 -c call. Simpler than
+          # eval; each is independent.
+          PROD_HOST=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_HOST") or d.get("host") or "")')
+          PROD_USER=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_USER") or d.get("user") or d.get("username") or "")')
+          PROD_PASS=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_PASSWORD") or d.get("password") or "")')
+          PROD_DB=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_NAME") or d.get("database") or d.get("dbname") or "")')
+          PROD_PORT=$(echo "$PROD_SECRET" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("DB_PORT") or d.get("port") or "5432")')
+
+          if [ -z "$PROD_HOST" ] || [ -z "$PROD_PASS" ]; then
+            echo "(prod credentials incomplete — skipping)"
+            exit 0
+          fi
+          echo "Auditing PROD tsp12 at $PROD_HOST (user: $PROD_USER, role: awslambda SELECT-only)"
+
+          # PPSQL is a shell function alias for prod psql calls. Wrapped in
+          # BEGIN READ ONLY as defense-in-depth on top of the awslambda role.
+          PPSQL="docker run --rm --network stack_packiot-net -e PGPASSWORD=$PROD_PASS postgres:15-alpine psql -h $PROD_HOST -p $PROD_PORT -U $PROD_USER -d $PROD_DB"
+
+          echo ""
+          echo "=== PROD: Top 20 tables by total size (public schema) ==="
+          $PPSQL -c "BEGIN READ ONLY; SELECT relname AS table, pg_size_pretty(pg_total_relation_size('public.'||relname)) AS total_size, n_live_tup AS row_estimate FROM pg_stat_user_tables WHERE schemaname='public' ORDER BY pg_total_relation_size('public.'||relname) DESC LIMIT 20; COMMIT;" 2>&1 | head -30
+
+          echo ""
+          echo "=== PROD: schemaname/tables/views/matviews counts ==="
+          $PPSQL -c "BEGIN READ ONLY; SELECT schemaname, COUNT(*) FILTER (WHERE relkind='r') AS tables, COUNT(*) FILTER (WHERE relkind='v') AS views, COUNT(*) FILTER (WHERE relkind='m') AS matviews FROM pg_class JOIN pg_namespace ON pg_namespace.oid=pg_class.relnamespace JOIN pg_stat_user_tables sn ON sn.schemaname=nspname WHERE relkind IN ('r','v','m') AND nspname='public' GROUP BY schemaname; COMMIT;" 2>&1 | head -6
+
+          echo ""
+          echo "=== PROD: Portuguese-named tables + c35_/c33_/customer-13 tables ==="
+          $PPSQL -c "BEGIN READ ONLY; SELECT schemaname||'.'||relname AS name, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size FROM pg_stat_user_tables WHERE schemaname='public' AND (relname ~* 'producao|paradas|equipamento|apontamento|monitoramento|c35_|c33_|_pt$|_br$|cust_13|customer_13|site_deb|site_wil') ORDER BY pg_total_relation_size(('public.'||relname)::regclass) DESC NULLS LAST LIMIT 25; COMMIT;" 2>&1 | head -30
+
+          echo ""
+          echo "=== PROD: shift_agg_from_events + v_operator_po_details version rows/size ==="
+          $PPSQL -c "BEGIN READ ONLY; SELECT relname, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size FROM pg_stat_user_tables WHERE schemaname='public' AND (relname LIKE 'shift_agg_from_events%' OR relname LIKE 'v_operator_po_details%'); COMMIT;" 2>&1 | head -10
+
+          echo ""
+          echo "=== PROD: monitoramento_execucao_functions rows/size + activity ==="
+          $PPSQL -c "BEGIN READ ONLY; SELECT relname, n_live_tup AS rows, n_tup_ins AS inserts_ever, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size, last_analyze::date, last_autovacuum::date FROM pg_stat_user_tables WHERE relname='monitoramento_execucao_functions'; COMMIT;" 2>&1 | head -6
+
+          echo ""
+          echo "=== PROD: c35_* + c33_* dashboard tables — row counts (populated by cron?) ==="
+          $PPSQL -c "BEGIN READ ONLY; SELECT relname, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(('public.'||relname)::regclass)) AS size, last_analyze::date FROM pg_stat_user_tables WHERE schemaname='public' AND (relname LIKE 'c35_%' OR relname LIKE 'c33_%') ORDER BY relname LIMIT 20; COMMIT;" 2>&1 | head -25
+
           echo ""
           echo "=== Views/matviews grouped by base table dependency ==="
           # For each base table, count how many views depend on it.
