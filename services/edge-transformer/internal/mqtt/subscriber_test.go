@@ -96,6 +96,15 @@ func TestDefaultConfig(t *testing.T) {
 	if c.TopicFilter != TopicFilterAll {
 		t.Errorf("TopicFilter: got %q, want %q", c.TopicFilter, TopicFilterAll)
 	}
+	// Regression guard: MUST be multi-level `#`, not the 5-segment `+/+/+/+`
+	// pattern (which silently drops all node-level NBIRTH/NDATA/NDEATH).
+	// See TopicFilterAll doc for the on-staging discovery story.
+	if TopicFilterAll != "spBv1.0/#" {
+		t.Errorf("TopicFilterAll regression: got %q, want %q — MUST use "+
+			"multi-level wildcard to match both 4-segment (node) and "+
+			"5-segment (device) Sparkplug topics",
+			TopicFilterAll, "spBv1.0/#")
+	}
 	if c.QoS != 0 {
 		t.Errorf("QoS: got %d, want 0 (Sparkplug spec)", c.QoS)
 	}
