@@ -42,6 +42,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -126,11 +127,23 @@ var (
 // a typed error + increment metrics. Silent loss is impossible: either
 // RabbitMQ took the message, or the caller learns of the failure.
 type Publisher struct {
+	// amqpURL is saved so reconnect() can re-dial after a broker outage.
+	// The chaos test in the deploy pipeline (RMQ stop → inject → RMQ
+	// start) exposed the missing reconnect as a silent-degrade — depth
+	// grew during outage but never drained after recovery.
+	amqpURL string
+
+	// mu serializes access to conn/ch/confirms during reconnect. Publish
+	// paths take rlock; reconnect takes wlock.
+	mu       sync.RWMutex
 	conn     *amqp.Connection
 	ch       *amqp.Channel
 	exchange string
 	instance string
 	logger   *slog.Logger
+
+	// reconnects atomic counter — Prom + /healthz observability.
+	reconnects atomic.Uint64
 
 	// ConfirmTimeout is the deadline for waiting on a broker ack per publish.
 	// Falls back to DefaultConfirmTimeout when zero.
@@ -181,6 +194,7 @@ func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 		instance = "edge-transformer"
 	}
 	return &Publisher{
+		amqpURL:        amqpURL,
 		conn:           conn,
 		ch:             ch,
 		exchange:       exchange,
@@ -189,6 +203,68 @@ func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 		ConfirmTimeout: DefaultConfirmTimeout,
 		confirms:       confirms,
 	}, nil
+}
+
+// reconnect closes the current AMQP connection + channel and re-opens
+// them. Under the wlock — concurrent PublishBytes callers block until
+// reconnect completes.
+//
+// Best-effort: if reconnect fails, the Publisher is left in a bad state
+// (ch is nil) and subsequent publishes will fail cleanly. The next
+// publish that hits the reconnect path will try again.
+func (p *Publisher) reconnect(logger *slog.Logger) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Best-effort close of the old conn + channel.
+	if p.ch != nil {
+		_ = p.ch.Close()
+		p.ch = nil
+	}
+	if p.conn != nil {
+		_ = p.conn.Close()
+		p.conn = nil
+	}
+
+	conn, err := amqp.Dial(p.amqpURL)
+	if err != nil {
+		return fmt.Errorf("shadowpub reconnect: dial: %w", err)
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("shadowpub reconnect: channel: %w", err)
+	}
+	if err := ch.Confirm(false); err != nil {
+		_ = ch.Close()
+		_ = conn.Close()
+		return fmt.Errorf("shadowpub reconnect: enable confirm mode: %w", err)
+	}
+	p.conn = conn
+	p.ch = ch
+	p.confirms = ch.NotifyPublish(make(chan amqp.Confirmation, 64))
+	p.reconnects.Add(1)
+	if logger != nil {
+		logger.Info("shadowpub: reconnected to RMQ")
+	}
+	return nil
+}
+
+// isConnectionError decides whether an AMQP error is worth triggering
+// a reconnect for. The amqp091-go library returns a variety of shapes;
+// the most common ones after a broker restart are "channel/connection
+// closed" errors.
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "channel/connection is not open") ||
+		strings.Contains(s, "channel closed") ||
+		strings.Contains(s, "connection closed") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "use of closed network connection")
 }
 
 // Close releases the AMQP channel + connection.
@@ -349,12 +425,44 @@ func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPay
 // Same publisher-confirm semantics as Publish: returns typed errors
 // (ErrPublishNacked, ErrConfirmTimeout) for the failure modes callers
 // need to distinguish.
+//
+// On connection-level errors (RMQ restart, network drop), transparently
+// re-dials via reconnect() and retries ONCE. This closes the ADR-0011
+// P3 chaos-test gap where an RMQ outage would strand outbox rows.
 func (p *Publisher) PublishBytes(ctx context.Context, routingKey, messageID string, body []byte) error {
+	if err := p.publishBytesOnce(ctx, routingKey, messageID, body); err != nil {
+		if isConnectionError(err) {
+			if p.logger != nil {
+				p.logger.Warn("shadowpub: connection-level publish failure — reconnecting",
+					slog.String("err", err.Error()))
+			}
+			if recErr := p.reconnect(p.logger); recErr != nil {
+				// Reconnect failed — surface the ORIGINAL error, not the
+				// reconnect error. Caller (drain loop) will retry later.
+				return err
+			}
+			// One retry after successful reconnect.
+			return p.publishBytesOnce(ctx, routingKey, messageID, body)
+		}
+		return err
+	}
+	return nil
+}
+
+// publishBytesOnce is the single-attempt inner. Callers wrap it with
+// retry semantics.
+func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID string, body []byte) error {
 	timeout := p.ConfirmTimeout
 	if timeout <= 0 {
 		timeout = DefaultConfirmTimeout
 	}
-	err := p.ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
+	p.mu.RLock()
+	ch := p.ch
+	p.mu.RUnlock()
+	if ch == nil {
+		return fmt.Errorf("shadowpub: no channel")
+	}
+	err := ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
@@ -369,14 +477,24 @@ func (p *Publisher) PublishBytes(ctx context.Context, routingKey, messageID stri
 	return p.waitConfirm(ctx, timeout)
 }
 
+// ReconnectCount is the number of times shadowpub has re-dialed the
+// AMQP connection. Non-zero = ops signal that RMQ has flapped or been
+// restarted; investigate if it grows unexpectedly.
+func (p *Publisher) ReconnectCount() uint64 { return p.reconnects.Load() }
+
 // waitConfirm blocks on the next confirmation. Returns nil on Ack, typed
-// errors on Nack / timeout / ctx cancel.
+// errors on Nack / timeout / ctx cancel. Reads the confirms channel under
+// rlock so reconnect() can atomically swap it.
 func (p *Publisher) waitConfirm(ctx context.Context, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
+	p.mu.RLock()
+	confirms := p.confirms
+	p.mu.RUnlock()
+
 	select {
-	case c, ok := <-p.confirms:
+	case c, ok := <-confirms:
 		if !ok {
 			// Channel closed — most likely the channel/connection died.
 			p.failed.Add(1)
