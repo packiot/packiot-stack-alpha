@@ -386,8 +386,10 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	// is a simplification that will change in Phase 4 Step 4.3 when the
 	// AMQP-consumer shim adds proper tag detection.
 	//
-	// Value coercion: sparkplug.ResolvedMetric.Value is any; the JS
-	// coerces via parseInt. We match by trying int64 → uint64 → fallthrough.
+	// Value coercion: sparkplug.ResolvedMetric.Value is any; the JS coerces
+	// via parseInt (truncating for floats, NaN→0 for non-numeric). We match
+	// that semantic by branching on the concrete type produced by the
+	// sparkplug decoder.
 	var payload int64
 	switch v := metric.Value.(type) {
 	case int64:
@@ -400,6 +402,15 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		payload = int64(v)
 	case int:
 		payload = int64(v)
+	case float64:
+		payload = int64(v) // JS parseInt truncates
+	case float32:
+		payload = int64(v)
+	case bool:
+		// JS parseInt(true) = NaN → 0; but Sparkplug booleans as counter
+		// values are almost certainly a config error worth flagging.
+		h.errors.WithLabelValues(tenant, "bool_as_counter").Inc()
+		return
 	default:
 		// Non-numeric — skip, count as error for observability.
 		h.errors.WithLabelValues(tenant, "non_numeric_value").Inc()
