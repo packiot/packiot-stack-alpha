@@ -207,6 +207,44 @@ The architectural takeaway for Phase 2: **subscriber-per-tenant is embarrassingl
 - Parity validation against **real captured factory payloads** (the Go-encoded-then-JS-decoded direction is proven; the JS-encoded-then-Go-decoded direction is the same wire spec; real factory bytes still need capture)
 - GC-pressure characterization under sustained load (24h soak with pprof memory profiling)
 
+---
+
+## Phase 2 progress — MQTT subscriber scaffold (2026-06-30, same PR)
+
+Shipped `internal/mqtt/` scaffold following the internal/amqp/consumer.go shape per ADR-0009 reuse rule:
+
+- `subscriber.go` — `Subscriber` type with paho.mqtt.golang client lifecycle, reconnect-with-backoff (delegated to paho's AutoReconnect + our OnConnectionLost handler), atomic counters, `/health`-JSON `SnapshotJSON` method, Prometheus hooks via `SetMetrics`
+- `Topic` struct + `ParseTopic()` — canonicalizes the Sparkplug B topic pattern `spBv1.0/<GroupID>/<MessageType>/<EdgeNodeID>[/<DeviceID>]`
+- `Config` + `DefaultConfig()` — Sparkplug-spec-friendly defaults (QoS 0, KeepAlive 30s, clean session enforced)
+- `Handler` signature — receives parsed topic + raw body; called for every message; nil-safe
+
+**Tests** (7 pass in default `go test`):
+- `TestParseTopic` — 7 subtests (node-level NDATA, device-level DDATA, NBIRTH, wrong namespace, too few parts, too many parts, empty)
+- `TestDefaultConfig` — spec-friendly defaults locked in
+- `TestSubscriberSnapshotShape` — /health JSON keys documented
+- `TestSubscriberHandlerNilSafe` — nil handler is no-op contract
+- `TestSubscriberRunRejectsBadConfig` — Run precondition checks
+- `Example_wiring` — runnable documentation showing MQTT body → sparkplug.Decode → dispatch by MessageType (NBIRTH/DBIRTH build alias table; NDATA/DDATA resolve aliases; NDEATH/DDEATH invalidate the table)
+
+**Dependency**: `github.com/eclipse/paho.mqtt.golang@v1.5.1` (canonical Go MQTT client, Eclipse-hosted, active).
+
+**Not yet in scope (Phase 2 remaining, next PR)**:
+
+- Wire the subscriber into `main.go` under an errgroup goroutine alongside the AMQP consumer
+- Per-tenant config from `client.yaml` (open Q1) — how many brokers per factory, TLS settings per broker
+- AWS Secrets Manager credential fetching (mirrors the AMQP consumer's `secrets` package pattern)
+- Sparkplug alias-table state machine (per-publisher table indexed by `(GroupID, EdgeNodeID, DeviceID)`, rebuilt on NBIRTH, invalidated on NDEATH — open Q3)
+- Integration test with a local mosquitto container (behind `mqtt_integration` build tag)
+- Shadow-mode plumbing that publishes the decoded normalized envelope to the same `edge.plc-normalized.<tenant>` exchange that Phase 2.5b's Node-RED publisher produces — enables ADR-0008-style comparator validation
+
+**Architectural decisions locked in via the scaffold**:
+
+1. **Clean-session MQTT** — Sparkplug B requires it. Persistent sessions would fight the broker's retained-message semantics.
+2. **QoS 0 default** — Sparkplug spec's convention for DATA messages. Higher QoS would double-count.
+3. **`TopicFilterAll = "spBv1.0/+/+/+/+"`** as the default subscription — matches every Sparkplug message. Downstream Handler decides what to process.
+4. **Per-publisher alias-table state lives in the Handler, not the Subscriber** — the Subscriber is a dumb pipe. Handler owns the state machine. Justifies the per-tenant subscriber sharding described in Phase 1's parallel benchmark analysis.
+5. **Handler errors don't propagate to the broker** — no "nack" in QoS 0. Errors are logged + counted; broker doesn't retry. This is Sparkplug B's contract; if we need retry, that's a downstream concern (DLX on the RMQ egress).
+
 ### Why this seam, not others
 
 Alternatives considered:
