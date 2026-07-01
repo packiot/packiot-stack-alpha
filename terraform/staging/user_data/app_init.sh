@@ -433,7 +433,7 @@ if aws secretsmanager describe-secret \
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
     "http://127.0.0.1:15672/api/permissions/%2F/$ET_USER" \
     -H "Content-Type: application/json" \
-    -d '{"configure":"^(edge-transformer.*|outbox.*)$","write":"^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*)$","read":"^(edge\\.plc-normalized|dlx\\.edge\\.plc-normalized|edge-transformer.*|outbox.*)$"}'
+    -d '{"configure":"^(edge-transformer.*|outbox.*)$","write":"^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$","read":"^(edge\\.plc-normalized|dlx\\.edge\\.plc-normalized|edge-transformer.*|outbox.*|oee)$"}'
 
   echo "RabbitMQ user '$ET_USER' created with edge-transformer least-priv perms"
 
