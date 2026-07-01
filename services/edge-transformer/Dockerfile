@@ -23,10 +23,19 @@ RUN CGO_ENABLED=0 GOOS=linux GOMAXPROCS=1 go build \
     -p=1 -trimpath -ldflags "-s -w" \
     -o /out/edge-transformer ./cmd/edge-transformer
 
+# Intermediate stage: create the outbox directory with nonroot ownership.
+# Docker's named-volume mount copies file+dir OWNERSHIP from the container
+# image if the volume is empty at first mount. Without this step, the
+# volume gets root-owned + nonroot user can't write the SQLite DB.
+# ADR-0011 P2 outbox lives here.
+FROM alpine AS outbox-dir
+RUN mkdir -p /out/var/lib/edge-transformer && chown -R 65532:65532 /out/var/lib
+
 # Distroless `static` image: binary + ca-certs + non-root user. No shell,
 # no package manager — minimal attack surface.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/edge-transformer /usr/local/bin/edge-transformer
+COPY --from=outbox-dir /out/var/lib /var/lib
 USER nonroot:nonroot
 
 # /healthz on 9102 by default (matches HEALTH_PORT in config).
