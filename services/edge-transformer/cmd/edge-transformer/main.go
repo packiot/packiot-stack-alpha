@@ -282,6 +282,13 @@ func main() {
 			logger.Error("shadowpub: failed to open channel — MQTT disabled",
 				slog.String("err", shadowErr.Error()))
 			shadowPub = nil
+		} else {
+			// ADR-0011 P3 chaos-test fix: proactively watch NotifyClose and
+			// re-dial when RMQ goes down. Without this, the drain loop's
+			// PublishBytes returns ErrConfirmTimeout (not a connection error)
+			// and the reconnect never fires. Ships in ctx so it dies with
+			// the main errgroup on shutdown.
+			shadowPub.StartConnectionMonitor(ctx, logger)
 		}
 
 		mqttCfg := mqtt.DefaultConfig()

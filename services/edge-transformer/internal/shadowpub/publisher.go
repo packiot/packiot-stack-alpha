@@ -205,6 +205,68 @@ func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 	}, nil
 }
 
+// StartConnectionMonitor spawns a background goroutine that watches the
+// AMQP connection's NotifyClose channel and proactively reconnects when
+// the broker drops the connection. Should be called ONCE after New().
+// Returns immediately; the goroutine dies when ctx is cancelled.
+//
+// This is the load-bearing fix for the ADR-0011 P3 chaos test: without
+// this, an RMQ 'docker stop' silently kills the channel, publishes
+// error out via ErrConfirmTimeout (which isn't a connection error), and
+// the outbox drain never recovers. With this, NotifyClose fires the
+// moment TCP closes, triggering an immediate reconnect attempt loop.
+func (p *Publisher) StartConnectionMonitor(ctx context.Context, logger *slog.Logger) {
+	go p.connectionMonitor(ctx, logger)
+}
+
+func (p *Publisher) connectionMonitor(ctx context.Context, logger *slog.Logger) {
+	backoff := 500 * time.Millisecond
+	const backoffCap = 15 * time.Second
+
+	for {
+		p.mu.RLock()
+		conn := p.conn
+		p.mu.RUnlock()
+		if conn == nil {
+			// No live conn — try to reconnect after backoff.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if err := p.reconnect(logger); err != nil {
+				if logger != nil {
+					logger.Warn("shadowpub: reconnect attempt failed — will retry",
+						slog.String("err", err.Error()),
+						slog.Duration("next_backoff", backoff))
+				}
+				if backoff *= 2; backoff > backoffCap {
+					backoff = backoffCap
+				}
+				continue
+			}
+			backoff = 500 * time.Millisecond // reset on success
+			continue
+		}
+
+		notifyClose := conn.NotifyClose(make(chan *amqp.Error, 1))
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-notifyClose:
+			if err != nil && logger != nil {
+				logger.Warn("shadowpub: connection closed — will reconnect",
+					slog.String("err", err.Error()))
+			}
+			// Nil out conn so next iteration triggers a reconnect.
+			p.mu.Lock()
+			p.conn = nil
+			p.ch = nil
+			p.mu.Unlock()
+		}
+	}
+}
+
 // reconnect closes the current AMQP connection + channel and re-opens
 // them. Under the wlock — concurrent PublishBytes callers block until
 // reconnect completes.
