@@ -120,6 +120,31 @@ jobs:
           done
           echo "All critical services healthy."
 
+      - name: Inject synthetic Sparkplug counter (ADR-0010 Phase 3 E2E)
+        # Publishes NBIRTH + NDATA against mosquitto, then scrapes /metrics
+        # so we can prove the Calc port ran. Runs BEFORE inspect so the
+        # inspect step's /metrics output reflects the inject.
+        # continue-on-error so an inject hiccup doesn't fail the deploy.
+        continue-on-error: true
+        run: |
+          set -x
+          docker run --rm \
+            -v "$PWD/services/edge-transformer:/src" \
+            -w /src \
+            -e CGO_ENABLED=0 -e GOOS=linux \
+            golang:1.24-alpine \
+            go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
+
+          docker run --rm \
+            --network stack_packiot-net \
+            -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+            alpine:3.20 \
+            /app/inject --broker tcp://mosquitto:1883 --value 100
+
+          rm -f services/edge-transformer/inject-counter-fixture
+          echo "Waiting 3s for edge-transformer to process..."
+          sleep 3
+
       - name: Inspect edge-transformer post-deploy
         # Diagnostic step — verifies env vars, log tail, healthcheck exit,
         # and Prometheus metrics scoped to Calc port + MQTT subscriber. Runs
