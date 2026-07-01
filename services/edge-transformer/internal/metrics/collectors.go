@@ -95,3 +95,140 @@ func (c *shadowCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.CounterValue, float64(v), tenant)
 	}
 }
+
+// ── ADR-0011 P1: MQTT subscriber + shadow publisher + sparkplug state ───────
+//
+// These collectors follow the same "snapshot function passed as closure"
+// pattern above so the metrics package stays decoupled from the
+// mqtt/shadowpub/sparkplug packages (no cycles).
+
+// MQTTSubscriberSnapshot is what the subscriber must produce for scrape.
+// Fields map 1:1 to the atomic counters + connected flag on mqtt.Subscriber.
+type MQTTSubscriberSnapshot struct {
+	Received     uint64
+	Handled      uint64
+	HandleErrors uint64
+	Reconnects   uint64
+	Dropped      uint64 // ADR-0011 P1 — queue-full drops
+	Connected    bool
+}
+
+// RegisterMQTTSubscriberCollector emits the MQTT-layer counters + connection
+// gauge. Kept parallel to the amqp consumer collector so operator dashboards
+// can flip between them without re-learning label conventions.
+func (m *Metrics) RegisterMQTTSubscriberCollector(snap func() MQTTSubscriberSnapshot) {
+	m.Registry.MustRegister(&mqttSubscriberCollector{
+		snap:         snap,
+		received:     prometheus.NewDesc("edge_transformer_mqtt_received_total", "Messages received from the MQTT broker (before Handler).", nil, nil),
+		handled:      prometheus.NewDesc("edge_transformer_mqtt_handled_total", "Messages that the Handler processed successfully.", nil, nil),
+		handleErrors: prometheus.NewDesc("edge_transformer_mqtt_handle_errors_total", "Messages the Handler returned an error for OR unparseable topics.", nil, nil),
+		reconnects:   prometheus.NewDesc("edge_transformer_mqtt_reconnects_total", "Broker reconnect events (paho AutoReconnect + our OnConnectionLost handler).", nil, nil),
+		dropped:      prometheus.NewDesc("edge_transformer_mqtt_dropped_total", "Messages dropped because the bounded ingestion queue was full (ADR-0011 rule 5).", []string{"reason"}, nil),
+		connected:    prometheus.NewDesc("edge_transformer_mqtt_connected", "1 if the subscriber is currently connected to the broker, 0 otherwise.", nil, nil),
+	})
+}
+
+type mqttSubscriberCollector struct {
+	snap                                                       func() MQTTSubscriberSnapshot
+	received, handled, handleErrors, reconnects, dropped, connected *prometheus.Desc
+}
+
+func (c *mqttSubscriberCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.received
+	ch <- c.handled
+	ch <- c.handleErrors
+	ch <- c.reconnects
+	ch <- c.dropped
+	ch <- c.connected
+}
+
+func (c *mqttSubscriberCollector) Collect(ch chan<- prometheus.Metric) {
+	s := c.snap()
+	ch <- prometheus.MustNewConstMetric(c.received, prometheus.CounterValue, float64(s.Received))
+	ch <- prometheus.MustNewConstMetric(c.handled, prometheus.CounterValue, float64(s.Handled))
+	ch <- prometheus.MustNewConstMetric(c.handleErrors, prometheus.CounterValue, float64(s.HandleErrors))
+	ch <- prometheus.MustNewConstMetric(c.reconnects, prometheus.CounterValue, float64(s.Reconnects))
+	ch <- prometheus.MustNewConstMetric(c.dropped, prometheus.CounterValue, float64(s.Dropped), "queue_full")
+	var connected float64
+	if s.Connected {
+		connected = 1
+	}
+	ch <- prometheus.MustNewConstMetric(c.connected, prometheus.GaugeValue, connected)
+}
+
+// ShadowPublisherSnapshot is the ADR-0011 P0-1 shadowpub view for scrape.
+type ShadowPublisherSnapshot struct {
+	Published       uint64
+	Confirmed       uint64
+	Nacked          uint64
+	ConfirmTimeouts uint64
+	Failed          uint64
+	InFlight        uint64
+}
+
+// RegisterShadowPublisherCollector exposes the publisher-confirms counters
+// (ADR-0011 P0-1). The nacked / confirmTimeout counters are the alerting
+// primary — nack in particular indicates broker resource alarm.
+func (m *Metrics) RegisterShadowPublisherCollector(snap func() ShadowPublisherSnapshot) {
+	m.Registry.MustRegister(&shadowPublisherCollector{
+		snap:            snap,
+		published:       prometheus.NewDesc("edge_transformer_shadowpub_published_total", "Messages published to RabbitMQ (may or may not be broker-confirmed).", nil, nil),
+		confirmed:       prometheus.NewDesc("edge_transformer_shadowpub_confirmed_total", "Messages the broker basic.acked (ADR-0011 P0-1).", nil, nil),
+		nacked:          prometheus.NewDesc("edge_transformer_shadowpub_nacked_total", "Messages the broker basic.nacked — check RabbitMQ resource alarms.", nil, nil),
+		confirmTimeouts: prometheus.NewDesc("edge_transformer_shadowpub_confirm_timeouts_total", "Messages the broker didn't confirm within ConfirmTimeout.", nil, nil),
+		failed:          prometheus.NewDesc("edge_transformer_shadowpub_failed_total", "PublishWithContext-level failures (network, channel closed).", nil, nil),
+		inFlight:        prometheus.NewDesc("edge_transformer_shadowpub_in_flight", "In-flight messages: published minus confirmed. Growing = broker slow.", nil, nil),
+	})
+}
+
+type shadowPublisherCollector struct {
+	snap                                                          func() ShadowPublisherSnapshot
+	published, confirmed, nacked, confirmTimeouts, failed, inFlight *prometheus.Desc
+}
+
+func (c *shadowPublisherCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.published
+	ch <- c.confirmed
+	ch <- c.nacked
+	ch <- c.confirmTimeouts
+	ch <- c.failed
+	ch <- c.inFlight
+}
+
+func (c *shadowPublisherCollector) Collect(ch chan<- prometheus.Metric) {
+	s := c.snap()
+	ch <- prometheus.MustNewConstMetric(c.published, prometheus.CounterValue, float64(s.Published))
+	ch <- prometheus.MustNewConstMetric(c.confirmed, prometheus.CounterValue, float64(s.Confirmed))
+	ch <- prometheus.MustNewConstMetric(c.nacked, prometheus.CounterValue, float64(s.Nacked))
+	ch <- prometheus.MustNewConstMetric(c.confirmTimeouts, prometheus.CounterValue, float64(s.ConfirmTimeouts))
+	ch <- prometheus.MustNewConstMetric(c.failed, prometheus.CounterValue, float64(s.Failed))
+	ch <- prometheus.MustNewConstMetric(c.inFlight, prometheus.GaugeValue, float64(s.InFlight))
+}
+
+// SparkplugSeqGap is a single observed sequence-number gap from a Sparkplug
+// publisher. Emitted by StateStore.OnSeqGap; kept as a per-observation
+// event rather than a running counter so we don't lose per-publisher
+// visibility to label cardinality.
+//
+// The subscriber wires OnSeqGap → SparkplugGaps counter increment. This
+// struct isn't exposed as a metric directly.
+type SparkplugSeqGap struct {
+	GroupID    string
+	EdgeNodeID string
+	DeviceID   string
+	Expected   uint64
+	Got        uint64
+}
+
+// NewSparkplugGapsCounter returns the labeled counter for sequence gaps.
+// Main.go wires the seq-gap callback → this counter's Inc(). Labels are
+// bounded per factory (dozens of edges × dozens of devices) so cardinality
+// stays sane.
+func (m *Metrics) NewSparkplugGapsCounter() *prometheus.CounterVec {
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "edge_transformer_sparkplug_seq_gaps_total",
+		Help: "Sparkplug sequence-number gaps observed per publisher — indicates messages were lost at the broker or between broker and subscriber.",
+	}, []string{"group_id", "edge_node_id", "device_id"})
+	m.Registry.MustRegister(c)
+	return c
+}
