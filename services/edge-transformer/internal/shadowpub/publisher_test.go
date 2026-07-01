@@ -6,9 +6,17 @@
 package shadowpub
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
@@ -164,4 +172,132 @@ func TestMessageIDUnique(t *testing.T) {
 		}
 		seen[id] = true
 	}
+}
+
+// ── ADR-0011 rule 1: publisher confirms + observable failure ─────────────────
+//
+// waitConfirm is unit-testable in isolation: we control the confirms channel
+// + the deadline + the context. Each terminal state (ack / nack / timeout /
+// ctx.Cancel) must produce the right typed error + increment the right
+// counter. Silent success is a bug per ADR-0011 rule 5.
+
+// newTestPublisher builds a Publisher that isn't connected to a real broker.
+// waitConfirm only reads from p.confirms and touches counters — no AMQP.
+func newTestPublisher() *Publisher {
+	return &Publisher{
+		logger:         slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		ConfirmTimeout: 100 * time.Millisecond,
+		confirms:       make(chan amqp.Confirmation, 4),
+	}
+}
+
+func TestWaitConfirmAck(t *testing.T) {
+	p := newTestPublisher()
+	go func() { p.confirms <- amqp.Confirmation{DeliveryTag: 1, Ack: true} }()
+
+	if err := p.waitConfirm(context.Background(), p.ConfirmTimeout); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if p.ConfirmedCount() != 1 {
+		t.Errorf("ConfirmedCount: got %d, want 1", p.ConfirmedCount())
+	}
+	if p.NackedCount() != 0 || p.ConfirmTimeoutCount() != 0 {
+		t.Errorf("unexpected side effects: nacked=%d timeout=%d",
+			p.NackedCount(), p.ConfirmTimeoutCount())
+	}
+}
+
+func TestWaitConfirmNackReturnsTypedError(t *testing.T) {
+	p := newTestPublisher()
+	go func() { p.confirms <- amqp.Confirmation{DeliveryTag: 1, Ack: false} }()
+
+	err := p.waitConfirm(context.Background(), p.ConfirmTimeout)
+	if !errors.Is(err, ErrPublishNacked) {
+		t.Fatalf("want ErrPublishNacked, got %v", err)
+	}
+	if p.NackedCount() != 1 {
+		t.Errorf("NackedCount: got %d, want 1", p.NackedCount())
+	}
+	if p.ConfirmedCount() != 0 {
+		t.Errorf("ConfirmedCount should not advance on nack")
+	}
+}
+
+func TestWaitConfirmTimeoutReturnsTypedError(t *testing.T) {
+	p := newTestPublisher()
+	// deliberately DON'T send anything to p.confirms
+	err := p.waitConfirm(context.Background(), 20*time.Millisecond)
+	if !errors.Is(err, ErrConfirmTimeout) {
+		t.Fatalf("want ErrConfirmTimeout, got %v", err)
+	}
+	if p.ConfirmTimeoutCount() != 1 {
+		t.Errorf("ConfirmTimeoutCount: got %d, want 1", p.ConfirmTimeoutCount())
+	}
+}
+
+func TestWaitConfirmCtxCancel(t *testing.T) {
+	p := newTestPublisher()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	err := p.waitConfirm(ctx, 500*time.Millisecond)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	// Neither ack nor timeout should have been counted
+	if p.ConfirmedCount() != 0 || p.ConfirmTimeoutCount() != 0 {
+		t.Errorf("cancel counted as ack/timeout: confirmed=%d timeout=%d",
+			p.ConfirmedCount(), p.ConfirmTimeoutCount())
+	}
+}
+
+func TestWaitConfirmClosedChannelSurfaced(t *testing.T) {
+	p := newTestPublisher()
+	close(p.confirms)
+	err := p.waitConfirm(context.Background(), 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("closed confirms channel should surface an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "confirms channel closed") {
+		t.Errorf("unexpected error text: %v", err)
+	}
+	if p.FailedCount() != 1 {
+		t.Errorf("FailedCount: got %d, want 1", p.FailedCount())
+	}
+}
+
+// TestCounterGettersReflectAtomicWrites is a smoke test that the atomic
+// getters return live counter values — future refactors can drift these
+// out of sync trivially without noticing.
+func TestCounterGettersReflectAtomicWrites(t *testing.T) {
+	p := newTestPublisher()
+	p.published.Add(3)
+	p.confirmed.Add(2)
+	p.nacked.Add(1)
+	p.confirmTimeouts.Add(4)
+	p.failed.Add(5)
+
+	if got, want := p.PublishedCount(), uint64(3); got != want {
+		t.Errorf("PublishedCount: got %d, want %d", got, want)
+	}
+	if got, want := p.ConfirmedCount(), uint64(2); got != want {
+		t.Errorf("ConfirmedCount: got %d, want %d", got, want)
+	}
+	if got, want := p.NackedCount(), uint64(1); got != want {
+		t.Errorf("NackedCount: got %d, want %d", got, want)
+	}
+	if got, want := p.ConfirmTimeoutCount(), uint64(4); got != want {
+		t.Errorf("ConfirmTimeoutCount: got %d, want %d", got, want)
+	}
+	if got, want := p.FailedCount(), uint64(5); got != want {
+		t.Errorf("FailedCount: got %d, want %d", got, want)
+	}
+
+	// Silence the atomic-import ambient hazard: this test WILL fail to
+	// compile if atomic is somehow shadowed, but we don't otherwise use it
+	// directly at the test level (we access counters through the atomic
+	// fields inside Publisher above).
+	_ = atomic.Uint64{}
 }

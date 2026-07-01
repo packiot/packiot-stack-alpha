@@ -314,12 +314,38 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 		// DATA — publish per-metric envelopes to edge.plc-normalized.<tenant>
 		// for ADR-0008 comparator validation. If shadowpub failed to
 		// initialize, fall back to log-only mode.
+		//
+		// ADR-0011 rule 1 + rule 5: publisher confirms are on. Distinguish
+		// the failure modes explicitly so ops sees the CAUSE, not just "publish
+		// failed". Silent loss is a bug; loss with a typed alert is acceptable.
 		if publisher != nil {
 			if err := publisher.Publish(ctx, resolved); err != nil {
-				logger.Warn("shadowpub: publish failed",
-					slog.String("publisher", key.String()),
-					slog.String("err", err.Error()))
-				// don't fail the handler — keep alias table cursor advancing
+				switch {
+				case errors.Is(err, shadowpub.ErrPublishNacked):
+					// RabbitMQ actively refused — usually resource alarm
+					// (memory or disk). Ops should check RMQ status.
+					logger.Error("shadowpub: RabbitMQ NACKED message",
+						slog.String("publisher", key.String()),
+						slog.String("action", "check RabbitMQ resource alarms"),
+						slog.String("err", err.Error()))
+				case errors.Is(err, shadowpub.ErrConfirmTimeout):
+					// Broker didn't answer in time — likely slow-write under
+					// load or connection wobble. Broker may still commit;
+					// message state is ambiguous.
+					logger.Warn("shadowpub: RabbitMQ confirm timeout",
+						slog.String("publisher", key.String()),
+						slog.String("state", "ambiguous — RMQ may have committed"),
+						slog.String("err", err.Error()))
+				default:
+					// Other errors (marshal, channel-closed, ctx.Cancel, etc.)
+					logger.Warn("shadowpub: publish failed",
+						slog.String("publisher", key.String()),
+						slog.String("err", err.Error()))
+				}
+				// Don't fail the handler — keep alias table cursor advancing.
+				// The failure IS observable via metrics + logs (ADR-0011).
+				// ADR-0011 P2 will add a local outbox for the retry-and-persist
+				// case; this MVP just surfaces the failure loud + moves on.
 			}
 		}
 		logger.Info("sparkplug: data decoded",

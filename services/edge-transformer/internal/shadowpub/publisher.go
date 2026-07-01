@@ -16,12 +16,20 @@
 // normalizer that Phase 2.5b hard-coded as an inline const. For shadow-mode
 // the comparator can ignore that field or match on metric name instead.
 //
-// SPIKE STATUS (ADR-0010 Phase 2 follow-up):
-// This is a working publisher but not yet fanned out per-tenant with
-// per-tenant credentials + retry topology. Uses the same AMQP creds as the
-// consumer (both talk to the same broker). Retries + DLX + dead-letter
-// routing are deferred until the shadow path proves useful for the
-// comparator use case.
+// STATUS (ADR-0010 Phase 2 + ADR-0011 P0-1):
+// This publisher runs in AMQP confirm-select mode (ADR-0011 rule 1). Every
+// PublishWithContext is followed by a wait for the broker's basic.ack. If
+// the broker nacks or fails to confirm within ConfirmTimeout, Publish
+// returns a typed error (ErrPublishNacked / ErrConfirmTimeout) so callers
+// can distinguish "broker rejected" from "broker slow" — both are visible
+// via counters + logs. Silent loss is impossible: either RabbitMQ took the
+// message, or the caller learns of the failure.
+//
+// What's still deferred (later ADR-0011 phases):
+//   - Local disk outbox for the retry-and-persist case (P2)
+//   - In-process retry loop with bounded exponential backoff on nack (P1)
+//   - Per-tenant credentials via AWS Secrets Manager (Phase 2 follow-up)
+//   - Prometheus metrics wired directly (currently counter-getters only)
 package shadowpub
 
 import (
@@ -29,6 +37,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -88,9 +97,34 @@ type Payload struct {
 	SourceMetricName  string `json:"source_metric_name,omitempty"` // full Sparkplug topic
 }
 
+// DefaultConfirmTimeout is how long we wait for RabbitMQ to ack a publish
+// before declaring it lost. ADR-0011 open-question default. Longer than a
+// typical WAN round-trip; shorter than a stuck-broker interval.
+const DefaultConfirmTimeout = 5 * time.Second
+
+// Errors surfaced by Publish. Callers can distinguish nack (RabbitMQ said no)
+// from timeout (RabbitMQ said nothing) — matters for the operator triage.
+var (
+	// ErrPublishNacked is returned when RabbitMQ actively refused the message
+	// via basic.nack. Retries may not help — inspect the broker + resource
+	// alarms (memory/disk) before re-publishing.
+	ErrPublishNacked = errors.New("shadowpub: RabbitMQ nacked publish")
+
+	// ErrConfirmTimeout is returned when RabbitMQ didn't confirm within
+	// the configured deadline. Common causes: broker slow-write under load,
+	// network wobble, broker restart in progress.
+	ErrConfirmTimeout = errors.New("shadowpub: RabbitMQ confirm timeout")
+)
+
 // Publisher owns an AMQP Channel (single-writer) for shadow publishes.
 // Not goroutine-safe — callers should hold the mutex or serialize calls.
 // (In our wiring only one goroutine — the MQTT Handler — calls Publish.)
+//
+// ADR-0011 rule 1: this publisher runs in confirm-select mode. Every
+// PublishWithContext is followed by a wait for the broker's basic.ack. If
+// no ack arrives within ConfirmTimeout, or if the broker nacks, we surface
+// a typed error + increment metrics. Silent loss is impossible: either
+// RabbitMQ took the message, or the caller learns of the failure.
 type Publisher struct {
 	conn     *amqp.Connection
 	ch       *amqp.Channel
@@ -98,13 +132,26 @@ type Publisher struct {
 	instance string
 	logger   *slog.Logger
 
+	// ConfirmTimeout is the deadline for waiting on a broker ack per publish.
+	// Falls back to DefaultConfirmTimeout when zero.
+	ConfirmTimeout time.Duration
+
+	// confirms is the ordered stream of Confirmation events from the broker.
+	// The library guarantees delivery-tag order matches publish order on the
+	// same channel, so we drain sequentially (one per Publish body iteration).
+	confirms chan amqp.Confirmation
+
 	// atomic counters — read by /health JSON body.
-	published atomic.Uint64
-	failed    atomic.Uint64
+	published       atomic.Uint64
+	confirmed       atomic.Uint64
+	nacked          atomic.Uint64
+	confirmTimeouts atomic.Uint64
+	failed          atomic.Uint64
 }
 
-// New opens an AMQP connection + channel and returns a Publisher ready for
-// Publish calls. Caller must Close when done.
+// New opens an AMQP connection + channel, puts the channel in confirm-select
+// mode, and returns a Publisher ready for Publish calls. Caller must Close
+// when done.
 //
 // amqpURL is the same shape amqp.Consumer uses (built from Secrets).
 // exchange is typically "edge.plc-normalized" (matches Phase 2.5b topology).
@@ -118,16 +165,29 @@ func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 		conn.Close()
 		return nil, fmt.Errorf("shadowpub: channel: %w", err)
 	}
+	// ADR-0011 rule 1 — enable AMQP confirm-select mode. Without this,
+	// PublishWithContext returns nil the moment the message leaves our TCP
+	// socket, whether or not RabbitMQ received it. Silent loss.
+	if err := ch.Confirm(false); err != nil {
+		_ = ch.Close()
+		_ = conn.Close()
+		return nil, fmt.Errorf("shadowpub: enable confirm mode: %w", err)
+	}
+	// Buffer of 64 is well above our sequential publish rate but small
+	// enough to serve as a bounded queue if the broker's ack stream stalls.
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 64))
 	instance, _ := os.Hostname()
 	if instance == "" {
 		instance = "edge-transformer"
 	}
 	return &Publisher{
-		conn:     conn,
-		ch:       ch,
-		exchange: exchange,
-		instance: instance,
-		logger:   logger,
+		conn:           conn,
+		ch:             ch,
+		exchange:       exchange,
+		instance:       instance,
+		logger:         logger,
+		ConfirmTimeout: DefaultConfirmTimeout,
+		confirms:       confirms,
 	}, nil
 }
 
@@ -142,14 +202,29 @@ func (p *Publisher) Close() error {
 	return nil
 }
 
-// PublishedCount + FailedCount are read by /health snapshots.
-func (p *Publisher) PublishedCount() uint64 { return p.published.Load() }
-func (p *Publisher) FailedCount() uint64    { return p.failed.Load() }
+// Counter getters — read by /health snapshots.
+// PublishedCount is the count of publishes sent to the broker (may or may
+// not be confirmed). ConfirmedCount is the subset that RabbitMQ acked.
+// The gap between them is the "in flight" set at any given moment.
+func (p *Publisher) PublishedCount() uint64       { return p.published.Load() }
+func (p *Publisher) ConfirmedCount() uint64       { return p.confirmed.Load() }
+func (p *Publisher) NackedCount() uint64          { return p.nacked.Load() }
+func (p *Publisher) ConfirmTimeoutCount() uint64  { return p.confirmTimeouts.Load() }
+func (p *Publisher) FailedCount() uint64          { return p.failed.Load() }
 
 // Publish fans out a ResolvedPayload into per-metric envelopes and publishes
-// each to edge.plc-normalized.<tenant>. Errors on the first publish failure —
-// remaining metrics in the batch are NOT retried by this call (upstream
-// caller decides retry semantics).
+// each to edge.plc-normalized.<tenant>, awaiting broker confirms per publish.
+//
+// Errors on the first publish failure — remaining metrics in the batch are
+// NOT retried by this call (upstream caller decides retry semantics; ADR-0011
+// Phase 3 will add a local outbox for the retry-and-persist case).
+//
+// Semantics (ADR-0011 rule 1):
+//   - PublishWithContext succeeds → count as published + wait for confirm
+//   - Confirm arrives with Ack=true → count as confirmed + advance
+//   - Confirm arrives with Ack=false → count as nacked + return ErrPublishNacked
+//   - No confirm within ConfirmTimeout → count as timeout + return ErrConfirmTimeout
+//   - ctx cancelled during wait → return ctx.Err()
 //
 // Tenant is derived from the publisher key's GroupID (lowercased). This
 // matches the Phase 2.5b publisher's env-var-driven CLIENT_TENANT_ID default
@@ -161,6 +236,11 @@ func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPay
 	now := time.Now().UTC()
 	sourceTs := time.Unix(0, int64(resolved.Timestamp)*int64(time.Millisecond)).UTC().Format(rfc3339Millis)
 	ingestedAt := now.Format(rfc3339Millis)
+
+	timeout := p.ConfirmTimeout
+	if timeout <= 0 {
+		timeout = DefaultConfirmTimeout
+	}
 
 	for _, m := range resolved.Metrics {
 		env := BuildEnvelope(EnvelopeInput{
@@ -190,8 +270,42 @@ func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPay
 			return fmt.Errorf("shadowpub: publish %s: %w", routingKey, err)
 		}
 		p.published.Add(1)
+
+		// Wait for the broker's ack. Confirms arrive in delivery-tag order
+		// on the same channel, so a sequential drain matches our sequential
+		// publish loop.
+		if err := p.waitConfirm(ctx, timeout); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// waitConfirm blocks on the next confirmation. Returns nil on Ack, typed
+// errors on Nack / timeout / ctx cancel.
+func (p *Publisher) waitConfirm(ctx context.Context, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case c, ok := <-p.confirms:
+		if !ok {
+			// Channel closed — most likely the channel/connection died.
+			p.failed.Add(1)
+			return fmt.Errorf("shadowpub: confirms channel closed")
+		}
+		if !c.Ack {
+			p.nacked.Add(1)
+			return ErrPublishNacked
+		}
+		p.confirmed.Add(1)
+		return nil
+	case <-timer.C:
+		p.confirmTimeouts.Add(1)
+		return ErrConfirmTimeout
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // EnvelopeInput is the pure-function seam used by BuildEnvelope. Isolated
