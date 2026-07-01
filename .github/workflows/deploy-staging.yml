@@ -276,20 +276,22 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          # Fetch prod credentials from AWS Secrets Manager
-          PROD_SECRET=$(aws secretsmanager get-secret-value --secret-id databaseCredentials --query SecretString --output text 2>/dev/null)
-          if [ -z "$PROD_SECRET" ]; then
-            echo "(cannot fetch databaseCredentials from Secrets Manager — skipping prod audit)"
+          # Fetch prod credentials from AWS Secrets Manager. Field names
+          # documented in services/mirror-worker-go/internal/secrets/secrets.go:
+          #   databaseCredentials → { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME }
+          PROD_SECRET=$(aws secretsmanager get-secret-value --secret-id databaseCredentials --query SecretString --output text 2>&1)
+          if [ -z "$PROD_SECRET" ] || echo "$PROD_SECRET" | grep -qE "error|not found|denied|Unable"; then
+            echo "(cannot fetch databaseCredentials from Secrets Manager: $PROD_SECRET — skipping)"
             exit 0
           fi
-          PROD_HOST=$(echo "$PROD_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin).get('host',''))")
-          PROD_USER=$(echo "$PROD_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin).get('username','') or json.load(open('/dev/stdin')).get('user',''))" 2>/dev/null)
-          if [ -z "$PROD_USER" ]; then
-            PROD_USER=$(echo "$PROD_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin).get('user',''))")
-          fi
-          PROD_PASS=$(echo "$PROD_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin).get('password',''))")
-          PROD_DB=$(echo "$PROD_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin).get('database',''))")
-          PROD_PORT=$(echo "$PROD_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin).get('port','5432'))")
+          # pick() equivalent — try each variant of the field name.
+          PICK() { echo "$PROD_SECRET" | python3 -c "import json,sys; d=json.load(sys.stdin); [print(d[k]) for k in [$1] if k in d and d[k]][:1]"; }
+          PROD_HOST=$(PICK "'DB_HOST','host'")
+          PROD_USER=$(PICK "'DB_USER','user','username'")
+          PROD_PASS=$(PICK "'DB_PASSWORD','password'")
+          PROD_DB=$(PICK "'DB_NAME','database','dbname'")
+          PROD_PORT=$(PICK "'DB_PORT','port'")
+          [ -z "$PROD_PORT" ] && PROD_PORT=5432
 
           if [ -z "$PROD_HOST" ] || [ -z "$PROD_PASS" ]; then
             echo "(prod credentials incomplete — skipping)"
