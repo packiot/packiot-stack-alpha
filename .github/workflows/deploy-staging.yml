@@ -242,7 +242,7 @@ jobs:
           $PSQL -c "SELECT n.nspname||'.'||c.relname AS name, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS kind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','v','m') AND (c.relname ILIKE '%powerbi%' OR c.relname ILIKE '%report%' OR c.relname ILIKE '%export%' OR c.relname ILIKE '%bi_%' OR c.relname ILIKE '%dashboard%') ORDER BY n.nspname, c.relname;"
 
           echo ""
-          echo "=== TimescaleDB hypertables (via hypertable_detailed_size) ==="
+          echo "=== TimescaleDB hypertables (via hypertable_size()) ==="
           $PSQL -c "SELECT h.hypertable_schema||'.'||h.hypertable_name AS name, h.num_chunks, pg_size_pretty(hypertable_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass)) AS size FROM timescaledb_information.hypertables h ORDER BY hypertable_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass) DESC NULLS LAST LIMIT 20;" 2>&1 | head -25
 
           echo ""
