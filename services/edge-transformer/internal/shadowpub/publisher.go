@@ -341,6 +341,34 @@ func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPay
 	return nil
 }
 
+// PublishBytes publishes an already-encoded envelope body to the given
+// routing key + message ID. Used by the outbox drainer (ADR-0011 P2) —
+// the outbox stores marshaled envelope bytes, so the drainer avoids
+// re-marshaling and just publishes the raw payload.
+//
+// Same publisher-confirm semantics as Publish: returns typed errors
+// (ErrPublishNacked, ErrConfirmTimeout) for the failure modes callers
+// need to distinguish.
+func (p *Publisher) PublishBytes(ctx context.Context, routingKey, messageID string, body []byte) error {
+	timeout := p.ConfirmTimeout
+	if timeout <= 0 {
+		timeout = DefaultConfirmTimeout
+	}
+	err := p.ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			MessageId:    messageID,
+			Body:         body,
+		})
+	if err != nil {
+		p.failed.Add(1)
+		return fmt.Errorf("shadowpub: publish %s: %w", routingKey, err)
+	}
+	p.published.Add(1)
+	return p.waitConfirm(ctx, timeout)
+}
+
 // waitConfirm blocks on the next confirmation. Returns nil on Ack, typed
 // errors on Nack / timeout / ctx cancel.
 func (p *Publisher) waitConfirm(ctx context.Context, timeout time.Duration) error {
