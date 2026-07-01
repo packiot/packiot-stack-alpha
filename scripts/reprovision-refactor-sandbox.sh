@@ -28,6 +28,7 @@ PARITY_SQL="${REPO_ROOT}/edge-node-red/db/17-hasura-metadata-parity.sql"
 POC_SQL="${REPO_ROOT}/docs/adr/reference/0012-poc-customer-dashboards.sql"
 PHASE1_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase1-renames-and-drops.sql"
 PHASE2_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase2-cagg-consolidation.sql"
+PHASE3_WRITER_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase3-writer-tables.sql"
 
 usage() {
     cat <<EOF
@@ -178,6 +179,16 @@ fi
 if ! $SKIP_PHASE2; then
     echo "[5c/5] apply Phase 2 CAgg consolidation lab..."
     apply_sql_file "$PHASE2_SQL"
+fi
+
+# Phase 3 writer-target tables — only needed on packiot_shadow (the
+# live-data POC target). The design sandbox packiot_refactor doesn't
+# receive live writes, so it doesn't need equipment_values as a real
+# table (the stub already has agg_equipment_values_1min which is enough
+# for façade + rename experiments).
+if [ "$SANDBOX_DB" = "packiot_shadow" ]; then
+    echo "[5d/5] apply Phase 3 writer-target tables (packiot_shadow only)..."
+    apply_sql_file "$PHASE3_WRITER_SQL"
 fi
 
 # --- final summary -----------------------------------------------------
