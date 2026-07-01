@@ -284,14 +284,24 @@ jobs:
             echo "(cannot fetch databaseCredentials from Secrets Manager: $PROD_SECRET — skipping)"
             exit 0
           fi
-          # pick() equivalent — try each variant of the field name.
-          PICK() { echo "$PROD_SECRET" | python3 -c "import json,sys; d=json.load(sys.stdin); [print(d[k]) for k in [$1] if k in d and d[k]][:1]"; }
-          PROD_HOST=$(PICK "'DB_HOST','host'")
-          PROD_USER=$(PICK "'DB_USER','user','username'")
-          PROD_PASS=$(PICK "'DB_PASSWORD','password'")
-          PROD_DB=$(PICK "'DB_NAME','database','dbname'")
-          PROD_PORT=$(PICK "'DB_PORT','port'")
-          [ -z "$PROD_PORT" ] && PROD_PORT=5432
+          # Extract all fields in one Python call — simpler + easier to debug.
+          # Prints KEY=value pairs; we source them into shell vars.
+          eval "$(echo "$PROD_SECRET" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+def get(*keys):
+    for k in keys:
+        if k in d and d[k]:
+            return str(d[k])
+    return ''
+print('PROD_HOST=\"' + get('DB_HOST','host') + '\"')
+print('PROD_USER=\"' + get('DB_USER','user','username') + '\"')
+print('PROD_PASS=\"' + get('DB_PASSWORD','password') + '\"')
+print('PROD_DB=\"' + get('DB_NAME','database','dbname') + '\"')
+print('PROD_PORT=\"' + (get('DB_PORT','port') or '5432') + '\"')
+print('AVAILABLE_KEYS=\"' + ','.join(sorted(d.keys())) + '\"')
+")"
+          echo "Available secret keys: $AVAILABLE_KEYS"
 
           if [ -z "$PROD_HOST" ] || [ -z "$PROD_PASS" ]; then
             echo "(prod credentials incomplete — skipping)"
