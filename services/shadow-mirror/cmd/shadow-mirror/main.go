@@ -1,0 +1,164 @@
+// shadow-mirror — polls staging user_logs and replays operator actions
+// to shadow paths so Flows 2 + 3 of the ADR-0012 POC receive the same
+// control-plane data as Flow 1.
+//
+// Phase 1 skeleton: config, dual DB pool, cursor loop, dispatcher with
+// one placeholder handler (manual-event-created — logs, no writes yet).
+// Runs but writes nothing. See ADR-0013 for the full plan.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/health"
+	logp "github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/log"
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay"
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay/handlers"
+)
+
+func main() {
+	// Distroless healthcheck subcommand (no shell in the image).
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
+	cfg := config.Load()
+	logger := logp.Setup(cfg.LogLevel)
+
+	if !cfg.Enabled {
+		logger.Info("SHADOW_MIRROR_ENABLED=false — service idle (no-op mode)")
+		// Serve /healthz + /metrics anyway so the container looks
+		// healthy from the compose healthcheck's PoV.
+		m := metrics.New()
+		serveHTTP(cfg.HealthPort, m.Handler(), logger)
+		return
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// TODO Phase 2: fetch creds from AWS Secrets Manager (packiot/staging/db).
+	// For skeleton, read from env vars — same fallback pattern as other services.
+	creds := &db.DBCreds{
+		Host:     getenv("DB_HOST", "postgres"),
+		Port:     getenvInt("DB_PORT", 5432),
+		User:     getenv("DB_USER", "postgres"),
+		Password: getenv("DB_PASSWORD", ""),
+	}
+	if creds.Password == "" {
+		logger.Error("DB_PASSWORD empty — refusing to boot with insecure creds")
+		os.Exit(1)
+	}
+
+	// Main pool: staging packiot DB. Reads user_logs, writes to shadow_go_port schema.
+	mainPool, err := db.NewPool(ctx, creds, cfg.PGDBName, "shadow-mirror-main", logger)
+	if err != nil {
+		logger.Error("main pool init failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	defer mainPool.Close()
+
+	// Shadow pool: packiot_shadow DB. Writes public schema. May be nil
+	// if PG_SHADOW_DB_NAME unset (partial degradation, per ADR-0013).
+	var shadowPool *pgxpool.Pool
+	if cfg.PGShadowDBName != "" {
+		shadowPool, err = db.NewPool(ctx, creds, cfg.PGShadowDBName, "shadow-mirror-shadow", logger)
+		if err != nil {
+			logger.Error("shadow pool init failed — running degraded (shadow_go_port only)",
+				slog.String("err", err.Error()))
+			// Non-fatal: proceed with shadowPool=nil, handlers will detect.
+		} else {
+			defer shadowPool.Close()
+		}
+	}
+
+	m := metrics.New()
+	dispatcher := replay.NewDispatcher(logger)
+	dispatcher.Register("manual-event-created", handlers.ManualEventCreatedPlaceholder(logger))
+
+	// HTTP server (health + metrics) runs alongside the loop.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", health.Handler())
+	mux.Handle("/metrics", m.Handler())
+	go func() {
+		addr := fmt.Sprintf(":%d", cfg.HealthPort)
+		logger.Info("http server", slog.String("addr", addr))
+		if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
+			logger.Error("http server error", slog.String("err", err.Error()))
+		}
+	}()
+
+	pollInterval := time.Duration(cfg.PollIntervalMs) * time.Millisecond
+	if err := replay.Loop(ctx, mainPool, shadowPool, dispatcher, m, pollInterval, cfg.BatchSize, logger); err != nil {
+		if ctx.Err() != nil {
+			logger.Info("shutting down (ctx cancelled)")
+			return
+		}
+		logger.Error("loop terminated with error", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+}
+
+func serveHTTP(port int, metricsHandler http.Handler, logger *slog.Logger) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", health.Handler())
+	mux.Handle("/metrics", metricsHandler)
+	addr := fmt.Sprintf(":%d", port)
+	logger.Info("http server (idle mode)", slog.String("addr", addr))
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		logger.Error("http server error", slog.String("err", err.Error()))
+	}
+}
+
+// runHealthcheck HTTP-probes localhost:HEALTH_PORT/healthz for the
+// docker HEALTHCHECK directive. Distroless has no shell/wget/curl.
+func runHealthcheck() int {
+	port := 9103
+	if p := os.Getenv("HEALTH_PORT"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			port = n
+		}
+	}
+	c := http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
+
+func getenv(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+func getenvInt(name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}

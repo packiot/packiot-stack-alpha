@@ -833,6 +833,59 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── shadow-mirror (ADR-0013 — control-plane parity for 3-flow POC) ────────────
+  # Polls staging.public.user_logs and replays operator actions onto
+  # the two shadow paths (shadow_go_port schema on packiot + public
+  # schema on packiot_shadow), closing the gap left by the data-plane
+  # source_type routing (which only covers equipment_values, not PO
+  # lifecycle / downtimes / operator-edited events).
+  #
+  # DEFAULT OFF (SHADOW_MIRROR_ENABLED=false). Skeleton PR ships the
+  # service compiled but idle — /metrics + /healthz serve, no writes.
+  # Flip the env to true once Phase 2 handlers land.
+  shadow-mirror:
+    build: ./services/shadow-mirror
+    container_name: shadow-mirror
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      # DEFAULT OFF — service starts but no polling happens.
+      SHADOW_MIRROR_ENABLED: "false"
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: packiot/staging/db
+      # DB creds come from the .env for skeleton; migrate to AWS
+      # Secrets Manager in Phase 2 (matches mirror-worker-go and
+      # oeecloud-worker patterns). Connects DIRECTLY to postgres
+      # (not pgbouncer) because pgbouncer's static database list
+      # doesn't include packiot_shadow — bypassing keeps the skeleton
+      # PR from having to touch pgbouncer config too.
+      DB_HOST: 10.10.10.89   # staging DB EC2 direct
+      DB_PORT: "5432"
+      # DB_USER/DB_PASSWORD sourced from .env file
+      PG_DB_NAME: packiot
+      PG_SHADOW_DB_NAME: packiot_shadow
+      POLL_INTERVAL_MS: "2000"
+      BATCH_SIZE: "100"
+      MAX_RETRIES: "5"
+      HEALTH_PORT: "9103"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.24
+    # No depends_on — service is idle by default (SHADOW_MIRROR_ENABLED=false)
+    # so it can start regardless of other services.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/shadow-mirror", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
   # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
   # over the docker network so the browser sees a single origin (no CORS).
