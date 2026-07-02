@@ -214,7 +214,5 @@ External:
 - [AWS IoT Greengrass v2 architecture overview](https://docs.aws.amazon.com/greengrass/v2/developerguide/what-is-iot-greengrass.html) — comparison reference
 
 Internal:
-- `~/notes/systems/timescaledb-continuous-aggregates.md` — current cloud OEE pipeline; what we replicate edge → cloud
-- `~/notes/systems/audit-log-replay-vs-shadow-mirror.md` — related pattern from the mirror-worker work
 - `CLAUDE.md` (repo root) — current data flow + repo map; the architecture this ADR proposes to evolve
 - `services/mirror-worker-go/docs/reconciler.md` — the multi-pass reconciliation pattern; potentially reusable shape for edge → cloud catch-up logic

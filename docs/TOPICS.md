@@ -136,7 +136,7 @@ ADR PR is SEPARATE from the implementation PR. The reviewer can question the arc
 
 ### B.8 — Zettels for non-trivial lessons
 
-Every production bug / non-obvious design discovery becomes a zettel in the team's `~/notes/` vault. Zettels capture the **pattern** (recognizable next time), not the **fix** (specific to this codebase).
+Every production bug / non-obvious design discovery is captured as a pattern. Zettels capture the **pattern** (recognizable next time), not the **fix** (specific to this codebase).
 
 Discovery → fix → zettel is the full loop. Skipping the zettel costs the team the institutional memory.
 
@@ -237,7 +237,6 @@ If you're debugging and your symptom doesn't fit any pattern above — **that's 
 - [`adr/`](./adr/) — every architectural decision
 - [`../README.md`](../README.md) — how to run the stack
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — workflow (PR gates, branch protection, deploy chain)
-- Team's `~/notes/` vault — zettelkasten of patterns (institutional memory)
 
 ---
 

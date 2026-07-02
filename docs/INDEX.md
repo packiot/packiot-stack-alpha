@@ -117,7 +117,7 @@ In [`product/`](./product/) — written for PM, CS, Sales (no engineering jargon
 
 ## 🧠 Why we did it this way (the meta)
 
-The team learns intentionally. After every significant debug or design, a zettel goes into `~/notes/` (mirrored at [brain.artemis](https://brain.artemis) for the dev who maintains the vault). The zettelkasten captures **patterns**, not solutions — making the same kind of bug easier to recognize next time.
+The team learns intentionally. After every significant debug or design, capture the pattern in a repo doc or ADR. The zettelkasten captures **patterns**, not solutions — making the same kind of bug easier to recognize next time.
 
 **Patterns most relevant to this codebase** (search the vault for):
 
