@@ -31,6 +31,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tenants"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
@@ -149,6 +150,11 @@ func main() {
 		shiftRes := shiftresolver.New(pool, 5*time.Minute, logger)
 		equipmentValuesWriter.SetShiftResolver(shiftRes)
 		logger.Info("shift resolver enabled (ADR-0014 Phase 2) — shadow paths get Go-computed shifts")
+	}
+
+	// ADR-0012 Wave 2 port #1 — customer_reports.speed writer (cust 33).
+	if cfg.Speed33ReportEnabled {
+		go reports.LoopSpeed33(ctx, pool, time.Duration(cfg.Speed33IntervalMinutes)*time.Minute, logger)
 	}
 
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
