@@ -63,6 +63,13 @@ type Config struct {
 	// during the comparator bake; retire it only after 168h of zero
 	// divergence.
 	ShiftResolverEnabled bool
+
+	// Speed33ReportEnabled — ADR-0012 Wave 2 port #1: the Go-scheduled
+	// writer for customer_reports.speed (customer 33). Legacy
+	// c33_speed_per_job_insert_into_report keeps the old table on prod;
+	// on staging this is the sole writer (legacy never scheduled here).
+	Speed33ReportEnabled  bool
+	Speed33IntervalMinutes int
 }
 
 func Load() (*Config, error) {
@@ -85,6 +92,8 @@ func Load() (*Config, error) {
 		LogLevel:         getenv("LOG_LEVEL", "info"),
 		PGShadowDBName:   getenv("POSTGRES_SHADOW_DB_NAME", ""),
 		ShiftResolverEnabled: getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
+		Speed33ReportEnabled: getenv("SPEED33_REPORT_ENABLED", "false") == "true",
+		Speed33IntervalMinutes: getenvInt("SPEED33_INTERVAL_MINUTES", 10),
 	}, nil
 }
 

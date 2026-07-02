@@ -732,6 +732,13 @@ services:
       # comparator bake — retire it only after 168h zero divergence on
       # the /d/3-flow-parity shift panel.
       SHIFT_RESOLVER_ENABLED: "true"
+      # ADR-0012 Wave 2 port #1: Go-scheduled writer for
+      # customer_reports.speed (customer 33). Sole writer on staging —
+      # the legacy procedure was never scheduled here. Bake method:
+      # one-shot CALL of the legacy procedure vs this job, diffed on
+      # id_order (see 0012-phase4-execution-plan.md Wave 2).
+      SPEED33_REPORT_ENABLED: "true"
+      SPEED33_INTERVAL_MINUTES: "10"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
