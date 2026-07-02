@@ -876,6 +876,37 @@ services:
   # DEFAULT OFF (SHADOW_MIRROR_ENABLED=false). Skeleton PR ships the
   # service compiled but idle — /metrics + /healthz serve, no writes.
   # Flip the env to true once Phase 2 handlers land.
+  # ── refdata-api ─────────────────────────────────────────────────────
+  # Task #86 Hasura retirement (Option C): the reference-read API that
+  # replaces Hasura for the REFACTORED stack (flows 2/3). Serves the
+  # exact 10-root contract enumerated from the query-log
+  # (docs/hasura-review-2026.md §Update) as plain JSON over HTTP.
+  # Flow 1 (edge-node-red) keeps the minimal Hasura as the stable
+  # alpha; new/refactored consumers point here instead. Internal-only —
+  # no public route. v1 reads the main DB via pgbouncer; flow-routing
+  # to packiot_shadow arrives with ADR-0012 Phase 4 reference data.
+  refdata-api:
+    build: ./services/refdata-api
+    container_name: refdata-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: packiot
+      HEALTH_PORT: "9104"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.26
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/refdata-api", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   shadow-mirror:
     build: ./services/shadow-mirror
     container_name: shadow-mirror
