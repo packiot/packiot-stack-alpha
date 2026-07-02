@@ -871,7 +871,7 @@ services:
       HEALTH_PORT: "9103"
     networks:
       packiot-net:
-        ipv4_address: 172.18.0.24
+        ipv4_address: 172.18.0.25
     # No depends_on — service is idle by default (SHADOW_MIRROR_ENABLED=false)
     # so it can start regardless of other services.
     healthcheck:
