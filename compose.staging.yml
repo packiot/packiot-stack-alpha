@@ -867,7 +867,10 @@ services:
       # PR from having to touch pgbouncer config too.
       DB_HOST: 10.10.10.89   # staging DB EC2 direct
       DB_PORT: "5432"
-      # DB_USER/DB_PASSWORD sourced from .env file
+      # Explicit env mapping — .env has POSTGRES_USER/POSTGRES_PASSWORD
+      # (as used by pgbouncer + edge-api), NOT DB_USER/DB_PASSWORD.
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
       PG_DB_NAME: packiot
       PG_SHADOW_DB_NAME: packiot_shadow
       POLL_INTERVAL_MS: "2000"
