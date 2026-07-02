@@ -7,6 +7,7 @@ package mqtt
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"testing"
@@ -343,3 +344,45 @@ func (m *fakePahoMessage) Topic() string     { return m.topic }
 func (m *fakePahoMessage) MessageID() uint16 { return 0 }
 func (m *fakePahoMessage) Payload() []byte   { return m.payload }
 func (m *fakePahoMessage) Ack()              {}
+
+// TestDegradedStaleThreshold covers the Config.StaleThreshold semantics:
+// 0 = default 60s, negative = idle checks disabled (staging has no MQTT
+// source — permanent-idle must not read as unhealthy), positive = custom.
+func TestDegradedStaleThreshold(t *testing.T) {
+	mk := func(threshold time.Duration) *Subscriber {
+		s := NewSubscriber(Config{StaleThreshold: threshold}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		s.connected = true
+		s.startedAt = time.Now().Add(-10 * time.Minute) // long past any grace window
+		return s
+	}
+
+	// Default (0 → 60s): 10 minutes of never-received silence is degraded.
+	if got := mk(0).Degraded(); got == "" {
+		t.Error("default threshold: want degraded after 10m idle since start, got healthy")
+	}
+
+	// Disabled (negative): same silence is healthy — idle is expected.
+	if got := mk(-1).Degraded(); got != "" {
+		t.Errorf("disabled threshold: want healthy on idle, got %q", got)
+	}
+
+	// Disabled but disconnected: connectivity still degrades.
+	s := mk(-1)
+	s.connected = false
+	if got := s.Degraded(); got == "" {
+		t.Error("disabled threshold: disconnected must still report degraded")
+	}
+
+	// Custom threshold larger than the silence window: healthy.
+	if got := mk(30 * time.Minute).Degraded(); got != "" {
+		t.Errorf("30m threshold: want healthy after 10m idle, got %q", got)
+	}
+
+	// Stale last-message age beyond a custom threshold: degraded.
+	s = mk(1 * time.Minute)
+	s.received.Store(5)
+	s.lastMessage.Store(time.Now().Add(-5 * time.Minute).UnixNano())
+	if got := s.Degraded(); got == "" {
+		t.Error("1m threshold: want degraded 5m after last message, got healthy")
+	}
+}

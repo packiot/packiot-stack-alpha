@@ -89,6 +89,11 @@ type Config struct {
 	MQTTClientID  string // must be unique per subscriber; default: edge-transformer-<hostname>
 	MQTTUsername  string
 	MQTTPassword  string
+	// MQTTStaleThresholdSeconds — seconds of MQTT silence before the
+	// subscriber reports degraded. <= 0 disables the idle checks
+	// (connection health still enforced). Staging has no live Sparkplug
+	// source — set -1 there so /healthz doesn't stay permanently red.
+	MQTTStaleThresholdSeconds int
 
 	// UseGoPort — feature flag for ADR-0010 Phase 3. When true, the
 	// calc_production_counters Go port runs in SHADOW mode: it evaluates
@@ -147,6 +152,7 @@ func Load() (*Config, error) {
 		MQTTClientID:  getenv("MQTT_CLIENT_ID", "edge-transformer"),
 		MQTTUsername:  getenv("MQTT_USERNAME", ""),
 		MQTTPassword:  getenv("MQTT_PASSWORD", ""),
+		MQTTStaleThresholdSeconds: getenvInt("MQTT_STALE_THRESHOLD_SECONDS", 60),
 
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),
