@@ -94,13 +94,26 @@ the 3 dead c35 dashboards skip straight to the contract wave.
 - Gate PASSED: 29/29 relkind parity with prod + SELECT probes green on
   all 16 recreated views + Hasura healthy (it tracks these names)
 
-### Wave 1 — expand: pool tables + backfill (1 PR per object group)
-- Create `customer_dashboards.<name>` pool tables (customer_id column,
-  composite indexes `(customer_id, <hot filter>)` per POC pattern)
-- Backfill from the per-customer tables (`INSERT … SELECT … , 33 AS
-  customer_id`)
-- Old tables stay live and written — zero consumer impact
-- Gate: presence + column-shape dimensions only (rows arrive in Wave 2)
+### Wave 1 — expand: pool tables + backfill — ✅ DONE 2026-07-02
+- `customer_reports` pool schema created with canonical tables for the
+  3 live objects: `shift` (cust 6, +(customer_id, day) index), `speed`
+  (cust 33, +(customer_id, job_start)), `sap_data_sync` (cust 13,
+  UNIQUE (customer_id, linie, tag, shicht, auftrag_key) extending
+  prod's pk_sap_sync upsert key — back4-api must target this at
+  Wave 2 cutover)
+- SQL: `0012-wave1-customer-reports-pool.sql`, idempotent, applied to
+  packiot_shadow (rehearsal) FIRST, then staging packiot
+- Rehearsal caught a real defect: packiot_shadow's Hasura-parity STUB
+  tables share names with prod report tables but not shapes — backfill
+  is now per-table fail-soft (NOTICE + skip on shape mismatch)
+- Gate PASSED both DBs: column counts = source+1 exactly (24/10/21)
+- Backfill no-op'd on staging — the per-customer sources are EMPTY
+  there (their writers were never scheduled on staging; staging cron
+  has only 4 jobs). Pool rows arrive via Wave 2 dual-write; prod
+  backfill happens at Phase 5 with real data
+- Wave 2 prep: all 9 writer function bodies captured to
+  `0012-wave2-prod-writer-funcs.sql` (8 names — get_data_sync_
+  enterprsie_06 has 2 overloads)
 
 ### Wave 2 — writer cutover (1 PR per pg_cron function)
 - Each piot4_* writer gains pool-table writes (dual-write window), old
