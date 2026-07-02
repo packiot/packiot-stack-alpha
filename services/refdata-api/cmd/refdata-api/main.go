@@ -125,6 +125,8 @@ func main() {
 	for _, ep := range endpoints {
 		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
 	}
+	registerQueryAPI(mux, pool) // ADR-0015 P1-P3
+
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
