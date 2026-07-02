@@ -113,6 +113,17 @@ var (
 		Help: "equipment_values delta INSERTs by outcome (ok|failed) during value sync.",
 	}, []string{"outcome"})
 
+	// ValueFanoutTotal — ADR-0012 3-flow parity: each delta INSERT is
+	// fanned out to shadow_go_port (same DB) + packiot_shadow (Flow 3).
+	// Shadow failures never fail the Flow 1 write (a retry would
+	// double-count the delta) — they land here as outcome=failed or
+	// outcome=missing_table instead. Silent loss is a bug (ADR-0011);
+	// alert on failed > 0.
+	ValueFanoutTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_value_fanout_total",
+		Help: "equipment_values delta fan-out to shadow destinations (ok|missing_table|failed).",
+	}, []string{"destination", "outcome"})
+
 	// ReconcilerEventsTotal — bumps once per prod equipment_event processed
 	// by the events sync. outcome=created: row inserted on staging + mapping
 	// written; outcome=skipped: equipment unmapped (no packml_register) or
@@ -277,6 +288,7 @@ func init() {
 		ReconcilerPOsTotal,
 		ReconcilerActiveDriftPOs,
 		ReconcilerValuesSyncedTotal,
+		ValueFanoutTotal,
 		ReconcilerEventsTotal,
 		ReconcilerEventsCursor,
 		DLQRetryAttemptsTotal,

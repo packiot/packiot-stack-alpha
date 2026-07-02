@@ -9,13 +9,19 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/secrets"
 )
 
 type Staging struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
+
+	// ADR-0012 3-flow parity fan-out (see InsertEquipmentValueDelta).
+	valueFanout bool
+	shadowPool  *pgxpool.Pool // packiot_shadow (Flow 3); nil = not attached
 }
 
 func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*Staging, error) {
@@ -43,7 +49,50 @@ func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger
 	return &Staging{pool: p, logger: logger}, nil
 }
 
-func (s *Staging) Close() { s.pool.Close() }
+func (s *Staging) Close() {
+	s.pool.Close()
+	if s.shadowPool != nil {
+		s.shadowPool.Close()
+	}
+}
+
+// EnableValueFanout turns on ADR-0012 3-flow fan-out: every
+// InsertEquipmentValueDelta row is also written to packiot.shadow_go_port
+// (same pool) and, when AttachShadowPool succeeded, packiot_shadow.public.
+func (s *Staging) EnableValueFanout() { s.valueFanout = true }
+
+// AttachShadowPool connects the ADR-0012 shadow DB (packiot_shadow) so
+// value fan-out reaches Flow 3. Separate pool because pgbouncer's static
+// database list doesn't include packiot_shadow — callers pass a
+// direct-to-postgres host via SHADOW_DB_HOST (same bypass shadow-mirror
+// uses).
+func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
+	sc := *creds
+	sc.Database = dbName
+	if host != "" {
+		sc.Host = host
+	}
+	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-shadow"))
+	if err != nil {
+		return fmt.Errorf("parse shadow url: %w", err)
+	}
+	pc.MaxConns = 2
+	pc.MinConns = 1
+	// Simple protocol even though this pool bypasses pgbouncer — keeps
+	// behavior uniform with the main pool.
+	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	p, err := pgxpool.NewWithConfig(ctx, pc)
+	if err != nil {
+		return fmt.Errorf("create shadow pool: %w", err)
+	}
+	if err := p.Ping(ctx); err != nil {
+		p.Close()
+		return fmt.Errorf("shadow ping: %w", err)
+	}
+	s.shadowPool = p
+	s.logger.Info("shadow pool ready", slog.String("db", dbName))
+	return nil
+}
 
 // WithTx runs fn inside a staging transaction. Commits on nil error,
 // rolls back on any error. Same shape as TS mirror-worker's withStagingTx.
@@ -354,19 +403,71 @@ func (s *Staging) FetchMappedActiveCPACKPOs(ctx context.Context, source string, 
 // Other operational columns (state, mode, speed, id_order, id_production_
 // order) intentionally left NULL — this row is a counter delta, not a
 // PLC snapshot.
+//
+// ADR-0012 3-flow fan-out: when EnableValueFanout was called, the same
+// row also goes to packiot.shadow_go_port (Flow 2) and — if
+// AttachShadowPool succeeded — packiot_shadow.public (Flow 3). The
+// timestamp is computed ONCE in Go: (ts_value, id_equipment) is the
+// parity join key across flows, and a per-statement now() would give
+// each flow a different key. Shadow failures never fail the Flow 1
+// write — a caller retry would re-insert the delta and double-count
+// production — they surface via mirror_worker_value_fanout_total +
+// warn logs instead (loss-with-alert, ADR-0011 rule 5).
 func (s *Staging) InsertEquipmentValueDelta(
 	ctx context.Context,
 	stagingEqID, stagingSiteID, stagingAreaID, enterpriseID int,
 	netDelta, grossDelta float64,
 ) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO equipment_values
-		       (id_equipment, ts_value, id_enterprise, id_site, id_area,
-		        net_production_incr, gross_production_incr)
-		 VALUES ($1, now(), $2, $3, $4, $5, $6)`,
-		stagingEqID, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta,
-	)
-	return err
+	ts := time.Now().UTC()
+	if _, err := s.pool.Exec(ctx, fmt.Sprintf(sqlInsertValueDelta, "public"),
+		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta,
+	); err != nil {
+		return err // Flow 1 is the source of truth — caller handles
+	}
+	if !s.valueFanout {
+		return nil
+	}
+	s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
+		ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta)
+	if s.shadowPool != nil {
+		s.fanoutValueDelta(ctx, s.shadowPool, "public", "packiot_shadow",
+			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta)
+	}
+	return nil
+}
+
+const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
+	       (id_equipment, ts_value, id_enterprise, id_site, id_area,
+	        net_production_incr, gross_production_incr)
+	 VALUES ($1, $2, $3, $4, $5, $6, $7)`
+
+// fanoutValueDelta writes one shadow copy of the delta row. Never
+// returns an error — outcomes land in the fan-out metric + logs.
+// 42P01 (table missing) is fail-open like shadow-mirror: deploy-order
+// independence between this service and the schema migrations.
+func (s *Staging) fanoutValueDelta(
+	ctx context.Context, pool *pgxpool.Pool, schema, destination string,
+	ts time.Time,
+	stagingEqID, stagingSiteID, stagingAreaID, enterpriseID int,
+	netDelta, grossDelta float64,
+) {
+	_, err := pool.Exec(ctx, fmt.Sprintf(sqlInsertValueDelta, schema),
+		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta)
+	if err == nil {
+		metrics.ValueFanoutTotal.WithLabelValues(destination, "ok").Inc()
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		metrics.ValueFanoutTotal.WithLabelValues(destination, "missing_table").Inc()
+		s.logger.Warn("value fan-out: target table missing — fail-open",
+			slog.String("destination", destination))
+		return
+	}
+	metrics.ValueFanoutTotal.WithLabelValues(destination, "failed").Inc()
+	s.logger.Warn("value fan-out failed",
+		slog.String("destination", destination),
+		slog.String("err", err.Error()))
 }
 
 // EnsureEventCursor seeds a mirror_replay_cursor row for the events
