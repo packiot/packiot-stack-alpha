@@ -96,10 +96,11 @@ func orderChangedOnSchema(ctx context.Context, pool *pgxpool.Pool, schema string
 	if !p.ShouldCreatePo || p.IDOrder == 0 {
 		return nil
 	}
+	// production_programmed + production_ordered both NOT NULL on prod.
 	insertSQL := fmt.Sprintf(`INSERT INTO %s.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order,
-		production_ordered, status, ts_start
-	) VALUES ($1,$2,$3,$4,$5,$6,2,$7)
+		production_programmed, production_ordered, status, ts_start
+	) VALUES ($1,$2,$3,$4,$5,$6,$6,2,$7)
 	ON CONFLICT DO NOTHING`, schema)
 	_, err = pool.Exec(ctx, insertSQL,
 		p.IDEnterprise, p.IDSite, p.IDArea, p.IDEquipment, p.IDOrder,

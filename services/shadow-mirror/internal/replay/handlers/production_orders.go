@@ -61,11 +61,13 @@ func OrderCreatedStarted(logger *slog.Logger) replay.Handler {
 }
 
 func insertProdOrder(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderCreatedStartedPayload, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
+	// production_programmed + production_ordered both NOT NULL on prod;
+	// use ProductionOrderQuantity for both (payload doesn't distinguish).
 	sql := fmt.Sprintf(`INSERT INTO %s.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order,
-		nm_production_order, production_ordered, txt_production_order_notes,
-		status, ts_start
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,2,$9)
+		nm_production_order, production_programmed, production_ordered,
+		txt_production_order_notes, status, ts_start
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,2,$9)
 	ON CONFLICT DO NOTHING`, schema)
 	_, err := pool.Exec(ctx, sql,
 		p.IDEnterprise, p.IDSite, p.IDArea, p.IDEquipment, p.IDOrder,
