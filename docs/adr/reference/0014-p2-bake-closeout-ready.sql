@@ -1,0 +1,12 @@
+-- ADR-0014 P2 close-out — READY TO RUN on/after 2026-07-09, ONLY IF
+-- /d/3-flow-parity shift panels show 168h of zero divergence.
+--
+-- Step 1 (staging DB, packiot):
+DROP TRIGGER IF EXISTS piot_set_shift_before_insert ON public.equipment_values;
+-- Step 2 (code, separate PR): in oeecloud-worker
+--   internal/handlers/sparkplug.go, change the fill gate
+--   `p.SourceType != ""` to `true` — all flows get the Go fill.
+-- Step 3: comparison doc Finding A — prod does NOT fill id_shift
+--   per-row; enabling the Go fill for Flow 1 keeps STAGING behavior
+--   (trigger parity). The PROD decision (behavior addition) is made at
+--   Phase 5 with PowerBI owner sign-off, not here.
