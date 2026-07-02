@@ -785,6 +785,12 @@ services:
       MQTT_CLIENT_ID: "edge-transformer-staging"
       MQTT_USERNAME: ""
       MQTT_PASSWORD: ""
+      # Staging has no live Sparkplug B source — MQTT silence is the
+      # steady state, not a failure. <= 0 disables the idle-degradation
+      # check so /healthz + the container healthcheck track broker
+      # connectivity only; a permanently-red healthcheck trains ops to
+      # ignore red. Real factories keep the 60s default.
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
       # ADR-0010 Phase 3 shadow-mode port — ON in staging for the 30-day
       # comparator soak. Shadow mode: Calc runs alongside Node-RED path but
       # does NOT change shadowpub output. Prom counters expose divergence.

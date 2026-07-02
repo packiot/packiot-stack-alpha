@@ -95,6 +95,17 @@ type Config struct {
 	// seconds (~3 hours) of buffer if the Handler stalls entirely; at the
 	// worst-case factory 300 msg/s peak that's ~33 seconds of buffer.
 	IngestQueueSize int
+
+	// StaleThreshold — how long since the last received message before
+	// Degraded() reports the subscriber unhealthy. 0 means the default
+	// (StaleMessageThreshold, 60s). Negative disables the idle checks
+	// entirely — connection-level degradation still applies. Staging has
+	// no live Sparkplug B source, so MQTT silence is its steady state,
+	// not a failure: a permanently-red healthcheck trains ops to ignore
+	// red (set MQTT_STALE_THRESHOLD_SECONDS <= 0 there). Real factories
+	// keep the default — 60s of silence there means a dead broker, dead
+	// goroutine, or stopped PLCs.
+	StaleThreshold time.Duration
 }
 
 // DefaultIngestQueueSize is the bounded-channel buffer between paho's
@@ -267,13 +278,25 @@ func (s *Subscriber) Component() string { return "mqtt_subscriber" }
 // per-component JSON body for /healthz aggregation.
 func (s *Subscriber) SnapshotDetail() any { return s.SnapshotJSON() }
 
+// staleThreshold resolves Config.StaleThreshold: 0 → default, negative
+// → idle checks disabled.
+func (s *Subscriber) staleThreshold() time.Duration {
+	if s.cfg.StaleThreshold == 0 {
+		return StaleMessageThreshold
+	}
+	return s.cfg.StaleThreshold
+}
+
 // Degraded returns a non-empty reason when the subscriber is unhealthy.
 // ADR-0011 rule 4: any degraded state MUST be surfaced with a reason.
 //
 // Degraded conditions:
 //   - Not connected to the broker (connection dropped, no auto-reconnect yet)
-//   - No message received in StaleMessageThreshold (broker went quiet OR
-//     goroutine is stuck OR PLCs all stopped publishing)
+//   - No message received in staleThreshold() (broker went quiet OR
+//     goroutine is stuck OR PLCs all stopped publishing). Skipped when
+//     Config.StaleThreshold is negative — environments with no MQTT
+//     source (staging) are idle by design, and a permanently-degraded
+//     component masks real failures.
 //
 // Note: on a fresh start with zero messages ever received, we return
 // "no messages received yet" — this is technically degraded per the
@@ -287,11 +310,15 @@ func (s *Subscriber) Degraded() string {
 		}
 		return "not connected to broker"
 	}
+	threshold := s.staleThreshold()
+	if threshold < 0 {
+		return "" // idle checks disabled — connectivity is the only signal
+	}
 	// received=0 → subscriber healthy at boot but never got a message
 	if s.received.Load() == 0 {
 		// Give the subscriber grace during boot — treat as degraded only
-		// if we've been running for > StaleMessageThreshold.
-		if time.Since(s.startedAt) > StaleMessageThreshold {
+		// if we've been running for > threshold.
+		if time.Since(s.startedAt) > threshold {
 			return fmt.Sprintf("no messages received in %v since start",
 				time.Since(s.startedAt).Round(time.Second))
 		}
@@ -303,9 +330,9 @@ func (s *Subscriber) Degraded() string {
 		return ""
 	}
 	age := time.Since(time.Unix(0, lastNs))
-	if age > StaleMessageThreshold {
+	if age > threshold {
 		return fmt.Sprintf("last message %v ago (threshold %v)",
-			age.Round(time.Second), StaleMessageThreshold)
+			age.Round(time.Second), threshold)
 	}
 	return ""
 }

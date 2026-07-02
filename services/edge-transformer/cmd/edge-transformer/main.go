@@ -306,6 +306,11 @@ func main() {
 		mqttCfg.ClientID = cfg.MQTTClientID
 		mqttCfg.Username = cfg.MQTTUsername
 		mqttCfg.Password = cfg.MQTTPassword
+		if cfg.MQTTStaleThresholdSeconds <= 0 {
+			mqttCfg.StaleThreshold = -1 // idle checks disabled (no MQTT source expected)
+		} else {
+			mqttCfg.StaleThreshold = time.Duration(cfg.MQTTStaleThresholdSeconds) * time.Second
+		}
 
 		calcHooks := calcHooks{
 			state:          calcState,
