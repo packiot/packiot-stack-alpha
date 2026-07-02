@@ -49,14 +49,17 @@ func OrderCreated(logger *slog.Logger) replay.Handler {
 	}
 }
 
-func insertPOAvailable(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderCreatedPayload, userLogID int64, logger *slog.Logger) error {
-	// production_programmed + production_ordered both NOT NULL on prod.
-	sql := fmt.Sprintf(`INSERT INTO %s.production_orders (
+const sqlInsertPOAvailable = `INSERT INTO %s.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order,
 		nm_production_order, production_programmed, production_ordered,
 		txt_production_order_notes, status
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,1)
-	ON CONFLICT DO NOTHING`, schema)
+	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
+
+func insertPOAvailable(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderCreatedPayload, userLogID int64, logger *slog.Logger) error {
+	// production_programmed + production_ordered both NOT NULL on prod.
+	// Conflict target qualified per bug 247 — see OrderCreatedStarted.
+	sql := fmt.Sprintf(sqlInsertPOAvailable, schema)
 	_, err := pool.Exec(ctx, sql,
 		p.IDEnterprise, p.IDSite, p.IDArea, p.IDEquipment, p.IDOrder,
 		p.NmProductionOrder, p.ProductionOrderQuantity, p.TxtProductionOrderNotes,
@@ -88,11 +91,21 @@ func OrderStarted(logger *slog.Logger) replay.Handler {
 		if err != nil {
 			return replay.ErrSkip
 		}
-		if err := updatePOStart(ctx, mainPool, "shadow_go_port", &p, tsStart, u.ID, logger); err != nil {
+		k, found, err := resolvePOKey(ctx, mainPool, p.IDProductionOrder)
+		if err != nil {
+			return fmt.Errorf("resolve PO natural key: %w", err)
+		}
+		if !found {
+			logger.Warn("order-started: Flow 1 PO not found",
+				slog.Int64("id_user_log", u.ID),
+				slog.Int64("id_production_order", p.IDProductionOrder))
+			return replay.ErrSkip
+		}
+		if err := updatePOStart(ctx, mainPool, "shadow_go_port", k, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
 		if shadowPool != nil {
-			if err := updatePOStart(ctx, shadowPool, "public", &p, tsStart, u.ID, logger); err != nil {
+			if err := updatePOStart(ctx, shadowPool, "public", k, tsStart, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow: %w", err)
 			}
 		}
@@ -100,12 +113,14 @@ func OrderStarted(logger *slog.Logger) replay.Handler {
 	}
 }
 
-func updatePOStart(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderStartedPayload, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
-	sql := fmt.Sprintf(`UPDATE %s.production_orders
+const sqlUpdatePOStart = `UPDATE %s.production_orders
 	   SET status = 2, ts_start = $1, last_update = now()
-	 WHERE id_production_order = $2`, schema)
-	_, err := pool.Exec(ctx, sql, tsStart, p.IDProductionOrder)
-	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+	 WHERE id_enterprise = $2 AND id_order = $3`
+
+func updatePOStart(ctx context.Context, pool *pgxpool.Pool, schema string, k poKey, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(sqlUpdatePOStart, schema)
+	return execExpectingRows(ctx, pool, schema, "production_orders", userLogID, logger,
+		sql, tsStart, k.IDEnterprise, k.IDOrder)
 }
 
 // OrderTimeChangedPayload — user_logs.category='order-time-changed'.
@@ -130,11 +145,21 @@ func OrderTimeChanged(logger *slog.Logger) replay.Handler {
 		if err != nil {
 			return replay.ErrSkip
 		}
-		if err := updatePOTsStart(ctx, mainPool, "shadow_go_port", &p, tsStart, u.ID, logger); err != nil {
+		k, found, err := resolvePOKey(ctx, mainPool, p.IDProductionOrder)
+		if err != nil {
+			return fmt.Errorf("resolve PO natural key: %w", err)
+		}
+		if !found {
+			logger.Warn("order-time-changed: Flow 1 PO not found",
+				slog.Int64("id_user_log", u.ID),
+				slog.Int64("id_production_order", p.IDProductionOrder))
+			return replay.ErrSkip
+		}
+		if err := updatePOTsStart(ctx, mainPool, "shadow_go_port", k, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
 		if shadowPool != nil {
-			if err := updatePOTsStart(ctx, shadowPool, "public", &p, tsStart, u.ID, logger); err != nil {
+			if err := updatePOTsStart(ctx, shadowPool, "public", k, tsStart, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow: %w", err)
 			}
 		}
@@ -142,12 +167,14 @@ func OrderTimeChanged(logger *slog.Logger) replay.Handler {
 	}
 }
 
-func updatePOTsStart(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderTimeChangedPayload, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
-	sql := fmt.Sprintf(`UPDATE %s.production_orders
+const sqlUpdatePOTsStart = `UPDATE %s.production_orders
 	   SET ts_start = $1, last_update = now()
-	 WHERE id_production_order = $2`, schema)
-	_, err := pool.Exec(ctx, sql, tsStart, p.IDProductionOrder)
-	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+	 WHERE id_enterprise = $2 AND id_order = $3`
+
+func updatePOTsStart(ctx context.Context, pool *pgxpool.Pool, schema string, k poKey, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(sqlUpdatePOTsStart, schema)
+	return execExpectingRows(ctx, pool, schema, "production_orders", userLogID, logger,
+		sql, tsStart, k.IDEnterprise, k.IDOrder)
 }
 
 // OrderReplacedPayload — user_logs.category='order-replaced'.
@@ -168,11 +195,21 @@ func OrderReplaced(logger *slog.Logger) replay.Handler {
 		if p.IDProductionOrder == 0 {
 			return replay.ErrSkip
 		}
-		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", p.IDProductionOrder, u.ID, logger); err != nil {
+		k, found, err := resolvePOKey(ctx, mainPool, p.IDProductionOrder)
+		if err != nil {
+			return fmt.Errorf("resolve PO natural key: %w", err)
+		}
+		if !found {
+			logger.Warn("order-replaced: Flow 1 PO not found",
+				slog.Int64("id_user_log", u.ID),
+				slog.Int64("id_production_order", p.IDProductionOrder))
+			return replay.ErrSkip
+		}
+		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", k, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
 		if shadowPool != nil {
-			if err := updatePORecalc(ctx, shadowPool, "public", p.IDProductionOrder, u.ID, logger); err != nil {
+			if err := updatePORecalc(ctx, shadowPool, "public", k, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow: %w", err)
 			}
 		}
@@ -196,11 +233,21 @@ func OrderStatusChanged(logger *slog.Logger) replay.Handler {
 		if p.IDProductionOrder == 0 {
 			return replay.ErrSkip
 		}
-		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", p.IDProductionOrder, u.ID, logger); err != nil {
+		k, found, err := resolvePOKey(ctx, mainPool, p.IDProductionOrder)
+		if err != nil {
+			return fmt.Errorf("resolve PO natural key: %w", err)
+		}
+		if !found {
+			logger.Warn("order-status-changed: Flow 1 PO not found",
+				slog.Int64("id_user_log", u.ID),
+				slog.Int64("id_production_order", p.IDProductionOrder))
+			return replay.ErrSkip
+		}
+		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", k, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
 		if shadowPool != nil {
-			if err := updatePORecalc(ctx, shadowPool, "public", p.IDProductionOrder, u.ID, logger); err != nil {
+			if err := updatePORecalc(ctx, shadowPool, "public", k, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow: %w", err)
 			}
 		}
@@ -208,10 +255,12 @@ func OrderStatusChanged(logger *slog.Logger) replay.Handler {
 	}
 }
 
-func updatePORecalc(ctx context.Context, pool *pgxpool.Pool, schema string, idPO int64, userLogID int64, logger *slog.Logger) error {
-	sql := fmt.Sprintf(`UPDATE %s.production_orders SET recalc_needed = true, last_update = now() WHERE id_production_order = $1`, schema)
-	_, err := pool.Exec(ctx, sql, idPO)
-	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+const sqlUpdatePORecalc = `UPDATE %s.production_orders SET recalc_needed = true, last_update = now() WHERE id_enterprise = $1 AND id_order = $2`
+
+func updatePORecalc(ctx context.Context, pool *pgxpool.Pool, schema string, k poKey, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(sqlUpdatePORecalc, schema)
+	return execExpectingRows(ctx, pool, schema, "production_orders", userLogID, logger,
+		sql, k.IDEnterprise, k.IDOrder)
 }
 
 // ManualEventEditedPayload — user_logs.category='manual-event-edited'.
@@ -260,6 +309,12 @@ func ManualEventEdited(logger *slog.Logger) replay.Handler {
 }
 
 func updateManualEvent(ctx context.Context, pool *pgxpool.Pool, schema string, p *ManualEventEditedPayload, tsStart, tsEnd *time.Time, userLogID int64, logger *slog.Logger) error {
+	// KNOWN GAP: id_equipment_event is a Flow 1 surrogate id — shadow
+	// rows have locally generated ids, so this UPDATE matches zero rows
+	// on the shadow paths (same id-space problem as bug 248, but
+	// equipment_events_man has no natural key: (id_equipment, ts_event)
+	// is not unique). Needs an id-map design; until then
+	// execExpectingRows makes the gap observable instead of silent.
 	sql := fmt.Sprintf(`UPDATE %s.equipment_events_man
 	   SET ts_event = COALESCE($1, ts_event),
 	       ts_end = COALESCE($2, ts_end),
@@ -268,7 +323,8 @@ func updateManualEvent(ctx context.Context, pool *pgxpool.Pool, schema string, p
 	       change_over = $8, planned_downtime = $9,
 	       txt_downtime_notes = $10, last_update = now()
 	 WHERE id_equipment_event = $11`, schema)
-	_, err := pool.Exec(ctx, sql,
+	return execExpectingRows(ctx, pool, schema, "equipment_events_man", userLogID, logger,
+		sql,
 		tsStart, tsEnd,
 		p.CdMachine, p.CdCategory, p.CdSubcategory,
 		p.DescCategory, p.DescSubcategory,
@@ -276,5 +332,4 @@ func updateManualEvent(ctx context.Context, pool *pgxpool.Pool, schema string, p
 		p.TxtDowntimeNotes,
 		p.IDEquipmentEvent,
 	)
-	return failOpenIfMissing(err, "equipment_events_man", schema, userLogID, logger)
 }
