@@ -55,6 +55,14 @@ type Config struct {
 	// existing shadow_go_port routing (source_type="go" → schema
 	// swap on main pool) untouched.
 	PGShadowDBName string
+
+	// ShiftResolverEnabled — ADR-0014 Phase 2. When true, the Go port of
+	// piot_set_shift_on_equipment_values() fills id_shift/id_shift_hour/
+	// ts_value_production on SHADOW-path equipment_values writes
+	// (source_type "go"/"refactored"). Flow 1 keeps the PL/pgSQL trigger
+	// during the comparator bake; retire it only after 168h of zero
+	// divergence.
+	ShiftResolverEnabled bool
 }
 
 func Load() (*Config, error) {
@@ -76,6 +84,7 @@ func Load() (*Config, error) {
 		HealthPort:       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
 		PGShadowDBName:   getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShiftResolverEnabled: getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 	}, nil
 }
 

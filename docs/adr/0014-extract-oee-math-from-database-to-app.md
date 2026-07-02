@@ -157,12 +157,31 @@ integrity. We're extracting COMPUTE, not STORAGE.
 - Deliverable: `docs/adr/reference/0014-oee-math-inventory.md`
 
 ### Phase 2 — port the shift setter (smallest, safest first)
-- `piot_set_shift_on_equipment_values()` → Go lookup in oeecloud-worker
-- Add id_shift/id_shift_hour/id_team columns to Build() output
-- Ship behind feature flag; comparator diffs Go output vs trigger output
-  for a bake period
-- Retire trigger on packiot.public; recreate on shadow_go_port +
-  packiot_shadow (no trigger — pure app writes)
+
+**STATUS: SHIPPED BEHIND FLAG (2026-07-02)** — `internal/shiftresolver/`
+ports `piot_set_shift_on_equipment_values()` +
+`piot_get_shift_hour_by_equipment()` 1:1 (naive-week arithmetic with
+negative week_begin, area-priority selection with NULLS LAST tiebreak,
+fail-open). Implementation notes vs the original sketch:
+
+- Instead of adding columns to every Build() SQL, the port is a
+  companion `UPDATE … SET col = COALESCE(col, $n)` queued right after
+  each UPSERT in the same pgx.Batch — trigger-parity "fill only when
+  NULL" semantics with zero churn on the 5 existing INSERT builders.
+  It also fills `ts_value_production` (the trigger's second job).
+  id_team turned out NOT to be set by this trigger — dropped from scope.
+- `SHIFT_RESOLVER_ENABLED=true` on staging fills SHADOW paths only
+  (source_type go/refactored); Flow 1 keeps the trigger so the bake
+  compares Go against PL/pgSQL, not Go against Go.
+- Bake gauge: /d/3-flow-parity "shift divergence" + "Go-unresolved"
+  panels (24h windows). Retire the trigger after 168h of zero.
+- Unit tests cover the week-offset math hand-derived from the SQL
+  (UTC wb=0/1, Sao Paulo wb=-3000 both sides of the week origin,
+  UTC-vs-local day boundary), the ORDER BY port, and window edge
+  inclusivity.
+
+Remaining for Phase 2 close-out: 168h bake → retire trigger on
+packiot.public → flip the fill gate to all source_types.
 
 ### Phase 3 — port runtime aggregates
 - Convert `piot_create_equipment_runtime_1hour` etc. into TimescaleDB
