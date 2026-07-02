@@ -16,20 +16,30 @@ import (
 // deep port is ADR-0014 P4 follow-up); Go owns orchestration, cadence
 // and observability — exactly the speed33 pattern.
 //
-// The 06b variant (21-day deep rebuild on its own cadence) is a named
-// follow-up — this port covers the primary hot path verbatim.
+// GENERATION NOTE (prod fidelity check, 2026-07-02): the plain-06
+// orchestrator+compute is a DEAD generation — its SETOF rowtype drifted
+// when the table gained 7 columns, and it now ERRORS on prod. The live
+// chain is update_..._06b → get_..._06c (verified: 358 rows read-only
+// on prod). This port implements the live semantics: 21-day Montreal
+// wipe + 23-column reload from 06c. The dead-logger ping
+// (piot_monitor_function) is deliberately dropped.
 const shift06Delete = `DELETE FROM customer_reports.shift
 	WHERE customer_id = 6
-	AND day >= (now() at time zone 'America/Montreal')::date - interval '6 day'`
+	AND day >= (now() at time zone 'America/Montreal')::date - interval '21 day'
+	AND day <= (now() at time zone 'America/Montreal')::date`
 
 const shift06Insert = `INSERT INTO customer_reports.shift
 	(customer_id, line, shift, turno_hrs, day, job, shift_duration_h,
 	 dt_duration_h, setup_duration_h, running, prss_qty, packed_qty,
-	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time)
+	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time,
+	 index1, id_equipment, pro_h, res_h, mnt_h, discart_h, index2)
 	SELECT 6, line, shift, turno_hrs, day, job, shift_duration_h,
 	 dt_duration_h, setup_duration_h, running, prss_qty, packed_qty,
-	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time
-	FROM get_report_shift_enterprsie_06()`
+	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time,
+	 index1, id_equipment, pro_h, res_h, mnt_h, discart_h, index2
+	FROM get_report_shift_enterprsie_06c(
+	  ((now() at time zone 'America/Montreal')::date - interval '21 day')::date,
+	  (now() at time zone 'America/Montreal')::date)`
 
 // RunShift06 executes one atomic delete-and-reload pass.
 func RunShift06(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
