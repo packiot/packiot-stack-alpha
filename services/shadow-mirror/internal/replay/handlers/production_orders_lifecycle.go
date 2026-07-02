@@ -50,10 +50,12 @@ func OrderCreated(logger *slog.Logger) replay.Handler {
 }
 
 func insertPOAvailable(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderCreatedPayload, userLogID int64, logger *slog.Logger) error {
+	// production_programmed + production_ordered both NOT NULL on prod.
 	sql := fmt.Sprintf(`INSERT INTO %s.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order,
-		nm_production_order, production_ordered, txt_production_order_notes, status
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1)
+		nm_production_order, production_programmed, production_ordered,
+		txt_production_order_notes, status
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,1)
 	ON CONFLICT DO NOTHING`, schema)
 	_, err := pool.Exec(ctx, sql,
 		p.IDEnterprise, p.IDSite, p.IDArea, p.IDEquipment, p.IDOrder,
