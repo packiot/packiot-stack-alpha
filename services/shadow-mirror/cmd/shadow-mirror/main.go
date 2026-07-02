@@ -90,6 +90,8 @@ func main() {
 	// Phase 2 (2026-07-01): first real handler live. Others come in
 	// subsequent PRs, per ADR-0013 §Implementation.
 	dispatcher.Register("manual-event-created", handlers.ManualEventCreated(logger))
+	dispatcher.Register("order-created-started", handlers.OrderCreatedStarted(logger))
+	dispatcher.Register("order-stopped", handlers.OrderStopped(logger))
 
 	// HTTP server (health + metrics) runs alongside the loop.
 	mux := http.NewServeMux()
