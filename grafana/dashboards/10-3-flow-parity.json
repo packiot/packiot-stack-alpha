@@ -1,0 +1,584 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "Data plane \u2014 equipment_values fan-out (ADR-0012)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Fan-out failures (should be 0)",
+      "description": "mirror_worker_value_fanout_total with outcome != ok. Any non-zero rate means shadow flows are silently diverging from Flow 1 \u2014 loss-with-alert contract (ADR-0011 rule 5).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(mirror_worker_value_fanout_total{outcome!=\"ok\"}[10m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "F1 rows missing a Flow 2 twin (15 min, CPACK)",
+      "description": "LEFT JOIN on (ts_value, id_equipment) \u2014 the parity join key. 0 = every Flow 1 CPACK row landed in shadow_go_port. Non-zero = fan-out is dropping rows.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "packiot-postgres"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS f1_missing_from_f2 FROM public.equipment_values p LEFT JOIN shadow_go_port.equipment_values s USING (ts_value, id_equipment) WHERE p.id_enterprise = 3 AND p.ts_value > now() - interval '15 minutes' AND s.ts_value IS NULL"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Stuck running POs in shadow_go_port",
+      "description": "count of status=2 rows. Bounded by the number of CPACK+simulator equipments \u2014 a growing number means order-stopped replays are no-oping again (bug 247/248 sentinel).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "packiot-postgres"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS stuck_running FROM shadow_go_port.production_orders WHERE status = 2"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 4,
+      "title": "Fan-out rate by destination (ok)",
+      "description": "rate(mirror_worker_value_fanout_total{outcome=ok}). The two destinations must track each other exactly \u2014 they fan out from the same loop.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(destination)(rate(mirror_worker_value_fanout_total{outcome=\"ok\"}[5m]))",
+          "legendFormat": "{{destination}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "edge-transformer dual-emit publish rate",
+      "description": "shadowpub published vs confirmed. Divergence = RMQ confirm problems (ADR-0011 P0-1).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(edge_transformer_shadowpub_published_total[5m])",
+          "legendFormat": "published"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(edge_transformer_shadowpub_confirmed_total[5m])",
+          "legendFormat": "confirmed"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Control plane \u2014 shadow-mirror operator-action replay (ADR-0013)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 6,
+      "title": "Replay failures (should be 0)",
+      "description": "shadow_mirror_failed_total rate. Failures stall nothing (cursor advances) but every failure is a shadow-path gap.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 15
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(shadow_mirror_failed_total[10m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 7,
+      "title": "Zero-row UPDATEs (replay gaps)",
+      "description": "shadow_mirror_update_noop_total rate. Post PR #191/#195 this should be ~0 in steady state; sustained non-zero means an id-space or natural-key regression (bugs 247/248 class).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 15
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(shadow_mirror_update_noop_total[10m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 8,
+      "title": "Cursor position",
+      "description": "Last replayed staging user_logs id. Flat while operator actions occur = mirror stalled.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "shadow_mirror_cursor"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Dispatch rate by category",
+      "description": "Successful handler acks per category \u2014 the operator-action mix reaching the shadow flows.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(category)(rate(shadow_mirror_dispatched_total[5m]))",
+          "legendFormat": "{{category}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Noop / skipped detail",
+      "description": "Zero-row updates by schema+table and skips by category. Noops on equipment_events_man should have stopped after PR #195's truth-reset; anything new = investigate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(schema, table)(rate(shadow_mirror_update_noop_total[5m]))",
+          "legendFormat": "noop {{schema}}.{{table}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(category)(rate(shadow_mirror_skipped_total[5m]))",
+          "legendFormat": "skip {{category}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "packiot",
+    "adr-0012",
+    "parity"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "3-Flow Parity \u2014 ADR-0012",
+  "uid": "3-flow-parity",
+  "version": 1,
+  "weekStart": ""
+}
