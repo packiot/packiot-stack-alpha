@@ -122,7 +122,4 @@ For each of those, the same idea applies: find a stable key, and make the write 
 ## References
 
 - [ADR-0011](./adr/0011-durability-boundary-and-store-and-forward.md) — the load-bearing rule this checklist enforces
-- `~/notes/systems/single-writer-per-row-invariant.md` — why the write-side pattern matters
-- `~/notes/systems/cross-system-replication-id-translation.md` — the business-key-vs-surrogate-key trap for cross-system replay
-- `~/notes/systems/dlq-exponential-backoff-retry-topology.md` — the retry topology that guarantees duplicates in the first place
 - Stripe: [Building Robust Systems with Idempotency Keys](https://stripe.com/blog/idempotency) — the industry canonical write-up

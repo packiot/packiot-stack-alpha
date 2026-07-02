@@ -281,7 +281,7 @@ These are the rules whose violation creates the next generation of the problem t
 - `docs/clients/cpack.example.yaml` — populated example for one real customer
 - `services/oeecloud-worker/` — the operational template: Go service replacing Node-RED, same per-tenant RMQ pattern, same Prometheus per-tenant labels, same comparator validation
 - `services/mirror-worker-go/` — DLQ + reanimator topology this ADR's Phase 2 copies verbatim (PR #77 + PR #84)
-- Phase 0 zettel cluster (link from `~/notes/`): `node-red-as-stream-processor-anti-pattern`, `observe-then-port-vs-port-then-deprecate`, `silent-metric-coverage-gap`, `stateful-config-loaders-ignore-source-edits`
+- Phase 0 pattern cluster (findable via docs+ADR search): `node-red-as-stream-processor-anti-pattern`, `observe-then-port-vs-port-then-deprecate`, `silent-metric-coverage-gap`, `stateful-config-loaders-ignore-source-edits`
 - [Node-RED flow contract patterns](https://nodered.org/docs/user-guide/messages) — the message-typing convention subflow contracts should follow
 - [Watermill (Go message-router library)](https://watermill.io/) — reference for the per-tenant consumer pattern, even if we don't adopt the library directly
 
