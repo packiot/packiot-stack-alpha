@@ -80,11 +80,19 @@ Scope after inventory: Wave 0 fixes staging's view-vs-table drift;
 Waves 1–2 cover only the 3 live tables; Wave 3 handles the 23 views;
 the 3 dead c35 dashboards skip straight to the contract wave.
 
-### Wave 0 — staging parity repair (NEW, from inventory)
-- Recreate the 21 staging tables that are views on prod as views, using
-  `pg_get_viewdef` output from prod (SELECT-only)
-- Precondition for rehearsing any view-flip on staging
-- Gate: column-shape dimension vs prod for all 23 views
+### Wave 0 — staging parity repair — ✅ DONE 2026-07-02
+- (Count correction vs the first inventory pass: **15** staging tables
+  were prod-views, not 21 — the earlier figure double-counted the 6
+  real tables.)
+- All 23 prod view definitions captured via `pg_get_viewdef`
+  (SELECT-only) → `0012-wave0-prod-view-defs.sql` (repo ground truth)
+- All 15 drifted tables flipped to views with per-object transactions;
+  the `v13_mobile_power_bi_direct_query` dependency trio flipped in one
+  atomic group. **Every prod definition compiled against staging base
+  tables — zero failures.** Flip targets were all empty (0 rows) with
+  no readers on staging.
+- Gate PASSED: 29/29 relkind parity with prod + SELECT probes green on
+  all 16 recreated views + Hasura healthy (it tracks these names)
 
 ### Wave 1 — expand: pool tables + backfill (1 PR per object group)
 - Create `customer_dashboards.<name>` pool tables (customer_id column,
