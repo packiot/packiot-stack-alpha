@@ -558,6 +558,133 @@
           "legendFormat": "skip {{category}}"
         }
       ]
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "ADR-0014 Phase 2 \u2014 shift resolver bake (Go vs trigger)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 11,
+      "title": "Shift divergence, Go vs trigger (24h)",
+      "description": "Rows sharing (ts_value, id_equipment) between shadow_go_port (Go-resolved shift) and public (trigger-resolved). Scope: rows where the Go resolver ran (s.id_shift IS NOT NULL). 168h of continuous 0 = safe to retire the trigger. Note: Go-resolved-NULL vs trigger-resolved-value escapes this filter \u2014 check the companion unresolved panel.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "packiot-postgres"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS shift_diverged FROM shadow_go_port.equipment_values s JOIN public.equipment_values p USING (ts_value, id_equipment) WHERE s.ts_value > now() - interval '24 hours' AND s.id_shift IS NOT NULL AND (s.id_shift IS DISTINCT FROM p.id_shift OR s.id_shift_hour IS DISTINCT FROM p.id_shift_hour)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 12,
+      "title": "Go-unresolved where trigger resolved (24h)",
+      "description": "Worker-written shadow rows where the Go resolver ran (ts_value_production set by the fill UPDATE) but left id_shift NULL while the trigger filled it on the Flow 1 twin. The fill UPDATE always sets ts_value_production, so this cleanly excludes mirror-worker fan-out rows. 0-goal during the bake.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "packiot-postgres"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS go_unresolved FROM shadow_go_port.equipment_values s JOIN public.equipment_values p USING (ts_value, id_equipment) WHERE s.ts_value > now() - interval '24 hours' AND s.ts_value_production IS NOT NULL AND s.id_shift IS NULL AND p.id_shift IS NOT NULL"
+        }
+      ]
     }
   ],
   "refresh": "30s",

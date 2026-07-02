@@ -110,10 +110,19 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		kind := m.Classify()
 
 		var q *writers.Query
+		var shiftQ *writers.Query
 		var buildErr error
 		switch {
 		case h.equipmentValues.CanWrite(kind):
 			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
+			// ADR-0014 Phase 2: shadow paths get the Go-ported shift fill
+			// as a companion UPDATE in the same batch. Flow 1
+			// (source_type "") keeps the PL/pgSQL trigger during the
+			// comparator bake — filling there would make the bake compare
+			// Go against Go.
+			if buildErr == nil && q != nil && p.SourceType != "" {
+				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
+			}
 		case h.unsMetrics.CanWrite(kind):
 			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
 		case h.poParameter.CanWrite(kind):
@@ -136,6 +145,12 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 		batch.Queue(q.SQL, q.Args...)
 		descs = append(descs, q.Desc)
+		if shiftQ != nil {
+			// Ordered right after its UPSERT — pgx.Batch executes
+			// statements sequentially on one connection.
+			batch.Queue(shiftQ.SQL, shiftQ.Args...)
+			descs = append(descs, shiftQ.Desc)
+		}
 	}
 
 	if batch.Len() == 0 {

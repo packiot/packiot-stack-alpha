@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 )
 
@@ -30,10 +31,56 @@ import (
 type EquipmentValues struct {
 	resolver *sparkplug.Resolver
 	logger   *slog.Logger
+
+	// shifts — ADR-0014 Phase 2 Go port of the shift trigger. nil =
+	// disabled (SHIFT_RESOLVER_ENABLED=false); set via SetShiftResolver.
+	shifts *shiftresolver.Resolver
 }
 
 func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
 	return &EquipmentValues{resolver: r, logger: logger}
+}
+
+// SetShiftResolver enables the ADR-0014 Phase 2 shift fill (see
+// BuildShiftFill).
+func (w *EquipmentValues) SetShiftResolver(r *shiftresolver.Resolver) { w.shifts = r }
+
+// sqlShiftFill ports piot_set_shift_on_equipment_values() as a companion
+// UPDATE queued right after the metric's UPSERT in the same pgx.Batch.
+// COALESCE everywhere = the trigger's "only fill when NULL" semantics;
+// ($1)::date matches the trigger's NEW.ts_value::date (session-timezone
+// cast, evaluated in this worker's session exactly as the trigger
+// evaluates in the inserting session).
+const sqlShiftFill = `
+	UPDATE %s.equipment_values SET
+		id_shift            = COALESCE(id_shift, $3),
+		id_shift_hour       = COALESCE(id_shift_hour, $4),
+		ts_value_production = COALESCE(ts_value_production, ($1)::date)
+	WHERE ts_value = $1 AND id_equipment = $2`
+
+// BuildShiftFill returns the shift-fill *Query for one metric, or nil
+// when the resolver is disabled or the topic is unregistered. Fail-open
+// end to end: an unresolvable shift still fills ts_value_production and
+// leaves the shift columns NULL — byte-for-byte what the trigger does.
+func (w *EquipmentValues) BuildShiftFill(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
+	if w.shifts == nil {
+		return nil, nil
+	}
+	topic := m.TopicForRegister()
+	info, err := w.resolver.Resolve(ctx, topic)
+	if err != nil {
+		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
+	}
+	if info == nil {
+		return nil, nil
+	}
+	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
+	idShift, idShiftHour := w.shifts.Resolve(ctx, info.IDEnterprise, info.IDEquipment, ts)
+	return &Query{
+		SQL:  fmt.Sprintf(sqlShiftFill, schema),
+		Args: []any{ts, info.IDEquipment, idShift, idShiftHour},
+		Desc: fmt.Sprintf("shift-fill %s.equipment_values eq=%d ts=%s", schema, info.IDEquipment, ts.Format(time.RFC3339)),
+	}, nil
 }
 
 // CanWrite returns true for kinds whose values land in equipment_values.

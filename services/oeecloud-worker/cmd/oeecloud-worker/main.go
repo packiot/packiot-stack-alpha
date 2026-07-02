@@ -31,6 +31,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tenants"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
 
@@ -140,6 +141,15 @@ func main() {
 	equipmentValuesWriter := writers.NewEquipmentValues(resolver, logger)
 	unsMetricsWriter := writers.NewUnsMetrics(resolver, logger)
 	poParameterWriter := writers.NewPOParameter(resolver, logger)
+
+	// ADR-0014 Phase 2 — Go port of piot_set_shift_on_equipment_values().
+	// Fills shift columns on SHADOW-path writes only during the comparator
+	// bake; Flow 1 keeps the trigger until 168h of zero divergence.
+	if cfg.ShiftResolverEnabled {
+		shiftRes := shiftresolver.New(pool, 5*time.Minute, logger)
+		equipmentValuesWriter.SetShiftResolver(shiftRes)
+		logger.Info("shift resolver enabled (ADR-0014 Phase 2) — shadow paths get Go-computed shifts")
+	}
 
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
 	// Parses the AMQP payload, builds one Query per metric via the right
