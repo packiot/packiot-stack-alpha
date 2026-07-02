@@ -24,14 +24,67 @@ existing public.* name.
    REST) proceeds, Phase 4 loses a whole class of coordination steps.
    If Hasura stays, add a "re-track + verify 7 named queries" step to
    every wave below.
-2. **Writer inventory (verification step, no code).** For each of the
-   33 objects, capture from the staging DB: writing pg_cron function
-   (piot4_13_* etc.), refresh cadence, and downstream view dependents
-   (schema-map audit has the dependency counts; this needs the names).
-   Store as a reference table in this file before Wave 1 lands.
-   An object whose writer is unknown does NOT enter a wave.
+2. **Writer inventory — DONE 2026-07-02** (SELECT-only on prod tsp12 +
+   staging + repo grep). Results below. Headline: the inventory
+   COLLAPSES the wave scope — on prod only **6 of the 29 named objects
+   are tables**; 23 are plain views needing no writer cutover at all,
+   and 3 of the 6 tables are dead.
+
+## Writer inventory (ground truth: prod tsp12, 2026-07-02)
+
+### Real tables with live writers → Wave 2 scope (3 objects)
+
+| Object | Writers | Prod activity |
+|---|---|---|
+| `report_shift_enterprsie_06` | PL/pgSQL: `update_report_shift_enterprsie_06`, `_06b`, `get_data_sync_enterprsie_06`, `_06b`, `update_equipment_validation_shift` | HOT — 11.1M ins + 11.1M del (delete-and-reload refresh), analyzed today |
+| `report_speed_enterprsie_33` | PL/pgSQL: `c33_speed_per_job_insert_into_report`, `piot_cust_speed_product_client_33` | warm — 1.8k ins, 36k seq reads |
+| `sap_report_data_sync_customer_13` | PL/pgSQL `upsert_sap_report_data_sync_customer_13` **+ EXTERNAL: back4-api `data-sync.controller.js` (neopac integration)** | VERY HOT — 18.4M upd, 12.9M idx reads |
+
+The sap_report cutover requires back4-api coordination — it is the only
+object with a non-PL/pgSQL writer.
+
+### Dead tables → contract-wave DROP candidates (3 objects)
+
+`c35_dashboard_paradas_24h`, `c35_dashboard_producao_24h`,
+`c35_dashboard_timeline_24h`: **zero writes since stats reset, one
+lifetime seq_scan, zero idx_scans** on prod — but 0.1–5.4M stale rows
+each. No writer exists in pg_proc (prod or staging) nor in any repo.
+Retired dashboards. Get c35 PowerBI owner sign-off, then drop in the
+contract wave — do NOT build pool tables for them.
+
+### Views (23 objects) → Wave 3 only
+
+All remaining c33_*/c35_v_*/v_13_*/v13_* objects are plain views on
+prod. They need no writer cutover and no backfill — only re-pointing at
+pool/canonical base tables when those move, then the compat gate's
+column-shape + planner dimensions.
+
+### ⚠ Staging drift discovered — new Wave 0
+
+**21 of the 23 prod views exist as TABLES on staging** — the staging
+bootstrap (`edge-node-red/db/00-schema.sql`) materialized them.
+Consequence: staging cannot rehearse the view-flip waves until these
+are recreated as views with prod definitions (fetch via
+`pg_get_viewdef` on prod, SELECT-only). This is Wave 0.
+
+### Not resolvable with current access
+
+Prod `cron.job` is permission-denied for the `awslambda` role, so the
+refresh CADENCE of the 3 live tables is inferred from stats, not read
+from the schedule. Reading it needs the elevated-access path already
+flagged for Phase 5.
 
 ## Wave plan (expand → cutover → façade → contract)
+
+Scope after inventory: Wave 0 fixes staging's view-vs-table drift;
+Waves 1–2 cover only the 3 live tables; Wave 3 handles the 23 views;
+the 3 dead c35 dashboards skip straight to the contract wave.
+
+### Wave 0 — staging parity repair (NEW, from inventory)
+- Recreate the 21 staging tables that are views on prod as views, using
+  `pg_get_viewdef` output from prod (SELECT-only)
+- Precondition for rehearsing any view-flip on staging
+- Gate: column-shape dimension vs prod for all 23 views
 
 ### Wave 1 — expand: pool tables + backfill (1 PR per object group)
 - Create `customer_dashboards.<name>` pool tables (customer_id column,
