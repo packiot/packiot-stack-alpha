@@ -640,6 +640,18 @@ services:
       PER_POST_DELAY_MS: "50"
       STAGING_API_URL: http://edge-api:8080
       HEALTH_PORT: "9102"
+      # ADR-0012 3-flow parity: fan every equipment_values delta out to
+      # shadow_go_port (Flow 2, same DB) + packiot_shadow.public (Flow 3)
+      # so the shadow flows receive the same prod-anchored CPACK counters
+      # as Flow 1. One Go-side timestamp keeps (ts_value, id_equipment)
+      # — the parity join key — identical across flows. Loss-with-alert:
+      # shadow write failures never fail the Flow 1 write; watch
+      # mirror_worker_value_fanout_total{outcome!="ok"}.
+      SHADOW_VALUE_FANOUT: "true"
+      POSTGRES_SHADOW_DB_NAME: packiot_shadow
+      # Direct to postgres — pgbouncer's static database list doesn't
+      # include packiot_shadow (same bypass shadow-mirror uses).
+      SHADOW_DB_HOST: 10.10.10.89
     networks:
       packiot-net:
         ipv4_address: 172.18.0.21

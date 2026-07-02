@@ -94,6 +94,19 @@ func main() {
 	}
 	defer stagingDB.Close()
 
+	// ADR-0012 3-flow parity: fan equipment_values deltas out to the
+	// shadow destinations. Shadow pool failure is non-fatal — fan-out
+	// degrades to shadow_go_port only (Flow 2), surfaced by the metric.
+	if cfg.ShadowValueFanout {
+		stagingDB.EnableValueFanout()
+		if cfg.ShadowDBName != "" {
+			if err := stagingDB.AttachShadowPool(ctx, stagingCreds, cfg.ShadowDBHost, cfg.ShadowDBName); err != nil {
+				logger.Error("shadow pool init failed — fan-out degraded to shadow_go_port only",
+					slog.String("err", err.Error()))
+			}
+		}
+	}
+
 	apiToken, err := stagingDB.FetchAPIToken(ctx, cfg.StagingEnterpriseID)
 	if err != nil {
 		logger.Error("fetch staging api token", slog.String("err", err.Error()))

@@ -33,6 +33,16 @@ type Config struct {
 	// Staging edge-api — reached on the packiot-net docker network.
 	StagingAPIBaseURL string
 
+	// ADR-0012 3-flow parity fan-out for equipment_values deltas.
+	// ShadowValueFanout gates the whole feature (shadow_go_port +
+	// packiot_shadow writes). ShadowDBName names the Flow 3 database
+	// (empty = shadow_go_port only). ShadowDBHost overrides the host for
+	// the shadow pool — pgbouncer's static database list doesn't include
+	// packiot_shadow, so staging passes the DB EC2 address directly.
+	ShadowValueFanout bool
+	ShadowDBName      string
+	ShadowDBHost      string
+
 	// Event-event interval-overlap matcher thresholds (Phase A4b).
 	// EventMinOverlapSec — minimum overlap to count as a match.
 	// EventMaxStartDriftSec — staging.ts_event must be no earlier than
@@ -169,6 +179,9 @@ func Load() (*Config, error) {
 		BatchSize:                  getenvInt("BATCH_SIZE", 50),
 		PerPostDelayMs:             getenvInt("PER_POST_DELAY_MS", 50),
 		StagingAPIBaseURL:          getenv("STAGING_API_URL", "http://edge-api:8080"),
+		ShadowValueFanout:          getenvBool("SHADOW_VALUE_FANOUT", false),
+		ShadowDBName:               getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShadowDBHost:               getenv("SHADOW_DB_HOST", ""),
 		EventMinOverlapSec:         getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
 		EventMaxStartDriftSec:      getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
 		HealthPort:                 getenvInt("HEALTH_PORT", 9102),
