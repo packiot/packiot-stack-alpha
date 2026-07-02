@@ -739,6 +739,9 @@ services:
       # id_order (see 0012-phase4-execution-plan.md Wave 2).
       SPEED33_REPORT_ENABLED: "true"
       SPEED33_INTERVAL_MINUTES: "10"
+      # Wave 2 port #2: shift_06 delete-and-reload → customer_reports.shift
+      SHIFT06_REPORT_ENABLED: "true"
+      SHIFT06_INTERVAL_MINUTES: "15"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20

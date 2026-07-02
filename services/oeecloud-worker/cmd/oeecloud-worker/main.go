@@ -157,6 +157,11 @@ func main() {
 		go reports.LoopSpeed33(ctx, pool, time.Duration(cfg.Speed33IntervalMinutes)*time.Minute, logger)
 	}
 
+	// ADR-0012 Wave 2 port #2 — customer_reports.shift writer (cust 6).
+	if cfg.Shift06ReportEnabled {
+		go reports.LoopShift06(ctx, pool, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger)
+	}
+
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
 	// Parses the AMQP payload, builds one Query per metric via the right
 	// writer, and sends them as a single pgx.Batch.
