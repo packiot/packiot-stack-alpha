@@ -3,13 +3,10 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay"
@@ -114,22 +111,5 @@ func insertManualEvent(ctx context.Context, pool *pgxpool.Pool, schema string, p
 		p.DescCategory, p.DescSubcategory,
 		p.TxtDowntimeNotes,
 	)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-			logger.Warn("target table missing — fail-open (Phase 2 handler tolerates missing tables)",
-				slog.Int64("id_user_log", userLogID),
-				slog.String("schema", schema),
-				slog.String("table", "equipment_events_man"),
-				slog.String("hint", "provision the table via reprovision script + a shadow_go_port migration"),
-			)
-			return nil
-		}
-		return err
-	}
-	return nil
+	return failOpenIfMissing(err, "equipment_events_man", schema, userLogID, logger)
 }
-
-// Ensure pgx types are pulled in for build — used only via the pool
-// parameter but reference here documents the dep.
-var _ = pgx.QueryExecModeSimpleProtocol
