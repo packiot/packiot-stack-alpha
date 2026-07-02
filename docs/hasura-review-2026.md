@@ -244,3 +244,42 @@ verify before pulling the plug:
 - Hasura Cloud project: `strong-cicada-30.hasura.app` (public URL
   `gqlpiot.packiot.com`)
 - Staging Docker Hasura: `stack-hasura-1` on port 8081
+
+## Update 2026-07-02 — de-bloat EXECUTED on staging (task #86 step 2)
+
+Query logging went live earlier today; 12h / 10,520 queries gave the
+empirical surface, which is RICHER than this review's 7-query estimate:
+
+**10 root fields** (all from edge-node-red, confirmed sole consumer):
+
+| Root | Kind | 12h count |
+|---|---|---|
+| h_piot_get_events_timeline3_with_event_id | tracked FUNCTION | 2751 |
+| h_piot_get_equipment_pending_downtime_with_event_id | tracked FUNCTION | 2751 |
+| v_operator_po_list_setup_4 | view | 1010 |
+| v_operator_po_details_3 | view | 1010 |
+| piot_get_shift_hours_by_packml_topic_2 | tracked FUNCTION | 949 |
+| piot_get_day_week_begin_by_packml_topic | tracked FUNCTION | 949 |
+| equipments | table (packml where-filter) | 949 |
+| v_operator_entities_2 | view | 70 |
+| v_entities_per_user_role_operator | view | 70 |
+| language_packs | table | 70 |
+
+Corrections to this review: (1) "105 tracked functions likely
+aspirational" — 4 are the hottest consumers; (2) the LIVE operator
+views are the version-suffixed ones (_3/_setup_4) — their unsuffixed
+siblings are the dead generation (contract-wave input).
+
+**Applied**: staging metadata shrunk 165 tables + 105 functions →
+**14 tables + 5 functions** (343KB → 35KB), keeping the exact
+permission closure (enterprise→Users row filters, equipments→packml).
+Three live-verify iterations caught two missing hops via real-traffic
+validation errors; final state 0 inconsistencies, 0 errors, all roots
+serving. PowerBI cross-checked: 21 surface objects were tracked, zero
+GraphQL-queried — DirectQuery unaffected by untracking.
+
+**What remains for retirement (Option D)**: the kept set IS the REST
+contract — 5 function-shaped endpoints + 5 view/table reads on
+edge-api, then flip edge-node-red's GraphQL tab to HTTP. Prod Hasura
+Cloud stays untouched until its own query logging (console action)
+confirms the surface there.
