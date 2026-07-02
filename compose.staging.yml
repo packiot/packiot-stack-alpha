@@ -163,7 +163,15 @@ services:
     environment:
       HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
       HASURA_GRAPHQL_DEV_MODE: "false"
-      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log
+      # query-log added 2026-07-02 (task #86 / docs/hasura-review-2026.md):
+      # logs every GraphQL operation so a 30-day window can confirm the
+      # 7-named-query enumeration before any retirement decision. Logs
+      # ship to Loki via promtail; enumerate with
+      #   {container="stack-hasura-1"} |= "query-log"
+      # NOTE: this covers STAGING only — prod is Hasura Cloud
+      # (strong-cicada-30); enable query logging there via the cloud
+      # console to observe the endpoint customers actually hit.
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log,query-log
       # Cap pool: Hasura defaults to 50 connections which alone saturates
       # TimescaleDB's max_connections=50. Keep Hasura direct (no PgBouncer)
       # because it uses prepared statements incompatible with transaction pooling.
