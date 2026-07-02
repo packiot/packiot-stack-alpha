@@ -436,10 +436,15 @@ func (s *Staging) InsertEquipmentValueDelta(
 	return nil
 }
 
+// tp_equipment matters: prod's CAgg layer filters
+// WHERE tp_equipment IS NOT NULL — a delta row without it is invisible
+// to every aggregate (found via the ADR-0015 query API returning [];
+// staging CPACK rows were excluded from the whole agg layer).
 const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	       (id_equipment, ts_value, id_enterprise, id_site, id_area,
-	        net_production_incr, gross_production_incr)
-	 VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	        net_production_incr, gross_production_incr, tp_equipment)
+	 SELECT $1, $2, $3, $4, $5, $6, $7, e.tp_equipment
+	   FROM public.equipments e WHERE e.id_equipment = $1`
 
 // fanoutValueDelta writes one shadow copy of the delta row. Never
 // returns an error — outcomes land in the fan-out metric + logs.
