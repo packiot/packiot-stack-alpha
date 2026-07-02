@@ -155,3 +155,21 @@ the schema-map audit (3.7GB+). Prod hygiene candidates surfaced: the
 5. **(Phase 5 list)** prod hygiene: 496M invalidation log,
    28M dead-logger; staging parity: missing equipments/last_update
    triggers (Findings B/C)
+
+## 9. Remediation status (same day, 2026-07-02 evening)
+
+| Finding | Status |
+|---|---|
+| B/C — missing triggers (equipments ×3, last_update ×3) | ✅ installed verbatim + fire-tested (`staging-parity-prod-triggers.sql`) |
+| §2 — 22 more view-materialization drifts | ✅ 20 flipped (Wave 0b, all prod defs compiled); 2 were CAgg-layer objects, resolved below |
+| §3 — aggregate layer absent | ✅ adopted: equipment_values (25 chunks) + equipment_events (104) + agg_1min_t (21) hypertables; **12 CAggs** live with staging-tuned refresh + retention policies (deliberate: 30-day materialization, 180/90-day retention — the not-bloated divergence); 41-object consumer chain rebuilt from prod defs; 1.13M rows in agg_equipment_values_1min |
+| §3 — skipped prod objects | 5 CAggs (1s-grain + boxes + ohlc/ticks) + _past/_archive hypertables — deliberate, adopt on consumer demand |
+| A — prod shift-attribution mechanism | OPEN — decision item for ADR-0014 P2 close-out / Phase 5 |
+| §5 — PL/pgSQL body drift | OPEN — prod-is-ground-truth rule recorded; re-audit at each port |
+| §6 — prod hygiene (496M invalidation log, dead logger) | OPEN — prod-side, Phase 5 list |
+
+New drift class discovered during remediation: **same name + same relkind,
+different implementation** (plain view emulating a prod CAgg) — invisible
+to object diffs; only `timescaledb_information.continuous_aggregates`
+membership reveals it. Zero message loss through the whole migration
+(DLX retries drained; failed queues 0).
