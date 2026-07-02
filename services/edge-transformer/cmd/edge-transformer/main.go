@@ -55,7 +55,6 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/transforms/calc_production_counters"
-	"github.com/prometheus/client_golang/prometheus"
 	"path/filepath"
 	"strings"
 )
