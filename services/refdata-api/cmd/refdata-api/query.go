@@ -230,7 +230,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 			}
 			_, err = pool.Exec(r.Context(), `INSERT INTO user_screen_config (id_user, screen, config)
 				VALUES ($1,$2,$3) ON CONFLICT (id_user, screen)
-				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, user, screen, body)
+				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, user, screen, string(body))
 			if err != nil {
 				http.Error(w, `{"error":"store failed"}`, http.StatusInternalServerError)
 				return
