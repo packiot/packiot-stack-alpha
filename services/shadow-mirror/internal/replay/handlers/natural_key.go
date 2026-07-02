@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,6 +37,26 @@ func resolvePOKey(ctx context.Context, mainPool *pgxpool.Pool, idProductionOrder
 		return k, false, err
 	}
 	return k, true, nil
+}
+
+// resolveEventID maps a Flow 1 equipment_events_man row to its
+// id_equipment_event by exact ts_event lookup — ts_event is the table's
+// PRIMARY KEY on packiot.public (prod shape), so this is a unique match,
+// not a heuristic. Shadow inserts preserve this id so that
+// manual-event-edited's UPDATE-by-id works on the shadow paths (events
+// have no immutable natural key: ts_event itself is editable).
+func resolveEventID(ctx context.Context, mainPool *pgxpool.Pool, tsEvent time.Time) (int64, bool, error) {
+	var id int64
+	err := mainPool.QueryRow(ctx,
+		`SELECT id_equipment_event FROM public.equipment_events_man WHERE ts_event = $1`,
+		tsEvent).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
 }
 
 // noopObserver reports UPDATEs that matched zero rows. Silent no-op

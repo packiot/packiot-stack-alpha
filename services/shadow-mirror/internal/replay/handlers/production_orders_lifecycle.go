@@ -309,12 +309,11 @@ func ManualEventEdited(logger *slog.Logger) replay.Handler {
 }
 
 func updateManualEvent(ctx context.Context, pool *pgxpool.Pool, schema string, p *ManualEventEditedPayload, tsStart, tsEnd *time.Time, userLogID int64, logger *slog.Logger) error {
-	// KNOWN GAP: id_equipment_event is a Flow 1 surrogate id — shadow
-	// rows have locally generated ids, so this UPDATE matches zero rows
-	// on the shadow paths (same id-space problem as bug 248, but
-	// equipment_events_man has no natural key: (id_equipment, ts_event)
-	// is not unique). Needs an id-map design; until then
-	// execExpectingRows makes the gap observable instead of silent.
+	// Shadow rows preserve Flow 1's id_equipment_event at insert time
+	// (see ManualEventCreated ID PRESERVATION), so this UPDATE-by-id
+	// resolves on the shadow paths. Rows created before that shipped are
+	// unmapped — their edits land here as observable no-ops via
+	// execExpectingRows (cleared by the truth-reset).
 	sql := fmt.Sprintf(`UPDATE %s.equipment_events_man
 	   SET ts_event = COALESCE($1, ts_event),
 	       ts_end = COALESCE($2, ts_end),

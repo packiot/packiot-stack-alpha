@@ -42,3 +42,22 @@ func TestPOInsertsQualifyConflictTarget(t *testing.T) {
 		}
 	}
 }
+
+// Event inserts must preserve Flow 1's id ($1 = id_equipment_event) and
+// qualify their conflict target with ts_event — Flow 1's PK, so a
+// conflict can only mean cursor re-replay. Unqualified ON CONFLICT is
+// the bug-247 silent-loss pattern.
+func TestEventInsertsPreserveIDAndQualifyConflict(t *testing.T) {
+	inserts := map[string]string{
+		"sqlInsertManualEvent": sqlInsertManualEvent,
+		"sqlInsertSplitEvent":  sqlInsertSplitEvent,
+	}
+	for name, sql := range inserts {
+		if !strings.Contains(sql, "id_equipment_event") {
+			t.Errorf("%s: must insert Flow 1's id_equipment_event (id preservation):\n%s", name, sql)
+		}
+		if !strings.Contains(sql, "ON CONFLICT (ts_event) DO NOTHING") {
+			t.Errorf("%s: ON CONFLICT must be qualified with (ts_event):\n%s", name, sql)
+		}
+	}
+}
