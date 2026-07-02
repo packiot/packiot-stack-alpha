@@ -904,6 +904,10 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: packiot
       HEALTH_PORT: "9104"
+      # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
+      # keys only; production keys move to Secrets Manager at P3
+      # hardening. customer_id is NEVER client-supplied.
+      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.26
