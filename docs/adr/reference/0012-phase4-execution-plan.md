@@ -115,16 +115,49 @@ the 3 dead c35 dashboards skip straight to the contract wave.
   `0012-wave2-prod-writer-funcs.sql` (8 names — get_data_sync_
   enterprsie_06 has 2 overloads)
 
-### Wave 2 — writer cutover (1 PR per pg_cron function)
-- Each piot4_* writer gains pool-table writes (dual-write window), old
-  table writes retained
-- NOTE the ADR-0014 interaction: functions already scheduled for a Go
-  port should be ported ONCE, directly to the pool shape — do not pay
-  the PL/pgSQL edit twice. Check `docs/adr/0014-*.md` Phase 3/4 list
-  before touching a function here.
-- Bake ≥72h: row-count + byte-sample dimensions comparing old table vs
-  pool slice
+### Wave 2 — writer cutover: DECIDED as the ADR-0014 P4 Go port, done once
+- **Decision (2026-07-02, after the fork was surfaced): do NOT edit the
+  PL/pgSQL writers for dual-write.** They are the customer-specific
+  family ADR-0014 Phase 4 earmarks for Go handlers
+  (`0014-oee-math-inventory.md` maps them); editing a 22KB function
+  we'd then port anyway violates the single-port rule (bug-241 family),
+  and staging can't validate the edit (writers unscheduled there, no
+  enterprise 6/33/13 base data).
+- **Shape**: one Go worker job per writer family, writing the
+  `customer_reports` pool tables directly, old table kept as the
+  dual-write shadow during the bake. Sequence by risk:
+  1. `report_speed_enterprsie_33` (2 small functions, warm) — the
+     pattern-prover
+  2. `report_shift_enterprsie_06` (5 functions, hot delete-and-reload —
+     port as truncate-and-rebuild job)
+  3. `sap_report_data_sync_customer_13` LAST (22KB upsert + back4-api
+     coordination; the pool unique key
+     (customer_id, linie, tag, shicht, auftrag_key) is the contract)
+- **Validation data**: staging lacks enterprise 6/33/13 base data →
+  build synthetic fixtures (mirror-worker/simulator style) OR run the
+  Go job read-only against prod base tables (SELECT-only holds) writing
+  to STAGING pool tables — the second gives real-data parity checking
+  without prod writes and is the recommended bake harness.
+- Ground truth for each port: `0012-wave2-prod-writer-funcs.sql`
+- Bake ≥72h per object: row-count + byte-sample vs the prod original
 - Gate: all 5 dimensions green per object
+
+### Coordination checklist (start these NOW — they have lead time)
+- [ ] back4-api owner: neopac data-sync controller must target the pool
+      key at cutover (only cross-service change in Phase 4)
+- [ ] c35 PowerBI owner sign-off: drop the 3 dead dashboard tables
+- [ ] Prod Hasura Cloud query logging ON (console) — task #86's other
+      half
+- [ ] Elevated prod DB access path for Phase 5 (awslambda can't DDL or
+      read cron.job)
+
+### Calendar gates (nothing blocks the Wave 2 Go ports meanwhile)
+- **2026-07-09**: ADR-0014 P2 shift-resolver bake ends (168h from
+  07-02T14:10Z) → retire trigger, widen fill gate
+- **2026-08-01**: Hasura 30-day staging query-log window ends →
+  enumerate operations → task #86 decision with product
+- Wave 3 view flips: after Wave 2 bakes green; Wave 4 contract: after
+  30-day soak + sign-offs
 
 ### Wave 3 — façade flip (1 PR per customer group)
 - `DROP TABLE public.c35_<name>` → `CREATE VIEW public.c35_<name> AS

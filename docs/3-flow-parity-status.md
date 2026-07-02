@@ -73,9 +73,17 @@ derivations (equipment_events, runtime aggregates, PO scoring).
 5. **ADR-0012 Phase 4** — real-staging migration (remaining 33 façades,
    customer_dashboards pool promotion) gated by the PowerBI 37-object
    compat test plan; then prod
-6. **(Optional) simulator fan-out** — route enterprise 1/2 simulator
-   traffic through edge-transformer or fan it out likewise, if parity
-   scope widens beyond CPACK
+6. **Simulator fan-out — DEFERRED (explicit decision 2026-07-02)**:
+   CPACK is the parity target; enterprise 1/2 simulator traffic stays
+   Flow 1-only. Revisit only if parity scope widens. Known consequence:
+   simulator PO churn interacting with the mirror reconciler can
+   strand shadow running-POs after a truth-reset (observed post-#191:
+   3 simulator equipments wedged the running-PO index, 31 loud 23505
+   failures, CPACK unaffected). One-time fix = the **truth-nudge**:
+   `UPDATE shadow SET status = f1.status ... WHERE shadow.status = 2
+   AND f1.status <> 2` joined by natural key. Candidate future
+   improvement: a periodic reconcile pass in shadow-mirror doing
+   exactly this (mirrors mirror-worker's EnsureActivePOs pattern)
 
 ## Acceptance criteria for "100% parity"
 
