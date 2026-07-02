@@ -851,7 +851,12 @@ services:
     environment:
       LOG_LEVEL: info
       # DEFAULT OFF — service starts but no polling happens.
-      SHADOW_MIRROR_ENABLED: "false"
+      # ADR-0013 shadow-mirror now ACTIVE:
+      # - shadow_go_port.equipment_events_man + production_orders exist
+      #   (migration 20260702000001_shadow_go_port_operator_tables.ts)
+      # - packiot_shadow.public.* exists (Phase 3 writer-tables SQL)
+      # - 10 handlers registered covering ~90% of daily operator volume
+      SHADOW_MIRROR_ENABLED: "true"
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
       # DB creds come from the .env for skeleton; migrate to AWS

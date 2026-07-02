@@ -85,6 +85,78 @@ CREATE TABLE IF NOT EXISTS public.uns_equipment_current_metrics (
 -- MAIN pool for resolver lookups (not the shadow pool), so this table
 -- exists on `packiot` DB and is NOT needed on `packiot_shadow`. Skipping.
 
+-- ADR-0013 shadow-mirror target tables. Column shape captured from
+-- staging packiot 2026-07-02 (matches prod tsp12).
+
+CREATE TABLE IF NOT EXISTS public.equipment_events_man (
+    id_equipment           integer,
+    ts_event               timestamp with time zone,
+    status                 integer,
+    id_equipment_event     integer,
+    txt_downtime_notes     text,
+    idle                   character varying,
+    idle_processed         boolean,
+    forced_creation_system boolean,
+    fault                  integer,
+    fault_processed        boolean,
+    cd_machine             character varying,
+    cd_category            character varying,
+    cd_subcategory         character varying,
+    change_over            boolean,
+    planned_downtime       boolean,
+    ts_end                 timestamp with time zone,
+    duration               integer,
+    id_enterprise          integer,
+    desc_category          character varying,
+    desc_subcategory       character varying,
+    cd_category_client     integer,
+    cd_subcategory_client  integer,
+    last_update            timestamp with time zone DEFAULT now(),
+    ignore_cost            boolean
+);
+CREATE INDEX IF NOT EXISTS eem_id_equipment_ts_idx ON public.equipment_events_man (id_equipment, ts_event DESC);
+
+CREATE TABLE IF NOT EXISTS public.production_orders (
+    id_production_order            bigint NOT NULL,
+    id_enterprise                  integer NOT NULL,
+    id_site                        integer NOT NULL,
+    id_area                        integer NOT NULL,
+    id_equipment                   integer NOT NULL,
+    id_product                     integer,
+    id_client                      integer,
+    status                         integer DEFAULT 1 NOT NULL,
+    production_programmed          bigint,
+    production_ordered             bigint,
+    id_order                       integer NOT NULL,
+    id_user_operator               integer,
+    id_equipment_executed          integer,
+    production_real                bigint,
+    production_final               bigint,
+    ts_start                       timestamp with time zone,
+    ts_end                         timestamp with time zone,
+    equipment_setup                jsonb,
+    oee_processed                  boolean DEFAULT false NOT NULL,
+    oee                            real,
+    stopped_time                   integer,
+    planned_downtime               integer,
+    qt_stops                       integer,
+    erp_processed                  boolean DEFAULT false NOT NULL,
+    ts_creation                    timestamp with time zone DEFAULT now() NOT NULL,
+    txt_production_order_notes     character varying(255),
+    txt_production_order_description character varying(255),
+    conversion_factor              real DEFAULT 1,
+    net_production                 double precision,
+    speed                          real,
+    ideal_production_speed         integer,
+    id_order_text                  character varying(255),
+    recalc_needed                  boolean DEFAULT true NOT NULL,
+    last_update                    timestamp with time zone DEFAULT now(),
+    nm_production_order            character varying,
+    multiplier                     double precision,
+    PRIMARY KEY (id_production_order)
+);
+CREATE INDEX IF NOT EXISTS po_id_equipment_status_idx ON public.production_orders (id_equipment, status);
+
 \echo ''
 \echo '=== packiot_shadow writer-target tables created ==='
-SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename IN ('equipment_values','uns_equipment_current_metrics') ORDER BY tablename;
+SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename IN ('equipment_values','uns_equipment_current_metrics','equipment_events_man','production_orders') ORDER BY tablename;
