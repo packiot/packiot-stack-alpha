@@ -87,7 +87,9 @@ func main() {
 
 	m := metrics.New()
 	dispatcher := replay.NewDispatcher(logger)
-	dispatcher.Register("manual-event-created", handlers.ManualEventCreatedPlaceholder(logger))
+	// Phase 2 (2026-07-01): first real handler live. Others come in
+	// subsequent PRs, per ADR-0013 §Implementation.
+	dispatcher.Register("manual-event-created", handlers.ManualEventCreated(logger))
 
 	// HTTP server (health + metrics) runs alongside the loop.
 	mux := http.NewServeMux()
