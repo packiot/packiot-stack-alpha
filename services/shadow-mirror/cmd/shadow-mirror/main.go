@@ -86,6 +86,9 @@ func main() {
 	}
 
 	m := metrics.New()
+	// Zero-row shadow UPDATEs are replay gaps that must be observable
+	// (bugs 247/248 were exactly this class of silent no-op).
+	handlers.SetNoopObserver(m.IncUpdateNoop)
 	dispatcher := replay.NewDispatcher(logger)
 	// Phase 2 (2026-07-01): first real handler live. Others come in
 	// subsequent PRs, per ADR-0013 §Implementation.

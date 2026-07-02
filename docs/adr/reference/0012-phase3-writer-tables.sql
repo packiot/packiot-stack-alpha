@@ -157,6 +157,18 @@ CREATE TABLE IF NOT EXISTS public.production_orders (
 );
 CREATE INDEX IF NOT EXISTS po_id_equipment_status_idx ON public.production_orders (id_equipment, status);
 
+-- Bugs 247/248 (2026-07-02): shadow-mirror replays lifecycle UPDATEs by
+-- the natural key (id_enterprise, id_order) — surrogate ids diverge per
+-- flow by construction. Both shadow destinations need the same
+-- uniqueness rules as packiot.public so (a) the handlers' qualified
+-- ON CONFLICT (id_enterprise, id_order) has an index to match and
+-- (b) the one-running-PO-per-equipment invariant can't be violated
+-- silently on one flow but enforced on the other.
+CREATE UNIQUE INDEX IF NOT EXISTS production_orders_id_enterprise_id_order_key
+    ON public.production_orders (id_enterprise, id_order);
+CREATE UNIQUE INDEX IF NOT EXISTS production_orders_id_equipment_run_idx
+    ON public.production_orders (id_equipment) WHERE (status = 2);
+
 \echo ''
 \echo '=== packiot_shadow writer-target tables created ==='
 SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename IN ('equipment_values','uns_equipment_current_metrics','equipment_events_man','production_orders') ORDER BY tablename;
