@@ -1,0 +1,278 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay"
+)
+
+// OrderCreatedPayload — user_logs.category='order-created'. Similar to
+// order-created-started but the PO is available (status=1) not running.
+// Used by mirror-worker-go's EnsureActivePOs reconciliation.
+type OrderCreatedPayload struct {
+	IDOrder                 int64  `json:"idOrder"`
+	IDEnterprise            int    `json:"idEnterprise"`
+	IDSite                  int    `json:"idSite"`
+	IDArea                  int    `json:"idArea"`
+	IDEquipment             int    `json:"idEquipment"`
+	NmProductionOrder       string `json:"nmProductionOrder"`
+	ProductionOrderQuantity int64  `json:"productionOrderQuantity"`
+	TxtProductionOrderNotes string `json:"txtProductionOrderNotes"`
+}
+
+// OrderCreated inserts a PO row with status=1 (available). Idempotent
+// via ON CONFLICT DO NOTHING.
+func OrderCreated(logger *slog.Logger) replay.Handler {
+	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+		var p OrderCreatedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return replay.ErrSkip
+		}
+		if p.IDOrder == 0 || p.IDEquipment == 0 {
+			return replay.ErrSkip
+		}
+		if err := insertPOAvailable(ctx, mainPool, "shadow_go_port", &p, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port: %w", err)
+		}
+		if shadowPool != nil {
+			if err := insertPOAvailable(ctx, shadowPool, "public", &p, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+func insertPOAvailable(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderCreatedPayload, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(`INSERT INTO %s.production_orders (
+		id_enterprise, id_site, id_area, id_equipment, id_order,
+		nm_production_order, production_ordered, txt_production_order_notes, status
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1)
+	ON CONFLICT DO NOTHING`, schema)
+	_, err := pool.Exec(ctx, sql,
+		p.IDEnterprise, p.IDSite, p.IDArea, p.IDEquipment, p.IDOrder,
+		p.NmProductionOrder, p.ProductionOrderQuantity, p.TxtProductionOrderNotes,
+	)
+	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+}
+
+// OrderStartedPayload — user_logs.category='order-started'.
+// Transitions an available PO (status=1) into running (status=2).
+type OrderStartedPayload struct {
+	IDArea            int    `json:"idArea"`
+	IDSite            int    `json:"idSite"`
+	Timestamp         string `json:"timestamp"`
+	IDEquipment       int    `json:"idEquipment"`
+	IDEnterprise      int    `json:"idEnterprise"`
+	IDProductionOrder int64  `json:"idProductionOrder"`
+}
+
+func OrderStarted(logger *slog.Logger) replay.Handler {
+	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+		var p OrderStartedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return replay.ErrSkip
+		}
+		if p.IDProductionOrder == 0 {
+			return replay.ErrSkip
+		}
+		tsStart, err := time.Parse(time.RFC3339, p.Timestamp)
+		if err != nil {
+			return replay.ErrSkip
+		}
+		if err := updatePOStart(ctx, mainPool, "shadow_go_port", &p, tsStart, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port: %w", err)
+		}
+		if shadowPool != nil {
+			if err := updatePOStart(ctx, shadowPool, "public", &p, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+func updatePOStart(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderStartedPayload, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(`UPDATE %s.production_orders
+	   SET status = 2, ts_start = $1, last_update = now()
+	 WHERE id_production_order = $2`, schema)
+	_, err := pool.Exec(ctx, sql, tsStart, p.IDProductionOrder)
+	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+}
+
+// OrderTimeChangedPayload — user_logs.category='order-time-changed'.
+// Updates ts_start of an existing PO.
+type OrderTimeChangedPayload struct {
+	Start                    string `json:"start"`
+	IDEquipment              int    `json:"idEquipment"`
+	IDProductionOrder        int64  `json:"idProductionOrder"`
+	IDProductionOrderRuntime int64  `json:"idProductionOrderRuntime"`
+}
+
+func OrderTimeChanged(logger *slog.Logger) replay.Handler {
+	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+		var p OrderTimeChangedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return replay.ErrSkip
+		}
+		if p.IDProductionOrder == 0 || p.Start == "" {
+			return replay.ErrSkip
+		}
+		tsStart, err := time.Parse(time.RFC3339Nano, p.Start)
+		if err != nil {
+			return replay.ErrSkip
+		}
+		if err := updatePOTsStart(ctx, mainPool, "shadow_go_port", &p, tsStart, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port: %w", err)
+		}
+		if shadowPool != nil {
+			if err := updatePOTsStart(ctx, shadowPool, "public", &p, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+func updatePOTsStart(ctx context.Context, pool *pgxpool.Pool, schema string, p *OrderTimeChangedPayload, tsStart time.Time, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(`UPDATE %s.production_orders
+	   SET ts_start = $1, last_update = now()
+	 WHERE id_production_order = $2`, schema)
+	_, err := pool.Exec(ctx, sql, tsStart, p.IDProductionOrder)
+	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+}
+
+// OrderReplacedPayload — user_logs.category='order-replaced'.
+// Marks the PO as replaced by another (recalc_needed=true to force
+// runtime aggregate recomputation).
+type OrderReplacedPayload struct {
+	IDEquipment       int   `json:"idEquipment"`
+	IDEnterprise      int   `json:"idEnterprise"`
+	IDProductionOrder int64 `json:"idProductionOrder"`
+}
+
+func OrderReplaced(logger *slog.Logger) replay.Handler {
+	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+		var p OrderReplacedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return replay.ErrSkip
+		}
+		if p.IDProductionOrder == 0 {
+			return replay.ErrSkip
+		}
+		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", p.IDProductionOrder, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port: %w", err)
+		}
+		if shadowPool != nil {
+			if err := updatePORecalc(ctx, shadowPool, "public", p.IDProductionOrder, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+// OrderStatusChangedPayload — user_logs.category='order-status-changed'.
+// Minimal payload — just triggers a recalc on the PO.
+type OrderStatusChangedPayload struct {
+	IDEquipment       int   `json:"idEquipment"`
+	IDProductionOrder int64 `json:"idProductionOrder"`
+}
+
+func OrderStatusChanged(logger *slog.Logger) replay.Handler {
+	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+		var p OrderStatusChangedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return replay.ErrSkip
+		}
+		if p.IDProductionOrder == 0 {
+			return replay.ErrSkip
+		}
+		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", p.IDProductionOrder, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port: %w", err)
+		}
+		if shadowPool != nil {
+			if err := updatePORecalc(ctx, shadowPool, "public", p.IDProductionOrder, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+func updatePORecalc(ctx context.Context, pool *pgxpool.Pool, schema string, idPO int64, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(`UPDATE %s.production_orders SET recalc_needed = true, last_update = now() WHERE id_production_order = $1`, schema)
+	_, err := pool.Exec(ctx, sql, idPO)
+	return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+}
+
+// ManualEventEditedPayload — user_logs.category='manual-event-edited'.
+// UPDATE existing equipment_events_man by id_equipment_event.
+type ManualEventEditedPayload struct {
+	End              string `json:"end"`
+	Start            string `json:"start"`
+	CdMachine        string `json:"cdMachine"`
+	CdCategory       string `json:"cdCategory"`
+	CdSubcategory    string `json:"cdSubcategory"`
+	DescCategory     string `json:"descCategory"`
+	DescSubcategory  string `json:"descSubcategory"`
+	IDEquipment      int    `json:"idEquipment"`
+	IDEquipmentEvent int    `json:"idEquipmentEvent"`
+	ChangeOver       bool   `json:"changeOver"`
+	PlannedDowntime  bool   `json:"plannedDowntime"`
+	TxtDowntimeNotes string `json:"txtDowntimeNotes"`
+}
+
+func ManualEventEdited(logger *slog.Logger) replay.Handler {
+	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+		var p ManualEventEditedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return replay.ErrSkip
+		}
+		if p.IDEquipmentEvent == 0 {
+			return replay.ErrSkip
+		}
+		var tsStart, tsEnd *time.Time
+		if t, err := time.Parse(time.RFC3339, p.Start); err == nil {
+			tsStart = &t
+		}
+		if t, err := time.Parse(time.RFC3339, p.End); err == nil {
+			tsEnd = &t
+		}
+		if err := updateManualEvent(ctx, mainPool, "shadow_go_port", &p, tsStart, tsEnd, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port: %w", err)
+		}
+		if shadowPool != nil {
+			if err := updateManualEvent(ctx, shadowPool, "public", &p, tsStart, tsEnd, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+func updateManualEvent(ctx context.Context, pool *pgxpool.Pool, schema string, p *ManualEventEditedPayload, tsStart, tsEnd *time.Time, userLogID int64, logger *slog.Logger) error {
+	sql := fmt.Sprintf(`UPDATE %s.equipment_events_man
+	   SET ts_event = COALESCE($1, ts_event),
+	       ts_end = COALESCE($2, ts_end),
+	       cd_machine = $3, cd_category = $4, cd_subcategory = $5,
+	       desc_category = $6, desc_subcategory = $7,
+	       change_over = $8, planned_downtime = $9,
+	       txt_downtime_notes = $10, last_update = now()
+	 WHERE id_equipment_event = $11`, schema)
+	_, err := pool.Exec(ctx, sql,
+		tsStart, tsEnd,
+		p.CdMachine, p.CdCategory, p.CdSubcategory,
+		p.DescCategory, p.DescSubcategory,
+		p.ChangeOver, p.PlannedDowntime,
+		p.TxtDowntimeNotes,
+		p.IDEquipmentEvent,
+	)
+	return failOpenIfMissing(err, "equipment_events_man", schema, userLogID, logger)
+}
