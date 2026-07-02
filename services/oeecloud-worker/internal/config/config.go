@@ -70,6 +70,8 @@ type Config struct {
 	// on staging this is the sole writer (legacy never scheduled here).
 	Speed33ReportEnabled  bool
 	Speed33IntervalMinutes int
+	Shift06ReportEnabled   bool
+	Shift06IntervalMinutes int
 }
 
 func Load() (*Config, error) {
@@ -94,6 +96,8 @@ func Load() (*Config, error) {
 		ShiftResolverEnabled: getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		Speed33ReportEnabled: getenv("SPEED33_REPORT_ENABLED", "false") == "true",
 		Speed33IntervalMinutes: getenvInt("SPEED33_INTERVAL_MINUTES", 10),
+		Shift06ReportEnabled:   getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
+		Shift06IntervalMinutes: getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
 	}, nil
 }
 
