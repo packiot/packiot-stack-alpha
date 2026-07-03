@@ -169,6 +169,11 @@ func main() {
 		go reports.LoopShift06(ctx, pool, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0014 P4 — enterprise-6 production data sync (main flow).
+	if cfg.Sync06ReportEnabled {
+		go reports.LoopSync06(ctx, pool, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
+	}
+
 	// ADR-0014 — the label-adapter boxes pipeline (descriptor-driven).
 	if cfg.Boxes13ReportEnabled {
 		go reports.LoopBoxes(ctx, flows.Standard(pool, shadowPool), time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)
