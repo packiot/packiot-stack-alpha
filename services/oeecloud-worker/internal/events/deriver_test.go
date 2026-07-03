@@ -7,7 +7,7 @@ import (
 
 func TestDeriverPortFidelity(t *testing.T) {
 	both := upsertSQL + correctSQL
-	for _, m := range []string{"interval '25 hours'", "rn > 10", "status_type = 4",
+	for _, m := range []string{"interval '25 hours'", "interval '10 seconds'", "status_type = 4",
 		"tp_equipment > 0", "ON CONFLICT (id_equipment, ts_event)",
 		"interval '1 day'", "forced_creation_system", "ca_discrete_changes_1s"} {
 		if !strings.Contains(both, m) {
@@ -19,5 +19,8 @@ func TestDeriverPortFidelity(t *testing.T) {
 	}
 	if !strings.Contains(upsertSQL, "first_value(state) OVER (PARTITION BY id_equipment, grp") {
 		t.Error("LOCF gaps-and-islands rewrite missing")
+	}
+	if strings.Contains(both, "rn >") {
+		t.Error("row-count warmup is wrong on sparse streams — must stay time-based")
 	}
 }

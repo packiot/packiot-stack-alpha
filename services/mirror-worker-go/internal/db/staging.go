@@ -446,6 +446,49 @@ const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	 SELECT $1, $2, $3, $4, $5, $6, $7, e.tp_equipment
 	   FROM public.equipments e WHERE e.id_equipment = $1`
 
+// FanoutStateRow mirrors one prod state transition (from the events
+// reconciler) as a state-bearing equipment_values row into the SHADOW
+// flows only. Flow 1 must NOT get it: its equipment_events are already
+// mirrored 1:1, and a state row would make its trigger pipeline mint a
+// duplicate. The shadow flows have no trigger pipeline — their events
+// come from the ADR-0014 deriver, which needs exactly this stream.
+// Closed-loop bake: prod events -> state stream -> deriver -> derived
+// events, expected to reproduce the mirrored events. Fail-open like
+// every fan-out write.
+func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID, status int, ts time.Time) {
+	if !s.valueFanout {
+		return
+	}
+	run := func(pool *pgxpool.Pool, schema, destination string) {
+		_, err := pool.Exec(ctx, fmt.Sprintf(sqlInsertStateRow, schema),
+			stagingEqID, ts, enterpriseID, status)
+		if err == nil {
+			metrics.ValueFanoutTotal.WithLabelValues(destination+"-state", "ok").Inc()
+			return
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			metrics.ValueFanoutTotal.WithLabelValues(destination+"-state", "missing_table").Inc()
+			return
+		}
+		metrics.ValueFanoutTotal.WithLabelValues(destination+"-state", "failed").Inc()
+		s.logger.Warn("state fan-out failed", slog.String("destination", destination), slog.String("err", err.Error()))
+	}
+	run(s.pool, "shadow_go_port", "shadow_go_port")
+	if s.shadowPool != nil {
+		run(s.shadowPool, "public", "packiot_shadow")
+	}
+}
+
+// Same (ts_value, id_equipment) key as every equipment_values write; if
+// a counter-delta row already occupies the second, enrich it with state
+// instead of losing the transition.
+const sqlInsertStateRow = `INSERT INTO %s.equipment_values
+	       (id_equipment, ts_value, id_enterprise, id_site, id_area, state, tp_equipment)
+	 SELECT $1, $2, $3, e.id_site, e.id_area, $4, e.tp_equipment
+	   FROM public.equipments e WHERE e.id_equipment = $1
+	 ON CONFLICT (ts_value, id_equipment) DO UPDATE SET state = EXCLUDED.state`
+
 // fanoutValueDelta writes one shadow copy of the delta row. Never
 // returns an error — outcomes land in the fan-out metric + logs.
 // 42P01 (table missing) is fail-open like shadow-mirror: deploy-order

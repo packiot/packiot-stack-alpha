@@ -228,5 +228,10 @@ func (r *Reconciler) ensureOneEvent(ctx context.Context, ev db.ProdEquipmentEven
 	}); err != nil {
 		return 0, err
 	}
+	// Shadow flows get the transition as a state-bearing value row —
+	// the ADR-0014 deriver's input stream (no-op unless fan-out enabled).
+	if ev.Status != nil {
+		r.staging.FanoutStateRow(ctx, stagingEqID, r.cfg.StagingEnterpriseID, *ev.Status, ev.TsEvent)
+	}
 	return stagingEventID, nil
 }
