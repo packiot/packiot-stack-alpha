@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
 )
 
 // Speed33 ports prod's c33_speed_per_job_insert_into_report() procedure
@@ -73,23 +75,10 @@ func RunSpeed33(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 // Prod scheduled the legacy procedure via cron (schedule unreadable to
 // awslambda — inferred warm: 1.8k lifetime inserts); 10 minutes is the
 // staging-tuned default, configurable by the caller.
-func LoopSpeed33(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	logger.Info("speed33 report writer started (Wave 2 port #1)", slog.Duration("interval", every))
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			n, err := RunSpeed33(ctx, pool)
-			if err != nil {
-				logger.Warn("speed33 pass failed", slog.String("err", err.Error()))
-				continue
-			}
-			if n > 0 {
-				logger.Info("speed33 rows inserted", slog.Int64("rows", n))
-			}
-		}
-	}
+func LoopSpeed33(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("speed33 report writer started (Wave 2 port #1)")
+	jobs.Loop(ctx, jobs.Job{Name: "speed33", Every: every, Run: func(ctx context.Context) error {
+		_, err := RunSpeed33(ctx, pool)
+		return err
+	}}, logger, obs)
 }

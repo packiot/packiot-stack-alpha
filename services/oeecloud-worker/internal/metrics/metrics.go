@@ -23,6 +23,7 @@ type Metrics struct {
 	// Per-delivery counters (incremented in amqp/consumer.go).
 	Deliveries *prometheus.CounterVec   // labels: routing_key, result
 	Duration   *prometheus.HistogramVec // labels: routing_key
+	JobTicks   *prometheus.CounterVec   // labels: job, outcome (ok|error|panic)
 }
 
 func New() *Metrics {
@@ -48,6 +49,10 @@ func New() *Metrics {
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}, []string{"routing_key"}),
 	}
-	reg.MustRegister(m.Deliveries, m.Duration)
+	m.JobTicks = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "oeecloud_worker_job_ticks_total",
+		Help: "Scheduled-job ticks by job and outcome (ok|error|panic).",
+	}, []string{"job", "outcome"})
+	reg.MustRegister(m.Deliveries, m.Duration, m.JobTicks)
 	return m
 }

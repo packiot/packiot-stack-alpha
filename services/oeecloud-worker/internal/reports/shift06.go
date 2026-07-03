@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
 )
 
 // Shift06 ports prod's update_report_shift_enterprsie_06() procedure
@@ -61,23 +63,10 @@ func RunShift06(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 // LoopShift06 — staging-tuned cadence (prod's cron schedule is
 // unreadable to awslambda; the COMPUTATION is verbatim, the cadence is
 // the documented divergence, same class as the CAgg policies).
-func LoopShift06(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	logger.Info("shift06 report writer started (Wave 2 port #2)", slog.Duration("interval", every))
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			n, err := RunShift06(ctx, pool)
-			if err != nil {
-				logger.Warn("shift06 pass failed", slog.String("err", err.Error()))
-				continue
-			}
-			if n > 0 {
-				logger.Info("shift06 rows rebuilt", slog.Int64("rows", n))
-			}
-		}
-	}
+func LoopShift06(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("shift06 report writer started (Wave 2 port #2)")
+	jobs.Loop(ctx, jobs.Job{Name: "shift06", Every: every, Run: func(ctx context.Context) error {
+		_, err := RunShift06(ctx, pool)
+		return err
+	}}, logger, obs)
 }

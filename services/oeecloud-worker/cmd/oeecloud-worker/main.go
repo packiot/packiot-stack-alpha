@@ -20,9 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"strconv"
-	"strings"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
@@ -157,14 +154,18 @@ func main() {
 		logger.Info("shift resolver enabled (ADR-0014 Phase 2) — shadow paths get Go-computed shifts")
 	}
 
+	mx := metrics.New()
+	// One observer for every scheduled job → jobs_ticks_total{job,outcome}.
+	jobObs := func(job, outcome string) { mx.JobTicks.WithLabelValues(job, outcome).Inc() }
+
 	// ADR-0012 Wave 2 port #1 — customer_reports.speed writer (cust 33).
 	if cfg.Speed33ReportEnabled {
-		go reports.LoopSpeed33(ctx, pool, time.Duration(cfg.Speed33IntervalMinutes)*time.Minute, logger)
+		go reports.LoopSpeed33(ctx, pool, time.Duration(cfg.Speed33IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0012 Wave 2 port #2 — customer_reports.shift writer (cust 6).
 	if cfg.Shift06ReportEnabled {
-		go reports.LoopShift06(ctx, pool, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger)
+		go reports.LoopShift06(ctx, pool, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3a — events deriver for the shadow flows. Deployed
@@ -174,8 +175,8 @@ func main() {
 		if shadowPool != nil {
 			dests = append(dests, events.Dest{Name: "packiot_shadow", Pool: shadowPool, EvSchema: "public", RefSchema: "public"})
 		}
-		go events.Loop(ctx, dests, csvInts(cfg.EventsExcludedAreas), csvInts(cfg.EventsExcludedEnterprises),
-			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger)
+		go events.Loop(ctx, dests, config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger, jobObs)
 	}
 
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
@@ -221,7 +222,6 @@ func main() {
 	// the metrics pkg; consumer + main provide read closures via the
 	// SetMetrics / RegisterXCollector callback pattern so amqp/writers
 	// stay decoupled from prometheus.
-	mx := metrics.New()
 	mx.RegisterConsumerCollector(func() metrics.ConsumerSnapshot {
 		return metrics.ConsumerSnapshot{
 			Delivered:         consumer.DeliveredCount(),
@@ -300,20 +300,4 @@ func runHealthcheck() int {
 		return 1
 	}
 	return 0
-}
-
-// csvInts parses "1,2,3" into []int; empty string → empty slice (ANY
-// of empty array matches nothing — the exclusion no-ops).
-func csvInts(s string) []int {
-	out := []int{}
-	for _, p := range strings.Split(s, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if n, err := strconv.Atoi(p); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
 }

@@ -446,6 +446,28 @@ const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	 SELECT $1, $2, $3, $4, $5, $6, $7, e.tp_equipment
 	   FROM public.equipments e WHERE e.id_equipment = $1`
 
+// execFanout is the single fail-open executor every fan-out write
+// shares: success/missing-table(42P01)/failure land in the fan-out
+// metric under destination+"-"+kind; failures warn and never propagate
+// (loss-with-alert, ADR-0011 rule 5).
+func (s *Staging) execFanout(ctx context.Context, pool *pgxpool.Pool, destination, kind, sql string, args ...any) {
+	_, err := pool.Exec(ctx, sql, args...)
+	if err == nil {
+		metrics.ValueFanoutTotal.WithLabelValues(destination+kind, "ok").Inc()
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		metrics.ValueFanoutTotal.WithLabelValues(destination+kind, "missing_table").Inc()
+		s.logger.Warn("fan-out: target table missing — fail-open",
+			slog.String("destination", destination), slog.String("kind", kind))
+		return
+	}
+	metrics.ValueFanoutTotal.WithLabelValues(destination+kind, "failed").Inc()
+	s.logger.Warn("fan-out failed", slog.String("destination", destination),
+		slog.String("kind", kind), slog.String("err", err.Error()))
+}
+
 // FanoutStateRow mirrors one prod state transition (from the events
 // reconciler) as a state-bearing equipment_values row into the SHADOW
 // flows only. Flow 1 must NOT get it: its equipment_events are already
@@ -459,24 +481,11 @@ func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID,
 	if !s.valueFanout {
 		return
 	}
-	run := func(pool *pgxpool.Pool, schema, destination string) {
-		_, err := pool.Exec(ctx, fmt.Sprintf(sqlInsertStateRow, schema),
-			stagingEqID, ts, enterpriseID, status)
-		if err == nil {
-			metrics.ValueFanoutTotal.WithLabelValues(destination+"-state", "ok").Inc()
-			return
-		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-			metrics.ValueFanoutTotal.WithLabelValues(destination+"-state", "missing_table").Inc()
-			return
-		}
-		metrics.ValueFanoutTotal.WithLabelValues(destination+"-state", "failed").Inc()
-		s.logger.Warn("state fan-out failed", slog.String("destination", destination), slog.String("err", err.Error()))
-	}
-	run(s.pool, "shadow_go_port", "shadow_go_port")
+	s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
+		fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
 	if s.shadowPool != nil {
-		run(s.shadowPool, "public", "packiot_shadow")
+		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-state",
+			fmt.Sprintf(sqlInsertStateRow, "public"), stagingEqID, ts, enterpriseID, status)
 	}
 }
 
@@ -491,24 +500,11 @@ func (s *Staging) FanoutEventRow(ctx context.Context, stagingEqID, enterpriseID 
 	if !s.valueFanout {
 		return
 	}
-	run := func(pool *pgxpool.Pool, schema, destination string) {
-		_, err := pool.Exec(ctx, fmt.Sprintf(sqlInsertShadowEvent, schema),
-			stagingEqID, ts, tsEnd, status, enterpriseID, duration)
-		if err == nil {
-			metrics.ValueFanoutTotal.WithLabelValues(destination+"-event", "ok").Inc()
-			return
-		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-			metrics.ValueFanoutTotal.WithLabelValues(destination+"-event", "missing_table").Inc()
-			return
-		}
-		metrics.ValueFanoutTotal.WithLabelValues(destination+"-event", "failed").Inc()
-		s.logger.Warn("event fan-out failed", slog.String("destination", destination), slog.String("err", err.Error()))
-	}
-	run(s.pool, "shadow_go_port", "shadow_go_port")
+	s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
+		fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	if s.shadowPool != nil {
-		run(s.shadowPool, "public", "packiot_shadow")
+		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-event",
+			fmt.Sprintf(sqlInsertShadowEvent, "public"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	}
 }
 
@@ -537,23 +533,9 @@ func (s *Staging) fanoutValueDelta(
 	stagingEqID, stagingSiteID, stagingAreaID, enterpriseID int,
 	netDelta, grossDelta float64,
 ) {
-	_, err := pool.Exec(ctx, fmt.Sprintf(sqlInsertValueDelta, schema),
+	s.execFanout(ctx, pool, destination, "",
+		fmt.Sprintf(sqlInsertValueDelta, schema),
 		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta)
-	if err == nil {
-		metrics.ValueFanoutTotal.WithLabelValues(destination, "ok").Inc()
-		return
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-		metrics.ValueFanoutTotal.WithLabelValues(destination, "missing_table").Inc()
-		s.logger.Warn("value fan-out: target table missing — fail-open",
-			slog.String("destination", destination))
-		return
-	}
-	metrics.ValueFanoutTotal.WithLabelValues(destination, "failed").Inc()
-	s.logger.Warn("value fan-out failed",
-		slog.String("destination", destination),
-		slog.String("err", err.Error()))
 }
 
 // EnsureEventCursor seeds a mirror_replay_cursor row for the events
