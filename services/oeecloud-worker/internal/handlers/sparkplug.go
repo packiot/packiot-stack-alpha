@@ -119,7 +119,12 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		// ADR-0010 10.3 slice 1: PO lifecycle params run their own tx
 		// (SELECT-then-decide + multi-statement commands) — not
 		// batchable. Drop-on-failure semantics live inside Execute.
-		if h.poControl != nil && kind == sparkplug.KindParameter &&
+		// SHADOW PATHS ONLY (like shift fill + event mint): on Flow 1,
+		// shadow-mirror already replays prod's PO actions — running
+		// lifecycle commands there too would be a double-writer
+		// collision (the sole-writer lesson). Gate lifts at
+		// consolidation, when Node-RED and the mirror replays retire.
+		if h.poControl != nil && p.SourceType != "" && kind == sparkplug.KindParameter &&
 			m.ID != nil && pocontrol.Handles(*m.ID) {
 			_ = h.poControl.Execute(ctx, pool, m, schema)
 			continue
