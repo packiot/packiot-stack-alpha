@@ -81,6 +81,11 @@ type Config struct {
 	EventsExcludedAreas       string // csv int list (prod parity: config, not hardcode)
 	EventsExcludedEnterprises string
 
+	// Boxes13ReportEnabled — ADR-0014 P4: the Neopac beep-chain
+	// aggregator (analogs Label_Neopac → equipment_boxes_cust_13).
+	Boxes13ReportEnabled   bool
+	Boxes13IntervalMinutes int
+
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
 	// OFF until synthetic-inject verification (staging has no live
 	// 30800 traffic; see the port design doc).
@@ -116,6 +121,8 @@ func Load() (*Config, error) {
 		EventsExcludedAreas:       getenv("EVENTS_EXCLUDED_AREAS", ""),
 		EventsExcludedEnterprises: getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
 		POControlEnabled:          getenv("PO_CONTROL_ENABLED", "false") == "true",
+		Boxes13ReportEnabled:      getenv("BOXES13_REPORT_ENABLED", "false") == "true",
+		Boxes13IntervalMinutes:    getenvInt("BOXES13_INTERVAL_MINUTES", 5),
 	}, nil
 }
 

@@ -751,6 +751,8 @@ services:
       # verification. SourceType-gated to shadow paths (PR #235), so the
       # only 30800s it can ever see on staging are our injects.
       PO_CONTROL_ENABLED: "true"
+      # ADR-0014 P4 — Neopac beep-chain aggregator (both shadow flows).
+      BOXES13_REPORT_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
