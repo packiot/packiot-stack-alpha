@@ -46,7 +46,7 @@ type paramPayload struct {
 
 // Handles reports whether this param id belongs to a ported slice.
 func Handles(id int) bool {
-	return (id >= 30800 && id <= 30803) || HandlesTopology(id) || HandlesCreatePO(id) || HandlesEvents(id)
+	return (id >= 30800 && id <= 30803) || HandlesTopology(id) || HandlesCreatePO(id) || HandlesEvents(id) || HandlesSetup(id)
 }
 
 // Execute runs one PO-control parameter end-to-end in a single tx.
@@ -99,6 +99,9 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	}
 	if HandlesEvents(paramID) {
 		return h.executeEvents(ctx, pool, m, schema)
+	}
+	if HandlesSetup(paramID) {
+		return h.executeSetupOrUserlog(ctx, pool, m, schema)
 	}
 
 	tx, err := pool.Begin(ctx)
