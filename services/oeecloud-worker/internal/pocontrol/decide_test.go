@@ -1,6 +1,7 @@
 package pocontrol
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,11 +61,37 @@ func TestDecideEnd(t *testing.T) {
 	}
 }
 
-func TestHandlesSlice1Only(t *testing.T) {
+func TestHandlesPortedSlices(t *testing.T) {
 	for id, want := range map[int]bool{30800: true, 30801: true, 30802: true, 30803: true,
-		30805: false, 30810: false, 30850: false, 30700: false} {
+		30700: true, // slice 2
+		30805: false, 30810: false, 30850: false} {
 		if Handles(id) != want {
 			t.Errorf("Handles(%d) != %v", id, want)
+		}
+	}
+}
+
+func TestHandlesTopology(t *testing.T) {
+	if !Handles(30700) || !HandlesTopology(30700) {
+		t.Error("30700 must dispatch to pocontrol (slice 2)")
+	}
+	if HandlesTopology(30701) {
+		t.Error("30701 stays with the po_parameter writer")
+	}
+}
+
+func TestTopologySQLShape(t *testing.T) {
+	for sql, must := range map[string][]string{
+		topoPackmlSeq:   {"line_unit_seq"},
+		topoLineRow:     {"id_equipment_line_infeed", "GROUP BY id_equipment", "ON CONFLICT (ts_value, id_equipment)"},
+		topoZeroLine:    {"id_equipment_line_infeed = 0", "ts_value < $1"},
+		topoMemberRow:   {"position_in_equipment_line", "id_equipment_line_connected = EXCLUDED.id_equipment_line_connected"},
+		topoZeroMembers: {"is_equipment_line_infeed = 0", "id_equipment_line_connected = $2"},
+	} {
+		for _, m := range must {
+			if !strings.Contains(sql, m) {
+				t.Errorf("topology SQL lost %q", m)
+			}
 		}
 	}
 }
