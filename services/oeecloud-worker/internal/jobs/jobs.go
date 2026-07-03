@@ -16,10 +16,14 @@ type Job struct {
 	Name  string
 	Every time.Duration
 	Run   func(ctx context.Context) error
+	// Timeout: 0 → max(2×Every, 5m). A hung tick must DIE, not
+	// silently stop the ticker forever (prod runs a watchdog for
+	// exactly this — terminate_long_proc_runtime; we build it in).
+	Timeout time.Duration
 }
 
 // Observer receives one call per tick with outcome "ok" | "error" |
-// "panic" — wired to the jobs_ticks_total CounterVec in main.
+// "timeout" | "panic" — wired to the jobs_ticks_total CounterVec.
 type Observer func(job, outcome string)
 
 // Loop runs j on its cadence until ctx is done. Run panics are
@@ -42,6 +46,15 @@ func Loop(ctx context.Context, j Job, logger *slog.Logger, obs Observer) {
 }
 
 func runOne(ctx context.Context, j Job, logger *slog.Logger) (outcome string) {
+	timeout := j.Timeout
+	if timeout <= 0 {
+		timeout = 2 * j.Every
+		if timeout < 5*time.Minute {
+			timeout = 5 * time.Minute
+		}
+	}
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	defer func() {
 		if r := recover(); r != nil {
 			outcome = "panic"
@@ -49,7 +62,12 @@ func runOne(ctx context.Context, j Job, logger *slog.Logger) (outcome string) {
 				slog.String("job", j.Name), slog.String("panic", fmt.Sprint(r)))
 		}
 	}()
-	if err := j.Run(ctx); err != nil {
+	if err := j.Run(tctx); err != nil {
+		if tctx.Err() != nil {
+			logger.Error("job tick TIMED OUT (killed — terminate_long_proc_runtime lesson)",
+				slog.String("job", j.Name), slog.Duration("timeout", timeout))
+			return "timeout"
+		}
 		logger.Warn("job tick failed", slog.String("job", j.Name), slog.String("err", err.Error()))
 		return "error"
 	}
