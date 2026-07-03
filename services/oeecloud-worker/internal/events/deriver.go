@@ -1,5 +1,11 @@
 // Package events — ADR-0014 P3a: the equipment_events deriver for the
-// shadow flows, ported from prod's piot_review_equipment_events()
+// shadow flows. SERVES status_type=4 EQUIPMENT ONLY (prod parity):
+// C-PACK is status_type=0 — its events are pipeline-created (CPAC
+// 30758=4) and reach the shadow flows via the mirror-worker event
+// fan-out until the ADR-0010 10.4 port lands. Idle-by-correctness on
+// a CPACK-only staging.
+//
+// Deriver ported from prod's piot_review_equipment_events()
 // (ground truth: docs/adr/reference/0014-p3-events-deriver-prod-funcs.sql).
 //
 // ARCHITECTURE NOTE: on prod, event CREATION happens in the Node-RED
