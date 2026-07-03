@@ -11,6 +11,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -135,4 +136,20 @@ func getenvInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// CSVInts parses "1,2,3" into []int; empty string → empty slice (ANY
+// of an empty array matches nothing — exclusions no-op).
+func CSVInts(s string) []int {
+	out := []int{}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(p); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }

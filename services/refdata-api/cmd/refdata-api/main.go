@@ -125,6 +125,7 @@ func main() {
 	for _, ep := range endpoints {
 		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
 	}
+	ensureSchema(pool) // startup migrations (P2 screen-config table)
 	registerQueryAPI(mux, pool) // ADR-0015 P1-P3
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

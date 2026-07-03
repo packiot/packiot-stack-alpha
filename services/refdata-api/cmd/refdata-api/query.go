@@ -194,10 +194,8 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 		_ = json.NewEncoder(w).Encode(out)
 	})
 
-	// ── Screen config (P2) — layout JSON per (user, screen) ─────────
-	_, _ = pool.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS user_screen_config (
-		id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
-		updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id_user, screen))`)
+	// ── Screen config (P2) — layout JSON per (user, screen).
+	// Table ensured by ensureSchema at startup (main.go).
 
 	mux.HandleFunc("/v1/screen-config", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := auth(r); !ok {
@@ -248,4 +246,12 @@ func keysOf[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// ensureSchema is the startup migration hook — called once from main
+// before routes register, not as a route-registration side effect.
+func ensureSchema(pool *pgxpool.Pool) {
+	_, _ = pool.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS user_screen_config (
+		id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
+		updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id_user, screen))`)
 }

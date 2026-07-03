@@ -39,6 +39,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -112,28 +114,27 @@ func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises []int) (del
 }
 
 // Loop runs the deriver on a fixed cadence for every destination
-// (prod's mega-proc ran the reviewer every minute).
-func Loop(ctx context.Context, dests []Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	logger.Info("events deriver started (ADR-0014 P3a)",
-		slog.Int("destinations", len(dests)), slog.Duration("interval", every))
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			for _, d := range dests {
-				del, ups, err := RunOnce(ctx, d, exclAreas, exclEnterprises)
-				if err != nil {
-					logger.Warn("deriver pass failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
-					continue
+// (prod's mega-proc ran the reviewer every minute). One tick = all
+// destinations; per-destination failures are logged and the tick
+// reports error if any destination failed.
+func Loop(ctx context.Context, dests []Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("events deriver started (ADR-0014 P3a)", slog.Int("destinations", len(dests)))
+	jobs.Loop(ctx, jobs.Job{Name: "events-deriver", Every: every, Run: func(ctx context.Context) error {
+		var firstErr error
+		for _, d := range dests {
+			del, ups, err := RunOnce(ctx, d, exclAreas, exclEnterprises)
+			if err != nil {
+				logger.Warn("deriver pass failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
 				}
-				if del+ups > 0 {
-					logger.Info("events derived", slog.String("dest", d.Name),
-						slog.Int64("upserted", ups), slog.Int64("corrected", del))
-				}
+				continue
+			}
+			if del+ups > 0 {
+				logger.Info("events derived", slog.String("dest", d.Name),
+					slog.Int64("upserted", ups), slog.Int64("corrected", del))
 			}
 		}
-	}
+		return firstErr
+	}}, logger, obs)
 }
