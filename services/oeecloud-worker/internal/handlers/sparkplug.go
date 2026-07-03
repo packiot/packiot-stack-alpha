@@ -111,6 +111,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 
 		var q *writers.Query
 		var shiftQ *writers.Query
+		var eventQ *writers.Query
 		var buildErr error
 		switch {
 		case h.equipmentValues.CanWrite(kind):
@@ -122,6 +123,9 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			// Go against Go.
 			if buildErr == nil && q != nil && p.SourceType != "" {
 				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
+				// ADR-0010 10.4: shadow paths mint the event row prod's
+				// pipeline mints (Flow 1's trigger covers Flow 1).
+				eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
 			}
 		case h.unsMetrics.CanWrite(kind):
 			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
@@ -150,6 +154,10 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			// statements sequentially on one connection.
 			batch.Queue(shiftQ.SQL, shiftQ.Args...)
 			descs = append(descs, shiftQ.Desc)
+		}
+		if eventQ != nil {
+			batch.Queue(eventQ.SQL, eventQ.Args...)
+			descs = append(descs, eventQ.Desc)
 		}
 	}
 

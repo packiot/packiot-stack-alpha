@@ -84,9 +84,13 @@ func (w *EquipmentValues) BuildShiftFill(ctx context.Context, m *sparkplug.Metri
 }
 
 // CanWrite returns true for kinds whose values land in equipment_values.
-// State/Mode/Counters share the same UPSERT key (ts_value, id_equipment);
-// postgres triggers on equipment_values populate equipment_events from
-// state column changes — so we don't write equipment_events directly.
+// State/Mode/Counters share the same UPSERT key (ts_value, id_equipment).
+//
+// equipment_events: prod's pipeline UPSERTS an event row directly for
+// every StateCurrent sample (captured node: ON CONFLICT (id_equipment,
+// ts_event) DO UPDATE status) — Flow 1 on staging gets the same effect
+// from its PL/pgSQL trigger; the SHADOW flows have no trigger, so
+// BuildEventMint provides the prod-faithful companion (ADR-0010 10.4).
 func (w *EquipmentValues) CanWrite(kind sparkplug.MetricKind) bool {
 	switch kind {
 	case sparkplug.KindProdProcessedCount,
@@ -161,6 +165,37 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	}
 	return nil, nil
 }
+
+// BuildEventMint is the ADR-0010 10.4 companion for KindStateCurrent:
+// prod mints an equipment_events row from every state sample. Returns
+// (nil, nil) for other kinds or unregistered topics. Shadow paths only —
+// the handler gates on SourceType (Flow 1's trigger already mints).
+func (w *EquipmentValues) BuildEventMint(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
+	if m.Classify() != sparkplug.KindStateCurrent {
+		return nil, nil
+	}
+	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	if err != nil || info == nil {
+		return nil, err
+	}
+	var value float64
+	if err := json.Unmarshal(m.Value, &value); err != nil {
+		return nil, fmt.Errorf("parse state value (name=%s): %w", m.Name, err)
+	}
+	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
+	return &Query{
+		SQL:  fmt.Sprintf(eventMintSQL, schema),
+		Args: []any{info.IDEquipment, ts, info.IDEnterprise, int(value)},
+		Desc: fmt.Sprintf("mint %s.equipment_events eq=%d ts=%s", schema, info.IDEquipment, ts.Format(time.RFC3339)),
+	}, nil
+}
+
+// Verbatim from the captured prod node ("INSERT State in equipment_events").
+const eventMintSQL = `
+	INSERT INTO %s.equipment_events (id_equipment, ts_event, id_enterprise, status)
+	VALUES ($1, $2, $3, $4)
+	ON CONFLICT (id_equipment, ts_event) DO UPDATE SET
+		id_enterprise = EXCLUDED.id_enterprise, status = EXCLUDED.status`
 
 func buildProcessed(
 	ts time.Time, info *sparkplug.EquipmentInfo,
