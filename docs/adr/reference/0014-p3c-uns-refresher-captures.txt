@@ -1,0 +1,146 @@
+######## piot_uns_equipment_refresh_current_week
+
+begin
+	with prod as
+		(
+			SELECT id_equipment, date_trunc('week', ts_value)::date as ts_value, 
+				sum(net_production_incr) net_production_incr,
+				sum(gross_production_incr) gross_production_incr,
+				sum(scrap_incr) scrap_incr,
+				avg(speed) speed
+			from ca_agg_equipment_values_1hour v 
+			--from ca_agg_equipment_values_1day v  --Eduardo: esta tabela está muito lenta
+			where ts_value>= date_trunc('week', now())::date
+			--new eduardo
+				and id_equipment in (select id_equipment from equipments where tp_equipment >1 and id_area != 24 and id_enterprise not in (2,30,34,35,36,38,99,100,101,102,111,112,113,114,115,118))
+			--new eduardo
+			group by id_equipment, date_trunc('week', ts_value)::date 
+			order by id_equipment, ts_value desc
+		)
+	UPDATE uns_equipment_current_week u
+		SET  gross_production = p.gross_production_incr,
+			net_production = p.net_production_incr,
+			scrap = p.scrap_incr,
+			speed = p.speed,
+			--target = p.production_programmed,
+			begin_time = p.ts_value,
+			end_time = p.ts_value + interval '1 week'
+		from prod p
+		where u.id_equipment = p.id_equipment;
+end 
+######## piot_uns_area_refresh_current_day
+
+begin
+	-- current day
+	with prod as
+		(
+			SELECT id_area, ts_value, 
+				(net) net_production_incr,
+				(gross) gross_production_incr,
+				(scrap) scrap_incr,
+				oee,
+				oee_p,
+				oee_a,
+				oee_q,
+				available_time, 
+				running_time, 
+				stopped_time, 
+				planned_downtime, 
+				ideal_production, 
+				idle_time, 
+				idle_starved, 
+				idle_blocked, 
+				target,  
+				downtime, 
+				changeover_time,
+				proportional_target
+			from area_runtime_1day v 
+			where ts_value>= date_trunc('day', now())::timestamptz and ts_value <= now()
+			group by id_area, ts_value 
+			order by id_area, ts_value
+		)
+	UPDATE uns_area_current_day u
+		SET  gross_production = p.gross_production_incr,
+			net_production = p.net_production_incr,
+			scrap = p.scrap_incr,
+			--target = p.production_programmed,
+			begin_time = p.ts_value,
+			end_time = p.ts_value + interval '1 day',
+			oee = p.oee,
+			oee_p = p.oee_p,
+			oee_a = p.oee_a,
+			oee_q = p.oee_q,
+			available_time = p.available_time,
+			running_time = p.running_time,
+			stopped_time = p.stopped_time,
+			planned_downtime = p.planned_downtime,
+			ideal_production = p.ideal_production,
+			idle_time = p.idle_time,
+			idle_starved = p.idle_starved,
+			idle_blocked = p.idle_blocked,
+			target = p.target,
+			proportional_target = p.proportional_target
+		from prod p
+		where u.id_area = p.id_area;
+
+end 
+######## piot_uns_equipment_refresh_current_month
+
+begin
+	-- current month
+	with prod as
+		(
+			SELECT id_equipment, ts_value, 
+				(net) net_production_incr,
+				(gross) gross_production_incr,
+				(scrap) scrap_incr,
+				(speed) speed,
+				oee,
+				oee_p,
+				oee_a,
+				oee_q,
+				available_time, 
+				running_time, 
+				stopped_time, 
+				planned_downtime, 
+				ideal_production, 
+				idle_time, 
+				idle_starved, 
+				idle_blocked, 
+				target,  
+				downtime, 
+				changeover_time
+			from equipment_runtime_1month v 
+			where ts_value>= date_trunc('month', now())::timestamptz and ts_value <= now()
+				--new eduardo
+				and id_equipment in (select id_equipment from equipments where tp_equipment >1 and id_area != 24 and id_enterprise not in (2,30,34,35,36,38,99,100,101,102,111,112,113,114,115,118))
+				--new eduardo
+			group by id_equipment, ts_value 
+			order by id_equipment, ts_value
+		)
+	UPDATE uns_equipment_current_month u
+		SET  gross_production = p.gross_production_incr,
+			net_production = p.net_production_incr,
+			scrap = p.scrap_incr,
+			speed = p.speed,
+			--target = p.production_programmed,
+			begin_time = p.ts_value,
+			elapsed_time = extract(epoch from (now() - p.ts_value)),
+			end_time = p.ts_value + interval '1 month',
+			oee = p.oee,
+			oee_p = p.oee_p,
+			oee_a = p.oee_a,
+			oee_q = p.oee_q,
+			available_time = p.available_time,
+			running_time = p.running_time,
+			stopped_time = p.stopped_time,
+			planned_downtime = p.planned_downtime,
+			ideal_production = p.ideal_production,
+			idle_time = p.idle_time,
+			idle_starved = p.idle_starved,
+			idle_blocked = p.idle_blocked,
+			target = p.target
+		from prod p
+		where u.id_equipment = p.id_equipment;
+end 
+
