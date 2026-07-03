@@ -64,7 +64,8 @@ func TestDecideEnd(t *testing.T) {
 func TestHandlesPortedSlices(t *testing.T) {
 	for id, want := range map[int]bool{30800: true, 30801: true, 30802: true, 30803: true,
 		30700: true, // slice 2
-		30805: false, 30810: false, 30850: false} {
+		30805: true, // slice 3
+		30810: false, 30850: false} {
 		if Handles(id) != want {
 			t.Errorf("Handles(%d) != %v", id, want)
 		}
@@ -93,5 +94,26 @@ func TestTopologySQLShape(t *testing.T) {
 				t.Errorf("topology SQL lost %q", m)
 			}
 		}
+	}
+}
+
+func TestCreatePOShape(t *testing.T) {
+	if !Handles(30805) || !HandlesCreatePO(30805) {
+		t.Error("30805 must dispatch (slice 3)")
+	}
+	for sql, must := range map[string][]string{
+		cpFamilyUpsert:  {"ON CONFLICT (id_enterprise, nm_product_family)", "RETURNING id_product_family"},
+		cpProductInsert: {"WHERE NOT EXISTS", "cd_product = $5 AND id_enterprise = $4"},
+		cpClientUpsert:  {"ON CONFLICT (nm_client, id_enterprise) DO NOTHING"},
+		cpInsertPO:      {"ON CONFLICT (id_enterprise, id_order)", "custom_field = EXCLUDED.custom_field"},
+	} {
+		for _, m := range must {
+			if !strings.Contains(sql, m) {
+				t.Errorf("createpo SQL lost %q", m)
+			}
+		}
+	}
+	if strings.Contains(cpInsertPO, "ts_start") {
+		t.Error("status=1 insert must not set ts_start (CHECK constraint semantics)")
 	}
 }

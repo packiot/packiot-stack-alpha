@@ -22,6 +22,7 @@ type Handler struct {
 
 	started  atomic.Uint64
 	topology atomic.Uint64
+	created  atomic.Uint64
 	ended    atomic.Uint64
 	noops    atomic.Uint64
 	dropped  atomic.Uint64
@@ -42,7 +43,9 @@ type paramPayload struct {
 }
 
 // Handles reports whether this param id belongs to a ported slice.
-func Handles(id int) bool { return (id >= 30800 && id <= 30803) || HandlesTopology(id) }
+func Handles(id int) bool {
+	return (id >= 30800 && id <= 30803) || HandlesTopology(id) || HandlesCreatePO(id)
+}
 
 // Execute runs one PO-control parameter end-to-end in a single tx.
 // Failures are logged + counted + DROPPED (nodered catch semantics —
@@ -88,6 +91,9 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	// before the lifecycle tx begins (topology.go guardrail note).
 	if paramID == 30700 {
 		return h.executeTopology(ctx, pool, m, schema)
+	}
+	if paramID == 30805 {
+		return h.executeCreatePO(ctx, pool, m, schema)
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -302,13 +308,14 @@ func (h *Handler) evMarkerAndRestamp(ctx context.Context, tx pgx.Tx, schema stri
 type Stats struct {
 	Started  uint64 `json:"po_control_started"`
 	Topology uint64 `json:"po_control_topology"`
+	Created  uint64 `json:"po_control_created"`
 	Ended    uint64 `json:"po_control_ended"`
 	NoOps    uint64 `json:"po_control_noops"`
 	Dropped  uint64 `json:"po_control_dropped"`
 }
 
 func (h *Handler) Stats() Stats {
-	return Stats{h.started.Load(), h.topology.Load(), h.ended.Load(), h.noops.Load(), h.dropped.Load()}
+	return Stats{h.started.Load(), h.topology.Load(), h.created.Load(), h.ended.Load(), h.noops.Load(), h.dropped.Load()}
 }
 
 func derefID(id *int) int {
