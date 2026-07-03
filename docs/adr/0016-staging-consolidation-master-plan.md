@@ -156,3 +156,33 @@ semantics beyond storage).
   unambiguous divergence panels.
 - The plan is 100%-parity-capable AND net-negative in complexity:
   every phase ends with something RETIRED.
+
+## 10. Phase I results (executed 2026-07-03)
+
+**Write census (the blindspot, closed):**
+- back4-api: users, user_roles, products, product_families, clients,
+  production_orders (+ sap_13 sync) — reference-plane writes; all
+  target tables already in the consolidated shape.
+- primary-api & reports: no raw SQL writes found (ORM/read-path
+  verification = residual check, low risk).
+
+**Consumer sweeps — two plan-changing finds:**
+1. **front4 executes GraphQL directly against PROD Hasura Cloud**
+   (`gqlpiot.packiot.com/v1/graphql`, raw fetch — no client lib, which
+   is why the Hasura review's package-grep missed it). Overview
+   V4/V5/V6 + Granado pages; 12 exported queries in V6 alone, reading
+   the UNS current family. CONSEQUENCES: (a) prod Hasura retirement
+   requires porting front4's full query surface (task #86 scope +=
+   front4 enumeration — the prod console query-log will show it);
+   (b) staging's 14+5 minimal set is unaffected (front4 targets prod
+   Cloud, not staging).
+2. **UNS current family: PORT, not collapse** — confirmed real
+   consumers (front4 overviews). P3c strategy fixed: Go refreshers.
+
+**sync_06 writers captured**: update_piot_table_production_data_sync_
+enterprise_06 (20.6KB) + _70days variant (20.9KB) — two further
+P4/Wave-2 ports.
+
+**Homes (§5) status**: user_logs = edge-api-at-flip (decided);
+uns_metrics = port (10.5) since UNS plane is consumer-confirmed;
+history copy = decided; mirror-worker = stays, repointed.
