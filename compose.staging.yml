@@ -742,10 +742,11 @@ services:
       # Wave 2 port #2: shift_06 delete-and-reload → customer_reports.shift
       SHIFT06_REPORT_ENABLED: "true"
       SHIFT06_INTERVAL_MINUTES: "15"
-      # ADR-0014 P3a events deriver — DISABLED until 2026-07-09 (the
-      # shift-bake owns the divergence panels until close-out; enable
-      # both changes together per 0014-p2-bake-closeout-ready.sql).
-      EVENTS_DERIVER_ENABLED: "false"
+      # ADR-0014 P3a events deriver — ENABLED 2026-07-03. Runs its own
+      # bake on equipment_events (separate table from the shift bake's
+      # id_shift surface — no panel contamination). The shift TRIGGER
+      # DROP still waits for its 168h (0014-p2-bake-closeout-ready.sql).
+      EVENTS_DERIVER_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
