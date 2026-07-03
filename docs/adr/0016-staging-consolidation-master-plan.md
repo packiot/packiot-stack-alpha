@@ -42,6 +42,22 @@ does 2, insert-only. Ports, each with prod-read fidelity + live bake:
 | 10.8 | pipeline user_logs entries | 8 nodes | with §5 user_logs home |
 | 10.9 | MQTT cutover: simulator → MQTT; edge-transformer = THE ingest; retire nodered wrap + direct-AMQP publish | — | LAST; kills the dual-emit residual |
 
+**Status update 2026-07-03 (post 10.3):** 10.1 ✅ · 10.2 ✅ (in 10.3
+slice 2) · **10.3 ✅ COMPLETE — all 5 slices + inject-verified** (PRs
+#234-243; the 361-line prep node has zero unported branches) · 10.4 ✅
+(#231) · 10.5 ❌ cancelled (uns_metrics is staging-sim-only — bloat
+ledger) · **10.6 RECLASSIFIED → ADR-0014 P4** (equipment_boxes_cust_13
+is written by upsert_equipment_boxes_cust_13 PL/pgSQL, not the
+pipeline; source stream scanned_boxes = edge-api surface) · 10.7
+partial (line_unit_seq in slice 2; config-field writeback remainder
+open) · 10.8 ✅ (30880 factory door in slice 5; pipeline-side entries
+land with each family) · 10.9 OPEN with named prerequisite: REAL
+FACTORY PAYLOAD CAPTURE (raw Sparkplug parameter metric shape — how
+the 30800 id rides the metric name/properties — deferred since
+ADR-0010 phase 1; cannot be synthesized from repo evidence). Shadow
+flows gained substrate tables along the way: production_orders_runtime,
+user_logs, uns_equipment_current_job (+F3: product_families, clients).
+
 Rule per port: capture prod flow nodes verbatim → port → prod-read
 fidelity (speed33 method) → bake vs Flow 1 → retire the nodered node
 in the SAME change (bug-241 rule).
