@@ -80,13 +80,9 @@ const refSchema = "public"
 // executeTopology runs the 30700 unit in one tx. SQL templates take
 // %[1]s = equipment_values schema, %[2]s = reference schema.
 func (h *Handler) executeTopology(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
-	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
-	if err != nil {
-		return fmt.Errorf("resolve: %w", err)
-	}
-	if info == nil {
-		h.noops.Add(1)
-		return nil
+	info, ok, err := h.resolveOrNoop(ctx, m)
+	if err != nil || !ok {
+		return err
 	}
 	var unitOrder []int64
 	if err := json.Unmarshal(m.Value, &unitOrder); err != nil || len(unitOrder) == 0 {

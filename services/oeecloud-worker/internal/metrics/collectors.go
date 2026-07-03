@@ -88,3 +88,38 @@ func (c *poParameterCollector) Collect(ch chan<- prometheus.Metric) {
 	emit("skipped_30800_30899", s.SkippedPOCtl)
 	emit("skipped_other", s.SkippedOther)
 }
+
+// POControlSnapshot mirrors pocontrol.Stats fields.
+type POControlSnapshot struct {
+	Started, Topology, Created, Events, Ended, NoOps, Dropped uint64
+}
+
+// RegisterPOControlCollector exposes the PO-lifecycle state machine's
+// counters — the tables it mutates are the platform's most critical
+// (user directive); grep-only observability was backwards.
+func (m *Metrics) RegisterPOControlCollector(snap func() POControlSnapshot) {
+	m.Registry.MustRegister(&poControlCollector{snap: snap,
+		desc: prometheus.NewDesc("oeecloud_worker_po_control_ops_total",
+			"PO-control operations by op (started|topology|created|events|ended|noop|dropped).",
+			[]string{"op"}, nil)})
+}
+
+type poControlCollector struct {
+	snap func() POControlSnapshot
+	desc *prometheus.Desc
+}
+
+func (c *poControlCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
+func (c *poControlCollector) Collect(ch chan<- prometheus.Metric) {
+	s := c.snap()
+	emit := func(op string, v uint64) {
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.CounterValue, float64(v), op)
+	}
+	emit("started", s.Started)
+	emit("topology", s.Topology)
+	emit("created", s.Created)
+	emit("events", s.Events)
+	emit("ended", s.Ended)
+	emit("noop", s.NoOps)
+	emit("dropped", s.Dropped)
+}

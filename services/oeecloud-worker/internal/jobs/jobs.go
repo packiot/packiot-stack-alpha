@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 )
 
 type Job struct {
@@ -72,4 +74,26 @@ func runOne(ctx context.Context, j Job, logger *slog.Logger) (outcome string) {
 		return "error"
 	}
 	return "ok"
+}
+
+// RunPerDest is the shared per-destination fan-out every multi-flow
+// job repeats: run fn for each dest, log failures, return the first
+// error (tick outcome), log row counts when positive.
+func RunPerDest(ctx context.Context, dests []flows.Dest, name string, logger *slog.Logger,
+	fn func(ctx context.Context, d flows.Dest) (int64, error)) error {
+	var firstErr error
+	for _, d := range dests {
+		n, err := fn(ctx, d)
+		if err != nil {
+			logger.Warn(name+" pass failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if n > 0 {
+			logger.Info(name+" rows", slog.String("dest", d.Name), slog.Int64("rows", n))
+		}
+	}
+	return firstErr
 }

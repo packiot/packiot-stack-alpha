@@ -207,8 +207,14 @@ func main() {
 	)
 
 	if cfg.POControlEnabled {
-		sparkplugHandler.SetPOControl(pocontrol.NewHandler(resolver, logger))
-		logger.Info("po-control lifecycle handler ENABLED (ADR-0010 10.3 slice 1)")
+		pc := pocontrol.NewHandler(resolver, logger)
+		sparkplugHandler.SetPOControl(pc)
+		mx.RegisterPOControlCollector(func() metrics.POControlSnapshot {
+			s := pc.Stats()
+			return metrics.POControlSnapshot{Started: s.Started, Topology: s.Topology,
+				Created: s.Created, Events: s.Events, Ended: s.Ended, NoOps: s.NoOps, Dropped: s.Dropped}
+		})
+		logger.Info("po-control lifecycle handler ENABLED (ADR-0010 10.3)")
 	}
 
 	dispatcher := handlers.NewDispatcher(logger)

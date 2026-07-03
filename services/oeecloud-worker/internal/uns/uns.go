@@ -120,18 +120,29 @@ func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterpri
 	return nil
 }
 
-// Loop schedules provision + refresh on the jobs runner.
+// Loop schedules the refreshers; Provision runs on the FIRST tick and
+// then hourly — running 12 ON CONFLICT probes every 5 minutes is pure
+// index churn (the write-amplification cost the aggregates taxonomy
+// warns about, eaten at home).
 func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("uns refresher started (P3c: provisioner + equipment week/month)")
+	provisionEvery := int(time.Hour / every)
+	if provisionEvery < 1 {
+		provisionEvery = 1
+	}
+	tick := 0
 	jobs.Loop(ctx, jobs.Job{Name: "uns-refresh", Every: every, Run: func(ctx context.Context) error {
+		defer func() { tick++ }()
 		var firstErr error
 		for _, d := range dests {
-			if err := Provision(ctx, d); err != nil {
-				logger.Warn("uns provision failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
-				if firstErr == nil {
-					firstErr = err
+			if tick%provisionEvery == 0 {
+				if err := Provision(ctx, d); err != nil {
+					logger.Warn("uns provision failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
 				}
-				continue
 			}
 			if err := RefreshEquipment(ctx, d, exclAreas, exclEnterprises); err != nil {
 				logger.Warn("uns refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
