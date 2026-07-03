@@ -81,6 +81,11 @@ type Config struct {
 	EventsExcludedAreas       string // csv int list (prod parity: config, not hardcode)
 	EventsExcludedEnterprises string
 
+	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
+	// sync (verbatim-embedded state machine).
+	Sync06ReportEnabled   bool
+	Sync06IntervalMinutes int
+
 	// Boxes13ReportEnabled — ADR-0014 P4: the Neopac beep-chain
 	// aggregator (analogs Label_Neopac → equipment_boxes_cust_13).
 	Boxes13ReportEnabled   bool
@@ -122,6 +127,8 @@ func Load() (*Config, error) {
 		EventsExcludedEnterprises: getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
 		POControlEnabled:          getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:      getenv("BOXES13_REPORT_ENABLED", "false") == "true",
+		Sync06ReportEnabled:       getenv("SYNC06_REPORT_ENABLED", "false") == "true",
+		Sync06IntervalMinutes:     getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Boxes13IntervalMinutes:    getenvInt("BOXES13_INTERVAL_MINUTES", 5),
 	}, nil
 }

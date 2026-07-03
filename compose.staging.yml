@@ -753,6 +753,8 @@ services:
       PO_CONTROL_ENABLED: "true"
       # ADR-0014 P4 — Neopac beep-chain aggregator (both shadow flows).
       BOXES13_REPORT_ENABLED: "true"
+      # ADR-0014 P4 — enterprise-6 sync state machine (verbatim embed).
+      SYNC06_REPORT_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
