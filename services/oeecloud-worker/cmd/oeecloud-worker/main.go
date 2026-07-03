@@ -36,6 +36,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tenants"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/uns"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
 
@@ -172,6 +173,13 @@ func main() {
 	// ADR-0014 P4 — enterprise-6 production data sync (main flow).
 	if cfg.Sync06ReportEnabled {
 		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, cfg.Sync06Target, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
+	}
+
+	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
+	if cfg.UnsRefreshEnabled {
+		go uns.Loop(ctx, flows.Standard(pool, shadowPool),
+			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+			time.Duration(cfg.UnsIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// obd port — the box→production bridge (descriptor-driven).
