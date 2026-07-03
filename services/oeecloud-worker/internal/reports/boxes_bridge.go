@@ -92,20 +92,8 @@ func RunBoxesBridge(ctx context.Context, d flows.Dest) (int64, error) {
 func LoopBoxesBridge(ctx context.Context, dests []flows.Dest, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("boxes bridge started (descriptor-driven, obd port)")
 	jobs.Loop(ctx, jobs.Job{Name: "boxes-bridge", Every: every, Run: func(ctx context.Context) error {
-		var firstErr error
-		for _, d := range dests {
-			n, err := RunBoxesBridge(ctx, d)
-			if err != nil {
-				logger.Warn("boxes bridge failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			if n > 0 {
-				logger.Info("boxes bridge rows", slog.String("dest", d.Name), slog.Int64("rows", n))
-			}
-		}
-		return firstErr
+		return jobs.RunPerDest(ctx, dests, "boxes-bridge", logger, func(ctx context.Context, d flows.Dest) (int64, error) {
+			return RunBoxesBridge(ctx, d)
+		})
 	}}, logger, obs)
 }

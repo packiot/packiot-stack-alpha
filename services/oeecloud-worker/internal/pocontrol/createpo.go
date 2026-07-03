@@ -78,13 +78,9 @@ const cpInsertPO = `
 	       custom_field = EXCLUDED.custom_field, id_equipment = EXCLUDED.id_equipment`
 
 func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
-	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
-	if err != nil {
-		return fmt.Errorf("resolve: %w", err)
-	}
-	if info == nil {
-		h.noops.Add(1)
-		return nil
+	info, ok, err := h.resolveOrNoop(ctx, m)
+	if err != nil || !ok {
+		return err
 	}
 	var p createPOPayload
 	if err := json.Unmarshal(m.Value, &p); err != nil {

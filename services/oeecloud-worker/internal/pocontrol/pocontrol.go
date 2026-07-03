@@ -65,13 +65,9 @@ func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
 	paramID := derefID(m.ID)
 
-	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
-	if err != nil {
-		return fmt.Errorf("resolve: %w", err)
-	}
-	if info == nil {
-		h.noops.Add(1)
-		return nil // topic not registered — same skip as every writer
+	info, ok, err := h.resolveOrNoop(ctx, m)
+	if err != nil || !ok {
+		return err
 	}
 
 	var p paramPayload
@@ -325,6 +321,20 @@ type Stats struct {
 
 func (h *Handler) Stats() Stats {
 	return Stats{h.started.Load(), h.topology.Load(), h.created.Load(), h.events.Load(), h.ended.Load(), h.noops.Load(), h.dropped.Load()}
+}
+
+// resolveOrNoop is the shared preamble of every executor: resolve the
+// topic; unregistered → count a noop and signal skip.
+func (h *Handler) resolveOrNoop(ctx context.Context, m *sparkplug.Metric) (*sparkplug.EquipmentInfo, bool, error) {
+	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve: %w", err)
+	}
+	if info == nil {
+		h.noops.Add(1)
+		return nil, false, nil
+	}
+	return info, true, nil
 }
 
 func derefID(id *int) int {

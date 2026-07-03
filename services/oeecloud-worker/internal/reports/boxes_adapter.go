@@ -135,20 +135,8 @@ func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
 func LoopBoxes(ctx context.Context, dests []flows.Dest, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("boxes label-adapter started (descriptor-driven, ADR-0014)")
 	jobs.Loop(ctx, jobs.Job{Name: "boxes", Every: every, Run: func(ctx context.Context) error {
-		var firstErr error
-		for _, d := range dests {
-			n, err := RunBoxes(ctx, d)
-			if err != nil {
-				logger.Warn("boxes pass failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			if n > 0 {
-				logger.Info("boxes rows upserted", slog.String("dest", d.Name), slog.Int64("rows", n))
-			}
-		}
-		return firstErr
+		return jobs.RunPerDest(ctx, dests, "boxes", logger, func(ctx context.Context, d flows.Dest) (int64, error) {
+			return RunBoxes(ctx, d)
+		})
 	}}, logger, obs)
 }

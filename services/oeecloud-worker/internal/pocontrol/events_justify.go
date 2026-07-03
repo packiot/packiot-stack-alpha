@@ -143,13 +143,9 @@ const ujScrapReset = `
 
 func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
 	paramID := derefID(m.ID)
-	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
-	if err != nil {
-		return fmt.Errorf("resolve: %w", err)
-	}
-	if info == nil {
-		h.noops.Add(1)
-		return nil
+	info, ok, err := h.resolveOrNoop(ctx, m)
+	if err != nil || !ok {
+		return err
 	}
 	var p eventPayload
 	if err := json.Unmarshal(m.Value, &p); err != nil {
