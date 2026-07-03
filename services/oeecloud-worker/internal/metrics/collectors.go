@@ -49,6 +49,7 @@ func (c *consumerCollector) Collect(ch chan<- prometheus.Metric) {
 // POParameterSnapshot mirrors writers.POParameterStats fields.
 type POParameterSnapshot struct {
 	WroteIdealSpeed  uint64
+	WroteAnalogs     uint64
 	SkippedLineOrder uint64
 	SkippedPOCtl     uint64
 	SkippedOther     uint64
@@ -63,7 +64,7 @@ func (m *Metrics) RegisterPOParameterCollector(snap func() POParameterSnapshot) 
 		snap: snap,
 		desc: prometheus.NewDesc(
 			"oeecloud_worker_writer_po_parameter_ops_total",
-			"PO Parameter writer operations by op (wrote_ideal_speed | skipped_30700 | skipped_30800_30899 | skipped_other).",
+			"PO Parameter writer operations by op (wrote_ideal_speed | wrote_analogs | skipped_30700 | skipped_30800_30899 | skipped_other).",
 			[]string{"op"}, nil,
 		),
 	})
@@ -82,6 +83,7 @@ func (c *poParameterCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.CounterValue, float64(v), op)
 	}
 	emit("wrote_ideal_speed", s.WroteIdealSpeed)
+	emit("wrote_analogs", s.WroteAnalogs)
 	emit("skipped_30700", s.SkippedLineOrder)
 	emit("skipped_30800_30899", s.SkippedPOCtl)
 	emit("skipped_other", s.SkippedOther)

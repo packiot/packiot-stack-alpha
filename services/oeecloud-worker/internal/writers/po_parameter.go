@@ -19,6 +19,9 @@ import (
 //	30700  line order              → ❌ not yet — needs packml_register lookup
 //	                                  + multi-row equipment_values UPDATE
 //	30701  ideal_production_speed  → ✅ implemented (single equipment_values UPSERT)
+//	30850  analog values           → ✅ implemented (ADR-0010 port 10.1 —
+//	                                  jsonb upsert of the metric value; prod
+//	                                  writes 614 analog rows/h)
 //	30800-30899
 //	       PO control (start/stop) → ❌ not yet — touches production_orders +
 //	                                  production_orders_runtime via complex
@@ -32,6 +35,7 @@ type POParameter struct {
 	logger   *slog.Logger
 
 	wroteIdealSpeed  atomic.Uint64
+	wroteAnalogs     atomic.Uint64
 	skippedLineOrder atomic.Uint64
 	skippedPOCtl     atomic.Uint64
 	skippedOther     atomic.Uint64
@@ -55,6 +59,8 @@ func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string, 
 	switch {
 	case id == 30701:
 		return w.buildIdealProductionSpeed(ctx, m, schema)
+	case id == 30850:
+		return w.buildAnalogs(ctx, m, schema)
 	case id == 30700:
 		w.skippedLineOrder.Add(1)
 		w.logger.Debug("po-parameter: 30700 line-order not yet ported, skipping",
@@ -118,9 +124,51 @@ func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplu
 	}, nil
 }
 
+// buildAnalogs mirrors Node-RED's parameter 30850 branch: UPSERT the
+// metric's raw JSON value into equipment_values.analogs. Prod rounds
+// the Sparkplug ms-timestamp to the NEAREST second (Math.round), not
+// truncation — matched here. Value passed as string, not []byte:
+// jsonb-vs-bytea under simple protocol (the PR #218 lesson).
+func (w *POParameter) buildAnalogs(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
+	topic := m.TopicForRegister()
+	info, err := w.resolver.Resolve(ctx, topic)
+	if err != nil {
+		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
+	}
+	if info == nil {
+		w.logger.Debug("po-parameter 30850: topic not registered, skipping",
+			slog.String("topic", topic), slog.String("name", m.Name))
+		return nil, nil
+	}
+	if len(m.Value) == 0 || !json.Valid(m.Value) {
+		return nil, fmt.Errorf("parameter 30850 carries invalid JSON value (name=%s)", m.Name)
+	}
+	ts := time.UnixMilli(m.Timestamp).Round(time.Second).UTC()
+
+	sql := fmt.Sprintf(analogsUpsertSQL, schema)
+	w.wroteAnalogs.Add(1)
+	return &Query{
+		SQL: sql,
+		Args: []any{
+			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+			string(m.Value),
+		},
+		Desc: fmt.Sprintf("upsert %s.equipment_values (analogs) eq=%d ts=%s",
+			schema, info.IDEquipment, ts.Format(time.RFC3339)),
+	}, nil
+}
+
+const analogsUpsertSQL = `
+	INSERT INTO %s.equipment_values
+		(ts_value, id_enterprise, id_site, id_area, id_equipment, analogs)
+	VALUES ($1, $2, $3, $4, $5, $6)
+	ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
+		analogs = EXCLUDED.analogs`
+
 // Stats returns per-ID counters for /health expansion later.
 type POParameterStats struct {
 	WroteIdealSpeed  uint64 `json:"po_param_wrote_ideal_speed"`
+	WroteAnalogs     uint64 `json:"po_param_wrote_analogs"`
 	SkippedLineOrder uint64 `json:"po_param_skipped_30700"`
 	SkippedPOCtl     uint64 `json:"po_param_skipped_30800_30899"`
 	SkippedOther     uint64 `json:"po_param_skipped_other"`
@@ -129,6 +177,7 @@ type POParameterStats struct {
 func (w *POParameter) Stats() POParameterStats {
 	return POParameterStats{
 		WroteIdealSpeed:  w.wroteIdealSpeed.Load(),
+		WroteAnalogs:     w.wroteAnalogs.Load(),
 		SkippedLineOrder: w.skippedLineOrder.Load(),
 		SkippedPOCtl:     w.skippedPOCtl.Load(),
 		SkippedOther:     w.skippedOther.Load(),
