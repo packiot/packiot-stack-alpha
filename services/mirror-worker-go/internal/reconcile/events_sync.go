@@ -233,5 +233,6 @@ func (r *Reconciler) ensureOneEvent(ctx context.Context, ev db.ProdEquipmentEven
 	if ev.Status != nil {
 		r.staging.FanoutStateRow(ctx, stagingEqID, r.cfg.StagingEnterpriseID, *ev.Status, ev.TsEvent)
 	}
+	r.staging.FanoutEventRow(ctx, stagingEqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
 	return stagingEventID, nil
 }

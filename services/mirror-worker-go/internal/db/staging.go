@@ -480,6 +480,44 @@ func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID,
 	}
 }
 
+// FanoutEventRow mirrors one prod equipment_event into the SHADOW
+// flows. Rationale (live finding, 2026-07-03): prod C-PACK equipments
+// are status_type=0 — their events are PIPELINE-created (CPAC 30758=4
+// algorithm), NOT derived by piot_review_* (which serves status_type=4
+// only). Until the ADR-0010 10.4 port exists, the reconciler fan-out
+// IS the staging stand-in for that pipeline path; the ADR-0014 deriver
+// covers the status_type=4 class when such a tenant appears.
+func (s *Staging) FanoutEventRow(ctx context.Context, stagingEqID, enterpriseID int, status *int, ts time.Time, tsEnd *time.Time, duration *int) {
+	if !s.valueFanout {
+		return
+	}
+	run := func(pool *pgxpool.Pool, schema, destination string) {
+		_, err := pool.Exec(ctx, fmt.Sprintf(sqlInsertShadowEvent, schema),
+			stagingEqID, ts, tsEnd, status, enterpriseID, duration)
+		if err == nil {
+			metrics.ValueFanoutTotal.WithLabelValues(destination+"-event", "ok").Inc()
+			return
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			metrics.ValueFanoutTotal.WithLabelValues(destination+"-event", "missing_table").Inc()
+			return
+		}
+		metrics.ValueFanoutTotal.WithLabelValues(destination+"-event", "failed").Inc()
+		s.logger.Warn("event fan-out failed", slog.String("destination", destination), slog.String("err", err.Error()))
+	}
+	run(s.pool, "shadow_go_port", "shadow_go_port")
+	if s.shadowPool != nil {
+		run(s.shadowPool, "public", "packiot_shadow")
+	}
+}
+
+const sqlInsertShadowEvent = `INSERT INTO %s.equipment_events
+	       (id_equipment, ts_event, ts_end, status, id_enterprise, duration)
+	 VALUES ($1, $2, $3, $4, $5, $6)
+	 ON CONFLICT (id_equipment, ts_event) DO UPDATE
+	    SET ts_end = EXCLUDED.ts_end, status = EXCLUDED.status, duration = EXCLUDED.duration`
+
 // Same (ts_value, id_equipment) key as every equipment_values write; if
 // a counter-delta row already occupies the second, enrich it with state
 // instead of losing the transition.
