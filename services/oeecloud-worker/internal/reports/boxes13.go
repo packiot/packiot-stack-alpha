@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
 )
 
@@ -73,16 +74,8 @@ func RunBoxes13(ctx context.Context, pool *pgxpool.Pool, evSchema, refSchema str
 	return tag.RowsAffected(), nil
 }
 
-// Boxes13Dest is one flow target.
-type Boxes13Dest struct {
-	Name      string
-	Pool      *pgxpool.Pool
-	EvSchema  string
-	RefSchema string
-}
-
 // LoopBoxes13 runs the shred on the jobs runner for every destination.
-func LoopBoxes13(ctx context.Context, dests []Boxes13Dest, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopBoxes13(ctx context.Context, dests []flows.Dest, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("boxes13 writer started (ADR-0014 P4, the Neopac beep chain)")
 	jobs.Loop(ctx, jobs.Job{Name: "boxes13", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error

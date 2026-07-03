@@ -25,6 +25,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/events"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
@@ -170,21 +171,13 @@ func main() {
 
 	// ADR-0014 P4 — the Neopac beep chain (boxes13): both shadow flows.
 	if cfg.Boxes13ReportEnabled {
-		bdests := []reports.Boxes13Dest{{Name: "shadow_go_port", Pool: pool, EvSchema: "shadow_go_port", RefSchema: "public"}}
-		if shadowPool != nil {
-			bdests = append(bdests, reports.Boxes13Dest{Name: "packiot_shadow", Pool: shadowPool, EvSchema: "public", RefSchema: "public"})
-		}
-		go reports.LoopBoxes13(ctx, bdests, time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)
+		go reports.LoopBoxes13(ctx, flows.Standard(pool, shadowPool), time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3a — events deriver for the shadow flows. Deployed
 	// DISABLED; enabled at the Jul-9 close-out (one bake at a time).
 	if cfg.EventsDeriverEnabled {
-		dests := []events.Dest{{Name: "shadow_go_port", Pool: pool, EvSchema: "shadow_go_port", RefSchema: "public"}}
-		if shadowPool != nil {
-			dests = append(dests, events.Dest{Name: "packiot_shadow", Pool: shadowPool, EvSchema: "public", RefSchema: "public"})
-		}
-		go events.Loop(ctx, dests, config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+		go events.Loop(ctx, flows.Standard(pool, shadowPool), config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger, jobObs)
 	}
 
