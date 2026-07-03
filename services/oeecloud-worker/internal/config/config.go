@@ -95,6 +95,8 @@ type Config struct {
 	Boxes13ReportEnabled   bool
 	Boxes13IntervalMinutes int
 	BoxesBridgeEnabled     bool
+	UnsRefreshEnabled      bool
+	UnsIntervalMinutes     int
 
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
 	// OFF until synthetic-inject verification (staging has no live
@@ -135,6 +137,8 @@ func Load() (*Config, error) {
 		POControlEnabled:          getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:      getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:        getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
+		UnsRefreshEnabled:         getenv("UNS_REFRESH_ENABLED", "false") == "true",
+		UnsIntervalMinutes:        getenvInt("UNS_INTERVAL_MINUTES", 5),
 		Sync06ReportEnabled:       getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:     getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Sync06EnterpriseID:        getenvInt("SYNC06_ENTERPRISE_ID", 6),
