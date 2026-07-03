@@ -54,7 +54,7 @@ const deliverySQL = `
 	       AND analogs IS NOT NULL AND analogs ? $1::text
 	       AND ts_value >= now() - interval '12 hour'
 	)
-	SELECT DISTINCT $7, $1::text,
+	SELECT DISTINCT $7::int, $1::text,
 	       ((regexp_replace(dia, 'T', ' '))::date +
 	        regexp_replace(hora, '^PT(\d+)H(\d+)M(\d+)S$', '\1:\2:\3')::time) AT TIME ZONE $8::text,
 	       ln.ord, eq.id_equipment, eq.id_area, eq.id_site, ln.qtyv, 1
@@ -72,7 +72,7 @@ const deliverySQL = `
 const counterSQL = `
 	INSERT INTO customer_reports.boxes
 	       (customer_id, label_key, ts_value, id_order, id_equipment, id_area, id_site, net_production, qty)
-	SELECT $2, $1::text, time_bucket($3::interval, ts_value),
+	SELECT $2::int, $1::text, time_bucket($3::interval, ts_value),
 	       (analogs -> $1::text ->> $4::text),
 	       id_equipment, id_area, id_site,
 	       sum((analogs -> $1::text ->> $5::text)::double precision), count(*)
