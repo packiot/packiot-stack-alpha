@@ -26,7 +26,7 @@ import (
 // wipe + 23-column reload from 06c. The dead-logger ping
 // (piot_monitor_function) is deliberately dropped.
 const shift06Delete = `DELETE FROM customer_reports.shift
-	WHERE customer_id = 6
+	WHERE customer_id = $1
 	AND day >= (now() at time zone 'America/Montreal')::date - interval '21 day'
 	AND day <= (now() at time zone 'America/Montreal')::date`
 
@@ -35,7 +35,7 @@ const shift06Insert = `INSERT INTO customer_reports.shift
 	 dt_duration_h, setup_duration_h, running, prss_qty, packed_qty,
 	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time,
 	 index1, id_equipment, pro_h, res_h, mnt_h, discart_h, index2)
-	SELECT 6, line, shift, turno_hrs, day, job, shift_duration_h,
+	SELECT $1::int, line, shift, turno_hrs, day, job, shift_duration_h,
 	 dt_duration_h, setup_duration_h, running, prss_qty, packed_qty,
 	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time,
 	 index1, id_equipment, pro_h, res_h, mnt_h, discart_h, index2
@@ -44,16 +44,16 @@ const shift06Insert = `INSERT INTO customer_reports.shift
 	  (now() at time zone 'America/Montreal')::date)`
 
 // RunShift06 executes one atomic delete-and-reload pass.
-func RunShift06(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+func RunShift06(ctx context.Context, pool *pgxpool.Pool, customerID int) (int64, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, shift06Delete); err != nil {
+	if _, err := tx.Exec(ctx, shift06Delete, customerID); err != nil {
 		return 0, err
 	}
-	ct, err := tx.Exec(ctx, shift06Insert)
+	ct, err := tx.Exec(ctx, shift06Insert, customerID)
 	if err != nil {
 		return 0, err
 	}
@@ -63,10 +63,10 @@ func RunShift06(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 // LoopShift06 — staging-tuned cadence (prod's cron schedule is
 // unreadable to awslambda; the COMPUTATION is verbatim, the cadence is
 // the documented divergence, same class as the CAgg policies).
-func LoopShift06(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopShift06(ctx context.Context, pool *pgxpool.Pool, customerID int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("shift06 report writer started (Wave 2 port #2)")
 	jobs.Loop(ctx, jobs.Job{Name: "shift06", Every: every, Run: func(ctx context.Context) error {
-		_, err := RunShift06(ctx, pool)
+		_, err := RunShift06(ctx, pool, customerID)
 		return err
 	}}, logger, obs)
 }

@@ -21,7 +21,7 @@ import (
 // line-level equipments (tp_equipment=3) of enterprise 33, last 5 days,
 // speed >= 150, finished POs (status > 2), one row per new id_order —
 // with two deliberate pool-shape changes:
-//   - customer_id = 33 on every row (pool multi-tenancy column)
+//   - customer_id = $1 on every row (pool multi-tenancy column)
 //   - the "already reported" dedupe reads the POOL slice, not the
 //     legacy table, so the two writers converge independently during
 //     the dual-run window
@@ -32,8 +32,8 @@ INSERT INTO customer_reports.speed(
 (WITH data AS (
     SELECT id_equipment, ts_value, speed, net_production_incr
     FROM equipment_values
-    WHERE id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = 33 AND tp_equipment = 3)
-    AND id_enterprise = 33
+    WHERE id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1 AND tp_equipment = 3)
+    AND id_enterprise = $1
     AND ts_value >= NOW() - INTERVAL '5 day'
     AND speed >= 150
     AND net_production_val IS NOT NULL
@@ -52,19 +52,19 @@ INSERT INTO customer_reports.speed(
     JOIN data d ON po.id_equipment = d.id_equipment
     WHERE d.ts_value >= po.ts_start
     AND d.ts_value < po.ts_end
-    AND po.id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = 33 AND tp_equipment = 3)
+    AND po.id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1 AND tp_equipment = 3)
     AND po.ts_start >= NOW() - INTERVAL '5 day'
     AND po.status > 2
-    AND po.id_order NOT IN (SELECT id_order FROM customer_reports.speed WHERE customer_id = 33)
+    AND po.id_order NOT IN (SELECT id_order FROM customer_reports.speed WHERE customer_id = $1)
     GROUP BY po.id_equipment, po.id_order, po.id_product, po.production_programmed, po.production_final, po.ts_start, product_type
 )
-SELECT 33, id_equipment, id_order, id_product, production_programmed,
+SELECT $1::int, id_equipment, id_order, id_product, production_programmed,
        production_final, avg_speed, final_net, job_start, product_type
 FROM speed)`
 
 // RunSpeed33 executes one pass. Returns rows inserted.
-func RunSpeed33(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	ct, err := pool.Exec(ctx, speed33SQL)
+func RunSpeed33(ctx context.Context, pool *pgxpool.Pool, customerID int) (int64, error) {
+	ct, err := pool.Exec(ctx, speed33SQL, customerID)
 	if err != nil {
 		return 0, err
 	}
@@ -75,10 +75,10 @@ func RunSpeed33(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 // Prod scheduled the legacy procedure via cron (schedule unreadable to
 // awslambda — inferred warm: 1.8k lifetime inserts); 10 minutes is the
 // staging-tuned default, configurable by the caller.
-func LoopSpeed33(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopSpeed33(ctx context.Context, pool *pgxpool.Pool, customerID int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("speed33 report writer started (Wave 2 port #1)")
 	jobs.Loop(ctx, jobs.Job{Name: "speed33", Every: every, Run: func(ctx context.Context) error {
-		_, err := RunSpeed33(ctx, pool)
+		_, err := RunSpeed33(ctx, pool, customerID)
 		return err
 	}}, logger, obs)
 }
