@@ -174,6 +174,11 @@ func main() {
 		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, cfg.Sync06Target, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// obd port — the box→production bridge (descriptor-driven).
+	if cfg.BoxesBridgeEnabled {
+		go reports.LoopBoxesBridge(ctx, flows.Standard(pool, shadowPool), time.Minute, logger, jobObs)
+	}
+
 	// ADR-0014 — the label-adapter boxes pipeline (descriptor-driven).
 	if cfg.Boxes13ReportEnabled {
 		go reports.LoopBoxes(ctx, flows.Standard(pool, shadowPool), time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)

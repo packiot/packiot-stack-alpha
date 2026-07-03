@@ -94,6 +94,7 @@ type Config struct {
 	// aggregator (analogs Label_Neopac → equipment_boxes_cust_13).
 	Boxes13ReportEnabled   bool
 	Boxes13IntervalMinutes int
+	BoxesBridgeEnabled     bool
 
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
 	// OFF until synthetic-inject verification (staging has no live
@@ -133,6 +134,7 @@ func Load() (*Config, error) {
 		EventsExcludedEnterprises: getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
 		POControlEnabled:          getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:      getenv("BOXES13_REPORT_ENABLED", "false") == "true",
+		BoxesBridgeEnabled:        getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
 		Sync06ReportEnabled:       getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:     getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Sync06EnterpriseID:        getenvInt("SYNC06_ENTERPRISE_ID", 6),

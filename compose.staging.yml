@@ -755,6 +755,7 @@ services:
       BOXES13_REPORT_ENABLED: "true"
       # ADR-0014 P4 — enterprise-6 sync state machine (verbatim embed).
       SYNC06_REPORT_ENABLED: "true"
+      BOXES_BRIDGE_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20

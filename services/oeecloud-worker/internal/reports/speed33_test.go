@@ -11,7 +11,7 @@ import (
 func TestSpeed33PortFidelity(t *testing.T) {
 	musts := []string{
 		"customer_reports.speed",         // pool target
-		"SELECT $1::int,",                     // customer_id column
+		"SELECT $1::int,",                // customer_id column
 		"tp_equipment = 3",               // line-level only
 		"id_enterprise = $1",             // customer scope
 		"INTERVAL '5 day'",               // rolling window
