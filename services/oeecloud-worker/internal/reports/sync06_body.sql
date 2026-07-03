@@ -156,8 +156,7 @@
         gds.job, 
         gds.item, 
         gds.totalavailablehrsinmin, 
-        gds.dtimehrs
-plannedinmin, 
+        gds.dtimehrsplannedinmin, 
         gds.dtimehrsunplannedinmin, 
         gds.unplanneddt_proinmin, 
         gds.unplanneddt_resinmin, 
@@ -332,8 +331,7 @@ WHERE
 */
 
 with po_runtimes as (
-   s
-elect
+   select
    	eq.cd_equipment,
    	po.id_order,
    	--case when upper(por.runtime_timerange) is null then 'in progress' else 'completed' end as status, --change EW 10-march-2025
