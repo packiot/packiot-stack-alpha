@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
@@ -23,6 +24,7 @@ type Handler struct {
 	started  atomic.Uint64
 	topology atomic.Uint64
 	created  atomic.Uint64
+	events   atomic.Uint64
 	ended    atomic.Uint64
 	noops    atomic.Uint64
 	dropped  atomic.Uint64
@@ -44,7 +46,7 @@ type paramPayload struct {
 
 // Handles reports whether this param id belongs to a ported slice.
 func Handles(id int) bool {
-	return (id >= 30800 && id <= 30803) || HandlesTopology(id) || HandlesCreatePO(id)
+	return (id >= 30800 && id <= 30803) || HandlesTopology(id) || HandlesCreatePO(id) || HandlesEvents(id)
 }
 
 // Execute runs one PO-control parameter end-to-end in a single tx.
@@ -94,6 +96,9 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	}
 	if paramID == 30805 {
 		return h.executeCreatePO(ctx, pool, m, schema)
+	}
+	if HandlesEvents(paramID) {
+		return h.executeEvents(ctx, pool, m, schema)
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -309,13 +314,14 @@ type Stats struct {
 	Started  uint64 `json:"po_control_started"`
 	Topology uint64 `json:"po_control_topology"`
 	Created  uint64 `json:"po_control_created"`
+	Events   uint64 `json:"po_control_events"`
 	Ended    uint64 `json:"po_control_ended"`
 	NoOps    uint64 `json:"po_control_noops"`
 	Dropped  uint64 `json:"po_control_dropped"`
 }
 
 func (h *Handler) Stats() Stats {
-	return Stats{h.started.Load(), h.topology.Load(), h.created.Load(), h.ended.Load(), h.noops.Load(), h.dropped.Load()}
+	return Stats{h.started.Load(), h.topology.Load(), h.created.Load(), h.events.Load(), h.ended.Load(), h.noops.Load(), h.dropped.Load()}
 }
 
 func derefID(id *int) int {
@@ -323,4 +329,9 @@ func derefID(id *int) int {
 		return 0
 	}
 	return *id
+}
+
+// txExecer is the minimal exec surface writeUserLog needs (pgx.Tx).
+type txExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }

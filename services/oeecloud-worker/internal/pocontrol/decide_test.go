@@ -65,7 +65,8 @@ func TestHandlesPortedSlices(t *testing.T) {
 	for id, want := range map[int]bool{30800: true, 30801: true, 30802: true, 30803: true,
 		30700: true, // slice 2
 		30805: true, // slice 3
-		30810: false, 30850: false} {
+		30810: true, // slice 4
+		30850: false, 30861: false} {
 		if Handles(id) != want {
 			t.Errorf("Handles(%d) != %v", id, want)
 		}
@@ -115,5 +116,41 @@ func TestCreatePOShape(t *testing.T) {
 	}
 	if strings.Contains(cpInsertPO, "ts_start") {
 		t.Error("status=1 insert must not set ts_start (CHECK constraint semantics)")
+	}
+}
+
+func TestEventsFamily(t *testing.T) {
+	for id, want := range map[int]bool{30810: true, 30811: true, 30812: true,
+		30813: true, 30814: true, 30820: true, 30815: false, 30861: false} {
+		if HandlesEvents(id) != want {
+			t.Errorf("HandlesEvents(%d) != %v", id, want)
+		}
+	}
+	for sql, must := range map[string][]string{
+		ujJustify:      {"WHERE id_equipment = $1 AND ts_event = $2", "cd_category_client"},
+		ujManualInsert: {"WHERE NOT EXISTS", "cd_machine = $6 AND cd_category = $7"},
+		ujTrimFirst:    {"forced_creation_system = true", "duration = $15"},
+		ujTrimSecond:   {"SELECT $1, $2, 10,", "forced_creation_system"},
+		ujScrapReset:   {"scrap_incr = 0", "ts_value = $2"},
+		ujUserLog:      {"'event'"},
+	} {
+		for _, m := range must {
+			if !strings.Contains(sql, m) {
+				t.Errorf("slice4 SQL lost %q", m)
+			}
+		}
+	}
+}
+
+func TestParseLocal(t *testing.T) {
+	// naive string interpreted in factory tz (America/Sao_Paulo = UTC-3)
+	got, err := parseLocal("2026-07-03 12:00:00", "America/Sao_Paulo")
+	if err != nil || got.Hour() != 15 {
+		t.Errorf("naive parse: %v %v (want 15 UTC)", got, err)
+	}
+	// RFC3339 offset wins over tz param
+	got, err = parseLocal("2026-07-03T12:00:00Z", "America/Sao_Paulo")
+	if err != nil || got.Hour() != 12 {
+		t.Errorf("rfc3339 parse: %v %v", got, err)
 	}
 }
