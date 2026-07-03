@@ -1,0 +1,657 @@
+
+########## [function] Prep: Parameter 30700-30701 (Line Config) (01 · Ingestion & Writes.json) lines=36
+// parameter 99000 set order of units in a line
+   
+msg.payload.unit_order = JSON.parse(msg.payload.sparkplug_metrics_key).value
+msg.payload.parameter_id = JSON.parse(msg.payload.sparkplug_metrics_key).id
+ts = new Date(Math.round(parseInt(msg.payload.sparkplug_timestamp)/1000)*1000).toISOString()
+
+var sql = ""
+
+// PRODUCTION LINE ORDER 
+if (msg.payload.parameter_id == 30700) {
+    sql = `select id_equipment as id_line_first, 
+    (select id_equipment from packml_register pr where id_site = `+ msg.payload.id_site + ` and id_unit = `+ msg.payload.unit_order[msg.payload.unit_order.length-1] + `  group by id_equipment)  as id_line_last 
+    from packml_register pr 
+    where id_site = `+ msg.payload.id_site + ` and id_unit = `+ msg.payload.unit_order[0] + ` 
+    group by id_equipment;`
+               
+    msg.temp = msg.payload
+    
+    msg.payload = sql;
+}
+
+// IDEAL PRODUCTION SPEED 
+if (msg.payload.parameter_id == 30701) {
+
+    sql = `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, ideal_production_speed)
+    VALUES  ('`+ ts +`',`+ msg.payload.id_enterprise +`,`+ msg.payload.id_site +`,`+ msg.payload.id_area +`,`+ msg.payload.id_equipment +
+    `, `+ JSON.parse(msg.payload.sparkplug_metrics_key).value + `) ` 
+    + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET ideal_production_speed = `+JSON.parse(msg.payload.sparkplug_metrics_key).value  + `;`
+               
+    msg.temp = msg.payload
+    
+    msg.payload = sql;
+}
+
+
+return msg;
+
+########## [function] Prep: Parameter 30800-30899 (PO Control) (01 · Ingestion & Writes.json) lines=361
+// 
+msg.parameter_id = msg.payload.parameter_id
+msg.payload_para = msg.payload
+msg.payload_para.id_po = JSON.parse(msg.payload.sparkplug_metrics_key).value
+var sparkplug_metrics_key = JSON.parse(msg.payload.sparkplug_metrics_key)
+var ts_now = new Date().toISOString();
+
+
+
+// 0.22
+var user = '';
+var log_user = false
+if (JSON.parse(msg.payload.sparkplug_metrics_key).user) user = JSON.parse(msg.payload.sparkplug_metrics_key).user;
+
+
+// 6MST
+var category_desc = '';
+if (JSON.parse(msg.payload.sparkplug_metrics_key).category_desc) category_desc = JSON.parse(msg.payload.sparkplug_metrics_key).category_desc;
+
+var subcategory_desc = '';
+if (JSON.parse(msg.payload.sparkplug_metrics_key).subcategory_desc) subcategory_desc = JSON.parse(msg.payload.sparkplug_metrics_key).subcategory_desc;
+
+
+//0.18
+var category_code = null;
+if (JSON.parse(msg.payload.sparkplug_metrics_key).category_code) category_code = JSON.parse(msg.payload.sparkplug_metrics_key).category_code;
+
+var subcategory_code = null;
+if (isNaN(JSON.parse(msg.payload.sparkplug_metrics_key).subcategory_code)===false) subcategory_code = JSON.parse(msg.payload.sparkplug_metrics_key).subcategory_code;
+
+
+
+
+// POs
+
+if ((msg.parameter_id == 30800) || (msg.parameter_id == 30802)) { // start a new po
+
+    //IF no id_production_order get id_production_order with id_order from production_orders 0.19
+    
+    var id_production_order
+    
+    if (typeof msg.payload_para.id_po === 'undefined' || msg.payload_para.id_po === null || msg.payload_para.id_po === "") {
+        id_production_order = `(select id_production_order from production_orders where id_equipment = `+msg.payload_para.id_equipment+` and id_order = `+JSON.parse(msg.payload_para.sparkplug_metrics_key).id_order+`)`
+    } else {
+        id_production_order = msg.payload_para.id_po
+    }
+
+
+
+  msg.payload = `
+    (SELECT lower(por.runtime_timerange) AS ts_lower, po.status as po_status, po.id_production_order as id_production_order_open, (select status from production_orders po where id_production_order = `+id_production_order+`) as cur_status
+    FROM public.production_orders_runtime por
+    inner join production_orders po
+    on por.id_production_order = po.id_production_order 
+    WHERE po.id_equipment = (select id_equipment from production_orders po where id_production_order = `+id_production_order+`) and po.status = 2 order by ts_lower desc limit 1)
+    
+    union
+
+    select now() AS ts_lower, po.status as po_status, po.id_production_order as id_production_order_open, 
+    1 as cur_status 
+    from production_orders po where id_production_order = `+id_production_order+` and (po.status = 1 OR po.status = 4);`
+}
+
+
+if ((msg.parameter_id == 30801) || (msg.parameter_id == 30803)) { // End an po
+    msg.payload = `
+    SELECT lower(por.runtime_timerange) AS ts_lower, po.status as po_status, po.id_production_order as id_po
+    FROM public.production_orders_runtime por
+    inner join production_orders po
+    on por.id_production_order = po.id_production_order 
+    WHERE po.status=2 and po.id_equipment = `+msg.payload_para.id_equipment+` order by ts_lower desc limit 1
+    ;`
+}
+
+
+// INSERT A NEW PO  0.18
+
+if (msg.parameter_id == 30805)  { 
+    
+    var nm_product_family = ""
+    var query_part_A_nm_product_family = " UPDATE SET nm_product_family = '' "  //0.21
+    var query_part_B_nm_product_family = " select id_product_family from rows " //0.21
+    
+
+    if (typeof JSON.parse(msg.payload.sparkplug_metrics_key).cd_product_family === 'undefined' || JSON.parse(msg.payload.sparkplug_metrics_key).cd_product_family === null) { //0.21
+        
+    } else {
+        nm_product_family = JSON.parse(msg.payload.sparkplug_metrics_key).cd_product_family;
+        query_part_A_nm_product_family = "  NOTHING ";
+        query_part_B_nm_product_family = " select id_product_family from product_families WHERE nm_product_family= '"+nm_product_family+"' ";
+    }
+        
+        
+    var nm_product = JSON.parse(msg.payload.sparkplug_metrics_key).nm_product;
+    
+    var cd_product = JSON.parse(msg.payload.sparkplug_metrics_key).cd_product;
+    var txt_product = JSON.parse(msg.payload.sparkplug_metrics_key).txt_product;
+    
+    var nm_client = JSON.parse(msg.payload.sparkplug_metrics_key).nm_client;
+    
+    
+    //--UPSERT PRODUCT FAMILY AND PRODUCT  ,   if family is null then  nm_product_family 
+    //
+    msg.payload1 = `
+
+																				   
+WITH rows AS (
+    INSERT INTO product_families 
+        (nm_product_family, id_enterprise )
+    VALUES
+        ('`+nm_product_family+`', `+ msg.payload_para.id_enterprise+`)
+    on conflict (nm_product_family, id_enterprise) DO `+query_part_A_nm_product_family+`
+    RETURNING id_product_family
+)
+insert into products 
+	(nm_product, id_product_family,txt_product,id_enterprise, cd_product)
+select 
+	'`+nm_product+`',
+	(`+query_part_B_nm_product_family+`),
+	'`+txt_product+`',
+	`+ msg.payload_para.id_enterprise+`,
+	'`+cd_product+`'
+`
+
+//--UPSERT CLIENT
+//-- GET VALUES FOR PO INSERT
+
+    msg.payload2 = `
+where NOT EXISTS (
+        SELECT id_product FROM products WHERE cd_product = '`+cd_product+`' and id_enterprise = `+ msg.payload_para.id_enterprise+`
+    )
+RETURNING id_product_family ;
+			   
+insert into clients  
+	(nm_client, id_enterprise)
+Values(
+	'`+nm_client+`',
+	`+ msg.payload_para.id_enterprise+`
+)
+on conflict (nm_client, id_enterprise) do nothing; 
+
+select 'true' as do_upsert,
+	(select id_product from products p where cd_product = '`+cd_product+`'  and id_enterprise = `+ msg.payload_para.id_enterprise+` ) as id_product,
+	(select id_client  from clients c where nm_client ='`+nm_client+`'  and id_enterprise = `+ msg.payload_para.id_enterprise+` ) as id_client,
+	(select conversion_factor from production_orders po where id_product = (
+		select id_product from products p where cd_product = '`+cd_product+`'  and id_enterprise = `+ msg.payload_para.id_enterprise+` 
+		) order by ts_creation desc limit 1) as conversion_factor;
+ `
+
+    msg.payload = msg.payload1 + msg.payload2 
+
+}
+
+
+
+
+
+// EVENTS
+
+
+// 4,MST included change_over ,   5,MST included description
+
+if (msg.parameter_id == 30810) { // justify downtime event
+
+    msg.payload = `
+    SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****
+    UPDATE public.equipment_events
+	SET planned_downtime='`+sparkplug_metrics_key.planned_dwt+`',
+	change_over='`+sparkplug_metrics_key.change_over+`',`;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined') {msg.payload = msg.payload + ` idle = '` + sparkplug_metrics_key.idle + `', `;}  // 7MST
+	msg.payload = msg.payload + ` txt_downtime_notes='`+sparkplug_metrics_key.txt_downtime+`',
+	cd_subcategory='`+sparkplug_metrics_key.subcategory+`',
+	cd_machine='`+sparkplug_metrics_key.sector+`',
+	cd_category='`+sparkplug_metrics_key.category+`',
+	desc_category='`+sparkplug_metrics_key.category_desc+`',
+	cd_category_client=`+category_code+`,
+	cd_subcategory_client=`+subcategory_code+`,
+	desc_subcategory='`+sparkplug_metrics_key.subcategory_desc+`' 
+	WHERE id_equipment=`+msg.payload_para.id_equipment+` AND ts_event='`+sparkplug_metrics_key.ts_event+`'****semicolon****
+	INSERT INTO user_logs (ts_event, id_enterprise,id_site,id_area,id_equipment,nm_user,category,subcategory,description,ts_log)
+    VALUES('`+sparkplug_metrics_key.ts_event+`', `+ msg.payload_para.id_enterprise+`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+msg.payload_para.id_equipment+`,'`+user+`','event','justify','30810','`+ts_now+`')`+`;`
+//0.22
+    
+}
+
+/*
+    msg.payload = `
+    SET timezone = '`+JSON.parse(msg.payload.sparkplug_metrics_key).timezone+`';
+    UPDATE public.equipment_events
+	SET planned_downtime='`+JSON.parse(msg.payload.sparkplug_metrics_key).planned_dwt+`',
+	change_over='`+JSON.parse(msg.payload.sparkplug_metrics_key).change_over+`',`;
+	if (typeof JSON.parse(msg.payload.sparkplug_metrics_key).idle !== 'undefined') {msg.payload = msg.payload + ` idle = '` + JSON.parse(msg.payload.sparkplug_metrics_key).idle + `', `;}  // 7MST
+	msg.payload = msg.payload + ` txt_downtime_notes='`+JSON.parse(msg.payload.sparkplug_metrics_key).txt_downtime+`',
+	cd_subcategory='`+JSON.parse(msg.payload.sparkplug_metrics_key).subcategory+`',
+	cd_machine='`+JSON.parse(msg.payload.sparkplug_metrics_key).sector+`',
+	cd_category='`+JSON.parse(msg.payload.sparkplug_metrics_key).category+`',
+	desc_category='`+JSON.parse(msg.payload.sparkplug_metrics_key).category_desc+`',
+	desc_subcategory='`+JSON.parse(msg.payload.sparkplug_metrics_key).subcategory_desc+`' 
+	WHERE id_equipment=`+msg.payload_para.id_equipment+` AND ts_event='`+JSON.parse(msg.payload.sparkplug_metrics_key).ts_event+`';`*/
+
+
+//insert into public.equipment_events_man	(id_equipment,id_enterprise, planned_downtime, cd_machine, cd_category, cd_subcategory, txt_downtime_notes,ts_event, ts_end, duration )
+//    values (`+msg.payload_para.id_equipment+`, `+msg.payload_para.id_enterprise+`,'`+JSON.parse(msg.payload.sparkplug_metrics_key).planned_dwt+`','`+JSON.parse(msg.payload.sparkplug_metrics_key).sector+`','`+JSON.parse(msg.payload.sparkplug_metrics_key).category+`','`+JSON.parse(msg.payload.sparkplug_metrics_key).subcategory+`'	,'`+JSON.parse(msg.payload.sparkplug_metrics_key).txt_downtime+`' , '`+JSON.parse(msg.payload.sparkplug_metrics_key).ts_event+`', '`+JSON.parse(msg.payload.sparkplug_metrics_key).ts_end+`', `+duration+`);`
+
+if (msg.parameter_id == 30811) { // justify manual event
+
+    duration = (Date.parse(sparkplug_metrics_key.ts_end) - Date.parse(sparkplug_metrics_key.ts_event))/1000;
+    msg.duration = duration;
+    msg.payload = 
+	`SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****  
+    insert into public.equipment_events_man	(id_equipment,id_enterprise, planned_downtime,`;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined') {msg.payload = msg.payload + ' idle, ';}  // 7MST
+	msg.payload = msg.payload +  ` change_over, cd_machine, cd_category, cd_subcategory, txt_downtime_notes,ts_event, ts_end, duration , desc_category ,desc_subcategory,cd_category_client,cd_subcategory_client ) 
+    SELECT `+msg.payload_para.id_equipment+`, `+msg.payload_para.id_enterprise+`,'`+sparkplug_metrics_key.planned_dwt+`',`;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined') {msg.payload = msg.payload + `'` + sparkplug_metrics_key.idle + `', `;}  // 7MST
+	msg.payload = msg.payload +  `'`+sparkplug_metrics_key.change_over+`','`+sparkplug_metrics_key.sector+`','`+sparkplug_metrics_key.category+`','`+sparkplug_metrics_key.subcategory+`'	,'`+sparkplug_metrics_key.txt_downtime+`' , '`+sparkplug_metrics_key.ts_event+`', '`+sparkplug_metrics_key.ts_end+`', `+duration+`, '`+sparkplug_metrics_key.category_desc+`','`+sparkplug_metrics_key.subcategory_desc+`' , `+category_code+`,`+subcategory_code+`
+    where NOT EXISTS  ( select * from public.equipment_events_man where ts_event = '`+sparkplug_metrics_key.ts_event+`' AND  cd_machine = '`+sparkplug_metrics_key.sector+`' AND cd_category = '`+sparkplug_metrics_key.category+`' and cd_subcategory = '`+sparkplug_metrics_key.subcategory+`')****semicolon****
+	INSERT INTO user_logs (ts_event, id_enterprise,id_site,id_area,id_equipment,nm_user,category,subcategory,description, ts_log)
+    VALUES('`+sparkplug_metrics_key.ts_event+`', `+ msg.payload_para.id_enterprise+`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+msg.payload_para.id_equipment+`,'`+user+`','event','manual event','30811','`+ts_now+`')`+`;`
+//0.22
+}
+
+if (msg.parameter_id == 30812) { // justify manual event UPDATE
+    msg.payload = `
+    SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****
+    UPDATE public.equipment_events_man
+	SET planned_downtime='`+sparkplug_metrics_key.planned_dwt+`',`;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined') {msg.payload = msg.payload + ` idle = '` + sparkplug_metrics_key.idle + `', `;}  // 7MST
+	msg.payload = msg.payload +` change_over='`+sparkplug_metrics_key.change_over+`',  txt_downtime_notes='`+sparkplug_metrics_key.txt_downtime+`',cd_subcategory='`+sparkplug_metrics_key.subcategory+`',cd_machine='`+sparkplug_metrics_key.sector+`',cd_category='`+sparkplug_metrics_key.category+`',desc_category='`+sparkplug_metrics_key.category_desc+`',desc_subcategory='`+sparkplug_metrics_key.subcategory_desc+`' , cd_category_client = `+category_code+`,cd_subcategory_client = `+subcategory_code+`
+	WHERE id_equipment=`+msg.payload_para.id_equipment+` AND ts_event='`+sparkplug_metrics_key.ts_event+`'****semicolon****
+	INSERT INTO user_logs (ts_event, id_enterprise,id_site,id_area,id_equipment,nm_user,category,subcategory,description,ts_log)
+    VALUES('`+sparkplug_metrics_key.ts_event+`', `+ msg.payload_para.id_enterprise+`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+msg.payload_para.id_equipment+`,'`+user+`','event','manual event','30812','`+ts_now+`')`+`;`
+//0.22
+}
+
+
+//6MST
+var duration
+
+if (msg.parameter_id == 30813) { // TRIM FIRST PART
+
+    duration = Math.abs((new Date(sparkplug_metrics_key.ts_end) - new Date(sparkplug_metrics_key.ts_event))/1000);
+    
+    
+    
+    //*  7MST   0.12MST 0.13MST 0.14MST
+    msg.payload = `
+    SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****
+    UPDATE public.equipment_events
+	SET `;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined' &&  sparkplug_metrics_key.idle !== null) msg.payload = msg.payload + `idle='`+sparkplug_metrics_key.idle+`', `
+	if (typeof sparkplug_metrics_key.planned_dwt !== 'undefined' &&  sparkplug_metrics_key.planned_dwt !== null) msg.payload = msg.payload + `planned_downtime=`+sparkplug_metrics_key.planned_dwt+`, `
+	if (typeof sparkplug_metrics_key.change_over !== 'undefined' &&  sparkplug_metrics_key.change_over !== null) msg.payload = msg.payload + `change_over=`+sparkplug_metrics_key.change_over+`, `
+	msg.payload = msg.payload + `txt_downtime_notes='`+sparkplug_metrics_key.txt_downtime+`',cd_subcategory='`+sparkplug_metrics_key.subcategory+`',cd_machine='`+sparkplug_metrics_key.sector+`',cd_category='`+sparkplug_metrics_key.category+`',desc_category='`+category_desc+`',desc_subcategory='`+subcategory_desc+`', cd_category_client = `+category_code+`, cd_subcategory_client = `+subcategory_code+`, ts_end='`+sparkplug_metrics_key.ts_end+`',duration='`+duration+`', forced_creation_system = true 
+	WHERE id_equipment=`+msg.payload_para.id_equipment+` AND ts_event='`+sparkplug_metrics_key.ts_event+`';`
+    
+    
+    /*   0.12MST
+     msg.payload = `
+    SET timezone = '`+sparkplug_metrics_key.timezone+`';
+    UPDATE public.equipment_events
+	SET ts_end='`+sparkplug_metrics_key.ts_end+`',duration='`+duration+`' 
+	WHERE id_equipment=`+msg.payload_para.id_equipment+` AND ts_event='`+sparkplug_metrics_key.ts_event+`';`
+	*/
+   
+}
+
+if (msg.parameter_id == 30814) { // TRIM SECOND PART
+    
+    var ts_end
+    duration = null;
+    
+    var insert_ts_end =  '';
+    var insert_ts_end_val =  '';
+    
+    if (sparkplug_metrics_key.ts_end) {
+        duration = Math.abs((new Date(sparkplug_metrics_key.ts_end) - new Date(sparkplug_metrics_key.ts_event))/1000);
+        ts_end = sparkplug_metrics_key.ts_end; 
+        
+        insert_ts_end =  'ts_end, duration ,';
+        insert_ts_end_val = `'`+ts_end+`', `+duration+`,`;
+        
+        msg.DEBUG = sparkplug_metrics_key.ts_event;
+    }
+    
+    // 0.14MST
+    msg.payload = 
+	`SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****  
+    insert into public.equipment_events	(id_equipment,id_enterprise, status, planned_downtime,`;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined') {msg.payload = msg.payload + ' idle, ';}  // 7MST
+	msg.payload = msg.payload +  `  change_over, cd_machine, cd_category, cd_subcategory, txt_downtime_notes,ts_event,` + insert_ts_end + ` desc_category ,desc_subcategory, forced_creation_system, cd_category_client,cd_subcategory_client ) 
+    SELECT `+msg.payload_para.id_equipment+`, `+msg.payload_para.id_enterprise+`, 10, '`+sparkplug_metrics_key.planned_dwt+`',`;
+	if (typeof sparkplug_metrics_key.idle !== 'undefined') {msg.payload = msg.payload + `'` + sparkplug_metrics_key.idle + `', `;}  // 7MST
+	msg.payload = msg.payload +  `'`+sparkplug_metrics_key.change_over+`','`+sparkplug_metrics_key.sector+`','`+sparkplug_metrics_key.category+`','`+sparkplug_metrics_key.subcategory+`'	,'`+sparkplug_metrics_key.txt_downtime+`' , '`+sparkplug_metrics_key.ts_event+`', ` + insert_ts_end_val + ` '`+category_desc+`','`+subcategory_desc+`' , true , `+category_code+`,`+subcategory_code+`
+    where NOT EXISTS  ( select * from public.equipment_events where ts_event = '`+sparkplug_metrics_key.ts_event+`' AND  cd_machine = '`+sparkplug_metrics_key.sector+`' AND cd_category = '`+sparkplug_metrics_key.category+`' and cd_subcategory = '`+sparkplug_metrics_key.subcategory+`');`
+}
+
+
+//  MANUAL SCRAP SETTINGS 
+
+if (msg.parameter_id == 30820) { // DELETE
+
+
+    ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000
+
+    msg.payload = `
+    SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****
+    UPDATE public.equipment_values
+	SET scrap_incr=0
+	WHERE id_equipment=`+msg.payload_para.id_equipment+` AND ts_value='`+ new Date(ts).toISOString()+`';`
+
+}
+
+
+// INSERT ANALOG VALUES
+
+if (msg.parameter_id == 30850) { // DELETE
+
+    ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000
+
+    msg.payload = `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, analogs)
+        VALUES  ('`+ new Date(ts).toISOString() +`',`+ msg.payload_para.id_enterprise +`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+ msg.payload_para.id_equipment+`,'`+JSON.stringify(sparkplug_metrics_key.value) + `') ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET analogs = '`+JSON.stringify(sparkplug_metrics_key.value) + `';`
+}      
+
+
+/// SETUP COUNTER
+
+if (msg.parameter_id == 30861) { // start time
+
+    ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000
+        
+    msg.payload = `
+    UPDATE public.uns_equipment_current_job
+	SET setup_begin_time='`+ new Date(ts).toISOString()+`', setup_end_time = null    
+	WHERE id_equipment=`+msg.payload_para.id_equipment+`;`    //0.18
+}
+
+if (msg.parameter_id == 30862) { // end time
+    
+    ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000    
+
+    msg.payload = `
+    UPDATE public.uns_equipment_current_job
+	SET setup_end_time='`+ new Date(ts).toISOString()+`'
+	WHERE id_equipment=`+msg.payload_para.id_equipment+`;`
+}
+
+
+if (msg.parameter_id == 30880) { // INSERT USER LOG 0.22
+    
+    //ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000    
+
+    msg.payload = `
+    SET timezone = '`+sparkplug_metrics_key.timezone+`'****semicolon****
+	INSERT INTO user_logs (ts_event, id_enterprise,id_site,id_area,id_equipment,nm_user,category,subcategory,description,ip,ts_log)
+    VALUES('`+new Date(JSON.parse(msg.payload_para.sparkplug_metrics_key).value.ts_event).toISOString()+`', `+ msg.payload_para.id_enterprise+`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+msg.payload_para.id_equipment+`,'`+JSON.parse(msg.payload_para.sparkplug_metrics_key).value.user+`','`+JSON.parse(msg.payload_para.sparkplug_metrics_key).value.category+`','`+JSON.parse(msg.payload_para.sparkplug_metrics_key).value.subcategory+`','`+JSON.parse(msg.payload_para.sparkplug_metrics_key).value.description+`','`+JSON.parse(msg.payload_para.sparkplug_metrics_key).value.ip+`','`+ts_now+`')`+`;`
+//0.22
+}
+
+return msg;
+
+########## [function] Build: UPSERT packml_register Config (30700) (03 · Error Handler.json) lines=61
+//Parameter[99000] set line equipments in equipment_values
+
+msg.payload = msg.temp
+
+ts = new Date(Math.round(parseInt(msg.payload.sparkplug_timestamp)/1000)*1000).toISOString()
+
+ 
+if (msg.payload.parameter_id == 30700) {
+   
+
+    var sql = ""  
+    var x = 0
+    
+     for (x in msg.payload.unit_order) {    
+        switch(x) {
+          case "0":
+            // First
+            sql =  sql + `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_equipment_line_connected, position_in_equipment_line, is_equipment_line_infeed)
+        VALUES  ('`+ ts +`',`+ msg.payload.id_enterprise +`,`+ msg.payload.id_site +`,`+ msg.payload.id_area +`,`+ `(select id_equipment from packml_register pr where id_site = `+msg.payload.id_site+` and id_unit = `+ msg.payload.unit_order[0] +` group by id_equipment), `+ msg.payload.id_equipment + `, 1 , 1 ) ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_equipment_line_connected = `+msg.payload.id_equipment + `;`
+            break;
+            
+          case String(msg.payload.unit_order.length-1):
+            // Last
+            sql = sql + `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_equipment_line_connected, position_in_equipment_line, is_equipment_line_outfeed)
+        VALUES  ('`+ ts +`',`+ msg.payload.id_enterprise +`,`+ msg.payload.id_site +`,`+ msg.payload.id_area +`,`+ `(select id_equipment from packml_register pr where id_site = `+msg.payload.id_site+` and id_unit = `+ msg.payload.unit_order[msg.payload.unit_order.length-1] +` group by id_equipment),`+ msg.payload.id_equipment + `,`+(msg.payload.unit_order.length)+ `, 1 ) ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_equipment_line_connected = `+msg.payload.id_equipment + `;`
+            break;
+            
+          default:
+             sql = sql + `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_equipment_line_connected, position_in_equipment_line)
+        VALUES  ('`+ ts +`',`+ msg.payload.id_enterprise +`,`+ msg.payload.id_site +`,`+ msg.payload.id_area +`,`+ `(select id_equipment from packml_register pr where id_site = `+msg.payload.id_site+` and id_unit = `+ msg.payload.unit_order[x] +` group by id_equipment),`+ msg.payload.id_equipment + `,`+(parseInt(x)+1)+ ` ) ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_equipment_line_connected = `+msg.payload.id_equipment + `;`
+     
+        }
+     }    
+     
+        
+        sql = sql +  `UPDATE equipment_values SET is_equipment_line_infeed = 0, is_equipment_line_outfeed = 0 WHERE ts_value < '`+ ts +`' and id_equipment_line_connected = `+ msg.payload.id_equipment +` and (is_equipment_line_infeed > 0 OR is_equipment_line_outfeed > 0);`
+    
+ /*       
+       var sql =  `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_equipment_line_connected, is_equipment_line_infeed)
+        VALUES  ('`+ ts +`',`+ msg.payload.id_enterprise +`,`+ msg.payload.id_site +`,`+ msg.payload.id_area +`,`+ msg.payload.id_line_first+`,`+ msg.payload.id_equipment + `, 1 ) ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_equipment_line_connected = `+msg.payload.id_equipment + `;`
+        sql = sql +  `INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_equipment_line_connected, is_equipment_line_outfeed)
+        VALUES  ('`+ ts +`',`+ msg.payload.id_enterprise +`,`+ msg.payload.id_site +`,`+ msg.payload.id_area +`,`+ msg.payload.id_line_last+`,`+ msg.payload.id_equipment + `, 1 ) ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_equipment_line_connected = `+msg.payload.id_equipment + `;
+        UPDATE equipment_values SET is_equipment_line_infeed = 0, is_equipment_line_outfeed = 0 WHERE ts_value < '`+ ts +`' and id_equipment_line_connected = `+ msg.payload.id_equipment +` and (is_equipment_line_infeed > 0 OR is_equipment_line_outfeed > 0);`
+    
+*/
+    
+           
+msg.temp = msg.payload
+
+msg.payload = sql;
+
+msg.parameter_id = null;
+
+return msg;
+
+}
+
+########## [function] Build: UPSERT PO Control Commands (30800-30899) (03 · Error Handler.json) lines=190
+// parameter 99000 set order of units in a line
+try {
+var prod_final =""
+var note = ""
+
+if (JSON.parse(msg.payload_para.sparkplug_metrics_key).prod_final) prod_final = " , production_final = " + JSON.parse(msg.payload_para.sparkplug_metrics_key).prod_final + " ";
+if (JSON.parse(msg.payload_para.sparkplug_metrics_key).note) note = " , txt_production_order_notes=  '" + decodeURIComponent(JSON.parse(msg.payload_para.sparkplug_metrics_key).note) + "' ";
+//
+
+var d = new Date();
+timestamp = d.getTime();
+
+ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000 //0.1.11MST
+
+//var ts_start = new Date(timestamp).toISOString();
+var ts_start = new Date(ts).toISOString();   //0.1.11MST
+
+//var ts_end =  new Date((timestamp+1000)).toISOString();
+var ts_end =  new Date((ts+1000)).toISOString();  //0.1.11MST
+
+
+    
+    
+
+if (msg.payload_para.id_equipment) {} else msg.payload_para.id_equipment = 99;
+
+set_time_end = ""
+
+var sql = ""
+
+
+//IF no id_production_order get id_production_order with id_order from production_orders 0.19
+
+var id_production_order
+
+if (typeof msg.payload_para.id_po === 'undefined' || msg.payload_para.id_po === null || msg.payload_para.id_po === "") {
+    id_production_order = `(select id_production_order from production_orders where id_equipment = `+msg.payload_para.id_equipment+` and id_order = `+JSON.parse(msg.payload_para.sparkplug_metrics_key).id_order+`)`
+} else {
+    id_production_order = msg.payload_para.id_po
+}
+
+
+
+if (((msg.parameter_id == 30800) || (msg.parameter_id == 30802)) && ((msg.payload[0].cur_status == 1) || (msg.payload[0].cur_status == 4))) { // start  po
+
+    //ts = Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000   //0.1.11MST
+    
+    var prev_status = 3
+    if (msg.parameter_id == 30802) prev_status = 4;
+    
+    var status = 2;
+    set_time_start = `, ts_start = '`+ts_start+`'`;
+    
+    if (msg.payload[0].po_status == 2) {
+        status = 4; // set status 4 if cur status is 2, because constrain is uncique for status. after delete set to status = 2 again. see below
+        set_time_end = ` ,  ts_end = '`+ts_end+`' `
+    }
+    
+    /* 0.23
+    status=`+status + " " + prod_final + " " + note + set_time_start + set_time_end + ` 
+    to
+     status=`+status + "  " + note + set_time_start + set_time_end + ` */
+    
+    sql = `
+    
+    UPDATE public.production_orders_runtime 
+    SET 
+    runtime_timerange = tstzrange(lower(runtime_timerange), '`+ new Date(ts).toISOString()+`'), 
+    recalc_needed=true 
+    WHERE id_equipment=`+msg.payload_para.id_equipment+` and upper(runtime_timerange) isnull ; 
+    
+    INSERT INTO public.production_orders_runtime (id_production_order,runtime_timerange, recalc_needed, id_equipment )
+	VALUES (`+id_production_order+`,'["`+ new Date(ts).toISOString()+`",)', true, `+ msg.payload_para.id_equipment+`);
+	
+    UPDATE public.production_orders 
+    SET 
+    status=`+prev_status + `, ts_end = '`+ts_end+`'`  + ` 
+    WHERE id_equipment=`+msg.payload_para.id_equipment+` and status=2 ; 
+
+    UPDATE public.production_orders 
+    SET 
+    status=`+status + "  " + note + set_time_start + set_time_end + ` 
+    WHERE id_production_order=`+id_production_order+` ;    
+    
+    INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_production_order, id_production_order_quality, tp_equipment)
+    VALUES  ('`+  new Date(ts).toISOString() +`',`+ msg.payload_para.id_enterprise +`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+ msg.payload_para.id_equipment+`,`+id_production_order + `,`+ msg.payload_para.signal_quality + `, 3 ) ` 
+    + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_production_order = `+id_production_order + `, id_production_order_quality = `+msg.payload_para.signal_quality + `, tp_equipment = 3;
+    
+    UPDATE equipment_values SET id_production_order = `+id_production_order + ` WHERE id_equipment = `+ msg.payload_para.id_equipment+` AND ts_value > '`+  new Date(ts).toISOString() +`' AND id_production_order IS NOT NULL;`
+    
+    
+    if (typeof msg.payload[0].po_status == 'undefined' || msg.payload[0].po_status == null || msg.payload[0].po_status == 2) 
+        {
+        if (msg.parameter_id == 30802) msg.parameter_id = 30803; else  msg.parameter_id = 30801;// end the previous poif exists
+        var id_po_closed = id_production_order 
+        id_production_order = msg.payload[0].id_production_order_open
+        }
+    else { 
+        msg.payload =sql
+        return msg;
+   }
+}
+
+//msg.payload1 =sql
+
+var sql2 = ""
+var new_status = 3
+ set_time_end = ` ,  ts_end = '`+ts_end+`' `
+ 
+if (((msg.parameter_id == 30801) || (msg.parameter_id == 30803)) && (msg.payload[0].po_status == 2)) { // end a po. Only end po if it is a current an open po
+        
+        if (typeof msg.payload[0].id_po === 'undefined' || msg.payload[0].id_po === null){}
+        else {
+            id_production_order = msg.payload[0].id_po
+        }
+        
+        if (msg.parameter_id == 30803) new_status=4;
+    
+        ts_po_begin = new Date(msg.payload[0].ts_lower).toISOString()
+        
+        ts_po_end = new Date(Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000).toISOString()
+        
+        ts_po_end_equ_val= new Date(Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000-1000).toISOString() // new
+            
+    
+        sql2 = sql2 + `
+        UPDATE public.production_orders_runtime 
+        SET 
+        runtime_timerange ='["`+ts_po_begin+`","`+ts_po_end+`")', 
+        recalc_needed=true 
+        WHERE id_production_order=`+id_production_order+` and upper(runtime_timerange) isnull ; 
+        
+        UPDATE public.production_orders 
+        SET 
+        status=`+new_status+prod_final+note+set_time_end+`
+        WHERE id_production_order=`+id_production_order+`; 
+        
+        INSERT INTO public.equipment_values (ts_value,id_enterprise,id_site,id_area,id_equipment, id_production_order, id_production_order_quality, tp_equipment)
+        VALUES  ('`+ ts_po_end_equ_val +`',`+ msg.payload_para.id_enterprise +`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+ msg.payload_para.id_equipment+`,`+id_production_order + `,`+ msg.payload_para.signal_quality + `, 3 ) ` 
+        + `ON CONFLICT (ts_value, id_equipment) DO UPDATE SET id_production_order = `+id_production_order + `, id_production_order_quality = `+msg.payload_para.signal_quality + `, tp_equipment = 3;
+        
+        UPDATE equipment_values SET id_production_order = `+id_production_order + ` WHERE id_equipment = `+ msg.payload_para.id_equipment+` AND ts_value > '`+  new Date(ts+1000).toISOString() +`' AND id_production_order IS NOT NULL;`
+    
+        
+        
+        if ( typeof id_po_closed !== 'undefined' && id_po_closed !== null ) {
+            set_time_end = ` ,  ts_end = null `
+            sql2 = sql2 + `
+        UPDATE public.production_orders 
+        SET 
+        status=2 `+note+set_time_end+` 
+        WHERE id_production_order=`+id_po_closed +`;`
+        
+        }
+        
+        
+        // upsert in eq_v, close in po with 3 , in po_rt set recalc true. and  set ts_end to 
+        
+        //msg.payload2 =sql2
+        msg.payload =sql + sql2
+        return msg;
+}
+
+
+
+if ((msg.parameter_id === 30805) && (msg.payload[0].do_upsert === 'true')) {  //0.18
+    
+    ts_created = new Date(Math.round(parseInt(JSON.parse(msg.payload_para.sparkplug_metrics_key).timestamp)/1000)*1000).toISOString()
+    order_quantity = JSON.parse(msg.payload_para.sparkplug_metrics_key).order_quantity
+    id_order = JSON.parse(msg.payload_para.sparkplug_metrics_key).id_order
+    txt_product = JSON.parse(msg.payload_para.sparkplug_metrics_key).txt_product
+    //custom_field = JSON.parse(msg.payload_para.sparkplug_metrics_key).custom_field
+    custom_field = JSON.stringify(JSON.parse(msg.payload_para.sparkplug_metrics_key).custom_field)
+    
+    msg.payload = 
+    ` INSERT INTO production_orders  
+        (id_enterprise, id_site , id_area , id_equipment ,id_product ,id_client , status ,production_programmed , production_ordered ,id_order, ts_creation, txt_production_order_description ,conversion_factor ,id_order_text, custom_field)
+    VALUES
+        (`+ msg.payload_para.id_enterprise +`,`+ msg.payload_para.id_site +`,`+ msg.payload_para.id_area +`,`+ msg.payload_para.id_equipment+`,`+ msg.payload[0].id_product+`,`+ msg.payload[0].id_client+`,1,`+order_quantity+`,`+order_quantity+`,`+id_order+`,'`+ ts_created + `','`+txt_product+`',` +
+        msg.payload[0].conversion_factor + `,'`+id_order+`','`+custom_field+`'
+        )
+    on conflict (id_enterprise, id_order) DO UPDATE SET custom_field = '`+custom_field+`', id_equipment = `+ msg.payload_para.id_equipment+`;
+    `
+    return msg;
+       // msg.DEBUG = msg.parameter_id + "   -   " + msg.payload.do_upsert
+
+}
+
+} catch(e) { node.error('UPSERT 30800-30899 failed: ' + e.message, msg); return null; }
+
+
