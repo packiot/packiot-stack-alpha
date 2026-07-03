@@ -72,6 +72,13 @@ type Config struct {
 	Speed33IntervalMinutes int
 	Shift06ReportEnabled   bool
 	Shift06IntervalMinutes int
+
+	// ADR-0014 P3a events deriver. DEFAULT OFF — enable 2026-07-09
+	// after the shift-bake close-out (one bake at a time).
+	EventsDeriverEnabled     bool
+	EventsDeriverIntervalMin int
+	EventsExcludedAreas       string // csv int list (prod parity: config, not hardcode)
+	EventsExcludedEnterprises string
 }
 
 func Load() (*Config, error) {
@@ -98,6 +105,10 @@ func Load() (*Config, error) {
 		Speed33IntervalMinutes: getenvInt("SPEED33_INTERVAL_MINUTES", 10),
 		Shift06ReportEnabled:   getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
 		Shift06IntervalMinutes: getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
+		EventsDeriverEnabled:     getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
+		EventsDeriverIntervalMin: getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
+		EventsExcludedAreas:       getenv("EVENTS_EXCLUDED_AREAS", ""),
+		EventsExcludedEnterprises: getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
 	}, nil
 }
 

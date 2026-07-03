@@ -20,19 +20,23 @@ import (
 	"syscall"
 	"time"
 
+	"strconv"
+	"strings"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/events"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tenants"
-	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/reports"
-	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
 
@@ -162,6 +166,17 @@ func main() {
 		go reports.LoopShift06(ctx, pool, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger)
 	}
 
+	// ADR-0014 P3a — events deriver for the shadow flows. Deployed
+	// DISABLED; enabled at the Jul-9 close-out (one bake at a time).
+	if cfg.EventsDeriverEnabled {
+		dests := []events.Dest{{Name: "shadow_go_port", Pool: pool, EvSchema: "shadow_go_port", RefSchema: "public"}}
+		if shadowPool != nil {
+			dests = append(dests, events.Dest{Name: "packiot_shadow", Pool: shadowPool, EvSchema: "public", RefSchema: "public"})
+		}
+		go events.Loop(ctx, dests, csvInts(cfg.EventsExcludedAreas), csvInts(cfg.EventsExcludedEnterprises),
+			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger)
+	}
+
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
 	// Parses the AMQP payload, builds one Query per metric via the right
 	// writer, and sends them as a single pgx.Batch.
@@ -278,4 +293,20 @@ func runHealthcheck() int {
 		return 1
 	}
 	return 0
+}
+
+// csvInts parses "1,2,3" into []int; empty string → empty slice (ANY
+// of empty array matches nothing — the exclusion no-ops).
+func csvInts(s string) []int {
+	out := []int{}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(p); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
