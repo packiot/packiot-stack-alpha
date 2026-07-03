@@ -228,6 +228,7 @@ func main() {
 		s := poParameterWriter.Stats()
 		return metrics.POParameterSnapshot{
 			WroteIdealSpeed:  s.WroteIdealSpeed,
+			WroteAnalogs:     s.WroteAnalogs,
 			SkippedLineOrder: s.SkippedLineOrder,
 			SkippedPOCtl:     s.SkippedPOCtl,
 			SkippedOther:     s.SkippedOther,
