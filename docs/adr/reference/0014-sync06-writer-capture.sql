@@ -177,8 +177,7 @@
         gds.job, 
         gds.item, 
         gds.totalavailablehrsinmin, 
-        gds.dtimehrs
-plannedinmin, 
+        gds.dtimehrsplannedinmin, 
         gds.dtimehrsunplannedinmin, 
         gds.unplanneddt_proinmin, 
         gds.unplanneddt_resinmin, 
