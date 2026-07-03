@@ -22,6 +22,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,12 +31,28 @@ import (
 )
 
 //go:embed sync06_body.sql
-var sync06Body string
+var sync06BodyRaw string
+
+// sync06Body renders the captured body for a tenant. At the default
+// (enterprise 6, legacy target) the output is BIT-IDENTICAL to the
+// verbatim capture — substitution only diverges when config diverges
+// (the no-hardcoded-enterprise-ids directive).
+func sync06Body(enterpriseID int, target string) string {
+	b := sync06BodyRaw
+	if enterpriseID != 6 {
+		b = strings.ReplaceAll(b, "id_enterprise = 6", fmt.Sprintf("id_enterprise = %d", enterpriseID))
+		b = strings.ReplaceAll(b, "get_data_sync_enterprsie_06b(21)", fmt.Sprintf("get_data_sync_enterprsie_%02db(21)", enterpriseID))
+	}
+	if target != "" && target != "production_data_sync_enterprise_06" {
+		b = strings.ReplaceAll(b, "production_data_sync_enterprise_06", target)
+	}
+	return b
+}
 
 // RunSync06 executes one full state-machine pass. The multi-statement
 // string runs under the simple protocol as ONE implicit transaction.
-func RunSync06(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, sync06Body); err != nil {
+func RunSync06(ctx context.Context, pool *pgxpool.Pool, enterpriseID int, target string) error {
+	if _, err := pool.Exec(ctx, sync06Body(enterpriseID, target)); err != nil {
 		return fmt.Errorf("sync06 pass: %w", err)
 	}
 	return nil
@@ -44,9 +61,9 @@ func RunSync06(ctx context.Context, pool *pgxpool.Pool) error {
 // LoopSync06 schedules the pass (main flow only — the compute reads
 // public base tables; shadow-flow pooling arrives with the sap_13
 // wave step).
-func LoopSync06(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopSync06(ctx context.Context, pool *pgxpool.Pool, enterpriseID int, target string, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("sync06 writer started (ADR-0014 P4 — verbatim-embedded state machine)")
 	jobs.Loop(ctx, jobs.Job{Name: "sync06", Every: every, Run: func(ctx context.Context) error {
-		return RunSync06(ctx, pool)
+		return RunSync06(ctx, pool, enterpriseID, target)
 	}}, logger, obs)
 }

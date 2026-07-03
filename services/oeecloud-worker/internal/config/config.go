@@ -71,8 +71,10 @@ type Config struct {
 	// on staging this is the sole writer (legacy never scheduled here).
 	Speed33ReportEnabled   bool
 	Speed33IntervalMinutes int
+	Speed33CustomerID      int
 	Shift06ReportEnabled   bool
 	Shift06IntervalMinutes int
+	Shift06CustomerID      int
 
 	// ADR-0014 P3a events deriver. DEFAULT OFF — enable 2026-07-09
 	// after the shift-bake close-out (one bake at a time).
@@ -85,6 +87,8 @@ type Config struct {
 	// sync (verbatim-embedded state machine).
 	Sync06ReportEnabled   bool
 	Sync06IntervalMinutes int
+	Sync06EnterpriseID    int
+	Sync06Target          string // empty = legacy table name (verbatim body)
 
 	// Boxes13ReportEnabled — ADR-0014 P4: the Neopac beep-chain
 	// aggregator (analogs Label_Neopac → equipment_boxes_cust_13).
@@ -119,8 +123,10 @@ func Load() (*Config, error) {
 		ShiftResolverEnabled:      getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		Speed33ReportEnabled:      getenv("SPEED33_REPORT_ENABLED", "false") == "true",
 		Speed33IntervalMinutes:    getenvInt("SPEED33_INTERVAL_MINUTES", 10),
+		Speed33CustomerID:         getenvInt("SPEED33_CUSTOMER_ID", 33),
 		Shift06ReportEnabled:      getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
 		Shift06IntervalMinutes:    getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
+		Shift06CustomerID:         getenvInt("SHIFT06_CUSTOMER_ID", 6),
 		EventsDeriverEnabled:      getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
 		EventsDeriverIntervalMin:  getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
 		EventsExcludedAreas:       getenv("EVENTS_EXCLUDED_AREAS", ""),
@@ -129,6 +135,8 @@ func Load() (*Config, error) {
 		Boxes13ReportEnabled:      getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		Sync06ReportEnabled:       getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:     getenvInt("SYNC06_INTERVAL_MINUTES", 15),
+		Sync06EnterpriseID:        getenvInt("SYNC06_ENTERPRISE_ID", 6),
+		Sync06Target:              getenv("SYNC06_TARGET", ""),
 		Boxes13IntervalMinutes:    getenvInt("BOXES13_INTERVAL_MINUTES", 5),
 	}, nil
 }
