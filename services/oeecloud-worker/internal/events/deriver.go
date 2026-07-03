@@ -41,17 +41,11 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 )
 
-// Dest is one derivation destination (flow schema + reference schema
-// live in the same database as the pool they run against).
-type Dest struct {
-	Name      string // for logs: "shadow_go_port" | "packiot_shadow"
-	Pool      *pgxpool.Pool
-	EvSchema  string // where ca_discrete_changes_1s + equipment_events live
-	RefSchema string // where equipments lives
-}
+// Dest is one derivation destination — the shared flows.Dest.
+type Dest = flows.Dest
 
 const transitionsCTE = `
 WITH stream AS (
