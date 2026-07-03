@@ -13,7 +13,10 @@
 //   - gapfill(state) LOCF aggregate → standard gaps-and-islands
 //     (count(state) OVER … as group id + first_value per group): zero
 //     PL/pgSQL in the refactored DB.
-//   - warmup skip rn > 10, 25h stream window, 1-day correction window:
+//   - warmup: prod's rn > 10 runs on a GAPFILLED 1-second grid = skip
+//     10 SECONDS. On our sparse sample stream that would skip 10 state
+//     SAMPLES (live-caught: first enablement derived 0 rows). Replaced
+//     with a time guard on the window's first 10s. 25h/1-day windows
 //     verbatim.
 //   - prod's hardcoded exclusions (id_area != 24, 15 enterprise ids)
 //     → config (EVENTS_EXCLUDED_AREAS/ENTERPRISES) — they are disabled-
@@ -57,13 +60,13 @@ WITH stream AS (
       FROM stream
 ), marked AS (
     SELECT ts_event, id_equipment, id_enterprise, status,
-           lag(status)  OVER (PARTITION BY id_equipment ORDER BY ts_event) AS prev_status,
-           row_number() OVER (PARTITION BY id_equipment ORDER BY ts_event) AS rn
+           lag(status)  OVER (PARTITION BY id_equipment ORDER BY ts_event) AS prev_status
       FROM filled
 ), trans AS (
     SELECT ts_event, id_equipment, id_enterprise, status
       FROM marked
-     WHERE status <> prev_status AND rn > 10
+     WHERE status <> prev_status
+       AND ts_event >= now() - interval '25 hours' + interval '10 seconds'
 ), final AS (
     SELECT ts_event,
            lead(ts_event) OVER (PARTITION BY id_equipment ORDER BY ts_event) AS ts_end,
