@@ -168,6 +168,15 @@ func main() {
 		go reports.LoopShift06(ctx, pool, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0014 P4 — the Neopac beep chain (boxes13): both shadow flows.
+	if cfg.Boxes13ReportEnabled {
+		bdests := []reports.Boxes13Dest{{Name: "shadow_go_port", Pool: pool, EvSchema: "shadow_go_port", RefSchema: "public"}}
+		if shadowPool != nil {
+			bdests = append(bdests, reports.Boxes13Dest{Name: "packiot_shadow", Pool: shadowPool, EvSchema: "public", RefSchema: "public"})
+		}
+		go reports.LoopBoxes13(ctx, bdests, time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)
+	}
+
 	// ADR-0014 P3a — events deriver for the shadow flows. Deployed
 	// DISABLED; enabled at the Jul-9 close-out (one bake at a time).
 	if cfg.EventsDeriverEnabled {

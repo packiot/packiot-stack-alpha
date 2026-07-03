@@ -63,9 +63,9 @@ func TestDecideEnd(t *testing.T) {
 
 func TestHandlesPortedSlices(t *testing.T) {
 	for id, want := range map[int]bool{30800: true, 30801: true, 30802: true, 30803: true,
-		30700: true, // slice 2
-		30805: true, // slice 3
-		30810: true, // slice 4
+		30700: true,              // slice 2
+		30805: true,              // slice 3
+		30810: true,              // slice 4
 		30861: true, 30880: true, // slice 5 + 10.8 factory door
 		30850: false} { // analogs stays with the po_parameter writer
 		if Handles(id) != want {
