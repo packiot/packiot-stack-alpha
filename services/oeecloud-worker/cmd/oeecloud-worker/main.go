@@ -32,6 +32,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
@@ -183,6 +184,11 @@ func main() {
 	sparkplugHandler := handlers.NewSparkplugHandler(
 		pool, shadowPool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
 	)
+
+	if cfg.POControlEnabled {
+		sparkplugHandler.SetPOControl(pocontrol.NewHandler(resolver, logger))
+		logger.Info("po-control lifecycle handler ENABLED (ADR-0010 10.3 slice 1)")
+	}
 
 	dispatcher := handlers.NewDispatcher(logger)
 	// Register the sparkplug handler for BOTH the legacy 2-segment key

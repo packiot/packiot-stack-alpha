@@ -747,6 +747,9 @@ services:
       # id_shift surface — no panel contamination). The shift TRIGGER
       # DROP still waits for its 168h (0014-p2-bake-closeout-ready.sql).
       EVENTS_DERIVER_ENABLED: "true"
+      # ADR-0010 10.3 slice 1 — OFF until synthetic-inject verification
+      # (no live 30800 traffic reaches staging; design doc has the plan).
+      PO_CONTROL_ENABLED: "false"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20

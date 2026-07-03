@@ -9,10 +9,10 @@ import "testing"
 func TestMetricClassify(t *testing.T) {
 	intp := func(n int) *int { return &n }
 	cases := []struct {
-		name string
+		name  string
 		topic string
-		id   *int
-		want MetricKind
+		id    *int
+		want  MetricKind
 	}{
 		// Line-level status metrics (type at N-1)
 		{"line state", "CPACK/SC/SLEEVE/SLEEVE1/Status/StateCurrent", nil, KindStateCurrent},

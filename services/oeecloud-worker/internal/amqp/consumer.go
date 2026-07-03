@@ -51,9 +51,9 @@ type Consumer struct {
 
 	// Liveness — set when the consume loop is actively reading the channel.
 	// Set false during reconnect; read by /health.
-	mu       sync.RWMutex
-	healthy  bool
-	lastErr  string
+	mu        sync.RWMutex
+	healthy   bool
+	lastErr   string
 	startedAt time.Time
 }
 
@@ -81,9 +81,9 @@ func (c *Consumer) SetMetrics(deliveries func(routingKey, result string), durati
 
 // Snapshot getter accessors so the metrics package can read counters
 // without importing the Snapshot struct or holding a lock-aware copy.
-func (c *Consumer) DeliveredCount() uint64      { return c.delivered.Load() }
-func (c *Consumer) AckedCount() uint64          { return c.acked.Load() }
-func (c *Consumer) NackedToRetryCount() uint64  { return c.nackedRetry.Load() }
+func (c *Consumer) DeliveredCount() uint64         { return c.delivered.Load() }
+func (c *Consumer) AckedCount() uint64             { return c.acked.Load() }
+func (c *Consumer) NackedToRetryCount() uint64     { return c.nackedRetry.Load() }
 func (c *Consumer) PublishedToFailedCount() uint64 { return c.publishedFail.Load() }
 
 // Run blocks until ctx is cancelled. On any connection/channel failure,
@@ -245,13 +245,13 @@ func (c *Consumer) perTenantQueueNames() []string {
 
 // handleDelivery is the per-message decision tree:
 //
-//   1. Check x-death header for retry-count. If at MaxRetries, the message
-//      has bounced through the retry queue too many times — publish to
-//      oee-failed and ack the original so it doesn't loop forever.
-//   2. Dispatch to a handler by routing key (or a fallback for unknown).
-//   3. Handler returns nil → ack. Handler returns error → nack with
-//      requeue=false so the message goes to DLX (oee-retry) → TTL → back
-//      to source → re-delivered to this consumer.
+//  1. Check x-death header for retry-count. If at MaxRetries, the message
+//     has bounced through the retry queue too many times — publish to
+//     oee-failed and ack the original so it doesn't loop forever.
+//  2. Dispatch to a handler by routing key (or a fallback for unknown).
+//  3. Handler returns nil → ack. Handler returns error → nack with
+//     requeue=false so the message goes to DLX (oee-retry) → TTL → back
+//     to source → re-delivered to this consumer.
 func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.Delivery) {
 	c.delivered.Add(1)
 	c.lastDelivery.Store(time.Now().UnixNano())

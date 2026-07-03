@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -18,17 +19,17 @@ import (
 //
 // Per-AMQP-message flow:
 //
-//   1. Parse JSON payload (sparkplug.Parse).
-//   2. Per-metric timestamp fallback (metric.ts || payload.ts || now()).
-//   3. For each metric:
-//      - Classify by name (sparkplug.Metric.Classify)
-//      - Ask each writer to Build() a *Query; collect non-nil ones into
-//        a pgx.Batch.
-//      - Unknown kinds: log + skip (don't fail the whole batch).
-//   4. SendBatch the whole batch as ONE round-trip to postgres.
-//   5. Iterate batch.Exec() results; capture the first error.
-//   6. Return first error → consumer nacks → DLX → retry. Re-processing
-//      is safe because all writes are UPSERTs (ON CONFLICT DO UPDATE).
+//  1. Parse JSON payload (sparkplug.Parse).
+//  2. Per-metric timestamp fallback (metric.ts || payload.ts || now()).
+//  3. For each metric:
+//     - Classify by name (sparkplug.Metric.Classify)
+//     - Ask each writer to Build() a *Query; collect non-nil ones into
+//     a pgx.Batch.
+//     - Unknown kinds: log + skip (don't fail the whole batch).
+//  4. SendBatch the whole batch as ONE round-trip to postgres.
+//  5. Iterate batch.Exec() results; capture the first error.
+//  6. Return first error → consumer nacks → DLX → retry. Re-processing
+//     is safe because all writes are UPSERTs (ON CONFLICT DO UPDATE).
 //
 // Pre-batch design did one pool.Exec per metric → N round-trips per
 // delivery (~5-6 typical CPACK payload). Batching cuts that to 1
@@ -46,6 +47,7 @@ type SparkplugHandler struct {
 	equipmentValues *writers.EquipmentValues
 	unsMetrics      *writers.UnsMetrics
 	poParameter     *writers.POParameter
+	poControl       *pocontrol.Handler // nil = 10.3 disabled
 	logger          *slog.Logger
 }
 
@@ -113,6 +115,16 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		var shiftQ *writers.Query
 		var eventQ *writers.Query
 		var buildErr error
+
+		// ADR-0010 10.3 slice 1: PO lifecycle params run their own tx
+		// (SELECT-then-decide + multi-statement commands) — not
+		// batchable. Drop-on-failure semantics live inside Execute.
+		if h.poControl != nil && kind == sparkplug.KindParameter &&
+			m.ID != nil && pocontrol.Handles(*m.ID) {
+			_ = h.poControl.Execute(ctx, pool, m, schema)
+			continue
+		}
+
 		switch {
 		case h.equipmentValues.CanWrite(kind):
 			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
@@ -238,3 +250,6 @@ func (h *SparkplugHandler) Stats() SparkplugStats {
 		ExecErrors:     h.execErrors.Load(),
 	}
 }
+
+// SetPOControl enables the 10.3 lifecycle handler (nil = disabled).
+func (h *SparkplugHandler) SetPOControl(pc *pocontrol.Handler) { h.poControl = pc }
