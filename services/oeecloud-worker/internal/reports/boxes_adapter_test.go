@@ -38,3 +38,22 @@ func TestBoxesAdapterShape(t *testing.T) {
 		}
 	}
 }
+
+// The obd-port bridge must stay descriptor-parameterized (no equipment
+// names in SQL) and keep prod's upsert key.
+func TestBoxesBridgeShape(t *testing.T) {
+	for _, m := range []string{
+		"child.cd_equipment = $1", "parent.cd_equipment = $2",
+		"time_bucket($4::interval", "label_key = $5",
+		"ON CONFLICT (ts_value, id_equipment)",
+	} {
+		if !strings.Contains(bridgeSQL, m) {
+			t.Errorf("bridge SQL lost %q", m)
+		}
+	}
+	for _, banned := range []string{"TL117", "Packer", "= 13"} {
+		if strings.Contains(bridgeSQL, banned) {
+			t.Errorf("hardcoded tenant artifact %q in bridge SQL", banned)
+		}
+	}
+}
