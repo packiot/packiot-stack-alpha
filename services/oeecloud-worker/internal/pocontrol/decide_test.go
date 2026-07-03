@@ -66,7 +66,8 @@ func TestHandlesPortedSlices(t *testing.T) {
 		30700: true, // slice 2
 		30805: true, // slice 3
 		30810: true, // slice 4
-		30850: false, 30861: false} {
+		30861: true, 30880: true, // slice 5 + 10.8 factory door
+		30850: false} { // analogs stays with the po_parameter writer
 		if Handles(id) != want {
 			t.Errorf("Handles(%d) != %v", id, want)
 		}
@@ -152,5 +153,19 @@ func TestParseLocal(t *testing.T) {
 	got, err = parseLocal("2026-07-03T12:00:00Z", "America/Sao_Paulo")
 	if err != nil || got.Hour() != 12 {
 		t.Errorf("rfc3339 parse: %v %v", got, err)
+	}
+}
+
+func TestSetupUserlogFamily(t *testing.T) {
+	for id, want := range map[int]bool{30861: true, 30862: true, 30880: true, 30863: false} {
+		if HandlesSetup(id) != want {
+			t.Errorf("HandlesSetup(%d) != %v", id, want)
+		}
+	}
+	if !strings.Contains(setupBegin, "setup_end_time = NULL") {
+		t.Error("30861 must clear setup_end_time (prod semantics)")
+	}
+	if !strings.Contains(userLog30880, "ip, ts_log") {
+		t.Error("30880 carries ip column (unlike the event-family log)")
 	}
 }
