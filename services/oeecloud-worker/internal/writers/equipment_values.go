@@ -19,11 +19,11 @@ import (
 // public.equipment_values. Mirrors the columns the Node-RED "UPSERT:
 // equipment_values / ..." node writes:
 //
-//   ProdProcessedCount → net_production_incr, net_production_val, speed
-//   ProdConsumedCount  → gross_production_incr, gross_production_val, speed
-//   ProdDefectiveCount → scrap_incr, scrap_val
-//   StateCurrent       → state
-//   UnitModeCurrent    → mode, sub_mode
+//	ProdProcessedCount → net_production_incr, net_production_val, speed
+//	ProdConsumedCount  → gross_production_incr, gross_production_val, speed
+//	ProdDefectiveCount → scrap_incr, scrap_val
+//	StateCurrent       → state
+//	UnitModeCurrent    → mode, sub_mode
 //
 // All UPSERT on (ts_value, id_equipment). tp_equipment is set from
 // metric.IsLineTopic() (3 for line, 1 for unit). ts_value bucketed to

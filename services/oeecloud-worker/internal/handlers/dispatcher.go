@@ -80,4 +80,3 @@ func LogOnly(logger *slog.Logger) Handler {
 		return nil
 	}
 }
-

@@ -138,8 +138,8 @@ func TestWindowEdges(t *testing.T) {
 	site := SiteInfo{Loc: time.UTC, WeekBegin: 0}
 	hours := []ShiftHour{{IDShiftHour: 1, IDShift: 1, BeginTime: 0, EndTime: 26400}}
 
-	atBegin := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)  // X=0
-	atEnd := time.Date(2026, 6, 29, 7, 20, 0, 0, time.UTC)   // X=26400
+	atBegin := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC) // X=0
+	atEnd := time.Date(2026, 6, 29, 7, 20, 0, 0, time.UTC)  // X=26400
 
 	inWindow := func(ts time.Time) bool {
 		x := WeekOffsetSeconds(ts, site)

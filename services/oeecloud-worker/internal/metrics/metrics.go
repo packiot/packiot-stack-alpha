@@ -21,7 +21,7 @@ type Metrics struct {
 	Registry *prometheus.Registry
 
 	// Per-delivery counters (incremented in amqp/consumer.go).
-	Deliveries *prometheus.CounterVec // labels: routing_key, result
+	Deliveries *prometheus.CounterVec   // labels: routing_key, result
 	Duration   *prometheus.HistogramVec // labels: routing_key
 }
 

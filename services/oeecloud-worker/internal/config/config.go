@@ -68,47 +68,53 @@ type Config struct {
 	// writer for customer_reports.speed (customer 33). Legacy
 	// c33_speed_per_job_insert_into_report keeps the old table on prod;
 	// on staging this is the sole writer (legacy never scheduled here).
-	Speed33ReportEnabled  bool
+	Speed33ReportEnabled   bool
 	Speed33IntervalMinutes int
 	Shift06ReportEnabled   bool
 	Shift06IntervalMinutes int
 
 	// ADR-0014 P3a events deriver. DEFAULT OFF — enable 2026-07-09
 	// after the shift-bake close-out (one bake at a time).
-	EventsDeriverEnabled     bool
-	EventsDeriverIntervalMin int
+	EventsDeriverEnabled      bool
+	EventsDeriverIntervalMin  int
 	EventsExcludedAreas       string // csv int list (prod parity: config, not hardcode)
 	EventsExcludedEnterprises string
+
+	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
+	// OFF until synthetic-inject verification (staging has no live
+	// 30800 traffic; see the port design doc).
+	POControlEnabled bool
 }
 
 func Load() (*Config, error) {
 	return &Config{
-		AWSRegion:        getenv("AWS_REGION", "us-east-1"),
-		PGSecretID:       getenv("PG_SECRET_ID", "packiot/staging/db"),
-		RabbitMQSecretID: getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-oeecloud-creds"),
-		AMQPHost:         getenv("RABBITMQ_HOST", "rabbitmq"),
-		AMQPPort:         getenvInt("RABBITMQ_PORT", 5672),
-		SourceExchange:   getenv("SOURCE_EXCHANGE", "oee"),
-		WorkerQueue:      getenv("WORKER_QUEUE", "oeecloud-worker-q"),
-		RetryExchange:    getenv("RETRY_EXCHANGE", "oee-retry"),
-		RetryQueue:       getenv("RETRY_QUEUE", "oeecloud-worker-q-retry-30s"),
-		FailedExchange:   getenv("FAILED_EXCHANGE", "oee-failed"),
-		FailedQueue:      getenv("FAILED_QUEUE", "oeecloud-worker-q-failed"),
-		RetryTTLMs:       getenvInt("RETRY_TTL_MS", 30000),
-		MaxRetries:       getenvInt("MAX_RETRIES", 5),
-		Prefetch:         getenvInt("PREFETCH", 50),
-		HealthPort:       getenvInt("HEALTH_PORT", 9101),
-		LogLevel:         getenv("LOG_LEVEL", "info"),
-		PGShadowDBName:   getenv("POSTGRES_SHADOW_DB_NAME", ""),
-		ShiftResolverEnabled: getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
-		Speed33ReportEnabled: getenv("SPEED33_REPORT_ENABLED", "false") == "true",
-		Speed33IntervalMinutes: getenvInt("SPEED33_INTERVAL_MINUTES", 10),
-		Shift06ReportEnabled:   getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
-		Shift06IntervalMinutes: getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
-		EventsDeriverEnabled:     getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
-		EventsDeriverIntervalMin: getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
+		AWSRegion:                 getenv("AWS_REGION", "us-east-1"),
+		PGSecretID:                getenv("PG_SECRET_ID", "packiot/staging/db"),
+		RabbitMQSecretID:          getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-oeecloud-creds"),
+		AMQPHost:                  getenv("RABBITMQ_HOST", "rabbitmq"),
+		AMQPPort:                  getenvInt("RABBITMQ_PORT", 5672),
+		SourceExchange:            getenv("SOURCE_EXCHANGE", "oee"),
+		WorkerQueue:               getenv("WORKER_QUEUE", "oeecloud-worker-q"),
+		RetryExchange:             getenv("RETRY_EXCHANGE", "oee-retry"),
+		RetryQueue:                getenv("RETRY_QUEUE", "oeecloud-worker-q-retry-30s"),
+		FailedExchange:            getenv("FAILED_EXCHANGE", "oee-failed"),
+		FailedQueue:               getenv("FAILED_QUEUE", "oeecloud-worker-q-failed"),
+		RetryTTLMs:                getenvInt("RETRY_TTL_MS", 30000),
+		MaxRetries:                getenvInt("MAX_RETRIES", 5),
+		Prefetch:                  getenvInt("PREFETCH", 50),
+		HealthPort:                getenvInt("HEALTH_PORT", 9101),
+		LogLevel:                  getenv("LOG_LEVEL", "info"),
+		PGShadowDBName:            getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShiftResolverEnabled:      getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
+		Speed33ReportEnabled:      getenv("SPEED33_REPORT_ENABLED", "false") == "true",
+		Speed33IntervalMinutes:    getenvInt("SPEED33_INTERVAL_MINUTES", 10),
+		Shift06ReportEnabled:      getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
+		Shift06IntervalMinutes:    getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
+		EventsDeriverEnabled:      getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
+		EventsDeriverIntervalMin:  getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
 		EventsExcludedAreas:       getenv("EVENTS_EXCLUDED_AREAS", ""),
 		EventsExcludedEnterprises: getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
+		POControlEnabled:          getenv("PO_CONTROL_ENABLED", "false") == "true",
 	}, nil
 }
 

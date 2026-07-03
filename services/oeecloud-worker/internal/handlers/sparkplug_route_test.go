@@ -25,11 +25,11 @@ func TestRouteForSource(t *testing.T) {
 	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	tests := []struct {
-		name           string
-		sourceType     string
-		shadowPool     *pgxpool.Pool
-		wantMainPool   bool // true = expect main, false = expect shadow
-		wantSchema     string
+		name         string
+		sourceType   string
+		shadowPool   *pgxpool.Pool
+		wantMainPool bool // true = expect main, false = expect shadow
+		wantSchema   string
 	}{
 		{
 			name:         "default source_type → main pool + public",
