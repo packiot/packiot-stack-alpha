@@ -12,8 +12,12 @@
 //     window boundary by ≤1h vs our session-tz evaluation. Documented
 //     BOUNDED DIVERGENCE: affects only ranges straddling that 30-day-
 //     old edge; the consistent boundary is arguably more correct.
-//   - prod's "if found" guard == the join against grouped sums (POs
-//     without runtime rows stay untouched, flag intact — identical).
+//   - CORRECTED BY THE HARNESS (first real catch): prod's IF FOUND
+//     after an aggregate SELECT INTO is ALWAYS true — prod ZEROES and
+//     CLEARS eligible POs with no in-window runtime rows. The port
+//     drives from the eligible set and LEFT JOINs the sums (zero-fill
+//     via the COALESCEs) — the original inner join left such POs
+//     flagged forever (measured: inverted-flag pairs in parity).
 //   - prod computed oee_performance in a second UPDATE from the
 //     just-stored columns; we compute it inline from the SAME
 //     expressions — identical values, one statement.
@@ -47,7 +51,13 @@ import (
 // oee = net / (((total-planned)/60) * ideal_speed);
 // availability = running/available; performance = oee/(avail*quality).
 const recalcSQL = `
-	WITH sums AS (
+	WITH eligible AS (
+	    SELECT e.id_production_order
+	      FROM %[1]s.production_orders e
+	     WHERE e.ts_start >= now() - $1::interval
+	       AND e.recalc_needed AND e.status > 1
+	       AND NOT (e.id_enterprise = ANY($2))
+	), sums AS (
 	    SELECT ca.id_production_order,
 	           sum(ca.gross_production)  AS gross,
 	           sum(ca.net_production)    AS net,
@@ -58,11 +68,8 @@ const recalcSQL = `
 	           sum(ca.stopped_time)      AS stop,
 	           sum(ca.planned_downtime)  AS planned
 	      FROM %[1]s.production_orders_runtime ca
-	      JOIN %[1]s.production_orders e USING (id_production_order)
-	     WHERE e.ts_start >= now() - $1::interval
-	       AND e.recalc_needed AND e.status > 1
-	       AND NOT (e.id_enterprise = ANY($2))
-	       AND ca.runtime_timerange && tstzrange(now() - $1::interval, now())
+	      JOIN eligible USING (id_production_order)
+	     WHERE ca.runtime_timerange && tstzrange(now() - $1::interval, now())
 	     GROUP BY ca.id_production_order
 	)
 	UPDATE %[1]s.production_orders e SET
@@ -88,8 +95,9 @@ const recalcSQL = `
 	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0),
 	       recalc_needed = false,
 	       last_update   = now()
-	  FROM sums s
-	 WHERE e.id_production_order = s.id_production_order`
+	  FROM eligible el
+	  LEFT JOIN sums s USING (id_production_order)
+	 WHERE e.id_production_order = el.id_production_order`
 
 // The self-re-enqueue (verbatim): running POs recalc every pass;
 // finished ones keep refreshing for 48h (late operator edits).
@@ -126,3 +134,8 @@ func LoopRecalc(ctx context.Context, dests []flows.Dest, window string, exclEnte
 		})
 	}}, logger, obs)
 }
+
+// Parity accessors — the harness emits the SAME constants it executes.
+func RecalcSQLForParity() string     { return recalcSQL }
+func ReflagRunningForParity() string { return reflagRunningSQL }
+func ReflagRecentForParity() string  { return reflagRecentSQL }
