@@ -151,8 +151,14 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			// day first — its upward cascade flags week+month, which
-			// the same pass then rolls up (prod's intra-minute order).
+			// hour first (the foundation), then day2 (sums hours),
+			// then week+month — prod's intra-minute cascade order.
+			if err := RunHour(ctx, d, exclAreas, exclEnterprises); err != nil {
+				logger.Warn("runtime-rollup-hour failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 			if err := RunDay(ctx, d, exclAreas, exclEnterprises, logger); err != nil {
 				logger.Warn("runtime-rollup-day failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {

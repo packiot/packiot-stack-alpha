@@ -101,28 +101,48 @@ func TestGrainMatrix(t *testing.T) {
 	}
 }
 
-// Day grain fidelity guards.
+// Day2 (the LIVE generation) fidelity guards.
 func TestDayShape(t *testing.T) {
 	for _, m := range []string{
-		"CASE WHEN ca.state = 6 THEN ca.speed END", // Eduardo 2024-02-29
-		"ca.ts_value_production = el.ts_value",     // tvp keying
-		"ee.status IN (5, 10, 11)",
-		"date_trunc('month', el.ts_value)", // upward cascade
-		"date_trunc('week', el.ts_value)",
+		"hr.ts_value_production = el.ts_value", // tvp keying
+		"hr.ts_value >= el.ts_value - interval '1 day'",
+		"CASE WHEN e.target_customized IS TRUE THEN e.target",
+		"sum(hr.net) / NULLIF(sum(hr.ideal_production), 0)",
 	} {
-		if !strings.Contains(dayEligibleSQL+dayValuesSQL+dayCascadeMonthSQL+dayCascadeWeekSQL+dayEventsSQL, m) {
-			t.Errorf("day lost %q", m)
+		if !strings.Contains(dayEligibleSQL+dayRollupSQL, m) {
+			t.Errorf("day2 lost %q", m)
 		}
 	}
-	// Phase E stays CONDITIONAL (inner join on ev).
-	if !strings.Contains(dayEventsSQL, "FROM ev\n	  JOIN ideal") {
-		t.Error("phase E update must drive from ev (inner) — GROUP BY FOUND semantics")
+	if !strings.Contains(dayCascadeMonthSQL+dayCascadeWeekSQL, "recalc_needed = true") {
+		t.Error("upward cascade lost")
 	}
-	// AMBER-2 intent restoration: per-row anchors, no loop-leak.
-	if !strings.Contains(dayReflagSQL, "e.id_equipment, e.ts_value") {
-		t.Error("reflag proportional must be PER ROW (amber-2 intent restore)")
+	if strings.Contains(dayRollupSQL, "ca_agg") {
+		t.Error("day2 sums the HOUR TABLE, not ca_agg — that was the dead generation")
 	}
-	if !strings.Contains(dayTargetsSQL, "target_customized IS NOT TRUE") {
-		t.Error("customized targets must be respected")
+}
+
+// Hour (the foundation) fidelity guards.
+func TestHourShape(t *testing.T) {
+	// Phase V keeps the flag TRUE; only phase E clears it.
+	if !strings.Contains(hourValuesSQL, "recalc_needed = true") {
+		t.Error("hour phase V must KEEP the flag (verbatim prod)")
+	}
+	if !strings.Contains(hourEventsSQL, "recalc_needed    = false") {
+		t.Error("only hour phase E clears the flag")
+	}
+	for _, m := range []string{
+		"interval '65 minutes'",
+		"ca_agg_equipment_values_1min", // speed from the 1min tier
+		"ELSE q.production_speed END",  // ideal fallback
+		"now() - interval '6 hour'",    // E guard
+		"now() - interval '10 days'",   // events window
+		"vl_day::float / 24",           // hourly proportional target
+	} {
+		if !strings.Contains(hourEligibleSQL+hourValuesSQL+hourSpeedSQL+hourEventsSQL+hourTargetsSQL, m) {
+			t.Errorf("hour lost %q", m)
+		}
+	}
+	if !strings.Contains(hourTargetsSQL, "NOT e.recalc_needed") {
+		t.Error("targets must drive from event-hit (cleared) rows only")
 	}
 }
