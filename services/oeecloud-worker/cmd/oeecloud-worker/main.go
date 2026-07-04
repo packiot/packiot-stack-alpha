@@ -188,6 +188,7 @@ func main() {
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, flows.Standard(pool, shadowPool),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+			config.CSVInts(cfg.RollupMachineLevelEnterprises),
 			time.Minute, logger, jobObs)
 	}
 
