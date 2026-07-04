@@ -146,3 +146,27 @@ func TestHourShape(t *testing.T) {
 		t.Error("targets must drive from event-hit (cleared) rows only")
 	}
 }
+
+// Shift grain fidelity guards.
+func TestShiftShape(t *testing.T) {
+	// V clears the flag in SHIFT (unlike hour) — verbatim per body.
+	if !strings.Contains(shiftValuesSQL, "recalc_needed = false") {
+		t.Error("shift phase V clears the flag (verbatim)")
+	}
+	for _, m := range []string{
+		"ca.id_shift = el.id_shift", // shift keying
+		"ca.ts_value_production = el.ts_value_production",
+		"cd_shift = el.cd_shift2",           // denorm
+		"tstzrange(el.ts_value, el.ts_end)", // shift window
+		"interval '25 days'",
+		"(sh.shift_size - ev.ts_planned) / (3600 * 24)", // proportional formula
+		"now() + interval '18 hour'",                    // forward re-flag
+	} {
+		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+shiftTargetsSQL+shiftReflagSQL, m) {
+			t.Errorf("shift lost %q", m)
+		}
+	}
+	if !strings.Contains(shiftEligibleSQL, "UNION ALL") {
+		t.Error("the UNION selector (lines ∪ machine-level enterprises) must survive")
+	}
+}

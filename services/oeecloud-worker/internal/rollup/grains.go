@@ -146,7 +146,7 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 
 // LoopGrains schedules runtime-rollup (the cascade tier; steps grow
 // as hour/day/shift are ported).
-func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("runtime-rollup started (P3b cascade: week+month; more grains as ported)")
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
@@ -161,6 +161,12 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 			}
 			if err := RunDay(ctx, d, exclAreas, exclEnterprises, logger); err != nil {
 				logger.Warn("runtime-rollup-day failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if err := RunShift(ctx, d, exclAreas, exclEnterprises, machineLevelEnterprises); err != nil {
+				logger.Warn("runtime-rollup-shift failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err
 				}
