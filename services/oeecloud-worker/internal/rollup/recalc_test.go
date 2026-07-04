@@ -100,3 +100,29 @@ func TestGrainMatrix(t *testing.T) {
 		t.Error("operator-customized targets must be respected")
 	}
 }
+
+// Day grain fidelity guards.
+func TestDayShape(t *testing.T) {
+	for _, m := range []string{
+		"CASE WHEN ca.state = 6 THEN ca.speed END", // Eduardo 2024-02-29
+		"ca.ts_value_production = el.ts_value",     // tvp keying
+		"ee.status IN (5, 10, 11)",
+		"date_trunc('month', el.ts_value)", // upward cascade
+		"date_trunc('week', el.ts_value)",
+	} {
+		if !strings.Contains(dayEligibleSQL+dayValuesSQL+dayCascadeMonthSQL+dayCascadeWeekSQL+dayEventsSQL, m) {
+			t.Errorf("day lost %q", m)
+		}
+	}
+	// Phase E stays CONDITIONAL (inner join on ev).
+	if !strings.Contains(dayEventsSQL, "FROM ev\n	  JOIN ideal") {
+		t.Error("phase E update must drive from ev (inner) — GROUP BY FOUND semantics")
+	}
+	// AMBER-2 intent restoration: per-row anchors, no loop-leak.
+	if !strings.Contains(dayReflagSQL, "e.id_equipment, e.ts_value") {
+		t.Error("reflag proportional must be PER ROW (amber-2 intent restore)")
+	}
+	if !strings.Contains(dayTargetsSQL, "target_customized IS NOT TRUE") {
+		t.Error("customized targets must be respected")
+	}
+}
