@@ -98,7 +98,7 @@ type Config struct {
 	UnsRefreshEnabled      bool
 	UnsIntervalMinutes     int
 
-	// PO-runtime recalc (P3b, ledger name po-runtime-recalc).
+	// PO-runtime refresh dispatcher (P3b: compute → recalc, ordered).
 	PORecalcEnabled             bool
 	PORecalcIntervalMinutes     int
 	PORecalcWindow              string // prod: '1 month'

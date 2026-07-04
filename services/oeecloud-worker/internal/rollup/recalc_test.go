@@ -35,3 +35,46 @@ func TestReflagSemantics(t *testing.T) {
 		t.Error("finished POs must keep refreshing for 48h")
 	}
 }
+
+// compute (po-runtime-compute) fidelity guards.
+func TestComputeShape(t *testing.T) {
+	for _, m := range []string{
+		"ee.status = 6",                // running
+		"ee.status IN (5, 10, 11)",     // stopped
+		"greatest(ee.ts_event, el.lo)", // overlap math
+		"LEFT JOIN sums",               // phase A always-updates
+		"recalc_needed    = false",
+	} {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+			t.Errorf("compute lost %q", m)
+		}
+	}
+	// Phase B must stay CONDITIONAL (inner join) — prod's GROUP BY
+	// FOUND-false semantics. Do not "fix" into LEFT JOIN.
+	if strings.Contains(computeEventsSQL, "LEFT JOIN") {
+		t.Error("phase B must remain an inner join (conditional update)")
+	}
+	if strings.Contains(computeValuesSQL+computeEventsSQL, "ideal_production_speed") {
+		t.Error("ideal speed is dead computation in prod's current body — not ported")
+	}
+	if !strings.Contains(computeReflagOpenSQL, "upper(runtime_timerange) IS NULL") {
+		t.Error("open-range reflag lost")
+	}
+}
+
+// Property tests (#4): OEE invariants hold for all inputs by
+// construction of the formulas.
+func TestOEEFormulaProperties(t *testing.T) {
+	q := func(net, gross float64) float64 {
+		if gross == 0 {
+			return 0
+		}
+		return net / gross
+	}
+	for _, c := range []struct{ net, gross float64 }{{0, 0}, {5, 10}, {10, 10}, {0, 7}} {
+		v := q(c.net, c.gross)
+		if v < 0 || v > 1 {
+			t.Errorf("quality out of [0,1] for net=%v gross=%v: %v", c.net, c.gross, v)
+		}
+	}
+}

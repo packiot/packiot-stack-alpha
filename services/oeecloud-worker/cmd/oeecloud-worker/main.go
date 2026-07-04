@@ -179,7 +179,7 @@ func main() {
 	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
 	// closes the loop pocontrol opens).
 	if cfg.PORecalcEnabled {
-		go rollup.LoopRecalc(ctx, flows.Standard(pool, shadowPool),
+		go rollup.LoopRefresh(ctx, flows.Standard(pool, shadowPool),
 			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
 			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs)
 	}
