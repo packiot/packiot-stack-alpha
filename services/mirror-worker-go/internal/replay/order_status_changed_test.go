@@ -19,10 +19,10 @@ import (
 
 func TestOrderStatusChangedPayload_Unmarshal(t *testing.T) {
 	cases := []struct {
-		name        string
-		raw         string
-		wantEq      int
-		wantPO      int64
+		name   string
+		raw    string
+		wantEq int
+		wantPO int64
 	}{
 		{
 			name:   "small ids",

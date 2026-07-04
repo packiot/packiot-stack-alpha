@@ -10,7 +10,7 @@
 //     ops has been guessing via `docker exec ... psql` for months.
 //   - Response body includes `reason` when degraded — never silent-degrade.
 //   - Extends (not refactors) the existing shape so Grafana panels
-//     + curl-based smoke checks keep working with zero flag changes.
+//   - curl-based smoke checks keep working with zero flag changes.
 package health
 
 import (

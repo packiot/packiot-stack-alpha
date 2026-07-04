@@ -2,7 +2,7 @@
 //
 // Each handler signature:
 //
-//   func(ctx, tx, row) error
+//	func(ctx, tx, row) error
 //
 // The tx is the per-row staging transaction begun by processRow (in main).
 // Handlers run their staging writes through this tx so the cursor advance
@@ -58,12 +58,12 @@ func (d *Dispatcher) HandledCategories() []string {
 //
 // Outcome semantics:
 //   - "skipped" — no handler registered for this category, OR a registered
-//                 handler returned an error matching replay.ErrSkipReplay
-//                 (structural mismatch — upstream entity not mirrorable).
-//                 Caller still advances the cursor and does NOT write DLQ.
+//     handler returned an error matching replay.ErrSkipReplay
+//     (structural mismatch — upstream entity not mirrorable).
+//     Caller still advances the cursor and does NOT write DLQ.
 //   - "ok"      — handler returned nil.
 //   - "failed"  — handler returned a non-skip error. Caller writes DLQ +
-//                 still advances the cursor (existing behaviour).
+//     still advances the cursor (existing behaviour).
 //
 // Returns nil when the handler's error was ErrSkipReplay so the caller
 // (processRow) takes its success branch — i.e. no mirror_replay_dlq insert.

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
@@ -135,6 +136,14 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	var value float64
 	if err := json.Unmarshal(m.Value, &value); err != nil {
 		return nil, fmt.Errorf("parse value as float (kind=%s, name=%s): %w", kind, m.Name, err)
+	}
+	// Absurd-value guard (oscillator incident 2026-07-04): no factory
+	// counter/state value approaches 1e12; beyond it the payload is
+	// corrupt — skip with a loud log rather than poison the stream.
+	if math.Abs(value) > 1e12 || math.IsNaN(value) || math.IsInf(value, 0) {
+		w.logger.Error("equipment_values: ABSURD value rejected (stream-poison guard)",
+			slog.String("name", m.Name), slog.Float64("value", value))
+		return nil, nil
 	}
 
 	tpEquipment := 1

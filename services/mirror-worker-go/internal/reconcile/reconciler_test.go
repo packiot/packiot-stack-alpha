@@ -64,4 +64,3 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
-

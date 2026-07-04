@@ -8,12 +8,12 @@
 //
 // Label discipline:
 //   - event_type — prod user_logs.category (order-status-changed,
-//                  event-justified, etc.). Cardinality is bounded by the
-//                  10 ported handlers + "unknown" for unmapped categories.
+//     event-justified, etc.). Cardinality is bounded by the
+//     10 ported handlers + "unknown" for unmapped categories.
 //   - outcome    — ok | failed | skipped. ok = handler returned nil;
-//                  failed = handler returned non-nil → DLQ; skipped =
-//                  no handler registered OR row was already replayed
-//                  (idempotency hit on mirror_id_map).
+//     failed = handler returned non-nil → DLQ; skipped =
+//     no handler registered OR row was already replayed
+//     (idempotency hit on mirror_id_map).
 package metrics
 
 import (

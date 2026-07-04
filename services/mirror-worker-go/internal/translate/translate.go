@@ -2,12 +2,12 @@
 //
 // Strategy by entity type:
 //
-//   enterprise   — hardcoded (prod CPACK=1 → staging CPACK=3); no lookup
-//   site         — business key 'nm_site'
-//   area         — business key 'nm_area'
-//   equipment    — business key 'packml_topic' (canonical, post-remap)
-//   PO           — mirror_id_map cache first, business key 'id_order' fallback
-//   event        — TODO phase 2 — mirror_id_map cache first, interval-overlap fallback (A4b)
+//	enterprise   — hardcoded (prod CPACK=1 → staging CPACK=3); no lookup
+//	site         — business key 'nm_site'
+//	area         — business key 'nm_area'
+//	equipment    — business key 'packml_topic' (canonical, post-remap)
+//	PO           — mirror_id_map cache first, business key 'id_order' fallback
+//	event        — TODO phase 2 — mirror_id_map cache first, interval-overlap fallback (A4b)
 //
 // Mirrors the TS translate.ts faithfully.
 package translate
@@ -333,9 +333,9 @@ func (t *Translator) EquipmentEvent(ctx context.Context, prodEventID int64) (int
 	// event at all in the area" or "events but with insufficient overlap".
 	// Different fixes apply to each.
 	var (
-		closestIDStr        string
-		closestOverlapSec   int
-		closestDriftSec     int
+		closestIDStr      string
+		closestOverlapSec int
+		closestDriftSec   int
 	)
 	closestFound, _ := t.staging.SelectOne(ctx,
 		`WITH prod_range AS (

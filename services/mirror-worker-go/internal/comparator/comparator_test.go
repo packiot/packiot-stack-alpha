@@ -161,12 +161,12 @@ func TestCountAnomalies(t *testing.T) {
 func TestComputeOEEDivergence(t *testing.T) {
 	fp := func(v float64) *float64 { return &v }
 	cases := []struct {
-		name        string
-		prod        db.ProdRuntimeValues
-		prodFound   bool
-		stagingNet  *float64
-		wantPct     float64
-		wantEmit    bool
+		name       string
+		prod       db.ProdRuntimeValues
+		prodFound  bool
+		stagingNet *float64
+		wantPct    float64
+		wantEmit   bool
 	}{
 		{
 			name:       "in sync — 1000 vs 1000 → 0%",
