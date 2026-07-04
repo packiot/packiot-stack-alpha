@@ -84,3 +84,7 @@ rule 2.
 <!--
 🤖 Generated with [Claude Code](https://claude.com/claude-code) — leave or remove this line at your discretion.
 -->
+
+## Porting (only if this PR ports legacy logic — see docs/PORTING.md)
+
+- [ ] PORT CHECKLIST from docs/PORTING.md filled in this PR body
