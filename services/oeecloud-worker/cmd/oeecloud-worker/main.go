@@ -32,6 +32,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/reports"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/rollup"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
@@ -173,6 +174,14 @@ func main() {
 	// ADR-0014 P4 — enterprise-6 production data sync (main flow).
 	if cfg.Sync06ReportEnabled {
 		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, cfg.Sync06Target, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
+	}
+
+	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
+	// closes the loop pocontrol opens).
+	if cfg.PORecalcEnabled {
+		go rollup.LoopRecalc(ctx, flows.Standard(pool, shadowPool),
+			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
+			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
