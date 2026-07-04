@@ -760,6 +760,7 @@ services:
       UNS_REFRESH_ENABLED: "true"
       # ADR-0014 P3b — po-runtime-recalc (shadow flows).
       PO_RECALC_ENABLED: "true"
+      RUNTIME_PROVISION_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
