@@ -82,8 +82,8 @@ func pickInt(m map[string]any, keys ...string) (int, error) {
 // FetchDBCreds pulls + parses a JSON secret into DBCreds. Tolerates
 // both naming conventions used in this project:
 //
-//   packiot/staging/db   → {host, port, user, password, name}
-//   databaseCredentials  → {DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME}
+//	packiot/staging/db   → {host, port, user, password, name}
+//	databaseCredentials  → {DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME}
 //
 // pick() walks each candidate key in order and returns the first
 // non-empty value. Adding more secrets later = add more aliases to

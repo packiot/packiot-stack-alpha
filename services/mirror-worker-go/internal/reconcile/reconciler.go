@@ -350,11 +350,11 @@ func (r *Reconciler) reviveExistingStagingPO(ctx context.Context, p db.ProdActiv
 	startTs := time.Now().UTC().Add(-5 * time.Second).Format(time.RFC3339)
 	startBody := map[string]any{
 		"idEnterprise":      r.cfg.StagingEnterpriseID,
-		"idSite":             stagingSiteID,
-		"idArea":             stagingAreaID,
-		"idEquipment":        stagingEqID,
-		"idProductionOrder":  stagingPOID,
-		"timestamp":          startTs,
+		"idSite":            stagingSiteID,
+		"idArea":            stagingAreaID,
+		"idEquipment":       stagingEqID,
+		"idProductionOrder": stagingPOID,
+		"timestamp":         startTs,
 	}
 	startKey := fmt.Sprintf("%s/recon/revive/%d", r.cfg.SourceName, p.IDProductionOrder)
 	if status, body, err := r.post(ctx, "/api/production-orders/start", startBody, startKey); err != nil {

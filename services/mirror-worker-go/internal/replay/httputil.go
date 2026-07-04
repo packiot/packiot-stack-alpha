@@ -19,11 +19,11 @@ import (
 // staging. These strings are stable literals in:
 //
 //   - edge-api/src/usecases/downtimes/justify/justify.service.ts
-//       throw new NotFoundException('Downtime does not exist');         // 404
+//     throw new NotFoundException('Downtime does not exist');         // 404
 //   - edge-api/src/usecases/downtimes/edit-manual-event/...service.ts
-//       throw new BadRequestException('Downtime does not exist');       // 400
+//     throw new BadRequestException('Downtime does not exist');       // 400
 //   - edge-api/src/usecases/downtimes/split/split.service.ts
-//       throw new NotFoundException('Event does not exist');            // 404
+//     throw new NotFoundException('Event does not exist');            // 404
 //
 // When edge-api returns 400 OR 404 with one of these EXACT messages we
 // treat the row as ErrSkipReplay — the parent it depends on was never
@@ -45,7 +45,7 @@ var downtimeMissingMessages = map[string]struct{}{
 // it can't be stopped (status != 2 / "running"):
 //
 //   - edge-api/src/usecases/production-orders/stop-production-order/...service.ts
-//       throw new BadRequestException('Production order can not be stopped');
+//     throw new BadRequestException('Production order can not be stopped');
 //
 // In our cross-system replay context this is *intent already satisfied*,
 // not an error — the operator's intent ("make this PO not running") is
@@ -70,7 +70,7 @@ var stopAlreadySatisfiedMessages = map[string]struct{}{
 // on the equipment:
 //
 //   - edge-api/src/usecases/production-orders/start-production-order/...service.ts
-//       throw new BadRequestException('Production order already running');
+//     throw new BadRequestException('Production order already running');
 //
 // Same "intent already satisfied" semantics as the stop variant — the
 // operator's intent ("make this PO running") is already met because the
@@ -92,11 +92,11 @@ var startAlreadySatisfiedMessages = map[string]struct{}{
 // id_order) tuple:
 //
 //   - edge-api/src/usecases/production-orders/create-production-order/...service.ts
-//       throw new BadRequestException('Production order already exists');
+//     throw new BadRequestException('Production order already exists');
 //   - edge-api/src/usecases/production-orders/setup-production-order/...service.ts
-//       throw new BadRequestException('Production order already exists!');
+//     throw new BadRequestException('Production order already exists!');
 //   - edge-api/src/usecases/production-orders/create-and-start/...service.ts
-//       throw new BadRequestException('Production order already exists!');
+//     throw new BadRequestException('Production order already exists!');
 //
 // Note the trailing exclamation point in two of the three messages — kept
 // as separate map entries because the literal is what we match on (we
@@ -106,9 +106,11 @@ var startAlreadySatisfiedMessages = map[string]struct{}{
 // and it does. Real-world trigger: the EnsureActivePOs reconciler
 // regularly hits 400 with "Production order already exists" at startup
 // (seen in the recent post-deploy log:
-//   {"level":"WARN","msg":"reconciler: ensureOnePO failed — skipping,
-//    next pass will retry","err":"...returned 400 (status=400
-//    body={\"message\":\"Production order already exists\"})"}).
+//
+//	{"level":"WARN","msg":"reconciler: ensureOnePO failed — skipping,
+//	 next pass will retry","err":"...returned 400 (status=400
+//	 body={\"message\":\"Production order already exists\"})"}).
+//
 // The reconciler already handles this gracefully (skip-and-retry-later),
 // but a future user_logs replay of order-created via this same code path
 // would currently DLQ. Pre-emptive coverage so it doesn't accumulate.

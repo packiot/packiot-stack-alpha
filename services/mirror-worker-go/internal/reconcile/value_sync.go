@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/mirror-worker-go/internal/db"
@@ -80,6 +81,21 @@ func (r *Reconciler) RunValueSync(ctx context.Context) error {
 			skipped++
 			continue
 		}
+		// SANITY CLAMP (2026-07-04 oscillator incident): poisoned
+		// staging runtime values (±1e38) turned this delta into a
+		// per-minute garbage injector feeding a self-sustaining loop
+		// across all three flows. No physical counter delta approaches
+		// this bound — beyond it, the INPUT is corrupt. Loss-with-alert
+		// (ADR-0011 rule 5): log loudly, count, skip.
+		if math.Abs(netDelta) > deltaSanityCap || math.Abs(grossDelta) > deltaSanityCap {
+			r.logger.Error("value sync: INSANE delta — input corrupt, skipping (oscillator guard)",
+				slog.Int64("staging_po", m.StagingPOID),
+				slog.Float64("net_delta", netDelta),
+				slog.Float64("gross_delta", grossDelta))
+			metrics.ReconcilerValuesSyncedTotal.WithLabelValues("insane_skipped").Inc()
+			skipped++
+			continue
+		}
 		if err := r.staging.InsertEquipmentValueDelta(ctx,
 			m.StagingEquipment, m.StagingSite, m.StagingArea, r.cfg.StagingEnterpriseID,
 			netDelta, grossDelta); err != nil {
@@ -110,6 +126,10 @@ func (r *Reconciler) RunValueSync(ctx context.Context) error {
 // have edited a PO backwards via /api/production-orders/recalc etc.).
 //
 // Exposed as a free function for unit testing.
+// deltaSanityCap: no real per-tick counter delta approaches 1e9 units;
+// anything beyond means a poisoned input (see the oscillator incident).
+const deltaSanityCap = 1e9
+
 func computeDelta(prod db.ProdRuntimeValues, staging db.MappedActivePO) (netDelta, grossDelta float64) {
 	prodNet := derefOr(prod.NetProduction, 0)
 	prodGross := derefOr(prod.GrossProduction, 0)

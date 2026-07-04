@@ -276,9 +276,9 @@ func TestPostStaging_SkipsOnDowntimeMissing(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	cfg := &config.Config{
-		StagingAPIBaseURL:    srv.URL,
-		SourceName:           "cpack-prod-go-test",
-		StagingEnterpriseID:  3,
+		StagingAPIBaseURL:   srv.URL,
+		SourceName:          "cpack-prod-go-test",
+		StagingEnterpriseID: 3,
 	}
 	httpc := &http.Client{Timeout: 5 * time.Second}
 	row := db.ProdUserLog{IDUserLogs: 999}
@@ -306,9 +306,9 @@ func TestPostStaging_KeepsValidationErrorAsFailure(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	cfg := &config.Config{
-		StagingAPIBaseURL:    srv.URL,
-		SourceName:           "cpack-prod-go-test",
-		StagingEnterpriseID:  3,
+		StagingAPIBaseURL:   srv.URL,
+		SourceName:          "cpack-prod-go-test",
+		StagingEnterpriseID: 3,
 	}
 	httpc := &http.Client{Timeout: 5 * time.Second}
 	row := db.ProdUserLog{IDUserLogs: 999}
@@ -339,9 +339,9 @@ func TestPostStaging_KeepsServerErrorAsFailure(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	cfg := &config.Config{
-		StagingAPIBaseURL:    srv.URL,
-		SourceName:           "cpack-prod-go-test",
-		StagingEnterpriseID:  3,
+		StagingAPIBaseURL:   srv.URL,
+		SourceName:          "cpack-prod-go-test",
+		StagingEnterpriseID: 3,
 	}
 	httpc := &http.Client{Timeout: 5 * time.Second}
 	row := db.ProdUserLog{IDUserLogs: 999}
@@ -366,9 +366,9 @@ func TestPostStaging_HappyPath(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	cfg := &config.Config{
-		StagingAPIBaseURL:    srv.URL,
-		SourceName:           "cpack-prod-go-test",
-		StagingEnterpriseID:  3,
+		StagingAPIBaseURL:   srv.URL,
+		SourceName:          "cpack-prod-go-test",
+		StagingEnterpriseID: 3,
 	}
 	httpc := &http.Client{Timeout: 5 * time.Second}
 	row := db.ProdUserLog{IDUserLogs: 999}
