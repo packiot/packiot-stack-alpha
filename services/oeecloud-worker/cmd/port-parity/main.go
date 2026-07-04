@@ -114,7 +114,11 @@ func main() {
 	emit := flag.Bool("emit", false, "print the run as one psql script (same consts) and exit")
 	flag.Parse()
 	if *emit {
-		emitRecalcScript()
+		if *subject == "compute" {
+			emitComputeScript()
+		} else {
+			emitRecalcScript()
+		}
 		return
 	}
 	if *subject != "recalc" {
@@ -203,4 +207,97 @@ func emitRecalcScript() {
 	fmt.Println(fmt.Sprintf(rollup.ReflagRecentForParity(), goSchema) + ";")
 	fmt.Println(recalcDiffSQL + ";")
 	fmt.Println(recalcMismatchDetail + ";")
+}
+
+// compute subject: heavier snapshot (month slices of values+events,
+// INDEXED — the accidental-benchmark lesson applied up front).
+var computeSnapshotSQL = []string{
+	`DROP SCHEMA IF EXISTS ` + legacySchema + ` CASCADE`,
+	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
+	`CREATE SCHEMA ` + legacySchema,
+	`CREATE SCHEMA ` + goSchema,
+	`CREATE TABLE ` + legacySchema + `.production_orders_runtime AS
+	   SELECT * FROM public.production_orders_runtime
+	    WHERE runtime_timerange && tstzrange(now() - interval '1 month', now())`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM public.sites`,
+	`CREATE TABLE ` + legacySchema + `.equipment_values AS
+	   SELECT id_equipment, ts_value, gross_production_incr, net_production_incr,
+	          speed, ideal_production_speed
+	     FROM public.equipment_values WHERE ts_value >= now() - interval '1 month'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_events AS
+	   SELECT id_equipment, ts_event, ts_end, status
+	     FROM public.equipment_events WHERE ts_event >= now() - interval '1 month'`,
+	`UPDATE ` + legacySchema + `.production_orders_runtime SET recalc_needed = true`,
+	`CREATE TABLE ` + goSchema + `.production_orders_runtime AS SELECT * FROM ` + legacySchema + `.production_orders_runtime`,
+	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
+	`CREATE TABLE ` + goSchema + `.sites AS SELECT * FROM ` + legacySchema + `.sites`,
+	`CREATE TABLE ` + goSchema + `.equipment_values AS SELECT * FROM ` + legacySchema + `.equipment_values`,
+	`CREATE TABLE ` + goSchema + `.equipment_events AS SELECT * FROM ` + legacySchema + `.equipment_events`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_values (id_equipment, ts_value)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_values (id_equipment, ts_value)`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_events (id_equipment, ts_event)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_events (id_equipment, ts_event)`,
+	`CREATE INDEX ON ` + legacySchema + `.production_orders_runtime (id_equipment)`,
+	`CREATE INDEX ON ` + goSchema + `.production_orders_runtime (id_equipment)`,
+}
+
+const computeLegacyRun = `SELECT piot_get_equipment_production_order_runtime_test()`
+
+const computeDiffSQL = `
+	SELECT count(*) FILTER (WHERE NOT ok) AS mismatches, count(*) AS compared
+	  FROM (
+	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0)) < 1e-6
+	        AND abs(COALESCE(l.net_production,0)   - COALESCE(g.net_production,0))   < 1e-6
+	        AND abs(COALESCE(l.oee_q,0)            - COALESCE(g.oee_q,0))            < 1e-9
+	        AND abs(COALESCE(l.speed,0)            - COALESCE(g.speed,0))            < 1e-6
+	        AND abs(COALESCE(l.running_time,0)     - COALESCE(g.running_time,0))     < 1.5
+	        AND abs(COALESCE(l.stopped_time,0)     - COALESCE(g.stopped_time,0))     < 1.5
+	        AND (l.recalc_needed = g.recalc_needed
+	             OR upper(l.runtime_timerange) IS NULL
+	             OR abs(extract(epoch FROM (upper(l.runtime_timerange) - (now() - interval '48 hours')))) < 1200)) AS ok
+	      FROM ` + legacySchema + `.production_orders_runtime l
+	      FULL JOIN ` + goSchema + `.production_orders_runtime g
+	        ON l.id_equipment = g.id_equipment
+	       AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
+	  ) d`
+
+// running/stopped tolerance 1.5s: open events use now(), which
+// advances between the legacy and go runs.
+
+const computeMismatchDetail = `
+	SELECT l.id_equipment, lower(l.runtime_timerange),
+	       l.gross_production, g.gross_production,
+	       l.running_time, g.running_time, l.recalc_needed, g.recalc_needed
+	  FROM ` + legacySchema + `.production_orders_runtime l
+	  FULL JOIN ` + goSchema + `.production_orders_runtime g
+	    ON l.id_equipment = g.id_equipment
+	   AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
+	 WHERE NOT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0)) < 1e-6
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
+	        AND (l.recalc_needed = g.recalc_needed
+	             OR upper(l.runtime_timerange) IS NULL
+	             OR abs(extract(epoch FROM (upper(l.runtime_timerange) - (now() - interval '48 hours')))) < 1200))
+	 LIMIT 8`
+
+// emitComputeScript mirrors emitRecalcScript for the compute subject.
+func emitComputeScript() {
+	fmt.Println("SET statement_timeout = 0;")
+	for _, s := range computeSnapshotSQL {
+		fmt.Println(s + ";")
+	}
+	fmt.Println("SET search_path TO " + legacySchema + ", public;")
+	fmt.Println(computeLegacyRun + ";")
+	fmt.Println("RESET search_path;")
+	for _, s := range []string{
+		fmt.Sprintf(rollup.ComputeEventsSQLForParity(), goSchema, goSchema),
+		fmt.Sprintf(rollup.ComputeValuesSQLForParity(), goSchema, goSchema),
+		fmt.Sprintf(rollup.ComputeReflagOpenForParity(), goSchema),
+		fmt.Sprintf(rollup.ComputeReflagRecentForParity(), goSchema),
+	} {
+		s = strings.ReplaceAll(s, "$1::interval", "interval '1 month'")
+		fmt.Println(s + ";")
+	}
+	fmt.Println(computeDiffSQL + ";")
+	fmt.Println(computeMismatchDetail + ";")
 }

@@ -167,3 +167,9 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 		return firstErr
 	}}, logger, obs)
 }
+
+// Parity accessors (single-source emission).
+func ComputeValuesSQLForParity() string    { return computeValuesSQL }
+func ComputeEventsSQLForParity() string    { return computeEventsSQL }
+func ComputeReflagOpenForParity() string   { return computeReflagOpenSQL }
+func ComputeReflagRecentForParity() string { return computeReflagRecentSQL }
