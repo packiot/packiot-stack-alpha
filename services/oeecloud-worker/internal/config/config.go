@@ -104,6 +104,7 @@ type Config struct {
 	PORecalcWindow              string // prod: '1 month'
 	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
 	RuntimeProvisionEnabled     bool
+	RuntimeRollupEnabled        bool
 
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
 	// OFF until synthetic-inject verification (staging has no live
@@ -151,6 +152,7 @@ func Load() (*Config, error) {
 		PORecalcWindow:              getenv("PO_RECALC_WINDOW", "1 month"),
 		PORecalcExcludedEnterprises: getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
 		RuntimeProvisionEnabled:     getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
+		RuntimeRollupEnabled:        getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		Sync06ReportEnabled:         getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:       getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Sync06EnterpriseID:          getenvInt("SYNC06_ENTERPRISE_ID", 6),

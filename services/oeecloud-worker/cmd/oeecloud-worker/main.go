@@ -184,6 +184,13 @@ func main() {
 			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
+	if cfg.RuntimeRollupEnabled {
+		go rollup.LoopGrains(ctx, flows.Standard(pool, shadowPool),
+			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+			time.Minute, logger, jobObs)
+	}
+
 	// ADR-0014 P3b — runtime-provision (bucket matrix, hourly).
 	if cfg.RuntimeProvisionEnabled {
 		go rollup.LoopProvision(ctx, flows.Standard(pool, shadowPool), logger, jobObs)
