@@ -170,3 +170,48 @@ func TestShiftShape(t *testing.T) {
 		t.Error("the UNION selector (lines ∪ machine-level enterprises) must survive")
 	}
 }
+
+// Entity tier (area/site) fidelity guards.
+func TestEntityGrainShape(t *testing.T) {
+	area := entityStatements(entityMatrix[0], "sch", "ref")
+	all := ""
+	for _, st := range area {
+		all += st.SQL
+	}
+	for _, m := range []string{
+		"tp_equipment = 3",                // areas roll up LINES only
+		"date_trunc('week', el.ts_value)", // week span
+		"el.ts_value + interval '1 week'", // verbatim <= upper bound
+		"extract(minute FROM now()) / 60", // hour prop tail
+		"gross = s.gross,",                // hour RAW fill (no COALESCE)
+	} {
+		if !strings.Contains(all, m) {
+			t.Errorf("area tier lost %q", m)
+		}
+	}
+	site := entityStatements(entityMatrix[1], "sch", "ref")
+	sall := ""
+	for _, st := range site {
+		sall += st.SQL
+	}
+	if !strings.Contains(sall, "id_site = el.id_site") || strings.Contains(sall, "tp_equipment = 3") {
+		t.Error("site tier must scope by areas-of-site, never tp filter")
+	}
+}
+
+// Week/month must key own-entity day rows directly (the scope pred
+// would reference absent columns — the bug this test pins).
+func TestEntityWeekMonthOwnKey(t *testing.T) {
+	for _, sp := range entityMatrix {
+		for _, st := range entityStatements(sp, "sch", "ref") {
+			if st.Name == sp.Name+"-week" || st.Name == sp.Name+"-month" {
+				if strings.Contains(st.SQL, "ard.id_equipment IN") || (sp.Name == "site" && strings.Contains(st.SQL, "ard.id_area IN")) {
+					t.Errorf("%s: week/month must not carry the tier-below scope pred", st.Name)
+				}
+				if !strings.Contains(st.SQL, "ard."+sp.Key+" = el."+sp.Key) {
+					t.Errorf("%s: missing own-key join", st.Name)
+				}
+			}
+		}
+	}
+}
