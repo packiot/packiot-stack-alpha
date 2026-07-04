@@ -126,3 +126,9 @@ func LoopRecalc(ctx context.Context, dests []flows.Dest, window string, exclEnte
 		})
 	}}, logger, obs)
 }
+
+// Parity accessors — the harness emits the SAME constants it executes
+// (single-source guarantee for differential runs).
+func RecalcSQLForParity() string     { return recalcSQL }
+func ReflagRunningForParity() string { return reflagRunningSQL }
+func ReflagRecentForParity() string  { return reflagRecentSQL }

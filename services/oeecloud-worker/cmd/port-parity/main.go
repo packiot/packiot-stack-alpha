@@ -74,7 +74,12 @@ const recalcDiffSQL = `
 	        AND abs(COALESCE(l.oee_quality,0)      - COALESCE(g.oee_quality,0))      < 1e-9
 	        AND abs(COALESCE(l.oee_availability,0) - COALESCE(g.oee_availability,0)) < 1e-9
 	        AND abs(COALESCE(l.oee_performance,0)  - COALESCE(g.oee_performance,0))  < 1e-9
-	        AND l.recalc_needed = g.recalc_needed) AS ok
+	        AND (l.recalc_needed = g.recalc_needed
+	             -- boundary guard: the 48h re-flag reads now(), which
+	             -- ADVANCES between the legacy and go runs; POs within
+	             -- ±5min of the boundary race by construction, not by
+	             -- logic. Values above are always compared.
+	             OR abs(extract(epoch FROM (l.ts_start - (now() - interval '48 hours')))) < 300)) AS ok
 	      FROM ` + legacySchema + `.production_orders l
 	      FULL JOIN ` + goSchema + `.production_orders g USING (id_production_order)
 	  ) d`
@@ -88,7 +93,8 @@ const recalcMismatchDetail = `
 	  FULL JOIN ` + goSchema + `.production_orders g USING (id_production_order)
 	 WHERE NOT (abs(COALESCE(l.oee,0) - COALESCE(g.oee,0)) < 1e-9
 	        AND abs(COALESCE(l.oee_performance,0) - COALESCE(g.oee_performance,0)) < 1e-9
-	        AND l.recalc_needed = g.recalc_needed)
+	        AND (l.recalc_needed = g.recalc_needed
+	             OR abs(extract(epoch FROM (l.ts_start - (now() - interval '48 hours')))) < 300))
 	 LIMIT 10`
 
 func main() {
