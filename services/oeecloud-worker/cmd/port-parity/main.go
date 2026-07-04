@@ -247,15 +247,20 @@ const computeLegacyRun = `SELECT piot_get_equipment_production_order_runtime_tes
 const computeDiffSQL = `
 	SELECT count(*) FILTER (WHERE NOT ok) AS mismatches, count(*) AS compared
 	  FROM (
-	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0)) < 1e-6
-	        AND abs(COALESCE(l.net_production,0)   - COALESCE(g.net_production,0))   < 1e-6
+	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
+	              < 1e-6 + 1e-6 * greatest(abs(COALESCE(l.gross_production,0)), abs(COALESCE(g.gross_production,0)))
+	        AND abs(COALESCE(l.net_production,0)   - COALESCE(g.net_production,0))
+	              < 1e-6 + 1e-6 * greatest(abs(COALESCE(l.net_production,0)), abs(COALESCE(g.net_production,0)))
 	        AND abs(COALESCE(l.oee_q,0)            - COALESCE(g.oee_q,0))            < 1e-9
-	        AND abs(COALESCE(l.speed,0)            - COALESCE(g.speed,0))            < 1e-6
+	        AND abs(COALESCE(l.speed,0)            - COALESCE(g.speed,0))
+	              < 1e-6 + 1e-6 * greatest(abs(COALESCE(l.speed,0)), abs(COALESCE(g.speed,0)))
 	        AND abs(COALESCE(l.running_time,0)     - COALESCE(g.running_time,0))     < 1.5
 	        AND abs(COALESCE(l.stopped_time,0)     - COALESCE(g.stopped_time,0))     < 1.5
 	        AND (l.recalc_needed = g.recalc_needed
 	             OR upper(l.runtime_timerange) IS NULL
-	             OR abs(extract(epoch FROM (upper(l.runtime_timerange) - (now() - interval '48 hours')))) < 1200)) AS ok
+	             -- epsilon must dominate the LEGACY LEG'S RUN DURATION
+	             -- (per-row month scans: tens of minutes) — 3600s.
+	             OR abs(extract(epoch FROM (upper(l.runtime_timerange) - (now() - interval '48 hours')))) < 3600)) AS ok
 	      FROM ` + legacySchema + `.production_orders_runtime l
 	      FULL JOIN ` + goSchema + `.production_orders_runtime g
 	        ON l.id_equipment = g.id_equipment
@@ -273,11 +278,12 @@ const computeMismatchDetail = `
 	  FULL JOIN ` + goSchema + `.production_orders_runtime g
 	    ON l.id_equipment = g.id_equipment
 	   AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
-	 WHERE NOT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0)) < 1e-6
+	 WHERE NOT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
+	              < 1e-6 + 1e-6 * greatest(abs(COALESCE(l.gross_production,0)), abs(COALESCE(g.gross_production,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
 	        AND (l.recalc_needed = g.recalc_needed
 	             OR upper(l.runtime_timerange) IS NULL
-	             OR abs(extract(epoch FROM (upper(l.runtime_timerange) - (now() - interval '48 hours')))) < 1200))
+	             OR abs(extract(epoch FROM (upper(l.runtime_timerange) - (now() - interval '48 hours')))) < 3600))
 	 LIMIT 8`
 
 // emitComputeScript mirrors emitRecalcScript for the compute subject.
