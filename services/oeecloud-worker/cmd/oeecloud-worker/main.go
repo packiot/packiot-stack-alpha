@@ -184,6 +184,11 @@ func main() {
 			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0014 P3b — runtime-provision (bucket matrix, hourly).
+	if cfg.RuntimeProvisionEnabled {
+		go rollup.LoopProvision(ctx, flows.Standard(pool, shadowPool), logger, jobObs)
+	}
+
 	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
 	if cfg.UnsRefreshEnabled {
 		go uns.Loop(ctx, flows.Standard(pool, shadowPool),
