@@ -78,3 +78,25 @@ func TestOEEFormulaProperties(t *testing.T) {
 		}
 	}
 }
+
+// The cascade grains: formulas + THE AMBER BUG pinned.
+func TestGrainMatrix(t *testing.T) {
+	if grainMatrix[0].Grain != "week" || grainMatrix[0].OeePTable != "equipment_runtime_1month" {
+		t.Error("AMBER BUG must be preserved: week's oee_p targets 1MONTH (prod copy-paste, shipped for years — fix only with consumer sign-off)")
+	}
+	if grainMatrix[1].OeePTable != "equipment_runtime_1month" {
+		t.Error("month's oee_p correctly targets 1month")
+	}
+	for _, m := range []string{
+		"s.net / NULLIF(s.ideal_production, 0)",                         // oee (grain variant)
+		"s.running_time / NULLIF(s.total_time - s.planned_downtime, 0)", // oee_a
+		"date_trunc('%[4]s', ard.ts_value::date)::date",                 // bucket join
+	} {
+		if !strings.Contains(grainRollupSQL, m) {
+			t.Errorf("grain rollup lost %q", m)
+		}
+	}
+	if !strings.Contains(grainTargetsSQL, "target_customized IS NOT TRUE") {
+		t.Error("operator-customized targets must be respected")
+	}
+}
