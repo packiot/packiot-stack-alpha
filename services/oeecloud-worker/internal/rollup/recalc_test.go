@@ -12,7 +12,7 @@ func TestRecalcFormulas(t *testing.T) {
 		"((s.total - s.planned) / 60.0)", // oee denominator
 		"s.run / NULLIF(s.avail, 0)",     // availability
 		"recalc_needed = false",
-		"GROUP BY ca.id_production_order", // the if-found join
+		"LEFT JOIN sums s USING (id_production_order)", // prod zeroes no-row POs
 		"runtime_timerange && tstzrange(now() - $1::interval, now())",
 	} {
 		if !strings.Contains(recalcSQL, m) {
