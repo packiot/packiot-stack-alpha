@@ -58,6 +58,16 @@ var recalcSnapshotSQL = []string{
 	`CREATE TABLE ` + goSchema + `.production_orders_runtime AS SELECT * FROM ` + legacySchema + `.production_orders_runtime`,
 	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
 	`CREATE TABLE ` + goSchema + `.sites AS SELECT * FROM ` + legacySchema + `.sites`,
+	// CREATE TABLE AS copies NO indexes — without prod-like keys the
+	// legacy per-PO loop goes O(n²) and hits statement_timeout (the
+	// harness accidentally benchmarked the refactor's point). Restore
+	// the access paths prod has:
+	`ALTER TABLE ` + legacySchema + `.production_orders ADD PRIMARY KEY (id_production_order)`,
+	`ALTER TABLE ` + goSchema + `.production_orders ADD PRIMARY KEY (id_production_order)`,
+	`CREATE INDEX ON ` + legacySchema + `.production_orders_runtime (id_production_order)`,
+	`CREATE INDEX ON ` + goSchema + `.production_orders_runtime (id_production_order)`,
+	`CREATE INDEX ON ` + legacySchema + `.equipments (id_equipment)`,
+	`CREATE INDEX ON ` + goSchema + `.equipments (id_equipment)`,
 }
 
 const recalcLegacyRun = `SELECT piot_get_equipment_production_order_runtime_final()`
@@ -177,6 +187,7 @@ func fatal(err error) {
 // emitRecalcScript renders the identical run for psql -f execution —
 // single-sourced from the same constants the binary uses.
 func emitRecalcScript() {
+	fmt.Println("SET statement_timeout = 0;")
 	for _, s := range recalcSnapshotSQL {
 		fmt.Println(s + ";")
 	}
