@@ -177,6 +177,12 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 					firstErr = err
 				}
 			}
+			if err := RunEntityGrains(ctx, d, exclAreas); err != nil {
+				logger.Warn("runtime-rollup-entity failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 		}
 		return firstErr
 	}}, logger, obs)
