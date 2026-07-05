@@ -114,9 +114,12 @@ func main() {
 	emit := flag.Bool("emit", false, "print the run as one psql script (same consts) and exit")
 	flag.Parse()
 	if *emit {
-		if *subject == "compute" {
+		switch *subject {
+		case "compute":
 			emitComputeScript()
-		} else {
+		case "hour":
+			emitHourScript()
+		default:
 			emitRecalcScript()
 		}
 		return
@@ -312,4 +315,94 @@ func emitComputeScript() {
 	}
 	fmt.Println(computeDiffSQL + ";")
 	fmt.Println(computeMismatchDetail + ";")
+}
+
+// hour subject: tiny window (65min eligibility) → fast legs. Both
+// legs receive the SAME 1min tier copy (legacy reads it as
+// agg_equipment_values_1min_t, go as ca_agg_equipment_values_1min) —
+// the subject isolates the ROLLUP math; the CAgg-vs-feeder
+// equivalence is the mechanism-swap argument, documented separately.
+var hourSnapshotSQL = []string{
+	`DROP SCHEMA IF EXISTS ` + legacySchema + ` CASCADE`,
+	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
+	`CREATE SCHEMA ` + legacySchema,
+	`CREATE SCHEMA ` + goSchema,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1hour AS
+	   SELECT * FROM public.equipment_runtime_1hour WHERE ts_value >= now() - interval '4 hours' AND ts_value <= now() + interval '1 hour'`,
+	`UPDATE ` + legacySchema + `.equipment_runtime_1hour SET recalc_needed = true WHERE ts_value >= now() - interval '65 minutes' AND ts_value <= now()`,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1day AS
+	   SELECT * FROM public.equipment_runtime_1day WHERE ts_value >= now() - interval '3 days'`,
+	`CREATE TABLE ` + legacySchema + `.area_runtime_1hour AS
+	   SELECT * FROM public.area_runtime_1hour WHERE ts_value >= now() - interval '4 hours'`,
+	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
+	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '4 hours'`,
+	`CREATE TABLE ` + legacySchema + `.agg_equipment_values_1min_t AS
+	   SELECT * FROM public.agg_equipment_values_1min_t WHERE ts_value >= now() - interval '4 hours'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_events AS
+	   SELECT * FROM public.equipment_events WHERE ts_event >= now() - interval '10 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_1hour AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1hour`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_1day AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1day`,
+	`CREATE TABLE ` + goSchema + `.area_runtime_1hour AS SELECT * FROM ` + legacySchema + `.area_runtime_1hour`,
+	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1hour AS SELECT * FROM ` + legacySchema + `.ca_agg_equipment_values_1hour`,
+	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1min AS SELECT * FROM ` + legacySchema + `.agg_equipment_values_1min_t`,
+	`CREATE TABLE ` + goSchema + `.equipment_events AS SELECT * FROM ` + legacySchema + `.equipment_events`,
+	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
+	`CREATE TABLE ` + goSchema + `.production_targets AS SELECT * FROM ` + legacySchema + `.production_targets`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_events (id_equipment, ts_event)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_events (id_equipment, ts_event)`,
+	`CREATE INDEX ON ` + legacySchema + `.agg_equipment_values_1min_t (id_equipment, ts_value)`,
+	`CREATE INDEX ON ` + goSchema + `.ca_agg_equipment_values_1min (id_equipment, ts_value)`,
+}
+
+const hourLegacyRun = `SELECT piot_get_equipment_runtime_1hour_production()`
+
+// diff: hour rows; exclude the current in-flight hour (ts_total reads
+// now() → open-bucket drift class); flag guard on the 2h tail band.
+const hourDiffSQL = `
+	SELECT count(*) FILTER (WHERE NOT ok) AS mismatches, count(*) AS compared
+	  FROM (
+	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.net,0) - COALESCE(g.net,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.net,0)),abs(COALESCE(g.net,0)))
+	        AND abs(COALESCE(l.speed,0) - COALESCE(g.speed,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.speed,0)),abs(COALESCE(g.speed,0)))
+	        AND abs(COALESCE(l.ideal_speed,0) - COALESCE(g.ideal_speed,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.ideal_speed,0)),abs(COALESCE(g.ideal_speed,0)))
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
+	        AND abs(COALESCE(l.stopped_time,0) - COALESCE(g.stopped_time,0)) < 1.5
+	        AND abs(COALESCE(l.planned_downtime,0) - COALESCE(g.planned_downtime,0)) < 1.5
+	        AND (l.recalc_needed = g.recalc_needed
+	             OR abs(extract(epoch FROM (l.ts_value - date_trunc('hour', now() - interval '2 hour')))) < 3600)) AS ok
+	      FROM ` + legacySchema + `.equipment_runtime_1hour l
+	      FULL JOIN ` + goSchema + `.equipment_runtime_1hour g
+	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	     WHERE l.ts_value < date_trunc('hour', now())  -- open-bucket drift
+	  ) d`
+
+const hourMismatchDetail = `
+	SELECT l.id_equipment, l.ts_value, l.gross, g.gross, l.running_time, g.running_time,
+	       l.speed, g.speed, l.recalc_needed, g.recalc_needed
+	  FROM ` + legacySchema + `.equipment_runtime_1hour l
+	  FULL JOIN ` + goSchema + `.equipment_runtime_1hour g
+	    ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	 WHERE l.ts_value < date_trunc('hour', now())
+	   AND NOT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5)
+	 LIMIT 8`
+
+func emitHourScript() {
+	fmt.Println("SET statement_timeout = 0;")
+	for _, s := range hourSnapshotSQL {
+		fmt.Println(s + ";")
+	}
+	fmt.Println("SET search_path TO " + legacySchema + ", public;")
+	fmt.Println(hourLegacyRun + ";")
+	fmt.Println("RESET search_path;")
+	for _, st := range rollup.HourStatementsForParity(goSchema, goSchema) {
+		sql := st.SQL
+		sql = strings.ReplaceAll(sql, "= ANY($1)", "= ANY(ARRAY[]::int[])")
+		sql = strings.ReplaceAll(sql, "= ANY($2)", "= ANY(ARRAY[]::int[])")
+		fmt.Println(sql + ";")
+	}
+	fmt.Println(hourDiffSQL + ";")
+	fmt.Println(hourMismatchDetail + ";")
 }
