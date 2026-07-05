@@ -119,6 +119,10 @@ func main() {
 			emitComputeScript()
 		case "hour":
 			emitHourScript()
+		case "day":
+			emitDayScript()
+		case "shift":
+			emitShiftScript()
 		default:
 			emitRecalcScript()
 		}
@@ -405,4 +409,173 @@ func emitHourScript() {
 	}
 	fmt.Println(hourDiffSQL + ";")
 	fmt.Println(hourMismatchDetail + ";")
+}
+
+// day2 subject: day rows roll from the STATIC hour-table copy — sums
+// are now()-independent; only eligibility bounds + tail carry drift.
+var daySnapshotSQL = []string{
+	`DROP SCHEMA IF EXISTS ` + legacySchema + ` CASCADE`,
+	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
+	`CREATE SCHEMA ` + legacySchema,
+	`CREATE SCHEMA ` + goSchema,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1day AS
+	   SELECT * FROM public.equipment_runtime_1day WHERE ts_value >= now() - interval '35 days' AND ts_value <= now() + interval '2 days'`,
+	`UPDATE ` + legacySchema + `.equipment_runtime_1day SET recalc_needed = true WHERE ts_value >= now() - interval '1 month'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1hour AS
+	   SELECT * FROM public.equipment_runtime_1hour WHERE ts_value >= now() - interval '35 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1week AS
+	   SELECT * FROM public.equipment_runtime_1week WHERE ts_value >= now() - interval '40 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1month AS
+	   SELECT * FROM public.equipment_runtime_1month WHERE ts_value >= now() - interval '70 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_1day AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1day`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_1hour AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1hour`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_1week AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1week`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_1month AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1month`,
+	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_runtime_1hour (id_equipment, ts_value_production)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_runtime_1hour (id_equipment, ts_value_production)`,
+}
+
+const dayLegacyRun = `SELECT piot_get_equipment_runtime_1day_production2()`
+
+const dayDiffSQL = `
+	SELECT count(*) FILTER (WHERE NOT ok) AS mismatches, count(*) AS compared
+	  FROM (
+	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.net,0) - COALESCE(g.net,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.net,0)),abs(COALESCE(g.net,0)))
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
+	        AND abs(COALESCE(l.available_time,0) - COALESCE(g.available_time,0)) < 1.5
+	        AND abs(COALESCE(l.oee,0) - COALESCE(g.oee,0)) < 1e-9 + 1e-6*greatest(abs(COALESCE(l.oee,0)),abs(COALESCE(g.oee,0)))
+	        AND abs(COALESCE(l.target,0) - COALESCE(g.target,0)) < 1e-6
+	        AND (l.recalc_needed = g.recalc_needed
+	             OR l.ts_value >= now() - interval '2 days'))  -- tail band (per-eq day anchors)
+	           AS ok
+	      FROM ` + legacySchema + `.equipment_runtime_1day l
+	      FULL JOIN ` + goSchema + `.equipment_runtime_1day g
+	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	     -- month-edge eligibility band
+	     WHERE abs(extract(epoch FROM (l.ts_value - (now() - interval '1 month')))) > 7200
+	  ) d`
+
+const dayMismatchDetail = `
+	SELECT l.id_equipment, l.ts_value, l.gross, g.gross, l.running_time, g.running_time,
+	       l.oee, g.oee, l.recalc_needed, g.recalc_needed
+	  FROM ` + legacySchema + `.equipment_runtime_1day l
+	  FULL JOIN ` + goSchema + `.equipment_runtime_1day g
+	    ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	 WHERE NOT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5)
+	 LIMIT 8`
+
+func emitDayScript() {
+	fmt.Println("SET statement_timeout = 0;")
+	for _, s := range daySnapshotSQL {
+		fmt.Println(s + ";")
+	}
+	fmt.Println("SET search_path TO " + legacySchema + ", public;")
+	fmt.Println(dayLegacyRun + ";")
+	fmt.Println("RESET search_path;")
+	fmt.Println("BEGIN;")
+	for _, st := range rollup.DayStatementsForParity(goSchema, goSchema) {
+		sql := st.SQL
+		// day2's OWN hardcoded lists (ends ...,115,118).
+		sql = strings.ReplaceAll(sql, "= ANY($1)", "= ANY(ARRAY[24])")
+		sql = strings.ReplaceAll(sql, "= ANY($2)", "= ANY(ARRAY[2,30,34,35,36,38,99,100,101,102,111,112,113,114,115,118])")
+		fmt.Println(sql + ";")
+	}
+	fmt.Println("COMMIT;")
+	fmt.Println(dayDiffSQL + ";")
+	fmt.Println(dayMismatchDetail + ";")
+}
+
+// shift subject: 30d window; events phase reads now() on open spans →
+// compare CLOSED shifts outside a safety band; forward re-flag band
+// [now−12h, now+18h] guarded on flags.
+var shiftSnapshotSQL = []string{
+	`DROP SCHEMA IF EXISTS ` + legacySchema + ` CASCADE`,
+	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
+	`CREATE SCHEMA ` + legacySchema,
+	`CREATE SCHEMA ` + goSchema,
+	`CREATE TABLE ` + legacySchema + `.equipment_runtime_shift AS
+	   SELECT * FROM public.equipment_runtime_shift WHERE ts_value >= now() - interval '32 days' AND ts_value <= now() + interval '1 day'`,
+	`UPDATE ` + legacySchema + `.equipment_runtime_shift SET recalc_needed = true WHERE ts_value >= now() - interval '30 days' AND ts_value <= now()`,
+	`CREATE TABLE ` + legacySchema + `.area_runtime_shift AS
+	   SELECT * FROM public.area_runtime_shift WHERE ts_value >= now() - interval '32 days'`,
+	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
+	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '32 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_events AS
+	   SELECT * FROM public.equipment_events WHERE ts_event >= now() - interval '25 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + legacySchema + `.shifts AS SELECT * FROM public.shifts`,
+	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
+	`CREATE TABLE ` + goSchema + `.equipment_runtime_shift AS SELECT * FROM ` + legacySchema + `.equipment_runtime_shift`,
+	`CREATE TABLE ` + goSchema + `.area_runtime_shift AS SELECT * FROM ` + legacySchema + `.area_runtime_shift`,
+	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1hour AS SELECT * FROM ` + legacySchema + `.ca_agg_equipment_values_1hour`,
+	`CREATE TABLE ` + goSchema + `.equipment_events AS SELECT * FROM ` + legacySchema + `.equipment_events`,
+	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
+	`CREATE TABLE ` + goSchema + `.shifts AS SELECT * FROM ` + legacySchema + `.shifts`,
+	`CREATE TABLE ` + goSchema + `.production_targets AS SELECT * FROM ` + legacySchema + `.production_targets`,
+	`CREATE INDEX ON ` + legacySchema + `.ca_agg_equipment_values_1hour (id_equipment, ts_value_production)`,
+	`CREATE INDEX ON ` + goSchema + `.ca_agg_equipment_values_1hour (id_equipment, ts_value_production)`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_events (id_equipment, ts_event)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_events (id_equipment, ts_event)`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_runtime_shift (id_equipment, ts_value)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_runtime_shift (id_equipment, ts_value)`,
+}
+
+const shiftLegacyRun = `SELECT piot_get_equipment_runtime_shift_production()`
+
+const shiftDiffSQL = `
+	SELECT count(*) FILTER (WHERE NOT ok) AS mismatches, count(*) AS compared
+	  FROM (
+	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.net,0) - COALESCE(g.net,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.net,0)),abs(COALESCE(g.net,0)))
+	        AND abs(COALESCE(l.speed,0) - COALESCE(g.speed,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.speed,0)),abs(COALESCE(g.speed,0)))
+	        AND COALESCE(l.cd_shift,'') = COALESCE(g.cd_shift,'')
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
+	        AND abs(COALESCE(l.stopped_time,0) - COALESCE(g.stopped_time,0)) < 1.5
+	        AND (l.recalc_needed = g.recalc_needed
+	             OR (l.ts_value >= now() - interval '14 hours' AND l.ts_value < now() + interval '20 hours')))
+	           AS ok
+	      FROM ` + legacySchema + `.equipment_runtime_shift l
+	      FULL JOIN ` + goSchema + `.equipment_runtime_shift g
+	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	     WHERE COALESCE(l.ts_end, now()) < now() - interval '1 hour'  -- closed, outside drift band
+	       AND abs(extract(epoch FROM (l.ts_value - (now() - interval '30 days')))) > 7200
+	  ) d`
+
+const shiftMismatchDetail = `
+	SELECT l.id_equipment, l.ts_value, l.gross, g.gross, l.running_time, g.running_time,
+	       l.cd_shift, g.cd_shift, l.recalc_needed, g.recalc_needed
+	  FROM ` + legacySchema + `.equipment_runtime_shift l
+	  FULL JOIN ` + goSchema + `.equipment_runtime_shift g
+	    ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	 WHERE COALESCE(l.ts_end, now()) < now() - interval '1 hour'
+	   AND NOT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
+	        AND COALESCE(l.cd_shift,'') = COALESCE(g.cd_shift,''))
+	 LIMIT 8`
+
+func emitShiftScript() {
+	fmt.Println("SET statement_timeout = 0;")
+	for _, s := range shiftSnapshotSQL {
+		fmt.Println(s + ";")
+	}
+	fmt.Println("SET search_path TO " + legacySchema + ", public;")
+	fmt.Println(shiftLegacyRun + ";")
+	fmt.Println("RESET search_path;")
+	fmt.Println("BEGIN;")
+	for _, st := range rollup.ShiftStatementsForParity(goSchema, goSchema) {
+		sql := st.SQL
+		// shift's OWN lists: areas 24; enterprises end ...,115,118
+		// (NO 35 — shift includes CPACK on prod); machine-level {6}.
+		sql = strings.ReplaceAll(sql, "= ANY($1)", "= ANY(ARRAY[24])")
+		sql = strings.ReplaceAll(sql, "= ANY($2)", "= ANY(ARRAY[2,30,34,36,38,99,100,101,102,111,112,113,114,115,118])")
+		sql = strings.ReplaceAll(sql, "= ANY($3)", "= ANY(ARRAY[6])")
+		fmt.Println(sql + ";")
+	}
+	fmt.Println("COMMIT;")
+	fmt.Println(shiftDiffSQL + ";")
+	fmt.Println(shiftMismatchDetail + ";")
 }
