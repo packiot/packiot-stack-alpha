@@ -185,3 +185,17 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	}
 	return tx.Commit(ctx)
 }
+
+// Parity accessors (single-source emission).
+func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
+	return []struct{ Name, SQL string }{
+		{"eligible", fmt.Sprintf(hourEligibleSQL, evSchema, refSchema)},
+		{"values", fmt.Sprintf(hourValuesSQL, evSchema)},
+		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, evSchema)},
+		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, evSchema, refSchema)},
+		{"speed", fmt.Sprintf(hourSpeedSQL, evSchema, refSchema)},
+		{"events", fmt.Sprintf(hourEventsSQL, evSchema)},
+		{"targets", fmt.Sprintf(hourTargetsSQL, evSchema, refSchema)},
+		{"reflag", fmt.Sprintf(hourReflagSQL, evSchema)},
+	}
+}
