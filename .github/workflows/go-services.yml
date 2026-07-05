@@ -68,3 +68,30 @@ jobs:
         with:
           version: v1.62
           working-directory: services/${{ matrix.service }}
+
+  golden-fixtures:
+    name: oeecloud-worker — golden fixtures (verified SQL vs ephemeral PG)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: golden
+          POSTGRES_DB: golden
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: services/oeecloud-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/oeecloud-worker/go.mod
+          cache-dependency-path: services/oeecloud-worker/go.sum
+      - name: golden fixture tests
+        env:
+          DATABASE_URL: postgres://postgres:golden@localhost:5432/golden?sslmode=disable
+        run: go test -tags golden -run Golden ./internal/rollup/
