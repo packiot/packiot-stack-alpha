@@ -150,6 +150,12 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 					firstErr = err
 				}
 			}
+			if err := RefreshCurrentRest(ctx, d); err != nil {
+				logger.Warn("uns current-rest refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 			if err := RefreshEquipment(ctx, d, exclAreas, exclEnterprises); err != nil {
 				logger.Warn("uns refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {

@@ -146,7 +146,7 @@ func RunCompute(ctx context.Context, d flows.Dest, window string) (int64, error)
 
 // LoopRefresh = the dispatcher (ledger: po-runtime-refresh): compute
 // then recalc, ordered, drop-per-step (prod's fail-soft blocks).
-func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
 	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)")
 	jobs.Loop(ctx, jobs.Job{Name: "po-runtime-refresh", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
@@ -161,6 +161,15 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 				logger.Warn("po-runtime-recalc failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err
+				}
+			}
+			if extra != nil {
+				// the dispatcher's third step (uns jobs), fail-soft
+				if err := extra(ctx, d); err != nil {
+					logger.Warn("po-refresh extra step failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+					if firstErr == nil {
+						firstErr = err
+					}
 				}
 			}
 		}
