@@ -152,19 +152,25 @@ func (r *Reconciler) RunEventsSync(ctx context.Context) error {
 	// upsert wrote ts_end NULL and nothing ever revisits it. Re-fanout
 	// recently-closed prod events — the (id_equipment, ts_event)
 	// ON CONFLICT closes the shadow rows. Fail-soft.
-	if closed, err := r.prodDB.FetchRecentlyClosedEvents(ctx, r.cfg.ProdEnterpriseID); err != nil {
-		r.logger.Warn("event closer: fetch failed", slog.String("err", err.Error()))
-	} else {
-		reclosed := 0
-		for _, ev := range closed {
-			eqID, terr := r.trans.Equipment(ctx, ev.IDEquipment)
-			if terr != nil {
-				continue
+	// PK lookback ≈ 48h of global event ids; every 10th tick is plenty
+	// (closures only need to land within the bake's 2h drift window).
+	r.closerTick++
+	if r.closerTick%10 == 1 {
+		if closed, err := r.prodDB.FetchRecentlyClosedEvents(ctx, r.cfg.ProdEnterpriseID, maxID-400_000); err != nil {
+			r.logger.Warn("event closer: fetch failed", slog.String("err", err.Error()))
+		} else {
+			reclosed := 0
+			for _, ev := range closed {
+				eqID, terr := r.trans.Equipment(ctx, ev.IDEquipment)
+				if terr != nil {
+					continue
+				}
+				r.staging.FanoutEventRow(ctx, eqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
+				reclosed++
 			}
-			r.staging.FanoutEventRow(ctx, eqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
-			reclosed++
+			metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(reclosed))
+			r.logger.Info("event closer pass", slog.Int("reclosed", reclosed))
 		}
-		metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(reclosed))
 	}
 
 	r.logger.Info("events sync tick complete",

@@ -43,13 +43,14 @@ import (
 // Reconciler diffs prod active POs vs staging active POs and POSTs the
 // missing ones through staging edge-api. One instance per worker process.
 type Reconciler struct {
-	cfg      *config.Config
-	prodDB   *db.Prod
-	staging  *db.Staging
-	trans    *translate.Translator
-	apiToken func() string
-	httpc    *http.Client
-	logger   *slog.Logger
+	closerTick int64 // events-closer cadence counter (every 10th tick)
+	cfg        *config.Config
+	prodDB     *db.Prod
+	staging    *db.Staging
+	trans      *translate.Translator
+	apiToken   func() string
+	httpc      *http.Client
+	logger     *slog.Logger
 
 	// Embeddable for unit tests so we can swap out the staging API
 	// calls without spinning up a real HTTP server. nil in production
