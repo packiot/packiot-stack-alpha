@@ -144,6 +144,12 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 					continue
 				}
 			}
+			if err := RefreshCurrentHour(ctx, d, exclAreas, exclEnterprises); err != nil {
+				logger.Warn("uns current-hour refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 			if err := RefreshEquipment(ctx, d, exclAreas, exclEnterprises); err != nil {
 				logger.Warn("uns refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
@@ -153,4 +159,114 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 		}
 		return firstErr
 	}}, logger, obs)
+}
+
+// ── P3c slice 2: the CURRENT-HOUR refreshers (dispatcher-verified:
+// prod's piot_refresh_uns runs hour + week + month for equipment;
+// DAY AND SHIFT ARE COMMENTED OUT ON PROD — dead, not ported. The
+// areas sub-dispatcher runs the area tier; sites analogous.)
+// Shape (verbatim): current-hour runtime row → UPDATE uns current
+// table (metrics + OEE family + times + begin/end) + last_24_hours
+// json_agg trail. Equipment carries the exclusion lists; area/site
+// don't (verbatim). Sources are the NOW-FILLED runtime grain tables.
+
+const refreshHourEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
+	           oee, oee_p, oee_a, oee_q, available_time, running_time,
+	           stopped_time, planned_downtime, ideal_production,
+	           idle_time, idle_starved, idle_blocked, target,
+	           changeover_time, proportional_target
+	      FROM %[1]s.equipment_runtime_1hour v
+	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
+	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	            WHERE tp_equipment > 1
+	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	)
+	UPDATE %[1]s.uns_equipment_current_hour u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       speed = p.speed, begin_time = p.ts_value,
+	       end_time = p.ts_value + interval '1 hour',
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, proportional_target = p.proportional_target
+	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+
+const refreshHourTrailEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, json_agg(json_build_object(
+	           'ts_value', ts_value, 'net_production', net,
+	           'gross_production', gross, 'scrap', scrap, 'speed', speed)) AS data
+	      FROM (SELECT id_equipment, ts_value, net, gross, scrap, speed
+	              FROM %[1]s.equipment_runtime_1hour
+	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
+	               AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	                    WHERE tp_equipment > 1
+	                      AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	             ORDER BY id_equipment, ts_value) t
+	     GROUP BY id_equipment
+	)
+	UPDATE %[1]s.uns_equipment_current_hour u SET last_24_hours = p.data
+	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+
+// entityHourSQL parameterizes the area/site hour refreshers (verbatim:
+// no exclusion lists on these; area carries the full OEE family, site
+// identical). %[3]s = entity key, %[4]s = runtime table, %[5]s = uns table.
+const refreshHourEntitySQL = `
+	WITH prod AS (
+	    SELECT %[3]s, ts_value, net, gross, scrap,
+	           oee, oee_p, oee_a, oee_q, available_time, running_time,
+	           stopped_time, planned_downtime, ideal_production,
+	           idle_time, idle_starved, idle_blocked, target, proportional_target
+	      FROM %[1]s.%[4]s v
+	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
+	)
+	UPDATE %[1]s.%[5]s u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       begin_time = p.ts_value, end_time = p.ts_value + interval '1 hour',
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, proportional_target = p.proportional_target
+	  FROM prod p WHERE u.%[3]s = p.%[3]s`
+
+const refreshHourTrailEntitySQL = `
+	WITH prod AS (
+	    SELECT %[3]s, json_agg(json_build_object(
+	           'ts_value', ts_value, 'net_production', net,
+	           'gross_production', gross, 'scrap', scrap)) AS data
+	      FROM (SELECT %[3]s, ts_value, net, gross, scrap
+	              FROM %[1]s.%[4]s
+	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
+	             ORDER BY %[3]s, ts_value) t
+	     GROUP BY %[3]s
+	)
+	UPDATE %[1]s.%[5]s u SET last_24_hours = p.data
+	  FROM prod p WHERE u.%[3]s = p.%[3]s`
+
+// RefreshCurrentHour runs the three live hour refreshers.
+func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns hour equipment: %w", err)
+	}
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns hour equipment trail: %w", err)
+	}
+	for _, e := range []struct{ key, rt, uns string }{
+		{"id_area", "area_runtime_1hour", "uns_area_current_hour"},
+		{"id_site", "site_runtime_1hour", "uns_site_current_hour"},
+	} {
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
+			return fmt.Errorf("uns hour %s: %w", e.uns, err)
+		}
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
+			return fmt.Errorf("uns hour trail %s: %w", e.uns, err)
+		}
+	}
+	return nil
 }
