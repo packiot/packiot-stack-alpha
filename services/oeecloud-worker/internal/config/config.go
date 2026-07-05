@@ -105,6 +105,7 @@ type Config struct {
 	PORecalcExcludedEnterprises   string // prod: 6 (owned by its sync chain)
 	RuntimeProvisionEnabled       bool
 	RuntimeRollupEnabled          bool
+	BakeComparatorEnabled         bool
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
@@ -154,6 +155,7 @@ func Load() (*Config, error) {
 		PORecalcExcludedEnterprises:   getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
 		RuntimeProvisionEnabled:       getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeRollupEnabled:          getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
+		BakeComparatorEnabled:         getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
 		RollupMachineLevelEnterprises: getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		Sync06ReportEnabled:           getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:         getenvInt("SYNC06_INTERVAL_MINUTES", 15),
