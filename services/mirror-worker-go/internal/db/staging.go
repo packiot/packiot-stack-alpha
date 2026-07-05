@@ -442,9 +442,10 @@ func (s *Staging) InsertEquipmentValueDelta(
 // staging CPACK rows were excluded from the whole agg layer).
 const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	       (id_equipment, ts_value, id_enterprise, id_site, id_area,
-	        net_production_incr, gross_production_incr, tp_equipment, ts_value_production)
+	        net_production_incr, gross_production_incr, tp_equipment, ts_value_production, id_shift)
 	 SELECT $1, $2, $3, $4, $5, $6, $7, e.tp_equipment,
-	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1)
+	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
+	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1)
 	   FROM public.equipments e WHERE e.id_equipment = $1`
 
 // execFanout is the single fail-open executor every fan-out write
@@ -519,9 +520,10 @@ const sqlInsertShadowEvent = `INSERT INTO %s.equipment_events
 // a counter-delta row already occupies the second, enrich it with state
 // instead of losing the transition.
 const sqlInsertStateRow = `INSERT INTO %s.equipment_values
-	       (id_equipment, ts_value, id_enterprise, id_site, id_area, state, tp_equipment, ts_value_production)
+	       (id_equipment, ts_value, id_enterprise, id_site, id_area, state, tp_equipment, ts_value_production, id_shift)
 	 SELECT $1, $2, $3, e.id_site, e.id_area, $4, e.tp_equipment,
-	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1)
+	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
+	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1)
 	   FROM public.equipments e WHERE e.id_equipment = $1
 	 ON CONFLICT (ts_value, id_equipment) DO UPDATE SET state = EXCLUDED.state`
 
