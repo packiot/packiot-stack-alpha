@@ -75,7 +75,13 @@ func (r *Reconciler) RunValueSync(ctx context.Context) error {
 			skipped++
 			continue
 		}
-		netDelta, grossDelta := computeDelta(prod, m)
+		injNet, injGross, ierr := r.staging.SumInjectedPOValues(ctx, m.StagingPOID)
+		if ierr != nil {
+			r.logger.Warn("value sync: injected-sum read failed", slog.String("err", ierr.Error()))
+			skipped++
+			continue
+		}
+		netDelta, grossDelta := computeDeltaSelf(prod, injNet, injGross)
 		if netDelta == 0 && grossDelta == 0 {
 			// Already in sync — no work, no INSERT noise.
 			skipped++
@@ -98,7 +104,7 @@ func (r *Reconciler) RunValueSync(ctx context.Context) error {
 		}
 		if err := r.staging.InsertEquipmentValueDelta(ctx,
 			m.StagingEquipment, m.StagingSite, m.StagingArea, r.cfg.StagingEnterpriseID,
-			netDelta, grossDelta); err != nil {
+			netDelta, grossDelta, m.StagingPOID); err != nil {
 			r.logger.Warn("value sync: insert delta failed",
 				slog.Int64("staging_po", m.StagingPOID),
 				slog.Int64("prod_po", m.ProdPOID),
@@ -129,6 +135,13 @@ func (r *Reconciler) RunValueSync(ctx context.Context) error {
 // deltaSanityCap: no real per-tick counter delta approaches 1e9 units;
 // anything beyond means a poisoned input (see the oscillator incident).
 const deltaSanityCap = 1e9
+
+// computeDeltaSelf measures against the attributed EV sum (see
+// SumInjectedPOValues) — self-referential convergence, immune to how
+// downstream windows process the rows.
+func computeDeltaSelf(prod db.ProdRuntimeValues, injNet, injGross float64) (netDelta, grossDelta float64) {
+	return derefOr(prod.NetProduction, 0) - injNet, derefOr(prod.GrossProduction, 0) - injGross
+}
 
 func computeDelta(prod db.ProdRuntimeValues, staging db.MappedActivePO) (netDelta, grossDelta float64) {
 	prodNet := derefOr(prod.NetProduction, 0)
