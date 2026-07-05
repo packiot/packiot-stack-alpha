@@ -137,3 +137,14 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 	}
 	return tx.Commit(ctx)
 }
+
+// Parity accessors (single-source emission).
+func DayStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
+	return []struct{ Name, SQL string }{
+		{"eligible", fmt.Sprintf(dayEligibleSQL, evSchema, refSchema)},
+		{"rollup", fmt.Sprintf(dayRollupSQL, evSchema)},
+		{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, evSchema)},
+		{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, evSchema)},
+		{"reflag", fmt.Sprintf(dayReflagSQL, evSchema, refSchema)},
+	}
+}

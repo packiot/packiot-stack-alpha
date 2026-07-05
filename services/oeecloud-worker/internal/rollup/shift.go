@@ -175,3 +175,16 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	}
 	return tx.Commit(ctx)
 }
+
+// Parity accessors (single-source emission).
+func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
+	return []struct{ Name, SQL string }{
+		{"eligible", fmt.Sprintf(shiftEligibleSQL, evSchema, refSchema)},
+		{"values", fmt.Sprintf(shiftValuesSQL, evSchema, refSchema)},
+		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, evSchema, refSchema)},
+		{"events-bank", fmt.Sprintf(shiftEventsSQL, evSchema)},
+		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, evSchema)},
+		{"targets", fmt.Sprintf(shiftTargetsSQL, evSchema, refSchema)},
+		{"reflag", fmt.Sprintf(shiftReflagSQL, evSchema, refSchema)},
+	}
+}
