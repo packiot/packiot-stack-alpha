@@ -254,8 +254,10 @@ const computeDiffSQL = `
 	        AND abs(COALESCE(l.oee_q,0)            - COALESCE(g.oee_q,0))            < 1e-9
 	        AND abs(COALESCE(l.speed,0)            - COALESCE(g.speed,0))
 	              < 1e-6 + 1e-6 * greatest(abs(COALESCE(l.speed,0)), abs(COALESCE(g.speed,0)))
-	        AND abs(COALESCE(l.running_time,0)     - COALESCE(g.running_time,0))     < 1.5
-	        AND abs(COALESCE(l.stopped_time,0)     - COALESCE(g.stopped_time,0))     < 1.5
+	        AND (upper(l.runtime_timerange) IS NULL  -- open rows: durations
+	             -- grow with now(); the legs' gap lands here verbatim
+	             OR (abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5
+	                 AND abs(COALESCE(l.stopped_time,0) - COALESCE(g.stopped_time,0)) < 1.5))
 	        AND (l.recalc_needed = g.recalc_needed
 	             OR upper(l.runtime_timerange) IS NULL
 	             -- epsilon must dominate the LEGACY LEG'S RUN DURATION
@@ -265,6 +267,10 @@ const computeDiffSQL = `
 	      FULL JOIN ` + goSchema + `.production_orders_runtime g
 	        ON l.id_equipment = g.id_equipment
 	       AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
+	     -- month-boundary eligibility racer: now() drifts between the
+	     -- legs; rows whose window start sits at the 1-month edge are
+	     -- eligible for one leg only. Exclude the edge band.
+	     WHERE abs(extract(epoch FROM (lower(l.runtime_timerange) - (now() - interval '1 month')))) > 3600
 	  ) d`
 
 // running/stopped tolerance 1.5s: open events use now(), which
