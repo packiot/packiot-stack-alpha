@@ -181,7 +181,8 @@ func main() {
 	if cfg.PORecalcEnabled {
 		go rollup.LoopRefresh(ctx, flows.Standard(pool, shadowPool),
 			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
-			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs)
+			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
+			uns.RefreshCurrentJobs)
 	}
 
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
