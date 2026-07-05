@@ -147,6 +147,26 @@ func (r *Reconciler) RunEventsSync(ctx context.Context) error {
 		}
 		metrics.ReconcilerEventsCursor.Set(float64(maxID))
 	}
+	// CLOSER PASS (bake catch #2): the cursor observes each event ONCE;
+	// at real-time lag the event is usually still OPEN → the fan-out
+	// upsert wrote ts_end NULL and nothing ever revisits it. Re-fanout
+	// recently-closed prod events — the (id_equipment, ts_event)
+	// ON CONFLICT closes the shadow rows. Fail-soft.
+	if closed, err := r.prodDB.FetchRecentlyClosedEvents(ctx, r.cfg.ProdEnterpriseID); err != nil {
+		r.logger.Warn("event closer: fetch failed", slog.String("err", err.Error()))
+	} else {
+		reclosed := 0
+		for _, ev := range closed {
+			eqID, terr := r.trans.Equipment(ctx, ev.IDEquipment)
+			if terr != nil {
+				continue
+			}
+			r.staging.FanoutEventRow(ctx, eqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
+			reclosed++
+		}
+		metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(reclosed))
+	}
+
 	r.logger.Info("events sync tick complete",
 		slog.Int64("cursor_from", cursor),
 		slog.Int64("cursor_to", maxID),

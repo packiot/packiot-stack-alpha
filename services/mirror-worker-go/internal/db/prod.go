@@ -581,3 +581,51 @@ func (p *Prod) SelectOne(ctx context.Context, sql string, args []any, dest ...an
 	}
 	return true, nil
 }
+
+// RecentlyClosedEvent is the closer pass's feed row (see events_sync).
+type RecentlyClosedEvent struct {
+	IDEquipment int
+	Status      *int
+	TsEvent     time.Time
+	TsEnd       *time.Time
+	Duration    *int
+}
+
+// FetchRecentlyClosedEvents returns prod events that HAVE a ts_end and
+// started within the lookback window. The fan-out closer re-upserts
+// these so shadow rows observed while still open get closed (the
+// observe-once cursor never revisits them — the closure gap only
+// manifests when the cursor runs at real-time). BEGIN READ ONLY as
+// everywhere.
+func (p *Prod) FetchRecentlyClosedEvents(ctx context.Context, enterpriseID int) ([]RecentlyClosedEvent, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	rows, err := tx.Query(ctx, `
+		SELECT id_equipment, status, ts_event, ts_end, duration
+		  FROM equipment_events
+		 WHERE id_enterprise = $1
+		   AND ts_end IS NOT NULL
+		   AND ts_event >= now() - interval '48 hours'
+		 ORDER BY ts_event`, enterpriseID)
+	if err != nil {
+		return nil, fmt.Errorf("recently closed events: %w", err)
+	}
+	defer rows.Close()
+	var out []RecentlyClosedEvent
+	for rows.Next() {
+		var e RecentlyClosedEvent
+		if err := rows.Scan(&e.IDEquipment, &e.Status, &e.TsEvent, &e.TsEnd, &e.Duration); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
