@@ -597,7 +597,9 @@ type RecentlyClosedEvent struct {
 // observe-once cursor never revisits them — the closure gap only
 // manifests when the cursor runs at real-time). BEGIN READ ONLY as
 // everywhere.
-func (p *Prod) FetchRecentlyClosedEvents(ctx context.Context, enterpriseID int) ([]RecentlyClosedEvent, error) {
+func (p *Prod) FetchRecentlyClosedEvents(ctx context.Context, enterpriseID int, sinceID int64) ([]RecentlyClosedEvent, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire: %w", err)
@@ -608,13 +610,18 @@ func (p *Prod) FetchRecentlyClosedEvents(ctx context.Context, enterpriseID int) 
 		return nil, fmt.Errorf("begin read only: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	// PK-range access (indexed) — the ts_event predicate alone would
+	// seq-scan a multi-million-row table (it wedged the events loop
+	// for 55 minutes on first deploy; the hard ctx timeout below is
+	// the watchdog that makes that class impossible now).
 	rows, err := tx.Query(ctx, `
 		SELECT id_equipment, status, ts_event, ts_end, duration
 		  FROM equipment_events
-		 WHERE id_enterprise = $1
+		 WHERE id_equipment_event > $2
+		   AND id_enterprise = $1
 		   AND ts_end IS NOT NULL
 		   AND ts_event >= now() - interval '48 hours'
-		 ORDER BY ts_event`, enterpriseID)
+		 ORDER BY id_equipment_event`, enterpriseID, sinceID)
 	if err != nil {
 		return nil, fmt.Errorf("recently closed events: %w", err)
 	}
