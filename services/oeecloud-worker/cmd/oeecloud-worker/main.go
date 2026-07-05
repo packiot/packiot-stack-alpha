@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/amqp"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/bake"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/events"
@@ -183,6 +184,11 @@ func main() {
 			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
 			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
 			uns.RefreshCurrentJobs)
+	}
+
+	// ADR-0016 — side-by-side bake comparator (legacy F1 vs Go F2).
+	if cfg.BakeComparatorEnabled {
+		go bake.Loop(ctx, pool, 10*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).

@@ -762,6 +762,7 @@ services:
       PO_RECALC_ENABLED: "true"
       RUNTIME_PROVISION_ENABLED: "true"
       RUNTIME_ROLLUP_ENABLED: "true"
+      BAKE_COMPARATOR_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
