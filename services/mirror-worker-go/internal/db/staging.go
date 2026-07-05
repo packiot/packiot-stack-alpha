@@ -446,7 +446,7 @@ const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	        net_production_incr, gross_production_incr, tp_equipment, ts_value_production, id_shift, id_production_order)
 	 SELECT $1, $2, $3, $4, $5, $6, $7, e.tp_equipment,
 	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
-	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1)
+	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1), $8
 	   FROM public.equipments e WHERE e.id_equipment = $1`
 
 // execFanout is the single fail-open executor every fan-out write
