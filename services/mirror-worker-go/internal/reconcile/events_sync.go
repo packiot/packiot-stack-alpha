@@ -106,7 +106,40 @@ func (r *Reconciler) RunEventsSync(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch new prod equipment_events: %w", err)
 	}
+	// CLOSER PASS runs BEFORE the empty-batch return: quiet streams
+	// (cursor at head, few new events) are EXACTLY when events get
+	// observed-open — the silent `return nil` below was hiding the
+	// closer on every quiet tick. Also: that return logs nothing,
+	// which cost an hour of phantom-hang forensics — hence the debug
+	// log.
+	// CLOSER PASS (bake catch #2): the cursor observes each event ONCE;
+	// at real-time lag the event is usually still OPEN → the fan-out
+	// upsert wrote ts_end NULL and nothing ever revisits it. Re-fanout
+	// recently-closed prod events — the (id_equipment, ts_event)
+	// ON CONFLICT closes the shadow rows. Fail-soft.
+	// PK lookback ≈ 48h of global event ids; every 10th tick is plenty
+	// (closures only need to land within the bake's 2h drift window).
+	r.closerTick++
+	if r.closerTick%10 == 1 {
+		if closed, err := r.prodDB.FetchRecentlyClosedEvents(ctx, r.cfg.ProdEnterpriseID, cursor-400_000); err != nil {
+			r.logger.Warn("event closer: fetch failed", slog.String("err", err.Error()))
+		} else {
+			reclosed := 0
+			for _, ev := range closed {
+				eqID, terr := r.trans.Equipment(ctx, ev.IDEquipment)
+				if terr != nil {
+					continue
+				}
+				r.staging.FanoutEventRow(ctx, eqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
+				reclosed++
+			}
+			metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(reclosed))
+			r.logger.Info("event closer pass", slog.Int("reclosed", reclosed))
+		}
+	}
+
 	if len(prodEvents) == 0 {
+		r.logger.Debug("events sync tick: no new prod events")
 		return nil
 	}
 
@@ -147,32 +180,6 @@ func (r *Reconciler) RunEventsSync(ctx context.Context) error {
 		}
 		metrics.ReconcilerEventsCursor.Set(float64(maxID))
 	}
-	// CLOSER PASS (bake catch #2): the cursor observes each event ONCE;
-	// at real-time lag the event is usually still OPEN → the fan-out
-	// upsert wrote ts_end NULL and nothing ever revisits it. Re-fanout
-	// recently-closed prod events — the (id_equipment, ts_event)
-	// ON CONFLICT closes the shadow rows. Fail-soft.
-	// PK lookback ≈ 48h of global event ids; every 10th tick is plenty
-	// (closures only need to land within the bake's 2h drift window).
-	r.closerTick++
-	if r.closerTick%10 == 1 {
-		if closed, err := r.prodDB.FetchRecentlyClosedEvents(ctx, r.cfg.ProdEnterpriseID, maxID-400_000); err != nil {
-			r.logger.Warn("event closer: fetch failed", slog.String("err", err.Error()))
-		} else {
-			reclosed := 0
-			for _, ev := range closed {
-				eqID, terr := r.trans.Equipment(ctx, ev.IDEquipment)
-				if terr != nil {
-					continue
-				}
-				r.staging.FanoutEventRow(ctx, eqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
-				reclosed++
-			}
-			metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(reclosed))
-			r.logger.Info("event closer pass", slog.Int("reclosed", reclosed))
-		}
-	}
-
 	r.logger.Info("events sync tick complete",
 		slog.Int64("cursor_from", cursor),
 		slog.Int64("cursor_to", maxID),
