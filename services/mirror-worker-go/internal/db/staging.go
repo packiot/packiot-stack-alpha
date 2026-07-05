@@ -417,10 +417,11 @@ func (s *Staging) InsertEquipmentValueDelta(
 	ctx context.Context,
 	stagingEqID, stagingSiteID, stagingAreaID, enterpriseID int,
 	netDelta, grossDelta float64,
+	stagingPOID int64,
 ) error {
 	ts := time.Now().UTC()
 	if _, err := s.pool.Exec(ctx, fmt.Sprintf(sqlInsertValueDelta, "public"),
-		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta,
+		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta, stagingPOID,
 	); err != nil {
 		return err // Flow 1 is the source of truth — caller handles
 	}
@@ -428,10 +429,10 @@ func (s *Staging) InsertEquipmentValueDelta(
 		return nil
 	}
 	s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
-		ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta)
+		ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	if s.shadowPool != nil {
 		s.fanoutValueDelta(ctx, s.shadowPool, "public", "packiot_shadow",
-			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta)
+			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	}
 	return nil
 }
@@ -442,7 +443,7 @@ func (s *Staging) InsertEquipmentValueDelta(
 // staging CPACK rows were excluded from the whole agg layer).
 const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	       (id_equipment, ts_value, id_enterprise, id_site, id_area,
-	        net_production_incr, gross_production_incr, tp_equipment, ts_value_production, id_shift)
+	        net_production_incr, gross_production_incr, tp_equipment, ts_value_production, id_shift, id_production_order)
 	 SELECT $1, $2, $3, $4, $5, $6, $7, e.tp_equipment,
 	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
 	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1)
@@ -535,11 +536,11 @@ func (s *Staging) fanoutValueDelta(
 	ctx context.Context, pool *pgxpool.Pool, schema, destination string,
 	ts time.Time,
 	stagingEqID, stagingSiteID, stagingAreaID, enterpriseID int,
-	netDelta, grossDelta float64,
+	netDelta, grossDelta float64, stagingPOID int64,
 ) {
 	s.execFanout(ctx, pool, destination, "",
 		fmt.Sprintf(sqlInsertValueDelta, schema),
-		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta)
+		stagingEqID, ts, enterpriseID, stagingSiteID, stagingAreaID, netDelta, grossDelta, stagingPOID)
 }
 
 // EnsureEventCursor seeds a mirror_replay_cursor row for the events
@@ -792,4 +793,19 @@ func WriteDLQ(ctx context.Context, tx pgx.Tx,
 		 VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
 		source, sourceLogID, category, subcategory, string(payload), errMsg)
 	return err
+}
+
+// SumInjectedPOValues returns the cumulative (net, gross) increments
+// attributed to a staging PO across F1 equipment_values. Value-sync
+// measures convergence against ITS OWN injections (+ any other
+// attributed rows) instead of the staging PO's downstream-processed
+// value — the latter goes 0-forever when injected rows land outside
+// the PO's runtime windows, turning the delta into an unbounded
+// re-injector (the 139M/shift slow-oscillator: 546 ticks × 254k).
+func (s *Staging) SumInjectedPOValues(ctx context.Context, stagingPOID int64) (net, gross float64, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(sum(net_production_incr), 0), COALESCE(sum(gross_production_incr), 0)
+		  FROM public.equipment_values
+		 WHERE id_production_order = $1`, stagingPOID).Scan(&net, &gross)
+	return net, gross, err
 }
