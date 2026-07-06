@@ -56,6 +56,7 @@ Filed: `captures/` (immutable legacy bodies — every port cites one)
 ## guides/ — how-to
 
 - [edge-transformer-phase-2-runbook](guides/edge-transformer-phase-2-runbook.md) · [publisher guide](guides/edge-transformer-phase-2-5-publisher-guide.md) · [PLC wiring](guides/edge-transformer-phase-2-5b-plc-wiring-guide.md)
+- [manual-smoke-check](guides/manual-smoke-check.md) — 10-minute hop-by-hop liveness triage (layers 0-5; freshness finds WHERE, the comparator finds WHETHER)
 - [powerbi-compatibility-test-plan](guides/powerbi-compatibility-test-plan.md) — the 37+1-object flip gate
 - [adr-0010-phase-3-shadow-mode-panels](guides/adr-0010-phase-3-shadow-mode-panels.md) — plus live boards in `grafana/dashboards/` (the flip gate reads `/d/bake-flow-parity`)
 

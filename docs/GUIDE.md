@@ -163,6 +163,8 @@ doc-review, 2026-07-06).
 ## 6. Operating the stack (how-to routes)
 
 - **Anything live right now?** → `overview/06` §fleet + Grafana.
+- **Something smells wrong / post-deploy check** → `guides/manual-smoke-check.md`
+  (hop-by-hop layers 0–5).
 - **Deploy** → push to `staging` (CI does the rest; `../CONTRIBUTING.md`).
   Prod deploys are gated (ADR-0003, OIDC).
 - **Touch the staging/prod DB** → SSM into the DB EC2; heavy SQL via
