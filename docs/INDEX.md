@@ -1,5 +1,9 @@
 # Documentation index
 
+> **New here? [`GUIDE.md`](GUIDE.md) is the front door** — one linear
+> walk from PLC signal to PowerBI dashboard, with the code map, the
+> glossary, and routes into everything below.
+>
 > Start here. New to the project? Read `overview/` top to bottom
 > (managers: just 00; engineers: all of it, then 05's guided tour).
 >

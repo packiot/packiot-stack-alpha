@@ -1,5 +1,8 @@
 # Phase 2.5b — Wiring PLC tabs to the publisher (real-data auto-publish)
 
+> **STATUS (2026-07-06): EXECUTED/SUPERSEDED.** This guide predates the 10.9 cutover (MQTT is THE ingest, ADR-0010). Kept as an as-executed record — do not follow for new work; see docs/GUIDE.md §2.
+
+
 **Goal:** make real PLC data flow through the `Publish to edge.plc-normalized` tab automatically — without manual inject clicks. Once shipped, edge-transformer's shadow handler sees real factory traffic.
 
 **Prereq (DONE):** Phase 2.5 Step 3 — the publisher tab is live in staging, verified end-to-end via SSM inject. See [Phase 2.5 publisher guide](./edge-transformer-phase-2-5-publisher-guide.md).

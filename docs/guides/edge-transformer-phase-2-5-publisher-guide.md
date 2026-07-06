@@ -1,5 +1,8 @@
 # Phase 2.5 — Node-RED Publisher to `edge.plc-normalized`
 
+> **STATUS (2026-07-06): EXECUTED/SUPERSEDED.** This guide predates the 10.9 cutover (MQTT is THE ingest, ADR-0010). Kept as an as-executed record — do not follow for new work; see docs/GUIDE.md §2.
+
+
 **Goal:** make `edge-node-red` publish normalized PLC payloads to the `edge.plc-normalized` exchange so the edge-transformer shadow handler receives real PLC events, not just synthetic test publishes.
 
 **Status:** READY to implement. All upstream prerequisites met (Phase 2 verified end-to-end via sustained-load test).
