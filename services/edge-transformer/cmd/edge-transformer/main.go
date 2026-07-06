@@ -1064,7 +1064,14 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			//   - "refactored" → public.* on packiot_shadow DB (opt-in via
 			//                    SHADOW_EMIT_REFACTORED=true env)
 			tenant := strings.ToLower(topic.GroupID)
-			routingKey := "sparkplug.data." + tenant
+			// 10.9 POST-CUTOVER FIX: the worker consumes the EXACT key
+			// "sparkplug.data" (per-tenant queues retired with legacy
+			// ingest). The tenant-suffixed key published the entire
+			// post-cutover stream into an unconsumed queue — 17k
+			// messages, found because a NEW dashboard metric stayed
+			// empty while every row-count check passed (the fan-out
+			// was feeding the tables). Tenant rides inside the envelope.
+			routingKey := "sparkplug.data"
 
 			sourceTypes := []string{"go"}
 			if emitRefactored {
