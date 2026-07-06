@@ -179,6 +179,13 @@ func main() {
 		go reports.LoopShift06(ctx, pool, cfg.Shift06CustomerID, time.Duration(cfg.Shift06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0012 Wave 2 port #3 — customer_reports.sap_data_sync writer
+	// (cust 13). Ships disabled: cutover gated on #223 (back4-api must
+	// target the pool key first).
+	if cfg.Sap13ReportEnabled {
+		go reports.LoopSap13(ctx, pool, cfg.Sap13CustomerID, time.Duration(cfg.Sap13IntervalMinutes)*time.Minute, logger, jobObs)
+	}
+
 	// ADR-0014 P4 — enterprise-6 production data sync (main flow).
 	if cfg.Sync06ReportEnabled {
 		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, cfg.Sync06Target, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)

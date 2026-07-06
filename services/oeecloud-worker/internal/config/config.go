@@ -76,6 +76,14 @@ type Config struct {
 	Shift06IntervalMinutes int
 	Shift06CustomerID      int
 
+	// Sap13ReportEnabled — ADR-0012 Wave 2 port #3: the Go writer for
+	// customer_reports.sap_data_sync (customer 13, neopac SAP). Ships
+	// DISABLED: enabling is gated on issue #223 (back4-api's
+	// data-sync.controller.js must target the pool upsert key first).
+	Sap13ReportEnabled   bool
+	Sap13IntervalMinutes int
+	Sap13CustomerID      int
+
 	// ADR-0014 P3a events deriver. DEFAULT OFF — enable 2026-07-09
 	// after the shift-bake close-out (one bake at a time).
 	EventsDeriverEnabled      bool
@@ -141,6 +149,9 @@ func Load() (*Config, error) {
 		Shift06ReportEnabled:          getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
 		Shift06IntervalMinutes:        getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
 		Shift06CustomerID:             getenvInt("SHIFT06_CUSTOMER_ID", 6),
+		Sap13ReportEnabled:            getenv("SAP13_REPORT_ENABLED", "false") == "true",
+		Sap13IntervalMinutes:          getenvInt("SAP13_INTERVAL_MINUTES", 15),
+		Sap13CustomerID:               getenvInt("SAP13_CUSTOMER_ID", 13),
 		EventsDeriverEnabled:          getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
 		EventsDeriverIntervalMin:      getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
 		EventsExcludedAreas:           getenv("EVENTS_EXCLUDED_AREAS", ""),
