@@ -219,6 +219,9 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 
 	if batch.Len() == 0 {
 		// Nothing to write (all metrics skipped or build-failed).
+		if h.batchWrites != nil {
+			h.batchWrites.WithLabelValues(destForSource(p.SourceType), "empty_batch").Inc()
+		}
 		return firstErr
 	}
 
