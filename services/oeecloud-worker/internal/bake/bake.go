@@ -19,6 +19,7 @@ package bake
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -96,10 +97,83 @@ func RunTick(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error
 	return firstErr
 }
 
-// Loop schedules the comparator.
-func Loop(ctx context.Context, pool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
-	logger.Info("bake comparator started (ADR-0016 side-by-side: legacy F1 vs Go F2)")
+// Loop schedules the comparator (F1-vs-F2 fidelity + F2-vs-F3 identity).
+func Loop(ctx context.Context, pool *pgxpool.Pool, shadowPool *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("bake comparator started (F1-vs-F2 fidelity + F2-vs-F3 identity)")
 	jobs.Loop(ctx, jobs.Job{Name: "bake-comparator", Every: every, Run: func(ctx context.Context) error {
-		return RunTick(ctx, pool, logger)
+		err := RunTick(ctx, pool, logger)
+		if ierr := RunIdentityTick(ctx, pool, shadowPool, logger); ierr != nil && err == nil {
+			err = ierr
+		}
+		return err
 	}}, logger, obs)
+}
+
+// ── F2-vs-F3 IDENTITY surfaces ────────────────────────────────────
+// F2 (shadow_go_port) and F3 (packiot_shadow) run the SAME Go engine
+// on the SAME fan-out inputs — their outputs must be IDENTICAL, not
+// merely tolerant. Cross-database, so each side computes an aggregate
+// fingerprint and Go compares. Any drift = a real divergence in the
+// dual-emit path (deploy-order gap, failed fanout leg, schema drift).
+
+var identityMismatch = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "bake_identity_mismatch",
+	Help: "1 if F2 and F3 fingerprints differ on a surface (must be 0)",
+}, []string{"surface"})
+
+func init() {
+	prometheus.MustRegister(identityMismatch)
+}
+
+// Fingerprint: count + rounded sums over a closed recent window.
+var identitySurfaces = []struct{ Name, SQL string }{
+	{"equipment_values_24h", `
+	SELECT count(*)::text || '|' || COALESCE(sum(net_production_incr)::numeric(20,3),0)::text
+	    || '|' || COALESCE(sum(gross_production_incr)::numeric(20,3),0)::text
+	  FROM %s.equipment_values
+	 WHERE ts_value >= date_trunc('hour', now() - interval '25 hours')
+	   AND ts_value < date_trunc('hour', now() - interval '1 hour')`},
+	{"equipment_runtime_shift_3d", `
+	SELECT count(*)::text || '|' || COALESCE(sum(gross)::numeric(20,3),0)::text
+	    || '|' || COALESCE(sum(running_time)::numeric(20,1),0)::text
+	  FROM %s.equipment_runtime_shift
+	 WHERE ts_value >= now() - interval '3 days' AND ts_end < now() - interval '2 hours'`},
+	{"production_orders_runtime_3d", `
+	SELECT count(*)::text || '|' || COALESCE(sum(gross_production)::numeric(20,3),0)::text
+	  FROM %s.production_orders_runtime
+	 WHERE lower(runtime_timerange) >= now() - interval '3 days'
+	   AND upper(runtime_timerange) < now() - interval '2 hours'`},
+}
+
+// RunIdentityTick compares F2 vs F3 fingerprints.
+func RunIdentityTick(ctx context.Context, f2 *pgxpool.Pool, f3 *pgxpool.Pool, logger *slog.Logger) error {
+	if f3 == nil {
+		return nil
+	}
+	var firstErr error
+	for _, s := range identitySurfaces {
+		var a, b string
+		if err := f2.QueryRow(ctx, fmt.Sprintf(s.SQL, "shadow_go_port")).Scan(&a); err != nil {
+			logger.Warn("identity F2 failed", slog.String("surface", s.Name), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := f3.QueryRow(ctx, fmt.Sprintf(s.SQL, "public")).Scan(&b); err != nil {
+			logger.Warn("identity F3 failed", slog.String("surface", s.Name), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if a == b {
+			identityMismatch.WithLabelValues(s.Name).Set(0)
+		} else {
+			identityMismatch.WithLabelValues(s.Name).Set(1)
+			logger.Warn("F2/F3 IDENTITY BROKEN", slog.String("surface", s.Name),
+				slog.String("f2", a), slog.String("f3", b))
+		}
+	}
+	return firstErr
 }

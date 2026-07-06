@@ -188,7 +188,7 @@ func main() {
 
 	// ADR-0016 — side-by-side bake comparator (legacy F1 vs Go F2).
 	if cfg.BakeComparatorEnabled {
-		go bake.Loop(ctx, pool, 10*time.Minute, logger, jobObs)
+		go bake.Loop(ctx, pool, shadowPool, 10*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
