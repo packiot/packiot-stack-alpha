@@ -58,13 +58,13 @@ type State interface {
 // sharing — Redis (or another shared store) is required if multiple
 // edge-transformer instances process the same tenant.
 type memState struct {
-	mu       sync.RWMutex
-	ints     map[string]int64
-	floats   map[string]float64
-	timeMs   map[string]int64
-	bools    map[string]bool
-	strings  map[string][]string
-	modes    map[string]UnitMode
+	mu      sync.RWMutex
+	ints    map[string]int64
+	floats  map[string]float64
+	timeMs  map[string]int64
+	bools   map[string]bool
+	strings map[string][]string
+	modes   map[string]UnitMode
 }
 
 // NewMemState returns an empty in-memory State — the default backing for

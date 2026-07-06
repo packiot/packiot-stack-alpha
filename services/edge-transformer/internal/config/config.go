@@ -53,13 +53,16 @@ type Config struct {
 	// pattern matches oeecloud-worker's per-tenant queue names verbatim
 	// so operator runbooks transfer.
 	SourceExchange string // 'plc.normalized'
-	WorkerQueue    string // 'edge-transformer-q' (legacy/catch-all, kept for parity with oeecloud-worker pattern)
-	RetryExchange  string // 'plc.normalized-retry'
-	RetryQueue     string // 'edge-transformer-q-retry-30s'
-	FailedExchange string // 'plc.normalized-failed'
-	FailedQueue    string // 'edge-transformer-q-failed'
-	RetryTTLMs     int    // 30000
-	MaxRetries     int    // 5
+	// 10.9 cutover switch: false = MQTT is THE ingest; the nodered wrap
+	// publishes into an unbound exchange until cosmetically retired.
+	AMQPSourceEnabled bool
+	WorkerQueue       string // 'edge-transformer-q' (legacy/catch-all, kept for parity with oeecloud-worker pattern)
+	RetryExchange     string // 'plc.normalized-retry'
+	RetryQueue        string // 'edge-transformer-q-retry-30s'
+	FailedExchange    string // 'plc.normalized-failed'
+	FailedQueue       string // 'edge-transformer-q-failed'
+	RetryTTLMs        int    // 30000
+	MaxRetries        int    // 5
 
 	// Consumer tuning
 	Prefetch int // 50 — bounded outstanding ack count
@@ -84,7 +87,7 @@ type Config struct {
 	// Creds are read from env for the MVP. A follow-up PR will move them
 	// to AWS Secrets Manager via a MQTTSecretID field (same shape as
 	// RabbitMQSecretID above).
-	MQTTEnabled  bool
+	MQTTEnabled   bool
 	MQTTBrokerURL string // tcp://mosquitto:1883 or ssl://broker.factory:8883
 	MQTTClientID  string // must be unique per subscriber; default: edge-transformer-<hostname>
 	MQTTUsername  string
@@ -128,30 +131,31 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Mode:             mode,
-		AWSRegion:        getenv("AWS_REGION", "us-east-1"),
-		RabbitMQSecretID: getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-edge-transformer-creds"),
-		AMQPHost:         getenv("RABBITMQ_HOST", "rabbitmq"),
-		AMQPPort:         getenvInt("RABBITMQ_PORT", 5672),
-		SourceExchange:   getenv("SOURCE_EXCHANGE", "plc.normalized"),
-		WorkerQueue:      getenv("WORKER_QUEUE", "edge-transformer-q"),
-		RetryExchange:    getenv("RETRY_EXCHANGE", "plc.normalized-retry"),
-		RetryQueue:       getenv("RETRY_QUEUE", "edge-transformer-q-retry-30s"),
-		FailedExchange:   getenv("FAILED_EXCHANGE", "plc.normalized-failed"),
-		FailedQueue:      getenv("FAILED_QUEUE", "edge-transformer-q-failed"),
-		RetryTTLMs:       getenvInt("RETRY_TTL_MS", 30000),
-		MaxRetries:       getenvInt("MAX_RETRIES", 5),
-		Prefetch:         getenvInt("PREFETCH", 50),
-		HealthPort:       getenvInt("HEALTH_PORT", 9102),
-		LogLevel:         getenv("LOG_LEVEL", "info"),
-		ClientYAMLPath:   getenv("CLIENT_YAML_PATH", "/etc/packiot/client.yaml"),
+		Mode:              mode,
+		AWSRegion:         getenv("AWS_REGION", "us-east-1"),
+		RabbitMQSecretID:  getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-edge-transformer-creds"),
+		AMQPHost:          getenv("RABBITMQ_HOST", "rabbitmq"),
+		AMQPPort:          getenvInt("RABBITMQ_PORT", 5672),
+		SourceExchange:    getenv("SOURCE_EXCHANGE", "plc.normalized"),
+		AMQPSourceEnabled: getenv("AMQP_SOURCE_ENABLED", "true") == "true",
+		WorkerQueue:       getenv("WORKER_QUEUE", "edge-transformer-q"),
+		RetryExchange:     getenv("RETRY_EXCHANGE", "plc.normalized-retry"),
+		RetryQueue:        getenv("RETRY_QUEUE", "edge-transformer-q-retry-30s"),
+		FailedExchange:    getenv("FAILED_EXCHANGE", "plc.normalized-failed"),
+		FailedQueue:       getenv("FAILED_QUEUE", "edge-transformer-q-failed"),
+		RetryTTLMs:        getenvInt("RETRY_TTL_MS", 30000),
+		MaxRetries:        getenvInt("MAX_RETRIES", 5),
+		Prefetch:          getenvInt("PREFETCH", 50),
+		HealthPort:        getenvInt("HEALTH_PORT", 9102),
+		LogLevel:          getenv("LOG_LEVEL", "info"),
+		ClientYAMLPath:    getenv("CLIENT_YAML_PATH", "/etc/packiot/client.yaml"),
 
 		// MQTT subscriber (ADR-0010 Phase 2 — off by default for safety)
-		MQTTEnabled:   getenvBool("MQTT_ENABLED", false),
-		MQTTBrokerURL: getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
-		MQTTClientID:  getenv("MQTT_CLIENT_ID", "edge-transformer"),
-		MQTTUsername:  getenv("MQTT_USERNAME", ""),
-		MQTTPassword:  getenv("MQTT_PASSWORD", ""),
+		MQTTEnabled:               getenvBool("MQTT_ENABLED", false),
+		MQTTBrokerURL:             getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
+		MQTTClientID:              getenv("MQTT_CLIENT_ID", "edge-transformer"),
+		MQTTUsername:              getenv("MQTT_USERNAME", ""),
+		MQTTPassword:              getenv("MQTT_PASSWORD", ""),
 		MQTTStaleThresholdSeconds: getenvInt("MQTT_STALE_THRESHOLD_SECONDS", 60),
 
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)

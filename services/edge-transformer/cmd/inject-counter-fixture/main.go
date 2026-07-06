@@ -58,9 +58,9 @@ const (
 	// Sparkplug B alias — must fit in uint64. Any small integer works.
 	// Distinct aliases for distinct metrics so NDATA references are
 	// unambiguous.
-	consumedAlias    = uint64(1)
-	machSpeedAlias   = uint64(2)
-	param30700Alias  = uint64(3)
+	consumedAlias   = uint64(1)
+	machSpeedAlias  = uint64(2)
+	param30700Alias = uint64(3)
 )
 
 func main() {
@@ -209,6 +209,6 @@ func run(logger *slog.Logger, broker, clientID string, value int64) error {
 	return nil
 }
 
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string  { return &s }
 func proto32(v uint32) *uint32 { return &v }
 func proto64(v uint64) *uint64 { return &v }

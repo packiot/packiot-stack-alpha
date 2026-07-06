@@ -133,6 +133,13 @@ func main() {
 	// add dynamic discovery later if onboarding cadence demands it.
 	discoverCtx, discoverCancel := context.WithTimeout(ctx, 10*time.Second)
 	activeTenants, err := tenants.DiscoverActive(discoverCtx, pool)
+	if !cfg.LegacyIngestEnabled {
+		// 10.9 cutover: the transformer's triple-emit ("" route) feeds
+		// F1 via the envelope queue; the nodered legacy leg retires.
+		logger.Info("LEGACY INGEST DISABLED (10.9): per-tenant sparkplug.data queues not consumed")
+		activeTenants = nil
+		err = nil
+	}
 	discoverCancel()
 	if err != nil {
 		logger.Error("tenant discovery failed", slog.String("err", err.Error()))

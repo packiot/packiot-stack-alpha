@@ -33,9 +33,9 @@ import (
 
 // nodeCanonical mirrors the shape emitted by testdata/parity/decode.js.
 type nodeCanonical struct {
-	Timestamp   any            `json:"timestamp"`
-	Seq         any            `json:"seq"`
-	MetricCount int            `json:"metric_count"`
+	Timestamp   any             `json:"timestamp"`
+	Seq         any             `json:"seq"`
+	MetricCount int             `json:"metric_count"`
 	Metrics     []nodeCanMetric `json:"metrics"`
 }
 

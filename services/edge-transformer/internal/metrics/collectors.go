@@ -129,7 +129,7 @@ func (m *Metrics) RegisterMQTTSubscriberCollector(snap func() MQTTSubscriberSnap
 }
 
 type mqttSubscriberCollector struct {
-	snap                                                       func() MQTTSubscriberSnapshot
+	snap                                                            func() MQTTSubscriberSnapshot
 	received, handled, handleErrors, reconnects, dropped, connected *prometheus.Desc
 }
 
@@ -182,7 +182,7 @@ func (m *Metrics) RegisterShadowPublisherCollector(snap func() ShadowPublisherSn
 }
 
 type shadowPublisherCollector struct {
-	snap                                                          func() ShadowPublisherSnapshot
+	snap                                                            func() ShadowPublisherSnapshot
 	published, confirmed, nacked, confirmTimeouts, failed, inFlight *prometheus.Desc
 }
 

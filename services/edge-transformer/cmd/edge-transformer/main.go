@@ -357,10 +357,17 @@ func main() {
 		// source_type="refactored" (routes to packiot_shadow public, new
 		// ADR-0012 refactor POC). Default false → single-emit unchanged.
 		emitRefactored := os.Getenv("SHADOW_EMIT_REFACTORED") == "true"
+		// 10.9 cutover: also emit source_type="" (production route → F1
+		// public) so plc-sim is the SINGLE source feeding all flows —
+		// the bake stays same-reality and the nodered legacy leg retires.
+		emitProduction := os.Getenv("SHADOW_EMIT_PRODUCTION") == "true"
 		if emitRefactored {
 			logger.Info("shadow dual-emit enabled: publishing source_type=go AND source_type=refactored envelopes")
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, logger), logger)
+		if emitProduction {
+			logger.Info("TRIPLE-emit enabled (10.9): source_type=\"\" (F1 production route) also published")
+		}
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -457,6 +464,13 @@ func main() {
 	// until every goroutine returns.
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
+		if !cfg.AMQPSourceEnabled {
+			// 10.9 cutover: MQTT is THE ingest; the nodered wrap's
+			// exchange stays declared but unconsumed.
+			logger.Info("AMQP source DISABLED (10.9 cutover — MQTT is the ingest)")
+			<-gctx.Done()
+			return nil
+		}
 		if err := consumer.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			return fmt.Errorf("amqp consumer: %w", err)
 		}
@@ -872,10 +886,10 @@ type outboxEnvelope struct {
 // shadowpub's sequential confirm handling.
 func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowpub.Publisher, logger *slog.Logger) error {
 	const (
-		batchSize       = 10
-		idleSleep       = 200 * time.Millisecond
-		initialBackoff  = 1 * time.Second
-		maxBackoff      = 60 * time.Second
+		batchSize      = 10
+		idleSleep      = 200 * time.Millisecond
+		initialBackoff = 1 * time.Second
+		maxBackoff     = 60 * time.Second
 	)
 	backoff := func(attempts int) time.Duration {
 		d := initialBackoff
@@ -954,7 +968,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored bool, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction bool, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		payload, err := sparkplug.Decode(body)
 		if err != nil {
@@ -1044,6 +1058,9 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			sourceTypes := []string{"go"}
 			if emitRefactored {
 				sourceTypes = append(sourceTypes, "refactored")
+			}
+			if emitProduction {
+				sourceTypes = append(sourceTypes, "") // F1 production route
 			}
 			for _, st := range sourceTypes {
 				env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{

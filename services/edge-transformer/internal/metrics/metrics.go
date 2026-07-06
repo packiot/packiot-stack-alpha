@@ -5,9 +5,9 @@
 // AFTER PR #56 silent-coverage-gap fix):
 //   - routing_key — the AMQP routing key (today "plc.normalized.<tenant>")
 //   - tenant      — the tenant id parsed from the routing key. MANDATORY:
-//                   the PR #56 lesson is that NOT having this label is the
-//                   single failure mode that hides per-tenant outages for
-//                   hours. Every per-delivery metric carries this label.
+//     the PR #56 lesson is that NOT having this label is the
+//     single failure mode that hides per-tenant outages for
+//     hours. Every per-delivery metric carries this label.
 //   - result      — acked | nacked_retry | exhausted_failed
 //
 // All scrape-time reads of writer atomic counters happen via custom

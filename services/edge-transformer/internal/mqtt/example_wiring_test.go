@@ -18,8 +18,8 @@ import (
 	"log/slog"
 	"os"
 
-	sp "github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/mqtt"
+	sp "github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
 // Example_wiring shows the canonical wire: MQTT body → sparkplug.Decode
