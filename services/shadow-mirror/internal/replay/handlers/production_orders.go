@@ -51,12 +51,24 @@ func OrderCreatedStarted(logger *slog.Logger) replay.Handler {
 		if err != nil {
 			return replay.ErrSkip
 		}
+		if err := openRuntimeWindow(ctx, mainPool, "shadow_go_port", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port supersede: %w", err)
+		}
 		if err := insertProdOrder(ctx, mainPool, "shadow_go_port", &p, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port write: %w", err)
 		}
+		if err := openRuntimeWindow(ctx, mainPool, "shadow_go_port", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port window: %w", err)
+		}
 		if shadowPool != nil {
+			if err := openRuntimeWindow(ctx, shadowPool, "public", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow supersede: %w", err)
+			}
 			if err := insertProdOrder(ctx, shadowPool, "public", &p, tsStart, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow write: %w", err)
+			}
+			if err := openRuntimeWindow(ctx, shadowPool, "public", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow window: %w", err)
 			}
 		}
 		return nil
@@ -126,10 +138,16 @@ func OrderStopped(logger *slog.Logger) replay.Handler {
 				slog.Int64("id_production_order", p.IDProductionOrder))
 			return replay.ErrSkip
 		}
+		if err := closeRuntimeWindow(ctx, mainPool, "shadow_go_port", k.IDEnterprise, k.IDOrder, tsEnd, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port window close: %w", err)
+		}
 		if err := updateProdOrderStop(ctx, mainPool, "shadow_go_port", k, &p, tsEnd, status, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port write: %w", err)
 		}
 		if shadowPool != nil {
+			if err := closeRuntimeWindow(ctx, shadowPool, "public", k.IDEnterprise, k.IDOrder, tsEnd, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow window close: %w", err)
+			}
 			if err := updateProdOrderStop(ctx, shadowPool, "public", k, &p, tsEnd, status, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow write: %w", err)
 			}
@@ -163,4 +181,65 @@ func failOpenIfMissing(err error, table, schema string, userLogID int64, logger 
 		return nil
 	}
 	return err
+}
+
+// ── RUNTIME WINDOWS (the missing leg) ─────────────────────────────
+// Prod's PO machinery opens a production_orders_runtime window on
+// start and closes it on stop/pause; the shadow flows' entire runtime
+// engine (compute/recalc/day2/UNS jobs) reads those windows. The
+// replay handlers created POs but never windows — the shadow runtime
+// chain starved in live operation (only inject tests ever had rows).
+//
+// Prod-truth conflict rule: the user_log stream is authoritative —
+// a start at T means anything still running on that equipment had
+// ended by T. supersedeRunning closes it (status=3 + window upper=T)
+// BEFORE the new start, which also dissolves the accumulated 23505s
+// against the one-running-PO-per-equipment partial unique index.
+
+const sqlSupersedeRunningPO = `UPDATE %s.production_orders
+	   SET status = 3, last_update = now()
+	 WHERE id_equipment = $1 AND status = 2
+	   AND NOT (id_enterprise = $2 AND id_order = $3)`
+
+const sqlCloseWindowsForEquipment = `UPDATE %s.production_orders_runtime r
+	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $2),
+	       recalc_needed = true
+	 WHERE r.id_equipment = $1 AND upper(runtime_timerange) IS NULL
+	   AND lower(runtime_timerange) < $2`
+
+const sqlOpenWindow = `INSERT INTO %s.production_orders_runtime
+	       (id_production_order, id_equipment, runtime_timerange, recalc_needed)
+	SELECT po.id_production_order, po.id_equipment, tstzrange($3, NULL), true
+	  FROM %s.production_orders po
+	 WHERE po.id_enterprise = $1 AND po.id_order = $2
+	   AND NOT EXISTS (SELECT 1 FROM %s.production_orders_runtime x
+	        WHERE x.id_production_order = po.id_production_order
+	          AND upper(x.runtime_timerange) IS NULL)`
+
+const sqlCloseWindowsForPO = `UPDATE %s.production_orders_runtime r
+	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $3),
+	       recalc_needed = true
+	  FROM %s.production_orders po
+	 WHERE po.id_enterprise = $1 AND po.id_order = $2
+	   AND r.id_production_order = po.id_production_order
+	   AND upper(r.runtime_timerange) IS NULL
+	   AND lower(r.runtime_timerange) < $3`
+
+// openRuntimeWindow supersedes any conflicting running PO on the
+// equipment, then opens [ts, ∞) for the (ent, order) PO. Idempotent
+// (NOT EXISTS guard on an already-open window).
+func openRuntimeWindow(ctx context.Context, pool *pgxpool.Pool, schema string, idEnterprise int, idOrder int64, idEquipment int, ts time.Time, userLogID int64, logger *slog.Logger) error {
+	if _, err := pool.Exec(ctx, fmt.Sprintf(sqlCloseWindowsForEquipment, schema), idEquipment, ts); err != nil {
+		return failOpenIfMissing(err, "production_orders_runtime", schema, userLogID, logger)
+	}
+	if _, err := pool.Exec(ctx, fmt.Sprintf(sqlSupersedeRunningPO, schema), idEquipment, idEnterprise, idOrder); err != nil {
+		return failOpenIfMissing(err, "production_orders", schema, userLogID, logger)
+	}
+	_, err := pool.Exec(ctx, fmt.Sprintf(sqlOpenWindow, schema, schema, schema), idEnterprise, idOrder, ts)
+	return failOpenIfMissing(err, "production_orders_runtime", schema, userLogID, logger)
+}
+
+func closeRuntimeWindow(ctx context.Context, pool *pgxpool.Pool, schema string, idEnterprise int, idOrder int64, ts time.Time, userLogID int64, logger *slog.Logger) error {
+	_, err := pool.Exec(ctx, fmt.Sprintf(sqlCloseWindowsForPO, schema, schema), idEnterprise, idOrder, ts)
+	return failOpenIfMissing(err, "production_orders_runtime", schema, userLogID, logger)
 }
