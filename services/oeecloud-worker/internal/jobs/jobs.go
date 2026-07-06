@@ -34,6 +34,15 @@ func Loop(ctx context.Context, j Job, logger *slog.Logger, obs Observer) {
 	t := time.NewTicker(j.Every)
 	defer t.Stop()
 	logger.Info("job started", slog.String("job", j.Name), slog.Duration("interval", j.Every))
+	// FIRST TICK FIRES IMMEDIATELY. time.Ticker's first fire comes a
+	// full interval in — for long-interval jobs under frequent deploys
+	// that means NEVER (the hourly provision job silently starved for
+	// a day of restarts; its failing dependency produced zero warns
+	// because it produced zero executions). Every loop must run once
+	// at boot or absence-of-logs is unreadable.
+	if outcome := runOne(ctx, j, logger); obs != nil {
+		obs(j.Name, outcome)
+	}
 	for {
 		select {
 		case <-ctx.Done():
