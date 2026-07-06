@@ -366,55 +366,6 @@
       ]
     },
     {
-      "id": 6,
-      "type": "stat",
-      "title": "UNS Metrics",
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 8
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "purple"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "purple",
-                "value": null
-              }
-            ]
-          }
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "packiot-postgres"
-          },
-          "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"UNS Metrics\" FROM uns_metrics WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
-          "format": "table",
-          "refId": "A"
-        }
-      ]
-    },
-    {
       "id": 7,
       "type": "timeseries",
       "title": "Metric Type Breakdown Over Time",
@@ -515,66 +466,6 @@
             "uid": "packiot-postgres"
           },
           "rawSql": "SELECT ee.ts_event, ent.nm_enterprise, e.nm_equipment, ee.status, ee.txt_downtime_notes, ee.ts_end, ee.duration, CASE WHEN ee.planned_downtime THEN 'Planned' WHEN ee.change_over THEN 'Changeover' WHEN ee.status = 6 THEN 'Running' ELSE 'Unplanned' END AS type FROM equipment_events ee LEFT JOIN equipments e ON e.id_equipment = ee.id_equipment LEFT JOIN enterprises ent ON ent.id_enterprise = ee.id_enterprise WHERE ee.id_enterprise IN ($enterprise) AND ee.id_equipment IN ($equipment) ORDER BY ee.ts_event DESC LIMIT 30",
-          "format": "table",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "type": "table",
-      "title": "Recent UNS Metrics",
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 21
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "displayName": "ts_value",
-            "desc": true
-          }
-        ],
-        "footer": {
-          "show": false
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "ts_value"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeAsLocal"
-              },
-              {
-                "id": "custom.width",
-                "value": 160
-              }
-            ]
-          }
-        ]
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "packiot-postgres"
-          },
-          "rawSql": "SELECT um.ts_value, ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment, um.metric_name, um.metric_value, um.metric_type FROM uns_metrics um LEFT JOIN equipments e ON e.id_equipment = um.id_equipment LEFT JOIN areas a ON a.id_area = um.id_area LEFT JOIN sites s ON s.id_site = um.id_site LEFT JOIN enterprises ent ON ent.id_enterprise = um.id_enterprise WHERE um.id_enterprise IN ($enterprise) AND um.id_site IN ($site) AND um.id_area IN ($area) AND um.id_equipment IN ($equipment) ORDER BY um.ts_value DESC LIMIT 30",
           "format": "table",
           "refId": "A"
         }
