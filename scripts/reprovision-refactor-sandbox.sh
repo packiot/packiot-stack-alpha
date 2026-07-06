@@ -29,6 +29,9 @@ POC_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-poc-customer-dashboards
 PHASE1_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-phase1-renames-and-drops.sql"
 PHASE2_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-phase2-cagg-consolidation.sql"
 PHASE3_WRITER_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-phase3-writer-tables.sql"
+LIVE_FEED_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-sandbox-live-feed.sql"
+SWEEP_A_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-sandbox-naming-sweep-a.sql"
+SWEEP_B_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-sandbox-naming-sweep-b.sql"
 
 usage() {
     cat <<EOF
@@ -43,6 +46,8 @@ Provision the ADR-0012 sandbox DB on staging DB EC2. Idempotent.
   --skip-poc       Skip loading customer_dashboards POC.
   --skip-phase1    Skip Phase 1 renames + drops.
   --skip-phase2    Skip Phase 2 CAgg consolidation lab.
+  --skip-live-feed Skip the packiot_shadow → sandbox live feed (fdw + job).
+  --skip-sweep     Skip the h_*/v_* naming sweep (A + B).
   -h, --help       Show this help.
 
 Environment:
@@ -57,6 +62,8 @@ RESET=false
 SKIP_POC=false
 SKIP_PHASE1=false
 SKIP_PHASE2=false
+SKIP_LIVE_FEED=false
+SKIP_SWEEP=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --reset) RESET=true; shift;;
@@ -64,6 +71,8 @@ while [ $# -gt 0 ]; do
         --skip-poc) SKIP_POC=true; shift;;
         --skip-phase1) SKIP_PHASE1=true; shift;;
         --skip-phase2) SKIP_PHASE2=true; shift;;
+        --skip-live-feed) SKIP_LIVE_FEED=true; shift;;
+        --skip-sweep) SKIP_SWEEP=true; shift;;
         -h|--help) usage; exit 0;;
         *) echo "unknown arg: $1"; usage; exit 1;;
     esac
@@ -189,6 +198,22 @@ fi
 if [ "$SANDBOX_DB" = "packiot_shadow" ]; then
     echo "[5d/5] apply Phase 3 writer-target tables (packiot_shadow only)..."
     apply_sql_file "$PHASE3_WRITER_SQL"
+fi
+
+# Live feed + naming sweep are DESIGN-SANDBOX ONLY (packiot_refactor).
+# The feed pulls FROM packiot_shadow (self-feed would loop), and the
+# sweep must not disturb packiot_shadow's Phase-4 wave rehearsals.
+if [ "$SANDBOX_DB" = "packiot_refactor" ]; then
+    if ! $SKIP_LIVE_FEED; then
+        echo "[5e/5] apply shadow live feed (fdw + refactor_sync job + ca_equipment_values_1min)..."
+        apply_sql_file "$LIVE_FEED_SQL"
+    fi
+    if ! $SKIP_SWEEP; then
+        echo "[5f/5] apply naming sweep A (h_* families)..."
+        apply_sql_file "$SWEEP_A_SQL"
+        echo "[5g/5] apply naming sweep B (v_* families + typo fix)..."
+        apply_sql_file "$SWEEP_B_SQL"
+    fi
 fi
 
 # --- final summary -----------------------------------------------------
