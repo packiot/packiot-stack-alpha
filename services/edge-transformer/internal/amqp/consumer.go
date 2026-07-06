@@ -184,8 +184,8 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 
 	eg, egctx := errgroup.WithContext(ctx)
 	for i, q := range queues {
-		queue := q                // capture for closure
-		tenant := c.tenants[i]    // per-queue tenant for metric labels
+		queue := q             // capture for closure
+		tenant := c.tenants[i] // per-queue tenant for metric labels
 		eg.Go(func() error {
 			return c.consumeOne(egctx, conn, queue, tenant)
 		})

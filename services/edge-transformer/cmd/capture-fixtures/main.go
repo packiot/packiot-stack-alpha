@@ -128,10 +128,10 @@ type capturedFixture struct {
 // perScenarioCounter tracks how many fixtures we've captured for each
 // scenario so we can stop at --max-per-scenario.
 type perScenarioCounter struct {
-	mu      sync.Mutex
-	counts  map[string]int
-	max     int
-	total   atomic.Uint64
+	mu     sync.Mutex
+	counts map[string]int
+	max    int
+	total  atomic.Uint64
 }
 
 func (c *perScenarioCounter) tryClaim(scenario string) (seq int, ok bool) {

@@ -118,6 +118,21 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
 
+  # ── plc-sim (10.9-staging: THE ingest source — Sparkplug B over MQTT) ──
+  plc-sim:
+    build:
+      context: ./services/edge-transformer
+    entrypoint: ["/plc-sim"]
+    environment:
+      MQTT_BROKER_URL: "tcp://mosquitto:1883"
+      PLC_SIM_TICK_SEC: "5"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [packiot-net]
+    mem_limit: 64m
+
   # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ──────────────────────────
   # Factory-side MQTT broker. PLCs publish Sparkplug B here; edge-transformer
   # subscribes to `spBv1.0/+/+/+/+` and bridges the decoded data into RabbitMQ.
@@ -762,6 +777,8 @@ services:
       PO_RECALC_ENABLED: "true"
       RUNTIME_PROVISION_ENABLED: "true"
       RUNTIME_ROLLUP_ENABLED: "true"
+      # 10.9: nodered legacy leg retired (plc-sim triple-emit feeds F1)
+      LEGACY_INGEST_ENABLED: "false"
       BAKE_COMPARATOR_ENABLED: "true"
     networks:
       packiot-net:
@@ -839,6 +856,12 @@ services:
       # ADR-0011 rule 4: /healthz will surface degraded state when the
       # subscriber can't reach mosquitto or hasn't received data in 60s.
       MQTT_ENABLED: "true"
+      # ── 10.9-STAGING CUTOVER ──────────────────────────────────────
+      # plc-sim (MQTT) is THE ingest; the nodered AMQP wrap retires.
+      AMQP_SOURCE_ENABLED: "false"
+      # Triple-emit: "" (F1 production route) + go + refactored — one
+      # source feeds all flows; the bake stays same-reality.
+      SHADOW_EMIT_PRODUCTION: "true"
       MQTT_BROKER_URL: "tcp://mosquitto:1883"
       MQTT_CLIENT_ID: "edge-transformer-staging"
       MQTT_USERNAME: ""

@@ -7,10 +7,10 @@
 // The envelope is defined by docs/clients/_normalized-payload-schema.yaml v1.0.
 // The only fields that differ from the Node-RED path:
 //
-//   envelope.source.type      "go"        (Node-RED path: "nodered")
-//   envelope.source.package   "sparkplug" (Node-RED path: absent)
-//   envelope.source.tab       absent      (Node-RED path: "Publish to edge...")
-//   payload.equipment_id      0 (TBD)     (Node-RED path: real ID from client.yaml map)
+//	envelope.source.type      "go"        (Node-RED path: "nodered")
+//	envelope.source.package   "sparkplug" (Node-RED path: absent)
+//	envelope.source.tab       absent      (Node-RED path: "Publish to edge...")
+//	payload.equipment_id      0 (TBD)     (Node-RED path: real ID from client.yaml map)
 //
 // The equipment_id resolution (name → int) belongs in the ADR-0009 Phase 3
 // normalizer that Phase 2.5b hard-coded as an inline const. For shadow-mode
@@ -251,7 +251,6 @@ func (p *Publisher) connectionMonitor(ctx context.Context, logger *slog.Logger) 
 	}
 }
 
-
 // reconnect closes the current AMQP connection + channel and re-opens
 // them. Under the wlock — concurrent PublishBytes callers block until
 // reconnect completes.
@@ -329,11 +328,11 @@ func (p *Publisher) Close() error {
 // PublishedCount is the count of publishes sent to the broker (may or may
 // not be confirmed). ConfirmedCount is the subset that RabbitMQ acked.
 // The gap between them is the "in flight" set at any given moment.
-func (p *Publisher) PublishedCount() uint64       { return p.published.Load() }
-func (p *Publisher) ConfirmedCount() uint64       { return p.confirmed.Load() }
-func (p *Publisher) NackedCount() uint64          { return p.nacked.Load() }
-func (p *Publisher) ConfirmTimeoutCount() uint64  { return p.confirmTimeouts.Load() }
-func (p *Publisher) FailedCount() uint64          { return p.failed.Load() }
+func (p *Publisher) PublishedCount() uint64      { return p.published.Load() }
+func (p *Publisher) ConfirmedCount() uint64      { return p.confirmed.Load() }
+func (p *Publisher) NackedCount() uint64         { return p.nacked.Load() }
+func (p *Publisher) ConfirmTimeoutCount() uint64 { return p.confirmTimeouts.Load() }
+func (p *Publisher) FailedCount() uint64         { return p.failed.Load() }
 
 // InFlightBacklog is publishing sent minus confirmed. Under steady state
 // this hovers near zero; a growing gap means RabbitMQ is slow-writing or
@@ -363,14 +362,14 @@ func (p *Publisher) Component() string { return "shadow_publisher" }
 // SnapshotDetail returns the per-component JSON body.
 func (p *Publisher) SnapshotDetail() any {
 	return map[string]any{
-		"exchange":                p.exchange,
-		"instance":                p.instance,
-		"published_total":         p.published.Load(),
-		"confirmed_total":         p.confirmed.Load(),
-		"nacked_total":            p.nacked.Load(),
-		"confirm_timeouts_total":  p.confirmTimeouts.Load(),
-		"failed_total":            p.failed.Load(),
-		"in_flight_backlog":       p.InFlightBacklog(),
+		"exchange":               p.exchange,
+		"instance":               p.instance,
+		"published_total":        p.published.Load(),
+		"confirmed_total":        p.confirmed.Load(),
+		"nacked_total":           p.nacked.Load(),
+		"confirm_timeouts_total": p.confirmTimeouts.Load(),
+		"failed_total":           p.failed.Load(),
+		"in_flight_backlog":      p.InFlightBacklog(),
 	}
 }
 

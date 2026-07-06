@@ -291,7 +291,7 @@ func TestDatatypeFallbackFromBirth(t *testing.T) {
 
 	// BIRTH establishes alias 1 as Int64
 	birth := &Payload{
-		Seq:     ptr(uint64(0)),
+		Seq: ptr(uint64(0)),
 		Metrics: []*Metric{{Name: ptr("temp"), Alias: ptr(uint64(1)),
 			Datatype: ptr(uint32(DataType_Int64.Number()))}},
 	}

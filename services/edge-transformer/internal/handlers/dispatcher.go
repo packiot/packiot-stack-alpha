@@ -58,9 +58,11 @@ func (d *Dispatcher) Register(routingKey string, h Handler) {
 // in Phase 2, the FALLBACK becomes the silent-failure surface — a tenant
 // routing change that misses the per-tenant Register() call will fall
 // through to Shadow, log+ack, and silently drop the transform. Either:
-//   (a) keep Shadow as fallback ONLY during the shadow phase, OR
-//   (b) flip fallback to a noisy "unknown routing key" handler that
-//       nacks + alerts in Phase 2+.
+//
+//	(a) keep Shadow as fallback ONLY during the shadow phase, OR
+//	(b) flip fallback to a noisy "unknown routing key" handler that
+//	    nacks + alerts in Phase 2+.
+//
 // The choice should be made deliberately in the Phase 2 PR, not by
 // inheriting this scaffold's default.
 func (d *Dispatcher) Handle(ctx context.Context, msg *amqp.Delivery) error {

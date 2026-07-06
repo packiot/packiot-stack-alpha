@@ -106,6 +106,7 @@ type Config struct {
 	RuntimeProvisionEnabled       bool
 	RuntimeRollupEnabled          bool
 	BakeComparatorEnabled         bool
+	LegacyIngestEnabled           bool // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
@@ -156,6 +157,7 @@ func Load() (*Config, error) {
 		RuntimeProvisionEnabled:       getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeRollupEnabled:          getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		BakeComparatorEnabled:         getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
+		LegacyIngestEnabled:           getenv("LEGACY_INGEST_ENABLED", "true") == "true",
 		RollupMachineLevelEnterprises: getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		Sync06ReportEnabled:           getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:         getenvInt("SYNC06_INTERVAL_MINUTES", 15),

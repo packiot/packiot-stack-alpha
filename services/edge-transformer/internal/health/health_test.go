@@ -16,14 +16,14 @@ import (
 
 // fakeComponent is a tiny ComponentSnapshotter for tests.
 type fakeComponent struct {
-	name         string
-	detail       any
+	name           string
+	detail         any
 	degradedReason string
 }
 
-func (f *fakeComponent) Component() string       { return f.name }
-func (f *fakeComponent) SnapshotDetail() any     { return f.detail }
-func (f *fakeComponent) Degraded() string        { return f.degradedReason }
+func (f *fakeComponent) Component() string   { return f.name }
+func (f *fakeComponent) SnapshotDetail() any { return f.detail }
+func (f *fakeComponent) Degraded() string    { return f.degradedReason }
 
 func TestMultiSnapshotterEmpty(t *testing.T) {
 	m := NewMulti()
