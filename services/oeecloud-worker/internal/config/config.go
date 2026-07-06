@@ -106,7 +106,7 @@ type Config struct {
 	RuntimeProvisionEnabled       bool
 	RuntimeRollupEnabled          bool
 	BakeComparatorEnabled         bool
-	LegacyIngestEnabled           bool // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
+	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
