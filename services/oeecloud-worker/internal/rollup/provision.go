@@ -67,6 +67,12 @@ func RunProvision(ctx context.Context, d flows.Dest, logger *slog.Logger) error 
 	if _, err := conn.Exec(ctx, `SET statement_timeout = 0`); err != nil {
 		return fmt.Errorf("statement_timeout: %w", err)
 	}
+	// Session-scoped advisory lock: provision and the rollup passes
+	// write the same grain tables; unserialized they deadlock hourly.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+	defer conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, d.Name+":runtime")
 	defer conn.Exec(context.WithoutCancel(ctx), `RESET search_path`)
 	var firstErr error
 	for _, fn := range provisionFns {

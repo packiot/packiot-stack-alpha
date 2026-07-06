@@ -166,6 +166,11 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// Serialize against runtime-provision (recurring hourly deadlocks:
+	// provision upserts vs rollup re-flags on the same grain tables).
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(hourEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("hour eligible: %w", err)
 	}
