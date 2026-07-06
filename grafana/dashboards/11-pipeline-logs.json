@@ -1,6 +1,6 @@
 {
   "uid": "packiot-pipeline-logs",
-  "title": "PLC Pipeline Logs",
+  "title": "11 \u2014 Pipeline logs (plc-sim \u2192 edge-transformer)",
   "tags": [
     "packiot",
     "logs",
@@ -104,7 +104,7 @@
     {
       "id": 1,
       "type": "logs",
-      "title": "edge-nodered",
+      "title": "plc-sim (staging source)",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -126,7 +126,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "{service=\"edge-nodered\"} |~ \"$search\"",
+          "expr": "{service=\"plc-sim\"} |~ \"$search\"",
           "refId": "A"
         }
       ]
@@ -134,7 +134,7 @@
     {
       "id": 2,
       "type": "logs",
-      "title": "oeecloud",
+      "title": "edge-transformer (ingest)",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -156,7 +156,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "{service=\"oeecloud\"} |~ \"$search\"",
+          "expr": "{service=\"edge-transformer\"} |~ \"$search\"",
           "refId": "A"
         }
       ]
