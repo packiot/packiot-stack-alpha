@@ -241,6 +241,7 @@ func main() {
 	sparkplugHandler := handlers.NewSparkplugHandler(
 		pool, shadowPool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
 	)
+	sparkplugHandler.SetLegacyIngest(cfg.LegacyIngestEnabled)
 
 	if cfg.POControlEnabled {
 		pc := pocontrol.NewHandler(resolver, logger)
