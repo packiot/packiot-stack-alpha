@@ -216,7 +216,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(oeecloud_worker_batch_writes_total{result=\"error\"}[1h]))",
+          "expr": "sum(increase(oeecloud_worker_batch_writes_total{result=\"error\"}[1h])) or vector(0)",
           "legendFormat": "errors",
           "refId": "A"
         }

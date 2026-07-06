@@ -78,7 +78,7 @@ func NewSparkplugHandler(
 // on the shared routing key are dropped (counted), not retried.
 func (h *SparkplugHandler) SetLegacyIngest(enabled bool) { h.legacyIngest = enabled }
 
-// SetWriteMetric wires the per-destination write counter (13-flow board).
+// SetWriteMetric wires the per-destination write counter (flow boards).
 func (h *SparkplugHandler) SetWriteMetric(vec *prometheus.CounterVec) { h.batchWrites = vec }
 
 // destForSource names the flow a source_type routes to, for metrics.

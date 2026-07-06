@@ -85,12 +85,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(edge_transformer_mqtt_handle_errors_total[5m]))*60",
+          "expr": "(sum(rate(edge_transformer_mqtt_handle_errors_total[5m])) or vector(0))*60",
           "legendFormat": "handle errors",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(edge_transformer_sparkplug_seq_gaps_total[5m]))*60",
+          "expr": "(sum(rate(edge_transformer_sparkplug_seq_gaps_total[5m])) or vector(0))*60",
           "legendFormat": "seq gaps",
           "refId": "B"
         }
