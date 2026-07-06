@@ -1,6 +1,6 @@
 # ADR-0016 — Staging consolidation to ONE flow: the master plan
 
-- **Status**: PROPOSED (2026-07-03)
+- **Status**: Accepted — flip runbook prepared, gates pending (blessed 2026-07-06)
 - **Goal**: one execution flow — the refactored stack (Go services,
   pool multi-tenancy, CAggs, zero PL/pgSQL compute, no Hasura,
   query-api reads) — at **100% behavioral parity with prod client-side

@@ -43,6 +43,14 @@ existing public.* name.
 The sap_report cutover requires back4-api coordination — it is the only
 object with a non-PL/pgSQL writer.
 
+> **CORRECTION 2026-07-06**: verified false. Both neopac controllers in
+> back4-api (`data-sync.controller.js`, `sap-report.controller.js`) are
+> READ-ONLY — they SELECT `v_sap_report_data_sync_customer_13` /
+> `v_13_site_deb_sap_report`; git history shows no write ever existed.
+> The sole writer is the PL/pgSQL upsert (ported, Wave-2 #3). There is
+> NO cross-service cutover; back4-api only needs the read views'
+> shapes preserved (already in the PowerBI gate list).
+
 ### Dead tables → contract-wave DROP candidates (3 objects)
 
 `c35_dashboard_paradas_24h`, `c35_dashboard_producao_24h`,

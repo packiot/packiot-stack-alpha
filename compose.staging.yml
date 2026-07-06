@@ -758,11 +758,13 @@ services:
       SHIFT06_REPORT_ENABLED: "true"
       SHIFT06_INTERVAL_MINUTES: "15"
       # Wave 2 port #3: sap_13 upsert → customer_reports.sap_data_sync.
-      # DISABLED until issue #223 resolves: back4-api's neopac
-      # data-sync.controller.js must target the pool key
-      # (customer_id, linie, tag, shicht, auftrag_key) at the same
-      # cutover — flipping this on is the back4-api owner's decision.
-      SAP13_REPORT_ENABLED: "false"
+      # ENABLED 2026-07-06 — #223 finding: back4-api is READ-ONLY on this
+      # dataset (both neopac controllers SELECT views; git history shows
+      # no write ever). The sole writer was the PL/pgSQL upsert we ported,
+      # so there is NO cross-service cutover. Bake: watch rows +
+      # jobs_ticks_total{job="sap13"}; prod-fidelity evidence extends the
+      # prod-read harness before the flip gate.
+      SAP13_REPORT_ENABLED: "true"
       SAP13_INTERVAL_MINUTES: "15"
       # ADR-0014 P3a events deriver — ENABLED 2026-07-03. Runs its own
       # bake on equipment_events (separate table from the shift bake's

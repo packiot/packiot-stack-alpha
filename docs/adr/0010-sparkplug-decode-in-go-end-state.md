@@ -1,6 +1,6 @@
 # ADR 0010 — Sparkplug B decode in Go (end-state for protocol processing)
 
-**Status:** Proposed (DRAFT — awaiting team review)
+**Status:** Accepted — implemented 2026-07-06 (10.9 cutover: MQTT is THE ingest; blessed 2026-07-06)
 **Date:** 2026-06-30
 **Author:** Emmanuel Podestá (with Claude Code as drafting partner)
 **Reviewers:** Packiot platform team
