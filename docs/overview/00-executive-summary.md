@@ -1,35 +1,71 @@
 # Packiot Platform Modernization — Executive Summary
 
 > Audience: management, stakeholders, anyone who needs the "what and
-> why" in five minutes. Engineers: continue to
+> why" in ten minutes. Engineers: continue to
 > [01-architecture](01-architecture.md) and
 > [05-onboarding](05-onboarding.md).
 >
-> Status date: 2026-07-06.
+> Scope: the full modernization program, from the first staging
+> environment ("Flow 1") through today. Status date: 2026-07-06.
 
 ## The initiative
 
-We are replacing the legacy core of the Packiot OEE platform — roughly
-**150 database stored procedures (PL/pgSQL) plus Node-RED automation
-scripts** — with a modern, testable **Go service stack**. The
-non-negotiable requirement: **100% behavioral parity at every
-customer-facing surface** (PowerBI reports, dashboards, customer data
-syncs) before any production cutover.
+The Packiot OEE platform's core runs on legacy technology: ~150
+unversioned database stored procedures computing all business math,
+Node-RED visual-programming flows handling ingestion and automation,
+and a GraphQL layer (Hasura) that a usage audit showed **4% utilized**.
+It works — customers depend on it daily — but it is untestable,
+unobservable, and increasingly expensive to change safely.
 
-All work has run on existing staging infrastructure at **zero
-additional cloud cost**.
+The program rebuilds this core as a modern, tested, observable **Go
+service stack**, under one non-negotiable rule: **100% behavioral
+parity at every customer-facing surface** (PowerBI reports, dashboards,
+customer data syncs) before any production cutover. All work has run
+on purpose-built staging infrastructure at **~$35/month total AWS
+cost — zero additional spend** beyond the two EC2 instances.
 
-## What has been achieved
+## What has been built, phase by phase
 
-### 1. The compute engine is fully rewritten — and mathematically proven
+### 1. A production-grade staging platform (from nothing)
+
+Two EC2 instances now run the entire platform: ~15 services under
+Docker Compose, deployed automatically on every merge (GitHub Actions
+→ self-hosted runner), with full observability (Grafana, Prometheus,
+Loki), daily EBS backups, disk-pressure guards, and a rehearsal
+production environment. Infrastructure is code (Terraform); deploys
+are one merge; rollbacks are one revert.
+
+### 2. Live production data, safely mirrored
+
+A Go **mirror-worker** streams real production activity (production
+orders, machine events, production counts) into staging under a hard
+rule that has never been broken: **production is read-only, always.**
+A companion **shadow-mirror** replays real operator actions
+(downtime justifications, order starts/stops) so staging behaves like
+a real factory, not a synthetic demo. An **operator web app** on
+staging exercises the same workflows customers use.
+
+### 3. Ingestion modernized to the industrial-IoT standard
+
+A new Go **edge-transformer** replaces the Node-RED ingestion layer:
+native **MQTT / Sparkplug B** (the industry standard protocol) with
+durability guarantees the legacy system never had — broker
+persistence, publisher confirmations, store-and-forward buffering,
+health endpoints with named degradation reasons. The Sparkplug
+decoder was cross-verified against the exact library the legacy
+system uses; throughput headroom measured at ~13,000× current load.
+The legacy cloud Node-RED instance (oeecloud-node-red) has already
+been **decommissioned**; a Go simulator now stands in for factory
+PLCs on staging, feeding every environment identically —
+verified row-for-row.
+
+### 4. The compute engine, rewritten and mathematically proven
 
 Every live legacy function in the OEE pipeline now runs as Go code:
-production-order lifecycle tracking, the hourly / daily / weekly /
-monthly / shift roll-up cascade for equipment, areas and sites, the
-live "current state" dashboards, and the per-customer report writers.
-
-A purpose-built **differential testing harness** ran old vs. new on
-identical real data:
+production-order lifecycle, the hourly / daily / weekly / monthly /
+shift roll-up cascade for machines, areas and sites, live "current
+state" dashboards, and per-customer report writers. A purpose-built
+differential harness compared old vs. new on identical real data:
 
 | Subject | Rows compared | Mismatches |
 |---|---:|---:|
@@ -40,41 +76,39 @@ identical real data:
 | Shift roll-up | 4,340 | **0** |
 | **Total** | **32,848** | **0** |
 
-### 2. Verification is continuous, not one-off
+The first legacy database trigger has already been formally retired,
+on evidence stronger than the planned test window required.
+
+### 5. The data model, untangled for multi-tenancy
+
+Per-customer copy-paste tables (one hardcoded table per client per
+report) are replaced by shared, tenant-keyed pools with
+**configuration instead of code** for customer-specific behavior —
+onboarding a new customer's report becomes one database row instead
+of a development project. Legacy names live on as compatibility
+views so nothing downstream breaks. A new **query-api** provides the
+modern read side.
+
+### 6. Verification as a permanent capability, not a project phase
 
 A comparator service runs 24/7 diffing the legacy and new engines on
-the same live data stream (Grafana dashboard `/d/bake-flow-parity`).
-Divergence is measured by us — never discovered by customers.
-Golden-fixture tests in CI freeze the proven behavior so no future
-change can silently regress it.
+the same live stream (Grafana board with a stated reading discipline:
+every non-zero number must carry a named cause and an expiry date).
+Golden-fixture tests in CI freeze proven behavior against regression.
+This machinery repeatedly caught latent defects before they could
+reach production — including a data-corruption feedback loop that
+had silently fabricated ~1.5 billion units of phantom production on
+staging, several misleading "dead" legacy code paths, and a missing
+data connection that had left part of the new engine idle. Every
+incident produced a permanent structural safeguard.
 
-### 3. Data ingestion modernized to the industrial IoT standard
+### 7. The cutover, de-risked to a checklist
 
-Factory data now enters via **MQTT / Sparkplug B** with durability
-guarantees end-to-end (broker persistence, publisher confirmations,
-store-and-forward buffering). One data source feeds all environments
-identically — verified row-for-row.
-
-### 4. Latent defects caught before production
-
-The verification machinery paid for itself repeatedly: a
-data-corruption feedback loop in a sync service (silently generating
-~1.5 billion units of phantom production on staging — diagnosed,
-purged, structurally guarded), several misleading "dead" legacy code
-paths, and a missing data-flow connection that had left part of the
-new engine idle. Every fix shipped with permanent safeguards. Details:
-[03-differences](03-prod-vs-new-differences.md) and the bug log in
-the project memory.
-
-### 5. The cutover is de-risked to a checklist
-
-Historical data is preserved (`hist_*` tables); a written **~30-minute
-cutover runbook** exists
-([adr/reference/0016-flip-runbook.md](../adr/reference/0016-flip-runbook.md)),
-fully reversible with a 30-day safety window, plus a 9-item
-decommissioning list that retires the legacy Node-RED services, the
-Hasura GraphQL layer, and shadow infrastructure — direct ongoing cost
-and complexity reduction.
+Historical data is preserved. A written **~30-minute cutover
+runbook** exists, fully reversible with a 30-day safety window, plus
+a 9-item decommissioning list retiring the legacy Node-RED services,
+the Hasura layer (direct savings: $600–2,400/year plus operational
+complexity), and all shadow infrastructure.
 
 ## What remains
 
@@ -82,14 +116,15 @@ and complexity reduction.
   unattended; window ends ~2026-07-13).
 - **Three business sign-offs**: PowerBI report owners (37-object
   compatibility gate), one cross-team API coordination for a customer
-  data sync (`sap_13` / back4-api), one dashboard-retirement
-  confirmation (`c35`).
+  data sync, one dashboard-retirement confirmation.
 - Then: execute the staging cutover, observe the 30-day window, and
   plan the production migration with everything staging-proven.
 
 ## Bottom line
 
-The engineering risk has been retired up front. The new platform is
-live in staging, measured as identical to the legacy system, and
-monitors itself continuously. **What remains is calendar time and
-approvals — not invention.**
+In roughly six weeks, on ~$35/month of infrastructure, the platform's
+core has been rebuilt, proven identical to the legacy system across
+32,848 measured outputs, hardened with durability and monitoring the
+legacy never had, and staged for a 30-minute reversible cutover.
+**The engineering risk has been retired up front; what remains is
+calendar time and approvals — not invention.**
