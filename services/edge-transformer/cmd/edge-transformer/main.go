@@ -195,7 +195,10 @@ func main() {
 	// healthcheck races the broker dial on a slow factory uplink and the
 	// container churns. Same trick used in mirror-worker-go's bootSnapshot.
 	multi := health.NewMulti()
-	multi.Add(consumer)
+	if cfg.AMQPSourceEnabled {
+		multi.Add(consumer) // deliberately absent post-10.9: a disabled
+		// source must not read as degraded
+	}
 	healthSrv := health.New(fmt.Sprintf(":%d", cfg.HealthPort), multi, mx.Registry, logger)
 	healthSrv.Start()
 
