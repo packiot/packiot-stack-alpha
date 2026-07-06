@@ -1,6 +1,6 @@
 # ADR-0013 — Shadow-mirror service for operator-action parity across the 3-flow POC
 
-- **Status**: DRAFT (2026-07-01)
+- **Status**: Accepted — implemented (retires at the flip, R1; blessed 2026-07-06)
 - **Deciders**: Emmanuel Podestá (Packiot backend)
 - **Depends on**: ADR-0010 (Go decode + shadow_go_port), ADR-0011 (durability boundary), ADR-0012 (schema refactor + packiot_shadow)
 - **Context repo**: `packiot-stack-alpha` (session 73)

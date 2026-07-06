@@ -16,8 +16,8 @@
 | G1 | Full-surface bake 7d green | ⏳ clock → ~2026-07-13 | 09-bake dashboard daily |
 | G2 | Shift-resolver close-out | ⏳ clock → 2026-07-09 | runbook in repo docs |
 | G3 | PowerBI 37+1 sign-off | 🟡 evidence READY (compat report PROMOTABLE + prod-read fidelity regenerated) | human |
-| G4 | sap_13 port or deferral | 🟡 port BUILT + staged disabled; contract posted on #223 | back4-api owner |
-| G5 | c35 drop sign-off | 🟡 evidence + prepared §C posted on #224 | c35 PowerBI owner |
+| G4 | sap_13 port or deferral | 🟢 port ENABLED on staging 2026-07-06 (bake running). #223 finding: back4-api is read-only on this dataset — no cross-service cutover exists | bake clock (≥72h) |
+| G5 | c35 drop sign-off | 🟢 SIGNED 2026-07-06: product owner confirms c35/CPACK does not use the 3 dashboards (#224) | — |
 | G6 | Prod Hasura creds + #225 recheck | 🔴 needs creds; window closes 2026-08-01 | user |
 | G7 | 10.9 prod payload capture | 🔴 needs factory access | user |
 | G8 | Elevated prod DB role | 🔴 prerequisite spec in §4 | user/infra |

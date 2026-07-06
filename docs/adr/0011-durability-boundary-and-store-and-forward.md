@@ -1,6 +1,6 @@
 # ADR 0011 — Durability boundary and store-and-forward pattern
 
-**Status:** Proposed (DRAFT — awaiting team review)
+**Status:** Accepted — implemented (outbox + retained-NBIRTH durability live on staging; blessed 2026-07-06)
 **Date:** 2026-06-30
 **Author:** Emmanuel Podestá (with Claude Code as drafting partner)
 **Reviewers:** Packiot platform team

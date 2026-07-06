@@ -1,6 +1,6 @@
 # ADR-0014 — Extract OEE math from PostgreSQL into application layer
 
-- **Status**: DRAFT (2026-07-02)
+- **Status**: Accepted — implemented (engine live at measured parity 0/13,162 + 0/13,432; blessed 2026-07-06)
 - **Deciders**: Emmanuel Podestá (Packiot backend)
 - **Depends on**: ADR-0010 (Go decode + shadow_go_port), ADR-0012 (schema refactor + packiot_shadow), ADR-0013 (shadow-mirror control-plane parity)
 - **Blocked by**: none. Blocks: full 3-flow parity (ADR-0012 Phase 4).

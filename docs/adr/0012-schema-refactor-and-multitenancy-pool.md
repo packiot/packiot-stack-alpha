@@ -1,6 +1,6 @@
 # ADR-0012 — Schema refactor: multi-tenancy pool pattern + naming unification
 
-- **Status**: DRAFT (2026-07-01)
+- **Status**: Accepted — in execution (Waves 0–2 done, Wave 3 partial, Wave 4 prepared; blessed 2026-07-06)
 - **Deciders**: Emmanuel Podestá (Packiot backend)
 - **Context repo**: `packiot-stack-alpha` (session 73)
 
