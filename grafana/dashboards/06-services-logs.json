@@ -52,7 +52,7 @@
       "type": "link",
       "title": "OEE Pipeline",
       "url": "/d/oee-pipeline",
-      "tooltip": "OEE Pipeline — Live Monitor"
+      "tooltip": "OEE Pipeline \u2014 Live Monitor"
     },
     {
       "icon": "external link",
@@ -70,7 +70,7 @@
       "type": "link",
       "title": "System Health",
       "url": "/d/system-health",
-      "tooltip": "System Health — DB & Pipeline"
+      "tooltip": "System Health \u2014 DB & Pipeline"
     },
     {
       "icon": "external link",
@@ -79,7 +79,7 @@
       "type": "link",
       "title": "Stack Overview",
       "url": "/d/packiot-logs",
-      "tooltip": "Stack Overview — log volumes & pipeline health"
+      "tooltip": "Stack Overview \u2014 log volumes & pipeline health"
     },
     {
       "icon": "external link",
@@ -88,7 +88,7 @@
       "type": "link",
       "title": "Operator Activity",
       "url": "/d/packiot-operator",
-      "tooltip": "Operator Activity — per-user actions & downtimes"
+      "tooltip": "Operator Activity \u2014 per-user actions & downtimes"
     },
     {
       "icon": "external link",
@@ -97,7 +97,7 @@
       "type": "link",
       "title": "PLC Pipeline Logs",
       "url": "/d/packiot-pipeline-logs",
-      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud-worker"
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud-worker"
     }
   ],
   "panels": [
@@ -254,7 +254,7 @@
     {
       "id": 4,
       "type": "logs",
-      "title": "simulator",
+      "title": "mirror-worker-go",
       "gridPos": {
         "h": 10,
         "w": 12,
@@ -276,7 +276,7 @@
             "type": "loki",
             "uid": "packiot-loki"
           },
-          "expr": "{service=\"simulator\"} |~ \"$search\"",
+          "expr": "{service=\"mirror-worker-go\"} |~ \"$search\"",
           "refId": "A"
         }
       ]
@@ -337,6 +337,66 @@
             "uid": "packiot-loki"
           },
           "expr": "{service=\"rabbitmq\"} |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "logs",
+      "title": "shadow-mirror",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=\"shadow-mirror\"} |~ \"$search\"",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "edge-transformer",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "packiot-loki"
+          },
+          "expr": "{service=\"edge-transformer\"} |~ \"$search\"",
           "refId": "A"
         }
       ]
