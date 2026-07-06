@@ -60,6 +60,13 @@ func RunProvision(ctx context.Context, d flows.Dest, logger *slog.Logger) error 
 	if _, err := conn.Exec(ctx, fmt.Sprintf(`SET search_path TO %s, public`, d.EvSchema)); err != nil {
 		return fmt.Errorf("search_path: %w", err)
 	}
+	// Provision is allowed to be slow (hourly cadence, 30min job
+	// timeout guards the tick) — the session default statement_timeout
+	// killed the 185-iteration shift create the moment first-tick
+	// starvation was fixed.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = 0`); err != nil {
+		return fmt.Errorf("statement_timeout: %w", err)
+	}
 	defer conn.Exec(context.WithoutCancel(ctx), `RESET search_path`)
 	var firstErr error
 	for _, fn := range provisionFns {
