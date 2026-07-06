@@ -59,7 +59,11 @@ func EncodeSim(ms []SimMetric, seq *uint64, isBirth bool) ([]byte, error) {
 	return Encode(p)
 }
 
-func nowMillis() uint64 { return uint64(time.Now().UnixMilli()) }
+// Second-aligned: the worker's shift-fill companion (and prod's
+// trigger semantics) key rows on second-truncated timestamps; ms
+// precision made the fill's WHERE match nothing (100% NULL hours
+// post-cutover — the parity check that caught it).
+func nowMillis() uint64 { return uint64(time.Now().Truncate(time.Second).UnixMilli()) }
 
 func simU64(v uint64) *uint64 { return &v }
 func simU32(v uint32) *uint32 { return &v }
