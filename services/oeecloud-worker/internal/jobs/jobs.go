@@ -34,12 +34,18 @@ func Loop(ctx context.Context, j Job, logger *slog.Logger, obs Observer) {
 	t := time.NewTicker(j.Every)
 	defer t.Stop()
 	logger.Info("job started", slog.String("job", j.Name), slog.Duration("interval", j.Every))
-	// FIRST TICK FIRES IMMEDIATELY. time.Ticker's first fire comes a
-	// full interval in — for long-interval jobs under frequent deploys
-	// that means NEVER (the hourly provision job silently starved for
-	// a day of restarts; its failing dependency produced zero warns
-	// because it produced zero executions). Every loop must run once
-	// at boot or absence-of-logs is unreadable.
+	// FIRST TICK FIRES IMMEDIATELY (after a small deterministic
+	// stagger). time.Ticker's first fire comes a full interval in —
+	// for long-interval jobs under frequent deploys that means NEVER
+	// (the hourly provision job silently starved for a day of
+	// restarts; zero executions → zero warns). The stagger spreads
+	// the boot thundering herd that deadlocked provision against the
+	// rollup jobs the moment starvation was fixed.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(bootStagger(j.Name)):
+	}
 	if outcome := runOne(ctx, j, logger); obs != nil {
 		obs(j.Name, outcome)
 	}
@@ -105,4 +111,13 @@ func RunPerDest(ctx context.Context, dests []flows.Dest, name string, logger *sl
 		}
 	}
 	return firstErr
+}
+
+// bootStagger spreads first ticks deterministically across ~45s.
+func bootStagger(name string) time.Duration {
+	var h uint32 = 2166136261
+	for i := 0; i < len(name); i++ {
+		h = (h ^ uint32(name[i])) * 16777619
+	}
+	return time.Duration(h%45) * time.Second
 }
