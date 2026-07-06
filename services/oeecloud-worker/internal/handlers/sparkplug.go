@@ -153,11 +153,17 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			// (source_type "") keeps the PL/pgSQL trigger during the
 			// comparator bake — filling there would make the bake compare
 			// Go against Go.
-			if buildErr == nil && q != nil && p.SourceType != "" {
+			if buildErr == nil && q != nil {
+				// ADR-0014 P2 CLOSE-OUT (2026-07-06, same-row evidence
+				// 0/46 after ts alignment): the Go resolver fills ALL
+				// routes; F1's piot_set_shift_before_insert trigger is
+				// dropped in the same change.
 				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
-				// ADR-0010 10.4: shadow paths mint the event row prod's
-				// pipeline mints (Flow 1's trigger covers Flow 1).
-				eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
+				if p.SourceType != "" {
+					// Event mint stays shadow-only: F1's EVENT trigger
+					// remains its writer until the §6 flip.
+					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
+				}
 			}
 		case h.unsMetrics.CanWrite(kind):
 			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
