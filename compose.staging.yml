@@ -122,7 +122,7 @@ services:
   plc-sim:
     build:
       context: ./services/edge-transformer
-    entrypoint: ["/plc-sim"]
+    entrypoint: ["/usr/local/bin/plc-sim"]
     environment:
       MQTT_BROKER_URL: "tcp://mosquitto:1883"
       PLC_SIM_TICK_SEC: "5"
