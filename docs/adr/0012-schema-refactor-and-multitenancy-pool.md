@@ -161,6 +161,18 @@ Version suffixes: for each `X + X_v2 + X_v3 + X_v4` family, identify canonical (
 - Drop `mv_*_full_hot|warm` (10)
 - Drop `hasura_test` and `data_sync_enterprise_06*` legacy
 
+### Sandbox live feed + naming sweep (2026-07-06)
+- ✅ Shadow insertions: `packiot_shadow` → `packiot_refactor` incremental
+  pull (postgres_fdw loopback + TimescaleDB `add_job`, 1-min cadence;
+  `0012-sandbox-live-feed.sql`) — zero changes to running services;
+  `equipment_values` is now a real hypertable feeding a real
+  `ca_equipment_values_1min` CAgg (fixes the Phase-1 naming drift vs
+  this ADR's table: canonical is `ca_*`, old names are façades)
+- ✅ h_*/v_* naming sweep on sandbox (`0012-sandbox-naming-sweep-a/b.sql`,
+  map: `reference/0012-naming-map.md`) — 34 canonical renames, 18
+  duplicates retired, every legacy name preserved as a compat view;
+  Hasura-parity check green (101/101 tracked names resolve)
+
 ### Phase 3 — CAgg consolidation on sandbox (session 74+)
 - Consolidate `agg_*` + `ca_agg_*` + `mv_agg_*` → `ca_*`
 - Enable compression on 9 uncompressed CAggs
