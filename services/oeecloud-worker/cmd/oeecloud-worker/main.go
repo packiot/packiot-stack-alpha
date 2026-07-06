@@ -195,6 +195,7 @@ func main() {
 
 	// ADR-0016 — side-by-side bake comparator (legacy F1 vs Go F2).
 	if cfg.BakeComparatorEnabled {
+		bake.Register(mx.Registry)
 		go bake.Loop(ctx, pool, shadowPool, 10*time.Minute, logger, jobObs)
 	}
 

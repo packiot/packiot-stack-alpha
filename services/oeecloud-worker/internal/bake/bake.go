@@ -40,9 +40,7 @@ var (
 	}, []string{"surface"})
 )
 
-func init() {
-	prometheus.MustRegister(surfaceDiff, surfaceCompared)
-}
+
 
 // Each surface: closed-window rows only (the parity drift classes),
 // relative tolerance on production values, absolute on durations.
@@ -167,8 +165,12 @@ var identityMismatch = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "1 if F2 and F3 fingerprints differ on a surface (must be 0)",
 }, []string{"surface"})
 
-func init() {
-	prometheus.MustRegister(identityMismatch)
+// Register exposes the bake gauges on the registry the worker actually
+// serves. The originals init()-registered on the DEFAULT registry —
+// which /metrics never exposed, so THE GATE BOARD read empty (found by
+// executing every panel query; the name-index hit was historical).
+func Register(reg prometheus.Registerer) {
+	reg.MustRegister(surfaceDiff, surfaceCompared, identityMismatch)
 }
 
 // Fingerprint: count + rounded sums over a closed recent window.
