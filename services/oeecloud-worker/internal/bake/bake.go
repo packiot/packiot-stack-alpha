@@ -66,6 +66,52 @@ var surfaces = []struct{ Name, SQL string }{
 	       AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
 	     WHERE upper(l.runtime_timerange) < now() - interval '2 hours'
 	       AND lower(l.runtime_timerange) >= now() - interval '3 days') d`},
+
+	{"equipment_runtime_1hour", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
+	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
+	      FROM public.equipment_runtime_1hour l
+	      JOIN shadow_go_port.equipment_runtime_1hour g
+	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	     WHERE l.ts_value >= now() - interval '2 days'
+	       AND l.ts_value < date_trunc('hour', now() - interval '2 hours')) d`},
+	{"equipment_runtime_1day", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))) AS ok
+	      FROM public.equipment_runtime_1day l
+	      JOIN shadow_go_port.equipment_runtime_1day g
+	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
+	     WHERE l.ts_value >= now() - interval '4 days'
+	       AND l.ts_value < date_trunc('day', now())) d`},
+	{"uns_equipment_current_month", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
+	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
+	      FROM public.uns_equipment_current_month l
+	      JOIN shadow_go_port.uns_equipment_current_month g USING (id_equipment)) d`},
+	{"uns_equipment_current_hour", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
+	              < 1e-6 + 0.05*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
+	      FROM public.uns_equipment_current_hour l
+	      JOIN shadow_go_port.uns_equipment_current_hour g USING (id_equipment)) d`},
+	{"uns_equipment_current_job", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT (COALESCE(l.id_order,-1) = COALESCE(g.id_order,-1)) AS ok
+	      FROM public.uns_equipment_current_job l
+	      JOIN shadow_go_port.uns_equipment_current_job g USING (id_equipment)) d`},
+	{"customer_reports_shift_06", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT true AS ok FROM customer_reports.shift WHERE customer_id = 6) d`},
+	{"equipment_events_closed", `
+	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
+	    SELECT (abs(extract(epoch FROM (l.ts_end - g.ts_end))) < 2) AS ok
+	      FROM public.equipment_events l
+	      JOIN shadow_go_port.equipment_events g
+	        ON l.id_equipment = g.id_equipment AND l.ts_event = g.ts_event
+	     WHERE l.ts_event >= now() - interval '2 days'
+	       AND l.ts_end IS NOT NULL AND g.ts_end IS NOT NULL) d`},
 	{"uns_equipment_current_week", `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
