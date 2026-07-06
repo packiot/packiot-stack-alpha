@@ -105,8 +105,8 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Metrics emitted by kind vs Node-RED publish rate",
-      "description": "Go port emission per Decision.Metrics entry. Overlay of shadowpub_confirmed_total for divergence detection at RMQ boundary. Match within 5-min buckets after 30-day soak = cutover-ready.",
+      "title": "Calc metrics emitted by kind rate",
+      "description": "Go port emission per Decision.Metrics entry. Overlay of edge_transformer_shadowpub_confirmed_total for divergence detection at RMQ boundary. Match within 5-min buckets after 30-day soak = cutover-ready.",
       "datasource": {
         "type": "prometheus",
         "uid": "packiot-prometheus"
@@ -118,7 +118,7 @@
           "legendFormat": "go: {{tenant}} \u2014 {{kind}}"
         },
         {
-          "expr": "sum by (tenant) (rate(shadowpub_confirmed_total[5m]))",
+          "expr": "sum by (tenant) (rate(edge_transformer_shadowpub_confirmed_total[5m]))",
           "refId": "B",
           "legendFormat": "shadowpub confirmed"
         }
@@ -182,7 +182,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (tenant, reason) (rate(calc_errors_total{tenant=~\"$tenant\"}[5m]))",
+          "expr": "sum by (tenant, reason) (rate(edge_transformer_mqtt_handle_errors_total{tenant=~\"$tenant\"}[5m]))",
           "refId": "A",
           "legendFormat": "{{tenant}} \u2014 {{reason}}"
         }
@@ -372,22 +372,22 @@
       },
       "targets": [
         {
-          "expr": "rate(shadowpub_published_total[5m])",
+          "expr": "rate(edge_transformer_shadowpub_published_total[5m])",
           "refId": "A",
           "legendFormat": "published/s"
         },
         {
-          "expr": "rate(shadowpub_confirmed_total[5m])",
+          "expr": "rate(edge_transformer_shadowpub_confirmed_total[5m])",
           "refId": "B",
           "legendFormat": "confirmed/s"
         },
         {
-          "expr": "rate(shadowpub_nacked_total[5m])",
+          "expr": "rate(edge_transformer_shadowpub_nacked_total[5m])",
           "refId": "C",
           "legendFormat": "nacked/s"
         },
         {
-          "expr": "rate(shadowpub_confirm_timeouts_total[5m])",
+          "expr": "rate(edge_transformer_shadowpub_confirm_timeouts_total[5m])",
           "refId": "D",
           "legendFormat": "confirm_timeout/s"
         }

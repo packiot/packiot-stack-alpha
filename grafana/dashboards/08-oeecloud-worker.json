@@ -67,7 +67,7 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Per-tenant throughput (acked msg/s)",
+      "title": "Throughput (acked msg/s)",
       "description": "rate(acked) broken down by tenant. Phase 1 today: all traffic is tenant=legacy. Phase 2 cutover: lines split into cpack / simcorp / staging / etc.",
       "gridPos": {
         "h": 8,
@@ -82,7 +82,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(tenant)(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"}[5m]))",
+          "expr": "sum by(tenant)(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\"}[5m]))",
           "legendFormat": "{{tenant}}"
         }
       ],
@@ -104,7 +104,7 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Per-tenant latency p95 (s)",
+      "title": "Latency p95 (s)",
       "description": "histogram_quantile by tenant. Compare tenants to spot one consuming disproportionate handler time.",
       "gridPos": {
         "h": 8,
@@ -119,7 +119,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, tenant)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, tenant)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))",
           "legendFormat": "{{tenant}} p95"
         }
       ],
@@ -165,7 +165,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"})",
+          "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"acked\"})",
           "legendFormat": "acked"
         }
       ],
@@ -215,7 +215,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\", tenant=~\"$tenant\"})"
+          "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\"})"
         }
       ],
       "options": {
@@ -270,7 +270,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"exhausted_failed\", tenant=~\"$tenant\"})"
+          "expr": "sum(oeecloud_worker_amqp_deliveries_total{result=\"exhausted_failed\"})"
         }
       ],
       "options": {
@@ -322,7 +322,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(oeecloud_worker_amqp_deliveries_total{tenant=~\"$tenant\"}[1m]))"
+          "expr": "sum(increase(oeecloud_worker_amqp_deliveries_total[1m]))"
         }
       ],
       "options": {
@@ -374,17 +374,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{tenant=~\"$tenant\"}[5m]))",
+          "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total[5m]))",
           "legendFormat": "delivered"
         },
         {
           "refId": "B",
-          "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\", tenant=~\"$tenant\"}[5m]))",
+          "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"acked\"}[5m]))",
           "legendFormat": "acked"
         },
         {
           "refId": "C",
-          "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\", tenant=~\"$tenant\"}[5m]))",
+          "expr": "sum(rate(oeecloud_worker_amqp_deliveries_total{result=\"nacked_retry\"}[5m]))",
           "legendFormat": "nacked \u2192 retry"
         }
       ],
@@ -418,17 +418,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))",
+          "expr": "histogram_quantile(0.5, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket{tenant=~\"$tenant\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le)(rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))",
           "legendFormat": "p99"
         }
       ],
