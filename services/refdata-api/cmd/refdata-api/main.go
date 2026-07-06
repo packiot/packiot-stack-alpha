@@ -1,7 +1,7 @@
 // refdata-api — the Hasura-replacement read API (task #86, Option C).
 //
 // Serves the EXACT reference-read contract enumerated from 12h of
-// Hasura query-log (docs/hasura-review-2026.md §Update 2026-07-02):
+// Hasura query-log (docs/audits/hasura-review-2026.md §Update 2026-07-02):
 // 10 root fields = 5 SQL functions + 5 views/tables. Flow 1
 // (edge-node-red) keeps the minimal Hasura as the stable alpha; the
 // refactored stack (flows 2/3) consumes THIS service instead — no

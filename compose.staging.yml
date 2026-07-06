@@ -178,7 +178,7 @@ services:
     environment:
       HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
       HASURA_GRAPHQL_DEV_MODE: "false"
-      # query-log added 2026-07-02 (task #86 / docs/hasura-review-2026.md):
+      # query-log added 2026-07-02 (task #86 / docs/audits/hasura-review-2026.md):
       # logs every GraphQL operation so a 30-day window can confirm the
       # 7-named-query enumeration before any retirement decision. Logs
       # ship to Loki via promtail; enumerate with
@@ -934,7 +934,7 @@ services:
   # Task #86 Hasura retirement (Option C): the reference-read API that
   # replaces Hasura for the REFACTORED stack (flows 2/3). Serves the
   # exact 10-root contract enumerated from the query-log
-  # (docs/hasura-review-2026.md §Update) as plain JSON over HTTP.
+  # (docs/audits/hasura-review-2026.md §Update) as plain JSON over HTTP.
   # Flow 1 (edge-node-red) keeps the minimal Hasura as the stable
   # alpha; new/refactored consumers point here instead. Internal-only —
   # no public route. v1 reads the main DB via pgbouncer; flow-routing

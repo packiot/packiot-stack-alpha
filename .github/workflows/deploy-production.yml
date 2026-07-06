@@ -50,7 +50,7 @@ jobs:
       - name: Fetch submodules
         # Production submodules: edge-api + operator only.
         # edge-node-red is per-factory (not in the cloud stack — see
-        # docs/production-out-of-scope.md + docs/adr/0005-*.md).
+        # docs/archive/production-out-of-scope.md + docs/adr/0005-*.md).
         # oeecloud-node-red was decommissioned 2026-06-24.
         run: |
           git submodule sync edge-api operator

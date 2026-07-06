@@ -272,7 +272,7 @@ services:
       options: {max-size: "10m", max-file: "5"}
 
   # NOTE: edge-nodered is DELIBERATELY ABSENT — per-factory deployment via
-  # manual workflow_dispatch (see docs/production-out-of-scope.md +
+  # manual workflow_dispatch (see docs/archive/production-out-of-scope.md +
   # docs/adr/0005-edge-nodered-self-hosted-runner-deploys.md).
   #
   # NOTE: simulator is DELIBERATELY ABSENT — staging-only synthetic PLC.

@@ -422,7 +422,7 @@ if aws secretsmanager describe-secret \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"$ET_PASS\",\"tags\":\"\"}"
 
-  # Least-priv perms — see docs/edge-transformer-phase-2-runbook.md §2.B.
+  # Least-priv perms — see docs/guides/edge-transformer-phase-2-runbook.md §2.B.
   # The regex restricts edge-transformer to its own queues + the shared
   # publish exchange. Cannot touch other tenants' queues, management API,
   # or other exchanges. Bounded blast radius.
