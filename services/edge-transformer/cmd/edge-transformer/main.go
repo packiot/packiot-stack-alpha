@@ -59,6 +59,13 @@ import (
 	"strings"
 )
 
+// emittedByFlow counts envelopes enqueued to the outbox per destination
+// flow (triple-emit). Package-level: the emit loop lives outside main.
+var emittedByFlow = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "edge_transformer_emitted_total",
+	Help: "Envelopes enqueued to the outbox by destination flow (triple-emit).",
+}, []string{"flow"})
+
 func main() {
 	// Docker healthcheck path. Distroless has no shell/curl/wget, so the
 	// binary self-probes via HTTP. Exit 0 = healthy, non-zero = not.
@@ -152,6 +159,7 @@ func main() {
 	// SetMetrics / RegisterXCollector callback pattern so amqp/handlers
 	// stay decoupled from prometheus.
 	mx := metrics.New()
+	mx.Registry.MustRegister(emittedByFlow)
 	mx.RegisterConsumerCollector(func() metrics.ConsumerSnapshot {
 		return metrics.ConsumerSnapshot{
 			Delivered:         consumer.DeliveredCount(),
@@ -1066,6 +1074,14 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 				sourceTypes = append(sourceTypes, "") // F1 production route
 			}
 			for _, st := range sourceTypes {
+				flow := "f2_shadow_go_port"
+				switch st {
+				case "refactored":
+					flow = "f3_packiot_shadow"
+				case "":
+					flow = "f1_public"
+				}
+				emittedByFlow.WithLabelValues(flow).Inc()
 				env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
 					Tenant:          tenant,
 					PublisherKey:    key.String(),

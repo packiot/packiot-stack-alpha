@@ -1,412 +1,288 @@
 {
-  "title": "10 \u2014 edge-transformer (MQTT ingest)",
-  "uid": "edge-transformer-shadow-mode",
-  "schemaVersion": 39,
-  "version": 1,
+  "title": "10 \u2014 edge-transformer: MQTT in \u2192 Calc \u2192 triple-emit out",
+  "uid": "edge-transformer-ingest",
   "tags": [
-    "edge-transformer",
-    "phase-3",
-    "adr-0010",
-    "adr-0011",
-    "outbox"
+    "flow"
   ],
-  "timezone": "browser",
+  "timezone": "utc",
   "time": {
     "from": "now-6h",
     "to": "now"
   },
   "refresh": "30s",
-  "templating": {
-    "list": [
-      {
-        "name": "tenant",
-        "label": "Tenant",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "packiot-prometheus"
-        },
-        "definition": "label_values(calc_evaluations_total, tenant)",
-        "query": {
-          "qryType": 1,
-          "query": "label_values(calc_evaluations_total, tenant)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
-        },
-        "includeAll": true,
-        "allValue": ".+",
-        "multi": true,
-        "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
-        },
-        "refresh": 2,
-        "regex": "",
-        "options": [],
-        "hide": 0,
-        "sort": 1
-      }
-    ]
-  },
+  "schemaVersion": 39,
   "panels": [
     {
-      "id": 1,
+      "id": 100,
       "type": "row",
-      "title": "Calc port \u2014 shadow-mode observability (ADR-0010 Phase 3)",
+      "title": "IN \u2014 from Mosquitto (Sparkplug B)",
+      "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 0
       },
-      "collapsed": false,
       "panels": []
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "MQTT messages received / handled / dropped (per min)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(edge_transformer_mqtt_received_total[5m]))*60",
+          "legendFormat": "received",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(edge_transformer_mqtt_handled_total[5m]))*60",
+          "legendFormat": "handled",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(edge_transformer_mqtt_dropped_total[5m]))*60",
+          "legendFormat": "dropped",
+          "refId": "C"
+        }
+      ]
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Calc evaluation rate by outcome",
-      "description": "Rate of Calc() calls, split by Decision.SendDownstream. 'send' rate should track Node-RED publish rate 1:1 once comparator is live.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
+      "title": "Handle errors + Sparkplug seq gaps (should be 0)",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "min": 0
+        },
+        "overrides": []
       },
       "targets": [
         {
-          "expr": "sum by (tenant, outcome) (rate(calc_evaluations_total{tenant=~\"$tenant\"}[5m]))",
-          "refId": "A",
-          "legendFormat": "{{tenant}} \u2014 {{outcome}}"
+          "expr": "sum(rate(edge_transformer_mqtt_handle_errors_total[5m]))*60",
+          "legendFormat": "handle errors",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(edge_transformer_sparkplug_seq_gaps_total[5m]))*60",
+          "legendFormat": "seq gaps",
+          "refId": "B"
         }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cps",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 20,
-            "stacking": {
-              "mode": "normal"
-            }
-          }
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 1,
-        "w": 12,
-        "h": 8
-      }
+      ]
     },
     {
       "id": 3,
-      "type": "timeseries",
-      "title": "Calc metrics emitted by kind rate",
-      "description": "Go port emission per Decision.Metrics entry. Overlay of edge_transformer_shadowpub_confirmed_total for divergence detection at RMQ boundary. Match within 5-min buckets after 30-day soak = cutover-ready.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
+      "type": "stat",
+      "title": "MQTT connected",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 1
       },
-      "targets": [
-        {
-          "expr": "sum by (tenant, kind) (rate(calc_metrics_emitted_total{tenant=~\"$tenant\"}[5m]))",
-          "refId": "A",
-          "legendFormat": "go: {{tenant}} \u2014 {{kind}}"
+      "fieldConfig": {
+        "defaults": {
+          "min": 0
         },
-        {
-          "expr": "sum by (tenant) (rate(edge_transformer_shadowpub_confirmed_total[5m]))",
-          "refId": "B",
-          "legendFormat": "shadowpub confirmed"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cps",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15
-          }
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 1,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "id": 4,
-      "type": "timeseries",
-      "title": "State mutations by kind",
-      "description": "Which parts of the port are actively writing state. Absence of counter.* mutations while evaluations{outcome=send} is non-zero = State write bug.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
+        "overrides": []
       },
       "targets": [
         {
-          "expr": "sum by (mutation_kind) (rate(calc_state_mutations_total{tenant=~\"$tenant\"}[5m]))",
-          "refId": "A",
-          "legendFormat": "{{mutation_kind}}"
+          "expr": "edge_transformer_mqtt_connected",
+          "legendFormat": "connected",
+          "refId": "A"
         }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cps",
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 60
-          }
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 9,
-        "w": 12,
-        "h": 8
-      }
+      "description": "1 = connected to Mosquitto"
     },
     {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Calc errors \u2014 MUST STAY NEAR 0",
-      "description": "ADR-0011 rule 5: silent-loss is a bug. ANY non-zero rate for 15 minutes = page.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
-      },
-      "targets": [
-        {
-          "expr": "sum by (tenant, reason) (rate(edge_transformer_mqtt_handle_errors_total{tenant=~\"$tenant\"}[5m]))",
-          "refId": "A",
-          "legendFormat": "{{tenant}} \u2014 {{reason}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cps",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 40,
-            "gradientMode": "opacity"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0.001
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 9,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "State seeds \u2014 non-counter Sparkplug metrics captured",
-      "description": "MachSpeed, Parameter30700 (line CSV), Parameter30750/30758/30761/30710. Zero on all seeds during high-drop evaluations = NBIRTH missing.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
-      },
-      "targets": [
-        {
-          "expr": "sum by (tenant, seed_kind) (rate(calc_state_seeds_total{tenant=~\"$tenant\"}[5m]))",
-          "refId": "A",
-          "legendFormat": "{{tenant}} \u2014 {{seed_kind}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cps",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15
-          }
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 17,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "id": 7,
+      "id": 101,
       "type": "row",
-      "title": "Outbox \u2014 durability boundary (ADR-0011 P2)",
+      "title": "PROCESS \u2014 Calc port (counters state machine) + outbox",
+      "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 9
       },
-      "collapsed": false,
       "panels": []
     },
     {
-      "id": 8,
+      "id": 4,
       "type": "timeseries",
-      "title": "Outbox depth (rows awaiting drain)",
-      "description": "Steady state: ~0. During RMQ outage: grows. Post-recovery: drains back to 0. Degraded threshold: 5000 rows.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
+      "title": "Calc: evaluations vs metrics emitted (per min)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(calc_evaluations_total[5m]))*60",
+          "legendFormat": "evaluations",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(calc_metrics_emitted_total[5m]))*60",
+          "legendFormat": "emitted",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Outbox depth + oldest age",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "min": 0
+        },
+        "overrides": []
       },
       "targets": [
         {
           "expr": "outbox_depth",
-          "refId": "A",
-          "legendFormat": "depth"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 30,
-            "lineWidth": 2
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 500
-              },
-              {
-                "color": "red",
-                "value": 5000
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 26,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "Outbox oldest-row age (seconds)",
-      "description": "How long the oldest queued row has been waiting. Degraded threshold: 60s. Growing = drain stuck.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
-      },
-      "targets": [
+          "legendFormat": "depth (msgs)",
+          "refId": "A"
+        },
         {
           "expr": "outbox_oldest_age_seconds",
-          "refId": "A",
-          "legendFormat": "oldest age (s)"
+          "legendFormat": "oldest age (s)",
+          "refId": "B"
         }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 20
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 10
-              },
-              {
-                "color": "red",
-                "value": 60
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 26,
-        "w": 12,
-        "h": 8
-      }
+      "description": "Store-and-forward buffer. Sustained growth = RabbitMQ publish path degraded."
     },
     {
-      "id": 10,
+      "id": 102,
+      "type": "row",
+      "title": "OUT \u2014 triple-emit to RabbitMQ (one envelope per flow)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "panels": []
+    },
+    {
+      "id": 6,
       "type": "timeseries",
-      "title": "Shadowpub publish + confirm rate",
-      "description": "Publish rate and confirmed rate \u2014 gap = in-flight backlog. Persistent gap = confirms not catching up (RMQ slow or channel wedged).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "packiot-prometheus"
+      "title": "Envelopes emitted per flow (per min) \u2014 the three lines must move together",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 55,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
       },
       "targets": [
         {
-          "expr": "rate(edge_transformer_shadowpub_published_total[5m])",
-          "refId": "A",
-          "legendFormat": "published/s"
-        },
-        {
-          "expr": "rate(edge_transformer_shadowpub_confirmed_total[5m])",
-          "refId": "B",
-          "legendFormat": "confirmed/s"
-        },
-        {
-          "expr": "rate(edge_transformer_shadowpub_nacked_total[5m])",
-          "refId": "C",
-          "legendFormat": "nacked/s"
-        },
-        {
-          "expr": "rate(edge_transformer_shadowpub_confirm_timeouts_total[5m])",
-          "refId": "D",
-          "legendFormat": "confirm_timeout/s"
+          "expr": "sum by (flow)(rate(edge_transformer_emitted_total[5m]))*60",
+          "legendFormat": "{{flow}}",
+          "refId": "A"
         }
       ],
+      "description": "f1_public = staging legacy flow \u00b7 f2_shadow_go_port = Go-port proving flow \u00b7 f3_packiot_shadow = the refactored DB (flip target)"
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "RabbitMQ publish: published vs broker-confirmed vs nacked (per min)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "cps",
           "custom": {
             "drawStyle": "line",
-            "fillOpacity": 15
-          }
-        }
+            "fillOpacity": 12
+          },
+          "min": 0
+        },
+        "overrides": []
       },
-      "gridPos": {
-        "x": 0,
-        "y": 34,
-        "w": 24,
-        "h": 8
-      }
+      "targets": [
+        {
+          "expr": "sum(rate(edge_transformer_shadowpub_published_total[5m]))*60",
+          "legendFormat": "published",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(edge_transformer_shadowpub_confirmed_total[5m]))*60",
+          "legendFormat": "confirmed",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(edge_transformer_shadowpub_nacked_total[5m]))*60",
+          "legendFormat": "nacked",
+          "refId": "C"
+        }
+      ]
     }
   ]
 }
