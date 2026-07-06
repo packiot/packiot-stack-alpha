@@ -133,7 +133,7 @@ func New(pool *pgxpool.Pool, ttl time.Duration, logger *slog.Logger) *Resolver {
 // matching the trigger's EXCEPTION WHEN OTHERS THEN NULL.
 func (r *Resolver) Resolve(ctx context.Context, idEnterprise, idEquipment int, ts time.Time) (idShift, idShiftHour *int) {
 	if err := r.ensureFresh(ctx); err != nil {
-		r.logger.Debug("shiftresolver: cache refresh failed — fail-open",
+		r.logger.Warn("shiftresolver: cache refresh FAILED — resolver fail-open (labels will be NULL)",
 			slog.String("err", err.Error()))
 		return nil, nil
 	}
@@ -212,12 +212,20 @@ func (r *Resolver) ensureFresh(ctx context.Context) error {
 		return err
 	}
 	for rows.Next() {
-		var id, site, area int
+		var id int
+		var site, area *int
 		if err := rows.Scan(&id, &site, &area); err != nil {
 			rows.Close()
 			return err
 		}
-		equips[id] = EquipRef{IDSite: site, IDArea: area}
+		if site == nil {
+			continue // unplaced equipment cannot resolve a shift
+		}
+		a := 0
+		if area != nil {
+			a = *area
+		}
+		equips[id] = EquipRef{IDSite: *site, IDArea: a}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
