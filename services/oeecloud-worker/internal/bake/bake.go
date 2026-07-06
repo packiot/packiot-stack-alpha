@@ -40,8 +40,6 @@ var (
 	}, []string{"surface"})
 )
 
-
-
 // Each surface: closed-window rows only (the parity drift classes),
 // relative tolerance on production values, absolute on durations.
 var surfaces = []struct{ Name, SQL string }{

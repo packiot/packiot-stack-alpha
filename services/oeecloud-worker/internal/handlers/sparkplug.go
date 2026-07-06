@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
@@ -38,6 +40,7 @@ type SparkplugHandler struct {
 	parsed        atomic.Uint64
 	legacyDropped atomic.Uint64
 	legacyIngest  bool
+	batchWrites   *prometheus.CounterVec
 	queriesSent   atomic.Uint64
 	queriesAcked  atomic.Uint64
 	skippedUnk    atomic.Uint64
@@ -74,7 +77,22 @@ func NewSparkplugHandler(
 // SetLegacyIngest wires the 10.9 flag: false → unparseable messages
 // on the shared routing key are dropped (counted), not retried.
 func (h *SparkplugHandler) SetLegacyIngest(enabled bool) { h.legacyIngest = enabled }
-func (h *SparkplugHandler) LegacyDroppedCount() uint64   { return h.legacyDropped.Load() }
+
+// SetWriteMetric wires the per-destination write counter (flow boards).
+func (h *SparkplugHandler) SetWriteMetric(vec *prometheus.CounterVec) { h.batchWrites = vec }
+
+// destForSource names the flow a source_type routes to, for metrics.
+func destForSource(sourceType string) string {
+	switch sourceType {
+	case "go":
+		return "f2_shadow_go_port"
+	case "refactored":
+		return "f3_packiot_shadow"
+	default:
+		return "f1_public"
+	}
+}
+func (h *SparkplugHandler) LegacyDroppedCount() uint64 { return h.legacyDropped.Load() }
 
 // Handle is the Handler signature consumed by Dispatcher.
 func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
@@ -209,9 +227,13 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	defer br.Close()
 
 	h.queriesSent.Add(uint64(batch.Len()))
+	dest := destForSource(p.SourceType)
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := br.Exec(); err != nil {
 			h.execErrors.Add(1)
+			if h.batchWrites != nil {
+				h.batchWrites.WithLabelValues(dest, "error").Inc()
+			}
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s: %w", descs[i], err)
 			}
@@ -221,6 +243,9 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			continue
 		}
 		h.queriesAcked.Add(1)
+		if h.batchWrites != nil {
+			h.batchWrites.WithLabelValues(dest, "ok").Inc()
+		}
 	}
 
 	return firstErr
