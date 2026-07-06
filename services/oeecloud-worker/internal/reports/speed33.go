@@ -16,7 +16,7 @@ import (
 )
 
 // Speed33 ports prod's c33_speed_per_job_insert_into_report() procedure
-// (captured verbatim in docs/adr/reference/0012-wave2-prod-writer-funcs.sql)
+// (captured verbatim in docs/adr/reference/captures/0012-wave2-prod-writer-funcs.sql)
 // to the customer_reports.speed pool table. Semantics preserved 1:1 —
 // line-level equipments (tp_equipment=3) of enterprise 33, last 5 days,
 // speed >= 150, finished POs (status > 2), one row per new id_order —

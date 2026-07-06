@@ -154,7 +154,7 @@ integrity. We're extracting COMPUTE, not STORAGE.
 - Enumerate every `piot_*` function + which pg_cron jobs call each
 - For each, note: rows read/written per invocation, avg execution time,
   business purpose, dependency chain
-- Deliverable: `docs/adr/reference/0014-oee-math-inventory.md`
+- Deliverable: `docs/adr/reference/designs/0014-oee-math-inventory.md`
 
 ### Phase 2 — port the shift setter (smallest, safest first)
 

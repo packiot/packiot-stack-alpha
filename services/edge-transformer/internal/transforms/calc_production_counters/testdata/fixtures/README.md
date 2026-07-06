@@ -18,7 +18,7 @@ Each scenario directory contains:
    `input-NN.json` files across all scenarios.
 2. For each scenario directory, pick ONE representative `input-NN.json`
    (the highest capture count usually — most typical shape).
-3. Read `../../../../../../docs/adr/reference/phase-3-calc-production-counters-state-machine.md`
+3. Read `../../../../../../docs/adr/reference/designs/phase-3-calc-production-counters-state-machine.md`
    and trace the input through phases 1-11 mentally, filling in the
    `initial_state.json` with plausible prior counters and any needed
    parameters.

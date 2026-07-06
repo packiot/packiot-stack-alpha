@@ -1,7 +1,7 @@
 // Package uns — ADR-0014 P3c: the UNS current-family provisioner +
 // the unblocked equipment refreshers (week, month), ported from
 // piot_uns_upsert_features / piot_uns_equipment_refresh_current_week
-// (+month). Design: docs/adr/reference/0014-p3c-uns-refresher-design.md.
+// (+month). Design: docs/adr/reference/designs/0014-p3c-uns-refresher-design.md.
 //
 // SLICE HONESTY: hour/day/shift(/jobs) refreshers read the RUNTIME
 // family and are sequenced AFTER P3b; this package ships the

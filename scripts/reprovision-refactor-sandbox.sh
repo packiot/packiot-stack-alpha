@@ -25,10 +25,10 @@ SANDBOX_DB="${SANDBOX_DB:-packiot_refactor}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PARITY_SQL="${REPO_ROOT}/edge-node-red/db/17-hasura-metadata-parity.sql"
-POC_SQL="${REPO_ROOT}/docs/adr/reference/0012-poc-customer-dashboards.sql"
-PHASE1_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase1-renames-and-drops.sql"
-PHASE2_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase2-cagg-consolidation.sql"
-PHASE3_WRITER_SQL="${REPO_ROOT}/docs/adr/reference/0012-phase3-writer-tables.sql"
+POC_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-poc-customer-dashboards.sql"
+PHASE1_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-phase1-renames-and-drops.sql"
+PHASE2_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-phase2-cagg-consolidation.sql"
+PHASE3_WRITER_SQL="${REPO_ROOT}/docs/adr/reference/migrations/0012-phase3-writer-tables.sql"
 
 usage() {
     cat <<EOF
