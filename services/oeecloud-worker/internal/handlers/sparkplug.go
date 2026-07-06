@@ -35,12 +35,14 @@ import (
 // delivery (~5-6 typical CPACK payload). Batching cuts that to 1
 // round-trip, which is ~5x less DB latency per delivery.
 type SparkplugHandler struct {
-	parsed       atomic.Uint64
-	queriesSent  atomic.Uint64
-	queriesAcked atomic.Uint64
-	skippedUnk   atomic.Uint64
-	buildErrors  atomic.Uint64
-	execErrors   atomic.Uint64
+	parsed        atomic.Uint64
+	legacyDropped atomic.Uint64
+	legacyIngest  bool
+	queriesSent   atomic.Uint64
+	queriesAcked  atomic.Uint64
+	skippedUnk    atomic.Uint64
+	buildErrors   atomic.Uint64
+	execErrors    atomic.Uint64
 
 	pool            *pgxpool.Pool
 	shadowPool      *pgxpool.Pool // may be nil — set only if POSTGRES_SHADOW_DB_NAME configured
@@ -69,10 +71,23 @@ func NewSparkplugHandler(
 	}
 }
 
+// SetLegacyIngest wires the 10.9 flag: false → unparseable messages
+// on the shared routing key are dropped (counted), not retried.
+func (h *SparkplugHandler) SetLegacyIngest(enabled bool) { h.legacyIngest = enabled }
+func (h *SparkplugHandler) LegacyDroppedCount() uint64   { return h.legacyDropped.Load() }
+
 // Handle is the Handler signature consumed by Dispatcher.
 func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	p, err := sparkplug.Parse(d.Body)
 	if err != nil {
+		if !h.legacyIngest {
+			// 10.9: residual nodered legacy publishes (heartbeats etc.)
+			// share the routing key with envelopes but not the schema.
+			// With legacy ingest retired they are noise — drop with a
+			// counter instead of churning retry/failed queues.
+			h.legacyDropped.Add(1)
+			return nil
+		}
 		// Bad JSON is terminal — consumer nacks; after MaxRetries the
 		// message lands in oee-failed for inspection.
 		return err
