@@ -403,6 +403,6 @@ After each cache lands, observe:
 
 ## Cross-references
 
-- [`docs/production-out-of-scope.md`](production-out-of-scope.md) — caching changes touch `staging` only; no production assets affected
+- [`docs/archive/production-out-of-scope.md`](production-out-of-scope.md) — caching changes touch `staging` only; no production assets affected
 - [`docs/adr/0006-workflow-infrastructure-refactor.md`](adr/0006-workflow-infrastructure-refactor.md) — CI build caching (Docker buildx, Go modules, npm) is covered there, NOT here
 - [`docs/adr/0001-edge-persistence-intermittent-connectivity.md`](adr/0001-edge-persistence-intermittent-connectivity.md) — long-term local-first design that makes some of these caches obsolete (operator UI reads from local DB instead of cloud)

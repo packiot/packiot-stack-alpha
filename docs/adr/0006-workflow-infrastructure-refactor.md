@@ -34,9 +34,9 @@ Additionally, ADR-0005 (per-factory deploys) explicitly depends on the reusable-
 
 ### What this ADR is NOT about
 
-This ADR is about **the workflow files + CI/CD infrastructure** — not about the services they deploy. Application-level caching (in-process Redis-style caches, HTTP cache-headers, etc.) is covered separately in [`docs/caching-review-2026-06-29.md`](../caching-review-2026-06-29.md). The two are complementary but distinct.
+This ADR is about **the workflow files + CI/CD infrastructure** — not about the services they deploy. Application-level caching (in-process Redis-style caches, HTTP cache-headers, etc.) is covered separately in [`docs/audits/caching-review-2026-06-29.md`](../caching-review-2026-06-29.md). The two are complementary but distinct.
 
-This ADR also **explicitly respects** the pinned-production-assets list in [`docs/production-out-of-scope.md`](../production-out-of-scope.md). Several workflow files are off-limits because they deploy to customer-facing production assets; the phasing below honors this constraint.
+This ADR also **explicitly respects** the pinned-production-assets list in [`docs/archive/production-out-of-scope.md`](../production-out-of-scope.md). Several workflow files are off-limits because they deploy to customer-facing production assets; the phasing below honors this constraint.
 
 ---
 
@@ -256,7 +256,7 @@ Documented in `CONTRIBUTING.md`. A new repo or environment can be onboarded by f
 
 ## Implementation phases
 
-Phases respect [`docs/production-out-of-scope.md`](../production-out-of-scope.md) — Phase 1-3 touch only the safe-zone workflows. Production-asset workflows refactor in Phase 5 under coordinated change-control.
+Phases respect [`docs/archive/production-out-of-scope.md`](../production-out-of-scope.md) — Phase 1-3 touch only the safe-zone workflows. Production-asset workflows refactor in Phase 5 under coordinated change-control.
 
 | Phase | Scope | Effort | Risk |
 |---|---|---|---|
@@ -300,8 +300,8 @@ External:
 - [Dependabot for GitHub Actions](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) — auto-update mechanism
 
 Internal:
-- [`docs/production-out-of-scope.md`](../production-out-of-scope.md) — the pinning doc this ADR's phasing respects
-- [`docs/caching-review-2026-06-29.md`](../caching-review-2026-06-29.md) — application caching (different from CI build caching covered here)
+- [`docs/archive/production-out-of-scope.md`](../production-out-of-scope.md) — the pinning doc this ADR's phasing respects
+- [`docs/audits/caching-review-2026-06-29.md`](../caching-review-2026-06-29.md) — application caching (different from CI build caching covered here)
 - [[ADR 0003]] — production deployment of parent stack; depends on phase 1 of this ADR
 - [[ADR 0004]] — config centralization; the per-client config flow uses the reusable patterns proposed here
 - [[ADR 0005]] — per-factory deploys; depends on phase 1 + phase 3 of this ADR (org-level reusable workflows + standardized secret schema)

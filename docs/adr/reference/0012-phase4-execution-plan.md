@@ -2,7 +2,7 @@
 
 - **Status**: Plan (2026-07-02) — expands ADR-0012 §Phase 4 into a
   concrete PR series
-- **Gate**: `docs/powerbi-compatibility-test-plan.md` (37 objects ×
+- **Gate**: `docs/guides/powerbi-compatibility-test-plan.md` (37 objects ×
   5 dimensions) after EVERY wave
 - **POC baseline**: 4 façades live in `packiot_shadow` +
   `packiot_refactor` (0012-poc-customer-dashboards.sql) — planner

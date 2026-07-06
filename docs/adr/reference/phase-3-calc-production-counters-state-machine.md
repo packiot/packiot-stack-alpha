@@ -373,8 +373,8 @@ Answering these BEFORE the port starts is cheaper than answering them during. Br
 
 ## 9. Cross-references
 
-- Port plan overview: `docs/phase-3-calc-production-counters-port-plan.md`
-- Phase 4 cutover: `docs/adr-0010-phase-4-migration-plan.md`
+- Port plan overview: `docs/adr/reference/phase-3-calc-production-counters-port-plan.md`
+- Phase 4 cutover: `docs/archive/adr-0010-phase-4-migration-plan.md`
 - ADR-0010: `docs/adr/0010-sparkplug-decode-in-go-end-state.md`
 - Reference JS source: `services/edge-transformer/internal/transforms/calc_production_counters/source.js`
 - Go scaffold: `services/edge-transformer/internal/transforms/calc_production_counters/{calc.go,state.go,decision_tree.go}`

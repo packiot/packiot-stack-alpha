@@ -191,7 +191,7 @@ Save this as `packiot-stack-alpha/grafana/edge-transformer-shadow-mode.json` and
 
 ## 30-day soak success criteria
 
-The Phase 4 cutover (per `docs/adr-0010-phase-4-migration-plan.md` §3, Step 4.2) requires:
+The Phase 4 cutover (per `docs/archive/adr-0010-phase-4-migration-plan.md` §3, Step 4.2) requires:
 
 1. **Panel 2 divergence ≤ 0.01%** averaged over the 30 days
 2. **Panel 4 error rate = 0** for the entire window (no exceptions)
