@@ -5,8 +5,9 @@ repos as submodules and is the only thing deployed to AWS staging EC2. The
 service repos do their own testing in isolation; this repo runs the
 integration via `docker compose`.
 
-If you're new to the codebase, start with `CLAUDE.md` at the repo root for
-the architecture overview. This file is about **workflow** — branches,
+If you're new to the codebase, start with [`docs/GUIDE.md`](docs/GUIDE.md)
+— the end-to-end walk through the stack (architecture, code map,
+glossary, doc routing). This file is about **workflow** — branches,
 PRs, deploys, and how the auto-bump chain wires it all together.
 
 ---
@@ -287,6 +288,7 @@ worth ~2-4h of work if discipline keeps slipping.
 
 ## See also
 
-- `CLAUDE.md` (repo root) — architecture, data flow, service map.
+- `docs/GUIDE.md` — architecture, data flow, code map, glossary.
+- `docs/INDEX.md` — the full documentation inventory.
 - Each submodule's own `CLAUDE.md` if present — service-specific
   conventions.

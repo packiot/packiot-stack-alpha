@@ -3,6 +3,11 @@
 > Local integration environment for the Packiot OEE platform.
 > Spins up the full data pipeline — factory floor to dashboard — in a single
 > `make up`, with no cloud accounts required.
+>
+> **This README covers the local harness only.** For the real system —
+> architecture, the migration program, staging/production, runbooks —
+> start at [`docs/GUIDE.md`](docs/GUIDE.md) (the end-to-end guide) and
+> [`docs/INDEX.md`](docs/INDEX.md) (the full doc map).
 
 ---
 

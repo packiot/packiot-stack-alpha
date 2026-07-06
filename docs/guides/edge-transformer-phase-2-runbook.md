@@ -1,5 +1,8 @@
 # edge-transformer Phase 2 — Ready-to-Go Runbook
 
+> **STATUS (2026-07-06): EXECUTED/SUPERSEDED.** This guide predates the 10.9 cutover (MQTT is THE ingest, ADR-0010). Kept as an as-executed record — do not follow for new work; see docs/GUIDE.md §2.
+
+
 **Purpose:** A concrete, copy-paste runbook for executing Phase 2 of ADR-0009 once the user-only prerequisites are done. Eliminates ambiguity at execution time.
 
 **Status:** Awaiting prerequisites (see Section 1).
