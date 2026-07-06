@@ -1,0 +1,23 @@
+apiVersion: 1
+
+# F3 — the refactored database (packiot_shadow on the same DB host).
+# Becomes THE database at the ADR-0016 §6 flip.
+datasources:
+  - name: Packiot Shadow (F3)
+    type: postgres
+    uid: packiot-postgres-shadow
+    url: $POSTGRES_HOST:$POSTGRES_PORT
+    user: $POSTGRES_USER
+    secureJsonData:
+      password: $POSTGRES_PASSWORD
+    jsonData:
+      database: packiot_shadow
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+      postgresVersion: 1600
+      timescaledb: true
+      queryTimeout: "60"
+    isDefault: false
+    editable: false

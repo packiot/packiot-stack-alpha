@@ -21,9 +21,10 @@ type Metrics struct {
 	Registry *prometheus.Registry
 
 	// Per-delivery counters (incremented in amqp/consumer.go).
-	Deliveries *prometheus.CounterVec   // labels: routing_key, result
-	Duration   *prometheus.HistogramVec // labels: routing_key
-	JobTicks   *prometheus.CounterVec   // labels: job, outcome (ok|error|panic)
+	Deliveries  *prometheus.CounterVec   // labels: routing_key, result
+	Duration    *prometheus.HistogramVec // labels: routing_key
+	JobTicks    *prometheus.CounterVec   // labels: job, outcome (ok|error|panic)
+	BatchWrites *prometheus.CounterVec   // labels: dest (flow), result (ok|error)
 }
 
 func New() *Metrics {
@@ -53,6 +54,10 @@ func New() *Metrics {
 		Name: "oeecloud_worker_job_ticks_total",
 		Help: "Scheduled-job ticks by job and outcome (ok|error|panic).",
 	}, []string{"job", "outcome"})
-	reg.MustRegister(m.Deliveries, m.Duration, m.JobTicks)
+	m.BatchWrites = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "oeecloud_worker_batch_writes_total",
+		Help: "Batch statements executed by destination flow. dest=f1_public|f2_shadow_go_port|f3_packiot_shadow.",
+	}, []string{"dest", "result"})
+	reg.MustRegister(m.Deliveries, m.Duration, m.JobTicks, m.BatchWrites)
 	return m
 }
