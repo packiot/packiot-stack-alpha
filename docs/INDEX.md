@@ -19,6 +19,7 @@
 | [03-prod-vs-new-differences](overview/03-prod-vs-new-differences.md) | reviewers/auditors | EVERY deliberate divergence, justified |
 | [04-verification](overview/04-verification.md) | engineers | the 0/32,848 methodology; harness usage; artifact classes |
 | [05-onboarding](overview/05-onboarding.md) | new team members | first-week guided tour + golden rules |
+| [06-state-and-continuation](overview/06-state-and-continuation.md) | whoever continues | live snapshot: fleet status, URLs, dashboards, DB validation, remaining tasks |
 
 ## Contracts & living references (stable paths — linked from CI/PR template)
 
