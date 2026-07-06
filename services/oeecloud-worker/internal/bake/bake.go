@@ -98,7 +98,7 @@ var surfaces = []struct{ Name, SQL string }{
 	      JOIN shadow_go_port.uns_equipment_current_hour g USING (id_equipment)) d`},
 	{"uns_equipment_current_job", `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
-	    SELECT (COALESCE(l.id_order,-1) = COALESCE(g.id_order,-1)) AS ok
+	    SELECT (COALESCE(l.id_order::text,'') = COALESCE(g.id_order::text,'')) AS ok
 	      FROM public.uns_equipment_current_job l
 	      JOIN shadow_go_port.uns_equipment_current_job g USING (id_equipment)) d`},
 	{"customer_reports_shift_06", `
