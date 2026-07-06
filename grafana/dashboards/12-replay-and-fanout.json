@@ -243,7 +243,7 @@
     {
       "type": "timeseries",
       "id": 5,
-      "title": "edge-transformer dual-emit publish rate",
+      "title": "Transformer emit \u2014 publish vs confirm rate (triple-emit since 10.9)",
       "description": "shadowpub published vs confirmed. Divergence = RMQ confirm problems (ADR-0011 P0-1).",
       "datasource": {
         "type": "prometheus",
@@ -416,7 +416,7 @@
     {
       "type": "stat",
       "id": 8,
-      "title": "Cursor position",
+      "title": "shadow-mirror user_logs cursor (must keep advancing)",
       "description": "Last replayed staging user_logs id. Flat while operator actions occur = mirror stalled.",
       "datasource": {
         "type": "prometheus",
@@ -691,9 +691,9 @@
   "schemaVersion": 38,
   "style": "dark",
   "tags": [
-    "packiot",
-    "adr-0012",
-    "parity"
+    "replay",
+    "shadow-mirror",
+    "retires-at-flip"
   ],
   "templating": {
     "list": []
@@ -704,8 +704,8 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "3-Flow Parity \u2014 ADR-0012",
-  "uid": "3-flow-parity",
+  "title": "12 \u2014 Replay & fan-out (shadow-mirror + mirror fan-out; retires at flip R1/R3)",
+  "uid": "replay-and-fanout",
   "version": 1,
   "weekStart": ""
 }
