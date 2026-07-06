@@ -214,6 +214,10 @@ if [ "$SANDBOX_DB" = "packiot_refactor" ]; then
         echo "[5g/5] apply naming sweep B (v_* families + typo fix)..."
         apply_sql_file "$SWEEP_B_SQL"
     fi
+    # PowerBI gate alignment (real staging shapes; file lands via the
+    # phase5-readiness PR — apply_sql_file skips gracefully if absent).
+    echo "[5h/5] apply PowerBI gate alignment..."
+    apply_sql_file "${REPO_ROOT}/docs/adr/reference/migrations/0012-sandbox-gate-alignment.sql"
 fi
 
 # --- final summary -----------------------------------------------------
