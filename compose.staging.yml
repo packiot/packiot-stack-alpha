@@ -757,6 +757,13 @@ services:
       # Wave 2 port #2: shift_06 delete-and-reload → customer_reports.shift
       SHIFT06_REPORT_ENABLED: "true"
       SHIFT06_INTERVAL_MINUTES: "15"
+      # Wave 2 port #3: sap_13 upsert → customer_reports.sap_data_sync.
+      # DISABLED until issue #223 resolves: back4-api's neopac
+      # data-sync.controller.js must target the pool key
+      # (customer_id, linie, tag, shicht, auftrag_key) at the same
+      # cutover — flipping this on is the back4-api owner's decision.
+      SAP13_REPORT_ENABLED: "false"
+      SAP13_INTERVAL_MINUTES: "15"
       # ADR-0014 P3a events deriver — ENABLED 2026-07-03. Runs its own
       # bake on equipment_events (separate table from the shift bake's
       # id_shift surface — no panel contamination). The shift TRIGGER
