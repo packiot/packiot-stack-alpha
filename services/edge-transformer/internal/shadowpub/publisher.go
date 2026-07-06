@@ -430,6 +430,7 @@ func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPay
 		Instance:        p.instance,
 		Metrics:         resolved.Metrics,
 		SourceTimestamp: int64(resolved.Timestamp),
+		SourceType:      "go", // was BuildEnvelope's implicit default
 	})
 
 	body, err := json.Marshal(env)
@@ -598,10 +599,14 @@ type EnvelopeInput struct {
 // override via EnvelopeInput.SourceType, e.g. "refactored" routes writes
 // into packiot_shadow public.* for the ADR-0012 refactor POC.
 func BuildEnvelope(in EnvelopeInput) Envelope {
+	// NO defaulting: source_type "" is a first-class value post-10.9 —
+	// it IS the F1 production route. The old ""→"go" coercion here made
+	// the triple-emit's production leg silently emit a SECOND go
+	// envelope: F2 received everything twice (harmless — idempotent
+	// upserts), F1 received nothing, and the emit-side metric couldn't
+	// see it because it counts before this function. Callers that want
+	// "go" say "go".
 	sourceType := in.SourceType
-	if sourceType == "" {
-		sourceType = "go"
-	}
 	metrics := make([]Metric, 0, len(in.Metrics))
 	for _, m := range in.Metrics {
 		metrics = append(metrics, Metric{
