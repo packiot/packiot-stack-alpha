@@ -104,9 +104,15 @@ func OrderStarted(logger *slog.Logger) replay.Handler {
 		if err := updatePOStart(ctx, mainPool, "shadow_go_port", k, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
+		if err := openRuntimeWindow(ctx, mainPool, "shadow_go_port", k.IDEnterprise, k.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+			return fmt.Errorf("shadow_go_port window: %w", err)
+		}
 		if shadowPool != nil {
 			if err := updatePOStart(ctx, shadowPool, "public", k, tsStart, u.ID, logger); err != nil {
 				return fmt.Errorf("packiot_shadow: %w", err)
+			}
+			if err := openRuntimeWindow(ctx, shadowPool, "public", k.IDEnterprise, k.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_shadow window: %w", err)
 			}
 		}
 		return nil
