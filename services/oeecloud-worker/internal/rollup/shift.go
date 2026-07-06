@@ -153,6 +153,11 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// Serialize against runtime-provision (recurring hourly deadlocks:
+	// provision upserts vs rollup re-flags on the same grain tables).
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(shiftEligibleSQL, d.EvSchema, d.RefSchema),
 		exclAreas, exclEnterprises, machineLevelEnterprises); err != nil {
 		return fmt.Errorf("shift eligible: %w", err)
