@@ -243,6 +243,7 @@ func main() {
 		pool, shadowPool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
 	)
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
+	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
 	sparkplugHandler.SetLegacyIngest(cfg.LegacyIngestEnabled)
 
 	if cfg.POControlEnabled {

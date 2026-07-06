@@ -192,7 +192,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(mirror_worker_value_fanout_total{outcome!=\"ok\"}[10m]))*60",
+          "expr": "(sum(rate(mirror_worker_value_fanout_total{outcome!=\"ok\"}[10m])) or vector(0))*60",
           "legendFormat": "fanout failures",
           "refId": "A"
         }
