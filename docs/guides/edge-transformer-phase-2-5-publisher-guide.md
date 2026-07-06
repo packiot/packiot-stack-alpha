@@ -295,4 +295,4 @@ For Step 4 specifically: keep wiring changes in a SECOND PR after Step 3 has bee
 
 ## Once this lands
 
-Phase 2.5 done → edge-transformer is receiving real PLC events in shadow mode → Phase 3 (Calc Production Counters port per `docs/adr/reference/phase-3-calc-production-counters-port-plan.md`) becomes the next concrete step.
+Phase 2.5 done → edge-transformer is receiving real PLC events in shadow mode → Phase 3 (Calc Production Counters port per `docs/adr/reference/designs/phase-3-calc-production-counters-port-plan.md`) becomes the next concrete step.

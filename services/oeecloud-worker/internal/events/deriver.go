@@ -6,7 +6,7 @@
 // a CPACK-only staging.
 //
 // Deriver ported from prod's piot_review_equipment_events()
-// (ground truth: docs/adr/reference/0014-p3-events-deriver-prod-funcs.sql).
+// (ground truth: docs/adr/reference/captures/0014-p3-events-deriver-prod-funcs.sql).
 //
 // ARCHITECTURE NOTE: on prod, event CREATION happens in the Node-RED
 // pipeline (direct INSERTs) and piot_review_* only CORRECTS. This port

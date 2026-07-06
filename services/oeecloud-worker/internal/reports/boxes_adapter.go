@@ -1,5 +1,5 @@
 // boxes_adapter.go — the label-adapter boxes pipeline (design:
-// docs/adr/reference/0014-label-adapter-design.md). Replaces the
+// docs/adr/reference/designs/0014-label-adapter-design.md). Replaces the
 // per-customer boxes13.go: one pool table (customer_reports.boxes),
 // per-tenant DESCRIPTOR rows (public.label_formats), two archetypes.
 // Onboarding another scanner enterprise = one descriptor INSERT,

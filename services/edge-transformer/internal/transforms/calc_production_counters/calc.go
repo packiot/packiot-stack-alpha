@@ -1,8 +1,8 @@
 // Package calc_production_counters is the Go port of Node-RED's
 // `Calc Production Counters` function (id 1175dbcfce9b9ffa in
 // subflows/SparkPlug_v1.10.39.1.json). See:
-//   - docs/adr/reference/phase-3-calc-production-counters-port-plan.md — design
-//   - docs/adr/reference/phase-3-calc-production-counters-state-machine.md — reference
+//   - docs/adr/reference/designs/phase-3-calc-production-counters-port-plan.md — design
+//   - docs/adr/reference/designs/phase-3-calc-production-counters-state-machine.md — reference
 //   - source.js — verbatim JS extract (line-for-line reference)
 //
 // The port implements the 11 phases from the state machine doc. Each phase

@@ -38,18 +38,21 @@ The spine:
 [0016](adr/0016-staging-consolidation-master-plan.md) (consolidation master plan).
 Full list: `ls docs/adr/`.
 
-### adr/reference/ — captured ground truth
+### adr/reference/ — ground truth, by kind ([taxonomy](adr/reference/README.md))
 
-Legacy PL/pgSQL bodies (`0014-*.sql` — every port cites its capture),
-wave scripts (`0012-*`), the Calc port design pair
-(`phase-3-calc-production-counters-*`), and
-**[0016-flip-runbook.md](adr/reference/0016-flip-runbook.md)** — the
-cutover checklist.
+Living at top level: **[0016-flip-runbook](adr/reference/0016-flip-runbook.md)**
+· [naming-ledger](adr/reference/naming-ledger.md)
+· [0016-endstate-schema-map](adr/reference/0016-endstate-schema-map.md)
+· [0012-phase4-execution-plan](adr/reference/0012-phase4-execution-plan.md).
+Filed: `captures/` (immutable legacy bodies — every port cites one)
+· `designs/` (port designs & inventories) · `migrations/`
+(as-executed staging SQL).
 
 ## guides/ — how-to
 
 - [edge-transformer-phase-2-runbook](guides/edge-transformer-phase-2-runbook.md) · [publisher guide](guides/edge-transformer-phase-2-5-publisher-guide.md) · [PLC wiring](guides/edge-transformer-phase-2-5b-plc-wiring-guide.md)
 - [powerbi-compatibility-test-plan](guides/powerbi-compatibility-test-plan.md) — the 37+1-object flip gate
+- [adr-0010-phase-3-shadow-mode-panels](guides/adr-0010-phase-3-shadow-mode-panels.md) — plus live boards in `grafana/dashboards/` (the flip gate reads `/d/bake-flow-parity`)
 
 ## audits/ — dated findings (historical record; check dates before acting)
 
@@ -57,10 +60,6 @@ cutover checklist.
 - [prod-staging-3flow-comparison-2026-07](audits/prod-staging-3flow-comparison-2026-07.md)
 - [3-flow-parity-status](audits/3-flow-parity-status.md) · [caching-review-2026-06-29](audits/caching-review-2026-06-29.md)
 - [prod-packml-register-llll-corruption](audits/prod-packml-register-llll-corruption.md)
-
-## observability/
-
-- [adr-0010-phase-3-shadow-mode-panels](observability/adr-0010-phase-3-shadow-mode-panels.md) — plus the live boards in `grafana/dashboards/` (the flip gate reads `/d/bake-flow-parity`)
 
 ## product/ · archive/
 

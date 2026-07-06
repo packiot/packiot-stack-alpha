@@ -129,7 +129,7 @@ WHERE <typical_powerbi_filter>
 façade's implicit `WHERE customer_id = X` is combined with the
 outer filter into a single composite index scan. This is exactly
 the pattern proven in the ADR-0012 POC (see
-`docs/adr/reference/0012-poc-customer-dashboards.sql`).
+`docs/adr/reference/migrations/0012-poc-customer-dashboards.sql`).
 
 **Fail**: sequential scan on the canonical pool table, or planner
 doesn't inline the façade WHERE clause → query performance
@@ -155,7 +155,7 @@ projection.
 
 1. **Sandbox seeded** — `packiot_refactor` must have the full
    ADR-0012 façade set applied (via
-   `docs/adr/reference/0012-poc-customer-dashboards.sql` extended
+   `docs/adr/reference/migrations/0012-poc-customer-dashboards.sql` extended
    for every one of the 37 objects). Currently the POC covers
    only `c35_dashboard_producao_24h`, `c33_dashboard_producao_24h`,
    `c35_dashboard_paradas_24h`, `c35_dashboard_timeline_24h`.
@@ -231,7 +231,7 @@ The refactor is promotable when:
 ## References
 
 - ADR-0012 — the refactor this gates
-- `docs/adr/reference/0012-poc-customer-dashboards.sql` — the
+- `docs/adr/reference/migrations/0012-poc-customer-dashboards.sql` — the
   façade pattern
 - `memory/project_staging_db_schema_map.md` — full prod schema
   audit context
