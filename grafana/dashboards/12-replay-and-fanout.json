@@ -73,7 +73,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(mirror_worker_value_fanout_total{outcome!=\"ok\"}[10m]))"
+          "expr": "(sum(rate(mirror_worker_value_fanout_total{outcome!=\"ok\"}[10m])) or vector(0))"
         }
       ]
     },
@@ -354,7 +354,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(shadow_mirror_failed_total[10m]))"
+          "expr": "(sum(rate(shadow_mirror_failed_total[10m])) or vector(0))"
         }
       ]
     },
@@ -409,7 +409,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(shadow_mirror_update_noop_total[10m]))"
+          "expr": "(sum(rate(shadow_mirror_update_noop_total[10m])) or vector(0))"
         }
       ]
     },
