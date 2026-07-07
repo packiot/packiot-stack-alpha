@@ -1,6 +1,6 @@
 {
   "uid": "equipment-config",
-  "title": "Equipment & PackML Routing",
+  "title": "02 \u2014 Equipment & PackML routing (reference data)",
   "description": "Configuration tables: hierarchy, equipment registry, packml_register routing, production orders",
   "tags": [
     "packiot",

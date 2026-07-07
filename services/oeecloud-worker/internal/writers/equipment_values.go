@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
@@ -30,6 +31,8 @@ import (
 // metric.IsLineTopic() (3 for line, 1 for unit). ts_value bucketed to
 // whole seconds — matches Node-RED's Math.round(ts/1000)*1000.
 type EquipmentValues struct {
+	skipSample atomic.Uint64
+
 	resolver *sparkplug.Resolver
 	logger   *slog.Logger
 
@@ -123,11 +126,16 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
 	if info == nil {
-		w.logger.Debug("equipment_values: topic not registered, skipping",
-			slog.String("topic", topic),
-			slog.String("name", m.Name),
-			slog.String("kind", kind.String()),
-		)
+		// INFO 1-in-32 sample (was Debug = invisible): the f1
+		// empty_batch trickle (~3/min) is THESE — every skipped topic
+		// deserves a name in the logs (gap-closure 2026-07-07).
+		if w.skipSample.Add(1)%32 == 1 {
+			w.logger.Info("equipment_values: topic not registered, skipping (sampled 1/32)",
+				slog.String("topic", topic),
+				slog.String("name", m.Name),
+				slog.String("kind", kind.String()),
+			)
+		}
 		return nil, nil
 	}
 

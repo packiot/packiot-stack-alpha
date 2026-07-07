@@ -1,6 +1,6 @@
 {
   "uid": "packiot-logs",
-  "title": "Stack Overview",
+  "title": "04 \u2014 Logs: stack overview",
   "tags": [
     "packiot",
     "logs"
@@ -51,7 +51,7 @@
       "type": "link",
       "title": "OEE Pipeline",
       "url": "/d/oee-pipeline",
-      "tooltip": "OEE Pipeline — Live Monitor"
+      "tooltip": "OEE Pipeline \u2014 Live Monitor"
     },
     {
       "icon": "external link",
@@ -69,7 +69,7 @@
       "type": "link",
       "title": "System Health",
       "url": "/d/system-health",
-      "tooltip": "System Health — DB & Pipeline"
+      "tooltip": "System Health \u2014 DB & Pipeline"
     },
     {
       "icon": "external link",
@@ -78,7 +78,7 @@
       "type": "link",
       "title": "Operator Activity",
       "url": "/d/packiot-operator",
-      "tooltip": "Operator Activity — per-user actions & downtimes"
+      "tooltip": "Operator Activity \u2014 per-user actions & downtimes"
     },
     {
       "icon": "external link",
@@ -87,7 +87,7 @@
       "type": "link",
       "title": "PLC Pipeline Logs",
       "url": "/d/packiot-pipeline-logs",
-      "tooltip": "PLC Pipeline Logs — edge-nodered & oeecloud"
+      "tooltip": "PLC Pipeline Logs \u2014 edge-nodered & oeecloud"
     },
     {
       "icon": "external link",
@@ -96,7 +96,7 @@
       "type": "link",
       "title": "Services Logs",
       "url": "/d/packiot-services-logs",
-      "tooltip": "Services Logs — edge-api, operator, simulator"
+      "tooltip": "Services Logs \u2014 edge-api, operator, simulator"
     }
   ],
   "panels": [
@@ -202,7 +202,7 @@
     {
       "id": 12,
       "type": "stat",
-      "title": "AMQP Published — 5m",
+      "title": "AMQP Published \u2014 5m",
       "gridPos": {
         "h": 4,
         "w": 5,
@@ -251,7 +251,7 @@
     {
       "id": 13,
       "type": "stat",
-      "title": "AMQP Received — 1m",
+      "title": "AMQP Received \u2014 1m",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -300,7 +300,7 @@
     {
       "id": 14,
       "type": "stat",
-      "title": "equipment_values Written — 5m",
+      "title": "equipment_values Written \u2014 5m",
       "gridPos": {
         "h": 4,
         "w": 5,
@@ -384,7 +384,7 @@
     {
       "id": 15,
       "type": "timeseries",
-      "title": "AMQP Message Flow — equipment_values writes/min by machine",
+      "title": "AMQP Message Flow \u2014 equipment_values writes/min by machine",
       "gridPos": {
         "h": 7,
         "w": 24,
@@ -427,7 +427,7 @@
     {
       "id": 8,
       "type": "logs",
-      "title": "All Services — Errors & Warnings",
+      "title": "All Services \u2014 Errors & Warnings",
       "gridPos": {
         "h": 12,
         "w": 24,

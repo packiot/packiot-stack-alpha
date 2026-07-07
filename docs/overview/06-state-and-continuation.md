@@ -75,7 +75,10 @@ Prod DB (tsp12): `databaseCredentials` secret, **SELECT-only, always**.
 ## 5. Remaining tasks (complete list)
 
 **Clocks (self-running):**
-- 7-day full-surface bake window → **~2026-07-13** (started at the
+- 7-day full-surface bake window → **~2026-07-14** (clock RESTARTED
+  2026-07-07: the envelope-routing repairs of 07-06 — F2 double-write
+  era, F1 gap + backlog replay — print artifacts on 3d comparison
+  surfaces until ~07-09; count green days from 07-07) (started at the
   10.9 cutover; read 09-bake daily — every non-zero must keep its
   named cause).
 - F3 identity fingerprints converge as its history fills (~07-09).
@@ -98,8 +101,27 @@ Prod DB (tsp12): `databaseCredentials` secret, **SELECT-only, always**.
 - Dashboard numbering dedup (two 05s, two 09s).
 - Bloat-ledger items post-flip: amber-bug fixes (consumer-signed), runtime-table slimming, `monitoramento_*` drop.
 
+## 5b. Alerting (added 2026-07-07)
+
+Prometheus rule groups `packiot-staging-health` (#336) +
+`packiot-flow-and-parity` cover: target down, engine stalls/errors,
+ingest silence, write-path dry, **flow write imbalance** (the
+2026-07-06 starving-leg class), batch errors, bake/identity
+persistence past expiry, DLQ, MQTT loss. Firing alerts show on the
+**03** and **09** boards' top panel (red = look). No external
+notification channel yet — the panel IS the notifier; wiring
+Slack/email needs a business decision on the channel.
+
+Grafana access truth: **https://grafana.staging.packiot.app via
+Authentik SSO** (basic auth is disabled; `GRAFANA_ADMIN_PASSWORD` is
+break-glass only). API automation: `-H 'X-WEBAUTH-USER: admin'`
+against the container's :3000.
+
 ## 6. How to continue a work session
 
+0. **Shared-tree rule**: multiple sessions may work this repo
+   concurrently — NEVER edit the main checkout for shippable work;
+   `git worktree add <scratch> origin/staging`, branch, PR, remove.
 1. Read the project memory pickup (`session_77_pickup.md` in the
    Claude project memory) — machine state + rules.
 2. Read this file for the live snapshot; check 09-bake for anything
