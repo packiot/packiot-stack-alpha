@@ -50,6 +50,81 @@ one process to bake, one place to reason about — but it is the wrong end state
 them apart once the migration stabilizes. We return to that in
 [Chapter 9](09-the-endgame.md).
 
+## How Go talks to the database
+
+Before the scheduling and the math, the plumbing — because "the engine processes the
+database" is a claim that has to cash out in real connections and real SQL. Three
+mechanics carry it, and the third is the one that makes the whole three-flow
+migration cheap.
+
+**A connection pool per physical database.** The worker holds pooled connections via
+`pgx` (`pgxpool.Pool`) — one pool to the main database, and a second to the separate
+refactored database (F3). Nothing opens a connection per query; work borrows a
+connection from the pool and returns it.
+
+**The ingest path writes in batches, not row by row.** When a message arrives, its
+writers don't fire one `INSERT` per value. Each writer builds a query object that the
+handler *enqueues into a `pgx.Batch`*, and the whole batch executes in one round trip
+per delivery. This is the difference between a fast ingest path and a database melting
+under per-row chatter.
+
+**The compute path fans one function across flows by swapping `search_path`.** This is
+the elegant part. Recall the [three flows](02-architecture-at-a-glance.md#idea-2--the-three-flows)
+write to three different schemas. The worker does *not* have three copies of each
+rollup. It has one, and it runs it against each destination by changing the schema on
+the connection's search path. A small helper loops the destinations:
+
+```go
+// internal/jobs/jobs.go — run one pass against every flow destination
+func RunPerDest(ctx context.Context, dests []flows.Dest, name string, logger *slog.Logger,
+    fn func(ctx context.Context, d flows.Dest) (int64, error)) error {
+    for _, d := range dests {
+        n, err := fn(ctx, d)   // same fn, different schema — see below
+        // ... per-dest error isolation + row-count logging ...
+    }
+}
+```
+
+…and each pass acquires a connection, points it at that flow's schema, and runs
+identical SQL:
+
+```go
+// internal/rollup/provision.go — the per-flow execution pattern
+conn, err := d.Pool.Acquire(ctx)
+defer conn.Release()
+
+// The SAME code becomes F1 / F2 / F3 by changing ONE thing:
+conn.Exec(ctx, fmt.Sprintf(`SET search_path TO %s, public`, d.EvSchema))
+
+// Session-scoped advisory lock: provision and the rollup passes write
+// the same grain tables; unserialized they deadlock hourly.
+conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, d.Name+":runtime")
+defer conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(...)`, d.Name+":runtime")
+defer conn.Exec(context.WithoutCancel(ctx), `RESET search_path`)
+
+// ... issue the flow-agnostic SQL ...
+```
+
+Two things in that snippet are worth pausing on, because they are exactly the kind of
+production concern a stored procedure inside pg_cron never had to state out loud:
+
+- **`search_path` is how one code path serves three flows.** Write the rollup once,
+  against unqualified table names, and the schema you set decides whether it lands in
+  the legacy schema, the shadow-port schema, or the refactored database. That is why
+  proving three flows identical costs almost no extra code — it *is* the same code.
+- **The advisory lock is a scar with a story.** Provision and the rollup passes both
+  write the same grain tables; run them unserialized and they deadlock every hour. A
+  Postgres session-level advisory lock, keyed by flow name, serializes them. Details
+  like this — and the `SET statement_timeout = 0` for the deliberately-slow hourly
+  provision pass — are the operational reality of moving computation out of the
+  database: you now *own* the concurrency and timeout behavior the database used to
+  manage implicitly, and you state it explicitly in code.
+
+So "the engine processes the database" means, concretely: pooled `pgx` connections,
+batched writes on the hot ingest path, and one set of rollup functions replayed
+across flows by schema-swapping — all of it visible, testable Go, none of it hidden
+in `pg_proc`.
+
 ## The scheduler: replacing pg_cron in Go
 
 Before the math, the rhythm. The legacy `pg_cron` rows — "run this procedure every
