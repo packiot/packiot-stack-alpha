@@ -1,6 +1,8 @@
 # ADR-0017 — Endgame target architecture: process separation + enterprise hardening
 
-- **Status**: Proposed (2026-07-07) — decider: Emmanuel Podestá
+- **Status**: **Accepted** (blessed by decider Emmanuel Podestá,
+  2026-07-07, relayed via session). Phase E's ADR gate is satisfied;
+  its soak gate (Phase B complete) remains.
 - **Context**: ADR-0016's flip consolidates onto ONE flow. This ADR
   decides what the stack looks like AFTER that: the process topology,
   the RabbitMQ topology, and the database operating standard the
