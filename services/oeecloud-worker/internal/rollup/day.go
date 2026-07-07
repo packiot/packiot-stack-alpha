@@ -22,6 +22,9 @@
 //   - Tail: re-flag current-day rows only (this generation's
 //     proportional formula is commented out — NOT ported; amber-2
 //     lived in the dead generation and dies with it).
+//   - Ideal speed: NO own derivation — oee = net / sum(hour rows'
+//     ideal_production), so the tp_equipment=3 NULL-ideal LOCF fix
+//     lives in hour.go's speed pass and this grain inherits it.
 //
 // GUARDRAIL: UPDATEs equipment_runtime_1day (+week/month flags) by
 // (id_equipment, ts_value); reads equipment_runtime_1hour. No PO tables.

@@ -15,6 +15,8 @@
 //     for years). Faithful port keeps it; guard test PINS it; ledger
 //     carries the fix-with-consumer-signoff note. Month's own oee_p
 //     correctly targets 1month.
+//   - Ideal speed: NO own derivation — day-sums carry ideal_production,
+//     so the tp_equipment=3 NULL-ideal LOCF fix (hour.go) is inherited.
 //
 // GUARDRAIL STATEMENT: UPDATEs on grain tables by (id_equipment,
 // ts_value); reads 1day + reference. No PO tables.
