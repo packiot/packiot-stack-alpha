@@ -827,6 +827,12 @@ services:
       BOXES_BRIDGE_ENABLED: "true"
       # ADR-0014 P3c — UNS provisioner + CAgg-sourced equipment grains.
       UNS_REFRESH_ENABLED: "true"
+      # uns_equipment_current_metrics deriver — the table froze at the
+      # 10.9 cutover (its ingest writer's `sparkplug.uns_metrics` routing
+      # key lost its only producer). In-engine derivation replaces it
+      # (owner decision 2026-07-07). Ships OFF; enable at the flip.
+      # Ledgered divergence: freshness ingest-time → job cadence (1 min).
+      UNS_CURRENT_METRICS_ENABLED: "false"
       # ADR-0014 P3b — po-runtime-recalc (shadow flows).
       PO_RECALC_ENABLED: "true"
       RUNTIME_PROVISION_ENABLED: "true"

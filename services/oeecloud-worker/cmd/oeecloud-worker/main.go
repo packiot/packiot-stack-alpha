@@ -226,6 +226,16 @@ func main() {
 			time.Duration(cfg.UnsIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
+	// uns_equipment_current_metrics deriver — the frozen live-state
+	// table's new mechanism (it lost its ingest writer at the 10.9
+	// cutover; owner-approved in-engine derivation, 2026-07-07).
+	// Its OWN job + cadence — flag-off until the flip. Freeze story +
+	// per-column derivation ledger: internal/uns/current_metrics.go.
+	if cfg.UnsCurrentMetricsEnabled {
+		go uns.LoopCurrentMetrics(ctx, flows.Standard(pool, shadowPool),
+			time.Duration(cfg.UnsCurrentMetricsIntervalMinutes)*time.Minute, logger, jobObs)
+	}
+
 	// obd port — the box→production bridge (descriptor-driven).
 	if cfg.BoxesBridgeEnabled {
 		go reports.LoopBoxesBridge(ctx, flows.Standard(pool, shadowPool), time.Minute, logger, jobObs)
