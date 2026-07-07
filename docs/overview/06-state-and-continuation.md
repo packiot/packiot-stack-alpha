@@ -4,7 +4,7 @@
 > every dashboard, the database validation results, and exactly what
 > remains. Written after a full-stack review on **2026-07-06 ~19:00Z**.
 > If you are continuing this work (human or AI), start HERE, then
-> [05-onboarding](05-onboarding.md).
+> [the guide](../README.md).
 
 ## 1. Service fleet (staging app EC2 `i-06c9547a2c7091ab7`)
 
@@ -14,7 +14,7 @@ sampled window.**
 
 | Service | Status | Notes |
 |---|---|---|
-| oeecloud-worker | ✅ healthy | THE engine — all jobs green (see [01-architecture §4](01-architecture.md)) |
+| oeecloud-worker | ✅ healthy | THE engine — all jobs green (see [guide ch.4](../guide/04-the-engine.md)) |
 | edge-transformer | ✅ healthy | MQTT ingest, triple-emit; AMQP source deliberately OFF (10.9) |
 | plc-sim | ✅ up | THE staging data source (Sparkplug B → Mosquitto) |
 | mirror-worker-go | ✅ healthy | prod mirror; value-sync at designed steady state (attributed ledger) |
@@ -150,7 +150,7 @@ against the container's :3000.
    Claude project memory) — machine state + rules.
 2. Read this file for the live snapshot; check 09-bake for anything
    past its expiry date (that's the only alarm that matters).
-3. Golden rules: [05-onboarding §Day 2](05-onboarding.md). The three
+3. Golden rules: [guide ch.9 §principles](../guide/09-the-endgame.md). The three
    that prevent disasters: prod SELECT-only · call-site-verify before
    porting · one precise predicate per destructive cleanup.
 4. The bug journal (260+ entries) and the zettel vault hold every

@@ -6,8 +6,8 @@
 >
 > **This README covers the local harness only.** For the real system —
 > architecture, the migration program, staging/production, runbooks —
-> start at [`docs/GUIDE.md`](docs/GUIDE.md) (the end-to-end guide) and
-> [`docs/INDEX.md`](docs/INDEX.md) (the full doc map).
+> start at [`docs/README.md`](docs/README.md) — the documentation front
+> door, which opens onto the end-to-end guide (read chapters 1–9 in order).
 
 ---
 
@@ -93,7 +93,7 @@ Docker Compose network, seeded with realistic fixture data, so a developer can:
 > Local dev keeps the simpler HTTP ingest above; mosquitto is present
 > for parity but the Go MQTT path is staging-only today. Canonical
 > per-environment service maps live in the `compose.*.yml` header
-> comments; the full story is [`docs/GUIDE.md`](docs/GUIDE.md).
+> comments; the full story is [`docs/README.md`](docs/README.md) → the guide.
 
 ### Data flow — one message, end-to-end (local dev)
 
