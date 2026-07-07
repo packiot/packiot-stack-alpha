@@ -1082,6 +1082,13 @@ services:
       dockerfile: Dockerfile.staging
     container_name: operator
     restart: unless-stopped
+    # ADR-0018 wave 4: nginx injects the enterprise api key on proxied
+    # /api/* writes (envsubst template) — the browser NEVER holds it.
+    # Value lives in /opt/packiot/.env (OPERATOR_EDGE_API_KEY =
+    # CPACK-Staging enterprises.api_key). edge-api gets JWT_SECRET via
+    # its env_file for the /session usecase (both appended 2026-07-07).
+    environment:
+      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
     ports:
       - "127.0.0.1:8083:80"
     networks:
