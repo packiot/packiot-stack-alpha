@@ -93,6 +93,68 @@ acknowledgment, retry forever. Contrast this with the engine in the next chapter
 whose obsession is not durability but *fidelity* — the same language, opposite
 disciplines.
 
+### The transformer's responsibilities, exactly
+
+To pin it down — the way [Chapter 4](04-the-engine.md) pins down the engine — here is
+precisely what this service owns and, just as importantly, what it does not:
+
+**It owns:** subscribing to the machine's MQTT/SparkPlug stream; decoding the
+protobuf; resolving aliases and topics to a stable equipment identity; the counter
+calculation; durability (the outbox); and publishing confirmed messages to the bus,
+stamped for the three flows.
+
+**It does not own:** OEE (it computes deltas and rates, never Availability ×
+Performance × Quality); the database (it never touches PostgreSQL — its only output
+is a RabbitMQ message); business state (it holds no notion of a production order or a
+shift). It is a **stateless-per-message protocol-and-durability service.** That
+narrowness is the point: it can be reasoned about, scaled per factory, and — in the
+endgame — split out cleanly, precisely because it does exactly one job.
+
+### The durability loop, in code
+
+The outbox is where "never lose a message" becomes real, and it is worth seeing the
+lifecycle concretely, because it is the transformer's spine:
+
+```
+  MQTT msg decoded ──▶ store.Enqueue()   (write to on-disk SQLite FIRST)
+                            │
+        drain goroutine ────┤ Peek() a batch
+                            ▼
+                     publisher.Publish()  (RabbitMQ, confirm-select mode)
+                        │            │
+             confirmed ─┘            └─ nacked / timed out
+                 │                          │
+            store.Delete(id)          row STAYS → retried with backoff
+```
+
+The service header states the invariant it buys:
+
+> *when a Sparkplug message decodes cleanly, the caller writes it to the outbox
+> FIRST (durable, on-disk), then a separate drain goroutine publishes to RabbitMQ
+> with publisher confirms. On successful confirm, the outbox row is deleted. On
+> failure, the row stays and gets retried … This makes the whole path
+> crash-consistent from "MQTT message received" to "RabbitMQ persistent".*
+
+And the publish is not fire-and-forget. It runs in AMQP **confirm-select** mode:
+every message must be acknowledged by the broker, and if it is refused or the
+acknowledgment doesn't arrive in time, the publisher returns a *typed* error the
+drain loop knows how to handle:
+
+```go
+// internal/shadowpub/publisher.go
+var (
+    ErrPublishNacked  = errors.New("shadowpub: RabbitMQ nacked publish")
+    ErrConfirmTimeout = errors.New("shadowpub: RabbitMQ confirm timeout")
+)
+```
+
+Those two errors are why the outbox row's deletion is *conditional on confirmation*:
+a nack or a timeout means the row is not deleted, so it drains again. A crash between
+decode and confirm loses nothing, because the durable write already happened. This is
+the entire difference between "we send to RabbitMQ" and "we guarantee delivery to
+RabbitMQ" — and it is why the transformer, not Node-RED, is where the durability
+boundary now lives.
+
 ## The triple-emit
 
 Recall [the three flows](02-architecture-at-a-glance.md#idea-2--the-three-flows).
