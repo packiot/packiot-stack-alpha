@@ -43,6 +43,16 @@ be worse than the disease. [Chapter 7](07-customizations-and-real-factories.md) 
 entirely about what belongs here and what doesn't — told through a real factory
 that pushed this boundary to its limit.
 
+To state its responsibility as precisely as the two Go services above — and to be
+exact about the *current* shape, after the "10.9 cutover" moved SparkPlug ingest
+into the transformer — Node-RED now **owns**: the PLC connection for
+*non-SparkPlug* protocols where it is still the adapter; a small set of operator
+HTTP endpoints the SPA calls; and the governed per-customer customization flows. It
+**no longer owns**: SparkPlug/MQTT ingest (the transformer subscribes directly),
+decoding, normalization, or durability. The trajectory is deliberate — Node-RED
+shrank from "the whole edge" to "the protocol adapter and the customization
+surface," and it is not killed only because that surface is genuinely needed.
+
 > **Decision:** the Node-RED / transformer split, and why Node-RED is not killed
 > outright, is [ADR-0009](../adr/0009-edge-transformer-go-service-and-nodered-split.md).
 > The "all-Go, kill Node-RED" option was considered and explicitly rejected.
