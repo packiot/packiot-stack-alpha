@@ -20,6 +20,12 @@ rollback is env-reversal (old DB frozen-read for 30 days).
       closed with the back4-api read-only finding.)
 - [ ] hist_* tables verified queryable on the target DB (§5 — DONE:
       EV 2.41M · POs 20.6k · runtime 20.6k · user_logs 137k).
+- [x] refdata-api SQL dependencies exist on the target DB — PROVISIONED
+      2026-07-07 (2 fns + 4 operator views + 2 return-type tables +
+      equipment_events_low_speed; as-executed SQL:
+      `migrations/0018-f3-refdata-deps.sql`; smoke: timeline 2010 rows,
+      pending 14781 on F3). Discovered absent during wave-3 build —
+      every /v1 operator route would have 500'd at flip.
 - [ ] `uns_equipment_current_metrics` freeze has a named cause or a
       fix (2026-07-07 audit: no producer post-10.9 — the
       `sparkplug.uns_metrics` routing key is published by nothing;
