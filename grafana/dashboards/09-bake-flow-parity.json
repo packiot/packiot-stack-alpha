@@ -13,6 +13,48 @@
   },
   "panels": [
     {
+      "id": 10,
+      "type": "stat",
+      "title": "FIRING ALERTS (must be 0 \u2014 names appear when firing)",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "firing",
+          "refId": "A"
+        },
+        {
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "legendFormat": "{{alertname}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "id": 1,
       "type": "timeseries",
       "title": "Surface mismatches (0 = engines agree)",
@@ -20,7 +62,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 4
       },
       "fieldConfig": {
         "defaults": {
@@ -48,7 +90,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 4
       },
       "fieldConfig": {
         "defaults": {
@@ -76,7 +118,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 13
       },
       "fieldConfig": {
         "defaults": {
@@ -114,7 +156,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -156,7 +198,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 25
       },
       "options": {
         "mode": "markdown",

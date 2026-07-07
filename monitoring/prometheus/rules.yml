@@ -40,3 +40,49 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "deliveries arriving but nothing written in 15m — resolver/DB path broken; see 13-database-reach board"
+
+  - name: packiot-flow-and-parity
+    rules:
+      # Today's bug class (2026-07-06): one flow starving while others
+      # write. Fires when the busiest and quietest destination diverge
+      # by more than 60% for 30m. Structural F1-vs-shadow statement
+      # differences (pocontrol/mint are shadow-only) stay under this.
+      - alert: FlowWriteImbalance
+        expr: >
+          (max(sum by (dest) (rate(oeecloud_worker_batch_writes_total{result="ok"}[15m])))
+           - min(sum by (dest) (rate(oeecloud_worker_batch_writes_total{result="ok"}[15m]))))
+          / max(sum by (dest) (rate(oeecloud_worker_batch_writes_total{result="ok"}[15m]))) > 0.6
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "Destination flows writing at diverged rates — a leg may be starving (see 08/13 boards)"
+      - alert: BatchWriteErrors
+        expr: sum(increase(oeecloud_worker_batch_writes_total{result="error"}[15m])) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Worker batch statements erroring"
+      - alert: BakeSurfacePersisting
+        expr: bake_surface_mismatches > 0
+        for: 24h
+        labels: {severity: warning}
+        annotations:
+          summary: "Bake surface {{ $labels.surface }} mismatched for 24h — past every documented expiry class"
+      - alert: IdentityBrokenPersisting
+        expr: bake_identity_mismatch > 0
+        for: 12h
+        labels: {severity: critical}
+        annotations:
+          summary: "F2/F3 identity fingerprint {{ $labels.surface }} diverged for 12h — same-engine flows MUST be equal"
+      - alert: MirrorDLQNotEmpty
+        expr: mirror_worker_dlq_depth > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "Mirror DLQ has rows for 30m — replay failures need eyes"
+      - alert: MQTTDisconnected
+        expr: edge_transformer_mqtt_connected == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "edge-transformer lost Mosquitto — ingestion is down"

@@ -1,6 +1,6 @@
 {
   "uid": "system-health",
-  "title": "System Health \u2014 DB & Pipeline",
+  "title": "03 \u2014 System health (DB & pipeline)",
   "description": "Row counts, pipeline throughput, events, UNS metrics, downtimes \u2014 filtered by hierarchy",
   "tags": [
     "packiot",
@@ -113,6 +113,48 @@
   },
   "panels": [
     {
+      "id": 11,
+      "type": "stat",
+      "title": "FIRING ALERTS (must be 0 \u2014 names appear when firing)",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "firing",
+          "refId": "A"
+        },
+        {
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "legendFormat": "{{alertname}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "id": 1,
       "type": "bargauge",
       "title": "Table Row Counts (filtered scope)",
@@ -120,7 +162,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 0
+        "y": 4
       },
       "options": {
         "reduceOptions": {
@@ -170,7 +212,7 @@
         "h": 8,
         "w": 16,
         "x": 8,
-        "y": 0
+        "y": 4
       },
       "options": {
         "legend": {
@@ -216,7 +258,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 8
+        "y": 12
       },
       "options": {
         "reduceOptions": {
@@ -272,7 +314,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 8
+        "y": 12
       },
       "options": {
         "reduceOptions": {
@@ -324,7 +366,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 8
+        "y": 12
       },
       "options": {
         "reduceOptions": {
@@ -374,7 +416,7 @@
         "h": 9,
         "w": 14,
         "x": 0,
-        "y": 12
+        "y": 16
       },
       "options": {
         "legend": {
@@ -419,7 +461,7 @@
         "h": 9,
         "w": 10,
         "x": 14,
-        "y": 12
+        "y": 16
       },
       "options": {
         "showHeader": true,
@@ -479,7 +521,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 25
       },
       "options": {
         "showHeader": true,

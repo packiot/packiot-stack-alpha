@@ -1,6 +1,6 @@
 {
   "uid": "oee-pipeline",
-  "title": "OEE Pipeline \u2014 Live Monitor",
+  "title": "01 \u2014 OEE pipeline (live business view)",
   "description": "Real-time view of the SparkPlug B \u2192 PubSub \u2192 TimescaleDB data pipeline",
   "tags": [
     "packiot",

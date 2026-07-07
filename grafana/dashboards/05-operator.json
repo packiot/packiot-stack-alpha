@@ -1,6 +1,6 @@
 {
   "uid": "packiot-operator",
-  "title": "Operator Activity",
+  "title": "05 \u2014 Operator activity",
   "description": "Per-user operator insights: logins, PO actions, downtime justification rate, and event throughput",
   "tags": [
     "packiot",
