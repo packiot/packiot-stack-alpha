@@ -42,15 +42,22 @@ type line struct {
 	MachSpeed  float64 // units/min
 }
 
-// The staging CPACK topology (mirrors the packml_register entries the
-// resolver routes; single-machine lines — the simplest topology that
-// exercises first-in-CSV and last-in-CSV aggregation branches).
+// The staging CPACK topology — VERIFIED against packml_register
+// 2026-07-07 (the original table was fictional: it CLAIMED to mirror
+// the register but only L5/BREYER/61 matched, so 4 of 5 sim lines
+// published unregistered topics that skipped everywhere — the
+// call-site-verification lesson, simulator edition):
+//   CPACK/SC/LINHAS/L8              → eq 51 (line-level entry)
+//   CPACK/SC/LINHAS/L5/BREYER + .../61/Unit → eq 53
+//   CPACK/SC/LINHAS/L5/TEXA   + .../65/Unit → eq 57
+//   CPACK/SC/LINHAS/L3/PTH    + .../81/Unit → eq 61
+//   CPACK/SC/LINHAS/L4/TEXA   (line resolves; unit idx unregistered) → eq 63
 var lines = []line{
-	{"L1", "BOBST", 51, 120},
-	{"L2", "MARTIN", 53, 100},
-	{"L4", "TCY", 57, 90},
+	{"L8", "", 51, 120},
 	{"L5", "BREYER", 61, 110},
-	{"L6", "GOPFERT", 63, 95},
+	{"L5", "TEXA", 65, 100},
+	{"L3", "PTH", 81, 90},
+	{"L4", "TEXA", 66, 95},
 }
 
 type metricDef struct {
@@ -59,7 +66,10 @@ type metricDef struct {
 }
 
 func (l line) metrics(base uint64) []metricDef {
-	p := "CPACK/SC/LINHAS/" + l.Line + "/" + l.Unit
+	p := "CPACK/SC/LINHAS/" + l.Line
+	if l.Unit != "" {
+		p += "/" + l.Unit
+	}
 	return []metricDef{
 		{p + fmt.Sprintf("/Admin/ProdConsumedCount/%d/Unit", l.Idx), base + 1},
 		{p + fmt.Sprintf("/Admin/ProdProcessedCount/%d/Unit", l.Idx), base + 2},
