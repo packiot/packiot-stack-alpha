@@ -456,7 +456,7 @@ services:
     # container reads stale content until recreated. Same trap as the
     # grafana `provisioning_rev` pattern.
     labels:
-      - "config_rev=2026-07-07-flow-parity-rules"
+      - "config_rev=2026-07-07-refdata-scrape"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
