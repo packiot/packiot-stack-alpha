@@ -154,6 +154,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"metrics": keysOf(metrics), "dimensions": keysOf(dimensions),
 			"grains": gr, "row_limit": queryRowLimit,
+			"datasets": datasetCatalog(),
 		})
 	})
 
@@ -163,12 +164,38 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 			return
 		}
-		var q queryReq
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&q); err != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
 			http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
 			return
 		}
-		sql, args, err := compile(q, cid)
+		// Two request shapes share the endpoint: {"dataset", ...} routes
+		// to the named-dataset registry (datasets.go, front4 census);
+		// otherwise the metric×dimension composer (legacy shape).
+		var probe struct {
+			Dataset string `json:"dataset"`
+		}
+		if err := json.Unmarshal(body, &probe); err != nil {
+			http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+			return
+		}
+		var sql string
+		var args []any
+		if probe.Dataset != "" {
+			var dq datasetReq
+			if err := json.Unmarshal(body, &dq); err != nil {
+				http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+				return
+			}
+			sql, args, err = compileDataset(dq, cid)
+		} else {
+			var q queryReq
+			if err := json.Unmarshal(body, &q); err != nil {
+				http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+				return
+			}
+			sql, args, err = compile(q, cid)
+		}
 		if err != nil {
 			http.Error(w, `{"error":`+fmt.Sprintf("%q", err.Error())+`}`, http.StatusBadRequest)
 			return
