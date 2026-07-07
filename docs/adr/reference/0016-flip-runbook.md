@@ -13,7 +13,10 @@ rollback is env-reversal (old DB frozen-read for 30 days).
 - [x] Shift-resolver close-out — DONE EARLY 2026-07-06 (same-row
       evidence 0/46; trigger dropped on staging, Go fill live on all
       flows, verified 07-07; roadmap A1).
-- [ ] PowerBI 37+1-object gate signed (human).
+- [x] PowerBI 37+1-object gate — WAIVED-ON-EVIDENCE 2026-07-07 (no
+      PowerBI access available, ever; automated shape gate PROMOTABLE +
+      prod-read fidelity as basis; rendered-report acceptance deferred
+      to Phase F customer-side — see gate board G3).
 - [ ] sap_13 either ported+baked or explicitly deferred to the
       post-flip ledger with back4-api owner sign-off (human).
       (Port ENABLED on staging 2026-07-06, 72h bake running; #223

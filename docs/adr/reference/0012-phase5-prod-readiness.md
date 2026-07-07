@@ -15,7 +15,7 @@
 |---|---|---|---|
 | G1 | Full-surface bake 7d green | ⏳ clock → ~2026-07-13 | 09-bake dashboard daily |
 | G2 | Shift-resolver close-out | ⏳ clock → 2026-07-09 | runbook in repo docs |
-| G3 | PowerBI 37+1 sign-off | 🟡 evidence READY (compat report PROMOTABLE + prod-read fidelity regenerated) | human |
+| G3 | PowerBI 37+1 sign-off | 🟢 WAIVED-ON-EVIDENCE (owner decision 2026-07-07: PowerBI access is not and will not be available; basis = automated compat gate PROMOTABLE + prod-read fidelity 1197/1197 & 63/68; rendered-report acceptance moves to Phase F as a customer-side check under the frozen-read rollback window) | owner (recorded) |
 | G4 | sap_13 port or deferral | 🟢 port ENABLED on staging 2026-07-06 (bake running). #223 finding: back4-api is read-only on this dataset — no cross-service cutover exists | bake clock (≥72h) |
 | G5 | c35 drop sign-off | 🟢 SIGNED 2026-07-06: product owner confirms c35/CPACK does not use the 3 dashboards (#224) | — |
 | G6 | Prod Hasura creds + #225 recheck | 🔴 needs creds; window closes 2026-08-01 | user |
