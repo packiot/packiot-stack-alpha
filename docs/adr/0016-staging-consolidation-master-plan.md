@@ -116,8 +116,10 @@ in the SAME change (bug-241 rule).
    3-flow machinery's final job): every consumer surface diffed for
    7 days.
 2. Flip = env/connection change: edge-api, workers' source_type=""
-   route, mirror-worker target, query-api DB. (Promote packiot_shadow
-   OR rename — decide by ops simplicity; rename keeps DSNs.)
+   route, mirror-worker target, query-api DB. (SETTLED: **PROMOTE
+   packiot_shadow, no rename** — decision recorded in
+   `reference/0016-flip-runbook.md`; rename risks TimescaleDB catalog
+   surprises, every consumer already parameterizes DB by env.)
 3. RETIREMENT LIST (the payoff): shadow_go_port schema, shadow-mirror
    service, dual-emit flag + SHADOW_* envs, fan-out (→ plain write),
    hasura + hasura-init containers, edge-nodered GraphQL tab,
@@ -139,6 +141,41 @@ feed_agg ×4, uns refresh ×3, _test/_temp) · hot/warm matview pairs
 Pending consumer checks: UNS current family, hot/warm matviews,
 uns_metrics, analogs consumers (WHO reads them — before porting 10.1
 semantics beyond storage).
+
+### Phase-F fate additions (2026-07-07 full-stack audit — prod tsp12 object accounting)
+
+Every prod object now has a fate bucket except the following, which
+need one before the Phase-5/F knex series is final (audit details in
+the project memory `full-stack-review-2026-07-07`):
+
+- **Targets family**: `oee_targets`, `scrap_targets`,
+  `production_targets_{day,week,month}` + `trig_update_targets`
+  triggers (×4 incl. `production_targets`). Zero references in the new
+  stack; `rollup/provision.go` handles bucket targets. Decide: port,
+  pool, or ledger-drop with consumer evidence.
+- **Device registry**: `devices`, `devices_health_check`, `plcs`,
+  `plc_events`, `last_state`, `packml_transmition_states`. Zero code
+  refs in the new stack; likely edge-nodered legacy. Fate needed.
+- **`scanned_boxes`**: written by edge-api labels DAO
+  (`src/data/DAO/labels/labels-dao.ts`), read per BUSINESS-RULES §6.
+  Exists on prod, NOT in F3, NOT in the phase-5 knex series → gap for
+  customer-13 label scanning at prod migration.
+- **`mv_agg_equipment_values_*_full_warm`** (×5): only the `_hot`
+  variants are ledgered dead — verify `_warm` consumers before drop.
+- **`pages` / `user_roles`** (+ `insert_default_pages_to_new_enterprises`,
+  `Update super user(s)` triggers): front4 RBAC — rides the Hasura/
+  front4 decision (Phase F scope).
+- **External consumers OUTSIDE this repo**: `cq_logs` →
+  `cq-logs-bigquery` pipeline; `highbyte_output_running_jobs` →
+  `highbyte` repo. Both read prod directly; the Phase-F decommission
+  list must repoint or retire BOTH.
+- **`Create packml topics` trigger** (enterprises/sites/areas/
+  equipments): F3 has ZERO triggers by design; replacement owner
+  (CS-Admin/edge-api creates `packml_register` rows) is implied but
+  not explicitly recorded — record it in the Phase-F cutover plan.
+- Minor: `area_runtime_shift_{1week,1month}` exist on prod but not F3
+  (grain matrix asymmetry); `equipment_runtime_shift_job`,
+  `equipment_validation_shift`, `infra_events` — no refs, fates needed.
 
 ## 8. Phasing + dependencies
 

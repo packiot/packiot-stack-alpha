@@ -11,6 +11,16 @@
 #   - docs/edge-nodered-customization-shapes.md — why this schema looks like this
 #
 # Status: Proposed (v1.0). Reviewed alongside ADR-0009.
+#
+# ⚠ PARTIALLY SUPERSEDED BY ADR-0010 (2026-07-07 note): the ingest
+# TOPOLOGY described here (Node-RED publishes → edge-transformer
+# consumes `edge.plc-normalized.<tenant>`) is the superseded ADR-0009
+# Phase-2 shape. Post-ADR-0010 (10.9 cutover), edge-transformer
+# subscribes to MQTT/SparkPlug DIRECTLY and Node-RED consumes from
+# RabbitMQ downstream; the `edge.plc-normalized` exchange exists but
+# its consumer is disabled (AMQP_SOURCE_ENABLED=false). Treat the
+# ENVELOPE/FIELD definitions below as the still-valid message contract
+# and the routing/topology prose as historical. See ADR-0010 §Decision.
 
 schema_version: "1.0"
 
