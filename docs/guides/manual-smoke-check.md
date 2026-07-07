@@ -108,5 +108,5 @@ prod-read harness (layer 4), not staging row counts.
   fingerprints, not ad-hoc counts.
 
 Routing: this is layer-by-layer triage. For what each component *is*,
-see [`../GUIDE.md`](../GUIDE.md) §2; for the verification methodology
-behind layer 4, [`../overview/04-verification.md`](../overview/04-verification.md).
+see [the guide](../README.md); for the verification methodology
+behind layer 4, [the guide ch.8 — observability](../guide/08-observability.md).

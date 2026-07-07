@@ -189,14 +189,14 @@ customer does.
 **Read order (30 minutes to full context):**
 1. Project memory `plan_endgame_migration.md` + `MEMORY.md` index
    (Claude project memory) — machine state + this plan's live status.
-2. `docs/GUIDE.md` — the stack, end to end.
+2. `docs/README.md` → the guide — the stack, end to end.
 3. `docs/overview/06-state-and-continuation.md` — live snapshot;
    **trust it over every status column in this file**.
 4. This roadmap → find the current phase → pick the topmost unblocked
    item. Human-gated items (G3–G8): prepare, ping, never improvise
    around them.
 
-**The rules that prevent disasters** (long-form: `05-onboarding` §Day 2,
+**The rules that prevent disasters** (long-form: guide ch.9,
 `PORTING.md`, the 260-entry bug journal):
 - Prod is SELECT-only, always — `BEGIN READ ONLY`, no exceptions,
   the role won't save you (discipline is the guardrail).
