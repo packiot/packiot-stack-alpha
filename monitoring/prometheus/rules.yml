@@ -1,0 +1,42 @@
+# Alerting rules — closes the documented "no alert rules" gap (B1 on
+# the endgame roadmap). Philosophy: few rules, each actionable, each
+# covering a failure mode we have actually seen. Alerts surface in the
+# Prometheus UI (/alerts) and the Grafana alert-list panel; ROUTING to
+# a push channel (ntfy/email) is a deliberate open human choice —
+# wire Alertmanager only when someone commits to reading it.
+groups:
+  - name: packiot-staging
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.job }} not scrapeable for 5m (crashed or wedged)"
+
+      - alert: EngineJobErrorStreak
+        expr: sum by (job) (increase(oeecloud_worker_job_ticks_total{outcome="error"}[15m])) > 2
+        labels: {severity: page}
+        annotations:
+          summary: "engine job {{ $labels.job }} failed >2 ticks in 15m — check oeecloud-worker logs"
+
+      - alert: EngineStalled
+        expr: sum(increase(oeecloud_worker_job_ticks_total[15m])) < 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "NO engine job ticked in 15m — scheduler wedged (jobs.Loop) or worker half-dead"
+
+      - alert: IngestSilent
+        expr: sum(increase(oeecloud_worker_amqp_deliveries_total[10m])) < 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "no AMQP deliveries in 10m — upstream chain dark (plc-sim → mosquitto → edge-transformer → rabbitmq)"
+
+      - alert: WritePathDry
+        expr: sum(increase(oeecloud_worker_batch_writes_total[15m])) < 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "deliveries arriving but nothing written in 15m — resolver/DB path broken; see 13-database-reach board"

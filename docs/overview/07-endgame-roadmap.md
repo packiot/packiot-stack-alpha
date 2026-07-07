@@ -49,7 +49,7 @@ G. Enterprise hardening — runs alongside B-F (alerts, backups, security)
 
 | # | Item | Who | Status |
 |---|---|---|---|
-| A1 | 2026-07-09 shift-resolver close-out (drop F1 trigger, widen fill gate — runbook in repo) | model+human merge | ⏳ dated |
+| A1 | shift-resolver close-out | done | ✅ EARLY (2026-07-06, same-row evidence 0/46): trigger DROPPED on staging, Go fill live on all flows (verified 07-07) |
 | A2 | 7-day bake window completes; every 09-board non-zero has its named cause | clock + daily human glance | ⏳ ~07-13 |
 | A3 | sap13 72h bake green (`jobs_ticks_total{job="sap13"}`, zero errors) | clock | ⏳ started 07-06 23:15Z |
 | A4 | G3: PowerBI sign-off checkbox (evidence already generated) | **human** | 🔴 deferred by owner |
@@ -66,10 +66,12 @@ restarts for that surface (do NOT flip over an unexplained delta).
 *Entry*: A done. *Exit*: 30-day soak clean; alerting live; old DB
 freeze expiry executed.
 
-- B1. **Alert rules land** (closes the documented monitoring gap):
-  ingest freshness (>5 min stale = page), job failure streaks (3
-  consecutive error ticks), CAgg invalidation backlog growth, disk %,
-  RabbitMQ queue depth. Route to a channel a human reads.
+- B1. **Alert rules — DONE 2026-07-07** (`monitoring/prometheus/rules.yml`:
+  scrape-down, engine error streak, engine stalled, ingest silent,
+  write-path dry). Open human choice: push routing (Alertmanager →
+  ntfy/email) — wire only when someone commits to reading it.
+  Backlog: CAgg-invalidation + disk + queue-depth rules need a
+  postgres/rabbitmq exporter first (G-track).
 - B2. Golden fixtures + auto bake-panels (session-77 methodology
   leftovers #3/#6) — cheap now, priceless during E and F.
 - B3. Watch items from 06 §5 (site_hour bucket timing, sim OEE>1
@@ -86,13 +88,19 @@ freeze expiry executed.
 *Exit*: task #86 decided; if "retire": front4 reads via refdata-api,
 Hasura containers removed (R5 completes).
 
-- C1. Harvest staging query log + prod-side enumeration (needs G6
-  creds) → the actual operation inventory.
+- C1. **Staging surface: DONE** — 12h log = 10 root fields, sole
+  consumer edge-node-red, staging Hasura already de-bloated to that
+  set, and **refdata-api covers 10/10** (verified 2026-07-07). Prod
+  Hasura Cloud enumeration still wants working creds (stored secret
+  401s as of 07-07) — but prod's consumer is front4, which is Phase F
+  scope; staging retirement does NOT wait for it.
 - C2. Decision with product: retire vs keep-minimal. The audit
   (4% utilization) predicts retire; the plan assumes it.
-- C3. If retire: extend refdata-api route-by-route (the 12-route
-  pattern scales; each route = enumerate → implement → contract test
-  → front4 PR flips one consumer), then drop `hasura`/`hasura-init`.
+- C3. **The one remaining staging step**: flip edge-node-red's
+  GraphQL tab to HTTP against refdata-api (submodule flow surgery —
+  mind the flow-manager dual-file lesson; do it in a fresh session
+  with a bake window), then drop `hasura`/`hasura-init` (R5). This is
+  the TOP UNBLOCKED item after the flip.
 - C4. **This unlocks the naming wave** (D3): renames stop paying the
   165-table re-tracking tax.
 
@@ -110,9 +118,10 @@ Hasura containers removed (R5 completes).
   gated on C4): on the real DB the h_* are function return types —
   ALTER FUNCTION in lockstep; compat views for every name; gate green
   before contract.
-- D4. Per-service DB roles (ADR-0017 §3): create, wire via Secrets
-  Manager, verify with a privilege-escalation test (each service run
-  MUST fail on tables it shouldn't touch).
+- D4. Per-service DB roles — SQL PREPARED
+  (`adr/reference/migrations/0017-service-roles.sql`); apply at Phase E
+  when each service gets its own secret; verify with the
+  privilege-escalation test (each service MUST fail outside its grants).
 
 ### Phase E — Process separation (ADR-0017; only after the flip)
 

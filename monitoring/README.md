@@ -11,8 +11,10 @@
 - `promtail/promtail-config.yaml` — Docker service discovery → Loki;
   relabels on compose project "stack".
 
-**Known gap (deliberate, on the ledger): no alerting or recording
-rules.** Alarm discipline today is human: the 09-bake board's
-named-cause rule + dashboard expiry dates (see `overview/06`). If you
-add `rule_files`, wire alerts to something a human reads — an alert
-nobody routes is worse than the current explicit "check 09 daily".
+- `prometheus/rules.yml` — 5 alerting rules (scrape down, engine
+  error streak, engine stalled, ingest silent, write path dry) —
+  added 2026-07-07 (roadmap B1). Alerts surface in Prometheus
+  `/alerts` + Grafana. **Open human choice**: push routing
+  (Alertmanager → ntfy/email) — wire it only when someone commits to
+  reading it; the 09-board named-cause ritual remains the correctness
+  alarm.
