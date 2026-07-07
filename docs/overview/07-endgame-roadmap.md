@@ -116,8 +116,9 @@ Hasura containers removed (R5 completes).
 
 ### Phase E — Process separation (ADR-0017; only after the flip)
 
-*Entry*: B done (stable single flow + alerts). *Exit*: monolith
-retired; four services with independent deploys and SLOs.
+*Entry*: B done (stable single flow + alerts) **+ ADR-0017 blessed
+by the decider** (it is Proposed — a human call, not a default).
+*Exit*: monolith retired; four services with independent deploys and SLOs.
 
 - E1. Extract **reports-worker** first (lowest risk, cleanest seam:
   `internal/reports` + jobs plumbing). Shared module (`services/pkg/`)
