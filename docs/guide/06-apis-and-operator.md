@@ -96,17 +96,37 @@ instead of a Node-RED tangle, and the browser no longer carries tenant credentia
 
 One more pair of services, because they explain how any of the above gets *tested*
 against reality. Staging has no real factory attached, so two services feed it from
-production:
+production. They are easy to confuse, so here is each one's responsibility, exactly:
 
-- **mirror-worker-go** replays a real enterprise's production data (POs, events,
-  value deltas) from prod into staging — read-only on the prod side, always.
-- **shadow-mirror** replays *operator actions* from the `user_logs` audit trail onto
-  the shadow flows.
+**mirror-worker-go — the data mirror (and validator).** It replays a real
+enterprise's production *data* — production orders, events, value deltas — from the
+production database into staging. Its cardinal rule is that it is **read-only on the
+production side, always**: it observes prod, it never writes to it. But it does more
+than copy. It also *validates*: a reconciler checks that active POs and event
+streams line up, a comparator continuously measures how far staging has drifted from
+prod (an OEE-divergence percentage), and a dead-letter queue with a reanimator
+handles replays that fail. It is a mirror with a conscience — it tells you not just
+"here is prod's data" but "here is how faithfully staging is reproducing it."
+
+**shadow-mirror — the action mirror.** It replays *operator actions* — the PO
+lifecycle events, downtime justifications, and edits recorded in the `user_logs`
+audit trail — onto the shadow flows. Where mirror-worker-go carries the *data plane*
+(what the machines did), shadow-mirror carries the *control plane* (what the people
+did), so that the shadow flows experience the same operator behavior the real system
+did. This is why the `user_logs` audit trail is a live contract and not just logging
+([above](#edge-api--the-control-plane-writes)): shadow-mirror reads from it.
 
 Together they make staging behave like a live factory, which is what lets the
 [differential bake](04-the-engine.md#proving-it-golden-fixtures-and-the-differential-bake)
-compare flows on realistic traffic. They are migration scaffolding: the moment
-staging runs on real data of its own, they retire.
+compare flows on realistic traffic.
+
+Their fates at the flip differ, and the difference is instructive.
+**shadow-mirror is pure migration scaffolding** — once the three flows collapse to
+one, there are no "shadow flows" to replay actions onto, so it retires.
+**mirror-worker-go stays**, repointed at the single promoted database: even after
+the flip, staging has no factory of its own, so it still needs real production data
+to be a useful test bed. One is a tool for the migration; the other is permanent
+staging infrastructure that the migration merely repoints.
 
 ---
 
