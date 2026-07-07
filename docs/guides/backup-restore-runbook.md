@@ -76,3 +76,34 @@ S3 (IA after 30d) at current DB size ≈ single-digit $/month; the
 scratch-instance drill ≈ $1/run. Cheap insurance against the only
 failure class the whole differential-bake program cannot catch:
 losing the database itself.
+
+## 7. As-prepared 2026-07-08 (groundwork PR — nothing active yet)
+
+The §3 architecture is now provisioned up to (but excluding) anything
+that touches the running postgres. Bucket name supersedes the §3
+placeholder `packiot-db-backups`.
+
+**Exists today:**
+
+| Piece | Value |
+|---|---|
+| S3 repo bucket | `packiot-db-backups-639178078294` |
+| Bucket ARN | `arn:aws:s3:::packiot-db-backups-639178078294` |
+| Bucket config | us-east-1, versioning ON, SSE-S3 default encryption (bucket key), lifecycle → INTELLIGENT_TIERING after 30d, all public access blocked |
+| Repo prefix | `/pgbackrest/staging` (room for a prod stanza later) |
+| pgBackRest config | `configs/pgbackrest/pgbackrest.conf` — stanza `packiot`, retention full=2 diff=7, process-max=2, creds via instance role (`repo1-s3-key-type=auto`) |
+| Activation doc | `docs/adr/reference/migrations/0017-pgbackrest-sidecar.md` — exact docker run snippets (postgres re-create + crond sidecar) and the flip-day checklist |
+| IMDS precondition | already satisfied: DB EC2 has IMDSv2 required + `HttpPutResponseHopLimit=2`, so containers can use the instance role |
+
+**Activates at flip (deliberately NOT done — rides the one restart):**
+
+- IAM: attach to role `packiot-staging-db` — `s3:ListBucket` on the
+  bucket ARN; `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`,
+  `s3:AbortMultipartUpload` on `<bucket ARN>/*`.
+- `db/Dockerfile`: `RUN apk add --no-cache pgbackrest` (same PR as the
+  container flags, so an image rebuild can't race the config).
+- timescaledb container re-create: `archive_mode=on`, `archive_command`,
+  `archive_timeout=300`, conf + shared-socket mounts.
+- `stanza-create` → `check` → first full backup → `verify` → cron
+  sidecar (weekly full Sun 03:00 UTC, daily diff, weekly verify).
+- Exit criterion unchanged: the §4 restore drill, not a green log.
