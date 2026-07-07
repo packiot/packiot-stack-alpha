@@ -163,6 +163,9 @@ const grainGoldenSchema = `
 	    net_production_incr double precision, gross_production_incr double precision, id_shift int
 	);
 	CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+	CREATE TABLE golden.equipment_values (
+	    id_equipment int, ts_value timestamptz, ideal_production_speed double precision
+	);
 	CREATE TABLE golden.equipment_events (
 	    id_equipment int, ts_event timestamptz, ts_end timestamptz,
 	    status int, planned_downtime boolean, change_over boolean
@@ -195,7 +198,25 @@ const grainGoldenFixture = `
 	    (id_equipment, ts_value, ts_value_production, gross, net, ideal_production, target, proportional_target, running_time, available_time, stopped_time, planned_downtime, downtime, changeover_time, scrap, speed)
 	VALUES
 	    (20, date_trunc('day', now() - interval '1 day') + interval '1 hour', date_trunc('day', now() - interval '1 day'), 100, 90, 200, 10, 10, 1800, 3600, 600, 0, 900, 0, 10, 50),
-	    (20, date_trunc('day', now() - interval '1 day') + interval '2 hour', date_trunc('day', now() - interval '1 day'), 60, 55, 100, 10, 10, 2400, 3600, 300, 0, 600, 0, 5, 40);`
+	    (20, date_trunc('day', now() - interval '1 day') + interval '2 hour', date_trunc('day', now() - interval '1 day'), 60, 55, 100, 10, 10, 2400, 3600, 300, 0, 600, 0, 5, 40);
+	-- THE LINE-WITH-NULL-IDEAL CASE (measured live 2026-07-07, eq 51/96
+	-- at CPACK-Staging): tp_equipment=3, equipments.production_speed
+	-- NULL, all in-hour 1min buckets carry NULL ideal_production_speed
+	-- (30701 arrived HOURS earlier). Prod LOCFs from equipment_values
+	-- (capture :10162-10172) → ideal_speed 120; the pre-fix port got 0
+	-- → oee 0 while F1 said ~0.95.
+	INSERT INTO golden.equipments VALUES (21,1,1,35,3,NULL);
+	INSERT INTO golden.equipment_runtime_1hour (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), true);
+	INSERT INTO golden.ca_agg_equipment_values_1hour
+	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
+	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
+	INSERT INTO golden.ca_agg_equipment_values_1min
+	    (id_equipment, ts_value, state, speed, ideal_production_speed)
+	VALUES (21, date_trunc('hour', now()), 6, 40, NULL);
+	INSERT INTO golden.equipment_values VALUES (21, now() - interval '3 hours', 120);
+	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
+	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);`
 
 func TestGoldenGrains(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
@@ -248,6 +269,35 @@ func TestGoldenGrains(t *testing.T) {
 	// assertion that matters is the sums landed while flag stayed).
 	if !recalc {
 		t.Error("hour flag must remain true (no events → phase E never cleared)")
+	}
+	// eq 20 has NO 1min rows this hour: prod's speed select avgs over
+	// zero rows → NULL → zero-fill. The fallback to production_speed
+	// is PER EXISTING ROW only — a regression to the null-extended
+	// CASE would write 100 here.
+	var idle20 float64
+	if err := pool.QueryRow(ctx, `SELECT ideal_speed FROM golden.equipment_runtime_1hour
+	    WHERE id_equipment=20 AND ts_value=date_trunc('hour', now())`).Scan(&idle20); err != nil {
+		t.Fatal(err)
+	}
+	if idle20 != 0 {
+		t.Errorf("empty-hour ideal_speed: %v (prod writes 0, never production_speed)", idle20)
+	}
+
+	// THE LINE-OEE LOCF SEMANTIC (eq 21): in-hour 1min bucket has NULL
+	// ideal_production_speed and equipments.production_speed is NULL —
+	// prod LOCFs the 3h-old equipment_values row (120). Pre-fix the
+	// port wrote ideal_speed=0 → oee=0 (the measured F1≈0.95 vs
+	// F2/F3=0.000 divergence on equipments 51/96).
+	var ideal21, oee21 float64
+	if err := pool.QueryRow(ctx, `SELECT ideal_speed, COALESCE(oee, -1) FROM golden.equipment_runtime_1hour
+	    WHERE id_equipment=21 AND ts_value=date_trunc('hour', now())`).Scan(&ideal21, &oee21); err != nil {
+		t.Fatal(err)
+	}
+	if ideal21 != 120 {
+		t.Errorf("line LOCF ideal_speed: %v (want 120 from equipment_values 3h back)", ideal21)
+	}
+	if oee21 <= 0 {
+		t.Errorf("line oee: %v (must be > 0 — net 45 against LOCF'd ideal)", oee21)
 	}
 
 	// day2 pass: sums the two hour rows; target_customized=true must PRESERVE 777.

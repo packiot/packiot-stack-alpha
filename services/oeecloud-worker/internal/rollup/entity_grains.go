@@ -24,6 +24,9 @@
 //     amber class again): intent-restored per-row (e.id_area/e.id_site),
 //     documented divergence.
 //   - Exclusions (area 24) → config param.
+//   - Ideal speed: NO own derivation — every body sums the tier
+//     below's ideal_production, so the tp_equipment=3 NULL-ideal
+//     LOCF fix (hour.go/shift.go speed passes) is inherited here.
 //
 // GUARDRAIL: UPDATEs area_/site_runtime_* by (key, ts_value); reads
 // the tier below. No PO tables.

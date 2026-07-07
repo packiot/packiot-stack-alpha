@@ -132,9 +132,10 @@ func TestHourShape(t *testing.T) {
 	}
 	for _, m := range []string{
 		"interval '65 minutes'",
-		"ca_agg_equipment_values_1min", // speed from the 1min tier
-		"ELSE q.production_speed END",  // ideal fallback
-		"now() - interval '6 hour'",    // E guard
+		"ca_agg_equipment_values_1min",     // speed from the 1min tier
+		"locf.ideal_production_speed",      // line-OEE fix: LOCF ideal from equipment_values
+		"q.production_speed)",              // ideal fallback (final COALESCE arg)
+		"now() - interval '6 hour'",        // E guard
 		"now() - interval '10 days'",   // events window
 		"vl_day::float / 24",           // hourly proportional target
 	} {

@@ -12,7 +12,11 @@
 //     row.ts_value (verbatim; the perf-critical guard prod comments
 //     about). state=6-only speed. Always-FOUND → LEFT JOIN zero-fill.
 //     V CLEARS the flag here (unlike hour — verbatim per body) and
-//     denormalizes cd_shift. ideal_speed written from the same sums.
+//     denormalizes cd_shift. ideal_speed written from the same sums;
+//     per-bucket LOCF from equipment_values fills the flow CAgg's
+//     NULL ideal_production_speed (prod's tier carries the trigger
+//     table's LOCF'd value — see shiftValuesSQL comment; the
+//     tp_equipment=3 NULL-ideal fix, shared with hour.go).
 //   - Cascade: area_runtime_shift flagged (same ts_value).
 //   - Phase E: overlaps over [ts_value, ts_end] (shift rows carry
 //     ts_end), 25-day window, CONDITIONAL; oee = net/ideal with the
@@ -51,12 +55,21 @@ const shiftEligibleSQL = `
 	       SELECT id_equipment FROM %[2]s.equipments
 	        WHERE tp_equipment = 1 AND id_enterprise = ANY($3))`
 
+// IDEAL-SPEED SOURCE (line-OEE fix, same mechanism as hour.go):
+// prod's ca_agg_equipment_values_1hour rows inherit the trigger
+// table's LOCF'd ideal_production_speed (equipment_values last
+// non-null ≤ row ts; capture 20-oee-engine-parity.sql:10162-10172,
+// carried through 22-agg-views.sql:248 GROUP BY). Our flow CAgg is
+// last()-in-bucket unfiltered → NULL wherever 30701 didn't arrive
+// in-bucket → tp_equipment=3 rows fell to production_speed (NULL
+// for lines) → ideal_speed 0 → oee 0. The LATERAL restores prod's
+// value at bucket-end granularity; avg-then-fallback shape verbatim.
 const shiftValuesSQL = `
 	WITH sums AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           sum(ca.gross_production_incr) AS gross,
 	           sum(ca.net_production_incr)   AS net,
-	           COALESCE(avg(ca.ideal_production_speed),
+	           COALESCE(avg(COALESCE(ca.ideal_production_speed, locf.ideal_production_speed)),
 	               (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = el.id_equipment)) AS ideal_speed,
 	           avg(CASE WHEN ca.state = 6 THEN ca.speed END) AS speed
 	      FROM shift_elig el
@@ -66,6 +79,14 @@ const shiftValuesSQL = `
 	       AND ca.ts_value >= now() - interval '30 days'
 	       AND ca.ts_value >= el.ts_value
 	       AND ca.ts_value_production = el.ts_value_production
+	      LEFT JOIN LATERAL (
+	           SELECT ev.ideal_production_speed
+	             FROM %[1]s.equipment_values ev
+	            WHERE ev.id_equipment = ca.id_equipment
+	              AND ev.ts_value < ca.ts_value + interval '1 hour'
+	              AND ev.ideal_production_speed IS NOT NULL
+	            ORDER BY ev.ts_value DESC LIMIT 1
+	      ) locf ON ca.ideal_production_speed IS NULL
 	     GROUP BY el.id_equipment, el.ts_value
 	)
 	UPDATE %[1]s.equipment_runtime_shift e SET

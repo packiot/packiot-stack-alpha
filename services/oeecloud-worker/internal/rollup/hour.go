@@ -10,8 +10,13 @@
 //   - Cascades verbatim: flags the equipment's DAY row (tvp-keyed via
 //     day-begin fn) and the area's HOUR row.
 //   - Speed pass from the 1min tier (flows: native ca_agg_1min):
-//     avg speed + ideal (fallback equipments.production_speed) —
-//     also always-FOUND (no GROUP BY) → always-update zero-fill.
+//     avg speed + ideal — also always-FOUND (no GROUP BY) →
+//     always-update zero-fill. Ideal per 1min row: bucket value,
+//     LOCF from equipment_values when the bucket is NULL (prod's
+//     trigger table carries LOCF'd ideal_production_speed; capture
+//     :10162-10172 — the tp_equipment=3 NULL-ideal fix), then
+//     equipments.production_speed — fallbacks apply to existing
+//     rows only (empty hour → 0, verbatim).
 //   - Phase E (event overlaps, [ts,+1h)): GROUP BY → CONDITIONAL
 //     inner join; sets recalc_needed=FALSE (the only clear);
 //     oee = net/ideal, ideal=((total−planned)/60)·ideal_speed;
@@ -82,11 +87,25 @@ const hourCascadeAreaSQL = `
 	 WHERE a.id_area = q.id_area AND a.ts_value = el.ts_value`
 
 // Speed pass from the 1min tier — always-FOUND → always-update.
+// IDEAL-SPEED SOURCE (line-OEE fix, measured 2026-07-07 eq 51/96):
+// prod's 1min tier is the trigger table agg_equipment_values_1min_t,
+// whose ideal_production_speed is LOCF'd from equipment_values —
+// "last non-null ideal_production_speed ≤ row ts, per equipment"
+// (capture 20-oee-engine-parity.sql:10162-10172). Our flow CAgg is
+// last()-in-bucket UNFILTERED → NULL in every bucket where 30701
+// didn't arrive that minute. The LATERAL reproduces prod's trigger
+// lookup at bucket granularity (LOCF at bucket end ≡ trigger value
+// under ts-ordered inserts). Per-row fallback equipments.production_
+// speed verbatim — and, verbatim, only for EXISTING 1min rows: an
+// empty hour avgs to NULL → zero-fill (prod writes 0 there, never
+// production_speed — aggregate-INTO is always FOUND).
 const hourSpeedSQL = `
 	WITH sp AS (
 	    SELECT el.id_equipment, el.ts_value,
-	           avg(CASE WHEN m.ideal_production_speed IS NOT NULL
-	                    THEN m.ideal_production_speed ELSE q.production_speed END) AS ideal_speed,
+	           avg(CASE WHEN m.id_equipment IS NOT NULL THEN COALESCE(
+	                    m.ideal_production_speed,
+	                    locf.ideal_production_speed,
+	                    q.production_speed) END) AS ideal_speed,
 	           avg(m.speed) AS speed
 	      FROM hour_elig el
 	      LEFT JOIN %[1]s.ca_agg_equipment_values_1min m
@@ -96,6 +115,14 @@ const hourSpeedSQL = `
 	       AND date_trunc('hour', m.ts_value) = el.ts_value
 	       AND m.ts_value >= el.ts_value - interval '1 hour'
 	       AND m.ts_value <  el.ts_value + interval '1 hour'
+	      LEFT JOIN LATERAL (
+	           SELECT ev.ideal_production_speed
+	             FROM %[1]s.equipment_values ev
+	            WHERE ev.id_equipment = m.id_equipment
+	              AND ev.ts_value < m.ts_value + interval '1 minute'
+	              AND ev.ideal_production_speed IS NOT NULL
+	            ORDER BY ev.ts_value DESC LIMIT 1
+	      ) locf ON m.ideal_production_speed IS NULL
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	     GROUP BY el.id_equipment, el.ts_value
 	)
