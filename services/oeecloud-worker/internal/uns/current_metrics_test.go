@@ -8,13 +8,14 @@ import (
 
 func TestCurrentMetricsShape(t *testing.T) {
 	for _, m := range []string{
-		"tp_equipment = 1",                       // machines only (owner spec)
+		"tp_equipment IN (1, 3)",                 // machines + lines (live table + prod)
 		"ON CONFLICT (id_equipment) DO UPDATE",   // one row per equipment
 		"mode() WITHIN GROUP (ORDER BY v.state)", // hourly dominant state
 		"interval '24 hours'",                    // stop-percentage window
 		"ts_end IS NULL",                         // open-event probe
 		"interval '15 days'",                     // prod's open-event guard
-		"NULLIF(st.t_total, 0)",                  // zero-total guard
+		"NULLIF(st.c_total, 0)",                  // zero-count guard (count-based, prod parity)
+		"count(*) FILTER (WHERE change_over)",    // percentages count-based 0–1, not duration·100
 		"'running' ELSE 'lowSpeed'",              // prod status mapping, state 6
 		"'changeOver' ELSE 'stopped'",            // prod status mapping, state 10
 		"last_updated  = EXCLUDED.last_updated",

@@ -19,15 +19,18 @@
 // EQUIVALENCE ARGUMENT (per column, vs the ingest writer + prod's
 // piot_proc_uns_equipment_refresh_current_metrics — found verbatim in
 // edge-node-red/db/20-oee-engine-parity.sql):
-//   - Scope: machines only (equipments.tp_equipment = 1) that HAVE
-//     values (INNER lateral to the latest-values probe, 7-day
-//     lookback for chunk pruning). Machines silent >7d keep their old
-//     row untouched — same as the ingest writer (no data, no update).
-//     All enterprises — prod's proc hardcodes an exclusion list; we
-//     process everything (no literals — standing directive).
-//     DIVERGENCE: prod's proc scopes tp_equipment=3 (lines); the
-//     ingest writer scoped whatever published. Owner spec says
-//     machines (tp=1).
+//   - Scope: machines AND lines (equipments.tp_equipment IN (1,3))
+//     that HAVE values (INNER lateral to the latest-values probe,
+//     7-day lookback for chunk pruning). Entities silent >7d keep
+//     their old row untouched — same as the ingest writer (no data,
+//     no update). Corrected 2026-07-08 to match the LIVE table, which
+//     holds 46 machines + 20 lines, and prod's proc (which covers
+//     lines). All enterprises processed — prod's proc hardcodes an
+//     enterprise-exclusion list; staging excludes NONE (only 3
+//     enterprises, all wanted), so empty is correct here. The prod
+//     exclusion list is a Phase-F ENABLE-TIME config item
+//     (UNS_CURRENT_METRICS_EXCLUDED_ENTERPRISES, never literals) —
+//     wire it when this job runs against prod, not before.
 //   - state / speed / updated_at: latest non-NULL state row + latest
 //     non-NULL speed row + latest row overall (updated_at=ts_value).
 //     Split laterals rather than one DISTINCT ON row because state
@@ -52,13 +55,16 @@
 //     (~1440-entry) array of situation strings
 //     (running/lowSpeed/changeOver/stopped); hourly dominant-state
 //     ints-as-text is the owner-specified cheap form.
-//   - 24h stop percentages: duration-weighted over non-running
-//     equipment_events (status ≠ 6) clipped to [now()−24h, now()];
+//   - 24h stop percentages: COUNT-based 0–1 fractions, matching prod
+//     verbatim (edge-node-red/db/20-oee-engine-parity.sql:15520-15523:
+//     count(*) FILTER by stop_type / nullif(sum of the three counts)).
 //     change_over first, planned = planned_downtime AND NOT
-//     change_over, unplanned = remainder; scaled 0–100.
-//     DIVERGENCE: prod's proc stored 0–1 fractions of minute COUNTS
-//     over state-10 minutes only. Owner spec says duration-weighted
-//     ·100.
+//     change_over, unplanned = remainder. Corrected 2026-07-08 from
+//     the earlier duration-weighted·100 form to prod parity.
+//     APPROXIMATION remaining: prod counts minute-grain timeline rows;
+//     this counts the equipment_events themselves (same BASIS =
+//     count, same SCALE = 0–1; grain differs — verify against prod
+//     rows at enable time).
 //   - ideal_speed: equipments.ideal_speed::varchar. Prod's updater
 //     for this column is commented out (dead) — this revives the
 //     equipments-sourced value per owner spec.
@@ -95,7 +101,7 @@ const currentMetricsSQL = `
 	      FROM %[2]s.equipments e
 	      JOIN %[2]s.areas a ON a.id_area = e.id_area
 	      JOIN %[2]s.sites s ON s.id_site = e.id_site
-	     WHERE e.tp_equipment = 1
+	     WHERE e.tp_equipment IN (1, 3)
 	), latest AS (
 	    SELECT m.*,
 	           la.ts_value AS updated_at,
@@ -140,10 +146,13 @@ const currentMetricsSQL = `
 	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now() + interval '60 seconds'))
 	           && tstzrange(now() - interval '24 hours', now())
 	), stops_24h AS (
+	    -- prod parity: COUNT of events by stop_type, not duration
+	    -- (20-oee-engine-parity.sql:15520-15523). dur retained only for
+	    -- the 24h-window overlap filter upstream, not for the ratios.
 	    SELECT id_equipment,
-	           sum(dur) AS t_total,
-	           sum(dur) FILTER (WHERE change_over) AS t_changeover,
-	           sum(dur) FILTER (WHERE planned_downtime AND NOT change_over) AS t_planned
+	           count(*) AS c_total,
+	           count(*) FILTER (WHERE change_over) AS c_changeover,
+	           count(*) FILTER (WHERE planned_downtime AND NOT change_over) AS c_planned
 	      FROM stop_events
 	     GROUP BY id_equipment
 	), hours AS (
@@ -184,10 +193,10 @@ const currentMetricsSQL = `
 	       l.nm_equipment, l.nm_area, l.nm_site,
 	       sh.status_24h,
 	       l.ideal_speed::varchar,
-	       COALESCE(st.t_changeover / NULLIF(st.t_total, 0) * 100, 0),
-	       COALESCE(st.t_planned    / NULLIF(st.t_total, 0) * 100, 0),
-	       COALESCE((st.t_total - COALESCE(st.t_changeover, 0) - COALESCE(st.t_planned, 0))
-	                / NULLIF(st.t_total, 0) * 100, 0),
+	       COALESCE(st.c_changeover::float8 / NULLIF(st.c_total, 0), 0),
+	       COALESCE(st.c_planned::float8    / NULLIF(st.c_total, 0), 0),
+	       COALESCE((st.c_total - COALESCE(st.c_changeover, 0) - COALESCE(st.c_planned, 0))::float8
+	                / NULLIF(st.c_total, 0), 0),
 	       now()
 	  FROM latest l
 	  LEFT JOIN open_event  oe ON oe.id_equipment = l.id_equipment
