@@ -157,6 +157,12 @@ green on staging. *Exit*: prod runs the new stack; legacy retired.
   data), writer cutover with ≥72h bakes per family, façade flips per
   customer group, CAgg adoption (75GB invalidation fix FIRST), Wave-4
   contract after prod's own soak.
+- F2b. **Incoplast-class prerequisites (ADR-0019)**: edge command
+  channel (G4) + client.yaml v1.1 (database integration, S7 rack/slot,
+  ERP dims, edge-operator mode) + credential externalization for
+  customer ERP secrets — REQUIRED before any factory with a local
+  operator UI or ERP coupling cuts over. CPACK-class factories are
+  unaffected.
 - F3. Factory-by-factory MQTT cutover (edge-transformer to real
   factories; the 10.9 pattern, one factory at a time, G7's capture as
   the validation corpus).
