@@ -1,16 +1,23 @@
 // query.go — ADR-0015 P1-P3: the customer-facing composable query API.
 //
 // P1: GET /v1/catalog + POST /v1/query — metrics × dimensions × grain ×
-//     window compiled to CAgg SQL. The catalog is the ONLY composition
-//     surface (allowlist by construction); table layout stays free to
-//     move underneath (the SQL map is the indirection).
+//
+//	window compiled to CAgg SQL. The catalog is the ONLY composition
+//	surface (allowlist by construction); table layout stays free to
+//	move underneath (the SQL map is the indirection).
+//
 // P2: GET/PUT /v1/screen-config — per-user/screen layout JSON; widgets
-//     bind to catalog queries, so customization adds zero query power.
+//
+//	bind to catalog queries, so customization adds zero query power.
+//
 // P3: X-Api-Key → customer_id tenancy (QUERY_API_KEYS="key:cid,key2:cid").
-//     customer_id is NEVER client-supplied. Cost caps: window ≤ 90d,
-//     grain×window budget, row limit, statement timeout.
+//
+//	customer_id is NEVER client-supplied. Cost caps: window ≤ 90d,
+//	grain×window budget, row limit, statement timeout.
+//
 // P4 (conditional, per ADR): a GraphQL façade would be GENERATED from
-//     this catalog — not hand-tracked. Not built until demanded.
+//
+//	this catalog — not hand-tracked. Not built until demanded.
 package main
 
 import (

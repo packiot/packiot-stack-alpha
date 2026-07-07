@@ -58,3 +58,9 @@ scrape_configs:
   - job_name: shadow-mirror
     static_configs:
       - targets: ['shadow-mirror:9103']
+
+  # refdata-api / query-api — the read side (ADR-0015). Go runtime +
+  # process metrics via promhttp default registry (:9104 main mux).
+  - job_name: refdata-api
+    static_configs:
+      - targets: ['refdata-api:9104']

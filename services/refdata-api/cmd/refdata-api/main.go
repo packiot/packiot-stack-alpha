@@ -18,6 +18,8 @@
 package main
 
 import (
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -125,9 +127,14 @@ func main() {
 	for _, ep := range endpoints {
 		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
 	}
-	ensureSchema(pool) // startup migrations (P2 screen-config table)
+	ensureSchema(pool)          // startup migrations (P2 screen-config table)
 	registerQueryAPI(mux, pool) // ADR-0015 P1-P3
 
+	// Gap-closure 2026-07-07: the only service without /metrics.
+	// promhttp default registry — request counts come from reqCount
+	// (incremented in makeHandler's wrapper below); Go runtime metrics
+	// ride along free.
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
