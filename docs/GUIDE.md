@@ -131,6 +131,8 @@ narrated map. Compressed:
   `adr/reference/0016-flip-runbook.md`), then retire R1–R9.
 - **Phase 5**: repeat on production, quarter-scale — gate board and
   full sequence in `adr/reference/0012-phase5-prod-readiness.md`.
+- **The endgame** (post-flip → finish line): ADR-0017 (process split +
+  enterprise hardening) sequenced in `overview/07-endgame-roadmap.md`.
 
 Current live status is ALWAYS `overview/06-state-and-continuation.md`
 (timestamped) — never trust a status line in any other doc, including
