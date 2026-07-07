@@ -56,9 +56,16 @@ Prod DB (tsp12): `databaseCredentials` secret, **SELECT-only, always**.
 | **09-bake-flow-parity** | THE flip gate: fidelity mismatches + identity fingerprints + agreement %, reading discipline in-panel |
 | 08-oeecloud-worker | engine jobs, writers, calc port, PO-control counters |
 | 07-mirror-worker | mirror fidelity watchdog, DLQ, cursors |
-| 09-edge-transformer-shadow-mode | ingest/decode/outbox (numbering collision with 09-bake — cosmetic, cleanup candidate) |
-| 10-3-flow-parity | the original 3-flow POC board (superseded by 09-bake; archive candidate at flip) |
-| 01-oee-pipeline · 02-equipment-config · 03-system-health · 04/05/06 logs · 05-operator | general ops |
+| 10-edge-transformer | ingest/decode/outbox (renumbered from the old 09-shadow-mode name) |
+| 11-pipeline-logs | plc-sim → edge-transformer hop (Loki) |
+| 12-replay-and-fanout | shadow-mirror replay + value fan-out tiles |
+| 13-database-reach | what actually lands on F1/F2/F3 (postgres) |
+| 01-oee-pipeline · 02-equipment-config · 03-system-health · 04/06 logs · 05-operator | general ops |
+
+(Renumbered scheme per `grafana/README.md` is canonical; the old
+`09-edge-transformer-shadow-mode` / `10-3-flow-parity` names are gone —
+a stale comment in `monitoring/prometheus/prometheus.yml` still
+referenced the old 09 filename until the 2026-07-07 sweep.)
 
 ## 4. Database refactor validation (checked live)
 
@@ -97,8 +104,25 @@ Prod DB (tsp12): `databaseCredentials` secret, **SELECT-only, always**.
 - Wave 4 contract after its 30-day soak (version-sprawl drops; evidence = pg_stat idx_scan baselines already collected in deploy CI).
 - Phase VI: prod migration planning (elevated access; PowerBI + payload prerequisites above).
 
+**Watch items (2026-07-07 full-stack audit — need a named cause or fate BEFORE flip):**
+- **`uns_equipment_current_metrics` FROZEN on all 3 flows** (measured
+  07-07 ~01:50Z: F1 stale since the 10.9 cutover ~07-06 14:00Z; F2/F3
+  since ~07-03 22:00Z; 66 rows each; raw ingest live to the minute).
+  Root cause: it is an ingest-time writer keyed to routing key
+  `sparkplug.uns_metrics` (see oeecloud-worker
+  `internal/handlers/dispatcher.go`), and post-10.9 the transformer
+  publishes only `sparkplug.data`. The endstate map keeps this table
+  (layer 5). Decide: emit the family from the transformer, move
+  maintenance into the `uns` job, or re-scope the table — and name the
+  cause on the bake board either way.
+- Legacy Node-RED `Publish: oee (amqplib)` node (Sparkplug tab) is
+  still ENABLED, publishing tenant-suffixed `sparkplug.data.<gateway>`
+  into the unconsumed per-tenant queue (the known "counted-dropped"
+  residual). Its bare-key fallback (gateway underivable) WOULD land in
+  the consumed queue → at R6/R7: disable the tab, verify the tenant
+  queue drained, and confirm the fallback never fired.
+
 **Cosmetic/backlog (safe anytime):**
-- Dashboard numbering dedup (two 05s, two 09s).
 - Bloat-ledger items post-flip: amber-bug fixes (consumer-signed), runtime-table slimming, `monitoramento_*` drop.
 
 ## 5b. Alerting (added 2026-07-07)

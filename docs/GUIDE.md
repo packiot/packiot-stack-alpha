@@ -158,9 +158,10 @@ this one.
 | `docs/adr/reference/migrations/` | as-executed / prepared migration SQL | single-shot files say so in their headers |
 | `tests/` | integration harness | `make test-integration` |
 
-Undocumented-service note: only edge-transformer has a README today;
-the one-paragraph roles above are the interim tour (gap tracked in the
-doc-review, 2026-07-06).
+Service READMEs: every first-party service has one as of 2026-07-07
+(`services/{edge-transformer,oeecloud-worker,mirror-worker-go,
+shadow-mirror,refdata-api}/README.md` + `services/README.md`) — start
+there; the one-paragraph roles above are just the tour.
 
 ## 6. Operating the stack (how-to routes)
 

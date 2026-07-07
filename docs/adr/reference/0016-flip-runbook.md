@@ -8,13 +8,26 @@ rollback is env-reversal (old DB frozen-read for 30 days).
 
 - [ ] Full-surface comparator (10 fidelity surfaces + 3 identity
       fingerprints, `/d/bake-flow-parity`) green for 7 consecutive
-      days — clock started 2026-07-06 (10.9 cutover = same-reality).
-- [ ] Shift-resolver close-out merged (2026-07-09 gate).
+      days — clock RESTARTED 2026-07-07 (envelope-routing repairs;
+      see 06-state §5) → ~2026-07-14. Trust 06-state for the live date.
+- [x] Shift-resolver close-out — DONE EARLY 2026-07-06 (same-row
+      evidence 0/46; trigger dropped on staging, Go fill live on all
+      flows, verified 07-07; roadmap A1).
 - [ ] PowerBI 37+1-object gate signed (human).
 - [ ] sap_13 either ported+baked or explicitly deferred to the
       post-flip ledger with back4-api owner sign-off (human).
+      (Port ENABLED on staging 2026-07-06, 72h bake running; #223
+      closed with the back4-api read-only finding.)
 - [ ] hist_* tables verified queryable on the target DB (§5 — DONE:
       EV 2.41M · POs 20.6k · runtime 20.6k · user_logs 137k).
+- [ ] `uns_equipment_current_metrics` freeze has a named cause or a
+      fix (2026-07-07 audit: no producer post-10.9 — the
+      `sparkplug.uns_metrics` routing key is published by nothing;
+      table frozen on all 3 flows; see 06-state §5 watch items).
+- [ ] At R6/R7: disable the Node-RED Sparkplug tab's
+      `Publish: oee (amqplib)` node, verify the per-tenant queue
+      (`oeecloud-worker-q-<tenant>`) drained, and confirm its bare-key
+      fallback never fired.
 
 ## Decision recorded: PROMOTE packiot_shadow (no rename)
 
