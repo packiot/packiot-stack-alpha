@@ -53,76 +53,61 @@ Docker Compose network, seeded with realistic fixture data, so a developer can:
 ## 2. Architecture overview
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  packiot-stack-alpha (Docker Compose — packiot-net bridge)       │
-│                                                                  │
-│  ┌─────────────┐   SparkPlug B    ┌──────────────────────┐      │
-│  │  simulator  │ ──────────────▶  │   edge-nodered       │      │
-│  │  (Python)   │                  │   (Node-RED 4 LTS)   │      │
-│  └─────────────┘                  │   port 1880          │      │
-│                                   └──────────┬───────────┘      │
-│                                              │ publishes        │
-│                                              ▼                  │
-│                                   ┌──────────────────────┐      │
-│                                   │  pubsub-emulator     │      │
-│                                   │  (GCP PubSub local)  │      │
-│                                   │  port 8085           │      │
-│                                   └──────────┬───────────┘      │
-│                                              │ subscribes       │
-│                                              ▼                  │
-│                                   ┌──────────────────────┐      │
-│  ┌─────────────┐  HTTP (REST)     │   oeecloud           │      │
-│  │  edge-api   │ ◀───────────     │   (Node-RED 4 LTS)   │      │
-│  │  (NestJS)   │                  │   port 1881          │      │
-│  │  port 8080  │                  └──────────┬───────────┘      │
-│  └──────┬──────┘                             │ writes           │
-│         │ reads/writes                        ▼                  │
-│         ▼                         ┌──────────────────────┐      │
-│  ┌─────────────────────────────── │  TimescaleDB + pg    │      │
-│  │  postgres (TimescaleDB 2.25)   │  port 5433           │      │
-│  │  Schema: equipment hierarchy,  └──────────┬───────────┘      │
-│  │  equipment_values, events,                │                  │
-│  │  production_orders, user_logs  ┌──────────▼───────────┐      │
-│  └────────────────────────────────│  Grafana             │      │
-│                                   │  port 3000           │      │
-│  ┌─────────────┐   HTTP calls     └──────────────────────┘      │
-│  │  operator   │ ──────────────▶  edge-nodered :1880            │
-│  │  (React SPA)│                                                 │
-│  │  port 3002  │                                                 │
-│  └─────────────┘                                                 │
-│                                                                  │
-│  Supporting:  hasura :8081 · adminer :8082 · loki :3100         │
-└──────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│  packiot-stack-alpha (Docker Compose — packiot-net bridge)        │
+│                                                                   │
+│  ┌─────────────┐  SparkPlug JSON  ┌──────────────────────┐       │
+│  │  simulator  │ ───HTTP────────▶ │   edge-nodered       │       │
+│  │  (Python)   │                  │   (Node-RED, :1880)  │       │
+│  └──────┬──────┘                  └──────────┬───────────┘       │
+│         │ operator layer                     │ publishes AMQP    │
+│         ▼                                    ▼                   │
+│  ┌─────────────┐                  ┌──────────────────────┐       │
+│  │  edge-api   │                  │  rabbitmq (:5672)    │       │
+│  │  (NestJS,   │                  │  exchange `oee`      │       │
+│  │   :8080)    │                  └──────────┬───────────┘       │
+│  └──────┬──────┘                             │ consumes          │
+│         │ writes user_logs                   ▼                   │
+│         │                         ┌──────────────────────┐       │
+│         │                         │  oeecloud-worker (Go)│       │
+│         │                         │  consumer + engine   │       │
+│         │                         └──────────┬───────────┘       │
+│         ▼                                    ▼ writes            │
+│  ┌────────────────────────────────────────────────────────┐      │
+│  │  postgres (TimescaleDB, :5433) — equipment_values,     │      │
+│  │  events, POs, user_logs → CAggs + engine-computed OEE  │      │
+│  └───────────────────────┬────────────────────────────────┘      │
+│                          ▼                                       │
+│                 ┌──────────────────┐    ┌─────────────────┐      │
+│                 │ grafana (:3000)  │    │ operator (:3002)│      │
+│                 └──────────────────┘    └─────────────────┘      │
+│                                                                   │
+│  Supporting: hasura :8081 · adminer :8082 · loki :3100 ·         │
+│  mosquitto :1883 · mirror-worker-go · promtail · oee-cron        │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
-### Data flow — one message, end-to-end
+> **Staging goes further than local dev**: there the primary ingest is
+> MQTT (ADR-0010 "10.9"): plc-sim → mosquitto → **edge-transformer**
+> (Go) → rabbitmq, with triple-emit across the migration flows.
+> Local dev keeps the simpler HTTP ingest above; mosquitto is present
+> for parity but the Go MQTT path is staging-only today. Canonical
+> per-environment service maps live in the `compose.*.yml` header
+> comments; the full story is [`docs/GUIDE.md`](docs/GUIDE.md).
 
-1. **simulator** publishes a SparkPlug B JSON payload to edge-nodered `/plc-data`.
-2. **edge-nodered** wraps it into a PubSub message and publishes it to the
-   `oee-topic` topic on the local GCP PubSub emulator.
-3. **oeecloud** (subscribed to `oeecloud-sub`) consumes the message, resolves the
-   SparkPlug topic to `id_equipment` via `packml_register`, and upserts a row into
-   `equipment_values` (TimescaleDB).
-4. **TimescaleDB triggers + stored procs** aggregate `equipment_values` into 1-min /
-   1-hour / 1-day continuous aggregates and compute OEE (Quality × Availability ×
-   Performance). OEE is never computed in application code.
-5. **Grafana** queries TimescaleDB and displays live OEE panels.
-6. **operator** (React SPA) calls edge-nodered for production order status and
-   calls **edge-api** to justify downtime events, start/stop orders, and log
-   operator activity to `user_logs`.
+### Data flow — one message, end-to-end (local dev)
 
-### What each service owns
-
-| Service | Reads | Writes |
-|---------|-------|--------|
-| edge-nodered | PLC data, PubSub inbound | PubSub outbound, equipment_events |
-| oeecloud | PubSub messages | equipment_values, uns_metrics |
-| edge-api | All tables | production_orders, user_logs, equipment config |
-| simulator | equipment_events (downtime list) | SparkPlug metrics via edge-nodered |
-| Grafana | equipment_values, user_logs, aggregates | — |
-| operator | edge-nodered (events), edge-api (CRUD) | via API only |
-
----
+1. **simulator** POSTs a SparkPlug B JSON payload to edge-nodered `/plc-data`.
+2. **edge-nodered** publishes it to the `oee` exchange on **RabbitMQ** (AMQP).
+3. **oeecloud-worker** (Go) consumes, resolves the SparkPlug topic to
+   `id_equipment` via `packml_register`, and batch-writes `equipment_values`.
+4. **The engine** (scheduled jobs inside oeecloud-worker) plus TimescaleDB
+   continuous aggregates compute the runtime grains and OEE
+   (Quality × Availability × Performance) — ADR-0014 moved this math out of
+   PL/pgSQL into Go.
+5. **Grafana** reads TimescaleDB and shows live OEE panels.
+6. **operator** (React SPA) drives production orders through **edge-api**,
+   which also writes the `user_logs` audit trail.
 
 ## 3. Prerequisites
 
@@ -190,45 +175,36 @@ If `net_production_incr` is null after 90 s, check [§14 Common failure modes](#
 Service           Internal host:port        Host port   Purpose
 ─────────────────────────────────────────────────────────────────────────────
 postgres          postgres:5432             5433        TimescaleDB (OEE DB)
-hasura            hasura:8080               8081        Hasura GraphQL proxy
+rabbitmq          rabbitmq:5672             —           AMQP bus (`oee` exchange)
+mosquitto         mosquitto:1883            —           MQTT broker (parity; ADR-0011 retained-NBIRTH volume)
+hasura            hasura:8080               8081        Hasura GraphQL (under retirement review, task #86)
+hasura-init       —                         —           one-shot metadata apply
 adminer           adminer:8080              8082        DB browser GUI
-grafana           grafana:3000              3000        OEE dashboards
-loki              loki:3100                 3100        Log aggregation
-rabbitmq          rabbitmq:5672             —           AMQP message bus
-edge-api          edge-api:8080             8080        NestJS admin / CRUD API
-edge-nodered      edge-nodered:1880         1880        Factory Node-RED
-operator          operator:3000             3002        React operator SPA
-simulator         —                         —           Python PLC simulator
+grafana           grafana:3000              3000        dashboards (see grafana/README.md)
+loki / promtail   loki:3100                 3100        logs pipeline
+edge-api          edge-api:8080             8080        NestJS admin / CRUD API (submodule)
+edge-nodered      edge-nodered:1880         1880        factory Node-RED (submodule)
+operator          operator:3000             3002        React operator SPA (submodule)
+simulator         —                         —           Python 2-layer sim (see simulator/README.md)
+oeecloud-worker   oeecloud-worker:9101      —           AMQP consumer + THE engine (services/…/README.md)
+mirror-worker-go  mirror-worker-go:9102     —           prod→staging mirror (services/…/README.md)
 oee-cron          —                         —           dev-only pg_cron substitute
+tests             —                         —           integration test runner
 ```
 
-### Staging first-party Go services (`services/`, deployed via `compose.staging.yml`)
+### Staging (`compose.staging.yml` — its header comment is canonical)
 
-```
-Service           Internal host:port        Health port  Purpose
-─────────────────────────────────────────────────────────────────────────────
-oeecloud-worker   oeecloud-worker:9101      9101         AMQP consumer →
-                                                         equipment_values/_events/uns_metrics.
-                                                         Replaces decommissioned
-                                                         oeecloud-node-red (2026-06-23).
-mirror-worker-go  mirror-worker-go:9102     9102         prod→staging user_logs replay
-                                                         (HTTP to staging edge-api).
-                                                         Replaces decommissioned TS
-                                                         services/mirror-worker (2026-06-24).
-prometheus        prometheus:9090           —            Metrics scrape — pulls
-                                                         /metrics from oeecloud-worker.
-```
+Everything above (minus postgres/tests — the DB is a separate EC2)
+**plus** the MQTT ingest path and the migration machinery:
+`edge-transformer` + `plc-sim` (Sparkplug over MQTT — THE ingest since
+10.9), `shadow-mirror` (control-plane replay; retires at the flip),
+`refdata-api` (:9104, Hasura-replacement reads), `pgbouncer`,
+`prometheus`, `authentik-*`, `db-migrate`. Each first-party Go service
+has its own README under `services/`.
 
-> Both Go workers live in `services/` (not as Git submodules — first-party
-> code with no independent release cycle). See
-> [`services/README.md`](./services/README.md) for shared architectural
-> patterns + open follow-up gaps.
->
-> **Local-dev parity is currently missing**: both Go workers fetch creds
-> from AWS Secrets Manager at startup with no env-var fallback. Adding
-> them to `compose.development.yml` would crash without the EC2 IAM role.
-> See the gated TODO in `compose.development.yml` (around line 305) for
-> the design sketch to close this gap.
+> Go services live in `services/` (not submodules — first-party code
+> with no independent release cycle); `edge-api`, `edge-nodered`,
+> `operator` are submodules. See [`services/README.md`](./services/README.md).
 
 > **Why 5433 for Postgres?** Port 5432 is the system Postgres default on most
 > Linux installs. 5433 avoids conflict without requiring the developer to stop
