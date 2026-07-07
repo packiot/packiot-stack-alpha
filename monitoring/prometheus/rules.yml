@@ -86,3 +86,87 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "edge-transformer lost Mosquitto — ingestion is down"
+
+  # 2026-07-07 full-stack audit: durability signals that were graphed
+  # (boards 07/10/12) but never alerted, + first host/DB rules enabled
+  # by the new exporters. Same philosophy: each rule = a failure mode
+  # we can name.
+  - name: packiot-durability-and-mirror
+    rules:
+      # Outbox exists to survive broker outages; a growing backlog with
+      # a live broker means the DRAIN is wedged (ADR-0011 P2).
+      - alert: TransformerOutboxBacklog
+        expr: outbox_depth > 1000
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "edge-transformer outbox holds {{ $value }} rows for 10m — drain slow or broker refusing (board 10)"
+      - alert: TransformerOutboxStale
+        expr: outbox_oldest_age_seconds > 900
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "oldest outbox row >15min old — drain wedged; data is durable but NOT flowing (board 10)"
+      # Publisher confirms: a nack means the broker REFUSED a publish —
+      # retry machinery exists, but nacks should be zero in steady state.
+      - alert: TransformerPublishNacked
+        expr: increase(edge_transformer_shadowpub_nacked_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "RabbitMQ nacked transformer publishes in the last 15m — broker pressure or topology drift"
+      - alert: TransformerMqttDrops
+        expr: increase(edge_transformer_mqtt_dropped_events_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "edge-transformer dropped MQTT events — decode failures or backpressure (board 10/11)"
+      # Some seq gaps are normal on reconnect; a stream of them means
+      # the PLC/broker is losing messages (SparkPlug seq is per-session).
+      - alert: SparkplugSeqGapStream
+        expr: increase(edge_transformer_sparkplug_seq_gaps_total[30m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "SparkPlug sequence gaps streaming ({{ $value }} in 30m) — message loss upstream of the transformer"
+      # Mirror replay falling behind prod: staging stops being a
+      # faithful test bed silently.
+      - alert: MirrorCursorLag
+        expr: mirror_worker_cursor_lag_seconds > 900
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "mirror-worker replay cursor >15min behind prod user_logs (board 07)"
+      - alert: MirrorOeeDivergence
+        expr: mirror_worker_comparator_oee_divergence_pct > 5
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "mirror comparator: staging OEE diverges >5% from prod for 30m (board 07)"
+      # shadow-mirror retires at flip (R1); until then its failures are
+      # control-plane parity holes in the bake evidence.
+      - alert: ShadowMirrorFailures
+        expr: increase(shadow_mirror_failed_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "shadow-mirror replay failures — operator-action parity hole on the shadow flows (board 12)"
+
+  # Host + DB rules (need the 2026-07-07 exporters; extend as the
+  # CAgg-invalidation/queue-depth backlog items land).
+  - name: packiot-host-and-db
+    rules:
+      - alert: HostDiskFilling
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.15
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "app EC2 root filesystem <15% free — the 2026-06-22 incident class; prune + snapshot check"
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "postgres-exporter cannot reach the DB — everything downstream is about to page"
+      - alert: PostgresConnectionsHigh
+        expr: sum(pg_stat_database_numbackends) > 150
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} DB backends — connection leak or pgbouncer bypass growing"

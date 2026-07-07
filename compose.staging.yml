@@ -456,7 +456,7 @@ services:
     # container reads stale content until recreated. Same trap as the
     # grafana `provisioning_rev` pattern.
     labels:
-      - "config_rev=2026-07-07-refdata-scrape"
+      - "config_rev=2026-07-07-exporters"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -480,6 +480,50 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── Exporters (2026-07-07: close the "bus+DB+host have zero white-box
+  # telemetry" gap from the full-stack audit; G-track/ADR-0017 §3) ──────────────
+  # postgres-exporter: white-box DB metrics (connections, locks, per-DB stats,
+  # replication/WAL). Points at the DB EC2 directly (same host the workers'
+  # shadow pool uses); auto-discovers packiot + packiot_shadow so the flip
+  # needs no exporter change. Unblocks the CAgg-invalidation/disk alert
+  # backlog named in monitoring/README.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/postgres?sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+      PG_EXPORTER_EXCLUDE_DATABASES: "template0,template1,authentik"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.28
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # node-exporter: app-EC2 host metrics (CPU, mem, DISK — the 2026-06-22
+  # incident class). Read-only host mounts; scraped via the compose network.
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.27
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
