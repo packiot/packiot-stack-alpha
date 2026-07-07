@@ -31,6 +31,13 @@ that responsibly.
 
 ## The engine's two halves
 
+Where the [transformer](03-the-edge.md#the-transformers-responsibilities-exactly)
+owns *protocol and durability*, the worker owns *raw persistence and computation* —
+and, symmetrically, it does **not** own protocol (it never sees MQTT or SparkPlug;
+it consumes already-decoded messages off the bus) and does **not** own the read
+surface (that is refdata-api, [Chapter 6](06-apis-and-operator.md)). It is the only
+service that both writes raw telemetry to the database and computes OEE from it.
+
 The worker (`services/oeecloud-worker/`) does two distinct things.
 
 **1. It consumes the bus and writes raw data.** An AMQP consumer reads the messages
