@@ -24,6 +24,7 @@
 | [04-verification](overview/04-verification.md) | engineers | the 0/32,848 methodology; harness usage; artifact classes |
 | [05-onboarding](overview/05-onboarding.md) | new team members | first-week guided tour + golden rules |
 | [06-state-and-continuation](overview/06-state-and-continuation.md) | whoever continues | live snapshot: fleet status, URLs, dashboards, DB validation, remaining tasks |
+| [07-endgame-roadmap](overview/07-endgame-roadmap.md) | whoever continues | THE sequenced plan to the finish line: phases A-G (flip → stabilize → Hasura → schema → process split → prod), handoff protocol |
 
 ## Contracts & living references (stable paths — linked from CI/PR template)
 
@@ -40,7 +41,8 @@ The spine:
 [0011](adr/0011-durability-boundary-and-store-and-forward.md) (durability rules) ·
 [0012](adr/0012-schema-refactor-and-multitenancy-pool.md) (schema waves) ·
 [0014](adr/0014-extract-oee-math-from-database-to-app.md) (the engine port) ·
-[0016](adr/0016-staging-consolidation-master-plan.md) (consolidation master plan).
+[0016](adr/0016-staging-consolidation-master-plan.md) (consolidation master plan) →
+[0017](adr/0017-endgame-process-separation-and-enterprise-hardening.md) (endgame: process split + enterprise hardening).
 Full list: `ls docs/adr/`.
 
 ### adr/reference/ — ground truth, by kind ([taxonomy](adr/reference/README.md))
