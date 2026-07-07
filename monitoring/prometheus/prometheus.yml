@@ -45,7 +45,8 @@ scrape_configs:
   - job_name: edge-transformer
     # ADR-0010 Phase 3 shadow-mode port + ADR-0011 P2 outbox.
     # Exposes calc_*, outbox_*, shadowpub_*, mqtt_subscriber_* series.
-    # Consumed by grafana/dashboards/09-edge-transformer-shadow-mode.json.
+    # Consumed by grafana/dashboards/10-edge-transformer.json (the
+    # renumbered board; old 09-edge-transformer-shadow-mode is gone).
     static_configs:
       - targets: ['edge-transformer:9102']
 
@@ -64,3 +65,16 @@ scrape_configs:
   - job_name: refdata-api
     static_configs:
       - targets: ['refdata-api:9104']
+
+  # ── Exporters (2026-07-07 audit: bus+DB+host had ZERO white-box
+  # telemetry). Unblocks the disk/CAgg-invalidation alert backlog. ──
+  # White-box DB metrics for BOTH packiot + packiot_shadow
+  # (auto-discover — flip needs no scrape change).
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # App-EC2 host metrics (CPU/mem/disk — the 2026-06-22 incident class).
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
