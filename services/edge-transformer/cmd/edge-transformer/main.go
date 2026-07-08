@@ -44,6 +44,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
@@ -470,6 +471,58 @@ func main() {
 		logger.Info("mqtt subscriber disabled (MQTT_ENABLED=false)")
 	}
 
+	// ── ADR-0019 C1 edge command channel (machine-write path) ────────────────
+	// The RETURN path: operator command → broker → transformer → SparkPlug
+	// DCMD → PLC. GATED behind EDGE_COMMANDS_ENABLED (default false), so this
+	// ships INERT: the consumer self-gates in Run (blocks on ctx, no dial) and
+	// no DCMD publisher is opened. Only when the flag flips do we open the MQTT
+	// DCMD publisher + register the command metrics.
+	cmdMetrics := command.Metrics{}
+	var cmdDevice *command.MQTTDevicePublisher
+	startCmd := false
+	if cfg.CommandsEnabled {
+		cmdReceived := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "edge_transformer_commands_received_total",
+			Help: "Operator commands consumed from edge.commands.<tenant> (ADR-0019 C1).",
+		}, []string{"tenant", "verb"})
+		cmdExecuted := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "edge_transformer_commands_executed_total",
+			Help: "Commands translated to a SparkPlug DCMD and published to the PLC (ADR-0019 C1).",
+		}, []string{"tenant", "verb"})
+		cmdRejected := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "edge_transformer_commands_rejected_total",
+			Help: "Commands refused (allow-list / params / mapping / malformed) — no DCMD emitted (ADR-0019 C1).",
+		}, []string{"tenant", "verb", "reason"})
+		cmdAcked := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "edge_transformer_commands_acked_total",
+			Help: "Acks published to edge.commands.<tenant>.ack, by status (ADR-0019 C1).",
+		}, []string{"tenant", "verb", "status"})
+		mx.Registry.MustRegister(cmdReceived, cmdExecuted, cmdRejected, cmdAcked)
+		cmdMetrics = command.Metrics{
+			Received: func(t, v string) { cmdReceived.WithLabelValues(t, v).Inc() },
+			Executed: func(t, v string) { cmdExecuted.WithLabelValues(t, v).Inc() },
+			Rejected: func(t, v, r string) { cmdRejected.WithLabelValues(t, v, r).Inc() },
+			Acked:    func(t, v, s string) { cmdAcked.WithLabelValues(t, v, s).Inc() },
+		}
+
+		var derr error
+		cmdDevice, derr = command.NewMQTTDevicePublisher(
+			cfg.MQTTBrokerURL, cfg.MQTTClientID+"-cmd", cfg.MQTTUsername, cfg.MQTTPassword, logger)
+		if derr != nil {
+			logger.Error("command: DCMD publisher init failed — command channel NOT started",
+				slog.String("err", derr.Error()))
+		} else {
+			startCmd = true
+			logger.Info("edge command channel ENABLED",
+				slog.Any("allowed_verbs", cfg.CommandsAllowed),
+				slog.String("edge_node", cfg.CommandsEdgeNode))
+		}
+	} else {
+		logger.Info("edge command channel disabled (EDGE_COMMANDS_ENABLED=false)")
+	}
+	cmdConsumer := command.NewConsumer(cfg, amqpCreds.URL(), tenants, cmdDevice, cmdMetrics, logger)
+	multi.Add(cmdConsumer)
+
 	// Run AMQP consumer + optional MQTT subscriber concurrently. First error
 	// (or ctx cancellation) tears both down. errgroup guarantees Wait blocks
 	// until every goroutine returns.
@@ -503,12 +556,28 @@ func main() {
 			return nil
 		})
 	}
+	// Command consumer. When DISABLED it self-gates (Run blocks on ctx, no
+	// dial). When ENABLED-but-publisher-init-failed we skip it entirely to
+	// avoid publishing through a nil device. Otherwise it consumes.
+	if !cfg.CommandsEnabled || startCmd {
+		g.Go(func() error {
+			if err := cmdConsumer.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("command consumer: %w", err)
+			}
+			return nil
+		})
+	} else {
+		logger.Warn("command channel enabled but publisher init failed — consumer not started")
+	}
 	if err := g.Wait(); err != nil {
 		logger.Error("worker group exited with error", slog.String("err", err.Error()))
 	}
 
 	if shadowPub != nil {
 		_ = shadowPub.Close()
+	}
+	if cmdDevice != nil {
+		cmdDevice.Close()
 	}
 	if outboxStore != nil {
 		_ = outboxStore.Close()

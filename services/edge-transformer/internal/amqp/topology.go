@@ -142,3 +142,108 @@ func DeclareTopology(ctx context.Context, ch *amqp.Channel, cfg *config.Config, 
 	)
 	return nil
 }
+
+// CommandQueueNames returns the (main, retry, failed, ack) queue names for a
+// tenant on the command channel. Single source of truth so the topology
+// declaration and the consumer agree byte-for-byte (the PR #56 lesson: a
+// consumer reading a queue nobody declares — or vice versa — is a silent
+// dead-letter sink).
+func CommandQueueNames(cfg *config.Config, tenant string) (main, retry, failed, ack string) {
+	base := fmt.Sprintf("%s-%s", cfg.CommandsQueuePrefix, tenant)
+	return base + "-q", base + "-q-retry-30s", base + "-q-failed", base + "-ack-q"
+}
+
+// DeclareCommandTopology asserts the edge command channel's exchange/queue/
+// binding graph (ADR-0019 C1). This is the INBOUND return path — operator
+// commands flow cloud → broker → transformer → PLC — so it reuses the exact
+// retry/DLX triple the ingest topology uses, with two differences called out
+// by the design:
+//
+//   - QUORUM queues (x-queue-type: quorum). A machine-write command must not
+//     be lost to a single broker node crash the way a best-effort classic
+//     mirror can be; quorum gives Raft-replicated durability. The ingest side
+//     is classic because a dropped metric self-heals on the next tick — a
+//     dropped WRITE does not.
+//
+//   - An ack routing key `edge.commands.<tenant>.ack` (+ a durable ack queue)
+//     so the executor's delivered/rejected result is observable and the
+//     edge-api producer can correlate it back to the operator action.
+//
+//     ┌──────────────────────────────────────────────────────────────────┐
+//     │  edge.commands  (topic exchange)                                  │
+//     │    routing key edge.commands.<tenant>  →  edge-commands-<t>-q     │
+//     │    routing key edge.commands.<tenant>.ack → edge-commands-<t>-ack-q│
+//     └─────────────────┬────────────────────────────────────────────────┘
+//     │ nack(requeue=false) → DLX
+//     ▼
+//     edge.commands-retry → edge-commands-<t>-q-retry-30s (TTL → back to source)
+//     │ after MaxRetries
+//     ▼
+//     edge.commands-failed → edge-commands-<t>-q-failed (terminal, human triage)
+func DeclareCommandTopology(ctx context.Context, ch *amqp.Channel, cfg *config.Config, tenants []string, logger *slog.Logger) error {
+	// 1. Exchanges — source + retry + failed, all topic + durable.
+	for _, ex := range []string{cfg.CommandsExchange, cfg.CommandsRetryExchange, cfg.CommandsFailedExchange} {
+		if err := ch.ExchangeDeclare(ex, "topic", true, false, false, false, nil); err != nil {
+			return fmt.Errorf("declare command exchange %s: %w", ex, err)
+		}
+	}
+
+	quorum := amqp.Table{"x-queue-type": "quorum"}
+
+	for _, t := range tenants {
+		mainQ, retryQ, failedQ, ackQ := CommandQueueNames(cfg, t)
+		routingKey := fmt.Sprintf("%s.%s", cfg.CommandsExchange, t) // edge.commands.<tenant>
+		ackKey := fmt.Sprintf("%s.%s.ack", cfg.CommandsExchange, t) // edge.commands.<tenant>.ack
+
+		// Main command queue — quorum, DLX to the retry exchange.
+		mainArgs := amqp.Table{"x-queue-type": "quorum", "x-dead-letter-exchange": cfg.CommandsRetryExchange}
+		if _, err := ch.QueueDeclare(mainQ, true, false, false, false, mainArgs); err != nil {
+			return fmt.Errorf("declare command queue %s: %w", mainQ, err)
+		}
+		if err := ch.QueueBind(mainQ, routingKey, cfg.CommandsExchange, false, nil); err != nil {
+			return fmt.Errorf("bind command queue %s: %w", mainQ, err)
+		}
+
+		// Retry queue — quorum, TTL, DLX back to the source exchange.
+		retryArgs := amqp.Table{
+			"x-queue-type":           "quorum",
+			"x-message-ttl":          int32(cfg.RetryTTLMs),
+			"x-dead-letter-exchange": cfg.CommandsExchange,
+		}
+		if _, err := ch.QueueDeclare(retryQ, true, false, false, false, retryArgs); err != nil {
+			return fmt.Errorf("declare command retry queue %s: %w", retryQ, err)
+		}
+		if err := ch.QueueBind(retryQ, routingKey, cfg.CommandsRetryExchange, false, nil); err != nil {
+			return fmt.Errorf("bind command retry queue %s: %w", retryQ, err)
+		}
+
+		// Terminal failed queue — quorum, NO TTL, NO DLX (human triage).
+		if _, err := ch.QueueDeclare(failedQ, true, false, false, false, quorum); err != nil {
+			return fmt.Errorf("declare command failed queue %s: %w", failedQ, err)
+		}
+		if err := ch.QueueBind(failedQ, routingKey, cfg.CommandsFailedExchange, false, nil); err != nil {
+			return fmt.Errorf("bind command failed queue %s: %w", failedQ, err)
+		}
+
+		// Ack queue — quorum, durable. Bound to the ack routing key on the
+		// source exchange so the delivered/rejected result survives a crash
+		// and the producer can correlate it. The transformer WRITES here; the
+		// edge-api producer (follow-up) READS here.
+		if _, err := ch.QueueDeclare(ackQ, true, false, false, false, quorum); err != nil {
+			return fmt.Errorf("declare command ack queue %s: %w", ackQ, err)
+		}
+		if err := ch.QueueBind(ackQ, ackKey, cfg.CommandsExchange, false, nil); err != nil {
+			return fmt.Errorf("bind command ack queue %s: %w", ackQ, err)
+		}
+	}
+
+	logger.Info("edge command topology declared",
+		slog.String("commands_exchange", cfg.CommandsExchange),
+		slog.String("retry_exchange", cfg.CommandsRetryExchange),
+		slog.String("failed_exchange", cfg.CommandsFailedExchange),
+		slog.Int("retry_ttl_ms", cfg.RetryTTLMs),
+		slog.Int("tenant_queues", len(tenants)),
+		slog.Any("tenants", tenants),
+	)
+	return nil
+}

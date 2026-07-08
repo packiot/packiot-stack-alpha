@@ -120,6 +120,42 @@ type Config struct {
 	OutboxEnabled bool
 	OutboxPath    string // filesystem path to the SQLite DB
 	OutboxCap     int    // max rows before FIFO drop-oldest kicks in
+
+	// ── Edge command channel (ADR-0019 C1 / task G4) ──────────────────────
+	// The RETURN path: an operator action in the cloud writes a value DOWN
+	// to the PLC (SparkPlug DCMD). This is the ONLY machine-write path in
+	// the stack, so it ships gated + inert. See docs/adr/reference/designs/
+	// 0019-C1-edge-command-channel.md.
+	//
+	// CommandsEnabled gates the WHOLE path — like MQTT_ENABLED and the uns
+	// deriver, the consumer only starts when this is true. Default false so
+	// the transformer ships with zero behavior change; a machine-write path
+	// must be opt-in, never on-by-accident.
+	CommandsEnabled bool
+	// CommandsAllowed is the allow-list of verbs the executor will translate
+	// to a PLC write. A verb NOT in this set is REJECTED (ack rejected + DLX),
+	// never guessed. Default "po_setup,param_write" mirrors the ADR-0019
+	// capabilities.commands.allowed contract.
+	CommandsAllowed []string
+	// CommandsExchange is the topic exchange operator commands land on. The
+	// per-tenant queue `edge-commands-<tenant>-q` binds `edge.commands.<tenant>`;
+	// acks publish back to `edge.commands.<tenant>.ack` on the same exchange.
+	CommandsExchange string
+	// CommandsQueuePrefix is the per-tenant queue base name. Final queue is
+	// `<prefix>-<tenant>-q` (+ `-retry-30s` / `-failed` for the DLX triple).
+	CommandsQueuePrefix string
+	// CommandsRetryExchange / CommandsFailedExchange complete the retry/DLX
+	// triple, mirroring the ingest topology's shape.
+	CommandsRetryExchange  string
+	CommandsFailedExchange string
+	// CommandsEdgeNode is the SparkPlug edge-node id the DCMD is published
+	// under: `spBv1.0/<group>/DCMD/<edgeNode>`. Group is derived from the
+	// command's packmlTopic first segment; the edge node is deployment-fixed
+	// (the plc-sim's node id in staging).
+	CommandsEdgeNode string
+	// CommandsDedupCap bounds the in-memory idempotency-key set (FIFO
+	// eviction). Re-delivery of a seen key does NOT re-issue the DCMD.
+	CommandsDedupCap int
 }
 
 func Load() (*Config, error) {
@@ -165,7 +201,35 @@ func Load() (*Config, error) {
 		OutboxEnabled: getenvBool("OUTBOX_ENABLED", false),
 		OutboxPath:    getenv("OUTBOX_PATH", "/var/lib/edge-transformer/outbox.db"),
 		OutboxCap:     getenvInt("OUTBOX_CAP", 100000),
+
+		// ADR-0019 C1 edge command channel (machine-write path — inert by default)
+		CommandsEnabled:        getenvBool("EDGE_COMMANDS_ENABLED", false),
+		CommandsAllowed:        getenvList("EDGE_COMMANDS_ALLOWED", "po_setup,param_write"),
+		CommandsExchange:       getenv("EDGE_COMMANDS_EXCHANGE", "edge.commands"),
+		CommandsQueuePrefix:    getenv("EDGE_COMMANDS_QUEUE_PREFIX", "edge-commands"),
+		CommandsRetryExchange:  getenv("EDGE_COMMANDS_RETRY_EXCHANGE", "edge.commands-retry"),
+		CommandsFailedExchange: getenv("EDGE_COMMANDS_FAILED_EXCHANGE", "edge.commands-failed"),
+		CommandsEdgeNode:       getenv("EDGE_COMMANDS_EDGE_NODE", "plc-sim"),
+		CommandsDedupCap:       getenvInt("EDGE_COMMANDS_DEDUP_CAP", 4096),
 	}, nil
+}
+
+// getenvList parses a comma-separated env var into a trimmed, non-empty
+// slice. Falls back to parsing `fallback` (also comma-separated) when the
+// var is unset/empty. Used for the command allow-list.
+func getenvList(name, fallback string) []string {
+	v := os.Getenv(name)
+	if v == "" {
+		v = fallback
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getenvBool(name string, fallback bool) bool {
