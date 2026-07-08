@@ -221,7 +221,7 @@ def check_secret_values(node: dict, flow: str, out: list) -> None:
                     f"({_redact(value)}); use a secret:// reference or an env ref.",
                 ))
     # Content-based: unambiguous credentials embedded anywhere (func body, URL).
-    for _key, value in _iter_string_props(node):
+    for _, value in _iter_string_props(node):
         if _is_safe_secret_value(value):
             continue
         for pat, label in _EMBEDDED_CRED_PATTERNS:
@@ -279,7 +279,7 @@ def check_db_core_write(node: dict, flow: str, out: list) -> None:
     if not is_db:
         return
     # Collect all SQL-ish text from the node.
-    blob = " \n ".join(v for _k, v in _iter_string_props(node)).lower()
+    blob = " \n ".join(v for _, v in _iter_string_props(node)).lower()
     if not any(verb in blob for verb in CONFIG["sql_write_verbs"]):
         return
     for table in CONFIG["core_tables"]:
@@ -377,7 +377,7 @@ def expand_args(args):
 def main(argv):
     args = argv[1:]
     if not args:
-        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+        print((__doc__ or "").strip().splitlines()[0] if __doc__ else "customization-flow lint", file=sys.stderr)
         print("usage: lint-customization-flows.py FLOW_OR_GLOB [FLOW_OR_GLOB ...]",
               file=sys.stderr)
         return 2
