@@ -952,6 +952,19 @@ services:
       # (routes to packiot_shadow public via oeecloud-worker's shadow
       # pool). Requires POSTGRES_SHADOW_DB_NAME set on oeecloud-worker.
       SHADOW_EMIT_REFACTORED: "true"
+      # ── ADR-0019 C1 edge command channel (machine-write path) ─────────
+      # The RETURN path: an operator action writes a value DOWN to the PLC
+      # (SparkPlug DCMD). This is the ONLY machine-write path in the stack,
+      # so it ships INERT: EDGE_COMMANDS_ENABLED=false means the consumer
+      # self-gates (no dial, no DCMD publisher) and behavior is unchanged.
+      # Flip to "true" only after the edge-api producer endpoint lands and
+      # the path is reviewed against the live tenant. Default false in code
+      # too (config.go), so this is belt-and-suspenders.
+      EDGE_COMMANDS_ENABLED: "false"
+      # Allow-list of verbs the executor will translate to a PLC write. A
+      # verb NOT in this set is REJECTED (ack rejected + dead-lettered),
+      # never guessed — the fail-safe rule (contrast ingest's zero-fill).
+      EDGE_COMMANDS_ALLOWED: "po_setup,param_write"
     volumes:
       # ADR-0004 — per-customer client.yaml lives in git under
       # docs/clients/<tenant>.yaml; mount it read-only into the container.

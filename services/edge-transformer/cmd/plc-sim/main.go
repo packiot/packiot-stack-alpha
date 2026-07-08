@@ -24,6 +24,8 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,11 +49,12 @@ type line struct {
 // the register but only L5/BREYER/61 matched, so 4 of 5 sim lines
 // published unregistered topics that skipped everywhere — the
 // call-site-verification lesson, simulator edition):
-//   CPACK/SC/LINHAS/L8              → eq 51 (line-level entry)
-//   CPACK/SC/LINHAS/L5/BREYER + .../61/Unit → eq 53
-//   CPACK/SC/LINHAS/L5/TEXA   + .../65/Unit → eq 57
-//   CPACK/SC/LINHAS/L3/PTH    + .../81/Unit → eq 61
-//   CPACK/SC/LINHAS/L4/TEXA   (line resolves; unit idx unregistered) → eq 63
+//
+//	CPACK/SC/LINHAS/L8              → eq 51 (line-level entry)
+//	CPACK/SC/LINHAS/L5/BREYER + .../61/Unit → eq 53
+//	CPACK/SC/LINHAS/L5/TEXA   + .../65/Unit → eq 57
+//	CPACK/SC/LINHAS/L3/PTH    + .../81/Unit → eq 61
+//	CPACK/SC/LINHAS/L4/TEXA   (line resolves; unit idx unregistered) → eq 63
 var lines = []line{
 	{"L8", "", 51, 120},
 	{"L5", "BREYER", 61, 110},
@@ -65,11 +68,19 @@ type metricDef struct {
 	alias uint64
 }
 
-func (l line) metrics(base uint64) []metricDef {
+// topicPrefix is the SparkPlug metric-name prefix for this line — the base a
+// DCMD's metric name must start with to target this line (e.g.
+// "CPACK/SC/LINHAS/L5/BREYER"). It is the same base metrics() builds from.
+func (l line) topicPrefix() string {
 	p := "CPACK/SC/LINHAS/" + l.Line
 	if l.Unit != "" {
 		p += "/" + l.Unit
 	}
+	return p
+}
+
+func (l line) metrics(base uint64) []metricDef {
+	p := l.topicPrefix()
 	return []metricDef{
 		{p + fmt.Sprintf("/Admin/ProdConsumedCount/%d/Unit", l.Idx), base + 1},
 		{p + fmt.Sprintf("/Admin/ProdProcessedCount/%d/Unit", l.Idx), base + 2},
@@ -84,6 +95,24 @@ type simState struct {
 	consumed, processed, defective float64
 	state                          int64 // PackML
 	stateLeft                      int   // ticks remaining in state
+
+	// ── DCMD-applied overrides (ADR-0019 C1 command-channel loop) ──────────
+	// A DCMD from the command channel mutates these; the sim then reports the
+	// new values in its next NBIRTH/NDATA, so the write is observable end to
+	// end. Guarded by the package-level `mu` (the paho callback goroutine
+	// writes them; the tick goroutine reads them).
+	speedOverride    float64 // param_write on .../Status/MachSpeed
+	hasSpeedOverride bool
+	poParam          string // po_setup on .../Status/Parameter30700
+}
+
+// effSpeed is the line's effective MachSpeed — the DCMD override if one has
+// been applied, else the static seed. Caller holds mu.
+func (s *simState) effSpeed(seed float64) float64 {
+	if s.hasSpeedOverride {
+		return s.speedOverride
+	}
+	return seed
 }
 
 func main() {
@@ -102,21 +131,33 @@ func main() {
 	for i := range states {
 		states[i] = simState{state: 6, stateLeft: 60 + rand.Intn(120)}
 	}
+	// mu guards `states` — the DCMD callback (paho goroutine) mutates the
+	// override fields while the tick goroutine reads them. rebirth signals the
+	// tick loop to republish an NBIRTH reflecting a just-applied DCMD, so the
+	// command-channel write is observable in the sim's output.
+	var mu sync.Mutex
+	rebirth := make(chan struct{}, 1)
 
 	publishBirth := func(c paho.Client) {
+		mu.Lock()
 		var ms []sparkplug.SimMetric
 		for i, l := range lines {
 			base := uint64((i + 1) * 10)
 			defs := l.metrics(base)
+			poText := states[i].poParam
+			if poText == "" {
+				poText = fmt.Sprint(l.Idx)
+			}
 			ms = append(ms,
 				sparkplug.SimMetric{Name: defs[0].name, Alias: defs[0].alias, Double: states[i].consumed},
 				sparkplug.SimMetric{Name: defs[1].name, Alias: defs[1].alias, Double: states[i].processed},
 				sparkplug.SimMetric{Name: defs[2].name, Alias: defs[2].alias, Double: states[i].defective},
-				sparkplug.SimMetric{Name: defs[3].name, Alias: defs[3].alias, Double: l.MachSpeed},
+				sparkplug.SimMetric{Name: defs[3].name, Alias: defs[3].alias, Double: states[i].effSpeed(l.MachSpeed)},
 				sparkplug.SimMetric{Name: defs[4].name, Alias: defs[4].alias, Long: states[i].state, IsLong: true},
-				sparkplug.SimMetric{Name: defs[5].name, Alias: defs[5].alias, Text: fmt.Sprint(l.Idx), IsText: true},
+				sparkplug.SimMetric{Name: defs[5].name, Alias: defs[5].alias, Text: poText, IsText: true},
 			)
 		}
+		mu.Unlock()
 		seq = 0
 		body, err := sparkplug.EncodeSim(ms, &seq, true)
 		if err != nil {
@@ -128,9 +169,71 @@ func main() {
 		logger.Info("NBIRTH published", "metrics", len(ms))
 	}
 
+	// applyDCMD is the command-channel loop's receiving end (ADR-0019 C1): it
+	// decodes a DCMD, matches each named metric to a line by topic prefix, and
+	// applies the write to the sim's in-memory state so the effect shows up in
+	// the next NBIRTH/NDATA. Only the two verbs the executor emits are mapped:
+	// param_write on MachSpeed and po_setup on Parameter30700.
+	applyDCMD := func(body []byte) {
+		p, err := sparkplug.Decode(body)
+		if err != nil {
+			logger.Error("DCMD decode", "err", err)
+			return
+		}
+		applied := 0
+		mu.Lock()
+		for _, m := range p.GetMetrics() {
+			name := m.GetName()
+			if name == "" {
+				continue
+			}
+			for i, l := range lines {
+				if !strings.HasPrefix(name, l.topicPrefix()) {
+					continue
+				}
+				switch {
+				case strings.HasSuffix(name, "/Status/MachSpeed"):
+					if v, ok := dcmdDouble(m); ok {
+						states[i].speedOverride = v
+						states[i].hasSpeedOverride = true
+						applied++
+						logger.Info("DCMD applied: MachSpeed override",
+							"line", l.Line, "unit", l.Unit, "value", v)
+					}
+				case strings.HasSuffix(name, "/Status/Parameter30700"):
+					if s, ok := dcmdString(m); ok {
+						states[i].poParam = s
+						applied++
+						logger.Info("DCMD applied: PO setup",
+							"line", l.Line, "unit", l.Unit, "po", s)
+					}
+				default:
+					logger.Info("DCMD received (no sim effect mapped)", "metric", name)
+				}
+			}
+		}
+		mu.Unlock()
+		if applied > 0 {
+			select {
+			case rebirth <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	dcmdTopic := "spBv1.0/" + groupID + "/DCMD/" + *edgeNode
 	opts.SetOnConnectHandler(func(c paho.Client) {
 		logger.Info("connected", "broker", *broker)
 		publishBirth(c)
+		// Subscribe to the device command topic — the command channel's DCMDs
+		// land here. QoS 1 to match the executor's at-least-once publish.
+		if tok := c.Subscribe(dcmdTopic, 1, func(_ paho.Client, msg paho.Message) {
+			applyDCMD(msg.Payload())
+		}); tok.WaitTimeout(5*time.Second) && tok.Error() != nil {
+			logger.Error("DCMD subscribe", "err", tok.Error())
+		} else {
+			logger.Info("DCMD listener subscribed", "topic", dcmdTopic)
+		}
 	})
 	client := paho.NewClient(opts)
 	if tok := client.Connect(); tok.Wait() && tok.Error() != nil {
@@ -150,8 +253,13 @@ func main() {
 			logger.Info("plc-sim stopping")
 			client.Disconnect(250)
 			return
+		case <-rebirth:
+			// A DCMD was just applied — republish NBIRTH so the new MachSpeed /
+			// PO param is immediately visible downstream.
+			publishBirth(client)
 		case <-tick.C:
 			var ms []sparkplug.SimMetric
+			mu.Lock()
 			for i, l := range lines {
 				s := &states[i]
 				s.stateLeft--
@@ -170,7 +278,9 @@ func main() {
 					}
 				}
 				if s.state == 6 {
-					inc := l.MachSpeed / 60 * float64(*tickSec) * (0.85 + rand.Float64()*0.3)
+					// Effective speed honors a DCMD MachSpeed override so a
+					// param_write is observable in the counter rate too.
+					inc := s.effSpeed(l.MachSpeed) / 60 * float64(*tickSec) * (0.85 + rand.Float64()*0.3)
 					s.consumed += inc
 					s.processed += inc * (0.97 + rand.Float64()*0.03)
 					if rand.Intn(50) == 0 {
@@ -185,6 +295,7 @@ func main() {
 					sparkplug.SimMetric{Alias: base + 5, Long: s.state, IsLong: true},
 				)
 			}
+			mu.Unlock()
 			body, err := sparkplug.EncodeSim(ms, &seq, false)
 			if err != nil {
 				logger.Error("encode NDATA", "err", err)
@@ -194,6 +305,32 @@ func main() {
 			tok.Wait()
 		}
 	}
+}
+
+// dcmdDouble extracts a numeric DCMD metric value as float64 (the executor
+// encodes param_write values as Double, but tolerate the other numeric wire
+// forms defensively).
+func dcmdDouble(m *sparkplug.Metric) (float64, bool) {
+	switch v := m.GetValue().(type) {
+	case *sparkplug.Metric_DoubleValue:
+		return v.DoubleValue, true
+	case *sparkplug.Metric_FloatValue:
+		return float64(v.FloatValue), true
+	case *sparkplug.Metric_LongValue:
+		return float64(v.LongValue), true
+	case *sparkplug.Metric_IntValue:
+		return float64(v.IntValue), true
+	}
+	return 0, false
+}
+
+// dcmdString extracts a string DCMD metric value (po_setup encodes poNumber as
+// String).
+func dcmdString(m *sparkplug.Metric) (string, bool) {
+	if v, ok := m.GetValue().(*sparkplug.Metric_StringValue); ok {
+		return v.StringValue, true
+	}
+	return "", false
 }
 
 func getenv(k, d string) string {
