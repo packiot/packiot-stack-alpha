@@ -35,10 +35,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the parsed shape of client.yaml. Skeleton-minimum: just
-// enough fields to drive tenant discovery + tag log lines. The full
-// schema lands in ADR-0009 Phase 2 work alongside the cpack example.
+// Config is the parsed shape of client.yaml. The skeleton fields
+// (tenant_id, customer, environment, equipments) are honored at runtime
+// today; the v1.1 sections below (schema_version, plc, equipment_mapping,
+// shifts, capabilities) are the descriptor schema from
+// docs/adr/reference/designs/0021-tenant-descriptor-and-isolation-gate.md
+// §1a. They parse into OPTIONAL typed fields and are validated when
+// present, but NOTHING consumes them yet — the capabilities drive the
+// C1/C2/C3 components that don't exist. This is the forward-compatible
+// parse+validate foundation: skeleton configs (cpack.yaml, incoplast.yaml)
+// keep loading unchanged, and a v1.1 descriptor round-trips + lints.
 type Config struct {
+	// SchemaVersion is the descriptor schema version ("1.1"). Absent in
+	// skeleton configs; informational for now (no behavior branches on it).
+	SchemaVersion string `yaml:"schema_version,omitempty"`
+
 	// TenantID is the lowercased Sparkplug group_id. Matches what
 	// services/oeecloud-worker/internal/tenants/discovery.go computes from
 	// packml_register, so per-tenant queue names line up across both
@@ -57,6 +68,25 @@ type Config struct {
 	// skeleton; Phase 2 fills it from packml_register exports or
 	// CS-Admin onboarding output.
 	Equipments []EquipmentMapping `yaml:"equipments,omitempty"`
+
+	// PLC (v1.1) describes how this factory's PLC is reached. Optional;
+	// nil for skeleton configs. Hosts are carried by REFERENCE only
+	// (host_ref: secret://…) — never inline values (the Incoplast
+	// cleartext-credentials lesson, made structural).
+	PLC *PLC `yaml:"plc,omitempty"`
+
+	// EquipmentMapping (v1.1) is the richer topic↔equipment table that
+	// also carries per-tenant ERP dimensions. Distinct from Equipments
+	// (the skeleton field) which stays as-is for back-compat.
+	EquipmentMapping []EquipmentMapEntry `yaml:"equipment_mapping,omitempty"`
+
+	// Shifts (v1.1) selects where shift definitions come from. Optional.
+	Shifts *Shifts `yaml:"shifts,omitempty"`
+
+	// Capabilities (v1.1) declares what this tenant's stack must stand up
+	// (operator mode, command channel, integrations, custom flows).
+	// Optional; nil for skeleton configs.
+	Capabilities *Capabilities `yaml:"capabilities,omitempty"`
 }
 
 // EquipmentMapping is one row of the topic↔equipment table — the same
@@ -66,6 +96,72 @@ type EquipmentMapping struct {
 	IDEquipment int    `yaml:"id_equipment"`
 	IDUnit      int    `yaml:"id_unit,omitempty"`
 }
+
+// PLC (v1.1 §1a) is the PLC-connectivity section.
+type PLC struct {
+	Protocol  string        `yaml:"protocol,omitempty"`
+	Endpoints []PLCEndpoint `yaml:"endpoints,omitempty"`
+}
+
+// PLCEndpoint is one reachable PLC. HostRef is a secret reference, never a
+// value; Rack/Slot are S7-specific (the schema gap ADR-0019 named) and are
+// pointers so "absent" is distinguishable from "0".
+type PLCEndpoint struct {
+	Name    string `yaml:"name,omitempty"`
+	HostRef string `yaml:"host_ref,omitempty"`
+	Rack    *int   `yaml:"rack,omitempty"`
+	Slot    *int   `yaml:"slot,omitempty"`
+}
+
+// EquipmentMapEntry (v1.1 §1a) maps a Sparkplug topic to an equipment id
+// and carries the per-tenant ERP dimensions that had no home before v1.1.
+type EquipmentMapEntry struct {
+	PackMLTopic string            `yaml:"packml_topic"`
+	IDEquipment int               `yaml:"id_equipment"`
+	ERP         map[string]string `yaml:"erp,omitempty"`
+}
+
+// Shifts (v1.1 §1a) selects the shift source: cloud_db or descriptor.
+type Shifts struct {
+	Source string `yaml:"source,omitempty"`
+}
+
+// Capabilities (v1.1 §1a) declares what the tenant's stack must provide.
+type Capabilities struct {
+	Operator       *OperatorCapability `yaml:"operator,omitempty"`
+	Commands       *CommandsCapability `yaml:"commands,omitempty"`
+	Integrations   []Integration       `yaml:"integrations,omitempty"`
+	Customizations []string            `yaml:"customizations,omitempty"`
+}
+
+// OperatorCapability picks where the operator UI runs. Mode ∈ {cloud, edge}.
+type OperatorCapability struct {
+	Mode     string `yaml:"mode,omitempty"`
+	Language string `yaml:"language,omitempty"`
+}
+
+// CommandsCapability is the operator→PLC write-back channel. When Enabled,
+// Allowed must be non-empty (you can't enable commands with none allowed).
+type CommandsCapability struct {
+	Enabled bool     `yaml:"enabled,omitempty"`
+	Allowed []string `yaml:"allowed,omitempty"`
+}
+
+// Integration is one outbound connector (e.g. the ERP database sync,
+// ADR-0019 G1). DSNRef is a secret reference, never a value.
+type Integration struct {
+	Type     string   `yaml:"type,omitempty"`
+	Driver   string   `yaml:"driver,omitempty"`
+	DSNRef   string   `yaml:"dsn_ref,omitempty"`
+	Reads    []string `yaml:"reads,omitempty"`
+	Writes   []string `yaml:"writes,omitempty"`
+	DedupKey string   `yaml:"dedup_key,omitempty"`
+}
+
+// secretScheme is the required prefix for any host/dsn reference. The
+// descriptor NEVER carries secret values inline — only pointers into the
+// secret store. Enforced by validate() so a leaked credential fails CI.
+const secretScheme = "secret://"
 
 // Load parses client.yaml from disk. Returns a useful error for the
 // common failure modes (missing file, bad YAML, missing required field).
@@ -78,14 +174,16 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	// Normalize BEFORE validate: lowercased tenant id to match the
+	// per-tenant queue naming convention used in internal/amqp/topology.go.
+	// CS Admin often writes uppercase customer codes (CPACK, SIMCORP) so
+	// the normalize step here saves a class of "almost-matches" bugs.
+	// Doing it first also lets validateV11's tenant_id↔topic check compare
+	// the canonical (lowercased) form directly.
+	cfg.TenantID = strings.ToLower(strings.TrimSpace(cfg.TenantID))
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", path, err)
 	}
-	// Normalize: lowercased tenant id to match the per-tenant queue
-	// naming convention used in internal/amqp/topology.go. CS Admin
-	// often writes uppercase customer codes (CPACK, SIMCORP) so the
-	// normalize step here saves a class of "almost-matches" bugs.
-	cfg.TenantID = strings.ToLower(strings.TrimSpace(cfg.TenantID))
 	return &cfg, nil
 }
 
@@ -103,7 +201,87 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("environment=%q: must be staging or production", c.Environment)
 	}
+	return c.validateV11()
+}
+
+// validateV11 runs the CI-lintable descriptor rules from the ADR-0021 §1a
+// spec. Every check is GATED on the presence of the section it governs, so
+// a skeleton config (no v1.1 sections) passes untouched — the whole point
+// of the forward-compatible parse-and-ignore contract.
+//
+// Rules (design doc §1a "Rules the descriptor enforces"):
+//  1. No secret VALUES anywhere: any host_ref / dsn_ref that is present
+//     must be a secret://… reference. There is deliberately NO plain-host
+//     field that could hold a value — the type system won't let you write
+//     one, and this check rejects a value smuggled through the ref field.
+//  2. tenant_id must equal the lowercased first '/'-segment of EVERY
+//     equipment_mapping topic — the discovery contract, checked statically
+//     (guards the silent cross-tenant-drop class of bug).
+//  3. capabilities.operator.mode ∈ {cloud, edge}; commands.enabled:true
+//     requires a non-empty allowed list.
+func (c *Config) validateV11() error {
+	// Rule 1a — plc endpoint hosts are references, never values.
+	if c.PLC != nil {
+		for i, ep := range c.PLC.Endpoints {
+			if err := requireSecretRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Rule 2 — tenant_id ↔ equipment_mapping topic prefix. c.TenantID is
+	// already normalized (Load lowercases before validate).
+	for i, em := range c.EquipmentMapping {
+		seg := strings.ToLower(firstTopicSegment(em.PackMLTopic))
+		if seg != c.TenantID {
+			return fmt.Errorf(
+				"equipment_mapping[%d].packml_topic=%q: first segment %q must equal tenant_id %q",
+				i, em.PackMLTopic, seg, c.TenantID)
+		}
+	}
+
+	// Rule 3 + Rule 1b — capabilities.
+	if c.Capabilities != nil {
+		if op := c.Capabilities.Operator; op != nil && op.Mode != "" {
+			switch op.Mode {
+			case "cloud", "edge":
+			default:
+				return fmt.Errorf("capabilities.operator.mode=%q: must be cloud or edge", op.Mode)
+			}
+		}
+		if cmd := c.Capabilities.Commands; cmd != nil && cmd.Enabled && len(cmd.Allowed) == 0 {
+			return fmt.Errorf("capabilities.commands.enabled is true but allowed is empty")
+		}
+		// Rule 1b — integration DSNs are references, never values.
+		for i, in := range c.Capabilities.Integrations {
+			if err := requireSecretRef("capabilities.integrations", i, in.Type, "dsn_ref", in.DSNRef); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// requireSecretRef enforces "empty, or a secret:// reference" on a host/dsn
+// field. Empty is allowed (the field may simply be unset); a non-empty
+// value that isn't a secret reference is a leaked credential and is rejected.
+func requireSecretRef(section string, idx int, label, field, val string) error {
+	if val == "" || strings.HasPrefix(val, secretScheme) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s[%d] (%s): %s=%q must be empty or a %s reference, not a value",
+		section, idx, label, field, val, secretScheme)
+}
+
+// firstTopicSegment returns the substring of topic before the first '/'
+// (the whole string if there is no '/'). This is the Sparkplug group_id
+// that must match tenant_id.
+func firstTopicSegment(topic string) string {
+	if i := strings.IndexByte(topic, '/'); i >= 0 {
+		return topic[:i]
+	}
+	return topic
 }
 
 // Tenants returns the single-element tenant list this transformer
