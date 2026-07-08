@@ -1,0 +1,33 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "custom-counter",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "spk1",
+    "type": "mqtt-sparkplug-plus in",
+    "z": "tab1",
+    "name": "NovoFlex Sparkplug",
+    "topic": "spBv1.0/INCOPLAST/DDATA/#",
+    "broker": "brk1",
+    "x": 300,
+    "y": 100,
+    "wires": [
+      [
+        "dbg2"
+      ]
+    ]
+  },
+  {
+    "id": "dbg2",
+    "type": "debug",
+    "z": "tab1",
+    "name": "d",
+    "x": 500,
+    "y": 100,
+    "wires": []
+  }
+]

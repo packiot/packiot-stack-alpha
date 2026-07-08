@@ -1,0 +1,21 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "custom-counter",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "pg_w",
+    "type": "postgresql",
+    "z": "tab1",
+    "name": "insert raw values",
+    "query": "INSERT INTO equipment_values (ts_value, id_equipment, value) VALUES ($1, $2, $3)",
+    "x": 320,
+    "y": 100,
+    "wires": [
+      []
+    ]
+  }
+]

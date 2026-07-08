@@ -1,0 +1,122 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "custom-counter",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "fn_state",
+    "type": "function",
+    "z": "tab1",
+    "name": "reel state machine",
+    "func": "// per-customer reel state machine (Shape 2 \u2014 the load-bearing pattern)\nconst st = flow.get('reel') || {count: 0};\nif (msg.payload.edge) { st.count += 1; }\nflow.set('reel', st);\nmsg.payload = { reel_count: st.count };\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 300,
+    "y": 100,
+    "wires": [
+      [
+        "chg1"
+      ]
+    ]
+  },
+  {
+    "id": "chg1",
+    "type": "change",
+    "z": "tab1",
+    "name": "shape payload",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "reel/count",
+        "tot": "str"
+      }
+    ],
+    "x": 520,
+    "y": 100,
+    "wires": [
+      [
+        "sw1"
+      ]
+    ]
+  },
+  {
+    "id": "sw1",
+    "type": "switch",
+    "z": "tab1",
+    "name": "route by area",
+    "property": "payload.area",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "EXTRUSAO",
+        "vt": "str"
+      }
+    ],
+    "outputs": 1,
+    "x": 700,
+    "y": 100,
+    "wires": [
+      [
+        "tmpl1"
+      ]
+    ]
+  },
+  {
+    "id": "tmpl1",
+    "type": "template",
+    "z": "tab1",
+    "name": "label",
+    "template": "Reel {{payload.reel_count}}",
+    "output": "str",
+    "x": 880,
+    "y": 100,
+    "wires": [
+      [
+        "dbg1"
+      ]
+    ]
+  },
+  {
+    "id": "dbg1",
+    "type": "debug",
+    "z": "tab1",
+    "name": "debug",
+    "active": true,
+    "x": 1040,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "cfg_erp",
+    "type": "postgresql",
+    "name": "erp reader (read-only)",
+    "host": "erp.local",
+    "port": 5432,
+    "database": "erp",
+    "user": "readonly",
+    "password": "secret://incoplast/erp/pg",
+    "dsn": "secret://incoplast/erp/dsn",
+    "ssl": true
+  },
+  {
+    "id": "fn_api",
+    "type": "function",
+    "z": "tab1",
+    "name": "attach api key",
+    "func": "msg.headers = { 'x-api-key': env.get('ERP_API_KEY') };\nreturn msg;",
+    "api_key": "",
+    "api_keyType": "env",
+    "outputs": 1,
+    "x": 300,
+    "y": 220,
+    "wires": [
+      []
+    ]
+  }
+]

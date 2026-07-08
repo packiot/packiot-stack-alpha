@@ -1,0 +1,23 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "custom-counter",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "file1",
+    "type": "file",
+    "z": "tab1",
+    "name": "write pos.csv",
+    "filename": "/data/exchange/pos.csv",
+    "appendNewline": true,
+    "overwriteFile": "false",
+    "x": 300,
+    "y": 100,
+    "wires": [
+      []
+    ]
+  }
+]

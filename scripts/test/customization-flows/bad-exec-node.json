@@ -1,0 +1,26 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "custom-counter",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "exec1",
+    "type": "exec",
+    "z": "tab1",
+    "name": "run oracle export script",
+    "command": "/opt/scripts/oracle_get_pos.sh",
+    "addpay": true,
+    "append": "",
+    "useSpawn": "false",
+    "x": 300,
+    "y": 100,
+    "wires": [
+      [],
+      [],
+      []
+    ]
+  }
+]
