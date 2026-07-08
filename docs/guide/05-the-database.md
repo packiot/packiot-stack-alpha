@@ -1,5 +1,8 @@
 # 5 — The Database
 
+> For the tables organized by schema and role (spine, rollup ladder, UNS, pools,
+> history), see the [Service Catalog (Ch.11)](11-service-catalog.md).
+
 Everything so far has been moving data *toward* the database. This chapter is about
 what it lands in, why the schema is shaped the way it is, and what the refactor
 changed. The database is PostgreSQL with **TimescaleDB** (a time-series extension)

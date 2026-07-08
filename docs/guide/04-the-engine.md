@@ -1,5 +1,8 @@
 # 4 — The Engine
 
+> For a concrete inventory of the worker's writers and scheduled jobs, see the
+> [Service Catalog (Ch.11)](11-service-catalog.md).
+
 This is the most important chapter, because it is where the rebuild's central claim
 is either true or false: that we moved the OEE computation out of the database and
 into Go **without changing a single number a customer sees.**

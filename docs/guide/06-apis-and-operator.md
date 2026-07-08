@@ -1,5 +1,8 @@
 # 6 — APIs and the Operator
 
+> For a concrete inventory of each API's endpoints, datasets, and the operator's
+> screens, see the [Service Catalog (Ch.11)](11-service-catalog.md).
+
 So far the data has flowed one way: machine → cloud → database. This chapter is
 about the other direction — how *people* read the results and *act* on the system.
 Two kinds of people: the **operator** on the factory floor during a shift, and the

@@ -22,6 +22,7 @@ why it exists."
 | 7 | [Customizations and Real Factories](guide/07-customizations-and-real-factories.md) | How the edge absorbs client-specific behavior, told through a real factory |
 | 8 | [Observability](guide/08-observability.md) | How you know any of this is working |
 | 9 | [The Endgame](guide/09-the-endgame.md) | Where the migration is going and how it finishes |
+| 11 | [Service Catalog](guide/11-service-catalog.md) | **Reference companion** — per service, its objective and a concrete, source-verified inventory (the database's tables by schema, an API's endpoints, a Go service's packages) |
 
 Keep the **[glossary](guide/glossary.md)** open in a second tab as you read — every
 domain and stack term the story uses (OEE, SparkPlug, CAgg, the flip, F1/F2/F3, …)

@@ -1,5 +1,8 @@
 # 3 — The Edge
 
+> For a concrete inventory of the services below (packages, endpoints, routes), see
+> the [Service Catalog (Ch.11)](11-service-catalog.md).
+
 The edge is everything that runs *inside the factory*: the machine, its controller,
 and the on-site software that gets the machine's data ready to leave the building.
 This chapter follows a single machine signal from the metal to the message bus.
