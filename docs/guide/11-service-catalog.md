@@ -48,7 +48,7 @@ cache of them. All verified present in `edge-api/schema.sql`.
 | Table | Role |
 |-------|------|
 | `equipment_values` | Raw truth — one machine sample per instant, TimescaleDB **hypertable**, unique on `(ts_value, id_equipment)`. Counters, state, denormalized hierarchy context. |
-| `agg_equipment_values_1min` | First continuous aggregate — the firehose in 1-minute buckets. **Note:** Ch.5 calls this `ca_equipment_values_1min` aspirationally; the worker's SQL uses `agg_equipment_values_1min` (14 references in `services/oeecloud-worker/`), and the naming ledger records "flows carry `agg_*` only". |
+| `agg_equipment_values_1min` | The one-minute tier — the firehose in 1-minute buckets (trigger-fed, `_t` in older SQL), with a continuous aggregate `ca_agg_equipment_values_1min` over it. **Naming:** grep `agg_*` — that is what the flows carry (naming ledger: "flows carry `agg_*` only"); ADR-0012's end-state canon is the `ca_agg_*` family, and the bare `ca_equipment_values_1min` in older ADR prose was never built. |
 | `equipment_events` / `equipment_events_man` | The downtime ledger — one row per machine event (`ts_event`→`ts_end`) with classification (`cd_category`, `planned_downtime`, `change_over`). The `_man` suffix marks manually-classified events. |
 | `production_orders` | The business work unit — PO lifecycle (`status` 1–4), plan vs. outcome, denormalized OEE + Q/A/P breakdown, the `recalc_needed` dirty flag. |
 | `production_orders_runtime` | One PO, many runs — a row per contiguous run with a `runtime_timerange` and its own OEE; a GiST exclusion constraint forbids overlapping runs (source of the honest `409 Conflict`). |
