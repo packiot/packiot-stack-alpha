@@ -1,0 +1,50 @@
+name: Customization-flow governance lint
+
+# ADR-0009 / ADR-0021 §1 governance gate. Per-customer customization lives at
+# the edge as governed Node-RED flows under clients/<tenant>/customizations/*.json.
+# This job enforces that they stay governed — no secret values, no shell/file
+# bridges, no raw MQTT/Sparkplug ingest, no direct writes to core pipeline
+# tables, no oversized function nodes, no retired egress. It is the CI incarnation
+# of the "Incoplast lesson" (a 1,069-node flow with cleartext creds doing pipeline
+# work is exactly what we refuse to let back in).
+#
+# The glob is empty today (no tenant has committed a customization flow yet), so
+# the job PASSES cleanly — it activates automatically when B2 adds Incoplast's.
+#
+# Path filter fires on customization flows themselves, the lint, its fixtures, and
+# this workflow. Stdlib-only Python (matches the repo's script style) — no deps.
+
+on:
+  pull_request:
+    branches: [staging, development]
+    paths:
+      - 'clients/**/customizations/**'
+      - 'scripts/lint-customization-flows.py'
+      - 'scripts/test-customization-lint.sh'
+      - 'scripts/test/customization-flows/**'
+      - '.github/workflows/customization-flow-lint.yml'
+  workflow_dispatch:
+
+jobs:
+  lint-customization-flows:
+    name: Lint customization flows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Keep the linter honest: prove it passes the good fixture and fails each
+      # bad one before we trust its verdict on real flows.
+      - name: Self-test the linter (fixtures)
+        run: bash scripts/test-customization-lint.sh
+
+      # The actual gate. Quote the glob so the shell does not expand it — the
+      # script expands it itself and treats an empty match as a clean pass.
+      - name: Lint committed customization flows
+        run: python3 scripts/lint-customization-flows.py 'clients/*/customizations/*.json'

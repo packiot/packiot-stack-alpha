@@ -1,0 +1,20 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "custom-counter",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "iot1",
+    "type": "google-iot-core out",
+    "z": "tab1",
+    "name": "publish to iot core",
+    "region": "us-central1",
+    "registry": "packiot",
+    "x": 320,
+    "y": 100,
+    "wires": []
+  }
+]
