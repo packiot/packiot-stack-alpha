@@ -73,7 +73,31 @@ connection from the pool and returns it.
 writers don't fire one `INSERT` per value. Each writer builds a query object that the
 handler *enqueues into a `pgx.Batch`*, and the whole batch executes in one round trip
 per delivery. This is the difference between a fast ingest path and a database melting
-under per-row chatter.
+under per-row chatter. The package comment states the split plainly:
+
+> *Writers no longer execute … they return `*Query` for the handler to enqueue into
+> a `pgx.Batch`. Handler executes all of a delivery's queries as one batched
+> round-trip.*
+
+Each `*Query` is an idempotent UPSERT keyed on `(ts_value, id_equipment)` — the same
+grain the legacy Node-RED node wrote, now visible Go instead of a buried flow node:
+
+```go
+// internal/writers/equipment_values.go — one metric → one batched UPSERT (trimmed)
+INSERT INTO %s.equipment_values
+    (ts_value, id_enterprise, id_site, id_area, id_equipment,
+     tp_equipment, net_production_incr, net_production_val, speed, ...)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ...)
+ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
+    net_production_incr = EXCLUDED.net_production_incr,
+    net_production_val  = COALESCE(EXCLUDED.net_production_val, equipment_values.net_production_val),
+    ...
+```
+
+The `ON CONFLICT … DO UPDATE` is what makes the whole pipeline safe to retry: a
+message replayed from the transformer's outbox re-lands on the same key and updates
+in place rather than duplicating, so "never lose a message" upstream never becomes
+"double-count a message" downstream.
 
 **The compute path fans one function across flows by swapping `search_path`.** This is
 the elegant part. Recall the [three flows](02-architecture-at-a-glance.md#idea-2--the-three-flows)
@@ -220,6 +244,59 @@ Not everything gets a deep rewrite. The engine uses two approaches deliberately:
    are not rewritten; the Go job simply calls the legacy function with the flow's
    schema on the search path. Zero transcription risk for periphery that carries no
    math. The deep port is spent where it matters.
+
+### The dirty-flag cascade, concretely
+
+The equivalence argument above kept mentioning `recalc_needed`. It is the single
+mechanism that makes the whole engine tractable, so it earns a from-scratch
+explanation.
+
+Start with the problem. The database is a historian with *billions* of raw rows
+([Chapter 5](05-the-database.md)). Recomputing every machine's every OEE window on
+every tick is impossible. But data also arrives *late* — an operator justifies a
+downtime an hour after it happened, a delayed sample lands in a bucket already
+summarized. So you cannot compute a window once and forget it, either. The answer is
+a **dirty flag**: a `recalc_needed` boolean on each aggregate row. A write that could
+have changed a window sets the flag; a scheduled pass recomputes *only* flagged rows
+and clears it. You recompute the minimum, but never miss a change.
+
+The discipline that makes this correct is strict: **many things may set the flag, but
+exactly one phase may clear it.** Get that wrong in either direction and OEE corrupts
+*silently* — clear too eagerly and a late edit is lost; never clear and the row
+recomputes forever, masking the fact that its inputs stopped changing. That is why
+the hourly rollup's equivalence argument insists its value phase "sets
+`recalc_needed=TRUE` *(verbatim!)*" while "only the events phase clears the flag."
+
+Two faithful fragments show the flag both propagating and re-arming. First, the
+hourly pass doesn't just recompute *its* grain — it marks the grains **above** it
+dirty, so a corrected hour cascades up into the day and the area totals that contain
+it:
+
+```go
+// internal/rollup/hour.go — the hourly pass flags the grains above it
+UPDATE %[1]s.equipment_runtime_1day  d SET recalc_needed = true ...   // the day that contains this hour
+UPDATE %[1]s.area_runtime_1hour      a SET recalc_needed = true ...   // the area that contains this equipment
+```
+
+Second, the PO-runtime pass **re-arms the flag on anything that can still change** —
+running orders every pass, and finished ones for a 48-hour tail to absorb late
+operator edits:
+
+```go
+// internal/rollup/recalc.go — keep recomputing what isn't final yet
+UPDATE %[1]s.production_orders SET recalc_needed = true
+ WHERE status = 2 AND recalc_needed = false;                 -- running: re-flag every pass
+UPDATE %[1]s.production_orders SET recalc_needed = true
+ WHERE status = 3 AND ts_start >= now() - interval '48 hours' -- finished: 48h late-edit window
+   AND recalc_needed = false;
+```
+
+Read together, these are the whole cascade: writes and self-re-enqueues *set* the
+flag, the rollup passes *consume* it, and the flag propagates up the grain hierarchy
+so a fix at the bottom reaches every total built on it. This is the `equipment_values
+→ ca_*_1min → equipment_runtime_1hour → _shift/_1day` chain from
+[Chapter 5](05-the-database.md#ca_equipment_values_1min--the-first-aggregate), driven
+one dirty row at a time rather than by recomputing the world.
 
 ## Proving it: golden fixtures and the differential bake
 

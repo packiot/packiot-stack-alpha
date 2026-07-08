@@ -35,10 +35,16 @@ next layer.
 ### `ca_equipment_values_1min` — the first aggregate
 
 A TimescaleDB **continuous aggregate** (CAgg): the firehose rolled into one-minute
-buckets per machine, refreshed automatically. It is stage one of a cascade —
-`1min → 1hour → shift` — and the reason a query for "this machine's OEE last month"
-does not have to scan a billion raw rows. The refactor's fight over *naming* this
-layer (the `ca_` prefix) is a whole subplot below.
+buckets per machine, refreshed automatically. It is stage one of a cascade whose
+real table names are worth knowing, because you will grep for them:
+`ca_equipment_values_1min → equipment_runtime_1hour → equipment_runtime_shift`
+(with `_1day`, `_1week`, `_1month` peer grains, and an `area_runtime_1hour` rollup
+for whole areas). It is the reason a query for "this machine's OEE last month" does
+not have to scan a billion raw rows. Each grain carries the `recalc_needed` dirty
+flag from [Chapter 4](04-the-engine.md#the-dirty-flag-cascade-concretely), and a fix
+at one grain flags the grains above it — the cascade flows *up* these table names.
+The refactor's fight over *naming* this layer (the `ca_` prefix) is a whole subplot
+below.
 
 ### `equipment_events` / `equipment_events_man` — the downtime ledger
 
