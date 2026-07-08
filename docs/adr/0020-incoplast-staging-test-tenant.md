@@ -1,6 +1,10 @@
 # ADR-0020 — Incoplast as a staging test tenant
 
 - **Status**: Proposed (2026-07-08) — decider: Emmanuel Podestá.
+- **Reframed by [ADR-0021](0021-multitenancy-model.md) (2026-07-08)**: the
+  "duplicate containers per tenant" mechanics below are subsumed by ADR-0021's
+  two-tier multi-tenancy model. Incoplast is no longer an ad-hoc second tenant
+  but the *validation* of that model. Read ADR-0021 first.
 - **Context**: [ADR-0019](0019-edge-customization-capabilities.md) turned the
   Incoplast assessment's seven gaps (local operator UI, ERP coupling, operator→PLC
   commands, …) into *requirements*. Those requirements need a place to be built and
