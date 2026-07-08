@@ -115,13 +115,18 @@ type Config struct {
 	UnsCurrentMetricsIntervalMinutes int
 
 	// PO-runtime refresh dispatcher (P3b: compute → recalc, ordered).
-	PORecalcEnabled               bool
-	PORecalcIntervalMinutes       int
-	PORecalcWindow                string // prod: '1 month'
-	PORecalcExcludedEnterprises   string // prod: 6 (owned by its sync chain)
-	RuntimeProvisionEnabled       bool
-	RuntimeRollupEnabled          bool
-	BakeComparatorEnabled         bool
+	PORecalcEnabled             bool
+	PORecalcIntervalMinutes     int
+	PORecalcWindow              string // prod: '1 month'
+	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
+	RuntimeProvisionEnabled     bool
+	RuntimeRollupEnabled        bool
+	BakeComparatorEnabled       bool
+	// BakeEnterpriseIDs — CSV of enterprises the surface-parity bake runs
+	// per tenant. The FIRST id is the frozen "gate" tenant (CPACK) whose
+	// queries run verbatim; the rest are positively scoped. Default "3"
+	// keeps behaviour byte-identical until Incoplast (4) is added: "3,4".
+	BakeEnterpriseIDs             string
 	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
@@ -178,6 +183,7 @@ func Load() (*Config, error) {
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
+		BakeEnterpriseIDs:                getenv("BAKE_ENTERPRISE_IDS", "3"),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
 		RollupMachineLevelEnterprises:    getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		Sync06ReportEnabled:              getenv("SYNC06_REPORT_ENABLED", "false") == "true",

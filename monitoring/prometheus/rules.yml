@@ -67,7 +67,7 @@ groups:
         for: 24h
         labels: {severity: warning}
         annotations:
-          summary: "Bake surface {{ $labels.surface }} mismatched for 24h — past every documented expiry class"
+          summary: "Bake surface {{ $labels.surface }} (enterprise {{ $labels.enterprise }}) mismatched for 24h — past every documented expiry class"
       - alert: IdentityBrokenPersisting
         expr: bake_identity_mismatch > 0
         for: 12h
