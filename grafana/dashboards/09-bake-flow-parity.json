@@ -77,7 +77,7 @@
       "targets": [
         {
           "expr": "bake_surface_mismatches",
-          "legendFormat": "{{surface}}",
+          "legendFormat": "{{surface}} (e{{enterprise}})",
           "refId": "A"
         }
       ]
@@ -105,7 +105,7 @@
       "targets": [
         {
           "expr": "bake_surface_compared",
-          "legendFormat": "{{surface}}",
+          "legendFormat": "{{surface}} (e{{enterprise}})",
           "refId": "A"
         }
       ]
@@ -186,7 +186,7 @@
       "targets": [
         {
           "expr": "1 - (bake_surface_mismatches / clamp_min(bake_surface_compared, 1))",
-          "legendFormat": "{{surface}}",
+          "legendFormat": "{{surface}} (e{{enterprise}})",
           "refId": "A"
         }
       ]
