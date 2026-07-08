@@ -39,6 +39,24 @@ Real factories live in the 40–85% range, and the entire value of the platform 
 showing them *where* the lost points went — which machine, which shift, which
 downtime category — so they can win them back.
 
+A worked example makes the three factors concrete. Take one 8-hour (480-minute)
+shift on a single machine:
+
+- It was **scheduled** to run all 480 minutes, but lost 48 to an unplanned jam —
+  so it ran 432. **Availability = 432 / 480 = 90%.**
+- At its ideal speed it would have made 43,200 units in that running time; it
+  actually made 36,720. **Performance = 36,720 / 43,200 = 85%.**
+- Of those 36,720, some 720 were scrap, leaving 36,000 net good.
+  **Quality = 36,000 / 36,720 ≈ 98%.**
+
+Multiply: **OEE = 0.90 × 0.85 × 0.98 ≈ 75%.** The power of the decomposition is
+that 75% is not a verdict, it is a *diagnosis*: the machine's biggest loss is the
+15 performance points, not the jam or the scrap — so that is where the plant
+manager looks first. Every number in this stack exists to make that breakdown
+trustworthy. (These are the exact ratios the engine computes in
+[Chapter 4](04-the-engine.md): `quality = net/gross`, `availability = running/available`,
+and `oee = net / (ideal × time)`.)
+
 ## The shape of the data
 
 To compute OEE, the platform tracks a small number of core concepts. You will meet

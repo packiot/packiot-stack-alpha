@@ -23,6 +23,10 @@ why it exists."
 | 8 | [Observability](guide/08-observability.md) | How you know any of this is working |
 | 9 | [The Endgame](guide/09-the-endgame.md) | Where the migration is going and how it finishes |
 
+Keep the **[glossary](guide/glossary.md)** open in a second tab as you read — every
+domain and stack term the story uses (OEE, SparkPlug, CAgg, the flip, F1/F2/F3, …)
+is one crisp line there, with a link back to the chapter that explains it.
+
 ## Reference material (the "why" and the "how-to")
 
 The guide tells the story. When you need the primary sources behind a decision, or
@@ -38,6 +42,10 @@ the exact steps for an operation, go here:
 - **`guides/`** — task runbooks (backup/restore, manual smoke check).
 - **`audits/`** — point-in-time evidence (prod-vs-staging comparisons, reviews).
 - **`clients/`** — per-factory configuration and onboarding material.
+- **[`BUSINESS-RULES.md`](BUSINESS-RULES.md)** — the domain knowledge that isn't
+  obvious from code (equipment hierarchy, shift math, OEE rules, CS-Admin
+  onboarding) — most of it learned via production incidents. Read it before touching
+  anything that computes OEE.
 
 ## A note on tense
 

@@ -103,6 +103,65 @@ acknowledgment, retry forever. Contrast this with the engine in the next chapter
 whose obsession is not durability but *fidelity* — the same language, opposite
 disciplines.
 
+### First principles: the SparkPlug session model
+
+Stage 2 (Normalize) is where the hardest idea at the edge lives, so it is worth
+building from scratch. Plain MQTT is fire-and-forget pub/sub: a subscriber that
+connects late receives a stream of values with no idea what they *mean*. SparkPlug B
+fixes that by layering a **stateful session** on top of MQTT, and understanding its
+three moving parts — **birth, aliases, sequence numbers** — explains why the
+normalizer cannot be a pure function.
+
+- **Birth certificates.** When a publisher comes online it sends an `NBIRTH` (node)
+  or `DBIRTH` (device) message that declares *every* metric it will ever emit: the
+  full name, its datatype, and a small integer **alias** for it. This is the
+  contract for the whole session. A receiver that misses the birth cannot interpret
+  anything that follows.
+- **Aliases.** After birth, `DATA` messages don't repeat the full metric name — they
+  carry just the alias and the value. The source comment puts the payoff exactly:
+  SparkPlug "compresses wire size by ~4× on the DATA path by referencing each metric
+  via a uint64 alias instead of its full topic name." The receiver **must** hold the
+  birth-time `alias → name` table, or a DATA payload is undecodable — an unresolved
+  alias is a hard decode failure, not a warning.
+- **Sequence numbers.** Every message carries a `seq` that increments per publisher
+  and wraps at 256. A gap means a message was lost on the wire — which factory MQTT
+  does under QoS 0 without violating anything. So a gap is *log-worthy but not an
+  error*; the session keeps going.
+- **Death.** `NDEATH`/`DDEATH` invalidates the alias table; subsequent DATA is
+  meaningless until a fresh birth re-establishes it.
+
+Crucially, aliases are only unique **within one publisher's scope** — the
+`(GroupID, EdgeNodeID, DeviceID)` tuple. Two different machines may both use alias
+`1` for entirely different metrics, so the table is keyed per publisher. This is why
+normalization is a small state machine, not a stateless transform. Here is the heart
+of it — resolving one DATA message against the table established at birth:
+
+```go
+// internal/sparkplug/aliastable.go — resolving a DATA message
+state, ok := s.publishers[key]
+if !ok || state.aliases == nil {
+    return nil, ErrNoBirth          // DATA arrived before any BIRTH
+}
+
+// Seq gap detection (Sparkplug seq wraps at 256).
+expected := (state.lastSeq + 1) & 0xff
+if got != expected && s.seqGapObserved != nil {
+    s.seqGapObserved(key, expected, got)   // a lost message — logged, not fatal
+}
+// ...
+entry, ok := state.aliases[alias]
+if !ok {
+    return nil, ErrUnknownAlias{PublisherKey: key, Alias: alias}
+}
+```
+
+Two production details fall straight out of the model. `ErrNoBirth` (DATA before any
+birth) and the `seqGapObserved` callback are not defensive paranoia — they are the
+exact failure modes SparkPlug's design admits, surfaced as a typed error and a
+Prometheus signal. Those SparkPlug **sequence gaps** are one of the outbox-adjacent
+metrics [Chapter 8](08-observability.md#coverage-hop-by-hop) watches: silence there
+would mean the edge is quietly losing machine data.
+
 ### The transformer's responsibilities, exactly
 
 To pin it down — the way [Chapter 4](04-the-engine.md) pins down the engine — here is
