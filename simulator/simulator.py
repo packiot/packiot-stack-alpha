@@ -74,6 +74,10 @@ ENTERPRISE_PROFILES = {
     "AutoParts Corp":    dict(ideal_speed=80,  scrap_rate=0.02, stop_prob=0.0008, start_prob=0.006, stuck_max=120),
     "FoodCo Industries": dict(ideal_speed=200, scrap_rate=0.04, stop_prob=0.001,  start_prob=0.005, stuck_max=120),
     "Simulator Corp":    dict(ideal_speed=120, scrap_rate=0.04, stop_prob=0.001,  start_prob=0.005, stuck_max=120),
+    # ADR-0020 test tenant. Plastic-film plant: extrusion (slower, more
+    # scrap) + printing (faster). Auto-driven once the enterprise is
+    # seeded and NOT in SIM_SKIP_ENTERPRISE_IDS.
+    "Incoplast-Staging": dict(ideal_speed=160, scrap_rate=0.05, stop_prob=0.0012, start_prob=0.005, stuck_max=150),
 }
 DEFAULT_PROFILE = dict(ideal_speed=120, scrap_rate=0.03, stop_prob=0.07, start_prob=0.25, stuck_max=120)
 

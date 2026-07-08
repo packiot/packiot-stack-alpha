@@ -1,0 +1,62 @@
+# clients/incoplast/client.yaml — staging TEST-TENANT config for Incoplast
+# (São Ludgero). Build-now / stand-up-post-flip per ADR-0020.
+#
+# Mounted into a second edge-transformer container at
+# /etc/packiot/client.yaml and parsed by
+# services/edge-transformer/internal/clientconfig/loader.go at boot.
+#
+# Current loader honors the SKELETON only: tenant_id, customer,
+# environment, equipments. Everything below the skeleton is commented
+# out on purpose — it documents, field by field, what Incoplast's REAL
+# config needs and where today's schema cannot yet express it. Those
+# commented blocks are the concrete, per-field statement of the
+# ADR-0019 gaps: they are the checklist the client.yaml v1.1 schema
+# must grow to satisfy before an Incoplast-class factory can migrate.
+
+# ── Skeleton (honored today) ─────────────────────────────────────────
+tenant_id:    incoplast          # first packml_topic segment 'INCOPLAST'
+                                  # → discovery lower()s to 'incoplast'
+customer:     "Incoplast (São Ludgero)"
+environment:  staging
+equipments: []                   # resolved from packml_register at runtime
+
+# ── Below: NOT yet honored — the ADR-0019 gap checklist ──────────────
+#
+# plc:
+#   protocol: s7                 # Siemens S7 — real Incoplast uses this
+#   endpoints:
+#     - name: NovoFlex-015
+#       host: <plc-ip>           # (secrets/hosts by REFERENCE, never inline —
+#       rack: 0                  #  the assessment found cleartext creds; never again)
+#       slot: 2                  # ⚠ GAP: schema's plc.auth has NO rack/slot fields
+#
+# equipment_mapping:
+#   - packml_topic: INCOPLAST/SL/EXTRUSAO/NovoFlex-015
+#     id_equipment: <id>
+#     erp:                       # ⚠ GAP: no home for ERP dimensions
+#       recurso: <code>          #  (recurso / etapa / empresa) in equipment_mapping
+#       etapa: <code>
+#
+# integrations:
+#   - type: database             # ⚠ GAP (G1, the big one): no database/ERP
+#     driver: oracle             #  connector type exists. Incoplast does a two-way
+#     dsn_ref: secret://...      #  sync with an on-prem Oracle ERP
+#     reads:  [production_orders, scrap, users]   #  (PACKIOT_PCPAPPARADA / _pcpapproducao).
+#     writes: [downtime, production]              #  Needs SQL templates + secret refs.
+#
+# operator:
+#   mode: edge                   # ⚠ GAP (G3): Incoplast runs its operator UI ON the
+#   language: pt-BR              #  floor box (offline-capable). Target: OUR operator
+#                                #  SPA deployed at the edge, proxied to a factory-local
+#                                #  edge-api — no bespoke in-flow UI.
+#
+# commands:
+#   enabled: true                # ⚠ GAP (G4, the one new component): the operator
+#   allowed: [po_setup, param_write]   #  writes parameters DOWN to the PLC. Needs the
+#                                #  edge command channel (edge-api → local broker →
+#                                #  transformer executes the PLC write).
+#
+# customization_flows:           # Layer B (ADR-0009): custom counter calc, the
+#   - custom_counter_calc        #  recurso/etapa mapping, reel (bobina) tracking —
+#   - reel_tracking              #  governed Node-RED flows, once refactored to pass
+#                                #  the governance lint.
