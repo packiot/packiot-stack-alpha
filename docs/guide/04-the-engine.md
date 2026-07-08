@@ -1,5 +1,8 @@
 # 4 — The Engine
 
+> For a concrete inventory of the worker's writers and scheduled jobs, see the
+> [Service Catalog (Ch.11)](11-service-catalog.md).
+
 This is the most important chapter, because it is where the rebuild's central claim
 is either true or false: that we moved the OEE computation out of the database and
 into Go **without changing a single number a customer sees.**
@@ -294,8 +297,8 @@ UPDATE %[1]s.production_orders SET recalc_needed = true
 Read together, these are the whole cascade: writes and self-re-enqueues *set* the
 flag, the rollup passes *consume* it, and the flag propagates up the grain hierarchy
 so a fix at the bottom reaches every total built on it. This is the `equipment_values
-→ ca_*_1min → equipment_runtime_1hour → _shift/_1day` chain from
-[Chapter 5](05-the-database.md#ca_equipment_values_1min--the-first-aggregate), driven
+→ agg_equipment_values_1min → equipment_runtime_1hour → _shift/_1day` chain from
+[Chapter 5](05-the-database.md#agg_equipment_values_1min--the-first-aggregate), driven
 one dirty row at a time rather than by recomputing the world.
 
 ## Proving it: golden fixtures and the differential bake

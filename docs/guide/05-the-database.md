@@ -1,5 +1,8 @@
 # 5 — The Database
 
+> For the tables organized by schema and role (spine, rollup ladder, UNS, pools,
+> history), see the [Service Catalog (Ch.11)](11-service-catalog.md).
+
 Everything so far has been moving data *toward* the database. This chapter is about
 what it lands in, why the schema is shaped the way it is, and what the refactor
 changed. The database is PostgreSQL with **TimescaleDB** (a time-series extension)
@@ -32,19 +35,24 @@ Because it is a hypertable, a year of per-second data stays queryable and
 compressible. Nothing downstream reads it directly — that is the whole point of the
 next layer.
 
-### `ca_equipment_values_1min` — the first aggregate
+### `agg_equipment_values_1min` — the first aggregate
 
-A TimescaleDB **continuous aggregate** (CAgg): the firehose rolled into one-minute
-buckets per machine, refreshed automatically. It is stage one of a cascade whose
-real table names are worth knowing, because you will grep for them:
-`ca_equipment_values_1min → equipment_runtime_1hour → equipment_runtime_shift`
+The firehose rolled into one-minute buckets per machine. It is stage one of a cascade
+whose real table names are worth knowing, because you will grep for them:
+`agg_equipment_values_1min → equipment_runtime_1hour → equipment_runtime_shift`
 (with `_1day`, `_1week`, `_1month` peer grains, and an `area_runtime_1hour` rollup
 for whole areas). It is the reason a query for "this machine's OEE last month" does
 not have to scan a billion raw rows. Each grain carries the `recalc_needed` dirty
 flag from [Chapter 4](04-the-engine.md#the-dirty-flag-cascade-concretely), and a fix
 at one grain flags the grains above it — the cascade flows *up* these table names.
-The refactor's fight over *naming* this layer (the `ca_` prefix) is a whole subplot
-below.
+
+A naming note, because it trips everyone: the one-minute tier is
+`agg_equipment_values_1min` (a trigger-fed table, `_t` in older SQL), and the
+TimescaleDB **continuous aggregate** layered over it is `ca_agg_equipment_values_1min`.
+ADR-0012's end-state canon is the `ca_agg_*` family, but the running flows carry
+`agg_*` today ("flows carry `agg_*` only", per the naming ledger) — so grep
+`agg_equipment_values_1min`. The bare `ca_equipment_values_1min` you may find in older
+ADR prose is an aspirational name that was never built as such; don't chase it.
 
 ### `equipment_events` / `equipment_events_man` — the downtime ledger
 
