@@ -1,5 +1,5 @@
 {
-  "title": "09 \u2014 ADR-0016 Bake (legacy F1 vs Go F2)",
+  "title": "09 — ADR-0016 Bake (legacy F1 vs Go F2)",
   "uid": "bake-flow-parity",
   "tags": [
     "bake",
@@ -15,7 +15,7 @@
     {
       "id": 10,
       "type": "stat",
-      "title": "FIRING ALERTS (must be 0 \u2014 names appear when firing)",
+      "title": "FIRING ALERTS (must be 0 — names appear when firing)",
       "gridPos": {
         "h": 4,
         "w": 24,
@@ -113,7 +113,7 @@
     {
       "id": 9,
       "type": "stat",
-      "title": "F2\u2194F3 identity (must ALL be 0 \u2014 same engine, same inputs)",
+      "title": "F2↔F3 identity (must ALL be 0 — same engine, same inputs)",
       "gridPos": {
         "h": 5,
         "w": 24,
@@ -192,20 +192,114 @@
       ]
     },
     {
+      "id": 20,
+      "type": "stat",
+      "title": "FLIP-READINESS — tenant converged (green = ready to flip, red = not)",
+      "description": "ADR-0022 V3 verdict. bake_tenant_converged: 1 when EVERY bake surface for the enterprise has 0 mismatches AND >0 compared rows. Absent = not converged.",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "NOT READY",
+                  "color": "red"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "FLIP-READY",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "expr": "bake_tenant_converged",
+          "legendFormat": "enterprise {{enterprise}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Convergence over time (1 = flip-ready) — watch it settle green before the flip",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineInterpolation": "stepAfter"
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "bake_tenant_converged",
+          "legendFormat": "enterprise {{enterprise}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 4,
       "type": "text",
       "gridPos": {
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 35
       },
       "options": {
         "mode": "markdown",
-        "content": "**Reading this board**: engine math is parity-proven (0/32,848) \u2014 these gauges measure STREAM fidelity between the legacy F1 pipeline and the Go F2 pipeline on the same mirrored input. Every non-zero reading must have a named cause; unexplained persistence past a documented expiry is a real signal. Known-noise ledger lives in the session memory + ADR-0016."
+        "content": "**Reading this board**: engine math is parity-proven (0/32,848) — these gauges measure STREAM fidelity between the legacy F1 pipeline and the Go F2 pipeline on the same mirrored input. Every non-zero reading must have a named cause; unexplained persistence past a documented expiry is a real signal. Known-noise ledger lives in the session memory + ADR-0016."
       }
     }
   ],
   "schemaVersion": 39,
-  "version": 1
+  "version": 2
 }
