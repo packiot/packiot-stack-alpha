@@ -30,6 +30,7 @@ func TestBuildEnvelopeCanonicalShape(t *testing.T) {
 		Tenant:          "cpack",
 		PublisherKey:    "CPACK/edge-01",
 		Instance:        "edge-transformer-hostname",
+		SourceType:      "go", // explicit — BuildEnvelope no longer defaults "" → "go"
 		Metrics:         metrics,
 		SourceTimestamp: 1782161858551,
 	}
@@ -64,6 +65,7 @@ func TestBuildEnvelopeMatchesOeecloudPayloadShape(t *testing.T) {
 		Tenant:       "cpack",
 		PublisherKey: "CPACK/edge-01",
 		Instance:     "test",
+		SourceType:   "go", // explicit — required for source_type to be present (no defaulting)
 		Metrics: []sparkplug.ResolvedMetric{
 			{
 				Name:      "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit",
@@ -112,15 +114,16 @@ func TestBuildEnvelopeMatchesOeecloudPayloadShape(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeSourceTypeOverride — ADR-0012 Phase 3 lets callers
-// stamp the envelope with a non-default source_type. Empty → "go" (back-compat).
+// TestBuildEnvelopeSourceTypeOverride — ADR-0012 Phase 3 lets callers stamp the
+// envelope with a source_type. Post-10.9 there is NO defaulting: "" is a
+// first-class value (the F1 production route). Callers that want "go" say "go".
 func TestBuildEnvelopeSourceTypeOverride(t *testing.T) {
 	cases := []struct {
 		name  string
 		input string
 		want  string
 	}{
-		{"empty defaults to go (ADR-0010 back-compat)", "", "go"},
+		{"empty stays empty (F1 route — no defaulting, post-10.9)", "", ""},
 		{"explicit go still yields go", "go", "go"},
 		{"refactored routes to shadow DB (ADR-0012)", "refactored", "refactored"},
 		{"arbitrary custom value pass-through (worker fail-safes it)", "unknown", "unknown"},
