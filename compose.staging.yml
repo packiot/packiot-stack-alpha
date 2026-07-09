@@ -1116,6 +1116,59 @@ services:
       retries: 3
       start_period: 15s
 
+  # ── operator-adapter ─────────────────────────────────────────────────
+  # Operator twin of the ingest-shim. Incoplast's bespoke operator UI
+  # (mui_* + Hasura) justifies downtimes and starts POs WITHOUT calling
+  # edge-api, so those actions never reach staging user_logs and the
+  # shadow-mirror can't replay them to F3. A tee node in Incoplast's
+  # Node-RED posts each operator action here over HTTPS; the adapter maps
+  # it to the matching edge-api call (which writes user_logs in F1), so
+  # shadow-mirror replays it to packiot_shadow (F3) — making both flows
+  # comparable for enterprise 4. Internal + Incoplast-Node-RED only; not a
+  # public route. See services/operator-adapter/README.md.
+  operator-adapter:
+    build: ./services/operator-adapter
+    container_name: operator-adapter
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      PORT: "8443"
+      EDGE_API_URL: http://edge-api:8080
+      # Tenant scope — no hardcoded enterprise ids in code; set here.
+      INCOPLAST_ENTERPRISE_ID: "4"
+      INCOPLAST_TOPIC_PREFIX: GRANADO
+      # FILL AT DEPLOY (secrets — keep out of git):
+      #   OPERATOR_API_KEY : shared secret the Incoplast tee node presents
+      #                      as X-Ingest-Key.
+      #   EDGE_API_KEY     : the enterprise-4 api_key edge-api authenticates
+      #                      (SELECT api_key FROM enterprises WHERE
+      #                       id_enterprise = 4).
+      OPERATOR_API_KEY: ${OPERATOR_API_KEY}
+      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY}
+      # TLS — refuses to serve plaintext. Cert+key mounted below.
+      TLS_CERT_FILE: /opt/packiot/operator-adapter/certs/tls.crt
+      TLS_KEY_FILE: /opt/packiot/operator-adapter/certs/tls.key
+    volumes:
+      # FILL AT DEPLOY: place tls.crt + tls.key on the host here.
+      - /opt/packiot/operator-adapter/certs:/opt/packiot/operator-adapter/certs:ro
+    ports:
+      - "8445:8443"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.30
+    depends_on:
+      edge-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/operator-adapter", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
   shadow-mirror:
     build: ./services/shadow-mirror
     container_name: shadow-mirror
