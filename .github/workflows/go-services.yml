@@ -23,6 +23,7 @@ on:
     paths:
       - 'services/mirror-worker-go/**'
       - 'services/oeecloud-worker/**'
+      - 'services/ingest-shim/**'
       - '.github/workflows/go-services.yml'
   workflow_dispatch:
 
@@ -34,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [mirror-worker-go, oeecloud-worker]
+        service: [mirror-worker-go, oeecloud-worker, ingest-shim]
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
