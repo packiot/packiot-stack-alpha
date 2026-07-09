@@ -92,10 +92,9 @@ func main() {
 		slog.String("db", dbCreds.Redacted("oeecloud-worker")),
 		slog.String("amqp", amqpCreds.Redacted()))
 
-	// Postgres pool — used by writers. Sized small (see db.New) because
-	// the consume loop is single-goroutine; at most one query is in flight
-	// at any time.
-	pool, err := db.New(ctx, dbCreds, logger)
+	// Postgres pool — shared by the ingest writer AND the concurrent
+	// rollup/refresh jobs, so sized via config (see db.New / pool.go).
+	pool, err := db.New(ctx, dbCreds, cfg.PGMaxConns, logger)
 	if err != nil {
 		logger.Error("postgres pool init failed", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -109,7 +108,7 @@ func main() {
 	// no live behavior change unless you opt-in via env.
 	var shadowPool *pgxpool.Pool
 	if cfg.PGShadowDBName != "" {
-		shadowPool, err = db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "oeecloud-worker-shadow", logger)
+		shadowPool, err = db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "oeecloud-worker-shadow", cfg.PGShadowMaxConns, logger)
 		if err != nil {
 			logger.Error("shadow postgres pool init failed",
 				slog.String("err", err.Error()),
