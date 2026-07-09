@@ -158,7 +158,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		// collision (the sole-writer lesson). Gate lifts at
 		// consolidation, when Node-RED and the mirror replays retire.
 		if h.poControl != nil && p.SourceType != "" && kind == sparkplug.KindParameter &&
-			m.ID != nil && pocontrol.Handles(*m.ID) {
+			m.ID != nil && pocontrol.Handles(int(*m.ID)) {
 			_ = h.poControl.Execute(ctx, pool, m, schema)
 			continue
 		}

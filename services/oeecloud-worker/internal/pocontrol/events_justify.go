@@ -142,7 +142,7 @@ const ujScrapReset = `
 	 WHERE id_equipment = $1 AND ts_value = $2`
 
 func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
-	paramID := derefID(m.ID)
+	paramID := derefID((*int)(m.ID))
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
 		return err

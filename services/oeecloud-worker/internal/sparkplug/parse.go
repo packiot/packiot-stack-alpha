@@ -49,7 +49,7 @@ type Metric struct {
 	CurSpeed  *jsonFloat       `json:"curspeed,omitempty"`
 	Alias     json.RawMessage `json:"alias,omitempty"`
 	Faults    json.RawMessage `json:"faults,omitempty"`
-	ID        *int            `json:"id,omitempty"`
+	ID        *jsonInt        `json:"id,omitempty"`
 }
 
 // Parse unmarshals the raw AMQP body. Returns an error caller can return
@@ -84,6 +84,31 @@ func (f *jsonFloat) UnmarshalJSON(b []byte) error {
 		return fmt.Errorf("jsonFloat %q: %w", t, err)
 	}
 	*f = jsonFloat(v)
+	return nil
+}
+
+// jsonInt accepts either a JSON number (4) or a quoted numeric string ("4").
+// Incoplast's PackML2SparkPlug node encodes the metric `id` as a string;
+// standard clients (CPACK) send a number. Both coerce to int — backward
+// compatible. Sibling of jsonFloat (same Incoplast string-encoding quirk);
+// without it the whole payload fails to unmarshal and every metric in it is
+// lost. Tolerates a trailing ".0" (some clients stringify floats).
+type jsonInt int
+
+func (n *jsonInt) UnmarshalJSON(b []byte) error {
+	t := strings.TrimSpace(string(b))
+	if t == "" || t == "null" {
+		return nil
+	}
+	s := strings.Trim(t, `"`) // strip quotes if it arrived as a string
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64) // ParseFloat tolerates "4" and "4.0"
+	if err != nil {
+		return fmt.Errorf("jsonInt %q: %w", t, err)
+	}
+	*n = jsonInt(int(v))
 	return nil
 }
 
