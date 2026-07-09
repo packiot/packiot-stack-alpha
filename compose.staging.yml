@@ -558,6 +558,13 @@ services:
       DB_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DB}"
       SIM_INTERVAL: "5"
       OP_INTERVAL: "15"
+      # Skip PLC simulation for enterprise 3 (CPACK, owned by mirror-worker-go)
+      # AND 4 (Incoplast) — Incoplast's PLC data now comes from the REAL factory
+      # tee (shim → sparkplug.data.incoplast), so the emulator must stay out of
+      # it. Otherwise the simulator floods F1 with untagged (source_type-absent)
+      # Incoplast data ~20x the real tee's rate, breaking F1↔F3 parity (#39,
+      # 2026-07-09). Only the PLC leg is gated; the operator sim is unaffected.
+      SIM_SKIP_ENTERPRISE_IDS: "3,4"
     depends_on:
       edge-nodered:
         condition: service_healthy
