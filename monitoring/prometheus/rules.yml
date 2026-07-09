@@ -170,3 +170,47 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "{{ $value }} DB backends — connection leak or pgbouncer bypass growing"
+
+  # ADR-0022 V3 — the per-tenant flip-readiness VERDICT. Layered ON TOP
+  # of the bake gauges (bake_surface_mismatches / bake_surface_compared);
+  # it does NOT touch the bake metric or the CPACK 24h-mismatch alert
+  # (BakeSurfacePersisting, above) — CPACK's flip signal is untouched.
+  #
+  # These derive by the `enterprise` LABEL — no tenant list is hardcoded
+  # in PromQL, so a third mirrored tenant lights up automatically.
+  #
+  # NOTE on enterprise="6": the bake emits ONE pool-liveness surface
+  # (customer_reports_shift_06) under enterprise="6" — the sync06 pool
+  # tenant, NOT a flip tenant. It will therefore also get a
+  # bake_tenant_converged series (converged whenever the pool report is
+  # live). That is incidental and harmless; the flip tenants are 3 (CPACK)
+  # and 4 (Incoplast).
+  - name: packiot-flip-readiness
+    rules:
+      # bake_tenant_converged{enterprise} = 1 IFF, for that enterprise,
+      # EVERY compared surface has zero mismatches AND every surface has
+      # actually compared rows this tick (compared > 0 — so "no data" is
+      # NOT mistaken for "converged").
+      #
+      #   max by(enterprise)(mismatches) == bool 0  → 1 when no surface mismatches
+      #   min by(enterprise)(compared)   >  bool 0  → 1 when no surface is starved
+      #   product                                   → 1 only when BOTH hold
+      #
+      # If a tenant emits no bake series at all, it has no
+      # bake_tenant_converged series → absent → treated as NOT converged.
+      - record: bake_tenant_converged
+        expr: >
+          (max by (enterprise) (bake_surface_mismatches) == bool 0)
+          *
+          (min by (enterprise) (bake_surface_compared) > bool 0)
+
+      # FLIP-READINESS signal: fires WHILE a tenant is not converged, so
+      # "ready to flip" is the explicit event of this alert RESOLVING for
+      # that enterprise. Not a failure — an informational gate. The
+      # flip-critical failure alert stays BakeSurfacePersisting (24h).
+      - alert: TenantNotFlipReady
+        expr: bake_tenant_converged == 0
+        for: 10m
+        labels: {severity: info}
+        annotations:
+          summary: "Tenant enterprise {{ $labels.enterprise }} NOT converged — not flip-ready (a bake surface mismatches or has no compared rows). Ready-to-flip = this alert resolved for the tenant."
