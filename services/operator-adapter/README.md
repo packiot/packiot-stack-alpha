@@ -14,17 +14,33 @@ Incoplast's operators justify downtimes and start POs through a custom Node-RED
 
 ```
 Incoplast Node-RED (operator action)
-  │  tee node → HTTPS POST
+  │  tee node → HTTPS POST  (packml_topic + action fields)
   ▼
-operator-adapter  ── maps Incoplast shape → edge-api DTO ──►  edge-api (F1)
+operator-adapter  ── resolve packml_topic → staging ids (packml_register) ──┐
+                  ── map Incoplast shape → edge-api DTO ──►  edge-api (F1)   │
                                                                 │ writes user_logs
-                                                                ▼
+                                                                ▼            │
                                                         shadow-mirror ─► packiot_shadow (F3)
+                  read-only Postgres pool (F1 `packiot`) ◄──────────────────┘
 ```
 
-The adapter is intentionally thin: **authenticate → scope-check → map field
-names → inject the enterprise-4 api key → call edge-api → translate status.**
-It does **no DB access** and **no topic→id resolution** (see "Unmapped fields").
+The adapter's job: **authenticate → scope-check → resolve packml_topic → map
+field names → inject the enterprise-4 api key → call edge-api → translate
+status.**
+
+**Topic → id resolution (new).** Incoplast's Node-RED only holds packml
+**topics** and its **own** production ids — NOT the staging (enterprise-4) ids we
+seeded (sequence-assigned, so they differ). The link between the two worlds is
+the topic. So the adapter resolves it, exactly like `oeecloud-worker` does for
+the data path: a small **read-only** Postgres pool queries `packml_register`
+(joined to `equipments → areas → sites`) to turn the topic into the staging
+`id_equipment` / `cd_machine` / `id_area` / `id_site`. The tee node therefore
+sends the **topic it has**, not ids it can't know.
+
+Resolution fails **closed**: a topic that is unknown, inactive, **cross-tenant**
+(the join is gated on `sites.id_enterprise = INCOPLAST_ENTERPRISE_ID`), or
+ambiguous (>1 active `packml_register` row) never resolves — the handler returns
+**422** rather than guessing an id.
 
 ## Endpoints
 
@@ -32,7 +48,7 @@ It does **no DB access** and **no topic→id resolution** (see "Unmapped fields"
 |--------|------|------------------|
 | POST | `/operator/downtime` | `create-manual-event` (id_param 30810/30811) or `edit-manual-event` (30812/30813/30814) |
 | POST | `/operator/po` | `create-and-start` |
-| GET | `/healthz` | liveness (`{"healthy":true}`) |
+| GET | `/healthz` | liveness + **DB pool reachability** (`{"healthy":true,"db":true}`; 503 if the resolver's pool is down) |
 | GET | `/metrics` | Prometheus (`operator_adapter_requests_total{action,outcome}`) |
 
 ### Auth & scope
@@ -50,14 +66,19 @@ It does **no DB access** and **no topic→id resolution** (see "Unmapped fields"
 
 | Condition | Adapter response |
 |-----------|------------------|
-| mapped + edge-api 2xx | **202 Accepted** |
+| resolved + mapped + edge-api 2xx | **202 Accepted** |
 | edge-api 4xx | **passthrough** (edge status + body) |
 | edge-api 5xx | **502 Bad Gateway** |
 | edge-api unreachable | **503 Service Unavailable** |
-| required field unmappable | **422 Unprocessable Entity** (names the field) |
+| `packml_topic` missing / unknown / inactive / cross-tenant / ambiguous | **422 Unprocessable Entity** (`topic … did not resolve to a staging equipment`) |
+| required **action** field unmappable | **422 Unprocessable Entity** (names the field) |
+| resolver DB/transport error | **503 Service Unavailable** (retryable — NOT a rejection) |
 
 **422, not a guess.** A wrong downtime/PO write is worse than a rejected one, so
-any required edge-api field the adapter can't fill stops here.
+any topic the adapter can't confidently resolve, or any required edge-api field
+it can't fill, stops here. A resolver **DB** error is a **503** instead (the
+topic might resolve on retry), so we never poison the negative cache with a
+transient failure.
 
 ## Configuration (env)
 
@@ -68,8 +89,16 @@ any required edge-api field the adapter can't fill stops here.
 | `INCOPLAST_ENTERPRISE_ID` | yes | — | tenant scope (no hardcoded ids in code) |
 | `INCOPLAST_TOPIC_PREFIX` | no | — | e.g. `GRANADO`; second scope gate / fallback |
 | `EDGE_API_URL` | no | `http://edge-api:8080` | internal edge-api base URL |
+| `PG_SECRET_ID` | no | `packiot/staging/db` | AWS Secrets Manager id for the read-only resolver DB creds (F1 `packiot`). Secret shape `{host,port,user,password,name}` |
+| `AWS_REGION` | no | `us-east-1` | region for the Secrets Manager lookup |
+| `CREDS_SOURCE` | no | — | set to `env` (dev only) to read DB creds from `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` instead of Secrets Manager |
 | `PORT` | no | `8443` | TLS listen port |
 | `TLS_CERT_FILE` / `TLS_KEY_FILE` | yes | — | refuses to serve plaintext |
+
+The resolver's Postgres pool is **small (max 3 conns)** and **read-only** — it
+only `SELECT`s from `packml_register`/`equipments`/`areas`/`sites`. It connects
+to **F1 `packiot`** (where edge-api writes) so the ids it resolves are exactly
+the ones edge-api accepts. Use a least-privilege DB role.
 
 ## Field mappings
 
@@ -77,8 +106,9 @@ any required edge-api field the adapter can't fill stops here.
 
 | Incoplast field | edge-api field | Notes |
 |-----------------|----------------|-------|
-| `id_equipment` | `idEquipment` | **required** — resolved from topic by the tee node |
-| `cd_machine` | `cdMachine` | **required** (edge `@IsNotEmpty`) |
+| `packml_topic` | — | **required** — the adapter resolves it → `idEquipment` + `cdMachine` |
+| _(resolved)_ `id_equipment` | `idEquipment` | filled by the adapter from `packml_topic` (`packml_register.id_equipment`) |
+| _(resolved)_ `cd_machine` | `cdMachine` | filled by the adapter from `packml_topic` (`equipments.cd_equipment`) |
 | `category` (`set_event_categoria[0]`) | `cdCategory` | **required** |
 | `category_desc` (`set_event_categoria[3]`) | `descCategory` | **required** |
 | `subcategory` (`set_event_subcategoria[0]`) | `cdSubcategory` | |
@@ -100,10 +130,11 @@ Routing: `id_param` 30810/30811 → **create-manual-event**; 30812/30813/30814 �
 
 | Incoplast field | edge-api field | Notes |
 |-----------------|----------------|-------|
+| `packml_topic` | — | **required** — the adapter resolves it → `idEquipment` + `idArea` + `idSite` |
 | `id_order` (`msg.payload.new_po`, the order number) | `idOrder` | **required** |
-| `id_equipment` | `idEquipment` | **required** — resolved from topic by tee node |
-| `id_site` | `idSite` | **required** — resolved from topic hierarchy |
-| `id_area` | `idArea` | **required** — resolved from topic hierarchy |
+| _(resolved)_ `id_equipment` | `idEquipment` | filled by the adapter from `packml_topic` |
+| _(resolved)_ `id_site` | `idSite` | filled by the adapter from the topic hierarchy (`areas → sites`) |
+| _(resolved)_ `id_area` | `idArea` | filled by the adapter from the topic hierarchy (`equipments.id_area`) |
 | `production_order_quantity` (`po.production_programmed`) | `productionOrderQuantity` | **required** |
 | `timestamp` (`msg.ts`) | `timestamp` | **required**, `YYYY-MM-DD HH:mm:ss` |
 | `nm_production_order` (`po.nm_product`) | `nmProductionOrder` | optional |
@@ -111,21 +142,30 @@ Routing: `id_param` 30810/30811 → **create-manual-event**; 30812/30813/30814 �
 | `id_label` | `idLabel` | optional — omitted if absent |
 | `enterprise` + `→idEnterprise=` | `idEnterprise` | injected from config |
 
-## Unmapped fields (deliberate gaps → the tee node must fill them)
+## What the tee sends vs. what the adapter resolves
 
 The Incoplast operator payload works in **packml_topic strings**, but edge-api
-DTOs demand **numeric ids** (`idEquipment`, `idSite`, `idArea`) and quantities
-that live in Incoplast's flow context (the matched `_POs` object + entity tree),
-**not in the raw operator click**. The adapter does **not** do topic→id
-resolution (it has no DB) — that is the tee node's job, using the same
-`_POs`/entity context Incoplast's flow already holds.
+DTOs demand **numeric staging ids** (`idEquipment`, `idSite`, `idArea`) +
+`cdMachine`. Incoplast's Node-RED does **not** know those ids — we seeded them
+into staging sequence-assigned, so they differ from Incoplast's own production
+ids. The **only** thing that links the two worlds is the **topic**.
 
-If any of these are absent the adapter returns **422** naming the field:
+So the split of responsibility is:
 
-- downtime: `id_equipment`, `cd_machine`, `category`, `category_desc`,
-  `ts_event`, `ts_end` (+ `id_equipment_event` on the edit path)
-- PO: `id_order`, `id_site`, `id_area`, `id_equipment`,
-  `production_order_quantity`, `timestamp`
+- **The tee node sends the topic + the action fields it genuinely owns.** It no
+  longer sends `id_equipment` / `id_site` / `id_area` / `cd_machine` — it can't
+  know them.
+- **The adapter resolves the ids** from `packml_topic` against `packml_register`
+  (read-only pool, F1 `packiot`), gated on `INCOPLAST_ENTERPRISE_ID`.
+
+The adapter returns **422** when:
+
+- `packml_topic` is missing, or does not resolve (unknown / inactive /
+  cross-tenant / ambiguous) → `topic … did not resolve to a staging equipment`
+- a still-missing **action** field the tee owns is absent:
+  - downtime: `category`, `category_desc`, `ts_event`, `ts_end`
+    (+ `id_equipment_event` on the edit path)
+  - PO: `id_order`, `production_order_quantity`, `timestamp`
 
 ## Node-RED tee-node spec
 
@@ -137,6 +177,8 @@ Function node (`tee → operator-adapter`), downtime example:
 
 ```javascript
 // Runs off the `justify event PackML` output wire.
+// The tee sends the packml_topic + the action fields — NO id_equipment /
+// cd_machine (the adapter resolves those from the topic).
 var cat = (msg.payload['set_event_categoria']    || '').split('.|:');
 var sub = (msg.payload['set_event_subcategoria'] || '').split('.|:');
 msg.headers = { 'X-Ingest-Key': env.get('OPERATOR_API_KEY'), 'Content-Type': 'application/json' };
@@ -144,11 +186,9 @@ msg.url = 'https://operator-adapter:8443/operator/downtime';
 msg.method = 'POST';
 msg.payload = {
     enterprise:         4,
-    topic:              flow.get('app_user_topic_' + msg.socketid),
+    packml_topic:       flow.get('packml_topic_' + msg.socketid), // the adapter resolves → staging ids
     id_param:           msg.metrics[0].id,               // 30810..30814
-    id_equipment:       flow.get('id_equipment_' + msg.socketid), // resolve from topic
-    id_equipment_event: msg.payload['set_event_id'],     // edit path
-    cd_machine:         flow.get('cd_machine_' + msg.socketid),   // equipment code
+    id_equipment_event: msg.payload['set_event_id'],     // edit path only
     category:           cat[0], category_desc: cat[3],
     subcategory:        sub[0], subcategory_desc: sub[1],
     planned_dwt:        cat[1] === 'true', change_over: cat[2] === 'true', idle: cat[4],
@@ -162,17 +202,16 @@ return msg;
 PO example (off `start new po`):
 
 ```javascript
+// The tee sends the packml_topic + the order fields — NO id_site / id_area /
+// id_equipment (the adapter resolves the hierarchy from the topic).
 msg.headers = { 'X-Ingest-Key': env.get('OPERATOR_API_KEY'), 'Content-Type': 'application/json' };
 msg.url = 'https://operator-adapter:8443/operator/po';
 msg.method = 'POST';
 var po = (global.get('_POs') || []).find(p => p.id_order == msg.payload['new_po']) || {};
 msg.payload = {
     enterprise:                4,
-    topic:                     flow.get('app_user_topic_' + msg.socketid),
+    packml_topic:              flow.get('packml_topic_' + msg.socketid), // the adapter resolves → staging ids
     id_order:                  msg.payload['new_po'],
-    id_site:                   flow.get('id_site_' + msg.socketid),
-    id_area:                   flow.get('id_area_' + msg.socketid),
-    id_equipment:              flow.get('id_equipment_' + msg.socketid),
     production_order_quantity: po.production_programmed,
     nm_production_order:       po.nm_product,
     timestamp:                 new Date(msg.ts).toISOString().slice(0,19).replace('T',' ')
@@ -181,8 +220,16 @@ return msg;
 ```
 
 Then an **http request** node (method: set from msg, return: parsed JSON). A 202
-means the action landed in `user_logs`; a 422 means a field above resolved to
-`undefined` — fix the resolution in the tee node, do not weaken the adapter.
+means the action landed in `user_logs`. A 422 means either the `packml_topic`
+did not resolve to a staging equipment (the topic isn't in `packml_register`,
+isn't `active`, or belongs to another tenant — fix the CS-Admin registration,
+**not** the adapter) or a required **action** field was `undefined` (fix the tee
+node). A 503 means the adapter's resolver DB was briefly unreachable — retry.
+
+> Where does `packml_topic_<socketid>` come from? It's the SparkPlug topic the
+> operator's session is already bound to in the flow. If Incoplast stores it
+> under a different flow key, point the tee at that key — the value must be the
+> exact string in `packml_register.packml_topic`.
 
 ## Local checks
 
@@ -199,8 +246,13 @@ gofmt -l .   # empty = clean
 2. Fill secrets in the deploy env: `OPERATOR_API_KEY` (new shared secret) and
    `EDGE_API_KEY` = the **enterprise-4 `api_key`** (`SELECT api_key FROM
    enterprises WHERE id_enterprise = 4`).
+2b. Ensure the EC2 IAM role can read `PG_SECRET_ID` (`packiot/staging/db`) and
+   that pgbouncer is reachable on `packiot-net` — the resolver opens a read-only
+   pool at boot and the container exits if it can't connect. Grant the DB user
+   `SELECT` on `packml_register`, `equipments`, `areas`, `sites`.
 3. `docker compose -f compose.staging.yml up -d --build operator-adapter`.
-4. Verify `GET https://<host>:8445/healthz` → `{"healthy":true}`.
+4. Verify `GET https://<host>:8445/healthz` → `{"healthy":true,"db":true}`
+   (503 if the resolver's DB pool is down).
 5. Add the tee nodes in Incoplast Node-RED (spec above); set `OPERATOR_API_KEY`
    in that Node-RED's env.
 6. Fire one test downtime + PO; confirm a new `user_logs` row in F1 and its twin

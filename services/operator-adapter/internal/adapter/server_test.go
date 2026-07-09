@@ -30,12 +30,53 @@ func (f *fakePoster) post(_ context.Context, call *edgeCall) (*edgeResult, error
 	return f.result, nil
 }
 
+// fakeResolver is the topic-resolver stand-in. By default it resolves every
+// topic to the canonical staging ids below; individual tests override res/err
+// to exercise the unresolved / DB-error / cross-tenant branches.
+type fakeResolver struct {
+	res       Resolved
+	err       error
+	pingErr   error
+	lastTopic string
+}
+
+func (f *fakeResolver) ResolveTopic(_ context.Context, topic string) (Resolved, error) {
+	f.lastTopic = topic
+	if f.err != nil {
+		return Resolved{}, f.err
+	}
+	return f.res, nil
+}
+
+func (f *fakeResolver) Ping(_ context.Context) error { return f.pingErr }
+
 const (
 	testKey   = "operator-secret"
 	testEntID = 4
+
+	// Canonical staging identity the default fakeResolver returns — matches the
+	// ids the mapping assertions below expect.
+	resEquipment = 120
+	resCDMachine = "LINHA_D"
+	resArea      = 22
+	resSite      = 11
 )
 
+func canonicalResolver() *fakeResolver {
+	return &fakeResolver{res: Resolved{
+		IDEquipment: resEquipment,
+		CDMachine:   resCDMachine,
+		IDArea:      resArea,
+		IDSite:      resSite,
+	}}
+}
+
 func newTestServer(t *testing.T, poster edgePoster) (*Server, *Metrics, *prometheus.Registry) {
+	t.Helper()
+	return newTestServerR(t, poster, canonicalResolver())
+}
+
+func newTestServerR(t *testing.T, poster edgePoster, resolver topicResolver) (*Server, *Metrics, *prometheus.Registry) {
 	t.Helper()
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg)
@@ -44,7 +85,7 @@ func newTestServer(t *testing.T, poster edgePoster) (*Server, *Metrics, *prometh
 		EnterpriseID:   testEntID,
 		TopicPrefix:    "GRANADO",
 	}
-	srv := NewServer(cfg, poster, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := NewServer(cfg, poster, resolver, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return srv, m, reg
 }
 
@@ -120,7 +161,7 @@ func TestPO_401_MissingKey(t *testing.T) {
 
 func TestDowntime_403_WrongEnterprise(t *testing.T) {
 	srv, _, reg := newTestServer(t, &fakePoster{})
-	body := `{"enterprise":7,"topic":"GRANADO/X","id_param":30810,"id_equipment":10,"cd_machine":"M","category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
+	body := `{"enterprise":7,"packml_topic":"GRANADO/X","id_param":30810,"category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
 	rec := do(t, srv, "/operator/downtime", testKey, body)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d", rec.Code)
@@ -133,7 +174,7 @@ func TestDowntime_403_WrongEnterprise(t *testing.T) {
 func TestDowntime_403_WrongTopicPrefix(t *testing.T) {
 	srv, _, _ := newTestServer(t, &fakePoster{})
 	// No enterprise field; topic sits under a different tenant root.
-	body := `{"topic":"OTHERCO/LINE","id_param":30810,"id_equipment":10,"cd_machine":"M","category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
+	body := `{"packml_topic":"OTHERCO/LINE","id_param":30810,"category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
 	rec := do(t, srv, "/operator/downtime", testKey, body)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d", rec.Code)
@@ -142,24 +183,24 @@ func TestDowntime_403_WrongTopicPrefix(t *testing.T) {
 
 func TestPO_403_WrongEnterprise(t *testing.T) {
 	srv, _, _ := newTestServer(t, &fakePoster{})
-	body := `{"enterprise":99,"topic":"GRANADO/X","id_order":1,"id_site":2,"id_area":3,"id_equipment":4,"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
+	body := `{"enterprise":99,"packml_topic":"GRANADO/X","id_order":1,"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
 	rec := do(t, srv, "/operator/po", testKey, body)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d", rec.Code)
 	}
 }
 
-// ── downtime create mapping (202 + correct body) ─────────────────────────────
+// ── downtime create mapping (202 + resolved ids injected) ────────────────────
 
 func TestDowntime_Create_Mapping(t *testing.T) {
 	fp := &fakePoster{result: &edgeResult{statusCode: 201, body: []byte(`{}`)}}
 	srv, _, reg := newTestServer(t, fp)
+	// NOTE: the tee sends NO id_equipment / cd_machine — the adapter resolves
+	// them from packml_topic.
 	body := `{
 		"enterprise":4,
-		"topic":"GRANADO/JAPERI-UP1/MF5-OPACO/LINHA_D",
+		"packml_topic":"GRANADO/JAPERI-UP1/MF5-OPACO/LINHA_D",
 		"id_param":30810,
-		"id_equipment":120,
-		"cd_machine":"LINHA_D",
 		"category":"TOOL",
 		"category_desc":"Tooling",
 		"subcategory":"ACC",
@@ -189,12 +230,12 @@ func TestDowntime_Create_Mapping(t *testing.T) {
 	want := edgeCreateDowntime{
 		CDCategory:       "TOOL",
 		DescCategory:     "Tooling",
-		CDMachine:        "LINHA_D",
+		CDMachine:        resCDMachine, // resolved from topic
 		CDSubcategory:    "ACC",
 		DescSubcategory:  "Accumulator full",
 		TxtDowntimeNotes: "added by operator",
 		IDEnterprise:     4,
-		IDEquipment:      120,
+		IDEquipment:      resEquipment, // resolved from topic
 		TSEvent:          "2026-07-08T16:53:45.000Z",
 		TSEnd:            "2026-07-08T17:53:45.000Z",
 	}
@@ -213,11 +254,9 @@ func TestDowntime_Edit_Mapping(t *testing.T) {
 	srv, _, _ := newTestServer(t, fp)
 	body := `{
 		"enterprise":4,
-		"topic":"GRANADO/LINE",
+		"packml_topic":"GRANADO/LINE",
 		"id_param":30812,
-		"id_equipment":120,
 		"id_equipment_event":10000,
-		"cd_machine":"LINHA_D",
 		"category":"TOOL",
 		"category_desc":"Tooling",
 		"subcategory":"ACC",
@@ -243,7 +282,7 @@ func TestDowntime_Edit_Mapping(t *testing.T) {
 	want := edgeEditDowntime{
 		CDCategory:       "TOOL",
 		DescCategory:     "Tooling",
-		CDMachine:        "LINHA_D",
+		CDMachine:        resCDMachine,
 		CDSubcategory:    "ACC",
 		DescSubcategory:  "Accumulator full",
 		TxtDowntimeNotes: "corrected",
@@ -251,7 +290,7 @@ func TestDowntime_Edit_Mapping(t *testing.T) {
 		Idle:             "no",
 		ChangeOver:       false,
 		IDEquipmentEvent: 10000,
-		IDEquipment:      120,
+		IDEquipment:      resEquipment,
 		Start:            "2026-07-08T16:00:00.000Z",
 		End:              "2026-07-08T17:00:00.000Z",
 	}
@@ -260,35 +299,91 @@ func TestDowntime_Edit_Mapping(t *testing.T) {
 	}
 }
 
-// ── downtime 422 unmapped ────────────────────────────────────────────────────
+// ── downtime 422: unresolved topic (unknown/inactive/cross-tenant) ───────────
 
-func TestDowntime_422_MissingEquipment(t *testing.T) {
+func TestDowntime_422_UnknownTopic(t *testing.T) {
 	fp := &fakePoster{}
-	srv, _, reg := newTestServer(t, fp)
-	// No id_equipment.
-	body := `{"enterprise":4,"topic":"GRANADO/L","id_param":30810,"cd_machine":"M","category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
-	rec := do(t, srv, "/operator/downtime", testKey, body)
+	res := &fakeResolver{err: ErrUnresolved}
+	srv, _, reg := newTestServerR(t, fp, res)
+	rec := do(t, srv, "/operator/downtime", testKey, validDowntime())
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("want 422, got %d", rec.Code)
 	}
 	if fp.last != nil {
+		t.Fatal("edge-api must NOT be called when the topic cannot be resolved")
+	}
+	if !strings.Contains(rec.Body.String(), "did not resolve to a staging equipment") {
+		t.Fatalf("422 body should explain the resolution failure, got %s", rec.Body.String())
+	}
+	if v := counterValue(t, reg, "downtime", outcomeUnresolved); v != 1 {
+		t.Fatalf("want 1 unresolved metric, got %v", v)
+	}
+}
+
+// ── downtime 422: missing packml_topic ───────────────────────────────────────
+
+func TestDowntime_422_MissingTopic(t *testing.T) {
+	fp := &fakePoster{}
+	srv, _, _ := newTestServer(t, fp)
+	// enterprise present (scope passes) but no packml_topic.
+	body := `{"enterprise":4,"id_param":30810,"category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
+	rec := do(t, srv, "/operator/downtime", testKey, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "packml_topic is required") {
+		t.Fatalf("422 should name packml_topic, got %s", rec.Body.String())
+	}
+	if fp.last != nil {
+		t.Fatal("edge-api must NOT be called")
+	}
+}
+
+// ── downtime 422: still-missing action field (category) after resolution ─────
+
+func TestDowntime_422_MissingCategory(t *testing.T) {
+	fp := &fakePoster{}
+	srv, _, _ := newTestServer(t, fp)
+	// Topic resolves fine, but category (an action field the tee still owns) is
+	// missing → mapping 422.
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_param":30810,"category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
+	rec := do(t, srv, "/operator/downtime", testKey, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "category") {
+		t.Fatalf("422 body should name category, got %s", rec.Body.String())
+	}
+	if fp.last != nil {
 		t.Fatal("edge-api must NOT be called on unmapped input")
-	}
-	if !strings.Contains(rec.Body.String(), "id_equipment") {
-		t.Fatalf("422 body should name the field, got %s", rec.Body.String())
-	}
-	if v := counterValue(t, reg, "downtime", outcomeUnmapped); v != 1 {
-		t.Fatalf("want 1 unmapped metric, got %v", v)
 	}
 }
 
 func TestDowntime_422_MissingEventIDOnEdit(t *testing.T) {
 	fp := &fakePoster{}
 	srv, _, _ := newTestServer(t, fp)
-	body := `{"enterprise":4,"topic":"GRANADO/L","id_param":30812,"id_equipment":1,"cd_machine":"M","category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_param":30812,"category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
 	rec := do(t, srv, "/operator/downtime", testKey, body)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("want 422, got %d", rec.Code)
+	}
+}
+
+// ── downtime 503: resolver DB error (retryable, not a rejection) ─────────────
+
+func TestDowntime_503_ResolverDBError(t *testing.T) {
+	fp := &fakePoster{}
+	res := &fakeResolver{err: errors.New("dial tcp: connection refused")}
+	srv, _, reg := newTestServerR(t, fp, res)
+	rec := do(t, srv, "/operator/downtime", testKey, validDowntime())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", rec.Code)
+	}
+	if fp.last != nil {
+		t.Fatal("edge-api must NOT be called when resolution errors")
+	}
+	if v := counterValue(t, reg, "downtime", outcomeResolverError); v != 1 {
+		t.Fatalf("want 1 resolver_error metric, got %v", v)
 	}
 }
 
@@ -297,13 +392,11 @@ func TestDowntime_422_MissingEventIDOnEdit(t *testing.T) {
 func TestPO_Create_Mapping(t *testing.T) {
 	fp := &fakePoster{result: &edgeResult{statusCode: 201, body: []byte(`Success!`)}}
 	srv, _, reg := newTestServer(t, fp)
+	// Tee sends NO id_site / id_area / id_equipment — resolved from topic.
 	body := `{
 		"enterprise":4,
-		"topic":"GRANADO/JAPERI-UP1/MF5-OPACO/LINHA_D",
+		"packml_topic":"GRANADO/JAPERI-UP1/MF5-OPACO/LINHA_D",
 		"id_order":218237,
-		"id_site":11,
-		"id_area":22,
-		"id_equipment":120,
 		"production_order_quantity":5000,
 		"timestamp":"2026-07-08 13:56:55",
 		"nm_production_order":"FILME OPACO 50MIC",
@@ -322,9 +415,9 @@ func TestPO_Create_Mapping(t *testing.T) {
 	}
 	want := edgeCreateAndStartPO{
 		IDEnterprise:            4,
-		IDSite:                  11,
-		IDArea:                  22,
-		IDEquipment:             120,
+		IDSite:                  resSite,      // resolved
+		IDArea:                  resArea,      // resolved
+		IDEquipment:             resEquipment, // resolved
 		IDOrder:                 218237,
 		ProductionOrderQuantity: 5000,
 		Timestamp:               "2026-07-08 13:56:55",
@@ -338,16 +431,31 @@ func TestPO_Create_Mapping(t *testing.T) {
 	}
 }
 
-func TestPO_422_MissingSite(t *testing.T) {
+func TestPO_422_UnknownTopic(t *testing.T) {
 	fp := &fakePoster{}
-	srv, _, _ := newTestServer(t, fp)
-	body := `{"enterprise":4,"topic":"GRANADO/L","id_order":1,"id_area":3,"id_equipment":4,"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
+	res := &fakeResolver{err: ErrUnresolved}
+	srv, _, _ := newTestServerR(t, fp, res)
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_order":1,"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
 	rec := do(t, srv, "/operator/po", testKey, body)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("want 422, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "id_site") {
-		t.Fatalf("422 should name id_site, got %s", rec.Body.String())
+	if fp.last != nil {
+		t.Fatal("edge-api must NOT be called when the topic cannot be resolved")
+	}
+}
+
+func TestPO_422_MissingQuantity(t *testing.T) {
+	fp := &fakePoster{}
+	srv, _, _ := newTestServer(t, fp)
+	// Topic resolves, but production_order_quantity (action field) missing.
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_order":1,"timestamp":"2026-07-08 10:00:00"}`
+	rec := do(t, srv, "/operator/po", testKey, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "production_order_quantity") {
+		t.Fatalf("422 should name production_order_quantity, got %s", rec.Body.String())
 	}
 	if fp.last != nil {
 		t.Fatal("edge-api must NOT be called on unmapped input")
@@ -406,7 +514,7 @@ func TestBadJSON_400(t *testing.T) {
 	}
 }
 
-func TestHealthz(t *testing.T) {
+func TestHealthz_OK(t *testing.T) {
 	srv, _, _ := newTestServer(t, &fakePoster{})
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -417,6 +525,20 @@ func TestHealthz(t *testing.T) {
 	var m map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatalf("healthz not JSON: %v", err)
+	}
+	if m["db"] != true {
+		t.Fatalf("healthz should report db:true when pool is up, got %v", m)
+	}
+}
+
+func TestHealthz_DBDown(t *testing.T) {
+	res := &fakeResolver{pingErr: errors.New("pool closed")}
+	srv, _, _ := newTestServerR(t, &fakePoster{}, res)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 when DB pool is down, got %d", rec.Code)
 	}
 }
 
@@ -431,5 +553,5 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 func validDowntime() string {
-	return `{"enterprise":4,"topic":"GRANADO/L","id_param":30810,"id_equipment":120,"cd_machine":"M","category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
+	return `{"enterprise":4,"packml_topic":"GRANADO/L","id_param":30810,"category":"C","category_desc":"D","ts_event":"2026-07-08T10:00:00Z","ts_end":"2026-07-08T11:00:00Z"}`
 }

@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // edgePoster is the seam the tests mock — the real implementation is
@@ -37,22 +40,23 @@ type Config struct {
 
 // Server is the adapter's HTTP surface.
 type Server struct {
-	cfg     Config
-	edge    edgePoster
-	metrics *Metrics
-	logger  *slog.Logger
+	cfg      Config
+	edge     edgePoster
+	resolver topicResolver
+	metrics  *Metrics
+	logger   *slog.Logger
 
 	served atomic.Uint64
 	failed atomic.Uint64
 }
 
-// NewServer wires a Server. Passing edge + metrics explicitly keeps the type
-// test-friendly (fakes in, no globals).
-func NewServer(cfg Config, edge edgePoster, metrics *Metrics, logger *slog.Logger) *Server {
+// NewServer wires a Server. Passing edge + resolver + metrics explicitly keeps
+// the type test-friendly (fakes in, no globals).
+func NewServer(cfg Config, edge edgePoster, resolver topicResolver, metrics *Metrics, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, edge: edge, metrics: metrics, logger: logger}
+	return &Server{cfg: cfg, edge: edge, resolver: resolver, metrics: metrics, logger: logger}
 }
 
 // Handler builds the routing mux. /metrics is attached by the caller (main)
@@ -67,8 +71,19 @@ func (s *Server) Handler() *http.ServeMux {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"healthy":true}`))
+	// Healthy only when the resolver's DB pool is reachable — the adapter
+	// cannot map topics → ids without it, so a dead pool must fail the probe
+	// (in addition to the process merely being up).
+	if s.resolver != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.resolver.Ping(ctx); err != nil {
+			s.logger.Warn("healthz: resolver DB pool unreachable", slog.String("err", err.Error()))
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"healthy": false, "db": false})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"healthy": true, "db": true})
 }
 
 // authOK compares the presented X-Ingest-Key against the configured secret in
@@ -121,10 +136,19 @@ func (s *Server) handleDowntime(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if !s.scopeOK(req.Enterprise, req.Topic) {
+	if !s.scopeOK(req.Enterprise, req.PackmlTopic) {
 		s.reject(w, action, outcomeForbidden, http.StatusForbidden, "action is not scoped to the configured Incoplast enterprise")
 		return
 	}
+	// Resolve packml_topic → staging ids (id_equipment + cd_machine). The tee
+	// node only holds the topic; the adapter owns the topic→id mapping.
+	resolved, ok := s.resolve(w, r.Context(), action, req.PackmlTopic)
+	if !ok {
+		return
+	}
+	req.IDEquipment = &resolved.IDEquipment
+	req.CDMachine = resolved.CDMachine
+
 	call, err := mapDowntime(&req, s.cfg.EnterpriseID)
 	if err != nil {
 		s.handleMapErr(w, action, err)
@@ -148,16 +172,60 @@ func (s *Server) handlePO(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if !s.scopeOK(req.Enterprise, req.Topic) {
+	if !s.scopeOK(req.Enterprise, req.PackmlTopic) {
 		s.reject(w, action, outcomeForbidden, http.StatusForbidden, "action is not scoped to the configured Incoplast enterprise")
 		return
 	}
+	// Resolve packml_topic → staging hierarchy ids (id_equipment/id_area/id_site).
+	resolved, ok := s.resolve(w, r.Context(), action, req.PackmlTopic)
+	if !ok {
+		return
+	}
+	req.IDEquipment = &resolved.IDEquipment
+	req.IDArea = &resolved.IDArea
+	req.IDSite = &resolved.IDSite
+
 	call, err := mapPO(&req, s.cfg.EnterpriseID)
 	if err != nil {
 		s.handleMapErr(w, action, err)
 		return
 	}
 	s.forward(w, r.Context(), action, call)
+}
+
+// resolve maps a packml_topic to staging ids, writing the correct error
+// response and returning ok=false when it cannot:
+//
+//	empty topic / unknown / inactive / cross-tenant / ambiguous -> 422 (ErrUnresolved)
+//	DB / transport error                                        -> 503 (retryable)
+//
+// A 422 here means "the topic doesn't name a staging equipment for this
+// tenant"; a 503 means "try again". Fail closed either way — we never guess an
+// id.
+func (s *Server) resolve(w http.ResponseWriter, ctx context.Context, action, packmlTopic string) (Resolved, bool) {
+	if s.resolver == nil {
+		s.reject(w, action, outcomeResolverError, http.StatusServiceUnavailable, "topic resolver is not configured")
+		return Resolved{}, false
+	}
+	if strings.TrimSpace(packmlTopic) == "" {
+		s.reject(w, action, outcomeUnresolved, http.StatusUnprocessableEntity, "packml_topic is required — the tee node must send the SparkPlug topic so the adapter can resolve the staging equipment")
+		return Resolved{}, false
+	}
+	resolved, err := s.resolver.ResolveTopic(ctx, packmlTopic)
+	if err == nil {
+		return resolved, true
+	}
+	if errors.Is(err, ErrUnresolved) {
+		s.reject(w, action, outcomeUnresolved, http.StatusUnprocessableEntity,
+			fmt.Sprintf("topic %q did not resolve to a staging equipment (unknown, inactive, cross-tenant, or ambiguous in packml_register)", packmlTopic))
+		return Resolved{}, false
+	}
+	// Transport/DB failure — retryable, not a permanent rejection.
+	s.failed.Add(1)
+	s.metrics.observe(action, outcomeResolverError)
+	s.logger.Warn("topic resolution failed (DB)", slog.String("action", action), slog.String("err", err.Error()))
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "topic resolver unavailable"})
+	return Resolved{}, false
 }
 
 func (s *Server) handleMapErr(w http.ResponseWriter, action string, err error) {

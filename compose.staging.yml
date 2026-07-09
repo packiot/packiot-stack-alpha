@@ -1170,6 +1170,13 @@ services:
       # Tenant scope — no hardcoded enterprise ids in code; set here.
       INCOPLAST_ENTERPRISE_ID: "4"
       INCOPLAST_TOPIC_PREFIX: GRANADO
+      # Read-only Postgres resolver: packml_topic → staging ids. Creds come
+      # from AWS Secrets Manager (CO-5: no plaintext password in compose env).
+      # Connects to F1 `packiot` (packiot/staging/db) so the ids the adapter
+      # resolves are the same ones edge-api accepts. Reaches the DB over
+      # packiot-net (via pgbouncer, per the secret's host).
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: packiot/staging/db
       # FILL AT DEPLOY (secrets — keep out of git):
       #   OPERATOR_API_KEY : shared secret the Incoplast tee node presents
       #                      as X-Ingest-Key.
@@ -1192,7 +1199,11 @@ services:
     depends_on:
       edge-api:
         condition: service_started
+      # Resolver reads packml_register → equipments via pgbouncer at boot.
+      pgbouncer:
+        condition: service_started
     healthcheck:
+      # Now also verifies the read-only DB pool is up (topic resolution needs it).
       test: ["CMD", "/usr/local/bin/operator-adapter", "--healthcheck"]
       interval: 30s
       timeout: 5s
