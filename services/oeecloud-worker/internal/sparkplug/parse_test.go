@@ -146,3 +146,25 @@ func TestParseBadJSON(t *testing.T) {
 		t.Error("Parse on bad json: want error, got nil")
 	}
 }
+
+func TestParse_StringEncodedNumerics(t *testing.T) {
+	// Incoplast's PackML2SparkPlug encodes curspeed/counter as JSON strings.
+	body := []byte(`{"metrics":[{"name":"x","timestamp":1782161858600,"value":12,"counter":"99012","curspeed":"120.5"}]}`)
+	p, err := Parse(body)
+	if err != nil {
+		t.Fatalf("string-encoded numerics must parse: %v", err)
+	}
+	m := p.Metrics[0]
+	if m.Counter == nil || float64(*m.Counter) != 99012 {
+		t.Errorf("counter: got %v want 99012", m.Counter)
+	}
+	if m.CurSpeed == nil || float64(*m.CurSpeed) != 120.5 {
+		t.Errorf("curspeed: got %v want 120.5", m.CurSpeed)
+	}
+	// numbers (CPACK) must still work
+	body2 := []byte(`{"metrics":[{"name":"x","timestamp":1,"value":1,"counter":42,"curspeed":88}]}`)
+	p2, err := Parse(body2)
+	if err != nil || float64(*p2.Metrics[0].CurSpeed) != 88 {
+		t.Errorf("numeric curspeed regressed: %v err=%v", p2.Metrics[0].CurSpeed, err)
+	}
+}

@@ -171,11 +171,11 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 
 	switch kind {
 	case sparkplug.KindProdProcessedCount:
-		return buildProcessed(ts, info, tpEquipment, value, m.Counter, m.CurSpeed, faults, checkNumber, schema), nil
+		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema), nil
 	case sparkplug.KindProdConsumedCount:
-		return buildConsumed(ts, info, tpEquipment, value, m.Counter, m.CurSpeed, faults, checkNumber, schema), nil
+		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema), nil
 	case sparkplug.KindProdDefectiveCount:
-		return buildDefective(ts, info, tpEquipment, value, m.Counter, faults, checkNumber, schema), nil
+		return buildDefective(ts, info, tpEquipment, value, (*float64)(m.Counter), faults, checkNumber, schema), nil
 	case sparkplug.KindStateCurrent:
 		return buildState(ts, info, tpEquipment, int(value), faults, checkNumber, schema), nil
 	case sparkplug.KindUnitModeCurrent:
