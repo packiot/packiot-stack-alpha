@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -92,6 +93,23 @@ func destForSource(sourceType string) string {
 		return "f1_public"
 	}
 }
+// tenantOf derives the tenant (group_id) from a payload: the lowercased first
+// segment of the first metric's topic, matching packml_register tenant
+// discovery (lower(split_part(packml_topic,'/',1))). Bounded cardinality (one
+// per onboarded client) so it is safe as a Prometheus label — it isolates a
+// single tenant's per-flow write rate, which the aggregate dest counter can't.
+func tenantOf(p *sparkplug.Payload) string {
+	for i := range p.Metrics {
+		if name := p.Metrics[i].Name; name != "" {
+			if idx := strings.IndexByte(name, '/'); idx > 0 {
+				return strings.ToLower(name[:idx])
+			}
+			return strings.ToLower(name)
+		}
+	}
+	return "unknown"
+}
+
 func (h *SparkplugHandler) LegacyDroppedCount() uint64 { return h.legacyDropped.Load() }
 
 // Handle is the Handler signature consumed by Dispatcher.
@@ -135,6 +153,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// Shadow pool nil-fallback: if source_type="refactored" but no shadow
 	// pool configured, silently downgrade to main pool. Logged.
 	pool, schema := h.routeForSource(p.SourceType)
+	tenant := tenantOf(p)
 
 	// Build phase — collect one Query per metric into the batch.
 	batch := &pgx.Batch{}
@@ -220,7 +239,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	if batch.Len() == 0 {
 		// Nothing to write (all metrics skipped or build-failed).
 		if h.batchWrites != nil {
-			h.batchWrites.WithLabelValues(destForSource(p.SourceType), "empty_batch").Inc()
+			h.batchWrites.WithLabelValues(destForSource(p.SourceType), tenant, "empty_batch").Inc()
 		}
 		return firstErr
 	}
@@ -235,7 +254,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		if _, err := br.Exec(); err != nil {
 			h.execErrors.Add(1)
 			if h.batchWrites != nil {
-				h.batchWrites.WithLabelValues(dest, "error").Inc()
+				h.batchWrites.WithLabelValues(dest, tenant, "error").Inc()
 			}
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s: %w", descs[i], err)
@@ -247,7 +266,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 		h.queriesAcked.Add(1)
 		if h.batchWrites != nil {
-			h.batchWrites.WithLabelValues(dest, "ok").Inc()
+			h.batchWrites.WithLabelValues(dest, tenant, "ok").Inc()
 		}
 	}
 
