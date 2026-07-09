@@ -45,6 +45,7 @@ volumes:
 # .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
 # .23 edge-transformer (ADR-0009 Phase 2; reserved, NOT yet wired — see commented service block below)
 # .24 mosquitto (ADR-0010 Phase 2 MQTT broker; ADR-0011 P0-2 durability config)
+# .29 ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug; publishes :8444, metrics :9105)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -864,6 +865,75 @@ services:
       start_period: 30s
     mem_limit: 256m
     cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug) ───────────────
+  # A node in Incoplast's REAL Node-RED POSTs its SparkPlug-JSON payload to
+  # this shim over HTTPS (public surface, Nginx/SG-gated on :8444). The shim
+  # authenticates (X-Ingest-Key), scope-guards the payload to INCOPLAST data,
+  # then republishes it VERBATIM onto the EXISTING `oee` topic exchange with
+  # routing key `sparkplug.data` — the exact pair oeecloud-worker consumes.
+  # From there it flows oeecloud-worker → F1/F3, tenant-routed to enterprise 4
+  # via the seeded packml_register rows. RabbitMQ itself stays internal: only
+  # the shim is exposed, and it never hands broker creds to the third party.
+  #
+  # Reuses oeecloud-worker's Secrets Manager pattern — same least-privilege
+  # `oeecloud-worker` broker user (packiot/staging/rabbitmq-oeecloud-creds),
+  # which already has write on the `oee` exchange.
+  ingest-shim:
+    build: ./services/ingest-shim
+    container_name: ingest-shim
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      # CO-5: RabbitMQ username/password via Secrets Manager, NOT env.
+      AWS_REGION: us-east-1
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-oeecloud-creds
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      # Publish target — the existing exchange + routing key oeecloud-worker
+      # consumes. VERBATIM republish, no transform.
+      EXCHANGE: oee
+      ROUTING_KEY: sparkplug.data
+      # Scope guard: only payloads whose topic/group first segment is
+      # INCOPLAST (case-insensitive) are admitted; everything else → 403.
+      SCOPE_GROUP: INCOPLAST
+      # Public TLS API on 8444; Prometheus metrics on 9105 (internal).
+      HTTP_ADDR: ":8444"
+      METRICS_ADDR: ":9105"
+      # Ingest API key — REQUIRED, no default (shim refuses to start unset).
+      # Value lives in /opt/packiot/.env; hand it to the Incoplast Node-RED
+      # node as the X-Ingest-Key header. # FILL AT DEPLOY
+      INGEST_API_KEY: ${INGEST_API_KEY:-}
+      # TLS is mandatory — the shim refuses to open a plaintext public
+      # listener. Mount the cert/key pair below. # FILL AT DEPLOY
+      TLS_CERT_FILE: /certs/server.crt
+      TLS_KEY_FILE: /certs/server.key
+    volumes:
+      # Host path holds the TLS server cert + key for :8444. # FILL AT DEPLOY
+      - /opt/packiot/ingest-shim/certs:/certs:ro
+    ports:
+      # Public HTTPS ingress. Nginx/SG terminates external access on 8444.
+      - "8444:8444"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.29
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    # Distroless image → binary self-probes its own TLS /healthz via the
+    # `--healthcheck` subcommand (no shell/curl/wget in the runtime image).
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ingest-shim", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 128m
+    cpus: 0.25
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
