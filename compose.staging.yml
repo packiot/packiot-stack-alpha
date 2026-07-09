@@ -923,9 +923,15 @@ services:
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       # Publish target — the existing exchange + routing key oeecloud-worker
-      # consumes. VERBATIM republish, no transform.
+      # consumes. Per-tenant key so Incoplast lands in the DEDICATED queue
+      # oeecloud-worker-q-incoplast (its own consumer), NOT the shared generic
+      # oeecloud-worker-q. With the 3-flow fan-out tripling message volume, the
+      # single generic-queue consumer backed up to 2495 msgs (2026-07-09) and
+      # F3 never caught up. This mirrors how edge-transformer routes CPACK to
+      # sparkplug.data.cpack_staging. The worker binds this key → per-tenant
+      # queue via packml_register tenant discovery (lower(split_part(topic,'/',1))).
       EXCHANGE: oee
-      ROUTING_KEY: sparkplug.data
+      ROUTING_KEY: sparkplug.data.incoplast
       # Scope guard: only payloads whose topic/group first segment is
       # INCOPLAST (case-insensitive) are admitted; everything else → 403.
       SCOPE_GROUP: INCOPLAST
