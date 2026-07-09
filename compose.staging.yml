@@ -839,7 +839,13 @@ services:
       RUNTIME_PROVISION_ENABLED: "true"
       RUNTIME_ROLLUP_ENABLED: "true"
       # 10.9: nodered legacy leg retired (plc-sim triple-emit feeds F1)
-      LEGACY_INGEST_ENABLED: "false"
+      # Re-enabled for the Incoplast mirrored-tenant validation (ADR-0022 V1):
+      # the ingest-shim publishes Incoplast's real SparkPlug to oee/sparkplug.data,
+      # and the worker must consume it → F1/F3 for the enterprise-4 bake. CPACK is
+      # unaffected (it flows via mirror-worker-go, not oee; nothing else publishes to
+      # oee). This is the transitional leg — the forward unified path (all tenants via
+      # transformer + S7 → oee) is post-flip onboarding (S1). Reversible.
+      LEGACY_INGEST_ENABLED: "true"
       BAKE_COMPARATOR_ENABLED: "true"
       # Per-tenant surface bake (ADR-0022). First id = the frozen CPACK gate
       # (verbatim SQL, byte-identical flip signal); additional ids run scoped.
