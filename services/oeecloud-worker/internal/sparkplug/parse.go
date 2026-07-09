@@ -7,6 +7,7 @@ package sparkplug
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -44,8 +45,8 @@ type Metric struct {
 	Name      string          `json:"name"`
 	Timestamp int64           `json:"timestamp"`
 	Value     json.RawMessage `json:"value"`
-	Counter   *float64        `json:"counter,omitempty"`
-	CurSpeed  *float64        `json:"curspeed,omitempty"`
+	Counter   *jsonFloat       `json:"counter,omitempty"`
+	CurSpeed  *jsonFloat       `json:"curspeed,omitempty"`
 	Alias     json.RawMessage `json:"alias,omitempty"`
 	Faults    json.RawMessage `json:"faults,omitempty"`
 	ID        *int            `json:"id,omitempty"`
@@ -60,6 +61,30 @@ func Parse(body []byte) (*Payload, error) {
 		return nil, fmt.Errorf("unmarshal payload: %w", err)
 	}
 	return &p, nil
+}
+
+
+// jsonFloat accepts either a JSON number (120) or a quoted numeric string
+// ("120", "120.4"). Some edge clients — notably Incoplast's PackML2SparkPlug
+// node — encode counter/curspeed as strings; standard clients (CPACK) send
+// numbers. Both coerce to float64, so this is backward-compatible.
+type jsonFloat float64
+
+func (f *jsonFloat) UnmarshalJSON(b []byte) error {
+	t := strings.TrimSpace(string(b))
+	if t == "" || t == "null" {
+		return nil
+	}
+	s := strings.Trim(t, `"`) // strip quotes if it arrived as a string
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("jsonFloat %q: %w", t, err)
+	}
+	*f = jsonFloat(v)
+	return nil
 }
 
 // MetricKind tells writers which table/columns the metric belongs to.
