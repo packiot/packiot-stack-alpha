@@ -32,14 +32,23 @@ type Deps struct {
 	APIKey       string
 	MaxBodyBytes int64
 	ScopeGroup   string
-	Publisher    Publisher
-	Metrics      *metrics.Metrics
-	Logger       *slog.Logger
+	// FanoutSourceTypes: the source_type value stamped onto each republished
+	// copy of an admitted message (one publish per entry). {"","go",
+	// "refactored"} fans a single Incoplast envelope into F1/F2/F3 for the
+	// 3-flow bake. Empty/nil degrades to a single verbatim publish.
+	FanoutSourceTypes []string
+	Publisher         Publisher
+	Metrics           *metrics.Metrics
+	Logger            *slog.Logger
 }
 
 // New wires the routes and returns the http.Handler.
 func New(d Deps) http.Handler {
-	s := &server{d: d, apiKey: []byte(d.APIKey), scopeGroup: strings.ToUpper(d.ScopeGroup)}
+	fanout := d.FanoutSourceTypes
+	if len(fanout) == 0 {
+		fanout = []string{""} // never publish zero copies
+	}
+	s := &server{d: d, apiKey: []byte(d.APIKey), scopeGroup: strings.ToUpper(d.ScopeGroup), fanout: fanout}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ingest/sparkplug", s.handleIngest)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -50,6 +59,7 @@ type server struct {
 	d          Deps
 	apiKey     []byte
 	scopeGroup string
+	fanout     []string
 }
 
 func (s *server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -107,22 +117,56 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Publish VERBATIM with publisher confirms.
-	if err := s.d.Publisher.Publish(r.Context(), body); err != nil {
-		s.d.Metrics.Inc(metrics.OutcomePublishFailed)
-		s.d.Logger.Error("publish failed",
-			slog.String("group", group),
-			slog.Int("bytes", len(body)),
-			slog.String("err", err.Error()))
-		writeJSON(w, http.StatusServiceUnavailable, `{"error":"publish failed"}`)
-		return
+	// 4. Fan-out publish with publisher confirms. The 3-flow bake needs the
+	//    SAME raw Incoplast data in F1/F2/F3, but the tee sends one envelope
+	//    (source_type ""). So we republish it once per configured flow with
+	//    source_type stamped; the worker's routeForSource() then lands each
+	//    copy in the right schema. A failure on ANY copy → 503 so the tee
+	//    retries the whole message (all writers are idempotent upserts, so a
+	//    partial-then-retry cannot double-count).
+	for _, st := range s.fanout {
+		out, err := withSourceType(body, st)
+		if err != nil {
+			// Admitted at the scope gate but not re-marshalable — treat as a
+			// bad payload rather than a broker failure.
+			s.reject(w, r, http.StatusBadRequest, metrics.OutcomeRejectedBad, "unparseable payload (fanout)", group, int64(len(body)))
+			return
+		}
+		if err := s.d.Publisher.Publish(r.Context(), out); err != nil {
+			s.d.Metrics.Inc(metrics.OutcomePublishFailed)
+			s.d.Logger.Error("publish failed",
+				slog.String("group", group),
+				slog.String("source_type", st),
+				slog.Int("bytes", len(out)),
+				slog.String("err", err.Error()))
+			writeJSON(w, http.StatusServiceUnavailable, `{"error":"publish failed"}`)
+			return
+		}
 	}
 
 	s.d.Metrics.Inc(metrics.OutcomePublished)
 	s.d.Logger.Info("published",
 		slog.String("group", group),
-		slog.Int("bytes", len(body)))
+		slog.Int("bytes", len(body)),
+		slog.Int("copies", len(s.fanout)))
 	writeJSON(w, http.StatusAccepted, `{"status":"accepted"}`)
+}
+
+// withSourceType returns body with its top-level "source_type" field set to
+// st, preserving every other field verbatim (json.RawMessage keeps each
+// value's exact bytes; key order and whitespace are irrelevant to the
+// worker's JSON decode). st="" yields source_type:"" — the F1/legacy flow.
+func withSourceType(body []byte, st string) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	v, err := json.Marshal(st)
+	if err != nil {
+		return nil, err
+	}
+	m["source_type"] = v
+	return json.Marshal(m)
 }
 
 // reject centralises the metric bump + structured log + JSON response for a

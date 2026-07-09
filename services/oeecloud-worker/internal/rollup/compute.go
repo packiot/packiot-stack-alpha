@@ -36,9 +36,12 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
@@ -125,6 +128,79 @@ const computeReflagRecentSQL = `
 	UPDATE %[1]s.production_orders_runtime SET recalc_needed = true
 	 WHERE upper(runtime_timerange) > now() - interval '48 hours'`
 
+// computeOverflowDiagSQL mirrors computeEventsSQL's eligible+ev CTEs but,
+// instead of updating, RETURNS the eligible rows whose computed running/
+// stopped exceed a 32-bit integer — i.e. the exact rows that make the UPDATE
+// raise SQLSTATE 22003 (running_time/stopped_time are int4). Run only on
+// error, so an otherwise-opaque, intermittent overflow (a corrupt PO range or
+// a far-future event ts_end producing an absurd interval) names the offending
+// PO in the logs instead of vanishing. %[1]s=EvSchema, %[2]s=RefSchema;
+// $1=window interval. int4 range: [-2147483648, 2147483647].
+const computeOverflowDiagSQL = `
+	WITH eligible AS (
+	    SELECT e.id_equipment, e.runtime_timerange, lower(e.runtime_timerange) AS lo,
+	           COALESCE(upper(e.runtime_timerange), now()) AS hi
+	      FROM %[1]s.production_orders_runtime e
+	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
+	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now()) AND e.recalc_needed
+	), ev AS (
+	    SELECT el.id_equipment, el.lo,
+	           COALESCE(sum(CASE WHEN ee.status = 6 THEN extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi) - greatest(ee.ts_event, el.lo))) END), 0) AS running,
+	           COALESCE(sum(CASE WHEN ee.status IN (5,10,11) THEN extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi) - greatest(ee.ts_event, el.lo))) END), 0) AS stopped
+	      FROM eligible el
+	      JOIN %[1]s.equipment_events ee ON ee.id_equipment = el.id_equipment
+	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
+	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
+	     GROUP BY el.id_equipment, el.lo
+	)
+	SELECT id_equipment, lo, running, stopped
+	  FROM ev
+	 WHERE running > 2147483647 OR stopped > 2147483647 OR running < -2147483648 OR stopped < -2147483648
+	 ORDER BY greatest(abs(running), abs(stopped)) DESC
+	 LIMIT 5`
+
+// diagnoseOverflow runs computeOverflowDiagSQL and logs the offending PO(s).
+// Best-effort: any error here is itself logged and swallowed — this path only
+// runs after a compute failure, to add context, never to change control flow.
+func diagnoseOverflow(ctx context.Context, d flows.Dest, window string, logger *slog.Logger) {
+	rows, err := d.Pool.Query(ctx, fmt.Sprintf(computeOverflowDiagSQL, d.EvSchema, d.RefSchema), window)
+	if err != nil {
+		logger.Warn("overflow diagnosis query failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+		return
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var idEquipment int
+		var lo time.Time
+		var running, stopped float64
+		if err := rows.Scan(&idEquipment, &lo, &running, &stopped); err != nil {
+			continue
+		}
+		found = true
+		logger.Error("po-runtime-compute int overflow — offending PO row",
+			slog.String("dest", d.Name),
+			slog.Int("id_equipment", idEquipment),
+			slog.Time("runtime_lo", lo),
+			slog.Float64("running_sec", running),
+			slog.Float64("stopped_sec", stopped))
+	}
+	if !found {
+		// The overflow is intermittent — the bad row may have been corrected
+		// by the legacy flow or aged out of the window between the failing
+		// pass and this diagnosis. Note that so the gap isn't mistaken for a
+		// bug in the diagnosis itself.
+		logger.Warn("overflow diagnosis found no >int4 row (already cleared/aged out)", slog.String("dest", d.Name))
+	}
+}
+
+// isIntOverflow reports whether err is a Postgres numeric-value-out-of-range
+// error (SQLSTATE 22003).
+func isIntOverflow(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22003"
+}
+
 // RunCompute executes one compute pass for one destination.
 func RunCompute(ctx context.Context, d flows.Dest, window string) (int64, error) {
 	// Phase B first (see NOTE): its eligible set must predate A's clear.
@@ -153,6 +229,12 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 		for _, d := range dests {
 			if _, err := RunCompute(ctx, d, window); err != nil {
 				logger.Warn("po-runtime-compute failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				// An int-overflow (SQLSTATE 22003) here is an opaque,
+				// intermittent failure — dump the offending PO row so it's
+				// actionable rather than a recurring mystery in the logs.
+				if isIntOverflow(err) {
+					diagnoseOverflow(ctx, d, window, logger)
+				}
 				if firstErr == nil {
 					firstErr = err
 				}

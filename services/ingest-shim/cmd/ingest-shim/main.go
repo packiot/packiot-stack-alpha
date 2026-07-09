@@ -119,12 +119,13 @@ func main() {
 
 	// Public TLS API server.
 	handler := httpserver.New(httpserver.Deps{
-		APIKey:       cfg.IngestAPIKey,
-		MaxBodyBytes: cfg.MaxBodyBytes,
-		ScopeGroup:   cfg.ScopeGroup,
-		Publisher:    pub,
-		Metrics:      m,
-		Logger:       logger,
+		APIKey:            cfg.IngestAPIKey,
+		MaxBodyBytes:      cfg.MaxBodyBytes,
+		ScopeGroup:        cfg.ScopeGroup,
+		FanoutSourceTypes: cfg.FanoutSourceTypes,
+		Publisher:         pub,
+		Metrics:           m,
+		Logger:            logger,
 	})
 	apiSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,

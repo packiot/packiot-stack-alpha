@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,15 @@ type Config struct {
 	// Scope guard. Only payloads whose topic/group first segment matches
 	// this (case-insensitive) are admitted. Everything else → 403.
 	ScopeGroup string // 'INCOPLAST'
+
+	// Fan-out. The staging 3-flow validation needs each Incoplast message to
+	// reach F1 (source_type ""), F2 (source_type "go"), and F3 (source_type
+	// "refactored") so the enterprise-4 surface bake has identical raw input
+	// on both sides. The live tee sends ONE envelope (source_type ""), so the
+	// shim republishes it once per flow with source_type stamped. Post-flip
+	// (single flow), set FANOUT_SOURCE_TYPES=legacy to restore verbatim
+	// single-publish. Tokens: "legacy" → "" (F1), "go" → F2, "refactored" → F3.
+	FanoutSourceTypes []string
 
 	// Body limits.
 	MaxBodyBytes int64 // reject empty and > this many bytes
@@ -78,8 +88,9 @@ func loadBase() *Config {
 		HTTPAddr:         getenv("HTTP_ADDR", ":8444"),
 		MetricsAddr:      getenv("METRICS_ADDR", ":9105"),
 		IngestAPIKey:     os.Getenv("INGEST_API_KEY"),
-		ScopeGroup:       getenv("SCOPE_GROUP", "INCOPLAST"),
-		MaxBodyBytes:     int64(getenvInt("MAX_BODY_BYTES", 1<<20)), // 1 MiB
+		ScopeGroup:        getenv("SCOPE_GROUP", "INCOPLAST"),
+		FanoutSourceTypes: parseFanout(getenv("FANOUT_SOURCE_TYPES", "legacy,go,refactored")),
+		MaxBodyBytes:      int64(getenvInt("MAX_BODY_BYTES", 1<<20)), // 1 MiB
 		TLSCertFile:      os.Getenv("TLS_CERT_FILE"),
 		TLSKeyFile:       os.Getenv("TLS_KEY_FILE"),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
@@ -103,4 +114,25 @@ func getenvInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// parseFanout maps a comma-separated flow-token list to the source_type
+// strings the shim stamps onto each republished copy. "legacy" (or an empty
+// token) → "" (F1); other tokens pass through verbatim ("go"→F2,
+// "refactored"→F3). Always returns at least one entry so the shim never
+// publishes zero copies (that would silently drop data).
+func parseFanout(s string) []string {
+	var out []string
+	for _, tok := range strings.Split(s, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || strings.EqualFold(tok, "legacy") {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, tok)
+	}
+	if len(out) == 0 {
+		out = []string{""}
+	}
+	return out
 }

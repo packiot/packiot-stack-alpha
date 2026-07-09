@@ -131,7 +131,15 @@ services:
       mosquitto:
         condition: service_healthy
     restart: unless-stopped
-    networks: [packiot-net]
+    networks:
+      # Pin a static IP outside the low sequential dynamic-allocation range.
+      # plc-sim has no static IP historically — during a partial redeploy where
+      # edge-nodered (static 172.18.0.4) was removed first, Docker IPAM handed
+      # plc-sim edge-nodered's freed .4, so edge-nodered then failed to attach
+      # ("Address already in use", 2026-07-09). Pinning plc-sim removes it from
+      # the dynamic pool so it can never squat a reserved slot again.
+      packiot-net:
+        ipv4_address: 172.18.0.200
     mem_limit: 64m
 
   # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ──────────────────────────
@@ -148,6 +156,12 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    # tini as PID 1 reaps zombies. eclipse-mosquitto runs mosquitto as PID 1,
+    # which does NOT reap the docker-exec'd healthcheck children — over days
+    # they leak into the container's pids cgroup until it hits pids.max and
+    # fork() returns EAGAIN, failing the healthcheck and blocking every deploy
+    # (incident 2026-07-09: 4578 zombie PIDs). init:true prevents recurrence.
+    init: true
     ports:
       # AMQP-adjacent: bind only to loopback on the host. Intra-stack traffic
       # goes via packiot-net; external factory PLCs reach us via nginx/ALB.
