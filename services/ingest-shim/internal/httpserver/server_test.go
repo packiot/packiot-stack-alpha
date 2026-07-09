@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,19 +13,33 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/metrics"
 )
 
-// fakePublisher is a deterministic Publisher for tests. It records the last
-// body it saw and returns a configurable error.
+// fakePublisher is a deterministic Publisher for tests. It records every body
+// it saw (fan-out publishes more than once) and returns a configurable error.
 type fakePublisher struct {
 	err      error
 	healthy  bool
 	lastBody []byte
+	bodies   [][]byte
 	calls    int
 }
 
 func (f *fakePublisher) Publish(_ context.Context, body []byte) error {
 	f.calls++
 	f.lastBody = append([]byte(nil), body...)
+	f.bodies = append(f.bodies, append([]byte(nil), body...))
 	return f.err
+}
+
+// sourceTypeOf extracts the top-level source_type from a published body.
+func sourceTypeOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var m struct {
+		SourceType string `json:"source_type"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("published body not valid JSON: %v", err)
+	}
+	return m.SourceType
 }
 func (f *fakePublisher) Healthy() bool { return f.healthy }
 
@@ -100,6 +115,7 @@ func TestIngest_TopLevelTopic_ScopeGuard(t *testing.T) {
 
 func TestIngest_Confirmed_202(t *testing.T) {
 	pub := &fakePublisher{healthy: true} // err nil → confirmed
+	// newTestServer sets no FanoutSourceTypes → single-publish default.
 	rec := do(t, newTestServer(pub), testKey, incoplastBody)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("want 202, got %d", rec.Code)
@@ -107,8 +123,65 @@ func TestIngest_Confirmed_202(t *testing.T) {
 	if pub.calls != 1 {
 		t.Fatalf("want 1 publish call, got %d", pub.calls)
 	}
-	if string(pub.lastBody) != incoplastBody {
-		t.Fatalf("body must be republished verbatim")
+	// Default flow stamps source_type "" (F1) and preserves the payload.
+	if got := sourceTypeOf(t, pub.lastBody); got != "" {
+		t.Fatalf("default publish must carry source_type \"\", got %q", got)
+	}
+	if !strings.Contains(string(pub.lastBody), "incoplast-nr") {
+		t.Fatalf("published body must preserve original fields, got %s", pub.lastBody)
+	}
+}
+
+func TestIngest_Fanout_ThreeFlows(t *testing.T) {
+	pub := &fakePublisher{healthy: true}
+	h := New(Deps{
+		APIKey:            testKey,
+		MaxBodyBytes:      1 << 20,
+		ScopeGroup:        "INCOPLAST",
+		FanoutSourceTypes: []string{"", "go", "refactored"},
+		Publisher:         pub,
+		Metrics:           metrics.New(),
+		Logger:            discardLogger(),
+	})
+	rec := do(t, h, testKey, incoplastBody)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d", rec.Code)
+	}
+	if pub.calls != 3 {
+		t.Fatalf("fan-out must publish once per flow (3), got %d", pub.calls)
+	}
+	got := map[string]bool{}
+	for _, b := range pub.bodies {
+		got[sourceTypeOf(t, b)] = true
+		if !strings.Contains(string(b), "incoplast-nr") {
+			t.Fatalf("each fan-out copy must preserve the payload, got %s", b)
+		}
+	}
+	for _, want := range []string{"", "go", "refactored"} {
+		if !got[want] {
+			t.Fatalf("missing fan-out copy for source_type %q (saw %v)", want, got)
+		}
+	}
+}
+
+func TestIngest_Fanout_PublishFailsMidway_503(t *testing.T) {
+	// A broker failure on any copy → 503 so the tee retries the whole message.
+	pub := &fakePublisher{healthy: true, err: context.DeadlineExceeded}
+	h := New(Deps{
+		APIKey:            testKey,
+		MaxBodyBytes:      1 << 20,
+		ScopeGroup:        "INCOPLAST",
+		FanoutSourceTypes: []string{"", "go", "refactored"},
+		Publisher:         pub,
+		Metrics:           metrics.New(),
+		Logger:            discardLogger(),
+	})
+	rec := do(t, h, testKey, incoplastBody)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 when a fan-out copy fails, got %d", rec.Code)
+	}
+	if pub.calls != 1 {
+		t.Fatalf("must stop at the first failed copy, got %d calls", pub.calls)
 	}
 }
 
