@@ -22,6 +22,7 @@ require (
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
+	github.com/robinson/gos7 v0.0.0-20260622162611-2d6806f80c8b
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.53.0
 )

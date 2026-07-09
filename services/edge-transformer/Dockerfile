@@ -23,6 +23,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOMAXPROCS=1 go build \
     -p=1 -trimpath -ldflags "-s -w" \
     -o /out/edge-transformer ./cmd/edge-transformer
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/plc-sim ./cmd/plc-sim
+# s7-reader: reads a real Siemens S7 PLC and republishes as SparkPlug B — the
+# real-client counterpart to plc-sim (S1/#32). CGo-free (gos7 is pure Go), so
+# the static build is preserved.
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/s7-reader ./cmd/s7-reader
 
 # Intermediate stage: create the outbox directory with nonroot ownership.
 # Docker's named-volume mount copies file+dir OWNERSHIP from the container
@@ -37,6 +41,7 @@ RUN mkdir -p /out/var/lib/edge-transformer && chown -R 65532:65532 /out/var/lib
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/edge-transformer /usr/local/bin/edge-transformer
 COPY --from=builder /out/plc-sim /usr/local/bin/plc-sim
+COPY --from=builder /out/s7-reader /usr/local/bin/s7-reader
 COPY --from=outbox-dir /out/var/lib /var/lib
 USER nonroot:nonroot
 
