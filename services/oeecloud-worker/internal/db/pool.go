@@ -16,8 +16,8 @@ import (
 // New returns a connected pgx pool sized to comfortably outnumber
 // prefetch (so handlers never block on pool acquire). Caller closes via
 // pool.Close() at shutdown.
-func New(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*pgxpool.Pool, error) {
-	return newWithDBName(ctx, creds, creds.Database, "oeecloud-worker", logger)
+func New(ctx context.Context, creds *secrets.DBCreds, maxConns int, logger *slog.Logger) (*pgxpool.Pool, error) {
+	return newWithDBName(ctx, creds, creds.Database, "oeecloud-worker", maxConns, logger)
 }
 
 // NewForDatabase returns a pool against the same host/user/password as
@@ -25,21 +25,26 @@ func New(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*pgx
 // shadow DB (packiot_shadow) sitting alongside the main packiot DB.
 // appName is set on the connection so pg_stat_activity shows which
 // consumer opened it (helpful during the refactor rollout).
-func NewForDatabase(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, logger *slog.Logger) (*pgxpool.Pool, error) {
-	return newWithDBName(ctx, creds, dbName, appName, logger)
+func NewForDatabase(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, maxConns int, logger *slog.Logger) (*pgxpool.Pool, error) {
+	return newWithDBName(ctx, creds, dbName, appName, maxConns, logger)
 }
 
-func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, logger *slog.Logger) (*pgxpool.Pool, error) {
+func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, maxConns int, logger *slog.Logger) (*pgxpool.Pool, error) {
 	pc, err := pgxpool.ParseConfig(creds.URLForDatabase(appName, dbName))
 	if err != nil {
 		return nil, fmt.Errorf("parse pg url: %w", err)
 	}
-	// Pool size: handleDelivery runs sequentially in a single goroutine
-	// (the AMQP consume loop is one channel-reader), so at most ONE query
-	// is in flight at any moment. 5 keeps a warm pool with headroom for
-	// the resolver's occasional second query without competing with the
-	// active write. Larger pools waste pgbouncer client slots.
-	pc.MaxConns = 5
+	// Pool size: the AMQP consumer runs one write at a time, BUT the periodic
+	// rollup/refresh jobs (LoopRefresh, bake, grains, uns) share this pool and
+	// run concurrently. A heavy shadow rollup can hold a connection 40s+ (plus
+	// an advisory-lock waiter), so an under-sized pool starves the ingest write
+	// → it times out and fails-open → F3 trickles. Sized via config now; the
+	// shadow pool (direct to the DB EC2) gets more headroom than the main pool
+	// (multiplexed through pgbouncer). Floor at 2 so we never wedge.
+	if maxConns < 2 {
+		maxConns = 2
+	}
+	pc.MaxConns = int32(maxConns)
 	pc.MinConns = 1
 
 	// pgbouncer in the stack runs in TRANSACTION pooling mode (each tx

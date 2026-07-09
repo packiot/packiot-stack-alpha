@@ -57,6 +57,17 @@ type Config struct {
 	// swap on main pool) untouched.
 	PGShadowDBName string
 
+	// Pool sizing. The original 5 assumed the ingest consumer runs one query
+	// at a time — but the background rollup/refresh jobs (LoopRefresh, bake,
+	// grains, uns) share the SAME pools and run concurrently. On the shadow
+	// pool a heavy rollup (piot_create_equipment_runtime_1week ~40s+ holding an
+	// advisory lock) plus its lock-waiter can consume all 5 connections,
+	// starving the equipment_values shadow writes → they time out and fail-open
+	// → F3 trickles (2026-07-09). The shadow pool connects DIRECT to the DB EC2
+	// (not pgbouncer), so give it headroom; the main pool goes via pgbouncer.
+	PGMaxConns       int // main pool (via pgbouncer)
+	PGShadowMaxConns int // shadow pool (direct) — needs headroom for rollups + writes
+
 	// ShiftResolverEnabled — ADR-0014 Phase 2. When true, the Go port of
 	// piot_set_shift_on_equipment_values() fills id_shift/id_shift_hour/
 	// ts_value_production on SHADOW-path equipment_values writes
@@ -155,6 +166,8 @@ func Load() (*Config, error) {
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
 		PGShadowDBName:                   getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
+		PGShadowMaxConns:                 getenvInt("POSTGRES_SHADOW_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		Speed33ReportEnabled:             getenv("SPEED33_REPORT_ENABLED", "false") == "true",
 		Speed33IntervalMinutes:           getenvInt("SPEED33_INTERVAL_MINUTES", 10),
