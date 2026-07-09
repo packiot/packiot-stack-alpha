@@ -891,7 +891,10 @@ services:
       LOG_LEVEL: info
       # CO-5: RabbitMQ username/password via Secrets Manager, NOT env.
       AWS_REGION: us-east-1
-      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-oeecloud-creds
+      # Publisher creds — the edge-transformer user has publish perms on
+      # `oee` (oeecloud-worker's user is a consumer, no publish). A dedicated
+      # publish-only ingest-shim RabbitMQ user is the production hardening.
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-edge-transformer-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       # Publish target — the existing exchange + routing key oeecloud-worker
