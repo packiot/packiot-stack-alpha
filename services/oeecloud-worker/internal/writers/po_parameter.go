@@ -54,7 +54,7 @@ func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string, 
 		w.skippedOther.Add(1)
 		return nil, nil
 	}
-	id := *m.ID
+	id := int(*m.ID)
 
 	switch {
 	case id == 30701:

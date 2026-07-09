@@ -57,13 +57,13 @@ func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	if err := h.execute(ctx, pool, m, schema); err != nil {
 		h.dropped.Add(1)
 		h.logger.Error("po-control command dropped (no retry — nodered catch semantics)",
-			slog.Int("param", derefID(m.ID)), slog.String("err", err.Error()))
+			slog.Int("param", derefID((*int)(m.ID))), slog.String("err", err.Error()))
 	}
 	return nil
 }
 
 func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
-	paramID := derefID(m.ID)
+	paramID := derefID((*int)(m.ID))
 
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {

@@ -52,7 +52,7 @@ type userLogPayload struct {
 }
 
 func (h *Handler) executeSetupOrUserlog(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
-	paramID := derefID(m.ID)
+	paramID := derefID((*int)(m.ID))
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
 		return err

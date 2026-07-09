@@ -2,16 +2,44 @@ package sparkplug
 
 import "testing"
 
+// TestParseTolerantNumbers — Incoplast's PackML2SparkPlug node string-encodes
+// numeric fields (id, counter, curspeed). The whole payload must still parse;
+// a naive *int/*float64 field would fail the unmarshal and drop every metric.
+func TestParseTolerantNumbers(t *testing.T) {
+	// id as a quoted string, counter/curspeed as quoted strings.
+	body := []byte(`{"timestamp":1782161858551,"gateway":"incoplast-nr","metrics":[` +
+		`{"name":"INCOPLAST/SL/IMP/M1/M1/Status/Parameter","id":"30700","counter":"120","curspeed":"88.5"}]}`)
+	p, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse must tolerate string-encoded numbers, got: %v", err)
+	}
+	if len(p.Metrics) != 1 {
+		t.Fatalf("want 1 metric, got %d", len(p.Metrics))
+	}
+	m := p.Metrics[0]
+	if m.ID == nil || int(*m.ID) != 30700 {
+		t.Fatalf("id: want 30700, got %v", m.ID)
+	}
+	if m.Counter == nil || float64(*m.Counter) != 120 {
+		t.Fatalf("counter: want 120, got %v", m.Counter)
+	}
+	// A plain JSON number must still work (CPACK path).
+	p2, err := Parse([]byte(`{"metrics":[{"name":"x","id":30800}]}`))
+	if err != nil || p2.Metrics[0].ID == nil || int(*p2.Metrics[0].ID) != 30800 {
+		t.Fatalf("numeric id must still parse, got err=%v", err)
+	}
+}
+
 // Sample topics taken from live CPACK staging traffic on 2026-06-22/23.
 // New test cases should reflect real production-shape topics — making one
 // up risks codifying a misreading of the Sparkplug grammar.
 
 func TestMetricClassify(t *testing.T) {
-	intp := func(n int) *int { return &n }
+	intp := func(n int) *jsonInt { v := jsonInt(n); return &v }
 	cases := []struct {
 		name  string
 		topic string
-		id    *int
+		id    *jsonInt
 		want  MetricKind
 	}{
 		// Line-level status metrics (type at N-1)
