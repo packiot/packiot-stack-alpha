@@ -15,6 +15,7 @@ package tracing
 import (
 	"context"
 	"os"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -58,6 +59,7 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(samplerFromEnv()),
 	)
 	otel.SetTracerProvider(tp)
 
@@ -66,4 +68,25 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 		defer cancel()
 		return tp.Shutdown(ctx)
 	}, nil
+}
+
+// samplerFromEnv returns the HEAD sampler, honoring OTEL_TRACES_SAMPLER_ARG (a
+// float ratio in [0,1], the OTel-standard env name). Unset/invalid → sample
+// everything (the prior behavior, so this is a no-op for services that don't
+// set it).
+//
+// ParentBased is the key: only the ROOT span's sampling decision uses the
+// ratio; a span that already has a (remote) parent inherits the parent's
+// decision. So dialing edge-transformer — the high-volume MQTT root — down to
+// e.g. 0.1 drops 90% of traces AT THE SOURCE, and the whole downstream chain
+// (worker consume, DB spans) drops or is kept WITH it. You never get a
+// half-sampled trace, and low-volume roots (operator actions) can stay at 1.0.
+func samplerFromEnv() sdktrace.Sampler {
+	ratio := 1.0
+	if v := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			ratio = f
+		}
+	}
+	return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
 }

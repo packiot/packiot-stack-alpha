@@ -1174,6 +1174,13 @@ services:
       # outbox (envelope traceparent) and the AMQP publish so PLC→worker→DB is
       # one trace. The receive→publish gap shows as outbox dwell time in Tempo.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      # HEAD sampling: this is the highest-volume trace ROOT (one per MQTT
+      # message). ParentBased means this 10% decision propagates to the whole
+      # downstream chain (worker consume + DB spans drop/keep WITH it), so Tempo
+      # sees ~10% of complete data-plane traces, not 100%. Other services leave
+      # this unset (1.0) — their roots (operator actions, ingest POSTs) are
+      # low-volume and worth keeping whole.
+      OTEL_TRACES_SAMPLER_ARG: "0.1"
       AWS_REGION: us-east-1
       RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-edge-transformer-creds
       RABBITMQ_HOST: rabbitmq
