@@ -99,6 +99,19 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	if n == 0 {
 		return 0, tx.Commit(ctx) // backlog drained for this dest
 	}
+	// CRITICAL for the backfill (not the live path): the passes widen the cagg
+	// join window to 10 days, which removes the live path's chunk-pruning. With
+	// hour_elig an un-analyzed temp table, the planner has no row estimate and
+	// scans the full 10-day range instead of driving from this ~200-row batch —
+	// the values pass then blows the 5-min tick budget. Index + ANALYZE so the
+	// planner drives from hour_elig via nested-loop index-seeks into the big
+	// tables; the widened window collapses to a cheap redundant filter.
+	if _, err := tx.Exec(ctx, `CREATE INDEX ON hour_elig (id_equipment, ts_value)`); err != nil {
+		return 0, fmt.Errorf("hour-backfill index: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `ANALYZE hour_elig`); err != nil {
+		return 0, fmt.Errorf("hour-backfill analyze: %w", err)
+	}
 	steps := []struct{ name, sql string }{
 		{"values", widenHourWindows(fmt.Sprintf(hourValuesSQL, d.EvSchema))},
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
