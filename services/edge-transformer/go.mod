@@ -22,6 +22,8 @@ require (
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
+	github.com/goburrow/modbus v0.1.0
+	github.com/gopcua/opcua v0.9.0
 	github.com/robinson/gos7 v0.0.0-20260622162611-2d6806f80c8b
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.53.0
@@ -44,6 +46,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/goburrow/serial v0.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/kr/text v0.2.0 // indirect

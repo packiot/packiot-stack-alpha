@@ -93,6 +93,18 @@ type Config struct {
 	// (design: 0019-G4-s7-read-adapter.md). Optional; present only for S7
 	// tenants (e.g. Incoplast). Each entry references a plc.endpoints[].name.
 	S7TagMap []S7EndpointTags `yaml:"s7_tag_map,omitempty"`
+
+	// ModbusTagMap (v1.1) maps Modbus TCP registers/coils to PackML metric
+	// names — the tag→PackML mapping the modbus-reader compiles into its poll
+	// loop. The Modbus sibling of S7TagMap. Optional; present only for tenants
+	// with Modbus lines (e.g. CPACK). Each entry references a plc.endpoints[].name.
+	ModbusTagMap []ModbusEndpointTags `yaml:"modbus_tag_map,omitempty"`
+
+	// OPCUATagMap (v1.1) maps OPC-UA NodeIDs to PackML metric names — the
+	// tag→PackML mapping the opcua-reader compiles into its poll loop. The
+	// OPC-UA sibling of S7TagMap. Optional; present only for tenants with
+	// OPC-UA lines (e.g. CPACK). Each entry references a plc.endpoints[].name.
+	OPCUATagMap []OPCUAEndpointTags `yaml:"opcua_tag_map,omitempty"`
 }
 
 // S7EndpointTags binds one PLC endpoint's tag set to a PackML equipment.
@@ -115,6 +127,47 @@ type S7Tag struct {
 	Long   bool    `yaml:"long,omitempty"`  // emit as SparkPlug Long (state metrics) vs Double
 }
 
+// ModbusEndpointTags binds one PLC endpoint's Modbus tag set to a PackML
+// equipment — the Modbus analogue of S7EndpointTags.
+type ModbusEndpointTags struct {
+	Endpoint    string      `yaml:"endpoint"`     // references plc.endpoints[].name
+	PackMLTopic string      `yaml:"packml_topic"` // tenant-prefixed base; each Tag.Metric is appended
+	IDEquipment int         `yaml:"id_equipment"`
+	Tags        []ModbusTag `yaml:"tags"`
+}
+
+// ModbusTag is one Modbus address → PackML metric-suffix binding. The full
+// SparkPlug metric name is PackMLTopic+Metric.
+type ModbusTag struct {
+	Metric   string  `yaml:"metric"`              // suffix appended to PackMLTopic
+	Kind     string  `yaml:"kind"`                // holding | input | coil | discrete
+	Address  int     `yaml:"address"`             // 0-based register/coil address
+	Quantity int     `yaml:"quantity,omitempty"`  // registers to span (0 = derive from type)
+	Type     string  `yaml:"type,omitempty"`      // uint16|int16|uint32|int32|float32|bool (register kinds; ignored for coil/discrete)
+	Scale    float64 `yaml:"scale,omitempty"`     // 0 = 1 (no scaling)
+	Long     bool    `yaml:"long,omitempty"`      // emit as SparkPlug Long vs Double
+	WordSwap bool    `yaml:"word_swap,omitempty"` // swap the two registers of a 32-bit value (CDAB vs ABCD)
+}
+
+// OPCUAEndpointTags binds one PLC endpoint's OPC-UA tag set to a PackML
+// equipment — the OPC-UA analogue of S7EndpointTags.
+type OPCUAEndpointTags struct {
+	Endpoint    string     `yaml:"endpoint"`     // references plc.endpoints[].name
+	PackMLTopic string     `yaml:"packml_topic"` // tenant-prefixed base; each Tag.Metric is appended
+	IDEquipment int        `yaml:"id_equipment"`
+	Tags        []OPCUATag `yaml:"tags"`
+}
+
+// OPCUATag is one OPC-UA NodeID → PackML metric-suffix binding. The full
+// SparkPlug metric name is PackMLTopic+Metric.
+type OPCUATag struct {
+	Metric string  `yaml:"metric"`          // suffix appended to PackMLTopic
+	NodeID string  `yaml:"node_id"`         // OPC-UA node address, e.g. "ns=2;s=Machine.Speed"
+	Type   string  `yaml:"type"`            // int | float | bool | string
+	Scale  float64 `yaml:"scale,omitempty"` // 0 = 1 (no scaling)
+	Long   bool    `yaml:"long,omitempty"`  // emit as SparkPlug Long vs Double
+}
+
 // EquipmentMapping is one row of the topic↔equipment table — the same
 // thing packml_register stores in the DB, lifted into git per ADR-0004.
 type EquipmentMapping struct {
@@ -129,16 +182,29 @@ type PLC struct {
 	Endpoints []PLCEndpoint `yaml:"endpoints,omitempty"`
 }
 
-// PLCEndpoint is one reachable PLC. HostRef is a secret reference, never a
-// value; Rack/Slot are S7-specific (the schema gap ADR-0019 named) and are
-// pointers so "absent" is distinguishable from "0".
+// PLCEndpoint is one reachable PLC. HostRef / EndpointURLRef are secret
+// references, never values; Rack/Slot are S7-specific (the schema gap ADR-0019
+// named) and UnitID is Modbus-specific — all pointers so "absent" is
+// distinguishable from "0".
 type PLCEndpoint struct {
 	Name    string `yaml:"name,omitempty"`
 	HostRef string `yaml:"host_ref,omitempty"`
 	Rack    *int   `yaml:"rack,omitempty"`
 	Slot    *int   `yaml:"slot,omitempty"`
+	// UnitID (Modbus) is the unit/slave id byte in the MBAP header — usually 1
+	// on a native Ethernet device, or the RTU address behind a serial gateway.
+	// Pointer so "absent" is distinguishable from "0" (a valid broadcast id).
+	UnitID *int `yaml:"unit_id,omitempty"`
+	// EndpointURLRef (OPC-UA) is a secret reference to the server URL
+	// (opc.tcp://host:port/path) — the OPC-UA analogue of host_ref. Never a
+	// value; the requireSecretRef check rejects an inline URL.
+	EndpointURLRef string `yaml:"endpoint_url_ref,omitempty"`
+	// SecurityPolicy / SecurityMode (OPC-UA) are optional; empty = "None" (the
+	// MVP default, see internal/opcua/client.go). Not secrets — plain tokens.
+	SecurityPolicy string `yaml:"security_policy,omitempty"`
+	SecurityMode   string `yaml:"security_mode,omitempty"`
 	// PollingInterval / ReconnectBackoff are Go duration strings ("1s", "30s")
-	// parsed by the s7-reader; empty = the reader's default.
+	// parsed by the readers; empty = the reader's default.
 	PollingInterval  string `yaml:"polling_interval,omitempty"`
 	ReconnectBackoff string `yaml:"reconnect_backoff,omitempty"`
 }
@@ -240,20 +306,28 @@ func (c *Config) validate() error {
 // of the forward-compatible parse-and-ignore contract.
 //
 // Rules (design doc §1a "Rules the descriptor enforces"):
-//  1. No secret VALUES anywhere: any host_ref / dsn_ref that is present
-//     must be a secret://… reference. There is deliberately NO plain-host
-//     field that could hold a value — the type system won't let you write
-//     one, and this check rejects a value smuggled through the ref field.
+//  1. No secret VALUES anywhere: any host_ref / dsn_ref / endpoint_url_ref that
+//     is present must be a secret://… reference. There is deliberately NO
+//     plain-host field that could hold a value — the type system won't let you
+//     write one, and this check rejects a value smuggled through the ref field.
 //  2. tenant_id must equal the lowercased first '/'-segment of EVERY
 //     equipment_mapping topic — the discovery contract, checked statically
 //     (guards the silent cross-tenant-drop class of bug).
 //  3. capabilities.operator.mode ∈ {cloud, edge}; commands.enabled:true
 //     requires a non-empty allowed list.
+//  4. s7_tag_map / modbus_tag_map / opcua_tag_map: each entry references a real
+//     plc endpoint, its packml_topic obeys the tenant-prefix contract (Rule 2),
+//     id_equipment > 0, tags non-empty, and every tag has a valid type token
+//     (+ kind ∈ {holding,input,coil,discrete} for modbus; non-empty node_id
+//     for opcua).
 func (c *Config) validateV11() error {
-	// Rule 1a — plc endpoint hosts are references, never values.
+	// Rule 1a — plc endpoint hosts / URLs are references, never values.
 	if c.PLC != nil {
 		for i, ep := range c.PLC.Endpoints {
 			if err := requireSecretRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
+				return err
+			}
+			if err := requireSecretRef("plc.endpoints", i, ep.Name, "endpoint_url_ref", ep.EndpointURLRef); err != nil {
 				return err
 			}
 		}
@@ -290,28 +364,20 @@ func (c *Config) validateV11() error {
 		}
 	}
 
-	// Rule 4 (ADR-0019 G4) — s7_tag_map. Each entry references a real PLC
-	// endpoint, its packml_topic obeys the tenant-prefix contract (Rule 2),
-	// and every tag has a valid S7 type + non-negative address.
+	// knownEndpoints is shared by every tag-map rule below.
 	knownEndpoints := map[string]bool{}
 	if c.PLC != nil {
 		for _, ep := range c.PLC.Endpoints {
 			knownEndpoints[ep.Name] = true
 		}
 	}
+
+	// Rule 4 (ADR-0019 G4) — s7_tag_map. Each entry references a real PLC
+	// endpoint, its packml_topic obeys the tenant-prefix contract (Rule 2),
+	// and every tag has a valid S7 type + non-negative address.
 	for i, m := range c.S7TagMap {
-		if m.Endpoint == "" || !knownEndpoints[m.Endpoint] {
-			return fmt.Errorf("s7_tag_map[%d].endpoint=%q: must reference a plc.endpoints[].name", i, m.Endpoint)
-		}
-		if seg := strings.ToLower(firstTopicSegment(m.PackMLTopic)); seg != c.TenantID {
-			return fmt.Errorf("s7_tag_map[%d].packml_topic=%q: first segment %q must equal tenant_id %q",
-				i, m.PackMLTopic, seg, c.TenantID)
-		}
-		if m.IDEquipment <= 0 {
-			return fmt.Errorf("s7_tag_map[%d].id_equipment must be > 0", i)
-		}
-		if len(m.Tags) == 0 {
-			return fmt.Errorf("s7_tag_map[%d] (%s): no tags", i, m.Endpoint)
+		if err := validateMapHeader("s7_tag_map", i, m.Endpoint, m.PackMLTopic, m.IDEquipment, len(m.Tags), knownEndpoints, c.TenantID); err != nil {
+			return err
 		}
 		for j, t := range m.Tags {
 			if strings.TrimSpace(t.Metric) == "" {
@@ -329,6 +395,79 @@ func (c *Config) validateV11() error {
 				return fmt.Errorf("s7_tag_map[%d].tags[%d] (%s): bit must be 0-7 for bool", i, j, t.Metric)
 			}
 		}
+	}
+
+	// Rule 4b — modbus_tag_map. Mirrors the S7 rules; adds the kind token
+	// (address space) and non-negative address.
+	for i, m := range c.ModbusTagMap {
+		if err := validateMapHeader("modbus_tag_map", i, m.Endpoint, m.PackMLTopic, m.IDEquipment, len(m.Tags), knownEndpoints, c.TenantID); err != nil {
+			return err
+		}
+		for j, t := range m.Tags {
+			if strings.TrimSpace(t.Metric) == "" {
+				return fmt.Errorf("modbus_tag_map[%d].tags[%d]: metric is required", i, j)
+			}
+			isBit := false
+			switch t.Kind {
+			case "holding", "input":
+			case "coil", "discrete":
+				isBit = true
+			default:
+				return fmt.Errorf("modbus_tag_map[%d].tags[%d] (%s): kind=%q must be holding|input|coil|discrete", i, j, t.Metric, t.Kind)
+			}
+			// Register kinds carry a numeric type token; bit kinds don't need one.
+			if !isBit {
+				switch t.Type {
+				case "uint16", "int16", "uint32", "int32", "float32", "bool":
+				default:
+					return fmt.Errorf("modbus_tag_map[%d].tags[%d] (%s): type=%q must be uint16|int16|uint32|int32|float32|bool", i, j, t.Metric, t.Type)
+				}
+			}
+			if t.Address < 0 || t.Quantity < 0 {
+				return fmt.Errorf("modbus_tag_map[%d].tags[%d] (%s): address/quantity must be non-negative", i, j, t.Metric)
+			}
+		}
+	}
+
+	// Rule 4c — opcua_tag_map. Mirrors the S7 rules; node_id (not an address)
+	// must be non-empty and the type is the coercion token.
+	for i, m := range c.OPCUATagMap {
+		if err := validateMapHeader("opcua_tag_map", i, m.Endpoint, m.PackMLTopic, m.IDEquipment, len(m.Tags), knownEndpoints, c.TenantID); err != nil {
+			return err
+		}
+		for j, t := range m.Tags {
+			if strings.TrimSpace(t.Metric) == "" {
+				return fmt.Errorf("opcua_tag_map[%d].tags[%d]: metric is required", i, j)
+			}
+			if strings.TrimSpace(t.NodeID) == "" {
+				return fmt.Errorf("opcua_tag_map[%d].tags[%d] (%s): node_id is required", i, j, t.Metric)
+			}
+			switch t.Type {
+			case "int", "float", "bool", "string":
+			default:
+				return fmt.Errorf("opcua_tag_map[%d].tags[%d] (%s): type=%q must be int|float|bool|string", i, j, t.Metric, t.Type)
+			}
+		}
+	}
+	return nil
+}
+
+// validateMapHeader checks the shared per-entry rules of a tag map (endpoint
+// reference, tenant-prefix contract, positive equipment id, non-empty tags) —
+// the identical head of every s7/modbus/opcua tag-map rule.
+func validateMapHeader(section string, i int, endpoint, packmlTopic string, idEquipment, nTags int, knownEndpoints map[string]bool, tenantID string) error {
+	if endpoint == "" || !knownEndpoints[endpoint] {
+		return fmt.Errorf("%s[%d].endpoint=%q: must reference a plc.endpoints[].name", section, i, endpoint)
+	}
+	if seg := strings.ToLower(firstTopicSegment(packmlTopic)); seg != tenantID {
+		return fmt.Errorf("%s[%d].packml_topic=%q: first segment %q must equal tenant_id %q",
+			section, i, packmlTopic, seg, tenantID)
+	}
+	if idEquipment <= 0 {
+		return fmt.Errorf("%s[%d].id_equipment must be > 0", section, i)
+	}
+	if nTags == 0 {
+		return fmt.Errorf("%s[%d] (%s): no tags", section, i, endpoint)
 	}
 	return nil
 }
