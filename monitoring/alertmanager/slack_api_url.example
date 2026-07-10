@@ -1,0 +1,4 @@
+# The real file (monitoring/alertmanager/slack_api_url) holds a Slack incoming-
+# webhook URL and is a SECRET — gitignored, provided at deploy. Shape:
+#   https://hooks.slack.com/services/<WORKSPACE_ID>/<CHANNEL_ID>/<TOKEN>
+# Create one at https://api.slack.com/messaging/webhooks

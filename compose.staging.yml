@@ -32,6 +32,7 @@ volumes:
   loki-data:
   prom-data:
   tempo-data:   # Tempo trace blocks + WAL (48h retention)
+  alertmanager-data:   # Alertmanager silences + notification state
   rabbitmq-data:
   authentik-media:
   authentik-certs:
@@ -626,6 +627,69 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
     mem_limit: 512m
+
+  # alertmanager: routes the Prometheus alert rules to Slack (they fired into the
+  # void before). Slack webhook URL is a secret read from a mounted file
+  # (monitoring/alertmanager/slack_api_url — gitignored, provided at deploy).
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./monitoring/alertmanager/slack_api_url:/etc/alertmanager/slack_api_url:ro
+      - alertmanager-data:/alertmanager
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.6
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 128m
+
+  # blackbox-exporter: synthetic uptime probes. Prometheus asks it to GET the
+  # public endpoints; it reports probe_success/duration/status — does the site
+  # answer from OUTSIDE, the complement to white-box service metrics.
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.11
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 64m
+
+  # cadvisor: per-CONTAINER resource metrics (CPU/mem/net/fs). node-exporter is
+  # host-only; cadvisor tells you WHICH container is the memory hog.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.18
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 256m
 
   # ── Simulator ──────────────────────────────────────────────────────────────────
   # PLC + Operator simulator for staging. Reads packml_register from DB, posts

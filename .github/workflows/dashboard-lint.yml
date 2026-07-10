@@ -1,0 +1,29 @@
+name: dashboard-lint
+
+# Guards the Grafana v2 dashboards against the bug classes fixed in the v2
+# rebuild: a panel/target with no datasource (silently falls back to the default
+# → dead PromQL), an unknown datasource uid, a duplicate board uid, or a query
+# on a phantom metric. See scripts/lint-dashboards.py.
+
+on:
+  pull_request:
+    paths:
+      - 'grafana/dashboards-v2/**'
+      - 'scripts/lint-dashboards.py'
+      - '.github/workflows/dashboard-lint.yml'
+  push:
+    branches: [staging, production]
+    paths:
+      - 'grafana/dashboards-v2/**'
+
+jobs:
+  lint:
+    name: lint v2 dashboards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Lint dashboards
+        run: python3 scripts/lint-dashboards.py
