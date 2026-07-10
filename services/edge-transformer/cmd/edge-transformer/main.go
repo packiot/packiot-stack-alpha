@@ -40,6 +40,10 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqp"
@@ -55,6 +59,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/tracing"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/transforms/calc_production_counters"
 	"path/filepath"
 	"strings"
@@ -97,6 +102,17 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
+	// ENDPOINT is set (see internal/tracing). The MQTT-receive span is the
+	// data-plane trace root; its context is persisted through the outbox and
+	// injected onto the AMQP publish so the whole PLC→worker→DB path is one
+	// trace. A failure here never blocks boot.
+	shutdownTracing, terr := tracing.Init(ctx, "edge-transformer")
+	if terr != nil {
+		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	// Load client.yaml. In the factory mode, missing/invalid client.yaml
 	// is a hard boot failure — there's no tenant to route under, no
@@ -954,6 +970,12 @@ type outboxEnvelope struct {
 	RoutingKey string `json:"routing_key"`
 	MessageID  string `json:"message_id"`
 	Body       []byte `json:"body"` // pre-marshaled envelope JSON
+	// Traceparent carries the W3C trace context of the MQTT-receive span
+	// ACROSS the durable outbox boundary — an in-process span can't survive
+	// the persist-then-drain gap, so we serialize it here and reconstruct the
+	// parent at drain time. omitempty: old rows (and the untraced default)
+	// simply start a fresh producer span. See runOutboxDrain.
+	Traceparent string `json:"traceparent,omitempty"`
 }
 
 // runOutboxDrain is a long-running goroutine that peeks outbox rows,
@@ -1026,9 +1048,24 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 				_ = store.Delete(ctx, m.ID)
 				continue
 			}
-			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			// Reconstruct the receive-side trace context persisted in the
+			// envelope, then open a producer span whose parent is that receive
+			// span. The wall-clock gap between the two is the outbox dwell
+			// time — visible in Tempo as the space between the spans.
+			drainCtx := ctx
+			if env.Traceparent != "" {
+				drainCtx = otel.GetTextMapPropagator().Extract(ctx,
+					propagation.MapCarrier{"traceparent": env.Traceparent})
+			}
+			drainCtx, span := otel.Tracer("edge-transformer").Start(drainCtx, "publish "+env.RoutingKey,
+				trace.WithSpanKind(trace.SpanKindProducer))
+			pubCtx, cancel := context.WithTimeout(drainCtx, 10*time.Second)
 			err := publisher.PublishBytes(pubCtx, env.RoutingKey, env.MessageID, env.Body)
 			cancel()
+			if err != nil {
+				span.RecordError(err)
+			}
+			span.End()
 			if err != nil {
 				bo := backoff(m.Attempts + 1)
 				logger.Warn("outbox: publish failed — will retry",
@@ -1050,6 +1087,20 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 
 func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction bool, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
+		// Root of the data-plane trace. The MQTT hop upstream can't carry a
+		// parent (paho v3.1.1 has no user-properties), so receive is the trace
+		// origin. The span context is serialized into each outbox envelope
+		// below so the drain-side publish continues this trace. No-op tracer
+		// unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+		ctx, span := otel.Tracer("edge-transformer").Start(ctx, "mqtt.receive "+topic.MessageType,
+			trace.WithSpanKind(trace.SpanKindConsumer),
+			trace.WithAttributes(
+				attribute.String("messaging.system", "mqtt"),
+				attribute.String("sparkplug.group_id", topic.GroupID),
+				attribute.String("sparkplug.message_type", topic.MessageType),
+			))
+		defer span.End()
+
 		payload, err := sparkplug.Decode(body)
 		if err != nil {
 			return fmt.Errorf("decode: %w", err)
@@ -1174,10 +1225,17 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 					continue
 				}
 				messageID := fmt.Sprintf("outbox-%s-%d", st, time.Now().UnixNano())
+				// Serialize the receive span's trace context into the envelope
+				// so the drain goroutine can reconstruct the parent after the
+				// durable persist/drain gap. MapCarrier gives us the bare
+				// traceparent string to store; empty when tracing is off.
+				tpCarrier := propagation.MapCarrier{}
+				otel.GetTextMapPropagator().Inject(ctx, tpCarrier)
 				oxEnv := outboxEnvelope{
-					RoutingKey: routingKey,
-					MessageID:  messageID,
-					Body:       body,
+					RoutingKey:  routingKey,
+					MessageID:   messageID,
+					Body:        body,
+					Traceparent: tpCarrier["traceparent"],
 				}
 				payload, err := json.Marshal(oxEnv)
 				if err != nil {

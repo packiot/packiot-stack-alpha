@@ -1163,6 +1163,11 @@ services:
     environment:
       LOG_LEVEL: info
       EDGE_TRANSFORMER_MODE: factory
+      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
+      # MQTT-receive span is the data-plane trace root; its context rides the
+      # outbox (envelope traceparent) and the AMQP publish so PLC→worker→DB is
+      # one trace. The receive→publish gap shows as outbox dwell time in Tempo.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       AWS_REGION: us-east-1
       RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-edge-transformer-creds
       RABBITMQ_HOST: rabbitmq
