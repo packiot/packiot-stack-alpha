@@ -268,3 +268,57 @@ environment: production
 		t.Errorf("TenantID = %q", cfg.TenantID)
 	}
 }
+
+// s7Valid is a minimal S7 tenant descriptor: one endpoint + a tag map.
+const s7Valid = `
+schema_version: "1.1"
+tenant_id: incoplast
+customer: Incoplast
+environment: staging
+plc:
+  protocol: s7
+  endpoints:
+    - name: NOVOFLEX_15
+      host_ref: secret://incoplast/plc/nf15
+      rack: 0
+      slot: 2
+s7_tag_map:
+  - endpoint: NOVOFLEX_15
+    packml_topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15/NOVOFLEX_15
+    id_equipment: 990015
+    tags:
+      - {metric: /Status/MachSpeed, db: 100, offset: 8, type: real}
+      - {metric: /Status/StateCurrent, db: 100, offset: 12, type: int, long: true}
+`
+
+func TestLoadS7TagMap_Valid(t *testing.T) {
+	cfg, err := Load(writeConfig(t, s7Valid))
+	if err != nil {
+		t.Fatalf("valid s7 config must Load: %v", err)
+	}
+	if len(cfg.S7TagMap) != 1 || len(cfg.S7TagMap[0].Tags) != 2 {
+		t.Fatalf("s7_tag_map not parsed: %+v", cfg.S7TagMap)
+	}
+	if cfg.S7TagMap[0].Endpoint != "NOVOFLEX_15" || cfg.S7TagMap[0].IDEquipment != 990015 {
+		t.Fatalf("s7 map fields wrong: %+v", cfg.S7TagMap[0])
+	}
+}
+
+func TestLoadS7TagMap_Invalid(t *testing.T) {
+	cases := []struct{ name, body, wantErr string }{
+		{"unknown endpoint", strings_Replace(s7Valid, "endpoint: NOVOFLEX_15", "endpoint: GHOST"), "must reference a plc.endpoints"},
+		{"wrong tenant prefix", strings_Replace(s7Valid, "packml_topic: INCOPLAST", "packml_topic: WRONGTENANT"), "must equal tenant_id"},
+		{"bad type", strings_Replace(s7Valid, "type: real", "type: word"), "must be int|dint|real|bool"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, tc.body))
+			if err == nil || !contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func strings_Replace(s, old, new string) string { return strings.ReplaceAll(s, old, new) }
+func contains(s, sub string) bool               { return strings.Contains(s, sub) }

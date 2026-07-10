@@ -87,6 +87,32 @@ type Config struct {
 	// (operator mode, command channel, integrations, custom flows).
 	// Optional; nil for skeleton configs.
 	Capabilities *Capabilities `yaml:"capabilities,omitempty"`
+
+	// S7TagMap (v1.1, ADR-0019 G4) maps S7 PLC addresses to PackML metric
+	// names — the tag→PackML mapping the s7-reader compiles into its poll loop
+	// (design: 0019-G4-s7-read-adapter.md). Optional; present only for S7
+	// tenants (e.g. Incoplast). Each entry references a plc.endpoints[].name.
+	S7TagMap []S7EndpointTags `yaml:"s7_tag_map,omitempty"`
+}
+
+// S7EndpointTags binds one PLC endpoint's tag set to a PackML equipment.
+type S7EndpointTags struct {
+	Endpoint    string  `yaml:"endpoint"`     // references plc.endpoints[].name
+	PackMLTopic string  `yaml:"packml_topic"` // tenant-prefixed base; each Tag.Metric is appended
+	IDEquipment int     `yaml:"id_equipment"`
+	Tags        []S7Tag `yaml:"tags"`
+}
+
+// S7Tag is one S7 address → PackML metric-suffix binding. The full SparkPlug
+// metric name is PackMLTopic+Metric.
+type S7Tag struct {
+	Metric string  `yaml:"metric"`          // suffix appended to PackMLTopic, e.g. "/Status/MachSpeed"
+	DB     int     `yaml:"db"`              // S7 data block number
+	Offset int     `yaml:"offset"`          // byte offset within the DB
+	Bit    int     `yaml:"bit,omitempty"`   // bit index (0-7) when type=bool
+	Type   string  `yaml:"type"`            // int | dint | real | bool
+	Scale  float64 `yaml:"scale,omitempty"` // 0 = 1 (no scaling)
+	Long   bool    `yaml:"long,omitempty"`  // emit as SparkPlug Long (state metrics) vs Double
 }
 
 // EquipmentMapping is one row of the topic↔equipment table — the same
@@ -111,6 +137,10 @@ type PLCEndpoint struct {
 	HostRef string `yaml:"host_ref,omitempty"`
 	Rack    *int   `yaml:"rack,omitempty"`
 	Slot    *int   `yaml:"slot,omitempty"`
+	// PollingInterval / ReconnectBackoff are Go duration strings ("1s", "30s")
+	// parsed by the s7-reader; empty = the reader's default.
+	PollingInterval  string `yaml:"polling_interval,omitempty"`
+	ReconnectBackoff string `yaml:"reconnect_backoff,omitempty"`
 }
 
 // EquipmentMapEntry (v1.1 §1a) maps a Sparkplug topic to an equipment id
@@ -256,6 +286,47 @@ func (c *Config) validateV11() error {
 		for i, in := range c.Capabilities.Integrations {
 			if err := requireSecretRef("capabilities.integrations", i, in.Type, "dsn_ref", in.DSNRef); err != nil {
 				return err
+			}
+		}
+	}
+
+	// Rule 4 (ADR-0019 G4) — s7_tag_map. Each entry references a real PLC
+	// endpoint, its packml_topic obeys the tenant-prefix contract (Rule 2),
+	// and every tag has a valid S7 type + non-negative address.
+	knownEndpoints := map[string]bool{}
+	if c.PLC != nil {
+		for _, ep := range c.PLC.Endpoints {
+			knownEndpoints[ep.Name] = true
+		}
+	}
+	for i, m := range c.S7TagMap {
+		if m.Endpoint == "" || !knownEndpoints[m.Endpoint] {
+			return fmt.Errorf("s7_tag_map[%d].endpoint=%q: must reference a plc.endpoints[].name", i, m.Endpoint)
+		}
+		if seg := strings.ToLower(firstTopicSegment(m.PackMLTopic)); seg != c.TenantID {
+			return fmt.Errorf("s7_tag_map[%d].packml_topic=%q: first segment %q must equal tenant_id %q",
+				i, m.PackMLTopic, seg, c.TenantID)
+		}
+		if m.IDEquipment <= 0 {
+			return fmt.Errorf("s7_tag_map[%d].id_equipment must be > 0", i)
+		}
+		if len(m.Tags) == 0 {
+			return fmt.Errorf("s7_tag_map[%d] (%s): no tags", i, m.Endpoint)
+		}
+		for j, t := range m.Tags {
+			if strings.TrimSpace(t.Metric) == "" {
+				return fmt.Errorf("s7_tag_map[%d].tags[%d]: metric is required", i, j)
+			}
+			switch t.Type {
+			case "int", "dint", "real", "bool":
+			default:
+				return fmt.Errorf("s7_tag_map[%d].tags[%d] (%s): type=%q must be int|dint|real|bool", i, j, t.Metric, t.Type)
+			}
+			if t.DB < 0 || t.Offset < 0 {
+				return fmt.Errorf("s7_tag_map[%d].tags[%d] (%s): db/offset must be non-negative", i, j, t.Metric)
+			}
+			if t.Type == "bool" && (t.Bit < 0 || t.Bit > 7) {
+				return fmt.Errorf("s7_tag_map[%d].tags[%d] (%s): bit must be 0-7 for bool", i, j, t.Metric)
 			}
 		}
 	}

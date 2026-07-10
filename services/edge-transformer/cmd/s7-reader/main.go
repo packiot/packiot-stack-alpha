@@ -24,6 +24,7 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/s7"
 )
 
@@ -36,6 +37,8 @@ func main() {
 	s7Slot := flag.Int("s7-slot", getenvInt("S7_SLOT", 2), "S7 slot")
 	tickSec := flag.Int("tick", getenvInt("S7_TICK_SEC", 5), "seconds between NDATA reads")
 	db := flag.Int("db", getenvInt("S7_DB", 100), "data block number for the demo tag set")
+	clientCfg := flag.String("client-config", getenv("CLIENT_CONFIG", ""), "path to client.yaml (s7_tag_map); empty = demo tags")
+	endpoint := flag.String("endpoint", getenv("S7_ENDPOINT", ""), "plc.endpoints[].name to drive (with --client-config)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "s7-reader")
@@ -44,17 +47,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	// PR 1 demo tag set — one Incoplast machine (NOVOFLEX_15), read from `db`.
-	// Metric names are the full PackML topic (tenant-prefixed), the duplicated
-	// unit segment matching the real Incoplast topic shape. PR 2 sources these
-	// from client.yaml s7_tag_map instead of hardcoding.
-	const prefix = "INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15/NOVOFLEX_15"
-	poller, err := s7.NewPoller([]s7.Tag{
-		{Metric: prefix + "/Admin/ProdProcessedCount/1/Unit", Alias: 1, DB: *db, Offset: 0, Type: s7.TypeDInt},
-		{Metric: prefix + "/Admin/ProdConsumedCount/1/Unit", Alias: 2, DB: *db, Offset: 4, Type: s7.TypeDInt},
-		{Metric: prefix + "/Status/MachSpeed", Alias: 3, DB: *db, Offset: 8, Type: s7.TypeReal},
-		{Metric: prefix + "/Status/StateCurrent", Alias: 4, DB: *db, Offset: 12, Type: s7.TypeInt, Long: true},
-	})
+	// Tag set: from client.yaml s7_tag_map (PR2) when --client-config is set,
+	// else the PR1 hardcoded demo (one Incoplast machine). Config-driven is the
+	// production-shaped path; the endpoint's rack/slot (when present) default
+	// the S7 connection so only the secret host_ref (→ S7_HOST env) is external.
+	var tags []s7.Tag
+	if *clientCfg != "" {
+		cfg, err := clientconfig.Load(*clientCfg)
+		if err != nil {
+			logger.Error("load client config", "path", *clientCfg, "err", err)
+			os.Exit(1)
+		}
+		if ep, ok := s7.FindEndpoint(cfg, *endpoint); ok {
+			if ep.Rack != nil {
+				*s7Rack = *ep.Rack
+			}
+			if ep.Slot != nil {
+				*s7Slot = *ep.Slot
+			}
+		}
+		tags, err = s7.TagsForEndpoint(cfg, *endpoint)
+		if err != nil {
+			logger.Error("compile s7 tag map", "endpoint", *endpoint, "err", err)
+			os.Exit(1)
+		}
+		logger.Info("loaded s7 tag map from config", "path", *clientCfg, "endpoint", *endpoint, "tags", len(tags))
+	} else {
+		const prefix = "INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15/NOVOFLEX_15"
+		tags = []s7.Tag{
+			{Metric: prefix + "/Admin/ProdProcessedCount/1/Unit", Alias: 1, DB: *db, Offset: 0, Type: s7.TypeDInt},
+			{Metric: prefix + "/Admin/ProdConsumedCount/1/Unit", Alias: 2, DB: *db, Offset: 4, Type: s7.TypeDInt},
+			{Metric: prefix + "/Status/MachSpeed", Alias: 3, DB: *db, Offset: 8, Type: s7.TypeReal},
+			{Metric: prefix + "/Status/StateCurrent", Alias: 4, DB: *db, Offset: 12, Type: s7.TypeInt, Long: true},
+		}
+	}
+	poller, err := s7.NewPoller(tags)
 	if err != nil {
 		logger.Error("build poller", "err", err)
 		os.Exit(1)
