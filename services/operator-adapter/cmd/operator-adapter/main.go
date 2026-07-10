@@ -29,11 +29,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/adapter"
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/db"
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/httpmetrics"
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/tracing"
 )
 
 func main() {
@@ -42,6 +44,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		os.Exit(runHealthcheck())
 	}
+
+	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
+	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.
+	shutdownTracing, terr := tracing.Init(context.Background(), "operator-adapter")
+	if terr != nil {
+		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	operatorKey := os.Getenv("OPERATOR_API_KEY")
 	if operatorKey == "" {
@@ -120,8 +130,11 @@ func main() {
 	}
 
 	httpSrv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           httpmetrics.New(reg)(mux), // RED metrics on every route
+		Addr: ":" + port,
+		// otelhttp: a server span per request (the trace root); httpmetrics
+		// inside it records the RED histogram. Ordering — trace outermost so the
+		// span wraps the whole handler including the metric observation.
+		Handler:           otelhttp.NewHandler(httpmetrics.New(reg)(mux), "operator-adapter"),
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}

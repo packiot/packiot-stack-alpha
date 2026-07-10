@@ -1,0 +1,31 @@
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: packiot-tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      # Correlation — the payoff of having all three pillars in one Grafana:
+      # from a trace span, jump to its logs (Loki) and its service's metrics
+      # (Prometheus), and render the service map.
+      tracesToLogsV2:
+        datasourceUid: packiot-loki
+        filterByTraceID: true
+        filterBySpanID: false
+        tags:
+          - key: service.name
+            value: service
+      tracesToMetrics:
+        datasourceUid: packiot-prometheus
+        tags:
+          - key: service.name
+            value: job
+      serviceMap:
+        datasourceUid: packiot-prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false

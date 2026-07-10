@@ -31,6 +31,7 @@ volumes:
   grafana-data:
   loki-data:
   prom-data:
+  tempo-data:   # Tempo trace blocks + WAL (48h retention)
   rabbitmq-data:
   authentik-media:
   authentik-certs:
@@ -436,7 +437,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-07-10-dashboards-v2-and-scrape-gaps"
+      - "provisioning_rev=2026-07-10-tempo-tracing-datasource"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -601,6 +602,26 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
+
+  # tempo: distributed-tracing backend (the third pillar — metrics/logs/traces).
+  # Single-binary mode, local block storage, 48h retention. Receives spans over
+  # OTLP (gRPC :4317 / HTTP :4318) from the services' OpenTelemetry exporters;
+  # Grafana queries it on :3200 (grafana/provisioning/datasources/tempo.yml).
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./monitoring/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.31
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 512m
 
   # ── Simulator ──────────────────────────────────────────────────────────────────
   # PLC + Operator simulator for staging. Reads packml_register from DB, posts
@@ -1226,6 +1247,11 @@ services:
     environment:
       PORT: "8443"
       EDGE_API_URL: http://edge-api:8080
+      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. This is the
+      # exemplar service for the tracing rollout (internal/tracing pattern): a
+      # trace spans receive → resolve (DB) → edge-api call, and propagates the
+      # traceparent so it continues into edge-api once that's instrumented.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       # Tenant scope — no hardcoded enterprise ids in code; set here.
       INCOPLAST_ENTERPRISE_ID: "4"
       INCOPLAST_TOPIC_PREFIX: INCOPLAST

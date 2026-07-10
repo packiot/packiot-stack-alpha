@@ -1,0 +1,46 @@
+# Tempo — distributed tracing backend (the third observability pillar alongside
+# Prometheus metrics + Loki logs). Single-binary mode: distributor + ingester +
+# querier + compactor in one process, local block storage. Sized for staging.
+#
+# Services export spans over OTLP (gRPC :4317 / HTTP :4318). Grafana queries
+# traces on the HTTP API :3200 (see grafana/provisioning/datasources/tempo.yml),
+# with trace↔logs (Loki) and trace↔metrics (Prometheus) correlation wired there.
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # Flush a block after 5m or when full — keeps recent traces queryable quickly.
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    # Staging retention: 48h of traces is plenty to debug a request after the
+    # fact without unbounded disk growth (the 2026-06-22 disk-incident lesson).
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+# metrics_generator would emit RED metrics + a service graph from spans into
+# Prometheus (remote_write). Left off in phase 0 — our services already emit RED
+# directly (http_request_duration_seconds); enable later if the span-derived
+# service graph is wanted.
+
+usage_report:
+  reporting_enabled: false

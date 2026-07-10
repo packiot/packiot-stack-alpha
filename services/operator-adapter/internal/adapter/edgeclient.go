@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // edgeResult captures what came back from edge-api so the handler can translate
@@ -34,7 +36,13 @@ func NewEdgeClient(baseURL, apiKey string, timeout time.Duration) *EdgeClient {
 	return &EdgeClient{
 		baseURL: baseURL,
 		apiKey:  apiKey,
-		http:    &http.Client{Timeout: timeout},
+		// otelhttp.NewTransport creates a client span per edge-api call and
+		// injects the W3C traceparent header, so the trace continues into
+		// edge-api. No-op overhead when tracing is disabled.
+		http: &http.Client{
+			Timeout:   timeout,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 	}
 }
 
