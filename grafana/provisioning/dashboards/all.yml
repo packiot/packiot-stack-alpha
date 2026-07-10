@@ -9,3 +9,16 @@ providers:
     allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards
+
+  # v2 boards — reviewed + rebuilt (grounded in live-verified metrics; every
+  # panel pins an explicit datasource uid). Loaded into a SEPARATE "Packiot v2"
+  # folder so the original "Packiot" set stays untouched during the flip bake
+  # for A/B comparison. v1 retires once v2 is blessed.
+  - name: packiot-v2
+    folder: Packiot v2
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards-v2

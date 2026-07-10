@@ -1,0 +1,94 @@
+{
+  "uid": "v2-flip-gate",
+  "title": "v2 · Flip gate (bake parity)",
+  "tags": ["packiot-v2", "flip", "bake"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "### The flip gate — F1 (legacy) vs the Go flows, surface by surface\n**Every surface must reach 0.** A non-zero reading is allowed only with a *named, dated* cause (the known-noise ledger lives in ADR-0016 + session memory). A new unexplained non-zero stops the clock. Readiness below is **derived from real `bake_surface_mismatches` / `bake_identity_mismatch`** — the old `bake_tenant_converged` metric was never emitted and is not used."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Surfaces NOT converged",
+      "description": "count of (surface,enterprise) with bake_surface_mismatches > 0. Target = 0. Replaces the dead bake_tenant_converged gauge.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "count(bake_surface_mismatches > 0) or vector(0)", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total rows mismatched",
+      "description": "sum(bake_surface_mismatches) across all surfaces/enterprises.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(bake_surface_mismatches)", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Identity fingerprints broken (F2↔F3)",
+      "description": "sum(bake_identity_mismatch). MUST be 0 — a 1 means F2 and F3 disagree byte-for-byte.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(bake_identity_mismatch)", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Mismatches by surface × enterprise (the ledger)",
+      "description": "bake_surface_mismatches. Each non-zero row needs a named cause. Enterprise 3 = CPACK, 4 = Incoplast.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 11, "w": 14, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } }, "unit": "short" },
+        "overrides": [ { "matcher": { "id": "byName", "options": "Value" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } } ] } ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "Value", "desc": true }] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "bake_surface_mismatches", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["surface", "enterprise", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "rows mismatched" } } } ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Rows compared per surface (bake coverage)",
+      "description": "bake_surface_compared — how many rows the bake checked this tick. A surface comparing 0 rows isn't 'passing', it's 'not looking' — pair with the mismatch table.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 11, "w": 10, "x": 14, "y": 9 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "Value", "desc": true }] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "bake_surface_compared", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["surface", "enterprise", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "rows compared" } } } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Mismatch trend by surface (watch it walk to 0)",
+      "description": "bake_surface_mismatches over time. The bake discipline is: watch each surface reach and hold 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "auto" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (surface) (bake_surface_mismatches)", "legendFormat": "{{surface}}", "refId": "A" } ]
+    }
+  ]
+}

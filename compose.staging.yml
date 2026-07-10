@@ -436,7 +436,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-07-01-edge-transformer-shadow-mode"
+      - "provisioning_rev=2026-07-10-dashboards-v2-and-scrape-gaps"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
