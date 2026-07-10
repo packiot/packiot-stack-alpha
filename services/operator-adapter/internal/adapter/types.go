@@ -62,6 +62,10 @@ type DowntimeRequest struct {
 	User string `json:"user"` // operator id — audit only, NEVER logged, NOT sent to edge-api
 }
 
+// scopeFields lets DowntimeRequest satisfy `scoped` so it flows through the same
+// pre-flight (pre) as the newer PO-lifecycle requests.
+func (r *DowntimeRequest) scopeFields() (*int, string) { return r.Enterprise, r.PackmlTopic }
+
 // ── Incoplast inbound: PO start ──────────────────────────────────────────────
 
 // PORequest is the resolved `start new po` action.
@@ -88,6 +92,9 @@ type PORequest struct {
 
 	User string `json:"user"` // audit only, never forwarded
 }
+
+// scopeFields lets PORequest satisfy `scoped` (shared pre-flight).
+func (r *PORequest) scopeFields() (*int, string) { return r.Enterprise, r.PackmlTopic }
 
 // ── edge-api outbound DTOs ───────────────────────────────────────────────────
 // JSON keys match edge-api's NestJS DTOs verbatim.
