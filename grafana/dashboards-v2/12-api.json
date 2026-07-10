@@ -1,0 +1,130 @@
+{
+  "uid": "v2-api",
+  "title": "v2 · API RED (rate / errors / duration)",
+  "tags": ["packiot-v2", "api", "red"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+        "query": { "query": "label_values(http_request_duration_seconds_count, job)", "refId": "A" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": { "mode": "markdown", "content": "### API RED — request Rate, Errors, Duration per service & route\nFrom the `http_request_duration_seconds` histogram (route label = the Go 1.22 route *template*, so `/v1/foo/{id}` is one series, not one-per-id). Covers refdata-api, operator-adapter, ingest-shim. **New instrumentation** — panels populate after the services redeploy; a blank tile right after deploy is scrape-lag, not a bug. operator-adapter + ingest-shim also need their scrape jobs (added in the dashboards-v2 PR)." }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Request rate by service (req/s)",
+      "description": "sum by(job) rate(http_request_duration_seconds_count[5m]).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (job) (rate(http_request_duration_seconds_count{job=~\"$job\"}[5m]))", "legendFormat": "{{job}}", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Error rate by service (5xx %)",
+      "description": "5xx responses / all responses, per service. 4xx is excluded (client error, not a service fault) — see the status-mix panel for those.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 12, "showPoints": "auto" }, "color": { "mode": "fixed", "fixedColor": "red" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.01 }, { "color": "red", "value": 0.05 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (job) (rate(http_request_duration_seconds_count{job=~\"$job\", status=~\"5..\"}[5m])) / clamp_min(sum by (job) (rate(http_request_duration_seconds_count{job=~\"$job\"}[5m])), 1e-9)", "legendFormat": "{{job}}", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Latency p95 by service",
+      "description": "histogram_quantile(0.95, ...) over http_request_duration_seconds_bucket.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "{{job}}", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99 (selected service)",
+      "description": "Quantiles for $job. A widening p99-vs-p50 gap = tail latency.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "p50", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "p95", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Request rate by route (selected service)",
+      "description": "sum by(route) rate(..._count{job=~\"$job\"}[5m]).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "stacking": { "mode": "normal" }, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (route) (rate(http_request_duration_seconds_count{job=~\"$job\"}[5m]))", "legendFormat": "{{route}}", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Status-code mix (selected service)",
+      "description": "Requests by HTTP status class. A rise in 4xx = client/auth issues; 5xx = service faults.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 12, "stacking": { "mode": "normal" }, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": "5.." }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (status) (rate(http_request_duration_seconds_count{job=~\"$job\"}[5m]))", "legendFormat": "{{status}}", "refId": "A" } ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Slowest routes by p95 (selected service)",
+      "description": "topk(15, p95 per route) — where to look first when latency rises.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "color-background", "mode": "gradient" } }, "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.25 }, { "color": "red", "value": 1 } ] } }, "overrides": [ { "matcher": { "id": "byName", "options": "route" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "auto" } } ] }, { "matcher": { "id": "byName", "options": "job" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "auto" } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(15, histogram_quantile(0.95, sum by (job, route, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m]))))", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["job", "route", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "p95 (s)" } } } ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Operator & ingest outcomes (business-level counters)",
+      "description": "operator_adapter_requests_total{action,outcome} + ingest_shim_requests_total{outcome} — the domain view alongside the raw HTTP view above.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*(unauthorized|forbidden|rejected|edge_5xx|edge_unreachable|publish_failed).*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (action, outcome) (rate(operator_adapter_requests_total[5m]))", "legendFormat": "adapter {{action}}/{{outcome}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (outcome) (rate(ingest_shim_requests_total[5m]))", "legendFormat": "ingest {{outcome}}", "refId": "B" }
+      ]
+    }
+  ]
+}

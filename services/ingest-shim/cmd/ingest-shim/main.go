@@ -32,6 +32,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/httpmetrics"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/httpserver"
 	logp "github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/metrics"
@@ -128,8 +129,10 @@ func main() {
 		Logger:            logger,
 	})
 	apiSrv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           handler,
+		Addr: cfg.HTTPAddr,
+		// RED metrics on every ingest route; recorded into m's registry, which
+		// the :9105 metrics server already serves.
+		Handler:           httpmetrics.New(m.Registerer())(handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}
