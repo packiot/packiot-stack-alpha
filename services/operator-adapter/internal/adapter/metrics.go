@@ -13,7 +13,7 @@ import (
 // Label cardinality is deliberately bounded (one label per route + one per
 // outcome — both closed sets defined in code, never caller-derived):
 //   - action:  "downtime" | "po" | "po_stop" | "po_setup" | "po_replace" |
-//     "po_change_status" | "po_change_time"
+//     "po_change_status" | "po_change_time" | "split"
 //   - outcome: "accepted" | "unauthorized" | "forbidden" | "unmapped" |
 //     "unresolved" | "resolver_error" | "bad_request" | "edge_4xx" |
 //     "edge_5xx" | "edge_unreachable"
