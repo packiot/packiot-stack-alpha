@@ -53,6 +53,7 @@ ambiguous (>1 active `packml_register` row) never resolves — the handler retur
 | POST | `/operator/po/replace` | `replace` | `order-replaced` |
 | POST | `/operator/po/change-status` | `change-status` | `order-status-changed` |
 | POST | `/operator/po/change-time` | `change-time` | `order-time-changed` |
+| POST | `/operator/split` | `downtimes/split` (one event → re-categorised sub-intervals) | `event-splitted` |
 | GET | `/healthz` | liveness + **DB pool reachability** (`{"healthy":true,"db":true}`; 503 if the resolver's pool is down) | — |
 | GET | `/metrics` | Prometheus (`operator_adapter_requests_total{action,outcome}`) | — |
 

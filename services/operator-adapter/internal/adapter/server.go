@@ -73,6 +73,9 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.HandleFunc("/operator/po/replace", s.handlePOReplace)
 	mux.HandleFunc("/operator/po/change-status", s.handlePOStatus)
 	mux.HandleFunc("/operator/po/change-time", s.handlePOTime)
+	// Split one downtime/manual/low-speed event into re-categorised sub-intervals
+	// (edge-api /api/downtimes/split). Distinct from the downtime edit/trim path.
+	mux.HandleFunc("/operator/split", s.handleSplit)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	return mux
 }
