@@ -112,6 +112,11 @@ services:
       # queue depth, message rates, connections, memory) alongside the
       # management UI. Overrides the image default, so management is listed too.
       - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      # load_definitions re-applies the least-priv users on every boot (survives
+      # a broker recreate — the 2026-07-10 trap). definitions.json is generated
+      # at deploy from the template + Secrets Manager (gitignored — has secrets).
+      - ./monitoring/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./monitoring/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.5

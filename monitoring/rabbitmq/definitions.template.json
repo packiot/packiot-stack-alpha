@@ -1,0 +1,31 @@
+{
+  "rabbit_version": "3.13.7",
+  "users": [
+    { "name": "__ADMIN__", "password": "__ADMIN_PASS__", "tags": ["administrator"] },
+    { "name": "oeecloud-worker", "password": "__OEE_PASS__", "tags": [] },
+    { "name": "edge-transformer", "password": "__ET_PASS__", "tags": [] }
+  ],
+  "vhosts": [{ "name": "/" }],
+  "permissions": [
+    { "user": "__ADMIN__", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*" },
+    {
+      "user": "oeecloud-worker", "vhost": "/",
+      "configure": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*)$",
+      "write": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*)$",
+      "read": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*)$"
+    },
+    {
+      "user": "edge-transformer", "vhost": "/",
+      "configure": "^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|dlx\\.edge\\.plc-normalized.*)$",
+      "write": "^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$",
+      "read": "^(edge\\.plc-normalized.*|dlx\\.edge\\.plc-normalized.*|edge-transformer.*|outbox.*|oee)$"
+    }
+  ],
+  "topic_permissions": [],
+  "parameters": [],
+  "global_parameters": [],
+  "policies": [],
+  "queues": [],
+  "exchanges": [],
+  "bindings": []
+}

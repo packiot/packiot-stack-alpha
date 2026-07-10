@@ -52,6 +52,31 @@ jobs:
         # Symlinking makes it available as .env so Docker Compose picks it up.
         run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
 
+      - name: Generate RabbitMQ definitions (durable least-priv users)
+        # rabbitmq.conf sets load_definitions, which re-imports users/perms on
+        # every broker boot so a container recreate can't lose the least-priv
+        # users again (the 2026-07-10 boot-only-provisioning trap). Build the
+        # real definitions.json from the committed template + the passwords in
+        # Secrets Manager (admin from .env); it's gitignored (contains secrets)
+        # and mounted read-only. MUST run before compose up — a missing file
+        # would stop rabbitmq booting since load_definitions references it.
+        run: |
+          set -euo pipefail
+          AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
+          AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
+          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-oeecloud-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          EP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-edge-transformer-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$EP"
+          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg ep "$EP" '
+            .users |= map(
+              if .name=="__ADMIN__" then .name=$au | .password=$ap
+              elif .name=="oeecloud-worker" then .password=$op
+              elif .name=="edge-transformer" then .password=$ep
+              else . end) |
+            .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
+          ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
+          echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
+
       - name: Build images
         run: docker compose -f compose.staging.yml -p stack build
 
