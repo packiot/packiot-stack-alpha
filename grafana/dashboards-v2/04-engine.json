@@ -1,0 +1,189 @@
+{
+  "uid": "v2-engine",
+  "title": "v2 · Engine — oeecloud-worker (AMQP→jobs→writes)",
+  "tags": ["packiot-v2", "engine", "flow"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+        "query": { "query": "label_values(oeecloud_worker_batch_writes_total, tenant)", "refId": "A" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "flow",
+        "label": "Flow (dest)",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+        "query": { "query": "label_values(oeecloud_worker_batch_writes_total, dest)", "refId": "A" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "### Is the OEE engine healthy end-to-end? — AMQP in → scheduled jobs → batch writes\noeecloud-worker consumes `sparkplug.data` envelopes off RabbitMQ, runs the rollup/UNS/report/bake **jobs**, and writes each tenant's rows to the three flows (**F1** `f1_public`, **F2** `f2_shadow_go_port`, **F3** `f3_packiot_shadow`). Use `$tenant` + `$flow` to slice. Job error/panic rate must stay flat 0; write-error rate must stay flat 0."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "AMQP deliveries by result (per s)",
+      "description": "sum by(result) rate(oeecloud_worker_amqp_deliveries_total[5m]). acked = handed to the engine · nacked_retry = transient failure, re-queued · exhausted_failed = dropped to oee-failed. A steady acked line with flat nacked/exhausted is healthy.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*failed.*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (result) (rate(oeecloud_worker_amqp_deliveries_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Handler latency p50 / p95",
+      "description": "histogram_quantile over oeecloud_worker_handler_duration_seconds_bucket — how long each envelope takes to process end-to-end.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Last outcome per job (everything should read ok)",
+      "description": "oeecloud_worker_job_ticks_total, instant, grouped by job × outcome. Each scheduled job (rollups, UNS, reports, bake) should show its ticks under outcome=ok; any error/panic row names the failing job.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 11 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } }, "unit": "short" },
+        "overrides": []
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "job", "desc": false }] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (job, outcome) (oeecloud_worker_job_ticks_total)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        { "id": "filterFieldsByName", "options": { "include": { "names": ["job", "outcome", "Value"] } } },
+        { "id": "organize", "options": { "renameByName": { "Value": "ticks" } } }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Job error / panic rate (healthy = flat 0)",
+      "description": "sum by(outcome) rate(oeecloud_worker_job_ticks_total{outcome=~\"error|panic\"}[5m]). A flat zero line is correct — this is a truthful-empty when the engine is clean.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 12, "showPoints": "auto" }, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (outcome) (rate(oeecloud_worker_job_ticks_total{outcome=~\"error|panic\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Batch write rate by tenant × flow (rows/s)",
+      "description": "sum by(tenant,dest) rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]), sliced by $tenant + $flow. A mirrored tenant's three flows move together.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (tenant, dest) (rate(oeecloud_worker_batch_writes_total{tenant=~\"$tenant\", dest=~\"$flow\", result=\"ok\"}[5m]))",
+          "legendFormat": "{{tenant}} · {{dest}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "PO parameter writer ops by op",
+      "description": "sum by(op) rate(oeecloud_worker_writer_po_parameter_ops_total[5m]). NOTE: skipped_30700 and skipped_30800_30899 are the config params (machine sequence / PO-control lifecycle) the edge-transformer handles elsewhere — a non-zero skip count is EXPECTED, not an error.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (op) (rate(oeecloud_worker_writer_po_parameter_ops_total[5m]))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "PO control ops by op (30800s lifecycle)",
+      "description": "sum by(op) rate(oeecloud_worker_po_control_ops_total[5m]) — start / stop / setup PO-control commands routed through the shadow paths.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (op) (rate(oeecloud_worker_po_control_ops_total[5m]))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

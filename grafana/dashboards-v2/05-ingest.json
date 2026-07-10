@@ -1,0 +1,201 @@
+{
+  "uid": "v2-ingest",
+  "title": "v2 · Ingest — edge-transformer (MQTT→calc→emit→outbox)",
+  "tags": ["packiot-v2", "ingest", "flow"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+        "query": { "query": "label_values(calc_evaluations_total, tenant)", "refId": "A" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "### Is the edge-transformer ingesting cleanly? — MQTT in → Calc (Go port) → triple-emit → outbox\nSubscribes to Mosquitto (Sparkplug B), runs the **Go calc port** (`USE_GO_PORT` is ON), fans each reading out to the three flows, and buffers to a store-and-forward **outbox** before publishing to RabbitMQ. Healthy = MQTT UP, handle-errors & seq-gaps flat 0, three emit lines overlapping, outbox near 0. The `commands_*` / `erp_*` families read empty **by design** (see the inert tile) — not a fault."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "MQTT connected",
+      "description": "max(edge_transformer_mqtt_connected). 1 = broker link up.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(edge_transformer_mqtt_connected)", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Outbox depth",
+      "description": "max(outbox_depth) (UNPREFIXED metric name — verbatim). Store-and-forward rows awaiting drain to RabbitMQ. Near 0 = healthy; a sustained climb = publish path degraded.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 1000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(outbox_depth)", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Outbox oldest age",
+      "description": "max(outbox_oldest_age_seconds) (UNPREFIXED — verbatim). Age of the oldest un-drained row. A rising age with a flat depth means the head of the buffer is stuck.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 60 }, { "color": "red", "value": 300 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(outbox_oldest_age_seconds)", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Shadowpub in-flight",
+      "description": "max(edge_transformer_shadowpub_in_flight) — publishes awaiting broker confirm. A bounded gauge; a growing value = confirms not returning.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 500 }, { "color": "red", "value": 5000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(edge_transformer_shadowpub_in_flight)", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Inert families (commands + erp) — 0 by design",
+      "description": "🟡 TRUTHFUL-EMPTY. edge_transformer_commands_* ships inert (EDGE_COMMANDS_ENABLED is OFF) and edge_transformer_erp_* is not wired (erpconnector inert). This tile reads 0 on purpose — it is here so the zero is EXPLAINED, not mistaken for a broken scrape. It lights amber only if either family unexpectedly emits series. (edge_transformer_amqp_deliveries_total is intentionally NOT charted — 0 series in staging's MQTT-in topology.)",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 16, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "INERT (0 by design)", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "(count(edge_transformer_commands_dispatched_total) or vector(0)) + (count(edge_transformer_erp_requests_total) or vector(0))", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "MQTT received vs handle-errors (per s)",
+      "description": "rate(edge_transformer_mqtt_received_total[5m]) vs rate(edge_transformer_mqtt_handle_errors_total[5m]). Received should be a live line; handle-errors should stay flat 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byName", "options": "handle errors" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum(rate(edge_transformer_mqtt_received_total[5m]))",
+          "legendFormat": "received",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum(rate(edge_transformer_mqtt_handle_errors_total[5m])) or vector(0)",
+          "legendFormat": "handle errors",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Sparkplug seq gaps by device (healthy = flat 0)",
+      "description": "sum by(group_id,edge_node_id,device_id) rate(edge_transformer_sparkplug_seq_gaps_total[5m]). A gap = a lost/out-of-order Sparkplug sequence number for that device. Flat 0 is correct — a truthful-empty when no messages are lost.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 12, "showPoints": "auto" }, "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (group_id, edge_node_id, device_id) (rate(edge_transformer_sparkplug_seq_gaps_total[5m]))",
+          "legendFormat": "{{group_id}}/{{edge_node_id}}/{{device_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Triple-emit rate by flow (should be 1:1:1)",
+      "description": "sum by(flow) rate(edge_transformer_emitted_total[5m]) — the fan-out feeding F1/F2/F3. The three lines overlap when healthy.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (flow) (rate(edge_transformer_emitted_total[5m]))",
+          "legendFormat": "{{flow}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Shadowpub: published vs confirmed vs nacked (per s)",
+      "description": "rate of edge_transformer_shadowpub_published_total / _confirmed_total / _nacked_total. published and confirmed should track 1:1; nacked should stay flat 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byName", "options": "nacked" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum(rate(edge_transformer_shadowpub_published_total[5m]))",
+          "legendFormat": "published",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum(rate(edge_transformer_shadowpub_confirmed_total[5m]))",
+          "legendFormat": "confirmed",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum(rate(edge_transformer_shadowpub_nacked_total[5m])) or vector(0)",
+          "legendFormat": "nacked",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Calc (Go port) evaluations by outcome",
+      "description": "sum by(outcome) rate(calc_evaluations_total{tenant=~\"$tenant\"}[5m]). The Go-port calc is live (USE_GO_PORT ON). ok should dominate; any error/skip outcome is named here.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byName", "options": "error" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (outcome) (rate(calc_evaluations_total{tenant=~\"$tenant\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
