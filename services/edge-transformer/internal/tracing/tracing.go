@@ -31,9 +31,14 @@ import (
 // pending spans. Disabled — no-op shutdown — when OTEL_EXPORTER_OTLP_ENDPOINT
 // is empty.
 func Init(ctx context.Context, serviceName string) (func(context.Context) error, error) {
+	// Always-safe shutdown so callers can `defer shutdown(ctx)` unconditionally.
+	// The doc contract is "always non-nil": returning nil here (as the error
+	// paths below once did) makes the caller's deferred call panic on exit.
+	noop := func(context.Context) error { return nil }
+
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
-		return func(context.Context) error { return nil }, nil
+		return noop, nil
 	}
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
@@ -46,14 +51,14 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 		otlptracegrpc.WithInsecure(),            // internal compose network, no TLS
 	)
 	if err != nil {
-		return nil, err
+		return noop, err
 	}
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(semconv.ServiceName(serviceName)),
 	)
 	if err != nil {
-		return nil, err
+		return noop, err
 	}
 
 	tp := sdktrace.NewTracerProvider(
