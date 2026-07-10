@@ -1,0 +1,19 @@
+# blackbox-exporter probe modules. Prometheus asks blackbox to probe a target
+# URL and blackbox reports probe_success/duration/status — synthetic uptime from
+# OUTSIDE the app (does the site actually answer?), the complement to white-box
+# metrics that only see a service from the inside.
+modules:
+  http_2xx:
+    prober: http
+    timeout: 8s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [200, 204, 301, 302, 401, 403]  # "answering", incl. auth gates
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: true   # internal self-signed certs are fine to probe
+  tcp_connect:
+    prober: tcp
+    timeout: 5s

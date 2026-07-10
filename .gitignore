@@ -19,3 +19,4 @@ presentation/
 # re-committed. Cleaned up in the 2026-06-24 decommission PR.
 0{print
 {{.Destination}}*
+monitoring/alertmanager/slack_api_url

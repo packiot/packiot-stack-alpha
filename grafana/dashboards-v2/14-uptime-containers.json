@@ -1,0 +1,89 @@
+{
+  "uid": "v2-uptime-containers",
+  "title": "v2 · Uptime & Containers",
+  "tags": ["packiot-v2", "uptime", "containers"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": { "mode": "markdown", "content": "### Uptime (blackbox) + Containers (cadvisor)\n**Top:** synthetic probes — does each public endpoint actually answer, from outside? `probe_success` = the black-box view that white-box service metrics can't give. **Bottom:** per-container CPU/mem from cadvisor — node-exporter is host-only; this tells you *which container* is the hog." }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Endpoint up? (probe_success)",
+      "description": "1 = the endpoint answered with an accepted status. 0 = down/unreachable/bad status.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "align": "auto", "cellOptions": { "type": "color-background" } }, "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Value", "desc": false } ] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "probe_success", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["instance", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "up" } } } ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Probe latency by endpoint",
+      "description": "probe_duration_seconds — how long each endpoint took to answer.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "probe_duration_seconds", "legendFormat": "{{instance}}", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "TLS cert days remaining",
+      "description": "(probe_ssl_earliest_cert_expiry - time()) / 86400 — days until the endpoint's cert expires. Renew before it hits 0 (the silent-outage class).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "d", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 4, "showPoints": "auto" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 14 }, { "color": "green", "value": 30 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "asc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "(probe_ssl_earliest_cert_expiry - time()) / 86400", "legendFormat": "{{instance}}", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Container CPU (cores) — top 15",
+      "description": "rate(container_cpu_usage_seconds_total[5m]) per container. Which container is burning CPU.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(15, sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[5m])))", "legendFormat": "{{name}}", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Container memory (working set) — top 15",
+      "description": "container_memory_working_set_bytes per container — the figure the OOM killer watches.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(15, sum by (name) (container_memory_working_set_bytes{name!=\"\"}))", "legendFormat": "{{name}}", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Container network I/O — top by rx",
+      "description": "rate(container_network_receive_bytes_total) / transmit per container.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(10, sum by (name) (rate(container_network_receive_bytes_total{name!=\"\"}[5m])))", "legendFormat": "{{name}} rx", "refId": "A" }
+      ]
+    }
+  ]
+}
