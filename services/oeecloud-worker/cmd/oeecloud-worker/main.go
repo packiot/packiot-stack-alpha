@@ -38,6 +38,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tenants"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/tracing"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/uns"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 )
@@ -68,6 +69,16 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
+	// ENDPOINT is set (see internal/tracing). The consumer extracts the
+	// traceparent injected by the publisher, so a single message becomes one
+	// trace spanning publish → consume → DB writes. A failure never blocks boot.
+	shutdownTracing, terr := tracing.Init(ctx, "oeecloud-worker")
+	if terr != nil {
+		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	// Fetch DB + AMQP creds from AWS Secrets Manager — CO-5 phase 2.
 	// AMQP user is least-privilege (provisioned via rabbitmqctl), not

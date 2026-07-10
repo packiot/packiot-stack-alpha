@@ -10,9 +10,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/amqptrace"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/handlers"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -257,6 +262,21 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 	c.lastDelivery.Store(time.Now().UnixNano())
 	start := time.Now()
 
+	// Continue the producer's trace: extract the traceparent the publisher
+	// injected into the message headers, then open a consumer span. otelpgx
+	// makes the DB writes children of this span, so a message is one trace from
+	// ingest-shim's POST through the worker's DB round-trip. All no-ops unless
+	// tracing is enabled (empty propagator + no-op tracer).
+	ctx = amqptrace.Extract(ctx, d.Headers)
+	ctx, span := otel.Tracer("oeecloud-worker").Start(ctx, "consume "+d.RoutingKey,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", d.Exchange),
+			attribute.String("messaging.rabbitmq.routing_key", d.RoutingKey),
+		))
+	defer span.End()
+
 	// Defer the duration recording so it covers EVERY exit path including
 	// the early returns below (failed-exchange publish errors, etc.). The
 	// histogram represents "time we spent on this message before deciding
@@ -298,6 +318,8 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 
 	if err := c.dispatcher.Handle(ctx, &d); err != nil {
 		// nack with requeue=false → DLX (retry exchange) → retry queue → TTL → back to source.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "handler error")
 		_ = d.Nack(false, false)
 		c.nackedRetry.Add(1)
 		if c.metricsDeliveries != nil {
