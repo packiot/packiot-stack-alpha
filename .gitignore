@@ -20,3 +20,6 @@ presentation/
 0{print
 {{.Destination}}*
 monitoring/alertmanager/slack_api_url
+
+# RabbitMQ definitions generated at deploy from the template + Secrets Manager (has passwords)
+monitoring/rabbitmq/definitions.json
