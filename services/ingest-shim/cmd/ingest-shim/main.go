@@ -30,6 +30,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/httpmetrics"
@@ -37,6 +39,7 @@ import (
 	logp "github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/tracing"
 )
 
 func main() {
@@ -75,6 +78,16 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
+	// ENDPOINT is set (see internal/tracing). The inbound server span is the
+	// root of the ingest trace; phase 2 carries traceparent onto the AMQP
+	// publish so oeecloud-worker's consume continues the same trace.
+	shutdownTracing, terr := tracing.Init(ctx, "ingest-shim")
+	if terr != nil {
+		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	// Fetch the AMQP creds from Secrets Manager — same mechanism as
 	// oeecloud-worker (least-privilege `oeecloud-worker` user, host/port
@@ -130,9 +143,10 @@ func main() {
 	})
 	apiSrv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		// RED metrics on every ingest route; recorded into m's registry, which
-		// the :9105 metrics server already serves.
-		Handler:           httpmetrics.New(m.Registerer())(handler),
+		// otelhttp: a server span per request (trace root, continuing any inbound
+		// traceparent). RED metrics wrap inside, recorded into m's registry,
+		// which the :9105 metrics server already serves.
+		Handler:           otelhttp.NewHandler(httpmetrics.New(m.Registerer())(handler), "ingest-shim"),
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}

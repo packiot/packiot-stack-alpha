@@ -1069,6 +1069,10 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
+      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; the inbound
+      # POST becomes a trace root. Phase 2 carries traceparent onto the AMQP
+      # publish so oeecloud-worker's consume continues the same trace.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       # CO-5: RabbitMQ username/password via Secrets Manager, NOT env.
       AWS_REGION: us-east-1
       # Publisher creds — the edge-transformer user has publish perms on
@@ -1283,6 +1287,9 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: packiot
       HEALTH_PORT: "9104"
+      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; a /v1 read
+      # becomes one trace with its DB query time as a child span (otelpgx).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
       # keys only; production keys move to Secrets Manager at P3
       # hardening. customer_id is NEVER client-supplied.

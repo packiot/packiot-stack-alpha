@@ -32,10 +32,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/httpmetrics"
+	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/tracing"
 )
 
 type endpoint struct {
@@ -106,6 +109,14 @@ func main() {
 		os.Exit(runHealthcheck())
 	}
 
+	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
+	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.
+	shutdownTracing, terr := tracing.Init(context.Background(), "refdata-api")
+	if terr != nil {
+		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
+
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s",
 		getenv("DB_HOST", "pgbouncer"), getenv("DB_PORT", "5432"),
 		getenv("DB_USER", "postgres"), os.Getenv("DB_PASSWORD"),
@@ -119,6 +130,9 @@ func main() {
 	// pgbouncer transaction pooling breaks pgx prepared statements —
 	// same fix as every other service in this stack.
 	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	// otelpgx emits a span per query, so each /v1 read shows its DB time as a
+	// child span of the request. No-op unless tracing is enabled.
+	pc.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(context.Background(), pc)
 	if err != nil {
 		logger.Error("pool", slog.String("err", err.Error()))
@@ -152,7 +166,9 @@ func main() {
 	logger.Info("refdata-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
 	// RED metrics on every /v1 route → the same promhttp default registry
 	// /metrics already serves.
-	handler := httpmetrics.New(prometheus.DefaultRegisterer)(mux)
+	// otelhttp: a server span per request (the trace root, continuing any
+	// inbound traceparent); httpmetrics wraps inside it for RED metrics.
+	handler := otelhttp.NewHandler(httpmetrics.New(prometheus.DefaultRegisterer)(mux), "refdata-api")
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		logger.Error("http", slog.String("err", err.Error()))
 		os.Exit(1)
