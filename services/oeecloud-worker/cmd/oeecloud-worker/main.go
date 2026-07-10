@@ -222,6 +222,12 @@ func main() {
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises),
 			time.Minute, logger, jobObs)
+		// Drain recalc_needed hour rows the live rollup can't reach (stranded
+		// outside its 65-min window) — bounded per tick, oldest-first.
+		go rollup.LoopHourBackfill(ctx, flows.Standard(pool, shadowPool),
+			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+			cfg.RollupBackfillLimit,
+			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-provision (bucket matrix, hourly).
