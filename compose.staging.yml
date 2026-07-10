@@ -929,6 +929,10 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
+      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
+      # consumer extracts the traceparent the publisher injected into the AMQP
+      # headers, so a message is one trace: publish → consume → DB (otelpgx).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       # CO-5 phase 2: DB + AMQP both via Secrets Manager. AMQP user
       # `oeecloud-worker` was provisioned on staging broker with
       # least-privilege perms (own topology only, no admin reach, no

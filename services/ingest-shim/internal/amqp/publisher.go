@@ -19,6 +19,10 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/packiot/packiot-stack-alpha/services/ingest-shim/internal/amqptrace"
 )
 
 // Sentinel errors the HTTP layer maps to 503.
@@ -111,6 +115,13 @@ func (p *Publisher) Healthy() bool { return p.connected.Load() }
 // application/json, persistent, and blocks until the broker confirms (202),
 // nacks (ErrNack), or the confirm times out (ErrConfirmTimeout).
 func (p *Publisher) Publish(ctx context.Context, body []byte) error {
+	// Producer span (no-op unless tracing is enabled). Started before the lock
+	// so its duration covers the whole publish+confirm; the injected
+	// traceparent below lets oeecloud-worker's consume continue this trace.
+	ctx, span := otel.Tracer("ingest-shim").Start(ctx, "publish "+p.routingKey,
+		trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -130,6 +141,9 @@ func (p *Publisher) Publish(ctx context.Context, body []byte) error {
 		Body:         body,
 		DeliveryMode: amqp.Persistent,
 		Timestamp:    time.Now(),
+		// Carry the trace context onto the message so the consumer continues
+		// this trace across the broker (W3C traceparent in the AMQP headers).
+		Headers: amqptrace.Inject(ctx, amqp.Table{}),
 	}); err != nil {
 		// A publish error usually means the channel is dead — mark unhealthy
 		// so the monitor reconnects and /healthz flips.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
@@ -59,6 +60,10 @@ func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName 
 	// throughput cost at our scale, AND it works correctly under
 	// pgbouncer transaction pooling.
 	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	// otelpgx emits a span per query, so the DB writes for a delivery hang off
+	// the consumer span as children (the traceparent extracted from the AMQP
+	// message). No-op unless tracing is enabled.
+	pc.ConnConfig.Tracer = otelpgx.NewTracer()
 	p, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
