@@ -48,6 +48,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqptrace"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
@@ -501,6 +502,10 @@ func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID 
 			DeliveryMode: amqp.Persistent,
 			MessageId:    messageID,
 			Body:         body,
+			// Carry the trace context onto the AMQP message so oeecloud-worker's
+			// consume continues this trace across the broker (phase 2a extract
+			// side). ctx carries the producer span from Publish/runOutboxDrain.
+			Headers: amqptrace.Inject(ctx, amqp.Table{}),
 		})
 	if err != nil {
 		p.failed.Add(1)
