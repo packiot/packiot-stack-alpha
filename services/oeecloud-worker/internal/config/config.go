@@ -132,6 +132,10 @@ type Config struct {
 	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
 	RuntimeProvisionEnabled     bool
 	RuntimeRollupEnabled        bool
+	// Backfill drains recalc_needed hour rows stranded OUTSIDE the live rollup's
+	// 65-min window (bounded per tick, oldest-first). Runs when RuntimeRollup is on.
+	RollupBackfillLimit          int // hour rows recomputed per backfill tick
+	RollupBackfillIntervalSeconds int
 	BakeComparatorEnabled       bool
 	// BakeEnterpriseIDs — CSV of enterprises the surface-parity bake runs
 	// per tenant. The FIRST id is the frozen "gate" tenant (CPACK) whose
@@ -195,6 +199,8 @@ func Load() (*Config, error) {
 		PORecalcExcludedEnterprises:      getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
+		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
+		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
 		BakeEnterpriseIDs:                getenv("BAKE_ENTERPRISE_IDS", "3"),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
