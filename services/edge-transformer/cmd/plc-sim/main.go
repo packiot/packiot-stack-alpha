@@ -175,45 +175,16 @@ func main() {
 	// the next NBIRTH/NDATA. Only the two verbs the executor emits are mapped:
 	// param_write on MachSpeed and po_setup on Parameter30700.
 	applyDCMD := func(body []byte) {
-		p, err := sparkplug.Decode(body)
+		mu.Lock()
+		applied, err := applyDCMDToStates(body, lines, states, logger)
+		mu.Unlock()
 		if err != nil {
 			logger.Error("DCMD decode", "err", err)
 			return
 		}
-		applied := 0
-		mu.Lock()
-		for _, m := range p.GetMetrics() {
-			name := m.GetName()
-			if name == "" {
-				continue
-			}
-			for i, l := range lines {
-				if !strings.HasPrefix(name, l.topicPrefix()) {
-					continue
-				}
-				switch {
-				case strings.HasSuffix(name, "/Status/MachSpeed"):
-					if v, ok := dcmdDouble(m); ok {
-						states[i].speedOverride = v
-						states[i].hasSpeedOverride = true
-						applied++
-						logger.Info("DCMD applied: MachSpeed override",
-							"line", l.Line, "unit", l.Unit, "value", v)
-					}
-				case strings.HasSuffix(name, "/Status/Parameter30700"):
-					if s, ok := dcmdString(m); ok {
-						states[i].poParam = s
-						applied++
-						logger.Info("DCMD applied: PO setup",
-							"line", l.Line, "unit", l.Unit, "po", s)
-					}
-				default:
-					logger.Info("DCMD received (no sim effect mapped)", "metric", name)
-				}
-			}
-		}
-		mu.Unlock()
 		if applied > 0 {
+			// Signal the tick loop to re-birth so the applied write shows up in
+			// the sim's next NBIRTH/NDATA (the write is observable end to end).
 			select {
 			case rebirth <- struct{}{}:
 			default:
@@ -310,6 +281,53 @@ func main() {
 // dcmdDouble extracts a numeric DCMD metric value as float64 (the executor
 // encodes param_write values as Double, but tolerate the other numeric wire
 // forms defensively).
+// applyDCMDToStates decodes a DCMD body and applies each mapped write to the
+// matching line's in-memory state, returning the number of writes applied. It
+// is the pure core of the command-channel receiving end (ADR-0019 C1), split
+// out of the paho callback so it can be unit-tested DIRECTLY against the
+// executor's real BuildDCMD output — the one seam that was implemented on both
+// ends (executor emits the DCMD, sim applies it) yet never tested TOGETHER
+// (each end had only isolated tests, so a wire-format drift between them would
+// have gone unnoticed). Callers hold the state mutex; this does no locking.
+func applyDCMDToStates(body []byte, lines []line, states []simState, logger *slog.Logger) (int, error) {
+	p, err := sparkplug.Decode(body)
+	if err != nil {
+		return 0, err
+	}
+	applied := 0
+	for _, m := range p.GetMetrics() {
+		name := m.GetName()
+		if name == "" {
+			continue
+		}
+		for i, l := range lines {
+			if !strings.HasPrefix(name, l.topicPrefix()) {
+				continue
+			}
+			switch {
+			case strings.HasSuffix(name, "/Status/MachSpeed"):
+				if v, ok := dcmdDouble(m); ok {
+					states[i].speedOverride = v
+					states[i].hasSpeedOverride = true
+					applied++
+					logger.Info("DCMD applied: MachSpeed override",
+						"line", l.Line, "unit", l.Unit, "value", v)
+				}
+			case strings.HasSuffix(name, "/Status/Parameter30700"):
+				if s, ok := dcmdString(m); ok {
+					states[i].poParam = s
+					applied++
+					logger.Info("DCMD applied: PO setup",
+						"line", l.Line, "unit", l.Unit, "po", s)
+				}
+			default:
+				logger.Info("DCMD received (no sim effect mapped)", "metric", name)
+			}
+		}
+	}
+	return applied, nil
+}
+
 func dcmdDouble(m *sparkplug.Metric) (float64, bool) {
 	switch v := m.GetValue().(type) {
 	case *sparkplug.Metric_DoubleValue:
