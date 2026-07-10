@@ -345,6 +345,12 @@ services:
       NODE_ENV: production
       NEW_RELIC_ENABLED: "false"
       NEW_RELIC_NO_CONFIG_FILE: "true"
+      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on (src/
+      # tracing.ts starts the NodeSDK). Completes the operator → operator-adapter
+      # → edge-api → DB trace: the adapter's outbound traceparent continues into
+      # edge-api's http span, and pg (pg-promise's driver) adds the DAO spans.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      OTEL_SERVICE_NAME: edge-api
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
