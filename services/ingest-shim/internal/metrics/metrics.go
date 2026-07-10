@@ -54,6 +54,10 @@ func (m *Metrics) Inc(outcome string) {
 	m.requests.WithLabelValues(outcome).Inc()
 }
 
+// Registerer exposes this service's metrics registry so middleware (e.g.
+// internal/httpmetrics) can register collectors that /metrics then serves.
+func (m *Metrics) Registerer() prometheus.Registerer { return m.registry }
+
 // Handler returns an http.Handler serving /metrics from this registry.
 func (m *Metrics) Handler() http.Handler {
 	mux := http.NewServeMux()

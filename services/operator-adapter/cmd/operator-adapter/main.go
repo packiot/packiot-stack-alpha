@@ -32,6 +32,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/adapter"
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/httpmetrics"
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/secrets"
 )
 
@@ -120,7 +121,7 @@ func main() {
 
 	httpSrv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           httpmetrics.New(reg)(mux), // RED metrics on every route
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}

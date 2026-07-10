@@ -18,6 +18,7 @@
 package main
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"context"
@@ -33,6 +34,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/httpmetrics"
 )
 
 type endpoint struct {
@@ -147,7 +150,10 @@ func main() {
 
 	port := getenv("HEALTH_PORT", "9104")
 	logger.Info("refdata-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	// RED metrics on every /v1 route → the same promhttp default registry
+	// /metrics already serves.
+	handler := httpmetrics.New(prometheus.DefaultRegisterer)(mux)
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		logger.Error("http", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
