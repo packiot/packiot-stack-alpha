@@ -1169,7 +1169,7 @@ services:
       EDGE_API_URL: http://edge-api:8080
       # Tenant scope — no hardcoded enterprise ids in code; set here.
       INCOPLAST_ENTERPRISE_ID: "4"
-      INCOPLAST_TOPIC_PREFIX: GRANADO
+      INCOPLAST_TOPIC_PREFIX: INCOPLAST
       # Read-only Postgres resolver: packml_topic → staging ids. Creds come
       # from AWS Secrets Manager (CO-5: no plaintext password in compose env).
       # Connects to F1 `packiot` (packiot/staging/db) so the ids the adapter
