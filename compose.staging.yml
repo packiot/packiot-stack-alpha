@@ -641,6 +641,13 @@ services:
     image: prom/alertmanager:v0.27.0
     container_name: alertmanager
     restart: unless-stopped
+    # PARKED until the Slack webhook is provisioned. alertmanager needs the
+    # mounted `slack_api_url` secret (deferred); without it the container can't
+    # start and reddens the whole deploy. `profiles` gates it out of a plain
+    # `docker compose up` — re-enable by creating the secret file and running
+    # with `--profile alerting` (or delete this line). Prometheus keeps its
+    # alerting→alertmanager:9093 wiring; it simply no-ops while this is parked.
+    profiles: ["alerting"]
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -650,7 +657,9 @@ services:
       - alertmanager-data:/alertmanager
     networks:
       packiot-net:
-        ipv4_address: 172.18.0.6
+        # .6 collides with stack-simulator-1 (defined in the simulator compose
+        # overlay) → "Address already in use" on create. Moved to a free .32.
+        ipv4_address: 172.18.0.32
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
