@@ -92,3 +92,37 @@ cd services/edge-transformer && go test ./internal/s7/...
 > `internal/s7/softplc/softplc.go`. For a landed F1/F3 row the tag's topic must
 > exist `active` in `packml_register` for the tenant; the E2E proves the
 > PLC→SparkPlug mechanism, the routing is the same as any other producer.
+
+## C1 command channel (operator → PLC write-back)
+
+The inverse of ingest: a typed `Command` on AMQP `edge.commands.<tenant>` →
+`internal/command` consumer → executor translates the verb to a SparkPlug
+**DCMD** (`spBv1.0/<group>/DCMD/<edgeNode>`) → the PLC applies it. `plc-sim` is
+the receiving end in staging: it subscribes to the DCMD topic and mutates its
+state so the write is observable in its next NBIRTH/NDATA.
+
+**The two ends are proven to agree in CI** (`cmd/plc-sim/main_test.go`,
+`TestDCMD_ExecutorToSim_Contract`): the executor's *real* `BuildDCMD` output is
+fed straight into the sim's *real* decode+apply path — no broker, no mocks — and
+must land the intended write. This closes the seam where the executor emitted a
+DCMD and the sim consumed one but the two were never tested TOGETHER.
+
+Live end-to-end check against a running stack (pre-flip manual validation):
+
+```bash
+# 1. Watch the sim's output.
+docker compose -f compose.staging.yml logs -f plc-sim   # look for "DCMD applied"
+
+# 2. Publish a param_write command onto the tenant command exchange (RabbitMQ).
+#    Verb param_write on MachSpeed; the sim overrides its reported speed.
+docker exec rabbitmq sh -c 'rabbitmqadmin -u "$RABBITMQ_USER" -p "$RABBITMQ_PASSWORD" \
+  publish exchange=edge.commands routing_key=edge.commands.cpack \
+  payload='"'"'{"tenant":"cpack","packmlTopic":"CPACK/SC/LINHAS/L5/BREYER","verb":"param_write","params":{"parameter":"Status/MachSpeed","value":87.5},"idempotencyKey":"manual-test-1"}'"'"''
+
+# 3. Confirm: plc-sim logs "DCMD applied: MachSpeed override … value=87.5",
+#    re-births, and its next NDATA reports MachSpeed=87.5 for L5/BREYER.
+#    An ack lands on edge.commands.cpack.ack.
+```
+
+A rejected command (bad verb / missing param) is nacked to the DLX and acked
+`rejected` — never a partial PLC write (the fail-safe rule in `internal/command`).
