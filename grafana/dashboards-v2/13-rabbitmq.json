@@ -1,0 +1,121 @@
+{
+  "uid": "v2-rabbitmq",
+  "title": "v2 · Bus (RabbitMQ)",
+  "tags": ["packiot-v2", "rabbitmq", "bus"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": { "mode": "markdown", "content": "### RabbitMQ — the message bus (previously zero telemetry)\nFrom the built-in `rabbitmq_prometheus` plugin (:15692, aggregated cluster metrics). Complements the per-service AMQP counters on the Engine/Mirrors boards with the broker's own view: total backlog, publish/deliver rates, connections, memory/disk alarms. Metric names are the stable rabbitmq_prometheus set; **verify against the live plugin after first deploy** (the plugin isn't enabled until this ships). Per-queue detail needs the `/metrics/detailed` endpoint (follow-up)." }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Messages ready (backlog)",
+      "description": "sum(rabbitmq_queue_messages_ready) — messages waiting for a consumer. A sustained climb = consumers can't keep up.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1000 }, { "color": "red", "value": 50000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_queue_messages_ready)", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Messages unacked",
+      "description": "sum(rabbitmq_queue_messages_unacked) — delivered but not yet acked. A high steady value = slow/stuck consumers.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 500 }, { "color": "red", "value": 10000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_queue_messages_unacked)", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Connections",
+      "description": "sum(rabbitmq_connections) — open AMQP connections.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_connections)", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Broker alarms (memory / disk)",
+      "description": "rabbitmq_alarms_memory_used_watermark + rabbitmq_alarms_free_disk_space_watermark. 1 = an alarm is active → the broker BLOCKS publishers. Must be 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["max"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(rabbitmq_alarms_memory_used_watermark) + max(rabbitmq_alarms_free_disk_space_watermark)", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Queue backlog over time (ready vs unacked)",
+      "description": "The bus's depth — ready waiting + unacked in flight.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_queue_messages_ready)", "legendFormat": "ready", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_queue_messages_unacked)", "legendFormat": "unacked", "refId": "B" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Message throughput (publish vs deliver)",
+      "description": "rate(rabbitmq_global_messages_received_total) = published in; rate(rabbitmq_global_messages_delivered_total) = delivered out. Divergence = the bus filling or draining.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "mps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_received_total[5m]))", "legendFormat": "published", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_delivered_total[5m]))", "legendFormat": "delivered", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_redelivered_total[5m]))", "legendFormat": "redelivered (retries)", "refId": "C" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Broker memory used vs limit",
+      "description": "rabbitmq_process_resident_memory_bytes vs rabbitmq_resident_memory_limit_bytes. Approaching the limit trips the memory alarm (publishers blocked).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byName", "options": "limit" }, "properties": [ { "id": "custom.lineStyle", "value": { "dash": [6, 6], "fill": "dash" } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_process_resident_memory_bytes)", "legendFormat": "used", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "min(rabbitmq_resident_memory_limit_bytes)", "legendFormat": "limit", "refId": "B" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Queues + channels",
+      "description": "rabbitmq_queues + rabbitmq_channels — topology size. A runaway channel count is a client leak (the PID-1-zombie of AMQP).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_queues)", "legendFormat": "queues", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_channels)", "legendFormat": "channels", "refId": "B" }
+      ]
+    }
+  ]
+}
