@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/adapter"
+	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/secrets"
 )
 
 func main() {
@@ -64,11 +67,44 @@ func main() {
 	edgeURL := getenv("EDGE_API_URL", "http://edge-api:8080")
 	edge := adapter.NewEdgeClient(edgeURL, edgeKey, 10*time.Second)
 
+	// Read-only Postgres pool for the topic resolver. Connect to F1 `packiot`
+	// (where edge-api writes) so the ids we resolve are exactly the ones
+	// edge-api accepts. Creds come from AWS Secrets Manager (CO-5: no plaintext
+	// passwords in compose env).
+	ctx := context.Background()
+	region := getenv("AWS_REGION", "us-east-1")
+	pgSecretID := getenv("PG_SECRET_ID", "packiot/staging/db")
+	secretsCtx, secretsCancel := context.WithTimeout(ctx, 10*time.Second)
+	dbCreds, err := secrets.FetchDBCreds(secretsCtx, region, pgSecretID)
+	secretsCancel()
+	if err != nil {
+		logger.Error("fetch db secret failed",
+			slog.String("err", err.Error()),
+			slog.String("secret_id", pgSecretID))
+		os.Exit(1)
+	}
+	logger.Info("db secret fetched", slog.String("db", dbCreds.Redacted("operator-adapter")))
+
+	poolCtx, poolCancel := context.WithTimeout(ctx, 10*time.Second)
+	pool, err := db.New(poolCtx, dbCreds, "operator-adapter", logger)
+	poolCancel()
+	if err != nil {
+		logger.Error("postgres pool init failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	// Topic → staging id resolver. 5 min TTL on hits (packml_register changes
+	// only on CS Admin edits); 30 s on misses so unknown topics don't hammer
+	// the DB. enterprise scope is enforced inside the resolver (cross-tenant
+	// topics never resolve).
+	resolver := adapter.NewPGResolver(pool, entID, 5*time.Minute, 30*time.Second)
+
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(prometheus.NewGoCollector())
 	metrics := adapter.NewMetrics(reg)
 
-	srv := adapter.NewServer(cfg, edge, metrics, logger)
+	srv := adapter.NewServer(cfg, edge, resolver, metrics, logger)
 	mux := srv.Handler()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 

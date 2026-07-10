@@ -31,11 +31,13 @@ const (
 // the "change/trim" ids edit an existing one.
 func mapDowntime(req *DowntimeRequest, idEnterprise int) (*edgeCall, error) {
 	// Fields common to both edge paths, required by edge-api's @IsNotEmpty.
+	// id_equipment + cd_machine are filled by the adapter's topic resolver
+	// before mapping; a nil/empty here means resolution didn't run (invariant).
 	if req.IDEquipment == nil {
-		return nil, unmapped("id_equipment is required but was not supplied — the tee node must resolve topic %q to an id_equipment", req.Topic)
+		return nil, unmapped("id_equipment is required but was not resolved from packml_topic %q", req.PackmlTopic)
 	}
 	if strings.TrimSpace(req.CDMachine) == "" {
-		return nil, unmapped("cd_machine is required but was empty — edge-api marks cdMachine @IsNotEmpty")
+		return nil, unmapped("cd_machine is required but was not resolved from packml_topic %q (equipments.cd_equipment)", req.PackmlTopic)
 	}
 	if strings.TrimSpace(req.Category) == "" {
 		return nil, unmapped("category is required but was empty (edge cdCategory @IsNotEmpty)")
@@ -109,11 +111,11 @@ func mapPO(req *PORequest, idEnterprise int) (*edgeCall, error) {
 	case req.IDOrder == nil:
 		return nil, unmapped("id_order is required but was not supplied (operator-selected order number, msg.payload.new_po)")
 	case req.IDSite == nil:
-		return nil, unmapped("id_site is required but was not supplied — the tee node must resolve topic %q to an id_site", req.Topic)
+		return nil, unmapped("id_site is required but was not resolved from packml_topic %q", req.PackmlTopic)
 	case req.IDArea == nil:
-		return nil, unmapped("id_area is required but was not supplied — the tee node must resolve topic %q to an id_area", req.Topic)
+		return nil, unmapped("id_area is required but was not resolved from packml_topic %q", req.PackmlTopic)
 	case req.IDEquipment == nil:
-		return nil, unmapped("id_equipment is required but was not supplied — the tee node must resolve topic %q to an id_equipment", req.Topic)
+		return nil, unmapped("id_equipment is required but was not resolved from packml_topic %q", req.PackmlTopic)
 	case req.ProductionOrderQuantity == nil:
 		return nil, unmapped("production_order_quantity is required but was not supplied (po.production_programmed)")
 	case strings.TrimSpace(req.Timestamp) == "":

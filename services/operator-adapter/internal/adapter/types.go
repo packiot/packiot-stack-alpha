@@ -34,14 +34,15 @@ package adapter
 //	30813 trim_event (edit)  -> edit-manual-event
 //	30814 trim_event2 (edit) -> edit-manual-event
 type DowntimeRequest struct {
-	Enterprise *int   `json:"enterprise"` // scope: must equal configured Incoplast enterprise id
-	Topic      string `json:"topic"`      // app_user_topic; scope-checked against topic prefix
+	Enterprise  *int   `json:"enterprise"`   // scope: must equal configured Incoplast enterprise id
+	Topic       string `json:"topic"`        // app_user_topic; scope-checked against topic prefix
+	PackmlTopic string `json:"packml_topic"` // SparkPlug packml_topic; the adapter resolves it → staging ids
 
 	IDParam          int  `json:"id_param"`           // 30810..30814, selects create vs edit
-	IDEquipment      *int `json:"id_equipment"`       // resolved by tee node from topic; REQUIRED
+	IDEquipment      *int `json:"id_equipment"`       // resolved by the adapter from packml_topic; NOT sent by the tee
 	IDEquipmentEvent *int `json:"id_equipment_event"` // set_event_id; REQUIRED for edit path
 
-	CDMachine string `json:"cd_machine"` // equipment code; REQUIRED (edge @IsNotEmpty)
+	CDMachine string `json:"cd_machine"` // resolved by the adapter (equipments.cd_equipment); NOT sent by the tee
 
 	TSEvent string `json:"ts_event"` // ISO 8601 start; REQUIRED
 	TSEnd   string `json:"ts_end"`   // ISO 8601 end;   REQUIRED
@@ -70,13 +71,14 @@ type DowntimeRequest struct {
 // the equipment via the topic. The tee node posts the order number plus the
 // hierarchy ids it already holds in the matched `_POs` object + entity context.
 type PORequest struct {
-	Enterprise *int   `json:"enterprise"` // scope: must equal configured Incoplast enterprise id
-	Topic      string `json:"topic"`      // app_user_topic; scope-checked
+	Enterprise  *int   `json:"enterprise"`   // scope: must equal configured Incoplast enterprise id
+	Topic       string `json:"topic"`        // app_user_topic; scope-checked
+	PackmlTopic string `json:"packml_topic"` // SparkPlug packml_topic; the adapter resolves it → staging ids
 
 	IDOrder                 *int   `json:"id_order"`                  // operator-selected order number; REQUIRED
-	IDSite                  *int   `json:"id_site"`                   // resolved from topic; REQUIRED
-	IDArea                  *int   `json:"id_area"`                   // resolved from topic; REQUIRED
-	IDEquipment             *int   `json:"id_equipment"`              // resolved from topic; REQUIRED
+	IDSite                  *int   `json:"id_site"`                   // resolved by the adapter from packml_topic; NOT sent by the tee
+	IDArea                  *int   `json:"id_area"`                   // resolved by the adapter from packml_topic; NOT sent by the tee
+	IDEquipment             *int   `json:"id_equipment"`              // resolved by the adapter from packml_topic; NOT sent by the tee
 	ProductionOrderQuantity *int   `json:"production_order_quantity"` // po.production_programmed; REQUIRED
 	Timestamp               string `json:"timestamp"`                 // 'YYYY-MM-DD HH:mm:ss'; REQUIRED
 
@@ -149,6 +151,8 @@ const (
 	outcomeUnauthorized    = "unauthorized"
 	outcomeForbidden       = "forbidden"
 	outcomeUnmapped        = "unmapped"
+	outcomeUnresolved      = "unresolved"     // packml_topic → staging id resolution failed (422)
+	outcomeResolverError   = "resolver_error" // resolver DB/transport error (503)
 	outcomeBadRequest      = "bad_request"
 	outcomeEdge4xx         = "edge_4xx"
 	outcomeEdge5xx         = "edge_5xx"
