@@ -205,6 +205,17 @@ func (w *EquipmentValues) BuildEventMint(ctx context.Context, m *sparkplug.Metri
 	if err != nil || info == nil {
 		return nil, err
 	}
+	// Only status_type=4 equipment is in the events deriver's scope (ADR-0014
+	// P3a converts their raw per-sample mints into interval events + deletes
+	// the non-transition rows). For status_type!=4 equipment (lines/sectors and
+	// non-state machines), the deriver never cleans up, so a per-sample mint
+	// here leaves open (ts_end NULL) events that the running_time compute counts
+	// to now() — a massive over-count (eq=51: 6914 open events → 44,182 h/day
+	// vs legacy's 13.6). Prod mints for these via line-aggregation
+	// (forced_creation_system), not per-sample. So: gate to the deriver's scope.
+	if info.StatusType != 4 {
+		return nil, nil
+	}
 	var value float64
 	if err := json.Unmarshal(m.Value, &value); err != nil {
 		return nil, fmt.Errorf("parse state value (name=%s): %w", m.Name, err)

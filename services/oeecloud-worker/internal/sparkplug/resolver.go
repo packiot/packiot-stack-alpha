@@ -21,6 +21,11 @@ type EquipmentInfo struct {
 	IDEquipment   int
 	SignalQuality *int
 	DayBegin      *int // areas.day_begin (used by shift trigger downstream)
+	// StatusType is equipments.status_type. Only status_type=4 equipment
+	// report StateCurrent that the events deriver (ADR-0014 P3a) converts to
+	// interval events; BuildEventMint gates on it so it never mints raw
+	// per-sample events for equipment the deriver won't clean (0 = absent).
+	StatusType int
 }
 
 // Resolver maps packml_topic → EquipmentInfo. Memoised in-process —
@@ -105,9 +110,10 @@ func (r *Resolver) Resolve(ctx context.Context, topic string) (*EquipmentInfo, e
 func (r *Resolver) query(ctx context.Context, topic string) (*EquipmentInfo, error) {
 	const q = `
 		SELECT pr.id_enterprise, pr.id_site, pr.id_area, pr.id_equipment,
-		       pr.signal_quality, a.day_begin
+		       pr.signal_quality, a.day_begin, COALESCE(e.status_type, 0)
 		  FROM packml_register pr
 		  JOIN areas a ON a.id_area = pr.id_area
+		  LEFT JOIN equipments e ON e.id_equipment = pr.id_equipment
 		 WHERE pr.packml_topic = $1
 		   AND pr.active = true
 		 LIMIT 1
@@ -115,7 +121,7 @@ func (r *Resolver) query(ctx context.Context, topic string) (*EquipmentInfo, err
 	row := r.pool.QueryRow(ctx, q, topic)
 	var info EquipmentInfo
 	err := row.Scan(&info.IDEnterprise, &info.IDSite, &info.IDArea,
-		&info.IDEquipment, &info.SignalQuality, &info.DayBegin)
+		&info.IDEquipment, &info.SignalQuality, &info.DayBegin, &info.StatusType)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
