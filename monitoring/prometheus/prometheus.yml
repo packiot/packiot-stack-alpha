@@ -105,3 +105,11 @@ scrape_configs:
   - job_name: edge-api
     static_configs:
       - targets: ['edge-api:8080']
+
+  # rabbitmq: the message bus — previously ZERO telemetry (obs-doc gap). The
+  # built-in rabbitmq_prometheus plugin (enabled via monitoring/rabbitmq/
+  # enabled_plugins) exposes aggregated metrics on :15692 — queue depth, ready/
+  # unacked, publish/deliver rates, connections, memory, the DLQ backlog.
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ['rabbitmq:15692']

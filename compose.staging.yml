@@ -107,6 +107,10 @@ services:
       - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      # Enable the built-in rabbitmq_prometheus plugin (exposes :15692/metrics —
+      # queue depth, message rates, connections, memory) alongside the
+      # management UI. Overrides the image default, so management is listed too.
+      - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.5
