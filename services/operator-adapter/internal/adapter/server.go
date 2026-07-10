@@ -66,8 +66,49 @@ func (s *Server) Handler() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/operator/downtime", s.handleDowntime)
 	mux.HandleFunc("/operator/po", s.handlePO)
+	// Full PO lifecycle surface (see po_lifecycle.go). Each maps 1:1 to an
+	// edge-api production-orders endpoint.
+	mux.HandleFunc("/operator/po/stop", s.handlePOStop)
+	mux.HandleFunc("/operator/po/setup", s.handlePOSetup)
+	mux.HandleFunc("/operator/po/replace", s.handlePOReplace)
+	mux.HandleFunc("/operator/po/change-status", s.handlePOStatus)
+	mux.HandleFunc("/operator/po/change-time", s.handlePOTime)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	return mux
+}
+
+// scoped is the seam the generic pre-flight reads: every operator request
+// exposes the (enterprise, packml_topic) pair the tenant scope gate checks. The
+// two original requests implement it directly (types.go); the newer PO requests
+// get it for free by embedding operatorScope.
+type scoped interface {
+	scopeFields() (*int, string)
+}
+
+// pre runs the invariant pre-flight shared by every operator handler:
+// POST-only → auth → JSON decode → tenant scope. It writes the correct error
+// response (405/401/400/403) and returns false on any failure so the caller can
+// simply `if !s.pre(...) { return }`. Keeping this in one place means a new
+// action can never accidentally skip auth or the scope gate.
+func (s *Server) pre(w http.ResponseWriter, r *http.Request, action string, dst scoped) bool {
+	if r.Method != http.MethodPost {
+		s.reject(w, action, outcomeBadRequest, http.StatusMethodNotAllowed, "method not allowed")
+		return false
+	}
+	if !s.authOK(r) {
+		s.reject(w, action, outcomeUnauthorized, http.StatusUnauthorized, "invalid or missing X-Ingest-Key")
+		return false
+	}
+	if err := decodeJSON(r, dst); err != nil {
+		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	ent, topic := dst.scopeFields()
+	if !s.scopeOK(ent, topic) {
+		s.reject(w, action, outcomeForbidden, http.StatusForbidden, "action is not scoped to the configured Incoplast enterprise")
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -123,21 +164,8 @@ func (s *Server) scopeOK(enterprise *int, topic string) bool {
 
 func (s *Server) handleDowntime(w http.ResponseWriter, r *http.Request) {
 	const action = "downtime"
-	if r.Method != http.MethodPost {
-		s.reject(w, action, outcomeBadRequest, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.authOK(r) {
-		s.reject(w, action, outcomeUnauthorized, http.StatusUnauthorized, "invalid or missing X-Ingest-Key")
-		return
-	}
 	var req DowntimeRequest
-	if err := decodeJSON(r, &req); err != nil {
-		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	if !s.scopeOK(req.Enterprise, req.PackmlTopic) {
-		s.reject(w, action, outcomeForbidden, http.StatusForbidden, "action is not scoped to the configured Incoplast enterprise")
+	if !s.pre(w, r, action, &req) {
 		return
 	}
 	// Resolve packml_topic → staging ids (id_equipment + cd_machine). The tee
@@ -159,21 +187,8 @@ func (s *Server) handleDowntime(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePO(w http.ResponseWriter, r *http.Request) {
 	const action = "po"
-	if r.Method != http.MethodPost {
-		s.reject(w, action, outcomeBadRequest, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.authOK(r) {
-		s.reject(w, action, outcomeUnauthorized, http.StatusUnauthorized, "invalid or missing X-Ingest-Key")
-		return
-	}
 	var req PORequest
-	if err := decodeJSON(r, &req); err != nil {
-		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	if !s.scopeOK(req.Enterprise, req.PackmlTopic) {
-		s.reject(w, action, outcomeForbidden, http.StatusForbidden, "action is not scoped to the configured Incoplast enterprise")
+	if !s.pre(w, r, action, &req) {
 		return
 	}
 	// Resolve packml_topic → staging hierarchy ids (id_equipment/id_area/id_site).

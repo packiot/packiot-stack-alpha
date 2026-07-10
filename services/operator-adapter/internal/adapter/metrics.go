@@ -10,10 +10,13 @@ import (
 // only operational question this shim raises: "are operator actions reaching
 // edge-api, and with what result?"
 //
-// Label cardinality is deliberately bounded:
-//   - action:  "downtime" | "po"
+// Label cardinality is deliberately bounded (one label per route + one per
+// outcome — both closed sets defined in code, never caller-derived):
+//   - action:  "downtime" | "po" | "po_stop" | "po_setup" | "po_replace" |
+//     "po_change_status" | "po_change_time"
 //   - outcome: "accepted" | "unauthorized" | "forbidden" | "unmapped" |
-//     "bad_request" | "edge_4xx" | "edge_5xx" | "edge_unreachable"
+//     "unresolved" | "resolver_error" | "bad_request" | "edge_4xx" |
+//     "edge_5xx" | "edge_unreachable"
 //
 // PII (operator name, notes, PO numbers) NEVER becomes a label — that would
 // both leak data into the metrics store and blow up cardinality.

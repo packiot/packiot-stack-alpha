@@ -44,12 +44,38 @@ ambiguous (>1 active `packml_register` row) never resolves — the handler retur
 
 ## Endpoints
 
-| Method | Path | Maps to edge-api |
-|--------|------|------------------|
-| POST | `/operator/downtime` | `create-manual-event` (id_param 30810/30811) or `edit-manual-event` (30812/30813/30814) |
-| POST | `/operator/po` | `create-and-start` |
-| GET | `/healthz` | liveness + **DB pool reachability** (`{"healthy":true,"db":true}`; 503 if the resolver's pool is down) |
-| GET | `/metrics` | Prometheus (`operator_adapter_requests_total{action,outcome}`) |
+| Method | Path | Maps to edge-api | user_logs eventType |
+|--------|------|------------------|---------------------|
+| POST | `/operator/downtime` | `create-manual-event` (id_param 30810/30811) or `edit-manual-event` (30812/30813/30814) | `manual-event-created` / `manual-event-edited` |
+| POST | `/operator/po` | `create-and-start` | `order-created-started` |
+| POST | `/operator/po/stop` | `stop` | `order-stopped` |
+| POST | `/operator/po/setup` | `setup` (close current + optionally open next) | `order-changed` |
+| POST | `/operator/po/replace` | `replace` | `order-replaced` |
+| POST | `/operator/po/change-status` | `change-status` | `order-status-changed` |
+| POST | `/operator/po/change-time` | `change-time` | `order-time-changed` |
+| GET | `/healthz` | liveness + **DB pool reachability** (`{"healthy":true,"db":true}`; 503 if the resolver's pool is down) | — |
+| GET | `/metrics` | Prometheus (`operator_adapter_requests_total{action,outcome}`) | — |
+
+The five `/operator/po/*` routes are **action-driven**, one per edge-api
+production-orders endpoint — *not* a decoder of Incoplast's raw SparkPlug
+`Parameter[30800..30803]` convention. The adapter is an anti-corruption layer
+whose stable contract is edge-api's own semantics; each client's tee node does
+the small translation from its private flow representation to these routes. That
+keeps the adapter client-agnostic (one route == one endpoint == one eventType)
+instead of coupling it to one factory's parameter encoding. Every `/operator/po/*`
+route resolves `packml_topic` → staging ids and shares the same
+auth/scope/422/503 semantics as `/operator/downtime`.
+
+### Scrap is NOT a route here (it's data-path)
+
+In the operator flow, scrap corrections are emitted as **counter metrics**
+(`Admin/ProdDefectiveCount` / `ProdConsumedCount` / `ProdProcessedCount`, plus a
+`Parameter[30850]` marker) — raw time-series, not an edge-api call. **edge-api
+has no scrap endpoint**; final good-count corrections ride *inside* the stop /
+setup bodies (`productionOrderQuantity` / `oldProductionOrderProdFinal`). So
+scrap is bridged by the **data tee** (→ `ingest-shim` → worker → `equipment_values`),
+exactly like PLC counters — never by this adapter. If you need to mirror scrap,
+tee those counter metrics through the data path, not `/operator/*`.
 
 ### Auth & scope
 
@@ -141,6 +167,72 @@ Routing: `id_param` 30810/30811 → **create-manual-event**; 30812/30813/30814 �
 | `notes` | `txtProductionOrderNotes` | optional |
 | `id_label` | `idLabel` | optional — omitted if absent |
 | `enterprise` + `→idEnterprise=` | `idEnterprise` | injected from config |
+
+### `/operator/po/*` — PO lifecycle → edge-api production-orders
+
+Every route below resolves `packml_topic` → `idEquipment` (and `idArea`/`idSite`
+for `setup`). The tee sends the topic + the fields it owns from flow context (the
+matched `_POs` object / `msg.payload`). Required fields (fail-closed 422 if absent):
+
+| Route | edge-api DTO | Required inbound fields (beyond `packml_topic`) | Optional |
+|-------|--------------|--------------------------------------------------|----------|
+| `stop` | `StopProductionOrderDto` | `timestamp`, `stop_type` (`pause`\|`finish` or `1`\|`2`), `id_production_order`, `production_order_quantity` | — |
+| `setup` | `SetupProductionOrderDto` | `timestamp`, `should_open_new_po`, `stop_type`, `old_id_production_order`, `old_production_order_prod_final` (+ `id_order` when `should_open_new_po`+`should_create_po`; `id_production_order` when opening an existing next PO) | `production_order_quantity`, `id_label`, `nm_production_order`, `notes` |
+| `replace` | `ReplaceProductionOrderDto` | `id_production_order` (the PO to switch to) | — |
+| `change-status` | `ChangeStatusProductionOrderDto` | `id_production_order` | — |
+| `change-time` | `ChangeTimeProductionOrderDto` | `id_production_order_runtime`, `id_production_order`, `start` | `end` |
+
+`stop_type` accepts edge-api's canonical `pause`/`finish` **or** Incoplast's
+numeric convention (`1` = interrupt→`pause`, `2` = `finish`), so the tee can
+forward `msg.payload['stop_type']` as-is. `id_enterprise` and the resolved
+`idEquipment`/`idArea`/`idSite` are never trusted from the caller — the adapter
+injects config + resolver values.
+
+Incoplast node → route: `change po - open e close` maps to **setup** when it
+opens the next PO (`new_po != no_new_po`) and to **stop** when it only closes;
+`change PO PackML` (set_po_number) maps to **replace**; the `po_manual_change_*`
+and time-correction actions map to **change-status** / **change-time**.
+
+Tee example (off `change po - open e close`, close-and-open-next → **setup**):
+
+```javascript
+// Runs off the `change po - open e close` output wire.
+// stop_type comes straight from the node (1=interrupt, 2=finish).
+msg.headers = { 'X-Ingest-Key': env.get('OPERATOR_API_KEY'), 'Content-Type': 'application/json' };
+msg.method = 'POST';
+var opensNext = msg.payload['new_po'] !== 'no_new_po';
+var nextPo = (global.get('_POs') || []).find(p => p.id_order == msg.payload['new_po']) || {};
+if (opensNext) {
+    msg.url = 'https://operator-adapter:8443/operator/po/setup';
+    msg.payload = {
+        enterprise:                     4,
+        packml_topic:                   flow.get('packml_topic_' + msg.socketid),
+        timestamp:                      new Date(msg.payload['ts_po_end']).toISOString().slice(0,19).replace('T',' '),
+        should_open_new_po:             true,
+        should_create_po:               false,               // reuse the already-created next PO row
+        stop_type:                      msg.payload['stop_type'], // 1|2 → pause|finish
+        old_id_production_order:        msg.payload['current_po'],
+        old_production_order_prod_final: msg.payload['po_manual_change_real_quantity'],
+        id_production_order:            nextPo.id_production_order,
+        production_order_quantity:      nextPo.production_programmed,
+        nm_production_order:            nextPo.nm_product
+    };
+} else {
+    msg.url = 'https://operator-adapter:8443/operator/po/stop';
+    msg.payload = {
+        enterprise:                4,
+        packml_topic:              flow.get('packml_topic_' + msg.socketid),
+        timestamp:                 new Date(msg.payload['ts_po_end']).toISOString().slice(0,19).replace('T',' '),
+        stop_type:                 msg.payload['stop_type'],
+        id_production_order:       msg.payload['current_po'],
+        production_order_quantity: msg.payload['po_manual_change_real_quantity']
+    };
+}
+return msg;
+```
+
+`replace` / `change-status` / `change-time` follow the same shape — set `msg.url`
+to the route and `msg.payload` to the required fields from the table above.
 
 ## What the tee sends vs. what the adapter resolves
 
