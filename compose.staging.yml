@@ -142,6 +142,58 @@ services:
         ipv4_address: 172.18.0.200
     mem_limit: 64m
 
+  # ── S7 end-to-end (profile: s7) — S1/#32 PR3 ──────────────────────────────────
+  # Opt-in scaffolding to run the REAL S7 read path live in staging, where there
+  # is no physical PLC. Neither service starts in the default bring-up; enable
+  # with `--profile s7` (or COMPOSE_PROFILES=s7). Flow:
+  #
+  #   s7-softplc  --(S7comm / ISO-on-TCP :102)-->  s7-reader
+  #     (pure-Go in-memory PLC, counters climb)      (gos7 client → SparkPlug B)
+  #                                                       │ NBIRTH/NDATA over MQTT
+  #                                                       ▼
+  #                                              mosquitto → edge-transformer → F1/F3
+  #
+  # This proves the gos7 wire path + tag→PackML mapping end-to-end against a real
+  # S7 endpoint, with no Snap7/C library and no CGo (the soft-PLC is pure Go; the
+  # same server type backs the internal/s7/softplc wire-level unit test).
+  s7-softplc:
+    profiles: ["s7"]
+    build:
+      context: ./services/edge-transformer
+    entrypoint: ["/usr/local/bin/s7-softplc"]
+    environment:
+      LISTEN_ADDR: ":102"      # S7 ISO-on-TCP port
+      S7_DB: "100"             # data block the demo tags read
+      SOFTPLC_TICK_SEC: "5"    # counters advance every 5s so OEE sees production
+    restart: unless-stopped
+    networks: [packiot-net]    # reachable as s7-softplc:102 on the compose net
+    mem_limit: 32m
+
+  s7-reader:
+    profiles: ["s7"]
+    build:
+      context: ./services/edge-transformer
+    entrypoint: ["/usr/local/bin/s7-reader"]
+    environment:
+      MQTT_BROKER_URL: "tcp://mosquitto:1883"
+      S7_HOST: "s7-softplc:102"   # the soft-PLC (a real S7 line sets this to the PLC)
+      S7_RACK: "0"
+      S7_SLOT: "2"
+      S7_GROUP: "INCOPLAST"       # SparkPlug group_id / tenant (first topic segment)
+      S7_EDGE_NODE: "s7-reader"
+      S7_TICK_SEC: "5"
+      # Demo tag set (no CLIENT_CONFIG): DB100 → the four NOVOFLEX_15 tags in
+      # cmd/s7-reader. For a landed F1/F3 row the topic must exist active in
+      # packml_register for the tenant; the mechanism here is PLC → SparkPlug.
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      s7-softplc:
+        condition: service_started
+    restart: unless-stopped
+    networks: [packiot-net]
+    mem_limit: 64m
+
   # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ──────────────────────────
   # Factory-side MQTT broker. PLCs publish Sparkplug B here; edge-transformer
   # subscribes to `spBv1.0/+/+/+/+` and bridges the decoded data into RabbitMQ.
