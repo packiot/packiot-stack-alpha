@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -34,6 +35,10 @@ func New(ctx context.Context, creds *secrets.DBCreds, appName string, logger *sl
 	// queries as text with client-side param interpolation — correct under
 	// transaction pooling, negligible cost at our query volume.
 	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+
+	// otelpgx emits a span per query, so a resolver lookup shows up as a DB
+	// child span under the operator-action trace. No-op when tracing is off.
+	pc.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	p, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
