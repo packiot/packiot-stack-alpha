@@ -566,6 +566,13 @@ services:
       DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/postgres?sslmode=disable"
       PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
       PG_EXPORTER_EXCLUDE_DATABASES: "template0,template1,authentik"
+      # Deep DB metrics beyond the built-ins — connections-by-state, cache hit,
+      # locks, longest query, tuple/deadlock/temp rates, table + hypertable
+      # sizes. Cluster-wide queries are master:true so auto-discover doesn't
+      # duplicate them per-DB. Consumed by the "Database" v2 Grafana board.
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/pgexporter/queries.yaml
+    volumes:
+      - ./monitoring/postgres-exporter/queries.yaml:/etc/pgexporter/queries.yaml:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.28
