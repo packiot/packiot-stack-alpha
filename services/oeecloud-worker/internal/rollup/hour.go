@@ -157,12 +157,23 @@ const hourEventsSQL = `
 	)
 	UPDATE %[1]s.equipment_runtime_1hour e SET
 	       available_time   = COALESCE(ev.ts_total - ev.ts_planned, 0),
-	       running_time     = COALESCE(ev.ts_running, 0),
-	       stopped_time     = COALESCE(ev.ts_stopped, 0),
-	       planned_downtime = ev.ts_planned,
+	       -- Physical invariant: time-in-state within an hour bucket cannot
+	       -- exceed the bucket's own elapsed wall-clock (ev.ts_total). The
+	       -- event sums above are per-event clipped to the hour, but OVERLAPPING
+	       -- events (e.g. a line minting one running event per member machine)
+	       -- sum past ts_total → a 6-machine line reads 6×3600, and eq51 ran to
+	       -- 135M/hr, whose 24h day-rollup SUM overflowed int4 (SQLSTATE 22003)
+	       -- and crashed the whole shadow rollup (2026-07-10 incident). LEAST is
+	       -- a no-op on correct data (F1 never exceeds ts_total) and matches F1's
+	       -- ≤3600 semantics; it bounds any event-layer over-mint so it can never
+	       -- overflow or crash a downstream grain. Deeper line-running-time
+	       -- semantics (union of intervals vs sum) tracked separately.
+	       running_time     = LEAST(COALESCE(ev.ts_running, 0),    ev.ts_total),
+	       stopped_time     = LEAST(COALESCE(ev.ts_stopped, 0),    ev.ts_total),
+	       planned_downtime = LEAST(ev.ts_planned,                 ev.ts_total),
 	       ideal_production = COALESCE(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0),
-	       downtime         = COALESCE(ev.ts_downtime, 0),
-	       changeover_time  = COALESCE(ev.ts_changeover, 0),
+	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
+	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
 	       oee = COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
 	  FROM ev
