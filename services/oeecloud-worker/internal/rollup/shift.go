@@ -204,9 +204,14 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	}
 	defer tx.Rollback(ctx)
 	// Serialize against runtime-provision (recurring hourly deadlocks:
-	// provision upserts vs rollup re-flags on the same grain tables).
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
-		return 0, fmt.Errorf("advisory lock: %w", err)
+	// provision upserts vs rollup re-flags on the same grain tables). NON-blocking:
+	// if provision holds the lock (it can run minutes under I/O pressure), skip this
+	// tick and retry — the flagged rows stay queued — rather than block and die on
+	// the pool's statement_timeout. See tryRuntimeLock.
+	if got, err := tryRuntimeLock(ctx, tx, d.Name); err != nil {
+		return 0, fmt.Errorf("advisory try-lock: %w", err)
+	} else if !got {
+		return 0, tx.Commit(ctx)
 	}
 	tag, err := tx.Exec(ctx, fmt.Sprintf(shiftEligibleSQL, d.EvSchema, d.RefSchema, limit),
 		exclAreas, exclEnterprises, machineLevelEnterprises)
