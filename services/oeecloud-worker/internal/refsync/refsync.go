@@ -34,17 +34,29 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/jobs"
 )
 
-// referenceTables is the drifting master set, in FK-safe order (parents first).
-// The already-synced hierarchy (enterprises/sites/areas/shifts/shift_hours) and
-// the flow/output tables are deliberately excluded. production_orders is NOT
-// here: it is written per-flow by pocontrol (a hybrid seed+tail), so a blanket
-// upsert would clobber F3's own minted rows — it needs a separate seed strategy.
+// referenceTables is the drifting master set this job can reconcile with a
+// plain PK upsert, in FK-safe order (parents first). Verified live: these were
+// empty-or-id-aligned in packiot_shadow, so upsert brings them to parity cleanly
+// (production_targets 0→24 was the biggest identity driver).
+//
+// Deliberately EXCLUDED and why:
+//   - enterprises/sites/areas/shifts/shift_hours — already in sync.
+//   - flow/output tables (equipment_values/_runtime_*, uns_*) — per-flow outputs.
+//   - equipments — shadow carries machines main doesn't (ids 109-112) AND shares
+//     only a subset of ids; a PK upsert ADDS main's rows without removing the
+//     extras (count drifts further) and the extras are FK-pinned by
+//     equipment_runtime. Needs a natural-key + FK-aware reconciliation.
+//   - packml_register — shadow has an independent id space; PK upsert collides on
+//     the packml_topic UNIQUE. Needs a natural-key (packml_topic) merge that
+//     lets shadow keep its own serial ids.
+//   - production_orders — written per-flow by pocontrol (hybrid seed+tail); a
+//     blanket upsert would clobber F3's minted rows; its historical seed needs a
+//     separate strategy.
+// The three above are tracked as follow-up reconciliation work.
 var referenceTables = []string{
 	"clients",
 	"product_families",
 	"products",
-	"equipments",
-	"packml_register",
 	"production_targets",
 }
 
