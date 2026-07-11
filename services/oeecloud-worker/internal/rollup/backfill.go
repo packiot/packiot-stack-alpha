@@ -87,9 +87,17 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		return 0, fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	// Same lock the live rollup + provision take — serializes grain writes.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
-		return 0, fmt.Errorf("advisory lock: %w", err)
+	// Same lock the live rollup + provision take — serializes grain writes. But
+	// TRY (non-blocking): the backfill is best-effort background work, so if the
+	// live rollup holds the lock we skip this tick rather than block. Blocking
+	// here on the main pool (pgbouncer, 120s statement_timeout) was what timed
+	// out the F2 backfill; a skip-and-retry-next-tick can never do that.
+	var gotLock bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime").Scan(&gotLock); err != nil {
+		return 0, fmt.Errorf("advisory try-lock: %w", err)
+	}
+	if !gotLock {
+		return 0, tx.Commit(ctx) // live rollup holds it — retry next tick
 	}
 	tag, err := tx.Exec(ctx, fmt.Sprintf(hourBackfillEligibleSQL, d.EvSchema, d.RefSchema, limit), exclAreas, exclEnterprises)
 	if err != nil {
