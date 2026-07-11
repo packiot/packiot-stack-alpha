@@ -38,6 +38,23 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 )
 
+// BOUNDED per-tick (%[3]d = LIMIT). The eligible set spans a 30-day window and,
+// because shift rows are partitioned by (id_shift × ts_value_production), can hold
+// thousands of flagged rows after any burst (an incident, a poison purge, a manual
+// reflag). RunShift processes shift_elig in ONE transaction, so an unbounded set
+// under I/O pressure (e.g. concurrent cagg materialization) blows the tick's
+// context deadline and rolls back WHOLESALE — committing nothing, draining nothing,
+// forever (observed 2026-07-11: F2=5517 / F3=2076 stuck; #437's running_time cap
+// never reaching the stale rows). LIMIT makes every tick commit a bounded slice, so
+// the backlog drains monotonically over ticks (same discipline as backfill.go).
+//
+// ORDER BY ts_value ASC (oldest-first): the recent tail is re-flagged EVERY tick by
+// shiftReflagSQL, so newest-first would let that fresh reflag perpetually crowd out
+// the old backlog and it would never drain. Oldest-first drains the backlog to zero;
+// once drained, only the small recent set remains and each tick clears it promptly.
+// LIMIT is pure row-selection — it never changes HOW a selected row is computed, so
+// parity with prod's per-row math is preserved (ShiftStatementsForParity passes an
+// effectively-unbounded limit to compare the full set).
 const shiftEligibleSQL = `
 	CREATE TEMP TABLE shift_elig ON COMMIT DROP AS
 	SELECT e.id_equipment, e.ts_value, e.ts_end, e.ts_value_production,
@@ -53,7 +70,9 @@ const shiftEligibleSQL = `
 	        WHERE tp_equipment > 1 AND NOT (id_area = ANY($1))
 	       UNION ALL
 	       SELECT id_equipment FROM %[2]s.equipments
-	        WHERE tp_equipment = 1 AND id_enterprise = ANY($3))`
+	        WHERE tp_equipment = 1 AND id_enterprise = ANY($3))
+	 ORDER BY e.ts_value ASC
+	 LIMIT %[3]d`
 
 // IDEAL-SPEED SOURCE (line-OEE fix, same mechanism as hour.go):
 // prod's ca_agg_equipment_values_1hour rows inherit the trigger
@@ -174,21 +193,35 @@ const shiftReflagSQL = `
 	       SELECT id_equipment FROM %[2]s.equipments
 	        WHERE tp_equipment = 1 AND id_enterprise = ANY($2))`
 
-// RunShift executes one shift pass for one destination — one tx.
-func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int) error {
+// RunShift executes one shift pass for one destination — one tx. It recomputes up
+// to `limit` of the OLDEST flagged shift rows and returns how many it processed
+// (0 = backlog empty). LoopGrains ticks every 60s, so a backlog drains `limit` rows
+// per tick until empty; the recent tail (shiftReflagSQL) then keeps it at zero.
+func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, limit int) (int64, error) {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin: %w", err)
+		return 0, fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	// Serialize against runtime-provision (recurring hourly deadlocks:
 	// provision upserts vs rollup re-flags on the same grain tables).
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
-		return fmt.Errorf("advisory lock: %w", err)
+		return 0, fmt.Errorf("advisory lock: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(shiftEligibleSQL, d.EvSchema, d.RefSchema),
-		exclAreas, exclEnterprises, machineLevelEnterprises); err != nil {
-		return fmt.Errorf("shift eligible: %w", err)
+	tag, err := tx.Exec(ctx, fmt.Sprintf(shiftEligibleSQL, d.EvSchema, d.RefSchema, limit),
+		exclAreas, exclEnterprises, machineLevelEnterprises)
+	if err != nil {
+		return 0, fmt.Errorf("shift eligible: %w", err)
+	}
+	n := tag.RowsAffected()
+	// Drive the value/event passes from this bounded batch via index seeks rather
+	// than seq-scanning the big ca_agg/events tables (same rationale as
+	// backfill.go: an un-analyzed temp table gives the planner no row estimate).
+	if _, err := tx.Exec(ctx, `CREATE INDEX ON shift_elig (id_equipment, ts_value)`); err != nil {
+		return 0, fmt.Errorf("shift elig index: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `ANALYZE shift_elig`); err != nil {
+		return 0, fmt.Errorf("shift elig analyze: %w", err)
 	}
 	steps := []struct{ name, sql string }{
 		{"values", fmt.Sprintf(shiftValuesSQL, d.EvSchema, d.RefSchema)},
@@ -199,20 +232,30 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	}
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
-			return fmt.Errorf("shift %s: %w", s.name, err)
+			return 0, fmt.Errorf("shift %s: %w", s.name, err)
 		}
 	}
+	// Reflag runs EVERY tick (even when the batch was empty) so the recent tail
+	// stays live — it is a small [now−12h, now+18h] window, independent of the
+	// bounded batch above.
 	if _, err := tx.Exec(ctx, fmt.Sprintf(shiftReflagSQL, d.EvSchema, d.RefSchema),
 		exclEnterprises, machineLevelEnterprises); err != nil {
-		return fmt.Errorf("shift reflag: %w", err)
+		return 0, fmt.Errorf("shift reflag: %w", err)
 	}
-	return tx.Commit(ctx)
+	return n, tx.Commit(ctx)
 }
+
+// parityShiftLimit keeps the parity emission effectively unbounded: the port
+// comparison must select the whole eligible set, not a per-tick slice. The LIMIT
+// is a runtime row-selection knob and changes no per-row computation, so an
+// unbounded parity run and a bounded production run compute identical values for
+// any row they share.
+const parityShiftLimit = 1 << 31 // ~2.1e9 rows — never binds in parity
 
 // Parity accessors (single-source emission).
 func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
 	return []struct{ Name, SQL string }{
-		{"eligible", fmt.Sprintf(shiftEligibleSQL, evSchema, refSchema)},
+		{"eligible", fmt.Sprintf(shiftEligibleSQL, evSchema, refSchema, parityShiftLimit)},
 		{"values", fmt.Sprintf(shiftValuesSQL, evSchema, refSchema)},
 		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, evSchema, refSchema)},
 		{"events-bank", fmt.Sprintf(shiftEventsSQL, evSchema)},
