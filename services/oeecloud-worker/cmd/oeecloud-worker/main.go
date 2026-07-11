@@ -32,6 +32,7 @@ import (
 	logp "github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/pocontrol"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/refsync"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/rollup"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/secrets"
@@ -249,6 +250,13 @@ func main() {
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			cfg.RollupBackfillLimit,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
+	}
+
+	// F3 reference-plane sync — mirror master tables main→packiot_shadow so F3
+	// rollups read the same reference plane as F2 (F2/F3 identity requirement).
+	if shadowPool != nil && cfg.RefSyncEnabled {
+		go refsync.Loop(ctx, pool, shadowPool,
+			time.Duration(cfg.RefSyncIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-provision (bucket matrix, hourly).
