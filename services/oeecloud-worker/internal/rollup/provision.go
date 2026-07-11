@@ -88,10 +88,21 @@ func RunProvision(ctx context.Context, d flows.Dest, logger *slog.Logger) error 
 	return firstErr
 }
 
-// LoopProvision schedules runtime-provision hourly.
-func LoopProvision(ctx context.Context, dests []flows.Dest, logger *slog.Logger, obs jobs.Observer) {
-	logger.Info("runtime-provision started (P3b matrix, transitional search_path strategy)")
-	jobs.Loop(ctx, jobs.Job{Name: "runtime-provision", Every: time.Hour, Timeout: 30 * time.Minute, Run: func(ctx context.Context) error {
+// LoopProvision schedules runtime-provision on the given interval.
+//
+// Provision materializes a 30-DAY horizon of future shift/hour/day buckets
+// (-4..+180 4-hour blocks) with ON CONFLICT DO NOTHING, so on any given run
+// ~99% of the buckets already exist and are skipped. Because the horizon is 30
+// days deep, running it hourly is wasteful: it re-walks the whole horizon (and,
+// until the piot_get_*_begin helper functions are optimized, that walk takes
+// 12-30 min while holding the shared runtime advisory lock, starving the rollup).
+// The 30-day buffer means a several-hour cadence is ample — the rollup always
+// finds current buckets already provisioned. `every` is configurable
+// (RUNTIME_PROVISION_INTERVAL_HOURS) so the lock-hold frequency can be tuned
+// down without changing which buckets get created.
+func LoopProvision(ctx context.Context, dests []flows.Dest, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("runtime-provision started (P3b matrix, transitional search_path strategy)", slog.Duration("every", every))
+	jobs.Loop(ctx, jobs.Job{Name: "runtime-provision", Every: every, Timeout: 30 * time.Minute, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
 			if err := RunProvision(ctx, d, logger); err != nil && firstErr == nil {

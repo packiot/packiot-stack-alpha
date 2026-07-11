@@ -259,9 +259,11 @@ func main() {
 			time.Duration(cfg.RefSyncIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
-	// ADR-0014 P3b — runtime-provision (bucket matrix, hourly).
+	// ADR-0014 P3b — runtime-provision (bucket matrix). Cadence configurable;
+	// the 30-day horizon makes hourly re-walks wasteful (see LoopProvision).
 	if cfg.RuntimeProvisionEnabled {
-		go rollup.LoopProvision(ctx, flows.Standard(pool, shadowPool), logger, jobObs)
+		provisionEvery := time.Duration(cfg.RuntimeProvisionIntervalHours) * time.Hour
+		go rollup.LoopProvision(ctx, flows.Standard(pool, shadowPool), provisionEvery, logger, jobObs)
 	}
 
 	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
