@@ -205,9 +205,13 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	}
 	defer tx.Rollback(ctx)
 	// Serialize against runtime-provision (recurring hourly deadlocks:
-	// provision upserts vs rollup re-flags on the same grain tables).
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime"); err != nil {
-		return fmt.Errorf("advisory lock: %w", err)
+	// provision upserts vs rollup re-flags on the same grain tables). NON-blocking:
+	// skip-and-retry if provision holds it rather than block on the pool's
+	// statement_timeout. See tryRuntimeLock.
+	if got, err := tryRuntimeLock(ctx, tx, d.Name); err != nil {
+		return fmt.Errorf("advisory try-lock: %w", err)
+	} else if !got {
+		return tx.Commit(ctx)
 	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(hourEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("hour eligible: %w", err)
