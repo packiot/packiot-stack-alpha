@@ -134,12 +134,19 @@ const shiftEventsSQL = `
 const shiftEventsUpdateSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET
 	       available_time   = COALESCE(ev.ts_total - ev.ts_planned, 0),
-	       running_time     = COALESCE(ev.ts_running, 0),
-	       stopped_time     = COALESCE(ev.ts_stopped, 0),
-	       planned_downtime = COALESCE(ev.ts_planned, 0),
+	       -- Same physical invariant as the hour grain (see hour.go): time-in-state
+	       -- within a shift bucket cannot exceed the shift's own elapsed wall-clock
+	       -- (ev.ts_total). Overlapping events (a line minting one running event
+	       -- per member machine) make the per-event-clipped sum exceed ts_total —
+	       -- observed live as a 6.7e9 shift running_time on F3 (line-event
+	       -- over-count). LEAST is a no-op on correct data and matches F1's ≤shift
+	       -- semantics; it bounds any over-mint from inflating this grain.
+	       running_time     = LEAST(COALESCE(ev.ts_running, 0),    ev.ts_total),
+	       stopped_time     = LEAST(COALESCE(ev.ts_stopped, 0),    ev.ts_total),
+	       planned_downtime = LEAST(COALESCE(ev.ts_planned, 0),    ev.ts_total),
 	       ideal_production = COALESCE(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0),
-	       downtime         = COALESCE(ev.ts_downtime, 0),
-	       changeover_time  = COALESCE(ev.ts_changeover, 0),
+	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
+	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
 	       oee = COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
 	  FROM shift_ev ev
