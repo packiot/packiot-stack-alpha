@@ -222,8 +222,11 @@ func main() {
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises),
 			time.Minute, logger, jobObs)
-		// Drain recalc_needed hour rows the live rollup can't reach (stranded
-		// outside its 65-min window) — bounded per tick, oldest-first.
+	}
+	// Drain recalc_needed hour rows the live rollup can't reach (stranded outside
+	// its 65-min window). OFF by default — see RollupBackfillEnabled: needs query
+	// work before it's safe to run against F2/F3.
+	if cfg.RuntimeRollupEnabled && cfg.RollupBackfillEnabled {
 		go rollup.LoopHourBackfill(ctx, flows.Standard(pool, shadowPool),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			cfg.RollupBackfillLimit,

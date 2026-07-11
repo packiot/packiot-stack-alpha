@@ -133,7 +133,11 @@ type Config struct {
 	RuntimeProvisionEnabled     bool
 	RuntimeRollupEnabled        bool
 	// Backfill drains recalc_needed hour rows stranded OUTSIDE the live rollup's
-	// 65-min window (bounded per tick, oldest-first). Runs when RuntimeRollup is on.
+	// 65-min window (bounded per tick, oldest-first). OFF by default: the first
+	// staging run showed the widened cagg join needs more query work (F3 values
+	// step > 5-min tick) and the main pool's 120s statement_timeout defeats the
+	// advisory-lock wait (F2). Re-enable once those are solved.
+	RollupBackfillEnabled        bool
 	RollupBackfillLimit          int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
 	BakeComparatorEnabled       bool
@@ -199,6 +203,7 @@ func Load() (*Config, error) {
 		PORecalcExcludedEnterprises:      getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
+		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "false") == "true",
 		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
