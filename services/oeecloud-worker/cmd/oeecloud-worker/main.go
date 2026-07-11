@@ -129,6 +129,24 @@ func main() {
 		defer shadowPool.Close()
 		logger.Info("shadow pool ready — source_type=refactored envelopes route here",
 			slog.String("shadow_db", cfg.PGShadowDBName))
+
+		// Ensure the shadow DB's TimescaleDB background-worker scheduler is
+		// running. The launcher does NOT reliably auto-start it for
+		// packiot_shadow (it skipped it — a scheduler was running for the stale
+		// 61 MB `packiot_refactor` leftover but not the live 676 MB shadow DB),
+		// leaving the 15 continuous-aggregate refresh policies DORMANT. That is
+		// the true root of the F3 rollup timeouts: unrefreshed caggs sit days
+		// behind, so every rollup query re-aggregates days of raw equipment_values
+		// on the fly (a 6-day lag = a 53s realtime HashAggregate per query).
+		// This call is idempotent and safe if the scheduler is already up, so
+		// running it on every worker start self-heals the scheduler after any
+		// DB restart. Best-effort: a failure here must not stop the worker.
+		if _, err := shadowPool.Exec(ctx, `SELECT _timescaledb_functions.start_background_workers()`); err != nil {
+			logger.Warn("could not start shadow TimescaleDB background workers — cagg refresh may lag",
+				slog.String("err", err.Error()))
+		} else {
+			logger.Info("ensured packiot_shadow TimescaleDB background workers are running (cagg refresh policies)")
+		}
 	}
 
 	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
