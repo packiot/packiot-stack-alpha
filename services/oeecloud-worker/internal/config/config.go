@@ -146,6 +146,7 @@ type Config struct {
 	RefSyncIntervalMinutes      int
 	RollupBackfillLimit          int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
+	RollupShiftLimit             int // shift rows recomputed per live rollup tick (bounds the tx so it can't roll back wholesale under load)
 	BakeComparatorEnabled       bool
 	// BakeEnterpriseIDs — CSV of enterprises the surface-parity bake runs
 	// per tenant. The FIRST id is the frozen "gate" tenant (CPACK) whose
@@ -213,6 +214,7 @@ func Load() (*Config, error) {
 		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
 		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
 		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
+		RollupShiftLimit:                 getenvInt("ROLLUP_SHIFT_LIMIT", 300),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
 		BakeEnterpriseIDs:                getenv("BAKE_ENTERPRISE_IDS", "3"),

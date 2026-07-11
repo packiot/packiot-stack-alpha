@@ -239,7 +239,7 @@ func main() {
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, flows.Standard(pool, shadowPool),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
-			config.CSVInts(cfg.RollupMachineLevelEnterprises),
+			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
 			time.Minute, logger, jobObs)
 	}
 	// Drain recalc_needed hour rows the live rollup can't reach (stranded outside
