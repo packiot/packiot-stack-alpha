@@ -138,6 +138,12 @@ type Config struct {
 	// (53s → 0.7s), and the advisory lock is now non-blocking (pg_try_...), so
 	// the main-pool 120s timeout can't bite. On by default with the live rollup.
 	RollupBackfillEnabled        bool
+	// RefSync mirrors master/reference tables (equipments, packml_register,
+	// production_targets, products, clients, …) main→packiot_shadow so F3 rollups
+	// read the same reference plane as F2 (the F2/F3 identity requirement). Runs
+	// only when the shadow DB is configured.
+	RefSyncEnabled              bool
+	RefSyncIntervalMinutes      int
 	RollupBackfillLimit          int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
 	BakeComparatorEnabled       bool
@@ -204,6 +210,8 @@ func Load() (*Config, error) {
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
+		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
+		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
 		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
