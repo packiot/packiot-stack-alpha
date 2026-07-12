@@ -91,7 +91,12 @@ SELECT time_bucket('00:01:00'::interval, equipment_values.ts_value) AS ts_value,
   GROUP BY (time_bucket('00:01:00'::interval, equipment_values.ts_value)), equipment_values.id_enterprise, equipment_values.id_site, equipment_values.id_area, equipment_values.id_equipment, equipment_values.tp_equipment
 WITH NO DATA;
 SELECT add_continuous_aggregate_policy('public.agg_equipment_values_1min',
-       start_offset => INTERVAL '2 hours', end_offset => INTERVAL '1 minute',
+       -- start_offset narrowed 2h→30min (task #57/#60): a 1-minute schedule with a
+       -- 2-hour window re-materializes ~119 minutes of already-materialized buckets
+       -- every run (~99% redundant) — the wasteful pattern proven on the 1-second
+       -- caggs (ca_discrete_changes_1s ran 19min under it). 30min keeps ample
+       -- late-data tolerance at a fraction of the per-run I/O.
+       start_offset => INTERVAL '30 minutes', end_offset => INTERVAL '1 minute',
        schedule_interval => INTERVAL '1 minute', if_not_exists => true);
 
 CREATE MATERIALIZED VIEW public.agg_equipment_values_10min
@@ -188,7 +193,12 @@ SELECT time_bucket('00:01:00'::interval, equipment_values.ts_value) AS ts_value,
   GROUP BY (time_bucket('00:01:00'::interval, equipment_values.ts_value)), equipment_values.id_enterprise, equipment_values.id_site, equipment_values.id_area
 WITH NO DATA;
 SELECT add_continuous_aggregate_policy('public.agg_area_values_1min',
-       start_offset => INTERVAL '2 hours', end_offset => INTERVAL '1 minute',
+       -- start_offset narrowed 2h→30min (task #57/#60): a 1-minute schedule with a
+       -- 2-hour window re-materializes ~119 minutes of already-materialized buckets
+       -- every run (~99% redundant) — the wasteful pattern proven on the 1-second
+       -- caggs (ca_discrete_changes_1s ran 19min under it). 30min keeps ample
+       -- late-data tolerance at a fraction of the per-run I/O.
+       start_offset => INTERVAL '30 minutes', end_offset => INTERVAL '1 minute',
        schedule_interval => INTERVAL '1 minute', if_not_exists => true);
 
 CREATE MATERIALIZED VIEW public.agg_area_values_10min
@@ -251,7 +261,12 @@ SELECT time_bucket('00:01:00'::interval, equipment_values.ts_value) AS ts_value,
   GROUP BY (time_bucket('00:01:00'::interval, equipment_values.ts_value)), equipment_values.id_enterprise, equipment_values.id_site
 WITH NO DATA;
 SELECT add_continuous_aggregate_policy('public.agg_site_values_1min',
-       start_offset => INTERVAL '2 hours', end_offset => INTERVAL '1 minute',
+       -- start_offset narrowed 2h→30min (task #57/#60): a 1-minute schedule with a
+       -- 2-hour window re-materializes ~119 minutes of already-materialized buckets
+       -- every run (~99% redundant) — the wasteful pattern proven on the 1-second
+       -- caggs (ca_discrete_changes_1s ran 19min under it). 30min keeps ample
+       -- late-data tolerance at a fraction of the per-run I/O.
+       start_offset => INTERVAL '30 minutes', end_offset => INTERVAL '1 minute',
        schedule_interval => INTERVAL '1 minute', if_not_exists => true);
 
 CREATE MATERIALIZED VIEW public.agg_site_values_10min
