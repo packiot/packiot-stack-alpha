@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -141,9 +143,22 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 
 	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
 
-	var value float64
-	if err := json.Unmarshal(m.Value, &value); err != nil {
-		return nil, fmt.Errorf("parse value as float (kind=%s, name=%s): %w", kind, m.Name, err)
+	// Accept a JSON number (3.14) OR a numeric JSON string ("3.14") — Incoplast
+	// quotes UnitModeCurrent and some counters. A value that is neither (a mode
+	// NAME, null, object) is PERMANENTLY malformed: retrying can never succeed,
+	// so SKIP (nil,nil) with a sampled log — exactly like the absurd-value guard
+	// below. Returning an error here nacks the delivery and RabbitMQ redelivers
+	// it forever: on 2026-07-12 an Incoplast UnitModeCurrent carrying a
+	// non-numeric string flooded the worker with an infinite nack-retry poison
+	// storm (dozens/sec), starving the other jobs and blocking Incoplast ingest.
+	value, ok := parseNumericValue(m.Value)
+	if !ok {
+		if w.skipSample.Add(1)%64 == 1 {
+			w.logger.Warn("equipment_values: non-numeric value, skipping (sampled 1/64; poison-storm guard)",
+				slog.String("name", m.Name), slog.String("kind", kind.String()),
+				slog.String("raw", truncateRaw(m.Value, 48)))
+		}
+		return nil, nil
 	}
 	// Absurd-value guard (oscillator incident 2026-07-04): no factory
 	// counter/state value approaches 1e12; beyond it the payload is
@@ -191,6 +206,35 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 		return buildMode(ts, info, tpEquipment, int(value), subMode, faults, checkNumber, schema), nil
 	}
 	return nil, nil
+}
+
+// parseNumericValue accepts a Sparkplug metric value as either a JSON number
+// (3.14) or a numeric JSON string ("3.14"). Some producers — notably the
+// Incoplast edge — quote UnitModeCurrent and certain counters. Returns
+// (0,false) for anything that is not numeric (a mode NAME, null, object) so the
+// caller can SKIP the metric rather than nack-and-retry a permanently-malformed
+// payload forever. See the poison-storm note in Build.
+func parseNumericValue(raw json.RawMessage) (float64, bool) {
+	var f float64
+	if json.Unmarshal(raw, &f) == nil {
+		return f, true
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+// truncateRaw renders a raw JSON value for a log line, capped to n bytes.
+func truncateRaw(raw json.RawMessage, n int) string {
+	s := string(raw)
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 // BuildEventMint is the ADR-0010 10.4 companion for KindStateCurrent:

@@ -1,0 +1,113 @@
+===== DIRECTIONAL PARITY INVENTORY — tsp12(prod) vs F3(staging), CPACK lines, 8d =====
+total aligned (topic,ts) cells: 475
+
+  MATCH           246  (51.8%)
+  GO_REGRESSION    31  (6.5%)
+  PROD_BUG         13  (2.7%)
+  REVIEW           97  (20.4%)
+  BOTH_BAD         10  (2.1%)
+  PROD_ONLY        15  (3.2%)
+  STG_ONLY         63  (13.3%)
+
+===== per-line breakdown =====
+  line              MATCH GOREG PRODBUG REVIEW BOTH PONLY SONLY
+  BREYER1               0     0       0      0    0     0    23
+  BREYER2              23     0       0      0    0     1     0
+  CER400               18     0       0      1    0     0     4
+  DUBUTI1               0     0       0      0    0     0    23
+  DUBUTI2              22     0       0      1    0     1     0
+  FLEXO                 5     2       8      0    8     1     0
+  HOTMADAG             12     0       0     10    1     1     0
+  ISIMAT               20     0       0      3    0     1     0
+  L10                  10     0       0     13    0     1     0
+  L3                    9     0       1     13    0     1     0
+  L4                    6     0       1     16    0     1     0
+  L5                   14     0       0      8    1     1     0
+  L6                   13     0       1      9    0     1     0
+  L8                    5    14       0      4    0     1     0
+  POLYTYPE1             9     0       0      5    0     0     9
+  POLYTYPE2            19     0       1      3    0     1     0
+  PTH40-03             19     0       0      4    0     1     0
+  PTH80S               18     0       1      0    0     0     4
+  SLEEVE1              12     8       0      3    0     1     0
+  SLEEVE2              12     7       0      4    0     1     0
+
+===== GO_REGRESSION examples =====
+  FLEXO 07-05 18:00 sh3
+     PROD[g=0 n=0 run=0 av=0 id=0 oee=0.000]
+     STG [g=0 n=0 run=86400 av=29400 id=0 oee=0.000] | STG run=86400>avail*1.2(29400)
+  FLEXO 07-06 02:10 sh1
+     PROD[g=0 n=0 run=0 av=0 id=0 oee=0.000]
+     STG [g=0 n=0 run=79200 av=26400 id=0 oee=0.000] | STG run=79200>avail*1.2(26400)
+  L8 07-06 18:00 sh3
+     PROD[g=39556 n=36748 run=23160 av=29400 id=58800 oee=0.625]
+     STG [g=0 n=0 run=2309342 av=29400 id=0 oee=0.000] | STG run=2309342>avail*1.2(29400);run=2309342>90k
+  L8 07-07 02:10 sh1
+     PROD[g=24368 n=23763 run=16380 av=26400 id=52800 oee=0.450]
+     STG [g=0 n=0 run=87749399 av=26400 id=0 oee=0.000] | STG run=87749399>avail*1.2(26400);run=87749399>90k
+  L8 07-07 09:30 sh2
+     PROD[g=33481 n=31654 run=21360 av=30600 id=61200 oee=0.517]
+     STG [g=0 n=0 run=259908887 av=30600 id=0 oee=0.000] | STG run=259908887>avail*1.2(30600);run=259908887>90k
+  L8 07-07 18:00 sh3
+     PROD[g=40554 n=38371 run=23820 av=29400 id=58800 oee=0.653]
+     STG [g=0 n=0 run=413143463 av=29400 id=0 oee=0.000] | STG run=413143463>avail*1.2(29400);run=413143463>90k
+
+===== PROD_BUG examples =====
+  POLYTYPE2 07-06 09:30 sh2
+     PROD[g=42254 n=51582 run=1860 av=1860 id=2480 oee=20.799]
+     STG [g=42243 n=51563 run=1860 av=30600 id=40800 oee=1.264] | PROD oee=20.80>1.5
+  PTH80S 07-06 09:30 sh2
+     PROD[g=285228 n=212179 run=300 av=30600 id=30600 oee=6.934]
+     STG [g=0 n=0 run=300 av=30600 id=30600 oee=0.000] | PROD oee=6.93>1.5
+  FLEXO 07-08 02:10 sh1
+     PROD[g=72792 n=72792 run=4920 av=5400 id=9000 oee=8.088]
+     STG [g=0 n=0 run=4920 av=26400 id=44000 oee=0.000] | PROD oee=8.09>1.5
+  FLEXO 07-08 09:30 sh2
+     PROD[g=33906 n=33906 run=1140 av=1140 id=1900 oee=17.845]
+     STG [g=11397 n=11397 run=1140 av=30600 id=51000 oee=0.224] | PROD oee=17.85>1.5
+  FLEXO 07-08 18:00 sh3
+     PROD[g=107154 n=107154 run=9360 av=20160 id=33600 oee=3.189]
+     STG [g=0 n=0 run=9360 av=29400 id=49000 oee=0.000] | PROD oee=3.19>1.5
+  FLEXO 07-09 02:10 sh1
+     PROD[g=73328 n=73328 run=3840 av=25260 id=42100 oee=1.742]
+     STG [g=0 n=0 run=3840 av=26400 id=44000 oee=0.000] | PROD oee=1.74>1.5
+
+===== REVIEW examples =====
+  CER400 07-06 09:30 sh2
+     PROD[g=26130 n=26121 run=300 av=30600 id=25500 oee=1.024]
+     STG [g=0 n=0 run=300 av=30600 id=25500 oee=0.000]
+  DUBUTI2 07-06 09:30 sh2
+     PROD[g=10185 n=3419 run=300 av=10020 id=9686 oee=0.353]
+     STG [g=0 n=0 run=300 av=30600 id=29580 oee=0.000]
+  HOTMADAG 07-06 18:00 sh3
+     PROD[g=4614 n=4618 run=4860 av=5280 id=6160 oee=0.750]
+     STG [g=0 n=0 run=4860 av=29400 id=34300 oee=0.000]
+  HOTMADAG 07-07 18:00 sh3
+     PROD[g=4815 n=4800 run=4560 av=4800 id=5600 oee=0.857]
+     STG [g=0 n=0 run=4560 av=29400 id=0 oee=0.000]
+  HOTMADAG 07-08 02:10 sh1
+     PROD[g=18127 n=17191 run=16620 av=16860 id=19670 oee=0.874]
+     STG [g=18136 n=17193 run=16620 av=26400 id=30800 oee=0.558]
+  HOTMADAG 07-08 09:30 sh2
+     PROD[g=33872 n=33636 run=27300 av=30600 id=35700 oee=0.942]
+     STG [g=15973 n=15906 run=27300 av=30600 id=35700 oee=0.446]
+
+===== BOTH_BAD examples =====
+  HOTMADAG 07-06 09:30 sh2
+     PROD[g=85778 n=85744 run=4620 av=5100 id=5950 oee=14.411]
+     STG [g=85766 n=85732 run=4620 av=30600 id=35700 oee=2.401]
+  FLEXO 07-06 09:30 sh2
+     PROD[g=30122 n=30122 run=2100 av=2400 id=4000 oee=7.530]
+     STG [g=29537 n=29537 run=86400 av=30600 id=51000 oee=0.579]
+  FLEXO 07-06 18:00 sh3
+     PROD[g=84066 n=84066 run=5580 av=18000 id=30000 oee=2.802]
+     STG [g=84066 n=84066 run=86400 av=29400 id=49000 oee=1.716]
+  FLEXO 07-07 02:10 sh1
+     PROD[g=42779 n=42779 run=2100 av=7740 id=12900 oee=3.316]
+     STG [g=48997 n=48997 run=81300 av=26400 id=44000 oee=1.114]
+  FLEXO 07-07 09:30 sh2
+     PROD[g=108771 n=108771 run=9840 av=12540 id=20900 oee=5.204]
+     STG [g=0 n=0 run=101640 av=30600 id=0 oee=0.000]
+  FLEXO 07-07 18:00 sh3
+     PROD[g=87725 n=87725 run=8580 av=11160 id=18600 oee=4.716]
+     STG [g=0 n=0 run=96780 av=29400 id=0 oee=0.000]
