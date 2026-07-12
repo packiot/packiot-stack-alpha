@@ -346,19 +346,33 @@ func Register(reg prometheus.Registerer) {
 }
 
 // Fingerprint: count + rounded sums over a closed recent window.
-var identitySurfaces = []struct{ Name, SQL string }{
-	{"equipment_values_24h", `
+//
+// CountTolerant: whether the row-COUNT (field 0) may use the tolerance band
+// instead of requiring an exact match. FALSE for the derived/provisioned grains
+// (a runtime_shift / po_runtime row-count gap is structural — provisioning or PO
+// minting diverged). TRUE only for the RAW ingest surface (equipment_values):
+// F2 (source_type "go") and F3 ("refactored") are fed by SEPARATE plc-sim
+// triple-emit messages, so a transient AMQP delivery drop on one leg loses a few
+// rows THERE — inherent emit-leg independence, not a bug (measured 2026-07-11:
+// 20/54,689 = 0.04%). Both Go legs write the same bare state=6 rows their cagg
+// needs, so state is not the cause. Count-exact on the raw layer would trip
+// forever on this inherent multi-leg variance; the derived OEE grains converge.
+var identitySurfaces = []struct {
+	Name, SQL     string
+	CountTolerant bool
+}{
+	{Name: "equipment_values_24h", CountTolerant: true, SQL: `
 	SELECT count(*)::text || '|' || COALESCE(sum(net_production_incr)::numeric(20,3),0)::text
 	    || '|' || COALESCE(sum(gross_production_incr)::numeric(20,3),0)::text
 	  FROM %s.equipment_values
 	 WHERE ts_value >= date_trunc('hour', now() - interval '25 hours')
 	   AND ts_value < date_trunc('hour', now() - interval '1 hour')`},
-	{"equipment_runtime_shift_3d", `
+	{Name: "equipment_runtime_shift_3d", SQL: `
 	SELECT count(*)::text || '|' || COALESCE(sum(gross)::numeric(20,3),0)::text
 	    || '|' || COALESCE(sum(running_time)::numeric(20,1),0)::text
 	  FROM %s.equipment_runtime_shift
 	 WHERE ts_value >= now() - interval '3 days' AND ts_end < now() - interval '2 hours'`},
-	{"production_orders_runtime_3d", `
+	{Name: "production_orders_runtime_3d", SQL: `
 	SELECT count(*)::text || '|' || COALESCE(sum(gross_production)::numeric(20,3),0)::text
 	  FROM %s.production_orders_runtime
 	 WHERE lower(runtime_timerange) >= now() - interval '3 days'
@@ -379,18 +393,23 @@ var identitySurfaces = []struct{ Name, SQL string }{
 // this band — so 1% flags real bugs while tolerating the in-flight tail.
 const identityTol = 0.01
 
-// identityMatch compares two pipe-delimited fingerprints: field 0 exact,
-// remaining numeric fields within identityTol relative. Returns (match, detail)
-// where detail names the worst offending field on a mismatch.
-func identityMatch(a, b string) (bool, string) {
+// identityMatch compares two pipe-delimited fingerprints. Field 0 (count) is
+// EXACT unless countTolerant (raw ingest surface — see CountTolerant); the
+// remaining numeric fields are within identityTol relative. Returns (match,
+// detail) where detail names the worst offending field on a mismatch.
+func identityMatch(a, b string, countTolerant bool) (bool, string) {
 	fa, fb := strings.Split(a, "|"), strings.Split(b, "|")
 	if len(fa) != len(fb) {
 		return false, fmt.Sprintf("field-count %d vs %d", len(fa), len(fb))
 	}
-	if fa[0] != fb[0] {
+	if !countTolerant && fa[0] != fb[0] {
 		return false, fmt.Sprintf("count %s vs %s", fa[0], fb[0])
 	}
-	for i := 1; i < len(fa); i++ {
+	start := 1
+	if countTolerant {
+		start = 0 // count joins the relative-tolerance loop
+	}
+	for i := start; i < len(fa); i++ {
 		va, e1 := strconv.ParseFloat(fa[i], 64)
 		vb, e2 := strconv.ParseFloat(fb[i], 64)
 		if e1 != nil || e2 != nil { // non-numeric field → require exact
@@ -429,7 +448,7 @@ func RunIdentityTick(ctx context.Context, f2 *pgxpool.Pool, f3 *pgxpool.Pool, lo
 			}
 			continue
 		}
-		match, detail := identityMatch(a, b)
+		match, detail := identityMatch(a, b, s.CountTolerant)
 		if match {
 			identityMismatch.WithLabelValues(s.Name).Set(0)
 			if a != b { // within tolerance but not byte-identical — visible, not alarming

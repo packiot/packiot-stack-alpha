@@ -9,25 +9,30 @@ import "testing"
 // gap of any real size fails.
 func TestIdentityMatch(t *testing.T) {
 	cases := []struct {
-		name string
-		a, b string
-		want bool
+		name     string
+		a, b     string
+		countTol bool
+		want     bool
 	}{
-		{"byte-identical", "520|505279000.000|1643940.0", "520|505279000.000|1643940.0", true},
-		{"gross within band (0.35%)", "520|505279000|1643940", "520|503523000|1643940", true},
-		{"gross beyond band (~21%)", "520|505279000|1643940", "520|400000000|1643940", false},
-		{"count differs", "520|505279000|1643940", "519|505279000|1643940", false},
-		{"running_time gap (~19%)", "520|505279000|2032680", "520|505279000|1643940", false},
-		{"field-count differs", "520|505279000", "520|505279000|1643940", false},
-		{"zeros", "0|0|0", "0|0|0", true},
-		{"gross exactly at 1%", "520|100000000|10", "520|101000000|10", true}, // rel = 1000000/101000000 = 0.99%
-		{"gross just over 1%", "520|100000000|10", "520|102000000|10", false}, // rel = 2000000/102000000 = 1.96%
-		{"two-field PO surface within band", "300|123456789", "300|123400000", true},
+		{"byte-identical", "520|505279000.000|1643940.0", "520|505279000.000|1643940.0", false, true},
+		{"gross within band (0.35%)", "520|505279000|1643940", "520|503523000|1643940", false, true},
+		{"gross beyond band (~21%)", "520|505279000|1643940", "520|400000000|1643940", false, false},
+		{"count differs (exact surface)", "520|505279000|1643940", "519|505279000|1643940", false, false},
+		{"running_time gap (~19%)", "520|505279000|2032680", "520|505279000|1643940", false, false},
+		{"field-count differs", "520|505279000", "520|505279000|1643940", false, false},
+		{"zeros", "0|0|0", "0|0|0", false, true},
+		{"gross exactly at 1%", "520|100000000|10", "520|101000000|10", false, true}, // rel = 1000000/101000000 = 0.99%
+		{"gross just over 1%", "520|100000000|10", "520|102000000|10", false, false}, // rel = 2000000/102000000 = 1.96%
+		{"two-field PO surface within band", "300|123456789", "300|123400000", false, true},
+		// countTolerant (raw equipment_values surface): count within band passes, beyond fails.
+		{"raw count within band (0.04%)", "54689|1817080000|1844530000", "54709|1818400000|1845870000", true, true},
+		{"raw count beyond band (~10%)", "54689|1817080000|1844530000", "60000|1817080000|1844530000", true, false},
+		{"raw count tolerant but sum beyond band", "54689|1817080000|1844530000", "54709|1817080000|2100000000", true, false},
 	}
 	for _, c := range cases {
-		got, detail := identityMatch(c.a, c.b)
+		got, detail := identityMatch(c.a, c.b, c.countTol)
 		if got != c.want {
-			t.Errorf("%s: identityMatch(%q, %q) = %v (detail=%q), want %v", c.name, c.a, c.b, got, detail, c.want)
+			t.Errorf("%s: identityMatch(%q, %q, %v) = %v (detail=%q), want %v", c.name, c.a, c.b, c.countTol, got, detail, c.want)
 		}
 	}
 }
