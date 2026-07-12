@@ -126,28 +126,29 @@ type Config struct {
 	UnsCurrentMetricsIntervalMinutes int
 
 	// PO-runtime refresh dispatcher (P3b: compute → recalc, ordered).
-	PORecalcEnabled             bool
-	PORecalcIntervalMinutes     int
-	PORecalcWindow              string // prod: '1 month'
-	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
-	RuntimeProvisionEnabled     bool
-	RuntimeRollupEnabled        bool
+	PORecalcEnabled               bool
+	PORecalcIntervalMinutes       int
+	PORecalcWindow                string // prod: '1 month'
+	PORecalcExcludedEnterprises   string // prod: 6 (owned by its sync chain)
+	RuntimeProvisionEnabled       bool
+	RuntimeProvisionIntervalHours int // provision cadence; 30-day horizon makes hourly wasteful (default 6)
+	RuntimeRollupEnabled          bool
 	// Backfill drains recalc_needed hour rows stranded OUTSIDE the live rollup's
 	// 65-min window (bounded per tick, oldest-first). Both original blockers are
 	// now solved: the shadow cagg scheduler self-heal made the widened join fast
 	// (53s → 0.7s), and the advisory lock is now non-blocking (pg_try_...), so
 	// the main-pool 120s timeout can't bite. On by default with the live rollup.
-	RollupBackfillEnabled        bool
+	RollupBackfillEnabled bool
 	// RefSync mirrors master/reference tables (equipments, packml_register,
 	// production_targets, products, clients, …) main→packiot_shadow so F3 rollups
 	// read the same reference plane as F2 (the F2/F3 identity requirement). Runs
 	// only when the shadow DB is configured.
-	RefSyncEnabled              bool
-	RefSyncIntervalMinutes      int
-	RollupBackfillLimit          int // hour rows recomputed per backfill tick
+	RefSyncEnabled                bool
+	RefSyncIntervalMinutes        int
+	RollupBackfillLimit           int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
-	RollupShiftLimit             int // shift rows recomputed per live rollup tick (bounds the tx so it can't roll back wholesale under load)
-	BakeComparatorEnabled       bool
+	RollupShiftLimit              int // shift rows recomputed per live rollup tick (bounds the tx so it can't roll back wholesale under load)
+	BakeComparatorEnabled         bool
 	// BakeEnterpriseIDs — CSV of enterprises the surface-parity bake runs
 	// per tenant. The FIRST id is the frozen "gate" tenant (CPACK) whose
 	// queries run verbatim; the rest are positively scoped. Default "3"
@@ -209,6 +210,7 @@ func Load() (*Config, error) {
 		PORecalcWindow:                   getenv("PO_RECALC_WINDOW", "1 month"),
 		PORecalcExcludedEnterprises:      getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
+		RuntimeProvisionIntervalHours:    getenvInt("RUNTIME_PROVISION_INTERVAL_HOURS", 6),
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
 		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
