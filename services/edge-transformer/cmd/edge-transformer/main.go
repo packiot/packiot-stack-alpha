@@ -389,13 +389,24 @@ func main() {
 		// public) so plc-sim is the SINGLE source feeding all flows —
 		// the bake stays same-reality and the nodered legacy leg retires.
 		emitProduction := os.Getenv("SHADOW_EMIT_PRODUCTION") == "true"
+		// #276 Phase-4 cutover: when true, the F3 (source_type=refactored)
+		// envelope is built from the Calc port's delta+cumulative counters
+		// instead of the raw cumulative resolved metrics. Gated separately
+		// from SHADOW_EMIT_REFACTORED so the F3 flow can be flipped to the
+		// corrected shape while F2 stays raw as the tsp12 divergence control.
+		// Requires USE_GO_PORT=true (Calc must be running) to have any effect.
+		emitCutoverRefactored := os.Getenv("CALC_CUTOVER_REFACTORED") == "true"
 		if emitRefactored {
 			logger.Info("shadow dual-emit enabled: publishing source_type=go AND source_type=refactored envelopes")
 		}
 		if emitProduction {
 			logger.Info("TRIPLE-emit enabled (10.9): source_type=\"\" (F1 production route) also published")
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, logger), logger)
+		if emitCutoverRefactored {
+			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
+				slog.Bool("use_go_port", cfg.UseGoPort))
+		}
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, emitCutoverRefactored, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -805,16 +816,24 @@ func metricAsFloat(v any) (float64, bool) {
 //
 // Errors are logged + counted but never propagated — shadow mode must
 // not break the normal handler chain.
-func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplug.ResolvedMetric, ts time.Time, logger *slog.Logger) {
+//
+// Returns the metrics the Calc port emitted for this input (Decision.Metrics)
+// so the caller can assemble the refactored-flow (F3) #276 cutover envelope
+// from delta+cumulative counters instead of raw cumulative values. Returns nil
+// when the metric only seeded state, wasn't a counter, was dropped, or errored
+// — i.e. "nothing Calc would emit downstream". State mutations are still
+// applied in all cases, so the observability (F2 shadow_go_port) path is
+// unchanged regardless of whether the caller consumes the return value.
+func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplug.ResolvedMetric, ts time.Time, logger *slog.Logger) []calc_production_counters.Metric {
 	// First: try to seed non-counter state (MachSpeed, parameters).
 	// Recognized ones update State + increment stateSeeds; unknown ones
 	// fall through and the caller ignores non-counter metrics.
 	if h.seedFromMetric(tenant, metric) {
-		return
+		return nil
 	}
 	kind := isCounterMetricName(metric.Name)
 	if kind == calc_production_counters.CounterKindUnknown {
-		return
+		return nil
 	}
 	// Build a Calc.Message. For shadow-mode observability we assume every
 	// ResolvedMetric that matches a counter topic IS a trigger event —
@@ -846,11 +865,11 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		// JS parseInt(true) = NaN → 0; but Sparkplug booleans as counter
 		// values are almost certainly a config error worth flagging.
 		h.errors.WithLabelValues(tenant, "bool_as_counter").Inc()
-		return
+		return nil
 	default:
 		// Non-numeric — skip, count as error for observability.
 		h.errors.WithLabelValues(tenant, "non_numeric_value").Inc()
-		return
+		return nil
 	}
 	msg := calc_production_counters.Message{
 		Topic:      metric.Name + "***TRIG",
@@ -867,7 +886,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 			slog.String("metric", metric.Name),
 			slog.String("err", err.Error()),
 		)
-		return
+		return nil
 	}
 	outcome := "send"
 	if !dec.SendDownstream {
@@ -907,6 +926,48 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		slog.Int("state_mutations", len(dec.StateUpdates)),
 	)
 	_ = ctx // reserved for future context-aware state backends (Redis)
+	// Return the emitted metrics so the caller can build the F3 cutover
+	// envelope. Empty when Calc chose to drop (SendDownstream=false).
+	return dec.Metrics
+}
+
+// buildCutoverMetrics assembles the F3 (#276 cutover) envelope's metric list:
+// the Calc port's emitted counters (Value=delta / Counter=cumulative — the
+// prod gross_production_incr/gross_production_val shape) followed by every
+// NON-counter resolved metric passed through verbatim (MachSpeed, UnitMode,
+// Parameter*, …), which Calc reads as state but never re-emits. The raw
+// cumulative counter metrics are dropped — the Calc deltas replace them; that
+// replacement IS the #276 fix (cagg was SUMming cumulatives into billions).
+func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric) []shadowpub.Metric {
+	out := make([]shadowpub.Metric, 0, len(calcMetrics)+len(resolved))
+	for _, em := range calcMetrics {
+		counter := float64(em.Counter)
+		m := shadowpub.Metric{
+			Name:      em.Name,
+			Timestamp: em.Timestamp,
+			Value:     em.Value,
+			Counter:   &counter,
+		}
+		// curspeed rides only on the counter metric that carried it in the JS
+		// (Consumed, or Processed under STATESPEED_THIS); zero → absent.
+		if em.CurSpeed != 0 {
+			cs := em.CurSpeed
+			m.CurSpeed = &cs
+		}
+		out = append(out, m)
+	}
+	for _, m := range resolved {
+		// Skip raw counters — the Calc deltas above are their replacement.
+		if isCounterMetricName(m.Name) != calc_production_counters.CounterKindUnknown {
+			continue
+		}
+		out = append(out, shadowpub.Metric{
+			Name:      m.Name,
+			Timestamp: int64(m.Timestamp),
+			Value:     m.Value,
+		})
+	}
+	return out
 }
 
 // sparkplugHandler is the MQTT subscriber's Handler for ADR-0010 Phase 2
@@ -1085,7 +1146,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction bool, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction, cutoverRefactored bool, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1155,10 +1216,23 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 		// metric BEFORE the shadowpub publish. Non-mutating with respect to
 		// the outgoing message — updates only the Calc State singleton +
 		// Prometheus counters.
+		//
+		// #276 cutover: collect the metrics Calc emits so the F3
+		// ("refactored") envelope below can be built from delta+cumulative
+		// counters instead of the raw cumulative values that blow up the cagg.
+		var calcMetrics []calc_production_counters.Metric
 		if calc.enabled() {
-			ts := time.Now()
 			for _, m := range resolved.Metrics {
-				calc.runShadow(ctx, topic.GroupID, m, ts, logger)
+				// Use the metric's SOURCE timestamp (PLC sample time), not
+				// ingest time. This is what prod Node-RED feeds Calc
+				// (msg.timestamp) and it keeps the cutover-F3 ts_value aligned
+				// with the raw-F3 path, so the tsp12 replay comparator diffs
+				// apples-to-apples. Zero → Calc falls back to now().
+				var ts time.Time
+				if src := m.Timestamp; src > 0 {
+					ts = time.UnixMilli(int64(src))
+				}
+				calcMetrics = append(calcMetrics, calc.runShadow(ctx, topic.GroupID, m, ts, logger)...)
 			}
 		}
 
@@ -1209,14 +1283,32 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 					flow = "f1_public"
 				}
 				emittedByFlow.WithLabelValues(flow).Inc()
-				env := shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
-					Tenant:          tenant,
-					PublisherKey:    key.String(),
-					Instance:        "outbox",
-					Metrics:         resolved.Metrics,
-					SourceTimestamp: int64(resolved.Timestamp),
-					SourceType:      st,
-				})
+
+				// #276 cutover: when CALC_CUTOVER_REFACTORED is on, the F3
+				// ("refactored") flow emits Calc-derived delta+cumulative
+				// counters (Value=delta, Counter=cumulative — prod's
+				// gross_production_incr/val shape) plus non-counter pass-through
+				// metrics, instead of the raw cumulative counters that the cagg
+				// SUMs into billions. Every other flow (go/F2, ""/F1) keeps the
+				// raw resolved metrics — F2 stays raw-and-blown-up on PURPOSE,
+				// as the validating divergence against tsp12. Default OFF = zero
+				// behavior change until the flag is flipped for F3 only.
+				var env shadowpub.Envelope
+				if st == "refactored" && cutoverRefactored && calc.enabled() {
+					env = shadowpub.BuildEnvelopeFromMetrics(
+						"outbox", st, int64(resolved.Timestamp),
+						buildCutoverMetrics(calcMetrics, resolved.Metrics),
+					)
+				} else {
+					env = shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
+						Tenant:          tenant,
+						PublisherKey:    key.String(),
+						Instance:        "outbox",
+						Metrics:         resolved.Metrics,
+						SourceTimestamp: int64(resolved.Timestamp),
+						SourceType:      st,
+					})
+				}
 				body, err := json.Marshal(env)
 				if err != nil {
 					logger.Warn("outbox: marshal envelope failed",

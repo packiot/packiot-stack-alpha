@@ -631,6 +631,25 @@ func BuildEnvelope(in EnvelopeInput) Envelope {
 	}
 }
 
+// BuildEnvelopeFromMetrics constructs an envelope from PRE-BUILT Metric
+// entries rather than from raw sparkplug ResolvedMetrics. It is the seam
+// for the #276 Calc cutover (ADR-0010 Phase 4): the caller assembles the
+// F3 ("refactored") flow's metrics from the Calc port's Decision.Metrics
+// (Value=delta / Counter=cumulative — the prod shape) plus non-counter
+// pass-through metrics, then hands the finished slice here.
+//
+// Deliberately dumb — no field derivation, no source-type defaulting. The
+// mapping from calc.Metric → shadowpub.Metric lives in the caller (main.go)
+// so this publishing package stays free of any transform-package import.
+func BuildEnvelopeFromMetrics(instance, sourceType string, sourceTimestamp int64, metrics []Metric) Envelope {
+	return Envelope{
+		Timestamp:  sourceTimestamp,
+		Gateway:    fmt.Sprintf("edge-transformer:%s", instance),
+		SourceType: sourceType,
+		Metrics:    metrics,
+	}
+}
+
 // parameterFromMetricName extracts the last segment of the Sparkplug topic
 // name, matching what Phase 2.5b's Node-RED adapter emits as `parameter`.
 // e.g. "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit" → "Unit"
