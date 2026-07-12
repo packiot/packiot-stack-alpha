@@ -113,7 +113,20 @@ const shiftValuesSQL = `
 	       net   = COALESCE(s.net, 0),
 	       scrap = COALESCE(s.gross - s.net, 0),
 	       speed = COALESCE(s.speed, 0),
-	       ideal_speed = COALESCE(s.ideal_speed, 0),
+	       -- LINE ideal_speed fix (parity with prod). Prod computes
+	       -- ideal_speed = COALESCE(avg(ca.ideal), equipments.production_speed, 0)
+	       -- as ONE aggregate, so a row with NO matching ca_agg buckets still
+	       -- falls to production_speed. Here the production_speed fallback lives
+	       -- INSIDE the sums CTE — but when the ca_agg join yields no sums row at
+	       -- all (common for tp=3 lines whose 30701 never lands in-bucket and whose
+	       -- shift row has no matching cagg bucket), s.ideal_speed is NULL and the
+	       -- old COALESCE(s.ideal_speed, 0) defaulted to 0 — diverging from prod,
+	       -- which returns production_speed (measured 2026-07-11: eq81 F1=58/F3=0).
+	       -- Restore prod's semantics by falling to production_speed at the OUTER
+	       -- level too. No-op when the sums row exists (s.ideal_speed already carries
+	       -- the inner fallback); only lifts the no-cagg-match rows off 0.
+	       ideal_speed = COALESCE(s.ideal_speed,
+	           (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = el.id_equipment), 0),
 	       cd_shift = el.cd_shift2,
 	       recalc_needed = false
 	  FROM shift_elig el
