@@ -21,7 +21,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -363,6 +365,48 @@ var identitySurfaces = []struct{ Name, SQL string }{
 	   AND upper(runtime_timerange) < now() - interval '2 hours'`},
 }
 
+// identityTol is the relative tolerance for the SUM fields of an identity
+// fingerprint. Field 0 (count) must ALWAYS match exactly — a row-count
+// difference is structural. The remaining aggregate sums (gross / net /
+// running_time / gross_production) get a small band because F2 (shadow_go_port)
+// and F3 (packiot_shadow) are two INDEPENDENTLY-fed flows: the most-recent
+// bucket carries a tiny in-flight raw-value difference that ages out to zero as
+// the window rolls. Measured 2026-07-11 at full convergence: the ONLY residual
+// was eq51 gross 0.35% (1.756M/505M), concentrated in the current day, traced to
+// an 80k/1.05B raw equipment_values diff (same 27,386 rows, values still
+// settling); running_time stayed BYTE-EXACT. Every real divergence this check
+// ever caught was ≥20% (uncapped running_time, stale pre-#437 rows), far outside
+// this band — so 1% flags real bugs while tolerating the in-flight tail.
+const identityTol = 0.01
+
+// identityMatch compares two pipe-delimited fingerprints: field 0 exact,
+// remaining numeric fields within identityTol relative. Returns (match, detail)
+// where detail names the worst offending field on a mismatch.
+func identityMatch(a, b string) (bool, string) {
+	fa, fb := strings.Split(a, "|"), strings.Split(b, "|")
+	if len(fa) != len(fb) {
+		return false, fmt.Sprintf("field-count %d vs %d", len(fa), len(fb))
+	}
+	if fa[0] != fb[0] {
+		return false, fmt.Sprintf("count %s vs %s", fa[0], fb[0])
+	}
+	for i := 1; i < len(fa); i++ {
+		va, e1 := strconv.ParseFloat(fa[i], 64)
+		vb, e2 := strconv.ParseFloat(fb[i], 64)
+		if e1 != nil || e2 != nil { // non-numeric field → require exact
+			if fa[i] != fb[i] {
+				return false, fmt.Sprintf("field %d %q vs %q", i, fa[i], fb[i])
+			}
+			continue
+		}
+		denom := math.Max(math.Max(math.Abs(va), math.Abs(vb)), 1)
+		if rel := math.Abs(va-vb) / denom; rel > identityTol {
+			return false, fmt.Sprintf("field %d %.1f vs %.1f (%.3f%% > %.1f%%)", i, va, vb, 100*rel, 100*identityTol)
+		}
+	}
+	return true, ""
+}
+
 // RunIdentityTick compares F2 vs F3 fingerprints.
 func RunIdentityTick(ctx context.Context, f2 *pgxpool.Pool, f3 *pgxpool.Pool, logger *slog.Logger) error {
 	if f3 == nil {
@@ -385,12 +429,17 @@ func RunIdentityTick(ctx context.Context, f2 *pgxpool.Pool, f3 *pgxpool.Pool, lo
 			}
 			continue
 		}
-		if a == b {
+		match, detail := identityMatch(a, b)
+		if match {
 			identityMismatch.WithLabelValues(s.Name).Set(0)
+			if a != b { // within tolerance but not byte-identical — visible, not alarming
+				logger.Info("F2/F3 identity within tolerance", slog.String("surface", s.Name),
+					slog.String("f2", a), slog.String("f3", b))
+			}
 		} else {
 			identityMismatch.WithLabelValues(s.Name).Set(1)
 			logger.Warn("F2/F3 IDENTITY BROKEN", slog.String("surface", s.Name),
-				slog.String("f2", a), slog.String("f3", b))
+				slog.String("f2", a), slog.String("f3", b), slog.String("detail", detail))
 		}
 	}
 	return firstErr
