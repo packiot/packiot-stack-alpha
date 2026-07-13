@@ -41,15 +41,70 @@ type EquipmentValues struct {
 	// shifts — ADR-0014 Phase 2 Go port of the shift trigger. nil =
 	// disabled (SHIFT_RESOLVER_ENABLED=false); set via SetShiftResolver.
 	shifts *shiftresolver.Resolver
+
+	// foldShift — ADR-0014 fold rollback flag (SHIFT_FILL_FOLDED). When
+	// true, the shift columns are folded into the UPSERT (shiftFold) and
+	// BuildShiftFill returns nil (no separate UPDATE). When false, the
+	// legacy split runs: UPSERT without shift columns + BuildShiftFill's
+	// companion UPDATE. Set via SetShiftFillFolded.
+	foldShift bool
 }
 
 func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
 	return &EquipmentValues{resolver: r, logger: logger}
 }
 
-// SetShiftResolver enables the ADR-0014 Phase 2 shift fill, now folded
-// straight into the equipment_values UPSERT (see shiftFold + Build).
+// SetShiftResolver enables the ADR-0014 Phase 2 shift fill. Whether it is
+// applied as a fold (into the UPSERT) or as a separate companion UPDATE
+// (BuildShiftFill) is selected by SetShiftFillFolded.
 func (w *EquipmentValues) SetShiftResolver(r *shiftresolver.Resolver) { w.shifts = r }
+
+// SetShiftFillFolded selects the ADR-0014 fold path (SHIFT_FILL_FOLDED).
+// true → shift columns folded into the UPSERT + BuildShiftFill returns nil;
+// false (default) → legacy split (bare UPSERT + separate UPDATE).
+func (w *EquipmentValues) SetShiftFillFolded(folded bool) { w.foldShift = folded }
+
+// sqlShiftFill ports piot_set_shift_on_equipment_values() as a companion
+// UPDATE queued right after the metric's UPSERT in the same pgx.Batch. Used
+// only on the LEGACY (unfolded) path — when SHIFT_FILL_FOLDED is true the
+// same columns ride inside the UPSERT via shiftFold instead. COALESCE
+// everywhere = the trigger's "only fill when NULL" semantics; ($1)::date
+// matches the trigger's NEW.ts_value::date (session-timezone cast, evaluated
+// in this worker's session exactly as the trigger evaluated in the
+// inserting session).
+const sqlShiftFill = `
+	UPDATE %s.equipment_values SET
+		id_shift            = COALESCE(id_shift, $3),
+		id_shift_hour       = COALESCE(id_shift_hour, $4),
+		ts_value_production = COALESCE(ts_value_production, ($1)::date)
+	WHERE ts_value = $1 AND id_equipment = $2`
+
+// BuildShiftFill returns the shift-fill *Query for one metric on the LEGACY
+// (unfolded) path, or nil when the resolver is disabled, the fold is active
+// (SHIFT_FILL_FOLDED=true — the UPSERT carries the columns itself), or the
+// topic is unregistered. Fail-open end to end: an unresolvable shift still
+// fills ts_value_production and leaves the shift columns NULL — byte-for-byte
+// what the trigger did.
+func (w *EquipmentValues) BuildShiftFill(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
+	if w.shifts == nil || w.foldShift {
+		return nil, nil
+	}
+	topic := m.TopicForRegister()
+	info, err := w.resolver.Resolve(ctx, topic)
+	if err != nil {
+		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
+	}
+	if info == nil {
+		return nil, nil
+	}
+	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
+	idShift, idShiftHour := w.shifts.Resolve(ctx, info.IDEnterprise, info.IDEquipment, ts)
+	return &Query{
+		SQL:  fmt.Sprintf(sqlShiftFill, schema),
+		Args: []any{ts, info.IDEquipment, idShift, idShiftHour},
+		Desc: fmt.Sprintf("shift-fill %s.equipment_values eq=%d ts=%s", schema, info.IDEquipment, ts.Format(time.RFC3339)),
+	}, nil
+}
 
 // shiftFold splices the ADR-0014 shift-fill columns (id_shift,
 // id_shift_hour, ts_value_production) into an equipment_values UPSERT so the
@@ -179,15 +234,16 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	}
 	checkNumber := m.Timestamp
 
-	// ADR-0014 fold: resolve the shift ONCE here and thread the labels into
-	// the row's own UPSERT (shiftFold), replacing the separate companion
-	// UPDATE that BuildShiftFill used to queue. withShift mirrors the old
-	// `if w.shifts == nil { return nil,nil }` guard: when the resolver is
-	// disabled the labels stay NULL and no shift binds are added. When it is
-	// enabled the fill is fail-open — an unresolvable shift still stamps
-	// ts_value_production (($1)::date) and leaves the id_* columns NULL,
-	// byte-for-byte what the dropped trigger did.
-	withShift := w.shifts != nil
+	// ADR-0014 fold (flag-gated, SHIFT_FILL_FOLDED): when folding is active
+	// resolve the shift ONCE here and thread the labels into the row's own
+	// UPSERT (shiftFold), so the separate BuildShiftFill UPDATE can be
+	// skipped — halving the per-metric statement count. withShift requires
+	// BOTH the resolver enabled AND the fold flag on; when the flag is off
+	// the columns are omitted here and the legacy BuildShiftFill UPDATE
+	// carries them instead. When on, the fill is fail-open — an unresolvable
+	// shift still stamps ts_value_production (($1)::date) and leaves the
+	// id_* columns NULL, byte-for-byte what the dropped trigger did.
+	withShift := w.shifts != nil && w.foldShift
 	var idShift, idShiftHour *int
 	if withShift {
 		idShift, idShiftHour = w.shifts.Resolve(ctx, info.IDEnterprise, info.IDEquipment, ts)

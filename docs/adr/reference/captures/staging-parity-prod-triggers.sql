@@ -24,9 +24,12 @@
 -- (ts_insert_blocker, ts_cagg_invalidation_trigger,
 -- feed_invalidation_log) — they are TimescaleDB hypertable/CAgg
 -- machinery and arrive with the CAgg-layer adoption, not standalone.
--- Staging's piot_set_shift_before_insert stays (ADR-0014 P2 bake in
--- progress; it is a KNOWN staging-only divergence, prod leaves
--- id_shift NULL per the comparison probe).
+-- UPDATE 2026-07-13: piot_set_shift_before_insert is RETIRED. The
+-- ADR-0014 P2 bake completed (168h zero divergence); the trigger was
+-- dropped from staging public.equipment_values (and packiot_shadow
+-- public — DBA verified ZERO triggers on both live). The oeecloud-worker
+-- Go shiftresolver is now the SOLE writer of id_shift/id_shift_hour/
+-- ts_value_production on ALL schemas and flows.
 
 -- ── last_update trigger functions (verbatim prod bodies) ────────────
 CREATE OR REPLACE FUNCTION public.last_update_to_now() RETURNS trigger

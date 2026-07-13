@@ -164,6 +164,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		kind := m.Classify()
 
 		var q *writers.Query
+		var shiftQ *writers.Query
 		var eventQ *writers.Query
 		var buildErr error
 
@@ -183,20 +184,28 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 
 		switch {
 		case h.equipmentValues.CanWrite(kind):
-			// ADR-0014 fold (2026-07-13): the shift labels (id_shift,
-			// id_shift_hour, ts_value_production) are now folded INTO the
-			// equipment_values UPSERT by Build() itself — the Go resolver
-			// fills ALL routes exactly as the separate companion UPDATE
-			// (BuildShiftFill) used to, but in the row's own INSERT. This
-			// halves the per-metric statement count on this surface
-			// (~60→~40 stmts/msg). Value semantics are byte-identical:
-			// keep-existing-else-fill (COALESCE on conflict) + the
-			// session-tz ts_value::date cast. See shiftFold.
+			// ADR-0014 shift fill (flag-gated, SHIFT_FILL_FOLDED — DBA
+			// bake-safe 2026-07-13, zero live triggers on public +
+			// packiot_shadow). Two mutually-exclusive paths, selected by
+			// the writer's foldShift flag:
+			//   folded  → Build() writes the shift columns INSIDE the
+			//             UPSERT and BuildShiftFill returns nil, halving
+			//             the per-metric statement count (~60→~40).
+			//   legacy  → Build() omits the columns and BuildShiftFill
+			//             queues a separate companion UPDATE (below).
+			// Both preserve identical id_shift/id_shift_hour/ts_value_
+			// production values (keep-existing-else-fill COALESCE + the
+			// session-tz ts_value::date cast). The Go resolver is the sole
+			// shift writer on ALL routes now (the F1 trigger is retired).
 			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
-			if buildErr == nil && q != nil && p.SourceType != "" {
-				// Event mint stays shadow-only: F1's EVENT trigger
-				// remains its writer until the §6 flip.
-				eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
+			if buildErr == nil && q != nil {
+				// Returns nil under the fold flag (skip the separate UPDATE).
+				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
+				if p.SourceType != "" {
+					// Event mint stays shadow-only: F1's EVENT trigger
+					// remains its writer until the §6 flip.
+					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
+				}
 			}
 		case h.unsMetrics.CanWrite(kind):
 			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
@@ -220,6 +229,13 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 		batch.Queue(q.SQL, q.Args...)
 		descs = append(descs, q.Desc)
+		if shiftQ != nil {
+			// Ordered right after its UPSERT — pgx.Batch executes
+			// statements sequentially on one connection. Present only on
+			// the legacy (unfolded) path; nil when SHIFT_FILL_FOLDED=true.
+			batch.Queue(shiftQ.SQL, shiftQ.Args...)
+			descs = append(descs, shiftQ.Desc)
+		}
 		if eventQ != nil {
 			batch.Queue(eventQ.SQL, eventQ.Args...)
 			descs = append(descs, eventQ.Desc)

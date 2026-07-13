@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 )
 
-// ADR-0014 fold fidelity: with the resolver enabled, every equipment_values
-// UPSERT must carry the three shift-fill columns folded straight into the
-// INSERT (replacing the removed BuildShiftFill companion UPDATE), and the
-// ON CONFLICT clause must keep-existing-else-fill via
-// COALESCE(equipment_values.col, EXCLUDED.col). ts_value_production must reuse
-// the ts_value bind ($1) for the session-tz date cast — byte-for-byte what
-// piot_set_shift_on_equipment_values() did.
+// ADR-0014 fold fidelity (SHIFT_FILL_FOLDED=true → withShift=true): every
+// equipment_values UPSERT must carry the three shift-fill columns folded
+// straight into the INSERT, and the ON CONFLICT clause must
+// keep-existing-else-fill via COALESCE(equipment_values.col, EXCLUDED.col).
+// ts_value_production must reuse the ts_value bind ($1) for the session-tz
+// date cast — byte-for-byte what piot_set_shift_on_equipment_values() did.
 func TestShiftFoldFoldedIntoUpsert(t *testing.T) {
 	ts := time.UnixMilli(1_700_000_000_000).Truncate(time.Second).UTC()
 	info := &sparkplug.EquipmentInfo{IDEnterprise: 1, IDSite: 2, IDArea: 3, IDEquipment: 42}
@@ -55,10 +55,10 @@ func TestShiftFoldFoldedIntoUpsert(t *testing.T) {
 	}
 }
 
-// With the resolver disabled (SHIFT_RESOLVER_ENABLED=false → w.shifts==nil →
-// withShift=false), the row must insert with NO shift columns and NO extra
-// binds — mirroring the old BuildShiftFill nil-return. This keeps the fold
-// a strict superset only when shift resolution is on.
+// ADR-0014 fold OFF (SHIFT_FILL_FOLDED=false → withShift=false): the row must
+// insert with NO shift columns and NO extra binds — the UPSERT is
+// byte-identical to today's legacy shape (shift columns are carried by the
+// separate BuildShiftFill UPDATE instead). This is the default rollback path.
 func TestShiftFoldDisabledOmitsColumns(t *testing.T) {
 	ts := time.UnixMilli(1_700_000_000_000).Truncate(time.Second).UTC()
 	info := &sparkplug.EquipmentInfo{IDEnterprise: 1, IDSite: 2, IDArea: 3, IDEquipment: 42}
@@ -71,5 +71,39 @@ func TestShiftFoldDisabledOmitsColumns(t *testing.T) {
 	}
 	if len(q.Args) != 12 {
 		t.Errorf("resolver disabled: expected 12 base args, got %d", len(q.Args))
+	}
+}
+
+// The SHIFT_FILL_FOLDED flag is a strict selector. Legacy path: the separate
+// BuildShiftFill UPDATE writes the SAME three columns the fold folds in
+// (keep-existing-else-fill + ($1)::date). Fold path: BuildShiftFill must go
+// SILENT (nil) so the two paths never both write the columns (double-write)
+// nor both skip them (gap).
+func TestShiftFillFoldFlagSelectsPaths(t *testing.T) {
+	for _, frag := range []string{
+		"id_shift            = COALESCE(id_shift, $3)",
+		"id_shift_hour       = COALESCE(id_shift_hour, $4)",
+		"ts_value_production = COALESCE(ts_value_production, ($1)::date)",
+	} {
+		if !strings.Contains(sqlShiftFill, frag) {
+			t.Errorf("legacy sqlShiftFill lost %q\nSQL:\n%s", frag, sqlShiftFill)
+		}
+	}
+
+	w := &EquipmentValues{}
+	m := &sparkplug.Metric{Name: "x/y", Timestamp: 1_700_000_000_000}
+
+	// Resolver disabled → no separate UPDATE, regardless of flag (guard 1).
+	if got, err := w.BuildShiftFill(nil, m, "public"); got != nil || err != nil {
+		t.Errorf("shifts==nil: BuildShiftFill must be nil,nil; got %+v, %v", got, err)
+	}
+
+	// Fold ON with a resolver present → BuildShiftFill must go silent (the
+	// UPSERT owns the columns). The foldShift guard returns (nil,nil) BEFORE
+	// touching the resolver, so a bare non-nil marker is safe here.
+	w.shifts = &shiftresolver.Resolver{}
+	w.foldShift = true
+	if got, err := w.BuildShiftFill(nil, m, "public"); got != nil || err != nil {
+		t.Errorf("foldShift=true: BuildShiftFill must be nil,nil (fold owns the columns); got %+v, %v", got, err)
 	}
 }

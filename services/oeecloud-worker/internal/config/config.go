@@ -85,6 +85,17 @@ type Config struct {
 	// divergence.
 	ShiftResolverEnabled bool
 
+	// ShiftFillFolded — ADR-0014 fold rollback flag (DBA rec, hot-path DB
+	// writer). When true, the shift columns (id_shift/id_shift_hour/
+	// ts_value_production) are written INSIDE the equipment_values UPSERT
+	// and the separate BuildShiftFill UPDATE is skipped — halving the
+	// per-metric statement count. When false (default), the legacy path
+	// runs: upsert WITHOUT shift columns + a separate companion UPDATE.
+	// Default-off so we can deploy dark, flip live, and revert by flag
+	// (no redeploy) if the 5-builder param-offset fold misbehaves. Only
+	// has effect when ShiftResolverEnabled is also true.
+	ShiftFillFolded bool
+
 	// Speed33ReportEnabled — ADR-0012 Wave 2 port #1: the Go-scheduled
 	// writer for customer_reports.speed (customer 33). Legacy
 	// c33_speed_per_job_insert_into_report keeps the old table on prod;
@@ -195,6 +206,7 @@ func Load() (*Config, error) {
 		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
 		PGShadowMaxConns:                 getenvInt("POSTGRES_SHADOW_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
+		ShiftFillFolded:                  getenv("SHIFT_FILL_FOLDED", "false") == "true",
 		Speed33ReportEnabled:             getenv("SPEED33_REPORT_ENABLED", "false") == "true",
 		Speed33IntervalMinutes:           getenvInt("SPEED33_INTERVAL_MINUTES", 10),
 		Speed33CustomerID:                getenvInt("SPEED33_CUSTOMER_ID", 33),
