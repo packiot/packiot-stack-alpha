@@ -47,46 +47,41 @@ func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentVa
 	return &EquipmentValues{resolver: r, logger: logger}
 }
 
-// SetShiftResolver enables the ADR-0014 Phase 2 shift fill (see
-// BuildShiftFill).
+// SetShiftResolver enables the ADR-0014 Phase 2 shift fill, now folded
+// straight into the equipment_values UPSERT (see shiftFold + Build).
 func (w *EquipmentValues) SetShiftResolver(r *shiftresolver.Resolver) { w.shifts = r }
 
-// sqlShiftFill ports piot_set_shift_on_equipment_values() as a companion
-// UPDATE queued right after the metric's UPSERT in the same pgx.Batch.
-// COALESCE everywhere = the trigger's "only fill when NULL" semantics;
-// ($1)::date matches the trigger's NEW.ts_value::date (session-timezone
-// cast, evaluated in this worker's session exactly as the trigger
-// evaluates in the inserting session).
-const sqlShiftFill = `
-	UPDATE %s.equipment_values SET
-		id_shift            = COALESCE(id_shift, $3),
-		id_shift_hour       = COALESCE(id_shift_hour, $4),
-		ts_value_production = COALESCE(ts_value_production, ($1)::date)
-	WHERE ts_value = $1 AND id_equipment = $2`
-
-// BuildShiftFill returns the shift-fill *Query for one metric, or nil
-// when the resolver is disabled or the topic is unregistered. Fail-open
-// end to end: an unresolvable shift still fills ts_value_production and
-// leaves the shift columns NULL — byte-for-byte what the trigger does.
-func (w *EquipmentValues) BuildShiftFill(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
-	if w.shifts == nil {
-		return nil, nil
+// shiftFold splices the ADR-0014 shift-fill columns (id_shift,
+// id_shift_hour, ts_value_production) into an equipment_values UPSERT so the
+// shift labels ride along with the row's own INSERT instead of a separate
+// companion UPDATE (BuildShiftFill, removed). This halves the per-metric
+// statement count on the equipment_values surface (~60→~40 stmts/msg on a
+// typical CPACK payload) while preserving the dropped trigger's semantics
+// byte-for-byte:
+//
+//   - keep-existing-else-fill → COALESCE(equipment_values.col, EXCLUDED.col)
+//     on conflict (identical to the trigger's / old UPDATE's
+//     COALESCE(col, $n) "only fill when NULL").
+//   - session-tz date cast → ts_value_production = ($1)::date, reusing the
+//     ts_value bind ($1) so the cast runs in this worker's session exactly
+//     as piot_set_shift_on_equipment_values() cast NEW.ts_value::date.
+//
+// baseArgs is the count of positional args the builder already uses
+// ($1..$baseArgs); the two shift-id binds append as $baseArgs+1 / +2. When
+// the resolver is disabled (withShift=false) it returns empty fragments and
+// no args — the row inserts with NULL shift labels, mirroring the old
+// BuildShiftFill nil-return under `if w.shifts == nil`.
+func shiftFold(withShift bool, idShift, idShiftHour *int, baseArgs int) (cols, vals, set string, args []any) {
+	if !withShift {
+		return "", "", "", nil
 	}
-	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
-	}
-	if info == nil {
-		return nil, nil
-	}
-	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
-	idShift, idShiftHour := w.shifts.Resolve(ctx, info.IDEnterprise, info.IDEquipment, ts)
-	return &Query{
-		SQL:  fmt.Sprintf(sqlShiftFill, schema),
-		Args: []any{ts, info.IDEquipment, idShift, idShiftHour},
-		Desc: fmt.Sprintf("shift-fill %s.equipment_values eq=%d ts=%s", schema, info.IDEquipment, ts.Format(time.RFC3339)),
-	}, nil
+	cols = ",\n\t\t\t id_shift, id_shift_hour, ts_value_production"
+	vals = fmt.Sprintf(", $%d, $%d, ($1)::date", baseArgs+1, baseArgs+2)
+	set = `,
+			id_shift            = COALESCE(equipment_values.id_shift, EXCLUDED.id_shift),
+			id_shift_hour       = COALESCE(equipment_values.id_shift_hour, EXCLUDED.id_shift_hour),
+			ts_value_production = COALESCE(equipment_values.ts_value_production, EXCLUDED.ts_value_production)`
+	return cols, vals, set, []any{idShift, idShiftHour}
 }
 
 // CanWrite returns true for kinds whose values land in equipment_values.
@@ -184,15 +179,29 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	}
 	checkNumber := m.Timestamp
 
+	// ADR-0014 fold: resolve the shift ONCE here and thread the labels into
+	// the row's own UPSERT (shiftFold), replacing the separate companion
+	// UPDATE that BuildShiftFill used to queue. withShift mirrors the old
+	// `if w.shifts == nil { return nil,nil }` guard: when the resolver is
+	// disabled the labels stay NULL and no shift binds are added. When it is
+	// enabled the fill is fail-open — an unresolvable shift still stamps
+	// ts_value_production (($1)::date) and leaves the id_* columns NULL,
+	// byte-for-byte what the dropped trigger did.
+	withShift := w.shifts != nil
+	var idShift, idShiftHour *int
+	if withShift {
+		idShift, idShiftHour = w.shifts.Resolve(ctx, info.IDEnterprise, info.IDEquipment, ts)
+	}
+
 	switch kind {
 	case sparkplug.KindProdProcessedCount:
-		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema), nil
+		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
 	case sparkplug.KindProdConsumedCount:
-		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema), nil
+		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
 	case sparkplug.KindProdDefectiveCount:
-		return buildDefective(ts, info, tpEquipment, value, (*float64)(m.Counter), faults, checkNumber, schema), nil
+		return buildDefective(ts, info, tpEquipment, value, (*float64)(m.Counter), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
 	case sparkplug.KindStateCurrent:
-		return buildState(ts, info, tpEquipment, int(value), faults, checkNumber, schema), nil
+		return buildState(ts, info, tpEquipment, int(value), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
 	case sparkplug.KindUnitModeCurrent:
 		// UnitModeCurrent payload may carry sub_mode in metric.alias —
 		// extract as string if present and non-null.
@@ -203,7 +212,7 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 				subMode = &s
 			}
 		}
-		return buildMode(ts, info, tpEquipment, int(value), subMode, faults, checkNumber, schema), nil
+		return buildMode(ts, info, tpEquipment, int(value), subMode, faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
 	}
 	return nil, nil
 }
@@ -283,26 +292,30 @@ func buildProcessed(
 	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment int, value float64, counter, curspeed *float64,
 	faults *string, checkNumber int64, schema string,
+	withShift bool, idShift, idShiftHour *int,
 ) *Query {
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12)
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality, faults, check_number)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality, faults, check_number%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			net_production_incr = EXCLUDED.net_production_incr,
 			net_production_val  = COALESCE(EXCLUDED.net_production_val, equipment_values.net_production_val),
 			speed               = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality      = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults              = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number        = EXCLUDED.check_number
-	`, schema)
+			check_number        = EXCLUDED.check_number%s
+	`, schema, sCols, sVals, sSet)
+	args := []any{
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
+	}
+	args = append(args, sArgs...)
 	return &Query{
-		SQL: sql,
-		Args: []any{
-			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-			tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
-		},
+		SQL:  sql,
+		Args: args,
 		Desc: fmt.Sprintf("upsert %s.equipment_values (processed) eq=%d ts=%s",
 			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}
@@ -312,26 +325,30 @@ func buildConsumed(
 	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment int, value float64, counter, curspeed *float64,
 	faults *string, checkNumber int64, schema string,
+	withShift bool, idShift, idShiftHour *int,
 ) *Query {
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12)
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			gross_production_incr = EXCLUDED.gross_production_incr,
 			gross_production_val  = COALESCE(EXCLUDED.gross_production_val, equipment_values.gross_production_val),
 			speed                 = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality        = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults                = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number          = EXCLUDED.check_number
-	`, schema)
+			check_number          = EXCLUDED.check_number%s
+	`, schema, sCols, sVals, sSet)
+	args := []any{
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
+	}
+	args = append(args, sArgs...)
 	return &Query{
-		SQL: sql,
-		Args: []any{
-			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-			tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
-		},
+		SQL:  sql,
+		Args: args,
 		Desc: fmt.Sprintf("upsert %s.equipment_values (consumed) eq=%d ts=%s",
 			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}
@@ -341,25 +358,29 @@ func buildDefective(
 	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment int, value float64, counter *float64,
 	faults *string, checkNumber int64, schema string,
+	withShift bool, idShift, idShiftHour *int,
 ) *Query {
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 11)
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, scrap_incr, scrap_val, signal_quality, faults, check_number)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 tp_equipment, scrap_incr, scrap_val, signal_quality, faults, check_number%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			scrap_incr     = EXCLUDED.scrap_incr,
 			scrap_val      = COALESCE(EXCLUDED.scrap_val, equipment_values.scrap_val),
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults         = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number   = EXCLUDED.check_number
-	`, schema)
+			check_number   = EXCLUDED.check_number%s
+	`, schema, sCols, sVals, sSet)
+	args := []any{
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, value, counter, info.SignalQuality, faults, checkNumber,
+	}
+	args = append(args, sArgs...)
 	return &Query{
-		SQL: sql,
-		Args: []any{
-			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-			tpEquipment, value, counter, info.SignalQuality, faults, checkNumber,
-		},
+		SQL:  sql,
+		Args: args,
 		Desc: fmt.Sprintf("upsert %s.equipment_values (defective) eq=%d ts=%s",
 			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}
@@ -368,24 +389,28 @@ func buildDefective(
 func buildState(
 	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment, state int, faults *string, checkNumber int64, schema string,
+	withShift bool, idShift, idShiftHour *int,
 ) *Query {
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 10)
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, state, signal_quality, faults, check_number)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 tp_equipment, state, signal_quality, faults, check_number%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			state          = EXCLUDED.state,
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults         = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number   = EXCLUDED.check_number
-	`, schema)
+			check_number   = EXCLUDED.check_number%s
+	`, schema, sCols, sVals, sSet)
+	args := []any{
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, state, info.SignalQuality, faults, checkNumber,
+	}
+	args = append(args, sArgs...)
 	return &Query{
-		SQL: sql,
-		Args: []any{
-			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-			tpEquipment, state, info.SignalQuality, faults, checkNumber,
-		},
+		SQL:  sql,
+		Args: args,
 		Desc: fmt.Sprintf("upsert %s.equipment_values (state) eq=%d ts=%s",
 			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}
@@ -394,25 +419,29 @@ func buildState(
 func buildMode(
 	ts time.Time, info *sparkplug.EquipmentInfo,
 	tpEquipment, mode int, subMode *string, faults *string, checkNumber int64, schema string,
+	withShift bool, idShift, idShiftHour *int,
 ) *Query {
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 11)
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, mode, sub_mode, signal_quality, faults, check_number)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 tp_equipment, mode, sub_mode, signal_quality, faults, check_number%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			mode           = EXCLUDED.mode,
 			sub_mode       = COALESCE(EXCLUDED.sub_mode, equipment_values.sub_mode),
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults         = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number   = EXCLUDED.check_number
-	`, schema)
+			check_number   = EXCLUDED.check_number%s
+	`, schema, sCols, sVals, sSet)
+	args := []any{
+		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
+		tpEquipment, mode, subMode, info.SignalQuality, faults, checkNumber,
+	}
+	args = append(args, sArgs...)
 	return &Query{
-		SQL: sql,
-		Args: []any{
-			ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-			tpEquipment, mode, subMode, info.SignalQuality, faults, checkNumber,
-		},
+		SQL:  sql,
+		Args: args,
 		Desc: fmt.Sprintf("upsert %s.equipment_values (mode) eq=%d ts=%s",
 			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}

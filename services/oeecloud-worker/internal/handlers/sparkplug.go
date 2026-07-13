@@ -164,7 +164,6 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		kind := m.Classify()
 
 		var q *writers.Query
-		var shiftQ *writers.Query
 		var eventQ *writers.Query
 		var buildErr error
 
@@ -184,23 +183,20 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 
 		switch {
 		case h.equipmentValues.CanWrite(kind):
+			// ADR-0014 fold (2026-07-13): the shift labels (id_shift,
+			// id_shift_hour, ts_value_production) are now folded INTO the
+			// equipment_values UPSERT by Build() itself — the Go resolver
+			// fills ALL routes exactly as the separate companion UPDATE
+			// (BuildShiftFill) used to, but in the row's own INSERT. This
+			// halves the per-metric statement count on this surface
+			// (~60→~40 stmts/msg). Value semantics are byte-identical:
+			// keep-existing-else-fill (COALESCE on conflict) + the
+			// session-tz ts_value::date cast. See shiftFold.
 			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
-			// ADR-0014 Phase 2: shadow paths get the Go-ported shift fill
-			// as a companion UPDATE in the same batch. Flow 1
-			// (source_type "") keeps the PL/pgSQL trigger during the
-			// comparator bake — filling there would make the bake compare
-			// Go against Go.
-			if buildErr == nil && q != nil {
-				// ADR-0014 P2 CLOSE-OUT (2026-07-06, same-row evidence
-				// 0/46 after ts alignment): the Go resolver fills ALL
-				// routes; F1's piot_set_shift_before_insert trigger is
-				// dropped in the same change.
-				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
-				if p.SourceType != "" {
-					// Event mint stays shadow-only: F1's EVENT trigger
-					// remains its writer until the §6 flip.
-					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
-				}
+			if buildErr == nil && q != nil && p.SourceType != "" {
+				// Event mint stays shadow-only: F1's EVENT trigger
+				// remains its writer until the §6 flip.
+				eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
 			}
 		case h.unsMetrics.CanWrite(kind):
 			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
@@ -224,12 +220,6 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 		batch.Queue(q.SQL, q.Args...)
 		descs = append(descs, q.Desc)
-		if shiftQ != nil {
-			// Ordered right after its UPSERT — pgx.Batch executes
-			// statements sequentially on one connection.
-			batch.Queue(shiftQ.SQL, shiftQ.Args...)
-			descs = append(descs, shiftQ.Desc)
-		}
 		if eventQ != nil {
 			batch.Queue(eventQ.SQL, eventQ.Args...)
 			descs = append(descs, eventQ.Desc)
