@@ -978,6 +978,15 @@ services:
       # drain (~2 msg/s → ~57k backlog). 1 = original serial behavior. Watch the
       # 5-conn main pool (POSTGRES_MAX_CONNS) under this — F1+F2 lanes share it.
       CONSUME_LANES: "4"
+      # Lever 1 (PR #453, merged flag-OFF): fold the shift-fill UPDATE into the
+      # equipment_values UPSERT so each message issues ~40 statements instead of
+      # ~60. Attacks the actual ceiling on the latency-bound oeecloud-worker-q
+      # drain (~0.95 msg/s, ~57k backlog). Recon 2026-07-13 proved the backlog is
+      # an even F1/F2/F3 triple-emit already spread across 3 lanes, so CONSUME_LANES
+      # is maxed out — the wall is per-message DB round-trips against the
+      # memory-starved DB EC2, not consumer count. Cutting stmts/msg is the lever.
+      # DBA GO: byte-identical output. Reversible: unset this line + redeploy.
+      SHIFT_FILL_FOLDED: "true"
       HEALTH_PORT: "9101"
       # ADR-0012 Phase 3: route source_type="refactored" envelopes to the
       # packiot_shadow DB (same host/user/password, different database).
