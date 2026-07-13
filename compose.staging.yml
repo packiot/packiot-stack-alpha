@@ -971,6 +971,13 @@ services:
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
+      # Concurrent keyed consume lanes (PR #451). Deliveries route to
+      # lane = hash(source_type) % N: same source_type stays strictly ordered
+      # (po-control is read-modify-write); the 3 flows (F1/F2/F3 → disjoint
+      # pool+schema) process concurrently. Unblocks the serial oeecloud-worker-q
+      # drain (~2 msg/s → ~57k backlog). 1 = original serial behavior. Watch the
+      # 5-conn main pool (POSTGRES_MAX_CONNS) under this — F1+F2 lanes share it.
+      CONSUME_LANES: "4"
       HEALTH_PORT: "9101"
       # ADR-0012 Phase 3: route source_type="refactored" envelopes to the
       # packiot_shadow DB (same host/user/password, different database).
