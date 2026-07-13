@@ -164,24 +164,38 @@ ports `piot_set_shift_on_equipment_values()` +
 negative week_begin, area-priority selection with NULLS LAST tiebreak,
 fail-open). Implementation notes vs the original sketch:
 
-- Instead of adding columns to every Build() SQL, the port is a
-  companion `UPDATE … SET col = COALESCE(col, $n)` queued right after
-  each UPSERT in the same pgx.Batch — trigger-parity "fill only when
-  NULL" semantics with zero churn on the 5 existing INSERT builders.
-  It also fills `ts_value_production` (the trigger's second job).
-  id_team turned out NOT to be set by this trigger — dropped from scope.
-- `SHIFT_RESOLVER_ENABLED=true` on staging fills SHADOW paths only
-  (source_type go/refactored); Flow 1 keeps the trigger so the bake
-  compares Go against PL/pgSQL, not Go against Go.
+- The port started as a companion `UPDATE … SET col = COALESCE(col, $n)`
+  queued right after each UPSERT in the same pgx.Batch — trigger-parity
+  "fill only when NULL" semantics with zero churn on the 5 INSERT
+  builders. It also fills `ts_value_production` (the trigger's second
+  job). id_team turned out NOT to be set by this trigger — dropped from
+  scope.
+- **FOLD (2026-07-13, flag `SHIFT_FILL_FOLDED`, default off):** the three
+  columns are now optionally folded straight INTO the UPSERT (INSERT
+  columns + `ON CONFLICT DO UPDATE SET col = COALESCE(equipment_values.col,
+  EXCLUDED.col)`, with `ts_value_production = ($1)::date` reusing the
+  ts_value bind for the identical session-tz cast). This halves the
+  per-metric statement count (~60→~40) on the equipment_values surface.
+  The flag selects: on → folded UPSERT + no separate UPDATE; off → the
+  legacy split above. DBA-ruled bake-safe (ZERO live triggers on
+  public + packiot_shadow, so no BEFORE-INSERT interaction); flag exists
+  purely for hot-path rollback-by-flag.
+- `SHIFT_RESOLVER_ENABLED=true` fills shifts on ALL flows. The
+  `piot_set_shift_before_insert` trigger was RETIRED after the 168h bake
+  (DBA verified zero triggers on staging public + packiot_shadow public);
+  the Go resolver is now the SOLE shift writer on every schema and flow.
 - Bake gauge: /d/3-flow-parity "shift divergence" + "Go-unresolved"
-  panels (24h windows). Retire the trigger after 168h of zero.
+  panels (24h windows) — must stay 0 across a shift cycle after each
+  `SHIFT_FILL_FOLDED` flip.
 - Unit tests cover the week-offset math hand-derived from the SQL
   (UTC wb=0/1, Sao Paulo wb=-3000 both sides of the week origin,
   UTC-vs-local day boundary), the ORDER BY port, and window edge
   inclusivity.
 
-Remaining for Phase 2 close-out: 168h bake → retire trigger on
-packiot.public → flip the fill gate to all source_types.
+Phase 2 close-out DONE: 168h bake passed → `piot_set_shift_before_insert`
+dropped on packiot.public → Go fills all source_types. The remaining
+`SHIFT_FILL_FOLDED` flip is a throughput optimization, not a correctness
+gate.
 
 ### Phase 3 — port runtime aggregates
 - Convert `piot_create_equipment_runtime_1hour` etc. into TimescaleDB

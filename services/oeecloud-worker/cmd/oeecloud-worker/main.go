@@ -191,7 +191,12 @@ func main() {
 	if cfg.ShiftResolverEnabled {
 		shiftRes := shiftresolver.New(pool, 5*time.Minute, logger)
 		equipmentValuesWriter.SetShiftResolver(shiftRes)
-		logger.Info("shift resolver enabled (ADR-0014 Phase 2) — shadow paths get Go-computed shifts")
+		// ADR-0014 fold rollback flag: fold the shift columns into the
+		// UPSERT (SHIFT_FILL_FOLDED=true) vs the legacy separate UPDATE
+		// (default). DBA bake-safe 2026-07-13 — flip live, revert by flag.
+		equipmentValuesWriter.SetShiftFillFolded(cfg.ShiftFillFolded)
+		logger.Info("shift resolver enabled (ADR-0014 Phase 2) — Go-computed shifts",
+			slog.Bool("shift_fill_folded", cfg.ShiftFillFolded))
 	}
 
 	mx := metrics.New()
