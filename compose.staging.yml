@@ -1267,6 +1267,19 @@ services:
       # (routes to packiot_shadow public via oeecloud-worker's shadow
       # pool). Requires POSTGRES_SHADOW_DB_NAME set on oeecloud-worker.
       SHADOW_EMIT_REFACTORED: "true"
+      # #276 Phase-4 Calc CUTOVER (PR #450, merged flag-OFF): flip the F3
+      # (source_type="refactored") emit from raw cumulative counters to the
+      # Calc port's delta+cumulative shape (Value=delta, Counter=cumulative —
+      # prod tsp12's gross_production_incr/val shape). Fixes the cagg SUMming
+      # cumulative counters into billions (oee 8142) on direct-line-emit lines
+      # (L8/SLEEVE/FLEXO). Scoped to F3 ONLY: the emit branch gates on
+      # `st == "refactored"`, so F2 (source_type="go") and F1 (source_type="")
+      # keep the raw resolved metrics untouched — F2 stays raw-and-blown-up on
+      # PURPOSE as the tsp12 divergence control. Requires USE_GO_PORT=true (set)
+      # + SHADOW_EMIT_REFACTORED=true (set). Reversible: unset this line +
+      # redeploy — the else-branch legacy BuildEnvelope path is retained, no DB
+      # change needed to roll back.
+      CALC_CUTOVER_REFACTORED: "true"
       # ── ADR-0019 C1 edge command channel (machine-write path) ─────────
       # The RETURN path: an operator action writes a value DOWN to the PLC
       # (SparkPlug DCMD). This is the ONLY machine-write path in the stack,
