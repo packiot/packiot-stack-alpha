@@ -1,9 +1,11 @@
 package amqp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -187,6 +189,7 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 	c.logger.Info("consuming",
 		slog.Any("queues", queues),
 		slog.Int("prefetch", c.cfg.Prefetch),
+		slog.Int("lanes_per_queue", max(c.cfg.ConsumeLanes, 1)),
 	)
 
 	eg, egctx := errgroup.WithContext(ctx)
@@ -220,22 +223,101 @@ func (c *Consumer) consumeOne(ctx context.Context, conn *amqp.Connection, queue 
 
 	closeCh := ch.NotifyClose(make(chan *amqp.Error, 1))
 
+	// Keyed worker pool. Deliveries are routed to lane = hash(source_type)%N
+	// so same-source_type messages stay strictly ordered within a lane — this
+	// preserves po-control lifecycle order (read-modify-write) — while distinct
+	// source_types (which write to DISJOINT (pool, schema) destinations)
+	// process concurrently. Every other handler (equipment_values / shift-fill
+	// / uns / po-parameter batch upserts, and event-mint) is idempotent by its
+	// natural key, so out-of-order across lanes is safe.
+	//
+	// lanes == 1 reproduces the original single-goroutine serial behavior
+	// exactly (one lane, one worker), so the change is inert until
+	// CONSUME_LANES is raised. The AMQP channel is single-writer, so
+	// ack/nack/publish across workers share chMu.
+	lanes := c.cfg.ConsumeLanes
+	if lanes < 1 {
+		lanes = 1
+	}
+	var chMu sync.Mutex
+	laneCh := make([]chan amqp.Delivery, lanes)
+	var wg sync.WaitGroup
+	for i := 0; i < lanes; i++ {
+		laneCh[i] = make(chan amqp.Delivery, c.cfg.Prefetch)
+		wg.Add(1)
+		go func(in <-chan amqp.Delivery) {
+			defer wg.Done()
+			for d := range in {
+				c.handleDelivery(ctx, ch, &chMu, d)
+			}
+		}(laneCh[i])
+	}
+	// closeLanes stops the workers and blocks until in-flight handlers drain.
+	// Buffered-but-unprocessed deliveries are dropped unacked → redelivered on
+	// the next connect (safe: all handlers are idempotent / retry-tolerant).
+	closeLanes := func() {
+		for _, lc := range laneCh {
+			close(lc)
+		}
+		wg.Wait()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			closeLanes()
 			return ctx.Err()
 		case e := <-closeCh:
+			closeLanes()
 			if e == nil {
 				return nil // clean close
 			}
 			return fmt.Errorf("channel closed for %s: %w", queue, e)
 		case d, ok := <-deliveries:
 			if !ok {
+				closeLanes()
 				return fmt.Errorf("delivery channel closed for %s", queue)
 			}
-			c.handleDelivery(ctx, ch, d)
+			// Route to the source_type lane. Block only until the lane has
+			// room OR shutdown — never drop a delivery silently.
+			select {
+			case laneCh[laneFor(d.Body, lanes)] <- d:
+			case <-ctx.Done():
+				closeLanes()
+				return ctx.Err()
+			}
 		}
 	}
+}
+
+// laneFor picks a processing lane for a delivery by hashing its source_type,
+// so all messages of one source_type (→ one schema/pool) stay in a single
+// serial lane while different source_types fan out. lanes<=1 short-circuits
+// to the single lane (serial mode).
+func laneFor(body []byte, lanes int) int {
+	if lanes <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sourceTypeOf(body)))
+	return int(h.Sum32() % uint32(lanes))
+}
+
+// sourceTypeOf cheaply extracts the top-level "source_type" string from a raw
+// envelope without a full JSON parse (the handler re-parses fully; this is on
+// the hot path). Returns "" on absence — which is itself a valid source_type
+// (F1 production), so all F1 messages hash to one consistent lane.
+func sourceTypeOf(body []byte) string {
+	key := []byte(`"source_type":"`)
+	i := bytes.Index(body, key)
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(key):]
+	if j := bytes.IndexByte(rest, '"'); j >= 0 {
+		return string(rest[:j])
+	}
+	return ""
 }
 
 // perTenantQueueNames builds "<prefix>-<tenant>" for every active tenant.
@@ -257,7 +339,12 @@ func (c *Consumer) perTenantQueueNames() []string {
 //  3. Handler returns nil → ack. Handler returns error → nack with
 //     requeue=false so the message goes to DLX (oee-retry) → TTL → back
 //     to source → re-delivered to this consumer.
-func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.Delivery) {
+// handleDelivery processes one delivery and acks/nacks it. It may run
+// concurrently across lanes, so every operation on the shared AMQP channel
+// (Publish/Ack/Nack — the amqp channel is single-writer) is serialized under
+// chMu. The DB work in dispatcher.Handle is not channel-bound and runs
+// concurrently. In serial mode (lanes==1) chMu is uncontended.
+func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, chMu *sync.Mutex, d amqp.Delivery) {
 	c.delivered.Add(1)
 	c.lastDelivery.Store(time.Now().UnixNano())
 	start := time.Now()
@@ -290,11 +377,16 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 	retries := xDeathCount(d.Headers)
 	if retries >= c.cfg.MaxRetries {
 		// Publish to failed exchange (terminal) and ack the original.
+		chMu.Lock()
 		err := ch.PublishWithContext(ctx, c.cfg.FailedExchange, d.RoutingKey, false, false, amqp.Publishing{
 			ContentType: d.ContentType,
 			Body:        d.Body,
 			Headers:     d.Headers,
 		})
+		if err == nil {
+			_ = d.Ack(false)
+		}
+		chMu.Unlock()
 		if err != nil {
 			c.logger.Error("publish to failed exchange",
 				slog.String("err", err.Error()),
@@ -303,7 +395,6 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 			// Don't ack — let the message be redelivered on next cycle.
 			return
 		}
-		_ = d.Ack(false)
 		c.publishedFail.Add(1)
 		if c.metricsDeliveries != nil {
 			c.metricsDeliveries(d.RoutingKey, "exhausted_failed")
@@ -320,7 +411,9 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 		// nack with requeue=false → DLX (retry exchange) → retry queue → TTL → back to source.
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "handler error")
+		chMu.Lock()
 		_ = d.Nack(false, false)
+		chMu.Unlock()
 		c.nackedRetry.Add(1)
 		if c.metricsDeliveries != nil {
 			c.metricsDeliveries(d.RoutingKey, "nacked_retry")
@@ -333,8 +426,11 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 		return
 	}
 
-	if err := d.Ack(false); err != nil {
-		c.logger.Error("ack failed", slog.String("err", err.Error()))
+	chMu.Lock()
+	ackErr := d.Ack(false)
+	chMu.Unlock()
+	if ackErr != nil {
+		c.logger.Error("ack failed", slog.String("err", ackErr.Error()))
 		return
 	}
 	c.acked.Add(1)

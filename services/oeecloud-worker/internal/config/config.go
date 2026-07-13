@@ -42,6 +42,15 @@ type Config struct {
 	// Consumer tuning
 	Prefetch int // 50 — bounded outstanding ack count
 
+	// ConsumeLanes — number of concurrent processing lanes per queue.
+	// Deliveries are routed to a lane by hash(source_type) so same-source_type
+	// messages stay strictly ordered within a lane (required: po-control
+	// lifecycle is read-modify-write) while distinct source_types — which
+	// write to disjoint (pool, schema) destinations — process concurrently.
+	// 1 (default) = the original single-goroutine serial behavior, so the
+	// change is inert until CONSUME_LANES is raised. See consumer.go.
+	ConsumeLanes int // 1
+
 	// HTTP
 	HealthPort int
 
@@ -179,6 +188,7 @@ func Load() (*Config, error) {
 		RetryTTLMs:                       getenvInt("RETRY_TTL_MS", 30000),
 		MaxRetries:                       getenvInt("MAX_RETRIES", 5),
 		Prefetch:                         getenvInt("PREFETCH", 50),
+		ConsumeLanes:                     getenvInt("CONSUME_LANES", 1),
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
 		PGShadowDBName:                   getenv("POSTGRES_SHADOW_DB_NAME", ""),
