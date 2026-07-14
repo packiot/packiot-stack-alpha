@@ -654,6 +654,30 @@ func isCounterMetricName(name string) calc_production_counters.CounterKind {
 	}
 }
 
+// isLineLevelMetricName reports whether a metric name is a LINE-level
+// (unit-less) topic rather than a per-machine (Unit) topic. It mirrors the
+// canonical line-vs-unit rule used everywhere else in the stack — the
+// oeecloud-worker resolver's Metric.IsLineTopic / TopicForRegister and the
+// Node-RED "Prepare Incoming Message" node: when path segment index 4 is a
+// PackML process keyword (Admin/Status/Command) there is no Unit segment, so
+// the topic is a LINE. A Unit topic carries the unit name at index 4, pushing
+// the process keyword to index 5. Case-insensitive to match the resolver
+// (Sparkplug topic casing varies across PLCs).
+//
+//	CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount             → line (parts[4]="Admin")
+//	CPACK/SC/LINHAS/L5/TEXA/Admin/ProdConsumedCount/65/Unit → unit (parts[4]="TEXA")
+func isLineLevelMetricName(name string) bool {
+	parts := strings.Split(name, "/")
+	if len(parts) < 5 {
+		return false
+	}
+	switch strings.ToLower(parts[4]) {
+	case "admin", "status", "command":
+		return true
+	}
+	return false
+}
+
 // seedFromMetric writes non-counter Sparkplug metrics into the Calc port's
 // State singleton so subsequent counter evaluations have the parameter
 // context they need (MachSpeed, Parameter*30761*, etc.). Silently no-ops
@@ -941,6 +965,21 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric) []shadowpub.Metric {
 	out := make([]shadowpub.Metric, 0, len(calcMetrics)+len(resolved))
 	for _, em := range calcMetrics {
+		// #276 parity fix: suppress Calc Phase-9 LINE-level counter emissions.
+		// Lines are aggregated by the canonical downstream ingestion path (the
+		// oeecloud-node-red "01 · Ingestion & Writes" node) exactly as in the
+		// F1/F2/prod flows — it already writes the line's gross/net for id 47.
+		// Emitting an explicit Calc line counter here adds a SECOND line stream
+		// that double-counts: id 47 (L5) = 43629 (Calc, coherent) + 65453
+		// (downstream) = 109082 → oee 1.425, physically impossible. Machine
+		// (Unit) counters and Phase-10 machine status pass through unchanged;
+		// the line stays sourced solely from the downstream derivation, giving
+		// F3==F2 parity. Removing the legacy derivation in favour of Calc-owned
+		// lines is a deliberate FUTURE step, not this fix.
+		if isLineLevelMetricName(em.Name) &&
+			isCounterMetricName(em.Name) != calc_production_counters.CounterKindUnknown {
+			continue
+		}
 		counter := float64(em.Counter)
 		m := shadowpub.Metric{
 			Name:      em.Name,

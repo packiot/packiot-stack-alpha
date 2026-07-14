@@ -258,3 +258,80 @@ func TestBuildCutoverMetrics(t *testing.T) {
 		}
 	}
 }
+
+// TestIsLineLevelMetricName pins the line-vs-unit discriminator against real
+// topic shapes. Mirrors the resolver's canonical rule (parts[4] ∈
+// {admin,status,command} → line). Case-insensitive.
+func TestIsLineLevelMetricName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		// LINE-level (unit-less): the Phase-9 emissions we must suppress.
+		{"CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount", true},
+		{"CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount", true},
+		{"CPACK/SC/LINHAS/L5/Admin/ProdDefectiveCount", true},
+		{"CPACK/SC/LINHAS/L5/Status/StateCurrent", true},
+		{"CPACK/SC/LINHAS/L5/Command/Something", true},
+		// Case-insensitive (PLC topic casing varies).
+		{"CPACK/SC/LINHAS/L5/admin/ProdConsumedCount", true},
+		// MACHINE (Unit) topics: parts[4] is the unit name — must NOT match.
+		{"CPACK/SC/LINHAS/L5/TEXA/Admin/ProdConsumedCount/65/Unit", false},
+		{"CPACK/SC/LINHAS/L5/BREYER/Admin/ProdProcessedCount/61/Unit", false},
+		{"CPACK/SC/LINHAS/L5/BREYER/Status/StateCurrent", false},
+		// Too short to classify (4-segment line base) → not a metric topic.
+		{"CPACK/SC/LINHAS/L5", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isLineLevelMetricName(c.name); got != c.want {
+			t.Errorf("isLineLevelMetricName(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBuildCutoverMetricsSuppressesLineCounters is the #276 parity fix guard:
+// a Calc Phase-9 LINE-level counter emission must be DROPPED from the cutover
+// envelope (the line is aggregated by the downstream ingestion path), while
+// per-machine (Unit) counters survive. Prevents the id-47 double-count that
+// produced oee > 1.0.
+func TestBuildCutoverMetricsSuppressesLineCounters(t *testing.T) {
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	machConsumed := base + "/Admin/ProdConsumedCount/61/Unit"
+	machProcessed := base + "/Admin/ProdProcessedCount/61/Unit"
+	machStatus := base + "/Status/StateCurrent"
+	lineConsumed := "CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount"   // Phase-9 line emit → DROP
+	lineProcessed := "CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount" // Phase-9 line emit → DROP
+
+	calcMetrics := []calc_production_counters.Metric{
+		{Name: machConsumed, Value: 5, Counter: 95, Timestamp: 1000},
+		{Name: lineConsumed, Value: 5, Counter: 95, Timestamp: 1000},   // must be suppressed
+		{Name: machProcessed, Value: 4, Counter: 80, Timestamp: 1000},
+		{Name: lineProcessed, Value: 4, Counter: 80, Timestamp: 1000},  // must be suppressed
+		{Name: machStatus, Value: 6, Counter: 6, Timestamp: 1000},      // machine status → keep
+	}
+
+	out := buildCutoverMetrics(calcMetrics, nil)
+
+	got := map[string]bool{}
+	for _, m := range out {
+		got[m.Name] = true
+	}
+	// Line-level counter emissions must be gone.
+	if got[lineConsumed] {
+		t.Errorf("line-level Consumed leaked into cutover envelope: %q", lineConsumed)
+	}
+	if got[lineProcessed] {
+		t.Errorf("line-level Processed leaked into cutover envelope: %q", lineProcessed)
+	}
+	// Machine counters + machine status must survive.
+	for _, want := range []string{machConsumed, machProcessed, machStatus} {
+		if !got[want] {
+			t.Errorf("machine-level metric %q wrongly dropped from cutover envelope", want)
+		}
+	}
+	if len(out) != 3 {
+		t.Fatalf("expected 3 surviving metrics (2 machine counters + 1 status), got %d: %+v",
+			len(out), out)
+	}
+}
