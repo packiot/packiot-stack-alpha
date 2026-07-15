@@ -114,7 +114,8 @@ pg_database_size:
 # per auto-discovered DB; label master_only false so it runs everywhere). ──
 pg_table_size_top:
   query: |
-    SELECT n.nspname AS schema,
+    SELECT current_database()          AS datname,
+           n.nspname AS schema,
            c.relname AS table,
            pg_total_relation_size(c.oid) AS total_bytes,
            pg_relation_size(c.oid)       AS heap_bytes,
@@ -128,6 +129,11 @@ pg_table_size_top:
     ORDER BY pg_total_relation_size(c.oid) DESC
     LIMIT 25
   metrics:
+    # datname disambiguates otherwise-identical (schema, table) label sets across
+    # auto-discovered DBs (public.equipment_values exists in packiot, packiot_shadow,
+    # shadow_go_port, ...). Without it Prometheus rejects the scrape with
+    # "collected before with the same name and label values" → HTTP 500 → up=0.
+    - datname: { usage: LABEL, description: "Database" }
     - schema: { usage: LABEL, description: "Schema" }
     - table: { usage: LABEL, description: "Table" }
     - total_bytes: { usage: GAUGE, description: "Total relation size incl. indexes + TOAST" }
@@ -139,7 +145,8 @@ pg_table_size_top:
 # is installed; the LEFT JOIN + coalesce keep it inert on plain Postgres). ──
 pg_timescaledb_hypertables:
   query: |
-    SELECT hypertable_schema AS schema,
+    SELECT current_database()      AS datname,
+           hypertable_schema AS schema,
            hypertable_name   AS hypertable,
            coalesce(total_bytes, 0)      AS total_bytes,
            coalesce(sz.num_chunks, 0)    AS num_chunks,
@@ -150,6 +157,10 @@ pg_timescaledb_hypertables:
       FROM chunks_detailed_size(format('%I.%I', h.hypertable_schema, h.hypertable_name))
     ) sz ON true
   metrics:
+    # datname disambiguates otherwise-identical (schema, hypertable) label sets
+    # across auto-discovered DBs (public.equipment_values is a hypertable in
+    # packiot, packiot_shadow, shadow_go_port). Without it the scrape 500s → up=0.
+    - datname: { usage: LABEL, description: "Database" }
     - schema: { usage: LABEL, description: "Hypertable schema" }
     - hypertable: { usage: LABEL, description: "Hypertable name" }
     - total_bytes: { usage: GAUGE, description: "Hypertable total size (all chunks)" }

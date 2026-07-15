@@ -139,27 +139,27 @@
       "id": 11,
       "type": "table",
       "title": "Top tables by total size",
-      "description": "pg_table_size_top_total_bytes — biggest relations (heap + indexes + TOAST), with dead-tuple bloat.",
+      "description": "pg_table_size_top_total_bytes — biggest relations (heap + indexes + TOAST), with dead-tuple bloat. Scoped to the primary DB (datname=\"packiot\"); the exporter now emits a per-DB datname label, so drop the filter to inspect packiot_shadow / shadow_go_port.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "bytes" }, "overrides": [ { "matcher": { "id": "byName", "options": "dead_tuples" }, "properties": [ { "id": "unit", "value": "short" } ] }, { "matcher": { "id": "byName", "options": "live_tuples" }, "properties": [ { "id": "unit", "value": "short" } ] } ] },
       "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "total_bytes", "desc": true } ] },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(20, pg_table_size_top_total_bytes)", "format": "table", "instant": true, "refId": "A" } ],
-      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["schema", "table", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "total_bytes" } } } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(20, pg_table_size_top_total_bytes{datname=\"packiot\"})", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["datname", "schema", "table", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "total_bytes" } } } ]
     },
     {
       "id": 12,
       "type": "table",
       "title": "TimescaleDB hypertables (size + chunks + compression)",
-      "description": "pg_timescaledb_hypertables_* — hypertable total size, chunk count, and whether compression is enabled. Empty on plain-Postgres DBs (guarded query).",
+      "description": "pg_timescaledb_hypertables_* — hypertable total size, chunk count, and whether compression is enabled. Scoped to the primary DB (datname=\"packiot\"); the exporter now emits a per-DB datname label to avoid cross-DB collisions. Empty on plain-Postgres DBs (guarded query).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [] },
       "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "total_bytes", "desc": true } ] },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_total_bytes", "format": "table", "instant": true, "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_num_chunks", "format": "table", "instant": true, "refId": "B" },
-        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_compression_enabled", "format": "table", "instant": true, "refId": "C" }
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_total_bytes{datname=\"packiot\"}", "format": "table", "instant": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_num_chunks{datname=\"packiot\"}", "format": "table", "instant": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_compression_enabled{datname=\"packiot\"}", "format": "table", "instant": true, "refId": "C" }
       ],
       "transformations": [
         { "id": "joinByField", "options": { "byField": "hypertable", "mode": "outer" } },
