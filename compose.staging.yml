@@ -1040,9 +1040,16 @@ services:
       # uns_equipment_current_metrics deriver — the table froze at the
       # 10.9 cutover (its ingest writer's `sparkplug.uns_metrics` routing
       # key lost its only producer). In-engine derivation replaces it
-      # (owner decision 2026-07-07). Ships OFF; enable at the flip.
+      # (owner decision 2026-07-07) as THE mechanism: one idempotent
+      # set-based UPSERT per flow, reconstructing every column from DB
+      # state, keyed by id_equipment, at UNS_CURRENT_METRICS_INTERVAL_MINUTES
+      # (default 1). ENABLED 2026-07-15 (architecture review — Squad 8):
+      # last_updated on F1 was ~33d stale; this is the only path that
+      # refreshes it pre-flip. Low-risk: one UPSERT, one table, no
+      # cross-service cutover (the legacy producer is already retired).
       # Ledgered divergence: freshness ingest-time → job cadence (1 min).
-      UNS_CURRENT_METRICS_ENABLED: "false"
+      # Reversible: set back to "false" + redeploy.
+      UNS_CURRENT_METRICS_ENABLED: "true"
       # ADR-0014 P3b — po-runtime-recalc (shadow flows).
       PO_RECALC_ENABLED: "true"
       RUNTIME_PROVISION_ENABLED: "true"
