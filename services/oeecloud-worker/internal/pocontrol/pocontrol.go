@@ -209,15 +209,39 @@ func (h *Handler) runningPO(ctx context.Context, tx pgx.Tx, schema string, eq in
 	return &r, nil
 }
 
+// sqlCloseOpenSegmentOnEquipment is the CLOSE-FIRST recurrence guard
+// (task #34, zombie-segment fix). Before a PO-start opens a new segment,
+// it bounds the upper of every still-OPEN runtime segment on THIS
+// equipment to $1 (the new start ts). This self-heals a prior finish
+// that left an unbounded "zombie" segment — the next start always cleans
+// it — so the "one open segment per equipment" invariant holds.
+//
+// Scoping (do NOT widen): keyed strictly on id_equipment, never
+// id_production_order. A PO legitimately runs open on other equipments
+// concurrently (#37 concurrent-split), so closing by PO would corrupt
+// those siblings. Same-equipment only.
+//
+// The `lower(runtime_timerange) < $1` guard mirrors the shadow-mirror
+// path (sqlCloseWindowsForEquipment): it skips the pathological
+// lower>=ts case that would otherwise invert tstzrange(lower, ts) and
+// abort the entire start tx (the old inverted-range poison). After this
+// statement the equipment has zero open segments, so the INSERT that
+// follows can never overlap — the upcoming EXCLUDE (id_equipment
+// WITH =, runtime_timerange WITH &&) can never fire on a normal start
+// (the closed prior [old_lower, ts) is adjacent to, not overlapping,
+// the new [ts, ∞)).
+const sqlCloseOpenSegmentOnEquipment = `UPDATE %s.production_orders_runtime
+	     SET runtime_timerange = tstzrange(lower(runtime_timerange), $1), recalc_needed = true
+	   WHERE id_equipment = $2 AND upper(runtime_timerange) IS NULL
+	     AND lower(runtime_timerange) < $1`
+
 // execStart = the captured 6-statement start block, order preserved.
 func (h *Handler) execStart(ctx context.Context, tx pgx.Tx, schema string, info *sparkplug.EquipmentInfo, targetID int64, plan StartPlan, p paramPayload, ts, ts1 time.Time) error {
 	stmts := []struct {
 		sql  string
 		args []any
 	}{
-		{fmt.Sprintf(`UPDATE %s.production_orders_runtime
-		     SET runtime_timerange = tstzrange(lower(runtime_timerange), $1), recalc_needed = true
-		   WHERE id_equipment = $2 AND upper(runtime_timerange) IS NULL`, schema),
+		{fmt.Sprintf(sqlCloseOpenSegmentOnEquipment, schema),
 			[]any{ts, info.IDEquipment}},
 		{fmt.Sprintf(`INSERT INTO %s.production_orders_runtime
 		     (id_production_order, runtime_timerange, recalc_needed, id_equipment)

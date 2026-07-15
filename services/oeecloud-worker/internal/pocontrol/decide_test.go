@@ -49,6 +49,25 @@ func TestDecideStartMatrix(t *testing.T) {
 	}
 }
 
+// The close-first guard (task #34) must stay scoped to the equipment and
+// keep the lower<ts inversion guard, or the EXCLUDE constraint dba adds
+// will start rejecting legitimate PO starts. Cheap shape assertion so a
+// regression fails without a DB.
+func TestCloseFirstGuardShape(t *testing.T) {
+	for _, m := range []string{
+		"id_equipment = $2",                  // scoped to equipment, not PO (#37)
+		"upper(runtime_timerange) IS NULL",   // only OPEN segments
+		"lower(runtime_timerange) < $1",      // inversion / EXCLUDE guard (mirrors F2)
+	} {
+		if !strings.Contains(sqlCloseOpenSegmentOnEquipment, m) {
+			t.Errorf("close-first guard lost %q", m)
+		}
+	}
+	if strings.Contains(sqlCloseOpenSegmentOnEquipment, "id_production_order") {
+		t.Error("close-first must NOT key on id_production_order — that would close sibling segments on other equipments (#37 concurrent-split)")
+	}
+}
+
 func TestDecideEnd(t *testing.T) {
 	if !DecideEnd(30801, nil).NoOp {
 		t.Error("end with nothing running must be noop (nodered po_status!=2 fallthrough)")
