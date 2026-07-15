@@ -30,6 +30,10 @@
       "id": 1,
       "type": "timeseries",
       "title": "user_logs polled vs replayed (per min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -48,11 +52,19 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(mirror_worker_user_logs_polled_total[5m]))*60",
           "legendFormat": "polled",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(mirror_worker_user_logs_replayed_total[5m]))*60",
           "legendFormat": "replayed",
           "refId": "B"
@@ -63,6 +75,10 @@
       "id": 2,
       "type": "timeseries",
       "title": "Cursor lag behind prod",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -82,6 +98,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "mirror_worker_cursor_lag_seconds",
           "legendFormat": "lag",
           "refId": "A"
@@ -92,6 +112,10 @@
       "id": 3,
       "type": "timeseries",
       "title": "Reconciler: events + POs + values synced (per tick)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -110,16 +134,28 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(increase(mirror_worker_reconciler_events_total[10m]))",
           "legendFormat": "events",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(increase(mirror_worker_reconciler_pos_total[10m]))",
           "legendFormat": "POs",
           "refId": "B"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(increase(mirror_worker_reconciler_values_synced_total[10m]))",
           "legendFormat": "value deltas",
           "refId": "C"
@@ -143,6 +179,10 @@
       "id": 4,
       "type": "timeseries",
       "title": "Value fan-out by destination (per min, ok)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -164,6 +204,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum by (destination)(rate(mirror_worker_value_fanout_total{outcome=\"ok\"}[5m]))*60",
           "legendFormat": "{{destination}}",
           "refId": "A"
@@ -174,6 +218,10 @@
       "id": 5,
       "type": "timeseries",
       "title": "Fan-out failures (must stay 0)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -192,6 +240,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "(sum(rate(mirror_worker_value_fanout_total{outcome!=\"ok\"}[10m])) or vector(0))*60",
           "legendFormat": "fanout failures",
           "refId": "A"
@@ -215,6 +267,10 @@
       "id": 6,
       "type": "timeseries",
       "title": "Comparator: OEE divergence % per active PO",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -234,6 +290,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "mirror_worker_comparator_oee_divergence_pct",
           "legendFormat": "{{po}}",
           "refId": "A"
@@ -244,6 +304,10 @@
       "id": 7,
       "type": "timeseries",
       "title": "Active-POs diff + events lag",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -262,11 +326,19 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "mirror_worker_comparator_active_pos_diff",
           "legendFormat": "PO diff",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "mirror_worker_comparator_events_lag_seconds",
           "legendFormat": "events lag (s)",
           "refId": "B"
@@ -277,6 +349,10 @@
       "id": 8,
       "type": "timeseries",
       "title": "DLQ depth (EMPTY = healthy) + reanimated",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -295,11 +371,19 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "mirror_worker_dlq_depth",
           "legendFormat": "depth",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(increase(mirror_worker_dlq_reanimated_total[1h]))",
           "legendFormat": "reanimated (1h)",
           "refId": "B"

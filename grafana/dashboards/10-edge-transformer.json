@@ -29,6 +29,10 @@
       "id": 1,
       "type": "timeseries",
       "title": "MQTT messages received / handled / dropped (per min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -47,16 +51,28 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(edge_transformer_mqtt_received_total[5m]))*60",
           "legendFormat": "received",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(edge_transformer_mqtt_handled_total[5m]))*60",
           "legendFormat": "handled",
           "refId": "B"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(edge_transformer_mqtt_dropped_total[5m]))*60",
           "legendFormat": "dropped",
           "refId": "C"
@@ -67,6 +83,10 @@
       "id": 2,
       "type": "timeseries",
       "title": "Handle errors + Sparkplug seq gaps (should be 0)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -85,11 +105,19 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "(sum(rate(edge_transformer_mqtt_handle_errors_total[5m])) or vector(0))*60",
           "legendFormat": "handle errors",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "(sum(rate(edge_transformer_sparkplug_seq_gaps_total[5m])) or vector(0))*60",
           "legendFormat": "seq gaps",
           "refId": "B"
@@ -100,6 +128,10 @@
       "id": 3,
       "type": "stat",
       "title": "MQTT connected",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -114,6 +146,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "edge_transformer_mqtt_connected",
           "legendFormat": "connected",
           "refId": "A"
@@ -138,6 +174,10 @@
       "id": 4,
       "type": "timeseries",
       "title": "Calc: evaluations vs metrics emitted (per min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -156,11 +196,19 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(calc_evaluations_total[5m]))*60",
           "legendFormat": "evaluations",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(calc_metrics_emitted_total[5m]))*60",
           "legendFormat": "emitted",
           "refId": "B"
@@ -171,6 +219,10 @@
       "id": 5,
       "type": "timeseries",
       "title": "Outbox depth + oldest age",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -189,11 +241,19 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "outbox_depth",
           "legendFormat": "depth (msgs)",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "outbox_oldest_age_seconds",
           "legendFormat": "oldest age (s)",
           "refId": "B"
@@ -218,6 +278,10 @@
       "id": 6,
       "type": "timeseries",
       "title": "Envelopes emitted per flow (per min) \u2014 the three lines must move together",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -239,6 +303,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum by (flow)(rate(edge_transformer_emitted_total[5m]))*60",
           "legendFormat": "{{flow}}",
           "refId": "A"
@@ -250,6 +318,10 @@
       "id": 7,
       "type": "timeseries",
       "title": "RabbitMQ publish: published vs broker-confirmed vs nacked (per min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "packiot-prometheus"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -268,16 +340,28 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(edge_transformer_shadowpub_published_total[5m]))*60",
           "legendFormat": "published",
           "refId": "A"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(edge_transformer_shadowpub_confirmed_total[5m]))*60",
           "legendFormat": "confirmed",
           "refId": "B"
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "packiot-prometheus"
+          },
           "expr": "sum(rate(edge_transformer_shadowpub_nacked_total[5m]))*60",
           "legendFormat": "nacked",
           "refId": "C"
