@@ -91,6 +91,40 @@ jobs:
       - name: Prune old images
         run: docker image prune -f
 
+      - name: Reload Prometheus config (dir-mount makes new file content visible; reload re-reads it)
+        # Task #39. prometheus.yml/rules.yml are now a DIRECTORY bind mount, so a
+        # git checkout that replaces them with new inodes is VISIBLE inside the
+        # running container without a recreate — but Prometheus only re-reads its
+        # config on SIGHUP or POST /-/reload (--web.enable-lifecycle is set in
+        # compose). Without this step, rule/scrape edits would sit on disk unread
+        # until the next full recreate, which is exactly the trap this task closes
+        # (the POStalenessGateRejectingWrites alert needed a manual force-recreate
+        # to load).
+        #
+        # `up -d` above does NOT recreate prometheus on a content-only change (its
+        # service spec is unchanged), so the container is the SAME one already
+        # running — we just tell it to re-read. Reaches prometheus over its own
+        # netns (--network container:prometheus), the same pattern the inspect/
+        # chaos steps use, so it needs no host curl and no published-port hop.
+        #
+        # Guarded: retry while prometheus finishes any (re)start, and
+        # continue-on-error so a reload miss never fails the deploy — the config
+        # is on disk regardless and loads on the next restart.
+        continue-on-error: true
+        run: |
+          set +e
+          echo "Reloading Prometheus config via POST /-/reload ..."
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:prometheus curlimages/curl:latest \
+                 -sf -X POST http://localhost:9090/-/reload >/dev/null 2>&1; then
+              echo "  prometheus config reloaded (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i: prometheus not ready for reload yet — sleeping 3s"
+            sleep 3
+          done
+          echo "  reload not confirmed after 10 attempts — config will load on next restart"
+
       - name: Smoke test — wait for critical services to report healthy
         # Without this, the previous step (compose up -d) returns the
         # moment the containers are CREATED, not when they're actually
