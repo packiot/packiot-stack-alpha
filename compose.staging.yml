@@ -549,11 +549,18 @@ services:
     image: prom/prometheus:v3.1.0
     container_name: prometheus
     restart: unless-stopped
-    # Bump `config_rev` whenever monitoring/prometheus/prometheus.yml
-    # changes. Bind mounts to a single FILE bind to the source's INODE;
-    # git rewrites the file with a new inode on checkout, so the running
-    # container reads stale content until recreated. Same trap as the
-    # grafana `provisioning_rev` pattern.
+    # Config + rules are a DIRECTORY bind mount (see volumes below), NOT two
+    # single-FILE mounts. A single-file bind pins the source INODE at
+    # container-create; git rewrites the file with a NEW inode on checkout
+    # (atomic rename), so the running container kept reading the OLD inode —
+    # prometheus.yml/rules.yml edits never reached it without a force-recreate
+    # (task #39). A directory mount resolves each lookup through the dir, so
+    # replaced files inside it become visible live. Content still needs a
+    # config RELOAD (SIGHUP / POST /-/reload — --web.enable-lifecycle is set
+    # below); the deploy-staging workflow issues that reload after `up -d`.
+    # `config_rev` remains as a manual force-recreate escape hatch: bump it
+    # only when a change needs a full container recreate (e.g. a command/flag
+    # change), NOT for routine config/rule edits — those are reload-only now.
     labels:
       - "config_rev=2026-07-07-exporters"
     command:
@@ -570,8 +577,11 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.22
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      # Directory mount (task #39): follows inode replacement of prometheus.yml
+      # / rules.yml on git checkout, unlike the previous two single-file mounts.
+      # Read-only: prometheus only READS config here; tsdb is the separate
+      # prom-data volume below, so :ro cannot block writes.
+      - ./monitoring/prometheus:/etc/prometheus:ro
       - prom-data:/prometheus
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
