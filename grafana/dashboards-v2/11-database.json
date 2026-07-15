@@ -151,15 +151,15 @@
       "id": 12,
       "type": "table",
       "title": "TimescaleDB hypertables (size + chunks + compression)",
-      "description": "pg_timescaledb_hypertables_* — hypertable total size, chunk count, and whether compression is enabled. Scoped to the primary DB (datname=\"packiot\"); the exporter now emits a per-DB datname label to avoid cross-DB collisions. Empty on plain-Postgres DBs (guarded query).",
+      "description": "pg_timescaledb_hypertables_* — hypertable total size, chunk count, and whether compression is enabled. Scoped to the primary DB, public schema (datname=\"packiot\", schema=\"public\") — the join key is the hypertable name, so scoping avoids both cross-DB and cross-schema (e.g. the shadow_go_port schema) name clashes. The exporter now emits a per-DB datname label. Empty on plain-Postgres DBs (guarded query).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [] },
       "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "total_bytes", "desc": true } ] },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_total_bytes{datname=\"packiot\"}", "format": "table", "instant": true, "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_num_chunks{datname=\"packiot\"}", "format": "table", "instant": true, "refId": "B" },
-        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_compression_enabled{datname=\"packiot\"}", "format": "table", "instant": true, "refId": "C" }
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_total_bytes{datname=\"packiot\", schema=\"public\"}", "format": "table", "instant": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_num_chunks{datname=\"packiot\", schema=\"public\"}", "format": "table", "instant": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_hypertables_compression_enabled{datname=\"packiot\", schema=\"public\"}", "format": "table", "instant": true, "refId": "C" }
       ],
       "transformations": [
         { "id": "joinByField", "options": { "byField": "hypertable", "mode": "outer" } },
