@@ -214,3 +214,26 @@ groups:
         labels: {severity: info}
         annotations:
           summary: "Tenant enterprise {{ $labels.enterprise }} NOT converged — not flip-ready (a bake surface mismatches or has no compared rows). Ready-to-flip = this alert resolved for the tenant."
+
+  # Task #32 Phase-3 — the PO-staleness-gate bake watch. The gate rejects a
+  # PO write ONLY on STALE_HEAD / RANGE_CONFLICT / BEYOND_HORIZON, and a
+  # rejection surfaces as an HTTP 409 on /api/production-orders/*. During the
+  # bake that count MUST stay ~0: a sustained non-zero means the gate is
+  # rejecting LEGITIMATE writes (wrong-rejection), which is the exact danger
+  # we flip the flag to avoid. This is the ONLY gate signal that is an alarm.
+  #
+  # NOT alerted (deliberately): po_gate_degraded_total — a degrade is a
+  # fail-safe ALLOW on open-segment drift, not a rejection. It's graphed on
+  # board v2-po-staleness-gate as informational and expected to trend to 0 as
+  # the #34 zombie-backfill cleanup lands; alerting on an ALLOW would be noise.
+  #
+  # `by (route)` (an enhancement over the task's plain sum) so the annotation
+  # names the offending PO route — more actionable in the page.
+  - name: packiot-po-staleness-gate
+    rules:
+      - alert: POStalenessGateRejectingWrites
+        expr: sum by (route) (rate(http_request_duration_seconds_count{job="edge-api", route=~"/api/production-orders/.*", status="409"}[5m])) > 0
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "PO staleness gate returning 409 on {{ $labels.route }} for 10m — it may be rejecting LEGITIMATE writes (STALE_HEAD/RANGE_CONFLICT/BEYOND_HORIZON). Check board v2-po-staleness-gate; if the bake, consider backing the flag off."
