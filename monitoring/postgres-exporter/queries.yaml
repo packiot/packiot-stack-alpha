@@ -142,7 +142,7 @@ pg_timescaledb_hypertables:
     SELECT hypertable_schema AS schema,
            hypertable_name   AS hypertable,
            coalesce(total_bytes, 0)      AS total_bytes,
-           coalesce(num_chunks, 0)       AS num_chunks,
+           coalesce(sz.num_chunks, 0)    AS num_chunks,
            coalesce(compression_enabled::int, 0) AS compression_enabled
     FROM timescaledb_information.hypertables h
     LEFT JOIN LATERAL (
