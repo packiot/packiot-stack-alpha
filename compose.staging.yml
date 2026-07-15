@@ -350,6 +350,16 @@ services:
       NODE_ENV: production
       NEW_RELIC_ENABLED: "false"
       NEW_RELIC_NO_CONFIG_FILE: "true"
+      # PO staleness/conflict gate (task #32). Master on + per-enterprise
+      # allowlist (CSV of surrogate id_enterprise). "3,4" = CPACK-Staging(3) +
+      # Incoplast-Staging(4) — both synthetic on staging, so global-ish signal
+      # with zero customer risk. Gate is fail-safe (degrade-to-allow on drift;
+      # rejects only STALE_HEAD/RANGE_CONFLICT/BEYOND_HORIZON → HTTP 409).
+      # Watch board v2-po-staleness-gate: 409-rate MUST stay 0 (alarm),
+      # liveness non-zero, degrade-by-reason trends down as #34 backfill cleans.
+      # Rollback: set ENABLED "false" (or drop these two) → redeploy → inert.
+      PO_STALENESS_GATE_ENABLED: "true"
+      PO_STALENESS_GATE_ENTERPRISES: "3,4"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on (src/
       # tracing.ts starts the NodeSDK). Completes the operator → operator-adapter
       # → edge-api → DB trace: the adapter's outbound traceparent continues into
