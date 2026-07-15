@@ -453,7 +453,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-07-10-tempo-tracing-datasource"
+      - "provisioning_rev=2026-07-15-mount-dashboards-v2"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -470,6 +470,11 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # v2 boards — the provisioning `packiot-v2` provider points here, but the
+      # mount was missing → Grafana logged "dashboards-v2: no such file or
+      # directory" every 10s and NONE of the 16 v2 boards (00-15, incl. the PO
+      # gate + database boards) were visible. Mount the dir so the v2 suite loads.
+      - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s
