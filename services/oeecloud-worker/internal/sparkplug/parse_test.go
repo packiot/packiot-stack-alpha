@@ -1,6 +1,9 @@
 package sparkplug
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestParseTolerantNumbers — Incoplast's PackML2SparkPlug node string-encodes
 // numeric fields (id, counter, curspeed). The whole payload must still parse;
@@ -194,5 +197,67 @@ func TestParse_StringEncodedNumerics(t *testing.T) {
 	p2, err := Parse(body2)
 	if err != nil || float64(*p2.Metrics[0].CurSpeed) != 88 {
 		t.Errorf("numeric curspeed regressed: %v err=%v", p2.Metrics[0].CurSpeed, err)
+	}
+}
+
+// TestParse_EncodingContract pins the producer→consumer wire contract on the
+// `oee` exchange: a producer must marshal the envelope EXACTLY ONCE, so the
+// AMQP body is a JSON object (`{...}`), which Parse round-trips. If a producer
+// double-encodes — marshals the already-serialized JSON a second time — the
+// body becomes a JSON *string* (`"{...}"`) and Parse MUST reject it. That
+// rejection is the mechanism that dead-letters the message to oee-failed
+// (nack → oee-retry → after MaxRetries → oee-failed) instead of silently
+// mis-ingesting it.
+//
+// Regression this guards (task #14): the edge-node-red "Relay to RabbitMQ"
+// (plcdata-fn) function published to the RabbitMQ management API with
+// `payload_encoding:"string"` + `payload: JSON.stringify(rmqPayload)`. When
+// rmqPayload arrived as an already-serialized string (e.g. the boot/reconcile
+// race that loaded the orphaned HTTP-Ingestion tab), that stringify ran a
+// SECOND time and the delivered body was `"{\"timestamp\":...}"` — a JSON
+// string of JSON. Every such message rejected here → oee-failed. The producer
+// was removed from flows.json; this test locks the contract so no future
+// producer (or a "tolerant" change to Parse) can reintroduce a silently-
+// accepted double-encode.
+func TestParse_EncodingContract(t *testing.T) {
+	env := Payload{
+		Timestamp: 1782161858551,
+		Gateway:   "simulator",
+		Metrics: []Metric{
+			{Name: "CPACK/SC/SLEEVE/SLEEVE1/Status/StateCurrent", Timestamp: 1782161858551, Value: json.RawMessage(`6`)},
+		},
+	}
+
+	// Single-encode: the correct wire shape. Round-trips through Parse.
+	single, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	if single[0] != '{' {
+		t.Fatalf("single-encoded body must start with '{', got %q", single[0])
+	}
+	got, err := Parse(single)
+	if err != nil {
+		t.Fatalf("single-encoded body must Parse: %v", err)
+	}
+	if got.Timestamp != env.Timestamp || got.Gateway != env.Gateway || len(got.Metrics) != 1 {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.Metrics[0].Name != env.Metrics[0].Name {
+		t.Fatalf("metric name round-trip: got %q", got.Metrics[0].Name)
+	}
+
+	// Double-encode: marshal the already-serialized JSON a second time. This is
+	// exactly what plcdata-fn produced — the body becomes a quoted JSON string.
+	double, err := json.Marshal(string(single))
+	if err != nil {
+		t.Fatalf("double-marshal: %v", err)
+	}
+	if double[0] != '"' {
+		t.Fatalf("double-encoded body must be a JSON string starting with '\"', got %q", double[0])
+	}
+	if _, err := Parse(double); err == nil {
+		t.Fatal("double-encoded body must be REJECTED by Parse (→ dead-letter), got nil error — " +
+			"a tolerant decode here would silently mis-ingest double-encoded messages")
 	}
 }
