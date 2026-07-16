@@ -44,23 +44,53 @@ type line struct {
 	MachSpeed  float64 // units/min
 }
 
-// The staging CPACK topology — VERIFIED against packml_register
-// 2026-07-07 (the original table was fictional: it CLAIMED to mirror
-// the register but only L5/BREYER/61 matched, so 4 of 5 sim lines
-// published unregistered topics that skipped everywhere — the
-// call-site-verification lesson, simulator edition):
+// The staging CPACK topology — VERIFIED against packml_register (staging
+// packiot_shadow: L8=51, L5=47, L3=48, L4=49; members below).
 //
-//	CPACK/SC/LINHAS/L8              → eq 51 (line-level entry)
-//	CPACK/SC/LINHAS/L5/BREYER + .../61/Unit → eq 53
-//	CPACK/SC/LINHAS/L5/TEXA   + .../65/Unit → eq 57
-//	CPACK/SC/LINHAS/L3/PTH    + .../81/Unit → eq 61
-//	CPACK/SC/LINHAS/L4/TEXA   (line resolves; unit idx unregistered) → eq 63
+// #16 LINE-FEED FIDELITY: each line now publishes its OWN line-scoped
+// Sparkplug stream (Unit=="") — a bare-topic counter + StateCurrent that
+// TopicForRegister collapses to the 4-segment line topic → the tp=3 line
+// equipment directly. Before, only L8 did this; L5/L3/L4 had ONLY member
+// streams, so their line equipments (47/48/49) were fed solely by fragile
+// Phase-9 member-derivation and under-counted vs prod (line-STATE 20/6/8 vs
+// L8's 17292; L3 line counter 0). Giving every line an own-stream makes them
+// isomorphic to the proven-clean L8, so the line reads its own counter, not a
+// member-sum.
+//
+// SINGLE-WRITER (the #456 non-regression): the line's Parameter30700 is its
+// OWN idx (105/88/92/120) — a self-reference that matches no member index, so
+// Phase-9 line-derivation never fires and the line's counter has exactly one
+// writer (its own-stream). Members no longer publish Parameter30700 at all
+// (see publishBirth). The line-counter idx is cosmetic: the resolver collapses
+// line topics to the 4-seg form, so 105/88/92 only need to not collide with a
+// member idx.
+//
+// PROD FIDELITY (verified SELECT-only, packiot40 2026-07-16): prod C-PACK
+// sends NO Parameter30700 for these lines (packml_register.line_unit_seq NULL
+// on every C-PACK row) — prod's line eqs are own-stream-fed, member-derivation
+// OFF. Our self-referential Parameter30700 reaches the SAME end state (no
+// member match ⇒ no derivation) while still serving the sim's DCMD po_setup
+// write-back observability on the line topic. Benign divergence; identical
+// downstream effect.
+//
+//	CPACK/SC/LINHAS/L8              (Unit="", idx 120) → eq 51  line own-stream
+//	CPACK/SC/LINHAS/L5              (Unit="", idx 105) → eq 47  line own-stream (NEW)
+//	CPACK/SC/LINHAS/L3              (Unit="", idx  88) → eq 48  line own-stream (NEW)
+//	CPACK/SC/LINHAS/L4              (Unit="", idx  92) → eq 49  line own-stream (NEW)
+//	CPACK/SC/LINHAS/L5/BREYER + .../61/Unit → eq 53  member
+//	CPACK/SC/LINHAS/L5/TEXA   + .../65/Unit → eq 57  member
+//	CPACK/SC/LINHAS/L3/PTH    + .../81/Unit → eq 61  member
+//	CPACK/SC/LINHAS/L4/TEXA   + .../63/Unit → eq 63  member (idx 66→63: 66 is
+//	  L4/BREYER's registered counter path; 66 mis-resolved by bare-topic fallback)
 var lines = []line{
 	{"L8", "", 51, 120},
+	{"L5", "", 47, 105},
+	{"L3", "", 48, 88},
+	{"L4", "", 49, 92},
 	{"L5", "BREYER", 61, 110},
 	{"L5", "TEXA", 65, 100},
 	{"L3", "PTH", 81, 90},
-	{"L4", "TEXA", 66, 95},
+	{"L4", "TEXA", 63, 95},
 }
 
 type metricDef struct {
@@ -144,18 +174,30 @@ func main() {
 		for i, l := range lines {
 			base := uint64((i + 1) * 10)
 			defs := l.metrics(base)
-			poText := states[i].poParam
-			if poText == "" {
-				poText = fmt.Sprint(l.Idx)
-			}
 			ms = append(ms,
 				sparkplug.SimMetric{Name: defs[0].name, Alias: defs[0].alias, Double: states[i].consumed},
 				sparkplug.SimMetric{Name: defs[1].name, Alias: defs[1].alias, Double: states[i].processed},
 				sparkplug.SimMetric{Name: defs[2].name, Alias: defs[2].alias, Double: states[i].defective},
 				sparkplug.SimMetric{Name: defs[3].name, Alias: defs[3].alias, Double: states[i].effSpeed(l.MachSpeed)},
 				sparkplug.SimMetric{Name: defs[4].name, Alias: defs[4].alias, Long: states[i].state, IsLong: true},
-				sparkplug.SimMetric{Name: defs[5].name, Alias: defs[5].alias, Text: poText, IsText: true},
 			)
+			// Parameter30700 (the line-machines CSV Phase-9 reads) is published
+			// ONLY by line entries (Unit==""). #16: a member publishing it would
+			// put a MEMBER index in the line's CSV, arming Phase-9 line-derivation
+			// — a SECOND line-counter writer on top of the line's own-stream (the
+			// #456 two-writer double-count, oee>1.0). A line entry publishes its
+			// OWN self-referential idx, which matches no member, so member-
+			// derivation never fires and the line's counter comes solely from its
+			// own-stream. Single-writer per line, exactly as L8 already behaves.
+			if l.Unit == "" {
+				poText := states[i].poParam
+				if poText == "" {
+					poText = fmt.Sprint(l.Idx)
+				}
+				ms = append(ms,
+					sparkplug.SimMetric{Name: defs[5].name, Alias: defs[5].alias, Text: poText, IsText: true},
+				)
+			}
 		}
 		mu.Unlock()
 		seq = 0
@@ -300,32 +342,64 @@ func applyDCMDToStates(body []byte, lines []line, states []simState, logger *slo
 		if name == "" {
 			continue
 		}
+		// LONGEST-PREFIX match — route the DCMD to exactly one line entry.
+		// #16 added bare line-topic entries (Unit=="", prefix e.g.
+		// "CPACK/SC/LINHAS/L5") whose prefix is ALSO a prefix of their members
+		// ("CPACK/SC/LINHAS/L5/BREYER/..."). A naive "apply to every matching
+		// prefix" would then double-apply a member-targeted DCMD to both the
+		// member AND the line. Pick the MOST SPECIFIC (longest) segment-aligned
+		// match instead — the same routing-table longest-prefix discipline the
+		// topic resolver uses. A line-topic DCMD (".../L5/Status/...") matches
+		// only the line entry; a member DCMD (".../L5/BREYER/Status/...") the
+		// member.
+		best := -1
 		for i, l := range lines {
-			if !strings.HasPrefix(name, l.topicPrefix()) {
+			if !prefixMatchSegment(name, l.topicPrefix()) {
 				continue
 			}
-			switch {
-			case strings.HasSuffix(name, "/Status/MachSpeed"):
-				if v, ok := dcmdDouble(m); ok {
-					states[i].speedOverride = v
-					states[i].hasSpeedOverride = true
-					applied++
-					logger.Info("DCMD applied: MachSpeed override",
-						"line", l.Line, "unit", l.Unit, "value", v)
-				}
-			case strings.HasSuffix(name, "/Status/Parameter30700"):
-				if s, ok := dcmdString(m); ok {
-					states[i].poParam = s
-					applied++
-					logger.Info("DCMD applied: PO setup",
-						"line", l.Line, "unit", l.Unit, "po", s)
-				}
-			default:
-				logger.Info("DCMD received (no sim effect mapped)", "metric", name)
+			if best < 0 || len(lines[i].topicPrefix()) > len(lines[best].topicPrefix()) {
+				best = i
 			}
+		}
+		if best < 0 {
+			continue
+		}
+		i, l := best, lines[best]
+		switch {
+		case strings.HasSuffix(name, "/Status/MachSpeed"):
+			if v, ok := dcmdDouble(m); ok {
+				states[i].speedOverride = v
+				states[i].hasSpeedOverride = true
+				applied++
+				logger.Info("DCMD applied: MachSpeed override",
+					"line", l.Line, "unit", l.Unit, "value", v)
+			}
+		case strings.HasSuffix(name, "/Status/Parameter30700"):
+			if s, ok := dcmdString(m); ok {
+				states[i].poParam = s
+				applied++
+				logger.Info("DCMD applied: PO setup",
+					"line", l.Line, "unit", l.Unit, "po", s)
+			}
+		default:
+			logger.Info("DCMD received (no sim effect mapped)", "metric", name)
 		}
 	}
 	return applied, nil
+}
+
+// prefixMatchSegment reports whether prefix is a SEGMENT-ALIGNED prefix of
+// name — HasPrefix that also requires the next character to be a topic
+// separator (or end-of-string), so "CPACK/SC/LINHAS/L5" matches
+// "CPACK/SC/LINHAS/L5/BREYER/..." but NOT "CPACK/SC/LINHAS/L58/...". Guards
+// the DCMD router against a bare line prefix bleeding onto an unrelated line
+// that merely shares a leading substring.
+func prefixMatchSegment(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := name[len(prefix):]
+	return rest == "" || rest[0] == '/'
 }
 
 func dcmdDouble(m *sparkplug.Metric) (float64, bool) {
