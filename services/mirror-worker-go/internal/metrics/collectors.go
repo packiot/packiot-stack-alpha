@@ -123,14 +123,14 @@ var (
 		Help: "Finisher per-candidate outcomes (finished|failed|skipped_*).",
 	}, []string{"outcome"})
 
-	// ReconcilerOrphanCandidates — gauge of reconcile-origin staging POs that
+	// ReconcilerOrphanCandidates — gauge of mirror-managed staging POs that
 	// are status=2 but absent from prod's status=2 set at the start of the
 	// last finisher pass (before per-candidate prod cross-check / grace).
 	// Sustained non-zero while the finisher is ENABLED means candidates are
 	// being held back by the safety skips (grace / unverified) — worth a look.
 	ReconcilerOrphanCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "mirror_worker_reconciler_orphan_candidates",
-		Help: "Reconcile-origin staging POs status=2 but gone from prod status=2 at last finisher pass.",
+		Help: "Mirror-managed staging POs status=2 but gone from prod status=2 at last finisher pass.",
 	})
 
 	// ReconcilerValuesSyncedTotal — bumps once per (prod_po, staging_po)

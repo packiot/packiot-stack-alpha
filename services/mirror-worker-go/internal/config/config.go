@@ -76,7 +76,7 @@ type Config struct {
 	// segment forever (the PO-17106 zombie pattern).
 	//
 	// The finisher closes that gap: it computes the INVERSE set —
-	// reconcile-origin staging POs that are status=2 but whose id_order is
+	// mirror-managed staging POs that are status=2 but whose id_order is
 	// NO LONGER in prod's status=2 set — cross-checks each against prod
 	// authoritatively, and finishes the genuinely-orphaned ones at their
 	// prod last-activity ts (NOT now(), to avoid injecting phantom

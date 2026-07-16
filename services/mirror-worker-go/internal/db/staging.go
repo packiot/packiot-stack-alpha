@@ -321,23 +321,38 @@ func (s *Staging) ActivePOIDOrders(ctx context.Context, enterpriseID int) (map[i
 	return out, rows.Err()
 }
 
-// ReconcileActivePOIDOrders returns the RECONCILE-ORIGIN staging POs
-// currently in status=2, as id_order → id_production_order. This is the
-// finisher's candidate universe (task #48) — deliberately NARROWER than
-// ActivePOIDOrders, which also counts simulator- and operator-created POs the
-// finisher must never touch.
+// ReconcileActivePOIDOrders returns the MIRROR-MANAGED staging POs currently in
+// status=2, as id_order → id_production_order. This is the finisher's candidate
+// universe (task #48) — deliberately NARROWER than ActivePOIDOrders, which also
+// counts simulator- and operator-created POs the finisher must never touch.
 //
-// "Reconcile-origin" is identified by either of the reconciler's two
-// signatures (union so a PO with a lost mapping insert is still covered — both
-// ensureOnePO and reviveExistingStagingPO swallow mapping-insert errors):
-//   - a mirror_id_map row for THIS source with source_log_id = 0 (the
-//     reconciler stamps 0 to mark "not from a user_log"); OR
+// "Mirror-managed" = created OR replayed by THIS mirror source, identified by
+// either of two signatures (union so a reconcile PO with a lost mapping insert
+// is still covered — both ensureOnePO and reviveExistingStagingPO swallow
+// mapping-insert errors):
+//   - a mirror_id_map row for THIS source (ANY source_log_id — see below); OR
 //   - nm_production_order LIKE 'CPACK-reconcile-%' (the reconciler's naming).
 //
-// Both are reconcile-specific and both exclude simulator / hand-made POs
-// (which never get a mirror_id_map row nor that name), so the finisher's blast
-// radius is bounded to POs this reconciler itself created. user_logs-replayed
-// mirror POs (source_log_id != 0) are intentionally OUT of scope for v1.
+// SCOPE WIDENED (task #48 follow-up, per the #49 finding): the mapping check no
+// longer requires source_log_id = 0. Reconciler-created POs (source_log_id = 0)
+// AND user_logs-replayed POs (source_log_id != 0) share the identical zombie
+// pathology — prod ends them via a user_logs-bypassing SparkPlug stop and the
+// mirror never hears about it — so both are now in scope.
+//
+// SAFETY — enterprise scope is what makes this widen safe, NOT the origin
+// predicate. The finisher is only meaningful for the enterprise that HAS a prod
+// authority to diff against (CPACK). Two independent scopes enforce that:
+//  1. this query filters id_enterprise = $2 (the caller passes StagingEnterpriseID,
+//     the CPACK mirror target) — so simulator (ent 2), Incoplast (ent 4) and any
+//     staging-only enterprise are excluded by construction; and
+//  2. the mapping EXISTS is scoped to m.source = $1 (this CPACK mirror source).
+//
+// The caller (computeOrphans) then diffs the result ONLY against
+// FetchActivePOs(ProdEnterpriseID). So a PO from a no-prod-authority enterprise
+// can never be a candidate: wrong id_enterprise AND no mirror_id_map row here.
+// Widening WHICH mirror POs (reconcile vs replayed) does not widen WHICH
+// enterprises — a staging-only enterprise still has no prod-active set to diff
+// against and is never reached.
 func (s *Staging) ReconcileActivePOIDOrders(ctx context.Context, source string, enterpriseID int) (map[int64]int64, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT po.id_order, po.id_production_order
@@ -351,13 +366,12 @@ func (s *Staging) ReconcileActivePOIDOrders(ctx context.Context, source string, 
 		         WHERE m.entity_type = 'production_order'
 		           AND m.source = $1
 		           AND m.staging_id = po.id_production_order
-		           AND m.source_log_id = 0
 		      )
 		    )`,
 		source, enterpriseID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query reconcile-origin active staging POs: %w", err)
+		return nil, fmt.Errorf("query mirror-managed active staging POs: %w", err)
 	}
 	defer rows.Close()
 	out := make(map[int64]int64)

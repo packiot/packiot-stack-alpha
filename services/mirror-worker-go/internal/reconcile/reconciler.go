@@ -158,7 +158,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Finisher pass (task #48) — closes the INVERSE gap the create pass
-	// leaves: reconcile-origin staging POs stuck at status=2 after prod
+	// leaves: mirror-managed staging POs stuck at status=2 after prod
 	// ended them via a user_logs-bypassing SparkPlug stop. Ships INERT
 	// (flag default false); runs on the same prod-active snapshot the create
 	// pass used, so no extra FetchActivePOs round-trip. A finisher error is
@@ -196,7 +196,7 @@ func computeMissing(prod []db.ProdActivePO, stagingActive map[int64]int64) []db.
 	return missing
 }
 
-// orphanCandidate pairs a reconcile-origin staging PO with the id_order the
+// orphanCandidate pairs a mirror-managed staging PO with the id_order the
 // diff keyed it by. The finisher walks these in id_order order for stable,
 // human-readable pass logs.
 type orphanCandidate struct {
@@ -204,7 +204,7 @@ type orphanCandidate struct {
 	StagingPOID int64
 }
 
-// computeOrphans returns the INVERSE of computeMissing: reconcile-origin
+// computeOrphans returns the INVERSE of computeMissing: mirror-managed
 // staging POs (id_order → staging id) whose id_order is NO LONGER in prod's
 // status=2 set. These are the finisher's orphan candidates — POs staging still
 // thinks are running that prod has already ended.
@@ -270,14 +270,14 @@ func finisherDecision(info db.ProdPOFinishInfo, present bool, graceCutoff time.T
 }
 
 // runFinisher executes one finisher pass on the prod-active snapshot already
-// fetched by Run. Flow: read staging's reconcile-origin active set → diff to
+// fetched by Run. Flow: read staging's mirror-managed active set → diff to
 // orphan candidates (layer 1) → one batched prod cross-check → per-candidate
 // decision (layers 2-4) → guarded staging close. SELECT-only on prod; the only
 // mutation is FinishOrphanPO on staging, which is itself idempotent.
 func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO) error {
 	reconcileActive, err := r.staging.ReconcileActivePOIDOrders(ctx, r.cfg.SourceName, r.cfg.StagingEnterpriseID)
 	if err != nil {
-		return fmt.Errorf("fetch reconcile-origin active staging POs: %w", err)
+		return fmt.Errorf("fetch mirror-managed active staging POs: %w", err)
 	}
 
 	candidates := computeOrphans(reconcileActive, prodPOs)

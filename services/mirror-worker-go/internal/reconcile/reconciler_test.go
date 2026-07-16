@@ -47,7 +47,7 @@ func TestDiffMissing_ProdEmpty(t *testing.T) {
 
 // ──── Finisher (task #48) ──────────────────────────────────────────────────
 
-// An orphan: staging thinks id_order=7 is running (reconcile-origin), but prod
+// An orphan: staging thinks id_order=7 is running (mirror-managed), but prod
 // no longer has it in its status=2 set → it must surface as a candidate.
 func TestComputeOrphans_DetectsOrphan(t *testing.T) {
 	reconcileActive := map[int64]int64{
@@ -77,17 +77,49 @@ func TestComputeOrphans_RunningPO_Untouched(t *testing.T) {
 	}
 }
 
-// computeOrphans only ever receives the reconcile-origin active set (the
-// ReconcileActivePOIDOrders SQL filter). A non-reconcile PO never enters the
-// map, so it can never be a candidate — modelled here by its absence.
-func TestComputeOrphans_NonReconcilePO_NotACandidate(t *testing.T) {
-	// id_order=99 is a simulator PO — it is NOT in reconcileActive because the
-	// staging query excludes it. Only reconcile-origin id_order=7 is present.
+// Widen (task #48 follow-up): a user_logs-REPLAYED mirror PO (mirror_id_map
+// source_log_id != 0) now shares the candidate universe with reconciler-created
+// POs. The origin distinction lives entirely in the ReconcileActivePOIDOrders
+// SQL predicate (now source_log_id-agnostic); once a PO is in reconcileActive,
+// computeOrphans treats it identically. So a replayed-origin CPACK PO absent
+// from prod-active surfaces as an orphan and is finished. Modelled here by a
+// mirror-managed PO in the map that prod no longer has active.
+func TestComputeOrphans_ReplayedOriginOrphan_Finished(t *testing.T) {
+	// id_order=42 stands in for a replayed (source_log_id != 0) mirror PO the
+	// widened staging query now includes. prod has ended it (not in prodActive).
+	reconcileActive := map[int64]int64{42: 9042}
+	prodActive := []db.ProdActivePO{} // prod ended it via a user_logs-bypassing stop
+	orphans := computeOrphans(reconcileActive, prodActive)
+	if len(orphans) != 1 || orphans[0].IDOrder != 42 || orphans[0].StagingPOID != 9042 {
+		t.Fatalf("expected replayed-origin id_order=42 as orphan, got %+v", orphans)
+	}
+	// And it clears the decision ladder (finished on prod, activity outside grace).
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	grace := now.Add(-30 * time.Minute)
+	info := db.ProdPOFinishInfo{Status: 3, LastActivity: now.Add(-2 * time.Hour), HasActivity: true}
+	if got := finisherDecision(info, true, grace); got != outcomeFinish {
+		t.Errorf("expected replayed-origin orphan to finish, got %q", got)
+	}
+}
+
+// Enterprise scope is the load-bearing safety guarantee for the widen. A PO in
+// a no-prod-authority enterprise (simulator ent 2, Incoplast ent 4, staging
+// ent 1) has no prod-active set to diff against, so "staging status=2 minus
+// prod-active" would wrongly finish ALL of them IF it ever saw them. It never
+// does: ReconcileActivePOIDOrders hard-filters id_enterprise = StagingEnterpriseID
+// (the CPACK mirror target) AND m.source = the CPACK source, so such a PO is
+// absent from reconcileActive by construction — never a candidate regardless of
+// origin. Modelled here by its absence from the map even though prod-active is
+// empty (which would otherwise make everything an orphan).
+func TestComputeOrphans_NoProdAuthorityPO_NeverACandidate(t *testing.T) {
+	// Only the CPACK-mirror-enterprise, mirror-managed id_order=7 is in the map.
+	// A simulator/Incoplast PO (different enterprise, no mirror_id_map row) is
+	// excluded upstream by the SQL scope and thus never appears here.
 	reconcileActive := map[int64]int64{7: 9007}
-	prodActive := []db.ProdActivePO{} // nothing active on prod
+	prodActive := []db.ProdActivePO{} // empty: no prod-active set at all
 	orphans := computeOrphans(reconcileActive, prodActive)
 	if len(orphans) != 1 || orphans[0].IDOrder != 7 {
-		t.Fatalf("expected only reconcile-origin id_order=7 as candidate, got %+v", orphans)
+		t.Fatalf("expected only the mirror-managed CPACK id_order=7, got %+v", orphans)
 	}
 }
 
