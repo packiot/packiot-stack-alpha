@@ -59,6 +59,39 @@ func resolveEventID(ctx context.Context, mainPool *pgxpool.Pool, tsEvent time.Ti
 	return id, true, nil
 }
 
+// equipmentEventKey is the natural key of public.equipment_events — its
+// PRIMARY KEY (id_equipment, ts_event). Unlike id_equipment_event (a
+// per-flow surrogate: F1 and F2 assign the same PLC event ids from
+// independent sequences and observably differ by one), (id_equipment,
+// ts_event) is derived deterministically from the PLC stream and is
+// therefore identical across F1/F2/F3. Operator classifications
+// (event-justified / event-edited) must join on this key, never on the
+// payload's id_equipment_event — that is the bug-248 id-space trap.
+type equipmentEventKey struct {
+	IDEquipment int
+	TsEvent     time.Time
+}
+
+// resolveEquipmentEventKey maps a Flow 1 id_equipment_event (as carried
+// in the event-justified/event-edited payload) to its natural key by
+// reading packiot.public.equipment_events via the main pool. edge-api's
+// DowntimesDAO treats id_equipment_event as unique (findByID returns
+// row[0]); we mirror that with QueryRow (first row wins). found=false
+// means the Flow 1 event is gone (pre-cursor history) — callers skip.
+func resolveEquipmentEventKey(ctx context.Context, mainPool *pgxpool.Pool, idEquipmentEvent int64) (equipmentEventKey, bool, error) {
+	var k equipmentEventKey
+	err := mainPool.QueryRow(ctx,
+		`SELECT id_equipment, ts_event FROM public.equipment_events WHERE id_equipment_event = $1`,
+		idEquipmentEvent).Scan(&k.IDEquipment, &k.TsEvent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return k, false, nil
+	}
+	if err != nil {
+		return k, false, err
+	}
+	return k, true, nil
+}
+
 // noopObserver reports UPDATEs that matched zero rows. Silent no-op
 // writes are exactly the failure mode bugs 247/248 hid — wired to the
 // shadow_mirror_update_noop_total counter in main.go.
