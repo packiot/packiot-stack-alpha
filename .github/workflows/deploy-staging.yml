@@ -125,6 +125,42 @@ jobs:
           done
           echo "  reload not confirmed after 10 attempts — config will load on next restart"
 
+      - name: Reload Alertmanager config (dir-mount makes new file content visible; reload re-reads it)
+        # Task #41 — same inode trap as #39/#40, now on the NOTIFICATION path.
+        # monitoring/alertmanager is now a DIRECTORY bind mount, so a git checkout
+        # that replaces alertmanager.yml with a new inode is VISIBLE inside the
+        # running container without a recreate — but alertmanager only re-reads its
+        # config on SIGHUP or POST /-/reload. Unlike Prometheus, alertmanager's
+        # /-/reload is enabled by DEFAULT (no --web.enable-lifecycle flag). Without
+        # this step a route/receiver edit would sit on disk unread until the next
+        # full recreate — i.e. silently-broken alerting, the worst failure mode.
+        #
+        # Alertmanager is PARKED behind `profiles: ["alerting"]` (Slack webhook
+        # secret deferred), so on a plain `up -d` the container is NOT running. In
+        # that case the reachability check simply never confirms and we log-and-
+        # move-on; continue-on-error guarantees a parked (or restarting) manager
+        # never reddens the deploy. When the profile is enabled, the reload lands.
+        # Reaches alertmanager (default port 9093) over its own netns
+        # (--network container:alertmanager), same pattern as the prometheus step.
+        continue-on-error: true
+        run: |
+          set +e
+          if ! docker ps --format '{{.Names}}' | grep -qx alertmanager; then
+            echo "alertmanager not running (parked behind --profile alerting) — skipping reload"
+            exit 0
+          fi
+          echo "Reloading Alertmanager config via POST /-/reload ..."
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:alertmanager curlimages/curl:latest \
+                 -sf -X POST http://localhost:9093/-/reload >/dev/null 2>&1; then
+              echo "  alertmanager config reloaded (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i: alertmanager not ready for reload yet — sleeping 3s"
+            sleep 3
+          done
+          echo "  reload not confirmed after 10 attempts — config will load on next restart"
+
       - name: Smoke test — wait for critical services to report healthy
         # Without this, the previous step (compose up -d) returns the
         # moment the containers are CREATED, not when they're actually
