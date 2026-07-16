@@ -28,12 +28,16 @@ var (
 
 	// UserLogsReplayedTotal — incremented after the handler returns.
 	// outcome=ok: handler returned nil; outcome=failed: handler returned
-	// non-nil error → row will be DLQ-d, cursor still advances; outcome=
-	// skipped: no handler registered for the category OR the row was
-	// already replayed (mirror_id_map idempotency hit).
+	// non-nil error → row will be DLQ-d (retryable), cursor still advances;
+	// outcome=skipped: no handler registered for the category OR the row was
+	// already replayed (mirror_id_map idempotency hit); outcome=terminal:
+	// edge-api PR #148 gate permanently rejected the PO-control replay (409
+	// STALE_HEAD/RANGE_CONFLICT/BEYOND_HORIZON) → row DLQ-d PRE-RETIRED, not
+	// retried. Split from failed so a correctly-rejected-stale action never
+	// masquerades as a stuck bug on the dashboard.
 	UserLogsReplayedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "mirror_worker_user_logs_replayed_total",
-		Help: "Replay outcomes by event_type + outcome (ok|failed|skipped).",
+		Help: "Replay outcomes by event_type + outcome (ok|failed|skipped|terminal).",
 	}, []string{"event_type", "outcome"})
 
 	// ReplayDurationSeconds — wall-clock time spent inside a handler,
@@ -148,11 +152,14 @@ var (
 	// failed: replay returned an error → retry_attempts bumped, last_retry_at
 	// set; permanent: row's prod user_log no longer exists (gone after a
 	// data purge) → DLQ row stays, won't retry further;
+	// terminal: edge-api PR #148 gate permanently rejected the replay (409
+	// STALE_HEAD/RANGE_CONFLICT/BEYOND_HORIZON) → row retired to the cap
+	// immediately, no further retries;
 	// exhausted: retry_attempts hit the cap → no further attempts will fire
 	// (counted once per tick when the row is observed past the cap).
 	DLQRetryAttemptsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "mirror_worker_dlq_retry_attempts_total",
-		Help: "DLQ retry outcomes (succeeded|failed|permanent|exhausted).",
+		Help: "DLQ retry outcomes (succeeded|failed|permanent|terminal|exhausted).",
 	}, []string{"outcome"})
 
 	// DLQDepth — gauge of mirror_replay_dlq rows for this worker's source.

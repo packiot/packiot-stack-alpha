@@ -262,6 +262,167 @@ func TestClassifyStagingError_TableDriven(t *testing.T) {
 	}
 }
 
+// TestClassifyStagingError_GateReject — pins the edge-api PR #148 gate-409
+// terminal classification (task #46 Part A). A 409 whose structured body
+// carries a recognized `reason` must be promoted to ErrTerminalReplay
+// (leave the retry loop, land in the DLQ review tray pre-retired). A 409
+// with an unknown reason, a non-409 with a gate-shaped body, and a missing
+// body must all stay verbatim (retryable / whatever they are today). None
+// of these may ever be confused with ErrSkipReplay (which would discard
+// them without a review row).
+func TestClassifyStagingError_GateReject(t *testing.T) {
+	orig := errors.New("orig error — must be returned untouched for non-terminal cases")
+
+	cases := []struct {
+		name         string
+		status       int
+		body         string
+		wantTerminal bool
+	}{
+		{
+			// The actual observed shape: a buffered stop whose assumedRunningPo
+			// no longer matches the authoritative running PO.
+			name:         "409 STALE_HEAD → terminal",
+			status:       409,
+			body:         `{"statusCode":409,"reason":"STALE_HEAD","currentRunningPo":17106,"actionTime":"22:17-03:00","message":"stale"}`,
+			wantTerminal: true,
+		},
+		{
+			name:         "409 RANGE_CONFLICT → terminal",
+			status:       409,
+			body:         `{"statusCode":409,"reason":"RANGE_CONFLICT","message":"overlaps settled range"}`,
+			wantTerminal: true,
+		},
+		{
+			name:         "409 BEYOND_HORIZON → terminal",
+			status:       409,
+			body:         `{"statusCode":409,"reason":"BEYOND_HORIZON","message":"older than horizon"}`,
+			wantTerminal: true,
+		},
+		{
+			// A 409 without a recognized gate reason stays whatever it is
+			// today — we only make KNOWN gate rejects terminal.
+			name:         "409 unknown reason → keep error (not terminal)",
+			status:       409,
+			body:         `{"statusCode":409,"reason":"SOMETHING_ELSE","message":"conflict"}`,
+			wantTerminal: false,
+		},
+		{
+			// A bare 409 with no reason field (e.g. a generic edge-api
+			// ConflictException) is NOT a gate reject — stays retryable.
+			name:         "409 no reason field → keep error (not terminal)",
+			status:       409,
+			body:         `{"statusCode":409,"message":"some other conflict"}`,
+			wantTerminal: false,
+		},
+		{
+			// Non-JSON 409 body — can't confirm a gate reason, keep error.
+			name:         "409 non-JSON body → keep error (not terminal)",
+			status:       409,
+			body:         `<html>nginx 409</html>`,
+			wantTerminal: false,
+		},
+		{
+			// Status-gated to 409: the pre-#148 masked reject came back as a
+			// 500. A 500 — even with a gate-shaped body — must stay a plain
+			// retryable error (a real 5xx is a genuine server fault).
+			name:         "500 with gate-shaped body → keep error (not terminal)",
+			status:       500,
+			body:         `{"statusCode":500,"reason":"STALE_HEAD","message":"masked"}`,
+			wantTerminal: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifyStagingError(c.status, []byte(c.body), "/api/production-orders/stop", orig)
+			isTerminal := errors.Is(got, ErrTerminalReplay)
+			if isTerminal != c.wantTerminal {
+				t.Fatalf("errors.Is(ErrTerminalReplay) = %v, want %v; got error: %v", isTerminal, c.wantTerminal, got)
+			}
+			// A terminal reject must NEVER also read as a skip (skip would
+			// discard the row without a DLQ review trail).
+			if errors.Is(got, ErrSkipReplay) {
+				t.Fatalf("gate reject must not match ErrSkipReplay; got: %v", got)
+			}
+			// Non-terminal cases must return the EXACT sentinel pointer —
+			// verbatim, so the row stays retryable exactly as before #148.
+			if !c.wantTerminal && got != orig {
+				t.Fatalf("non-terminal case returned %v, want verbatim orig %v", got, orig)
+			}
+		})
+	}
+}
+
+// TestPostStaging_TerminalOnGate409StaleHead — end-to-end (httptest) proof
+// that a 409 STALE_HEAD from staging edge-api surfaces as ErrTerminalReplay
+// through PostStaging, so the dispatcher/processRow terminal path fires
+// (ack + retire, no requeue). Task #46 Part A: "409 STALE_HEAD → terminal".
+func TestPostStaging_TerminalOnGate409StaleHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"statusCode":409,"reason":"STALE_HEAD","currentRunningPo":17106,"actionTime":"22:17-03:00","message":"assumed PO not running"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{
+		StagingAPIBaseURL:   srv.URL,
+		SourceName:          "cpack-prod-go-test",
+		StagingEnterpriseID: 3,
+	}
+	httpc := &http.Client{Timeout: 5 * time.Second}
+	row := db.ProdUserLog{IDUserLogs: 2567207}
+
+	status, _, err := PostStaging(context.Background(), cfg, httpc, "tok",
+		row, "/api/production-orders/stop", map[string]any{"x": 1})
+	if err == nil {
+		t.Fatal("PostStaging err = nil, want terminal error")
+	}
+	if !errors.Is(err, ErrTerminalReplay) {
+		t.Fatalf("err = %v, want errors.Is(ErrTerminalReplay) = true", err)
+	}
+	if errors.Is(err, ErrSkipReplay) {
+		t.Fatalf("err = %v, must NOT match ErrSkipReplay (terminal keeps a DLQ review row)", err)
+	}
+	if status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", status)
+	}
+}
+
+// TestPostStaging_5xxStillRetryable — task #46 Part A: "a 5xx → still
+// retried". A 500 (including the pre-#148 masked-reject regime) must stay a
+// plain retryable error: NOT terminal, NOT skip. The DLQRetrier keeps
+// re-driving it, which is correct for a genuine server fault.
+func TestPostStaging_5xxStillRetryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"statusCode":500,"message":"Internal server error"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{
+		StagingAPIBaseURL:   srv.URL,
+		SourceName:          "cpack-prod-go-test",
+		StagingEnterpriseID: 3,
+	}
+	httpc := &http.Client{Timeout: 5 * time.Second}
+	row := db.ProdUserLog{IDUserLogs: 999}
+
+	_, _, err := PostStaging(context.Background(), cfg, httpc, "tok",
+		row, "/api/production-orders/stop", map[string]any{"x": 1})
+	if err == nil {
+		t.Fatal("PostStaging err = nil, want retryable failure error")
+	}
+	if errors.Is(err, ErrTerminalReplay) {
+		t.Fatalf("err = %v, must NOT match ErrTerminalReplay (5xx is retryable)", err)
+	}
+	if errors.Is(err, ErrSkipReplay) {
+		t.Fatalf("err = %v, must NOT match ErrSkipReplay (5xx is retryable)", err)
+	}
+}
+
 // TestPostStaging_SkipsOnDowntimeMissing — end-to-end check that the
 // classifier is wired into PostStaging itself. Uses httptest.NewServer
 // to model staging edge-api returning the 400 + parent-missing body.

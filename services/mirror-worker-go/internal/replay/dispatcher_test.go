@@ -153,6 +153,38 @@ func TestDispatcher_NonSkipErrorStillFailed(t *testing.T) {
 	}
 }
 
+func TestDispatcher_TerminalReplay(t *testing.T) {
+	// Handler returns an error wrapping ErrTerminalReplay (edge-api PR #148
+	// gate reject) → dispatcher must:
+	//   - increment outcome=terminal (NOT failed, NOT skipped)
+	//   - RETURN the error (non-nil) so processRow routes it to the DLQ
+	//     review tray pre-retired. Contrast with ErrSkipReplay, which is
+	//     swallowed (returns nil, no DLQ).
+	const evt = "test-event-terminal"
+	beforeTerminal := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "terminal"))
+	beforeFailed := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed"))
+	beforeSkipped := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped"))
+
+	d := NewDispatcher()
+	d.Register(evt, func(_ context.Context, _ pgx.Tx, _ db.ProdUserLog) error {
+		return fmt.Errorf("gate reject: %w", ErrTerminalReplay)
+	})
+
+	gotErr := d.Dispatch(context.Background(), nil, db.ProdUserLog{Category: evt})
+	if !errors.Is(gotErr, ErrTerminalReplay) {
+		t.Fatalf("Dispatch err = %v, want non-nil wrapping ErrTerminalReplay (must reach DLQ, not be swallowed)", gotErr)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "terminal")); got != beforeTerminal+1 {
+		t.Errorf("terminal = %f, want %f", got, beforeTerminal+1)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "failed")); got != beforeFailed {
+		t.Errorf("failed = %f, want %f (terminal must not bump failed)", got, beforeFailed)
+	}
+	if got := testutil.ToFloat64(metrics.UserLogsReplayedTotal.WithLabelValues(evt, "skipped")); got != beforeSkipped {
+		t.Errorf("skipped = %f, want %f (terminal must not bump skipped)", got, beforeSkipped)
+	}
+}
+
 func TestDispatcher_MarkAlreadyReplayed(t *testing.T) {
 	const evt = "test-event-already-replayed"
 	beforePolled := testutil.ToFloat64(metrics.UserLogsPolledTotal.WithLabelValues(evt))
