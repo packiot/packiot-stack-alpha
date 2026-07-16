@@ -1541,6 +1541,15 @@ services:
     build:
       context: ./operator
       dockerfile: Dockerfile.staging
+      args:
+        # task #31 — enable the offline durable PO write-queue (#94/#95).
+        # VITE_* is baked by Vite at `yarn build` (compile-time), so the ONLY
+        # way to turn it on is to pass it as a build-arg here and REBUILD the
+        # image (deploy-staging.yml runs `docker compose build` every deploy).
+        # A container env flip + restart does NOT work. Rollback = set "false".
+        # Client-side only, CPACK-keyed staging SPA (Incoplast bypasses via
+        # operator-adapter). See operator/Dockerfile.staging + durableWrite.js.
+        VITE_PO_WRITE_QUEUE_ENABLED: "true"
     container_name: operator
     restart: unless-stopped
     # ADR-0018 wave 4: nginx injects the enterprise api key on proxied
