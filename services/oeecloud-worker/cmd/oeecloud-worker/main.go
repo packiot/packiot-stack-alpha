@@ -52,6 +52,17 @@ func main() {
 		os.Exit(runHealthcheck())
 	}
 
+	// F2/F3 identity + int-overflow SENTINEL path (Task #21). A one-shot,
+	// SELECT-only deploy gate: connect both DB planes, run internal/bake's
+	// RunSentinel, print a PASS/FAIL report, exit non-zero on any determinism
+	// regression or overflow. Invoked in CI via
+	//   docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
+	// so it reuses the SAME creds path, pool config and schema routing as the
+	// running worker. Never starts the AMQP consumer.
+	if len(os.Args) > 1 && os.Args[1] == "--identity-sentinel" {
+		os.Exit(runIdentitySentinel())
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
@@ -432,6 +443,76 @@ func runHealthcheck() int {
 	}
 	if !meta.Healthy {
 		fmt.Fprintf(os.Stderr, "healthcheck: not healthy: %s\n", string(body))
+		return 1
+	}
+	return 0
+}
+
+// runIdentitySentinel is the one-shot F2/F3 identity + int-overflow deploy gate
+// (Task #21). SELECT-only. It connects the two DB planes exactly as the worker
+// does (same creds path, same pool builders), runs internal/bake.RunSentinel
+// over the configured enterprises, prints a compact PASS/FAIL report, and
+// returns a process exit code:
+//
+//	0  — every surface PASS or SKIP, no overflow (gate green)
+//	1  — a determinism regression, an overflow violation, OR the check itself
+//	     could not run (fail-closed: a sentinel that cannot execute must never
+//	     silently pass a deploy)
+//
+// SKIP (no data / one side entirely empty on a cold, unconverged stack) never
+// fails the gate — the live bake gauge tracks sustained one-sidedness.
+func runIdentitySentinel() int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "identity-sentinel: config: %v\n", err)
+		return 1
+	}
+	logger := logp.Setup(cfg.LogLevel)
+
+	if cfg.PGShadowDBName == "" {
+		// No F3 plane configured → nothing to gate. Not a failure: on a plain
+		// prod-shaped deploy without the shadow DB the sentinel is a no-op.
+		logger.Warn("identity-sentinel: POSTGRES_SHADOW_DB_NAME unset — no F3 plane to compare; skipping (exit 0)")
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	dbCreds, err := secrets.FetchDBCreds(ctx, cfg.AWSRegion, cfg.PGSecretID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "identity-sentinel: fetch db creds: %v\n", err)
+		return 1
+	}
+	f2, err := db.New(ctx, dbCreds, 2, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "identity-sentinel: F2 pool: %v\n", err)
+		return 1
+	}
+	defer f2.Close()
+	f3, err := db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "identity-sentinel-shadow", 2, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "identity-sentinel: F3 pool: %v\n", err)
+		return 1
+	}
+	defer f3.Close()
+
+	enterprises := config.CSVInts(cfg.BakeEnterpriseIDs)
+	logger.Info("identity-sentinel running", slog.Any("enterprises", enterprises),
+		slog.String("f3_db", cfg.PGShadowDBName))
+
+	rep, err := bake.RunSentinel(ctx, f2, f3, enterprises)
+	if err != nil {
+		// Query-level failure: the gate could not evaluate. Fail closed — print
+		// whatever partial report we have plus the error.
+		fmt.Fprintf(os.Stderr, "identity-sentinel: check could not run (FAIL-CLOSED): %v\n", err)
+		fmt.Println(rep.String())
+		return 1
+	}
+	fmt.Println("F2/F3 IDENTITY + INT-OVERFLOW SENTINEL")
+	fmt.Println(rep.String())
+	if rep.Failed() {
+		fmt.Fprintln(os.Stderr, "identity-sentinel: GATE FAILED — F2/F3 determinism regression or int-overflow detected")
 		return 1
 	}
 	return 0

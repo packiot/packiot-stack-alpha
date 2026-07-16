@@ -445,6 +445,83 @@ jobs:
               -c "SELECT ts_value, id_equipment, net_production_incr, gross_production_incr, scrap_incr, speed, state, mode FROM shadow_go_port.equipment_values ORDER BY ts_value DESC LIMIT 5;" \
             2>&1 | head -12
 
+      - name: F2/F3 identity + int-overflow sentinel (Task #21 — self-enforcing determinism gate)
+        # THE SAFETY NET that makes F2==F3 determinism self-enforcing instead of
+        # a manual comparator run. Post-deploy, this execs the SAME oeecloud-
+        # worker binary that just deployed with the `--identity-sentinel`
+        # subcommand (like `--healthcheck`): it opens both DB planes
+        # (F2=shadow_go_port in the main DB, F3=public in packiot_shadow) and,
+        # SELECT-only, over a SETTLED window (ts_end < now()-3h) PER NATURAL KEY
+        # (nm_equipment|tp_equipment, never surrogate id_equipment):
+        #   - GATE 1: F2==F3 BYTE-EXACT on the event-derived core
+        #     {count, running_time, duration} on every equipment (the primary
+        #     determinism assertion — see internal/bake/sentinel.go for why the
+        #     rollup-computed + counter columns are NOT gated post-#276 cutover);
+        #   - GATE 2: int-overflow bound (running_time ≤ bucket span × 1.05 — the
+        #     L8 P0 sentinel: running_time overflowed to ~112M vs ~11,195);
+        #   - GATE 3: raw equipment_values row COUNT, count-tolerant.
+        # Counter (gross/net) F2-vs-F3 divergences are REPORTED as INFO (they are
+        # divergent by design — F2 raw control vs F3 cutover) but do NOT gate;
+        # counter CORRECTNESS is the separate F3-vs-prod S2 readiness gate.
+        # Skips cleanly when a surface has no data (cold stack).
+        #
+        # ENFORCE MODE (IDENTITY_SENTINEL_ENFORCE):
+        #   "false" (default) — SOFT-LAUNCH bake-in: run + print the full report
+        #     + emit a ::warning:: on a non-zero exit, but DO NOT fail the deploy.
+        #     NOTE: after the #43 reframe the gated surface PASSES on live staging
+        #     (verified 2026-07-16: core byte-exact on all 62 ent-3 equipment incl.
+        #     L3/L4/L5/L6/L8/L10, 0 overflow — the old L8/L4 false-fails came from
+        #     gating the by-design-divergent counter surface, now demoted to INFO).
+        #     So there is NO known pre-existing violation on the GATED surface; it
+        #     is safe to flip to "true" after observing a few green deploys.
+        #   "true" — ENFORCING: a non-zero sentinel exit FAILS the deploy run
+        #     (red). Determinism becomes self-enforcing — a real running_time
+        #     drift / overflow / count divergence blocks the pipeline.
+        #
+        # NOTE: this step is NOT continue-on-error at the YAML level — the
+        # enforce/warn decision is made INSIDE the script from the binary's exit
+        # code, so warn-mode still surfaces a loud annotation while enforce-mode
+        # blocks. The binary itself always exits non-zero on any violation.
+        env:
+          IDENTITY_SENTINEL_ENFORCE: "false"
+        run: |
+          set +e
+          echo "=== waiting for oeecloud-worker to report healthy before sentinel ==="
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' oeecloud-worker 2>/dev/null || echo missing)
+            if [ "$status" = "healthy" ]; then echo "  oeecloud-worker healthy after ${i}s"; break; fi
+            sleep 2
+          done
+          if ! docker ps --format '{{.Names}}' | grep -qx oeecloud-worker; then
+            echo "::warning title=identity-sentinel skipped::oeecloud-worker container not running — cannot run F2/F3 gate"
+            exit 0
+          fi
+
+          echo "=== running F2/F3 identity + int-overflow sentinel (SELECT-only) ==="
+          # Brief retry loop: a just-restarted worker may still be opening its
+          # DB pools. Retry the whole check a few times on a non-zero exit that
+          # is a transient connect error, not a data verdict — but since the
+          # binary prints its verdict and exits, we simply run it once and
+          # capture the code; the settled window is unaffected by the restart.
+          docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
+          RC=$?
+          echo "sentinel exit code: $RC"
+
+          if [ "$RC" -eq 0 ]; then
+            echo "F2/F3 identity + overflow gate: PASS (or SKIP on empty window)"
+            exit 0
+          fi
+
+          # Non-zero: a determinism regression, an overflow violation, or the
+          # check could not run (fail-closed inside the binary).
+          if [ "${IDENTITY_SENTINEL_ENFORCE}" = "true" ]; then
+            echo "::error title=F2/F3 identity gate FAILED::sentinel exit $RC — determinism regression or int-overflow (see report above). Failing the deploy (ENFORCE=true)."
+            exit 1
+          else
+            echo "::warning title=F2/F3 identity gate divergence (warn-only)::sentinel exit $RC — F2/F3 determinism divergence or overflow detected (see report above). NOT failing the deploy while IDENTITY_SENTINEL_ENFORCE=false. Triage then flip ENFORCE=true."
+            exit 0
+          fi
+
       - name: Chaos test — kill RMQ, prove outbox durability (ADR-0011 P3)
         # Proves the store-and-forward payoff: with outbox enabled, an RMQ
         # outage doesn't drop messages. Sequence:

@@ -393,11 +393,16 @@ var identitySurfaces = []struct {
 // this band — so 1% flags real bugs while tolerating the in-flight tail.
 const identityTol = 0.01
 
-// identityMatch compares two pipe-delimited fingerprints. Field 0 (count) is
+// IdentityMatch compares two pipe-delimited fingerprints. Field 0 (count) is
 // EXACT unless countTolerant (raw ingest surface — see CountTolerant); the
 // remaining numeric fields are within identityTol relative. Returns (match,
 // detail) where detail names the worst offending field on a mismatch.
-func identityMatch(a, b string, countTolerant bool) (bool, string) {
+//
+// EXPORTED so the CI identity-sentinel (cmd/oeecloud-worker --identity-sentinel,
+// via internal/bake.RunSentinel) evaluates the F2/F3 tolerance contract through
+// the SAME function the in-process bake loop uses — one definition of "identical",
+// no drift between the live gauge and the deploy gate.
+func IdentityMatch(a, b string, countTolerant bool) (bool, string) {
 	fa, fb := strings.Split(a, "|"), strings.Split(b, "|")
 	if len(fa) != len(fb) {
 		return false, fmt.Sprintf("field-count %d vs %d", len(fa), len(fb))
@@ -448,7 +453,7 @@ func RunIdentityTick(ctx context.Context, f2 *pgxpool.Pool, f3 *pgxpool.Pool, lo
 			}
 			continue
 		}
-		match, detail := identityMatch(a, b, s.CountTolerant)
+		match, detail := IdentityMatch(a, b, s.CountTolerant)
 		if match {
 			identityMismatch.WithLabelValues(s.Name).Set(0)
 			if a != b { // within tolerance but not byte-identical — visible, not alarming
