@@ -1,0 +1,22 @@
+# Pre-commit secret-scanning gate (task #61).
+#
+# One-time setup per clone:
+#     pip install pre-commit     # or: pipx install pre-commit / brew install pre-commit
+#     pre-commit install         # installs the git commit hook
+#
+# Thereafter every `git commit` runs `gitleaks protect --staged` against the
+# STAGED diff and BLOCKS the commit if a secret is found — catching leaks
+# locally before they ever reach a remote. The hook auto-loads the shared
+# `.gitleaks.toml` allowlist from the repo root, so it stays in lockstep with CI.
+#
+# To bypass in a genuine emergency (discouraged): `git commit --no-verify`.
+
+minimum_pre_commit_version: "3.0.0"
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      # Upstream hook entry at this rev is:
+      #   gitleaks protect --verbose --redact --staged
+      - id: gitleaks

@@ -245,6 +245,7 @@ bump failed silently.
 | Workflow | Trigger | Job name | Required? |
 |---|---|---|---|
 | `pr-validation.yml` | PR to `staging` or `development` | `Validate compose files` | **Yes** (on `staging`) |
+| `gitleaks.yml` | PR + push to `staging` | `gitleaks detect (full history)` | **Yes** — fails on any secret |
 | `go-services.yml` | PR to `staging`/`development` touching `services/**` | `<service> — vet/test/build` (matrix) | No (convention) |
 | `deploy-staging.yml` | push to `staging` | `deploy` (includes smoke check on container health) | (post-merge) |
 | `build-postgres.yml` | push to `main` (path `db/**`) | `build-and-push` | No |
@@ -283,6 +284,35 @@ A fourth option exists but is custom code: a parent-side workflow that
 polls each submodule's CI status at the pinned SHA and rejects the bot
 bump PR if red. Approximates the gate without native protection;
 worth ~2-4h of work if discipline keeps slipping.
+
+---
+
+## Secret scanning (gitleaks)
+
+Two layers keep credentials out of git:
+
+1. **CI (`gitleaks.yml`)** — a **required** check that scans the full history
+   on every PR and every push to `staging`. Any finding fails the job and
+   blocks the merge. Runs the pinned gitleaks binary with the shared
+   `.gitleaks.toml` allowlist (tuned to suppress documented dev-default /
+   public-key false positives with near-zero noise).
+
+2. **Local pre-commit hook** — catches leaks *before* they reach a remote.
+   Install once per clone:
+
+   ```bash
+   pip install pre-commit      # or pipx / brew
+   pre-commit install          # wires the git commit hook
+   ```
+
+   Thereafter each `git commit` runs `gitleaks protect --staged` on the staged
+   diff and blocks the commit on a finding. Emergency bypass (discouraged):
+   `git commit --no-verify`.
+
+If the scanner flags a genuine false positive, add it to the allowlist in
+`.gitleaks.toml` (keep it tight — allowlist the *extracted secret value* or an
+exact path, never a broad secret shape), and explain why in the PR. Never
+commit a real secret and "allowlist" it — rotate it instead.
 
 ---
 
