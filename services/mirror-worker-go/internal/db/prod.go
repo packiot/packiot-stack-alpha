@@ -372,6 +372,92 @@ func (p *Prod) FetchActivePOs(ctx context.Context, enterpriseID int) ([]ProdActi
 	return out, nil
 }
 
+// ProdPOFinishInfo is the prod-authoritative view the reconciler's finisher
+// (task #48) needs per orphan candidate: does prod STILL have this PO active
+// (safety re-check against the diff snapshot), and — if not — when did it
+// really stop, so we close the staging mirror at that ts instead of now().
+//
+// LastActivity = GREATEST(production_orders.ts_end, max(upper(runtime_timerange))),
+// i.e. the later of the header's stop time and the last CLOSED runtime
+// segment's upper bound ("segment last real compute moment"). HasActivity is
+// false when both are NULL — the finisher then can't pick a real close ts and
+// conservatively skips (never fabricates one).
+type ProdPOFinishInfo struct {
+	IDOrder      int64
+	Status       int
+	LastActivity time.Time
+	HasActivity  bool
+}
+
+// FetchPOFinishInfo batches the finisher's prod cross-check: for each given
+// id_order (scoped to enterprise, the diff's business key), return prod's
+// CURRENT status + last-activity ts. This is the SAME prod source as
+// FetchActivePOs, so the finisher is prod-driven end-to-end — the diff says
+// "gone from status=2", this confirms it authoritatively on a fresh read and
+// hands back the real stop moment. One round-trip via ANY($::bigint[]),
+// wrapped in BEGIN READ ONLY like every prod read.
+//
+// An id_order absent from the result means prod has NO row for it under this
+// enterprise — the caller treats that as "unverifiable" and skips (fail-safe:
+// never close what prod can't confirm).
+func (p *Prod) FetchPOFinishInfo(ctx context.Context, enterpriseID int, idOrders []int64) (map[int64]ProdPOFinishInfo, error) {
+	if len(idOrders) == 0 {
+		return map[int64]ProdPOFinishInfo{}, nil
+	}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.ReadCommitted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// GREATEST ignores NULL inputs (returns NULL only when all are NULL), so
+	// ts_end-less POs still resolve to their last closed segment's upper
+	// bound and vice-versa. max(upper(runtime_timerange)) is NULL while a
+	// segment is still open (upper unbounded) — but such a PO is status=2 and
+	// gets filtered by the status guard upstream anyway.
+	rows, err := tx.Query(ctx,
+		`SELECT po.id_order, po.status,
+		        GREATEST(po.ts_end, max(upper(por.runtime_timerange))) AS last_activity
+		   FROM production_orders po
+		   LEFT JOIN production_orders_runtime por
+		     ON por.id_production_order = po.id_production_order
+		  WHERE po.id_enterprise = $1
+		    AND po.id_order = ANY($2::bigint[])
+		  GROUP BY po.id_order, po.status, po.ts_end`,
+		enterpriseID, idOrders,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query PO finish info: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]ProdPOFinishInfo, len(idOrders))
+	for rows.Next() {
+		var r ProdPOFinishInfo
+		var lastActivity sql.NullTime
+		if err := rows.Scan(&r.IDOrder, &r.Status, &lastActivity); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		if lastActivity.Valid {
+			r.LastActivity = lastActivity.Time
+			r.HasActivity = true
+		}
+		out[r.IDOrder] = r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // ProdRuntimeValues is the slim projection the value-sync needs: the
 // canonical "current production" counters from production_orders_runtime
 // (the per-minute cron-recomputed table, which is what operator UI and

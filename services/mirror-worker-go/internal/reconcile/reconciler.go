@@ -126,39 +126,51 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	metrics.ReconcilerActiveDriftPOs.Set(float64(len(missing)))
 
 	if len(missing) == 0 {
-		metrics.ReconcilerRunsTotal.WithLabelValues("ok").Inc()
-		r.logger.Info("reconciler pass: in sync",
+		r.logger.Info("reconciler pass: in sync (create pass)",
+			slog.Int("prod_active", len(prodPOs)),
+			slog.Int("staging_active", len(stagingActive)))
+	} else {
+		// Per-run cap so a single bad pass can't hammer staging edge-api
+		// during an outage. Whatever isn't backfilled this pass is picked
+		// up on the next tick.
+		toProcess := missing
+		if len(toProcess) > r.cfg.ReconcileMaxPerRun {
+			toProcess = toProcess[:r.cfg.ReconcileMaxPerRun]
+		}
+
+		r.logger.Info("reconciler pass: backfilling missing POs",
 			slog.Int("prod_active", len(prodPOs)),
 			slog.Int("staging_active", len(stagingActive)),
-			slog.Duration("elapsed", time.Since(start)))
-		return nil
-	}
+			slog.Int("drift", len(missing)),
+			slog.Int("processing", len(toProcess)))
 
-	// Per-run cap so a single bad pass can't hammer staging edge-api
-	// during an outage. Whatever isn't backfilled this pass is picked
-	// up on the next tick.
-	toProcess := missing
-	if len(toProcess) > r.cfg.ReconcileMaxPerRun {
-		toProcess = toProcess[:r.cfg.ReconcileMaxPerRun]
-	}
-
-	r.logger.Info("reconciler pass: backfilling missing POs",
-		slog.Int("prod_active", len(prodPOs)),
-		slog.Int("staging_active", len(stagingActive)),
-		slog.Int("drift", len(missing)),
-		slog.Int("processing", len(toProcess)))
-
-	for _, p := range toProcess {
-		if err := r.ensureOnePO(ctx, p); err != nil {
-			metrics.ReconcilerPOsTotal.WithLabelValues("failed").Inc()
-			r.logger.Warn("reconciler: ensureOnePO failed — skipping, next pass will retry",
-				slog.Int64("prod_po", p.IDProductionOrder),
-				slog.Int64("id_order", p.IDOrder),
-				slog.String("err", err.Error()))
-			continue
+		for _, p := range toProcess {
+			if err := r.ensureOnePO(ctx, p); err != nil {
+				metrics.ReconcilerPOsTotal.WithLabelValues("failed").Inc()
+				r.logger.Warn("reconciler: ensureOnePO failed — skipping, next pass will retry",
+					slog.Int64("prod_po", p.IDProductionOrder),
+					slog.Int64("id_order", p.IDOrder),
+					slog.String("err", err.Error()))
+				continue
+			}
+			metrics.ReconcilerPOsTotal.WithLabelValues("created").Inc()
 		}
-		metrics.ReconcilerPOsTotal.WithLabelValues("created").Inc()
 	}
+
+	// Finisher pass (task #48) — closes the INVERSE gap the create pass
+	// leaves: mirror-managed staging POs stuck at status=2 after prod
+	// ended them via a user_logs-bypassing SparkPlug stop. Ships INERT
+	// (flag default false); runs on the same prod-active snapshot the create
+	// pass used, so no extra FetchActivePOs round-trip. A finisher error is
+	// logged but never fails the whole pass — the create side already
+	// succeeded and the next tick retries.
+	if r.cfg.ReconcileFinisherEnabled {
+		if err := r.runFinisher(ctx, prodPOs); err != nil {
+			r.logger.Warn("reconciler: finisher pass failed — create pass unaffected, next tick retries",
+				slog.String("err", err.Error()))
+		}
+	}
+
 	metrics.ReconcilerRunsTotal.WithLabelValues("ok").Inc()
 	r.logger.Info("reconciler pass complete", slog.Duration("elapsed", time.Since(start)))
 	return nil
@@ -182,6 +194,148 @@ func computeMissing(prod []db.ProdActivePO, stagingActive map[int64]int64) []db.
 	// gives the same view a human gets in psql.
 	sort.Slice(missing, func(i, j int) bool { return missing[i].IDOrder < missing[j].IDOrder })
 	return missing
+}
+
+// orphanCandidate pairs a mirror-managed staging PO with the id_order the
+// diff keyed it by. The finisher walks these in id_order order for stable,
+// human-readable pass logs.
+type orphanCandidate struct {
+	IDOrder     int64
+	StagingPOID int64
+}
+
+// computeOrphans returns the INVERSE of computeMissing: mirror-managed
+// staging POs (id_order → staging id) whose id_order is NO LONGER in prod's
+// status=2 set. These are the finisher's orphan candidates — POs staging still
+// thinks are running that prod has already ended.
+//
+// A candidate present in prodActive is EXCLUDED here: that's a legitimately-
+// running PO and the first (of four) safety layers protecting it — a running
+// PO can never become a finish candidate. Pure + sorted for the same
+// no-shadow-implementation, stable-progress reasons as computeMissing.
+func computeOrphans(reconcileActive map[int64]int64, prodActive []db.ProdActivePO) []orphanCandidate {
+	prodSet := make(map[int64]struct{}, len(prodActive))
+	for _, p := range prodActive {
+		prodSet[p.IDOrder] = struct{}{}
+	}
+	out := make([]orphanCandidate, 0)
+	for idOrder, stagingPOID := range reconcileActive {
+		if _, stillActive := prodSet[idOrder]; stillActive {
+			continue
+		}
+		out = append(out, orphanCandidate{IDOrder: idOrder, StagingPOID: stagingPOID})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].IDOrder < out[j].IDOrder })
+	return out
+}
+
+// finisherOutcome is the decision for one orphan candidate, computed purely
+// from prod's authoritative finish-info + the grace cutoff. The metric label
+// string doubles as the enum value so the decision and its observability can't
+// drift apart.
+type finisherOutcome string
+
+const (
+	outcomeFinish          finisherOutcome = "finished"
+	outcomeSkipStillActive finisherOutcome = "skipped_still_active"
+	outcomeSkipGrace       finisherOutcome = "skipped_grace"
+	outcomeSkipNoActivity  finisherOutcome = "skipped_no_activity"
+	outcomeSkipUnverified  finisherOutcome = "skipped_unverified"
+)
+
+// finisherDecision applies the per-candidate safety ladder AFTER the set diff
+// already excluded prod-active POs (layer 1). Layers 2-4 live here:
+//   - unverified: prod has no row for this id_order → can't confirm → skip;
+//   - still active: prod's FRESH read shows status=2 (a diff-vs-recheck race)
+//     → skip (never close a running PO);
+//   - no activity: prod gave no last-activity ts → skip (never fabricate one);
+//   - grace: prod last-activity is inside the grace window → skip (possible
+//     flap / mid-transition — don't race a legitimate re-activation).
+//
+// Only a PO that clears all of them returns outcomeFinish, with the close ts.
+func finisherDecision(info db.ProdPOFinishInfo, present bool, graceCutoff time.Time) finisherOutcome {
+	if !present {
+		return outcomeSkipUnverified
+	}
+	if info.Status == 2 {
+		return outcomeSkipStillActive
+	}
+	if !info.HasActivity {
+		return outcomeSkipNoActivity
+	}
+	if info.LastActivity.After(graceCutoff) {
+		return outcomeSkipGrace
+	}
+	return outcomeFinish
+}
+
+// runFinisher executes one finisher pass on the prod-active snapshot already
+// fetched by Run. Flow: read staging's mirror-managed active set → diff to
+// orphan candidates (layer 1) → one batched prod cross-check → per-candidate
+// decision (layers 2-4) → guarded staging close. SELECT-only on prod; the only
+// mutation is FinishOrphanPO on staging, which is itself idempotent.
+func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO) error {
+	reconcileActive, err := r.staging.ReconcileActivePOIDOrders(ctx, r.cfg.SourceName, r.cfg.StagingEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("fetch mirror-managed active staging POs: %w", err)
+	}
+
+	candidates := computeOrphans(reconcileActive, prodPOs)
+	metrics.ReconcilerOrphanCandidates.Set(float64(len(candidates)))
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	idOrders := make([]int64, len(candidates))
+	for i, c := range candidates {
+		idOrders[i] = c.IDOrder
+	}
+	info, err := r.prodDB.FetchPOFinishInfo(ctx, r.cfg.ProdEnterpriseID, idOrders)
+	if err != nil {
+		return fmt.Errorf("fetch prod PO finish info: %w", err)
+	}
+
+	graceCutoff := time.Now().UTC().Add(-time.Duration(r.cfg.ReconcileFinisherGraceMinutes) * time.Minute)
+	r.logger.Info("finisher pass: evaluating orphan candidates",
+		slog.Int("candidates", len(candidates)),
+		slog.Int("grace_minutes", r.cfg.ReconcileFinisherGraceMinutes))
+
+	for _, c := range candidates {
+		pi, present := info[c.IDOrder]
+		decision := finisherDecision(pi, present, graceCutoff)
+		if decision != outcomeFinish {
+			metrics.ReconcilerFinisherTotal.WithLabelValues(string(decision)).Inc()
+			r.logger.Info("finisher: skipping orphan candidate",
+				slog.Int64("id_order", c.IDOrder),
+				slog.Int64("staging_po", c.StagingPOID),
+				slog.String("decision", string(decision)),
+				slog.Int("prod_status", pi.Status))
+			continue
+		}
+
+		finished, err := r.staging.FinishOrphanPO(ctx, c.StagingPOID, pi.LastActivity)
+		if err != nil {
+			metrics.ReconcilerFinisherTotal.WithLabelValues("failed").Inc()
+			r.logger.Warn("finisher: FinishOrphanPO failed — next pass will retry",
+				slog.Int64("id_order", c.IDOrder),
+				slog.Int64("staging_po", c.StagingPOID),
+				slog.String("err", err.Error()))
+			continue
+		}
+		if !finished {
+			// Header already status!=2 (a prior pass, or another writer beat
+			// us). The idempotency guard did its job — not a close, not a fail.
+			metrics.ReconcilerFinisherTotal.WithLabelValues("skipped_idempotent").Inc()
+			continue
+		}
+		metrics.ReconcilerFinisherTotal.WithLabelValues(string(outcomeFinish)).Inc()
+		r.logger.Info("finisher: closed orphaned reconcile PO",
+			slog.Int64("id_order", c.IDOrder),
+			slog.Int64("staging_po", c.StagingPOID),
+			slog.Int("prod_status", pi.Status),
+			slog.Time("close_ts", pi.LastActivity))
+	}
+	return nil
 }
 
 // errAlreadyMapped is the sentinel returned by ensureOnePO when a mapping

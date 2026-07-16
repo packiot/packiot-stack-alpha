@@ -66,6 +66,30 @@ type Config struct {
 	ReconcileIntervalSec int
 	ReconcileMaxPerRun   int
 
+	// Prod-authoritative finisher pass (task #48). The create/revive
+	// reconciler above is CREATE-ONLY: it opens/keeps staging POs active to
+	// mirror prod's status=2 set, but never CLOSES one. When a prod PO ends
+	// via a SparkPlug stop that bypasses edge-api's user_logs (~95% of
+	// stops), the mirror never sees an order-stopped, prod's row leaves
+	// status=2, and the create-only reconciler simply stops tracking it —
+	// leaving the staging mirror stuck at status=2 with an open runtime
+	// segment forever (the PO-17106 zombie pattern).
+	//
+	// The finisher closes that gap: it computes the INVERSE set —
+	// mirror-managed staging POs that are status=2 but whose id_order is
+	// NO LONGER in prod's status=2 set — cross-checks each against prod
+	// authoritatively, and finishes the genuinely-orphaned ones at their
+	// prod last-activity ts (NOT now(), to avoid injecting phantom
+	// stopped_time). Ships INERT (default false) so it lands as a no-op and
+	// is enabled deliberately after review — same discipline as the rest of
+	// the migration.
+	//
+	// ReconcileFinisherGraceMinutes guards against racing a legitimate
+	// re-activation: a PO whose prod last-activity is within this window is
+	// treated as possibly mid-transition / flapping and skipped this pass.
+	ReconcileFinisherEnabled      bool
+	ReconcileFinisherGraceMinutes int
+
 	// Value-sync layer. The existence pass (above) tracks which POs are
 	// active. The value pass tracks WHAT they show: production_real,
 	// gross_production, net_production, qt_stops, OEE rollups. Without
@@ -169,41 +193,44 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		AWSRegion:                  getenv("AWS_REGION", "us-east-1"),
-		ProdDBSecretID:             getenv("PROD_DB_SECRET_ID", "databaseCredentials"),
-		StagingDBSecretID:          getenv("STAGING_DB_SECRET_ID", "packiot/staging/db"),
-		SourceName:                 getenv("SOURCE_NAME", "cpack-prod-go"),
-		ProdEnterpriseID:           getenvInt("PROD_ENTERPRISE_ID", 1),
-		StagingEnterpriseID:        getenvInt("STAGING_ENTERPRISE_ID", 3),
-		PollIntervalSec:            getenvInt("POLL_INTERVAL_SEC", 60),
-		BatchSize:                  getenvInt("BATCH_SIZE", 50),
-		PerPostDelayMs:             getenvInt("PER_POST_DELAY_MS", 50),
-		StagingAPIBaseURL:          getenv("STAGING_API_URL", "http://edge-api:8080"),
-		ShadowValueFanout:          getenvBool("SHADOW_VALUE_FANOUT", false),
-		ShadowDBName:               getenv("POSTGRES_SHADOW_DB_NAME", ""),
-		ShadowDBHost:               getenv("SHADOW_DB_HOST", ""),
-		EventMinOverlapSec:         getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
-		EventMaxStartDriftSec:      getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
-		HealthPort:                 getenvInt("HEALTH_PORT", 9102),
-		ReconcileEnabled:           getenvBool("RECONCILE_ENABLED", true),
-		ReconcileIntervalSec:       getenvInt("RECONCILE_INTERVAL_SEC", 300),
-		ReconcileMaxPerRun:         getenvInt("RECONCILE_MAX_PER_RUN", 20),
-		ReconcileValuesEnabled:     getenvBool("RECONCILE_VALUES_ENABLED", true),
-		ReconcileValuesIntervalSec: getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
-		ReconcileEventsEnabled:     getenvBool("RECONCILE_EVENTS_ENABLED", true),
-		ReconcileEventsIntervalSec: getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
-		ReconcileEventsBatchSize:   getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
-		DLQRetryEnabled:            getenvBool("DLQ_RETRY_ENABLED", true),
-		DLQRetryIntervalSec:        getenvInt("DLQ_RETRY_INTERVAL_SEC", 300),
-		DLQRetryMaxAttempts:        getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
-		DLQRetryBatchSize:          getenvInt("DLQ_RETRY_BATCH_SIZE", 50),
-		DLQReanimateEnabled:        getenvBool("DLQ_REANIMATE_ENABLED", true),
-		DLQReanimateIntervalSec:    getenvInt("DLQ_REANIMATE_INTERVAL_SEC", 600),
-		DLQReanimateBatchSize:      getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
-		ComparatorEnabled:          getenvBool("COMPARATOR_ENABLED", true),
-		ComparatorIntervalSec:      getenvInt("COMPARATOR_INTERVAL_SEC", 300),
-		ComparatorOEEIntervalSec:   getenvInt("COMPARATOR_OEE_INTERVAL_SEC", 1800),
-		LogLevel:                   getenv("LOG_LEVEL", "info"),
+		AWSRegion:             getenv("AWS_REGION", "us-east-1"),
+		ProdDBSecretID:        getenv("PROD_DB_SECRET_ID", "databaseCredentials"),
+		StagingDBSecretID:     getenv("STAGING_DB_SECRET_ID", "packiot/staging/db"),
+		SourceName:            getenv("SOURCE_NAME", "cpack-prod-go"),
+		ProdEnterpriseID:      getenvInt("PROD_ENTERPRISE_ID", 1),
+		StagingEnterpriseID:   getenvInt("STAGING_ENTERPRISE_ID", 3),
+		PollIntervalSec:       getenvInt("POLL_INTERVAL_SEC", 60),
+		BatchSize:             getenvInt("BATCH_SIZE", 50),
+		PerPostDelayMs:        getenvInt("PER_POST_DELAY_MS", 50),
+		StagingAPIBaseURL:     getenv("STAGING_API_URL", "http://edge-api:8080"),
+		ShadowValueFanout:     getenvBool("SHADOW_VALUE_FANOUT", false),
+		ShadowDBName:          getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShadowDBHost:          getenv("SHADOW_DB_HOST", ""),
+		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
+		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
+		HealthPort:            getenvInt("HEALTH_PORT", 9102),
+		ReconcileEnabled:      getenvBool("RECONCILE_ENABLED", true),
+		ReconcileIntervalSec:  getenvInt("RECONCILE_INTERVAL_SEC", 300),
+		ReconcileMaxPerRun:    getenvInt("RECONCILE_MAX_PER_RUN", 20),
+		// Finisher ships INERT (default false) — enabled deliberately after review.
+		ReconcileFinisherEnabled:      getenvBool("RECONCILE_FINISHER_ENABLED", false),
+		ReconcileFinisherGraceMinutes: getenvInt("RECONCILE_FINISHER_GRACE_MINUTES", 30),
+		ReconcileValuesEnabled:        getenvBool("RECONCILE_VALUES_ENABLED", true),
+		ReconcileValuesIntervalSec:    getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
+		ReconcileEventsEnabled:        getenvBool("RECONCILE_EVENTS_ENABLED", true),
+		ReconcileEventsIntervalSec:    getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
+		ReconcileEventsBatchSize:      getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
+		DLQRetryEnabled:               getenvBool("DLQ_RETRY_ENABLED", true),
+		DLQRetryIntervalSec:           getenvInt("DLQ_RETRY_INTERVAL_SEC", 300),
+		DLQRetryMaxAttempts:           getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
+		DLQRetryBatchSize:             getenvInt("DLQ_RETRY_BATCH_SIZE", 50),
+		DLQReanimateEnabled:           getenvBool("DLQ_REANIMATE_ENABLED", true),
+		DLQReanimateIntervalSec:       getenvInt("DLQ_REANIMATE_INTERVAL_SEC", 600),
+		DLQReanimateBatchSize:         getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
+		ComparatorEnabled:             getenvBool("COMPARATOR_ENABLED", true),
+		ComparatorIntervalSec:         getenvInt("COMPARATOR_INTERVAL_SEC", 300),
+		ComparatorOEEIntervalSec:      getenvInt("COMPARATOR_OEE_INTERVAL_SEC", 1800),
+		LogLevel:                      getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
 	if cfg.ProdEnterpriseID <= 0 {
