@@ -45,6 +45,15 @@
 // current minute, so comparing the open bucket would false-fail; the 3-day
 // history is unaffected by the deploy.
 //
+// ANCHOR ON now(), NEVER max(ts_value) (task #42): F3's equipment_runtime_shift
+// / _1hour carry FUTURE-DATED rows (~2026-08-14, uniform across all lines — a
+// rollup forward-fill horizon artifact, benign). Measured 2026-07-16: 5518 such
+// rows exist in the 3-day lookback, and ALL are excluded by the ts_end<now()-2h
+// upper bound (future ts_value ⇒ future ts_end ⇒ fails the closed-past-bucket
+// clause). Do NOT "optimize" this window to key off max(ts_value) — that would
+// anchor on 2026-08-14 and silently drag the whole comparison into empty/future
+// buckets. The upper bound MUST stay a wall-clock-now closed-past predicate.
+//
 // SKIP-ON-EMPTY (cold-stack guard): both sides empty for a surface → SKIP (no
 // data to compare). Exactly one side entirely empty → SKIP with a loud warn
 // (F3 rollup not yet converged / infra, NOT a determinism regression — the live
