@@ -682,8 +682,21 @@ services:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
     volumes:
-      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - ./monitoring/alertmanager/slack_api_url:/etc/alertmanager/slack_api_url:ro
+      # Task #41 (same class as #39/#40, now on the NOTIFICATION path). Config +
+      # secret are a DIRECTORY bind mount, NOT two single-FILE mounts. A single-
+      # file bind pins the source INODE at container-create; a deploy git-checkout
+      # rewrites alertmanager.yml with a NEW inode (atomic rename), so the running
+      # container kept reading the OLD inode — config edits never reached it, i.e.
+      # SILENTLY BROKEN ALERTING (a stale route/receiver = pages that never fire),
+      # exactly when you can least afford it. A directory mount resolves each
+      # lookup through the dir, so files replaced inside it become visible live.
+      # Both /etc/alertmanager/alertmanager.yml AND the gitignored, deploy-mounted
+      # /etc/alertmanager/slack_api_url secret (referenced by slack_api_url_file
+      # in alertmanager.yml) now come in via the one dir mount; slack_api_url.example
+      # tags along harmlessly. Visibility ≠ reload: new content is on disk but
+      # alertmanager only re-reads on SIGHUP / POST /-/reload — the deploy-staging
+      # workflow issues that reload after `up -d` (mirrors the prometheus step).
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
       - alertmanager-data:/alertmanager
     networks:
       packiot-net:
