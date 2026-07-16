@@ -23,3 +23,14 @@ monitoring/alertmanager/slack_api_url
 
 # RabbitMQ definitions generated at deploy from the template + Secrets Manager (has passwords)
 monitoring/rabbitmq/definitions.json
+
+# ── Secret-material hardening (task #61) ──────────────────────────────────────
+# Belt-and-suspenders alongside the gitleaks gate: keep credential-bearing file
+# shapes out of the index entirely so they can never reach a remote.
+.env                      # real env files (.env.local already ignored above)
+*.pem                     # TLS / SSH private keys
+*.ovpn                    # OpenVPN client configs (embed inline keys/certs)
+*.tfvars                  # Terraform variable files (DB passwords, tokens)
+*service-account*.json    # GCP service-account key files
+private-key.json          # generic exported private keys
+client_secrets.json       # OAuth client secret bundles

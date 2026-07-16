@@ -1,0 +1,66 @@
+# Packiot shared gitleaks configuration
+# ---------------------------------------------------------------------------
+# Secret-scanning gate (task #61). Extends the upstream gitleaks default rule
+# set (`useDefault = true`) and layers a TIGHT allowlist that suppresses only
+# the DOCUMENTED false positives found during the 2026-07 security sweep.
+#
+# Design notes (learned the hard way — see PR discussion):
+#   * gitleaks v8.21 IGNORES the plural `[[allowlists]]` array. Everything must
+#     live in ONE singular `[allowlist]` table or it is silently dropped.
+#   * `regexes` are matched against the target chosen by `regexTarget`. We use
+#     `regexTarget = "secret"` so we allowlist by the *extracted secret value*,
+#     NOT the surrounding line. This is the tight, safe choice: a real
+#     high-entropy leak on the same line as a placeholder is still caught,
+#     because its extracted secret won't equal a documented dev default.
+#   * `paths` always match the file path; `stopwords` always match the secret.
+#
+# Do NOT add real secret shapes here — only the documented FPs below.
+# This file is copied verbatim into the sibling repos (front4, primary-api,
+# packiot1-backend, back4-api) so every repo scans with the same ruleset.
+# ---------------------------------------------------------------------------
+
+title = "Packiot shared gitleaks config"
+
+[extend]
+# Inherit the full upstream ruleset (AWS keys, GitHub PATs, private keys,
+# generic-api-key, high-entropy, etc.). We only ADD an allowlist on top.
+useDefault = true
+
+[allowlist]
+description = "Packiot documented false positives (2026-07 sweep)"
+# Allowlist by the EXTRACTED SECRET value, not the whole line — keeps it tight.
+regexTarget = "secret"
+
+# --- Vendored / generated trees + public-by-design files (path-scoped) ------
+paths = [
+    '''(^|/)node_modules/''',
+    '''.*/dist-info/.*''',
+    '''(^|/)packiot1-backend/lib/''',
+    '''(^|/)cq-logs-bigquery/env/''',
+    '''(^|/)front4/src/firebase\.js$''',
+]
+
+# --- Documented FP secret values --------------------------------------------
+regexes = [
+    # Firebase / GCP WEB apiKey — public by design (ships in the browser
+    # bundle; Google's model is referrer/API restriction, not secrecy).
+    '''AIzaSy[0-9A-Za-z_\-]{33}''',
+
+    # Dev / test default passwords (exact literals only).
+    '''^(packiot|changeme|golden|guest|test|pw)$''',
+    # curl `-u user:pass` dev-default pair form (secret is captured as user:pass).
+    '''^(packiot|guest|test):(packiot|guest|test)$''',
+    '''^ChangeMeSecurePassword123!$''',
+    '''changeme-min-32-chars-long-secret''',
+    '''^SG\.dev-placeholder-not-used-locally$''',
+
+    # Env-var placeholders / shell interpolations — references, not values.
+    '''\$\{[^}]*\}''',
+    '''^(PG_PASSWORD|PGPASSWORD)$''',
+]
+
+# --- Stopwords: any secret CONTAINING one of these is treated as an FP -------
+stopwords = [
+    "PG_PASSWORD",
+    "PGPASSWORD",
+]

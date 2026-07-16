@@ -1,0 +1,52 @@
+name: gitleaks
+
+# Secret-scanning gate (task #61) — blocks any PR or push that introduces a
+# secret. Runs the pinned gitleaks binary against the FULL git history with the
+# shared, low-noise allowlist in `.gitleaks.toml`. A finding fails the job
+# (gitleaks exits non-zero), which blocks the merge via branch protection.
+#
+# Why a pinned binary and not `gitleaks/gitleaks-action`? The official action
+# requires a GITLEAKS_LICENSE secret when run under a GitHub *organisation*
+# account (packiot is one). The pinned binary is fully self-contained, has no
+# license gate, and runs as the checkout owner so there is no git
+# "dubious ownership" friction. Version is pinned (never `latest`) and the
+# download is integrity-checked against the release's published checksums.
+
+on:
+  pull_request:
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.21.2"
+
+jobs:
+  scan:
+    name: gitleaks detect (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # gitleaks scans every commit, so we need the whole history, not a
+          # shallow clone.
+          fetch-depth: 0
+
+      - name: Install pinned gitleaks
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "${tarball}" "${base}/${tarball}"
+          curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          # Integrity-check the download against the release's published checksum.
+          grep " ${tarball}\$" checksums.txt | sha256sum -c -
+          tar -xzf "${tarball}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan repository
+        run: gitleaks detect --source . --config .gitleaks.toml --redact -v
