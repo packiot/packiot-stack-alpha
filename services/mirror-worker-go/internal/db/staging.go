@@ -321,6 +321,108 @@ func (s *Staging) ActivePOIDOrders(ctx context.Context, enterpriseID int) (map[i
 	return out, rows.Err()
 }
 
+// ReconcileActivePOIDOrders returns the RECONCILE-ORIGIN staging POs
+// currently in status=2, as id_order → id_production_order. This is the
+// finisher's candidate universe (task #48) — deliberately NARROWER than
+// ActivePOIDOrders, which also counts simulator- and operator-created POs the
+// finisher must never touch.
+//
+// "Reconcile-origin" is identified by either of the reconciler's two
+// signatures (union so a PO with a lost mapping insert is still covered — both
+// ensureOnePO and reviveExistingStagingPO swallow mapping-insert errors):
+//   - a mirror_id_map row for THIS source with source_log_id = 0 (the
+//     reconciler stamps 0 to mark "not from a user_log"); OR
+//   - nm_production_order LIKE 'CPACK-reconcile-%' (the reconciler's naming).
+//
+// Both are reconcile-specific and both exclude simulator / hand-made POs
+// (which never get a mirror_id_map row nor that name), so the finisher's blast
+// radius is bounded to POs this reconciler itself created. user_logs-replayed
+// mirror POs (source_log_id != 0) are intentionally OUT of scope for v1.
+func (s *Staging) ReconcileActivePOIDOrders(ctx context.Context, source string, enterpriseID int) (map[int64]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT po.id_order, po.id_production_order
+		   FROM production_orders po
+		  WHERE po.id_enterprise = $2
+		    AND po.status = 2
+		    AND (
+		      po.nm_production_order LIKE 'CPACK-reconcile-%'
+		      OR EXISTS (
+		        SELECT 1 FROM mirror_id_map m
+		         WHERE m.entity_type = 'production_order'
+		           AND m.source = $1
+		           AND m.staging_id = po.id_production_order
+		           AND m.source_log_id = 0
+		      )
+		    )`,
+		source, enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query reconcile-origin active staging POs: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var idOrder, idPO int64
+		if err := rows.Scan(&idOrder, &idPO); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[idOrder] = idPO
+	}
+	return out, rows.Err()
+}
+
+// FinishOrphanPO closes an orphaned reconcile PO on staging: it seals the open
+// runtime segment at closeTs and flips the header to status=3 (finished), in
+// one transaction. Returns whether it actually finished a row (false = already
+// finished by a prior pass → idempotent no-op).
+//
+// This is the DIRECT-DB equivalent of what StopProductionOrderDAO.stop does
+// (close production_orders_runtime where upper(runtime_timerange) IS NULL,
+// then set production_orders.status/ts_end + recalc_needed). We do NOT route
+// through edge-api /api/production-orders/stop on purpose: that path runs the
+// PoStalenessGate, whose BEYOND_HORIZON gate (48h) would REJECT a close at a
+// stale last-activity ts — and stale is exactly the orphan case. The finisher
+// is a reconciliation/repair write, not an operator action, so it bypasses the
+// operator-facing gate by design.
+//
+// Idempotency is structural, not advisory:
+//   - the segment UPDATE only matches OPEN segments (upper IS NULL);
+//   - the header UPDATE only matches status=2.
+//
+// A second pass therefore touches zero rows. GREATEST(closeTs, lower(...))
+// guards the empty/inverted-range error class: if closeTs somehow precedes the
+// segment start, we clamp to lower so tstzrange never sees upper < lower.
+// recalc_needed=true lets staging's per-minute cron recompute the now-closed
+// PO's final OEE, same as a real stop.
+func (s *Staging) FinishOrphanPO(ctx context.Context, stagingPOID int64, closeTs time.Time) (bool, error) {
+	var finished bool
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE production_orders_runtime
+			    SET runtime_timerange = tstzrange(
+			          lower(runtime_timerange),
+			          GREATEST($2::timestamptz, lower(runtime_timerange))),
+			        recalc_needed = true
+			  WHERE id_production_order = $1
+			    AND upper(runtime_timerange) IS NULL`,
+			stagingPOID, closeTs); err != nil {
+			return fmt.Errorf("close runtime segment: %w", err)
+		}
+		ct, err := tx.Exec(ctx,
+			`UPDATE production_orders
+			    SET status = 3, ts_end = $2, recalc_needed = true
+			  WHERE id_production_order = $1
+			    AND status = 2`,
+			stagingPOID, closeTs)
+		if err != nil {
+			return fmt.Errorf("finish production_order: %w", err)
+		}
+		finished = ct.RowsAffected() > 0
+		return nil
+	})
+	return finished, err
+}
+
 // LookupStagingPOByIDOrder returns the most recent staging PO matching
 // (enterprise, id_order). Called by the reconciler after POSTing
 // /api/production-orders/create to capture the new id_production_order
