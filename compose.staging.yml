@@ -935,6 +935,16 @@ services:
       # Direct to postgres — pgbouncer's static database list doesn't
       # include packiot_shadow (same bypass shadow-mirror uses).
       SHADOW_DB_HOST: 10.10.10.89
+      # ADR-0025 / #48: prod-authoritative reconcile FINISHER. Closes mirror-
+      # managed CPACK (ent 1) status=2 POs that dropped off prod-active — the
+      # zombie class from prod SparkPlug-stops that bypass user_logs (~95%).
+      # Orphans = staging-active MINUS prod-active; closed at prod last-activity
+      # ts (not now()); 4 safety layers + grace window. v1 = F1 only (#480);
+      # F2/F3 fan-out lands with #51. Watch mirror_worker_reconciler_finisher_
+      # total{outcome} — should close exactly the ~10 known F1 zombies.
+      # Rollback: set "false" + redeploy.
+      RECONCILE_FINISHER_ENABLED: "true"
+      RECONCILE_FINISHER_GRACE_MINUTES: "30"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.21
