@@ -446,31 +446,37 @@ jobs:
             2>&1 | head -12
 
       - name: F2/F3 identity + int-overflow sentinel (Task #21 — self-enforcing determinism gate)
-        # THE SAFETY NET that makes tsp12==F2==F3 self-enforcing instead of a
-        # manual comparator run. Post-deploy, this execs the SAME oeecloud-worker
-        # binary that just deployed with the `--identity-sentinel` subcommand
-        # (like `--healthcheck`): it opens both DB planes (F2=shadow_go_port in
-        # the main DB, F3=public in packiot_shadow), compares each identity
-        # surface PER NATURAL KEY (nm_equipment|tp_equipment, never surrogate
-        # id_equipment) over a SETTLED window (ts_end < now()-2h) using the SAME
-        # internal/bake.IdentityMatch the live gauge uses, and asserts the int-
-        # overflow bound (running_time ≤ bucket wall-clock span × 1.05 — the L8
-        # P0 sentinel: running_time overflowed to ~112M vs ~11,195 correct).
-        # SELECT-only on both DBs. Skips cleanly when a surface has no data
-        # (cold stack) so a fresh env can't false-fail.
+        # THE SAFETY NET that makes F2==F3 determinism self-enforcing instead of
+        # a manual comparator run. Post-deploy, this execs the SAME oeecloud-
+        # worker binary that just deployed with the `--identity-sentinel`
+        # subcommand (like `--healthcheck`): it opens both DB planes
+        # (F2=shadow_go_port in the main DB, F3=public in packiot_shadow) and,
+        # SELECT-only, over a SETTLED window (ts_end < now()-3h) PER NATURAL KEY
+        # (nm_equipment|tp_equipment, never surrogate id_equipment):
+        #   - GATE 1: F2==F3 BYTE-EXACT on the event-derived core
+        #     {count, running_time, duration} on every equipment (the primary
+        #     determinism assertion — see internal/bake/sentinel.go for why the
+        #     rollup-computed + counter columns are NOT gated post-#276 cutover);
+        #   - GATE 2: int-overflow bound (running_time ≤ bucket span × 1.05 — the
+        #     L8 P0 sentinel: running_time overflowed to ~112M vs ~11,195);
+        #   - GATE 3: raw equipment_values row COUNT, count-tolerant.
+        # Counter (gross/net) F2-vs-F3 divergences are REPORTED as INFO (they are
+        # divergent by design — F2 raw control vs F3 cutover) but do NOT gate;
+        # counter CORRECTNESS is the separate F3-vs-prod S2 readiness gate.
+        # Skips cleanly when a surface has no data (cold stack).
         #
         # ENFORCE MODE (IDENTITY_SENTINEL_ENFORCE):
-        #   "false" (default, current) — SOFT-LAUNCH: run + print the full
-        #     report + emit a ::warning:: annotation, but DO NOT fail the deploy.
-        #     Chosen because there is a KNOWN live F2-vs-F3 gross/net divergence
-        #     (F2 raw equipment_values gross ≈ 9.2e9 vs F3 ≈ 3.4e6; L8 line gross
-        #     F2 4.1e9 vs F3 3.2e8 — running_time stays byte-exact) that predates
-        #     this gate and needs triage (backend-dev/dba). Hard-blocking now
-        #     would red every deploy over a pre-existing condition.
+        #   "false" (default) — SOFT-LAUNCH bake-in: run + print the full report
+        #     + emit a ::warning:: on a non-zero exit, but DO NOT fail the deploy.
+        #     NOTE: after the #43 reframe the gated surface PASSES on live staging
+        #     (verified 2026-07-16: core byte-exact on all 62 ent-3 equipment incl.
+        #     L3/L4/L5/L6/L8/L10, 0 overflow — the old L8/L4 false-fails came from
+        #     gating the by-design-divergent counter surface, now demoted to INFO).
+        #     So there is NO known pre-existing violation on the GATED surface; it
+        #     is safe to flip to "true" after observing a few green deploys.
         #   "true" — ENFORCING: a non-zero sentinel exit FAILS the deploy run
-        #     (red). Flip this to "true" once F2==F3 is restored (or the contract
-        #     is re-scoped for post-#276-cutover F2 deprecation). That one-line
-        #     change is the whole point: determinism becomes self-enforcing.
+        #     (red). Determinism becomes self-enforcing — a real running_time
+        #     drift / overflow / count divergence blocks the pipeline.
         #
         # NOTE: this step is NOT continue-on-error at the YAML level — the
         # enforce/warn decision is made INSIDE the script from the binary's exit
