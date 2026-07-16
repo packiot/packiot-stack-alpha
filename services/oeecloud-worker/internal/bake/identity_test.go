@@ -30,9 +30,9 @@ func TestIdentityMatch(t *testing.T) {
 		{"raw count tolerant but sum beyond band", "54689|1817080000|1844530000", "54709|1817080000|2100000000", true, false},
 	}
 	for _, c := range cases {
-		got, detail := identityMatch(c.a, c.b, c.countTol)
+		got, detail := IdentityMatch(c.a, c.b, c.countTol)
 		if got != c.want {
-			t.Errorf("%s: identityMatch(%q, %q, %v) = %v (detail=%q), want %v", c.name, c.a, c.b, c.countTol, got, detail, c.want)
+			t.Errorf("%s: IdentityMatch(%q, %q, %v) = %v (detail=%q), want %v", c.name, c.a, c.b, c.countTol, got, detail, c.want)
 		}
 	}
 }
