@@ -437,6 +437,251 @@ func (s *Staging) FinishOrphanPO(ctx context.Context, stagingPOID int64, closeTs
 	return finished, err
 }
 
+// ──── ADR-0025 shadow fan-out (task #51) ───────────────────────────────
+//
+// FinishOrphanPO above closes ONLY Flow 1 (public schema, by the F1 surrogate
+// id_production_order). The shadow flows (F2 = shadow_go_port schema on the
+// main pool; F3 = packiot_shadow.public on the shadow pool) carry their OWN
+// surrogate id_production_order per row (bug 248), so the same close must be
+// re-expressed against each flow by the NATURAL KEY (id_enterprise, id_order)
+// — exactly what shadow-mirror's lifecycle handlers do. These helpers reuse
+// the ADR-0012 fan-out plumbing (s.pool + s.shadowPool) the value delta
+// already writes through, so the finisher reaches all three flows with no new
+// connection wiring.
+
+// ShadowFlow is an opaque handle to one shadow destination, enumerated by
+// ShadowFlows and passed back into the per-flow finisher helpers. Keeping
+// the pool/schema unexported keeps pgx out of the reconcile package.
+type ShadowFlow struct {
+	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_shadow" (F3)
+	pool   *pgxpool.Pool
+	schema string
+}
+
+// ShadowFlows returns the shadow destinations the finisher fan-out should
+// reach, gated on the SAME plumbing the value fan-out uses:
+//   - nil when EnableValueFanout was never called (fan-out disabled) — the
+//     finisher then behaves exactly like #480 (F1 only);
+//   - {shadow_go_port} when only Flow 2 is attached;
+//   - {shadow_go_port, packiot_shadow} once AttachShadowPool succeeded.
+//
+// One flag (RECONCILE_FINISHER_ENABLED) governs whether the finisher runs at
+// all; this method governs which flows it can reach given what's wired.
+func (s *Staging) ShadowFlows() []ShadowFlow {
+	if !s.valueFanout {
+		return nil
+	}
+	flows := []ShadowFlow{{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"}}
+	if s.shadowPool != nil {
+		flows = append(flows, ShadowFlow{Name: "packiot_shadow", pool: s.shadowPool, schema: "public"})
+	}
+	return flows
+}
+
+// withTxPool runs fn in a transaction on an arbitrary pool (main or shadow).
+// Same commit/rollback contract as WithTx, which is hard-wired to s.pool.
+func withTxPool(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ShadowActiveMirrorPOs returns the shadow flow's still-open POs as
+// id_order → shadow id_production_order: status=2 AND holding an open
+// (upper-unbounded) runtime segment. That open-segment predicate is what
+// makes a PO a genuine zombie candidate — a status=2 header with no open
+// window is nothing to close.
+//
+// Scope is enterprise-only here; the mirror-managed narrowing is applied by
+// the CALLER intersecting these id_orders with F1MirrorClosedPOShapes (which
+// IS mirror-managed + status!=2). A shadow PO that happens to share an
+// enterprise but is not a mirror-managed-closed F1 PO therefore never gets a
+// correction — the intersection + prod veto exclude it.
+func (s *Staging) ShadowActiveMirrorPOs(ctx context.Context, flow ShadowFlow, enterpriseID int) (map[int64]int64, error) {
+	rows, err := flow.pool.Query(ctx, fmt.Sprintf(`
+		SELECT po.id_order, po.id_production_order
+		  FROM %s.production_orders po
+		 WHERE po.id_enterprise = $1
+		   AND po.status = 2
+		   AND EXISTS (
+		     SELECT 1 FROM %s.production_orders_runtime r
+		      WHERE r.id_production_order = po.id_production_order
+		        AND upper(r.runtime_timerange) IS NULL)`, flow.schema, flow.schema),
+		enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query shadow active mirror POs (%s): %w", flow.Name, err)
+	}
+	defer rows.Close()
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var idOrder, idPO int64
+		if err := rows.Scan(&idOrder, &idPO); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[idOrder] = idPO
+	}
+	return out, rows.Err()
+}
+
+// F1POShape is Flow 1's authoritative rendering of a mirror-managed PO that
+// has ALREADY left status=2 (closed by the finisher this pass, or out-of-band
+// earlier — the #49 case). The shadow fan-out reproduces exactly this shape,
+// so F2/F3 end byte-identical to F1 (and therefore to each other).
+//
+//   - SealedUpper: the max upper bound across F1's CLOSED runtime segments —
+//     the ts to seal the shadow's open segment at. nil = F1 has no sealed
+//     segment (reset/available → the shadow segment is DELETED instead).
+//   - HasOpenSegment: F1's header is closed but a segment is still open. That
+//     is an inconsistent F1 close; the caller skips (never guesses).
+type F1POShape struct {
+	IDOrder        int64
+	Status         int
+	TsEnd          *time.Time
+	SealedUpper    *time.Time
+	HasOpenSegment bool
+}
+
+// F1MirrorClosedPOShapes reads Flow 1's shape for the given id_orders,
+// restricted to MIRROR-MANAGED POs that are NO LONGER status=2. Same
+// mirror-managed predicate as ReconcileActivePOIDOrders (reconcile-named OR a
+// mirror_id_map row for this source) so the fan-out only ever reproduces the
+// shape of a PO this mirror owns. An id_order absent from the result (still
+// status=2, or not mirror-managed, or unknown) is left untouched by the
+// caller — F1 being still-open is the proxy for "prod may still be running".
+func (s *Staging) F1MirrorClosedPOShapes(ctx context.Context, source string, enterpriseID int, idOrders []int64) (map[int64]F1POShape, error) {
+	if len(idOrders) == 0 {
+		return map[int64]F1POShape{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT po.id_order, po.status, po.ts_end,
+		       max(upper(por.runtime_timerange)) AS sealed_upper,
+		       bool_or(por.id_production_order IS NOT NULL
+		               AND upper(por.runtime_timerange) IS NULL) AS has_open_segment
+		  FROM public.production_orders po
+		  LEFT JOIN public.production_orders_runtime por
+		    ON por.id_production_order = po.id_production_order
+		 WHERE po.id_enterprise = $2
+		   AND po.id_order = ANY($3::bigint[])
+		   AND po.status <> 2
+		   AND (
+		     po.nm_production_order LIKE 'CPACK-reconcile-%'
+		     OR EXISTS (
+		       SELECT 1 FROM mirror_id_map m
+		        WHERE m.entity_type = 'production_order'
+		          AND m.source = $1
+		          AND m.staging_id = po.id_production_order)
+		   )
+		 GROUP BY po.id_order, po.status, po.ts_end`,
+		source, enterpriseID, idOrders,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query F1 mirror-closed PO shapes: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]F1POShape, len(idOrders))
+	for rows.Next() {
+		var sh F1POShape
+		var sealedUpper sql.NullTime
+		var tsEnd sql.NullTime
+		var hasOpen sql.NullBool
+		if err := rows.Scan(&sh.IDOrder, &sh.Status, &tsEnd, &sealedUpper, &hasOpen); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		if tsEnd.Valid {
+			sh.TsEnd = &tsEnd.Time
+		}
+		if sealedUpper.Valid {
+			sh.SealedUpper = &sealedUpper.Time
+		}
+		sh.HasOpenSegment = hasOpen.Valid && hasOpen.Bool
+		out[sh.IDOrder] = sh
+	}
+	return out, rows.Err()
+}
+
+// SealShadowOrphanPO reproduces F1's paused/finished close on ONE shadow flow
+// by natural key: seal the open runtime segment at sealTs, then flip the
+// header to F1's status + ts_end. Returns whether it actually closed a header
+// row (false = already !=2 → idempotent no-op). This is the shadow twin of
+// FinishOrphanPO; the SQL matches shadow-mirror's sqlCloseWindowsForPO +
+// sqlUpdatePOStop so the shadow rows land byte-identical to a replayed stop.
+//
+// Idempotency is structural (same discipline as FinishOrphanPO): the segment
+// UPDATE only matches upper-unbounded rows; the header UPDATE only matches
+// status=2. GREATEST(sealTs, lower(...)) guards the inverted-range error class.
+func (s *Staging) SealShadowOrphanPO(ctx context.Context, flow ShadowFlow, enterpriseID int, idOrder int64, sealTs time.Time, status int, tsEnd *time.Time) (bool, error) {
+	var closed bool
+	err := withTxPool(ctx, flow.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s.production_orders_runtime r
+			   SET runtime_timerange = tstzrange(
+			         lower(r.runtime_timerange),
+			         GREATEST($3::timestamptz, lower(r.runtime_timerange))),
+			       recalc_needed = true
+			  FROM %s.production_orders po
+			 WHERE po.id_enterprise = $1 AND po.id_order = $2
+			   AND r.id_production_order = po.id_production_order
+			   AND upper(r.runtime_timerange) IS NULL`, flow.schema, flow.schema),
+			enterpriseID, idOrder, sealTs); err != nil {
+			return fmt.Errorf("seal shadow segment: %w", err)
+		}
+		ct, err := tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s.production_orders
+			   SET status = $3, ts_end = $4, recalc_needed = true, last_update = now()
+			 WHERE id_enterprise = $1 AND id_order = $2 AND status = 2`, flow.schema),
+			enterpriseID, idOrder, status, tsEnd)
+		if err != nil {
+			return fmt.Errorf("close shadow header: %w", err)
+		}
+		closed = ct.RowsAffected() > 0
+		return nil
+	})
+	return closed, err
+}
+
+// DeleteShadowOrphanSegment reproduces F1's reset/available shape (F1 has NO
+// runtime segment) on ONE shadow flow: DELETE the phantom open segment — there
+// is no ts to seal at — then flip the header to F1's status + ts_end by
+// natural key. Returns whether a header row was actually changed (idempotent
+// no-op otherwise). Same structural idempotency as SealShadowOrphanPO.
+func (s *Staging) DeleteShadowOrphanSegment(ctx context.Context, flow ShadowFlow, enterpriseID int, idOrder int64, status int, tsEnd *time.Time) (bool, error) {
+	var closed bool
+	err := withTxPool(ctx, flow.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			DELETE FROM %s.production_orders_runtime r
+			 USING %s.production_orders po
+			 WHERE po.id_enterprise = $1 AND po.id_order = $2
+			   AND r.id_production_order = po.id_production_order
+			   AND upper(r.runtime_timerange) IS NULL`, flow.schema, flow.schema),
+			enterpriseID, idOrder); err != nil {
+			return fmt.Errorf("delete shadow segment: %w", err)
+		}
+		ct, err := tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s.production_orders
+			   SET status = $3, ts_end = $4, recalc_needed = true, last_update = now()
+			 WHERE id_enterprise = $1 AND id_order = $2 AND status = 2`, flow.schema),
+			enterpriseID, idOrder, status, tsEnd)
+		if err != nil {
+			return fmt.Errorf("close shadow header: %w", err)
+		}
+		closed = ct.RowsAffected() > 0
+		return nil
+	})
+	return closed, err
+}
+
 // LookupStagingPOByIDOrder returns the most recent staging PO matching
 // (enterprise, id_order). Called by the reconciler after POSTing
 // /api/production-orders/create to capture the new id_production_order

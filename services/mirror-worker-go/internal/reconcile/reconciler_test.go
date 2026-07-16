@@ -211,3 +211,167 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
+
+// ──── ADR-0025 shadow fan-out (task #51) ────────────────────────────────────
+
+func tptr(t time.Time) *time.Time { return &t }
+
+// The safety ladder + seal/delete verdict of the shadow fan-out, exercised
+// purely (no DB / no clock) exactly like TestFinisherDecision. Times are
+// anchored so the grace boundary (now-30m) is deterministic.
+func TestShadowFanoutPlan(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	grace := now.Add(-30 * time.Minute)     // graceCutoff
+	oldStop := now.Add(-2 * time.Hour)      // safely before the cutoff
+	recentStop := now.Add(-5 * time.Minute) // inside the grace window
+	tsEnd := now.Add(-2 * time.Hour)
+
+	cases := []struct {
+		name       string
+		f1         db.F1POShape
+		prod       db.ProdPOFinishInfo
+		prodOK     bool
+		wantAction shadowAction
+		wantReason string    // when skip
+		wantSealTs time.Time // when seal
+		wantStatus int       // when seal/delete
+	}{
+		{
+			// Recurrence: the F1 finisher just sealed this PO status=3 at its
+			// last-activity ts → reproduce the same sealed segment on F2/F3.
+			name:       "finished-on-F1 seals shadow at F1 upper",
+			f1:         db.F1POShape{Status: 3, SealedUpper: tptr(oldStop), TsEnd: tptr(tsEnd)},
+			prod:       db.ProdPOFinishInfo{Status: 3, LastActivity: oldStop, HasActivity: true},
+			prodOK:     true,
+			wantAction: shadowSeal,
+			wantSealTs: oldStop,
+			wantStatus: 3,
+		},
+		{
+			// #49: F1 was PAUSED out-of-band (status=4, segment sealed) → the
+			// shadow zombie must be sealed to status=4, byte-identical to F1.
+			name:       "paused-on-F1 seals shadow status=4",
+			f1:         db.F1POShape{Status: 4, SealedUpper: tptr(oldStop), TsEnd: tptr(tsEnd)},
+			prod:       db.ProdPOFinishInfo{Status: 4, LastActivity: oldStop, HasActivity: true},
+			prodOK:     true,
+			wantAction: shadowSeal,
+			wantSealTs: oldStop,
+			wantStatus: 4,
+		},
+		{
+			// #49: F1 was RESET to available (status=1, segment DELETED) → the
+			// shadow's phantom open segment is deleted, header → status=1.
+			name:       "reset-on-F1 deletes shadow segment status=1",
+			f1:         db.F1POShape{Status: 1, SealedUpper: nil, TsEnd: nil},
+			prod:       db.ProdPOFinishInfo{Status: 1, HasActivity: false},
+			prodOK:     true,
+			wantAction: shadowDelete,
+			wantStatus: 1,
+		},
+		{
+			// Prod veto (ADR-0025 choice #1): F1 says closed but prod's fresh
+			// read still shows status=2 → never close what prod still runs.
+			name:       "prod still active vetoes the close",
+			f1:         db.F1POShape{Status: 3, SealedUpper: tptr(oldStop)},
+			prod:       db.ProdPOFinishInfo{Status: 2, LastActivity: oldStop, HasActivity: true},
+			prodOK:     true,
+			wantAction: shadowSkip,
+			wantReason: "skipped_prod_active",
+		},
+		{
+			name:       "prod row absent is unverifiable → skip",
+			f1:         db.F1POShape{Status: 3, SealedUpper: tptr(oldStop)},
+			prod:       db.ProdPOFinishInfo{},
+			prodOK:     false,
+			wantAction: shadowSkip,
+			wantReason: "skipped_prod_unverified",
+		},
+		{
+			// Inconsistent F1: header closed but a segment is still open.
+			name:       "F1 header closed but segment still open → skip",
+			f1:         db.F1POShape{Status: 3, HasOpenSegment: true, SealedUpper: tptr(oldStop)},
+			prod:       db.ProdPOFinishInfo{Status: 3, LastActivity: oldStop, HasActivity: true},
+			prodOK:     true,
+			wantAction: shadowSkip,
+			wantReason: "skipped_f1_open",
+		},
+		{
+			name:       "seal ts inside grace window → skip",
+			f1:         db.F1POShape{Status: 3, SealedUpper: tptr(recentStop)},
+			prod:       db.ProdPOFinishInfo{Status: 3, LastActivity: recentStop, HasActivity: true},
+			prodOK:     true,
+			wantAction: shadowSkip,
+			wantReason: "skipped_grace",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := shadowFanoutPlan(c.f1, c.prod, c.prodOK, grace)
+			if got.action != c.wantAction {
+				t.Fatalf("action = %d, want %d (reason=%q)", got.action, c.wantAction, got.reason)
+			}
+			switch c.wantAction {
+			case shadowSkip:
+				if got.reason != c.wantReason {
+					t.Errorf("skip reason = %q, want %q", got.reason, c.wantReason)
+				}
+			case shadowSeal:
+				if !got.sealTs.Equal(c.wantSealTs) {
+					t.Errorf("sealTs = %v, want %v", got.sealTs, c.wantSealTs)
+				}
+				if got.status != c.wantStatus {
+					t.Errorf("status = %d, want %d", got.status, c.wantStatus)
+				}
+			case shadowDelete:
+				if got.status != c.wantStatus {
+					t.Errorf("status = %d, want %d", got.status, c.wantStatus)
+				}
+			}
+		})
+	}
+}
+
+// F2==F3 is preserved by construction: the plan is a pure function of F1's
+// shape + prod info (identical for both flows), so F2 and F3 receive the exact
+// same seal ts / status / ts_end. This test pins that invariant.
+func TestShadowFanoutPlan_F2EqualsF3(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	grace := now.Add(-30 * time.Minute)
+	stop := now.Add(-90 * time.Minute)
+	f1 := db.F1POShape{Status: 4, SealedUpper: tptr(stop), TsEnd: tptr(stop)}
+	prod := db.ProdPOFinishInfo{Status: 4, LastActivity: stop, HasActivity: true}
+
+	f2Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 2 (shadow_go_port)
+	f3Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 3 (packiot_shadow)
+
+	if f2Plan.action != shadowSeal || f3Plan.action != shadowSeal {
+		t.Fatalf("expected both flows to seal, got F2=%d F3=%d", f2Plan.action, f3Plan.action)
+	}
+	if !f2Plan.sealTs.Equal(f3Plan.sealTs) || f2Plan.status != f3Plan.status {
+		t.Errorf("F2 (%v,%d) != F3 (%v,%d) — F2==F3 broken",
+			f2Plan.sealTs, f2Plan.status, f3Plan.sealTs, f3Plan.status)
+	}
+}
+
+func TestSortedInt64Keys(t *testing.T) {
+	got := sortedInt64Keys(map[int64]struct{}{9: {}, 3: {}, 6: {}})
+	want := []int64{3, 6, 9}
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("sortedInt64Keys = %v, want %v", got, want)
+	}
+	if len(sortedInt64Keys(map[int64]struct{}{})) != 0 {
+		t.Error("expected empty slice for empty set")
+	}
+}
+
+func TestSortedInt64ValueKeys(t *testing.T) {
+	// The map is id_order → shadow surrogate id; only the KEYS (id_orders) are
+	// walked, in ascending order, for stable per-pass logs.
+	got := sortedInt64ValueKeys(map[int64]int64{893639: 94522, 893395: 19631, 893381: 20877})
+	want := []int64{893381, 893395, 893639}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sortedInt64ValueKeys = %v, want %v", got, want)
+		}
+	}
+}
