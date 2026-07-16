@@ -97,6 +97,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, tx pgx.Tx, row db.ProdUserLog
 		metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "skipped").Inc()
 		return nil
 	}
+	if errors.Is(err, ErrTerminalReplay) {
+		// Legitimate + PERMANENT edge-api gate reject (PR #148 409). Record
+		// a DISTINCT outcome so dashboards separate a stuck bug ("failed",
+		// retryable) from a correctly-rejected-stale action ("terminal",
+		// not retryable). Return the error verbatim so the caller
+		// (processRow) routes it to the DLQ review tray — written
+		// pre-retired so the DLQRetrier never re-drives it.
+		metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "terminal").Inc()
+		return err
+	}
 	metrics.UserLogsReplayedTotal.WithLabelValues(eventType, "failed").Inc()
 	return err
 }

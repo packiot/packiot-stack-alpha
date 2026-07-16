@@ -785,15 +785,41 @@ func (s *Staging) ReanimateMappableEquipmentEventDLQ(ctx context.Context, source
 // WriteDLQ appends an unreplayable row for human inspection. Runs in
 // caller's tx so we don't lose visibility into a bad row that crashed
 // before the outer commit.
+//
+// retryAttempts seeds the row's retry_attempts column:
+//   - 0            — the normal transient-failure case: the row is
+//     immediately eligible for the DLQRetrier's first retry pass.
+//   - >= the cap   — a TERMINAL failure (e.g. an edge-api PR #148 gate
+//     reject): the row is written PRE-RETIRED so FetchRetriableDLQ
+//     (retry_attempts < cap) never selects it. It stays in the tray for
+//     human review but is never re-driven.
 func WriteDLQ(ctx context.Context, tx pgx.Tx,
 	source string, sourceLogID int64, category string, subcategory *string,
-	payload []byte, errMsg string,
+	payload []byte, errMsg string, retryAttempts int,
 ) error {
 	_, err := tx.Exec(ctx,
 		`INSERT INTO mirror_replay_dlq
-		       (source, source_log_id, category, subcategory, payload, error)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-		source, sourceLogID, category, subcategory, string(payload), errMsg)
+		       (source, source_log_id, category, subcategory, payload, error, retry_attempts)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+		source, sourceLogID, category, subcategory, string(payload), errMsg, retryAttempts)
+	return err
+}
+
+// RetireDLQRow bumps a DLQ row's retry_attempts to (at least) the cap so
+// FetchRetriableDLQ (retry_attempts < cap) never selects it again — the
+// row stays in the tray for human review but the DLQRetrier stops
+// re-driving it. Used for a TERMINAL failure discovered DURING a retry
+// pass: a row DLQ'd under the old masked-500 regime that now, post
+// edge-api PR #148, comes back as a clean 409 gate reject. GREATEST()
+// guards against ever lowering an already-higher counter. Runs outside any
+// tx (the failed replay's tx rolled back), same as MarkDLQRetried.
+func (s *Staging) RetireDLQRow(ctx context.Context, id int64, retiredAttempts int) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE mirror_replay_dlq
+		    SET retry_attempts = GREATEST(retry_attempts, $2),
+		        last_retry_at  = now()
+		  WHERE id = $1`,
+		id, retiredAttempts)
 	return err
 }
 

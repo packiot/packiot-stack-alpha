@@ -24,6 +24,34 @@ import (
 // stay as plain errors so they land in DLQ and get human attention.
 var ErrSkipReplay = errors.New("skip replay: upstream entity structurally unmappable on staging")
 
+// ErrTerminalReplay is returned when edge-api LEGITIMATELY and PERMANENTLY
+// rejects a PO-control replay via its PO-staleness gate — a structured 409
+// with reason ∈ {STALE_HEAD, RANGE_CONFLICT, BEYOND_HORIZON} (edge-api
+// PR #148). The buffered operator action is stale relative to the
+// authoritative running-PO head on staging; NO retry will ever succeed
+// (staging time won't run backwards, and the running PO won't revert). The
+// gate reject is CORRECT — replaying a genuinely-stale stop would corrupt
+// the target PO's runtime. The bug this sentinel fixes is the pipeline
+// treating that permanent reject as retryable → re-driving the same stale
+// action every DLQ tick forever.
+//
+// Distinct from ErrSkipReplay in BOTH axes:
+//
+//	                   retried?   DLQ / review row?
+//	ErrSkipReplay      no         no   (structural non-mapping; discard)
+//	ErrTerminalReplay  no         yes  (correct reject; keep for review)
+//	plain error        yes        yes  (transient / real bug; retry then DLQ)
+//
+// A skip is "the upstream entity was never mirrored, nothing to see" — no
+// human attention needed, so no DLQ. A terminal reject IS a real,
+// correctly-rejected action worth an operator glance, so it is routed to
+// the mirror_replay_dlq review tray — but written PRE-RETIRED
+// (retry_attempts at the cap) so the DLQRetrier never re-drives it.
+//
+// Do NOT reach for this to force a stale action through by recomputing its
+// assumedRunningPo — that would defeat the gate, which is the whole point.
+var ErrTerminalReplay = errors.New("terminal replay: edge-api PO-staleness gate permanently rejected this PO-control action")
+
 // parseBigint accepts either a JSON number or a bigint-as-text column —
 // the staging/prod queries cast id_production_order::text + ::text on
 // id_equipment_event::text to dodge int64-overflow surprises in pgx.

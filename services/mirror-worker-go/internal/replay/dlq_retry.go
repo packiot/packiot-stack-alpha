@@ -25,6 +25,7 @@ package replay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -97,7 +98,7 @@ func (r *DLQRetrier) RunOnce(ctx context.Context) error {
 		return nil
 	}
 
-	var succeeded, failed, permanent int
+	var succeeded, failed, permanent, terminal int
 	for _, row := range rows {
 		switch outcome := r.retryOne(ctx, row); outcome {
 		case "succeeded":
@@ -109,6 +110,9 @@ func (r *DLQRetrier) RunOnce(ctx context.Context) error {
 		case "permanent":
 			permanent++
 			metrics.DLQRetryAttemptsTotal.WithLabelValues("permanent").Inc()
+		case "terminal":
+			terminal++
+			metrics.DLQRetryAttemptsTotal.WithLabelValues("terminal").Inc()
 		}
 	}
 	r.logger.Info("DLQ retry tick complete",
@@ -116,6 +120,7 @@ func (r *DLQRetrier) RunOnce(ctx context.Context) error {
 		slog.Int("succeeded", succeeded),
 		slog.Int("failed", failed),
 		slog.Int("permanent", permanent),
+		slog.Int("terminal", terminal),
 		slog.Duration("elapsed", time.Since(start)))
 	return nil
 }
@@ -126,6 +131,9 @@ func (r *DLQRetrier) RunOnce(ctx context.Context) error {
 //	"failed"    — replay returned an error; retry_attempts++.
 //	"permanent" — prod user_logs row no longer exists; DLQ row stays
 //	              but bumped so the cap eventually retires it.
+//	"terminal"  — edge-api PR #148 gate PERMANENTLY rejected the replay
+//	              (409 STALE_HEAD/RANGE_CONFLICT/BEYOND_HORIZON); DLQ row
+//	              retired to the cap immediately so it never re-drives.
 //
 // On any internal error (DB hiccup unrelated to the replay) we log and
 // return "failed" so the row stays in the queue and gets retried next
@@ -161,6 +169,23 @@ func (r *DLQRetrier) retryOne(ctx context.Context, row db.DLQRetryRow) string {
 		return db.DeleteDLQRow(ctx, tx, row.ID)
 	})
 	if replayErr != nil {
+		if errors.Is(replayErr, ErrTerminalReplay) {
+			// edge-api PR #148 gate now returns a clean 409 for this
+			// buffered PO-control action — it is PERMANENTLY stale. This is
+			// exactly the row (e.g. the 2567207 stop) that churned every
+			// tick under the old masked-500 regime. Retire it to the cap so
+			// FetchRetriableDLQ never re-selects it; the row stays in the
+			// tray for human review. Do NOT bump-by-one (that re-drives it
+			// up to cap-1 more times for no reason).
+			r.logger.Error("DLQ retry: replay permanently rejected by edge-api gate — retiring row (no further retries)",
+				slog.Int64("dlq_id", row.ID),
+				slog.Int64("source_log_id", row.SourceLogID),
+				slog.String("category", row.Category),
+				slog.Int("prior_attempts", row.RetryAttempts),
+				slog.String("err", replayErr.Error()))
+			_ = r.staging.RetireDLQRow(ctx, row.ID, r.cfg.DLQRetryMaxAttempts)
+			return "terminal"
+		}
 		r.logger.Warn("DLQ retry failed — will retry after backoff",
 			slog.Int64("dlq_id", row.ID),
 			slog.Int64("source_log_id", row.SourceLogID),

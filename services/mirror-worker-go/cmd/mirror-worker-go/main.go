@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -388,12 +389,27 @@ func processRow(
 		// duration) + returns the handler's error verbatim. We keep the
 		// existing DLQ-and-advance behaviour here.
 		if dispErr := disp.Dispatch(ctx, tx, row); dispErr != nil {
-			logger.Warn("replay failed, writing DLQ row",
-				slog.String("category", row.Category),
-				slog.Int64("source_log_id", row.IDUserLogs),
-				slog.String("err", dispErr.Error()))
+			// A TERMINAL failure (edge-api PR #148 gate reject) is a
+			// correctly-rejected, permanently-stale PO-control action. Route
+			// it to the DLQ review tray PRE-RETIRED (retry_attempts at the
+			// cap) so the DLQRetrier never re-drives it — the fix for the
+			// infinite ~5-min replay storm. A normal failure writes the row
+			// at retry_attempts=0 so the retrier picks it up next pass.
+			retryAttempts := 0
+			if errors.Is(dispErr, replay.ErrTerminalReplay) {
+				retryAttempts = cfg.DLQRetryMaxAttempts
+				logger.Error("replay permanently rejected by edge-api gate — writing terminal DLQ row (retired, will not retry)",
+					slog.String("category", row.Category),
+					slog.Int64("source_log_id", row.IDUserLogs),
+					slog.String("err", dispErr.Error()))
+			} else {
+				logger.Warn("replay failed, writing DLQ row",
+					slog.String("category", row.Category),
+					slog.Int64("source_log_id", row.IDUserLogs),
+					slog.String("err", dispErr.Error()))
+			}
 			if dlqErr := db.WriteDLQ(ctx, tx, cfg.SourceName, row.IDUserLogs,
-				row.Category, row.Subcategory, row.Payload, dispErr.Error()); dlqErr != nil {
+				row.Category, row.Subcategory, row.Payload, dispErr.Error(), retryAttempts); dlqErr != nil {
 				return fmt.Errorf("DLQ write: %w (original: %v)", dlqErr, dispErr)
 			}
 		}

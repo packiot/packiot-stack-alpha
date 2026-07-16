@@ -119,6 +119,40 @@ var createAlreadySatisfiedMessages = map[string]struct{}{
 	"Production order already exists!": {},
 }
 
+// gateRejectReasons are the structured `reason` codes edge-api's PO-
+// staleness gate returns with a 409 (edge-api PR #148). Each means the
+// buffered PO-control action is PERMANENTLY out of date relative to the
+// authoritative running-PO head on staging — retrying re-drives the SAME
+// stale action forever. Terminal, not retryable:
+//
+//   - STALE_HEAD     — the action's assumedRunningPo != the PO currently
+//     running on the equipment (e.g. the observed 2567207 stop carrying a
+//     PO that PO 17106 has since superseded).
+//   - RANGE_CONFLICT — the action-time window collides with an already-
+//     settled runtime range.
+//   - BEYOND_HORIZON — the action-time is older than the gate's replay
+//     horizon.
+//
+// A 409 WITHOUT one of these reasons is left untouched (stays whatever it
+// is today) — we only make the KNOWN gate rejects terminal. And ONLY a
+// 409 is considered: pre-#148 the same reject came back as a masked 500,
+// which stays a plain retryable error (a real 5xx is a server fault).
+var gateRejectReasons = map[string]struct{}{
+	"STALE_HEAD":     {},
+	"RANGE_CONFLICT": {},
+	"BEYOND_HORIZON": {},
+}
+
+// gateReject models edge-api PR #148's structured 409 body:
+//
+//	{ statusCode:409, reason, currentRunningPo, actionTime, message }
+//
+// Only `reason` drives the terminal decision; the rest are captured for
+// the DLQ review row's diagnostic context but not parsed here.
+type gateReject struct {
+	Reason string `json:"reason"`
+}
+
 // edgeAPIError matches the JSON body emitted by edge-api's global
 // HttpExceptionFilter: { statusCode, message, error? }. We only care
 // about `message` for the skip decision.
@@ -149,6 +183,23 @@ func classifyStagingError(status int, body []byte, path string, origErr error) e
 	// anyway so a 2xx never gets promoted to skip.
 	if status < http.StatusBadRequest {
 		return origErr
+	}
+
+	// Gate reject (edge-api PR #148): a structured 409 whose body carries a
+	// RECOGNIZED `reason` is a PERMANENT rejection of a stale PO-control
+	// replay. Terminal — it must leave the retry loop and land in the DLQ
+	// review tray (pre-retired), NOT be retried. Keyed on status==409 AND a
+	// known reason so an unrelated 409, or a pre-#148 masked 500, is
+	// unaffected. Checked before the message-map rules because it is a
+	// distinct status class and short-circuits cleanly.
+	if status == http.StatusConflict {
+		var gr gateReject
+		if json.Unmarshal(body, &gr) == nil {
+			if _, ok := gateRejectReasons[gr.Reason]; ok {
+				return fmt.Errorf("staging %s returned 409 gate reject (reason=%s): PO-control replay permanently stale — terminal, routed to DLQ review (no retry): %w",
+					path, gr.Reason, ErrTerminalReplay)
+			}
+		}
 	}
 
 	// Extract the candidate message either from the JSON envelope or
