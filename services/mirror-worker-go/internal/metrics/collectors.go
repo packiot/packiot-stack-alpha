@@ -143,6 +143,32 @@ var (
 		Help: "equipment_values delta INSERTs by outcome (ok|failed) during value sync.",
 	}, []string{"outcome"})
 
+	// ReconcilerShadowFanoutTotal — per-(flow,outcome) results of the
+	// ADR-0025 shadow fan-out that reproduces the F1 finisher's PO close
+	// into the shadow flows (F2 shadow_go_port, F3 packiot_shadow). flow =
+	// the destination schema/DB; outcome:
+	//   sealed  — an open shadow segment was sealed at F1's ts_end + header
+	//             flipped to F1's status (paused/finished parity);
+	//   deleted — F1 has no segment (reset/available) so the shadow's phantom
+	//             open segment was deleted + header flipped to F1's status;
+	//   skipped_idempotent — the shadow header was already !=2 (prior pass);
+	//   skipped_prod_active — prod's fresh read still shows status=2 (veto:
+	//             never close what prod still runs — ADR-0025 choice #1);
+	//   skipped_prod_unverified — prod has no row for this id_order;
+	//   skipped_f1_active — F1 is still status=2 (or not mirror-managed) for
+	//             this id_order → F1-open is the "prod may still be running"
+	//             proxy, leave the shadow row alone;
+	//   skipped_f1_open — F1's header is closed but a segment is still open
+	//             (inconsistent F1 — don't guess a correction);
+	//   skipped_grace — F1's seal ts is inside the grace window;
+	//   failed  — the shadow write tx errored (next tick retries; idempotent).
+	// dba scopes the cagg refresh off the sealed/deleted (flow,id_order) log
+	// lines this counter is paired with.
+	ReconcilerShadowFanoutTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_reconciler_shadow_fanout_total",
+		Help: "ADR-0025 finisher fan-out to shadow flows (sealed|deleted|skipped_*|failed).",
+	}, []string{"flow", "outcome"})
+
 	// ValueFanoutTotal — ADR-0012 3-flow parity: each delta INSERT is
 	// fanned out to shadow_go_port (same DB) + packiot_shadow (Flow 3).
 	// Shadow failures never fail the Flow 1 write (a retry would
@@ -323,6 +349,7 @@ func init() {
 		ReconcilerFinisherTotal,
 		ReconcilerOrphanCandidates,
 		ReconcilerValuesSyncedTotal,
+		ReconcilerShadowFanoutTotal,
 		ValueFanoutTotal,
 		ReconcilerEventsTotal,
 		ReconcilerEventsCursor,

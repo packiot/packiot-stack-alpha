@@ -269,12 +269,30 @@ func finisherDecision(info db.ProdPOFinishInfo, present bool, graceCutoff time.T
 	return outcomeFinish
 }
 
-// runFinisher executes one finisher pass on the prod-active snapshot already
-// fetched by Run. Flow: read staging's mirror-managed active set → diff to
-// orphan candidates (layer 1) → one batched prod cross-check → per-candidate
+// runFinisher orchestrates the prod-authoritative close for ALL THREE flows on
+// the prod-active snapshot Run already fetched:
+//   - runF1Finisher — closes Flow 1 (public), #480's behavior, unchanged;
+//   - runShadowFanout — reproduces that close on F2/F3 (ADR-0025, task #51).
+//
+// The two are sequenced (F1 first) so the shadow pass reads an F1 shape that
+// already reflects this pass's F1 closes. Crucially the shadow pass is NOT
+// gated on there being F1 candidates: the #49 existing zombies have F1 ALREADY
+// closed out-of-band, so they never surface as F1 candidates yet their shadow
+// rows still need correcting — that path only runs because runShadowFanout is
+// unconditional.
+func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO) error {
+	if err := r.runF1Finisher(ctx, prodPOs); err != nil {
+		return err
+	}
+	return r.runShadowFanout(ctx, prodPOs)
+}
+
+// runF1Finisher executes one Flow-1 finisher pass on the prod-active snapshot
+// already fetched by Run. Flow: read staging's mirror-managed active set → diff
+// to orphan candidates (layer 1) → one batched prod cross-check → per-candidate
 // decision (layers 2-4) → guarded staging close. SELECT-only on prod; the only
 // mutation is FinishOrphanPO on staging, which is itself idempotent.
-func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO) error {
+func (r *Reconciler) runF1Finisher(ctx context.Context, prodPOs []db.ProdActivePO) error {
 	reconcileActive, err := r.staging.ReconcileActivePOIDOrders(ctx, r.cfg.SourceName, r.cfg.StagingEnterpriseID)
 	if err != nil {
 		return fmt.Errorf("fetch mirror-managed active staging POs: %w", err)
@@ -336,6 +354,190 @@ func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO)
 			slog.Time("close_ts", pi.LastActivity))
 	}
 	return nil
+}
+
+// ──── ADR-0025 shadow fan-out (task #51) ───────────────────────────────────
+
+// shadowAction is the correction the fan-out applies to ONE shadow flow's PO,
+// derived purely from F1's authoritative shape under a prod veto.
+type shadowAction int
+
+const (
+	shadowSkip shadowAction = iota
+	shadowSeal
+	shadowDelete
+)
+
+// shadowPlan is shadowFanoutPlan's verdict for one (flow, id_order): what to
+// do and the header values to stamp so F2/F3 end byte-identical to F1.
+type shadowPlan struct {
+	action shadowAction
+	reason string     // metric outcome label when action == shadowSkip
+	sealTs time.Time  // seal boundary when action == shadowSeal
+	status int        // F1's header status to reproduce
+	tsEnd  *time.Time // F1's header ts_end to reproduce
+}
+
+// shadowFanoutPlan decides the shadow correction for one PO whose shadow rows
+// are still status=2, from F1's authoritative shape + a fresh prod cross-check.
+// Pure (no DB / no clock) so the whole safety ladder is unit-testable the way
+// finisherDecision is.
+//
+// Safety ladder (ADR-0025):
+//   - prod veto FIRST (choice #1: prod authority prevents an F1 bug from
+//     propagating to the shadows) — skip if prod can't be confirmed or still
+//     shows the PO running;
+//   - F1 inconsistent (header closed but a segment still open) → skip, never
+//     guess a correction;
+//   - F1 has a sealed segment (paused/finished) → SEAL the shadow segment at
+//     F1's upper bound, past grace; reproduce F1's status + ts_end;
+//   - F1 has no segment (reset/available) → DELETE the shadow's phantom open
+//     segment (no ts to seal at); reproduce F1's status + ts_end.
+func shadowFanoutPlan(f1 db.F1POShape, prodInfo db.ProdPOFinishInfo, prodPresent bool, graceCutoff time.Time) shadowPlan {
+	if !prodPresent {
+		return shadowPlan{action: shadowSkip, reason: "skipped_prod_unverified"}
+	}
+	if prodInfo.Status == 2 {
+		return shadowPlan{action: shadowSkip, reason: "skipped_prod_active"}
+	}
+	if f1.HasOpenSegment {
+		return shadowPlan{action: shadowSkip, reason: "skipped_f1_open"}
+	}
+	if f1.SealedUpper != nil {
+		if f1.SealedUpper.After(graceCutoff) {
+			return shadowPlan{action: shadowSkip, reason: "skipped_grace"}
+		}
+		return shadowPlan{action: shadowSeal, sealTs: *f1.SealedUpper, status: f1.Status, tsEnd: f1.TsEnd}
+	}
+	return shadowPlan{action: shadowDelete, status: f1.Status, tsEnd: f1.TsEnd}
+}
+
+// runShadowFanout reproduces the F1 finisher's close on the shadow flows
+// (F2 shadow_go_port, F3 packiot_shadow) by NATURAL KEY (id_enterprise,
+// id_order), reusing the ADR-0012 fan-out pools. It is unconditional (runs
+// even with zero F1 candidates) so pre-existing #49 zombies — F1 closed, F2/F3
+// stuck status=2 — get corrected. Steps: collect each flow's still-open
+// mirror-managed POs → read F1's authoritative shape for those id_orders →
+// fresh prod cross-check → apply the pure plan per flow. F2 and F3 get the
+// IDENTICAL F1-derived correction, so F2==F3 is preserved by construction.
+//
+// No-op when the fan-out plumbing isn't attached (ShadowFlows()==nil) — the
+// finisher then degrades to F1-only, exactly like #480.
+func (r *Reconciler) runShadowFanout(ctx context.Context, prodPOs []db.ProdActivePO) error {
+	flows := r.staging.ShadowFlows()
+	if len(flows) == 0 {
+		return nil
+	}
+
+	// 1) Per-flow still-open candidates + the union of their id_orders.
+	perFlow := make([]map[int64]int64, len(flows))
+	idOrderSet := make(map[int64]struct{})
+	for i, f := range flows {
+		open, err := r.staging.ShadowActiveMirrorPOs(ctx, f, r.cfg.StagingEnterpriseID)
+		if err != nil {
+			return fmt.Errorf("shadow active POs (%s): %w", f.Name, err)
+		}
+		perFlow[i] = open
+		for idOrder := range open {
+			idOrderSet[idOrder] = struct{}{}
+		}
+	}
+	if len(idOrderSet) == 0 {
+		return nil
+	}
+	idOrders := sortedInt64Keys(idOrderSet)
+
+	// 2) F1's authoritative shape (mirror-managed, already status!=2) + a fresh
+	//    prod cross-check for the veto. F1-open POs are simply absent here → the
+	//    caller leaves those shadow rows alone.
+	f1Shapes, err := r.staging.F1MirrorClosedPOShapes(ctx, r.cfg.SourceName, r.cfg.StagingEnterpriseID, idOrders)
+	if err != nil {
+		return fmt.Errorf("F1 mirror-closed shapes: %w", err)
+	}
+	prodInfo, err := r.prodDB.FetchPOFinishInfo(ctx, r.cfg.ProdEnterpriseID, idOrders)
+	if err != nil {
+		return fmt.Errorf("prod finish info (shadow veto): %w", err)
+	}
+	graceCutoff := time.Now().UTC().Add(-time.Duration(r.cfg.ReconcileFinisherGraceMinutes) * time.Minute)
+
+	// 3) Apply per flow, in stable id_order order for readable pass logs.
+	for i, f := range flows {
+		for _, idOrder := range sortedInt64ValueKeys(perFlow[i]) {
+			f1, ok := f1Shapes[idOrder]
+			if !ok {
+				// F1 still status=2 (or not mirror-managed): F1-open is the
+				// proxy for "prod may still be running" — leave the shadow row.
+				metrics.ReconcilerShadowFanoutTotal.WithLabelValues(f.Name, "skipped_f1_active").Inc()
+				continue
+			}
+			pi, present := prodInfo[idOrder]
+			plan := shadowFanoutPlan(f1, pi, present, graceCutoff)
+			switch plan.action {
+			case shadowSeal:
+				closed, err := r.staging.SealShadowOrphanPO(ctx, f, r.cfg.StagingEnterpriseID, idOrder, plan.sealTs, plan.status, plan.tsEnd)
+				r.recordShadowClose(f, idOrder, "sealed", plan.status, plan.sealTs, closed, err)
+			case shadowDelete:
+				closed, err := r.staging.DeleteShadowOrphanSegment(ctx, f, r.cfg.StagingEnterpriseID, idOrder, plan.status, plan.tsEnd)
+				var ts time.Time
+				if plan.tsEnd != nil {
+					ts = *plan.tsEnd
+				}
+				r.recordShadowClose(f, idOrder, "deleted", plan.status, ts, closed, err)
+			default:
+				metrics.ReconcilerShadowFanoutTotal.WithLabelValues(f.Name, plan.reason).Inc()
+			}
+		}
+	}
+	return nil
+}
+
+// recordShadowClose maps one shadow write result to its metric + a structured
+// log line. The "shadow fan-out: closed orphaned PO" line is deliberately
+// greppable per (flow, id_order, action, close_ts): the dba scopes the
+// enable-time cagg refresh off exactly these lines (which equipment_runtime_*
+// windows to invalidate = the sealed/deleted segments' [lower, close_ts]).
+func (r *Reconciler) recordShadowClose(f db.ShadowFlow, idOrder int64, verb string, status int, closeTs time.Time, closed bool, err error) {
+	if err != nil {
+		metrics.ReconcilerShadowFanoutTotal.WithLabelValues(f.Name, "failed").Inc()
+		r.logger.Warn("shadow fan-out: close failed — F1 unaffected, next tick retries",
+			slog.String("flow", f.Name),
+			slog.Int64("id_order", idOrder),
+			slog.String("err", err.Error()))
+		return
+	}
+	if !closed {
+		// Header already !=2 (a prior pass, or another writer beat us) — the
+		// idempotency guard did its job.
+		metrics.ReconcilerShadowFanoutTotal.WithLabelValues(f.Name, "skipped_idempotent").Inc()
+		return
+	}
+	metrics.ReconcilerShadowFanoutTotal.WithLabelValues(f.Name, verb).Inc()
+	r.logger.Info("shadow fan-out: closed orphaned PO",
+		slog.String("flow", f.Name),
+		slog.Int64("id_order", idOrder),
+		slog.String("action", verb),
+		slog.Int("status", status),
+		slog.Time("close_ts", closeTs))
+}
+
+// sortedInt64Keys returns the keys of a set in ascending order.
+func sortedInt64Keys(m map[int64]struct{}) []int64 {
+	out := make([]int64, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// sortedInt64ValueKeys returns the keys of an id_order→surrogate map ascending.
+func sortedInt64ValueKeys(m map[int64]int64) []int64 {
+	out := make([]int64, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // errAlreadyMapped is the sentinel returned by ensureOnePO when a mapping
