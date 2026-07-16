@@ -42,7 +42,19 @@ const dayEligibleSQL = `
 	CREATE TEMP TABLE day_elig ON COMMIT DROP AS
 	SELECT d.id_equipment, d.ts_value, d.target_customized,
 	       date_trunc('week', d.ts_value)  AS ts_week,
-	       date_trunc('month', d.ts_value) AS ts_month
+	       date_trunc('month', d.ts_value) AS ts_month,
+	       -- TRUE production-day length in seconds = next day's anchor
+	       -- minus this day's anchor, sourced from the SAME day-boundary
+	       -- function the eligibility window below already uses. NOT
+	       -- hardcoded 86400: America/Sao_Paulo DST makes legit days of
+	       -- 90000 (fall-back) and 82800 (spring-forward) seconds. Adding
+	       -- the CALENDAR interval '1 day' lands on the next per-equipment
+	       -- anchor regardless of DST, so the epoch diff is the real
+	       -- wall-clock day length. Feeds the LEAST() ceiling in the sums
+	       -- CTE of dayRollupSQL (task #59 — defensive over-mint clamp).
+	       extract(epoch FROM (
+	           (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day') LIMIT 1)
+	           - d.ts_value)) AS day_len_s
 	  FROM %[1]s.equipment_runtime_1day d
 	 WHERE d.ts_value >= now() - interval '1 month'
 	   AND d.ts_value < (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(d.id_equipment, now() + interval '1 day') LIMIT 1)
@@ -55,15 +67,33 @@ const dayRollupSQL = `
 	WITH sums AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           sum(hr.net) / NULLIF(sum(hr.ideal_production), 0) AS oee,
-	           sum(hr.available_time)   AS available_time,
-	           sum(hr.running_time)     AS running_time,
-	           sum(hr.stopped_time)     AS stopped_time,
+	           -- Physical invariant: a production-day's time-in-state cannot
+	           -- exceed the day's own wall-clock length (el.day_len_s). The
+	           -- HOUR grain is :00-aligned, but a non-hour-aligned site
+	           -- day_begin (e.g. 02:10) makes a 24h production-day straddle
+	           -- 25 whole hour buckets, so the naked sum reaches 25×3600 =
+	           -- 90000s — impossible (> 86400). LEAST is a no-op on correct
+	           -- data and matches the same ceiling hour.go/shift.go already
+	           -- apply on their grains (see hour.go phase E). day_len_s is
+	           -- the TRUE per-equipment length, so DST-legit 90000/82800s
+	           -- days are preserved (NOT clamped to 86400).
+	           --
+	           -- DEFENSIVE BOUND ONLY (task #59): this caps the impossible
+	           -- over-counted day, but the ADJACENT under-counted day (the
+	           -- boundary hour double-books one day and shorts the other —
+	           -- 90000+82800=172800=48h) STAYS under. The structural fix for
+	           -- the boundary-hour misattribution ripples into prod stored
+	           -- procs (piot_create_equipment_runtime_1hour) and is out of
+	           -- scope here — tracked for a follow-up design call.
+	           LEAST(sum(hr.available_time), el.day_len_s) AS available_time,
+	           LEAST(sum(hr.running_time),   el.day_len_s) AS running_time,
+	           LEAST(sum(hr.stopped_time),   el.day_len_s) AS stopped_time,
 	           sum(hr.planned_downtime) AS planned_downtime,
 	           sum(hr.ideal_production) AS ideal_production,
 	           sum(hr.target)           AS target,
 	           sum(hr.gross)            AS gross,
 	           sum(hr.net)              AS net,
-	           sum(hr.downtime)         AS downtime,
+	           LEAST(sum(hr.downtime),   el.day_len_s) AS downtime,
 	           sum(hr.changeover_time)  AS changeover_time,
 	           sum(hr.scrap)            AS scrap,
 	           avg(hr.speed)            AS speed,
@@ -73,7 +103,7 @@ const dayRollupSQL = `
 	        ON hr.id_equipment = el.id_equipment
 	       AND hr.ts_value >= el.ts_value - interval '1 day'
 	       AND hr.ts_value_production = el.ts_value
-	     GROUP BY el.id_equipment, el.ts_value
+	     GROUP BY el.id_equipment, el.ts_value, el.day_len_s
 	)
 	UPDATE %[1]s.equipment_runtime_1day e SET
 	       oee              = COALESCE(s.oee, 0),

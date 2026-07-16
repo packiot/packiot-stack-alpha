@@ -121,6 +121,48 @@ func TestDayShape(t *testing.T) {
 	}
 }
 
+// Day over-mint clamp (task #59): the summed time metrics must be
+// bounded by the TRUE per-equipment production-day length, and that
+// length must NOT be a hardcoded 86400 (DST days are 90000 / 82800s).
+// The behavioural proof (non-hour-aligned over-mint capped, hour-aligned
+// unchanged, DST 90000 not mis-clamped) lives in the golden DB test
+// (day_clamp_golden_test.go, -tags golden); these are the always-on
+// string guards so a refactor can't silently drop the ceiling.
+func TestDayOverMintClamp(t *testing.T) {
+	// The four additive wall-clock time metrics get the LEAST ceiling.
+	for _, m := range []string{
+		"LEAST(sum(hr.available_time), el.day_len_s)",
+		"LEAST(sum(hr.running_time),   el.day_len_s)",
+		"LEAST(sum(hr.stopped_time),   el.day_len_s)",
+		"LEAST(sum(hr.downtime),   el.day_len_s)",
+	} {
+		if !strings.Contains(dayRollupSQL, m) {
+			t.Errorf("day over-mint clamp lost %q", m)
+		}
+	}
+	// day_len_s must be grouped through the CTE so the ceiling is per-row.
+	if !strings.Contains(dayRollupSQL, "GROUP BY el.id_equipment, el.ts_value, el.day_len_s") {
+		t.Error("day_len_s must be in the GROUP BY (per-day ceiling)")
+	}
+	// The ceiling source: the day-boundary function, next anchor via the
+	// CALENDAR '1 day' interval (DST-correct) — NEVER a hardcoded 86400.
+	if !strings.Contains(dayEligibleSQL, "piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day')") {
+		t.Error("day_len_s must source the next anchor from the day-boundary fn")
+	}
+	if !strings.Contains(dayEligibleSQL, "AS day_len_s") {
+		t.Error("day_len_s column missing from the eligibility temp table")
+	}
+	// The ceiling must be the per-row anchor-derived length, never a
+	// hardcoded literal (DST days are 90000 / 82800s). The exact-match
+	// LEAST assertions above already fail if the arg is swapped for a
+	// number; this pins the anti-pattern explicitly for a future reader.
+	for _, antipattern := range []string{"), 86400)", ", 86400.", "day_len_s = 86400"} {
+		if strings.Contains(dayRollupSQL+dayEligibleSQL, antipattern) {
+			t.Errorf("day length hardcoded via %q — must derive from the day anchors (DST breaks 86400)", antipattern)
+		}
+	}
+}
+
 // Hour (the foundation) fidelity guards.
 func TestHourShape(t *testing.T) {
 	// Phase V keeps the flag TRUE; only phase E clears it.
