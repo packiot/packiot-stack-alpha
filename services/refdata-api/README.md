@@ -27,15 +27,32 @@ A single small Go binary serving two surfaces:
 
 ## Tenancy invariant
 
-`X-Api-Key` → `customer_id` server-side (`QUERY_API_KEYS="key:cid,…"`).
-**customer_id is never client-supplied** — the query compiler injects
-`id_enterprise = $1` itself. Keep it that way.
+**customer_id is never client-supplied** — it is derived server-side from
+the credential and injected as `id_enterprise = $1`. Two credential types
+resolve to the SAME tenant (`auth.go` whole-mux middleware, ADR-0027
+Surface-1). Precedence: **a present `X-Api-Key` wins** (a bad one 401s, no
+fallthrough); otherwise the Bearer token is tried.
+
+- `X-Api-Key` → `customer_id` via `QUERY_API_KEYS="key:cid,…"` (operator /
+  service credential).
+- `Authorization: Bearer <firebase-jwt>` → `uid` → `id_enterprise` via
+  `users` (task #68, the static front4 SPA path — it holds no key and never
+  names a tenant). The ID token is verified with public keys only (no
+  secret): RS256 signature against Google's rotating x509 certs, plus
+  `iss=securetoken.google.com/<project>`, `aud=<project>`, `exp`/`iat`. The
+  uid→enterprise lookup is hardened (`active = true AND id_enterprise IS NOT
+  NULL`) and cached (5-min TTL). Fail-closed: bad/expired/wrong-project
+  token, or a uid with no active enterprise → 401, never a default tenant.
+
+`/healthz` + `/metrics` are the only auth-exempt routes.
 
 ## Config
 
 `DB_HOST` (default `pgbouncer`) · `DB_PORT` · `DB_USER` ·
 `DB_PASSWORD` · `DB_NAME` (`packiot`) · `HEALTH_PORT` (9104) ·
-`QUERY_API_KEYS`. pgxpool with `QueryExecModeSimpleProtocol`
-(pgbouncer transaction pooling — do not remove). Deployed in
-`compose.staging.yml` only. Code: `cmd/refdata-api/{main.go,query.go}`
-— deliberately no `internal/`; it's ~400 lines and should stay small.
+`QUERY_API_KEYS` · `FIREBASE_PROJECT_ID` (default `fbpackiot`; the
+JWKS/x509 URL is a public constant, not config). pgxpool with
+`QueryExecModeSimpleProtocol` (pgbouncer transaction pooling — do not
+remove). Deployed in `compose.staging.yml` only. Code:
+`cmd/refdata-api/{main.go,query.go,auth.go,auth_firebase.go}` —
+deliberately no `internal/`; keep it small.
