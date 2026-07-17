@@ -108,7 +108,7 @@ func TestCompileDatasetWindowed(t *testing.T) {
 		"sites": json.RawMessage(`[5,7]`), "shifts": json.RawMessage(`[2]`),
 		"time_grain": json.RawMessage(`"hour"`),
 	}}
-	sql, args, err := compileDataset(q, 42)
+	sql, args, err := compileDataset(q, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestCompileDatasetWindowed(t *testing.T) {
 		{Dataset: "oee-score-teams", Window: win, Filters: map[string]json.RawMessage{"time_grain": json.RawMessage(`"'; DROP"`)}}, // out of enum
 		{Dataset: "mission-control", Window: win},                                                                                  // window on non-windowed dataset
 	} {
-		if _, _, err := compileDataset(bad, 42); err == nil {
+		if _, _, err := compileDataset(bad, 42, callerRole{id: 55, present: true}); err == nil {
 			t.Errorf("compileDataset accepted invalid request: %+v", bad)
 		}
 	}
@@ -147,11 +147,11 @@ func TestCompileDatasetWindowed(t *testing.T) {
 // Per-equipment overview functions take only an equipment id — the
 // compiled SQL must carry the ownership guard, and the id is required.
 func TestCompileDatasetEquipmentGuard(t *testing.T) {
-	if _, _, err := compileDataset(datasetReq{Dataset: "overview-job-info"}, 42); err == nil {
+	if _, _, err := compileDataset(datasetReq{Dataset: "overview-job-info"}, 42, callerRole{id: 55, present: true}); err == nil {
 		t.Error("per-equipment dataset compiled without an equipment filter")
 	}
 	sql, args, err := compileDataset(datasetReq{Dataset: "overview-job-info",
-		Filters: map[string]json.RawMessage{"equipment": json.RawMessage(`7`)}}, 42)
+		Filters: map[string]json.RawMessage{"equipment": json.RawMessage(`7`)}}, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestCompileDatasetEquipmentGuard(t *testing.T) {
 // enterprises.api_key is the tenancy secret; users carries credential
 // columns. Neither may be selectable through any dataset.
 func TestEnterpriseConfigExcludesSecrets(t *testing.T) {
-	sql, args, err := compileDataset(datasetReq{Dataset: "enterprise-config"}, 42)
+	sql, args, err := compileDataset(datasetReq{Dataset: "enterprise-config"}, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestEnterpriseConfigExcludesSecrets(t *testing.T) {
 	if !strings.Contains(sql, "id_enterprise = $1") || args[0] != 42 {
 		t.Errorf("enterprise-config not tenancy-scoped: %s %v", sql, args)
 	}
-	usersSQL, _, err := compileDataset(datasetReq{Dataset: "users"}, 42)
+	usersSQL, _, err := compileDataset(datasetReq{Dataset: "users"}, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestEnterpriseConfigExcludesSecrets(t *testing.T) {
 // overview reads carry the ownership arg at $2.
 
 func TestHomeUnsBindsTenantAtDollarOne(t *testing.T) {
-	sql, args, err := compileDataset(datasetReq{Dataset: "home-uns"}, 42)
+	sql, args, err := compileDataset(datasetReq{Dataset: "home-uns"}, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,11 +209,11 @@ func TestHomeUnsBindsTenantAtDollarOne(t *testing.T) {
 // the tenant fence MUST be the outer WHERE id_enterprise = $1, with the PO id
 // at $2. Without that wrapper a caller could probe other tenants' PO ids.
 func TestEventsTimelineFromPOIsFenced(t *testing.T) {
-	if _, _, err := compileDataset(datasetReq{Dataset: "events-timeline-from-po"}, 42); err == nil {
+	if _, _, err := compileDataset(datasetReq{Dataset: "events-timeline-from-po"}, 42, callerRole{id: 55, present: true}); err == nil {
 		t.Error("events-timeline-from-po compiled without the required production_order filter")
 	}
 	sql, args, err := compileDataset(datasetReq{Dataset: "events-timeline-from-po",
-		Filters: map[string]json.RawMessage{"production_order": json.RawMessage(`915`)}}, 42)
+		Filters: map[string]json.RawMessage{"production_order": json.RawMessage(`915`)}}, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestEventsTimelineFromPOIsFenced(t *testing.T) {
 func TestWindowedMigrationFunctionsBindTenantAndWindow(t *testing.T) {
 	win := &dsWindow{From: time.Now().Add(-30 * 24 * time.Hour), To: time.Now()}
 	for _, name := range []string{"events-timeline-full", "production-orders-runtimes", "production-orders-with-runtimes"} {
-		sql, args, err := compileDataset(datasetReq{Dataset: name, Window: win}, 42)
+		sql, args, err := compileDataset(datasetReq{Dataset: name, Window: win}, 42, callerRole{id: 55, present: true})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -258,7 +258,7 @@ func TestWindowedMigrationFunctionsBindTenantAndWindow(t *testing.T) {
 	// events-timeline-full pins the optional _id_production_order to a literal
 	// NULL so the window binds at $6/$7 — assert the NULL literal is present and
 	// there is no $8 (7 params).
-	sql, _, _ := compileDataset(datasetReq{Dataset: "events-timeline-full", Window: win}, 42)
+	sql, _, _ := compileDataset(datasetReq{Dataset: "events-timeline-full", Window: win}, 42, callerRole{id: 55, present: true})
 	if !strings.Contains(sql, ",NULL,$6,$7)") {
 		t.Errorf("events-timeline-full must pin _id_production_order to NULL: %s", sql)
 	}
@@ -269,7 +269,7 @@ func TestWindowedMigrationFunctionsBindTenantAndWindow(t *testing.T) {
 // config incl. api_key, so a SELECT * (or selecting that column) would re-leak
 // the very secret this migration removes from the browser.
 func TestBootstrapRoleViewsDoNotLeakEnterpriseJSONB(t *testing.T) {
-	sql, args, err := compileDataset(datasetReq{Dataset: "entities-per-user-role"}, 42)
+	sql, args, err := compileDataset(datasetReq{Dataset: "entities-per-user-role"}, 42, callerRole{id: 55, present: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,11 +291,11 @@ func TestBootstrapRoleViewsDoNotLeakEnterpriseJSONB(t *testing.T) {
 func TestPerEquipmentMigrationReadsRequireEquipmentAtDollarTwo(t *testing.T) {
 	for _, name := range []string{"equipment-downtime-reasons", "site-by-equipment",
 		"custom-target-month", "custom-target-week", "custom-target-day"} {
-		if _, _, err := compileDataset(datasetReq{Dataset: name}, 42); err == nil {
+		if _, _, err := compileDataset(datasetReq{Dataset: name}, 42, callerRole{id: 55, present: true}); err == nil {
 			t.Errorf("%s compiled without the required equipment filter", name)
 		}
 		sql, args, err := compileDataset(datasetReq{Dataset: name,
-			Filters: map[string]json.RawMessage{"equipment": json.RawMessage(`7`)}}, 42)
+			Filters: map[string]json.RawMessage{"equipment": json.RawMessage(`7`)}}, 42, callerRole{id: 55, present: true})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

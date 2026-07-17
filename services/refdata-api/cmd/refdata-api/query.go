@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -184,7 +185,12 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 				http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
 				return
 			}
-			sql, args, err = compileDataset(dq, cid)
+			// task #70: the caller's id_user_role — server-derived, set only on
+			// the verified-JWT path (userRoleFromContext). The X-Api-Key operator
+			// path leaves it unset; the two role datasets then fail closed
+			// (errRoleDatasetNeedsUser → 403 below). NEVER from the request body.
+			roleID, roleOK := userRoleFromContext(r.Context())
+			sql, args, err = compileDataset(dq, cid, callerRole{id: roleID, present: roleOK})
 		} else {
 			var q queryReq
 			if err := json.Unmarshal(body, &q); err != nil {
@@ -194,7 +200,14 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 			sql, args, err = compile(q, cid)
 		}
 		if err != nil {
-			http.Error(w, `{"error":`+fmt.Sprintf("%q", err.Error())+`}`, http.StatusBadRequest)
+			// task #70: a role dataset invoked without user context is
+			// authenticated + well-formed but not permitted on this path →
+			// 403, distinct from the 400 for a malformed/invalid request.
+			code := http.StatusBadRequest
+			if errors.Is(err, errRoleDatasetNeedsUser) {
+				code = http.StatusForbidden
+			}
+			http.Error(w, `{"error":`+fmt.Sprintf("%q", err.Error())+`}`, code)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)

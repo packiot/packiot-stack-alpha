@@ -58,8 +58,8 @@ const firebaseCertURL = "https://www.googleapis.com/robot/v1/metadata/x509/secur
 // (FIREBASE_PROJECT_ID) so the value is config, never hard-coded policy.
 const defaultFirebaseProject = "fbpackiot"
 
-// usersEnterpriseSQL maps a verified Firebase uid → tenant. It is back4-api's
-// mapping HARDENED on DBA advice (staging+prod confirmed, task #68):
+// usersEnterpriseSQL maps a verified Firebase uid → (tenant, role). It is
+// back4-api's mapping HARDENED on DBA advice (staging+prod confirmed, task #68):
 //   - id_user_firebase is UNIQUE ⇒ at most one row (the core safety property);
 //   - active = true         ⇒ a deactivated user with a still-valid token can
 //     no longer resolve their old tenant (back4-api omits this — we diverge
@@ -68,7 +68,19 @@ const defaultFirebaseProject = "fbpackiot"
 //     yield ZERO rows, so we reject rather than inject a NULL/absent tenant.
 //
 // Zero rows ⇒ errUnknownUID ⇒ 401. Never a default tenant.
-const usersEnterpriseSQL = `SELECT id_enterprise FROM users
+//
+// task #70: also selects users.user_roles — the caller's SINGLE id_user_role.
+// The linkage is one-role-per-user: users.user_roles is a scalar integer FK to
+// user_roles.id_user_role (confirmed against back4-api's authoritative queries,
+// `ur.id_user_role = u.user_roles` / `count(*) WHERE user_roles = $1`, and the
+// staging schema — despite the plural column name). It is NULLABLE (role-less
+// users), so it is scanned into a *int; a NULL role yields hasRole=false — the
+// tenant is still resolved (every non-role dataset works) but the two per-user-
+// role bootstrap datasets fail closed. This is NOT a guard in the WHERE clause:
+// a role-less user must still authenticate. The value is resolved to an
+// id_user_role server-side and only ever bound as $2 — the raw uid never
+// reaches SQL beyond this uid→identity lookup.
+const usersEnterpriseSQL = `SELECT id_enterprise, user_roles FROM users
 	WHERE id_user_firebase = $1 AND active = true AND id_enterprise IS NOT NULL`
 
 var (
@@ -313,22 +325,24 @@ type verifier interface {
 // lookup and assert the tenant is derived from the verified uid.
 type firebaseBearerAuth struct {
 	verify verifier
-	// lookup maps a verified uid → customer_id (id_enterprise). The production
-	// impl is a closure over the pgx pool running usersEnterpriseSQL; tests
-	// inject a fake. Unknown uid / deactivated / NULL enterprise → errUnknownUID.
-	lookup func(ctx context.Context, uid string) (int, error)
+	// lookup maps a verified uid → resolvedIdentity (tenant + optional role).
+	// The production impl is a closure over the pgx pool running
+	// usersEnterpriseSQL; tests inject a fake. Unknown uid / deactivated / NULL
+	// enterprise → errUnknownUID; a NULL role → identity with hasRole=false.
+	lookup func(ctx context.Context, uid string) (resolvedIdentity, error)
 
-	// positive-only TTL cache: uid → id_enterprise. Bounded lifetime so a
-	// user's deactivation/enterprise move propagates within ttl. No negative
-	// caching — a valid-token-but-unknown-uid is nearly impossible (the token
-	// already proved a real fbpackiot identity), so the DB is not a flood risk.
+	// positive-only TTL cache: uid → resolvedIdentity. Bounded lifetime so a
+	// user's deactivation / enterprise move / ROLE change propagates within
+	// ttl. No negative caching — a valid-token-but-unknown-uid is nearly
+	// impossible (the token already proved a real fbpackiot identity), so the
+	// DB is not a flood risk.
 	ttl   time.Duration
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
 }
 
 type cacheEntry struct {
-	cid int
+	id  resolvedIdentity
 	exp time.Time
 }
 
@@ -341,55 +355,64 @@ func newFirebaseBearerAuth(v verifier, pool *pgxpool.Pool, ttl time.Duration) *f
 	}
 }
 
-// dbEnterpriseLookup is the production uid→enterprise resolver: the hardened
+// dbEnterpriseLookup is the production uid→identity resolver: the hardened
 // usersEnterpriseSQL. Zero rows (unknown uid, deactivated user, or NULL
-// enterprise) → errUnknownUID → 401.
-func dbEnterpriseLookup(pool *pgxpool.Pool) func(context.Context, string) (int, error) {
-	return func(ctx context.Context, uid string) (int, error) {
+// enterprise) → errUnknownUID → 401. A NULL users.user_roles is scanned into a
+// nil *int → hasRole=false (tenant valid, no user axis; role datasets reject).
+func dbEnterpriseLookup(pool *pgxpool.Pool) func(context.Context, string) (resolvedIdentity, error) {
+	return func(ctx context.Context, uid string) (resolvedIdentity, error) {
 		var cid int
-		err := pool.QueryRow(ctx, usersEnterpriseSQL, uid).Scan(&cid)
+		var role *int // NULLABLE: users.user_roles is unset for role-less users
+		err := pool.QueryRow(ctx, usersEnterpriseSQL, uid).Scan(&cid, &role)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, errUnknownUID
+			return resolvedIdentity{}, errUnknownUID
 		}
 		if err != nil {
-			return 0, err
+			return resolvedIdentity{}, err
 		}
-		return cid, nil
+		id := resolvedIdentity{customerID: cid}
+		if role != nil {
+			id.userRole = *role
+			id.hasRole = true
+		}
+		return id, nil
 	}
 }
 
 // resolve is the bearerResolver signature the middleware calls: raw JWT →
-// customer_id. Fail-closed at every step — unknown uid, NULL/absent
-// enterprise, deactivated user, and any verify error all return an error
-// (→ 401), never a default tenant.
-func (a *firebaseBearerAuth) resolve(ctx context.Context, tokenStr string) (int, error) {
+// resolvedIdentity (tenant + optional role). Fail-closed at every step —
+// unknown uid, NULL/absent enterprise, deactivated user, and any verify error
+// all return an error (→ 401), never a default tenant. A resolved-but-role-less
+// user is NOT an error: hasRole=false flows through so non-role datasets serve
+// and only the role datasets reject.
+func (a *firebaseBearerAuth) resolve(ctx context.Context, tokenStr string) (resolvedIdentity, error) {
 	uid, err := a.verify.Verify(ctx, tokenStr)
 	if err != nil {
-		return 0, err
+		return resolvedIdentity{}, err
 	}
-	if cid, ok := a.cacheGet(uid); ok {
-		return cid, nil
+	if id, ok := a.cacheGet(uid); ok {
+		return id, nil
 	}
-	cid, err := a.lookup(ctx, uid)
+	id, err := a.lookup(ctx, uid)
 	if err != nil {
-		return 0, err
+		return resolvedIdentity{}, err
 	}
-	a.cachePut(uid, cid)
-	return cid, nil
+	a.cachePut(uid, id)
+	return id, nil
 }
 
-func (a *firebaseBearerAuth) cacheGet(uid string) (int, bool) {
+func (a *firebaseBearerAuth) cacheGet(uid string) (resolvedIdentity, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	e, ok := a.cache[uid]
 	if !ok || time.Now().After(e.exp) {
-		return 0, false
+		return resolvedIdentity{}, false
 	}
-	return e.cid, true
+	return e.id, true
 }
 
-func (a *firebaseBearerAuth) cachePut(uid string, cid int) {
+func (a *firebaseBearerAuth) cachePut(uid string, id resolvedIdentity) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.cache[uid] = cacheEntry{cid: cid, exp: time.Now().Add(a.ttl)}
+	a.cache[uid] = cacheEntry{id: id, exp: time.Now().Add(a.ttl)}
 }

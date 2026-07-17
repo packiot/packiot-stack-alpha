@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,17 +57,21 @@ func TestEveryDatasetIsTenantScoped(t *testing.T) {
 }
 
 // compileDataset must place the caller's customerID at $1 for every
-// dataset, regardless of the request body — the client cannot move it.
+// dataset, regardless of the request body — the client cannot move it. A
+// present role is supplied so the per-user-role datasets also compile and get
+// their $1 checked here (their $2 server-derived-role invariant is pinned
+// separately in TestRoleDatasetsBindTenantAndUserRoleAxes).
 func TestCompiledArgsPinCustomerIDAtDollarOne(t *testing.T) {
 	const tenantA, tenantB = 3, 4
+	const someRole = 55
 	for name, ds := range datasets {
 		req := datasetReq{Dataset: name}
 		if ds.windowed {
 			// minimal valid window so compile doesn't reject on bounds
 			req.Window = &dsWindow{From: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)}
 		}
-		aSQL, aArgs, aErr := compileDataset(req, tenantA)
-		bSQL, bArgs, bErr := compileDataset(req, tenantB)
+		aSQL, aArgs, aErr := compileDataset(req, tenantA, callerRole{id: someRole, present: true})
+		bSQL, bArgs, bErr := compileDataset(req, tenantB, callerRole{id: someRole, present: true})
 		if aErr != nil || bErr != nil {
 			// A dataset needing required client params can't be compiled
 			// from an empty body — the structural test above already
@@ -304,27 +309,28 @@ func TestAuthMiddlewareEmptyKeysDeniesAll(t *testing.T) {
 // injected as the context customer_id that makeHandler binds at $1. A bad or
 // unknown token must fail closed to 401 without reaching a handler.
 
-// fakeBearer builds a bearerResolver from a verified-uid→cid table, recording
-// whether it was invoked (to prove X-Api-Key precedence short-circuits it).
+// fakeBearer builds a bearerResolver from a token→resolvedIdentity table,
+// recording whether it was invoked (to prove X-Api-Key precedence
+// short-circuits it).
 type fakeBearer struct {
-	table  map[string]int // token string → resolved customer_id
+	table  map[string]resolvedIdentity // token string → resolved identity (tenant + optional role)
 	called bool
 }
 
-func (f *fakeBearer) resolve(_ context.Context, token string) (int, error) {
+func (f *fakeBearer) resolve(_ context.Context, token string) (resolvedIdentity, error) {
 	f.called = true
-	cid, ok := f.table[token]
+	id, ok := f.table[token]
 	if !ok {
-		return 0, errUnknownUID
+		return resolvedIdentity{}, errUnknownUID
 	}
-	return cid, nil
+	return id, nil
 }
 
 // TestBearerPathResolvesTenantServerSide proves the JWT path binds the
 // server-derived customer_id into context (→ $1), and fails closed on a bad or
 // unknown token — the front4 SPA never supplies a tenant or a key.
 func TestBearerPathResolvesTenantServerSide(t *testing.T) {
-	fb := &fakeBearer{table: map[string]int{"tok-A": 11, "tok-B": 22}}
+	fb := &fakeBearer{table: map[string]resolvedIdentity{"tok-A": {customerID: 11}, "tok-B": {customerID: 22}}}
 	var reached bool
 	var gotCID int
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +375,7 @@ func TestBearerPathResolvesTenantServerSide(t *testing.T) {
 // handler, no tenant. Uses a resolver that always errors, standing in for a
 // failed VerifyIDToken.
 func TestBearerVerifyErrorFailsClosed(t *testing.T) {
-	badResolver := func(context.Context, string) (int, error) { return 0, errEmptySubject }
+	badResolver := func(context.Context, string) (resolvedIdentity, error) { return resolvedIdentity{}, errEmptySubject }
 	mw := authMiddleware(map[string]int{}, infraExemptSet(), badResolver,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("handler reached with an unverifiable token — must fail closed")
@@ -404,7 +410,7 @@ func TestBearerDisabledWhenNilResolver(t *testing.T) {
 // consults the Bearer resolver; an INVALID key 401s WITHOUT falling through to
 // Bearer (no cross-credential probing in one request).
 func TestXApiKeyWinsOverBearer(t *testing.T) {
-	fb := &fakeBearer{table: map[string]int{"tok-A": 99}}
+	fb := &fakeBearer{table: map[string]resolvedIdentity{"tok-A": {customerID: 99}}}
 	var gotCID int
 	var reached bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -440,5 +446,148 @@ func TestXApiKeyWinsOverBearer(t *testing.T) {
 	}
 	if fb.called {
 		t.Error("bearer resolver was consulted after a bad X-Api-Key — a supplied key is authoritative, no fallthrough")
+	}
+}
+
+// ── task #70: the SECOND (per-user-role) scoping axis ──────────────────────
+//
+// The two variables-context bootstrap datasets are NOT tenant-wide: they bind
+// a second, server-derived axis — the caller's id_user_role at $2 — on top of
+// the tenant at $1. These tests widen the isolation gate to reason about that
+// two-axis scoping while proving the existing single-axis property still holds
+// for every other dataset.
+
+// roleDatasets is the exact set expected to carry the per-user-role axis. A
+// dataset that grows a pUserRole param without being listed here (or one here
+// that loses it) fails the gate — the role surface can't drift silently.
+var roleDatasets = map[string]bool{
+	"entities-per-user-role": true,
+	"menu-per-user-role":     true,
+}
+
+// TestRoleDatasetsBindTenantAndUserRoleAxes pins the two-axis contract:
+//   - exactly the roleDatasets set carries a pUserRole param, and no other;
+//   - for those, params are [pEnterprise($1), pUserRole($2)] in that order and
+//     the SQL binds BOTH id_enterprise=$1 AND id_user_role=$2;
+//   - pUserRole is server-derived: it has no filter name, so a client body can
+//     neither set nor override it (proven by construction + a compile probe);
+//   - every OTHER dataset keeps the single tenant axis (no pUserRole).
+func TestRoleDatasetsBindTenantAndUserRoleAxes(t *testing.T) {
+	for name, ds := range datasets {
+		var nRole int
+		for _, p := range ds.params {
+			if p.kind == pUserRole {
+				nRole++
+				// Server-derived only: a pUserRole param must never be a named,
+				// client-settable filter — that is what keeps $2 off the wire.
+				if p.name != "" {
+					t.Errorf("dataset %q: pUserRole param must have no filter name (server-derived, not client-supplied); got %q", name, p.name)
+				}
+			}
+		}
+		want := roleDatasets[name]
+		if want && nRole != 1 {
+			t.Errorf("dataset %q: expected exactly one pUserRole axis, got %d", name, nRole)
+		}
+		if !want && nRole != 0 {
+			t.Errorf("dataset %q: unexpected pUserRole axis (%d) — only the variables-context role datasets take a user axis", name, nRole)
+		}
+		if !want {
+			continue
+		}
+		// Two-axis shape: $1 tenant then $2 role, in order.
+		if len(ds.params) != 2 || ds.params[0].kind != pEnterprise || ds.params[1].kind != pUserRole {
+			t.Errorf("dataset %q: params must be [pEnterprise, pUserRole]; got %+v", name, ds.params)
+		}
+		if !strings.Contains(ds.sql, "id_enterprise = $1") || !strings.Contains(ds.sql, "id_user_role = $2") {
+			t.Errorf("dataset %q: SQL must bind BOTH tenant ($1) and user_role ($2):\n%s", name, ds.sql)
+		}
+	}
+}
+
+// TestRoleDatasetsFailClosedWithoutUserContext proves the X-Api-Key decision
+// (task #70 §3): a role dataset compiled without a resolved user identity —
+// the operator path, or a role-less user — is rejected with
+// errRoleDatasetNeedsUser (→ 403), never an unscoped tenant-wide role list.
+// With a present role it compiles, binding the SERVER role at $2.
+func TestRoleDatasetsFailClosedWithoutUserContext(t *testing.T) {
+	for name := range roleDatasets {
+		// No user context → fail closed.
+		if _, _, err := compileDataset(datasetReq{Dataset: name}, 42, callerRole{present: false}); err != errRoleDatasetNeedsUser {
+			t.Errorf("dataset %q without user context: err=%v; want errRoleDatasetNeedsUser (fail closed)", name, err)
+		}
+		// Present role → compiles; tenant at $1, server role at $2.
+		sql, args, err := compileDataset(datasetReq{Dataset: name}, 42, callerRole{id: 77, present: true})
+		if err != nil {
+			t.Fatalf("dataset %q with user context: unexpected err %v", name, err)
+		}
+		if len(args) != 2 || args[0] != 42 || args[1] != 77 {
+			t.Errorf("dataset %q: args must be [tenant 42, role 77]; got %v", name, args)
+		}
+		if !strings.Contains(sql, "id_user_role = $2") {
+			t.Errorf("dataset %q: compiled SQL must scope id_user_role = $2:\n%s", name, sql)
+		}
+	}
+}
+
+// TestRoleAxisCannotBeClientSupplied proves $2 is never movable by the body:
+// because pUserRole carries no filter name, ANY attempt to pass the role (or
+// the tenant) through filters is rejected as an unaccepted filter — the client
+// cannot inject or override the server-derived role.
+func TestRoleAxisCannotBeClientSupplied(t *testing.T) {
+	for name := range roleDatasets {
+		for _, key := range []string{"id_user_role", "user_role", "id_enterprise", "role"} {
+			req := datasetReq{Dataset: name, Filters: map[string]json.RawMessage{key: json.RawMessage(`9999`)}}
+			if _, _, err := compileDataset(req, 42, callerRole{id: 77, present: true}); err == nil {
+				t.Errorf("dataset %q accepted client-supplied filter %q — the role/tenant axes must be server-derived only", name, key)
+			}
+		}
+	}
+}
+
+// TestBearerPathStashesUserRoleInContext proves the middleware plumbing: the
+// Bearer path stashes the resolved id_user_role in context when present, omits
+// it when the user is role-less, and the X-Api-Key path never sets it (so role
+// datasets fail closed on the operator path — the two-axis fail-closed link).
+func TestBearerPathStashesUserRoleInContext(t *testing.T) {
+	fb := &fakeBearer{table: map[string]resolvedIdentity{
+		"tok-role":   {customerID: 11, userRole: 5, hasRole: true},
+		"tok-norole": {customerID: 12}, // hasRole false (NULL users.user_roles)
+	}}
+	var gotCID, gotRole int
+	var roleOK bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCID, _ = customerIDFromContext(r.Context())
+		gotRole, roleOK = userRoleFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := authMiddleware(map[string]int{"op-key": 9}, infraExemptSet(), fb.resolve, next)
+
+	cases := []struct {
+		name        string
+		key         string // X-Api-Key ("" = unset)
+		authz       string // Authorization ("" = unset)
+		wantCID     int
+		wantRole    int
+		wantRoleSet bool
+	}{
+		{"bearer with role → cid+role stashed", "", "Bearer tok-role", 11, 5, true},
+		{"bearer role-less → cid only, no role axis", "", "Bearer tok-norole", 12, 0, false},
+		{"x-api-key → cid only, never a role axis", "op-key", "", 9, 0, false},
+	}
+	for _, c := range cases {
+		gotCID, gotRole, roleOK = 0, 0, false
+		req := httptest.NewRequest("GET", "/v1/query", nil)
+		if c.key != "" {
+			req.Header.Set("X-Api-Key", c.key)
+		}
+		if c.authz != "" {
+			req.Header.Set("Authorization", c.authz)
+		}
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+		if gotCID != c.wantCID || roleOK != c.wantRoleSet || gotRole != c.wantRole {
+			t.Errorf("%s: cid=%d role=%d roleSet=%v; want cid=%d role=%d roleSet=%v",
+				c.name, gotCID, gotRole, roleOK, c.wantCID, c.wantRole, c.wantRoleSet)
+		}
 	}
 }
