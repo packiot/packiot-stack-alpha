@@ -685,6 +685,17 @@ type ProdEventClose struct {
 	Duration *int
 }
 
+// packml_register.id_equipment is a NULLABLE FK: rows that route a topic by
+// id_unit (or an unbound topic registration awaiting equipment assignment)
+// carry a NULL id_equipment — they are not concrete equipment. The IS NOT NULL
+// filter keeps those out of the enumeration entirely: DISTINCT would otherwise
+// collapse every NULL to a single (ORDER BY … NULLS LAST) trailing row that
+// scan-crashes the caller. This is the real fix; the NULL-tolerant scan below
+// is belt-and-suspenders in the same spirit as the BEGIN READ ONLY wrapper.
+const sqlEnterpriseEquipmentIDs = `SELECT DISTINCT id_equipment FROM packml_register
+		  WHERE id_enterprise = $1 AND id_equipment IS NOT NULL
+		  ORDER BY id_equipment`
+
 // FetchEnterpriseEquipmentIDs returns the DISTINCT prod id_equipment values
 // that have a packml_register row for the enterprise. This is the domain
 // translate.Equipment operates on; the close-sweep enumerates it once per
@@ -702,23 +713,51 @@ func (p *Prod) FetchEnterpriseEquipmentIDs(ctx context.Context, enterpriseID int
 		return nil, fmt.Errorf("begin read only: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	rows, err := tx.Query(ctx,
-		`SELECT DISTINCT id_equipment FROM packml_register
-		  WHERE id_enterprise = $1 ORDER BY id_equipment`,
-		enterpriseID)
+	rows, err := tx.Query(ctx, sqlEnterpriseEquipmentIDs, enterpriseID)
 	if err != nil {
 		return nil, fmt.Errorf("distinct equipment ids: %w", err)
 	}
 	defer rows.Close()
-	var out []int
-	for rows.Next() {
-		var id int
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
+	ids, skippedNull, err := scanEnterpriseEquipmentIDs(rows)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	if skippedNull > 0 {
+		// Should be 0 given the SQL filter; a non-zero count means a NULL
+		// slipped past the WHERE clause — worth a breadcrumb, never fatal.
+		p.logger.Debug("close-sweep: skipped NULL id_equipment rows from packml_register",
+			slog.Int("skipped", skippedNull),
+			slog.Int("enterprise", enterpriseID))
+	}
+	return ids, nil
+}
+
+// equipmentIDRows is the minimal slice of pgx.Rows that scanEnterpriseEquipmentIDs
+// needs. Narrowing to an interface here is the seam that lets the NULL-skip
+// logic be unit-tested without a live pool (this package has no pgxmock).
+type equipmentIDRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// scanEnterpriseEquipmentIDs collects non-NULL id_equipment values and reports
+// how many NULL rows it skipped. Scanning into sql.NullInt64 (not *int) is what
+// keeps a single stray NULL id_equipment from returning an error and aborting
+// the whole close-sweep — the exact crash this guards against.
+func scanEnterpriseEquipmentIDs(rows equipmentIDRows) (ids []int, skippedNull int, err error) {
+	for rows.Next() {
+		var id sql.NullInt64
+		if err = rows.Scan(&id); err != nil {
+			return nil, skippedNull, err
+		}
+		if !id.Valid {
+			skippedNull++
+			continue
+		}
+		ids = append(ids, int(id.Int64))
+	}
+	return ids, skippedNull, rows.Err()
 }
 
 // FetchEventCloseInfo point-looks-up prod's authoritative (status, ts_end,
