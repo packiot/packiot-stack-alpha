@@ -177,7 +177,15 @@ services:
       S7_DB: "100"             # data block the demo tags read
       SOFTPLC_TICK_SEC: "5"    # counters advance every 5s so OEE sees production
     restart: unless-stopped
-    networks: [packiot-net]    # reachable as s7-softplc:102 on the compose net
+    # Static IP (like every other service on packiot-net): an unpinned service
+    # draws a DYNAMIC IP from the same /24 and can squat another service's
+    # declared static address while that service is momentarily down during a
+    # recreate — causing "Address already in use" on the static owner's next
+    # start (the 2026-07-17 simulator→hasura .2 collision that blocked staging
+    # deploys). Profile-gated, but pinned so `--profile s7` can't re-trigger it.
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.33   # reachable as s7-softplc:102 on the compose net
     mem_limit: 32m
 
   s7-reader:
@@ -202,7 +210,11 @@ services:
       s7-softplc:
         condition: service_started
     restart: unless-stopped
-    networks: [packiot-net]
+    # Static IP — see the s7-softplc note above (unpinned services can squat a
+    # static address during a recreate → "Address already in use").
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.34
     mem_limit: 64m
 
   # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ──────────────────────────
@@ -776,7 +788,22 @@ services:
         condition: service_healthy
       edge-api:
         condition: service_started
-    networks: [packiot-net]
+    # Static IP. THIS is the 2026-07-17 staging-deploy blocker: simulator was
+    # the ONLY default-deploy service without a static ipv4_address, so Docker
+    # IPAM handed it a DYNAMIC address from the shared 172.18.0.0/24 pool. When
+    # hasura (static 172.18.0.2) was briefly down during a recreate, IPAM saw .2
+    # as free and gave it to simulator; simulator (restart: unless-stopped) then
+    # HELD .2, so every subsequent `up -d` that tried to start hasura failed with
+    # "Error response from daemon: Address already in use" and aborted the whole
+    # convergence mid-flight — stranding whichever other service was being
+    # recreated (operator, then mirror-worker-go) in state=created. Docker does
+    # NOT globally reserve static IPs; an address is only "taken" while a
+    # container actually holds it, so a dynamic service can transiently claim a
+    # static peer's IP. Pinning every service to a static IP removes the dynamic
+    # pool entirely and makes the collision class impossible.
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.6
     # Bypass docker-embedded DNS for the two hot endpoints — the simulator's
     # /plc-data poller was throwing intermittent NameResolutionError(
     # 'Failed to resolve edge-nodered') every 5-7s, which silenced the
