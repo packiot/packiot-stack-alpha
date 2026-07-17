@@ -161,59 +161,133 @@ jobs:
           done
           echo "  reload not confirmed after 10 attempts — config will load on next restart"
 
-      - name: Smoke test — wait for critical services to report healthy
-        # Without this, the previous step (compose up -d) returns the
-        # moment the containers are CREATED, not when they're actually
-        # serving traffic. A bad commit that builds clean but crashes at
-        # startup would otherwise look like a successful deploy until
-        # someone notices Grafana 15 min later.
+      - name: Post-deploy service-state gate — EVERY expected service running/healthy (task #67)
+        # ROOT CAUSE this closes (task #67): during the #57 PR1 deploy (#494) the
+        # `operator` container was RECREATED (submodule image bump + new
+        # REFDATA_API_KEY env) but Docker Compose left it in state=`created` and
+        # never started it (ExitCode=0, no logs) — an intermittent defect in
+        # compose's create→start handoff when a recreated service's depends_on
+        # target (edge-nodered, service_healthy) is ALREADY running and is NOT
+        # itself recreated this deploy, so the dependency-ready signal the new
+        # container blocks on is never re-broadcast. `up -d` still exited 0, so
+        # the deploy went GREEN with the one service that actually changed left
+        # down. Reproduced locally: the modern-compose happy path starts cleanly,
+        # confirming this is a race, not a misconfig — which is exactly why the
+        # backstop must re-derive ground truth from `ps` instead of trusting
+        # compose's own convergence accounting.
         #
-        # Each critical service has a healthcheck declared in
-        # compose.staging.yml — we just wait for `healthy` status with a
-        # bounded timeout. Service list = the ones whose unavailability
-        # would be a real-world incident (edge-api serving operator +
-        # mirror writes, rabbitmq carrying the SparkPlug stream, hasura
-        # serving the operator UI, the two Go workers).
+        # The PREVIOUS smoke test could not have caught it for TWO reasons:
+        #   1. Its service list was HARDCODED and did not include `operator`
+        #      (same class of gap as the hardcoded-enterprise-id anti-pattern —
+        #      a new service silently escapes the gate).
+        #   2. It only asserted `.State.Health.Status`; `operator` has NO
+        #      healthcheck, so even if listed it would have been waved through as
+        #      "no healthcheck — assuming OK" while sitting in `created`.
         #
-        # If any service doesn't reach healthy within 120s, dumps the
-        # last 50 log lines for that container so the actions-summary
-        # email tells the operator exactly what's wrong.
-        timeout-minutes: 3
+        # This gate fixes both. It ENUMERATES the expected services from the
+        # rendered compose config (so a newly-added service can never be omitted;
+        # `config --services` already excludes profile-gated services like
+        # alertmanager/s7-*), CLASSIFIES one-shots STRUCTURALLY (targets of a
+        # `service_completed_successfully` dependency — db-migrate, hasura-init —
+        # no hardcoded names), then asserts per service:
+        #   - long-running service  → State MUST be `running`; and if it declares
+        #     a healthcheck, Health MUST reach `healthy` (Health=`starting` keeps
+        #     polling within the timeout).
+        #   - one-shot service      → MUST be `exited` with ExitCode 0.
+        # Any `created` / non-zero `exited` / `dead` / `missing` / unhealthy at
+        # the deadline FAILS the workflow (non-zero) and dumps that container's
+        # last log lines. A green deploy can no longer mask a down service
+        # (same hardening theme as #39/#40). `.env` is symlinked by the earlier
+        # "Link .env" step so `config`/`ps` resolve cleanly here.
+        timeout-minutes: 6
         run: |
-          set -e
-          deadline=$(($(date +%s) + 120))
-          services="stack-edge-api-1 mirror-worker-go oeecloud-worker stack-rabbitmq-1 stack-hasura-1 stack-edge-nodered-1"
-          for svc in $services; do
-            echo "Waiting for $svc..."
-            while true; do
-              status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$svc" 2>/dev/null || echo "missing")
-              case "$status" in
-                healthy)
-                  echo "  $svc: healthy"
-                  break
-                  ;;
-                no-healthcheck)
-                  echo "  $svc: no healthcheck defined — assuming OK"
-                  break
-                  ;;
-                missing)
-                  echo "  $svc: container not found!"
-                  docker ps --format '{{.Names}}\t{{.Status}}'
-                  exit 1
-                  ;;
-                *)
-                  if [ "$(date +%s)" -ge "$deadline" ]; then
-                    echo "  $svc: TIMEOUT after 120s — last status: $status"
-                    echo "  --- last 50 log lines ---"
-                    docker logs --tail 50 "$svc" 2>&1 || true
-                    exit 1
-                  fi
-                  sleep 3
-                  ;;
-              esac
-            done
-          done
-          echo "All critical services healthy."
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json, subprocess, sys, time
+
+          COMPOSE = ["docker", "compose", "-f", "compose.staging.yml", "-p", "stack"]
+
+          def sh(args):
+              return subprocess.run(COMPOSE + args, capture_output=True, text=True)
+
+          # 1) Expected services + structural classification from the rendered config.
+          cfg_run = sh(["config", "--format", "json"])
+          if cfg_run.returncode != 0:
+              print("::error title=gate could not render compose config::" + cfg_run.stderr[-500:])
+              sys.exit(1)
+          svcs = json.loads(cfg_run.stdout).get("services", {})
+
+          oneshot = set()
+          for _, s in svcs.items():
+              dep = s.get("depends_on") or {}
+              # `config --format json` normalizes depends_on to the long-form dict;
+              # guard against the short-form list just in case a compose version differs.
+              if not isinstance(dep, dict):
+                  continue
+              for dep_name, dep_cond in dep.items():
+                  if isinstance(dep_cond, dict) and dep_cond.get("condition") == "service_completed_successfully":
+                      oneshot.add(dep_name)
+          has_hc = {
+              n for n, s in svcs.items()
+              if s.get("healthcheck") and not s["healthcheck"].get("disable")
+          }
+          expected = set(svcs.keys())
+          print("Gate expects %d services (%d one-shot, %d healthchecked):"
+                % (len(expected), len(oneshot), len(has_hc)))
+          print("  one-shots: %s" % (", ".join(sorted(oneshot)) or "(none)"))
+
+          def current_states():
+              out = sh(["ps", "-a", "--format", "json"]).stdout
+              d = {}
+              for line in out.splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  r = json.loads(line)
+                  d[r["Service"]] = (r.get("State"), r.get("Health") or "", r.get("ExitCode"))
+              return d
+
+          # 2) Poll every expected service to a terminal verdict (or deadline).
+          deadline = time.time() + 300
+          pending = set(expected)
+          failed = {}
+          while pending and time.time() < deadline:
+              st = current_states()
+              for svc in sorted(pending):
+                  state, health, code = st.get(svc, ("missing", "", None))
+                  if svc in oneshot:
+                      if state == "exited" and code == 0:
+                          print("OK   %s: exited(0) [one-shot]" % svc); pending.discard(svc)
+                      elif state == "created" or state == "dead" or (state == "exited" and code not in (0, None)):
+                          failed[svc] = (state, health, code); pending.discard(svc)
+                      # running / restarting / exited(None) → still settling, keep polling
+                  else:
+                      if state == "running" and (svc not in has_hc or health == "healthy"):
+                          print("OK   %s: running%s" % (svc, " (%s)" % health if health else "")); pending.discard(svc)
+                      elif state in ("created", "exited", "dead"):
+                          failed[svc] = (state, health, code); pending.discard(svc)
+                      # running+starting / restarting / transient-missing → keep polling
+              if pending:
+                  time.sleep(3)
+
+          # 3) Anything still pending at the deadline is a timeout failure.
+          st = current_states()
+          for svc in pending:
+              failed[svc] = st.get(svc, ("missing", "", None))
+
+          if failed:
+              print("\n=== SERVICE-STATE GATE: %d FAILURE(S) ===" % len(failed))
+              for svc, (state, health, code) in sorted(failed.items()):
+                  print("::error title=service %s not up::state=%s health=%s exit=%s"
+                        % (svc, state, health or "none", code))
+                  print("--- %s: last 40 log lines ---" % svc)
+                  logs = sh(["logs", "--tail", "40", svc])
+                  sys.stdout.write((logs.stdout or logs.stderr)[-4000:])
+                  print()
+              sys.exit(1)
+
+          print("\nAll %d expected services are running/healthy (one-shots exited 0). Gate PASS." % len(expected))
+          PYEOF
 
       - name: Inject synthetic Sparkplug counter (ADR-0010 Phase 3 E2E)
         # Publishes NBIRTH + NDATA against mosquitto, then scrapes /metrics
