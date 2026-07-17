@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -760,18 +761,167 @@ func scanEnterpriseEquipmentIDs(rows equipmentIDRows) (ids []int, skippedNull in
 	return ids, skippedNull, rows.Err()
 }
 
-// FetchEventCloseInfo point-looks-up prod's authoritative (status, ts_end,
-// duration) for each requested (id_equipment, ts_event) key, under ONE
-// READ ONLY tx. Keys absent from prod are simply absent from the returned
-// map — the sweep treats "no prod row" as "cannot close, do not fabricate"
-// (that's how it avoids masking a real stranding). Cost is O(len(keys)) =
-// O(divergent shadow rows), each an index probe on the unique
-// (id_equipment, ts_event). The caller sets the ctx watchdog.
+// prodEventCloseChunkSize bounds how many (id_equipment, ts_event) keys go
+// into a single batched lookup query. The sweep sorts keys by ts_event before
+// chunking, so each chunk covers a NARROW ts_event span — which is what drives
+// TimescaleDB static chunk exclusion (a range predicate on the partition
+// column prunes the 2.45B-row hypertable to just the chunks covering
+// [minTs,maxTs]; verified on prod: a 2-day span pruned to 3 chunks). 1000
+// makes the common case (a handful of strands) a single round-trip while
+// keeping the unnest arrays and per-query span bounded even under a large
+// open-strand backlog.
+const prodEventCloseChunkSize = 1000
+
+// sqlEventCloseInfo batches N point-lookups into ONE query. Two mechanisms
+// combine to keep it cheap against a billion-row hypertable:
+//
+//   - unnest($2::int[], $3::timestamptz[]) turns the key set into a two-column
+//     virtual table joined on the UNIQUE (id_equipment, ts_event) — one
+//     equipment_events_pk index probe per key, server-side, no per-key network
+//     round-trip.
+//   - the ts_event BETWEEN $4 AND $5 bounds (min/max of the batch) give the
+//     TimescaleDB planner a constant range on the partition column so it can
+//     statically exclude every chunk outside the batch's span. This predicate
+//     is REDUNDANT for correctness (the join already matches exact keys) — it
+//     exists solely as the chunk-exclusion hint. Because min≤every key's
+//     ts≤max by construction, it can never drop a requested key.
+//
+// Executed via simple protocol (see FetchEventCloseInfo) so the bounds arrive
+// as literal constants — on PG12 a prepared statement could flip to a generic
+// plan and lose plan-time chunk exclusion; literals make the fast plan
+// deterministic on every execution.
+const sqlEventCloseInfo = `SELECT ee.id_equipment, ee.ts_event, ee.status, ee.ts_end, ee.duration
+	  FROM equipment_events ee
+	  JOIN unnest($2::int[], $3::timestamptz[]) AS k(id_equipment, ts_event)
+	    ON ee.id_equipment = k.id_equipment AND ee.ts_event = k.ts_event
+	 WHERE ee.id_enterprise = $1
+	   AND ee.ts_event >= $4
+	   AND ee.ts_event <= $5`
+
+// eventCloseCanonKey canonicalises a (id_equipment, ts_event) pair to a value
+// that survives the prod round-trip. timestamptz has microsecond resolution,
+// and Go's time.Time == (used for map keys) is fragile across separately
+// decoded values — monotonic-clock reading and *Location identity differ even
+// for the same instant. Keying on UnixMicro instead lets a prod-RETURNED
+// ts_event be matched back to the ORIGINAL caller key, which is what we store
+// as the output map key. That preserves FetchEventCloseInfo's contract: the
+// caller looks results up with the very ProdEventKey value it passed in
+// (planCloseCorrections does exactly that), so the lookup can't silently miss.
+type eventCloseCanonKey struct {
+	eq int
+	us int64
+}
+
+func canonEventKey(eq int, ts time.Time) eventCloseCanonKey {
+	return eventCloseCanonKey{eq: eq, us: ts.UnixMicro()}
+}
+
+// eventCloseBatch is one chunk of keys ready to bind to sqlEventCloseInfo:
+// parallel eqIDs/tsEvents arrays plus the min/max ts_event bounds for chunk
+// exclusion. eqIDs is int32 to match equipment_events.id_equipment (int4) so
+// the $2::int[] cast is exact.
+type eventCloseBatch struct {
+	eqIDs    []int32
+	tsEvents []time.Time
+	minTs    time.Time
+	maxTs    time.Time
+}
+
+// planEventCloseBatches is the PURE chunking core (factored out for unit tests,
+// same posture as scanEnterpriseEquipmentIDs). It sorts a COPY of keys by
+// ts_event ascending, then slices into chunks of chunkSize. Sorting first is
+// deliberate: it clusters temporally-near keys so each chunk's [minTs,maxTs]
+// span — and thus the set of hypertable chunks it touches — stays minimal. A
+// lone weeks-old open strand lands in its own early chunk with a tight range
+// instead of widening every batch.
+func planEventCloseBatches(keys []ProdEventKey, chunkSize int) []eventCloseBatch {
+	if len(keys) == 0 {
+		return nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = prodEventCloseChunkSize
+	}
+	sorted := make([]ProdEventKey, len(keys))
+	copy(sorted, keys)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].TsEvent.Before(sorted[j].TsEvent)
+	})
+
+	var batches []eventCloseBatch
+	for start := 0; start < len(sorted); start += chunkSize {
+		end := start + chunkSize
+		if end > len(sorted) {
+			end = len(sorted)
+		}
+		grp := sorted[start:end]
+		b := eventCloseBatch{
+			eqIDs:    make([]int32, len(grp)),
+			tsEvents: make([]time.Time, len(grp)),
+			minTs:    grp[0].TsEvent,          // sorted asc → first is the min
+			maxTs:    grp[len(grp)-1].TsEvent, // ... and last is the max
+		}
+		for i, k := range grp {
+			b.eqIDs[i] = int32(k.IDEquipment)
+			b.tsEvents[i] = k.TsEvent
+		}
+		batches = append(batches, b)
+	}
+	return batches
+}
+
+// eventCloseRows is the minimal pgx.Rows slice scanEventCloseBatch needs —
+// the seam that lets the row→key mapping be unit-tested without a live pool
+// (mirrors equipmentIDRows).
+type eventCloseRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// scanEventCloseBatch maps prod result rows back onto the ORIGINAL caller keys
+// via canon and writes them into out. A returned row that doesn't map to a
+// requested key is impossible (the JOIN only emits matched keys) but is
+// dropped rather than fabricated if it ever occurred.
+func scanEventCloseBatch(rows eventCloseRows, canon map[eventCloseCanonKey]ProdEventKey, out map[ProdEventKey]ProdEventClose) error {
+	for rows.Next() {
+		var eq int
+		var ts time.Time
+		var c ProdEventClose
+		if err := rows.Scan(&eq, &ts, &c.Status, &c.TsEnd, &c.Duration); err != nil {
+			return err
+		}
+		if k, ok := canon[canonEventKey(eq, ts)]; ok {
+			out[k] = c
+		}
+	}
+	return rows.Err()
+}
+
+// FetchEventCloseInfo looks up prod's authoritative (status, ts_end, duration)
+// for the requested (id_equipment, ts_event) keys and returns them keyed by
+// the caller's own ProdEventKey. Keys absent from prod are simply absent from
+// the map — the sweep treats "no prod row" as "cannot close, do not fabricate"
+// (that's how it avoids masking a real stranding).
+//
+// Batched: instead of N per-key round-trips (the #63 TIMEOUT — hundreds of
+// serial prod QueryRows blew past the 30s watchdog), keys are chunked and each
+// chunk is ONE unnest-join query. Cost is O(passes), not O(keys × RTT), and
+// the whole set runs under ONE READ ONLY tx bounded by the caller's ctx
+// watchdog. Simple protocol interpolates the ts_event bounds as literals so
+// TimescaleDB chunk exclusion is deterministic (see sqlEventCloseInfo).
 func (p *Prod) FetchEventCloseInfo(ctx context.Context, enterpriseID int, keys []ProdEventKey) (map[ProdEventKey]ProdEventClose, error) {
 	out := make(map[ProdEventKey]ProdEventClose, len(keys))
 	if len(keys) == 0 {
 		return out, nil
 	}
+
+	// Recover the caller's exact key from a prod-returned (eq, ts) row.
+	canon := make(map[eventCloseCanonKey]ProdEventKey, len(keys))
+	for _, k := range keys {
+		canon[canonEventKey(k.IDEquipment, k.TsEvent)] = k
+	}
+	batches := planEventCloseBatches(keys, prodEventCloseChunkSize)
+
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire: %w", err)
@@ -782,21 +932,23 @@ func (p *Prod) FetchEventCloseInfo(ctx context.Context, enterpriseID int, keys [
 		return nil, fmt.Errorf("begin read only: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	for _, k := range keys {
-		var c ProdEventClose
-		err := tx.QueryRow(ctx,
-			`SELECT status, ts_end, duration
-			   FROM equipment_events
-			  WHERE id_enterprise = $1 AND id_equipment = $2 AND ts_event = $3`,
-			enterpriseID, k.IDEquipment, k.TsEvent,
-		).Scan(&c.Status, &c.TsEnd, &c.Duration)
-		if err == pgx.ErrNoRows {
-			continue
-		}
+
+	for _, b := range batches {
+		// QueryExecModeSimpleProtocol: pgx interpolates the args as sanitized
+		// literals, so the ts_event bounds reach the planner as constants and
+		// the chunk-excluding plan is used on every execution (no prepared-
+		// statement generic-plan fallback on PG12).
+		rows, err := tx.Query(ctx, sqlEventCloseInfo,
+			pgx.QueryExecModeSimpleProtocol,
+			enterpriseID, b.eqIDs, b.tsEvents, b.minTs, b.maxTs)
 		if err != nil {
-			return nil, fmt.Errorf("event close lookup (eq=%d): %w", k.IDEquipment, err)
+			return nil, fmt.Errorf("event close batch lookup: %w", err)
 		}
-		out[k] = c
+		if err := scanEventCloseBatch(rows, canon, out); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("event close batch scan: %w", err)
+		}
+		rows.Close()
 	}
 	return out, nil
 }
