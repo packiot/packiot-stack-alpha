@@ -43,7 +43,7 @@ import (
 // Reconciler diffs prod active POs vs staging active POs and POSTs the
 // missing ones through staging edge-api. One instance per worker process.
 type Reconciler struct {
-	closerTick int64 // events-closer cadence counter (every 10th tick)
+	closerTick int64 // events close-sweep cadence counter (task #63; every Nth tick)
 	cfg        *config.Config
 	prodDB     *db.Prod
 	staging    *db.Staging

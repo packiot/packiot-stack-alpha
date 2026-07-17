@@ -123,6 +123,29 @@ type Config struct {
 	ReconcileEventsIntervalSec int
 	ReconcileEventsBatchSize   int
 
+	// Event close-sweep (task #63). Replaces the old prod-ts_event-bounded
+	// close re-fan (FetchRecentlyClosedEvents) — which missed any close that
+	// landed outside a 48h / 400k-PK window, leaving shadow rows OPEN
+	// forever and inflating F2/F3 duration+availability while COUNT parity
+	// still passed. The sweep is DRIVEN FROM THE SHADOW instead: it selects
+	// the tiny set of divergent shadow rows (ts_end IS NULL at ANY age, or
+	// ts_event within the recent window) and re-points each at prod's
+	// authoritative (ts_end, status, duration). Cost is O(divergent rows),
+	// not O(prod volume).
+	//
+	// EveryNTicks: cadence in events-sync ticks (a close only needs to land
+	//   within the bake drift window, not every tick).
+	// RecentHours: RISK-2 recent-close-drift lookback on shadow ts_event.
+	// TimeoutSec: hard ctx watchdog around one sweep (candidate fetch +
+	//   prod point-lookups + fan-out corrections) — same watchdog discipline
+	//   the old FetchRecentlyClosedEvents used to bound a runaway scan.
+	// BatchSize: PK page size for the shadow candidate iteration.
+	ReconcileEventsCloseSweepEnabled     bool
+	ReconcileEventsCloseSweepEveryNTicks int
+	ReconcileEventsCloseSweepRecentHours int
+	ReconcileEventsCloseSweepTimeoutSec  int
+	ReconcileEventsCloseSweepBatchSize   int
+
 	// DLQ retry loop. Periodically re-runs the dispatcher on
 	// mirror_replay_dlq rows whose backoff window has elapsed. Drains
 	// transient failures (connection refused during a deploy, prod
@@ -187,6 +210,14 @@ type Config struct {
 	// COMPARATOR_OEE_INTERVAL_SEC (gated internally by lastOEERun).
 	ComparatorOEEIntervalSec int
 
+	// ComparatorEventOpenStrandHours — close-field parity threshold (task
+	// #63). The comparator counts shadow equipment_events rows still OPEN
+	// (ts_end IS NULL) whose ts_event is OLDER than this many hours, per
+	// plane, and emits them + their f2/f3 skew. Older-than avoids counting
+	// legitimately-open live events; a real strand is one that should have
+	// closed long ago. Default 48h.
+	ComparatorEventOpenStrandHours int
+
 	// Logging.
 	LogLevel string
 }
@@ -220,17 +251,25 @@ func Load() (*Config, error) {
 		ReconcileEventsEnabled:        getenvBool("RECONCILE_EVENTS_ENABLED", true),
 		ReconcileEventsIntervalSec:    getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
 		ReconcileEventsBatchSize:      getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
-		DLQRetryEnabled:               getenvBool("DLQ_RETRY_ENABLED", true),
-		DLQRetryIntervalSec:           getenvInt("DLQ_RETRY_INTERVAL_SEC", 300),
-		DLQRetryMaxAttempts:           getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
-		DLQRetryBatchSize:             getenvInt("DLQ_RETRY_BATCH_SIZE", 50),
-		DLQReanimateEnabled:           getenvBool("DLQ_REANIMATE_ENABLED", true),
-		DLQReanimateIntervalSec:       getenvInt("DLQ_REANIMATE_INTERVAL_SEC", 600),
-		DLQReanimateBatchSize:         getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
-		ComparatorEnabled:             getenvBool("COMPARATOR_ENABLED", true),
-		ComparatorIntervalSec:         getenvInt("COMPARATOR_INTERVAL_SEC", 300),
-		ComparatorOEEIntervalSec:      getenvInt("COMPARATOR_OEE_INTERVAL_SEC", 1800),
-		LogLevel:                      getenv("LOG_LEVEL", "info"),
+
+		ReconcileEventsCloseSweepEnabled:     getenvBool("RECONCILE_EVENTS_CLOSE_SWEEP_ENABLED", false),
+		ReconcileEventsCloseSweepEveryNTicks: getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_EVERY_N_TICKS", 10),
+		ReconcileEventsCloseSweepRecentHours: getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_RECENT_HOURS", 72),
+		ReconcileEventsCloseSweepTimeoutSec:  getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_TIMEOUT_SEC", 30),
+		ReconcileEventsCloseSweepBatchSize:   getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_BATCH_SIZE", 500),
+
+		DLQRetryEnabled:                getenvBool("DLQ_RETRY_ENABLED", true),
+		DLQRetryIntervalSec:            getenvInt("DLQ_RETRY_INTERVAL_SEC", 300),
+		DLQRetryMaxAttempts:            getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
+		DLQRetryBatchSize:              getenvInt("DLQ_RETRY_BATCH_SIZE", 50),
+		DLQReanimateEnabled:            getenvBool("DLQ_REANIMATE_ENABLED", true),
+		DLQReanimateIntervalSec:        getenvInt("DLQ_REANIMATE_INTERVAL_SEC", 600),
+		DLQReanimateBatchSize:          getenvInt("DLQ_REANIMATE_BATCH_SIZE", 100),
+		ComparatorEnabled:              getenvBool("COMPARATOR_ENABLED", true),
+		ComparatorIntervalSec:          getenvInt("COMPARATOR_INTERVAL_SEC", 300),
+		ComparatorOEEIntervalSec:       getenvInt("COMPARATOR_OEE_INTERVAL_SEC", 1800),
+		ComparatorEventOpenStrandHours: getenvInt("COMPARATOR_EVENT_OPEN_STRAND_HOURS", 48),
+		LogLevel:                       getenv("LOG_LEVEL", "info"),
 	}
 	// Sanity checks
 	if cfg.ProdEnterpriseID <= 0 {
@@ -238,6 +277,11 @@ func Load() (*Config, error) {
 	}
 	if cfg.StagingEnterpriseID <= 0 {
 		return nil, fmt.Errorf("STAGING_ENTERPRISE_ID required")
+	}
+	// Guard the cadence divisor — a misconfigured 0 would panic the
+	// events-sync tick on `closerTick % N`.
+	if cfg.ReconcileEventsCloseSweepEveryNTicks < 1 {
+		cfg.ReconcileEventsCloseSweepEveryNTicks = 1
 	}
 	return cfg, nil
 }

@@ -325,6 +325,32 @@ var (
 		Name: "mirror_worker_comparator_dlq_anomaly_total",
 		Help: "Staging mirror_replay_dlq entries whose source_log_id no longer exists on prod user_logs. Healthy: 0. Non-zero = orphaned DLQ rows needing manual triage.",
 	})
+
+	// ComparatorEventOpenStrands — close-field parity gauge (task #63).
+	// Per shadow plane (f2 = shadow_go_port, f3 = packiot_shadow), the count
+	// of equipment_events rows still OPEN (ts_end IS NULL) whose ts_event is
+	// older than the strand threshold. This is the signal that turns "COUNT
+	// parity PASS" into "COUNT + close-field parity PASS": count parity can
+	// pass while these rows silently inflate F2/F3 duration+availability.
+	//
+	// Healthy: BOTH planes near prod's own open count AND EQUAL to each
+	// other (f2 == f3 — determinism intact). A rising value means the
+	// close-sweep is not keeping up (or is disabled); f2 != f3 means the two
+	// planes have diverged and the sweep's both-planes correction is not
+	// landing on one of them.
+	ComparatorEventOpenStrands = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_event_open_strands",
+		Help: "Shadow equipment_events rows still OPEN (ts_end IS NULL) older than the strand threshold, per plane (f2|f3). Healthy: low and f2==f3.",
+	}, []string{"plane"})
+
+	// ComparatorEventOpenStrandsSkew — |f2 - f3| open-strand count. The
+	// single number an alert can watch: any non-zero value is an F2!=F3
+	// close-field divergence. Emitted only when both planes are measured
+	// (F3 attached); stays at its last value otherwise.
+	ComparatorEventOpenStrandsSkew = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mirror_worker_comparator_event_open_strands_skew",
+		Help: "abs(f2 - f3) shadow open-strand counts. Healthy: 0 (F2==F3). Non-zero = the two shadow planes disagree on close state.",
+	})
 )
 
 func init() {
@@ -363,5 +389,7 @@ func init() {
 		ComparatorOEEDivergencePct,
 		ComparatorOEEMeasured,
 		ComparatorDLQAnomalyTotal,
+		ComparatorEventOpenStrands,
+		ComparatorEventOpenStrandsSkew,
 	)
 }

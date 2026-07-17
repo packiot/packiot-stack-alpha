@@ -879,6 +879,167 @@ const sqlInsertShadowEvent = `INSERT INTO %s.equipment_events
 	 ON CONFLICT (id_equipment, ts_event) DO UPDATE
 	    SET ts_end = EXCLUDED.ts_end, status = EXCLUDED.status, duration = EXCLUDED.duration`
 
+// ShadowEventKey identifies a shadow equipment_events row by its natural
+// key. IDEquipment is the STAGING id — shadow rows are keyed on staging ids
+// (the fan-out translates prod→staging before writing).
+type ShadowEventKey struct {
+	IDEquipment int
+	TsEvent     time.Time
+}
+
+// FetchShadowEventCloseCandidates returns the DISTINCT set of shadow
+// equipment_events rows that are close-sweep candidates, UNIONed across
+// BOTH shadow planes (F2 = shadow_go_port on the staging pool, F3 = public
+// on the packiot_shadow pool). A row qualifies if it is either:
+//
+//	(a) still OPEN (ts_end IS NULL) at ANY age            — RISK-1 open-strand
+//	(b) has ts_event >= now()-recentHours                 — RISK-2 close-drift
+//
+// This is the whole point of task #63: the candidate set is driven FROM THE
+// SHADOW (indexed, tiny), so cost is O(divergent rows), never O(prod
+// volume). The old close path fetched FROM PROD bounded by ts_event/PK
+// windows — a close landing outside those windows was never re-fanned and
+// the shadow row stayed OPEN forever.
+//
+// UNION (not intersection) across planes is deliberate: a row can be open on
+// F2 but drifted-closed on F3 (or vice-versa). The sweep re-points BOTH
+// planes at prod's single authoritative value, so feeding the union and
+// correcting both is exactly what re-converges F2==F3.
+//
+// The recent cutoff is computed ONCE in Go (not per-plane now()) so both
+// planes — which live in different databases with independent clocks — get
+// an identical window. Iterated PK-batched on id_equipment_event so a large
+// open set can't buffer unbounded. The caller sets the ctx watchdog.
+func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpriseID, recentHours, pageSize int) ([]ShadowEventKey, error) {
+	if pageSize <= 0 {
+		pageSize = 500
+	}
+	recentCutoff := time.Now().Add(-time.Duration(recentHours) * time.Hour)
+	seen := make(map[ShadowEventKey]struct{})
+
+	page := func(pool *pgxpool.Pool, sql string, buildArgs func(lastID int64) []any) error {
+		var lastID int64
+		for {
+			rows, err := pool.Query(ctx, sql, buildArgs(lastID)...)
+			if err != nil {
+				return err
+			}
+			n := 0
+			for rows.Next() {
+				var evID int64
+				var k ShadowEventKey
+				if err := rows.Scan(&evID, &k.IDEquipment, &k.TsEvent); err != nil {
+					rows.Close()
+					return err
+				}
+				seen[k] = struct{}{}
+				if evID > lastID {
+					lastID = evID
+				}
+				n++
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+			if n < pageSize {
+				return nil
+			}
+		}
+	}
+
+	collect := func(pool *pgxpool.Pool, schema string) error {
+		if pool == nil { // F3 not attached
+			return nil
+		}
+		openSQL := fmt.Sprintf(`
+			SELECT id_equipment_event, id_equipment, ts_event
+			  FROM %s.equipment_events
+			 WHERE id_enterprise = $1 AND ts_end IS NULL AND id_equipment_event > $2
+			 ORDER BY id_equipment_event
+			 LIMIT $3`, schema)
+		if err := page(pool, openSQL, func(lastID int64) []any {
+			return []any{enterpriseID, lastID, pageSize}
+		}); err != nil {
+			// Deploy-order independence: a plane whose table isn't migrated
+			// yet is skipped fail-open (same posture as the fan-out writes).
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+				s.logger.Warn("close-sweep candidates: plane table missing — fail-open",
+					slog.String("schema", schema))
+				return nil
+			}
+			return fmt.Errorf("%s open-strand candidates: %w", schema, err)
+		}
+		recentSQL := fmt.Sprintf(`
+			SELECT id_equipment_event, id_equipment, ts_event
+			  FROM %s.equipment_events
+			 WHERE id_enterprise = $1 AND ts_event >= $2 AND id_equipment_event > $3
+			 ORDER BY id_equipment_event
+			 LIMIT $4`, schema)
+		if err := page(pool, recentSQL, func(lastID int64) []any {
+			return []any{enterpriseID, recentCutoff, lastID, pageSize}
+		}); err != nil {
+			return fmt.Errorf("%s recent-drift candidates: %w", schema, err)
+		}
+		return nil
+	}
+
+	if err := collect(s.pool, "shadow_go_port"); err != nil {
+		return nil, err
+	}
+	if err := collect(s.shadowPool, "public"); err != nil {
+		return nil, err
+	}
+
+	out := make([]ShadowEventKey, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+// CountShadowOpenStrands counts shadow equipment_events rows still OPEN
+// (ts_end IS NULL) whose ts_event is older than olderThanHours, per plane
+// ("f2" = shadow_go_port, "f3" = public/packiot_shadow). Pure COUNT on the
+// (id_enterprise) WHERE ts_end IS NULL partial index — the comparator's
+// close-field parity signal. A plane whose pool is nil is omitted from the
+// map (F3 not attached). Both planes should read EQUAL (F2==F3); inequality
+// is a divergence the watchdog flags.
+func (s *Staging) CountShadowOpenStrands(ctx context.Context, enterpriseID, olderThanHours int) (map[string]int, error) {
+	cutoff := time.Now().Add(-time.Duration(olderThanHours) * time.Hour)
+	out := make(map[string]int, 2)
+	count := func(pool *pgxpool.Pool, plane, schema string) error {
+		if pool == nil {
+			return nil
+		}
+		var n int
+		err := pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT count(*) FROM %s.equipment_events
+			  WHERE id_enterprise = $1 AND ts_end IS NULL AND ts_event < $2`, schema),
+			enterpriseID, cutoff).Scan(&n)
+		if err != nil {
+			// Plane not migrated yet → omit from the map (skew is only
+			// computed when BOTH planes are measured). Fail-open.
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+				return nil
+			}
+			return fmt.Errorf("%s open-strand count: %w", plane, err)
+		}
+		out[plane] = n
+		return nil
+	}
+	if err := count(s.pool, "f2", "shadow_go_port"); err != nil {
+		return nil, err
+	}
+	if err := count(s.shadowPool, "f3", "public"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Same (ts_value, id_equipment) key as every equipment_values write; if
 // a counter-delta row already occupies the second, enrich it with state
 // instead of losing the transition.
