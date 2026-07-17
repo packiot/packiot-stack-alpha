@@ -958,6 +958,12 @@ services:
       # Rollback: set "false" + redeploy.
       RECONCILE_FINISHER_ENABLED: "true"
       RECONCILE_FINISHER_GRACE_MINUTES: "30"
+      # task #63 — enable the shadow-driven event close-sweep (landed inert in
+      # #502, default false). Fixes >48h-late-close open-row strands + ts_end
+      # drift that count-parity hides. Watch mirror_worker_comparator_event_
+      # open_strands_skew (should stay 0) + the ~16 known open strands closing.
+      # Rollback: set "false" + redeploy. STAGING ONLY.
+      RECONCILE_EVENTS_CLOSE_SWEEP_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.21
