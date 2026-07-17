@@ -73,6 +73,7 @@ var (
 	pWinFrom = dsParam{kind: pFrom}
 	pWinTo   = dsParam{kind: pTo}
 	pEquip   = dsParam{kind: pEquipmentID, name: "equipment"}
+	pPO      = dsParam{kind: pEquipmentID, name: "production_order"} // single required int, tenant-fenced by the SQL's outer WHERE id_enterprise = $1
 	pShiftF  = dsParam{kind: pShiftFiltered}
 	pTeamF   = dsParam{kind: pTeamFiltered}
 	pMicro   = dsParam{kind: pBool, name: "microstops"}
@@ -281,6 +282,63 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt},
 	},
 
+	// ── home (front4 Home page) ──────────────────────────────────────
+	// h_piot_home_uns self-scopes: enterprise is arg 1 and the body filters
+	// id_enterprise = in_id_enterprise on both areas and equipments
+	// (tp_equipment=3, line level). No wrapper needed. Not windowed — it
+	// returns the current live sites→areas→lines OEE tree.
+	"home-uns": {
+		group: "home", doc: "Home page live OEE tree (h_piot_home_uns)",
+		sql:    `SELECT * FROM h_piot_home_uns($1)`,
+		params: []dsParam{pEnt},
+	},
+
+	// ── events-timeline (front4 events timelines) ────────────────────
+	// events-timeline-from-po: the function takes ONLY a PO id and derives
+	// the equipment from the PO — it does NOT take an enterprise arg, so
+	// without a fence a caller could probe another tenant's PO ids. Its
+	// output carries id_enterprise, so we wrap `WHERE id_enterprise = $1`:
+	// $1 = the caller's tenant, $2 = the PO id. A PO in another tenant
+	// yields zero rows. Not windowed.
+	"events-timeline-from-po": {
+		group: "events-timeline", doc: "Event timeline for one production order (h_piot_get_events_timeline_from_po)",
+		sql:    `SELECT * FROM h_piot_get_events_timeline_from_po($2) WHERE id_enterprise = $1`,
+		params: []dsParam{pEnt, pPO},
+	},
+	// events-timeline-full: enterprise is arg 1 (self-scoping). The id-filter
+	// text args are postgres array literals ('{1,2}') the function ::int[]-
+	// casts — exactly pIDList's wire format; '{}' = no narrowing. The optional
+	// middle arg _id_production_order (DEFAULT NULL) is pinned to a literal
+	// NULL so the window binds cleanly at $6/$7 without a null-param kind.
+	"events-timeline-full": {
+		group: "events-timeline", doc: "Full filtered event timeline (h_piot_get_events_timeline_full_with_filter_3)",
+		sql:      `SELECT * FROM h_piot_get_events_timeline_full_with_filter_3($1,$2,$3,$4,$5,NULL,$6,$7)`,
+		windowed: true, maxWindow: eventWindow,
+		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("event_types"), pWinFrom, pWinTo},
+	},
+
+	// ── production-orders (front4 PO runtime views) ──────────────────
+	// Both functions share downtimes-summary's exact arg shape: enterprise
+	// arg 1 (self-scoping), then the site/area/equipment/shift id-filter
+	// literals, the [tsstart,tsend] window, and a trailing teams filter.
+	// _runtimes = one row per PO runtime segment; _with_runtimes4 = one row
+	// per PO with a nested `runtimes` json array. Windowed at analyticsWindow
+	// (front4's PO views span months).
+	"production-orders-runtimes": {
+		group: "production-orders", doc: "One row per PO runtime segment (h_piot_production_orders_runtimes)",
+		sql:      `SELECT * FROM h_piot_production_orders_runtimes($1,$2,$3,$4,$5,$6,$7,$8)`,
+		windowed: true, maxWindow: analyticsWindow,
+		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
+			pWinFrom, pWinTo, ids("teams")},
+	},
+	"production-orders-with-runtimes": {
+		group: "production-orders", doc: "One row per PO with nested runtimes (h_piot_production_orders_with_runtimes4)",
+		sql:      `SELECT * FROM h_piot_production_orders_with_runtimes4($1,$2,$3,$4,$5,$6,$7,$8)`,
+		windowed: true, maxWindow: analyticsWindow,
+		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
+			pWinFrom, pWinTo, ids("teams")},
+	},
+
 	// ── enterprise-config ────────────────────────────────────────────
 	// Explicit projections: enterprises minus api_key (the tenancy
 	// secret must never transit this API), users minus operator_pw_hash
@@ -304,6 +362,102 @@ var datasets = map[string]dataset{
 		sql: `SELECT id_user_role, nm_user_role, id_enterprise, permissions, super_user
 			FROM user_roles WHERE id_enterprise = $1`,
 		params: []dsParam{pEnt},
+	},
+
+	// ── variables-context (front4 GET_VARIABLES_CONTEXT bootstrap) ───────
+	// The front4 bootstrap read (src/Context/Query.js) fans out over six
+	// root fields, ALL scoped server-side by the Firebase JWT's uid via
+	// Hasura row-permissions (no where-clause, no vars in the query). Four
+	// of the six are already covered as tenant-scoped datasets:
+	// `enterprise-config` (enterprises MINUS api_key — the whole point of
+	// this migration is to STOP shipping api_key to the browser), `users`,
+	// `user-roles`, and the /v1/language-packs route. The two below add the
+	// per-role entity + menu views. Both are $1-scoped (id_enterprise); the
+	// FINAL per-USER narrowing (which single role row is the caller's) is a
+	// flagged open item — see the report — because #68's JWT path resolves
+	// uid→customer_id and DISCARDS the uid, so no handler can yet scope by
+	// user identity. Returning all of the tenant's role rows is not a
+	// cross-tenant leak (every row is inside $1); front4's adapter selects
+	// its own role by the uid it already holds client-side.
+	"entities-per-user-role": {
+		group: "variables-context", doc: "Per-role entity tree for the bootstrap (v_entities_per_user_role)",
+		// Explicit projection MINUS the `enterprise` jsonb blob: that column
+		// embeds enterprise config that includes api_key on this view, so a
+		// SELECT * would re-leak the secret this migration exists to remove.
+		// front4 reads enterprise scalars from `enterprise-config` instead.
+		sql: `SELECT id_enterprise, id_user_role, nm_user_role,
+			sites, areas, equipments, sectors, shifts, teams
+			FROM v_entities_per_user_role WHERE id_enterprise = $1`,
+		params: []dsParam{pEnt},
+	},
+	"menu-per-user-role": {
+		group: "variables-context", doc: "Per-role menu for the bootstrap (v_menu_per_user_role)",
+		sql:    `SELECT id_enterprise, id_user_role, menu FROM v_menu_per_user_role WHERE id_enterprise = $1`,
+		params: []dsParam{pEnt},
+	},
+
+	// ── settings (front4 Settings/* config reads) ────────────────────────
+	// equipment-downtime-reasons: DowntimeReasons2 reads the per-equipment
+	// downtime_reasons JSON by equipment id (Hasura scopes the enterprise by
+	// permission). We scope enterprise as $1 and take the equipment id as the
+	// client filter ($2), same ownership shape as the overview-detail group.
+	"equipment-downtime-reasons": {
+		group: "settings", doc: "Per-equipment downtime reasons config (equipments.downtime_reasons)",
+		sql: `SELECT id_equipment, nm_equipment, downtime_reasons FROM equipments
+			WHERE id_enterprise = $1 AND id_equipment = $2`,
+		params: []dsParam{pEnt, pEquip},
+	},
+
+	// custom-target-{month,week,day}: Settings/Targets reads the customized
+	// (manually-overridden) target series per equipment from the
+	// equipment_runtime_1{month,week,day} rollup tables. Those tables carry
+	// no id_enterprise, so — like liveUNS — we scope through the equipments
+	// hierarchy ($1) and take the equipment id as the client filter ($2).
+	// The rows are sparse (only target_customized=true), so we omit front4's
+	// ts_value lower-bound and return newest-first under the row cap; the
+	// adapter applies the date bound client-side. front4's nested
+	// `equipment { nm_equipment }` is flattened to an nm_equipment column.
+	"custom-target-month": {
+		group: "settings", doc: "Customized monthly targets per equipment (equipment_runtime_1month)",
+		sql: `SELECT r.ts_value, r.target, e.nm_equipment
+			FROM equipment_runtime_1month r JOIN equipments e USING (id_equipment)
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			AND r.target IS NOT NULL AND r.target_customized = true
+			ORDER BY r.ts_value DESC`,
+		params: []dsParam{pEnt, pEquip},
+	},
+	"custom-target-week": {
+		group: "settings", doc: "Customized weekly targets per equipment (equipment_runtime_1week)",
+		sql: `SELECT r.ts_value, r.target, e.nm_equipment
+			FROM equipment_runtime_1week r JOIN equipments e USING (id_equipment)
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			AND r.target IS NOT NULL AND r.target_customized = true
+			ORDER BY r.ts_value DESC`,
+		params: []dsParam{pEnt, pEquip},
+	},
+	"custom-target-day": {
+		group: "settings", doc: "Customized daily targets per equipment (equipment_runtime_1day)",
+		sql: `SELECT r.ts_value, r.target, e.nm_equipment
+			FROM equipment_runtime_1day r JOIN equipments e USING (id_equipment)
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			AND r.target IS NOT NULL AND r.target_customized = true
+			ORDER BY r.ts_value DESC`,
+		params: []dsParam{pEnt, pEquip},
+	},
+
+	// ── overview-detail extras (OverviewV6 side reads) ───────────────────
+	// site-by-equipment: OverviewV6's AREA_NAME query reads the `sites` table
+	// for the site that CONTAINS a given equipment (Hasura nested filter
+	// sites.Areas.Equipments.id_equipment). equipments carries id_site
+	// denormalized, so an EXISTS on equipments scopes both the ownership
+	// ($2 in the caller's tenant) and the site linkage. Projects the exact
+	// seven columns AREA_NAME selects.
+	"site-by-equipment": {
+		group: "overview-detail", doc: "Site metadata for an equipment (sites, OverviewV6 AREA_NAME)",
+		sql: `SELECT s.id_enterprise, s.nm_site, s.day_begin, s.week_begin, s.week_size, s.timezone, s.language_tag
+			FROM sites s WHERE s.id_enterprise = $1
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_site = s.id_site AND e.id_equipment = $2)`,
+		params: []dsParam{pEnt, pEquip},
 	},
 }
 

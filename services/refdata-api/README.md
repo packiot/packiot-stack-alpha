@@ -25,6 +25,33 @@ A single small Go binary serving two surfaces:
 `/v1/language-packs` · `/v1/downtime-reasons?topics=` ·
 `/v1/catalog` · `/v1/query` · `/v1/screen-config` · `/healthz`
 
+## Named datasets (`POST /v1/query {"dataset": …}`)
+
+The composable API also serves an allowlisted **named-dataset registry**
+(`datasets.go`) that replaces front4's direct Hasura reads — each dataset is a
+`$1`-first, tenant-scoped, projection-shaped read (see `GET /v1/catalog`). The
+front4→refdata migration (#58 Phases 2-3) adds these: `home-uns`,
+`events-timeline-from-po`, `events-timeline-full`, `production-orders-runtimes`,
+`production-orders-with-runtimes`, `entities-per-user-role`, `menu-per-user-role`,
+`equipment-downtime-reasons`, `site-by-equipment`, `custom-target-{month,week,day}`.
+Several front4 reads fold into existing datasets rather than adding new ones:
+GET_TARGET → `production-targets`/`scrap-targets`; ScrapPeriod → `single-period`;
+OEE_OBJ_MONTH → `live-equipment-month` + `oee-targets`; GET_SHIFT_PROD →
+`live-equipment-shift`; LIST_USERS → `users`; USER_LANGUAGE → `/v1/language-packs`.
+
+**VariablesContext (`GET_VARIABLES_CONTEXT`) caveat.** The `enterprise-config`
+dataset already returns `enterprises` **minus `api_key`** — migrating front4's
+bootstrap to it is what removes the secret from browser localStorage. The
+per-role bootstrap views (`entities-per-user-role`, `menu-per-user-role`) are
+scoped by `id_enterprise = $1` only and return **all** of the tenant's role rows;
+the correct per-USER narrowing needs `(id_enterprise, id_user_role)` where
+`id_user_role` is resolved from the caller's Firebase uid. The #68 Bearer path
+resolves `uid → customer_id` and **discards the uid**, so no handler can yet scope
+by user identity — the server-side per-user tightening is a flagged follow-up
+(plumb the verified uid into request context). Until then front4 selects its own
+role client-side from the uid it already holds. `v_entities_per_user_role`'s
+`enterprise` jsonb column (which embeds `api_key`) is deliberately projected out.
+
 ## Tenancy invariant
 
 **customer_id is never client-supplied** — it is derived server-side from
