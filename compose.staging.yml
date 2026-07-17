@@ -1570,8 +1570,20 @@ services:
     # Value lives in /opt/packiot/.env (OPERATOR_EDGE_API_KEY =
     # CPACK-Staging enterprises.api_key). edge-api gets JWT_SECRET via
     # its env_file for the /session usecase (both appended 2026-07-07).
+    #
+    # ADR-0027 Surface-1 (task #57): nginx also injects the tenant read key
+    # on proxied /v1/* reads (refdata-api). refdata derives customer_id from
+    # this key server-side — the operator never names a tenant. This staging
+    # SPA is single-tenant CPACK, so the value is the CPACK entry from
+    # refdata's QUERY_API_KEYS above (stg-cpack-key). It is an opaque read
+    # key, NOT an enterprise id and NOT the enterprises.api_key secret —
+    # refdata maps it to the tenant. Overridable via /opt/packiot/.env;
+    # defaults to the committed staging key so the box works out of the box.
+    # ORDERED PAIR: deploy this BEFORE refdata's auth middleware (PR2) so the
+    # operator sends the key before refdata requires it.
     environment:
       EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
+      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:-stg-cpack-key}
     ports:
       - "127.0.0.1:8083:80"
     networks:
