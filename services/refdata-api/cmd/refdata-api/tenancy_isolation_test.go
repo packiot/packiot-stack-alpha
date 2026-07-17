@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -202,7 +203,7 @@ func TestAuthMiddlewareFailsClosed(t *testing.T) {
 		gotCID, _ = customerIDFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	mw := authMiddleware(keys, exempt, next)
+	mw := authMiddleware(keys, exempt, nil, next) // nil bearer: X-Api-Key path only
 
 	cases := []struct {
 		name      string
@@ -238,8 +239,8 @@ func TestAuthMiddlewareFailsClosed(t *testing.T) {
 // yields an empty map ⇒ EVERY non-infra route 401s. Credential-source failure
 // denies all access; it never falls through to "no filter".
 func TestAuthMiddlewareEmptyKeysDeniesAll(t *testing.T) {
-	mw := authMiddleware(map[string]int{}, infraExemptSet(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("handler reached with an empty keys map — must fail closed")
+	mw := authMiddleware(map[string]int{}, infraExemptSet(), nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler reached with an empty keys map and nil bearer — must fail closed")
 	}))
 	req := httptest.NewRequest("GET", "/v1/query", nil)
 	req.Header.Set("X-Api-Key", "anything")
@@ -247,5 +248,152 @@ func TestAuthMiddlewareEmptyKeysDeniesAll(t *testing.T) {
 	mw.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("empty keys: code=%d, want 401", rr.Code)
+	}
+}
+
+// ── task #68: the Firebase-JWT tenant path, same rigor as X-Api-Key ────────
+//
+// These extend the isolation gate to the SECOND credential type. The property
+// under test is identical to the key path: the tenant is derived SERVER-SIDE
+// (here from the verified uid, never from anything the browser names) and
+// injected as the context customer_id that makeHandler binds at $1. A bad or
+// unknown token must fail closed to 401 without reaching a handler.
+
+// fakeBearer builds a bearerResolver from a verified-uid→cid table, recording
+// whether it was invoked (to prove X-Api-Key precedence short-circuits it).
+type fakeBearer struct {
+	table  map[string]int // token string → resolved customer_id
+	called bool
+}
+
+func (f *fakeBearer) resolve(_ context.Context, token string) (int, error) {
+	f.called = true
+	cid, ok := f.table[token]
+	if !ok {
+		return 0, errUnknownUID
+	}
+	return cid, nil
+}
+
+// TestBearerPathResolvesTenantServerSide proves the JWT path binds the
+// server-derived customer_id into context (→ $1), and fails closed on a bad or
+// unknown token — the front4 SPA never supplies a tenant or a key.
+func TestBearerPathResolvesTenantServerSide(t *testing.T) {
+	fb := &fakeBearer{table: map[string]int{"tok-A": 11, "tok-B": 22}}
+	var reached bool
+	var gotCID int
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		gotCID, _ = customerIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := authMiddleware(map[string]int{}, infraExemptSet(), fb.resolve, next)
+
+	cases := []struct {
+		name      string
+		authz     string // Authorization header value ("" = unset)
+		wantCode  int
+		wantReach bool
+		wantCID   int
+	}{
+		{"valid token A → tenant 11", "Bearer tok-A", http.StatusOK, true, 11},
+		{"valid token B → tenant 22 (uid drives tenant)", "Bearer tok-B", http.StatusOK, true, 22},
+		{"lowercase scheme accepted", "bearer tok-A", http.StatusOK, true, 11},
+		{"unknown token (valid sig, no enterprise) → 401", "Bearer tok-unknown", http.StatusUnauthorized, false, 0},
+		{"malformed Authorization → 401", "Basic zzz", http.StatusUnauthorized, false, 0},
+		{"empty bearer → 401", "Bearer ", http.StatusUnauthorized, false, 0},
+		{"no credential at all → 401", "", http.StatusUnauthorized, false, 0},
+	}
+	for _, c := range cases {
+		reached, gotCID = false, 0
+		req := httptest.NewRequest("GET", "/v1/operator-po-list", nil)
+		if c.authz != "" {
+			req.Header.Set("Authorization", c.authz)
+		}
+		rr := httptest.NewRecorder()
+		mw.ServeHTTP(rr, req)
+		if rr.Code != c.wantCode || reached != c.wantReach || gotCID != c.wantCID {
+			t.Errorf("%s: code=%d reached=%v cid=%d; want code=%d reached=%v cid=%d",
+				c.name, rr.Code, reached, gotCID, c.wantCode, c.wantReach, c.wantCID)
+		}
+	}
+}
+
+// TestBearerVerifyErrorFailsClosed: a token that fails verification
+// (bad/expired/wrong-project — the resolver returns any error) → 401, no
+// handler, no tenant. Uses a resolver that always errors, standing in for a
+// failed VerifyIDToken.
+func TestBearerVerifyErrorFailsClosed(t *testing.T) {
+	badResolver := func(context.Context, string) (int, error) { return 0, errEmptySubject }
+	mw := authMiddleware(map[string]int{}, infraExemptSet(), badResolver,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("handler reached with an unverifiable token — must fail closed")
+		}))
+	req := httptest.NewRequest("GET", "/v1/query", nil)
+	req.Header.Set("Authorization", "Bearer forged.jwt.here")
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("unverifiable token: code=%d, want 401", rr.Code)
+	}
+}
+
+// TestBearerDisabledWhenNilResolver: with the Bearer path unconfigured (nil
+// resolver), a Bearer credential must 401 — never silently succeed.
+func TestBearerDisabledWhenNilResolver(t *testing.T) {
+	mw := authMiddleware(map[string]int{"k": 5}, infraExemptSet(), nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("handler reached with a Bearer token but nil resolver — must fail closed")
+		}))
+	req := httptest.NewRequest("GET", "/v1/query", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("nil bearer resolver: code=%d, want 401", rr.Code)
+	}
+}
+
+// TestXApiKeyWinsOverBearer documents+enforces the precedence: a present
+// X-Api-Key is authoritative. A VALID key resolves via the key and never
+// consults the Bearer resolver; an INVALID key 401s WITHOUT falling through to
+// Bearer (no cross-credential probing in one request).
+func TestXApiKeyWinsOverBearer(t *testing.T) {
+	fb := &fakeBearer{table: map[string]int{"tok-A": 99}}
+	var gotCID int
+	var reached bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		gotCID, _ = customerIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := authMiddleware(map[string]int{"good": 7}, infraExemptSet(), fb.resolve, next)
+
+	// (1) valid key + bearer both present → key wins, bearer NOT consulted.
+	fb.called, reached, gotCID = false, false, 0
+	req := httptest.NewRequest("GET", "/v1/operator-po-list", nil)
+	req.Header.Set("X-Api-Key", "good")
+	req.Header.Set("Authorization", "Bearer tok-A")
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || gotCID != 7 || !reached {
+		t.Errorf("valid key + bearer: code=%d cid=%d reached=%v; want 200 cid=7 reached=true", rr.Code, gotCID, reached)
+	}
+	if fb.called {
+		t.Error("bearer resolver was consulted although a valid X-Api-Key was present — key must win")
+	}
+
+	// (2) invalid key + valid bearer → 401, bearer NOT consulted (no fallthrough).
+	fb.called, reached, gotCID = false, false, 0
+	req = httptest.NewRequest("GET", "/v1/operator-po-list", nil)
+	req.Header.Set("X-Api-Key", "wrong")
+	req.Header.Set("Authorization", "Bearer tok-A")
+	rr = httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized || reached {
+		t.Errorf("invalid key + valid bearer: code=%d reached=%v; want 401 reached=false", rr.Code, reached)
+	}
+	if fb.called {
+		t.Error("bearer resolver was consulted after a bad X-Api-Key — a supplied key is authoritative, no fallthrough")
 	}
 }

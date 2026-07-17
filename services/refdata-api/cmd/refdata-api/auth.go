@@ -1,6 +1,6 @@
 // auth.go — ADR-0027 Surface-1: the single tenant-injection authority.
 //
-// The invariant: X-Api-Key → customer_id → $1. The client NEVER names a
+// The invariant: credential → customer_id → $1. The client NEVER names a
 // tenant (no path/query/body enterprise id). The server derives it from
 // the credential and binds it as the first query parameter of every read.
 //
@@ -10,6 +10,13 @@
 // middleware in front of the WHOLE mux, so no route — legacy or new — can
 // skip it, and makes the resolved customer_id travel to handlers via
 // request context (never a handler arg the client could influence).
+//
+// task #68 adds a SECOND credential type behind the same authority: a
+// per-user Firebase ID token (`Authorization: Bearer <jwt>`) for the static
+// front4 SPA, which holds no shared key. The Bearer path (auth_firebase.go)
+// verifies the token and derives the tenant from the users table server-side.
+// Both credential types resolve to the SAME context-injected customer_id, so
+// every downstream handler is identical no matter how the caller authed.
 package main
 
 import (
@@ -101,24 +108,69 @@ func infraExemptSet() map[string]bool {
 	return exempt
 }
 
-// authMiddleware resolves X-Api-Key → customer_id in front of the whole mux
-// and injects it into the request context. Fail-closed:
+// bearerResolver verifies a `Authorization: Bearer` credential (a Firebase ID
+// token) and returns its server-derived customer_id. A nil resolver disables
+// the Bearer path entirely (X-Api-Key only). The concrete implementation is
+// firebaseBearerAuth.resolve (auth_firebase.go).
+type bearerResolver func(ctx context.Context, token string) (int, error)
+
+// authMiddleware resolves a credential → customer_id in front of the whole mux
+// and injects it into the request context. Two credential types, ONE resolved
+// tenant.
+//
+// Precedence (documented invariant): X-Api-Key WINS if present. A supplied
+// X-Api-Key is authoritative — a bad one 401s rather than silently falling
+// through to Bearer, so a caller can't probe both credential spaces in one
+// request (confused-deputy avoidance). Only when NO X-Api-Key is offered do we
+// try the Bearer token (the front4 SPA path).
+//
+// Fail-closed, exhaustively:
 //   - infra routes pass through unauthenticated (healthcheck + scrape);
-//   - any other route with no / unknown key → 401, no DB touch;
-//   - an empty keys map (missing/malformed QUERY_API_KEYS) → EVERY non-infra
-//     route 401s. A credential-source failure denies all access; it never
-//     falls through to "no filter".
-func authMiddleware(keys map[string]int, exempt map[string]bool, next http.Handler) http.Handler {
+//   - X-Api-Key present but unknown → 401, no DB touch;
+//   - no X-Api-Key, Bearer present but resolver nil (path disabled) → 401;
+//   - no X-Api-Key, Bearer present but invalid/expired/wrong-project token, or
+//     valid token whose uid maps to no active enterprise → 401, no tenant leak;
+//   - neither credential offered → 401;
+//   - an empty keys map AND a nil bearer resolver → EVERY non-infra route 401s.
+//     A credential-source failure denies all access; it never falls through to
+//     "no tenant filter".
+func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerResolver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if exempt[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
-		cid, ok := keys[r.Header.Get("X-Api-Key")]
-		if !ok {
-			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
+		// 1) X-Api-Key is authoritative when present (operator/service creds).
+		if raw := r.Header.Get("X-Api-Key"); raw != "" {
+			cid, ok := keys[raw]
+			if !ok {
+				unauthorized(w)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
+		// 2) Else fall back to the Firebase Bearer token (front4 SPA).
+		if tok, err := bearerToken(r); err == nil {
+			if bearer == nil {
+				unauthorized(w)
+				return
+			}
+			cid, err := bearer(r.Context(), tok)
+			if err != nil {
+				unauthorized(w)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
+			return
+		}
+		// 3) No usable credential.
+		unauthorized(w)
 	})
+}
+
+// unauthorized is the single 401 response — a generic message that never
+// reveals which credential/claim failed (no oracle for token/key probing).
+func unauthorized(w http.ResponseWriter) {
+	http.Error(w, `{"error":"missing or invalid credentials"}`, http.StatusUnauthorized)
 }

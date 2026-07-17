@@ -199,12 +199,23 @@ func main() {
 	logger.Info("refdata-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
 	// ADR-0027 Surface-1: the single tenant-injection authority, applied as
 	// middleware in front of the WHOLE mux so no route can skip it. It
-	// resolves X-Api-Key → customer_id (fail-closed: no/unknown key → 401, no
-	// DB touch; empty QUERY_API_KEYS → everything 401s) and injects the id via
-	// context. /healthz + /metrics are exempt (ops probes, no tenant data).
+	// resolves a credential → customer_id (fail-closed: no/invalid credential →
+	// 401, no DB touch) and injects the id via context. /healthz + /metrics are
+	// exempt (ops probes, no tenant data).
+	//
+	// Two credential types resolve to the SAME tenant:
+	//   - X-Api-Key → customer_id via the static QUERY_API_KEYS map (operator).
+	//   - Authorization: Bearer <firebase-jwt> → uid → id_enterprise via the
+	//     users table (task #68, the front4 static-SPA path). Public-key token
+	//     verification: no secret needed. The project id is config
+	//     (FIREBASE_PROJECT_ID, default fbpackiot); the JWKS/x509 URL is a
+	//     public constant. The uid→tenant lookup is cached (5-min TTL).
 	keys := parseAPIKeys(os.Getenv("QUERY_API_KEYS"))
-	logger.Info("tenant auth configured", slog.Int("keys", len(keys)))
-	authed := authMiddleware(keys, infraExemptSet(), mux)
+	projectID := getenv("FIREBASE_PROJECT_ID", defaultFirebaseProject)
+	bearer := newFirebaseBearerAuth(newFirebaseVerifier(projectID, nil), pool, 5*time.Minute)
+	logger.Info("tenant auth configured",
+		slog.Int("keys", len(keys)), slog.String("firebase_project", projectID))
+	authed := authMiddleware(keys, infraExemptSet(), bearer.resolve, mux)
 	// RED metrics on every /v1 route → the same promhttp default registry
 	// /metrics already serves. httpmetrics wraps the auth middleware so 401s
 	// are counted too; otelhttp is the outermost server span (the trace root,
