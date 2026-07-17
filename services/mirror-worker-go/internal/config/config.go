@@ -252,7 +252,7 @@ func Load() (*Config, error) {
 		ReconcileEventsIntervalSec:    getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
 		ReconcileEventsBatchSize:      getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
 
-		ReconcileEventsCloseSweepEnabled:     getenvBool("RECONCILE_EVENTS_CLOSE_SWEEP_ENABLED", true),
+		ReconcileEventsCloseSweepEnabled:     getenvBool("RECONCILE_EVENTS_CLOSE_SWEEP_ENABLED", false),
 		ReconcileEventsCloseSweepEveryNTicks: getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_EVERY_N_TICKS", 10),
 		ReconcileEventsCloseSweepRecentHours: getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_RECENT_HOURS", 72),
 		ReconcileEventsCloseSweepTimeoutSec:  getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_TIMEOUT_SEC", 30),
