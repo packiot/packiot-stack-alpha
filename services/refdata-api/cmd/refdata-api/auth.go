@@ -54,7 +54,14 @@ type mountedRoute struct {
 // middleware to the handlers via request context.
 type ctxKey int
 
-const customerIDKey ctxKey = 0
+const (
+	customerIDKey ctxKey = 0
+	// userRoleKey carries the caller's server-derived id_user_role (task #70).
+	// ONLY the Firebase-JWT path sets it — the X-Api-Key operator path has no
+	// user identity, so its absence is the fail-closed signal for the two
+	// per-user-role bootstrap datasets. Never client-supplied.
+	userRoleKey ctxKey = 1
+)
 
 func withCustomerID(ctx context.Context, id int) context.Context {
 	return context.WithValue(ctx, customerIDKey, id)
@@ -63,6 +70,35 @@ func withCustomerID(ctx context.Context, id int) context.Context {
 func customerIDFromContext(ctx context.Context) (int, bool) {
 	id, ok := ctx.Value(customerIDKey).(int)
 	return id, ok
+}
+
+// withUserRole stashes the caller's single resolved id_user_role. Set only on
+// the Bearer path, and only when the users row actually has a role (a NULL
+// users.user_roles leaves it unset → role datasets fail closed).
+func withUserRole(ctx context.Context, roleID int) context.Context {
+	return context.WithValue(ctx, userRoleKey, roleID)
+}
+
+// userRoleFromContext returns the caller's id_user_role and whether one was
+// resolved. ok=false means "no user axis" (X-Api-Key path, or a role-less
+// user) — the role bootstrap datasets must reject rather than emit an
+// unscoped, tenant-wide role list.
+func userRoleFromContext(ctx context.Context) (int, bool) {
+	id, ok := ctx.Value(userRoleKey).(int)
+	return id, ok
+}
+
+// resolvedIdentity is what a credential resolves to server-side. Both
+// credential types yield a customerID (the tenant → $1). ONLY the Firebase
+// Bearer path yields a userRole (the caller's single id_user_role → $2 on the
+// per-user-role bootstrap datasets); the X-Api-Key operator path has no user
+// axis, so hasRole is false and role-scoped datasets fail closed. A user whose
+// users.user_roles is NULL also resolves hasRole=false (tenant still valid, so
+// every non-role dataset works; only the two role datasets reject).
+type resolvedIdentity struct {
+	customerID int
+	userRole   int
+	hasRole    bool
 }
 
 // queryAPIRoutes are the composable-query-API routes registered by
@@ -109,10 +145,11 @@ func infraExemptSet() map[string]bool {
 }
 
 // bearerResolver verifies a `Authorization: Bearer` credential (a Firebase ID
-// token) and returns its server-derived customer_id. A nil resolver disables
-// the Bearer path entirely (X-Api-Key only). The concrete implementation is
-// firebaseBearerAuth.resolve (auth_firebase.go).
-type bearerResolver func(ctx context.Context, token string) (int, error)
+// token) and returns the server-derived identity: the tenant (always) and,
+// when the users row has one, the caller's id_user_role (task #70). A nil
+// resolver disables the Bearer path entirely (X-Api-Key only). The concrete
+// implementation is firebaseBearerAuth.resolve (auth_firebase.go).
+type bearerResolver func(ctx context.Context, token string) (resolvedIdentity, error)
 
 // authMiddleware resolves a credential → customer_id in front of the whole mux
 // and injects it into the request context. Two credential types, ONE resolved
@@ -150,18 +187,27 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 			next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
 			return
 		}
-		// 2) Else fall back to the Firebase Bearer token (front4 SPA).
+		// 2) Else fall back to the Firebase Bearer token (front4 SPA). The
+		// resolver derives BOTH the tenant and (task #70) the caller's single
+		// id_user_role from the verified uid — both go into context. The role
+		// is stashed only when present (a role-less user still authenticates
+		// and reaches every non-role dataset); the two per-user-role datasets
+		// read userRoleFromContext and fail closed when it is absent.
 		if tok, err := bearerToken(r); err == nil {
 			if bearer == nil {
 				unauthorized(w)
 				return
 			}
-			cid, err := bearer(r.Context(), tok)
+			id, err := bearer(r.Context(), tok)
 			if err != nil {
 				unauthorized(w)
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
+			ctx := withCustomerID(r.Context(), id.customerID)
+			if id.hasRole {
+				ctx = withUserRole(ctx, id.userRole)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		// 3) No usable credential.

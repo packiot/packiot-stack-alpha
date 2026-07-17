@@ -30,12 +30,31 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// errRoleDatasetNeedsUser is returned by compileDataset when a per-user-role
+// dataset is requested without a server-resolved user identity — i.e. via the
+// X-Api-Key operator path (no user axis) or by a role-less user. The handler
+// maps it to 403: the request is well-formed and authenticated, but this
+// dataset is front4-JWT-only. Failing closed here is the whole point — it is
+// the guard that stops anyone accidentally shipping an unscoped, tenant-wide
+// role list to a caller that never proved which role is theirs (task #70 §3).
+var errRoleDatasetNeedsUser = errors.New("dataset requires user context (front4 Firebase JWT); not available via X-Api-Key")
+
+// callerRole is the server-derived per-user axis threaded into compileDataset
+// for the two role bootstrap datasets. It comes from userRoleFromContext (set
+// only on the verified-JWT path), NEVER from the request body. present=false ⇒
+// no user identity ⇒ the role datasets fail closed with errRoleDatasetNeedsUser.
+type callerRole struct {
+	id      int
+	present bool
+}
 
 // ── Parameter model ──────────────────────────────────────────────────
 //
@@ -55,6 +74,7 @@ const (
 	pBool                       // filters.<name>: bool, default false
 	pShiftFiltered              // derived: len(filters.shifts) > 0
 	pTeamFiltered               // derived: len(filters.teams) > 0
+	pUserRole                   // task #70: server-derived id_user_role → $2; NEVER client-supplied; absent ⇒ errRoleDatasetNeedsUser
 )
 
 type dsParam struct {
@@ -70,6 +90,7 @@ func oneOf(name string, vals ...string) dsParam {
 
 var (
 	pEnt     = dsParam{kind: pEnterprise}
+	pRole    = dsParam{kind: pUserRole} // no name ⇒ not a client-settable filter (server-derived only)
 	pWinFrom = dsParam{kind: pFrom}
 	pWinTo   = dsParam{kind: pTo}
 	pEquip   = dsParam{kind: pEquipmentID, name: "equipment"}
@@ -372,28 +393,30 @@ var datasets = map[string]dataset{
 	// `enterprise-config` (enterprises MINUS api_key — the whole point of
 	// this migration is to STOP shipping api_key to the browser), `users`,
 	// `user-roles`, and the /v1/language-packs route. The two below add the
-	// per-role entity + menu views. Both are $1-scoped (id_enterprise); the
-	// FINAL per-USER narrowing (which single role row is the caller's) is a
-	// flagged open item — see the report — because #68's JWT path resolves
-	// uid→customer_id and DISCARDS the uid, so no handler can yet scope by
-	// user identity. Returning all of the tenant's role rows is not a
-	// cross-tenant leak (every row is inside $1); front4's adapter selects
-	// its own role by the uid it already holds client-side.
+	// per-role entity + menu views. TWO-AXIS scoping (task #70): $1 =
+	// id_enterprise (tenant) AND $2 = id_user_role (the caller's single role).
+	// The role is SERVER-DERIVED from the verified Firebase uid (users.user_roles
+	// → userRoleFromContext), never client-supplied — pRole has no filter name,
+	// so a request body can neither set nor override it. Absent user context
+	// (the X-Api-Key operator path, or a role-less user) ⇒ compileDataset fails
+	// closed with errRoleDatasetNeedsUser (403), so no unscoped tenant-wide role
+	// list is ever emitted. This replaces #68's uid-discarding gap: the JWT path
+	// now resolves uid→(tenant, role) and stashes the role in request context.
 	"entities-per-user-role": {
-		group: "variables-context", doc: "Per-role entity tree for the bootstrap (v_entities_per_user_role)",
+		group: "variables-context", doc: "Per-role entity tree for the bootstrap (v_entities_per_user_role), scoped to the caller's role",
 		// Explicit projection MINUS the `enterprise` jsonb blob: that column
 		// embeds enterprise config that includes api_key on this view, so a
 		// SELECT * would re-leak the secret this migration exists to remove.
 		// front4 reads enterprise scalars from `enterprise-config` instead.
 		sql: `SELECT id_enterprise, id_user_role, nm_user_role,
 			sites, areas, equipments, sectors, shifts, teams
-			FROM v_entities_per_user_role WHERE id_enterprise = $1`,
-		params: []dsParam{pEnt},
+			FROM v_entities_per_user_role WHERE id_enterprise = $1 AND id_user_role = $2`,
+		params: []dsParam{pEnt, pRole},
 	},
 	"menu-per-user-role": {
-		group: "variables-context", doc: "Per-role menu for the bootstrap (v_menu_per_user_role)",
-		sql:    `SELECT id_enterprise, id_user_role, menu FROM v_menu_per_user_role WHERE id_enterprise = $1`,
-		params: []dsParam{pEnt},
+		group: "variables-context", doc: "Per-role menu for the bootstrap (v_menu_per_user_role), scoped to the caller's role",
+		sql:    `SELECT id_enterprise, id_user_role, menu FROM v_menu_per_user_role WHERE id_enterprise = $1 AND id_user_role = $2`,
+		params: []dsParam{pEnt, pRole},
 	},
 
 	// ── settings (front4 Settings/* config reads) ────────────────────────
@@ -475,8 +498,10 @@ type datasetReq struct {
 }
 
 // compileDataset validates a dataset request against the registry and
-// produces SQL + args. customerID comes from auth, never the body.
-func compileDataset(q datasetReq, customerID int) (string, []any, error) {
+// produces SQL + args. customerID (→ $1) and, for the per-user-role datasets,
+// the caller's role (→ $2) both come from auth (server-derived), never the
+// body. role.present=false makes any pUserRole dataset fail closed.
+func compileDataset(q datasetReq, customerID int, role callerRole) (string, []any, error) {
 	ds, ok := datasets[q.Dataset]
 	if !ok {
 		return "", nil, fmt.Errorf("unknown dataset %q", q.Dataset)
@@ -507,6 +532,14 @@ func compileDataset(q datasetReq, customerID int) (string, []any, error) {
 		switch p.kind {
 		case pEnterprise:
 			args = append(args, customerID)
+		case pUserRole:
+			// Server-derived from the verified Firebase uid, NEVER from the
+			// body. Absent (X-Api-Key path, or a role-less user) ⇒ fail closed
+			// so an unscoped tenant-wide role list can never be emitted.
+			if !role.present {
+				return "", nil, errRoleDatasetNeedsUser
+			}
+			args = append(args, role.id)
 		case pFrom:
 			args = append(args, q.Window.From)
 		case pTo:
@@ -596,6 +629,7 @@ func datasetCatalog() map[string]any {
 	out := make(map[string]any, len(datasets))
 	for name, ds := range datasets {
 		filters := map[string]string{}
+		requiresUser := false
 		for _, p := range ds.params {
 			switch p.kind {
 			case pIDList:
@@ -606,11 +640,18 @@ func datasetCatalog() map[string]any {
 				filters[p.name] = "enum: " + strings.Join(p.enum, "|") + " (default " + p.enum[0] + ")"
 			case pBool:
 				filters[p.name] = "bool (default false)"
+			case pUserRole:
+				// Not a client filter — flag it so callers know this dataset is
+				// front4-JWT-only (server-derived id_user_role; 403 via X-Api-Key).
+				requiresUser = true
 			}
 		}
 		entry := map[string]any{
 			"group": ds.group, "description": ds.doc,
 			"windowed": ds.windowed, "filters": filters,
+		}
+		if requiresUser {
+			entry["requires_user_context"] = true
 		}
 		if ds.windowed {
 			entry["max_window"] = ds.maxWindow.String()

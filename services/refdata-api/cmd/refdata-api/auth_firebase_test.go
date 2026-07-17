@@ -203,24 +203,24 @@ func (f funcVerifier) Verify(ctx context.Context, tok string) (string, error) { 
 func TestBearerAuthResolveDerivesTenantFromUID(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("uid drives tenant + positive cache", func(t *testing.T) {
+	t.Run("uid drives tenant + role + positive cache", func(t *testing.T) {
 		var lookups int
 		a := &firebaseBearerAuth{
 			verify: funcVerifier(func(_ context.Context, _ string) (string, error) { return "uid-42", nil }),
-			lookup: func(_ context.Context, uid string) (int, error) {
+			lookup: func(_ context.Context, uid string) (resolvedIdentity, error) {
 				lookups++
 				if uid != "uid-42" {
-					t.Fatalf("lookup got uid=%q; tenant must come from the verified uid", uid)
+					t.Fatalf("lookup got uid=%q; tenant+role must come from the verified uid", uid)
 				}
-				return 42, nil
+				return resolvedIdentity{customerID: 42, userRole: 9, hasRole: true}, nil
 			},
 			ttl:   time.Minute,
 			cache: map[string]cacheEntry{},
 		}
 		for i := 0; i < 3; i++ {
-			cid, err := a.resolve(ctx, "any-token")
-			if err != nil || cid != 42 {
-				t.Fatalf("resolve #%d: cid=%d err=%v; want 42,nil", i, cid, err)
+			id, err := a.resolve(ctx, "any-token")
+			if err != nil || id.customerID != 42 || id.userRole != 9 || !id.hasRole {
+				t.Fatalf("resolve #%d: id=%+v err=%v; want {42,9,true},nil", i, id, err)
 			}
 		}
 		if lookups != 1 {
@@ -228,12 +228,27 @@ func TestBearerAuthResolveDerivesTenantFromUID(t *testing.T) {
 		}
 	})
 
+	t.Run("role-less user → tenant resolves, hasRole=false (not an error)", func(t *testing.T) {
+		a := &firebaseBearerAuth{
+			verify: funcVerifier(func(_ context.Context, _ string) (string, error) { return "uid-norole", nil }),
+			lookup: func(context.Context, string) (resolvedIdentity, error) {
+				return resolvedIdentity{customerID: 7}, nil // NULL user_roles → hasRole false
+			},
+			ttl:   time.Minute,
+			cache: map[string]cacheEntry{},
+		}
+		id, err := a.resolve(ctx, "tok")
+		if err != nil || id.customerID != 7 || id.hasRole {
+			t.Fatalf("role-less resolve: id=%+v err=%v; want {7,_,false},nil (tenant valid, no role axis)", id, err)
+		}
+	})
+
 	t.Run("verify error → fail closed, no lookup", func(t *testing.T) {
 		a := &firebaseBearerAuth{
 			verify: funcVerifier(func(_ context.Context, _ string) (string, error) { return "", errEmptySubject }),
-			lookup: func(context.Context, string) (int, error) {
+			lookup: func(context.Context, string) (resolvedIdentity, error) {
 				t.Fatal("lookup must not run when verify fails")
-				return 0, nil
+				return resolvedIdentity{}, nil
 			},
 			ttl:   time.Minute,
 			cache: map[string]cacheEntry{},
@@ -246,7 +261,7 @@ func TestBearerAuthResolveDerivesTenantFromUID(t *testing.T) {
 	t.Run("unknown uid → errUnknownUID", func(t *testing.T) {
 		a := &firebaseBearerAuth{
 			verify: funcVerifier(func(_ context.Context, _ string) (string, error) { return "ghost", nil }),
-			lookup: func(context.Context, string) (int, error) { return 0, errUnknownUID },
+			lookup: func(context.Context, string) (resolvedIdentity, error) { return resolvedIdentity{}, errUnknownUID },
 			ttl:    time.Minute,
 			cache:  map[string]cacheEntry{},
 		}
@@ -314,6 +329,12 @@ func TestUsersEnterpriseSQLIsHardened(t *testing.T) {
 	}
 	if contains(sql, "api_key") {
 		t.Errorf("usersEnterpriseSQL must never touch api_key:\n%s", sql)
+	}
+	// task #70: it also resolves the caller's single role (users.user_roles).
+	// A future edit that drops this column would silently break per-user-role
+	// scoping (the datasets would bind a zero role and return no rows).
+	if !contains(sql, "user_roles") {
+		t.Errorf("usersEnterpriseSQL must select users.user_roles for the role axis:\n%s", sql)
 	}
 }
 
