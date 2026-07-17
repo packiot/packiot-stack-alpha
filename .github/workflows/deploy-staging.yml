@@ -199,6 +199,26 @@ jobs:
         # last log lines. A green deploy can no longer mask a down service
         # (same hardening theme as #39/#40). `.env` is symlinked by the earlier
         # "Link .env" step so `config`/`ps` resolve cleanly here.
+        #
+        # SECOND-MISS FIX (this PR): the create→start strand has a SECOND
+        # trigger the original gate could not see. In #494 `up -d` exited 0 and
+        # the gate ran. But `up -d` can ALSO abort NON-zero mid-convergence —
+        # recreate service A, then hit a host-port clash bringing up service B —
+        # and leave A in state=`created`, never started (run 29609399636:
+        # `Error response from daemon: Address already in use` stranded
+        # mirror-worker-go in `created`). In that mode the FAILED Deploy step
+        # skipped this gate entirely (no `if:` → default `success()`), so the
+        # deploy went red with only the opaque daemon error and ZERO per-service
+        # diagnosis of WHICH container was left down. `if: ${{ !cancelled() }}`
+        # makes the gate run after Deploy whether it passed OR failed (only a
+        # cancellation skips it), so a partial/aborted `up -d` still gets the
+        # precise `mirror-worker-go: state=created + last 40 log lines` verdict
+        # instead of a mystery red. Running is the PRIMARY assertion; a container
+        # that never started can't be "healthy" or "starting" — it's just down.
+        # `current_states()` also lower-cases State/Health so a compose build
+        # that emits `Created`/`Exited` still hits the fail branch immediately
+        # instead of polling to the deadline.
+        if: ${{ !cancelled() }}
         timeout-minutes: 6
         run: |
           set -euo pipefail
@@ -244,7 +264,14 @@ jobs:
                   if not line:
                       continue
                   r = json.loads(line)
-                  d[r["Service"]] = (r.get("State"), r.get("Health") or "", r.get("ExitCode"))
+                  # Normalize State/Health to lowercase: some compose builds
+                  # emit `Created`/`Exited`/`Healthy` (capitalized). Without this
+                  # a `created` service would miss the fail branch and poll to the
+                  # deadline instead of failing fast. `running` is the primary
+                  # verdict; health is a secondary assertion layered on top.
+                  d[r["Service"]] = ((r.get("State") or "").lower(),
+                                     (r.get("Health") or "").lower(),
+                                     r.get("ExitCode"))
               return d
 
           # 2) Poll every expected service to a terminal verdict (or deadline).
