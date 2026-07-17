@@ -68,6 +68,13 @@ func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 		"h_piot_get_targets", "production_targets", "scrap_targets", "oee_targets",
 		// enterprise-config
 		"enterprises", "user_roles", "users",
+		// front4→refdata migration (#58 Phases 2-3) net-new datasets
+		"h_piot_home_uns",
+		"h_piot_get_events_timeline_from_po", "h_piot_get_events_timeline_full_with_filter_3",
+		"h_piot_production_orders_runtimes", "h_piot_production_orders_with_runtimes4",
+		"v_entities_per_user_role", "v_menu_per_user_role",
+		"equipment_runtime_1month", "equipment_runtime_1week", "equipment_runtime_1day",
+		"sites", "downtime_reasons",
 	}
 	all := ""
 	for _, ds := range datasets {
@@ -176,6 +183,127 @@ func TestEnterpriseConfigExcludesSecrets(t *testing.T) {
 	for _, secret := range []string{"operator_pw_hash", "id_user_firebase", "SELECT *"} {
 		if strings.Contains(usersSQL, secret) {
 			t.Errorf("users dataset must not expose %q: %s", secret, usersSQL)
+		}
+	}
+}
+
+// ── front4→refdata migration datasets (#58 Phases 2-3) ───────────────────
+//
+// These assert the SHAPE contract of the 13-read gap: the Group-A functions
+// bind the tenant at $1 and self-scope; the Group-B PO function is fenced by
+// an outer WHERE id_enterprise = $1; the per-role bootstrap views project the
+// api_key-bearing `enterprise` jsonb OUT; and the per-equipment settings/
+// overview reads carry the ownership arg at $2.
+
+func TestHomeUnsBindsTenantAtDollarOne(t *testing.T) {
+	sql, args, err := compileDataset(datasetReq{Dataset: "home-uns"}, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "h_piot_home_uns($1)") || args[0] != 42 {
+		t.Errorf("home-uns must call the function with the injected tenant at $1: %s %v", sql, args)
+	}
+}
+
+// events-timeline-from-po is Group B: the function has NO enterprise arg, so
+// the tenant fence MUST be the outer WHERE id_enterprise = $1, with the PO id
+// at $2. Without that wrapper a caller could probe other tenants' PO ids.
+func TestEventsTimelineFromPOIsFenced(t *testing.T) {
+	if _, _, err := compileDataset(datasetReq{Dataset: "events-timeline-from-po"}, 42); err == nil {
+		t.Error("events-timeline-from-po compiled without the required production_order filter")
+	}
+	sql, args, err := compileDataset(datasetReq{Dataset: "events-timeline-from-po",
+		Filters: map[string]json.RawMessage{"production_order": json.RawMessage(`915`)}}, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "WHERE id_enterprise = $1") {
+		t.Errorf("events-timeline-from-po must fence the tenant with an outer WHERE id_enterprise = $1: %s", sql)
+	}
+	if !strings.Contains(sql, "h_piot_get_events_timeline_from_po($2)") {
+		t.Errorf("events-timeline-from-po must pass the PO id at $2 (client), tenant at $1: %s", sql)
+	}
+	if args[0] != 42 || args[1] != 915 {
+		t.Errorf("events-timeline-from-po args wrong: %v", args)
+	}
+}
+
+// The windowed migration functions (Group A) take the tenant at $1 and the
+// window as [tsstart, tsend]; the id-filter args are '{}' when absent.
+func TestWindowedMigrationFunctionsBindTenantAndWindow(t *testing.T) {
+	win := &dsWindow{From: time.Now().Add(-30 * 24 * time.Hour), To: time.Now()}
+	for _, name := range []string{"events-timeline-full", "production-orders-runtimes", "production-orders-with-runtimes"} {
+		sql, args, err := compileDataset(datasetReq{Dataset: name, Window: win}, 42)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if args[0] != 42 {
+			t.Errorf("%s: tenant must be $1, got %v", name, args[0])
+		}
+		if !strings.Contains(sql, "LIMIT 10000") {
+			t.Errorf("%s: row cap missing", name)
+		}
+		// window bounds must be bound as timestamps, never absent
+		var sawFrom, sawTo bool
+		for _, a := range args {
+			if tv, ok := a.(time.Time); ok {
+				sawFrom = sawFrom || tv.Equal(win.From)
+				sawTo = sawTo || tv.Equal(win.To)
+			}
+		}
+		if !sawFrom || !sawTo {
+			t.Errorf("%s: window bounds not bound: %v", name, args)
+		}
+	}
+	// events-timeline-full pins the optional _id_production_order to a literal
+	// NULL so the window binds at $6/$7 — assert the NULL literal is present and
+	// there is no $8 (7 params).
+	sql, _, _ := compileDataset(datasetReq{Dataset: "events-timeline-full", Window: win}, 42)
+	if !strings.Contains(sql, ",NULL,$6,$7)") {
+		t.Errorf("events-timeline-full must pin _id_production_order to NULL: %s", sql)
+	}
+}
+
+// The two bootstrap role views must project the api_key-bearing `enterprise`
+// jsonb column OUT: v_entities_per_user_role.enterprise embeds enterprise
+// config incl. api_key, so a SELECT * (or selecting that column) would re-leak
+// the very secret this migration removes from the browser.
+func TestBootstrapRoleViewsDoNotLeakEnterpriseJSONB(t *testing.T) {
+	sql, args, err := compileDataset(datasetReq{Dataset: "entities-per-user-role"}, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sql, "SELECT *") {
+		t.Errorf("entities-per-user-role must use an explicit projection, not SELECT *: %s", sql)
+	}
+	// the bare `enterprise` jsonb column must not be selected (id_enterprise is
+	// fine; the leak vector is the standalone `enterprise` blob).
+	if strings.Contains(sql, "nm_user_role,\n\t\t\tenterprise") || strings.Contains(sql, ", enterprise,") || strings.Contains(sql, ", enterprise ") {
+		t.Errorf("entities-per-user-role selects the api_key-bearing `enterprise` jsonb: %s", sql)
+	}
+	if !strings.Contains(sql, "id_enterprise = $1") || args[0] != 42 {
+		t.Errorf("entities-per-user-role not tenant-scoped: %s %v", sql, args)
+	}
+}
+
+// The per-equipment settings/overview migration reads carry the ownership arg
+// at $2 (tenant at $1) — same shape as the overview-detail group.
+func TestPerEquipmentMigrationReadsRequireEquipmentAtDollarTwo(t *testing.T) {
+	for _, name := range []string{"equipment-downtime-reasons", "site-by-equipment",
+		"custom-target-month", "custom-target-week", "custom-target-day"} {
+		if _, _, err := compileDataset(datasetReq{Dataset: name}, 42); err == nil {
+			t.Errorf("%s compiled without the required equipment filter", name)
+		}
+		sql, args, err := compileDataset(datasetReq{Dataset: name,
+			Filters: map[string]json.RawMessage{"equipment": json.RawMessage(`7`)}}, 42)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if args[0] != 42 || args[1] != 7 {
+			t.Errorf("%s: tenant must be $1, equipment $2; got %v", name, args)
+		}
+		if !strings.Contains(sql, "$1") || !strings.Contains(sql, "$2") {
+			t.Errorf("%s: must bind $1 (tenant) and $2 (equipment): %s", name, sql)
 		}
 	}
 }

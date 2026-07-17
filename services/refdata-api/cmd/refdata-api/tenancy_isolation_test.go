@@ -93,6 +93,51 @@ func first(a []any) any {
 	return a[0]
 }
 
+// ── #58 front4→refdata migration: the net-new datasets are gate-classified ──
+//
+// TestEveryDatasetIsTenantScoped already covers ALL datasets structurally
+// (that is the whole point of the gate — a new entry is fenced by
+// construction). This test PINS the specific net-new datasets the #58 Phase
+// 2-3 migration adds, so that a future refactor that renames or drops one is a
+// visible failure here, not a silent coverage hole. Every listed dataset must
+// exist, bind the injected tenant at $1, and — for the api_key-adjacent role
+// views — never carry the secret.
+func TestFront4MigrationDatasetsAreClassifiedTenantSafe(t *testing.T) {
+	// The 12 net-new datasets (the 13th read, ScrapPeriod, folds into the
+	// existing `single-period` dataset — same function, same args — and the
+	// GET_TARGET/OEE_OBJ_MONTH/GET_SHIFT_PROD reads fold into
+	// production-targets/scrap-targets/oee-targets/live-equipment-month/
+	// live-equipment-shift; see the report).
+	migration := []string{
+		"home-uns",
+		"events-timeline-from-po", "events-timeline-full",
+		"production-orders-runtimes", "production-orders-with-runtimes",
+		"entities-per-user-role", "menu-per-user-role",
+		"equipment-downtime-reasons", "site-by-equipment",
+		"custom-target-month", "custom-target-week", "custom-target-day",
+	}
+	for _, name := range migration {
+		ds, ok := datasets[name]
+		if !ok {
+			t.Errorf("#58 migration dataset %q is missing from the registry", name)
+			continue
+		}
+		// Same invariant the whole-registry gate enforces, pinned per name.
+		if len(ds.params) == 0 || ds.params[0].kind != pEnterprise {
+			t.Errorf("dataset %q: params[0] must be pEnterprise ($1)", name)
+		}
+		if !strings.Contains(ds.sql, "$1") {
+			t.Errorf("dataset %q: SQL never binds the injected tenant $1:\n%s", name, ds.sql)
+		}
+		// The tenancy secret must never transit any migration dataset — this
+		// catches a future edit that re-adds SELECT * on v_entities_per_user_role
+		// (whose `enterprise` jsonb embeds api_key).
+		if strings.Contains(ds.sql, "api_key") {
+			t.Errorf("dataset %q: SQL references api_key — the tenancy secret must never transit this API", name)
+		}
+	}
+}
+
 // ── ADR-0027 Surface-1: the gate now covers the ENTIRE mux ────────────────
 //
 // Before Surface-1 the isolation gate guarded only the `datasets` map
