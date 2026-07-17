@@ -49,10 +49,16 @@ func TestArgParsers(t *testing.T) {
 	if _, err := topicsArg(httptest.NewRequest("GET", "/v1/x", nil)); err == nil {
 		t.Error("topicsArg: want error on missing param")
 	}
-	if _, err := topicEnterpriseArg(httptest.NewRequest("GET", "/v1/x?topic=T&enterprise=abc", nil)); err == nil {
-		t.Error("topicEnterpriseArg: want error on non-integer enterprise")
+	// topicArg parses a single ?topic= (client filter, binds $2 — the tenant
+	// is $1 from the key).
+	a, err := topicArg(httptest.NewRequest("GET", "/v1/shift-hours?topic=T", nil))
+	if err != nil || len(a) != 1 || a[0] != "T" {
+		t.Errorf("topicArg: %v %v", a, err)
 	}
-	if args, err := topicEnterpriseArg(httptest.NewRequest("GET", "/v1/x?topic=T&enterprise=3", nil)); err != nil || args[1] != 3 {
-		t.Errorf("topicEnterpriseArg: %v %v", args, err)
+	if _, err := topicArg(httptest.NewRequest("GET", "/v1/x", nil)); err == nil {
+		t.Error("topicArg: want error on missing param")
 	}
+	// ADR-0027 §4: the client can no longer name a tenant — the ?enterprise=
+	// parser (topicEnterpriseArg) is gone. The route now scopes to the key's
+	// customer_id, verified by the isolation gate (tenancy_isolation_test.go).
 }

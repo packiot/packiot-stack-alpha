@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -138,12 +137,10 @@ func parseAPIKeys(raw string) map[string]int {
 }
 
 func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
-	keys := parseAPIKeys(os.Getenv("QUERY_API_KEYS"))
-
-	auth := func(r *http.Request) (int, bool) {
-		cid, ok := keys[r.Header.Get("X-Api-Key")]
-		return cid, ok
-	}
+	// ADR-0027 Surface-1: tenant auth is now whole-mux middleware (auth.go),
+	// not a per-handler closure. Handlers read the resolved customer_id from
+	// request context (customerIDFromContext) — the middleware guarantees a
+	// valid key already resolved before any of these run.
 
 	mux.HandleFunc("/v1/catalog", func(w http.ResponseWriter, r *http.Request) {
 		gr := map[string]string{}
@@ -159,7 +156,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 	})
 
 	mux.HandleFunc("/v1/query", func(w http.ResponseWriter, r *http.Request) {
-		cid, ok := auth(r)
+		cid, ok := customerIDFromContext(r.Context())
 		if !ok {
 			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 			return
@@ -232,7 +229,12 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 	// Table ensured by ensureSchema at startup (main.go).
 
 	mux.HandleFunc("/v1/screen-config", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := auth(r); !ok {
+		// ADR-0027 Surface-1: a saved layout is tenant-private. Scope both the
+		// read and the upsert to the resolved customer_id ($1) so a colliding
+		// id_user across tenants can neither read nor overwrite another
+		// tenant's config (the pre-Surface-1 hole).
+		cid, ok := customerIDFromContext(r.Context())
+		if !ok {
 			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 			return
 		}
@@ -245,8 +247,8 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 		case http.MethodGet:
 			var cfg []byte
 			err := pool.QueryRow(r.Context(),
-				`SELECT config FROM user_screen_config WHERE id_user=$1 AND screen=$2`,
-				user, screen).Scan(&cfg)
+				`SELECT config FROM user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
+				cid, user, screen).Scan(&cfg)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{}`)
@@ -260,9 +262,9 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 				http.Error(w, `{"error":"config must be valid JSON <= 64KB"}`, http.StatusBadRequest)
 				return
 			}
-			_, err = pool.Exec(r.Context(), `INSERT INTO user_screen_config (id_user, screen, config)
-				VALUES ($1,$2,$3) ON CONFLICT (id_user, screen)
-				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, user, screen, string(body))
+			_, err = pool.Exec(r.Context(), `INSERT INTO user_screen_config (id_enterprise, id_user, screen, config)
+				VALUES ($1,$2,$3,$4) ON CONFLICT (id_enterprise, id_user, screen)
+				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, cid, user, screen, string(body))
 			if err != nil {
 				http.Error(w, `{"error":"store failed"}`, http.StatusInternalServerError)
 				return
@@ -284,8 +286,23 @@ func keysOf[V any](m map[string]V) []string {
 
 // ensureSchema is the startup migration hook — called once from main
 // before routes register, not as a route-registration side effect.
+//
+// ADR-0027 Surface-1: user_screen_config is tenant-private. A fresh table is
+// keyed on (id_enterprise, id_user, screen). The ALTER/DROP/CREATE lines are
+// the idempotent forward-migration for a table created before Surface-1 (the
+// old PK was (id_user, screen)): add the owning enterprise, drop the old PK,
+// and re-key on a unique index that includes id_enterprise — the ON CONFLICT
+// target the upsert now uses. Backfilled rows get id_enterprise = 0 (an
+// unreachable tenant), so they are invisible to any real key. Multi-statement
+// Exec is fine on the simple protocol this pool uses.
 func ensureSchema(pool *pgxpool.Pool) {
-	_, _ = pool.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS user_screen_config (
-		id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
-		updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id_user, screen))`)
+	_, _ = pool.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS user_screen_config (
+			id_enterprise int NOT NULL DEFAULT 0,
+			id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
+			updated_at timestamptz NOT NULL DEFAULT now());
+		ALTER TABLE user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
+		ALTER TABLE user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
+		CREATE UNIQUE INDEX IF NOT EXISTS user_screen_config_tenant_key
+			ON user_screen_config (id_enterprise, id_user, screen);`)
 }

@@ -42,9 +42,14 @@ import (
 )
 
 type endpoint struct {
-	path string
-	sql  string
-	args func(r *http.Request) ([]any, error) // nil = no args
+	path  string
+	sql   string
+	class routeClass
+	// args builds the CLIENT-supplied arguments only. For routeTenantScoped
+	// endpoints makeHandler PREPENDS the server-resolved customer_id as $1,
+	// so a client arg returned here binds $2, $3, … . nil = no client args
+	// (customer_id-only for scoped routes; zero args for global ones).
+	args func(r *http.Request) ([]any, error)
 }
 
 // topicsArg parses ?topics=a,b,c into a text[] argument.
@@ -64,38 +69,66 @@ func topicArg(r *http.Request) ([]any, error) {
 	return []any{t}, nil
 }
 
-func topicEnterpriseArg(r *http.Request) ([]any, error) {
-	t := r.URL.Query().Get("topic")
-	e := r.URL.Query().Get("enterprise")
-	if t == "" || e == "" {
-		return nil, fmt.Errorf("missing required query params: topic, enterprise")
-	}
-	id, err := strconv.Atoi(e)
-	if err != nil {
-		return nil, fmt.Errorf("enterprise must be an integer")
-	}
-	return []any{t, id}, nil
-}
-
-// The contract — one entry per Hasura root field. SQL functions are
-// called as-is (they live in the main DB until their ADR-0014 ports);
-// view reads go through the LIVE view generation (_2/_3/_setup_4 —
-// the version-suffixed ones are the consumed generation, per the
-// query-log enumeration).
+// The contract — one entry per Hasura root field. ADR-0027 Surface-1 re-homes
+// these eleven Generation-A routes behind the single injection authority:
+// each is tenant-scoped by the server-resolved customer_id ($1) and the
+// client can no longer name a tenant (?enterprise= is gone; ?topics= only
+// narrows WITHIN the tenant). The scoping is byte-stable — every backing
+// function/view ALREADY emits id_enterprise (via its equipments join or as a
+// view column), so an outer `WHERE id_enterprise = $1` changes no response
+// column, it only drops other tenants' rows. The operator caches /v1/* by URL
+// and parses fixed shapes, so shape stability is the load-bearing contract.
 var endpoints = []endpoint{
-	{"/v1/events-timeline", `SELECT * FROM h_piot_get_events_timeline3_with_event_id($1)`, topicsArg},
-	{"/v1/pending-downtime", `SELECT * FROM h_piot_get_equipment_pending_downtime_with_event_id($1)`, topicsArg},
-	{"/v1/shift-hours", `SELECT * FROM piot_get_shift_hours_by_packml_topic_2($1)`, topicArg},
-	{"/v1/shift-hours-by-enterprise", `SELECT * FROM piot_get_shift_hours_by_enterprise_packml_topic_2($1, $2)`, topicEnterpriseArg},
-	{"/v1/day-week-begin", `SELECT * FROM piot_get_day_week_begin_by_packml_topic($1)`, topicArg},
-	{"/v1/operator-po-list", `SELECT * FROM v_operator_po_list_setup_4`, nil},
-	{"/v1/operator-po-details", `SELECT * FROM v_operator_po_details_3`, nil},
-	{"/v1/operator-entities", `SELECT * FROM v_operator_entities_2`, nil},
-	{"/v1/entities-per-user-role", `SELECT * FROM v_entities_per_user_role_operator`, nil},
-	{"/v1/language-packs", `SELECT * FROM language_packs`, nil},
-	{"/v1/downtime-reasons", `SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
+	// Event / downtime timelines — the SETOF functions emit id_enterprise
+	// from their internal equipments join; ?topics= binds $2 (a filter within
+	// the tenant), $1 is the caller's id.
+	{"/v1/events-timeline",
+		`SELECT * FROM h_piot_get_events_timeline3_with_event_id($2) WHERE id_enterprise = $1`,
+		routeTenantScoped, topicsArg},
+	{"/v1/pending-downtime",
+		`SELECT * FROM h_piot_get_equipment_pending_downtime_with_event_id($2) WHERE id_enterprise = $1`,
+		routeTenantScoped, topicsArg},
+	{"/v1/shift-hours",
+		`SELECT * FROM piot_get_shift_hours_by_packml_topic_2($2) WHERE id_enterprise = $1`,
+		routeTenantScoped, topicArg},
+	// ?enterprise= DROPPED (ADR-0027 §4): the enterprise is the key's
+	// customer_id, never client-supplied. We pass it as the function's
+	// enterprise arg ($1) — the function already ignores it, so the real
+	// scope is the outer WHERE — and keep the path alive (byte-stable shape)
+	// because the operator caches /v1/* by URL.
+	{"/v1/shift-hours-by-enterprise",
+		`SELECT * FROM piot_get_shift_hours_by_enterprise_packml_topic_2($2, $1) WHERE id_enterprise = $1`,
+		routeTenantScoped, topicArg},
+	{"/v1/day-week-begin",
+		`SELECT * FROM piot_get_day_week_begin_by_packml_topic($2) WHERE id_enterprise = $1`,
+		routeTenantScoped, topicArg},
+	// v_operator_* views expose id_enterprise as a column already returned to
+	// the operator; the predicate only removes other tenants' rows.
+	{"/v1/operator-po-list",
+		`SELECT * FROM v_operator_po_list_setup_4 WHERE id_enterprise = $1`,
+		routeTenantScoped, nil},
+	{"/v1/operator-po-details",
+		`SELECT * FROM v_operator_po_details_3 WHERE id_enterprise = $1`,
+		routeTenantScoped, nil},
+	{"/v1/operator-entities",
+		`SELECT * FROM v_operator_entities_2 WHERE id_enterprise = $1`,
+		routeTenantScoped, nil},
+	{"/v1/entities-per-user-role",
+		`SELECT * FROM v_entities_per_user_role_operator WHERE id_enterprise = $1`,
+		routeTenantScoped, nil},
+	// language_packs is global i18n — no tenant column (ADR-0027 §2's one
+	// deliberate exception). Still behind auth (a valid key is required), but
+	// carries no $1: routeGlobalRef.
+	{"/v1/language-packs",
+		`SELECT * FROM language_packs`,
+		routeGlobalRef, nil},
+	// downtime-reasons: equipments already carries id_enterprise; add the
+	// tenant predicate and move the topic vector to $2. Same projected columns.
+	{"/v1/downtime-reasons",
+		`SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
 	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment AND p.id_unit = e.id_equipment
-	  WHERE p.packml_topic = ANY($1) AND p.active`, topicsArg},
+	  WHERE p.packml_topic = ANY($2) AND p.active AND e.id_enterprise = $1`,
+		routeTenantScoped, topicsArg},
 }
 
 var (
@@ -164,11 +197,19 @@ func main() {
 
 	port := getenv("HEALTH_PORT", "9104")
 	logger.Info("refdata-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
+	// ADR-0027 Surface-1: the single tenant-injection authority, applied as
+	// middleware in front of the WHOLE mux so no route can skip it. It
+	// resolves X-Api-Key → customer_id (fail-closed: no/unknown key → 401, no
+	// DB touch; empty QUERY_API_KEYS → everything 401s) and injects the id via
+	// context. /healthz + /metrics are exempt (ops probes, no tenant data).
+	keys := parseAPIKeys(os.Getenv("QUERY_API_KEYS"))
+	logger.Info("tenant auth configured", slog.Int("keys", len(keys)))
+	authed := authMiddleware(keys, infraExemptSet(), mux)
 	// RED metrics on every /v1 route → the same promhttp default registry
-	// /metrics already serves.
-	// otelhttp: a server span per request (the trace root, continuing any
-	// inbound traceparent); httpmetrics wraps inside it for RED metrics.
-	handler := otelhttp.NewHandler(httpmetrics.New(prometheus.DefaultRegisterer)(mux), "refdata-api")
+	// /metrics already serves. httpmetrics wraps the auth middleware so 401s
+	// are counted too; otelhttp is the outermost server span (the trace root,
+	// continuing any inbound traceparent).
+	handler := otelhttp.NewHandler(httpmetrics.New(prometheus.DefaultRegisterer)(authed), "refdata-api")
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		logger.Error("http", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -181,13 +222,28 @@ func main() {
 func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var args []any
+		// ADR-0027 Surface-1: tenant-scoped routes bind the server-resolved
+		// customer_id as $1 — client args (if any) follow as $2+. The
+		// customer_id comes from the auth middleware via context, never the
+		// request. This defensive check is unreachable behind the middleware,
+		// but it guarantees a scoped query can never run without $1.
+		if ep.class == routeTenantScoped {
+			cid, ok := customerIDFromContext(r.Context())
+			if !ok {
+				failed.Add(1)
+				http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
+				return
+			}
+			args = append(args, cid)
+		}
 		if ep.args != nil {
-			var err error
-			if args, err = ep.args(r); err != nil {
+			clientArgs, err := ep.args(r)
+			if err != nil {
 				failed.Add(1)
 				http.Error(w, `{"error":`+strconv.Quote(err.Error())+`}`, http.StatusBadRequest)
 				return
 			}
+			args = append(args, clientArgs...)
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
