@@ -128,6 +128,12 @@ func (c *Comparator) RunOnce(ctx context.Context) error {
 	} else {
 		ok++
 	}
+	if err := c.measureEventOpenStrands(ctx); err != nil {
+		failed++
+		c.logger.Warn("comparator measure failed", slog.String("metric", "event_open_strands"), slog.String("err", err.Error()))
+	} else {
+		ok++
+	}
 	// OEE divergence runs on its own (longer) cadence — internal gate, not
 	// a separate goroutine. Skip silently when not due; emit logs when run.
 	// First tick after boot always runs (zero-value lastOEERun is far enough
@@ -194,6 +200,48 @@ func (c *Comparator) measureDLQAnomaly(ctx context.Context) error {
 			slog.Int("dlq_size", len(stagingIDs)),
 			slog.Int("anomalies", anomalies),
 		)
+	}
+	return nil
+}
+
+// measureEventOpenStrands counts shadow equipment_events rows still OPEN
+// (ts_end IS NULL) older than the strand threshold, per plane, and emits
+// the per-plane gauge plus the f2/f3 skew. This is the close-field parity
+// signal (task #63): COUNT parity can pass while these open strands inflate
+// F2/F3 duration+availability, so the watchdog must measure them directly.
+//
+// It reads the shadow planes (not prod) — the strands live only there. The
+// query is a pure COUNT on the (id_enterprise) WHERE ts_end IS NULL partial
+// index, cheap enough for the comparator cadence. Healthy: both planes low
+// AND equal (skew 0). The close-sweep in the reconciler is the writer that
+// drives these toward 0; this measure is the watchdog that proves it.
+func (c *Comparator) measureEventOpenStrands(ctx context.Context) error {
+	perPlane, err := c.staging.CountShadowOpenStrands(ctx,
+		c.cfg.StagingEnterpriseID, c.cfg.ComparatorEventOpenStrandHours)
+	if err != nil {
+		return fmt.Errorf("shadow open-strand count: %w", err)
+	}
+	for plane, n := range perPlane {
+		metrics.ComparatorEventOpenStrands.WithLabelValues(plane).Set(float64(n))
+	}
+	// Skew is only meaningful when BOTH planes were measured (F3 attached).
+	f2, haveF2 := perPlane["f2"]
+	f3, haveF3 := perPlane["f3"]
+	if haveF2 && haveF3 {
+		skew := f2 - f3
+		if skew < 0 {
+			skew = -skew
+		}
+		metrics.ComparatorEventOpenStrandsSkew.Set(float64(skew))
+		if skew != 0 {
+			c.logger.Warn("comparator event_open_strands: F2 != F3 — planes disagree on close state",
+				slog.Int("f2", f2), slog.Int("f3", f3), slog.Int("skew", skew))
+		}
+	}
+	if f2 > 0 || f3 > 0 {
+		c.logger.Info("comparator event_open_strands",
+			slog.Int("f2", f2), slog.Int("f3", f3),
+			slog.Int("older_than_hours", c.cfg.ComparatorEventOpenStrandHours))
 	}
 	return nil
 }

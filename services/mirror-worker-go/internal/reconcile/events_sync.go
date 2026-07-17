@@ -106,35 +106,28 @@ func (r *Reconciler) RunEventsSync(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch new prod equipment_events: %w", err)
 	}
-	// CLOSER PASS runs BEFORE the empty-batch return: quiet streams
-	// (cursor at head, few new events) are EXACTLY when events get
-	// observed-open — the silent `return nil` below was hiding the
-	// closer on every quiet tick. Also: that return logs nothing,
-	// which cost an hour of phantom-hang forensics — hence the debug
-	// log.
-	// CLOSER PASS (bake catch #2): the cursor observes each event ONCE;
-	// at real-time lag the event is usually still OPEN → the fan-out
-	// upsert wrote ts_end NULL and nothing ever revisits it. Re-fanout
-	// recently-closed prod events — the (id_equipment, ts_event)
-	// ON CONFLICT closes the shadow rows. Fail-soft.
-	// PK lookback ≈ 48h of global event ids; every 10th tick is plenty
-	// (closures only need to land within the bake's 2h drift window).
+	// CLOSE-SWEEP runs BEFORE the empty-batch return: quiet streams
+	// (cursor at head, few new events) are EXACTLY when events sit
+	// observed-open — the silent `return nil` below would otherwise skip
+	// the sweep on every quiet tick.
+	//
+	// task #63: the events cursor observes each prod event ONCE; at
+	// real-time lag it is usually still OPEN → the fan-out upsert wrote
+	// ts_end NULL and nothing ever revisited it. The OLD closer re-fanned
+	// prod events bounded by (ts_event >= now()-48h AND id > cursor-400k) —
+	// on prod's 2.45B-id space the 400k PK bound is even narrower than 48h,
+	// so any close landing outside that window was NEVER re-fanned and the
+	// shadow row stayed OPEN forever, inflating F2/F3 duration+availability
+	// while row COUNT parity still passed. The sweep replaces that with a
+	// SHADOW-DRIVEN reconciliation: select the tiny divergent-candidate set
+	// FROM THE SHADOW (open at any age + recently-closed), point-look-up
+	// prod's authoritative close, and re-upsert both planes. Cost is
+	// O(divergent rows), not O(prod volume). See runEventCloseSweep.
 	r.closerTick++
-	if r.closerTick%10 == 1 {
-		if closed, err := r.prodDB.FetchRecentlyClosedEvents(ctx, r.cfg.ProdEnterpriseID, cursor-400_000); err != nil {
-			r.logger.Warn("event closer: fetch failed", slog.String("err", err.Error()))
-		} else {
-			reclosed := 0
-			for _, ev := range closed {
-				eqID, terr := r.trans.Equipment(ctx, ev.IDEquipment)
-				if terr != nil {
-					continue
-				}
-				r.staging.FanoutEventRow(ctx, eqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
-				reclosed++
-			}
-			metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(reclosed))
-			r.logger.Info("event closer pass", slog.Int("reclosed", reclosed))
+	if r.cfg.ReconcileEventsCloseSweepEnabled &&
+		(r.closerTick-1)%int64(r.cfg.ReconcileEventsCloseSweepEveryNTicks) == 0 {
+		if err := r.runEventCloseSweep(ctx); err != nil {
+			r.logger.Warn("event close-sweep failed", slog.String("err", err.Error()))
 		}
 	}
 
@@ -268,4 +261,163 @@ func (r *Reconciler) ensureOneEvent(ctx context.Context, ev db.ProdEquipmentEven
 	}
 	r.staging.FanoutEventRow(ctx, stagingEqID, r.cfg.StagingEnterpriseID, ev.Status, ev.TsEvent, ev.TsEnd, ev.Duration)
 	return stagingEventID, nil
+}
+
+// closeCorrection is one shadow row the sweep re-points at prod's
+// authoritative close state. Applied IDENTICALLY to both shadow planes
+// (F2 + F3) via FanoutEventRow, which is what keeps F2==F3.
+type closeCorrection struct {
+	StagingEqID int
+	TsEvent     time.Time
+	Status      *int
+	TsEnd       *time.Time
+	Duration    *int
+}
+
+// planCloseCorrections is the PURE decision core of the close-sweep,
+// factored out so the regression tests can pin its behaviour without a DB
+// (same pattern as computeOrphans / computeOEEDivergence). Inputs:
+//
+//   - candidates: divergent shadow rows (STAGING-id space), from
+//     FetchShadowEventCloseCandidates.
+//   - reverse:    stagingEqID → prodEqID (shadow is keyed on staging ids,
+//     but prod is looked up by prod id).
+//   - prodClose:  prod's authoritative close state, keyed by the natural
+//     (prodEqID, ts_event).
+//
+// A candidate yields a correction ONLY when prod has an authoritative row
+// for it AND that row is CLOSED (ts_end != nil). The two skips are the
+// safety guarantees that make the sweep unable to mask a real stranding:
+//
+//   - equipment not resolvable to prod → skip (can't look prod up).
+//   - prod row ABSENT                  → skip; never fabricate a close. If
+//     the shadow row is a genuine strand it stays OPEN and visible.
+//   - prod row still OPEN              → skip; the shadow open legitimately
+//     matches prod — correcting would invent a close prod never made.
+//
+// F2==F3 is preserved by construction: one correction, applied to both
+// planes with the same value.
+func planCloseCorrections(
+	candidates []db.ShadowEventKey,
+	reverse map[int]int,
+	prodClose map[db.ProdEventKey]db.ProdEventClose,
+) []closeCorrection {
+	out := make([]closeCorrection, 0, len(candidates))
+	for _, c := range candidates {
+		prodEq, ok := reverse[c.IDEquipment]
+		if !ok {
+			continue
+		}
+		auth, ok := prodClose[db.ProdEventKey{IDEquipment: prodEq, TsEvent: c.TsEvent}]
+		if !ok {
+			continue // no prod row — do NOT fabricate a close
+		}
+		if auth.TsEnd == nil {
+			continue // prod still open — nothing to correct
+		}
+		out = append(out, closeCorrection{
+			StagingEqID: c.IDEquipment,
+			TsEvent:     c.TsEvent,
+			Status:      auth.Status,
+			TsEnd:       auth.TsEnd,
+			Duration:    auth.Duration,
+		})
+	}
+	return out
+}
+
+// buildReverseEquipmentMap inverts prod↔staging by enumerating prod's
+// equipment set and forward-translating each via the battle-tested
+// translate.Equipment (with all its deterministic-tie-break fixes). A
+// hand-rolled inverse-topic path would be a second place for that logic to
+// drift; reusing the forward translator is the robust choice. O(machines)
+// (~62 for CPACK), run once per sweep.
+//
+// Collisions (two prod equipment collapsing to one staging equipment) are
+// logged and first-wins deterministically (FetchEnterpriseEquipmentIDs
+// returns ordered ids). A wrong prodEq only fails the ts_event point-lookup
+// (yielding no correction) — it can never produce a WRONG close.
+func (r *Reconciler) buildReverseEquipmentMap(ctx context.Context) (map[int]int, error) {
+	prodEqIDs, err := r.prodDB.FetchEnterpriseEquipmentIDs(ctx, r.cfg.ProdEnterpriseID)
+	if err != nil {
+		return nil, err
+	}
+	reverse := make(map[int]int, len(prodEqIDs))
+	for _, prodEq := range prodEqIDs {
+		stagingEq, err := r.trans.Equipment(ctx, prodEq)
+		if err != nil {
+			// Unmapped (no staging packml_register) → its shadow candidates
+			// simply won't resolve and stay visible. Not fatal to the sweep.
+			continue
+		}
+		if existing, dup := reverse[stagingEq]; dup {
+			if existing != prodEq {
+				r.logger.Warn("event close-sweep: staging equipment maps from multiple prod equipment; keeping first",
+					slog.Int("staging_eq", stagingEq),
+					slog.Int("kept_prod_eq", existing),
+					slog.Int("ignored_prod_eq", prodEq))
+			}
+			continue
+		}
+		reverse[stagingEq] = prodEq
+	}
+	return reverse, nil
+}
+
+// runEventCloseSweep is one shadow-driven close-reconciliation pass (task
+// #63). Bounded by a hard ctx watchdog — the same discipline the old
+// FetchRecentlyClosedEvents used, now covering the whole sweep (candidate
+// fetch + reverse-map build + prod point-lookups + fan-out).
+//
+// Flow: shadow candidates (tiny, indexed) → reverse map → prod authority →
+// pure planCloseCorrections → FanoutEventRow to BOTH planes (per-plane
+// fail-soft inside execFanout, so a bad F3 write can't block F2).
+func (r *Reconciler) runEventCloseSweep(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx,
+		time.Duration(r.cfg.ReconcileEventsCloseSweepTimeoutSec)*time.Second)
+	defer cancel()
+
+	candidates, err := r.staging.FetchShadowEventCloseCandidates(ctx,
+		r.cfg.StagingEnterpriseID,
+		r.cfg.ReconcileEventsCloseSweepRecentHours,
+		r.cfg.ReconcileEventsCloseSweepBatchSize)
+	if err != nil {
+		return fmt.Errorf("fetch shadow candidates: %w", err)
+	}
+	if len(candidates) == 0 {
+		r.logger.Debug("event close-sweep: no candidates")
+		return nil
+	}
+
+	reverse, err := r.buildReverseEquipmentMap(ctx)
+	if err != nil {
+		return fmt.Errorf("build reverse equipment map: %w", err)
+	}
+
+	keys := make([]db.ProdEventKey, 0, len(candidates))
+	for _, c := range candidates {
+		if prodEq, ok := reverse[c.IDEquipment]; ok {
+			keys = append(keys, db.ProdEventKey{IDEquipment: prodEq, TsEvent: c.TsEvent})
+		}
+	}
+	prodClose, err := r.prodDB.FetchEventCloseInfo(ctx, r.cfg.ProdEnterpriseID, keys)
+	if err != nil {
+		return fmt.Errorf("fetch prod close info: %w", err)
+	}
+
+	corrections := planCloseCorrections(candidates, reverse, prodClose)
+	for _, cc := range corrections {
+		// FanoutEventRow writes the identical value to F2 and F3 — the
+		// (id_equipment, ts_event) ON CONFLICT DO UPDATE closes/corrects the
+		// existing shadow row on each plane, converging F2==F3.
+		r.staging.FanoutEventRow(ctx, cc.StagingEqID, r.cfg.StagingEnterpriseID,
+			cc.Status, cc.TsEvent, cc.TsEnd, cc.Duration)
+	}
+	metrics.ReconcilerEventsTotal.WithLabelValues("reclosed").Add(float64(len(corrections)))
+	r.logger.Info("event close-sweep pass",
+		slog.Int("candidates", len(candidates)),
+		slog.Int("resolved_keys", len(keys)),
+		slog.Int("prod_authoritative", len(prodClose)),
+		slog.Int("corrected", len(corrections)))
+	return nil
 }

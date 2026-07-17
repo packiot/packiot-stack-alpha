@@ -668,24 +668,30 @@ func (p *Prod) SelectOne(ctx context.Context, sql string, args []any, dest ...an
 	return true, nil
 }
 
-// RecentlyClosedEvent is the closer pass's feed row (see events_sync).
-type RecentlyClosedEvent struct {
+// ProdEventKey identifies one prod equipment_event by its natural key —
+// (id_equipment, ts_event) is UNIQUE on equipment_events, the same key the
+// shadow fan-out upserts on. Used to point-look-up prod's authoritative
+// close state for a shadow candidate row (task #63 close-sweep).
+type ProdEventKey struct {
 	IDEquipment int
-	Status      *int
 	TsEvent     time.Time
-	TsEnd       *time.Time
-	Duration    *int
 }
 
-// FetchRecentlyClosedEvents returns prod events that HAVE a ts_end and
-// started within the lookback window. The fan-out closer re-upserts
-// these so shadow rows observed while still open get closed (the
-// observe-once cursor never revisits them — the closure gap only
-// manifests when the cursor runs at real-time). BEGIN READ ONLY as
-// everywhere.
-func (p *Prod) FetchRecentlyClosedEvents(ctx context.Context, enterpriseID int, sinceID int64) ([]RecentlyClosedEvent, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+// ProdEventClose is prod's authoritative close state for an event: the
+// fields the sweep re-points a divergent shadow row at.
+type ProdEventClose struct {
+	Status   *int
+	TsEnd    *time.Time
+	Duration *int
+}
+
+// FetchEnterpriseEquipmentIDs returns the DISTINCT prod id_equipment values
+// that have a packml_register row for the enterprise. This is the domain
+// translate.Equipment operates on; the close-sweep enumerates it once per
+// sweep and forward-translates each to invert prod↔staging (the shadow
+// candidate rows carry STAGING ids, but prod must be looked up by PROD id).
+// O(machines) — ~62 rows for CPACK — not O(event volume). READ ONLY.
+func (p *Prod) FetchEnterpriseEquipmentIDs(ctx context.Context, enterpriseID int) ([]int, error) {
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire: %w", err)
@@ -696,29 +702,62 @@ func (p *Prod) FetchRecentlyClosedEvents(ctx context.Context, enterpriseID int, 
 		return nil, fmt.Errorf("begin read only: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	// PK-range access (indexed) — the ts_event predicate alone would
-	// seq-scan a multi-million-row table (it wedged the events loop
-	// for 55 minutes on first deploy; the hard ctx timeout below is
-	// the watchdog that makes that class impossible now).
-	rows, err := tx.Query(ctx, `
-		SELECT id_equipment, status, ts_event, ts_end, duration
-		  FROM equipment_events
-		 WHERE id_equipment_event > $2
-		   AND id_enterprise = $1
-		   AND ts_end IS NOT NULL
-		   AND ts_event >= now() - interval '48 hours'
-		 ORDER BY id_equipment_event`, enterpriseID, sinceID)
+	rows, err := tx.Query(ctx,
+		`SELECT DISTINCT id_equipment FROM packml_register
+		  WHERE id_enterprise = $1 ORDER BY id_equipment`,
+		enterpriseID)
 	if err != nil {
-		return nil, fmt.Errorf("recently closed events: %w", err)
+		return nil, fmt.Errorf("distinct equipment ids: %w", err)
 	}
 	defer rows.Close()
-	var out []RecentlyClosedEvent
+	var out []int
 	for rows.Next() {
-		var e RecentlyClosedEvent
-		if err := rows.Scan(&e.IDEquipment, &e.Status, &e.TsEvent, &e.TsEnd, &e.Duration); err != nil {
+		var id int
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// FetchEventCloseInfo point-looks-up prod's authoritative (status, ts_end,
+// duration) for each requested (id_equipment, ts_event) key, under ONE
+// READ ONLY tx. Keys absent from prod are simply absent from the returned
+// map — the sweep treats "no prod row" as "cannot close, do not fabricate"
+// (that's how it avoids masking a real stranding). Cost is O(len(keys)) =
+// O(divergent shadow rows), each an index probe on the unique
+// (id_equipment, ts_event). The caller sets the ctx watchdog.
+func (p *Prod) FetchEventCloseInfo(ctx context.Context, enterpriseID int, keys []ProdEventKey) (map[ProdEventKey]ProdEventClose, error) {
+	out := make(map[ProdEventKey]ProdEventClose, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin read only: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	for _, k := range keys {
+		var c ProdEventClose
+		err := tx.QueryRow(ctx,
+			`SELECT status, ts_end, duration
+			   FROM equipment_events
+			  WHERE id_enterprise = $1 AND id_equipment = $2 AND ts_event = $3`,
+			enterpriseID, k.IDEquipment, k.TsEvent,
+		).Scan(&c.Status, &c.TsEnd, &c.Duration)
+		if err == pgx.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("event close lookup (eq=%d): %w", k.IDEquipment, err)
+		}
+		out[k] = c
+	}
+	return out, nil
 }
