@@ -1,5 +1,23 @@
 [
   {
+    "ref": "/ext/neopac/sap-report",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "/ext/neopac/sap-report",
+    "source": "external",
+    "kind": "relation",
+    "name": "v_13_site_deb_sap_report"
+  },
+  {
+    "ref": "/ext/neopac/sap-report-sync",
+    "source": "external",
+    "kind": "relation",
+    "name": "v_sap_report_data_sync_customer_13"
+  },
+  {
     "ref": "/v1/day-week-begin",
     "source": "route",
     "kind": "function",

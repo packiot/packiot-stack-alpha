@@ -42,6 +42,15 @@ const (
 	// routeInfra: NO auth — ops probes that expose no tenant data
 	// (/healthz for the container healthcheck, /metrics for Prometheus).
 	routeInfra
+	// routeExternalShim: ADR-0031 Workstream B anti-corruption shims. EXEMPT
+	// from this middleware — NOT because they skip authentication, but because
+	// they must reproduce a FOREIGN auth contract's exact status shapes (back4's
+	// missing-key → 400, unknown/wrong-owner → 401, both text/html) that this
+	// middleware (which 401s uniformly as JSON) cannot express. Each shim self-
+	// authenticates through the SAME QUERY_API_KEYS map (key → customer_id), so
+	// refdata is still the single injection authority; the tenant fence is the
+	// per-shim owner binding (external.go), gated by external_golden_test.go.
+	routeExternalShim
 )
 
 // mountedRoute is one entry in the route manifest.
@@ -122,12 +131,13 @@ var infraRoutes = []mountedRoute{
 // A new route that isn't listed here (or an endpoint without a class) is a
 // build failure in the gate, not a silent tenancy hole.
 func routeManifest() []mountedRoute {
-	m := make([]mountedRoute, 0, len(endpoints)+len(queryAPIRoutes)+len(infraRoutes))
+	m := make([]mountedRoute, 0, len(endpoints)+len(queryAPIRoutes)+len(infraRoutes)+len(externalShims))
 	for _, ep := range endpoints {
 		m = append(m, mountedRoute{ep.path, ep.class})
 	}
 	m = append(m, queryAPIRoutes...)
 	m = append(m, infraRoutes...)
+	m = append(m, externalRoutes()...) // ADR-0031 Workstream B (external.go)
 	return m
 }
 
@@ -138,6 +148,21 @@ func infraExemptSet() map[string]bool {
 	exempt := map[string]bool{}
 	for _, rt := range routeManifest() {
 		if rt.class == routeInfra {
+			exempt[rt.path] = true
+		}
+	}
+	return exempt
+}
+
+// authExemptSet is what the auth middleware ACTUALLY lets through: the infra
+// probes PLUS the external-contract shims (routeExternalShim), which self-
+// authenticate to reproduce a foreign auth contract's exact status shapes. This
+// is the middleware's exemption source of truth (main.go); the isolation gate
+// asserts that only these two classes are ever exempt.
+func authExemptSet() map[string]bool {
+	exempt := map[string]bool{}
+	for _, rt := range routeManifest() {
+		if rt.class == routeInfra || rt.class == routeExternalShim {
 			exempt[rt.path] = true
 		}
 	}
