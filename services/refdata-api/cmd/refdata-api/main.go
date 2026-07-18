@@ -232,7 +232,12 @@ func main() {
 	bearer := newFirebaseBearerAuth(newFirebaseVerifier(projectID, nil), pool, 5*time.Minute)
 	logger.Info("tenant auth configured",
 		slog.Int("keys", len(keys)), slog.String("firebase_project", projectID))
-	authed := authMiddleware(keys, infraExemptSet(), bearer.resolve, mux)
+	// ADR-0031 Workstream B: mount the external-contract anti-corruption shims.
+	// They resolve the tenant through the SAME key map (single injection
+	// authority) but self-authenticate, so they sit in the auth-exempt set below.
+	// Must register BEFORE the middleware wraps the mux.
+	registerExternalShims(mux, pool, keys, logger)
+	authed := authMiddleware(keys, authExemptSet(), bearer.resolve, mux)
 	// RED metrics on every /v1 route → the same promhttp default registry
 	// /metrics already serves. httpmetrics wraps the auth middleware so 401s
 	// are counted too; otelhttp is the outermost server span (the trace root,

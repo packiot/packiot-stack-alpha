@@ -225,17 +225,23 @@ func TestRouteManifestCoversEveryRoute(t *testing.T) {
 		}
 	}
 	// Invariant: every /v1 read resolves the tenant from the key (i.e. is NOT
-	// auth-exempt); only infra probes are exempt.
-	exempt := infraExemptSet()
+	// auth-exempt). The exempt set is EXACTLY the infra probes plus the ADR-0031
+	// external shims (routeExternalShim), which self-authenticate to reproduce a
+	// foreign auth contract; nothing else may be exempt.
+	exempt := authExemptSet()
 	for path, class := range seen {
 		if strings.HasPrefix(path, "/v1/") && exempt[path] {
 			t.Errorf("route %q is a /v1 read but is auth-exempt — every read must resolve the tenant from the key", path)
 		}
-		if class == routeInfra && !exempt[path] {
-			t.Errorf("infra route %q is not in the auth-exempt set", path)
-		}
-		if class != routeInfra && exempt[path] {
-			t.Errorf("route %q is auth-exempt but not classified as infra", path)
+		switch class {
+		case routeInfra, routeExternalShim:
+			if !exempt[path] {
+				t.Errorf("route %q (class %d) must be in the auth-exempt set", path, class)
+			}
+		default:
+			if exempt[path] {
+				t.Errorf("route %q is auth-exempt but is neither infra nor an external shim", path)
+			}
 		}
 	}
 }
