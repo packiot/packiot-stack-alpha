@@ -1,0 +1,54 @@
+method,raw_path,normalized_path,class,edge_or_refdata_target,wave,controller_file,security_debt,notes
+POST,/upload/downtime_csv,/upload/downtime_csv,NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.storeDowntimeReasons,unauth-write#60,CSV bulk upsert; NOT under /api/admin guard
+POST,/api/admindowntime-reasons/upload,/api/admindowntime-reasons/upload,NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.storeDowntimeReasons,unauth-write#60,GUARD-BYPASS: path lacks slash so /api/admin/* glob does NOT match => unauthenticated
+GET,/download/downtime_reasons/{id},/download/downtime_reasons/{id},NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.getDowntimeReasons,unauth-read,config read; unauth
+POST,/upload/po_csv_validation,/upload/po_csv_validation,NET-NEW,edge-api:production-orders(CSV-import missing),3,ProductionOrdersController.poStore,#52#60,PO CSV bulk import; unauth
+POST,/api/admin/upload/downtime_csv,/api/admin/upload/downtime_csv,NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.storeDowntimeReasons,,guarded
+GET,/api/admin/downtime_reasons/download/{id},/api/admin/downtime_reasons/download/{id},NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.getDowntimeReasons,,guarded read
+GET,/api/admin/download/downtime_reasons/{id},/api/admin/download/downtime_reasons/{id},NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.getDowntimeReasons,,guarded read (dup path of prev)
+POST,/api/admin/upload/po_csv,/api/admin/upload/po_csv,NET-NEW,edge-api:production-orders(CSV-import missing),3,ProductionOrdersController.poStoreTransaction,#52#60,PO CSV bulk import (pg-format %L bulk inserts)
+POST,/api/production-orders/insert,/api/production-orders/insert,NET-NEW,edge-api:production-orders(CSV-import missing),3,ProductionOrdersController.poStore,#52#60 unauth-write,Neopac CSV PO upload; NOT under /api/admin guard
+POST,/api/admin/downtime-reasons/upload,/api/admin/downtime-reasons/upload,NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.storeDowntimeReasons,,guarded
+GET,/api/admin/downtime-reasons/download/{id},/api/admin/downtime-reasons/download/{id},NET-NEW,edge-api:downtime-reasons(missing),3,DowntimeReasonsController.getDowntimeReasons,,guarded read
+GET,/api/admin/downtimes/total/categories/{id},/api/admin/downtimes/total/categories/{id},READ-REFDATA,refdata:downtimes-per-category,2,DowntimesController.getDowntimesMonthByCategory,,maps to existing dataset
+POST,/api/admin/production-orders/upload,/api/admin/production-orders/upload,NET-NEW,edge-api:production-orders(CSV-import missing),3,ProductionOrdersController.poStoreTransaction,#52#60,PO CSV bulk import
+GET,/api/production/health/{id},/api/production/health/{id},READ-REFDATA,refdata:overview-production-health,2,production-health.module,unauth-read,maps to existing dataset
+POST,/api/users/external,/api/users/external,DUP,edge-api:users/create-user,2,UsersController.createExternalUser,auth-divergence,Firebase self-register via uid header; NOT under /api/admin guard
+GET,/api/admin/users,/api/admin/users,DUP,edge-api:users/list-users,2,UsersController.getUsers,,read served by edge (strategic=refdata)
+POST,/api/admin/users,/api/admin/users,DUP,edge-api:users/create-user,2,UsersController.createUsers,,
+PUT,/api/admin/users,/api/admin/users,DUP,edge-api:users/edit-user,2,UsersController.updateUsers,,PUT->POST verb change
+DELETE,/api/admin/users,/api/admin/users,DUP,edge-api:users/delete-user,2,UsersController.deleteUsers,,DELETE->POST verb change
+POST,/api/admin/api-users,/api/admin/api-users,DUP,edge-api:users/create-user,2,UsersController.createApiUser,,API-user variant
+GET,/api/admin/user-roles,/api/admin/user-roles,DUP,edge-api:user-roles/list-user-roles,2,UserRolesController.getUserRoles,,
+POST,/api/admin/user-roles,/api/admin/user-roles,DUP,edge-api:user-roles/create-user-role,2,UserRolesController.createUserRoles,,
+PUT,/api/admin/user-roles,/api/admin/user-roles,DUP,edge-api:user-roles/edit-user-role,2,UserRolesController.editUserRoles,,PUT->POST
+DELETE,/api/admin/user-roles,/api/admin/user-roles,DUP,edge-api:user-roles/delete-user-role,2,UserRolesController.deleteUserRoles,,DELETE->POST
+GET,/api/admin/oeeavgmonth/{id},/api/admin/oeeavgmonth/{id},READ-REFDATA,refdata:oee-by-month(net-new dataset),2,OeeController.getOeebyMonth,,needs new dataset
+GET,/api/admin/analogs/{id},/api/admin/analogs/{id},READ-REFDATA,refdata:suzano-analogs(net-new dataset),2,suzano-tags.module,,tenant-custom Suzano report
+GET,/analogs/{id},/analogs/{id},READ-REFDATA,refdata:suzano-analogs(net-new dataset),2,suzano-tags.module,unauth-read,unauth dup of /api/admin/analogs
+GET,/reportDowntimes/{datetime},/reportDowntimes/{datetime},READ-REFDATA,refdata:report-downtimes(net-new dataset),2,get-report-downtimes.module,unauth-read,datetime string param
+GET,/api/admin/pages,/api/admin/pages,DUP,edge-api:pages/get-pages,2,PagesController.getPages,,read served by edge (strategic=refdata)
+POST,/getEmbedToken,/getEmbedToken,EXTERNAL,none(shim needed),3,PowerBIController.getEmbedToken,unauth,PowerBI embed (MS service principal); customer BI contract
+POST,/refreshDataset,/refreshDataset,EXTERNAL,none(shim needed),3,PowerBIController.refreshDataset,unauth,PowerBI dataset refresh
+POST,/getRefreshDatasetToken,/getRefreshDatasetToken,EXTERNAL,none(shim needed),3,PowerBIController.getDatasetResfreshToken,unauth,PowerBI refresh token
+GET,/health,/health,INFRA,delete(orchestrator),0,inline,,liveness probe
+GET,/integration/job_data_integration/{id},/integration/job_data_integration/{id},EXTERNAL,none(shim needed),3,JobDataIntegrationController.getDataIntegration,api_key,Montebello ext pull (api_key + id_enterprise match)
+GET,/integration/get-shift-validation/{id},/integration/get-shift-validation/{id},EXTERNAL,none(shim needed),3,get-shift-validation.module,,Montebello ext pull
+GET,/events_montebello,/events_montebello,EXTERNAL,none(shim needed),3,ApiMontebelloEventsController.getdowntimesMontebello,api_key,Montebello ent-6 downtimes ext pull
+GET,/api/v1/montebello/data-sync,/api/v1/montebello/data-sync,EXTERNAL,none(shim needed),3,integrations/montebello/data-sync.controller,x-api-key,Montebello ent-6 data-sync (v_piot_production_data_sync_cust6)
+GET,/api/v1/neopac/sap-report-sync,/api/v1/neopac/sap-report-sync,EXTERNAL,none(shim needed),3,integrations/neopac/data-sync.controller,x-api-key,NEOPAC SAP ent-13 sync (v_sap_report_data_sync_customer_13)
+GET,/api/v1/neopac/sap-report,/api/v1/neopac/sap-report,EXTERNAL,none(shim needed),3,integrations/neopac/sap-report.controller,x-api-key,NEOPAC SAP ent-13 report (v_13_site_deb_sap_report) - SAP-FACING
+GET,/integration/job_report/{id},/integration/job_report/{id},EXTERNAL,none(shim needed),3,ApiJobReportController.getJobReport,api_key,Incoplast ext job report pull
+GET,/events_incoplast,/events_incoplast,EXTERNAL,none(shim needed),3,ApiIncoplastEventsController.getDowntimesIncoplast,api_key,Incoplast ext downtimes pull
+GET,/jobs_incoplast,/jobs_incoplast,EXTERNAL,none(shim needed),3,ApiIncoplastJobsController.getjobsIncoplast,api_key,Incoplast ext jobs pull
+GET,/devices,/devices,NET-NEW,observability-plane,2,cronJobs/devicesMonitoring.getDevicesStatus,unauth-read,device status telemetry
+POST,/devices/ping,/devices/ping,NET-NEW,edge-api:device-heartbeat(missing),3,DevicesController.healthPing,unauth-write,device heartbeat write
+GET,/devices/monitoring,/devices/monitoring,NET-NEW,observability-plane,2,monitoring.module,unauth-read,
+GET,/devices/infra-events/plcs/{period},/devices/infra-events/plcs/{period},NET-NEW,observability-plane,2,get-disconnected-plc-events.module,unauth-read,period string param
+GET,/devices/infra-events/plcs/quantity/{period},/devices/infra-events/plcs/quantity/{period},NET-NEW,observability-plane,2,get-disconnected-plc-events-quantity.module,unauth-read,
+POST,/devices/infra-events/plcs,/devices/infra-events/plcs,NET-NEW,edge-api:infra-events(missing),3,upsert-plc-events.module,unauth-write,PLC infra-event ingestion write
+POST,/devices/infra-events,/devices/infra-events,NET-NEW,edge-api:infra-events(missing),3,upsert-infra-events.module,unauth-write,infra-event ingestion write
+GET,/devices/infra-events/{idDevice}/{eventType},/devices/infra-events/{idDevice}/{eventType},NET-NEW,observability-plane,2,get-infra-events.module,unauth-read,eventType string param (not numeric)
+GET,/infra-events/plc/current-status/{id},/infra-events/plc/current-status/{id},NET-NEW,observability-plane,2,current-plc-status.module,unauth-read,
+GET,/infra-events/plc/report,/infra-events/plc/report,NET-NEW,observability-plane,2,plc-report.module,unauth-read,
+GET,/api-docs,/api-docs,INFRA,delete(orchestrator),0,swagger-ui,,swagger docs
