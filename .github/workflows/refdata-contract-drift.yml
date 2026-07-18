@@ -1,0 +1,142 @@
+name: refdata-api contract drift gate
+
+# TASK #71 — pre-prod-flip staging↔prod contract defense.
+#
+# refdata-api binds a POSITIONAL contract (datasets.go + the /v1/* routes in
+# main.go) against prod pg_proc functions and pg_catalog relations. If prod's
+# signatures/columns drift from what the binary assumes, a prod flip breaks
+# reads SILENTLY. This gate makes that drift a hard, visible failure.
+#
+# TWO LAYERS (deliberately split by whether prod access is needed):
+#
+#   contract-selfcheck  — per-PR, NO prod access. Extracts the contract from
+#                         source and locks it against the golden; validates the
+#                         drift SQL renders. Catches the common drift direction:
+#                         a datasets.go/main.go edit (new dataset, _3→_4 bump,
+#                         added column) that is internally malformed or shifts
+#                         the contract without review.
+#
+#   live-drift          — workflow_dispatch, runs the REAL diff against live
+#                         prod. Prod DB creds NEVER enter CI (embedding them was
+#                         rejected — PRs #161–167). Instead CI extracts the
+#                         contract (safe), then triggers the committed script ON
+#                         the staging app EC2 via SSM; that host fetches creds
+#                         from Secrets Manager and runs the SELECT-only diff
+#                         (BEGIN READ ONLY). Gated on an OIDC role variable so it
+#                         is inert until infra provisions ssm:SendCommand access.
+#
+# Run live-drift as the pre-flip gate. Refresh the golden (UPDATE_GOLDEN=1) and
+# re-run live-drift whenever datasets.go / main.go change the prod surface.
+
+on:
+  pull_request:
+    branches: [staging, development]
+    paths:
+      - 'services/refdata-api/cmd/refdata-api/datasets.go'
+      - 'services/refdata-api/cmd/refdata-api/main.go'
+      - 'services/refdata-api/cmd/refdata-api/contract.go'
+      - 'services/refdata-api/cmd/refdata-api/contract_test.go'
+      - 'services/refdata-api/cmd/refdata-api/testdata/contract.golden.json'
+      - 'services/refdata-api/scripts/refdata-contract-drift-check.sh'
+      - '.github/workflows/refdata-contract-drift.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-selfcheck:
+    name: contract self-check (no prod access)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: services/refdata-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/refdata-api/go.mod
+          cache-dependency-path: services/refdata-api/go.sum
+
+      # 1. The extractor + golden lock. Fails if the contract drifted from the
+      #    committed golden, or if any dataset/route can't be parsed (fail-loud).
+      - name: contract tests (parse + golden + shapes)
+        run: go test -run 'Contract|ParseSQL' ./cmd/refdata-api/
+
+      # 2. --dump-contract must emit valid JSON (the drift script consumes it).
+      - name: dump-contract emits valid JSON
+        run: go run ./cmd/refdata-api --dump-contract | jq -e 'type=="array" and length>0' >/dev/null
+
+      # 3. The drift SQL must render from the contract (no prod touch).
+      - name: drift SQL renders (DRY_RUN)
+        run: |
+          go run ./cmd/refdata-api --dump-contract > /tmp/contract.json
+          DRY_RUN=1 CONTRACT_JSON=/tmp/contract.json bash scripts/refdata-contract-drift-check.sh \
+            | grep -q 'BEGIN READ ONLY'
+
+  live-drift:
+    name: live prod drift (SSM → app EC2, SELECT-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    # Only runs on manual dispatch AND once infra provides an OIDC role scoped to
+    # ssm:SendCommand on the app EC2. Until then it is inert (creds never in CI).
+    if: ${{ github.event_name == 'workflow_dispatch' && vars.AWS_SSM_ROLE_ARN != '' }}
+    permissions:
+      id-token: write   # OIDC → assume the SSM role
+      contents: read
+    env:
+      APP_EC2_ID: i-06c9547a2c7091ab7
+      AWS_REGION: us-east-1
+    defaults:
+      run:
+        working-directory: services/refdata-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/refdata-api/go.mod
+          cache-dependency-path: services/refdata-api/go.sum
+
+      # Extract the contract IN CI (safe — no DB). The EC2 only needs the JSON +
+      # the script; it fetches prod creds itself from Secrets Manager.
+      - name: extract contract
+        run: go run ./cmd/refdata-api --dump-contract > /tmp/contract.json
+
+      - name: configure AWS (OIDC, ssm:SendCommand only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_SSM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: run drift check on app EC2 via SSM (SELECT-only)
+        run: |
+          set -euo pipefail
+          SCRIPT_B64=$(base64 -w0 scripts/refdata-contract-drift-check.sh)
+          CONTRACT_B64=$(base64 -w0 /tmp/contract.json)
+          # The remote runner writes both artifacts and runs the committed script
+          # with the CI-extracted contract; the script reads prod creds locally.
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$APP_EC2_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "refdata #71 contract drift gate (SELECT-only)" \
+            --parameters commands="[\
+              \"echo $SCRIPT_B64 | base64 -d > /tmp/refdata-drift.sh\",\
+              \"echo $CONTRACT_B64 | base64 -d > /tmp/refdata-contract.json\",\
+              \"CONTRACT_JSON=/tmp/refdata-contract.json AWS_REGION=$AWS_REGION bash /tmp/refdata-drift.sh; echo __EXIT__=\$?\"\
+            ]" \
+            --query 'Command.CommandId' --output text)
+          echo "SSM CommandId=$CMD_ID"
+          for i in $(seq 1 40); do
+            ST=$(aws ssm list-command-invocations --command-id "$CMD_ID" \
+                 --query 'CommandInvocations[0].Status' --output text 2>/dev/null || echo Pending)
+            case "$ST" in Success|Failed|TimedOut|Cancelled) break;; esac
+            sleep 5
+          done
+          OUT=$(aws ssm get-command-invocation --command-id "$CMD_ID" \
+                --instance-id "$APP_EC2_ID" --query 'StandardOutputContent' --output text)
+          echo "$OUT"
+          # The script exits non-zero on drift; the remote echoes __EXIT__=N.
+          RC=$(printf '%s\n' "$OUT" | sed -n 's/^__EXIT__=//p' | tail -1)
+          echo "drift-check exit code: ${RC:-unknown}"
+          test "${RC:-1}" = "0"
