@@ -278,52 +278,118 @@ type closeCorrection struct {
 // factored out so the regression tests can pin its behaviour without a DB
 // (same pattern as computeOrphans / computeOEEDivergence). Inputs:
 //
-//   - candidates: divergent shadow rows (STAGING-id space), from
-//     FetchShadowEventCloseCandidates.
+//   - candidates: shadow rows (STAGING-id space) carrying their CURRENT close
+//     state, from FetchShadowEventCloseCandidates.
 //   - reverse:    stagingEqID → prodEqID (shadow is keyed on staging ids,
 //     but prod is looked up by prod id).
 //   - prodClose:  prod's authoritative close state, keyed by the natural
 //     (prodEqID, ts_event).
 //
 // A candidate yields a correction ONLY when prod has an authoritative row
-// for it AND that row is CLOSED (ts_end != nil). The two skips are the
-// safety guarantees that make the sweep unable to mask a real stranding:
+// for it AND that row is CLOSED (ts_end != nil) AND the shadow's CURRENT close
+// state actually DIFFERS from prod's. That last clause is the task #86
+// convergence fix: without it every prod-closed recent-window row re-upserts
+// on every pass (~4230 no-op writes/pass) instead of converging to ~0. The
+// skips are the safety guarantees that make the sweep unable to mask a real
+// stranding:
 //
 //   - equipment not resolvable to prod → skip (can't look prod up).
 //   - prod row ABSENT                  → skip; never fabricate a close. If
 //     the shadow row is a genuine strand it stays OPEN and visible.
 //   - prod row still OPEN              → skip; the shadow open legitimately
 //     matches prod — correcting would invent a close prod never made.
+//   - shadow ALREADY == prod           → skip; nothing to write (convergence).
 //
-// F2==F3 is preserved by construction: one correction, applied to both
-// planes with the same value.
+// Candidates are grouped by natural (stagingEq, ts_event) key first: the same
+// key can arrive from both planes with DIFFERENT current state (open on F2,
+// closed on F3). We emit exactly ONE correction per key when ANY plane
+// diverges, and the caller applies it to BOTH planes — so F2==F3 is preserved
+// by construction (one value, written identically to both planes).
 func planCloseCorrections(
-	candidates []db.ShadowEventKey,
+	candidates []db.ShadowEventCandidate,
 	reverse map[int]int,
 	prodClose map[db.ProdEventKey]db.ProdEventClose,
 ) []closeCorrection {
-	out := make([]closeCorrection, 0, len(candidates))
+	// Group per-plane current states under the natural key. tsUS keys on
+	// UnixMicro (not time.Time) because time.Time is fragile as a map key
+	// across separately-decoded values (monotonic reading / *Location differ) —
+	// same defence as db.canonEventKey.
+	type nk struct {
+		eq   int
+		tsUS int64
+	}
+	order := make([]nk, 0, len(candidates))
+	rep := make(map[nk]time.Time, len(candidates)) // representative ts_event
+	states := make(map[nk][]db.ShadowEventCandidate, len(candidates))
 	for _, c := range candidates {
-		prodEq, ok := reverse[c.IDEquipment]
+		k := nk{eq: c.IDEquipment, tsUS: c.TsEvent.UnixMicro()}
+		if _, seen := states[k]; !seen {
+			order = append(order, k)
+			rep[k] = c.TsEvent
+		}
+		states[k] = append(states[k], c)
+	}
+
+	out := make([]closeCorrection, 0, len(order))
+	for _, k := range order {
+		prodEq, ok := reverse[k.eq]
 		if !ok {
 			continue
 		}
-		auth, ok := prodClose[db.ProdEventKey{IDEquipment: prodEq, TsEvent: c.TsEvent}]
+		auth, ok := prodClose[db.ProdEventKey{IDEquipment: prodEq, TsEvent: rep[k]}]
 		if !ok {
 			continue // no prod row — do NOT fabricate a close
 		}
 		if auth.TsEnd == nil {
 			continue // prod still open — nothing to correct
 		}
+		if !anyPlaneDiverges(states[k], auth) {
+			continue // shadow already matches prod on every plane — skip (convergence)
+		}
 		out = append(out, closeCorrection{
-			StagingEqID: c.IDEquipment,
-			TsEvent:     c.TsEvent,
+			StagingEqID: k.eq,
+			TsEvent:     rep[k],
 			Status:      auth.Status,
 			TsEnd:       auth.TsEnd,
 			Duration:    auth.Duration,
 		})
 	}
 	return out
+}
+
+// anyPlaneDiverges reports whether at least one plane's current close state
+// differs from prod's authoritative close on any of the three columns the
+// fan-out UPSERT writes (ts_end, status, duration). When every plane already
+// matches, the row is skipped — this is what drops `corrected` from ~4230/pass
+// to ~0 once the backlog is drained.
+func anyPlaneDiverges(states []db.ShadowEventCandidate, auth db.ProdEventClose) bool {
+	for _, s := range states {
+		if !timePtrEqual(s.TsEnd, auth.TsEnd) ||
+			!intPtrEqual(s.Status, auth.Status) ||
+			!intPtrEqual(s.Duration, auth.Duration) {
+			return true
+		}
+	}
+	return false
+}
+
+// timePtrEqual compares two *time.Time by instant (time.Equal), not struct
+// identity: a shadow ts_end decoded in a different *Location than prod's still
+// counts as equal, so a mere tz difference can't trigger a spurious re-upsert.
+// Both nil = equal; exactly one nil = differ.
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+// intPtrEqual: both nil = equal; one nil = differ; else value equality.
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // buildReverseEquipmentMap inverts prod↔staging by enumerating prod's
@@ -395,9 +461,15 @@ func (r *Reconciler) runEventCloseSweep(ctx context.Context) error {
 	}
 
 	keys := make([]db.ProdEventKey, 0, len(candidates))
+	seenKey := make(map[db.ProdEventKey]struct{}, len(candidates))
 	for _, c := range candidates {
 		if prodEq, ok := reverse[c.IDEquipment]; ok {
-			keys = append(keys, db.ProdEventKey{IDEquipment: prodEq, TsEvent: c.TsEvent})
+			k := db.ProdEventKey{IDEquipment: prodEq, TsEvent: c.TsEvent}
+			if _, dup := seenKey[k]; dup {
+				continue // same natural key across planes → one prod lookup
+			}
+			seenKey[k] = struct{}{}
+			keys = append(keys, k)
 		}
 	}
 	prodClose, err := r.prodDB.FetchEventCloseInfo(ctx, r.cfg.ProdEnterpriseID, keys)
