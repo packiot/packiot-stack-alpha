@@ -45,8 +45,8 @@ type Metric struct {
 	Name      string          `json:"name"`
 	Timestamp int64           `json:"timestamp"`
 	Value     json.RawMessage `json:"value"`
-	Counter   *jsonFloat       `json:"counter,omitempty"`
-	CurSpeed  *jsonFloat       `json:"curspeed,omitempty"`
+	Counter   *jsonFloat      `json:"counter,omitempty"`
+	CurSpeed  *jsonFloat      `json:"curspeed,omitempty"`
 	Alias     json.RawMessage `json:"alias,omitempty"`
 	Faults    json.RawMessage `json:"faults,omitempty"`
 	ID        *jsonInt        `json:"id,omitempty"`
@@ -63,6 +63,34 @@ func Parse(body []byte) (*Payload, error) {
 	return &p, nil
 }
 
+// IsJSONStringBody reports whether body's top-level JSON value is a STRING
+// (`"..."`) rather than the OBJECT (`{...}`) every valid envelope is. This is
+// the exact wire signature of a DOUBLE-ENCODED envelope: a producer that
+// marshals an already-serialized JSON payload a second time emits
+// `"{\"timestamp\":...}"` — a JSON string of JSON. Parse necessarily fails on
+// it with `json: cannot unmarshal string into Go value of type
+// sparkplug.Payload`, and because the delivered bytes are fixed, retrying can
+// NEVER succeed. Callers use this to drop-and-count the delivery instead of
+// nack-retrying it into a poison storm (task #92 — the consumer-side backstop
+// to the producer removal in #475/#22 and the wire contract pinned in
+// TestParse_EncodingContract, task #14).
+//
+// Cheap: skips leading JSON insignificant-whitespace (RFC 8259 §2: space, tab,
+// LF, CR) and checks the first structural byte. No allocation, no full parse —
+// safe on the hot per-delivery path.
+func IsJSONStringBody(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '"':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
 
 // jsonFloat accepts either a JSON number (120) or a quoted numeric string
 // ("120", "120.4"). Some edge clients — notably Incoplast's PackML2SparkPlug
