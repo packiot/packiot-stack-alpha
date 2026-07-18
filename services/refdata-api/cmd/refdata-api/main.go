@@ -92,12 +92,18 @@ var endpoints = []endpoint{
 		`SELECT * FROM piot_get_shift_hours_by_packml_topic_2($2) WHERE id_enterprise = $1`,
 		routeTenantScoped, topicArg},
 	// ?enterprise= DROPPED (ADR-0027 §4): the enterprise is the key's
-	// customer_id, never client-supplied. We pass it as the function's
-	// enterprise arg ($1) — the function already ignores it, so the real
-	// scope is the outer WHERE — and keep the path alive (byte-stable shape)
-	// because the operator caches /v1/* by URL.
+	// customer_id, never client-supplied. The real tenant scope is the outer
+	// WHERE; the path stays alive (byte-stable shape) because the operator
+	// caches /v1/* by URL.
+	// Arity note (task #90): PROD's piot_get_shift_hours_by_enterprise_packml_topic_2
+	// takes ONE arg (in_topic) — it resolves the enterprise internally from
+	// packml_register. Staging's copy is a 2-arg wrapper (in_topic, in_enterprise
+	// DEFAULT NULL) whose body is `SELECT * FROM piot_get_shift_hours_by_packml_topic_2(in_topic)`
+	// — the enterprise arg is dead. Binding a 2nd arg 500s on prod (arity
+	// mismatch) and does nothing on staging, so we bind topic only. Byte-stable
+	// on both; tenant fencing is entirely the outer WHERE id_enterprise = $1.
 	{"/v1/shift-hours-by-enterprise",
-		`SELECT * FROM piot_get_shift_hours_by_enterprise_packml_topic_2($2, $1) WHERE id_enterprise = $1`,
+		`SELECT * FROM piot_get_shift_hours_by_enterprise_packml_topic_2($2) WHERE id_enterprise = $1`,
 		routeTenantScoped, topicArg},
 	{"/v1/day-week-begin",
 		`SELECT * FROM piot_get_day_week_begin_by_packml_topic($2) WHERE id_enterprise = $1`,
