@@ -146,6 +146,31 @@ func TestParseSQLShapes(t *testing.T) {
 			},
 		},
 		{
+			// task #54: aggregate projection avg(r.oee) reduces to the column r.oee.
+			name: "aggregate projection reduces to inner column (oee-by-month)",
+			sql: `SELECT avg(r.oee) AS oee, r.cd_shift
+				FROM equipment_runtime_shift r JOIN equipments e USING (id_equipment)
+				WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+				AND date_trunc('month', r.ts_value) = date_trunc('month', $3::date)
+				AND r.cd_shift IS NOT NULL GROUP BY r.cd_shift ORDER BY r.cd_shift`,
+			want: []contractObject{
+				{Kind: "relation", Name: "equipment_runtime_shift", Columns: []string{"oee", "cd_shift"}},
+				{Kind: "relation", Name: "equipments"},
+			},
+		},
+		{
+			// task #54: JSON extraction analogs->'DATA' reduces to the base column analogs.
+			name: "json-extraction projection reduces to base column (suzano-analogs)",
+			sql: `SELECT analogs->'DATA' AS data, ts_value, id_equipment, id_enterprise, id_site, id_area
+				FROM equipment_values WHERE id_enterprise = $1
+				AND (cardinality($2::int[]) = 0 OR id_equipment = ANY($2::int[]))
+				AND ts_value >= date_trunc('minute', $3::timestamp) AT TIME ZONE 'America/Sao_Paulo'
+				AND analogs->'DATA' @> '[{"type": "PPM"}]' AND analogs IS NOT NULL ORDER BY ts_value ASC`,
+			want: []contractObject{
+				{Kind: "relation", Name: "equipment_values", Columns: []string{"analogs", "ts_value", "id_equipment", "id_enterprise", "id_site", "id_area"}},
+			},
+		},
+		{
 			name: "liveUNS alias.* → existence-only + guard",
 			sql: `SELECT t.* FROM uns_equipment_current_shift t JOIN equipments e USING (id_equipment)
 				WHERE e.id_enterprise = $1 AND (cardinality($2::int[]) = 0 OR t.id_equipment = ANY($2::int[]))`,
@@ -171,17 +196,47 @@ func TestParseSQLShapes(t *testing.T) {
 }
 
 // TestParseSQLRejectsUnparseable proves the fail-loud contract: an expression
-// in a projection (not a plain column) must ERROR, not silently drop from the
-// contract.
+// in a projection (not a reducible column) must ERROR, not silently drop from the
+// contract. count(*) stays rejected because `*` is not a column reference.
 func TestParseSQLRejectsUnparseable(t *testing.T) {
 	bad := []string{
 		`SELECT count(*) FROM enterprises WHERE id_enterprise = $1`,
 		`SELECT a.col FROM enterprises e WHERE id_enterprise = $1`, // unknown alias a
 		`SELECT id_enterprise`, // no FROM
+		`SELECT coalesce(a, b) FROM enterprises WHERE id_enterprise = $1`, // multi-arg expr, not a single column
 	}
 	for _, sql := range bad {
 		if _, err := parseSQL(sql); err == nil {
 			t.Errorf("parseSQL accepted unparseable SQL: %q", sql)
+		}
+	}
+}
+
+// TestReduceToColumnRef pins the projection-expression reducer (task #54): the
+// supported wrappers (aggregate, JSON extraction, ::cast, nesting) peel to the
+// underlying column ref; genuinely opaque shapes return ok=false so the caller
+// still fails loud.
+func TestReduceToColumnRef(t *testing.T) {
+	ok := map[string]string{
+		"id_equipment":      "id_equipment", // plain column unchanged
+		"r.oee":             "r.oee",        // alias.col unchanged
+		"avg(r.oee)":        "r.oee",        // aggregate wrapper
+		"analogs->'DATA'":   "analogs",      // JSON -> extraction
+		"analogs->>'k'":     "analogs",      // JSON ->> extraction
+		"t.analogs->'DATA'": "t.analogs",    // qualified JSON base
+		"sum(r.qty)::int":   "r.qty",        // nested aggregate + cast
+		"col::int":          "col",          // bare cast
+	}
+	for in, want := range ok {
+		got, gotOK := reduceToColumnRef(in)
+		if !gotOK || got != want {
+			t.Errorf("reduceToColumnRef(%q) = (%q,%v); want (%q,true)", in, got, gotOK, want)
+		}
+	}
+	bad := []string{"*", "count(*)", "coalesce(a, b)", "a + b", "1", "'literal'"}
+	for _, in := range bad {
+		if got, gotOK := reduceToColumnRef(in); gotOK {
+			t.Errorf("reduceToColumnRef(%q) = (%q,true); want ok=false", in, got)
 		}
 	}
 }

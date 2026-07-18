@@ -188,6 +188,45 @@ func parseSQL(rawSQL string) ([]contractObject, error) {
 
 type projCol struct{ rel, col string }
 
+// reduceToColumnRef peels the projection-expression wrappers this contract
+// supports — a JSON extraction (col -> 'k' / col ->> 'k'), a single-argument
+// aggregate/function call (agg(inner)), and a ::type cast — down to the
+// underlying column reference (alias.col or col) whose existence the drift gate
+// verifies. Recursion handles nesting (e.g. avg(r.oee)). It returns ok=false for
+// anything it can't confidently reduce (a multi-arg expression, an operator
+// expression, `*`), so parseProjection still fails loud on a genuinely opaque
+// projection — the fail-closed intent of the whole contract module.
+func reduceToColumnRef(expr string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return "", false
+	}
+	// JSON extraction: the base column is the left-hand side of the first ->
+	// (this also matches the ->> operator, whose first two bytes are ->).
+	if i := strings.Index(expr, "->"); i >= 0 {
+		return reduceToColumnRef(expr[:i])
+	}
+	// Single-argument aggregate/function wrapper: ident( inner ).
+	if i := strings.IndexByte(expr, '('); i > 0 && strings.HasSuffix(expr, ")") && isIdent(expr[:i]) {
+		return reduceToColumnRef(expr[i+1 : len(expr)-1])
+	}
+	// ::type cast suffix.
+	if i := strings.Index(expr, "::"); i >= 0 {
+		return reduceToColumnRef(expr[:i])
+	}
+	// Base case: alias.col or col — both sides must be bare identifiers.
+	if dot := strings.IndexByte(expr, '.'); dot >= 0 {
+		if isIdent(expr[:dot]) && isIdent(expr[dot+1:]) {
+			return expr, true
+		}
+		return "", false
+	}
+	if isIdent(expr) {
+		return expr, true
+	}
+	return "", false
+}
+
 // parseFuncCall detects `name(arglist)` at the start of s (the text right after
 // FROM). Returns the function name and the number of top-level arguments.
 func parseFuncCall(s string) (name string, argc int, ok bool, err error) {
@@ -304,25 +343,25 @@ func parseProjection(proj string, aliasMap map[string]string, primary string) ([
 		if strings.HasSuffix(it, ".*") {
 			continue // alias.* → existence-only
 		}
-		if strings.ContainsAny(it, " ()") {
-			return nil, fmt.Errorf("unparseable projection item %q (expression, not a plain column)", it)
+		// Reduce a supported projection EXPRESSION — a single-argument aggregate
+		// (avg(r.oee)), a JSON extraction (analogs->'DATA'), or a ::type cast —
+		// down to the underlying column whose existence the drift gate verifies.
+		// Anything reduceToColumnRef can't confidently reduce still FAILS LOUD, so
+		// a genuinely opaque expression never silently escapes the contract check.
+		ref, ok := reduceToColumnRef(it)
+		if !ok {
+			return nil, fmt.Errorf("unparseable projection item %q (expression, not a reducible column)", it)
 		}
-		if dot := strings.IndexByte(it, '.'); dot >= 0 {
-			alias, col := it[:dot], it[dot+1:]
+		if dot := strings.IndexByte(ref, '.'); dot >= 0 {
+			alias, col := ref[:dot], ref[dot+1:]
 			rel, ok := aliasMap[alias]
 			if !ok {
 				return nil, fmt.Errorf("projection references unknown alias %q", alias)
 			}
-			if !isIdent(col) {
-				return nil, fmt.Errorf("non-column projection %q", it)
-			}
 			out = append(out, projCol{rel: rel, col: col})
 			continue
 		}
-		if !isIdent(it) {
-			return nil, fmt.Errorf("non-column projection %q", it)
-		}
-		out = append(out, projCol{rel: primary, col: it})
+		out = append(out, projCol{rel: primary, col: ref})
 	}
 	return out, nil
 }

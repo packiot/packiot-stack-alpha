@@ -332,6 +332,22 @@
     "argc": 4
   },
   {
+    "ref": "oee-by-month",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipment_runtime_shift",
+    "columns": [
+      "oee",
+      "cd_shift"
+    ]
+  },
+  {
+    "ref": "oee-by-month",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
     "ref": "oee-progress",
     "source": "dataset",
     "kind": "function",
@@ -477,6 +493,26 @@
     "name": "production_targets"
   },
   {
+    "ref": "report-downtimes",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "v_report_downtimes",
+    "columns": [
+      "op",
+      "linha",
+      "turno",
+      "inicio",
+      "fim",
+      "duracao",
+      "maquina",
+      "codigo_categoria",
+      "codigo_subcategoria",
+      "descricao_categoria",
+      "descricao_subcategoria",
+      "anotacao"
+    ]
+  },
+  {
     "ref": "scrap-targets",
     "source": "dataset",
     "kind": "relation",
@@ -515,6 +551,20 @@
       "week_size",
       "timezone",
       "language_tag"
+    ]
+  },
+  {
+    "ref": "suzano-analogs",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipment_values",
+    "columns": [
+      "analogs",
+      "ts_value",
+      "id_equipment",
+      "id_enterprise",
+      "id_site",
+      "id_area"
     ]
   },
   {

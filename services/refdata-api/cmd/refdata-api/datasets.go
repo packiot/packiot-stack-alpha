@@ -75,6 +75,7 @@ const (
 	pShiftFiltered              // derived: len(filters.shifts) > 0
 	pTeamFiltered               // derived: len(filters.teams) > 0
 	pUserRole                   // task #70: server-derived id_user_role → $2; NEVER client-supplied; absent ⇒ errRoleDatasetNeedsUser
+	pDateScalar                 // task #54: filters.<name>: a required date/datetime string, validated + bound as a positional ::date/::timestamp arg
 )
 
 type dsParam struct {
@@ -87,6 +88,15 @@ func ids(name string) dsParam { return dsParam{kind: pIDList, name: name} }
 func oneOf(name string, vals ...string) dsParam {
 	return dsParam{kind: pEnum, name: name, enum: vals}
 }
+
+// pDate declares a required scalar date/datetime filter, bound positionally as
+// a ::date/::timestamp arg (the SQL decides the cast). The value is validated
+// against a fixed set of layouts (YYYY-MM-DD, 'YYYY-MM-DD HH:MM:SS', RFC3339)
+// and bound as a time.Time — never interpolated into the SQL text — so it is a
+// client FILTER (like ids()/oneOf()), never the tenant axis. It is intentionally
+// NOT a window bound: these datasets bucket a single point in time (a month, a
+// from-instant, an hour) rather than scan a [from,to] range.
+func pDate(name string) dsParam { return dsParam{kind: pDateScalar, name: name} }
 
 var (
 	pEnt     = dsParam{kind: pEnterprise}
@@ -173,6 +183,23 @@ var datasets = map[string]dataset{
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF, pTeamF},
+	},
+	// oee-by-month (task #54, ADR-0031 §2b-1 — was back4 GET /api/admin/oeeavgmonth/{id},
+	// OeeRepository.getAvgOeebyMonth). equipment_runtime_shift has NO id_enterprise
+	// column, so — exactly like custom-target-* / liveUNS — we scope through
+	// `equipments` ($1 = tenant, $2 = the ownership-guarded equipment). back4 took a
+	// bare (id_equipment, date) with NO tenant fence; the fence is the load-bearing
+	// rewrite. Projection-shaped per ADR-0027 rule #2 (avg(oee) AS oee, not SELECT *);
+	// the month scalar is bound via pDate ($3), never a window. Not windowed.
+	"oee-by-month": {
+		group: "oee", doc: "Avg OEE per shift for one equipment's month (equipment_runtime_shift, scoped through equipments)",
+		sql: `SELECT avg(r.oee) AS oee, r.cd_shift
+			FROM equipment_runtime_shift r JOIN equipments e USING (id_equipment)
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			AND date_trunc('month', r.ts_value) = date_trunc('month', $3::date)
+			AND r.cd_shift IS NOT NULL
+			GROUP BY r.cd_shift ORDER BY r.cd_shift`,
+		params: []dsParam{pEnt, pEquip, pDate("month")},
 	},
 
 	// ── live-uns-equipment (snapshot tables — no window by design) ───
@@ -490,6 +517,63 @@ var datasets = map[string]dataset{
 			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_site = s.id_site AND e.id_equipment = $2)`,
 		params: []dsParam{pEnt, pEquip},
 	},
+
+	// ── tenant-custom (client-shaped reads; NOT general-purpose datasets) ────
+	// These carry a client-specific projection/shape and are grouped apart so it
+	// is visible they are bespoke. They are still first-class tenant-safe datasets:
+	// $1 is the injected customer_id, every hardcoded client id from back4 is
+	// removed and replaced by a $1-fenced filter (the "no hardcoded ids" rule).
+
+	// suzano-analogs (task #54, ADR-0031 §2b-2 — was back4 GET /analogs/{id} +
+	// /api/admin/analogs/{id}, SuzanoTagsDAO.getCurrentByMonth). back4 HARDCODED
+	// `id_equipment IN (404,411)` — a Suzano-specific literal set. Per the "no
+	// hardcoded ids" directive that literal does NOT move into refdata: it becomes
+	// a tenant-fenced equipments id-filter (cardinality 0 ⇒ all my equipment), and
+	// the enterprise self-scopes to $1. The Suzano-shaped `analogs->'DATA'` PPM
+	// projection, the `analogs->'DATA' @> '[{"type":"PPM"}]'` predicate (the
+	// containment is on the DATA sub-object, exactly as back4 wrote it — NOT on the
+	// bare analogs blob), and the America/Sao_Paulo lower-bound window are all
+	// preserved. The `from` instant is bound via pDate ($3::timestamp). Not windowed;
+	// the shared row cap replaces back4's LIMIT 300.
+	"suzano-analogs": {
+		group: "tenant-custom", doc: "Analog PPM readings from equipment_values (Suzano scrap report; analogs->'DATA')",
+		sql: `SELECT analogs->'DATA' AS data, ts_value, id_equipment, id_enterprise, id_site, id_area
+			FROM equipment_values
+			WHERE id_enterprise = $1
+			AND (cardinality($2::int[]) = 0 OR id_equipment = ANY($2::int[]))
+			AND ts_value >= date_trunc('minute', $3::timestamp) AT TIME ZONE 'America/Sao_Paulo'
+			AND analogs->'DATA' @> '[{"type": "PPM"}]'
+			AND analogs IS NOT NULL
+			ORDER BY ts_value ASC`,
+		params: []dsParam{pEnt, ids("equipments"), pDate("from")},
+	},
+
+	// report-downtimes (task #54, ADR-0031 §2b-3 — was back4 GET /reportDowntimes/{datetime},
+	// get-report-downtimes.service.js → reportDAO.getDowntimes).
+	//
+	// BACKING OBJECT: the back4 read is NOT a view/fn — it is an inline 6-relation
+	// join over a `(equipment_events UNION ALL equipment_events_man)` derived table,
+	// with a HARDCODED `id_enterprise = 37` (Suzano) and no clean single relation.
+	// That shape is (a) un-fenceable by a single WHERE and (b) unclassifiable by the
+	// fail-loud contract-drift parser (contract.go), which models a dataset as one
+	// primary relation/function + guard relations. The correct fix — matching how
+	// ADR-0031 handles frozen external reads (named `v_*` views) — is a dedicated
+	// tenant-CARRYING view `v_report_downtimes` that encapsulates the UNION + joins
+	// and EXPOSES id_enterprise + ts_value so refdata can fence on them. The dba owns
+	// creating that view (DDL handed off with this change); the pre-prod-flip
+	// contract-drift GATE (scripts/refdata-contract-drift-check.sh) will BLOCK the
+	// flip — fail-closed — until the view exists in prod, so this never serves a
+	// missing object silently. The hardcoded 37 is gone: the tenant is $1, the hour
+	// bucket is bound via pDate ($2::timestamp). Not windowed (a single hour point).
+	"report-downtimes": {
+		group: "tenant-custom", doc: "Downtime report rows for one hour bucket (v_report_downtimes; dba-owned view, see report-downtimes note)",
+		sql: `SELECT op, linha, turno, inicio, fim, duracao, maquina,
+			codigo_categoria, codigo_subcategoria, descricao_categoria, descricao_subcategoria, anotacao
+			FROM v_report_downtimes
+			WHERE id_enterprise = $1 AND ts_value = date_trunc('hour', $2::timestamp)
+			ORDER BY inicio DESC`,
+		params: []dsParam{pEnt, pDate("datetime")},
+	},
 }
 
 // ── Compile ──────────────────────────────────────────────────────────
@@ -590,6 +674,24 @@ func compileDataset(q datasetReq, customerID int, role callerRole) (string, []an
 				}
 			}
 			args = append(args, b)
+		case pDateScalar:
+			// A required client filter, validated + bound as a time.Time (never
+			// interpolated). The dataset's ::date/::timestamp cast decides how the
+			// bound value is truncated. It is NOT the tenant axis — $1 stays the
+			// injected customerID regardless of this filter.
+			raw, ok := q.Filters[p.name]
+			if !ok {
+				return "", nil, fmt.Errorf("dataset %q requires filter %q (a date YYYY-MM-DD or datetime)", q.Dataset, p.name)
+			}
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return "", nil, fmt.Errorf("filter %q must be a date/datetime string", p.name)
+			}
+			t, err := parseDateFilter(s)
+			if err != nil {
+				return "", nil, fmt.Errorf("filter %q: %w", p.name, err)
+			}
+			args = append(args, t)
 		case pShiftFiltered:
 			v, err := intList(q.Filters, "shifts")
 			if err != nil {
@@ -605,6 +707,21 @@ func compileDataset(q datasetReq, customerID int, role callerRole) (string, []an
 		}
 	}
 	return ds.sql + fmt.Sprintf(" LIMIT %d", queryRowLimit), args, nil
+}
+
+// parseDateFilter validates a pDate value against a fixed layout allowlist and
+// returns it as a time.Time (bound positionally, never string-interpolated). It
+// accepts a bare date, a space-separated datetime, or RFC3339 so a single
+// pDate kind serves both the month/day scalars (oee-by-month, suzano-analogs)
+// and the datetime bucket (report-downtimes). A value outside the allowlist is
+// rejected — the filter can never carry arbitrary SQL text.
+func parseDateFilter(s string) (time.Time, error) {
+	for _, layout := range []string{"2006-01-02", "2006-01-02 15:04:05", time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("must be YYYY-MM-DD, 'YYYY-MM-DD HH:MM:SS', or RFC3339")
 }
 
 func intList(filters map[string]json.RawMessage, name string) ([]int, error) {
@@ -648,6 +765,8 @@ func datasetCatalog() map[string]any {
 				filters[p.name] = "enum: " + strings.Join(p.enum, "|") + " (default " + p.enum[0] + ")"
 			case pBool:
 				filters[p.name] = "bool (default false)"
+			case pDateScalar:
+				filters[p.name] = "date YYYY-MM-DD or datetime (required)"
 			case pUserRole:
 				// Not a client filter — flag it so callers know this dataset is
 				// front4-JWT-only (server-derived id_user_role; 403 via X-Api-Key).
