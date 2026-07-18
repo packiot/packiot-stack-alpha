@@ -361,7 +361,14 @@ func main() {
 	// Surface PO Parameter skipped-id counters on /health so #32 (port
 	// 30700 / 30800-30899) can be measured-then-decided instead of guessed.
 	consumer.SetWriterStats(func() any {
-		return map[string]any{"po_parameter": poParameterWriter.Stats()}
+		return map[string]any{
+			"po_parameter": poParameterWriter.Stats(),
+			// Surface the sparkplug handler counters so the double-encode
+			// poison-storm guard (task #92) is observable on /health — a
+			// non-zero sparkplug_double_encoded_dropped means a producer is
+			// double-marshaling envelopes onto the oee exchange.
+			"sparkplug": sparkplugHandler.Stats(),
+		}
 	})
 
 	// Prometheus instrumentation. Registry + collectors are wired in

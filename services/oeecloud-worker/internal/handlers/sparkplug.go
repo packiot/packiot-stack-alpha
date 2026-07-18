@@ -38,15 +38,16 @@ import (
 // delivery (~5-6 typical CPACK payload). Batching cuts that to 1
 // round-trip, which is ~5x less DB latency per delivery.
 type SparkplugHandler struct {
-	parsed        atomic.Uint64
-	legacyDropped atomic.Uint64
-	legacyIngest  bool
-	batchWrites   *prometheus.CounterVec
-	queriesSent   atomic.Uint64
-	queriesAcked  atomic.Uint64
-	skippedUnk    atomic.Uint64
-	buildErrors   atomic.Uint64
-	execErrors    atomic.Uint64
+	parsed               atomic.Uint64
+	legacyDropped        atomic.Uint64
+	doubleEncodedDropped atomic.Uint64
+	legacyIngest         bool
+	batchWrites          *prometheus.CounterVec
+	queriesSent          atomic.Uint64
+	queriesAcked         atomic.Uint64
+	skippedUnk           atomic.Uint64
+	buildErrors          atomic.Uint64
+	execErrors           atomic.Uint64
 
 	pool            *pgxpool.Pool
 	shadowPool      *pgxpool.Pool // may be nil — set only if POSTGRES_SHADOW_DB_NAME configured
@@ -93,6 +94,7 @@ func destForSource(sourceType string) string {
 		return "f1_public"
 	}
 }
+
 // tenantOf derives the tenant (group_id) from a payload: the lowercased first
 // segment of the first metric's topic, matching packml_register tenant
 // discovery (lower(split_part(packml_topic,'/',1))). Bounded cardinality (one
@@ -112,10 +114,47 @@ func tenantOf(p *sparkplug.Payload) string {
 
 func (h *SparkplugHandler) LegacyDroppedCount() uint64 { return h.legacyDropped.Load() }
 
+// DoubleEncodedDroppedCount is the number of double-encoded (JSON-string-of-JSON)
+// deliveries dropped by the poison-storm guard. Non-zero means a producer on the
+// oee exchange is double-marshaling envelopes — investigate the producer (the
+// value should stay flat at 0 now that #475/#22 removed the known one).
+func (h *SparkplugHandler) DoubleEncodedDroppedCount() uint64 { return h.doubleEncodedDropped.Load() }
+
+// bodyPreview renders up to n bytes of a raw AMQP body for a log line. The
+// double-encode guard logs this so ops can eyeball the offending shape without
+// dumping multi-KB payloads into Loki.
+func bodyPreview(body []byte, n int) string {
+	if len(body) > n {
+		return string(body[:n])
+	}
+	return string(body)
+}
+
 // Handle is the Handler signature consumed by Dispatcher.
 func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	p, err := sparkplug.Parse(d.Body)
 	if err != nil {
+		// A DOUBLE-ENCODED envelope (a JSON string of JSON — `"{...}"`) is
+		// DETERMINISTIC poison: the delivered bytes are fixed, so every
+		// nack→DLX→redeliver re-fails identically. Nack-retrying it (which the
+		// legacyIngest=true branch below does) is a pure poison storm — this is
+		// the #89/#92 stall shape (`cannot unmarshal string into ...Payload`,
+		// ~2/s on sparkplug.data). Drop + count + sampled log, NEVER retry —
+		// the same "deterministic parse failure ⇒ skip, don't nack" rule as the
+		// non-numeric-value guard (#449). Independent of legacyIngest because no
+		// valid envelope is EVER a bare JSON string; the producer that emitted
+		// this shape was already removed in #475/#22 and this is the standing
+		// consumer-side backstop against any residual or future double-encoder.
+		if sparkplug.IsJSONStringBody(d.Body) {
+			if n := h.doubleEncodedDropped.Add(1); n%64 == 1 {
+				h.logger.Warn("sparkplug: double-encoded envelope (JSON string of JSON) — dropping, not retrying (poison-storm guard; sampled 1/64)",
+					slog.String("routing_key", d.RoutingKey),
+					slog.Int("body_len", len(d.Body)),
+					slog.String("body_preview", bodyPreview(d.Body, 80)),
+				)
+			}
+			return nil
+		}
 		if !h.legacyIngest {
 			// 10.9: residual nodered legacy publishes (heartbeats etc.)
 			// share the routing key with envelopes but not the schema.
@@ -311,22 +350,26 @@ func (h *SparkplugHandler) routeForSource(sourceType string) (*pgxpool.Pool, str
 // reflect the build→batch split: queriesSent counts batch entries
 // pushed, queriesAcked counts successful execs.
 type SparkplugStats struct {
-	Parsed         uint64 `json:"sparkplug_parsed"`
-	QueriesSent    uint64 `json:"sparkplug_queries_sent"`
-	QueriesAcked   uint64 `json:"sparkplug_queries_acked"`
-	SkippedUnknown uint64 `json:"sparkplug_skipped_unknown_kind"`
-	BuildErrors    uint64 `json:"sparkplug_build_errors"`
-	ExecErrors     uint64 `json:"sparkplug_exec_errors"`
+	Parsed               uint64 `json:"sparkplug_parsed"`
+	QueriesSent          uint64 `json:"sparkplug_queries_sent"`
+	QueriesAcked         uint64 `json:"sparkplug_queries_acked"`
+	SkippedUnknown       uint64 `json:"sparkplug_skipped_unknown_kind"`
+	BuildErrors          uint64 `json:"sparkplug_build_errors"`
+	ExecErrors           uint64 `json:"sparkplug_exec_errors"`
+	LegacyDropped        uint64 `json:"sparkplug_legacy_dropped"`
+	DoubleEncodedDropped uint64 `json:"sparkplug_double_encoded_dropped"`
 }
 
 func (h *SparkplugHandler) Stats() SparkplugStats {
 	return SparkplugStats{
-		Parsed:         h.parsed.Load(),
-		QueriesSent:    h.queriesSent.Load(),
-		QueriesAcked:   h.queriesAcked.Load(),
-		SkippedUnknown: h.skippedUnk.Load(),
-		BuildErrors:    h.buildErrors.Load(),
-		ExecErrors:     h.execErrors.Load(),
+		Parsed:               h.parsed.Load(),
+		QueriesSent:          h.queriesSent.Load(),
+		QueriesAcked:         h.queriesAcked.Load(),
+		SkippedUnknown:       h.skippedUnk.Load(),
+		BuildErrors:          h.buildErrors.Load(),
+		ExecErrors:           h.execErrors.Load(),
+		LegacyDropped:        h.legacyDropped.Load(),
+		DoubleEncodedDropped: h.doubleEncodedDropped.Load(),
 	}
 }
 

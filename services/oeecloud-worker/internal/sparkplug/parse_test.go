@@ -260,4 +260,45 @@ func TestParse_EncodingContract(t *testing.T) {
 		t.Fatal("double-encoded body must be REJECTED by Parse (→ dead-letter), got nil error — " +
 			"a tolerant decode here would silently mis-ingest double-encoded messages")
 	}
+
+	// IsJSONStringBody must FLAG the double-encoded body (top-level JSON string)
+	// and NOT the correct single-encoded object. This is the predicate the
+	// worker uses to drop-not-retry the poison (task #92); if it misclassified
+	// the object it would silently drop good traffic.
+	if !IsJSONStringBody(double) {
+		t.Fatal("IsJSONStringBody must return true for a double-encoded (JSON-string) body")
+	}
+	if IsJSONStringBody(single) {
+		t.Fatal("IsJSONStringBody must return false for a correct single-encoded object body")
+	}
+}
+
+// TestIsJSONStringBody covers the top-level-token discrimination the #92
+// poison-storm guard depends on: only a bare JSON string (`"..."`, the
+// double-encode signature that yields `cannot unmarshal string into
+// ...Payload`) is dropped; every object body — including one with leading
+// insignificant whitespace — must pass through to the normal parse path.
+func TestIsJSONStringBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"object", `{"timestamp":1,"metrics":[]}`, false},
+		{"object leading whitespace", "  \n\t{\"timestamp\":1}", false},
+		{"double-encoded string of object", `"{\"timestamp\":1}"`, true},
+		{"double-encoded string leading ws", "\n \"{\\\"a\\\":1}\"", true},
+		{"bare string", `"hello"`, true},
+		{"array", `[1,2,3]`, false},
+		{"number", `42`, false},
+		{"empty", ``, false},
+		{"whitespace only", "   \n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsJSONStringBody([]byte(tt.body)); got != tt.want {
+				t.Errorf("IsJSONStringBody(%q) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
 }
