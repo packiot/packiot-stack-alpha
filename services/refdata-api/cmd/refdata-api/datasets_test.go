@@ -115,9 +115,13 @@ func TestCompileDatasetWindowed(t *testing.T) {
 	if !strings.Contains(sql, "h_piot_oee_score_with_teams") || !strings.Contains(sql, "LIMIT 10000") {
 		t.Errorf("fn call or row cap missing: %s", sql)
 	}
-	// params order: ent, equipments, areas, sites, shifts, teams, from, to, grain, nav, shiftF, teamF
+	// params order: ent, equipments, areas, sites, shifts, teams, from, to, grain, nav, shiftF
+	// (11 args — the fn has no is_team_filtered on staging OR prod; see task #90).
 	if args[0] != 42 {
 		t.Errorf("tenancy: args[0] = %v, want injected 42", args[0])
+	}
+	if len(args) != 11 {
+		t.Errorf("oee-score-teams binds %d args, want 11 (prod signature)", len(args))
 	}
 	if args[1] != "{}" || args[3] != "{5,7}" || args[4] != "{2}" {
 		t.Errorf("id-list literals wrong: %v", args)
@@ -125,8 +129,8 @@ func TestCompileDatasetWindowed(t *testing.T) {
 	if args[8] != "HOUR" {
 		t.Errorf("time_grain not bound UPPERCASE: %v", args[8])
 	}
-	if args[10] != true || args[11] != false {
-		t.Errorf("derived shift/team filtered flags wrong: %v %v", args[10], args[11])
+	if args[10] != true {
+		t.Errorf("derived shift-filtered flag wrong: %v", args[10])
 	}
 
 	for _, bad := range []datasetReq{

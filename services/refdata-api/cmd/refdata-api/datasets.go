@@ -145,12 +145,20 @@ func liveUNS(doc, table string) dataset {
 
 var datasets = map[string]dataset{
 	// ── oee ──────────────────────────────────────────────────────────
+	// h_piot_oee_score_with_teams is an 11-arg fn on BOTH staging AND prod
+	// (verified live via pg_get_function_arguments, task #90): it ends at
+	// is_shift_filtered and has NO is_team_filtered — unlike its 12-arg sibling
+	// h_piot_oee_progress_new2 (below), from which the extra pTeamF binding was
+	// mistakenly copied. Binding 12 positional args would 500 on both DBs, so
+	// we bind the 11 args the real signature accepts. in_ids_teams (the teams
+	// vector, $6) is still passed; only the phantom is_team_filtered flag is
+	// dropped — no functionality lost (the fn never implemented that flag).
 	"oee-score-teams": {
 		group: "oee", doc: "OEE score split by shifts/teams (h_piot_oee_score_with_teams)",
-		sql:      `SELECT * FROM h_piot_oee_score_with_teams($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		sql:      `SELECT * FROM h_piot_oee_score_with_teams($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
-			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF, pTeamF},
+			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF},
 	},
 	"oee-score-full": {
 		group: "oee", doc: "Full OEE score breakdown (h_piot_oee_score_full_3)",
