@@ -887,6 +887,53 @@ type ShadowEventKey struct {
 	TsEvent     time.Time
 }
 
+// ShadowEventCandidate is a close-sweep candidate: the natural key PLUS the
+// shadow row's CURRENT close state (ts_end / status / duration — the exact
+// three columns the fan-out UPSERT writes). Carrying the current state is the
+// convergence fix (task #86): the decision core compares it against prod's
+// authoritative close and skips rows that ALREADY match, instead of
+// re-upserting every prod-closed row every pass (~4230 no-op writes/pass).
+// nil pointers distinguish "column NULL / event still OPEN" from a set value.
+type ShadowEventCandidate struct {
+	ShadowEventKey
+	TsEnd    *time.Time // nil = OPEN
+	Status   *int
+	Duration *int
+}
+
+// shadowCandDedup is a fully-comparable value key used to de-duplicate
+// candidates. It folds in the CURRENT close state, not just the natural key:
+// the same natural key can legitimately appear with DIFFERENT state across the
+// two planes (open on F2, closed on F3), and we must keep both so the decision
+// core sees the divergence. Identical (key + state) tuples — a row matched by
+// both the open and recent sub-queries, or holding the same value on both
+// planes — collapse to one. Pointers become (present,value) pairs so nil and a
+// set value never alias.
+type shadowCandDedup struct {
+	eq        int
+	tsUS      int64
+	hasEnd    bool
+	endUS     int64
+	hasStatus bool
+	status    int
+	hasDur    bool
+	dur       int
+}
+
+func dedupKey(c ShadowEventCandidate) shadowCandDedup {
+	k := shadowCandDedup{eq: c.IDEquipment, tsUS: c.TsEvent.UnixMicro()}
+	if c.TsEnd != nil {
+		k.hasEnd, k.endUS = true, c.TsEnd.UnixMicro()
+	}
+	if c.Status != nil {
+		k.hasStatus, k.status = true, *c.Status
+	}
+	if c.Duration != nil {
+		k.hasDur, k.dur = true, *c.Duration
+	}
+	return k
+}
+
 // FetchShadowEventCloseCandidates returns the DISTINCT set of shadow
 // equipment_events rows that are close-sweep candidates, UNIONed across
 // BOTH shadow planes (F2 = shadow_go_port on the staging pool, F3 = public
@@ -901,21 +948,29 @@ type ShadowEventKey struct {
 // windows — a close landing outside those windows was never re-fanned and
 // the shadow row stayed OPEN forever.
 //
+// Each row carries its CURRENT close state (ts_end/status/duration) so the
+// decision core (planCloseCorrections) can skip rows that already match prod —
+// the task #86 convergence fix. Adding these three columns to the SELECT does
+// not change which rows or index the WHERE clause touches (they are read off
+// the same heap tuples already fetched), so the query plan is unchanged.
+//
 // UNION (not intersection) across planes is deliberate: a row can be open on
 // F2 but drifted-closed on F3 (or vice-versa). The sweep re-points BOTH
 // planes at prod's single authoritative value, so feeding the union and
-// correcting both is exactly what re-converges F2==F3.
+// correcting both is exactly what re-converges F2==F3. De-dup folds in the
+// current state so a per-plane divergence survives to the decision core.
 //
 // The recent cutoff is computed ONCE in Go (not per-plane now()) so both
 // planes — which live in different databases with independent clocks — get
 // an identical window. Iterated PK-batched on id_equipment_event so a large
 // open set can't buffer unbounded. The caller sets the ctx watchdog.
-func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpriseID, recentHours, pageSize int) ([]ShadowEventKey, error) {
+func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpriseID, recentHours, pageSize int) ([]ShadowEventCandidate, error) {
 	if pageSize <= 0 {
 		pageSize = 500
 	}
 	recentCutoff := time.Now().Add(-time.Duration(recentHours) * time.Hour)
-	seen := make(map[ShadowEventKey]struct{})
+	seen := make(map[shadowCandDedup]struct{})
+	var out []ShadowEventCandidate
 
 	page := func(pool *pgxpool.Pool, sql string, buildArgs func(lastID int64) []any) error {
 		var lastID int64
@@ -927,12 +982,15 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 			n := 0
 			for rows.Next() {
 				var evID int64
-				var k ShadowEventKey
-				if err := rows.Scan(&evID, &k.IDEquipment, &k.TsEvent); err != nil {
+				var c ShadowEventCandidate
+				if err := rows.Scan(&evID, &c.IDEquipment, &c.TsEvent, &c.TsEnd, &c.Status, &c.Duration); err != nil {
 					rows.Close()
 					return err
 				}
-				seen[k] = struct{}{}
+				if _, dup := seen[dedupKey(c)]; !dup {
+					seen[dedupKey(c)] = struct{}{}
+					out = append(out, c)
+				}
 				if evID > lastID {
 					lastID = evID
 				}
@@ -954,7 +1012,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 			return nil
 		}
 		openSQL := fmt.Sprintf(`
-			SELECT id_equipment_event, id_equipment, ts_event
+			SELECT id_equipment_event, id_equipment, ts_event, ts_end, status, duration
 			  FROM %s.equipment_events
 			 WHERE id_enterprise = $1 AND ts_end IS NULL AND id_equipment_event > $2
 			 ORDER BY id_equipment_event
@@ -973,7 +1031,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 			return fmt.Errorf("%s open-strand candidates: %w", schema, err)
 		}
 		recentSQL := fmt.Sprintf(`
-			SELECT id_equipment_event, id_equipment, ts_event
+			SELECT id_equipment_event, id_equipment, ts_event, ts_end, status, duration
 			  FROM %s.equipment_events
 			 WHERE id_enterprise = $1 AND ts_event >= $2 AND id_equipment_event > $3
 			 ORDER BY id_equipment_event
@@ -993,10 +1051,6 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 		return nil, err
 	}
 
-	out := make([]ShadowEventKey, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
 	return out, nil
 }
 
