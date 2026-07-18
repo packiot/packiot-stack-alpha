@@ -58,12 +58,13 @@ type line struct {
 // member-sum.
 //
 // SINGLE-WRITER (the #456 non-regression): the line's Parameter30700 is its
-// OWN idx (105/88/92/120) — a self-reference that matches no member index, so
-// Phase-9 line-derivation never fires and the line's counter has exactly one
-// writer (its own-stream). Members no longer publish Parameter30700 at all
-// (see publishBirth). The line-counter idx is cosmetic: the resolver collapses
-// line topics to the 4-seg form, so 105/88/92 only need to not collide with a
-// member idx.
+// OWN Idx (the `line.Idx` field = 51/47/48/49) — a self-reference that matches
+// no member index, so Phase-9 line-derivation never fires and the line's
+// counter has exactly one writer (its own-stream). Members no longer publish
+// Parameter30700 at all (see publishBirth). The line-counter Idx is cosmetic:
+// the resolver collapses line topics to the 4-seg form, so 51/47/48/49 only
+// need to not collide with a member Idx (enforced by
+// TestLineParameter30700_SelfReferentialNoMemberCollision).
 //
 // PROD FIDELITY (verified SELECT-only, packiot40 2026-07-16): prod C-PACK
 // sends NO Parameter30700 for these lines (packml_register.line_unit_seq NULL
@@ -73,20 +74,39 @@ type line struct {
 // write-back observability on the line topic. Benign divergence; identical
 // downstream effect.
 //
-//	CPACK/SC/LINHAS/L8              (Unit="", idx 120) → eq 51  line own-stream
-//	CPACK/SC/LINHAS/L5              (Unit="", idx 105) → eq 47  line own-stream (NEW)
-//	CPACK/SC/LINHAS/L3              (Unit="", idx  88) → eq 48  line own-stream (NEW)
-//	CPACK/SC/LINHAS/L4              (Unit="", idx  92) → eq 49  line own-stream (NEW)
+// Line entries carry a self-referential Idx (= the eq surrogate) and a
+// prod-calibrated MachSpeed (= prod production_speed); members carry a real
+// counter-path Idx and a member MachSpeed. (Idx, MachSpeed) shown below:
+//
+//	CPACK/SC/LINHAS/L8              (Unit="", Idx 51, spd 120) → eq 51  line own-stream
+//	CPACK/SC/LINHAS/L5              (Unit="", Idx 47, spd 147) → eq 47  line own-stream (#16)
+//	CPACK/SC/LINHAS/L3              (Unit="", Idx 48, spd 140) → eq 48  line own-stream (#16)
+//	CPACK/SC/LINHAS/L4              (Unit="", Idx 49, spd 147) → eq 49  line own-stream (#16)
 //	CPACK/SC/LINHAS/L5/BREYER + .../61/Unit → eq 53  member
 //	CPACK/SC/LINHAS/L5/TEXA   + .../65/Unit → eq 57  member
 //	CPACK/SC/LINHAS/L3/PTH    + .../81/Unit → eq 61  member
 //	CPACK/SC/LINHAS/L4/TEXA   + .../63/Unit → eq 63  member (idx 66→63: 66 is
 //	  L4/BREYER's registered counter path; 66 mis-resolved by bare-topic fallback)
+//
+// FEED-MAGNITUDE CALIBRATION (#77): the line MachSpeed is the own-stream's
+// counter rate (units/min while StateCurrent==6) — the sim's line "feed
+// magnitude". It MUST track prod's real line throughput or line-vs-prod gross
+// drifts. When #16/#491 added the L5/L3/L4 line entries, their MachSpeed field
+// was left holding the leftover self-ref-idx numbers (105/88/92) instead of a
+// prod-calibrated machine speed — an uncalibrated feed that under-fed those
+// lines ~29–37% vs prod. L8 (pre-existing) already carried 120 = prod's
+// production_speed, so it was never the actual gap (the #18 "L8 −38%" figure
+// predates #491 and does not reproduce: L8 now tracks prod within ~5%).
+//
+// MachSpeed is now set to each line's prod `equipments.production_speed`
+// (SELECT-only, packiot40 2026-07-18): L8=120, L5=147, L3=140, L4=147. The
+// feed_magnitude_parity_test guard pins these against a prod-calibrated band so
+// a future line addition can't silently ship an uncalibrated feed again.
 var lines = []line{
 	{"L8", "", 51, 120},
-	{"L5", "", 47, 105},
-	{"L3", "", 48, 88},
-	{"L4", "", 49, 92},
+	{"L5", "", 47, 147},
+	{"L3", "", 48, 140},
+	{"L4", "", 49, 147},
 	{"L5", "BREYER", 61, 110},
 	{"L5", "TEXA", 65, 100},
 	{"L3", "PTH", 81, 90},
