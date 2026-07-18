@@ -185,12 +185,17 @@ export PGPASSWORD=$(jq -r .DB_PASSWORD <<<"$SECRET")
 export PGDATABASE=$(jq -r .DB_NAME <<<"$SECRET")
 
 run_psql() {
+  # -q is REQUIRED: without it, psql echoes the BEGIN/SET/COMMIT command tags to
+  # stdout, which the emptiness check below miscounts as "drift" → false-positive
+  # "❌ DRIFT DETECTED" with an empty result table. -q suppresses those tags so the
+  # only stdout is the actual drift rows. (Found via #90: the gate reported drift
+  # with a blank KIND/REF/OBJECT/DETAIL table purely from the transaction tags.)
   if command -v psql >/dev/null; then
-    psql -tA -F$'\t' -v ON_ERROR_STOP=1
+    psql -qtA -F$'\t' -v ON_ERROR_STOP=1
   else
     docker run --rm -i --network host \
       -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
-      postgres:15-alpine psql -tA -F$'\t' -v ON_ERROR_STOP=1
+      postgres:15-alpine psql -qtA -F$'\t' -v ON_ERROR_STOP=1
   fi
 }
 DRIFT=$(printf '%s\n' "$SQL" | run_psql) || fail "prod query failed"
