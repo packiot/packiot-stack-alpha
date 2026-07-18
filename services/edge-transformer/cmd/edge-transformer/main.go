@@ -321,6 +321,13 @@ func main() {
 				slog.String("err", shadowErr.Error()))
 			shadowPub = nil
 		} else {
+			// #91 emit-liveness: fail /healthz if emit stalls (dead channel /
+			// failing reconnect) so orchestration recycles instead of a silent
+			// 27h gap. 0 disables. See shadowpub.emitStalled for the anti-flap
+			// (recent-attempt) gate.
+			shadowPub.LivenessTimeout = time.Duration(cfg.EmitLivenessTimeoutSeconds) * time.Second
+			logger.Info("shadowpub emit-liveness configured",
+				slog.Int("timeout_seconds", cfg.EmitLivenessTimeoutSeconds))
 			// ADR-0011 P3 chaos-test fix: proactively watch NotifyClose and
 			// re-dial when RMQ goes down. Without this, the drain loop's
 			// PublishBytes returns ErrConfirmTimeout (not a connection error)
