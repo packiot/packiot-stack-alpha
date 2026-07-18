@@ -52,9 +52,20 @@ const dayEligibleSQL = `
 	       -- anchor regardless of DST, so the epoch diff is the real
 	       -- wall-clock day length. Feeds the LEAST() ceiling in the sums
 	       -- CTE of dayRollupSQL (task #59 — defensive over-mint clamp).
+	       --
+	       -- MUST subtract the two timestamptz ANCHORS (the fn's ts_value
+	       -- column), NOT the date-typed ts_value_production label and NOT
+	       -- d.ts_value directly: equipment_runtime_1day.ts_value is DATE
+	       -- (production-date key), and the fn's ts_value_production is also
+	       -- DATE, so (ts_value_production - d.ts_value) is (date - date) =
+	       -- INTEGER (a day count), and extract(epoch FROM integer) does
+	       -- not exist -> SQLSTATE 42883 (task #93). The day_begin offset
+	       -- cancels in anchor(D+1) − anchor(D), leaving the true DST-aware
+	       -- wall-clock length as an interval; extract(epoch …) yields secs.
 	       extract(epoch FROM (
-	           (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day') LIMIT 1)
-	           - d.ts_value)) AS day_len_s
+	           (SELECT ts_value FROM piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day') LIMIT 1)
+	         - (SELECT ts_value FROM piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value) LIMIT 1)
+	       )) AS day_len_s
 	  FROM %[1]s.equipment_runtime_1day d
 	 WHERE d.ts_value >= now() - interval '1 month'
 	   AND d.ts_value < (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(d.id_equipment, now() + interval '1 day') LIMIT 1)
