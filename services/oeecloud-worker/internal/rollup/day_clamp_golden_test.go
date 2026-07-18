@@ -14,12 +14,21 @@
 // timezone/DST calendar — the session runs in UTC and the length is
 // injected directly. Three scenarios:
 //
-//	201 — non-hour-aligned (02:10), true length 86400, 25×3600 buckets
+//	201 — over-mint, true length 86400, 25×3600 buckets
 //	      ⇒ naked sum 90000 must be CAPPED to 86400; counts untouched.
-//	202 — hour-aligned, partial day (20 buckets) below the length
+//	202 — partial day (20 buckets) below the length
 //	      ⇒ sums UNCHANGED (clamp is a no-op on correct data).
 //	203 — DST fall-back, true length 90000, 25×3600 buckets summing
 //	      to 90000 ⇒ must stay 90000, NOT be mis-clamped to 86400.
+//
+// TYPE FIDELITY (task #93): the real equipment_runtime_1day.ts_value is
+// DATE and the real piot_get_day_begin_by_equipment returns ts_value
+// (timestamptz anchor) + ts_value_production (DATE). An earlier version
+// of this fixture typed both as timestamptz, which let the buggy
+// `ts_value_production - d.ts_value` resolve to `timestamptz - timestamptz`
+// = interval and pass — masking the production `date - date` = integer /
+// `extract(epoch FROM integer)` 42883 crash. The stub below now mirrors
+// the real return types so day_len_s is exercised on the true type path.
 //
 // Run: DATABASE_URL=postgres://... go test -tags golden ./internal/rollup -run DayOverMintClamp
 package rollup
@@ -44,7 +53,7 @@ const dayClampSchema = `
 	    id_site int, id_area int, id_enterprise int, tp_equipment int
 	);
 	CREATE TABLE dayclamp.equipment_runtime_1day (
-	    id_equipment int, ts_value timestamptz,
+	    id_equipment int, ts_value date,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT true,
 	    oee double precision,
 	    available_time double precision, running_time double precision,
@@ -55,7 +64,7 @@ const dayClampSchema = `
 	    proportional_target double precision
 	);
 	CREATE TABLE dayclamp.equipment_runtime_1hour (
-	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
+	    id_equipment int, ts_value timestamptz, ts_value_production date,
 	    available_time double precision, running_time double precision,
 	    stopped_time double precision, planned_downtime double precision,
 	    ideal_production double precision, target double precision,
@@ -65,18 +74,23 @@ const dayClampSchema = `
 	);
 
 	-- Injected TRUE production-day length per equipment (seconds). The
-	-- stub returns the day anchor for the day CONTAINING t: for the
-	-- day_len_s call (t = day.ts_value + 1 day) it yields day.ts_value +
-	-- true_len_s, so epoch(next − this) = true_len_s exactly. UTC session
-	-- ⇒ interval '1 day' == 24h, so (t − '1 day') recovers the anchor.
+	-- stub returns, for the production date D containing t (D =
+	-- date_trunc('day', t)::date — the calls only ever pass midnights, so
+	-- this is exact), a timestamptz anchor whose value grows by true_len_s
+	-- per calendar day: anchor(D) = 2000-01-01 + (D − 2000-01-01)·true_len_s.
+	-- Consecutive anchors therefore differ by exactly true_len_s, so the
+	-- two-call day_len_s expression epoch(anchor(D+1) − anchor(D)) yields
+	-- true_len_s. ts_value_production is DATE, matching the real fn — this
+	-- is what makes (date - date) reachable if the code ever regresses.
 	CREATE TABLE dayclamp.day_len_cfg (id_equipment int PRIMARY KEY, true_len_s double precision);
 	CREATE FUNCTION dayclamp.piot_get_day_begin_by_equipment(eq int, t timestamptz)
-	  RETURNS TABLE (ts_value timestamptz, ts_value_production timestamptz)
+	  RETURNS TABLE (ts_value timestamptz, ts_value_production date)
 	  AS $$
-	    SELECT v, v FROM (
-	      SELECT (t - interval '1 day')
-	           + make_interval(secs => (SELECT true_len_s FROM dayclamp.day_len_cfg WHERE id_equipment = eq)) AS v
-	    ) s;
+	    SELECT
+	      TIMESTAMPTZ '2000-01-01 00:00:00+00'
+	        + make_interval(secs => (date_trunc('day', t)::date - DATE '2000-01-01')
+	                                * (SELECT true_len_s FROM dayclamp.day_len_cfg WHERE id_equipment = eq)),
+	      date_trunc('day', t)::date;
 	  $$ LANGUAGE sql;`
 
 func TestDayOverMintClampBehaviour(t *testing.T) {
@@ -107,10 +121,13 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		    (203, 90000);   -- DST fall-back: legitimately 25h
 
 		-- Day rows (yesterday-ish so they are eligible, < now()+len anchor).
+		-- ts_value is DATE (the production-date key) — the 25th straddling
+		-- hour bucket that drives the over-mint comes from the hour grain,
+		-- not from a non-midnight day key (which a DATE column cannot hold).
 		INSERT INTO dayclamp.equipment_runtime_1day (id_equipment, ts_value) VALUES
-		    (201, date_trunc('day', now() - interval '2 days') + interval '2 hour 10 minute'),
-		    (202, date_trunc('day', now() - interval '2 days')),
-		    (203, date_trunc('day', now() - interval '2 days'));
+		    (201, (now() - interval '2 days')::date),
+		    (202, (now() - interval '2 days')::date),
+		    (203, (now() - interval '2 days')::date);
 
 		-- 201: 25 buckets × (3600 available, 3600 running, 3600 stopped,
 		-- 3600 downtime) ⇒ each sums to 90000 (impossible). Counts:
@@ -120,21 +137,21 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		     available_time, running_time, stopped_time, downtime,
 		     planned_downtime, ideal_production, target, gross, net, changeover_time, scrap, speed, proportional_target)
 		SELECT 201,
-		       (date_trunc('day', now() - interval '2 days') + interval '2 hour 10 minute') + make_interval(hours => g),
-		       (date_trunc('day', now() - interval '2 days') + interval '2 hour 10 minute'),
+		       date_trunc('day', now() - interval '2 days') + make_interval(hours => g),
+		       (now() - interval '2 days')::date,
 		       3600, 3600, 3600, 3600, 0, 200, 10, 120, 100, 0, 0, 50, 0
 		  FROM generate_series(0, 24) g;
 
-		-- 202: hour-aligned, PARTIAL day — 20 buckets. available 3600,
-		-- running 3000, stopped 600, downtime 600 ⇒ 72000/60000/12000/12000,
-		-- all below 86400 ⇒ clamp must be a no-op.
+		-- 202: PARTIAL day — 20 buckets. available 3600, running 3000,
+		-- stopped 600, downtime 600 ⇒ 72000/60000/12000/12000, all below
+		-- 86400 ⇒ clamp must be a no-op.
 		INSERT INTO dayclamp.equipment_runtime_1hour
 		    (id_equipment, ts_value, ts_value_production,
 		     available_time, running_time, stopped_time, downtime,
 		     planned_downtime, ideal_production, target, gross, net, changeover_time, scrap, speed, proportional_target)
 		SELECT 202,
 		       date_trunc('day', now() - interval '2 days') + make_interval(hours => g),
-		       date_trunc('day', now() - interval '2 days'),
+		       (now() - interval '2 days')::date,
 		       3600, 3000, 600, 600, 0, 200, 10, 120, 100, 0, 0, 50, 0
 		  FROM generate_series(0, 19) g;
 
@@ -146,7 +163,7 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		     planned_downtime, ideal_production, target, gross, net, changeover_time, scrap, speed, proportional_target)
 		SELECT 203,
 		       date_trunc('day', now() - interval '2 days') + make_interval(hours => g),
-		       date_trunc('day', now() - interval '2 days'),
+		       (now() - interval '2 days')::date,
 		       3600, 3600, 1800, 1800, 0, 200, 10, 120, 100, 0, 0, 50, 0
 		  FROM generate_series(0, 24) g;`
 
