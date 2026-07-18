@@ -88,6 +88,16 @@ type Metric struct {
 // typical WAN round-trip; shorter than a stuck-broker interval.
 const DefaultConfirmTimeout = 5 * time.Second
 
+// DefaultLivenessTimeout is the #91 emit-liveness window. 120s is deliberately
+// conservative — the Sparkplug stream emits every few seconds, so 120s of
+// actively-trying-with-zero-confirms is unambiguously a stall, yet it is 24×
+// the 5s confirm timeout and 2× the outbox's 60s oldest-row alarm, leaving wide
+// margin against a transient broker blip so /healthz cannot flap into a restart
+// loop. Under a sustained outage the outbox drain re-attempts at most every
+// ~60s (its backoff cap), so lastAttemptAt stays fresh within the window and
+// the stall is detected reliably.
+const DefaultLivenessTimeout = 120 * time.Second
+
 // Errors surfaced by Publish. Callers can distinguish nack (RabbitMQ said no)
 // from timeout (RabbitMQ said nothing) — matters for the operator triage.
 var (
@@ -134,6 +144,28 @@ type Publisher struct {
 	// Falls back to DefaultConfirmTimeout when zero.
 	ConfirmTimeout time.Duration
 
+	// LivenessTimeout is the emit-liveness deadline (#91). If the publisher has
+	// ATTEMPTED a publish within LivenessTimeout but has NOT had a single
+	// successful broker confirm within that same window, emit has stalled — a
+	// dead channel / failing reconnect that the backlog metric can't see
+	// (published never advances, so InFlightBacklog stays 0 and /healthz stays
+	// green — exactly the #89 27h silent gap). Degraded() surfaces the stall so
+	// orchestration recycles. Zero = liveness check disabled.
+	//
+	// The "recent attempt" gate is what stops this from FLAPPING: an idle
+	// publisher (no MQTT traffic → nothing to emit) records no attempts, so it
+	// is never marked degraded for simply being quiet. Only actively
+	// trying-and-failing trips it.
+	LivenessTimeout time.Duration
+
+	// lastAttemptAt / lastConfirmAt are unix-nano wall-clock stamps read by the
+	// liveness predicate. lastAttemptAt is bumped at the top of every publish
+	// attempt (before the channel-nil check, so a dead-channel stall still
+	// counts as "trying"); lastConfirmAt is bumped on every broker Ack. Both
+	// seed to New()'s wall clock so a fresh, idle publisher is not degraded.
+	lastAttemptAt atomic.Int64
+	lastConfirmAt atomic.Int64
+
 	// confirms is the ordered stream of Confirmation events from the broker.
 	// The library guarantees delivery-tag order matches publish order on the
 	// same channel, so we drain sequentially (one per Publish body iteration).
@@ -178,16 +210,23 @@ func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 	if instance == "" {
 		instance = "edge-transformer"
 	}
-	return &Publisher{
-		amqpURL:        amqpURL,
-		conn:           conn,
-		ch:             ch,
-		exchange:       exchange,
-		instance:       instance,
-		logger:         logger,
-		ConfirmTimeout: DefaultConfirmTimeout,
-		confirms:       confirms,
-	}, nil
+	p := &Publisher{
+		amqpURL:         amqpURL,
+		conn:            conn,
+		ch:              ch,
+		exchange:        exchange,
+		instance:        instance,
+		logger:          logger,
+		ConfirmTimeout:  DefaultConfirmTimeout,
+		LivenessTimeout: DefaultLivenessTimeout,
+		confirms:        confirms,
+	}
+	// Seed the liveness stamps to now so a freshly-started, idle publisher is
+	// never reported as stalled before it has had anything to emit.
+	now := time.Now().UnixNano()
+	p.lastAttemptAt.Store(now)
+	p.lastConfirmAt.Store(now)
+	return p, nil
 }
 
 // StartConnectionMonitor spawns a background goroutine that watches the
@@ -243,10 +282,24 @@ func (p *Publisher) connectionMonitor(ctx context.Context, logger *slog.Logger) 
 				logger.Warn("shadowpub: connection closed — will reconnect",
 					slog.String("err", err.Error()))
 			}
-			// Nil out conn so next iteration triggers a reconnect.
+			// Nil out conn so next iteration triggers a reconnect — but ONLY if
+			// it is still the SAME connection whose close we observed. The
+			// outbox drain's PublishBytes has its OWN inline reconnect path
+			// (isConnectionError → reconnect + retry). If that already re-dialed
+			// a fresh connection while we were blocked on the OLD conn's
+			// NotifyClose, an unconditional nil-out here would WIPE that healthy
+			// new connection — forcing a needless extra reconnect and a brief
+			// no-channel window on the live PRODUCTION emit route (all three
+			// F1/F2/F3 flows share this one channel). The generation guard makes
+			// the two reconnect paths cooperate instead of clobbering each other
+			// (#91): whichever rebuilds the route first wins; the loser is a
+			// no-op. Rebuild is always the FULL conn+channel+confirm-select+
+			// confirms stream (see reconnect), so no leg is left half-wired.
 			p.mu.Lock()
-			p.conn = nil
-			p.ch = nil
+			if p.conn == conn {
+				p.conn = nil
+				p.ch = nil
+			}
 			p.mu.Unlock()
 		}
 	}
@@ -362,16 +415,51 @@ func (p *Publisher) Component() string { return "shadow_publisher" }
 
 // SnapshotDetail returns the per-component JSON body.
 func (p *Publisher) SnapshotDetail() any {
+	now := time.Now().UnixNano()
 	return map[string]any{
-		"exchange":               p.exchange,
-		"instance":               p.instance,
-		"published_total":        p.published.Load(),
-		"confirmed_total":        p.confirmed.Load(),
-		"nacked_total":           p.nacked.Load(),
-		"confirm_timeouts_total": p.confirmTimeouts.Load(),
-		"failed_total":           p.failed.Load(),
-		"in_flight_backlog":      p.InFlightBacklog(),
+		"exchange":                 p.exchange,
+		"instance":                 p.instance,
+		"published_total":          p.published.Load(),
+		"confirmed_total":          p.confirmed.Load(),
+		"nacked_total":             p.nacked.Load(),
+		"confirm_timeouts_total":   p.confirmTimeouts.Load(),
+		"failed_total":             p.failed.Load(),
+		"in_flight_backlog":        p.InFlightBacklog(),
+		"last_confirm_age_seconds": nanosAgeSeconds(now, p.lastConfirmAt.Load()),
+		"last_attempt_age_seconds": nanosAgeSeconds(now, p.lastAttemptAt.Load()),
+		"liveness_timeout_seconds": p.LivenessTimeout.Seconds(),
 	}
+}
+
+// nanosAgeSeconds renders the age (in seconds) of a unix-nano stamp relative to
+// now-nanos. Guards against a negative result from a stamp written a hair after
+// `now` was sampled (concurrent bump) by flooring at 0.
+func nanosAgeSeconds(nowNanos, stampNanos int64) float64 {
+	if stampNanos <= 0 || nowNanos <= stampNanos {
+		return 0
+	}
+	return time.Duration(nowNanos - stampNanos).Seconds()
+}
+
+// emitStalled is the pure #91 liveness predicate, factored out of Degraded so
+// it is unit-testable without a broker. Emit is stalled when BOTH:
+//
+//   - we ATTEMPTED a publish within `timeout` of `now` (lastAttempt is recent —
+//     i.e. there is work and we are actively trying), AND
+//   - we have had NO successful confirm within `timeout` of `now` (lastConfirm
+//     is stale — nothing is getting through).
+//
+// The recent-attempt half is the anti-flap guard: a genuinely idle publisher
+// (no traffic → no attempts) has a STALE lastAttempt and is therefore never
+// reported stalled. timeout<=0 disables the check entirely.
+func emitStalled(now, lastAttempt, lastConfirm int64, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	window := int64(timeout)
+	recentlyAttempted := now-lastAttempt <= window
+	staleConfirm := now-lastConfirm > window
+	return recentlyAttempted && staleConfirm
 }
 
 // Degraded returns non-empty when publisher-side reliability is at risk.
@@ -382,6 +470,15 @@ func (p *Publisher) SnapshotDetail() any {
 //   - Non-zero nacks (broker resource alarm) → ops should investigate
 //   - Non-zero confirm timeouts (broker slow-write, may recover) → warn
 func (p *Publisher) Degraded() string {
+	// #91 emit-liveness — the load-bearing check. A dead channel / failing
+	// reconnect stalls emit WITHOUT growing the backlog (published never
+	// advances), so the backlog check below cannot see it; this one can. Put
+	// first because a total emit stall is the most actionable failure.
+	if emitStalled(time.Now().UnixNano(), p.lastAttemptAt.Load(), p.lastConfirmAt.Load(), p.LivenessTimeout) {
+		age := nanosAgeSeconds(time.Now().UnixNano(), p.lastConfirmAt.Load())
+		return fmt.Sprintf("emit stalled: no successful publish-confirm in %.0fs (liveness timeout %s) while actively attempting — dead channel / failing reconnect",
+			age, p.LivenessTimeout)
+	}
 	if backlog := p.InFlightBacklog(); backlog > BacklogDegradedThreshold {
 		return fmt.Sprintf("in-flight backlog %d > threshold %d (broker may be slow)",
 			backlog, BacklogDegradedThreshold)
@@ -491,6 +588,10 @@ func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID 
 	if timeout <= 0 {
 		timeout = DefaultConfirmTimeout
 	}
+	// Record the attempt BEFORE the channel-nil check: a dead channel (reconnect
+	// still failing) is precisely the stall we want liveness to see, and it must
+	// count as "we are actively trying to emit" (#91).
+	p.lastAttemptAt.Store(time.Now().UnixNano())
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ch == nil {
@@ -534,6 +635,7 @@ func (p *Publisher) waitConfirmLocked(ctx context.Context, timeout time.Duration
 			return ErrPublishNacked
 		}
 		p.confirmed.Add(1)
+		p.lastConfirmAt.Store(time.Now().UnixNano())
 		return nil
 	case <-timer.C:
 		p.confirmTimeouts.Add(1)
@@ -571,6 +673,7 @@ func (p *Publisher) waitConfirm(ctx context.Context, timeout time.Duration) erro
 			return ErrPublishNacked
 		}
 		p.confirmed.Add(1)
+		p.lastConfirmAt.Store(time.Now().UnixNano())
 		return nil
 	case <-timer.C:
 		p.confirmTimeouts.Add(1)

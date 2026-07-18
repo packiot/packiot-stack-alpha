@@ -121,6 +121,12 @@ type Config struct {
 	OutboxPath    string // filesystem path to the SQLite DB
 	OutboxCap     int    // max rows before FIFO drop-oldest kicks in
 
+	// EmitLivenessTimeoutSeconds is the #91 shadowpub emit-liveness window: if
+	// the publisher is actively attempting but has had zero broker confirms for
+	// this long, /healthz goes 503 so orchestration recycles the silently-stalled
+	// service (the #89 gap). 0 disables the check. See shadowpub.DefaultLivenessTimeout.
+	EmitLivenessTimeoutSeconds int
+
 	// ── Edge command channel (ADR-0019 C1 / task G4) ──────────────────────
 	// The RETURN path: an operator action in the cloud writes a value DOWN
 	// to the PLC (SparkPlug DCMD). This is the ONLY machine-write path in
@@ -201,6 +207,8 @@ func Load() (*Config, error) {
 		OutboxEnabled: getenvBool("OUTBOX_ENABLED", false),
 		OutboxPath:    getenv("OUTBOX_PATH", "/var/lib/edge-transformer/outbox.db"),
 		OutboxCap:     getenvInt("OUTBOX_CAP", 100000),
+
+		EmitLivenessTimeoutSeconds: getenvInt("EMIT_LIVENESS_TIMEOUT_SECONDS", 120),
 
 		// ADR-0019 C1 edge command channel (machine-write path — inert by default)
 		CommandsEnabled:        getenvBool("EDGE_COMMANDS_ENABLED", false),
