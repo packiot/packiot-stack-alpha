@@ -141,6 +141,17 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		os.Exit(runHealthcheck())
 	}
+	// --dump-contract: emit the datasets/routes → prod pg-object positional
+	// contract as JSON and exit. Read-only introspection, no DB touch; consumed
+	// by scripts/refdata-contract-drift-check.sh to diff against live prod
+	// (task #71). Kept out of the serving path entirely.
+	if len(os.Args) > 1 && os.Args[1] == "--dump-contract" {
+		if err := dumpContract(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "dump-contract:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
 	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.

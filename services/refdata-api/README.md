@@ -73,6 +73,30 @@ fallthrough); otherwise the Bearer token is tried.
 
 `/healthz` + `/metrics` are the only auth-exempt routes.
 
+## Pre-prod-flip contract drift gate (task #71)
+
+Every dataset (`datasets.go`) and `/v1/*` route (`main.go`) binds a **positional
+contract** against prod `pg_proc` functions and `pg_catalog` relations. If prod's
+signatures/columns drift from what the binary assumes, a prod flip breaks reads
+silently. The gate makes that a hard failure:
+
+- **Extract:** `refdata-api --dump-contract` walks the in-memory registries and
+  emits, per backing object, `{kind, name, argc | columns}` as JSON
+  (`contract.go`). Locked by a golden test (`contract_test.go` +
+  `testdata/contract.golden.json`) — refresh with
+  `UPDATE_GOLDEN=1 go test ./cmd/refdata-api/ -run TestContractGolden`.
+- **Diff:** `scripts/refdata-contract-drift-check.sh` renders SELECT-only queries
+  from the contract and asserts, against **live prod** (`BEGIN READ ONLY`), that
+  each function exists with a compatible arity and each relation/column exists.
+  Prod creds NEVER enter CI — it runs out-of-band on the staging app EC2
+  (`i-06c9547a2c7091ab7`) via SSM (Secrets Manager `databaseCredentials`).
+- **CI:** `.github/workflows/refdata-contract-drift.yml` — a per-PR structural
+  self-check (golden + parse + SQL render, no prod) plus a `workflow_dispatch`
+  live-drift job (SSM → EC2, gated on an OIDC role variable).
+
+Run the live gate before flipping: `AWS_REGION=us-east-1 bash
+services/refdata-api/scripts/refdata-contract-drift-check.sh` (exit 0 = clean).
+
 ## Config
 
 `DB_HOST` (default `pgbouncer`) · `DB_PORT` · `DB_USER` ·
