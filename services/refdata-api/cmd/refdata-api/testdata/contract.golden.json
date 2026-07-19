@@ -66,6 +66,79 @@
     "name": "v_sap_report_data_sync_customer_13"
   },
   {
+    "ref": "/integration/get-shift-validation/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "enterprises"
+  },
+  {
+    "ref": "/integration/get-shift-validation/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipment_validation_shift"
+  },
+  {
+    "ref": "/integration/get-shift-validation/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "packml_register"
+  },
+  {
+    "ref": "/integration/job_data_integration/:id_enterprise",
+    "source": "external",
+    "kind": "function",
+    "name": "get_data_sync_enterprsie_06b",
+    "argc": 1
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "agg_equipment_values_1min_t"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "areas"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipment_runtime_shift"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "packml_register"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "production_orders"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "production_orders_runtime"
+  },
+  {
+    "ref": "/integration/job_report/:id_enterprise",
+    "source": "external",
+    "kind": "relation",
+    "name": "sites"
+  },
+  {
     "ref": "/v1/day-week-begin",
     "source": "route",
     "kind": "function",
