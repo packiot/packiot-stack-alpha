@@ -70,9 +70,14 @@ echo "      contract: $N_TOTAL objects ($N_FN functions, $N_REL relations)" >&2
 echo "[2/4] rendering drift SQL..." >&2
 SQDEF='def sq: "'"'"'" + gsub("'"'"'"; "'"'"''"'"'") + "'"'"'";'
 
+# NOTE: contractObject.ArgC is `json:"argc,omitempty"`, so a parameterless
+# set-returning function (Montebello's get_downtime_sync_enterprsie_06(), argc 0)
+# omits the key entirely. Coalesce a missing argc to 0 (`.argc // 0`) so it
+# renders a valid SQL literal and matches a 0-arg prod proc (0 BETWEEN 0 AND 0),
+# instead of `null` (which never matches → a FALSE arity-mismatch).
 FN_VALUES=$(jq -r "$SQDEF"'
   [.[] | select(.kind=="function")
-   | "  (" + (.ref|sq) + "," + (.name|sq) + "," + (.argc|tostring) + ")"]
+   | "  (" + (.ref|sq) + "," + (.name|sq) + "," + ((.argc // 0)|tostring) + ")"]
   | join(",\n")' "$CONTRACT_JSON")
 
 REL_VALUES=$(jq -r "$SQDEF"'

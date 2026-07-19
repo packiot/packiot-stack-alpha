@@ -273,8 +273,8 @@ func TestExternalShimsDeclareOwnerBinding(t *testing.T) {
 		if sh.run == nil {
 			t.Errorf("external shim %q: nil run", sh.path)
 		}
-		if len(sh.backingViews) == 0 {
-			t.Errorf("external shim %q: declares no backingViews — the drift gate can't verify the frozen view exists", sh.path)
+		if len(sh.backingViews)+len(sh.backingFunctions)+len(sh.guardRelations) == 0 {
+			t.Errorf("external shim %q: declares no backing views/functions/guard relations — the drift gate can't verify the frozen prod object exists", sh.path)
 		}
 		if seen[sh.path] {
 			t.Errorf("external shim path %q registered twice", sh.path)
