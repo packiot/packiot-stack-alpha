@@ -22,6 +22,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 )
 
 // routeClass classifies every mux route for BOTH the auth middleware
@@ -198,7 +199,7 @@ type bearerResolver func(ctx context.Context, token string) (resolvedIdentity, e
 //     "no tenant filter".
 func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerResolver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if exempt[r.URL.Path] {
+		if exemptMatch(exempt, r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -244,4 +245,112 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 // reveals which credential/claim failed (no oracle for token/key probing).
 func unauthorized(w http.ResponseWriter) {
 	http.Error(w, `{"error":"missing or invalid credentials"}`, http.StatusUnauthorized)
+}
+
+// ── Wildcard-aware path matching (ADR-0031 Workstream B, Family A) ────────────
+//
+// WHY THIS EXISTS
+// ───────────────
+// The auth-exempt set is keyed by the MANIFEST path, and the middleware used to
+// gate on `exempt[r.URL.Path]` — an EXACT-STRING lookup. That is correct for
+// every route that had ever been mounted: infra probes (/healthz, /metrics) and
+// the NEOPAC/Montebello/Incoplast /ext/* shims are all CONCRETE paths, so the
+// concrete request URL is literally a key in the set.
+//
+// Family A's back4 /integration/* shims break that assumption: their routes carry
+// a PATH PARAMETER (`/integration/job_report/:id_enterprise`). The manifest key is
+// the pattern, but the request URL is a concrete `/integration/job_report/123` —
+// which is NOT a key, so the exact lookup misses, the request falls through to the
+// JSON-401 middleware, and the foreign contract (which expects back4's own
+// 400/422/500 shapes) breaks before the shim ever runs.
+//
+// The fix is additive and precedence-safe: a wildcard segment (":name" Express
+// form or "{name}" Go 1.22 form) binds EXACTLY ONE non-empty path segment — the
+// SAME semantics as Go 1.22's ServeMux `{name}`. Because muxPattern (external.go)
+// mounts the route with that identical wildcard, the exempt decision here and the
+// mux's routing decision can never disagree. Concrete paths contain no wildcard
+// segment, so isPatternPath is false for them and they keep pure O(1) exact-match
+// behavior — NEOPAC/Montebello/Incoplast and the infra probes are byte-unchanged.
+
+// isWildcardSeg reports whether a single path segment is a wildcard (":name" or
+// "{name}"). Both notations bind one segment; only ":name" needs translation for
+// the Go mux (see muxPattern).
+func isWildcardSeg(seg string) bool {
+	return strings.HasPrefix(seg, ":") ||
+		(strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") && len(seg) >= 2)
+}
+
+// isPatternPath reports whether a path contains any wildcard segment. Concrete
+// routes return false and keep exact-match behavior.
+func isPatternPath(p string) bool {
+	for _, seg := range strings.Split(strings.Trim(p, "/"), "/") {
+		if isWildcardSeg(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathMatches reports whether a concrete request path matches a (possibly
+// wildcard) pattern. A wildcard segment binds exactly one non-empty segment; all
+// other segments must be byte-equal, and the segment counts must match — so
+// `/integration/job_report/{id}` matches `/integration/job_report/123` but not
+// `/integration/job_report/` (empty) nor `/integration/job_report/1/2` (extra).
+// This mirrors Go 1.22 ServeMux `{name}` semantics exactly.
+func pathMatches(pattern, path string) bool {
+	ps := strings.Split(strings.Trim(pattern, "/"), "/")
+	cs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(ps) != len(cs) {
+		return false
+	}
+	for i := range ps {
+		if isWildcardSeg(ps[i]) {
+			if cs[i] == "" {
+				return false // a wildcard must bind a non-empty segment
+			}
+			continue
+		}
+		if ps[i] != cs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// exemptMatch is the pattern-aware exempt lookup that replaced the bare
+// `exempt[path]`. Exact keys (every infra probe + the concrete /ext/* shims) hit
+// the O(1) map first; only when that misses do wildcard keys (the /integration/*
+// shims) fall to a segment match. So the hot path for existing routes is
+// unchanged, and the wildcard cost is paid only by requests that aren't an exact
+// exempt path.
+func exemptMatch(exempt map[string]bool, path string) bool {
+	if exempt[path] {
+		return true
+	}
+	for pat := range exempt {
+		if isPatternPath(pat) && pathMatches(pat, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// muxPattern translates an Express-style shim path (":name") into the Go 1.22
+// ServeMux wildcard pattern ("{name}") used at registration. Concrete paths pass
+// through unchanged, so the NEOPAC/Montebello/Incoplast /ext/* mounts are
+// byte-identical to before this extension. Keeping the registry's `path` in the
+// foreign ":name" idiom is a deliberate ACL choice — the manifest documents the
+// contract exactly as back4 declared it; the Go form is an implementation detail
+// applied only at the mux boundary.
+func muxPattern(p string) string {
+	if !isPatternPath(p) {
+		return p
+	}
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		if strings.HasPrefix(seg, ":") {
+			segs[i] = "{" + seg[1:] + "}"
+		}
+	}
+	return strings.Join(segs, "/")
 }

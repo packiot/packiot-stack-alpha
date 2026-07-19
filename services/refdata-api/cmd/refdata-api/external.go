@@ -80,6 +80,14 @@ type externalRows struct {
 	// enough — the timestamp VALUE must match too. Empty ⇒ every timestamp uses
 	// the default toISOString pin. See withMomentZColumns / momentZFormat.
 	momentZ map[string]bool
+	// dateOnly names columns a consumer's DAO renders with dayjs(...).format(
+	// 'YYYY-MM-DD') — a DATE string, no time-of-day, no zone suffix. This is a
+	// THIRD timestamp form (distinct from both toISOString `.000Z` and momentZ's
+	// `[Z]`): get-shift-validation's ShiftsValidationDAO.findByTopic post-formats
+	// ts_value_production this way. Empty ⇒ no column uses it. See
+	// withDateOnlyColumns / dateOnlyFormat. (Zone-of-parse for naive timestamps is
+	// the §3c shadow-diff; the FORMAT is what is pinned here.)
+	dateOnly map[string]bool
 }
 
 // withMomentZColumns marks the given columns to be rendered with moment's
@@ -91,6 +99,18 @@ func (er externalRows) withMomentZColumns(cols ...string) externalRows {
 		m[c] = true
 	}
 	er.momentZ = m
+	return er
+}
+
+// withDateOnlyColumns marks columns to be rendered as a dayjs `YYYY-MM-DD` date
+// string (get-shift-validation's ts_value_production). Returns a copy so the
+// shared reader result is never mutated.
+func (er externalRows) withDateOnlyColumns(cols ...string) externalRows {
+	m := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		m[c] = true
+	}
+	er.dateOnly = m
 	return er
 }
 
@@ -123,6 +143,10 @@ func (er externalRows) MarshalJSON() ([]byte, error) {
 					// so a NULL (nil, not a time.Time) is left untouched → the
 					// type assertion fails and it falls through to null below.
 					v = momentZFormat(t)
+				} else if t, ok := row[j].(time.Time); ok && er.dateOnly[col] {
+					// dayjs(...).format('YYYY-MM-DD') — a NULL falls through to
+					// null (the type assertion fails on nil), same guard shape.
+					v = dateOnlyFormat(t)
 				} else {
 					v = normalizeExternalValue(row[j])
 				}
@@ -377,6 +401,35 @@ var externalShims = []externalShim{
 		auth:           queryAPIKeyAuth("api_key is required!", "Unauthorized access"),
 		guardRelations: []string{"production_orders", "packml_register"},
 	},
+	// ── back4 /integration/* shims (Family A) — see external_integration.go ──
+	// These carry a `:id_enterprise` PATH PARAM (the client names the tenant in
+	// back4 — the ACL replaces it with the owner-bound cid) and their own foreign
+	// auth ladders (400/422, and get-shift-validation's distinct 500-for-all).
+	// The wildcard path is why the framework got muxPattern + exemptMatch (auth.go).
+	{
+		consumer:         "montebello",
+		path:             "/integration/job_data_integration/:id_enterprise",
+		ownerEnv:         "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:              runJobDataIntegration,
+		auth:             integrationEnterpriseAuth("id is required!"),
+		backingFunctions: []backingFn{{name: "get_data_sync_enterprsie_06b", argc: 1}},
+	},
+	{
+		consumer:       "montebello",
+		path:           "/integration/get-shift-validation/:id_enterprise",
+		ownerEnv:       "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:            runShiftValidation,
+		auth:           integrationShiftValidationAuth, // distinct 500-for-all membrane
+		guardRelations: []string{"enterprises", "packml_register", "equipment_validation_shift"},
+	},
+	{
+		consumer:       "incoplast",
+		path:           "/integration/job_report/:id_enterprise",
+		ownerEnv:       "EXTERNAL_INCOPLAST_CUSTOMER_ID",
+		run:            runJobReport,
+		auth:           integrationEnterpriseAuth("id_enterprise is required!"),
+		guardRelations: []string{"equipment_runtime_shift", "agg_equipment_values_1min_t", "production_orders_runtime", "production_orders", "equipments", "sites", "areas", "packml_register"},
+	},
 }
 
 // ── The NEOPAC SAP shims (frozen shapes pinned from the back4 controllers) ───
@@ -586,7 +639,12 @@ func registerExternalShims(mux *http.ServeMux, pool *pgxpool.Pool, keys map[stri
 				slog.String("consumer", sh.consumer), slog.String("path", sh.path),
 				slog.String("owner_env", sh.ownerEnv))
 		}
-		mux.HandleFunc(sh.path, makeExternalHandler(sh, reader, keys, owner, logger))
+		// muxPattern (auth.go) translates the registry's Express-style ":name"
+		// path into the Go 1.22 ServeMux "{name}" wildcard so a concrete
+		// `/integration/job_report/123` routes to this handler; concrete /ext/*
+		// paths pass through unchanged. The auth-exempt set matches the SAME
+		// pattern (exemptMatch), so routing and exemption never disagree.
+		mux.HandleFunc(muxPattern(sh.path), makeExternalHandler(sh, reader, keys, owner, logger))
 	}
 	logger.Info("external-contract shims registered (ADR-0031 Family-A)",
 		slog.Int("shims", len(externalShims)))
