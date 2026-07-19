@@ -24,8 +24,13 @@ func TestContractParses(t *testing.T) {
 		refs[o.Ref] = true
 		switch o.Kind {
 		case "function":
-			if o.ArgC <= 0 {
-				t.Errorf("%s: function %s has argc %d (want ≥1)", o.Ref, o.Name, o.ArgC)
+			// Parsed sources (dataset/route) always bind ≥1 positional arg (the
+			// tenant $1 at minimum), so argc 0 there signals a parseFuncCall gap.
+			// External shims (external.go) DECLARE their functions, and a
+			// parameterless set-returning proc is legitimate (Montebello's
+			// get_downtime_sync_enterprsie_06() → argc 0), so 0 is valid there.
+			if o.ArgC < 0 || (o.Source != "external" && o.ArgC == 0) {
+				t.Errorf("%s: function %s has argc %d (parsed want ≥1; external want ≥0)", o.Ref, o.Name, o.ArgC)
 			}
 			if len(o.Columns) != 0 {
 				t.Errorf("%s: function %s must not carry columns", o.Ref, o.Name)

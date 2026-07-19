@@ -72,6 +72,26 @@ import (
 type externalRows struct {
 	cols []string
 	rows [][]any
+	// momentZ names the columns a consumer's VALUE adapter reformats from the
+	// default toISOString form (millisecond `.000Z`) to moment's
+	// `YYYY-MM-DDTHH:mm:ss[Z]` (second precision, literal Z). back4's Montebello/
+	// Incoplast controllers post-process ts_event/ts_end/last_update through
+	// moment(...).utc().format(...); reproducing the ENVELOPE reshape is not
+	// enough — the timestamp VALUE must match too. Empty ⇒ every timestamp uses
+	// the default toISOString pin. See withMomentZColumns / momentZFormat.
+	momentZ map[string]bool
+}
+
+// withMomentZColumns marks the given columns to be rendered with moment's
+// `[Z]` timestamp format instead of the default toISOString. Returns a copy so
+// the underlying reader result is never mutated (the reader is shared/scripted).
+func (er externalRows) withMomentZColumns(cols ...string) externalRows {
+	m := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		m[c] = true
+	}
+	er.momentZ = m
+	return er
 }
 
 // MarshalJSON emits `[{col:val,...},...]` in column order, values normalized to
@@ -97,7 +117,15 @@ func (er externalRows) MarshalJSON() ([]byte, error) {
 			b.WriteByte(':')
 			var v any
 			if j < len(row) {
-				v = normalizeExternalValue(row[j])
+				if t, ok := row[j].(time.Time); ok && er.momentZ[col] {
+					// Per-consumer VALUE adapter: moment(...).utc().format(
+					// 'YYYY-MM-DDTHH:mm:ss[Z]'). back4 guards `if (item.col)`,
+					// so a NULL (nil, not a time.Time) is left untouched → the
+					// type assertion fails and it falls through to null below.
+					v = momentZFormat(t)
+				} else {
+					v = normalizeExternalValue(row[j])
+				}
 			}
 			val, err := marshalNoEscape(v)
 			if err != nil {
@@ -268,10 +296,31 @@ type externalShim struct {
 	path     string // internal mux path (devops maps the external URL here, OQ3)
 	ownerEnv string // env naming the bound customer_id (config; NEVER a literal)
 	run      shimRunner
-	// backingViews / guardRelations feed the pre-flip contract-drift gate
-	// (existence-only): the frozen view MUST exist in prod or the flip is blocked.
-	backingViews   []string
-	guardRelations []string
+	// auth reproduces THIS endpoint's foreign auth STATUS SHAPE. nil ⇒ the
+	// default header contract (x-api-key header; 400 "x-api-key is required!";
+	// unknown/wrong-owner → 401 "Unauthorized access") — what NEOPAC + Montebello
+	// data-sync use. The Montebello/Incoplast pull endpoints authenticate via an
+	// `api_key` QUERY param with their own bodies ("api_key is required!",
+	// "Not authorized!"), so they supply a queryAPIKeyAuth here. The owner
+	// binding (cid must equal the config-bound owner) is enforced by EVERY
+	// authenticator — that invariant is not overridable per shim.
+	auth externalAuth
+	// backingViews / backingFunctions / guardRelations feed the pre-flip
+	// contract-drift gate (existence-only): the frozen view/function MUST exist
+	// in prod or the flip is blocked. backingFunctions carries the arg count so
+	// the drift gate asserts arity too (a set-returning proc renamed or its
+	// signature changed breaks the read exactly like a dropped view).
+	backingViews     []string
+	backingFunctions []backingFn
+	guardRelations   []string
+}
+
+// backingFn is a set-returning function a shim reads from (Montebello's
+// get_downtime_sync_enterprsie_06(), etc.). name+argc mirror the contract's
+// function object so the drift gate checks EXISTENCE and ARITY, not just a name.
+type backingFn struct {
+	name string
+	argc int
 }
 
 // externalShims is the Family-A (ERP/BI data-sync READ) registry. This PR ships
@@ -293,6 +342,40 @@ var externalShims = []externalShim{
 		ownerEnv:     "EXTERNAL_NEOPAC_CUSTOMER_ID",
 		run:          runNeopacSapReportSync,
 		backingViews: []string{"v_sap_report_data_sync_customer_13"},
+	},
+	// ── Montebello (Family A, ent 6) — see external_montebello_incoplast.go ──
+	{
+		consumer:     "montebello",
+		path:         "/ext/montebello/data-sync",
+		ownerEnv:     "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:          runMontebelloDataSync,
+		backingViews: []string{"v_piot_production_data_sync_cust6"},
+		// header x-api-key auth (default) — reproduces data-sync.controller.js
+	},
+	{
+		consumer:         "montebello",
+		path:             "/ext/montebello/events",
+		ownerEnv:         "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:              runMontebelloEvents,
+		auth:             queryAPIKeyAuth("api_key is required!", "Not authorized!"),
+		backingFunctions: []backingFn{{name: "get_downtime_sync_enterprsie_06", argc: 0}},
+	},
+	// ── Incoplast (Family A, api_key) — see external_montebello_incoplast.go ──
+	{
+		consumer:       "incoplast",
+		path:           "/ext/incoplast/events",
+		ownerEnv:       "EXTERNAL_INCOPLAST_CUSTOMER_ID",
+		run:            runIncoplastEvents,
+		auth:           queryAPIKeyAuth("api_key is required!", "Unauthorized access"),
+		guardRelations: []string{"equipment_events", "equipment_events_man", "equipments", "packml_register"},
+	},
+	{
+		consumer:       "incoplast",
+		path:           "/ext/incoplast/jobs",
+		ownerEnv:       "EXTERNAL_INCOPLAST_CUSTOMER_ID",
+		run:            runIncoplastJobs,
+		auth:           queryAPIKeyAuth("api_key is required!", "Unauthorized access"),
+		guardRelations: []string{"production_orders", "packml_register"},
 	},
 }
 
@@ -386,30 +469,85 @@ func parseIntDefault(s string, def int) int {
 	return n
 }
 
+// ── The pluggable authenticators (one per foreign auth STATUS SHAPE) ─────────
+
+// externalAuth reproduces one endpoint's foreign auth STATUS SHAPE and resolves
+// the tenant through refdata's single key→customer_id authority. It returns the
+// resolved customer_id on success, or a *shimError whose status+body are
+// byte-identical to what the back4 controller sent. EVERY authenticator MUST
+// enforce the owner binding (resolved cid == the config-bound owner); that is
+// the tenant fence for a frozen customer-scoped read, not a per-endpoint option.
+type externalAuth func(r *http.Request, keys map[string]int, owner int) (int, *shimError)
+
+// headerAPIKeyAuth is the DEFAULT (nil auth) contract: the x-api-key HEADER,
+// with back4's exact 400/401 bodies. Used by NEOPAC (sap-report[-sync]) and
+// Montebello data-sync — all three read the key from `req.header('x-api-key')`.
+func headerAPIKeyAuth(r *http.Request, keys map[string]int, owner int) (int, *shimError) {
+	apiKey := r.Header.Get("x-api-key")
+	if apiKey == "" {
+		e := errMissingAPIKey // 400 "x-api-key is required!"
+		return 0, &e
+	}
+	cid, ok := keys[apiKey]
+	if !ok || cid != owner {
+		e := errUnauthorized // 401 "Unauthorized access"
+		return 0, &e
+	}
+	return cid, nil
+}
+
+// queryAPIKeyAuth builds the auth contract for the Montebello/Incoplast PULL
+// endpoints: the credential is an `api_key` QUERY param (not a header), the
+// missing-key body and the reject body differ per endpoint, and back4 treats the
+// literal string "undefined" as absent (`api_key == "undefined"`, the classic
+// `String(undefined)` leak from a client that forgot to set the param).
+//
+// OWNER-BINDING NOTE (honest boundary): back4's events_incoplast / jobs_incoplast
+// have NO reject branch — they resolve the api_key's OWN enterprise and query it,
+// so an unknown key silently yields empty data and a foreign key would read ITS
+// tenant. The ACL HARDENS this to the framework's owner binding (unknown/
+// wrong-owner → 401): the happy path (the bound customer's key) is byte-identical,
+// and the only behavioural change is that a non-owner key is now rejected instead
+// of leaking. That reject body is CHOSEN ("Unauthorized access", the family
+// convention), not pinned from those two endpoints — flagged for §3d owner
+// sign-off. events_montebello DOES pin its reject ("Not authorized!"), passed
+// through here verbatim.
+func queryAPIKeyAuth(missingBody, rejectBody string) externalAuth {
+	return func(r *http.Request, keys map[string]int, owner int) (int, *shimError) {
+		apiKey := r.URL.Query().Get("api_key")
+		if apiKey == "" || apiKey == "undefined" {
+			return 0, &shimError{status: http.StatusBadRequest, body: missingBody}
+		}
+		cid, ok := keys[apiKey]
+		if !ok || cid != owner {
+			return 0, &shimError{status: http.StatusUnauthorized, body: rejectBody}
+		}
+		return cid, nil
+	}
+}
+
 // ── The shared membrane (auth reproduction + owner binding + byte encoding) ──
 
 // makeExternalHandler builds the HTTP handler for one shim. It reproduces back4's
 // auth STATUS SHAPES exactly (missing key → 400, unknown/wrong-owner → 401) while
 // routing the tenant through refdata's single authority (the QUERY_API_KEYS map).
+// The auth SHAPE is per-shim (sh.auth; nil ⇒ the header default); the owner
+// binding + byte-identical encode + timeout + metrics are shared here, once.
 //
 // owner is resolved once at registration from ownerEnv. owner == 0 (env unset)
 // means EVERY request 401s — no real customer_id is 0 — so a mis-provisioned shim
 // fails closed rather than serving another tenant's frozen view.
 func makeExternalHandler(sh externalShim, reader externalReader, keys map[string]int, owner int, logger *slog.Logger) http.HandlerFunc {
+	authFn := sh.auth
+	if authFn == nil {
+		authFn = headerAPIKeyAuth
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1) Reproduce back4's auth contract byte-for-byte, but resolve the
-		//    tenant through refdata's key→customer_id authority (no `== 13`).
-		apiKey := r.Header.Get("x-api-key")
-		if apiKey == "" {
-			writeShimError(w, errMissingAPIKey) // 400 "x-api-key is required!"
-			return
-		}
-		cid, ok := keys[apiKey]
-		if !ok || cid != owner {
-			// Unknown key OR a valid key bound to a DIFFERENT customer → 401.
-			// This is the tenant fence for the frozen customer-scoped view: no
-			// data read happens, so there is no cross-tenant leak.
-			writeShimError(w, errUnauthorized) // 401 "Unauthorized access"
+		// 1) Reproduce back4's auth contract byte-for-byte (per-shim shape), but
+		//    resolve the tenant through refdata's key→customer_id authority.
+		cid, serr := authFn(r, keys, owner)
+		if serr != nil {
+			writeShimError(w, *serr)
 			return
 		}
 		// 2) Run the frozen read + reshape under the $1 = cid fence.

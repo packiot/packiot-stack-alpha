@@ -113,14 +113,18 @@ func extractContract() ([]contractObject, error) {
 
 	// ADR-0031 Workstream B external shims (external.go). Their SQL is built
 	// dynamically (optional filters, LIMIT/OFFSET), so it is NOT run through
-	// parseSQL; instead each shim DECLARES its backing view(s) + guard relation(s),
-	// emitted here as existence-only relations. This puts the FROZEN external
-	// views under the same pre-flip drift gate as the native reads — if a frozen
-	// view is dropped/renamed in prod, the flip is blocked fail-closed rather than
-	// 500ing an external SAP contract silently.
+	// parseSQL; instead each shim DECLARES its backing view(s), backing
+	// function(s) + guard relation(s), emitted here as existence-only objects.
+	// This puts the FROZEN external views/functions under the same pre-flip drift
+	// gate as the native reads — if a frozen view is dropped or a set-returning
+	// proc is renamed/re-signatured in prod, the flip is blocked fail-closed
+	// rather than 500ing an external SAP/Montebello contract silently.
 	for _, sh := range externalShims {
 		for _, rel := range sh.backingViews {
 			out = append(out, contractObject{Ref: sh.path, Source: "external", Kind: "relation", Name: rel})
+		}
+		for _, fn := range sh.backingFunctions {
+			out = append(out, contractObject{Ref: sh.path, Source: "external", Kind: "function", Name: fn.name, ArgC: fn.argc})
 		}
 		for _, rel := range sh.guardRelations {
 			out = append(out, contractObject{Ref: sh.path, Source: "external", Kind: "relation", Name: rel})

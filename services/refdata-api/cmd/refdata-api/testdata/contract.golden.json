@@ -1,5 +1,53 @@
 [
   {
+    "ref": "/ext/incoplast/events",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipment_events"
+  },
+  {
+    "ref": "/ext/incoplast/events",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipment_events_man"
+  },
+  {
+    "ref": "/ext/incoplast/events",
+    "source": "external",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "/ext/incoplast/events",
+    "source": "external",
+    "kind": "relation",
+    "name": "packml_register"
+  },
+  {
+    "ref": "/ext/incoplast/jobs",
+    "source": "external",
+    "kind": "relation",
+    "name": "packml_register"
+  },
+  {
+    "ref": "/ext/incoplast/jobs",
+    "source": "external",
+    "kind": "relation",
+    "name": "production_orders"
+  },
+  {
+    "ref": "/ext/montebello/data-sync",
+    "source": "external",
+    "kind": "relation",
+    "name": "v_piot_production_data_sync_cust6"
+  },
+  {
+    "ref": "/ext/montebello/events",
+    "source": "external",
+    "kind": "function",
+    "name": "get_downtime_sync_enterprsie_06"
+  },
+  {
     "ref": "/ext/neopac/sap-report",
     "source": "external",
     "kind": "relation",
