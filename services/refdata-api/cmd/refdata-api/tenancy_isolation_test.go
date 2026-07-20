@@ -205,11 +205,12 @@ func TestRouteManifestCoversEveryRoute(t *testing.T) {
 	// The query-API + infra routes must be present and correctly classed — a
 	// new /v1 route added without a class is a build failure here.
 	want := map[string]routeClass{
-		"/v1/query":         routeTenantScoped,
-		"/v1/screen-config": routeTenantScoped,
-		"/v1/catalog":       routeGlobalRef,
-		"/healthz":          routeInfra,
-		"/metrics":          routeInfra,
+		"/v1/query":            routeTenantScoped,
+		"/v1/screen-config":    routeTenantScoped,
+		"/v1/dashboard-config": routeTenantScoped, // F2 (ADR-0029 §D2)
+		"/v1/catalog":          routeGlobalRef,
+		"/healthz":             routeInfra,
+		"/metrics":             routeInfra,
 	}
 	for path, class := range want {
 		if got, ok := seen[path]; !ok {
@@ -271,6 +272,7 @@ func TestAuthMiddlewareFailsClosed(t *testing.T) {
 		wantCID   int
 	}{
 		{"no-key on tenant route", "", false, "/v1/operator-po-list", http.StatusUnauthorized, false, 0},
+		{"no-key on dashboard-config (F2)", "", false, "/v1/dashboard-config", http.StatusUnauthorized, false, 0},
 		{"unknown-key", "nope", true, "/v1/operator-po-list", http.StatusUnauthorized, false, 0},
 		{"valid-key injects cid", "good-key", true, "/v1/operator-po-list", http.StatusOK, true, 7},
 		{"healthz exempt (no key)", "", false, "/healthz", http.StatusOK, true, 0},

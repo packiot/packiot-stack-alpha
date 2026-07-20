@@ -139,6 +139,18 @@
     "name": "sites"
   },
   {
+    "ref": "/v1/dashboard-config",
+    "source": "route",
+    "kind": "relation",
+    "name": "dashboard_config",
+    "columns": [
+      "id_enterprise",
+      "dashboard_id",
+      "config",
+      "version"
+    ]
+  },
+  {
     "ref": "/v1/day-week-begin",
     "source": "route",
     "kind": "function",

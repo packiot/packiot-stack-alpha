@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -287,6 +288,143 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 			http.Error(w, `{"error":"GET or PUT"}`, http.StatusMethodNotAllowed)
 		}
 	})
+
+	// ── Dashboard config (F2) — baseline ⊕ override, tenant-fenced.
+	// dashboard_config baseline is ensured by 28-refdata-tables.sql (prod-gated);
+	// user_screen_config override is ensured by ensureSchema (startup).
+	mux.HandleFunc("/v1/dashboard-config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		// ADR-0027 Surface-1: the tenant is the resolved customer_id ($1), never
+		// client-named. The middleware guarantees it; this is the defensive fence.
+		cid, ok := customerIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, `{"error":"missing or unknown credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		dashboardID := r.URL.Query().Get("dashboard_id")
+		if dashboardID == "" {
+			http.Error(w, `{"error":"dashboard_id query param required"}`, http.StatusBadRequest)
+			return
+		}
+		user := r.URL.Query().Get("user") // optional; "" ⇒ baseline only (no override row matches)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		var cfg []byte
+		var version int
+		err := pool.QueryRow(ctx, dashboardConfigResolveSQL, cid, dashboardID, user).Scan(&cfg, &version)
+		found := true
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No baseline row for this tenant+dashboard — the fence held, there is
+			// simply nothing to serve. This is the cross-tenant "disjoint/none"
+			// outcome for a dashboard owned by another tenant.
+			found = false
+		} else if err != nil {
+			failed.Add(1)
+			http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+			return
+		}
+		served.Add(1)
+		writeDashboardConfig(w, resolveDashboardConfigResp(cfg, version, found))
+	})
+}
+
+// ── Dashboard config (ADR-0029 §D2 / Phase F2) ───────────────────────────────
+//
+// GET /v1/dashboard-config?dashboard_id=<id>[&user=<uid>] resolves the config
+// document the front4 composition engine renders (front4 useDashboardConfig,
+// components/dashboard/useDashboardConfig.js). Two tables compose it:
+//
+//	BASELINE  dashboard_config       (id_enterprise, dashboard_id, version) → config   [28-refdata-tables.sql]
+//	OVERRIDE  user_screen_config     (id_enterprise, id_user, screen)       → config   [ensureSchema]
+//
+// with `screen` == dashboard_id for the override. The served document is the
+// jsonb top-level SHALLOW MERGE `baseline || override` — override keys win — so a
+// per-user layout tweak inherits every baseline key it does not restate. Both
+// reads are fenced to the injected tenant ($1); the tenant is NEVER client-named
+// (ADR-0027). `user` is optional (absent ⇒ baseline only) and is NOT a tenant
+// axis — it selects a row WITHIN the already-fenced tenant, same contract as
+// /v1/screen-config.
+//
+// The merge is done in SQL (Postgres owns jsonb `||`), guarded so a non-object
+// baseline is returned untouched (the handler then marks it invalid) rather than
+// erroring the `||`.
+const dashboardConfigResolveSQL = `
+WITH baseline AS (
+    SELECT config, version
+    FROM dashboard_config
+    WHERE id_enterprise = $1 AND dashboard_id = $2
+    ORDER BY version DESC
+    LIMIT 1
+),
+override AS (
+    SELECT config
+    FROM user_screen_config
+    WHERE id_enterprise = $1 AND id_user = $3 AND screen = $2
+)
+SELECT
+    CASE
+        WHEN o.config IS NULL THEN b.config
+        WHEN jsonb_typeof(b.config) = 'object' AND jsonb_typeof(o.config) = 'object'
+            THEN b.config || o.config
+        ELSE b.config
+    END AS config,
+    b.version AS version
+FROM baseline b
+LEFT JOIN override o ON true`
+
+// dashboardConfigResp is the wire contract the front4 useDashboardConfig
+// consumes. status is a SUPERSET of the F1 engine's own {ok|invalid}:
+//
+//	ok         a config resolved for this tenant+dashboard (config + version set).
+//	           The engine STILL runs validateDashboardConfig on it and may itself
+//	           downgrade to invalid — refdata owns RESOLUTION, the engine owns
+//	           deep SCHEMA validation (single source of truth stays in schema.ts).
+//	not_found  no baseline row for (tenant, dashboard_id) — engine renders an
+//	           empty/diagnostic state.
+//	invalid    a row exists but its stored config is not a JSON object (a cheap
+//	           structural guard refdata CAN do without duplicating the TS schema);
+//	           issues[] mirrors the engine's ValidationIssue {path, message}.
+type dashboardConfigResp struct {
+	Status  string          `json:"status"`
+	Config  json.RawMessage `json:"config,omitempty"`
+	Version *int            `json:"version,omitempty"`
+	Issues  []configIssue   `json:"issues,omitempty"`
+}
+
+// configIssue mirrors front4 ValidationIssue (schema.ts) so the diagnostic tile
+// renders a refdata-side issue identically to an engine-side one.
+type configIssue struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// resolveDashboardConfigResp maps a resolved DB result to the wire envelope. Pure
+// (no I/O) so the not_found / invalid / ok policy is unit-tested DB-free:
+//   - found=false ⇒ not_found (the fence held; nothing owned by this tenant).
+//   - found + non-object config ⇒ invalid (cheap structural guard; deep schema
+//     validation stays engine-side).
+//   - found + object config ⇒ ok (config + version).
+func resolveDashboardConfigResp(cfg []byte, version int, found bool) dashboardConfigResp {
+	if !found {
+		return dashboardConfigResp{Status: "not_found"}
+	}
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(cfg, &probe) != nil {
+		return dashboardConfigResp{
+			Status: "invalid",
+			Issues: []configIssue{{Path: "(root)", Message: "stored config is not a JSON object"}},
+		}
+	}
+	return dashboardConfigResp{Status: "ok", Config: json.RawMessage(cfg), Version: &version}
+}
+
+func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func keysOf[V any](m map[string]V) []string {
