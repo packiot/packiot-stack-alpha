@@ -119,6 +119,9 @@ var queryAPIRoutes = []mountedRoute{
 	{"/v1/catalog", routeGlobalRef},          // schema metadata; tenant-independent, no DB tenant read
 	{"/v1/query", routeTenantScoped},         // compile / compileDataset inject customer_id as $1
 	{"/v1/screen-config", routeTenantScoped}, // scoped to id_enterprise = $1 (per-tenant layouts)
+	// F2 (ADR-0029 §D2): baseline ⊕ override dashboard config; both CTEs fenced
+	// WHERE id_enterprise = $1 (dashboardConfigResolveSQL, query.go).
+	{"/v1/dashboard-config", routeTenantScoped},
 }
 
 // infraRoutes are the unauthenticated ops probes — no tenant data.

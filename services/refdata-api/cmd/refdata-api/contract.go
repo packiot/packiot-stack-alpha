@@ -131,6 +131,16 @@ func extractContract() ([]contractObject, error) {
 		}
 	}
 
+	// Bespoke query.go route relations (the /v1/query, /v1/screen-config,
+	// /v1/dashboard-config handlers). Their SQL is hand-written inside the handler,
+	// not one of the parseSQL-walked registries, so — like the external shims —
+	// each backing relation is DECLARED here so the pre-flip drift gate still
+	// verifies its existence + columns in prod. /v1/dashboard-config's baseline
+	// table (dashboard_config) is NEW (28-refdata-tables.sql) and MUST exist in
+	// prod before the route serves; declaring it here BLOCKS the flip fail-closed
+	// until it does (same guarantee v_report_downtimes gets).
+	out = append(out, bespokeRouteRelations...)
+
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Ref != out[j].Ref {
 			return out[i].Ref < out[j].Ref
@@ -138,6 +148,17 @@ func extractContract() ([]contractObject, error) {
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// bespokeRouteRelations are relations read by hand-written query.go handlers that
+// parseSQL does not walk (their SQL lives in the handler, not datasets/endpoints).
+// Declared existence+columns so the #71 drift gate covers them too.
+var bespokeRouteRelations = []contractObject{
+	{
+		Ref: "/v1/dashboard-config", Source: "route", Kind: "relation",
+		Name:    "dashboard_config",
+		Columns: []string{"id_enterprise", "dashboard_id", "config", "version"},
+	},
 }
 
 // parseSQL classifies one SQL string into its backing objects. The SQL shapes
