@@ -20,9 +20,14 @@ import (
 // auth ladder + error shape (job_report/job_data_integration's 400/422;
 // get-shift-validation's 500-for-all membrane) and the owner-binding isolation.
 //
-// SCOPE (honest boundary): fixtures use only string/int/bool/time.Time values
-// whose Go↔node-pg JSON serialization is pinnable. presscount (job_report) and any
-// numeric SELECT-* column are DELIBERATELY absent — the §3c step-3 shadow-diff.
+// SCOPE (§3c shadow-diff now CLOSED): fixtures include the prod-typed numeric +
+// bigint columns. Verified SELECT-only against prod: job_report's presscount is
+// sum(gross_production_incr) → DOUBLE PRECISION, so it stays a JSON NUMBER on both
+// drivers — job_report is numeric-CLEAN (pinned as a number below). get_data_sync
+// _enterprsie_06b (job_data_integration) projects bigint + numeric(10,2) columns →
+// node-pg strings. get-shift-validation's index1/shift_hrs are TEXT (always
+// strings), id_order is BIGINT → a string; its jsonb columns are a SEPARATE
+// (jsonb key-order) shadow-diff flagged in the report, not this numeric one.
 
 // intReq builds a GET request with the :id_enterprise path value set (as the mux
 // would). pathID is a string so a test can pass a MISMATCHED id to drive the 422.
@@ -117,9 +122,12 @@ func TestExemptMatchWildcardVsConcrete(t *testing.T) {
 func TestIntegrationShimEndToEndThroughMiddleware(t *testing.T) {
 	sh := shimByPath(t, "/integration/job_report/:id_enterprise")
 	reader := &scriptedReader{fn: func(sql string, args []any) (externalRows, error) {
+		// presscount = sum(gross_production_incr) → DOUBLE PRECISION → a JSON number
+		// (float8 matches node-pg + pgx; the numeric fix does NOT touch it). Same row
+		// as TestJobReportGoldenShape so both share the incoplast/job_report golden.
 		return externalRows{
-			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "ts_start", "packml_topic"},
-			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), "OP-901", tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2"}},
+			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "presscount", "ts_start", "packml_topic"},
+			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), "OP-901", 4200.5, tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2"}},
 		}, nil
 	}}
 	mux := http.NewServeMux()
@@ -135,9 +143,7 @@ func TestIntegrationShimEndToEndThroughMiddleware(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("e2e happy: code = %d, want 200 (routing/exemption/PathValue broken)", rr.Code)
 	}
-	if want := readGolden(t, "incoplast", "job_report"); rr.Body.String() != want {
-		t.Errorf("e2e happy body not byte-identical.\n got:  %s\n want: %s", rr.Body.String(), want)
-	}
+	compareGolden(t, "incoplast", "job_report", rr.Body.String())
 
 	// (b) missing id_equipment → the SHIM's own 400 (text/html), NOT the JSON-401
 	// middleware — proof the exempt match let the request through to the shim.
@@ -163,9 +169,12 @@ func TestJobDataIntegrationGoldenShape(t *testing.T) {
 		if !strings.Contains(sql, "get_data_sync_enterprsie_06b($1)") {
 			t.Errorf("expected the frozen ent-06 function, got %s", sql)
 		}
+		// get_data_sync_enterprsie_06b projects bigint (job, presscnt) → node-pg
+		// strings, and numeric(10,2) (totalavailablehrsinmin, setuphoursinmin→"0.00")
+		// → strings with scale. All delivered as Go strings by the reader.
 		return externalRows{
-			cols: []string{"site", "nm_equipment", "id_order", "ts_start", "packml_topic"},
-			rows: [][]any{{"MTB-SITE", "Extrusora 1 <A&B>", 8801, tsUTC(6, 0, 0), "spBv1.0/mtb/DDATA/L01"}},
+			cols: []string{"site", "nm_equipment", "job", "totalavailablehrsinmin", "setuphoursinmin", "presscnt", "ts_start", "packml_topic"},
+			rows: [][]any{{"MTB-SITE", "Extrusora 1 <A&B>", "8801", "480.00", "0.00", "12345", tsUTC(6, 0, 0), "spBv1.0/mtb/DDATA/L01"}},
 		}, nil
 	}}
 	req := intReq("/integration/job_data_integration/"+strconv.Itoa(montebelloOwner)+"?api_key="+montebelloKey+"&days_interval=7&site=mtb-site", strconv.Itoa(montebelloOwner))
@@ -173,9 +182,7 @@ func TestJobDataIntegrationGoldenShape(t *testing.T) {
 	if status != http.StatusOK || ct != "application/json; charset=utf-8" {
 		t.Errorf("status/ct = %d/%q, want 200/application/json; charset=utf-8", status, ct)
 	}
-	if want := readGolden(t, "montebello", "job_data_integration"); body != want {
-		t.Errorf("job_data_integration body not byte-identical.\n got:  %s\n want: %s", body, want)
-	}
+	compareGolden(t, "montebello", "job_data_integration", body)
 }
 
 // TestJobDataIntegrationDaysInterval pins the post-auth 400 window (1..41) and the
@@ -280,9 +287,11 @@ func TestJobReportGoldenShape(t *testing.T) {
 		if ids, ok := args[1].([]int); !ok || !reflect.DeepEqual(ids, []int{42, 43}) {
 			t.Errorf("id_equipment must bind $2 = []int{42,43}; got %#v", args[1])
 		}
+		// presscount = sum(gross_production_incr) → DOUBLE PRECISION → a JSON number
+		// (job_report is numeric-CLEAN). Identical row to the e2e test above.
 		return externalRows{
-			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "ts_start", "packml_topic"},
-			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), "OP-901", tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2"}},
+			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "presscount", "ts_start", "packml_topic"},
+			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), "OP-901", 4200.5, tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2"}},
 		}, nil
 	}}
 	// id_equipment as a bracketed list to exercise the strip+split+int parse.
@@ -291,9 +300,7 @@ func TestJobReportGoldenShape(t *testing.T) {
 	if status != http.StatusOK || ct != "application/json; charset=utf-8" {
 		t.Errorf("status/ct = %d/%q", status, ct)
 	}
-	if want := readGolden(t, "incoplast", "job_report"); body != want {
-		t.Errorf("job_report body not byte-identical.\n got:  %s\n want: %s", body, want)
-	}
+	compareGolden(t, "incoplast", "job_report", body)
 }
 
 func TestJobReportIdEquipmentRequired(t *testing.T) {
@@ -345,9 +352,13 @@ func TestShiftValidationGoldenShape(t *testing.T) {
 			if len(args) < 2 || args[1] != "%spBv1.0%" {
 				t.Errorf("findByTopic must bind $2 = '%%spBv1.0%%'; got %v", args)
 			}
+			// index1 is TEXT → always a string ("7"); id_site is int4 → number;
+			// id_order is BIGINT → node-pg string. txt_validation_notes is JSONB —
+			// kept as a scalar-string stand-in; jsonb key-ORDER parity is a SEPARATE
+			// shadow-diff flagged in the report, not this numeric one.
 			return externalRows{
 				cols: []string{"index1", "packml_topic", "id_site", "ts_value_production", "cd_shift", "id_order", "txt_validation_notes", "to_delete"},
-				rows: [][]any{{7, "spBv1.0/mtb/DDATA/L01", 14, tsUTC(6, 0, 0), "T1", "OP-555", "ok <A&B>", false}},
+				rows: [][]any{{"7", "spBv1.0/mtb/DDATA/L01", 14, tsUTC(6, 0, 0), "T1", "5000000001", "ok <A&B>", false}},
 			}, nil
 		case strings.Contains(sql, "LIMIT 1"): // getEnterpriseTopic, fenced by $1 = cid
 			if len(args) < 1 || args[0] != montebelloOwner {
@@ -364,9 +375,7 @@ func TestShiftValidationGoldenShape(t *testing.T) {
 	if status != http.StatusOK || ct != "application/json; charset=utf-8" {
 		t.Errorf("status/ct = %d/%q", status, ct)
 	}
-	if want := readGolden(t, "montebello", "get-shift-validation"); body != want {
-		t.Errorf("get-shift-validation body not byte-identical.\n got:  %s\n want: %s", body, want)
-	}
+	compareGolden(t, "montebello", "get-shift-validation", body)
 }
 
 // TestShiftValidation500Membrane is the DISTINCT-MEMBRANE gate: EVERY error is a

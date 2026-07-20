@@ -59,6 +59,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -169,12 +171,14 @@ func (er externalRows) MarshalJSON() ([]byte, error) {
 // pin is time.Time: node-pg returns a JS Date, and JSON.stringify(date) is
 // Date.prototype.toISOString() — UTC, millisecond precision, trailing `Z`.
 //
-// NOT pinned here (deliberately — see the report + the golden test's scope):
-// Postgres numeric/decimal. node-postgres returns numeric columns as STRINGS by
-// default; pgx returns them as a numeric Go type. Which columns are numeric is a
-// property of the live view DDL that cannot be read from the back4 controller
-// source (it does `SELECT *`). That parity is the ADR §3c step-3 SHADOW-DIFF
-// item, gated before cutover — never silently assumed here.
+// Postgres numeric/decimal/bigint parity (the ADR §3c step-3 SHADOW-DIFF) is NOT
+// handled here — it is resolved one layer UP, in pgxExternalReader.query: those
+// OIDs are forced onto the text wire and their raw Postgres text is substituted
+// as a Go string (see applyNodePgTextForm), so by the time a value reaches this
+// function a numeric/bigint column is ALREADY a string and hits the default case
+// below — byte-identical to node-postgres, which stringifies them the same way.
+// Reproducing that at the reader (not here) is deliberate: the discriminator is
+// the column OID, which only the reader can see (the back4 controllers `SELECT *`).
 func normalizeExternalValue(v any) any {
 	switch t := v.(type) {
 	case time.Time:
@@ -233,16 +237,77 @@ type externalReader interface {
 // column order from pgx field descriptions (the byte-identity requirement).
 type pgxExternalReader struct{ pool *pgxpool.Pool }
 
+// oidMoney is Postgres `money` (pgtype exposes no named const for it). node-pg
+// returns it as a string too, so it joins numeric/int8 in the text-passthrough set.
+const oidMoney = 790
+
+// nodePgStringifiedOIDs forces the result columns node-postgres serializes as JSON
+// STRINGS by default — numeric/decimal (1700), bigint/int8 (20), money (790) —
+// onto the TEXT wire, so the reader can pass their exact Postgres text through
+// verbatim (see applyNodePgTextForm). Passed as the first arg to pool.Query; pgx
+// strips it before positional binding, so $1..$N are unaffected. This is the ONE
+// place the §3c numeric shadow-diff is closed.
+var nodePgStringifiedOIDs = pgx.QueryResultFormatsByOID{
+	pgtype.NumericOID: pgx.TextFormatCode, // 1700 numeric/decimal
+	pgtype.Int8OID:    pgx.TextFormatCode, // 20   bigint
+	oidMoney:          pgx.TextFormatCode, // 790  money
+}
+
+// isNodePgStringifiedOID reports whether an OID is one node-postgres returns as a
+// JSON string by default. Verified against back4 src/db/database.js: a vanilla
+// pg.Pool with NO setTypeParser override, so pg-types' defaults apply — numeric
+// and int8 use the identity (string) parser, int4/float8 become JS numbers.
+func isNodePgStringifiedOID(oid uint32) bool {
+	switch oid {
+	case pgtype.NumericOID, pgtype.Int8OID, oidMoney:
+		return true
+	}
+	return false
+}
+
+// applyNodePgTextForm rewrites the text-forced columns of one decoded row to the
+// EXACT Postgres text node-postgres would deliver: for each column flagged in
+// textPass the raw wire bytes (text format, thanks to nodePgStringifiedOIDs)
+// replace pgx's decoded value as a Go string; a NULL (raw == nil) stays nil so it
+// still marshals to JSON null.
+//
+// WHY (the §3c numeric shadow-diff, resolved): node-pg returns numeric/bigint as a
+// STRING preserving scale ("12.34", "0.00", "9007199254740993"); pgx decodes them
+// to pgtype.Numeric / int64, which json-encode as UNQUOTED numbers and — for a
+// zero numeric — DROP the display scale (pgtype.Numeric of 0.00 → "0", proven from
+// pgtype/numeric.go: ndigits==0 ⇒ Int=0,Exp=0). Passing the raw text is precisely
+// node-pg's own mechanism (text protocol + identity parser), so the emitted JSON
+// string is byte-identical BY CONSTRUCTION — including the 0.00 case (56 real rows
+// in v_13_site_deb_sap_report carry a zero numeric) and bigints beyond 2^53.
+func applyNodePgTextForm(vals []any, raw [][]byte, textPass []bool) {
+	for i := range vals {
+		if i < len(textPass) && textPass[i] {
+			if i < len(raw) && raw[i] != nil {
+				vals[i] = string(raw[i])
+			} else {
+				vals[i] = nil
+			}
+		}
+	}
+}
+
 func (p pgxExternalReader) query(ctx context.Context, sql string, args ...any) (externalRows, error) {
-	rows, err := p.pool.Query(ctx, sql, args...)
+	// Prepend the result-format control so numeric/int8/money come back as text.
+	qargs := make([]any, 0, len(args)+1)
+	qargs = append(qargs, nodePgStringifiedOIDs)
+	qargs = append(qargs, args...)
+
+	rows, err := p.pool.Query(ctx, sql, qargs...)
 	if err != nil {
 		return externalRows{}, err
 	}
 	defer rows.Close()
 	fds := rows.FieldDescriptions()
 	cols := make([]string, len(fds))
+	textPass := make([]bool, len(fds))
 	for i, fd := range fds {
 		cols[i] = string(fd.Name)
+		textPass[i] = isNodePgStringifiedOID(fd.DataTypeOID)
 	}
 	var data [][]any
 	for rows.Next() {
@@ -250,6 +315,9 @@ func (p pgxExternalReader) query(ctx context.Context, sql string, args ...any) (
 		if err != nil {
 			return externalRows{}, err
 		}
+		// Substitute the raw Postgres text for numeric/int8/money columns (node-pg
+		// parity); RawValues() returns the same buffered row Values() just decoded.
+		applyNodePgTextForm(vals, rows.RawValues(), textPass)
 		data = append(data, vals)
 	}
 	if rows.Err() != nil {
