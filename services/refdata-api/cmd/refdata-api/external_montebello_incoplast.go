@@ -16,14 +16,16 @@
 //   - {newData} / {jobs_filtered} whose ts_* columns are reformatted by a
 //     per-consumer VALUE adapter (moment's `[Z]` format) — see momentZFormat.
 //
-// NUMERIC-COLUMN BOUNDARY (same honesty as external.go): several of these reads
-// are `SELECT *` / set-returning functions projecting columns that MAY be
-// numeric/decimal (duration, net_production, gross_production, presscount).
-// node-pg returns numeric as a STRING; pgx returns a numeric Go type. Which
-// columns are numeric is a live-DDL property unreadable from the controller
-// source, so it is NOT pinned in the golden fixtures — it is the §3c step-3
-// SHADOW-DIFF item, gated before cutover. The golden fixtures below use only
-// string/int/bool/time.Time values whose serialization IS pinnable.
+// DRIVER-SERIALIZATION BOUNDARY (§3c shadow-diff — now CLOSED at the reader):
+// these `SELECT *` / set-returning reads project columns whose Go↔node-pg JSON
+// form differs by DRIVER, resolved in pgxExternalReader.query (see external.go):
+//   - numeric/decimal + bigint → node-pg STRINGS (pack_id, and get_data_sync's
+//     bigint/numeric(10,2)); duration/id_order are int4 → numbers; net/gross_
+//     production are float8 → numbers. Live-typed SELECT-only from prod.
+//   - jsonb (custom_field) → node-pg re-emits it as an OBJECT with jsonb's stored
+//     key order (JSON.parse→JSON.stringify), reserialized by nodePgJSONText.
+//
+// The golden fixtures below now INCLUDE these columns in their node-pg form.
 package main
 
 import (
@@ -41,10 +43,16 @@ import (
 // reshaping the envelope without also reshaping these timestamp values would
 // break byte-identity against the moment-formatted back4 output.
 //
-// Flagged for the §3c shadow-diff: back4 reads timestamp-WITHOUT-tz columns
-// through node-pg, which parses them in the process LOCAL zone before `.utc()`;
-// pgx parses naive timestamps as UTC. The FORMAT is pinned here; the naive-
-// timestamp zone-of-parse is a driver nuance verified live, not from source.
+// §3c naive-timestamp zone-of-parse — RESOLVED, CLEAN. back4 reads timestamp-
+// WITHOUT-tz columns (incoplast jobs' `at time zone 'utc'` ts_start/ts_end/
+// last_update) through node-pg, which parses a naive timestamp in the process
+// LOCAL zone before `.utc()`; pgx parses naive timestamps as UTC. These agree iff
+// the process zone is UTC — and it IS: neither back4 nor refdata sets TZ, so both
+// containers default to UTC (verified live: a default node container reports
+// DEFAULT_TZ=UTC and node-pg emits a naive `2026-07-18 18:34:00` as
+// `"2026-07-18T18:34:00.000Z"`, byte-identical to pgx's always-UTC decode).
+// INVARIANT: this parity holds only while back4 runs UTC — a non-UTC TZ on the
+// back4 container would shift these columns and reopen the diff.
 func momentZFormat(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05") + "Z"
 }

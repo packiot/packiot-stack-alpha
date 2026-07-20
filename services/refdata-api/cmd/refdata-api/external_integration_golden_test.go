@@ -25,9 +25,10 @@ import (
 // sum(gross_production_incr) → DOUBLE PRECISION, so it stays a JSON NUMBER on both
 // drivers — job_report is numeric-CLEAN (pinned as a number below). get_data_sync
 // _enterprsie_06b (job_data_integration) projects bigint + numeric(10,2) columns →
-// node-pg strings. get-shift-validation's index1/shift_hrs are TEXT (always
-// strings), id_order is BIGINT → a string; its jsonb columns are a SEPARATE
-// (jsonb key-order) shadow-diff flagged in the report, not this numeric one.
+// node-pg strings, plus a JSONB supervisornotes. get-shift-validation's index1/
+// shift_hrs are TEXT (always strings), id_order is BIGINT → a string, and its
+// JSONB txt_validation_notes is now modeled as REAL jsonb. All jsonb columns are
+// emitted as OBJECTS in jsonb's stored key order (reserialized by nodePgJSONText).
 
 // intReq builds a GET request with the :id_enterprise path value set (as the mux
 // would). pathID is a string so a test can pass a MISMATCHED id to drive the 422.
@@ -170,11 +171,14 @@ func TestJobDataIntegrationGoldenShape(t *testing.T) {
 			t.Errorf("expected the frozen ent-06 function, got %s", sql)
 		}
 		// get_data_sync_enterprsie_06b projects bigint (job, presscnt) → node-pg
-		// strings, and numeric(10,2) (totalavailablehrsinmin, setuphoursinmin→"0.00")
-		// → strings with scale. All delivered as Go strings by the reader.
+		// strings, numeric(10,2) (totalavailablehrsinmin, setuphoursinmin→"0.00")
+		// → strings with scale, and supervisornotes JSONB → an OBJECT in node-pg's
+		// stored key order (rawJSON). All delivered by the reader.
 		return externalRows{
-			cols: []string{"site", "nm_equipment", "job", "totalavailablehrsinmin", "setuphoursinmin", "presscnt", "ts_start", "packml_topic"},
-			rows: [][]any{{"MTB-SITE", "Extrusora 1 <A&B>", "8801", "480.00", "0.00", "12345", tsUTC(6, 0, 0), "spBv1.0/mtb/DDATA/L01"}},
+			cols: []string{"site", "nm_equipment", "job", "totalavailablehrsinmin", "setuphoursinmin", "presscnt", "supervisornotes", "ts_start", "packml_topic"},
+			rows: [][]any{{"MTB-SITE", "Extrusora 1 <A&B>", "8801", "480.00", "0.00", "12345",
+				rawJSON([]byte(`{"note":"setup ok","user":"MarviePin","approved":true,"ts_confirm":"2026-07-18T02:38:02.603Z"}`)),
+				tsUTC(6, 0, 0), "spBv1.0/mtb/DDATA/L01"}},
 		}, nil
 	}}
 	req := intReq("/integration/job_data_integration/"+strconv.Itoa(montebelloOwner)+"?api_key="+montebelloKey+"&days_interval=7&site=mtb-site", strconv.Itoa(montebelloOwner))
@@ -353,12 +357,16 @@ func TestShiftValidationGoldenShape(t *testing.T) {
 				t.Errorf("findByTopic must bind $2 = '%%spBv1.0%%'; got %v", args)
 			}
 			// index1 is TEXT → always a string ("7"); id_site is int4 → number;
-			// id_order is BIGINT → node-pg string. txt_validation_notes is JSONB —
-			// kept as a scalar-string stand-in; jsonb key-ORDER parity is a SEPARATE
-			// shadow-diff flagged in the report, not this numeric one.
+			// id_order is BIGINT → node-pg string. txt_validation_notes is JSONB →
+			// emitted as an OBJECT in node-pg's stored key order (rawJSON) — this is a
+			// REAL equipment_validation_shift.txt_validation_notes shape (nested
+			// {LastConfirm:{note,user,approved,ip_adress,ts_confirm}}, with an embedded
+			// \n in note preserved).
 			return externalRows{
 				cols: []string{"index1", "packml_topic", "id_site", "ts_value_production", "cd_shift", "id_order", "txt_validation_notes", "to_delete"},
-				rows: [][]any{{"7", "spBv1.0/mtb/DDATA/L01", 14, tsUTC(6, 0, 0), "T1", "5000000001", "ok <A&B>", false}},
+				rows: [][]any{{"7", "spBv1.0/mtb/DDATA/L01", 14, tsUTC(6, 0, 0), "T1", "5000000001",
+					rawJSON([]byte(`{"LastConfirm":{"note":"BC should be 21344\nPP should be 19872","user":"Hmoujib","approved":true,"ip_adress":"","ts_confirm":"2026-07-17T04:18:38.010Z"}}`)),
+					false}},
 			}, nil
 		case strings.Contains(sql, "LIMIT 1"): // getEnterpriseTopic, fenced by $1 = cid
 			if len(args) < 1 || args[0] != montebelloOwner {

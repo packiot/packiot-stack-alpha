@@ -33,10 +33,13 @@
 //     controller `catch`es to `res.status(500).send(error.message)`, so EVERY
 //     error (auth included) is a 500-with-message, not the 400/401/422 matrix.
 //
-// NUMERIC-COLUMN BOUNDARY (same honesty as external.go): job_report's presscount
-// (sum → int8/numeric) and any SELECT-* numeric column from
-// get_data_sync_enterprsie_06b are node-pg-stringified and live-DDL-typed, so they
-// are NOT pinned in the golden fixtures — that is the §3c step-3 SHADOW-DIFF.
+// DRIVER-SERIALIZATION BOUNDARY (§3c shadow-diff — now CLOSED at the reader,
+// external.go): job_report's presscount is `sum(gross_production_incr)` →
+// DOUBLE PRECISION (live-typed SELECT-only from prod), so it is a JSON NUMBER on
+// both drivers — job_report is numeric-CLEAN. get_data_sync_enterprsie_06b projects
+// bigint/numeric(10,2) → node-pg strings and a jsonb supervisornotes → an OBJECT in
+// jsonb's stored key order; get-shift-validation's txt_validation_notes is jsonb
+// likewise. All are pinned in the golden fixtures below in their node-pg form.
 package main
 
 import (
@@ -51,11 +54,13 @@ import (
 // bare calendar date, no time, no zone suffix. Only get-shift-validation's
 // ShiftsValidationDAO.findByTopic applies it (to ts_value_production).
 //
-// ZONE NUANCE (flagged for the §3c shadow-diff): dayjs WITHOUT `.utc()` formats in
-// the process LOCAL zone, so which calendar day a near-midnight timestamp lands on
-// depends on the back4 container's TZ. We format in the value's own location (UTC
-// for the fixtures, so the golden is deterministic); the naive-timestamp zone-of-
-// parse is verified live, not pinned from source. The FORMAT is what is pinned.
+// ZONE NUANCE (§3c — RESOLVED, CLEAN): ts_value_production is a Postgres `date`
+// (no time-of-day). node-pg parses `date` at LOCAL midnight and dayjs WITHOUT
+// `.utc()` formats in the SAME local zone, so the calendar day never shifts;
+// pgx decodes `date` at UTC midnight and we format in the value's own location.
+// Under the UTC container both services run in (neither sets TZ) the two are
+// byte-identical, and because format and parse share the one zone the result is
+// stable even off-UTC. The FORMAT is what is pinned.
 func dateOnlyFormat(t time.Time) string {
 	return t.Format("2006-01-02")
 }
