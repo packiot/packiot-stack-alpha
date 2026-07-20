@@ -50,6 +50,23 @@ type endpoint struct {
 	// so a client arg returned here binds $2, $3, … . nil = no client args
 	// (customer_id-only for scoped routes; zero args for global ones).
 	args func(r *http.Request) ([]any, error)
+	// sqlF3 (ADR-0032 Step 1, optional) overrides sql when the process flow is
+	// f3 (REFDATA_FLOW=f3). Empty ⇒ the same sql serves both flows — the common
+	// case, because F3 keeps F1's object names where the object exists (flow.go).
+	// It is only populated when a backing object is genuinely RENAMED in
+	// packiot_shadow, so the F1 read stays byte-identical. Declared LAST so the
+	// positional endpoint literals above stay valid.
+	sqlF3 string
+}
+
+// activeSQL returns the SQL this endpoint runs under the process flow: the f3
+// override when flow==f3 and one is set, else the F1 sql. Centralising the
+// choice keeps the flow-branch out of the handler hot path.
+func (e endpoint) activeSQL(f flow) string {
+	if f == flowF3 && e.sqlF3 != "" {
+		return e.sqlF3
+	}
+	return e.sql
 }
 
 // topicsArg parses ?topics=a,b,c into a text[] argument.
@@ -82,15 +99,15 @@ var endpoints = []endpoint{
 	// Event / downtime timelines — the SETOF functions emit id_enterprise
 	// from their internal equipments join; ?topics= binds $2 (a filter within
 	// the tenant), $1 is the caller's id.
-	{"/v1/events-timeline",
-		`SELECT * FROM h_piot_get_events_timeline3_with_event_id($2) WHERE id_enterprise = $1`,
-		routeTenantScoped, topicsArg},
-	{"/v1/pending-downtime",
-		`SELECT * FROM h_piot_get_equipment_pending_downtime_with_event_id($2) WHERE id_enterprise = $1`,
-		routeTenantScoped, topicsArg},
-	{"/v1/shift-hours",
-		`SELECT * FROM piot_get_shift_hours_by_packml_topic_2($2) WHERE id_enterprise = $1`,
-		routeTenantScoped, topicArg},
+	{path: "/v1/events-timeline",
+		sql:   `SELECT * FROM h_piot_get_events_timeline3_with_event_id($2) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: topicsArg},
+	{path: "/v1/pending-downtime",
+		sql:   `SELECT * FROM h_piot_get_equipment_pending_downtime_with_event_id($2) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: topicsArg},
+	{path: "/v1/shift-hours",
+		sql:   `SELECT * FROM piot_get_shift_hours_by_packml_topic_2($2) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: topicArg},
 	// ?enterprise= DROPPED (ADR-0027 §4): the enterprise is the key's
 	// customer_id, never client-supplied. The real tenant scope is the outer
 	// WHERE; the path stays alive (byte-stable shape) because the operator
@@ -102,39 +119,39 @@ var endpoints = []endpoint{
 	// — the enterprise arg is dead. Binding a 2nd arg 500s on prod (arity
 	// mismatch) and does nothing on staging, so we bind topic only. Byte-stable
 	// on both; tenant fencing is entirely the outer WHERE id_enterprise = $1.
-	{"/v1/shift-hours-by-enterprise",
-		`SELECT * FROM piot_get_shift_hours_by_enterprise_packml_topic_2($2) WHERE id_enterprise = $1`,
-		routeTenantScoped, topicArg},
-	{"/v1/day-week-begin",
-		`SELECT * FROM piot_get_day_week_begin_by_packml_topic($2) WHERE id_enterprise = $1`,
-		routeTenantScoped, topicArg},
+	{path: "/v1/shift-hours-by-enterprise",
+		sql:   `SELECT * FROM piot_get_shift_hours_by_enterprise_packml_topic_2($2) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: topicArg},
+	{path: "/v1/day-week-begin",
+		sql:   `SELECT * FROM piot_get_day_week_begin_by_packml_topic($2) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: topicArg},
 	// v_operator_* views expose id_enterprise as a column already returned to
 	// the operator; the predicate only removes other tenants' rows.
-	{"/v1/operator-po-list",
-		`SELECT * FROM v_operator_po_list_setup_4 WHERE id_enterprise = $1`,
-		routeTenantScoped, nil},
-	{"/v1/operator-po-details",
-		`SELECT * FROM v_operator_po_details_3 WHERE id_enterprise = $1`,
-		routeTenantScoped, nil},
-	{"/v1/operator-entities",
-		`SELECT * FROM v_operator_entities_2 WHERE id_enterprise = $1`,
-		routeTenantScoped, nil},
-	{"/v1/entities-per-user-role",
-		`SELECT * FROM v_entities_per_user_role_operator WHERE id_enterprise = $1`,
-		routeTenantScoped, nil},
+	{path: "/v1/operator-po-list",
+		sql:   `SELECT * FROM v_operator_po_list_setup_4 WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: nil},
+	{path: "/v1/operator-po-details",
+		sql:   `SELECT * FROM v_operator_po_details_3 WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: nil},
+	{path: "/v1/operator-entities",
+		sql:   `SELECT * FROM v_operator_entities_2 WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: nil},
+	{path: "/v1/entities-per-user-role",
+		sql:   `SELECT * FROM v_entities_per_user_role_operator WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: nil},
 	// language_packs is global i18n — no tenant column (ADR-0027 §2's one
 	// deliberate exception). Still behind auth (a valid key is required), but
 	// carries no $1: routeGlobalRef.
-	{"/v1/language-packs",
-		`SELECT * FROM language_packs`,
-		routeGlobalRef, nil},
+	{path: "/v1/language-packs",
+		sql:   `SELECT * FROM language_packs`,
+		class: routeGlobalRef, args: nil},
 	// downtime-reasons: equipments already carries id_enterprise; add the
 	// tenant predicate and move the topic vector to $2. Same projected columns.
-	{"/v1/downtime-reasons",
-		`SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
+	{path: "/v1/downtime-reasons",
+		sql: `SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
 	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment AND p.id_unit = e.id_equipment
 	  WHERE p.packml_topic = ANY($2) AND p.active AND e.id_enterprise = $1`,
-		routeTenantScoped, topicsArg},
+		class: routeTenantScoped, args: topicsArg},
 }
 
 var (
@@ -167,10 +184,20 @@ func main() {
 	}
 	defer func() { _ = shutdownTracing(context.Background()) }()
 
+	// ADR-0032 Step 1: resolve the read-plane flow ONCE, before the DSN and the
+	// handlers are built. f1 (default) → dbname `packiot` (F1) via pgbouncer's
+	// `packiot` pool; f3 → dbname `packiot_shadow` (F3) via the new
+	// `packiot_shadow` pool. Same host (pgbouncer) either way — only the target
+	// database changes. Defaulting to f1 keeps merging this a zero-behavior-change
+	// (flow.go).
+	activeFlow = resolveFlow(os.Getenv("REFDATA_FLOW"))
+	dbName := dbNameForFlow(activeFlow)
+	logger.Info("read-plane flow resolved",
+		slog.String("flow", string(activeFlow)), slog.String("db_name", dbName))
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s",
 		getenv("DB_HOST", "pgbouncer"), getenv("DB_PORT", "5432"),
 		getenv("DB_USER", "postgres"), os.Getenv("DB_PASSWORD"),
-		getenv("DB_NAME", "packiot"))
+		dbName)
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		logger.Error("parse dsn", slog.String("err", err.Error()))
@@ -253,6 +280,10 @@ func main() {
 // of objects — pgx field descriptions give the column names, so one
 // generic encoder covers every endpoint.
 func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.HandlerFunc {
+	// Resolve the flow-specific SQL ONCE when the handler is built — activeFlow
+	// is process-global and fixed by the time routes register (main resolves it
+	// before the mux loop), so this never varies per request.
+	sql := ep.activeSQL(activeFlow)
 	return func(w http.ResponseWriter, r *http.Request) {
 		var args []any
 		// ADR-0027 Surface-1: tenant-scoped routes bind the server-resolved
@@ -280,7 +311,7 @@ func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.Hand
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
-		rows, err := pool.Query(ctx, ep.sql, args...)
+		rows, err := pool.Query(ctx, sql, args...)
 		if err != nil {
 			failed.Add(1)
 			logger.Warn("query failed", slog.String("path", ep.path), slog.String("err", err.Error()))
