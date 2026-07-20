@@ -137,6 +137,19 @@ func (er externalRows) MarshalJSON() ([]byte, error) {
 			}
 			b.Write(key)
 			b.WriteByte(':')
+			// A jsonb/json column, already reserialized to node-pg's exact form by
+			// the reader (see nodePgJSONText): emit it VERBATIM as a JSON value
+			// (object/array/scalar), never quoted. A nil rawJSON is a SQL NULL.
+			if j < len(row) {
+				if rj, ok := row[j].(rawJSON); ok {
+					if rj == nil {
+						b.WriteString("null")
+					} else {
+						b.Write(rj)
+					}
+					continue
+				}
+			}
 			var v any
 			if j < len(row) {
 				if t, ok := row[j].(time.Time); ok && er.momentZ[col] {
@@ -291,10 +304,158 @@ func applyNodePgTextForm(vals []any, raw [][]byte, textPass []bool) {
 	}
 }
 
+// ── jsonb/json parity (the §3c key-ORDER axis) ───────────────────────────────
+
+// nodePgJSONOIDs are the JSON container types node-postgres decodes with
+// JSON.parse (pg-types registers it for BOTH jsonb and json) and Express res.json
+// re-emits with JSON.stringify. Unlike numeric/int8 (node-pg passes those through
+// as a QUOTED string), these are emitted as JSON VALUES (object/array/scalar). We
+// force them onto the text wire and RESERIALIZE the raw text to match JSON.parse+
+// JSON.stringify exactly (see nodePgJSONText). (jsonb already prefers text in pgx,
+// so RawValues has no 0x01 version prefix — forcing text is belt-and-suspenders.)
+var nodePgJSONOIDs = map[uint32]int16{
+	pgtype.JSONBOID: pgx.TextFormatCode, // 3802
+	pgtype.JSONOID:  pgx.TextFormatCode, // 114
+}
+
+// externalTextForcedFormats is the union forced onto the text wire: numeric/int8/
+// money (→ quoted strings) AND jsonb/json (→ reserialized objects). Passed as the
+// first arg to pool.Query; pgx strips it before positional binding.
+var externalTextForcedFormats = func() pgx.QueryResultFormatsByOID {
+	m := pgx.QueryResultFormatsByOID{}
+	for k, v := range nodePgStringifiedOIDs {
+		m[k] = v
+	}
+	for k, v := range nodePgJSONOIDs {
+		m[k] = v
+	}
+	return m
+}()
+
+// isNodePgJSONOID reports whether an OID is a JSON container node-pg round-trips
+// through JSON.parse/JSON.stringify (jsonb, json).
+func isNodePgJSONOID(oid uint32) bool {
+	return oid == pgtype.JSONBOID || oid == pgtype.JSONOID
+}
+
+// rawJSON is a jsonb/json value ALREADY reserialized to node-pg's exact wire form
+// (compact, stored key order, JS number semantics). externalRows.MarshalJSON emits
+// it VERBATIM as a JSON value — never as a quoted string (a jsonb object must stay
+// an object). A nil rawJSON is a SQL NULL → JSON null.
+type rawJSON []byte
+
+// nodePgJSONText reserializes a Postgres jsonb/json text value to the EXACT bytes
+// node-postgres would emit, i.e. JSON.parse then JSON.stringify. Concretely:
+//   - drop jsonb's insignificant whitespace ({"a": 1} → {"a":1});
+//   - KEEP the object key order — JSON.parse preserves the text's order, which for
+//     jsonb is Postgres's stored length-then-byte order, and JSON.stringify keeps
+//     object order. (pgx's default jsonb decode goes through a Go map, whose
+//     re-marshal SORTS keys alphabetically — the exact divergence this closes.)
+//   - normalize numbers through IEEE-754 float64: 1.50→1.5, 100.0→100, and ints
+//     beyond 2^53 lose precision EXACTLY as JS does. Go's shortest-float format
+//     equals V8's, so the number bytes match back4 byte-for-byte (verified against
+//     a live node reference on real prod rows).
+//
+// This is deliberately NOT json.Compact (which would keep "1.50" and thus diverge
+// from node-pg) and NOT a Go map round-trip (which reorders keys). No HTML
+// escaping — Express's JSON.stringify doesn't escape < > &, matching the rest of
+// the shim (marshalNoEscape). KNOWN theoretical edge: Go always escapes U+2028/
+// U+2029 in strings while JSON.stringify does not — absent from these columns.
+func nodePgJSONText(src []byte) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(src))
+	// No UseNumber(): numbers decode to float64, matching JS Number semantics.
+	var out bytes.Buffer
+	if err := emitNodePgJSON(dec, &out); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// emitNodePgJSON walks one JSON value from dec and writes its node-pg form to out,
+// preserving object key order (the load-bearing property) and compacting.
+func emitNodePgJSON(dec *json.Decoder, out *bytes.Buffer) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := t.(json.Delim); ok {
+		switch d {
+		case '{':
+			out.WriteByte('{')
+			for i := 0; dec.More(); i++ {
+				if i > 0 {
+					out.WriteByte(',')
+				}
+				keyTok, err := dec.Token() // an object key is always a string
+				if err != nil {
+					return err
+				}
+				kb, err := marshalNoEscape(keyTok.(string))
+				if err != nil {
+					return err
+				}
+				out.Write(kb)
+				out.WriteByte(':')
+				if err := emitNodePgJSON(dec, out); err != nil {
+					return err
+				}
+			}
+			if _, err := dec.Token(); err != nil { // consume closing '}'
+				return err
+			}
+			out.WriteByte('}')
+		case '[':
+			out.WriteByte('[')
+			for i := 0; dec.More(); i++ {
+				if i > 0 {
+					out.WriteByte(',')
+				}
+				if err := emitNodePgJSON(dec, out); err != nil {
+					return err
+				}
+			}
+			if _, err := dec.Token(); err != nil { // consume closing ']'
+				return err
+			}
+			out.WriteByte(']')
+		}
+		return nil
+	}
+	// Scalar: string / float64 / bool / nil. marshalNoEscape matches JSON.stringify
+	// (shortest float == V8; no HTML escaping; true/false/null).
+	vb, err := marshalNoEscape(t)
+	if err != nil {
+		return err
+	}
+	out.Write(vb)
+	return nil
+}
+
+// applyNodePgJSONForm rewrites the jsonb/json columns of one decoded row to node-
+// pg's reserialized form (a rawJSON, emitted verbatim by MarshalJSON as an object/
+// array/scalar). A NULL (raw == nil) becomes rawJSON(nil) → JSON null.
+func applyNodePgJSONForm(vals []any, raw [][]byte, jsonPass []bool) error {
+	for i := range vals {
+		if i < len(jsonPass) && jsonPass[i] {
+			if i < len(raw) && raw[i] != nil {
+				b, err := nodePgJSONText(raw[i])
+				if err != nil {
+					return err
+				}
+				vals[i] = rawJSON(b)
+			} else {
+				vals[i] = rawJSON(nil)
+			}
+		}
+	}
+	return nil
+}
+
 func (p pgxExternalReader) query(ctx context.Context, sql string, args ...any) (externalRows, error) {
-	// Prepend the result-format control so numeric/int8/money come back as text.
+	// Prepend the result-format control so numeric/int8/money (→ strings) and
+	// jsonb/json (→ reserialized objects) come back as text.
 	qargs := make([]any, 0, len(args)+1)
-	qargs = append(qargs, nodePgStringifiedOIDs)
+	qargs = append(qargs, externalTextForcedFormats)
 	qargs = append(qargs, args...)
 
 	rows, err := p.pool.Query(ctx, sql, qargs...)
@@ -305,9 +466,11 @@ func (p pgxExternalReader) query(ctx context.Context, sql string, args ...any) (
 	fds := rows.FieldDescriptions()
 	cols := make([]string, len(fds))
 	textPass := make([]bool, len(fds))
+	jsonPass := make([]bool, len(fds))
 	for i, fd := range fds {
 		cols[i] = string(fd.Name)
 		textPass[i] = isNodePgStringifiedOID(fd.DataTypeOID)
+		jsonPass[i] = isNodePgJSONOID(fd.DataTypeOID)
 	}
 	var data [][]any
 	for rows.Next() {
@@ -315,9 +478,14 @@ func (p pgxExternalReader) query(ctx context.Context, sql string, args ...any) (
 		if err != nil {
 			return externalRows{}, err
 		}
-		// Substitute the raw Postgres text for numeric/int8/money columns (node-pg
-		// parity); RawValues() returns the same buffered row Values() just decoded.
-		applyNodePgTextForm(vals, rows.RawValues(), textPass)
+		// Substitute the raw Postgres text for numeric/int8/money columns and the
+		// reserialized node-pg form for jsonb/json columns. RawValues() returns the
+		// same buffered row Values() just decoded (text format for the forced OIDs).
+		raw := rows.RawValues()
+		applyNodePgTextForm(vals, raw, textPass)
+		if err := applyNodePgJSONForm(vals, raw, jsonPass); err != nil {
+			return externalRows{}, err
+		}
 		data = append(data, vals)
 	}
 	if rows.Err() != nil {

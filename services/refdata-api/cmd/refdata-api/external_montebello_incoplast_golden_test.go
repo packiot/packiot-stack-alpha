@@ -26,7 +26,9 @@ import (
 // pack_id (events) is BIGINT → a string, not the number a naive fixture assumed;
 // duration (events) is int4 → a number; net/gross_production (inco jobs) are
 // DOUBLE PRECISION → numbers (float8 matches both drivers, no fix). Each is
-// pinned in its real form below.
+// pinned in its real form below. JSONB (custom_field) is ALSO now included: node-pg
+// re-emits it as an OBJECT in jsonb's stored key order (reserialized by
+// nodePgJSONText, proven byte-identical to a live node reference on real rows).
 
 // This suite's own key map (independent of the NEOPAC suite's): the Montebello
 // api_key resolves to ent 6, the Incoplast key to its enterprise, and a
@@ -244,9 +246,14 @@ func TestIncoplastEventsGoldenShape(t *testing.T) {
 		}
 		return externalRows{
 			// id_order is int4 → number; pack_id is id_equipment_event::bigint →
-			// node-pg string "1234". (duration, an int4, is not in this envelope.)
-			cols: []string{"id_order", "nm_site", "nm_equipment", "cd_shift", "ts_event", "ts_end", "pack_id", "packml_topic", "last_update"},
-			rows: [][]any{{5501, "INCO-SITE", "Extrusora 2", "T1", tsUTC(6, 0, 0), tsUTC(6, 10, 0), "1234", "spBv1.0/inco/DDATA/EX2", tsUTC(6, 11, 0)}},
+			// node-pg string "1234"; custom_field is JSONB → emitted as an OBJECT in
+			// node-pg's stored key order (rawJSON, the reader's reserialized form —
+			// this is a REAL production_orders.custom_field shape). duration (int4) is
+			// not in this envelope.
+			cols: []string{"id_order", "nm_site", "nm_equipment", "cd_shift", "ts_event", "ts_end", "pack_id", "custom_field", "packml_topic", "last_update"},
+			rows: [][]any{{5501, "INCO-SITE", "Extrusora 2", "T1", tsUTC(6, 0, 0), tsUTC(6, 10, 0), "1234",
+				rawJSON([]byte(`{"STATUS":1,"id_order":357226,"priority":10,"cd_client":34407,"scrap_factor":44.32910965352669,"PRODUCTION_STEP":62,"VERSION_PRODUCT":"9"}`)),
+				"spBv1.0/inco/DDATA/EX2", tsUTC(6, 11, 0)}},
 		}, nil
 	}}
 	req := httptest.NewRequest("GET", "/ext/incoplast/events?api_key="+incoplastKey, nil)
@@ -289,9 +296,12 @@ func TestIncoplastJobsGoldenShape(t *testing.T) {
 			// id_production_order is bigint → node-pg string "9001". net_production/
 			// gross_production are DOUBLE PRECISION → JSON numbers (float8 matches
 			// both drivers, no stringify): net_production 1234.5 stays unquoted here,
-			// proving the fix is scoped to numeric/int8 and does NOT touch float8.
-			cols: []string{"id_production_order", "id_order", "net_production", "gross_production", "ts_start", "ts_end", "id_equipment", "status", "topic", "last_update"},
-			rows: [][]any{{"9001", "OP-778", 1234.5, 1300.0, tsUTC(6, 0, 0), tsUTC(14, 0, 0), 42, 3, "spBv1.0/inco/DDATA/EX2", tsUTC(14, 0, 5)}},
+			// proving the numeric fix is scoped to numeric/int8 and does NOT touch
+			// float8. custom_field is JSONB → an OBJECT in node-pg's stored key order.
+			cols: []string{"id_production_order", "id_order", "net_production", "gross_production", "ts_start", "ts_end", "id_equipment", "status", "topic", "custom_field", "last_update"},
+			rows: [][]any{{"9001", "OP-778", 1234.5, 1300.0, tsUTC(6, 0, 0), tsUTC(14, 0, 0), 42, 3, "spBv1.0/inco/DDATA/EX2",
+				rawJSON([]byte(`{"STATUS":1,"id_order":356337,"priority":10,"cd_client":542113,"scrap_factor":20.895905129091858,"PRODUCTION_STEP":62,"VERSION_PRODUCT":"5"}`)),
+				tsUTC(14, 0, 5)}},
 		}, nil
 	}}
 	req := httptest.NewRequest("GET", "/ext/incoplast/jobs?api_key="+incoplastKey, nil)
