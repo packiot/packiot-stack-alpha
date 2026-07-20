@@ -18,12 +18,31 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "Packiot PostgreSQL",
+          "value": "packiot-postgres"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "postgres",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
         "name": "enterprise",
         "label": "Enterprise",
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_enterprise AS __text, id_enterprise AS __value FROM enterprises ORDER BY nm_enterprise",
         "multi": true,
@@ -46,7 +65,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_site AS __text, id_site AS __value FROM sites WHERE id_enterprise IN ($enterprise) ORDER BY nm_site",
         "multi": true,
@@ -69,7 +88,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_area AS __text, id_area AS __value FROM areas WHERE id_site IN ($site) ORDER BY nm_area",
         "multi": true,
@@ -92,7 +111,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_equipment AS __text, id_equipment AS __value FROM equipments WHERE id_area IN ($area) ORDER BY nm_equipment",
         "multi": true,
@@ -172,7 +191,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT id_enterprise, nm_enterprise, active FROM enterprises WHERE id_enterprise IN ($enterprise) ORDER BY nm_enterprise",
           "format": "table",
@@ -208,7 +227,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT s.id_site, ent.nm_enterprise, s.nm_site FROM sites s JOIN enterprises ent ON ent.id_enterprise = s.id_enterprise WHERE s.id_enterprise IN ($enterprise) AND s.id_site IN ($site) ORDER BY ent.nm_enterprise, s.nm_site",
           "format": "table",
@@ -244,7 +263,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT a.id_area, ent.nm_enterprise, s.nm_site, a.nm_area, a.week_begin, a.week_size FROM areas a JOIN sites s ON s.id_site = a.id_site JOIN enterprises ent ON ent.id_enterprise = a.id_enterprise WHERE a.id_enterprise IN ($enterprise) AND a.id_site IN ($site) AND a.id_area IN ($area) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area",
           "format": "table",
@@ -316,7 +335,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT eq.id_equipment, ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment, CASE eq.tp_equipment WHEN 1 THEN 'Machine' WHEN 2 THEN 'Sector' WHEN 3 THEN 'Line' ELSE eq.tp_equipment::text END AS tp_equipment, eq.status_type, eq.ideal_speed, eq.lead_machine, lm.nm_equipment AS nm_lead_machine FROM equipments eq JOIN areas a ON a.id_area = eq.id_area JOIN sites s ON s.id_site = eq.id_site JOIN enterprises ent ON ent.id_enterprise = eq.id_enterprise LEFT JOIN equipments lm ON lm.id_equipment = eq.lead_machine WHERE eq.id_enterprise IN ($enterprise) AND eq.id_site IN ($site) AND eq.id_area IN ($area) AND eq.id_equipment IN ($equipment) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area, eq.nm_equipment",
           "format": "table",
@@ -435,7 +454,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT pr.id_packml_register, ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment, pr.packml_topic, pr.active, pr.id_unit, pr.signal_quality, pr.timestamp FROM packml_register pr JOIN equipments e ON e.id_equipment = pr.id_equipment JOIN areas a ON a.id_area = e.id_area JOIN sites s ON s.id_site = e.id_site JOIN enterprises ent ON ent.id_enterprise = e.id_enterprise WHERE pr.id_enterprise IN ($enterprise) AND pr.id_site IN ($site) AND pr.id_area IN ($area) AND pr.id_equipment IN ($equipment) ORDER BY ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment",
           "format": "table",
@@ -541,7 +560,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT po.id_production_order, ent.nm_enterprise, s.nm_site, a.nm_area, e.nm_equipment, po.status, po.nm_production_order, po.ts_start, po.ts_end, po.production_final FROM production_orders po LEFT JOIN equipments e ON e.id_equipment = po.id_equipment LEFT JOIN areas a ON a.id_area = po.id_area LEFT JOIN sites s ON s.id_site = po.id_site LEFT JOIN enterprises ent ON ent.id_enterprise = po.id_enterprise WHERE po.id_enterprise IN ($enterprise) AND po.id_site IN ($site) AND po.id_area IN ($area) AND po.id_equipment IN ($equipment) ORDER BY po.id_production_order DESC LIMIT 100",
           "format": "table",
@@ -578,7 +597,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT sh.id_shift, s.nm_site, a.nm_area, sh.cd_shift, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.begin_time || ' seconds')::interval, 'Dy HH24:MI') AS begin_day_time, TO_CHAR(DATE_TRUNC('week', NOW()) + (sh2.end_time || ' seconds')::interval, 'Dy HH24:MI') AS end_day_time, sh2.begin_time, sh2.end_time FROM shifts sh JOIN sites s ON s.id_site = sh.id_site LEFT JOIN areas a ON a.id_area = sh.id_area JOIN shift_hours sh2 ON sh2.id_shift = sh.id_shift WHERE s.id_site IN ($site) ORDER BY sh.id_shift, sh2.begin_time",
           "format": "table",
@@ -715,7 +734,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT por.id_production_order_runtime, po.nm_production_order, po.status AS po_status, e.nm_equipment, lower(por.runtime_timerange) AS ts_start, upper(por.runtime_timerange) AS ts_end, por.net_production, (por.gross_production - por.net_production) AS scrap, por.recalc_needed FROM production_orders_runtime por JOIN production_orders po ON po.id_production_order = por.id_production_order LEFT JOIN equipments e ON e.id_equipment = por.id_equipment WHERE po.id_enterprise IN ($enterprise) AND po.id_site IN ($site) AND po.id_area IN ($area) AND por.id_equipment IN ($equipment) ORDER BY por.id_production_order_runtime DESC LIMIT 100",
           "format": "table",

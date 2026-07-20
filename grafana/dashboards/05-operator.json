@@ -19,12 +19,31 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "Packiot PostgreSQL",
+          "value": "packiot-postgres"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "postgres",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
         "name": "enterprise",
         "label": "Enterprise",
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_enterprise AS __text, nm_enterprise AS __value FROM enterprises WHERE active = true ORDER BY nm_enterprise",
         "refresh": 2,
@@ -44,7 +63,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT DISTINCT nm_user FROM user_logs ORDER BY nm_user",
         "refresh": 2,
@@ -68,7 +87,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT DISTINCT category FROM user_logs ORDER BY category",
         "refresh": 2,
@@ -132,7 +151,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT COUNT(DISTINCT nm_user) as value FROM user_logs WHERE ts_log >= $__timeFrom() AND ts_log <= $__timeTo()",
           "format": "table",
@@ -182,7 +201,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT COUNT(*) as value FROM user_logs WHERE ts_log >= $__timeFrom() AND ts_log <= $__timeTo() AND category LIKE 'order-%' AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ','))))",
           "format": "table",
@@ -239,7 +258,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT COUNT(*) as value FROM user_logs WHERE ts_log >= $__timeFrom() AND ts_log <= $__timeTo() AND category IN ('event-justified','event-edited','manual-event-edited') AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ','))))",
           "format": "table",
@@ -289,7 +308,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT COUNT(*) as value FROM user_logs WHERE ts_log >= $__timeFrom() AND ts_log <= $__timeTo() AND category = 'manual-event-created' AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ','))))",
           "format": "table",
@@ -347,7 +366,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE cd_category IS NOT NULL AND cd_category <> '') / NULLIF(COUNT(*) FILTER (WHERE ts_end IS NOT NULL), 0), 1) AS value FROM equipment_events WHERE ts_event >= $__timeFrom() AND ts_event <= $__timeTo() AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ','))))",
           "format": "table",
@@ -404,7 +423,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT COUNT(*) AS value FROM equipment_events WHERE ts_end IS NULL AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ','))))",
           "format": "table",
@@ -453,7 +472,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_log,'$__interval',0) AS time, COUNT(*) AS \"PO Actions\" FROM user_logs WHERE ts_log BETWEEN $__timeFrom() AND $__timeTo() AND (category LIKE 'order-%') AND ('${user:csv}' = 'All' OR nm_user = ANY(string_to_array('${user:csv}', ','))) AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND ('${action_type:csv}' = 'All' OR category = ANY(string_to_array('${action_type:csv}', ','))) GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -462,7 +481,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_log,'$__interval',0) AS time, COUNT(*) AS \"Justifications\" FROM user_logs WHERE ts_log BETWEEN $__timeFrom() AND $__timeTo() AND (category IN ('event-justified','event-edited','manual-event-edited')) AND ('${user:csv}' = 'All' OR nm_user = ANY(string_to_array('${user:csv}', ','))) AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND ('${action_type:csv}' = 'All' OR category = ANY(string_to_array('${action_type:csv}', ','))) GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -471,7 +490,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_log,'$__interval',0) AS time, COUNT(*) AS \"Manual Events\" FROM user_logs WHERE ts_log BETWEEN $__timeFrom() AND $__timeTo() AND (category = 'manual-event-created') AND ('${user:csv}' = 'All' OR nm_user = ANY(string_to_array('${user:csv}', ','))) AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND ('${action_type:csv}' = 'All' OR category = ANY(string_to_array('${action_type:csv}', ','))) GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -524,7 +543,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT nm_user, COUNT(*) AS actions FROM user_logs WHERE ts_log BETWEEN $__timeFrom() AND $__timeTo() AND ('${user:csv}' = 'All' OR nm_user = ANY(string_to_array('${user:csv}', ','))) AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND ('${action_type:csv}' = 'All' OR category = ANY(string_to_array('${action_type:csv}', ','))) GROUP BY nm_user ORDER BY actions DESC LIMIT 20",
           "format": "table",
@@ -576,7 +595,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT COALESCE(category, 'unknown') AS action, COUNT(*) AS count FROM user_logs WHERE ts_log BETWEEN $__timeFrom() AND $__timeTo() AND ('${user:csv}' = 'All' OR nm_user = ANY(string_to_array('${user:csv}', ','))) AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND ('${action_type:csv}' = 'All' OR category = ANY(string_to_array('${action_type:csv}', ','))) GROUP BY 1 ORDER BY count DESC",
           "format": "table",
@@ -657,7 +676,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT e.id_equipment, COALESCE(pr.packml_topic, eq.nm_equipment) AS topic, ROUND(EXTRACT(EPOCH FROM (now() - e.ts_event)) / 60.0) AS \"Open (min)\", e.ts_event FROM equipment_events e LEFT JOIN packml_register pr ON pr.id_equipment = e.id_equipment JOIN equipments eq ON eq.id_equipment = e.id_equipment WHERE e.ts_end IS NOT NULL AND (e.cd_category IS NULL OR e.cd_category = '') AND e.status = 10 AND ('${enterprise:csv}' = '.*' OR e.id_enterprise IN (SELECT ent.id_enterprise FROM enterprises ent WHERE ent.nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) ORDER BY e.ts_event ASC LIMIT 20",
           "format": "table",
@@ -733,7 +752,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_end,'$__interval',0) AS time, COUNT(*) AS \"Pending\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND ts_end IS NOT NULL AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND (cd_category IS NULL OR cd_category = '') AND status = 10 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -742,7 +761,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_end,'$__interval',0) AS time, COUNT(*) AS \"Justified\" FROM equipment_events WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND cd_category IS NOT NULL AND status = 10 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -820,7 +839,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_start,'$__interval',0) AS time, COUNT(*) AS \"Started\" FROM production_orders WHERE ts_start BETWEEN $__timeFrom() AND $__timeTo() AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND status >= 2 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -829,7 +848,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroup(ts_end,'$__interval',0) AS time, COUNT(*) AS \"Finished\" FROM production_orders WHERE ts_end BETWEEN $__timeFrom() AND $__timeTo() AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND status = 3 GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -910,7 +929,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT ts_log AS \"When\", nm_user AS \"User\", category, COALESCE(payload->>'nmProductionOrder', '') AS \"Product\", COALESCE(payload->>'descCategory', '') AS \"Category\", COALESCE(payload->>'cdSubcategory', '') AS \"Subcategory\", COALESCE(payload->>'descSubcategory', payload->>'txtDowntimeNotes', payload->>'txtProductionOrderNotes', '') AS \"Detail\", id_equipment AS \"Equipment\" FROM user_logs WHERE ts_log BETWEEN $__timeFrom() AND $__timeTo() AND ('${user:csv}' = 'All' OR nm_user = ANY(string_to_array('${user:csv}', ','))) AND ('${enterprise:csv}' = '.*' OR id_enterprise IN (SELECT id_enterprise FROM enterprises WHERE nm_enterprise = ANY(string_to_array('${enterprise:csv}', ',')))) AND ('${action_type:csv}' = 'All' OR category = ANY(string_to_array('${action_type:csv}', ','))) ORDER BY ts_log DESC LIMIT 500",
           "format": "table",

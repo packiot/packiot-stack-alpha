@@ -15,6 +15,25 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "Packiot PostgreSQL",
+          "value": "packiot-postgres"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "postgres",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
         "name": "service",
         "label": "Service",
         "type": "query",
@@ -240,7 +259,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Published/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes' AND tp_equipment = 1",
           "format": "time_series",
@@ -289,7 +308,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Received/1min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '1 minute'",
           "format": "time_series",
@@ -338,7 +357,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Rows/5min\" FROM equipment_values WHERE ts_value > NOW() - INTERVAL '5 minutes'",
           "format": "time_series",
@@ -416,7 +435,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT time_bucket('1 minute', ev.ts_value) AS time, split_part(pr.packml_topic, '/', -1) AS metric, COUNT(*) AS value FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment AND pr.active = true WHERE $__timeFilter(ev.ts_value) GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
