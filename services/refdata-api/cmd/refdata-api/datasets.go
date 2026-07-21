@@ -260,6 +260,32 @@ var datasets = map[string]dataset{
 		"Overview production chart, live generation (h_piot_overview_production_chart_v6)", "h_piot_overview_production_chart_v6"),
 	"overview-production-chart-legacy": perEquipment("overview-detail",
 		"Overview production chart, legacy generation (h_piot_overview_i_production_chart)", "h_piot_overview_i_production_chart"),
+	// overview-production-chart-base (ADR-0032 §5.1 — front4 PR #202 gap #2).
+	// front4's productionChart hook + every Overview* fork call the BARE
+	// `h_piot_overview_production_chart(idequipment)` (lib/dashboard/hooks/
+	// productionChart.js:38, Overview*/queries.js), NOT the _v6 / _i_ variants
+	// refdata already binds — so those two datasets are a version MISMATCH for
+	// the read front4 actually issues. Live census 2026-07-21 confirmed the bare
+	// fn EXISTS in BOTH packiot and packiot_shadow (idequipment integer) — file-19
+	// replay materialized it in F3 — so this is a true version-match, not a new
+	// object. Same perEquipment ownership shape as its siblings.
+	"overview-production-chart-base": perEquipment("overview-detail",
+		"Overview production chart, base generation (h_piot_overview_production_chart)", "h_piot_overview_production_chart"),
+	// equipment-info (ADR-0032 §5.1 — front4 PR #202 gap #4, machineStatus).
+	// front4's machineStatus composite (lib/dashboard/hooks/machineStatus.js) and
+	// neopacStats read the `equipments` row for one line — nm_equipment (the V3
+	// status card's title) and tp_equipment. The other two legs of machineStatus
+	// (uns_equipment_current_job.speed, h_piot_overview_i_get_events_3.colorcolumn)
+	// are ALREADY served by `live-equipment-job` + `overview-events`; this closes
+	// the third leg. A dedicated per-equipment metadata read: enterprise fence at
+	// $1 (equipments carries id_enterprise), the equipment id at $2 — same shape
+	// as `site-by-equipment`. Relevant to CPACK ent 3 + Incoplast ent 4.
+	"equipment-info": {
+		group: "overview-detail", doc: "Equipment metadata for one line (equipments, front4 machineStatus/neopacStats)",
+		sql: `SELECT id_equipment, nm_equipment, tp_equipment, id_enterprise, id_site, id_area
+			FROM equipments WHERE id_enterprise = $1 AND id_equipment = $2`,
+		params: []dsParam{pEnt, pEquip},
+	},
 	"overview-production-health": perEquipment("overview-detail",
 		"Production health gauge (h_piot_get_production_health)", "h_piot_get_production_health"),
 	"overview-downtimes-by-category": perEquipment("overview-detail",
@@ -356,6 +382,38 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt},
 	},
 
+	// per-equipment targets (ADR-0032 §5.1 — front4 PR #202 gap #3). front4's
+	// GET_TARGET / OEE_OBJ_MONTH (Overview/queries.js, familyB.js) filter the
+	// three target tables by a SINGLE id_equipment; the enterprise-wide
+	// production-targets/scrap-targets/oee-targets datasets above return EVERY
+	// equipment's row, so the front4 refdata adapter (one dataset → one GraphQL
+	// root field, single-re-nest) cannot narrow to the one line the Overview card
+	// renders. These add the id_equipment axis. All three tables carry
+	// id_enterprise natively, so the tenant fence is a DIRECT `id_enterprise = $1`
+	// (no EXISTS wrapper needed — a foreign-tenant equipment id simply matches
+	// zero rows); id_equipment = $2 is the client filter. Backing tables verified
+	// present + column-parity in BOTH packiot and packiot_shadow (2026-07-21).
+	// Explicit projections (ADR-0027) covering exactly the vl_* columns front4
+	// reads (oee_targets has no vl_hour).
+	"production-targets-by-equipment": {
+		group: "targets", doc: "Configured production targets for one equipment (production_targets, front4 GET_TARGET)",
+		sql: `SELECT id_enterprise, id_equipment, id_area, id_site, vl_day, vl_hour, vl_month, vl_week, vl_shift
+			FROM production_targets WHERE id_enterprise = $1 AND id_equipment = $2`,
+		params: []dsParam{pEnt, pEquip},
+	},
+	"scrap-targets-by-equipment": {
+		group: "targets", doc: "Configured scrap targets for one equipment (scrap_targets, front4 GET_TARGET)",
+		sql: `SELECT id_enterprise, id_equipment, id_area, id_site, vl_day, vl_hour, vl_month, vl_week, vl_shift
+			FROM scrap_targets WHERE id_enterprise = $1 AND id_equipment = $2`,
+		params: []dsParam{pEnt, pEquip},
+	},
+	"oee-targets-by-equipment": {
+		group: "targets", doc: "Configured OEE targets for one equipment (oee_targets, front4 OEE_OBJ_MONTH)",
+		sql: `SELECT id_enterprise, id_equipment, id_area, id_site, vl_day, vl_month, vl_week, vl_shift
+			FROM oee_targets WHERE id_enterprise = $1 AND id_equipment = $2`,
+		params: []dsParam{pEnt, pEquip},
+	},
+
 	// ── home (front4 Home page) ──────────────────────────────────────
 	// h_piot_home_uns self-scopes: enterprise is arg 1 and the body filters
 	// id_enterprise = in_id_enterprise on both areas and equipments
@@ -411,6 +469,41 @@ var datasets = map[string]dataset{
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			pWinFrom, pWinTo, ids("teams")},
+	},
+
+	// production-orders-by-equipment (ADR-0032 §5.1 — front4 PR #202 gap #1).
+	// front4's previousJob (lib/dashboard/hooks/previousJob.js), the
+	// ProductionOrders list, and the EventsTab GET_JOBS read the RAW
+	// `production_orders` table directly (not a windowed runtime view/fn): the
+	// fork's query is `limit 2, where id_equipment = $eq, order by ts_end
+	// desc_nulls_last`, then reads `[0]` (the most-recently-ended order = the
+	// "previous" one; the RUNNING order has ts_end=NULL → sorts last). The two
+	// runtime-view datasets above (h_piot_production_orders_*) are windowed OEE
+	// aggregates, a different shape.
+	//
+	// BOUNDING (constraint: no unbounded table scan): the read is fenced to ONE
+	// equipment (pEquip, $2) within ONE tenant (po.id_enterprise = $1, direct —
+	// production_orders carries id_enterprise, so a foreign-tenant equipment id
+	// matches zero rows). That equipment fence + the shared row cap make this a
+	// bounded read, NOT a table scan; ordering ts_end DESC NULLS LAST returns
+	// newest-first so front4's `[0]` previous-order and any recent-orders list are
+	// served under the cap. Not windowed (previousJob passes no time window).
+	//
+	// SHAPE: front4 reads a nested `product { nm_product }` / `client { nm_client }`;
+	// like `site-by-equipment` flattens `equipment { nm_equipment }`, we LEFT JOIN
+	// products/clients and project the names as flat nm_product/nm_client columns
+	// (the adapter re-nests). All three relations verified present + column-parity
+	// in BOTH packiot and packiot_shadow (2026-07-21). CPACK ent 3 has PO data
+	// (275 rows in F3); relevant to ent 3 (Incoplast ent 4 has no POs yet).
+	"production-orders-by-equipment": {
+		group: "production-orders", doc: "Raw production orders for one equipment, newest-first (production_orders + product/client names, front4 previousJob)",
+		sql: `SELECT po.id_order, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, pr.nm_product, cl.nm_client
+			FROM production_orders po
+			LEFT JOIN products pr ON pr.id_product = po.id_product
+			LEFT JOIN clients cl ON cl.id_client = po.id_client
+			WHERE po.id_enterprise = $1 AND po.id_equipment = $2
+			ORDER BY po.ts_end DESC NULLS LAST`,
+		params: []dsParam{pEnt, pEquip},
 	},
 
 	// ── enterprise-config ────────────────────────────────────────────

@@ -369,6 +369,20 @@
     ]
   },
   {
+    "ref": "equipment-info",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "id_equipment",
+      "nm_equipment",
+      "tp_equipment",
+      "id_enterprise",
+      "id_site",
+      "id_area"
+    ]
+  },
+  {
     "ref": "events-timeline-from-po",
     "source": "dataset",
     "kind": "function",
@@ -526,6 +540,22 @@
     "name": "oee_targets"
   },
   {
+    "ref": "oee-targets-by-equipment",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "oee_targets",
+    "columns": [
+      "id_enterprise",
+      "id_equipment",
+      "id_area",
+      "id_site",
+      "vl_day",
+      "vl_month",
+      "vl_week",
+      "vl_shift"
+    ]
+  },
+  {
     "ref": "overview-downtimes-by-category",
     "source": "dataset",
     "kind": "relation",
@@ -591,6 +621,19 @@
     "argc": 1
   },
   {
+    "ref": "overview-production-chart-base",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "overview-production-chart-base",
+    "source": "dataset",
+    "kind": "function",
+    "name": "h_piot_overview_production_chart",
+    "argc": 1
+  },
+  {
     "ref": "overview-production-chart-legacy",
     "source": "dataset",
     "kind": "relation",
@@ -624,6 +667,38 @@
     "argc": 9
   },
   {
+    "ref": "production-orders-by-equipment",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "clients",
+    "columns": [
+      "nm_client"
+    ]
+  },
+  {
+    "ref": "production-orders-by-equipment",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "production_orders",
+    "columns": [
+      "id_order",
+      "production_programmed",
+      "net_production",
+      "ts_start",
+      "ts_end",
+      "id_equipment"
+    ]
+  },
+  {
+    "ref": "production-orders-by-equipment",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "products",
+    "columns": [
+      "nm_product"
+    ]
+  },
+  {
     "ref": "production-orders-runtimes",
     "source": "dataset",
     "kind": "function",
@@ -642,6 +717,23 @@
     "source": "dataset",
     "kind": "relation",
     "name": "production_targets"
+  },
+  {
+    "ref": "production-targets-by-equipment",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "production_targets",
+    "columns": [
+      "id_enterprise",
+      "id_equipment",
+      "id_area",
+      "id_site",
+      "vl_day",
+      "vl_hour",
+      "vl_month",
+      "vl_week",
+      "vl_shift"
+    ]
   },
   {
     "ref": "report-downtimes",
@@ -668,6 +760,23 @@
     "source": "dataset",
     "kind": "relation",
     "name": "scrap_targets"
+  },
+  {
+    "ref": "scrap-targets-by-equipment",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "scrap_targets",
+    "columns": [
+      "id_enterprise",
+      "id_equipment",
+      "id_area",
+      "id_site",
+      "vl_day",
+      "vl_hour",
+      "vl_month",
+      "vl_week",
+      "vl_shift"
+    ]
   },
   {
     "ref": "single-period",
