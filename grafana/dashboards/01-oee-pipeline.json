@@ -18,12 +18,31 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "Packiot PostgreSQL",
+          "value": "packiot-postgres"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "postgres",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
         "name": "enterprise",
         "label": "Enterprise",
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_enterprise AS __text, id_enterprise AS __value FROM enterprises ORDER BY nm_enterprise",
         "multi": true,
@@ -46,7 +65,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_site AS __text, id_site AS __value FROM sites WHERE id_enterprise IN ($enterprise) ORDER BY nm_site",
         "multi": true,
@@ -69,7 +88,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_area AS __text, id_area AS __value FROM areas WHERE id_site IN ($site) ORDER BY nm_area",
         "multi": true,
@@ -92,7 +111,7 @@
         "type": "query",
         "datasource": {
           "type": "postgres",
-          "uid": "packiot-postgres"
+          "uid": "${datasource}"
         },
         "query": "SELECT nm_equipment AS __text, id_equipment AS __value FROM equipments WHERE id_area IN ($area) ORDER BY nm_equipment",
         "multi": true,
@@ -163,7 +182,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Total Rows\" FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
           "format": "table",
@@ -219,7 +238,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Rows/5min\" FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) AND ts_value > NOW() - INTERVAL '5 minutes'",
           "format": "table",
@@ -271,7 +290,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, EXTRACT(EPOCH FROM MAX(ts_value)) * 1000 AS \"Last Message\" FROM equipment_values WHERE id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
           "format": "table",
@@ -327,7 +346,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, COUNT(*) AS \"Active\" FROM packml_register WHERE active = true AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment)",
           "format": "table",
@@ -386,7 +405,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, ROUND( (SUM(net_production_incr) / NULLIF(SUM(net_production_incr) + SUM(scrap_incr), 0) * 100)::numeric, 1) AS \"Quality %\" FROM equipment_values WHERE $__timeFilter(ts_value) AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) AND net_production_incr IS NOT NULL",
           "format": "table",
@@ -444,7 +463,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, ROUND( (SUM(ev.speed) / NULLIF(SUM(COALESCE(e.ideal_speed, e.production_speed)), 0) * 100)::numeric, 1) AS \"Performance %\" FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.speed > 0 AND COALESCE(e.ideal_speed, e.production_speed) > 0",
           "format": "table",
@@ -502,7 +521,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, ROUND( (SUM(CASE WHEN state = 6 THEN 1.0 ELSE 0.0 END) / NULLIF(COUNT(*), 0) * 100)::numeric, 1) AS \"Availability %\" FROM equipment_values WHERE $__timeFilter(ts_value) AND id_enterprise IN ($enterprise) AND id_site IN ($site) AND id_area IN ($area) AND id_equipment IN ($equipment) AND state IS NOT NULL",
           "format": "table",
@@ -560,7 +579,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT NOW() AS time, ROUND( ( (SUM(ev.net_production_incr) / NULLIF(SUM(ev.net_production_incr) + SUM(ev.scrap_incr), 0)) * (SUM(CASE WHEN ev.speed > 0 THEN ev.speed ELSE 0 END) / NULLIF(SUM(CASE WHEN ev.speed > 0 THEN COALESCE(e.ideal_speed, e.production_speed) ELSE 0 END), 0)) * (SUM(CASE WHEN ev.state = 6 THEN 1.0 ELSE 0.0 END) / NULLIF(COUNT(*), 0)) * 100 )::numeric, 1) AS \"OEE %\" FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.net_production_incr IS NOT NULL AND ev.state IS NOT NULL AND COALESCE(e.ideal_speed, e.production_speed) > 0",
           "format": "table",
@@ -607,7 +626,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, SUM(ev.net_production_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.net_production_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
@@ -653,7 +672,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, AVG(ev.speed) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.speed IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
@@ -717,7 +736,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, SUM(ev.scrap_incr) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.scrap_incr IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
@@ -805,7 +824,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT $__timeGroupAlias(ev.ts_value, $__interval), ent.nm_enterprise || ' \u203a ' || e.nm_equipment AS metric, LAST(ev.state, ev.ts_value) FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE $__timeFilter(ev.ts_value) AND ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) AND ev.state IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
@@ -943,7 +962,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT ev.ts_value, ent.nm_enterprise AS enterprise, s.nm_site AS site, a.nm_area AS area, e.nm_equipment AS equipment, ev.net_production_incr, ev.gross_production_incr, ev.scrap_incr, ev.state, ev.mode, ev.speed, ev.signal_quality FROM equipment_values ev JOIN equipments e ON e.id_equipment = ev.id_equipment JOIN areas a ON a.id_area = ev.id_area JOIN sites s ON s.id_site = ev.id_site JOIN enterprises ent ON ent.id_enterprise = ev.id_enterprise WHERE ev.id_enterprise IN ($enterprise) AND ev.id_site IN ($site) AND ev.id_area IN ($area) AND ev.id_equipment IN ($equipment) ORDER BY ev.ts_value DESC LIMIT 50",
           "format": "table",

@@ -85,6 +85,24 @@ services:
       QUERY_TIMEOUT: "60"
       # Reclaim idle server connections after 120s (default 600s).
       SERVER_IDLE_TIMEOUT: "120"
+    # ── ADR-0032 Step 1: ADDITIVE packiot_shadow (F3) pool ─────────────────────
+    # The edoburu entrypoint (/entrypoint.sh) generates userlist.txt + a
+    # pgbouncer.ini from the env vars above, then `exec "$@"` (this command).
+    # We let that generation run UNTOUCHED — the `packiot` (F1) pool line and
+    # every [pgbouncer] setting stay byte-identical to today (zero regression) —
+    # and only INSERT one extra [databases] line for the F3 shadow DB before
+    # launching pgbouncer. Same host/port/user; only dbname differs. The
+    # existing userlist entry covers this pool (same DB user).
+    #   Reversible: delete this `command:` block → back to the packiot-only pool.
+    #   $$VAR (double-$) escapes Compose interpolation so the container shell
+    #   expands DB_HOST/DB_PORT/DB_USER from the env: block above at runtime.
+    #   Default-F1 posture: this only ADDS a route; no consumer points at it
+    #   until refdata REFDATA_FLOW flips to f3 (below) or a Grafana board is
+    #   switched to the packiot-postgres-shadow datasource.
+    command:
+      - /bin/sh
+      - -c
+      - 'sed -i "s|^\[databases\]|[databases]\npackiot_shadow = host=$$DB_HOST port=$$DB_PORT dbname=packiot_shadow auth_user=$$DB_USER|" /etc/pgbouncer/pgbouncer.ini && exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini'
     networks:
       packiot-net:
         ipv4_address: 172.18.0.10
@@ -1450,6 +1468,18 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: packiot
+      # ── ADR-0032 Step 1: F3 read-plane plumbing (ADDITIVE, DEFAULT F1) ────────
+      # REFDATA_FLOW selects which flow's DB refdata reads through pgbouncer:
+      #   f1 → DB_NAME (packiot / F1, packiot.public)  ← DEFAULT, unchanged today
+      #   f3 → DB_NAME_F3 (packiot_shadow / F3)         ← via the new pgbouncer
+      #                                                    packiot_shadow pool
+      # Kept f1 so this PR is a zero-behavior-change enablement: the F3 target is
+      # plumbed-but-inactive. The sibling refdata-api code change consumes
+      # REFDATA_FLOW to pick DB_NAME vs DB_NAME_F3 and to re-map each Surface-1
+      # dataset's SQL to packiot_shadow objects. Flip to f3 only after that lands
+      # and the per-dataset F3 parity gate (ADR-0032 §6 Step 1) is green.
+      REFDATA_FLOW: f1
+      DB_NAME_F3: packiot_shadow
       HEALTH_PORT: "9104"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; a /v1 read
       # becomes one trace with its DB query time as a child span (otelpgx).

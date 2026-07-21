@@ -16,6 +16,25 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "Packiot PostgreSQL",
+          "value": "packiot-postgres"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "postgres",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
         "name": "service",
         "label": "Service",
         "type": "query",
@@ -197,7 +216,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT time_bucket('1 minute', ev.ts_value) AS time, split_part(pr.packml_topic, '/', -1) AS metric, COUNT(*) AS value FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment WHERE $__timeFilter(ev.ts_value) GROUP BY 1, 2 ORDER BY 1",
           "format": "time_series",
@@ -241,7 +260,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT time_bucket('1 minute', lower(runtime_timerange)) AS time, COUNT(*) AS \"PO events\" FROM production_orders_runtime WHERE lower(runtime_timerange) >= $__timeFrom() AND lower(runtime_timerange) < $__timeTo() GROUP BY 1 ORDER BY 1",
           "format": "time_series",
@@ -284,7 +303,7 @@
         {
           "datasource": {
             "type": "postgres",
-            "uid": "packiot-postgres"
+            "uid": "${datasource}"
           },
           "rawSql": "SELECT ev.ts_value, split_part(pr.packml_topic, '/', -1) AS machine, ev.state, ev.speed, ev.net_production_incr, ev.gross_production_incr FROM equipment_values ev JOIN packml_register pr ON pr.id_equipment = ev.id_equipment ORDER BY ev.ts_value DESC LIMIT 20",
           "format": "table",

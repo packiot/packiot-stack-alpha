@@ -78,6 +78,18 @@ def lint_file(path, seen_uids):
         if any(m in q for q in queries):
             errs.append(f"query references banned/phantom metric {m!r} (never emitted)")
 
+    # ADR-0032 Step 1: a panel may bind its datasource to a `datasource`-type
+    # template variable (`"uid": "${var}"`) so the whole board can be switched
+    # between F1 (packiot-postgres) and F3 (packiot-postgres-shadow) from the
+    # dashboard header. That is NOT a blank/typo'd datasource — it is valid IFF
+    # the board actually defines that variable as type=datasource AND its default
+    # (current.value) is a known provisioned uid (so the board renders a real DS
+    # on first load, not a dead ${var}). Build the map of legal such vars.
+    ds_var_defaults = {}
+    for v in d.get("templating", {}).get("list", []):
+        if v.get("type") == "datasource":
+            ds_var_defaults[v.get("name")] = (v.get("current") or {}).get("value")
+
     def check_ds(obj, where):
         ds = obj.get("datasource")
         if ds is None:
@@ -86,6 +98,14 @@ def lint_file(path, seen_uids):
         uid = ds.get("uid") if isinstance(ds, dict) else None
         if not uid:
             errs.append(f"{where}: datasource has no uid")
+        elif uid.startswith("${") and uid.endswith("}"):
+            var = uid[2:-1]
+            if var not in ds_var_defaults:
+                errs.append(f"{where}: datasource var {uid!r} has no matching "
+                            f"type=datasource template variable")
+            elif ds_var_defaults[var] not in KNOWN_DS:
+                errs.append(f"{where}: datasource var {uid!r} defaults to "
+                            f"{ds_var_defaults[var]!r}, not a known datasource uid")
         elif uid not in KNOWN_DS:
             errs.append(f"{where}: unknown datasource uid {uid!r}")
 
