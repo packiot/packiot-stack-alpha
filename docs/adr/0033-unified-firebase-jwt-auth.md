@@ -1,6 +1,8 @@
 # ADR-0033 — Unify client-user authentication on Firebase JWT (reads + writes + operator), with per-tenant isolation
 
-**Status:** Proposed · **Date:** 2026-07-21 · **Scope:** front4 (reads) · operator PWA (writes) · edge-api (write API) — **DESIGN ONLY** (this ADR is the plan; no edge-api/operator code changes ship with it). **Decision owner:** auth architect / tech-lead — pending USER sign-off on the three open questions in §11. **This is the USER's chosen direction.**
+> **⚠️ Issuer superseded by [ADR-0034](0034-adopt-cognito-amplify-auth.md) (Proposed, 2026-07-21).** The USER chose to consolidate auth onto AWS: adopt **Cognito (via Amplify Auth)** as the identity provider, replacing Firebase. **This ADR's unified-auth MODEL is kept in full** — it is issuer-agnostic (per-user RS256 JWT verified by public keys, `uid → id_enterprise`, tenant-bound SQL, reads+writes). ADR-0034 swaps only the *issuer* (Firebase→Cognito) and its mechanics (project→user-pool, Admin-SDK→Admin-API+IAM, x509→JWKS), and supersedes this ADR's **Decision 6** (Firebase project topology → Cognito pool topology) and the **Firebase-Admin-SDK specifics of Decision 7B**. Read ADR-0034 for the current plan; read this ADR for the model rationale it preserves.
+
+**Status:** Proposed (issuer superseded by ADR-0034) · **Date:** 2026-07-21 · **Scope:** front4 (reads) · operator PWA (writes) · edge-api (write API) — **DESIGN ONLY** (this ADR is the plan; no edge-api/operator code changes ship with it). **Decision owner:** auth architect / tech-lead — pending USER sign-off on the three open questions in §11. **This is the USER's chosen direction.**
 
 **Builds on / honors:**
 - [ADR-0027](0027-refdata-api-surface-1-read-contract.md) — the **single tenant-injection authority** invariant (`credential → customer_id → $1`; the client never names a tenant). This ADR extends that invariant from the read plane to the write plane.

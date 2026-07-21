@@ -1,6 +1,8 @@
 # Staging Firebase project — setup guide (`packiot-staging`)
 
-**Status:** action guide for the USER · **Date:** 2026-07-21 · **Relates to:** [ADR-0033](../adr/0033-unified-firebase-jwt-auth.md) (Decision 6 — separate Firebase project per environment; Decision 7 — CS-Admin owns client-user creation)
+> **⚠️ HISTORICAL — superseded by [ADR-0034](../adr/0034-adopt-cognito-amplify-auth.md).** The USER chose to consolidate auth onto AWS Cognito (via Amplify Auth), replacing Firebase. The manual GCP-console project-creation this guide describes is exactly the friction ADR-0034 removes: the staging identity plane becomes a Terraform `aws_cognito_user_pool` in `api-terraform`, provisioned by the same AWS creds as the rest of the stack — no GCP console, no hand-placed service-account key. Keep this guide only as the record of the Firebase path being retired.
+
+**Status:** action guide for the USER (HISTORICAL — see ADR-0034) · **Date:** 2026-07-21 · **Relates to:** [ADR-0033](../adr/0033-unified-firebase-jwt-auth.md) (Decision 6 — separate Firebase project per environment; Decision 7 — CS-Admin owns client-user creation)
 
 > **Why this exists.** Today staging and prod share ONE Firebase project, `fbpackiot`. That is the anti-pattern ADR-0033 Decision 6 fixes: a staging mistake (a bad auth rule, a spammed test user, a deleted account) can corrupt the **prod** user pool, and a staging ID token is `aud`-valid against the prod verifier. This guide walks the USER through standing up a dedicated **`packiot-staging`** Firebase project so staging front4 (and later operator/edge-api) authenticate against their own isolated project.
 >
