@@ -1,0 +1,132 @@
+[
+  {
+    "id": "cpack_tab",
+    "type": "tab",
+    "label": "CPACK staging ingest tee",
+    "disabled": false,
+    "info": "Tee CPACK's SparkPlug-JSON to the staging ingest-shim. Wire your SparkPlug-assembly node's output into 'cpack tee'. Set env var CPACK_INGEST_KEY to the ingest key (never hardcode)."
+  },
+  {
+    "id": "cpack_note",
+    "type": "comment",
+    "z": "cpack_tab",
+    "name": "WIRE: <your SparkPlug-assembly node> --> [cpack tee].  Set env CPACK_INGEST_KEY.",
+    "x": 300,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "cpack_fn",
+    "type": "function",
+    "z": "cpack_tab",
+    "name": "cpack tee (set headers + key)",
+    "func": "// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n// CPACK \u2192 staging ingest tee \u2014 Node-RED `function` node body\n// ADR-0032 \"direct from PLC\" realization. Copy-paste this into a `function`\n// node placed on a SECOND wire off CPACK's SparkPlug-assembly node (the point\n// where the payload is already the SparkPlug-JSON envelope, i.e. right before\n// the existing cloud/pubsub-out node). The existing publish path stays wired\n// and untouched \u2014 this is a tee, not a redirect.\n//\n// What it does:\n//   1. Confirms msg.payload is the SparkPlug-JSON envelope the cloud worker\n//      already consumes (timestamp + metrics[] with slash-topic names).\n//   2. Sets the two HTTP headers the ingest-shim requires: X-Ingest-Key\n//      (auth) + Content-Type. The KEY IS NOT HARDCODED \u2014 it is read from the\n//      Node-RED environment (see \"KEY HANDLING\" below).\n//   3. Leaves msg.payload as the envelope so the downstream `http request`\n//      node POSTs it verbatim. The shim republishes it VERBATIM onto the\n//      `oee` exchange (routing key sparkplug.data.cpack) \u2192 oeecloud-worker \u2192\n//      packiot_shadow (F3), tenant-routed to CPACK (ent 3 staging) via the\n//      already-seeded packml_register rows.\n//\n// KEY HANDLING (do NOT paste the secret into this flow):\n//   Set the ingest key as a Node-RED environment variable named\n//   CPACK_INGEST_KEY (settings.js `functionGlobalContext`/`env`, an OS env var\n//   on the Node-RED process, or the node's own Environment Variables tab).\n//   The USER receives the key value out-of-band (see README \u00a7\"Key handling\").\n//\n// TOPIC SHAPE \u2014 must match what packml_register expects for CPACK ent 3:\n//   The cloud worker resolves each metric by its topic NAME (not by protobuf\n//   alias), via TopicForRegister(). CPACK line/unit metric names look like:\n//     CPACK/SC/LINHAS/L8/Status/StateCurrent\n//     CPACK/SC/LINHAS/L8/Admin/ProdConsumedCount/51/Unit\n//     CPACK/SC/LINHAS/L8/Admin/ProdProcessedCount/51/Unit\n//     CPACK/SC/LINHAS/L8/Admin/ProdDefectiveCount/51/Unit\n//   The first segment (CPACK) is the scope group the shim enforces and the\n//   tenant the worker routes on (lower(\"CPACK\") = \"cpack\"). Keep it CPACK.\n// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n// 1. Resolve the ingest key from the environment (never from the flow file).\nconst key = env.get(\"CPACK_INGEST_KEY\");\nif (!key) {\n    node.error(\"CPACK_INGEST_KEY env var is not set \u2014 refusing to POST without an ingest key\", msg);\n    return null; // drop; fix the env, do not leak an unauthenticated request\n}\n\n// 2. Normalize to the envelope shape the worker's sparkplug.Parse expects.\n//    If your assembly node already emits { timestamp, gateway, metrics:[...] }\n//    this block is a no-op passthrough. If it emits only the metrics array,\n//    wrap it. Adjust `gateway` to a stable identifier for this factory.\nlet env_payload = msg.payload;\nif (Array.isArray(env_payload)) {\n    env_payload = { timestamp: Date.now(), gateway: \"cpack-edge\", metrics: env_payload };\n} else if (env_payload && !env_payload.timestamp) {\n    env_payload.timestamp = Date.now();\n}\n\n// Guard: must carry at least one metric with a slash-topic name, or the shim's\n// scope guard cannot read the group and returns 400.\nif (!env_payload || !Array.isArray(env_payload.metrics) || env_payload.metrics.length === 0) {\n    node.warn(\"tee: payload has no metrics[]; skipping this message\");\n    return null;\n}\n\n// Do NOT set source_type here \u2014 the shim stamps it (F1/F2/F3 fan-out) and\n// overwrites any value the tee sends. Sending it is harmless but pointless.\n\n// 3. Set headers for the http-request node. The shim wants exactly these.\nmsg.headers = {\n    \"Content-Type\": \"application/json\",\n    \"X-Ingest-Key\": key\n};\nmsg.payload = env_payload;\n\n// The downstream `http request` node is configured POST + \"Return: parsed JSON\",\n// so msg.statusCode carries 202 (accepted) / 401 / 403 / 400 / 503 for the\n// error-handling wire. See README \u00a7\"Response handling\".\nreturn msg;\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 320,
+    "y": 120,
+    "wires": [
+      [
+        "cpack_http"
+      ]
+    ]
+  },
+  {
+    "id": "cpack_http",
+    "type": "http request",
+    "z": "cpack_tab",
+    "name": "POST https://ec2-100-28-20-195.compute-1.amazonaws.com:8446/ingest/sparkplug",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "https://ec2-100-28-20-195.compute-1.amazonaws.com:8446/ingest/sparkplug",
+    "tls": "cpack_tls",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 620,
+    "y": 120,
+    "wires": [
+      [
+        "cpack_route"
+      ]
+    ]
+  },
+  {
+    "id": "cpack_route",
+    "type": "switch",
+    "z": "cpack_tab",
+    "name": "statusCode",
+    "property": "statusCode",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "202",
+        "vt": "num"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 2,
+    "x": 840,
+    "y": 120,
+    "wires": [
+      [
+        "cpack_ok"
+      ],
+      [
+        "cpack_err"
+      ]
+    ]
+  },
+  {
+    "id": "cpack_ok",
+    "type": "debug",
+    "z": "cpack_tab",
+    "name": "202 accepted",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "complete": "statusCode",
+    "x": 1030,
+    "y": 90,
+    "wires": []
+  },
+  {
+    "id": "cpack_err",
+    "type": "debug",
+    "z": "cpack_tab",
+    "name": "NOT 202 (see README)",
+    "active": true,
+    "tosidebar": true,
+    "console": true,
+    "complete": "payload",
+    "x": 1050,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "cpack_tls",
+    "type": "tls-config",
+    "name": "cpack staging (self-signed)",
+    "verifyservercert": false,
+    "cert": "",
+    "key": "",
+    "ca": "",
+    "certname": "",
+    "keyname": "",
+    "caname": "",
+    "servername": "",
+    "alpnprotocol": ""
+  }
+]
