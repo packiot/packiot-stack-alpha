@@ -682,6 +682,8 @@
     "name": "production_orders",
     "columns": [
       "id_order",
+      "id_production_order",
+      "status",
       "production_programmed",
       "net_production",
       "ts_start",
