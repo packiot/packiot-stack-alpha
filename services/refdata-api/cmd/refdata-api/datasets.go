@@ -129,6 +129,24 @@ type dataset struct {
 	windowed  bool
 	maxWindow time.Duration
 	params    []dsParam
+	// sqlF3 (ADR-0032 Step 1, optional) overrides sql when the process read-plane
+	// flow is f3 (REFDATA_FLOW=f3). Empty ⇒ the same sql serves both flows, which
+	// is EVERY dataset today: packiot_shadow keeps packiot's object names where
+	// the object exists, so no dataset needs a textual rewrite (flow.go). The
+	// field is the pre-wired seam for a genuine F3 rename; the parameter order and
+	// row-cap append are identical for both variants (compileDataset uses
+	// activeSQL), so an sqlF3 must bind the SAME $N positions as sql.
+	sqlF3 string
+}
+
+// activeSQL returns the dataset's SQL for the given flow: the f3 override when
+// flow==f3 and one is set, else the F1 sql. The row cap is appended by the
+// caller (compileDataset) AFTER this choice, so both variants share it.
+func (d dataset) activeSQL(f flow) string {
+	if f == flowF3 && d.sqlF3 != "" {
+		return d.sqlF3
+	}
+	return d.sql
 }
 
 // perEquipment wraps an idequipment-only overview function in the
@@ -706,7 +724,7 @@ func compileDataset(q datasetReq, customerID int, role callerRole) (string, []an
 			args = append(args, len(v) > 0)
 		}
 	}
-	return ds.sql + fmt.Sprintf(" LIMIT %d", queryRowLimit), args, nil
+	return ds.activeSQL(activeFlow) + fmt.Sprintf(" LIMIT %d", queryRowLimit), args, nil
 }
 
 // parseDateFilter validates a pDate value against a fixed layout allowlist and
