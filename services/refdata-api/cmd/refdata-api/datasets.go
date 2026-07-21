@@ -495,9 +495,34 @@ var datasets = map[string]dataset{
 	// (the adapter re-nests). All three relations verified present + column-parity
 	// in BOTH packiot and packiot_shadow (2026-07-21). CPACK ent 3 has PO data
 	// (275 rows in F3); relevant to ent 3 (Incoplast ent 4 has no POs yet).
+	//
+	// EXTENDED (ADR-0032 §5.1 — front4 job-selector surfaces): the two front4 job
+	// pickers read `production_orders` directly for a job list, not the previousJob
+	// [0] read. EventsTab GET_JOBS (src/components/EventsTab/queries.js) filters
+	// `id_equipment = $line AND status != 1` and projects {id_order,
+	// id_production_order}. ProductionOrders ModalEdit GET_JOB_LIST
+	// (src/pages/ProductionOrders/queries.js) filters `status IN (1,4) AND
+	// equipment.nm_equipment = $nm_equipment` and projects {id_order,
+	// id_production_order, nm_product, status, nm_client, ts_start, ts_end}. Both
+	// need two columns this projection lacked: `id_production_order` (the true PO
+	// surrogate PK — id_order is a per-equipment sequence, NOT globally unique) and
+	// `status` (PO lifecycle 1=available/2=running/3=finished/4=paused). Both are
+	// column-parity verified in F1 AND F3 (id_production_order bigint, status int;
+	// 2026-07-21). Added below.
+	//
+	// FILTER AXIS (deliberately unchanged): the dataset stays fenced to ONE
+	// equipment by id_equipment ($2) — that fence is the bounding invariant, so we
+	// do NOT add an nm_equipment filter (it would force a name→id join and risk a
+	// wider scan). GET_JOB_LIST's `nm_equipment` axis is served by front4 resolving
+	// nm_equipment → id_equipment (it already holds that mapping from the equipment
+	// list / site-by-equipment datasets) and calling this dataset by id_equipment.
+	// The `status` predicates (!=1 for GET_JOBS, IN(1,4) for GET_JOB_LIST) are
+	// applied CLIENT-SIDE by front4 over the now-exposed `status` column — the
+	// per-equipment row set is already bounded, so no server-side status filter is
+	// warranted. Net: +2 projected columns, zero new filters, fence + cap intact.
 	"production-orders-by-equipment": {
-		group: "production-orders", doc: "Raw production orders for one equipment, newest-first (production_orders + product/client names, front4 previousJob)",
-		sql: `SELECT po.id_order, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, pr.nm_product, cl.nm_client
+		group: "production-orders", doc: "Raw production orders for one equipment, newest-first (production_orders + product/client names, front4 previousJob + job-selectors)",
+		sql: `SELECT po.id_order, po.id_production_order, po.status, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, pr.nm_product, cl.nm_client
 			FROM production_orders po
 			LEFT JOIN products pr ON pr.id_product = po.id_product
 			LEFT JOIN clients cl ON cl.id_client = po.id_client
