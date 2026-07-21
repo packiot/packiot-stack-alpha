@@ -1,0 +1,132 @@
+[
+  {
+    "id": "incoplast_tab",
+    "type": "tab",
+    "label": "INCOPLAST staging ingest tee",
+    "disabled": false,
+    "info": "Tee INCOPLAST's SparkPlug-JSON to the staging ingest-shim. Wire your SparkPlug-assembly node's output into 'incoplast tee'. Set env var INCOPLAST_INGEST_KEY to the ingest key (never hardcode)."
+  },
+  {
+    "id": "incoplast_note",
+    "type": "comment",
+    "z": "incoplast_tab",
+    "name": "WIRE: <your SparkPlug-assembly node> --> [incoplast tee].  Set env INCOPLAST_INGEST_KEY.",
+    "x": 300,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "incoplast_fn",
+    "type": "function",
+    "z": "incoplast_tab",
+    "name": "incoplast tee (set headers + key)",
+    "func": "// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n// Incoplast \u2192 staging ingest tee \u2014 Node-RED `function` node body\n// This CONFIRMS / re-issues the tee already documented at\n// ~/incoplast-ingest/tee-node-setup.md. If a working tee is already installed\n// in Incoplast's Node-RED, you do NOT need to reinstall \u2014 see the \"DELTA vs the\n// already-installed tee\" note at the bottom.\n//\n// Placement: a SECOND wire off Incoplast's SparkPlug-assembly node\n// (PackML2SparkPlug / \"prepare_Sparkplug & DBIRTH\" / \"SparkPlug DDATA\"), right\n// before the existing `pubsub-out`. The pubsub-out stays wired and untouched.\n//\n// Incoplast quirk (already handled by the cloud worker): PackML2SparkPlug\n// encodes metric `counter`/`curspeed`/`id` as STRINGS (\"120\", \"4\"); the worker\n// tolerates both strings and numbers. Send the envelope AS-IS \u2014 do not reshape.\n//\n// KEY HANDLING: read from env var INCOPLAST_INGEST_KEY (never hardcode).\n// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nconst key = env.get(\"INCOPLAST_INGEST_KEY\");\nif (!key) {\n    node.error(\"INCOPLAST_INGEST_KEY env var is not set \u2014 refusing to POST without an ingest key\", msg);\n    return null;\n}\n\n// At the tap point the payload is ALREADY the SparkPlug-JSON envelope Incoplast\n// sends to PubSub. Pass it through verbatim; just guarantee a top-level ts.\nlet env_payload = msg.payload;\nif (env_payload && !env_payload.timestamp) {\n    env_payload.timestamp = Date.now();\n}\nif (!env_payload || !Array.isArray(env_payload.metrics) || env_payload.metrics.length === 0) {\n    node.warn(\"tee: payload has no metrics[]; skipping this message\");\n    return null;\n}\n\n// Its INCOPLAST/\u2026 topics route it to enterprise 4 automatically via the seeded\n// packml_register. The shim's scope guard admits it because the first topic\n// segment is INCOPLAST. Do NOT set source_type \u2014 the shim stamps it.\n\nmsg.headers = {\n    \"Content-Type\": \"application/json\",\n    \"X-Ingest-Key\": key\n};\nmsg.payload = env_payload;\nreturn msg;\n\n// \u2500\u2500 DELTA vs the already-installed Incoplast tee \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n// 1. ENDPOINT UNCHANGED: same ingest-shim on :8444, routing key\n//    sparkplug.data.incoplast, scope group INCOPLAST. Incoplast's cloud path is\n//    byte-unchanged by the CPACK work (CPACK gets its OWN shim instance :8446).\n// 2. KEY: the earlier setup pasted the key inline in the doc; this version reads\n//    it from env (INCOPLAST_INGEST_KEY) so the secret never lives in the flow\n//    export. If you keep the old inline-key node, that's fine functionally \u2014\n//    this is a hardening, not a correctness change.\n// 3. FAN-OUT (cloud side, no Node-RED change): today the shim triple-emits\n//    (F1/F2/F3). When ADR-0032 collapses to F3-only, the cloud sets\n//    FANOUT_SOURCE_TYPES=refactored on the shim \u2014 the tee node is untouched.\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 320,
+    "y": 120,
+    "wires": [
+      [
+        "incoplast_http"
+      ]
+    ]
+  },
+  {
+    "id": "incoplast_http",
+    "type": "http request",
+    "z": "incoplast_tab",
+    "name": "POST https://ec2-100-28-20-195.compute-1.amazonaws.com:8444/ingest/sparkplug",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "https://ec2-100-28-20-195.compute-1.amazonaws.com:8444/ingest/sparkplug",
+    "tls": "incoplast_tls",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 620,
+    "y": 120,
+    "wires": [
+      [
+        "incoplast_route"
+      ]
+    ]
+  },
+  {
+    "id": "incoplast_route",
+    "type": "switch",
+    "z": "incoplast_tab",
+    "name": "statusCode",
+    "property": "statusCode",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "202",
+        "vt": "num"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 2,
+    "x": 840,
+    "y": 120,
+    "wires": [
+      [
+        "incoplast_ok"
+      ],
+      [
+        "incoplast_err"
+      ]
+    ]
+  },
+  {
+    "id": "incoplast_ok",
+    "type": "debug",
+    "z": "incoplast_tab",
+    "name": "202 accepted",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "complete": "statusCode",
+    "x": 1030,
+    "y": 90,
+    "wires": []
+  },
+  {
+    "id": "incoplast_err",
+    "type": "debug",
+    "z": "incoplast_tab",
+    "name": "NOT 202 (see README)",
+    "active": true,
+    "tosidebar": true,
+    "console": true,
+    "complete": "payload",
+    "x": 1050,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "incoplast_tls",
+    "type": "tls-config",
+    "name": "incoplast staging (self-signed)",
+    "verifyservercert": false,
+    "cert": "",
+    "key": "",
+    "ca": "",
+    "certname": "",
+    "keyname": "",
+    "caname": "",
+    "servername": "",
+    "alpnprotocol": ""
+  }
+]
