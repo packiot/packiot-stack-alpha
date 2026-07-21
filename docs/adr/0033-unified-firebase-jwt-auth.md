@@ -72,7 +72,7 @@ The surprising part, and the real security posture: **operator write requests do
 ## 2. Target model — one identity, three relying parties
 
 ```
-                         Firebase (project: fbpackiot — see OQ-3)
+                         Firebase (per-ENV project — fbpackiot=prod, packiot-staging=staging; Decision 6)
                          mints per-USER ID tokens (RS256, ~1h TTL) + long-lived refresh tokens
                                    │
         ┌──────────────────────────┼───────────────────────────────┐
@@ -249,6 +249,54 @@ Service tokens should be per-service, scoped to the enterprise(s) they serve, ro
 
 ---
 
+## 7A. Decision 6 — Firebase project topology: **SEPARATE project per environment** (RESOLVES OQ-3)
+
+**Question (was OQ-3):** is the **staging** Firebase project the same `fbpackiot` as prod, or a separate project?
+
+**DECISION — a SEPARATE Firebase project per environment.** Prod stays on `fbpackiot`; staging gets a dedicated **`packiot-staging`** project; (dev may share staging or get its own later). `FIREBASE_PROJECT_ID` becomes a **per-environment** value for every relying party (front4 via `VITE_FIREBASE_PROJECT_ID`; refdata + edge-api via env), and each environment's front4 authenticates against its own project.
+
+**Why separate, in priority order:**
+
+1. **Blast-radius isolation — the load-bearing reason.** A single shared project means a *staging* mistake mutates the *prod* user pool: a test-user spam run, a fat-fingered "delete all users", a loosened Auth setting, an accidental provider toggle — all land on real customers. Separate projects make staging a true sandbox: **nothing done in `packiot-staging` can touch a prod client's login.** This is the same isolation discipline as separate DB instances per env; auth deserves it more, not less.
+2. **Token-audience isolation (a real security boundary, not just hygiene).** A Firebase ID token's `aud` claim **is the project id**, and the verifier pins `aud` (ADR-0027/§1.1). With one shared project, a token minted for staging is `aud`-valid against the **prod** refdata/edge-api verifier and vice-versa — the environments are cryptographically fungible. Separate projects make a staging token **fail `aud` verification** at the prod plane (and vice-versa): a leaked/replayed staging token cannot act on prod. Cross-env replay becomes unrepresentable, mirroring the cross-tenant-unrepresentable stance of the whole ADR.
+3. **Clean per-env provisioning (feeds Decision 7).** Phase-0 operator provisioning + all test-user minting run against the **correct** project with a **staging-only** service-account key. The dead prod key (`back4-api/private-key.json`, credential deleted in GCP) is never needed; a staging SA key can only ever reach staging. A mis-pointed key is a *config error*, not a *cross-env breach*.
+4. **Cost is not a reason to share.** Firebase **projects are free**; each project carries its **own free-tier** Auth quota; **standard Email/Password Auth is free** (Spark plan). Because tenancy is a **DB lookup** (Decision 1), staging does **not** need Identity Platform / custom claims, so there is no per-MAU billing to duplicate. Separation costs $0.
+
+**Consequences / mechanics:**
+- front4 `src/firebase.js` reads `VITE_FIREBASE_*` with fbpackiot fallbacks — prod byte-identical; staging flips by pointing `.env.staging` at `packiot-staging` (repo prep already landed; the flip is gated on the project existing).
+- refdata + edge-api verifiers take `FIREBASE_PROJECT_ID` per env (refdata already supports this). The verifier's `aud` pin then enforces boundary #2 for free.
+- **USER action** (console, cannot be automated by the repo): create `packiot-staging`, enable Email/Password, register the web app, create a staging service-account key → staging secrets manager (never the repo). Step-by-step: **[`docs/auth/staging-firebase-setup.md`](../auth/staging-firebase-setup.md)**.
+
+---
+
+## 7B. Decision 7 — **CS-Admin owns client-user creation** (per-ENV project + DB mapping, one transaction)
+
+**Question:** who creates a client user's Firebase identity, and how does the `uid → id_enterprise` row that Decision 1 depends on get seeded — and where does that leave the ad-hoc "mint a user by hand with the prod service-account key" practice?
+
+**DECISION — CS-Admin is the single provisioning authority for client users.** When CS-Admin onboards a client user it performs, **atomically**, both halves of the identity:
+
+```
+CS-Admin "create client user" (per-environment; uses THIS env's service-account key + THIS env's DB):
+  BEGIN
+    1. Firebase Admin SDK  createUser({ email, password|link })  in the CORRECT per-ENV project
+       (Decision 6: packiot-staging for staging, fbpackiot for prod)  → uid
+    2. INSERT/UPDATE users SET id_user_firebase = uid, id_enterprise = <tenant>, user_roles = ..., active = true
+  COMMIT   (+ compensating Firebase delete if the DB write fails — no orphaned Firebase account)
+```
+
+**Why this is the right shape:**
+
+1. **It closes the exact gap Decision 1 opens.** DB-lookup tenancy means a Firebase uid with **no** `users` row fails closed (401, correct) — but that also means a user is unusable until the `uid → id_enterprise` row exists. Doing both in **one transaction** guarantees there is never a half-provisioned user (a Firebase account nobody can attribute, or a `users` row pointing at a uid that was never minted). This is the standard "two systems, one logical create" outbox/saga problem; the compensating delete on rollback keeps Firebase and the DB consistent.
+2. **It is per-ENV by construction (honors Decision 6).** CS-Admin is configured with the **target environment's** service-account key and points at the **target environment's** DB. Staging CS-Admin can only mint into `packiot-staging` + seed the staging DB; it **cannot** reach prod. The credential boundary from Decision 6 is enforced at the tool level.
+3. **It retires manual minting.** The prior practice — a one-off admin script + the prod service-account key (`back4-api/private-key.json`) minting users by hand — is **retired**. That key is dead (deleted in GCP) and must not be resurrected. All new client-user creation goes through CS-Admin against the correct per-ENV project. (The one-off `packiot` **staging test user** is minted manually only because CS-Admin's staging wiring isn't stood up yet; it is the last hand-mint, and it uses the **staging** SA key, never the dead prod one.)
+
+**Consequences:**
+- CS-Admin gains a "create client user" flow (Firebase Admin SDK + the existing `users` write) — a concrete onboarding feature, sequenced after Decision 6's projects exist. This is the USER's stated future direction.
+- Deactivation stays a **DB** operation (`active = false`) per Decision 1 — CS-Admin need not also disable the Firebase account for the tenant fence to stop resolving (though it may, defense-in-depth).
+- No password material crosses environments or lands in a repo; the per-ENV SA key is the only secret, held in that env's secrets manager (Decision 6 / setup guide §4).
+
+---
+
 ## 8. Operator session bootstrap after the flip (loose end from §decision 4)
 
 Today `/session/login` returns more than a token: `{ entities, user, language, user_permissions }` — the SPA's `AuthContext` needs the operator's entity scope (which equipment/sectors they may act on) and localization. After bcrypt retires, that bootstrap still needs a home. Two options (design, not blocking): (a) a thin authenticated `/session/bootstrap` on edge-api that takes the Firebase Bearer and returns entities/language/permissions derived from `users.user_roles` (same query, no password step); or (b) move it to a refdata dataset (it is a *read*). Prefer (b) for consistency with the read-plane consolidation, but (a) is a smaller diff. Flag for the endgame, not the cutover.
@@ -282,7 +330,7 @@ ADR-0032's single-flow collapse must seed operator identity into `packiot_shadow
 
 - **OQ-1 — Tenant claim (decision 1):** confirm **DB lookup** as the end-state (recommended — reuses the proven refdata path, single source of truth, zero migration, the write fence hits the DB regardless), or opt for **Firebase custom claim** (self-contained token, but re-mint on enterprise move + a second source of truth to keep in sync).
 - **OQ-2 — Operator token-refresh + shared-tablet strategy (decision 2):** confirm **persisted refresh token + just-in-time ID-token mint at drain + per-write `enqueueUid` binding** (recommended — preserves per-user non-repudiation, strands-until-owner-returns on a shared tablet), or opt into a **per-tablet device identity** (custom token) that trades per-user cryptographic attribution for shared-device ergonomics.
-- **OQ-3 — Firebase project topology:** is the **staging** Firebase project the **same** `fbpackiot` as prod, or a **separate** project? This governs whether `FIREBASE_PROJECT_ID` differs per environment for edge-api (as it can for refdata via env), whether operator bulk-provisioning (Phase 0) runs against one project or two, and the blast radius of a mis-config. (refdata defaults to `fbpackiot`; edge-api must match whichever project mints the operator tokens.)
+- **OQ-3 — Firebase project topology:** ~~is the **staging** Firebase project the **same** `fbpackiot` as prod, or a **separate** project?~~ **RESOLVED — SEPARATE project per environment (see [Decision 6](#7a-decision-6--firebase-project-topology-separate-project-per-environment-resolves-oq-3)).** Prod = `fbpackiot`, staging = `packiot-staging`; `FIREBASE_PROJECT_ID` is per-env for front4/refdata/edge-api; Phase-0 provisioning runs per-env; a staging token fails `aud` verification at the prod plane (and vice-versa). USER console steps: [`docs/auth/staging-firebase-setup.md`](../auth/staging-firebase-setup.md). The remaining open questions are OQ-1 and OQ-2 above.
 
 ---
 
