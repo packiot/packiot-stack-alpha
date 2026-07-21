@@ -52,6 +52,28 @@ output "github_runner_next_step" {
   EOT
 }
 
+# ── Cognito (ADR-0034) — consumed by refdata verifier + front4 Amplify config ──
+
+output "cognito_user_pool_id" {
+  description = "Staging Cognito user pool id (non-secret identifier)"
+  value       = aws_cognito_user_pool.staging.id
+}
+
+output "cognito_user_pool_client_id" {
+  description = "front4 Amplify app client id (public client, no secret)"
+  value       = aws_cognito_user_pool_client.front4.id
+}
+
+output "cognito_issuer_url" {
+  description = "OIDC issuer — refdata JWT verifier validates `iss` against this"
+  value       = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.staging.id}"
+}
+
+output "cognito_jwks_url" {
+  description = "JWKS endpoint — refdata fetches signing keys here to verify Cognito JWTs"
+  value       = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.staging.id}/.well-known/jwks.json"
+}
+
 output "estimated_monthly_cost" {
   description = "Approximate AWS bill for this staging environment"
   value = {
