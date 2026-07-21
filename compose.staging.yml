@@ -1566,7 +1566,7 @@ services:
       # REFDATA_FLOW to pick DB_NAME vs DB_NAME_F3 and to re-map each Surface-1
       # dataset's SQL to packiot_shadow objects. Flip to f3 only after that lands
       # and the per-dataset F3 parity gate (ADR-0032 §6 Step 1) is green.
-      REFDATA_FLOW: f1
+      REFDATA_FLOW: f3
       DB_NAME_F3: packiot_shadow
       HEALTH_PORT: "9104"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; a /v1 read
