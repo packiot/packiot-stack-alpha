@@ -48,6 +48,7 @@ groups:
       # by more than 60% for 30m. Structural F1-vs-shadow statement
       # differences (pocontrol/mint are shadow-only) stay under this.
       - alert: FlowWriteImbalance
+        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
         expr: >
           (max(sum by (dest) (rate(oeecloud_worker_batch_writes_total{result="ok"}[15m])))
            - min(sum by (dest) (rate(oeecloud_worker_batch_writes_total{result="ok"}[15m]))))
@@ -63,12 +64,14 @@ groups:
         annotations:
           summary: "Worker batch statements erroring"
       - alert: BakeSurfacePersisting
+        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
         expr: bake_surface_mismatches > 0
         for: 24h
         labels: {severity: warning}
         annotations:
           summary: "Bake surface {{ $labels.surface }} (enterprise {{ $labels.enterprise }}) mismatched for 24h — past every documented expiry class"
       - alert: IdentityBrokenPersisting
+        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
         expr: bake_identity_mismatch > 0
         for: 12h
         labels: {severity: critical}
@@ -143,6 +146,7 @@ groups:
       # shadow-mirror retires at flip (R1); until then its failures are
       # control-plane parity holes in the bake evidence.
       - alert: ShadowMirrorFailures
+        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
         expr: increase(shadow_mirror_failed_total[15m]) > 0
         labels: {severity: warning}
         annotations:
@@ -165,11 +169,13 @@ groups:
         annotations:
           summary: "postgres-exporter cannot reach the DB — everything downstream is about to page"
       - alert: PostgresConnectionsHigh
-        expr: sum(pg_stat_database_numbackends) > 150
+        # DB max_connections=50, so the old >150 threshold could NEVER fire.
+        # >40 = 80% of the pool — a real "approaching exhaustion" warning.
+        expr: sum(pg_stat_database_numbackends) > 40
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $value }} DB backends — connection leak or pgbouncer bypass growing"
+          summary: "{{ $value }} DB backends (>80% of max_connections=50) — connection leak or pgbouncer bypass growing"
 
   # ADR-0022 V3 — the per-tenant flip-readiness VERDICT. Layered ON TOP
   # of the bake gauges (bake_surface_mismatches / bake_surface_compared);
@@ -209,6 +215,7 @@ groups:
       # that enterprise. Not a failure — an informational gate. The
       # flip-critical failure alert stays BakeSurfacePersisting (24h).
       - alert: TenantNotFlipReady
+        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
         expr: bake_tenant_converged == 0
         for: 10m
         labels: {severity: info}
