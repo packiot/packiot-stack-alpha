@@ -93,13 +93,14 @@ func runPhase9LineAggregation(
 		// First-machine: contribute to LINE Consumed + bump Defective counter.
 		if prodConsumedSet && machineIdx == firstMachine {
 			metric := Metric{
-				Timestamp: timestampMs,
-				Name:      enterpriseToLine + "/Admin/ProdConsumedCount",
-				Value:     consIncr,
-				Type:      "int32",
-				Counter:   curConsumed,
-				Timezone:  msg.SparkPlugTimezone,
-				Extra:     msg.SparkPlugAddMetrics,
+				Timestamp:      timestampMs,
+				Name:           enterpriseToLine + "/Admin/ProdConsumedCount",
+				Value:          consIncr,
+				Type:           "int32",
+				Counter:        curConsumed,
+				Timezone:       msg.SparkPlugTimezone,
+				Extra:          msg.SparkPlugAddMetrics,
+				LineAggregated: true, // Phase-9 member→line aggregate — cutover suppresses (see Metric.LineAggregated)
 			}
 			if !stateSpeedThis {
 				metric.CurSpeed = round1(prodSpeed)
@@ -118,13 +119,14 @@ func runPhase9LineAggregation(
 		// Last-machine: contribute to LINE Processed + decrement Defective counter.
 		if prodProcessedSet && machineIdx == lastMachine {
 			metric := Metric{
-				Timestamp: timestampMs,
-				Name:      enterpriseToLine + "/Admin/ProdProcessedCount",
-				Value:     procIncr,
-				Type:      "int32",
-				Counter:   curProcessed,
-				Timezone:  msg.SparkPlugTimezone,
-				Extra:     msg.SparkPlugAddMetrics,
+				Timestamp:      timestampMs,
+				Name:           enterpriseToLine + "/Admin/ProdProcessedCount",
+				Value:          procIncr,
+				Type:           "int32",
+				Counter:        curProcessed,
+				Timezone:       msg.SparkPlugTimezone,
+				Extra:          msg.SparkPlugAddMetrics,
+				LineAggregated: true, // Phase-9 member→line aggregate — cutover suppresses (see Metric.LineAggregated)
 			}
 			dec.Metrics = append(dec.Metrics, metric)
 
@@ -163,13 +165,14 @@ func runPhase9LineAggregation(
 			appendTimeMsMutation(dec, lineDefTsKey, timestampMs, "line.defective.ts")
 
 			metric := Metric{
-				Timestamp: timestampMs,
-				Name:      lineDefKey,
-				Value:     curDef - prevDef,
-				Type:      "int32",
-				Counter:   curDef,
-				Timezone:  msg.SparkPlugTimezone,
-				Extra:     msg.SparkPlugAddMetrics,
+				Timestamp:      timestampMs,
+				Name:           lineDefKey,
+				Value:          curDef - prevDef,
+				Type:           "int32",
+				Counter:        curDef,
+				Timezone:       msg.SparkPlugTimezone,
+				Extra:          msg.SparkPlugAddMetrics,
+				LineAggregated: true, // Phase-9 member→line aggregate — cutover suppresses (see Metric.LineAggregated)
 			}
 			dec.Metrics = append(dec.Metrics, metric)
 		}

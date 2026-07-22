@@ -60,6 +60,7 @@ const shiftGoldenSchema = `
 	    stopped_time double precision, planned_downtime double precision,
 	    ideal_production double precision, downtime double precision,
 	    changeover_time double precision, oee double precision,
+	    oee_a double precision, oee_p double precision, oee_q double precision,
 	    target double precision, proportional_target double precision
 	);
 	-- stub: shift_size 28800 (8h). NOTE: shift_size is intentionally UNUSED by
@@ -195,5 +196,23 @@ func TestGoldenShiftProportionalTarget(t *testing.T) {
 	// CUSTOM: never overwritten by the proration.
 	if p35 := prop(35); p35 != 99999 {
 		t.Errorf("target_customized proportional_target=%v, want 99999 (must be untouched)", p35)
+	}
+
+	// ADR-0037 C: the OEE waterfall is now written at the shift grain (was 0
+	// everywhere). eq30 ran the full 2h elapsed window with no planned downtime,
+	// so Availability = running/planned-production-time ≈ 1.0. And the composite
+	// oee must equal a·p·q (Performance is the residual that closes it).
+	var oee, a, p, q float64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(oee,0),COALESCE(oee_a,0),COALESCE(oee_p,0),COALESCE(oee_q,0)
+		   FROM golden.equipment_runtime_shift WHERE id_equipment=30`).
+		Scan(&oee, &a, &p, &q); err != nil {
+		t.Fatal(err)
+	}
+	if !(a > 0.9 && a <= 1.0+1e-9) {
+		t.Errorf("shift oee_a=%v, want ≈1.0 (fully running, no planned downtime) — A/P/Q must be populated, not 0", a)
+	}
+	if math.Abs(oee-a*p*q) > 1e-6 {
+		t.Errorf("OEE waterfall broken: oee=%v but a*p*q=%v (a=%v p=%v q=%v) — must satisfy oee = a·p·q", oee, a*p*q, a, p, q)
 	}
 }

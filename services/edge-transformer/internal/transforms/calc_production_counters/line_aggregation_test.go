@@ -344,6 +344,64 @@ func TestPhase9DebounceSuppressesFirstEmission(t *testing.T) {
 	}
 }
 
+// TestLineOwnStreamIsDifferencedNotAggregated is the ADR-0037(A) guard: a
+// tp=3 line that feeds its OWN bare-topic cumulative totalizer (CPACK #16
+// own-stream lines, Unit segment present but no member Parameter30700) must be
+// DIFFERENCED by Phase 3/8 — the emitted metric carries Value=delta (single
+// digits, NOT the raw cumulative) and Counter=cumulative (monotonic) — and it
+// must NOT be tagged LineAggregated (it is the line's own stream, not a
+// member→line aggregate). This is what lets buildCutoverMetrics keep it, so the
+// worker writes net_production_incr=delta + net_production_val=cumulative
+// instead of a raw totalizer with a NULL val.
+func TestLineOwnStreamIsDifferencedNotAggregated(t *testing.T) {
+	s := NewMemState()
+	// Own-stream line topic: Admin at index 4 (→ line, no Unit segment). The
+	// line publishes MachSpeed on its 4-segment line topic (where the sim puts
+	// it), and parseTopicFull now collapses the unitTopic to that 4-seg form,
+	// so the Phase-8 glitch guard (prodSpeed < 3*machspeed) can find it.
+	lineTopic := "CPACK/SC/LINHAS/L8"
+	seedMachSpeed(t, s, lineTopic, 120.0)
+	consumed := lineTopic + "/Admin/ProdConsumedCount/51/Unit"
+
+	// Tick 1: cumulative totalizer 1000. First observation rebaselines from 0,
+	// so the delta equals the whole reading — seed it, then measure tick 2.
+	if _, err := Calc(Message{Topic: consumed + "***TRIG", Payload: 1000, CmdTrigger: true,
+		Timestamp: time.UnixMilli(1700000000000)}, s); err != nil {
+		t.Fatalf("Calc tick1: %v", err)
+	}
+	// (apply tick-1 state so tick-2 has a prior)
+	dec1, _ := Calc(Message{Topic: consumed + "***TRIG", Payload: 1000, CmdTrigger: true,
+		Timestamp: time.UnixMilli(1700000000000)}, s)
+	for _, m := range dec1.StateUpdates {
+		_ = m.Apply(s)
+	}
+
+	// Tick 2: cumulative totalizer 1007 → the line produced 7 units.
+	dec, err := Calc(Message{Topic: consumed + "***TRIG", Payload: 1007, CmdTrigger: true,
+		Timestamp: time.UnixMilli(1700000060000)}, s)
+	if err != nil {
+		t.Fatalf("Calc tick2: %v", err)
+	}
+	var got *Metric
+	for i := range dec.Metrics {
+		if dec.Metrics[i].Name == consumed {
+			got = &dec.Metrics[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no own-stream Consumed metric emitted: %+v", metricNames(dec.Metrics))
+	}
+	if got.Value != 7 {
+		t.Errorf("own-stream Value: got %d, want 7 (delta, not the 1007 raw totalizer)", got.Value)
+	}
+	if got.Counter != 1007 {
+		t.Errorf("own-stream Counter: got %d, want 1007 (cumulative, → net_production_val)", got.Counter)
+	}
+	if got.LineAggregated {
+		t.Errorf("own-stream line counter wrongly tagged LineAggregated — cutover would drop it")
+	}
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
 func metricNames(ms []Metric) []string {
