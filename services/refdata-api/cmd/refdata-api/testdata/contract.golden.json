@@ -318,6 +318,23 @@
     ]
   },
   {
+    "ref": "data-quality-events",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "data_quality_event",
+    "columns": [
+      "id",
+      "id_enterprise",
+      "id_equipment",
+      "grain",
+      "bucket_ts",
+      "rule",
+      "observed_value",
+      "severity",
+      "detected_at"
+    ]
+  },
+  {
     "ref": "downtimes-events",
     "source": "dataset",
     "kind": "function",
