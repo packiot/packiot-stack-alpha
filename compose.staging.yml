@@ -1488,6 +1488,20 @@ services:
       # keys only; production keys move to Secrets Manager at P3
       # hardening. customer_id is NEVER client-supplied.
       QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4"
+      # ── ADR-0034: dual-accept IdP cutover (Firebase OR Cognito) ───────────────
+      # refdata is now a relying party for the staging Cognito user pool
+      # ALONGSIDE Firebase — a front4 session carrying EITHER token resolves its
+      # tenant server-side (usersEnterpriseSQL matches id_user_firebase OR
+      # id_user_cognito). These are PUBLIC identifiers (pool id / app-client id /
+      # issuer) — NOT secrets (no signing key, no client secret). All are also
+      # the in-binary defaults; set here so the config is explicit + auditable.
+      # Reversible kill switch: COGNITO_AUTH_ENABLED=false → Firebase-only, no
+      # other change. Firebase is NEVER disabled by this — the cutover is additive.
+      COGNITO_AUTH_ENABLED: "true"
+      COGNITO_ISSUER: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt"
+      COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
+      # COGNITO_JWKS_URL defaults to <issuer>/.well-known/jwks.json; override only
+      # for a non-standard endpoint.
     networks:
       packiot-net:
         ipv4_address: 172.18.0.26

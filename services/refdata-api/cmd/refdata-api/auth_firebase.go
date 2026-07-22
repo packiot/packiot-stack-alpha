@@ -58,7 +58,7 @@ const firebaseCertURL = "https://www.googleapis.com/robot/v1/metadata/x509/secur
 // (FIREBASE_PROJECT_ID) so the value is config, never hard-coded policy.
 const defaultFirebaseProject = "fbpackiot"
 
-// usersEnterpriseSQL maps a verified Firebase uid → (tenant, role). It is
+// usersEnterpriseSQL maps a verified per-user id → (tenant, role). It is
 // back4-api's mapping HARDENED on DBA advice (staging+prod confirmed, task #68):
 //   - id_user_firebase is UNIQUE ⇒ at most one row (the core safety property);
 //   - active = true         ⇒ a deactivated user with a still-valid token can
@@ -68,6 +68,16 @@ const defaultFirebaseProject = "fbpackiot"
 //     yield ZERO rows, so we reject rather than inject a NULL/absent tenant.
 //
 // Zero rows ⇒ errUnknownUID ⇒ 401. Never a default tenant.
+//
+// ADR-0034 (dual-accept IdP cutover): the WHERE is a UNIFIED lookup that matches
+// the verified subject against EITHER id_user_firebase OR id_user_cognito. The
+// verified uid is an opaque, cryptographically-random subject from ONE issuer
+// (a Firebase uid, ~28 chars, or a Cognito sub, a 36-char UUID). Both columns
+// are UNIQUE, so an OR-match still yields at most one row; the two id spaces do
+// not overlap, so a Firebase token can never resolve a Cognito row or vice
+// versa. This keeps the resolver/interface/cache UNCHANGED across both IdPs —
+// the multiVerifier decides WHICH issuer signed the token; the SQL only needs
+// the subject. Tenant fencing is byte-identical to the Firebase-only path.
 //
 // task #70: also selects users.user_roles — the caller's SINGLE id_user_role.
 // The linkage is one-role-per-user: users.user_roles is a scalar integer FK to
@@ -81,7 +91,8 @@ const defaultFirebaseProject = "fbpackiot"
 // id_user_role server-side and only ever bound as $2 — the raw uid never
 // reaches SQL beyond this uid→identity lookup.
 const usersEnterpriseSQL = `SELECT id_enterprise, user_roles FROM users
-	WHERE id_user_firebase = $1 AND active = true AND id_enterprise IS NOT NULL`
+	WHERE (id_user_firebase = $1 OR id_user_cognito = $1)
+	  AND active = true AND id_enterprise IS NOT NULL`
 
 var (
 	errNoBearer     = errors.New("no bearer token")
