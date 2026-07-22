@@ -1604,6 +1604,62 @@ services:
       retries: 3
       start_period: 15s
 
+  # ── barcode-service ──────────────────────────────────────────────────
+  # Phase-0 durable box-scan ingest with a server-authoritative, GAPLESS
+  # per-production-order label sequence (North-star serialization/pharma
+  # pillar, Bronze tier). POST /v1/scans decides label_seq = last+1 inside
+  # ONE Postgres transaction under pg_advisory_xact_lock(id_po) so the count
+  # can never gap or double under concurrent scanners / client replays
+  # (idempotent by the client-generated scan_uuid UNIQUE). GET
+  # /v1/scans/stream is an in-memory SSE fan-out of accepted scans, scoped
+  # per PO AND per tenant. Writes F3 (packiot_shadow) via pgbouncer's
+  # packiot_shadow pool — the go-forward plane. The Bronze schema is
+  # edge-node-red/db/36-box-scans.sql (box_scans append-only + po_box_counter
+  # + v_po_box_totals), applied to packiot_shadow. Internal-only for Phase 0;
+  # a Node-RED tee posts scans here in a later phase. See
+  # services/barcode-service/README.md.
+  barcode-service:
+    build: ./services/barcode-service
+    container_name: barcode-service
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Writes the go-forward plane (F3) via pgbouncer's packiot_shadow pool —
+      # the same pool refdata-api reads through under REFDATA_FLOW=f3.
+      DB_NAME: packiot_shadow
+      HTTP_PORT: "8446"
+      # ── Issuer-agnostic dual JWT verifier (tenant from JWT only) ──────────────
+      # id_enterprise is derived SERVER-SIDE from a verified token and fails
+      # closed; the client never names a tenant. These are PUBLIC identifiers
+      # (Firebase project / Cognito pool + app-client id / issuer) — NOT secrets.
+      # Same values refdata-api uses so "authenticated as enterprise N" agrees
+      # across services. Leave COGNITO_ISSUER empty to run Firebase-only.
+      FIREBASE_PROJECT_ID: fbpackiot
+      COGNITO_ISSUER: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt"
+      COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
+      LOG_LEVEL: info
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.36
+    depends_on:
+      # Writes require the DB; wait for pgbouncer's container to start (the pool
+      # itself fails the /healthz probe until reachable — ADR-0011 rule 4).
+      pgbouncer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/barcode-service", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
   # ── operator-adapter ─────────────────────────────────────────────────
   # Operator twin of the ingest-shim. Incoplast's bespoke operator UI
   # (mui_* + Hasura) justifies downtimes and starts POs WITHOUT calling
