@@ -562,6 +562,7 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
       - ./monitoring/loki/loki-local-config.yaml:/etc/loki/local-config.yaml:ro
+      - ./monitoring/loki/rules:/etc/loki/rules:ro
       - loki-data:/loki
     networks:
       packiot-net:
