@@ -183,7 +183,22 @@ const shiftEventsUpdateSQL = `
 	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
 	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
-	       oee = COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
+	       oee = COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0),
+	       -- ADR-0037 C: write the OEE waterfall (A×P×Q), not just composite oee.
+	       -- Availability = running / planned-production-time ; Quality = net /
+	       -- gross ; Performance back-solved by shiftOeePSQL so oee = a·p·q
+	       -- (same shape as grains.go / legacy pg engine). Was: A/P/Q all 0.
+	       oee_a = COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0),
+	       oee_q = COALESCE(e.net / NULLIF(e.gross, 0), 0)
+	  FROM shift_ev ev
+	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
+	   AND e.ts_value >= now() - interval '25 day'`
+
+// Performance residual — closes oee = oee_a · oee_p · oee_q on the event-hit
+// shift rows the events update just persisted (see hourOeePSQL for rationale).
+const shiftOeePSQL = `
+	UPDATE %[1]s.equipment_runtime_shift e
+	   SET oee_p = COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
@@ -277,6 +292,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, d.EvSchema, d.RefSchema)},
 		{"events-bank", fmt.Sprintf(shiftEventsSQL, d.EvSchema)},
 		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, d.EvSchema)},
+		{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
 		{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
 	}
 	for _, s := range steps {
@@ -309,6 +325,7 @@ func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL st
 		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, evSchema, refSchema)},
 		{"events-bank", fmt.Sprintf(shiftEventsSQL, evSchema)},
 		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, evSchema)},
+		{"oee-p", fmt.Sprintf(shiftOeePSQL, evSchema)},
 		{"targets", fmt.Sprintf(shiftTargetsSQL, evSchema, refSchema)},
 		{"reflag", fmt.Sprintf(shiftReflagSQL, evSchema, refSchema)},
 	}

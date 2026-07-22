@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/transforms/calc_production_counters"
 	"github.com/prometheus/client_golang/prometheus"
@@ -290,48 +291,65 @@ func TestIsLineLevelMetricName(t *testing.T) {
 	}
 }
 
-// TestBuildCutoverMetricsSuppressesLineCounters is the #276 parity fix guard:
-// a Calc Phase-9 LINE-level counter emission must be DROPPED from the cutover
-// envelope (the line is aggregated by the downstream ingestion path), while
-// per-machine (Unit) counters survive. Prevents the id-47 double-count that
-// produced oee > 1.0.
+// TestBuildCutoverMetricsSuppressesLineCounters is the #276 / ADR-0037(A)
+// parity guard: a Calc Phase-9 member→line AGGREGATION counter (tagged
+// LineAggregated) must be DROPPED from the cutover envelope (it double-counts
+// against the downstream line derivation — the id-47 oee>1.0 bug), while
+// per-machine (Unit) counters AND the line's OWN-stream Phase-8 counter
+// (line-level NAME but NOT LineAggregated) survive so the line is differenced
+// (Value=delta, Counter=cumulative) instead of writing a raw totalizer.
 func TestBuildCutoverMetricsSuppressesLineCounters(t *testing.T) {
 	base := "CPACK/SC/LINHAS/L5/BREYER"
 	machConsumed := base + "/Admin/ProdConsumedCount/61/Unit"
 	machProcessed := base + "/Admin/ProdProcessedCount/61/Unit"
 	machStatus := base + "/Status/StateCurrent"
-	lineConsumed := "CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount"   // Phase-9 line emit → DROP
-	lineProcessed := "CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount" // Phase-9 line emit → DROP
+	aggConsumed := "CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount"   // Phase-9 aggregate → DROP
+	aggProcessed := "CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount" // Phase-9 aggregate → DROP
+	// The line's OWN-stream Phase-8 counter: line-level topic, but NOT a
+	// Phase-9 aggregate → must SURVIVE and keep its cumulative Counter.
+	ownConsumed := "CPACK/SC/LINHAS/L8/Admin/ProdConsumedCount/51/Unit"
 
 	calcMetrics := []calc_production_counters.Metric{
 		{Name: machConsumed, Value: 5, Counter: 95, Timestamp: 1000},
-		{Name: lineConsumed, Value: 5, Counter: 95, Timestamp: 1000},   // must be suppressed
+		{Name: aggConsumed, Value: 5, Counter: 95, Timestamp: 1000, LineAggregated: true},  // suppressed
 		{Name: machProcessed, Value: 4, Counter: 80, Timestamp: 1000},
-		{Name: lineProcessed, Value: 4, Counter: 80, Timestamp: 1000},  // must be suppressed
-		{Name: machStatus, Value: 6, Counter: 6, Timestamp: 1000},      // machine status → keep
+		{Name: aggProcessed, Value: 4, Counter: 80, Timestamp: 1000, LineAggregated: true}, // suppressed
+		{Name: machStatus, Value: 6, Counter: 6, Timestamp: 1000},                          // machine status → keep
+		{Name: ownConsumed, Value: 7, Counter: 700, Timestamp: 1000},                       // own-stream line → keep
 	}
 
 	out := buildCutoverMetrics(calcMetrics, nil)
 
-	got := map[string]bool{}
-	for _, m := range out {
-		got[m.Name] = true
+	got := map[string]*shadowpub.Metric{}
+	for i := range out {
+		got[out[i].Name] = &out[i]
 	}
-	// Line-level counter emissions must be gone.
-	if got[lineConsumed] {
-		t.Errorf("line-level Consumed leaked into cutover envelope: %q", lineConsumed)
+	// Phase-9 aggregate emissions must be gone.
+	if got[aggConsumed] != nil {
+		t.Errorf("Phase-9 aggregate Consumed leaked into cutover envelope: %q", aggConsumed)
 	}
-	if got[lineProcessed] {
-		t.Errorf("line-level Processed leaked into cutover envelope: %q", lineProcessed)
+	if got[aggProcessed] != nil {
+		t.Errorf("Phase-9 aggregate Processed leaked into cutover envelope: %q", aggProcessed)
 	}
-	// Machine counters + machine status must survive.
-	for _, want := range []string{machConsumed, machProcessed, machStatus} {
-		if !got[want] {
-			t.Errorf("machine-level metric %q wrongly dropped from cutover envelope", want)
+	// Machine counters + machine status + the line OWN-stream counter survive.
+	for _, want := range []string{machConsumed, machProcessed, machStatus, ownConsumed} {
+		if got[want] == nil {
+			t.Errorf("metric %q wrongly dropped from cutover envelope", want)
 		}
 	}
-	if len(out) != 3 {
-		t.Fatalf("expected 3 surviving metrics (2 machine counters + 1 status), got %d: %+v",
+	// The own-stream line counter must carry its cumulative Counter (→ populates
+	// net_production_val) and its delta Value (→ net_production_incr) — this is
+	// the fix for the raw-totalizer / NULL-val inflation (ADR-0037 A).
+	if m := got[ownConsumed]; m != nil {
+		if m.Value != int64(7) {
+			t.Errorf("own-stream line Value (delta): got %v, want 7", m.Value)
+		}
+		if m.Counter == nil || *m.Counter != 700 {
+			t.Errorf("own-stream line Counter (cumulative): got %v, want 700", m.Counter)
+		}
+	}
+	if len(out) != 4 {
+		t.Fatalf("expected 4 surviving metrics (2 machine counters + status + own-stream line), got %d: %+v",
 			len(out), out)
 	}
 }

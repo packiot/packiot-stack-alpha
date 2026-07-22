@@ -63,12 +63,32 @@ func parseTopicFull(topic string) (unitTopic string, kind CounterKind, flags Tri
 		return "", CounterKindUnknown, TriggerFlags{}, ErrMalformedTopic
 	}
 
-	// Extract the 5-segment unit topic (Enterprise/Site/Area/Line/Unit).
+	// Extract the unit topic — the prefix all this equipment's state keys
+	// (MachSpeed, Parameter*, priors, UnitMode) hang off.
+	//
+	// Normally it is the 5-segment Enterprise/Site/Area/Line/Unit. But a
+	// LINE own-stream counter (CPACK #16: the line's PLC feeds its OWN
+	// bare-topic totalizer) has NO Unit segment — the PackML process keyword
+	// (Admin/Status/Command) sits at index 4, e.g.
+	// CPACK/SC/LINHAS/L8/Admin/ProdConsumedCount/51/Unit. Taking parts[:5]
+	// there yields ".../L8/Admin", so the Phase-7/8 MachSpeed lookup
+	// (unitTopic+"/Status/MachSpeed") misses the line's actual MachSpeed
+	// metric (".../L8/Status/MachSpeed"), reads 0, and the glitch guard
+	// (prodSpeed < 3*machspeed) silently drops EVERY line-own counter — so
+	// the line was never differenced and its raw totalizer flowed straight to
+	// net_production_incr (ADR-0037 A). Collapse line topics to the 4-segment
+	// line topic, mirroring the worker resolver's TopicForRegister rule, so
+	// the state-key prefix matches where the line publishes its Status.
 	parts := strings.Split(body, "/")
 	if len(parts) < 5 {
 		return "", CounterKindUnknown, TriggerFlags{}, ErrMalformedTopic
 	}
-	unitTopic = strings.Join(parts[:5], "/")
+	switch strings.ToLower(parts[4]) {
+	case "admin", "status", "command":
+		unitTopic = strings.Join(parts[:4], "/") // line own-stream — no Unit segment
+	default:
+		unitTopic = strings.Join(parts[:5], "/") // Enterprise/Site/Area/Line/Unit
+	}
 
 	// Parse trigger-suffix flags. JS uses includes() (substring) checks,
 	// so ORDER MATTERS: TRIG_CO contains TRIG_C, TRIG_C=O contains C=O,

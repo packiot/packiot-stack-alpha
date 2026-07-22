@@ -972,19 +972,22 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric) []shadowpub.Metric {
 	out := make([]shadowpub.Metric, 0, len(calcMetrics)+len(resolved))
 	for _, em := range calcMetrics {
-		// #276 parity fix: suppress Calc Phase-9 LINE-level counter emissions.
-		// Lines are aggregated by the canonical downstream ingestion path (the
-		// oeecloud-node-red "01 · Ingestion & Writes" node) exactly as in the
-		// F1/F2/prod flows — it already writes the line's gross/net for id 47.
-		// Emitting an explicit Calc line counter here adds a SECOND line stream
-		// that double-counts: id 47 (L5) = 43629 (Calc, coherent) + 65453
-		// (downstream) = 109082 → oee 1.425, physically impossible. Machine
-		// (Unit) counters and Phase-10 machine status pass through unchanged;
-		// the line stays sourced solely from the downstream derivation, giving
-		// F3==F2 parity. Removing the legacy derivation in favour of Calc-owned
-		// lines is a deliberate FUTURE step, not this fix.
-		if isLineLevelMetricName(em.Name) &&
-			isCounterMetricName(em.Name) != calc_production_counters.CounterKindUnknown {
+		// #276 / ADR-0037(A): suppress ONLY Phase-9 member→line AGGREGATION
+		// counters — NOT the line's own-stream Phase-8 counter. A Phase-9 line
+		// emission double-counts against the pre-existing downstream line
+		// derivation (the #456 two-writer bug: id 47 = 43629 Calc + 65453
+		// downstream = 109082 → oee 1.425). But suppressing by line-level NAME
+		// (the old rule) also dropped the line's OWN differenced counter, so a
+		// tp=3 line whose PLC feeds its own bare-topic totalizer (CPACK #16
+		// own-stream lines) got NOTHING from Calc — its raw cumulative
+		// totalizer flowed to net_production_incr with net_production_val NULL
+		// and the cagg SUMmed cumulatives into ~14,000× inflation (oee ≫ 1,
+		// net > gross). Origin-tagging (LineAggregated) tells the two apart:
+		// the own-stream Phase-8 counter (Value=delta, Counter=cumulative)
+		// passes through and is differenced like a tp=1 machine; only the
+		// double-counting Phase-9 aggregate is dropped. Machine (Unit) counters
+		// and Phase-10 status were never line-level, so they are unaffected.
+		if em.LineAggregated {
 			continue
 		}
 		counter := float64(em.Counter)

@@ -146,6 +146,20 @@ type Metric struct {
 	CurSpeed  float64 `json:"curspeed,omitempty"`
 	// Extra carries msg.SparkPlug_add_metrics passthrough.
 	Extra map[string]any `json:"-"`
+	// LineAggregated marks a metric produced by Phase-9 member→line
+	// AGGREGATION (runPhase9LineAggregation) — as opposed to the unit's or
+	// line's OWN differenced counter emitted by Phase 8. The #276 cutover
+	// envelope (buildCutoverMetrics) suppresses ONLY these: a Phase-9 line
+	// emission double-counts against the pre-existing downstream line
+	// derivation (the #456 two-writer bug). The line's OWN-stream Phase-8
+	// counter must NOT be suppressed — dropping it left the line's raw
+	// totalizer flowing straight into net_production_incr with
+	// net_production_val NULL (the ~14,000× cagg-SUM inflation this field
+	// fixes: ADR-0037 finding A). Origin-tagged, not name-based, because a
+	// Phase-8 own-stream line counter and a Phase-9 aggregation share the
+	// same line-level topic NAME and can only be told apart by which phase
+	// emitted them. Internal routing only — never serialized.
+	LineAggregated bool `json:"-"`
 }
 
 // Calc runs the 11-phase decision tree against msg + state and returns
