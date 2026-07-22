@@ -72,10 +72,16 @@ type GrainMetrics struct {
 	Gross float64
 	Net   float64
 
-	// IdealSpeed is nullable in the DB (nil ⇒ SQL NULL). In the runtime tables it
-	// defaults to 0, so the "0 while producing" branch is the common one; nil is
-	// handled for robustness.
+	// IdealSpeed is nullable in the DB (nil ⇒ SQL NULL). In the shift/hour runtime
+	// tables it defaults to 0, so the "0 while producing" branch is the common one;
+	// nil is handled for robustness.
 	IdealSpeed *float64
+	// IdealSpeedTracked marks grains that STORE ideal_speed as an OEE driver
+	// (shift, hour). The day/week/month tables have NO ideal_speed column (OEE is
+	// derived from summed ideal_production there), so the IDEAL_SPEED rule is
+	// meaningless for them and MUST NOT fire — otherwise every producing day/week/
+	// month row would false-positive. Only shift/hour set this true.
+	IdealSpeedTracked bool
 
 	// Count/duration metrics checked for negativity.
 	AvailableTime   float64
@@ -154,7 +160,7 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 	// IDEAL_SPEED_NULL_WHILE_PRODUCING (P3-4) — producing (net > 0) but no ideal
 	// speed → OEE denominator collapses. warn: it is the pervasive baseline (~90%),
 	// silent loss rather than an impossible served value.
-	if m.Net > 0 && (m.IdealSpeed == nil || *m.IdealSpeed == 0) {
+	if m.IdealSpeedTracked && m.Net > 0 && (m.IdealSpeed == nil || *m.IdealSpeed == 0) {
 		var obs *float64
 		if m.IdealSpeed != nil {
 			z := *m.IdealSpeed
@@ -172,17 +178,18 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 // visibility), and dqScanLimit caps the per-grain row count so the side-write
 // stays cheap.
 type dqGrainScan struct {
-	Grain  string
-	Table  string
-	Window string
+	Grain         string
+	Table         string
+	Window        string
+	HasIdealSpeed bool // only shift/hour store the ideal_speed column
 }
 
 var dqGrainMatrix = []dqGrainScan{
-	{"shift", "equipment_runtime_shift", "30 days"},
-	{"hour", "equipment_runtime_1hour", "7 days"},
-	{"day", "equipment_runtime_1day", "30 days"},
-	{"week", "equipment_runtime_1week", "180 days"},
-	{"month", "equipment_runtime_1month", "365 days"},
+	{"shift", "equipment_runtime_shift", "30 days", true},
+	{"hour", "equipment_runtime_1hour", "7 days", true},
+	{"day", "equipment_runtime_1day", "30 days", false},
+	{"week", "equipment_runtime_1week", "180 days", false},
+	{"month", "equipment_runtime_1month", "365 days", false},
 }
 
 // dqScanLimit caps rows read per grain per tick (most-recent-first). A bound on a
@@ -191,18 +198,20 @@ const dqScanLimit = 20000
 
 // dqGrainScanSQL reads recently-computed grain rows, joining equipments for the
 // tenant id. %[1]s = EvSchema (flow tables), %[2]s = the grain table, %[3]s =
-// RefSchema (equipments), %[4]d = LIMIT. $1 = window interval.
+// RefSchema (equipments), %[4]s = the ideal_speed projection (r.ideal_speed for
+// shift/hour, NULL::float8 for day/week/month which lack the column), %[5]d =
+// LIMIT. $1 = window interval.
 const dqGrainScanSQL = `
 	SELECT e.id_enterprise, r.id_equipment, r.ts_value::timestamptz,
 	       r.oee, r.oee_a, r.oee_p, r.oee_q,
-	       r.gross, r.net, r.ideal_speed,
+	       r.gross, r.net, %[4]s,
 	       r.available_time, r.running_time, r.stopped_time,
 	       r.planned_downtime, r.downtime, r.changeover_time, r.idle_time
 	  FROM %[1]s.%[2]s r
 	  JOIN %[3]s.equipments e USING (id_equipment)
 	 WHERE r.ts_value >= now() - $1::interval
 	 ORDER BY r.ts_value DESC
-	 LIMIT %[4]d`
+	 LIMIT %[5]d`
 
 // dqUpsertSQL bulk-upserts a batch of events via unnest arrays. ON CONFLICT on
 // the dedup expression index (migration 34) makes re-detection on recompute
@@ -240,8 +249,12 @@ func RunDQScan(ctx context.Context, d flows.Dest, dqEnabled bool) (int64, error)
 }
 
 func runDQScanGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int64, error) {
+	idealExpr := "NULL::float8"
+	if g.HasIdealSpeed {
+		idealExpr = "r.ideal_speed"
+	}
 	rows, err := d.Pool.Query(ctx,
-		fmt.Sprintf(dqGrainScanSQL, d.EvSchema, g.Table, d.RefSchema, dqScanLimit), g.Window)
+		fmt.Sprintf(dqGrainScanSQL, d.EvSchema, g.Table, d.RefSchema, idealExpr, dqScanLimit), g.Window)
 	if err != nil {
 		return 0, fmt.Errorf("query: %w", err)
 	}
@@ -251,6 +264,7 @@ func runDQScanGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int64, er
 	for rows.Next() {
 		var m GrainMetrics
 		m.Grain = g.Grain
+		m.IdealSpeedTracked = g.HasIdealSpeed
 		if err := rows.Scan(
 			&m.IDEnterprise, &m.IDEquipment, &m.BucketTS,
 			&m.OEE, &m.OeeA, &m.OeeP, &m.OeeQ,

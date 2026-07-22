@@ -22,7 +22,7 @@ func TestDetectGrain_OEEOutlier(t *testing.T) {
 	ts := time.Date(2026, 7, 22, 6, 0, 0, 0, time.UTC)
 	got := DetectGrain(GrainMetrics{
 		IDEnterprise: 3, IDEquipment: 81, Grain: "shift", BucketTS: ts,
-		OEE: 8142, Gross: 100, Net: 100, IdealSpeed: ptr(58),
+		OEE: 8142, Gross: 100, Net: 100, IdealSpeed: ptr(58), IdealSpeedTracked: true,
 	})
 	byRule := rulesOf(got)
 	e, ok := byRule[DQRuleOEEGt1]
@@ -56,7 +56,7 @@ func TestDetectGrain_IdealSpeedZeroWhileProducing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := DetectGrain(GrainMetrics{
 				IDEnterprise: 4, IDEquipment: 12, Grain: "shift",
-				Gross: 500, Net: 480, IdealSpeed: tc.idealSpeed,
+				Gross: 500, Net: 480, IdealSpeed: tc.idealSpeed, IdealSpeedTracked: true,
 			})
 			byRule := rulesOf(got)
 			e, ok := byRule[DQRuleIdealSpeedNullProducing]
@@ -78,10 +78,23 @@ func TestDetectGrain_IdealSpeedZeroWhileProducing(t *testing.T) {
 func TestDetectGrain_IdealSpeedZeroNotProducing(t *testing.T) {
 	got := DetectGrain(GrainMetrics{
 		IDEnterprise: 4, IDEquipment: 12, Grain: "shift",
-		Gross: 0, Net: 0, IdealSpeed: ptr(0),
+		Gross: 0, Net: 0, IdealSpeed: ptr(0), IdealSpeedTracked: true,
 	})
 	if len(got) != 0 {
 		t.Errorf("idle grain (net=0) must be clean, got %v", got)
+	}
+}
+
+// A day/week/month grain has NO ideal_speed column (IdealSpeedTracked=false):
+// even producing (net>0) with ideal_speed nil, the IDEAL_SPEED rule must NOT
+// fire — those grains derive OEE from summed ideal_production, not ideal_speed.
+func TestDetectGrain_IdealSpeedNotTrackedNeverFires(t *testing.T) {
+	got := DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 81, Grain: "day",
+		Gross: 1000, Net: 950, IdealSpeed: nil, IdealSpeedTracked: false,
+	})
+	if len(got) != 0 {
+		t.Errorf("untracked-ideal-speed grain must not fire the ideal-speed rule, got %v", got)
 	}
 }
 
@@ -141,8 +154,8 @@ func TestDetectGrain_MultipleRules(t *testing.T) {
 		IDEnterprise: 3, IDEquipment: 81, Grain: "shift",
 		OEE:   8142,          // OEE_GT_1
 		Gross: 100, Net: 200, // NET_GT_GROSS (net>gross) + producing
-		IdealSpeed:  ptr(0), // IDEAL_SPEED_NULL_WHILE_PRODUCING
-		RunningTime: -10,    // NEGATIVE_METRIC
+		IdealSpeed: ptr(0), IdealSpeedTracked: true, // IDEAL_SPEED_NULL_WHILE_PRODUCING
+		RunningTime: -10, // NEGATIVE_METRIC
 	})
 	byRule := rulesOf(got)
 	for _, want := range []DQRule{
