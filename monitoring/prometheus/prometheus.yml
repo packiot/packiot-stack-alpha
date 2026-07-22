@@ -67,8 +67,9 @@ scrape_configs:
     static_configs:
       - targets: ['shadow-mirror:9103']
 
-  # refdata-api / query-api — the read side (ADR-0015). Go runtime +
-  # process metrics via promhttp default registry (:9104 main mux).
+  # refdata-api / query-api — the read side (ADR-0015). Full RED on :9104:
+  # http_request_duration_seconds{method,route,status} (rate=_count, errors=by
+  # status, duration=histogram) plus Go runtime + process metrics.
   - job_name: refdata-api
     static_configs:
       - targets: ['refdata-api:9104']
@@ -85,6 +86,15 @@ scrape_configs:
   - job_name: node-exporter
     static_configs:
       - targets: ['node-exporter:9100']
+
+  # White-box Redis metrics — Redis was a total blind spot. The exporter
+  # (oliver006/redis_exporter) sits beside authentik-redis and turns its INFO
+  # into redis_* series (memory, keyspace hit/miss, evictions, clients, ops).
+  # Readies ADR-0035's refdata-api cache: point the exporter at app-redis too
+  # (multi-target) and the alerting/dashboards inherit it.
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']
 
   # ── Live Incoplast path (was invisible: no scrape job existed, so the
   # metrics existed but reached no board — found in the v2 dashboard audit). ──
