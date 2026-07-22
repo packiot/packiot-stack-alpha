@@ -1,0 +1,147 @@
+{
+  "uid": "v2-query-traces",
+  "title": "v2 · DB Query Traces (Tempo / TraceQL)",
+  "tags": ["packiot-v2", "traces", "database", "tempo"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "min_dur",
+        "label": "Min span duration",
+        "type": "custom",
+        "query": "50ms,100ms,200ms,500ms,1s,2s",
+        "current": { "text": "100ms", "value": "100ms" },
+        "options": [
+          { "text": "50ms", "value": "50ms", "selected": false },
+          { "text": "100ms", "value": "100ms", "selected": true },
+          { "text": "200ms", "value": "200ms", "selected": false },
+          { "text": "500ms", "value": "500ms", "selected": false },
+          { "text": "1s", "value": "1s", "selected": false },
+          { "text": "2s", "value": "2s", "selected": false }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "### DB Query Traces — jump from a latency spike to the exact slow SQL trace\n\nSQL spans already exist: **otelpgx** in `refdata-api` / `oeecloud-worker` / `operator-adapter`, and `edge-api` auto-instruments `pg`. Every DB span carries `span.db.system = \"postgresql\"` and `span.db.statement` (the SQL text). This board is pure **TraceQL** against the Tempo datasource (`packiot-tempo`).\n\n**Workflow:** latency panel (board 12 API / board 11 DB) shows a spike → click the exemplar dot → land on the trace here → open the span → read `db.statement`. Or start here: filter recent slow DB spans, click a Trace ID, then use the span's *Logs* / *Metrics* links (Tempo → Loki / Prometheus correlation) to see the surrounding context.\n\n🟡 **Truthful-empty caveat:** exemplar *dots* on Prometheus latency panels stay absent until each service ATTACHES its active `trace_id` as an exemplar on `http_request_duration_seconds` (per-service code = separate PR). The trace **search** panels below work today regardless — Tempo already receives the spans. `mirror-worker-go` and `shadow-mirror` are **untraced (retiring)** workers — expect no spans from them by design."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Recent slow DB spans  ( db.system=postgresql && duration > $min_dur )",
+      "description": "TraceQL: { span.db.system = \"postgresql\" && duration > $min_dur }. Click a Trace ID to open the trace; the span's db.statement holds the SQL. Sorted by duration.",
+      "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+          "queryType": "traceql",
+          "query": "{ span.db.system = \"postgresql\" && duration > $min_dur }",
+          "limit": 50,
+          "tableType": "spans",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "SQL latency p95 by service (TraceQL metrics)",
+      "description": "TraceQL metrics: { span.db.system=\"postgresql\" } | quantile_over_time(duration, .95) by (resource.service.name). Requires Tempo metrics-generator / local-blocks. One line per service that emits pg spans.",
+      "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+          "queryType": "traceql",
+          "query": "{ span.db.system = \"postgresql\" } | quantile_over_time(duration, .95) by (resource.service.name)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "SQL span rate by service (TraceQL metrics)",
+      "description": "TraceQL metrics: { span.db.system=\"postgresql\" } | rate() by (resource.service.name). DB span throughput per service — pairs with the p95 panel to separate 'slow' from 'busy'.",
+      "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+          "queryType": "traceql",
+          "query": "{ span.db.system = \"postgresql\" } | rate() by (resource.service.name)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Saved: refdata-api slow pg spans ( > 200ms )",
+      "description": "Exemplar TraceQL: { resource.service.name = \"refdata-api\" && span.db.system=\"postgresql\" && duration > 200ms }. refdata-api is the hot read plane — this is the first place to look when the front4→refdata read path is slow.",
+      "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+      "gridPos": { "h": 11, "w": 12, "x": 0, "y": 31 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"refdata-api\" && span.db.system = \"postgresql\" && duration > 200ms }",
+          "limit": 50,
+          "tableType": "spans",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Saved: spans touching equipment_runtime_shift",
+      "description": "Exemplar TraceQL: { span.db.statement =~ \".*equipment_runtime_shift.*\" }. Find-slow-queries-BY-TABLE via a db.statement regex — the OEE shift-rollup table is a frequent hotspot. Until a first-class db.sql.table attribute is emitted (separate per-service PR), regex on the statement text is the way to filter by table.",
+      "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+      "gridPos": { "h": 11, "w": 12, "x": 12, "y": 31 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "packiot-tempo" },
+          "queryType": "traceql",
+          "query": "{ span.db.statement =~ \".*equipment_runtime_shift.*\" }",
+          "limit": 50,
+          "tableType": "spans",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "text",
+      "title": "TraceQL cookbook — find slow queries by table",
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 42 },
+      "options": {
+        "mode": "markdown",
+        "content": "## TraceQL cookbook\n\nAll queries run against the **Tempo** datasource (`packiot-tempo`). Paste into an Explore → Tempo → *TraceQL* tab, or edit a panel above. Duration literals: `ms`, `s` (e.g. `100ms`, `1.5s`).\n\n### Core building blocks\n| Intent | TraceQL |\n|---|---|\n| Any Postgres span | `{ span.db.system = \"postgresql\" }` |\n| Slow DB spans | `{ span.db.system = \"postgresql\" && duration > 100ms }` |\n| Slow DB spans in one service | `{ resource.service.name = \"refdata-api\" && span.db.system = \"postgresql\" && duration > 200ms }` |\n| Traces that contain a slow DB span (span→trace) | `{ span.db.system = \"postgresql\" && duration > 500ms } | select(resource.service.name)` |\n\n### Find slow queries BY TABLE (regex on db.statement)\nThere is **no `db.sql.table` attribute yet** (adding one is a per-service code PR — see the compose `# TODO`). Until then, match the table name inside the SQL text with a regex:\n\n| Table | TraceQL |\n|---|---|\n| `equipment_runtime_shift` | `{ span.db.statement =~ \".*equipment_runtime_shift.*\" }` |\n| …and slow only | `{ span.db.statement =~ \".*equipment_runtime_shift.*\" && duration > 100ms }` |\n| `production_orders` writes | `{ span.db.statement =~ \"(?i).*(insert into\\|update).*production_orders.*\" }` |\n| any `equipment_values` scan | `{ span.db.statement =~ \".*equipment_values.*\" }` |\n\n**Caveats of the regex approach:** (1) case-sensitive by default — prefix `(?i)` for case-insensitive; (2) matches the statement text, so a table named in a comment or a JOIN also matches; (3) escape regex metacharacters in table names. A future `db.sql.table` attribute (via `otelpgx.WithIncludeQueryParameters` + a table-extracting span processor) would make this `{ span.db.sql.table = \"equipment_runtime_shift\" }` — exact, indexed, cheap.\n\n### TraceQL metrics (rate / quantile over time)\n| Intent | TraceQL |\n|---|---|\n| p95 DB latency by service | `{ span.db.system=\"postgresql\" } | quantile_over_time(duration, .95) by (resource.service.name)` |\n| DB span rate by service | `{ span.db.system=\"postgresql\" } | rate() by (resource.service.name)` |\n| Slow-span rate for one table | `{ span.db.statement =~ \".*equipment_runtime_shift.*\" && duration > 100ms } | rate()` |\n\n### From a trace, jump sideways (already wired on the Tempo datasource)\n- **→ Logs (Loki):** span *Logs* link filters `packiot-loki` by trace id (`tracesToLogsV2`).\n- **→ Metrics (Prometheus):** span *Metrics* link (`tracesToMetrics`) + the service map (`serviceMap`).\n- **← from Prometheus:** once services attach `trace_id` exemplars, latency panels on boards 11/12 show clickable dots that land here (`exemplarTraceIdDestinations`).\n\n### Instrumented vs. not\n| Service | pg spans? |\n|---|---|\n| `refdata-api`, `oeecloud-worker`, `operator-adapter` | ✅ otelpgx |\n| `edge-api` | ✅ pg auto-instrumentation |\n| `mirror-worker-go`, `shadow-mirror` | 🟡 untraced — **retiring**, will not be instrumented |"
+      }
+    }
+  ]
+}
