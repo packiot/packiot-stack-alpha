@@ -232,6 +232,33 @@ var datasets = map[string]dataset{
 	"live-equipment-shift": liveUNS("Current shift snapshot per equipment (uns_equipment_current_shift)", "uns_equipment_current_shift"),
 	"live-equipment-month": liveUNS("Current month snapshot per equipment (uns_equipment_current_month)", "uns_equipment_current_month"),
 
+	// current-shift (ADR-0032 Wave-D — front4 neopacStats CURRENT_SHIFT, the last
+	// non-fork Hasura read in lib/dashboard/hooks/neopacStats.js). The Neopac stats
+	// card reads the current-shift snapshot AND the nested `equipment { tp_equipment }`
+	// for #80's tp-aware "where you should be now" target arrow. `live-equipment-shift`
+	// (liveUNS, SELECT t.*) already serves the SCALAR shift columns, but it joins
+	// equipments ONLY for the tenant fence and does NOT project tp_equipment — so it
+	// cannot serve the nested equipment leg, and neopacStats stayed pinned to Hasura.
+	// This minimal per-equipment dataset closes it: same ownership shape as the
+	// perEquipment group ($1 = tenant fence via equipments.id_enterprise, $2 = the
+	// equipment), an EXPLICIT projection (ADR-0027) of exactly the seven shift columns
+	// neopacStats reads PLUS e.tp_equipment (the front4 adapter re-nests it under
+	// `equipment{tp_equipment}`, frozen-skin parity). All seven uns_equipment_current_shift
+	// columns AND equipments.tp_equipment are column-parity verified in BOTH packiot
+	// (F1) and packiot_shadow (F3) (2026-07-22 census) — both backing objects are
+	// already SERVABLE_BOTH, so NO F3 migration is needed. Not windowed (a live
+	// snapshot). Distinct from live-equipment-shift by the +tp_equipment projection
+	// and the single-equipment ($2) axis (neopacStats fires one line id, matching its
+	// sibling overview-takt / overview-scrap-rate legs).
+	"current-shift": {
+		group: "live-uns-equipment", doc: "Current-shift snapshot for one equipment with tp_equipment (uns_equipment_current_shift + equipments, front4 neopacStats CURRENT_SHIFT)",
+		sql: `SELECT t.net_production, t.gross_production, t.scrap, t.elapsed_time, t.target,
+			t.duration, t.proportional_target, t.id_equipment, e.tp_equipment
+			FROM uns_equipment_current_shift t JOIN equipments e USING (id_equipment)
+			WHERE e.id_enterprise = $1 AND t.id_equipment = $2`,
+		params: []dsParam{pEnt, pEquip},
+	},
+
 	// ── mission-control ──────────────────────────────────────────────
 	"mission-control": {
 		group: "mission-control", doc: "Mission control equipment grid (h_piot_get_mission_control_uns_3)",
@@ -520,9 +547,26 @@ var datasets = map[string]dataset{
 	// applied CLIENT-SIDE by front4 over the now-exposed `status` column — the
 	// per-equipment row set is already bounded, so no server-side status filter is
 	// warranted. Net: +2 projected columns, zero new filters, fence + cap intact.
+	//
+	// EXTENDED AGAIN (ADR-0032 Wave-D — front4 familyB GET_JOB_INFO, the last
+	// non-fork Hasura read in lib/dashboard/hooks/familyB.js). GET_JOB_INFO bundles
+	// three Hasura root fields; two already have datasets (overview-job-info,
+	// equipment-info), and its third leg reads the RUNNING order (`production_orders
+	// where id_equipment=$id AND status=2`) selecting `product{cd_product,
+	// txt_product,nm_product}`, `id_order_text`, and `txt_production_order_description`
+	// (the elpes JobStatusPanel's order title + product name). This projection had
+	// nm_product (added by the PR #540 column-extend) but LACKED the other four —
+	// so familyB stayed pinned to Hasura. Mirroring #540, we add them: the two
+	// `production_orders` columns (txt_production_order_description, id_order_text)
+	// and the two remaining `products` columns (cd_product, txt_product) off the
+	// existing LEFT JOIN products. All four are column-parity verified in BOTH
+	// packiot (F1) and packiot_shadow (F3) (2026-07-22 census) — no F3 migration.
+	// The status=2 (running) predicate stays CLIENT-SIDE, exactly like GET_JOBS /
+	// GET_JOB_LIST above (the `status` column is already projected); the per-equipment
+	// fence + row cap are unchanged. Net: +4 projected columns, zero new filters.
 	"production-orders-by-equipment": {
-		group: "production-orders", doc: "Raw production orders for one equipment, newest-first (production_orders + product/client names, front4 previousJob + job-selectors)",
-		sql: `SELECT po.id_order, po.id_production_order, po.status, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, pr.nm_product, cl.nm_client
+		group: "production-orders", doc: "Raw production orders for one equipment, newest-first (production_orders + product/client names, front4 previousJob + job-selectors + familyB GET_JOB_INFO)",
+		sql: `SELECT po.id_order, po.id_production_order, po.id_order_text, po.status, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, po.txt_production_order_description, pr.nm_product, pr.cd_product, pr.txt_product, cl.nm_client
 			FROM production_orders po
 			LEFT JOIN products pr ON pr.id_product = po.id_product
 			LEFT JOIN clients cl ON cl.id_client = po.id_client
