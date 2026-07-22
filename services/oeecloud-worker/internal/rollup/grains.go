@@ -148,7 +148,7 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 
 // LoopGrains schedules runtime-rollup (the cascade tier; steps grow
 // as hour/day/shift are ported).
-func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, dqEnabled bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("runtime-rollup started (P3b cascade: week+month; more grains as ported)")
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
@@ -188,6 +188,17 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 				if firstErr == nil {
 					firstErr = err
 				}
+			}
+			// P11 andon Tier-0: DETECT + RECORD data-quality violations on the grains
+			// just computed. PURE SIDE-WRITE — reads runtime rows, writes ONLY
+			// data_quality_event; alters no served value. Flag-gated (DQ_ALARMS_ENABLED).
+			if n, err := RunDQScan(ctx, d, dqEnabled); err != nil {
+				logger.Warn("data-quality scan failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else if n > 0 {
+				logger.Info("data-quality events recorded", slog.String("dest", d.Name), slog.Int64("upserted", n))
 			}
 		}
 		return firstErr

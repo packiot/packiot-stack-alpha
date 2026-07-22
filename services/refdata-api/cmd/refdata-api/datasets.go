@@ -300,6 +300,25 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, pEquip, pDate("month")},
 	},
 
+	// ── data-quality (north-star P11 andon pillar, Tier-0) ───────────
+	// data-quality-events: the alarm feed. Surfaces the data_quality_event rows the
+	// rollup DETECTOR records (OEE_GT_1, NET_GT_GROSS, NEGATIVE_METRIC,
+	// IDEAL_SPEED_NULL_WHILE_PRODUCING) so silent OEE corruption becomes VISIBLE on
+	// the read plane. Tenant-fenced DIRECTLY on id_enterprise (the table carries it
+	// natively, like production_targets / oee_targets — no equipments JOIN, so no
+	// `active` predicate applies), most-recent-first. Explicit projection (ADR-0027
+	// rule #2). Not windowed — the compile row cap (LIMIT 10000) bounds it and the
+	// andon panel wants the freshest violations. The backing table is a NEW staging
+	// object (edge-node-red migration 34, applied to BOTH packiot + packiot_shadow);
+	// the pre-flip drift gate will CORRECTLY flag it MISSING on prod until that
+	// migration rolls forward there as part of the P11 rollout.
+	"data-quality-events": {
+		group: "data-quality", doc: "Data-quality alarm feed — recorded OEE/runtime violations, most-recent-first (data_quality_event)",
+		sql: `SELECT id, id_enterprise, id_equipment, grain, bucket_ts, rule, observed_value, severity, detected_at
+			FROM data_quality_event WHERE id_enterprise = $1 ORDER BY detected_at DESC`,
+		params: []dsParam{pEnt},
+	},
+
 	// ── live-uns-equipment (snapshot tables — no window by design) ───
 	"live-equipment-metrics": {
 		group: "live-uns-equipment", doc: "Live equipment state/speed/status snapshot (uns_equipment_current_metrics)",

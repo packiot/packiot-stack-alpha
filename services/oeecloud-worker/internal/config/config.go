@@ -153,6 +153,12 @@ type Config struct {
 	RuntimeProvisionEnabled       bool
 	RuntimeProvisionIntervalHours int // provision cadence; 30-day horizon makes hourly wasteful (default 6)
 	RuntimeRollupEnabled          bool
+	// DQAlarmsEnabled — north-star P11 (andon) Tier-0 data-quality alarm substrate.
+	// When true, the rollup tick DETECTS data-quality violations (oee>1, net>gross,
+	// negatives, ideal_speed=0-while-producing) on each computed grain and RECORDS a
+	// data_quality_event (pure side-write; NO served value is altered). Default true
+	// on staging; flip off to disable detection entirely (reversible).
+	DQAlarmsEnabled bool
 	// Backfill drains recalc_needed hour rows stranded OUTSIDE the live rollup's
 	// 65-min window (bounded per tick, oldest-first). Both original blockers are
 	// now solved: the shadow cagg scheduler self-heal made the widened join fast
@@ -234,6 +240,7 @@ func Load() (*Config, error) {
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeProvisionIntervalHours:    getenvInt("RUNTIME_PROVISION_INTERVAL_HOURS", 6),
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
+		DQAlarmsEnabled:                  getenv("DQ_ALARMS_ENABLED", "true") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
 		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
 		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
