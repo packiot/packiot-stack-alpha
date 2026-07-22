@@ -236,6 +236,31 @@
     "argc": 1
   },
   {
+    "ref": "current-shift",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "tp_equipment"
+    ]
+  },
+  {
+    "ref": "current-shift",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "uns_equipment_current_shift",
+    "columns": [
+      "net_production",
+      "gross_production",
+      "scrap",
+      "elapsed_time",
+      "target",
+      "duration",
+      "proportional_target",
+      "id_equipment"
+    ]
+  },
+  {
     "ref": "custom-target-day",
     "source": "dataset",
     "kind": "relation",
@@ -776,12 +801,14 @@
     "columns": [
       "id_order",
       "id_production_order",
+      "id_order_text",
       "status",
       "production_programmed",
       "net_production",
       "ts_start",
       "ts_end",
-      "id_equipment"
+      "id_equipment",
+      "txt_production_order_description"
     ]
   },
   {
@@ -790,7 +817,9 @@
     "kind": "relation",
     "name": "products",
     "columns": [
-      "nm_product"
+      "nm_product",
+      "cd_product",
+      "txt_product"
     ]
   },
   {
