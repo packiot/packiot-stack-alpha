@@ -9,6 +9,8 @@
 - [ADR-0029 (decisions resolved 2026-07-20)](0029-decisions-resolved-2026-07-20.md) — its **D5 / #80 ruling** ("backend prorates the proportional_target") is the *assumption finding (a) violates* on the F3 read plane. This ADR corrects the record.
 - [ADR-0032](0032-collapse-to-single-flow-f3.md) — the collapse to F3 just made F3 the *read plane*, which is what turns finding (a) from "shadow curiosity" into "live-misleading." Correctness now matters because F3 is what users see.
 - The #456 two-writer double-count post-mortem (`.../feedback_bug_two_writer_line_double_count.md`) and the int4-overflow / EventMint-scope bug (`.../feedback_bug_eventmint_deriver_scope_mismatch.md`) — findings (h) and (b) are the *same bug classes* recurring; this ADR generalizes them.
+- [ADR-0038 — North-Star target architecture](0038-north-star-factory-platform.md) — its **P11 Alerting/Andon → B2** pillar is "THIN/MISSING (business alarms)." The **`data_quality_event` substrate decided in §4A below is the concrete seed of B2** — the first business-alarm surface the platform grows. 0038 sets the destination; §4A lays the first stone.
+- [ADR-0039 — Entity lifecycle & deletion strategy](0039-entity-lifecycle-deletion-strategy.md) — findings **P3-2** (missing `production_target`, no area/site fallback) and **P3-4** (0/NULL `ideal_speed`) are partly *entity-integrity* gaps: config that should never be absent for a producing equipment. 0039 owns the entity contract (temporal columns, one delete path, restored FKs) that keeps that config present; this ADR alarms when it isn't (rule `METRIC_MISSING_ALL_LEVELS` / `IDEAL_SPEED_NULL_WHILE_PRODUCING`, §4A).
 
 > **Numbering:** `0035` is a concurrent Redis-cache ADR; `0036` is this ADR's companion. This is `0037`.
 
@@ -128,11 +130,80 @@ Since `oee = net / ideal_production` and `ideal_production` depends on `ideal_sp
 
 ---
 
+## 4A. The data-quality event substrate — where the alarms these findings demand actually land — **[Gold-adjacent] · NEW DECISION**
+
+Findings **(d)** (`oee > 1` → *"alert on it"*), **P3-2** (missing target → *"data-quality alarm, not silent 0"*), and **P3-4** (0/NULL `ideal_speed` → *"emit a data-quality alarm"*) each **end in an alarm** — but **no table exists to emit that alarm into.** An alarm with no sink is a TODO, not a decision. Three findings already reached for the same missing thing; this section supplies it once, as a first-class substrate, so the rest of the backlog stops re-inventing it inline.
+
+### Decision — a single `data_quality_event` table (gold-adjacent)
+
+DECIDE one tenant-scoped, grain-tagged event table that every invariant/validation check writes a row into when it trips. It sits **beside Gold** (not inside a runtime rollup row) so a served metric and the fact that it was flagged are separable — a dashboard can show the number *and* a "this value is suspect" badge.
+
+```sql
+-- Gold-adjacent data-quality event sink (design sketch; windows/enum tuned in S-phase).
+-- Written by the rollup tick; read by the P11-B2 alarm/andon surface (ADR-0038).
+CREATE TABLE data_quality_event (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_enterprise  int         NOT NULL,               -- tenant (multitenancy fence, ADR-0012 pool)
+  id_equipment   int         NOT NULL,               -- entity at fault
+  bucket         text        NOT NULL,               -- grain: 'shift' | '1hour' | '1day' | ...
+  ts_range       tstzrange   NOT NULL,               -- grain window the violation was observed in
+  rule           dq_rule     NOT NULL,               -- which invariant tripped (enum below)
+  observed_value double precision,                   -- the offending value (e.g. oee=8142, ideal_speed=NULL→NULL)
+  severity       dq_severity NOT NULL DEFAULT 'warn',-- 'info' | 'warn' | 'critical'
+  detected_at    timestamptz NOT NULL DEFAULT now()  -- when the check saw it
+);
+
+CREATE TYPE dq_rule AS ENUM (
+  'OEE_GT_1',                          -- (d)/(e): oee or oee_p > 1 — mis-set 30701 ideal_speed tripwire
+  'NET_GT_GROSS',                      -- (e): net production exceeds gross — impossible, guard breach
+  'NEGATIVE_METRIC',                   -- (e): a count/time went < 0
+  'IDEAL_SPEED_NULL_WHILE_PRODUCING',  -- P3-4: 0/NULL nameplate speed while net>0 → silent oee=0
+  'METRIC_MISSING_ALL_LEVELS'          -- P3-2: no production_target at equipment/area/site → silent 0
+);
+```
+
+`bucket` + `ts_range` pin the violation to a specific grain row so it round-trips to the exact `equipment_runtime_*` window (and survives the **reprocessing/replay** of ADR-0036 §3.3 — a re-computed window re-emits its DQ events idempotently).
+
+### Who writes it, and when — inside the existing rollup tick
+
+The check runs where the numbers are already in hand: the **existing rollup tick** in `services/oeecloud-worker/internal/rollup/` (the same `shift.go`/`hour.go`/`grains.go` pass that computes `oee`, `oee_a/p/q`, `proportional_target`). It is the Silver→Gold boundary — the moment a value is about to be served — so it is the correct, single place to assert the invariants of finding (e) and, on breach, `INSERT` a `data_quality_event` rather than (or in addition to) silently clamping. **No new service, no new consumer of the message bus** — one function called from the tick that already runs.
+
+### This is the seed of the north-star P11-B2 business-alarm pillar
+
+[ADR-0038 §P11 / B2](0038-north-star-factory-platform.md) rates the **business** alerting/andon layer THIN→MISSING (infra Alertmanager exists; OEE-threshold / andon / **metric data-quality** alarms do not — the grep for `andon` returns zero). `data_quality_event` is the **first table of that pillar**: the alarm *evaluation* here produces rows; B2 later adds threshold config, notification transport, and andon widgets *on top of the same table*. Building it now, as the sink for these findings, means B2 is grown, not greenfielded — the highest-value, lowest-cost slice ADR-0038 itself names ("data-quality alarms first within B2").
+
+### Sequencing — **instrument BEFORE remediate** (hard rule)
+
+**The DQ substrate + its alarms ship BEFORE the clamp / `ideal_speed` / proration fixes** (findings (a), (d)-clamp, (e), P3-2, P3-4). The order is not incidental — it is the safety property:
+
+1. **Make the corruption visible and measurable first.** Emit `data_quality_event` rows for every `OEE_GT_1`, `IDEAL_SPEED_NULL_WHILE_PRODUCING`, etc. *while the served numbers are still the (wrong-but-high) values users see today.* This produces a **baseline census** of exactly which tenants/equipment/windows are affected and by how much.
+2. **Only then change the served value.** Clamping OEE to 1.0 or fixing proration (a) will *lower* numbers tenants may have baselined against (see §6 "Negative/risks": some tenants baselined on the inflated OEE). Instrumenting first means the drop is *explained by data* ("you had N `OEE_GT_1` events from a mis-set ideal_speed; here they are") instead of appearing as an unexplained regression, and lets the per-tenant rollout + comms be driven off the census rather than guesswork.
+
+The rule generalizes: **a data-quality substrate is an observability change (safe, additive, reversible); a clamp/formula change is a served-value change (visible, needs comms).** Ship the observability change first, always. This orders the remediation sequence in §5.
+
+### Empirical justification — the live-evidence scale (a systemic invariant vacuum, not "3 edge cases")
+
+The audit ran these checks against the **live DB**; the scale reframes the findings from a handful of edge cases into a *missing-invariant regime*:
+
+| Signal (live-DB observed) | Scale | What it proves |
+|---|---|---|
+| `ideal_speed` NULL-or-0, **shift** grain | **90.3%** of rows | The 30701 config gap (P3-4) is the *norm*, not the exception — the availability/performance base is unset for the vast majority of shift rows. |
+| `ideal_speed` NULL-or-0, **hourly** grain | **96.8%** of rows | Same gap, worse at finer grain. `IDEAL_SPEED_NULL_WHILE_PRODUCING` would fire on nearly every producing hour. |
+| `oee` maximum, **shift** grain | **8,142** | Not the golden-test-permitted 5349 (finding (d)) — an actual served-tier value three orders of magnitude over 1.0. |
+| `oee` maximum, **hourly** grain | **13,918** | Finer grain, larger blow-up — the uncapped residual (d)/(e) compounds. |
+| `oee` maximum, **F1 (legacy pg)** | **8.2 × 10¹⁸** | Approaching int/float overflow territory — the *same class* as the int4-overflow incident (`feedback_bug_eventmint_deriver_scope_mismatch.md`); an unbounded metric with no `[0,1]` guard. |
+| `oee > 1` distribution | **concentrated on `tp=3` lines** | The **#456 two-writer double-count fingerprint** (`feedback_bug_two_writer_line_double_count.md`): line-level rows double-written (legacy derivation + Calc emission) → oee>1 clusters exactly where finding (h) predicts. |
+
+**Read together:** 90–97% of rows missing a required input, OEE served up to 10¹⁸, and the overflow clustering on the precise entity class a known two-writer bug touches — this is not three isolated defects. It is **finding (e) restated as data**: there is no `[0,1]` / `net≤gross` / non-negativity invariant *anywhere on the served path*, so the values are unbounded by construction. The `data_quality_event` table is what makes that vacuum *countable* (one `SELECT count(*) … GROUP BY rule` is the ongoing census), and the instrument-before-remediate rule is what makes closing it *safe*.
+
+---
+
 ## 5. Prioritized remediation sequence
 
-Ordered by (visibility × correctness impact) ÷ effort, and by ADR-0036 layer dependency (Bronze/Silver scaffolding first where a fix needs replay):
+Ordered by (visibility × correctness impact) ÷ effort, and by ADR-0036 layer dependency (Bronze/Silver scaffolding first where a fix needs replay). **Step 0 is the instrument-before-remediate gate (§4A):** stand up `data_quality_event` + the invariant *checks* (emit-only) **before** any clamp/formula step below, so corruption is measured while the served numbers are still what tenants see today. The clamps and proration fixes (1, 3, 4) are then rolled out per-tenant off the census those events produce.
 
-1. **(a) proportional_target elapsed-prorate** — *P1, Silver, one formula.* Highest visibility (F3 is the read plane; violates the #80 ruling live). Ship first; `shift.go:191`.
+0. **`data_quality_event` substrate + emit-only invariant checks** — *§4A, Gold-adjacent, observability-only.* Additive, reversible, changes no served value. Ships FIRST. Seeds ADR-0038 P11-B2.
+1. **(a) proportional_target elapsed-prorate** — *P1, Silver, one formula.* Highest visibility (F3 is the read plane; violates the #80 ruling live). Ship first *among value-changing fixes*; `shift.go:191`.
 2. **(b) monotonicity guard** — *P1, Silver+Bronze.* Stops silent phantom-production corruption; `calc.go`. Land **with/after ADR-0036 Bronze B0/B1** so the corrupted history can be replayed out.
 3. **(e) `[0,1]`/`net≤gross`/non-negativity invariants** — *P2, Silver core.* The Silver contract itself; subsumes (d)-clamp, guards (a)/(b)/(f) regressions. Build as ADR-0036 §4's deliverable.
 4. **(d) performance cap + direct-measure + oee>1 alert** — *P2, Silver+Gold.* Rides on (e)'s clamp; adds the direct measure + tripwire. `grains.go:103`, alert in Gold.
