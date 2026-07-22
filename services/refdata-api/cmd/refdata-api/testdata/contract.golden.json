@@ -383,6 +383,64 @@
     ]
   },
   {
+    "ref": "equipment-runtime-1day",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipment_runtime_1day",
+    "columns": [
+      "ts_value",
+      "id_equipment",
+      "available_time",
+      "changeover_time",
+      "downtime",
+      "gross",
+      "ideal_production",
+      "idle_blocked",
+      "idle_starved",
+      "idle_time",
+      "net",
+      "planned_downtime",
+      "proportional_target",
+      "recalc_needed",
+      "running_time",
+      "scrap",
+      "speed",
+      "stopped_time",
+      "target",
+      "target_customized"
+    ]
+  },
+  {
+    "ref": "equipment-runtime-1day",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "nm_equipment"
+    ]
+  },
+  {
+    "ref": "equipments-events-column-flag",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "id_equipment"
+    ]
+  },
+  {
+    "ref": "equipments-list",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "id_equipment",
+      "cd_equipment",
+      "nm_equipment",
+      "position"
+    ]
+  },
+  {
     "ref": "events-timeline-from-po",
     "source": "dataset",
     "kind": "function",
@@ -660,6 +718,41 @@
     "argc": 1
   },
   {
+    "ref": "overview-scrap-rate",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "overview-scrap-rate",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "v_13_overview_partial_scrap_rate",
+    "columns": [
+      "cd_equipment",
+      "gross",
+      "net",
+      "scrap",
+      "scrap_rate"
+    ]
+  },
+  {
+    "ref": "overview-takt",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "overview-takt",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "v_13_overview_takt",
+    "columns": [
+      "id_equipment",
+      "avg_speed"
+    ]
+  },
+  {
     "ref": "production-flow",
     "source": "dataset",
     "kind": "function",
@@ -698,6 +791,107 @@
     "name": "products",
     "columns": [
       "nm_product"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "areas",
+    "columns": [
+      "nm_area"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "clients",
+    "columns": [
+      "nm_client"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "nm_equipment"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "product_families",
+    "columns": [
+      "nm_product_family",
+      "id_product_family"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "production_orders",
+    "columns": [
+      "id_production_order",
+      "id_order",
+      "id_order_text",
+      "id_equipment",
+      "id_equipment_executed",
+      "id_product",
+      "id_user_operator",
+      "status",
+      "available_time",
+      "conversion_factor",
+      "gross_production",
+      "ideal_production",
+      "ideal_production_speed",
+      "net_production",
+      "oee",
+      "oee_availability",
+      "oee_performance",
+      "oee_quality",
+      "planned_downtime",
+      "production_final",
+      "production_ordered",
+      "production_programmed",
+      "production_real",
+      "qt_stops",
+      "running_time",
+      "speed",
+      "stopped_time",
+      "ts_creation",
+      "ts_start",
+      "ts_start_tz",
+      "ts_end",
+      "ts_end_tz",
+      "txt_production_order_description",
+      "txt_production_order_notes"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "products",
+    "columns": [
+      "nm_product",
+      "cd_product",
+      "txt_product",
+      "scrap_target",
+      "equipment_setup"
+    ]
+  },
+  {
+    "ref": "production-orders-rich",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "sites",
+    "columns": [
+      "nm_site"
     ]
   },
   {
@@ -778,6 +972,36 @@
       "vl_month",
       "vl_week",
       "vl_shift"
+    ]
+  },
+  {
+    "ref": "shifts",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "areas",
+    "columns": [
+      "nm_area"
+    ]
+  },
+  {
+    "ref": "shifts",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "shifts",
+    "columns": [
+      "id_shift",
+      "cd_shift",
+      "id_site",
+      "id_area"
+    ]
+  },
+  {
+    "ref": "shifts",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "sites",
+    "columns": [
+      "nm_site"
     ]
   },
   {

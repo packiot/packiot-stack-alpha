@@ -710,6 +710,174 @@ var datasets = map[string]dataset{
 			ORDER BY inicio DESC`,
 		params: []dsParam{pEnt, pDate("datetime")},
 	},
+
+	// ── front4 Category C (front4 PR #210 §C — net-new datasets) ─────────────
+	// The seven reads below are the LAST Hasura-only front4 sites with NO refdata
+	// dataset (PR #210 "Category C" table). Wave-B rewires the sites that already
+	// have a dataset; these had none, so front4 cannot drop `@apollo/client` until
+	// they land. Every one is tenant-fenced (enterprise NEVER from the body — $1 is
+	// the injected customer_id) and bounded (per-equipment guard, id-list + window,
+	// or a single enterprise scan under the shared row cap). REFDATA_FLOW stays
+	// default f1; all backing objects were census-verified present + column-parity
+	// in BOTH packiot (F1) and packiot_shadow (F3) on 2026-07-21, except three
+	// nullable production_orders columns absent in F3 that 31-f3-front4-cat-c-objects.sql
+	// adds (see production-orders-rich note).
+
+	// overview-takt / overview-scrap-rate (C1/C2 — OverviewV5 + lib/dashboard/
+	// hooks/neopacStats). front4 reads these two ent-13 ("Neopac") views by a bare
+	// `id_equipment = $eq` with NO tenant predicate (Hasura scoped the enterprise by
+	// row-permission). The load-bearing rewrite is the FENCE: an EXISTS on equipments
+	// binds the caller's tenant ($1) to the equipment ($2), so a foreign-tenant
+	// equipment id yields zero rows — same ownership shape as the perEquipment group,
+	// but over a VIEW instead of a set-returning function. ⚠️ These are ent-13-SPECIFIC
+	// views: on staging (tenants CPACK ent 3 + Incoplast ent 4) they return EMPTY, and
+	// in F3 (`packiot_shadow`) they are STUB TABLES (relkind r), not views — the object
+	// EXISTS with column-parity, which is what the read needs (front4 needs a non-Hasura
+	// path even when the result is empty). Bind anyway.
+	"overview-takt": {
+		group: "overview-detail", doc: "Per-equipment takt/avg speed (v_13_overview_takt, ent-13 Neopac view; empty off ent 13)",
+		sql: `SELECT v.id_equipment, v.avg_speed
+			FROM v_13_overview_takt v
+			WHERE v.id_equipment = $2
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1)`,
+		params: []dsParam{pEnt, pEquip},
+	},
+	"overview-scrap-rate": {
+		group: "overview-detail", doc: "Per-equipment partial scrap rate (v_13_overview_partial_scrap_rate, ent-13 Neopac view; empty off ent 13)",
+		sql: `SELECT v.cd_equipment, v.gross, v.net, v.scrap, v.scrap_rate
+			FROM v_13_overview_partial_scrap_rate v
+			WHERE v.id_equipment = $2
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1)`,
+		params: []dsParam{pEnt, pEquip},
+	},
+
+	// equipments-events-column-flag (C3 — Downtimes/index SHOULD_DISPLAY_EVENT_COLLUMN).
+	// front4 issues an `equipments_aggregate` COUNT that gates whether the Downtimes
+	// grid shows the events column: the count of the caller's equipment that both have
+	// `event_should_be_displayed = true` AND are a machine/sector (tp_equipment IN 1,2).
+	// A count>0 flips `isSectorView`. We replicate the exact aggregate predicate,
+	// enterprise-fenced at $1. NOTE the projection is count(id_equipment), NOT count(*):
+	// the fail-loud contract parser (contract.go) rejects `*` inside an aggregate, so a
+	// single-column count is the parseable-yet-equivalent form (every row has a non-null
+	// id_equipment PK, so count(id_equipment) == count(*)). Not windowed; one scalar row.
+	"equipments-events-column-flag": {
+		group: "downtimes-analytics", doc: "Count gating the Downtimes events column (equipments where event_should_be_displayed, tp 1/2)",
+		sql: `SELECT count(id_equipment) AS count FROM equipments
+			WHERE id_enterprise = $1 AND event_should_be_displayed = true AND tp_equipment IN (1, 2)`,
+		params: []dsParam{pEnt},
+	},
+
+	// equipments-list (C4 — Settings/ProductionOrders GetEquipmentsPosition,
+	// EQUIPMENT_POSITION). front4 lists EVERY machine (tp_equipment = 1) in the
+	// enterprise with its physical `position` for the PO-board ordering. Distinct from
+	// the single-equipment `equipment-info` dataset (which takes an id at $2): this is
+	// an enterprise-WIDE read fenced directly on equipments.id_enterprise = $1 (no
+	// per-equipment axis), bounded by the tenant scope + row cap. Projects exactly the
+	// four columns front4 reads. Not windowed.
+	"equipments-list": {
+		group: "settings", doc: "Enterprise-wide machine list with board position (equipments, front4 EQUIPMENT_POSITION)",
+		sql: `SELECT id_equipment, cd_equipment, nm_equipment, position
+			FROM equipments WHERE id_enterprise = $1 AND tp_equipment = 1`,
+		params: []dsParam{pEnt},
+	},
+
+	// production-orders-rich (C5 — Settings/ProductionOrders GET_PRODUCTION_ORDERS).
+	// front4's PO admin board reads `production_orders` filtered by a SET of equipment
+	// ids AND status = 1 (available), newest-first by ts_creation, with a DEEP nest:
+	// client{nm_client}, product{nm_product,cd_product,txt_product,scrap_target,
+	// equipment_setup, product_family{...}}, equipment{nm_equipment}, Sites{nm_site},
+	// Area{nm_area}. Distinct from `production-orders-by-equipment` (single equipment,
+	// flat, all-status): this is MULTI-equipment ($2 = an id-list) + status-fenced +
+	// a deeper join set.
+	//
+	// SHAPE: like the sibling PO dataset, we LEFT JOIN the relations and project the
+	// nested names FLAT (nm_client, nm_product, nm_product_family, nm_site, nm_area,
+	// …); the front4 refdata adapter re-nests them under the Hasura root-field names
+	// (frozen-skin parity). `equipment_setup`/`scrap_target` are SCALAR columns on
+	// products (not relations); `product_family` is the `product_families` table
+	// (products.id_product_family FK). BOUND + FENCED: po.id_enterprise = $1 (direct —
+	// production_orders carries id_enterprise, so a foreign-tenant equipment id in the
+	// list simply matches zero rows), the id-list at $2 (cardinality 0 ⇒ zero rows,
+	// safe — front4 always passes the board's machine set), status = 1 literal, and the
+	// shared row cap. Not windowed (the board is a status snapshot, not a time range).
+	//
+	// F3 NOTE: production_orders in packiot_shadow (F3) lacks three of the projected
+	// columns present in F1 — ideal_production, ts_start_tz, ts_end_tz —
+	// so 31-f3-front4-cat-c-objects.sql ADDs them (nullable, IF NOT EXISTS) to keep
+	// F1↔F3 object parity at F3_MISSING=0. They are inert under the default f1 flow.
+	"production-orders-rich": {
+		group: "production-orders", doc: "Available POs for a set of equipment, deep-nested (production_orders + client/product/product_family/equipment/site/area, front4 GET_PRODUCTION_ORDERS)",
+		sql: `SELECT po.id_production_order, po.id_order, po.id_order_text, po.id_equipment, po.id_equipment_executed,
+			po.id_product, po.id_user_operator, po.status, po.available_time, po.conversion_factor,
+			po.gross_production, po.ideal_production, po.ideal_production_speed, po.net_production,
+			po.oee, po.oee_availability, po.oee_performance, po.oee_quality, po.planned_downtime,
+			po.production_final, po.production_ordered, po.production_programmed, po.production_real,
+			po.qt_stops, po.running_time, po.speed, po.stopped_time, po.ts_creation,
+			po.ts_start, po.ts_start_tz, po.ts_end, po.ts_end_tz,
+			po.txt_production_order_description, po.txt_production_order_notes,
+			cl.nm_client,
+			pr.nm_product, pr.cd_product, pr.txt_product, pr.scrap_target, pr.equipment_setup,
+			pf.nm_product_family, pf.id_product_family,
+			eq.nm_equipment,
+			s.nm_site,
+			a.nm_area
+			FROM production_orders po
+			LEFT JOIN clients cl ON cl.id_client = po.id_client
+			LEFT JOIN products pr ON pr.id_product = po.id_product
+			LEFT JOIN product_families pf ON pf.id_product_family = pr.id_product_family
+			LEFT JOIN equipments eq ON eq.id_equipment = po.id_equipment
+			LEFT JOIN sites s ON s.id_site = po.id_site
+			LEFT JOIN areas a ON a.id_area = po.id_area
+			WHERE po.id_enterprise = $1 AND (cardinality($2::int[]) = 0 OR po.id_equipment = ANY($2::int[]))
+			AND po.status = 1
+			ORDER BY po.ts_creation DESC`,
+		params: []dsParam{pEnt, ids("equipments")},
+	},
+
+	// equipment-runtime-1day (C6 — PdfSuzano EQP_RUNTIME_1DAY; also OverviewV3
+	// commented). front4 reads the RAW daily runtime rollup for a SET of equipment
+	// over a date range (front4 uses _gte/_lt half-open bounds). equipment_runtime_1day
+	// carries NO id_enterprise, so — like custom-target-day / liveUNS — we scope
+	// through the equipments hierarchy ($1) and add the equipment id-list ($2). This is
+	// DISTINCT from custom-target-day (which filters target_customized = true — a
+	// different, sparse row set): this is the raw, unfiltered daily series. The date
+	// range is a WINDOW ([from, to)), bound as $3/$4 with `< to` to match front4's _lt;
+	// budgeted at analyticsWindow (one row per equipment per day is cheap). The join to
+	// equipments supplies nm_equipment (front4's nested equipment{nm_equipment}).
+	"equipment-runtime-1day": {
+		group: "settings", doc: "Raw daily runtime rollup for a set of equipment over a date range (equipment_runtime_1day, front4 PdfSuzano)",
+		sql: `SELECT r.ts_value, r.id_equipment, r.available_time, r.changeover_time, r.downtime, r.gross,
+			r.ideal_production, r.idle_blocked, r.idle_starved, r.idle_time, r.net, r.planned_downtime,
+			r.proportional_target, r.recalc_needed, r.running_time, r.scrap, r.speed, r.stopped_time,
+			r.target, r.target_customized, e.nm_equipment
+			FROM equipment_runtime_1day r JOIN equipments e USING (id_equipment)
+			WHERE e.id_enterprise = $1
+			AND (cardinality($2::int[]) = 0 OR r.id_equipment = ANY($2::int[]))
+			AND r.ts_value >= $3 AND r.ts_value < $4`,
+		windowed: true, maxWindow: analyticsWindow,
+		params: []dsParam{pEnt, ids("equipments"), pWinFrom, pWinTo},
+	},
+
+	// shifts (C7 — Context/VariablesContext GET_VARIABLES_CONTEXT #6 `shifts` root
+	// field + EntityFilters/Query). VERIFIED genuinely uncovered (2026-07-21): the
+	// front4 bootstrap reads a STANDALONE `shifts` root field selecting {cd_shift,
+	// id_shift, name_site{nm_site,id_site}, area{id_area,nm_area}} — a shape NEITHER
+	// covered by `entities-per-user-role` (whose `shifts` is a scalar jsonb column on
+	// the view, no id_shift / nested site+area) NOR by the /v1/shift-hours route (which
+	// is packml-topic-keyed via piot_get_shift_hours_by_packml_topic_2 — a per-equipment
+	// calendar expansion, not the enterprise's shift-definition list). So this is a
+	// real net-new dataset. Enterprise-fenced at $1 on shifts.id_enterprise; the two
+	// LEFT JOINs flatten the site/area names the adapter re-nests. Not windowed
+	// (a small, static definition list bounded by the tenant + row cap).
+	"shifts": {
+		group: "variables-context", doc: "Enterprise shift definitions for the bootstrap (shifts + site/area names, front4 GET_VARIABLES_CONTEXT #6)",
+		sql: `SELECT sh.id_shift, sh.cd_shift, sh.id_site, s.nm_site, sh.id_area, a.nm_area
+			FROM shifts sh
+			LEFT JOIN sites s ON s.id_site = sh.id_site
+			LEFT JOIN areas a ON a.id_area = sh.id_area
+			WHERE sh.id_enterprise = $1`,
+		params: []dsParam{pEnt},
+	},
 }
 
 // ── Compile ──────────────────────────────────────────────────────────
