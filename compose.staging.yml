@@ -49,6 +49,7 @@ volumes:
 # .24 mosquitto (ADR-0010 Phase 2 MQTT broker; ADR-0011 P0-2 durability config)
 # .29 ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug; publishes :8444, metrics :9105)
 # .35 app-redis (ADR-0035 application cache for refdata-api cache-aside; SEPARATE from authentik-redis .14)
+# .37 redis-exporter (white-box Redis metrics on :9121; scrapes authentik-redis today, ADR-0035 app-redis later)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -726,6 +727,26 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.27
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # redis-exporter: white-box Redis metrics (memory, keyspace, hit/miss,
+  # connected clients, evictions, blocked clients, ops/sec). Redis was a total
+  # telemetry blind spot — authentik-redis backs the whole auth flow yet emitted
+  # ZERO metrics. REDIS_ADDR points at authentik-redis (the only Redis today).
+  # When ADR-0035's app-redis (.35) lands as the refdata-api cache-aside store,
+  # add it via the exporter's multi-target mode (a second scrape target with a
+  # ?target= relabel, same shape as blackbox) — no new exporter needed.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0-alpine
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://authentik-redis:6379
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.37
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
