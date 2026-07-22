@@ -235,7 +235,7 @@ func perEquipment(group, doc, fn string) dataset {
 	return dataset{
 		group: group, doc: doc,
 		sql: `SELECT f.* FROM ` + fn + `($2) f WHERE EXISTS
-			(SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1)`,
+			(SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1 AND e.active)`,
 		params: []dsParam{pEnt, pEquip},
 	}
 }
@@ -246,7 +246,7 @@ func liveUNS(doc, table string) dataset {
 	return dataset{
 		group: "live-uns-equipment", doc: doc,
 		sql: `SELECT t.* FROM ` + table + ` t JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1 AND (cardinality($2::int[]) = 0 OR t.id_equipment = ANY($2::int[]))`,
+			WHERE e.id_enterprise = $1 AND e.active AND (cardinality($2::int[]) = 0 OR t.id_equipment = ANY($2::int[]))`,
 		params: []dsParam{pEnt, ids("equipments")},
 	}
 }
@@ -293,7 +293,7 @@ var datasets = map[string]dataset{
 		group: "oee", doc: "Avg OEE per shift for one equipment's month (equipment_runtime_shift, scoped through equipments)",
 		sql: `SELECT avg(r.oee) AS oee, r.cd_shift
 			FROM equipment_runtime_shift r JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND date_trunc('month', r.ts_value) = date_trunc('month', $3::date)
 			AND r.cd_shift IS NOT NULL
 			GROUP BY r.cd_shift ORDER BY r.cd_shift`,
@@ -335,7 +335,7 @@ var datasets = map[string]dataset{
 		sql: `SELECT t.net_production, t.gross_production, t.scrap, t.elapsed_time, t.target,
 			t.duration, t.proportional_target, t.id_equipment, e.tp_equipment
 			FROM uns_equipment_current_shift t JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1 AND t.id_equipment = $2`,
+			WHERE e.id_enterprise = $1 AND t.id_equipment = $2 AND e.active`,
 		params: []dsParam{pEnt, pEquip},
 	},
 
@@ -390,7 +390,7 @@ var datasets = map[string]dataset{
 	"equipment-info": {
 		group: "overview-detail", doc: "Equipment metadata for one line (equipments, front4 machineStatus/neopacStats)",
 		sql: `SELECT id_equipment, nm_equipment, tp_equipment, id_enterprise, id_site, id_area
-			FROM equipments WHERE id_enterprise = $1 AND id_equipment = $2`,
+			FROM equipments WHERE id_enterprise = $1 AND id_equipment = $2 AND active`,
 		params: []dsParam{pEnt, pEquip},
 	},
 	"overview-production-health": perEquipment("overview-detail",
@@ -663,14 +663,14 @@ var datasets = map[string]dataset{
 		group: "enterprise-config", doc: "Enterprise settings (enterprises minus api_key)",
 		sql: `SELECT id_enterprise, nm_enterprise, week_begin, day_begin, week_size, timezone,
 			logo_url, active, basic_menu, custom_menu, language_packs, scrap_calc_type
-			FROM enterprises WHERE id_enterprise = $1`,
+			FROM enterprises WHERE id_enterprise = $1 AND active IS NOT FALSE`,
 		params: []dsParam{pEnt},
 	},
 	"users": {
 		group: "enterprise-config", doc: "Enterprise users (minus credential columns)",
 		sql: `SELECT id_user, user_email, user_name, id_enterprise, phone_number, user_roles,
 			timezone, languages, user_menu, internal_user, active
-			FROM users WHERE id_enterprise = $1`,
+			FROM users WHERE id_enterprise = $1 AND active IS NOT FALSE`,
 		params: []dsParam{pEnt},
 	},
 	"user-roles": {
@@ -722,7 +722,7 @@ var datasets = map[string]dataset{
 	"equipment-downtime-reasons": {
 		group: "settings", doc: "Per-equipment downtime reasons config (equipments.downtime_reasons)",
 		sql: `SELECT id_equipment, nm_equipment, downtime_reasons FROM equipments
-			WHERE id_enterprise = $1 AND id_equipment = $2`,
+			WHERE id_enterprise = $1 AND id_equipment = $2 AND active`,
 		params: []dsParam{pEnt, pEquip},
 	},
 
@@ -739,7 +739,7 @@ var datasets = map[string]dataset{
 		group: "settings", doc: "Customized monthly targets per equipment (equipment_runtime_1month)",
 		sql: `SELECT r.ts_value, r.target, e.nm_equipment
 			FROM equipment_runtime_1month r JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND r.target IS NOT NULL AND r.target_customized = true
 			ORDER BY r.ts_value DESC`,
 		params: []dsParam{pEnt, pEquip},
@@ -748,7 +748,7 @@ var datasets = map[string]dataset{
 		group: "settings", doc: "Customized weekly targets per equipment (equipment_runtime_1week)",
 		sql: `SELECT r.ts_value, r.target, e.nm_equipment
 			FROM equipment_runtime_1week r JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND r.target IS NOT NULL AND r.target_customized = true
 			ORDER BY r.ts_value DESC`,
 		params: []dsParam{pEnt, pEquip},
@@ -757,7 +757,7 @@ var datasets = map[string]dataset{
 		group: "settings", doc: "Customized daily targets per equipment (equipment_runtime_1day)",
 		sql: `SELECT r.ts_value, r.target, e.nm_equipment
 			FROM equipment_runtime_1day r JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1 AND e.id_equipment = $2
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND r.target IS NOT NULL AND r.target_customized = true
 			ORDER BY r.ts_value DESC`,
 		params: []dsParam{pEnt, pEquip},
@@ -773,8 +773,8 @@ var datasets = map[string]dataset{
 	"site-by-equipment": {
 		group: "overview-detail", doc: "Site metadata for an equipment (sites, OverviewV6 AREA_NAME)",
 		sql: `SELECT s.id_enterprise, s.nm_site, s.day_begin, s.week_begin, s.week_size, s.timezone, s.language_tag
-			FROM sites s WHERE s.id_enterprise = $1
-			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_site = s.id_site AND e.id_equipment = $2)`,
+			FROM sites s WHERE s.id_enterprise = $1 AND s.active
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_site = s.id_site AND e.id_equipment = $2 AND e.active)`,
 		params: []dsParam{pEnt, pEquip},
 	},
 
@@ -863,7 +863,7 @@ var datasets = map[string]dataset{
 		sql: `SELECT v.id_equipment, v.avg_speed
 			FROM v_13_overview_takt v
 			WHERE v.id_equipment = $2
-			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1)`,
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1 AND e.active)`,
 		params: []dsParam{pEnt, pEquip},
 	},
 	"overview-scrap-rate": {
@@ -871,7 +871,7 @@ var datasets = map[string]dataset{
 		sql: `SELECT v.cd_equipment, v.gross, v.net, v.scrap, v.scrap_rate
 			FROM v_13_overview_partial_scrap_rate v
 			WHERE v.id_equipment = $2
-			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1)`,
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1 AND e.active)`,
 		params: []dsParam{pEnt, pEquip},
 	},
 
@@ -887,7 +887,7 @@ var datasets = map[string]dataset{
 	"equipments-events-column-flag": {
 		group: "downtimes-analytics", doc: "Count gating the Downtimes events column (equipments where event_should_be_displayed, tp 1/2)",
 		sql: `SELECT count(id_equipment) AS count FROM equipments
-			WHERE id_enterprise = $1 AND event_should_be_displayed = true AND tp_equipment IN (1, 2)`,
+			WHERE id_enterprise = $1 AND event_should_be_displayed = true AND tp_equipment IN (1, 2) AND active`,
 		params: []dsParam{pEnt},
 	},
 
@@ -901,7 +901,7 @@ var datasets = map[string]dataset{
 	"equipments-list": {
 		group: "settings", doc: "Enterprise-wide machine list with board position (equipments, front4 EQUIPMENT_POSITION)",
 		sql: `SELECT id_equipment, cd_equipment, nm_equipment, position
-			FROM equipments WHERE id_enterprise = $1 AND tp_equipment = 1`,
+			FROM equipments WHERE id_enterprise = $1 AND tp_equipment = 1 AND active`,
 		params: []dsParam{pEnt},
 	},
 
@@ -975,7 +975,7 @@ var datasets = map[string]dataset{
 			r.proportional_target, r.recalc_needed, r.running_time, r.scrap, r.speed, r.stopped_time,
 			r.target, r.target_customized, e.nm_equipment
 			FROM equipment_runtime_1day r JOIN equipments e USING (id_equipment)
-			WHERE e.id_enterprise = $1
+			WHERE e.id_enterprise = $1 AND e.active
 			AND (cardinality($2::int[]) = 0 OR r.id_equipment = ANY($2::int[]))
 			AND r.ts_value >= $3 AND r.ts_value < $4`,
 		windowed: true, maxWindow: analyticsWindow,
