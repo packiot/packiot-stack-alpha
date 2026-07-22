@@ -14,6 +14,8 @@
 **Relates to:**
 - [ADR-0027](0027-refdata-api-surface-1-read-contract.md) — refdata-api is the **Gold consumer**. The read contract binds to Gold tables/views; this ADR does not change that contract, it names what feeds it.
 - [ADR-0015](0015-customer-facing-query-api.md) — customer query API, another Gold consumer.
+- [ADR-0038 — North-Star target architecture](0038-north-star-factory-platform.md) — the medallion (esp. immutable Bronze + a named Silver) is the **substrate the north-star pillars stand on**; ADR-0037 §4A's `data_quality_event` (fed at the Silver→Gold boundary) is the seed of 0038's **P11-B2** business-alarm pillar.
+- [ADR-0039 — Entity lifecycle & deletion strategy](0039-entity-lifecycle-deletion-strategy.md) — 0039 owns **dimension** temporal columns (SCD-2) + the entity-integrity contract (one delete path, restored FKs). This ADR generalizes the *same* temporal/lineage-column pattern to the **fact/metric** tables (Bronze/Gold — §5A) and flags the `packiot_shadow` FK regression (§5A note) that 0039 is the home for.
 
 > **Numbering:** `0035` is allocated to a concurrent Redis-cache ADR. This is `0036`; its companion is `0037`.
 
@@ -210,6 +212,33 @@ Without Bronze, every ADR-0037 fix is *forward-only* and the historical record s
 
 `equipment_values` keys on `UNIQUE(ts_value, id_equipment)` with `ts_value` at 1-second resolution, so two samples from the same fast line inside one second collide and the second **overwrites** the first (`ON CONFLICT DO UPDATE`) → silent undercount. In a proper append-only Bronze this is impossible by construction: Bronze either carries a finer-grained key (sub-second `ts_value`, or a monotonic ingest sequence as a tiebreak) or a synthetic row id, so **no raw sample is ever lost to a key collision.** This is the same finding as ADR-0037 (g); it is *resolved by the Bronze design*, not by a point patch — a concrete example of "the structural fix subsumes the point fix."
 
+### 3.5 The live Bronze reality — the B0/B1 starting state (retention as config-drift, compression absent)
+
+§1 and §3.2 say the repo grep for `add_retention_policy`/`add_compression_policy` returns nothing. That is true **of the repo** — and the live-DB audit sharpens *why that is dangerous*: it is **config drift**, not the absence of a policy. The starting state B0/B1 must build from is:
+
+- **Retention EXISTS — but as a 180-day `drop` policy that lives ONLY in the live DB, not in any migration.** So the replay source of truth (§3.3) is being **actively destroyed on a 180-day rolling window** by a policy that is *invisible to version control* — no one reading the repo knows raw older than ~6 months is already gone. This is the worst of both worlds: the destruction is real, but undocumented and un-reviewable. Bronze's whole premise (retain for reprocessing) is being silently violated by out-of-band config.
+- **NO compression on any base hypertable.** The storage-economics half of the historian argument (§2.3, §3.2) is entirely unrealized — raw sits uncompressed *and* gets dropped at 180 days. We pay full disk for the warm window and then throw away the cold window that reprocessing needs.
+- **Live/repo schema drift on the rollups too.** The Gold runtime tables are *declared* as hypertables in `edge-node-red/db` (`10-missing-tables.sql:327/367`), but on `packiot_shadow` they are **heap tables** — the repo and the live DB disagree about the physical model. Any policy/compression reasoning that assumes "they're hypertables because the DDL says so" is wrong against the live substrate.
+
+**DECISION — B0 (refined).** B0 is not "add a policy where there is none"; it is two coupled moves:
+1. **Move retention into version-controlled migrations** — the 180-day drop stops being live-only config drift and becomes a reviewed, diffable artifact.
+2. **Change `drop` → `compress`, and stretch the horizon to years.** The replay source stops being destroyed:
+
+```sql
+-- B0: retention/compression as a MIGRATION (not live-only config), drop→compress, retain years.
+ALTER TABLE equipment_values SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'id_equipment',
+  timescaledb.compress_orderby   = 'ts_value DESC'
+);
+SELECT add_compression_policy('equipment_values', compress_after => INTERVAL '7 days');   -- ~7–14d warm
+SELECT add_retention_policy  ('equipment_values', drop_after     => INTERVAL '2 years');   -- was a 180-day DROP (live-only)
+```
+
+**DECISION — B1 (refined).** Append-only Bronze means **stop the `ON CONFLICT (ts_value, id_equipment) DO UPDATE` overwrite** (`internal/writers/equipment_values.go:359+`) and make the raw write append-only, keyed with the monotonic **`source_seq`** tiebreak enumerated in §5A. That simultaneously (a) makes Bronze immutable, (b) fixes the sub-second collision of §3.4 / ADR-0037 (g) *by construction*, and (c) removes the mechanism (in-place overwrite) that makes reprocessing impossible. B1 is additive to the Gold path (§6).
+
+**Why this ordering matters:** B0 is pure policy/migration (low risk, reversible — drop the policy) and it **stops the bleeding** (the 180-day drop deleting the replay source) *before* the more invasive append-only write change (B1). Do B0 first, immediately, on staging.
+
 ---
 
 ## 4. Silver in detail — the validation layer that doesn't exist yet
@@ -234,6 +263,38 @@ Whether Silver is materialized as (i) a hardened stage inside `oeecloud-worker` 
 
 Gold (`equipment_runtime_*`, `uns_*`, `ca_*`) keeps its current shape and its current consumer contract (ADR-0027 refdata read contract is **not** changed by this ADR). The change is upstream: Gold now consumes a *validated* Silver, so the ADR-0037 correctness findings that *surface* at the Gold read plane (misleading proportional_target on the F3 read plane, oee>1 tiles) are fixed at their Silver source, not patched at the Gold edge. Gold stays the thin "serve what Silver guaranteed" layer it should be.
 
+## 5A. Temporal & lineage columns — enumerated, and the schema-hardening notes (NEW DECISIONS)
+
+§3–§5 name the layers but do **not** list the columns that make replay auditable and append-only *possible*. Reprocessing (§3.3) and immutability (§3.1) are not free-standing behaviors — they need physical lineage columns to hang on. Enumerate them once, here, as a decision.
+
+### Bronze lineage columns — what makes append-only work
+
+Bronze (`equipment_values`, `equipment_events`) gets:
+
+| Column | Type | Role |
+|---|---|---|
+| `ingested_at` | `timestamptz DEFAULT now()` | **Arrival time** — distinct from `ts_value` (the PLC event time). Lets Bronze answer "when did we *receive* this?" independent of when the reading was taken; the basis for late-arrival detection (ADR-0037 (b) monotonicity guard) and for auditing ingest lag. |
+| `source_seq` | `bigint` (monotonic) | **The sub-second tiebreak.** A per-writer monotonic sequence that makes `(ts_value, id_equipment, source_seq)` unique *by construction*, so two samples in the same 1-second `ts_value` bucket no longer collide. This is what makes Bronze append-only and **resolves ADR-0037 (g) structurally** (see §3.4) — it replaces the `ON CONFLICT DO UPDATE` overwrite (B1, §3.5) rather than papering over it. |
+
+### Gold lineage columns — what makes replay auditable
+
+The Gold runtime tables — `equipment_runtime_shift`, `_1hour`, `_1day`, `_1week`, `_1month`, and the `area_runtime_*` / `site_runtime_*` rollups — get:
+
+| Column | Type | Role |
+|---|---|---|
+| `computed_at` | `timestamptz` | **When this Gold row was (re)computed.** After a replay (§3.3) corrects a window, `computed_at` advances — so "is this row from before or after the fix?" is answerable, and stale-vs-fresh Gold is auditable. |
+| `source_watermark` | (raw high-watermark, e.g. `timestamptz` / `bigint`) | **The Bronze high-watermark this row was computed from** — the max `ts_value`/`source_seq` of the raw the aggregate consumed. This is the lineage link Gold→Bronze: it says *exactly which raw* produced a served number, makes replay idempotent (recompute only where the watermark moved), and lets a DQ event (ADR-0037 §4A) point back to its raw source window. |
+
+### The inconsistency this generalizes — some tables already do this, most don't
+
+The pattern is not new to the codebase — it is **inconsistently applied**: `production_orders_runtime` and the `uns_*` tables **already carry** a `last_update` / `updated_at` column, while the `equipment_runtime_*` Gold tables and the raw Bronze tables carry **nothing**. So the stack already agrees temporal columns are worth having on *some* served tables — this decision **generalizes the pattern uniformly** (`computed_at`/`source_watermark` on every Gold rollup; `ingested_at`/`source_seq` on every Bronze table) instead of leaving it ad hoc. Note the naming: `last_update`/`updated_at` are *mutation*-time stamps (they fit an upsert model); Bronze/Gold get *lineage* stamps (`ingested_at`, `computed_at`, `source_watermark`) that fit an append-only + replay model — the semantic upgrade is deliberate.
+
+> **Cross-ref — ADR-0039 owns the *dimension* side of this same pattern.** [ADR-0039](0039-entity-lifecycle-deletion-strategy.md) adds temporal columns + SCD-2 history to the **dimension/entity** tables (enterprises/sites/areas/equipments). §5A here is the **fact/metric** counterpart (Bronze raw + Gold rollups). Same principle — every row knows when and from what it came — split by table role: 0039 owns dimensions, 0036 owns facts. Keep the column-naming conventions aligned across the two ADRs.
+
+### Note — the referential-integrity regression on `packiot_shadow`
+
+The go-forward `packiot_shadow` DB **shed the enterprise→site→area→equipment foreign keys** the legacy schema carried (the legacy DB declared **138 + 207** FK constraints across the hierarchy; the shadow schema dropped them for ingest-throughput/flexibility). That is a real **integrity regression**: nothing at the DB layer now prevents an `equipment` row pointing at a non-existent `area`/`site`/`enterprise`, which is *upstream* of the P3-2 "missing target, no fallback" and the tenant-fence assumptions the medallion relies on. **Restoring these FKs (or an equivalent validated-conform check in Silver) is part of schema-hardening** — flagged here, but **owned by [ADR-0039](0039-entity-lifecycle-deletion-strategy.md)** (entity-integrity is its remit). The medallion notes it because a broken entity graph corrupts every layer above it; 0039 decides the restore path.
+
 ---
 
 ## 6. Migration — incremental, no big-bang
@@ -250,7 +311,9 @@ Sequenced so each step is independently valuable and reversible. **This ADR ship
 | **L0** | Stand up the **AWS-native offline lakehouse (§2.4)**: batch-export Bronze→S3 parquet, register in Glue, query via Athena; **repoint `cq-logs-bigquery` from the BigQuery client to `boto3`/`pyathena`** (its only dataset, `cq_logs`, lands in S3). Completes the **BigQuery→S3+Athena** cut → **100% off GCP**. `reports/` (LaTeX-only) needs no data-tier change. | Low | Yes (BigQuery can stay until Athena verified) |
 | **P** | Promote each phase staging→prod under its own gate (retention windows sized to prod volume; prod DB is SELECT-only for us — policy/DDL changes go through the normal prod-apply gate, never ad hoc). | — | Per-phase |
 
-**Sequencing rule:** Bronze (B0/B1) lands *before or with* the first Silver reprocessing-dependent fix, because the whole point of Silver fixes is to *replay* them — and replay needs Bronze. B0 (policy-only) is the cheapest, most reversible first move and can go immediately on staging.
+> **B0/B1 refined by the live-DB audit (§3.5):** B0 is not "add a policy where none exists" — the live DB already runs a **180-day `drop`** (live-only config drift), so B0 = *move retention into a migration* **and** *convert `drop`→`compress` with a years-long horizon* (stop destroying the replay source). B1's append-only write uses the **`source_seq`** lineage column (§5A). See §3.5 for the exact starting state and DDL.
+
+**Sequencing rule:** Bronze (B0/B1) lands *before or with* the first Silver reprocessing-dependent fix, because the whole point of Silver fixes is to *replay* them — and replay needs Bronze. B0 (policy-only) is the cheapest, most reversible first move and can go immediately on staging. **And per ADR-0037 §4A, the `data_quality_event` substrate + emit-only invariant checks ship even earlier — Step 0 — so corruption is measured before any served value changes (instrument-before-remediate).**
 
 ---
 
