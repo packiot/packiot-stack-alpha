@@ -48,6 +48,7 @@ volumes:
 # .23 edge-transformer (ADR-0009 Phase 2; reserved, NOT yet wired — see commented service block below)
 # .24 mosquitto (ADR-0010 Phase 2 MQTT broker; ADR-0011 P0-2 durability config)
 # .29 ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug; publishes :8444, metrics :9105)
+# .35 app-redis (ADR-0035 application cache for refdata-api cache-aside; SEPARATE from authentik-redis .14)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -400,6 +401,34 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: pgbouncer
+      # ── ADR-0035: app-redis reachability (PLUMBED, NOT YET CONSUMED) ──────────
+      # edge-api does NOT cache anything today. This just makes the shared app
+      # cache reachable so a future enhancement can land without a compose change:
+      # (a) write-through cache INVALIDATION (edge-api write → publish an invalidate
+      #     so refdata's short TTL isn't the only self-heal), and/or
+      # (b) moving the count engine's in-process per-tenant memState to shared
+      #     Redis (fixes the single-writer-per-tenant gap). See the ADR.
+      # No edge-api code reads REDIS_URL yet — present only for documentation +
+      # future wiring; removing it changes nothing today.
+      REDIS_URL: redis://app-redis:6379/0
+      # ── ADR-0033 d3: Bearer-JWT dual-accept write-auth (PR #158) ──────────────
+      # AuthMiddleware accepts a Cognito OR Firebase USER JWT (RS256, verified
+      # against the issuer JWKS) IN ADDITION to the existing x-api-key/?token=
+      # api-key path — both resolve the SAME res.locals.callerEnterpriseId the
+      # TenantFence fences on, so a JWT write is tenant-fenced identically to an
+      # api-key write. This unblocks front4 dropping the browser-stored api-key.
+      # All PUBLIC identifiers (pool id / app-client id / issuer) — NOT secrets:
+      # no signing key, no client secret. Consumed by src/shared/auth/
+      # bearer-jwt.config.ts (resolveBearerJwtConfig). JWKS URIs are derived
+      # (COGNITO_JWKS_URI defaults to <issuer>/.well-known/jwks.json; FIREBASE_
+      # JWKS_URI defaults to the Google securetoken JWK endpoint) — override only
+      # for a non-standard endpoint. Reversible kill switch: AUTH_BEARER_ENABLED=
+      # "false" → Bearer path inert, api-key path unchanged (instant rollback).
+      AUTH_BEARER_ENABLED: "true"
+      COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
+      COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
+      FIREBASE_ISSUER: https://securetoken.google.com/fbpackiot
+      FIREBASE_AUDIENCE: fbpackiot
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -1457,6 +1486,54 @@ services:
   # alpha; new/refactored consumers point here instead. Internal-only —
   # no public route. v1 reads the main DB via pgbouncer; flow-routing
   # to packiot_shadow arrives with ADR-0012 Phase 4 reference data.
+  # ── app-redis (ADR-0035) ─────────────────────────────────────────────────
+  # Dedicated APPLICATION cache / shared-state Redis — SEPARATE from
+  # authentik-redis (.14), which is authentik's private session/task store and
+  # must NEVER be reused for app data. Backs refdata-api's cache-aside layer:
+  # front4 dashboards poll the same tenant's /v1/query datasets on a refresh
+  # tick, so a short-TTL cache collapses that fan-in to ONE DB hit per
+  # (tenant, dataset, params) per TTL window. It is also the seam that later
+  # fixes the count engine's in-process per-tenant memState (single-writer gap)
+  # by moving that shared state here — see the ADR.
+  #
+  # It is a CACHE, not a store:
+  #   --maxmemory 256mb + allkeys-lru  → bounded footprint; evict the coldest
+  #                                       keys under pressure instead of OOMing.
+  #   --appendonly no + --save ""      → no persistence; a restart is a cold
+  #                                       cache (refdata fails open → re-fills
+  #                                       from the DB, no correctness impact).
+  # Non-secret today (internal packiot-net only, no published port). If a
+  # password is ever required, inject it via a secret (--requirepass ${...} from
+  # .env / Secrets Manager) — never hardcode, same rule as every other credential.
+  #
+  # PROD NOTE — do NOT ship this container to production. Prod uses managed
+  # ElastiCache (Redis), provisioned in api-terraform; the app just points
+  # REDIS_URL at the ElastiCache endpoint. See docs/adr/0035-redis-cache-layer.md.
+  app-redis:
+    image: redis:7-alpine
+    container_name: app-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save ""
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.35
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    mem_limit: 320m   # > maxmemory: Redis needs headroom above maxmemory for overhead
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   refdata-api:
     build: ./services/refdata-api
     container_name: refdata-api
@@ -1502,9 +1579,24 @@ services:
       COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
       # COGNITO_JWKS_URL defaults to <issuer>/.well-known/jwks.json; override only
       # for a non-standard endpoint.
+      # ── ADR-0035: cache-aside over app-redis (ADDITIVE · FLAG-GATED · FAIL-OPEN) ──
+      # REDIS_CACHE_ENABLED=true turns on the /v1/query dataset cache-aside; set
+      # "false" to disable at runtime (a container env flip + restart) with zero
+      # code change — reads fall straight through to the DB. Per-dataset TTLs live
+      # in the code (datasets.go groupCacheTTL): reference/config 180-300s, live
+      # OEE 15-30s. If app-redis is down, refdata FAILS OPEN (serves from the DB),
+      # so this dependency is soft — refdata boots and serves without it.
+      REDIS_CACHE_ENABLED: "true"
+      REDIS_URL: redis://app-redis:6379/0
     networks:
       packiot-net:
         ipv4_address: 172.18.0.26
+    depends_on:
+      # Soft dependency: refdata fails open, so we only wait for the container to
+      # start (not a healthcheck) — a slow/unhealthy cache must never block the
+      # read plane from booting.
+      app-redis:
+        condition: service_started
     healthcheck:
       test: ["CMD", "/usr/local/bin/refdata-api", "--healthcheck"]
       interval: 30s

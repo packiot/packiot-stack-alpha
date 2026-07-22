@@ -137,6 +137,16 @@ type dataset struct {
 	// row-cap append are identical for both variants (compileDataset uses
 	// activeSQL), so an sqlF3 must bind the SAME $N positions as sql.
 	sqlF3 string
+	// cacheTTL (ADR-0035, optional) is the cache-aside TTL for this dataset. It
+	// trades freshness for DB-load relief: a client re-polling within the window
+	// is served from Redis instead of re-hitting the SQL. A per-dataset override
+	// (> 0) wins; 0 (the zero value, i.e. unset on almost every literal) falls
+	// back to the dataset's GROUP default (cacheTTLForGroup). A NEGATIVE value is
+	// the explicit opt-out sentinel → never cache (resolves to 0 in cacheTTL()).
+	// The value is chosen to match the backing data's own update cadence:
+	// reference/config datasets tolerate minutes; live OEE snapshots get seconds
+	// so operators still see fresh numbers. See cacheTTLForGroup.
+	cacheTTL time.Duration
 }
 
 // activeSQL returns the dataset's SQL for the given flow: the f3 override when
@@ -147,6 +157,76 @@ func (d dataset) activeSQL(f flow) string {
 		return d.sqlF3
 	}
 	return d.sql
+}
+
+// ── Cache-aside TTLs (ADR-0035) ──────────────────────────────────────────────
+//
+// TTL is set per GROUP, not per dataset, so the ~50 dataset literals stay
+// untouched (their `group` already classifies them) and the freshness policy is
+// one readable table. The split is by the backing data's update cadence:
+//
+//   - REFERENCE / CONFIG groups (enterprise settings, users, roles, per-role
+//     entity/menu trees, targets, custom targets, settings) change on a CS
+//     onboarding or a manual edit — MINUTES-stale is fine, so a LONG TTL lets a
+//     re-polling dashboard skip the DB almost entirely.
+//   - LIVE groups (uns_* snapshots, OEE scores, mission control, overview
+//     detail, downtimes/events, production flow/speed) track the 1-min cagg
+//     cascade — a SHORT TTL (~the cagg cadence) keeps the operator's numbers
+//     fresh while still collapsing a burst of same-tick polls to one DB hit.
+//
+// A group absent from the map falls back to defaultCacheTTL (conservative short).
+const defaultCacheTTL = 20 * time.Second
+
+var groupCacheTTL = map[string]time.Duration{
+	// reference / config — LONG (slow-moving, edited by CS / operators, not by the
+	// telemetry pipeline):
+	"enterprise-config": 300 * time.Second, // enterprises / users / user_roles
+	"variables-context": 180 * time.Second, // per-role entity + menu bootstrap trees
+	"settings":          300 * time.Second, // downtime-reason config, etc.
+	"targets":           300 * time.Second, // production/scrap/oee target config
+	"tenant-custom":     300 * time.Second, // manually-overridden custom targets
+
+	// live — SHORT (driven by the 1-min cagg cascade; keep operator numbers fresh):
+	"live-uns-equipment":  15 * time.Second, // uns_equipment_current_* snapshots
+	"oee":                 30 * time.Second,
+	"mission-control":     20 * time.Second,
+	"overview-detail":     20 * time.Second,
+	"downtimes-analytics": 30 * time.Second,
+	"events-timeline":     20 * time.Second,
+	"single-period":       30 * time.Second,
+	"total-production":    30 * time.Second,
+	"production-flow":     30 * time.Second,
+	"machine-speed":       20 * time.Second,
+	"home":                30 * time.Second,
+	"production-orders":   20 * time.Second, // PO list/details flip on operator start/stop → keep short
+}
+
+// cacheTTL resolves the effective cache-aside TTL for this dataset: an explicit
+// positive per-dataset override wins; a negative override opts out (0 ⇒ bypass);
+// otherwise the group default; otherwise the conservative short default.
+func (d dataset) cacheTTLResolved() time.Duration {
+	if d.cacheTTL > 0 {
+		return d.cacheTTL
+	}
+	if d.cacheTTL < 0 {
+		return 0 // explicit opt-out sentinel
+	}
+	if t, ok := groupCacheTTL[d.group]; ok {
+		return t
+	}
+	return defaultCacheTTL
+}
+
+// datasetCacheTTL returns the cache-aside TTL for a named dataset, or 0 (bypass)
+// for an unknown dataset. The query handler uses it to size the cache-aside
+// wrapper WITHOUT re-plumbing compileDataset's signature (kept stable for its
+// many callers/tests).
+func datasetCacheTTL(name string) time.Duration {
+	ds, ok := datasets[name]
+	if !ok {
+		return 0
+	}
+	return ds.cacheTTLResolved()
 }
 
 // perEquipment wraps an idequipment-only overview function in the

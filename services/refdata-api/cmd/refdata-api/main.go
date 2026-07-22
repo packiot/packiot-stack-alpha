@@ -37,6 +37,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/cache"
 	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/httpmetrics"
 	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/tracing"
 )
@@ -217,12 +218,37 @@ func main() {
 	}
 	defer pool.Close()
 
+	// ADR-0035: cache-aside for the /v1/query dataset dispatch. ADDITIVE +
+	// FLAG-GATED (REDIS_CACHE_ENABLED, default true on staging) + FAIL-OPEN. A
+	// construction error (bad REDIS_URL) is NON-fatal — we log it and serve with a
+	// nil cache (every read transparently bypasses to the DB), because a read
+	// plane must never fail to boot because the cache is misconfigured.
+	qcache, cerr := cache.New(cache.Config{
+		URL:     getenv("REDIS_URL", "redis://app-redis:6379/0"),
+		Enabled: getenvBool("REDIS_CACHE_ENABLED", true),
+	}, prometheus.DefaultRegisterer)
+	if cerr != nil {
+		logger.Warn("cache init failed; serving uncached", slog.String("err", cerr.Error()))
+		qcache = nil
+	}
+	defer func() { _ = qcache.Close() }()
+	if qcache.Enabled() {
+		if perr := qcache.Ping(context.Background()); perr != nil {
+			// Non-fatal: fail-open means a down Redis just yields DB reads.
+			logger.Warn("cache ping failed at startup; will fail open per-read", slog.String("err", perr.Error()))
+		} else {
+			logger.Info("cache-aside enabled", slog.String("backend", "app-redis"))
+		}
+	} else {
+		logger.Info("cache-aside disabled (REDIS_CACHE_ENABLED=false or unconfigured)")
+	}
+
 	mux := http.NewServeMux()
 	for _, ep := range endpoints {
 		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
 	}
-	ensureSchema(pool)          // startup migrations (P2 screen-config table)
-	registerQueryAPI(mux, pool) // ADR-0015 P1-P3
+	ensureSchema(pool)                  // startup migrations (P2 screen-config table)
+	registerQueryAPI(mux, pool, qcache) // ADR-0015 P1-P3 + ADR-0035 cache-aside
 
 	// Gap-closure 2026-07-07: the only service without /metrics.
 	// promhttp default registry — request counts come from reqCount
@@ -385,4 +411,22 @@ func getenv(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// getenvBool parses a boolean env (1/t/true/on ⇒ true, 0/f/false/off ⇒ false,
+// case-insensitive). Unset or unparseable ⇒ def, so a typo is safe (defaults to
+// the intended staging behavior rather than silently flipping the flag).
+func getenvBool(k string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "t", "true", "on", "yes":
+		return true
+	case "0", "f", "false", "off", "no":
+		return false
+	default:
+		return def
+	}
 }
