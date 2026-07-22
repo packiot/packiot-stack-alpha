@@ -620,8 +620,11 @@ services:
     # `config_rev` remains as a manual force-recreate escape hatch: bump it
     # only when a change needs a full container recreate (e.g. a command/flag
     # change), NOT for routine config/rule edits — those are reload-only now.
+    # config_rev bumped for the exemplar-storage flag below — a --enable-feature
+    # change is a command change, so it needs a force-recreate (a plain reload
+    # won't pick up a new CLI flag), per the note above.
     labels:
-      - "config_rev=2026-07-07-exporters"
+      - "config_rev=2026-07-22-exemplars"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -630,6 +633,30 @@ services:
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
       - --web.enable-lifecycle
+      # Exemplar storage: lets Prometheus retain per-sample exemplars (a
+      # trace_id label carried alongside a histogram observation). Grafana's
+      # Prometheus datasource then renders them as clickable dots on latency
+      # panels → jump straight to the Tempo trace (exemplarTraceIdDestinations
+      # in grafana/provisioning/datasources/prometheus.yml). NOTE: this only
+      # *stores* exemplars — services must still ATTACH trace_id exemplars to
+      # their http_request_duration_seconds observations for dots to appear.
+      # That is per-service code = a separate PR (see PR body TODO).
+      - --enable-feature=exemplar-storage
+    # TODO(traces, follow-up PR — NOT this PR, per-service code):
+    #   1. Attach the active trace_id as a Prometheus EXEMPLAR on each service's
+    #      http_request_duration_seconds histogram observations so the latency
+    #      panels (boards 11/12) render clickable dots → Tempo. Without this,
+    #      exemplar-storage above stores nothing and the dots never appear.
+    #      - Go   (refdata-api / oeecloud-worker / operator-adapter): use the
+    #        client_golang exemplar API (ObserveWithExemplar) pulling trace_id
+    #        from the span context.
+    #      - Node (edge-api): prom-client observe with an exemplar label.
+    #   2. First-class table TraceQL: add otelpgx.WithIncludeQueryParameters and
+    #      a db.sql.table span attribute (table extracted from the statement) so
+    #      "find slow queries by table" becomes { span.db.sql.table = "..." }
+    #      instead of the db.statement regex used on board 18 today.
+    #   NOTE: mirror-worker-go + shadow-mirror are the two UNTRACED workers — do
+    #      NOT instrument them; they are retiring.
     ports:
       - "127.0.0.1:9090:9090"
     networks:

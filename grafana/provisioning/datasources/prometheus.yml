@@ -11,3 +11,15 @@ datasources:
     jsonData:
       timeInterval: 15s
       httpMethod: POST
+      # Exemplars: when a Prometheus histogram sample carries a trace_id
+      # exemplar, Grafana renders it as a clickable dot on the latency panel.
+      # exemplarTraceIdDestinations tells Grafana which datasource to open with
+      # that id — here the Tempo datasource (uid packiot-tempo) — so a spike on
+      # http_request_duration_seconds jumps straight to the slow trace.
+      # name=trace_id is the exemplar label the services must attach (separate
+      # per-service PR — see PR body / compose.staging.yml TODO). Requires
+      # --enable-feature=exemplar-storage on the prometheus service.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: packiot-tempo
+          urlDisplayLabel: "View trace in Tempo"
