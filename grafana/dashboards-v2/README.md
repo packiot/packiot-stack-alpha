@@ -45,6 +45,8 @@ check the source metric on the **Infra** board's `up`-by-job scrape-health table
 | **08 Logs** | `v2-logs` | Unified Loki, `$service`(dynamic)/`$level`/`$search` | `$service` is `label_values(service)` — never a hardcoded list; no `tenant` label on logs |
 | **09 Equipment** | `v2-equipment` | Reference data — hierarchy, packml_register, POs, shifts | pure config browser (SQL) |
 | **10 Infra** | `v2-infra` | host disk/mem/cpu, pg_up, go/process runtime, **scrape health** | the `up`-by-job table surfaces any target that stops being scraped |
+| **16 Database DBM** | `v2-database-dbm` | Deep ("Datadog-style") DB internals on the **F3 plane** (`$datname`=`packiot_shadow`): session saturation, throughput/efficiency, table+index health, TimescaleDB jobs/cagg-lag/compression, per-tenant load | catalog-view panels (seq-scans, unused indexes, cagg lag, jobs, compression) are **native SQL over `packiot_shadow`** until postgres-exporter reloads the new queries; `pg_stat_statements` section is PENDING a DB restart (prereqs on the panel) |
+| **17 Data Quality** | `v2-data-quality` | OEE-invariant violations from `data_quality_event` (F3) — `OEE_GT_1`/`NET_GT_GROSS`/`NEGATIVE_METRIC` by rule×enterprise×equipment; feeds P11 andon | native SQL over `packiot-postgres-shadow`; empty only if `DQ_ALARMS_ENABLED` never ran (641 violations present now) |
 | **18 DB Query Traces** | `v2-query-traces` | **Tempo/TraceQL** — jump from a latency spike to the exact slow SQL trace; slow-DB-span table, p95/rate by service, saved by-table TraceQL + cookbook | span search works today; exemplar *dots* need per-service `trace_id` on `http_request_duration_seconds` (separate PR); `mirror-worker-go`/`shadow-mirror` untraced (retiring) |
 
 ## Datasources (pinned on every panel)

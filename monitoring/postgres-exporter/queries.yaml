@@ -166,3 +166,163 @@ pg_timescaledb_hypertables:
     - total_bytes: { usage: GAUGE, description: "Hypertable total size (all chunks)" }
     - num_chunks: { usage: GAUGE, description: "Chunk count" }
     - compression_enabled: { usage: GAUGE, description: "1 if compression policy enabled" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DBM ("Datadog-style") extension — 6 catalog/TimescaleDB views for the deep
+# Database board (16-database-dbm). Every query below was verified read-only
+# (BEGIN READ ONLY; ...; ROLLBACK) against packiot_shadow on staging before
+# commit. Per-DB queries carry a `datname = current_database()` disambiguator so
+# auto-discovery (PG_EXPORTER_AUTO_DISCOVER_DATABASES=true) never emits the same
+# metric name+labels from two DBs (that path 500s the scrape → up=0). Internal
+# TimescaleDB chunk schemas are excluded from the table/index scans: per-chunk
+# relnames rotate as chunks age, so including them would churn stale series
+# forever — the parent hypertable + user tables carry the signal we want.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Per-table access + bloat (seq-scan-heavy tables, dead tuples, vacuum age).
+# LIMIT 50 by seq_tup_read bounds the series count; the heaviest sequential
+# scanners (a missing-index smell) sort to the top. Runs per auto-discovered DB. ──
+pg_stat_user_tables:
+  query: |
+    SELECT current_database() AS datname,
+           schemaname AS schema,
+           relname    AS table,
+           seq_scan,
+           seq_tup_read,
+           coalesce(idx_scan, 0) AS idx_scan,
+           n_live_tup,
+           n_dead_tup,
+           CASE WHEN last_autovacuum IS NOT NULL
+                THEN extract(epoch FROM now() - last_autovacuum)
+                ELSE -1 END AS last_autovacuum_age_seconds
+    FROM pg_stat_user_tables
+    WHERE schemaname NOT LIKE '\_timescaledb%'
+    ORDER BY seq_tup_read DESC
+    LIMIT 50
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - schema: { usage: LABEL, description: "Schema" }
+    - table: { usage: LABEL, description: "Table" }
+    - seq_scan: { usage: COUNTER, description: "Sequential scans initiated" }
+    - seq_tup_read: { usage: COUNTER, description: "Live rows fetched by sequential scans (index-absence smell)" }
+    - idx_scan: { usage: COUNTER, description: "Index scans initiated" }
+    - n_live_tup: { usage: GAUGE, description: "Estimated live rows" }
+    - n_dead_tup: { usage: GAUGE, description: "Estimated dead rows (bloat / vacuum lag)" }
+    - last_autovacuum_age_seconds: { usage: GAUGE, description: "Seconds since last autovacuum (-1 = never)" }
+
+# ── Per-index usage (idx_scan) + on-disk size. Sorted unused-and-large first so
+# idx_scan=0 candidates for DROP surface at the top. LIMIT 50 bounds cardinality;
+# internal chunk indexes excluded (their names churn per chunk). Runs per DB. ──
+pg_stat_user_indexes:
+  query: |
+    SELECT current_database() AS datname,
+           schemaname   AS schema,
+           relname      AS table,
+           indexrelname AS index,
+           coalesce(idx_scan, 0)         AS idx_scan,
+           pg_relation_size(indexrelid)  AS size_bytes
+    FROM pg_stat_user_indexes
+    WHERE schemaname NOT LIKE '\_timescaledb%'
+    ORDER BY coalesce(idx_scan, 0) ASC, pg_relation_size(indexrelid) DESC
+    LIMIT 50
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - schema: { usage: LABEL, description: "Schema" }
+    - table: { usage: LABEL, description: "Table the index belongs to" }
+    - index: { usage: LABEL, description: "Index name" }
+    - idx_scan: { usage: GAUGE, description: "Scans of this index (0 sustained = unused → drop candidate)" }
+    - size_bytes: { usage: GAUGE, description: "Index size on disk" }
+
+# ── TimescaleDB background jobs — health of the automation plane (cagg refresh,
+# retention, compression, telemetry). last_run_success flags a failed last run;
+# total_failures is cumulative; seconds_to_next_start shows scheduling. job_id is
+# unique in job_stats (verified). isfinite() guards paused jobs whose next_start
+# is 'infinity' (subtracting an infinite timestamp errors). Runs per DB. ──
+pg_timescaledb_jobs:
+  query: |
+    SELECT current_database() AS datname,
+           j.job_id::text                  AS job_id,
+           coalesce(j.proc_name, 'unknown') AS proc_name,
+           coalesce(j.hypertable_name, '')  AS hypertable,
+           CASE WHEN s.last_run_status = 'Success' THEN 1 ELSE 0 END AS last_run_success,
+           CASE WHEN s.next_start IS NOT NULL AND isfinite(s.next_start)
+                THEN extract(epoch FROM s.next_start - now())
+                ELSE 0 END AS seconds_to_next_start,
+           coalesce(s.total_failures, 0) AS total_failures,
+           coalesce(s.total_runs, 0)     AS total_runs
+    FROM timescaledb_information.jobs j
+    LEFT JOIN timescaledb_information.job_stats s ON s.job_id = j.job_id
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - job_id: { usage: LABEL, description: "TimescaleDB background job id" }
+    - proc_name: { usage: LABEL, description: "Job procedure (policy_refresh_continuous_aggregate, ...)" }
+    - hypertable: { usage: LABEL, description: "Target hypertable / cagg view (blank for global jobs)" }
+    - last_run_success: { usage: GAUGE, description: "1 if the last run succeeded, else 0" }
+    - seconds_to_next_start: { usage: GAUGE, description: "Seconds until the next scheduled start" }
+    - total_failures: { usage: GAUGE, description: "Cumulative failed runs" }
+    - total_runs: { usage: GAUGE, description: "Cumulative runs" }
+
+# ── Continuous-aggregate refresh lag — the freshness of the OEE rollup plane.
+# The refresh job's hypertable_name is the cagg VIEW name (NOT the materialization
+# hypertable), so the join is on view_schema/view_name. -1 = no successful refresh
+# on record. Runs per DB. ──
+pg_timescaledb_cagg:
+  query: |
+    SELECT current_database() AS datname,
+           ca.view_schema AS schema,
+           ca.view_name   AS cagg,
+           CASE WHEN s.last_successful_finish IS NOT NULL AND isfinite(s.last_successful_finish)
+                THEN extract(epoch FROM now() - s.last_successful_finish)
+                ELSE -1 END AS seconds_since_last_success
+    FROM timescaledb_information.continuous_aggregates ca
+    LEFT JOIN timescaledb_information.jobs j
+      ON j.hypertable_schema = ca.view_schema
+     AND j.hypertable_name   = ca.view_name
+     AND j.proc_name = 'policy_refresh_continuous_aggregate'
+    LEFT JOIN timescaledb_information.job_stats s ON s.job_id = j.job_id
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - schema: { usage: LABEL, description: "Continuous-aggregate view schema" }
+    - cagg: { usage: LABEL, description: "Continuous-aggregate view name" }
+    - seconds_since_last_success: { usage: GAUGE, description: "Age of the last successful refresh (-1 = none on record)" }
+
+# ── Compression effectiveness per hypertable. Only compressed hypertables report
+# a row from hypertable_compression_stats(); uncompressed ones coalesce to 0.
+# ratio = before/after (higher = better). Runs per DB. ──
+pg_timescaledb_compression:
+  query: |
+    SELECT current_database() AS datname,
+           h.hypertable_schema AS schema,
+           h.hypertable_name   AS hypertable,
+           coalesce(cs.before_compression_total_bytes, 0) AS before_bytes,
+           coalesce(cs.after_compression_total_bytes, 0)  AS after_bytes,
+           coalesce(cs.before_compression_total_bytes, 0)
+             - coalesce(cs.after_compression_total_bytes, 0) AS saved_bytes,
+           CASE WHEN coalesce(cs.after_compression_total_bytes, 0) > 0
+                THEN cs.before_compression_total_bytes::float / cs.after_compression_total_bytes
+                ELSE 0 END AS ratio
+    FROM timescaledb_information.hypertables h
+    LEFT JOIN LATERAL (
+      SELECT * FROM hypertable_compression_stats(format('%I.%I', h.hypertable_schema, h.hypertable_name))
+    ) cs ON true
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - schema: { usage: LABEL, description: "Hypertable schema" }
+    - hypertable: { usage: LABEL, description: "Hypertable name" }
+    - before_bytes: { usage: GAUGE, description: "Uncompressed total bytes across compressed chunks" }
+    - after_bytes: { usage: GAUGE, description: "Compressed total bytes" }
+    - saved_bytes: { usage: GAUGE, description: "Bytes saved by compression (before - after)" }
+    - ratio: { usage: GAUGE, description: "Compression ratio (before/after; 0 = not compressed)" }
+
+# ── Cluster-wide connection + worker ceilings. master:true → single emission on
+# the primary connection (these GUCs are cluster-global, identical on every DB),
+# so it never collides under auto-discovery. Drives the connection-saturation
+# panel: sum(connections) / scalar(pg_settings_max_connections) — never hardcode 50. ──
+pg_settings:
+  master: true
+  query: |
+    SELECT current_setting('max_connections')::float                  AS max_connections,
+           current_setting('timescaledb.max_background_workers')::float AS max_background_workers
+  metrics:
+    - max_connections: { usage: GAUGE, description: "Cluster max_connections ceiling" }
+    - max_background_workers: { usage: GAUGE, description: "TimescaleDB max_background_workers ceiling" }
