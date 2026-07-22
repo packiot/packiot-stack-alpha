@@ -39,5 +39,26 @@ limits_config:
   ingestion_rate_mb: 8
   ingestion_burst_size_mb: 16
 
+# Ruler — evaluates the LogQL alert rules in monitoring/loki/rules/ and pushes
+# firing alerts to the SAME Alertmanager the Prometheus rules use. Catches the
+# log-only failure modes metrics miss (error spike / panic / OOM — the #277
+# poison-storm class).
+#
+# storage.local.directory expects <dir>/<tenant>/*.yaml; tenant is "fake"
+# (auth_enabled: false single-tenant id). The rules dir is NOT in the loki-data
+# volume, so compose must bind-mount it:
+#     - ./monitoring/loki/rules:/etc/loki/rules:ro
+# (owned by the compose file; loki boots fine without it — the ruler just finds
+# no rules until the mount lands.)
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /etc/loki/rules
+  rule_path: /loki/ruler-wal
+  alertmanager_url: http://alertmanager:9093
+  enable_alertmanager_v2: true
+  enable_api: true
+
 analytics:
   reporting_enabled: false

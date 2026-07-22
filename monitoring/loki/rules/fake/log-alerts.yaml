@@ -1,0 +1,38 @@
+# Loki ruler — log-based alerts for failure modes the METRICS miss.
+# The #277 "poison-storm" class (a flood of error/panic log lines that never
+# moves a counter) is invisible to Prometheus; these LogQL rules watch the log
+# stream directly and route to the same Alertmanager as the metric rules.
+#
+# Tenant dir is "fake" because loki-local-config.yaml sets auth_enabled: false
+# (Loki's single-tenant default tenant id). Rules are matched across ALL
+# services via {service=~".+"} — no service is hardcoded.
+groups:
+  - name: packiot-log-alerts
+    rules:
+      # A burst of error-level lines across the stack. Matches both logfmt
+      # (level=error) and JSON ("level":"error") shapes, case-insensitive.
+      - alert: LogErrorSpike
+        expr: |
+          sum(count_over_time({service=~".+"} |~ `(?i)(level=error|"level":"?error|level":"err)` [5m])) > 50
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Error-log spike: >50 error lines/5m across services — possible poison-storm (#277 class); metrics may not show it"
+
+      # Any panic is severe — Go panic / stack unwind / unhandled throw.
+      - alert: LogPanicDetected
+        expr: |
+          sum(count_over_time({service=~".+"} |~ `(?i)panic` [2m])) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "panic in the logs (last 2m) — a service crashed or is crash-looping; check board v2-logs"
+
+      # OOM: kernel oom-kill, cgroup memory limit, or Go runtime OOM.
+      - alert: LogOOMDetected
+        expr: |
+          sum(count_over_time({service=~".+"} |~ `(?i)(out of memory|oom-?kill|cannot allocate memory|runtime: out of memory)` [5m])) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "OOM signature in the logs (last 5m) — a container hit its memory limit; check host mem on board v2-infra"

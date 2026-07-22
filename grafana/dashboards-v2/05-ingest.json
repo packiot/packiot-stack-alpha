@@ -31,7 +31,7 @@
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "### Is the edge-transformer ingesting cleanly? — MQTT in → Calc (Go port) → triple-emit → outbox\nSubscribes to Mosquitto (Sparkplug B), runs the **Go calc port** (`USE_GO_PORT` is ON), fans each reading out to the three flows, and buffers to a store-and-forward **outbox** before publishing to RabbitMQ. Healthy = MQTT UP, handle-errors & seq-gaps flat 0, three emit lines overlapping, outbox near 0. The `commands_*` / `erp_*` families read empty **by design** (see the inert tile) — not a fault."
+        "content": "### Is the edge-transformer ingesting cleanly? — MQTT in → Calc (Go port) → emit → outbox\nSubscribes to Mosquitto (Sparkplug B), runs the **Go calc port** (`USE_GO_PORT` is ON), and buffers each reading to a store-and-forward **outbox** before publishing to RabbitMQ. Healthy = MQTT UP, handle-errors & seq-gaps flat 0, emit rate tracking MQTT-received, outbox near 0. The `commands_*` / `erp_*` families read empty **by design** (see the inert tile) — not a fault."
       }
     },
     {
@@ -134,8 +134,8 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Triple-emit rate by flow (should be 1:1:1)",
-      "description": "sum by(flow) rate(edge_transformer_emitted_total[5m]) — the fan-out feeding F1/F2/F3. The three lines overlap when healthy.",
+      "title": "Emit rate (per s)",
+      "description": "sum rate(edge_transformer_emitted_total[5m]) — the transformer's emit throughput into RabbitMQ. Tracks MQTT-received; a divergence means readings are dropped before emit.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
       "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" } }, "overrides": [] },
@@ -143,8 +143,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
-          "expr": "sum by (flow) (rate(edge_transformer_emitted_total[5m]))",
-          "legendFormat": "{{flow}}",
+          "expr": "sum (rate(edge_transformer_emitted_total[5m]))",
+          "legendFormat": "emitted",
           "refId": "A"
         }
       ]

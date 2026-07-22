@@ -35,8 +35,6 @@ check the source metric on the **Infra** board's `up`-by-job scrape-health table
 | Board | uid | Answers | Notable expected-empties |
 |---|---|---|---|
 | **00 Overview** | `v2-overview` | Firing alerts + is-the-stack-alive + does-data-land, one glance | "Firing alerts" empty = nothing firing (good) |
-| **01 Replication** | `v2-replication` | **Per-tenant F1/F2/F3 write parity** — the Incoplast/CPACK replication proof. `$tenant` var | "F1→F3 drift" reads 0 for mirrored tenants; simcorp/staging show their F1 count (not mirrored — by design) |
-| **02 Flip gate** | `v2-flip-gate` | Bake surfaces + F2↔F3 identity, readiness derived from real metrics | Identity mismatch = 0 is the target; a surface comparing 0 rows is "not looking", not "passing" |
 | **03 OEE (business)** | `v2-oee` | OEE/A/P/Q per equipment, `$enterprise/$site/$area/$equipment` chain | SQL over `equipment_values`; cross-check vs the engine's `production_orders_runtime` (noted on each panel) |
 | **04 Engine** | `v2-engine` | oeecloud-worker: AMQP→jobs→writes, `$tenant`/`$flow` | job error/panic rate flat 0 = healthy; `skipped_30700/30800_30899` are expected (config params handled elsewhere) |
 | **05 Ingest** | `v2-ingest` | edge-transformer: MQTT→calc→emit→outbox | one annotated tile explains `commands_*`/`erp_*` read 0 by design (inert flags); `amqp_deliveries` not charted (unused in MQTT-in topology) |
@@ -48,6 +46,14 @@ check the source metric on the **Infra** board's `up`-by-job scrape-health table
 | **16 Database DBM** | `v2-database-dbm` | Deep ("Datadog-style") DB internals on the **F3 plane** (`$datname`=`packiot_shadow`): session saturation, throughput/efficiency, table+index health, TimescaleDB jobs/cagg-lag/compression, per-tenant load | catalog-view panels (seq-scans, unused indexes, cagg lag, jobs, compression) are **native SQL over `packiot_shadow`** until postgres-exporter reloads the new queries; `pg_stat_statements` section is PENDING a DB restart (prereqs on the panel) |
 | **17 Data Quality** | `v2-data-quality` | OEE-invariant violations from `data_quality_event` (F3) — `OEE_GT_1`/`NET_GT_GROSS`/`NEGATIVE_METRIC` by rule×enterprise×equipment; feeds P11 andon | native SQL over `packiot-postgres-shadow`; empty only if `DQ_ALARMS_ENABLED` never ran (641 violations present now) |
 | **18 DB Query Traces** | `v2-query-traces` | **Tempo/TraceQL** — jump from a latency spike to the exact slow SQL trace; slow-DB-span table, p95/rate by service, saved by-table TraceQL + cookbook | span search works today; exemplar *dots* need per-service `trace_id` on `http_request_duration_seconds` (separate PR); `mirror-worker-go`/`shadow-mirror` untraced (retiring) |
+
+### Retired boards
+
+- **01 Replication** (`v2-replication`) and **02 Flip gate** (`v2-flip-gate`) were
+  pure 3-flow / bake instruments. The flip gate is closed, so both were removed
+  (2026-07). Their live-metric successors (`bake_surface_mismatches` etc.) still
+  drive the alerts in `rules.yml`, kept until the ADR-0032 F2/shadow-mirror
+  decommission prunes them in lockstep.
 
 ## Datasources (pinned on every panel)
 
@@ -65,8 +71,9 @@ check the source metric on the **Infra** board's `up`-by-job scrape-health table
 - Every panel sets a unit + (for stats) thresholds; timeseries use table legends
   with `lastNotNull`/`mean`; tables color-code the meaningful column.
 
-## Retiring v1
+## Retiring v1 — DONE (2026-07)
 
-Once v2 is blessed: remove the `packiot` provider's boards (or the provider) from
-`provisioning/dashboards/all.yml`, delete `grafana/dashboards/`, and bump the
-grafana `provisioning_rev` label. Do it as its own PR so the swap is auditable.
+v2 was blessed. The `packiot` provider block was removed from
+`provisioning/dashboards/all.yml` and `grafana/dashboards/` (13 v1 boards) deleted.
+The v1 set was a full duplicate that still carried dead
+primary-api/back4-api/hasura panels + 3-flow/bake artifacts.

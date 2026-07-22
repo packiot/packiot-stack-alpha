@@ -87,26 +87,15 @@
       "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(mirror_worker_dlq_depth)", "refId": "A" } ]
     },
     {
-      "id": 7,
-      "type": "stat",
-      "title": "Bake surfaces mismatched",
-      "description": "sum(bake_surface_mismatches). This is the flip-gate headline — 0 across all surfaces is the target. Non-zero must carry a named cause (see board v2-flip-gate).",
-      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
-      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(bake_surface_mismatches)", "refId": "A" } ]
-    },
-    {
       "id": 8,
       "type": "timeseries",
-      "title": "Does data land? — engine write rate by flow",
-      "description": "sum by(dest) rate(oeecloud_worker_batch_writes_total[5m]). All three flows should carry traffic.",
+      "title": "Does data land? — engine write rate",
+      "description": "sum rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]). Rows/s the engine commits; flat 0 while MQTT is up = the write path is broken.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 12 },
       "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (dest) (rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]))", "legendFormat": "{{dest}}", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum (rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]))", "legendFormat": "written/s", "refId": "A" } ]
     },
     {
       "id": 9,
