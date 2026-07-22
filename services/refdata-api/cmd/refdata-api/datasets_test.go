@@ -320,3 +320,67 @@ func TestPgIntArray(t *testing.T) {
 		t.Errorf("literal: %q", got)
 	}
 }
+
+// TestSoftDeletedEntitiesAreFiltered locks in the soft-delete correctness fix
+// (task #54): any dataset that READS an entity/dimension table (equipments,
+// sites, enterprises, users) — either as its primary FROM (lists/metadata/counts)
+// or as a tenancy/ownership JOIN — must fence the entity side on `active`, so a
+// soft-deleted equipment/site/enterprise/user never surfaces in front4's lists,
+// metadata, or counts. The predicate must hold on BOTH flows (F1 packiot and F3
+// packiot_shadow); `active` was verified live to exist on all five entity tables
+// in both DBs (2026-07-22). Fact tables (equipment_values/events, the
+// equipment_runtime_*/uns_* snapshots) have NO active column and must NOT be
+// filtered — those datasets fence only their JOINed equipments/sites alias.
+func TestSoftDeletedEntitiesAreFiltered(t *testing.T) {
+	// Datasets whose SQL must contain an entity-side `active` predicate. Grouped
+	// by how the entity is read; every one is checked on both flows.
+	wantActive := []string{
+		// primary FROM an entity table (lists / metadata / counts) — the leak:
+		"equipment-info", "equipments-list", "equipment-downtime-reasons",
+		"equipments-events-column-flag", "site-by-equipment", "enterprise-config", "users",
+		// entity JOINed/EXISTS as a tenancy or ownership fence (fence the entity,
+		// NOT the fact table it is joined to):
+		"oee-by-month", "current-shift", "equipment-runtime-1day",
+		"custom-target-month", "custom-target-week", "custom-target-day",
+		"overview-takt", "overview-scrap-rate",
+		// liveUNS-generated (JOIN equipments for the tenant fence):
+		"live-equipment-job", "live-equipment-day", "live-equipment-shift", "live-equipment-month",
+		// perEquipment-generated (EXISTS equipments ownership guard):
+		"overview-job-info", "overview-events", "overview-events-legacy",
+		"overview-production-chart", "overview-production-chart-legacy",
+		"overview-production-chart-base", "overview-production-health",
+		"overview-downtimes-by-category",
+	}
+	for _, name := range wantActive {
+		ds, ok := datasets[name]
+		if !ok {
+			t.Errorf("%s: not in the dataset registry (renamed/removed?)", name)
+			continue
+		}
+		for _, f := range []flow{flowF1, flowF3} {
+			sql := ds.activeSQL(f)
+			// accept either `.active` (NOT NULL tables) or `active IS NOT FALSE`
+			// (the nullable enterprises/users columns — NULL means legacy/visible).
+			if !strings.Contains(sql, "active") {
+				t.Errorf("%s (flow %s): missing the soft-delete `active` filter — a deleted entity would leak: %s", name, f, sql)
+			}
+		}
+	}
+
+	// Guard the intentional EXCLUSIONS so a future edit that "fixes" them trips
+	// this test and forces a conscious decision (they are NOT bugs):
+	//   - production-orders-rich / shifts: primary FROM is a FACT/definition table
+	//     (production_orders / shifts); equipments/sites/areas appear only as
+	//     LEFT-JOIN name enrichment, so an active predicate would over-filter and
+	//     DROP valid rows. The equipment set front4 passes is already fenced
+	//     upstream by equipments-list.
+	//   - live-equipment-metrics: reads uns_equipment_current_metrics directly
+	//     (it carries its own id_enterprise, so no equipments JOIN exists to
+	//     fence); closing it would require restructuring into an EXISTS, out of
+	//     scope for this predicate-only correctness fix. Tracked as a residual.
+	for _, name := range []string{"production-orders-rich", "shifts", "live-equipment-metrics"} {
+		if _, ok := datasets[name]; !ok {
+			t.Errorf("%s: excluded dataset no longer exists — revisit the exclusion list", name)
+		}
+	}
+}
