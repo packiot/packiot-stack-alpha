@@ -56,6 +56,7 @@ const dayClampSchema = `
 	    id_equipment int, ts_value date,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT true,
 	    oee double precision,
+	    oee_a double precision, oee_p double precision, oee_q double precision,
 	    available_time double precision, running_time double precision,
 	    stopped_time double precision, planned_downtime double precision,
 	    ideal_production double precision, target double precision,
