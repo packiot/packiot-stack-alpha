@@ -23,8 +23,11 @@
 //     row's just-written ideal_speed; 25d update guard. E banks its
 //     hits + ts_planned in a temp table for the targets pass.
 //   - Targets (E-hit ∩ not-customized ∩ pt ∩ shift-hour): the shift
-//     proportional formula verbatim: vl_day · (shift_size −
-//     ts_planned)/(3600·24) → proportional_target only.
+//     proportional formula, ELAPSED-prorated (ADR-0029 D5 / #80):
+//     vl_day · (ts_total − ts_planned)/(3600·24) → proportional_target
+//     only. ts_total is elapsed-capped-at-ts_end, so a LIVE shift scales
+//     with elapsed and a COMPLETED shift settles at the full target.
+//     tp-agnostic, single writer. (Was full-shift: shift_size − ts_planned.)
 //   - Tail: re-flag [now−12h, now+18h] with the same UNION selector.
 //
 // GUARDRAIL: UPDATEs equipment_runtime_shift (+area flag) by
@@ -186,9 +189,37 @@ const shiftEventsUpdateSQL = `
 	   AND e.ts_value >= now() - interval '25 day'`
 
 // Targets: the shift proportional formula, E-hit rows only.
+//
+// ELAPSED PRORATION (ADR-0029 D5 / #80 — restores the backend's
+// prorate-per-elapsed assumption that front4 #80 consumes). The former
+// write used sh.shift_size (the FULL scheduled shift duration), so a
+// LIVE shift's proportional_target already showed the whole-shift target
+// two hours in — every line/machine shift card read "behind" all shift.
+// The fix: prorate by ELAPSED scheduled-productive time, tp-agnostic,
+// exactly like the legacy base machine fn post-#80
+// (20-oee-engine-parity.sql: target · (least(now(),ts_end)−ts_value)/shift_size).
+//
+//   proportional_target = vl_day · (ev.ts_total − ev.ts_planned) / 86400
+//
+//   - ev.ts_total = extract(epoch (least(ts_end, now()) − ts_value)) —
+//     wall-clock elapsed, CAPPED at the shift end. For a COMPLETED (past)
+//     shift ts_total = ts_end − ts_value = shift_size, so the row settles
+//     at the full/final target (elapsed == full). Only the LIVE shift
+//     prorates; past shifts keep their final target. No tp branch.
+//   - (ts_total − ts_planned) is the shift's ELAPSED scheduled-productive
+//     time (identical expression to available_time above). Denominator
+//     convention: SCHEDULED-PRODUCTIVE — already-consumed planned
+//     downtime is subtracted in the numerator basis exactly as the
+//     full-shift form subtracted it (vl_day is a per-DAY rate over 86400s),
+//     so a scheduled break pauses target growth instead of overstating it.
+//   - SINGLE writer (one UPDATE of this column per row) — do NOT add a
+//     post-pass overwrite; that is the #456 two-writer double-count class.
+//   - The LATERAL shift-hour lookup is RETAINED purely as the "shift-hour
+//     found" guard (legacy's `if found`): its shift_size is intentionally
+//     no longer referenced now that proration is elapsed-based.
 const shiftTargetsSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET
-	       proportional_target = COALESCE(pt.vl_day * ((sh.shift_size - ev.ts_planned) / (3600 * 24)), 0)
+	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
 	  FROM shift_ev ev
 	  JOIN %[2]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
 	  LATERAL piot_get_shift_hour_begin_by_equipment(ev.id_equipment, ev.ts_value) sh

@@ -202,7 +202,7 @@ func TestShiftShape(t *testing.T) {
 		"cd_shift = el.cd_shift2",           // denorm
 		"tstzrange(el.ts_value, el.ts_end)", // shift window
 		"interval '25 days'",
-		"(sh.shift_size - ev.ts_planned) / (3600 * 24)", // proportional formula
+		"(ev.ts_total - ev.ts_planned) / (3600 * 24)", // ELAPSED-prorated proportional formula (#80/ADR-0029 D5)
 		"now() + interval '18 hour'",                    // forward re-flag
 	} {
 		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+shiftTargetsSQL+shiftReflagSQL, m) {
@@ -211,6 +211,18 @@ func TestShiftShape(t *testing.T) {
 	}
 	if !strings.Contains(shiftEligibleSQL, "UNION ALL") {
 		t.Error("the UNION selector (lines ∪ machine-level enterprises) must survive")
+	}
+	// Regression guard: proportional_target must prorate by ELAPSED (ts_total),
+	// never by the FULL scheduled shift (shift_size). A revert to shift_size makes
+	// every live shift card read the whole-shift target from the first minute.
+	if strings.Contains(shiftTargetsSQL, "shift_size") {
+		t.Error("shift proportional_target regressed to full-shift (shift_size) — must be elapsed-prorated on ts_total")
+	}
+	// Single-writer invariant (#456 double-count class): proportional_target is
+	// written EXACTLY ONCE across the whole shift pass.
+	pass := shiftEligibleSQL + shiftValuesSQL + shiftEventsSQL + shiftEventsUpdateSQL + shiftTargetsSQL + shiftReflagSQL
+	if n := strings.Count(pass, "proportional_target ="); n != 1 {
+		t.Errorf("proportional_target written %d times in the shift pass, want exactly 1 (single-writer)", n)
 	}
 }
 
