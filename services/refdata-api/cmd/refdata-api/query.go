@@ -32,6 +32,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/cache"
 )
 
 // ── Catalog (P1) ─────────────────────────────────────────────────────
@@ -138,7 +140,7 @@ func parseAPIKeys(raw string) map[string]int {
 	return out
 }
 
-func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
+func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 	// ADR-0027 Surface-1: tenant auth is now whole-mux middleware (auth.go),
 	// not a per-handler closure. Handlers read the resolved customer_id from
 	// request context (customerIDFromContext) — the middleware guarantees a
@@ -180,6 +182,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 		}
 		var sql string
 		var args []any
+		datasetName := probe.Dataset // "" ⇒ legacy composer path (never cached)
 		if probe.Dataset != "" {
 			var dq datasetReq
 			if err := json.Unmarshal(body, &dq); err != nil {
@@ -213,30 +216,33 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		rows, err := pool.Query(ctx, sql, args...)
+
+		// The DB read → JSON-array bytes. Shared verbatim by the cached and
+		// uncached paths so the served bytes are identical either way.
+		load := func(ctx context.Context) ([]byte, error) {
+			return runQueryJSON(ctx, pool, sql, args)
+		}
+
+		var payload []byte
+		// Cache-aside (ADR-0035): ONLY the named-dataset path (front4 poll target).
+		// The legacy composer path (datasetName == "") is never cached. ttl<=0 or a
+		// disabled/nil cache ⇒ GetOrLoad is a transparent pass-through to load. The
+		// key is tenant-fenced by the SERVER-RESOLVED cid — never the request body.
+		if datasetName != "" {
+			ttl := datasetCacheTTL(datasetName)
+			key := cache.DatasetKey(cid, string(activeFlow), datasetName, sql, args)
+			payload, err = qcache.GetOrLoad(ctx, key, ttl, load)
+		} else {
+			payload, err = load(ctx)
+		}
 		if err != nil {
 			failed.Add(1)
 			http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 			return
 		}
-		defer rows.Close()
-		cols := rows.FieldDescriptions()
-		out := make([]map[string]any, 0, 256)
-		for rows.Next() {
-			vals, err := rows.Values()
-			if err != nil {
-				http.Error(w, `{"error":"scan failed"}`, http.StatusInternalServerError)
-				return
-			}
-			m := make(map[string]any, len(cols))
-			for i, c := range cols {
-				m[string(c.Name)] = vals[i]
-			}
-			out = append(out, m)
-		}
 		served.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
+		_, _ = w.Write(payload)
 	})
 
 	// ── Screen config (P2) — layout JSON per (user, screen).
@@ -425,6 +431,36 @@ func resolveDashboardConfigResp(cfg []byte, version int, found bool) dashboardCo
 func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// runQueryJSON executes sql/args and marshals the result set as a JSON array of
+// row objects — the exact wire shape the /v1/query handler serves. Extracted so
+// the cached and uncached paths share ONE query+encode implementation, and so
+// the cache-aside loader can hand back ready-to-cache bytes. A DB/scan/marshal
+// error is returned (never cached); the caller maps it to a 500.
+func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []any) ([]byte, error) {
+	rows, err := pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := rows.FieldDescriptions()
+	out := make([]map[string]any, 0, 256)
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		m := make(map[string]any, len(cols))
+		for i, c := range cols {
+			m[string(c.Name)] = vals[i]
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(out)
 }
 
 func keysOf[V any](m map[string]V) []string {

@@ -50,7 +50,7 @@ func TestParseAPIKeys(t *testing.T) {
 // per-user-role datasets carry the pUserRole axis.
 func TestQueryHandlerRoleDatasetViaXApiKeyIs403(t *testing.T) {
 	mux := http.NewServeMux()
-	registerQueryAPI(mux, nil) // 403 path returns before any pool use
+	registerQueryAPI(mux, nil, nil) // 403 path returns before any pool use (nil cache ⇒ bypass)
 	// Operator credential: a tenant, no Bearer path (nil resolver) → no user axis.
 	handler := authMiddleware(map[string]int{"op-key": 9}, infraExemptSet(), nil, mux)
 
