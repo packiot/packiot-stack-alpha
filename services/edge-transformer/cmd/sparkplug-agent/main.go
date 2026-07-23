@@ -38,6 +38,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawmqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/session"
@@ -110,6 +111,24 @@ func main() {
 	}, []string{"reason"})
 	reg.MustRegister(dropped)
 
+	// ingest is the SHARED pipeline entry point: resolve each raw tag against
+	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
+	// internal MQTT subscriber (Mode-B / full architecture) and the HTTP
+	// front-door (Mode-A direct-to-ingest tee) call it, so the two front-doors
+	// feed one tagstore→session→uplink path. Returns (accepted, total):
+	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
+	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
+		for _, t := range tags {
+			if _, _, ok := resolver.Resolve(t.Metric); !ok {
+				dropped.WithLabelValues("unmapped").Inc()
+				continue
+			}
+			store.Apply(t)
+			accepted++
+		}
+		return accepted, len(tags)
+	}
+
 	// Internal-broker subscriber: decode JSON → RBE-apply mapped tags.
 	subCfg := rawmqtt.DefaultConfig()
 	subCfg.BrokerURL = cfg.Sparkplug.InternalBroker
@@ -122,13 +141,7 @@ func main() {
 			dropped.WithLabelValues("decode_error").Inc()
 			return err
 		}
-		for _, t := range tags {
-			if _, _, ok := resolver.Resolve(t.Metric); !ok {
-				dropped.WithLabelValues("unmapped").Inc()
-				continue
-			}
-			store.Apply(t)
-		}
+		ingest(tags)
 		return nil
 	}, logger)
 	sub.SetDroppedMetric(func(reason string) { dropped.WithLabelValues(reason).Inc() })
@@ -140,6 +153,41 @@ func main() {
 	healthAddr := fmt.Sprintf(":%d", healthPort())
 	hsrv := health.New(healthAddr, multi, reg, logger)
 	hsrv.Start()
+
+	// ── HTTP raw-tag front-door (ADR-0042 P1 — Mode-A direct-to-ingest) ───
+	// The tee POSTs the rawtag envelope straight at the agent, skipping the
+	// per-tenant connectivity Node-RED for the first proof. Strictly additive
+	// — the MQTT subscriber above stays wired for Mode-B / the full
+	// architecture. Enabled only when AGENT_HTTP_INGEST_ENABLED=true AND a key
+	// is present: an enabled-but-keyless config fails closed (auth is never
+	// optional), the same discipline as ingest-shim's INGEST_API_KEY.
+	var ingestSrv *http.Server
+	if getenvBool("AGENT_HTTP_INGEST_ENABLED", false) {
+		key := os.Getenv("AGENT_INGEST_API_KEY")
+		if key == "" {
+			logger.Error("AGENT_HTTP_INGEST_ENABLED=true but AGENT_INGEST_API_KEY is empty — refusing to serve ingest with auth disabled")
+			os.Exit(1)
+		}
+		ingestOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sparkplug_agent_http_ingest_total",
+			Help: "HTTP raw-tag ingest requests by outcome (received|accepted|rejected_auth|rejected_scope|rejected_bad).",
+		}, []string{"outcome"})
+		reg.MustRegister(ingestOutcomes)
+		hi := httpingest.New(httpingest.Config{
+			APIKey:       key,
+			ScopeGroup:   cfg.Sparkplug.GroupID, // agent serves exactly one tenant
+			MaxBodyBytes: int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
+		}, ingest, ingestOutcomes, logger)
+		ingestAddr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
+		ingestSrv = &http.Server{Addr: ingestAddr, Handler: hi.Handler()}
+		go func() {
+			logger.Info("http raw-tag ingest listening", "addr", ingestAddr, "scope", cfg.Sparkplug.GroupID)
+			if err := ingestSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("http ingest server exited", "err", err)
+				cancel()
+			}
+		}()
+	}
 
 	// ── run subscriber + uplink + tick loop ──────────────────────────────
 	go func() {
@@ -164,6 +212,9 @@ func main() {
 		case <-ctx.Done():
 			logger.Info("sparkplug-agent stopping")
 			shutctx, sc := context.WithTimeout(context.Background(), 5*time.Second)
+			if ingestSrv != nil {
+				_ = ingestSrv.Shutdown(shutctx)
+			}
 			_ = hsrv.Shutdown(shutctx)
 			sc()
 			return
@@ -322,4 +373,18 @@ func getenvInt(k string, d int) int {
 		return n
 	}
 	return d
+}
+
+// getenvBool parses a truthy env var (true/1/yes, case-insensitive). Anything
+// else — including unset — is the default.
+func getenvBool(k string, d bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(k)))
+	switch v {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return d
+	}
 }
