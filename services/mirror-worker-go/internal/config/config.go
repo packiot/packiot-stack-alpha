@@ -10,6 +10,16 @@ import (
 	"strconv"
 )
 
+// Reconciler scheduler modes (RECONCILE_MODE). Poll is the pre-split
+// behavior — one combined pass runs BOTH the create-diff and the finisher
+// on a single prod snapshot every RECONCILE_INTERVAL_SEC. Tail splits the
+// two halves onto independent tickers so the cheap create-diff can run fast
+// (sub-3s PO-start detection) while the heavier finisher stays slow.
+const (
+	ReconcileModePoll = "poll"
+	ReconcileModeTail = "tail"
+)
+
 type Config struct {
 	AWSRegion string
 
@@ -65,6 +75,18 @@ type Config struct {
 	ReconcileEnabled     bool
 	ReconcileIntervalSec int
 	ReconcileMaxPerRun   int
+
+	// Reconciler scheduler mode + per-half cadences (event-driven split).
+	// ReconcileMode selects poll (pre-split, default) or tail (split). In
+	// poll mode RECONCILE_INTERVAL_SEC drives the combined pass; in tail
+	// mode the create-diff runs at ReconcileCreateIntervalSec (default 3s,
+	// a 0.33ms cached status=2 index scan — cheap enough to poll fast) and
+	// the finisher runs at ReconcileFinisherIntervalSec (default 300s, stop
+	// latency is grace-bound so nothing is gained by finishing faster).
+	// Rollback to the pre-split scheduler = RECONCILE_MODE=poll (or unset).
+	ReconcileMode                string
+	ReconcileCreateIntervalSec   int
+	ReconcileFinisherIntervalSec int
 
 	// Prod-authoritative finisher pass (task #48). The create/revive
 	// reconciler above is CREATE-ONLY: it opens/keeps staging POs active to
@@ -243,6 +265,11 @@ func Load() (*Config, error) {
 		ReconcileEnabled:      getenvBool("RECONCILE_ENABLED", true),
 		ReconcileIntervalSec:  getenvInt("RECONCILE_INTERVAL_SEC", 300),
 		ReconcileMaxPerRun:    getenvInt("RECONCILE_MAX_PER_RUN", 20),
+		// Scheduler split — all default to today's behavior: mode=poll makes
+		// RECONCILE_INTERVAL_SEC drive the combined pass exactly as before.
+		ReconcileMode:                getenv("RECONCILE_MODE", ReconcileModePoll),
+		ReconcileCreateIntervalSec:   getenvInt("RECONCILE_CREATE_INTERVAL_SEC", 3),
+		ReconcileFinisherIntervalSec: getenvInt("RECONCILE_FINISHER_INTERVAL_SEC", 300),
 		// Finisher ships INERT (default false) — enabled deliberately after review.
 		ReconcileFinisherEnabled:      getenvBool("RECONCILE_FINISHER_ENABLED", false),
 		ReconcileFinisherGraceMinutes: getenvInt("RECONCILE_FINISHER_GRACE_MINUTES", 30),
@@ -282,6 +309,20 @@ func Load() (*Config, error) {
 	// events-sync tick on `closerTick % N`.
 	if cfg.ReconcileEventsCloseSweepEveryNTicks < 1 {
 		cfg.ReconcileEventsCloseSweepEveryNTicks = 1
+	}
+	// Reconciler mode — fall back to poll (pre-split behavior) on anything
+	// unrecognized so a typo can never silently drop the finisher or spin
+	// the create loop at a bogus cadence.
+	if cfg.ReconcileMode != ReconcileModeTail {
+		cfg.ReconcileMode = ReconcileModePoll
+	}
+	// Guard the tail-mode tickers — a 0/negative interval would make
+	// time.Duration(...) a zero/negative tick that busy-loops the pass.
+	if cfg.ReconcileCreateIntervalSec < 1 {
+		cfg.ReconcileCreateIntervalSec = 3
+	}
+	if cfg.ReconcileFinisherIntervalSec < 1 {
+		cfg.ReconcileFinisherIntervalSec = 300
 	}
 	return cfg, nil
 }
