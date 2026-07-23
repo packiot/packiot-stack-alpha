@@ -235,9 +235,100 @@ SELECT add_compression_policy('equipment_values', compress_after => INTERVAL '7 
 SELECT add_retention_policy  ('equipment_values', drop_after     => INTERVAL '2 years');   -- was a 180-day DROP (live-only)
 ```
 
-**DECISION — B1 (refined).** Append-only Bronze means **stop the `ON CONFLICT (ts_value, id_equipment) DO UPDATE` overwrite** (`internal/writers/equipment_values.go:359+`) and make the raw write append-only, keyed with the monotonic **`source_seq`** tiebreak enumerated in §5A. That simultaneously (a) makes Bronze immutable, (b) fixes the sub-second collision of §3.4 / ADR-0037 (g) *by construction*, and (c) removes the mechanism (in-place overwrite) that makes reprocessing impossible. B1 is additive to the Gold path (§6).
+**DECISION — B1 (refined).** Append-only Bronze means keeping every raw sample, keyed with the monotonic **`source_seq`** tiebreak enumerated in §5A, so that (a) Bronze is immutable, (b) the sub-second collision of §3.4 / ADR-0037 (g) is resolved *by construction*, and (c) the overwrite mechanism that makes reprocessing impossible is removed. **The *mechanism* — where the append-only write lands — is settled in §3.6:** NOT by making the live `equipment_values` UPSERT append-only in place (that `ON CONFLICT DO UPDATE` is a load-bearing column-merge, §3.6.1), but by a **separate `equipment_values_raw` / `equipment_events_raw` hypertable, dual-written behind a default-OFF flag**. B1 is additive to the Gold path (§6).
 
 **Why this ordering matters:** B0 is pure policy/migration (low risk, reversible — drop the policy) and it **stops the bleeding** (the 180-day drop deleting the replay source) *before* the more invasive append-only write change (B1). Do B0 first, immediately, on staging.
+
+### 3.6 — B1 mechanism decision (append-only Bronze)
+
+§3.1 named two *mechanisms* for B1, and §3.5's "DECISION — B1 (refined)" leaned toward the first: **(a)** make the live `equipment_values` / `equipment_events` hypertables append-only **in place** (stop the `ON CONFLICT DO UPDATE`, key with `source_seq`), or **(b)** feed a **separate** `*_raw` hypertable alongside the untouched operational tables. A completed analysis of the live writer, the `agg_*` rollup views, and prod timestamp/keying reality now settles the mechanism. **This subsection is the decision and its implementation-ready spec; it refines the §3.5 sketch and the §5A `source_seq` placement.**
+
+> **DECISION — B1 = mechanism (b), a *separate* append-only Bronze table, flag-gated and design-only.** Do **not** make the live `equipment_values` / `equipment_events` hypertables append-only in place — by *either* sub-mechanism. Keep the live merged UPSERT byte-identical; add `equipment_values_raw` / `equipment_events_raw` as distinct append-only hypertables, dual-written behind a default-OFF flag.
+
+#### 3.6.1 — Why NOT in place: the live UPSERT is a load-bearing **column-merge**, not dedup
+
+The decisive blocker, and it is **independent of the sub-second question** (§3.4) — it would kill the in-place option even if every timestamp were sub-second-unique. `ON CONFLICT (ts_value, id_equipment) DO UPDATE` reads like duplicate-suppression, but it is doing structural work: it **fuses the five metric kinds into one wide row.** The writer emits a *separate* `INSERT` per kind, each populating only its own columns, and the UPSERT `COALESCE`-merges them onto the shared `(ts_value, id_equipment)` row:
+
+| Build func (`internal/writers/equipment_values.go`) | Columns it writes | Merge site |
+|---|---|---|
+| `buildProcessed` (:355) | `net_production_incr/_val` | `ON CONFLICT … DO UPDATE … COALESCE` (:359) |
+| `buildConsumed` (:392) | `gross_production_incr/_val` | :392 |
+| `buildDefective` (:425) | `scrap_incr/_val` | :425 |
+| `buildState` (:456) | `state` | :456 |
+| `buildMode` (:486) | `mode, sub_mode` | :486 |
+
+Because of this merge, one `(minute, equipment)` row carries the `net`/`gross`/`scrap` counter increments **co-resident** with the dimensional columns the `agg_*` rollup views `GROUP BY` — `mode, signal_quality, id_shift, id_production_order, conversion_factor, number_cavities`. That co-residence is an *artifact of the merge*, not a property of the raw stream. Split the kinds into honest per-kind append-only rows and the counter increments land on `net`/`gross`/`scrap` rows while `mode` arrives on its **own** row with the counters `NULL` — so `GROUP BY … mode` scatters every counter into the `mode = NULL` group and it is **silently dropped from the true `(minute, equipment, mode)` aggregate.** Making the live table append-only in place therefore does not merely change durability — it **breaks the Gold rollup contract by construction.**
+
+Two further in-place blockers, both grounded in prod reality:
+
+- **Sub-second-at-source is dead — especially for events.** Mechanism (a)'s premise was "carry finer-grained `ts_value` so collisions can't happen." Prod timestamps refute it: `ts_value` is **96.66 % whole-second** and `ts_event` is **100 % whole-second**. The wire does not deliver sub-second resolution to disambiguate with; the tiebreak *must* be a writer-assigned monotonic **`source_seq`** (§5A), not a finer source timestamp.
+- **In-place PK change on a compression-enabled hypertable is decompress + rebuild.** Append-only needs a key that admits multiple rows per `(ts_value, id_equipment)` (the `source_seq` tiebreak). Altering the key on the *live* hypertable — which B0 (§3.5) makes compression-enabled — forces a **decompress + PK rebuild of the hot operational historian**, a blocked in-place operation. A **fresh** table takes the new key for free.
+
+#### 3.6.2 — The decision: a separate append-only Bronze hypertable (`db/42`)
+
+Bronze is its own table, fed alongside — never in place. Fresh tables mean **no decompress / PK surgery on the live compressed operational hypertable**; `equipment_values` keeps its exact current shape, key, and merge.
+
+```sql
+-- db/42 (NEW) — append-only Bronze, distinct from the merged operational table.
+CREATE TABLE equipment_values_raw (LIKE equipment_values INCLUDING DEFAULTS);
+-- Key that ADMITS every raw sample. Partition col (ts_value) IN the key ⇒ valid hypertable unique;
+-- source_seq (writer-assigned monotonic tiebreak, already live via db/41 temporal columns — §5A)
+-- is what lets two same-(equipment, ts_value) samples coexist instead of colliding.
+ALTER TABLE equipment_values_raw
+  ADD PRIMARY KEY (id_equipment, ts_value, source_seq);
+SELECT create_hypertable('equipment_values_raw', 'ts_value');
+ALTER TABLE equipment_values_raw SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'id_equipment',                 -- B0 economics (§3.2/§3.5)
+  timescaledb.compress_orderby   = 'ts_value DESC, source_seq DESC'
+);
+SELECT add_compression_policy('equipment_values_raw', compress_after => INTERVAL '7 days');
+SELECT add_retention_policy  ('equipment_values_raw', drop_after     => INTERVAL '2 years'); -- historian horizon
+-- equipment_events_raw: same shape, create_hypertable('…','ts_event'),
+-- PRIMARY KEY (id_equipment, ts_event, source_seq).
+```
+
+`source_seq` and `ingested_at` already exist on the row via **`db/41`** (the T0-2 temporal-columns migration, §5A), so `db/42` adds only the tables + policies — no new plumbing to produce the tiebreak.
+
+#### 3.6.3 — Writer dual-write, flag-gated `BRONZE_RAW_APPEND` (default **OFF**)
+
+The writer keeps its existing behavior **byte-identical** and *additionally* appends into `*_raw` when the flag is on:
+
+- **Unchanged:** the merged `equipment_values` / `equipment_events` UPSERT — same SQL, same `Truncate(time.Second)` (`equipment_values.go:194`), same `(ts_value, id_equipment)` key, same column-merge. **Prod-parity, the F2↔F3 comparator, and the `agg_*` views are untouched.**
+- **Added (flag on):** a plain `INSERT` into `*_raw` — **no `ON CONFLICT`**, **no `Truncate(time.Second)`** (retain the original **ms-precision `ts_value`**), tie-broken by `source_seq`. Every decoded sample is kept.
+- **Symmetric across destinations ⇒ comparator NOT broken.** The dual-write is added to **both the F2 and F3 destinations**, which are written by the *same worker*. This **corrects the earlier premise** that a raw append would desync the planes: because the raw append is applied identically on each dest, the **F2↔F3 comparator stays valid** — both planes still differ only where they differed before.
+
+#### 3.6.4 — Prove it with a golden fixture (why B1 is design-only *now*)
+
+The load-bearing behavior is *collision recovery*, and **staging cannot exercise it**: the simulator-fed feed produces **zero live same-second collisions**, so shipping the dual-write to staging ships **unexercised code**. The proof is a **golden fixture**, not a live bake:
+
+```
+feed two samples for the same (equipment) inside one second:
+   sample A: ts = 12:00:00.250   (same second, different ms)
+   sample B: ts = 12:00:00.800
+assert:
+   equipment_values      → 1 row   (merged UPSERT: Truncate → :00, second overwrites first)  ← behavior UNCHANGED
+   equipment_values_raw  → 2 rows  (both retained; source_seq tiebreak)                        ← Bronze guarantee
+   repeat with A,B at the SAME ms  → *_raw still retains BOTH (source_seq)                      ← key admits dupes
+```
+
+The fixture asserts both guarantees together: the merged table still merges to one (prod-parity preserved) **and** Bronze keeps both (no raw sample lost). Because *only a fixture* can drive collision recovery on the current staging feed, **B1 lands as design here + flag-off code gated behind the fixture — not as a staging bake.** This is the honest reason B1 is design-only: the code is unprovable on today's staging, and shipping unexercised code on is worse than shipping the spec.
+
+#### 3.6.5 — Sequencing (what is, and is NOT, part of B1)
+
+- **B1 = the additive `*_raw` tables (`db/42`) + flag-off dual-write + golden fixture.** Nothing reads `*_raw` yet; Gold is fed exactly as today; the merge stays where it is.
+- **Silver read-cutover is AFTER the ADR-0032 F2 collapse.** Re-pointing the rollups at `*_raw` and re-expressing the column-merge (§3.6.1) as an explicit **Silver conform step** (§4) — i.e. *retiring the merge* — is a later phase that must land **after** [ADR-0032](0032-collapse-to-single-flow-f3.md) collapses F2, so there is a single plane to re-point. Until then the merge is retained verbatim as the operational write.
+- **History replay is a SEPARATE follow-up, not B1.** Reprocessing the existing corrupted history — the **697 Silver-clamp rows** and the collapsed same-second samples, which live on **prod (SELECT-only for us)** — is the **§3.3 reprocessing** work, reusing the `recalc_needed` re-flag scaffolding (`shift.go:198`, `grains.go:109`). It is explicitly **out of scope for B1**, which only *starts retaining* raw going forward.
+
+#### 3.6.6 — Live evidence cited
+
+| Claim | Evidence |
+|---|---|
+| UPSERT is a load-bearing column-merge (5 kinds → 1 wide row) | `equipment_values.go` build funcs :355 / :392 / :425 / :456 / :486, all `ON CONFLICT (ts_value,id_equipment) DO UPDATE … COALESCE` |
+| Truncate destroys sub-second on the merged write | `equipment_values.go:194` `Truncate(time.Second)` |
+| Sub-second-at-source is dead (esp. events) | `ts_value` 96.66 % whole-second; `ts_event` **100 %** whole-second → mechanism-(a) sub-second-at-source is impossible |
+| In-place PK change is blocked | PK change on a compression-enabled hypertable = decompress + rebuild of the live table |
+| Tiebreak column already exists | `source_seq` / `ingested_at` live via `db/41` (T0-2 temporal columns, §5A) |
 
 ---
 
@@ -274,7 +365,7 @@ Bronze (`equipment_values`, `equipment_events`) gets:
 | Column | Type | Role |
 |---|---|---|
 | `ingested_at` | `timestamptz DEFAULT now()` | **Arrival time** — distinct from `ts_value` (the PLC event time). Lets Bronze answer "when did we *receive* this?" independent of when the reading was taken; the basis for late-arrival detection (ADR-0037 (b) monotonicity guard) and for auditing ingest lag. |
-| `source_seq` | `bigint` (monotonic) | **The sub-second tiebreak.** A per-writer monotonic sequence that makes `(ts_value, id_equipment, source_seq)` unique *by construction*, so two samples in the same 1-second `ts_value` bucket no longer collide. This is what makes Bronze append-only and **resolves ADR-0037 (g) structurally** (see §3.4) — it replaces the `ON CONFLICT DO UPDATE` overwrite (B1, §3.5) rather than papering over it. |
+| `source_seq` | `bigint` (monotonic) | **The sub-second tiebreak.** A per-writer monotonic sequence that makes `(id_equipment, ts_value, source_seq)` unique *by construction*, so two samples in the same 1-second `ts_value` bucket no longer collide. This is what makes Bronze append-only and **resolves ADR-0037 (g) structurally** (see §3.4). Per the §3.6 mechanism decision it is the **PRIMARY KEY of the separate `equipment_values_raw` / `equipment_events_raw` tables** (`(id_equipment, ts_value, source_seq)`), *not* a replacement key on the live `equipment_values` UPSERT — that merged write is kept byte-identical (§3.6.3). Already live via `db/41`. |
 
 ### Gold lineage columns — what makes replay auditable
 
@@ -304,14 +395,14 @@ Sequenced so each step is independently valuable and reversible. **This ADR ship
 | Phase | Step | Risk | Reversible? |
 |-------|------|------|-------------|
 | **B0** | Add compression + retention policy to the *existing* `equipment_values` / `equipment_events` hypertables on **staging** (no new tables yet). Pure policy add. | Low | Yes (drop policy) |
-| **B1** | Introduce append-only Bronze semantics: stop overwriting raw (resolve the sub-second key, ADR-0037 g), or split `equipment_values_raw` as a distinct immutable hypertable fed by the writer. | Med | Yes (Bronze is additive; Gold path unchanged) |
+| **B1** | Introduce append-only Bronze via a **separate** `equipment_values_raw` / `equipment_events_raw` hypertable (`db/42`), **flag-gated dual-write** (`BRONZE_RAW_APPEND`, default OFF) alongside the byte-identical live merged UPSERT, proven by a golden collision fixture. **Mechanism decided in §3.6 — NOT in-place** (the live UPSERT is a load-bearing column-merge). **Design-only now** (collision recovery is unprovable on the current sim-fed staging feed). | Med | Yes (Bronze is additive; Gold path + comparator unchanged) |
 | **S1** | Extract the Silver invariant contract as a named stage; wire the highest-priority ADR-0037 fixes (a, b) through it. | Med | Yes (per-invariant flags) |
 | **S2** | Migrate remaining ADR-0037 P2/P3 findings into Silver (c–h, targets, rates). | Med | Yes |
 | **G0** | Formalize caggs as the documented Silver→Gold streaming transform (naming/docs; behavior already live). | Low | N/A |
 | **L0** | Stand up the **AWS-native offline lakehouse (§2.4)**: batch-export Bronze→S3 parquet, register in Glue, query via Athena; **repoint `cq-logs-bigquery` from the BigQuery client to `boto3`/`pyathena`** (its only dataset, `cq_logs`, lands in S3). Completes the **BigQuery→S3+Athena** cut → **100% off GCP**. `reports/` (LaTeX-only) needs no data-tier change. | Low | Yes (BigQuery can stay until Athena verified) |
 | **P** | Promote each phase staging→prod under its own gate (retention windows sized to prod volume; prod DB is SELECT-only for us — policy/DDL changes go through the normal prod-apply gate, never ad hoc). | — | Per-phase |
 
-> **B0/B1 refined by the live-DB audit (§3.5):** B0 is not "add a policy where none exists" — the live DB already runs a **180-day `drop`** (live-only config drift), so B0 = *move retention into a migration* **and** *convert `drop`→`compress` with a years-long horizon* (stop destroying the replay source). B1's append-only write uses the **`source_seq`** lineage column (§5A). See §3.5 for the exact starting state and DDL.
+> **B0/B1 refined by the live-DB audit (§3.5) and the mechanism decision (§3.6):** B0 is not "add a policy where none exists" — the live DB already runs a **180-day `drop`** (live-only config drift), so B0 = *move retention into a migration* **and** *convert `drop`→`compress` with a years-long horizon* (stop destroying the replay source). **B1 is mechanism (b): a separate `*_raw` hypertable (`db/42`) dual-written behind a default-OFF flag, keyed `(id_equipment, ts_value, source_seq)` — NOT an in-place change to the live merged UPSERT** (that `ON CONFLICT DO UPDATE` is a load-bearing column-merge; see §3.6.1). The Silver read-cutover that retires the merge lands **after** the [ADR-0032](0032-collapse-to-single-flow-f3.md) F2 collapse; history replay is the separate §3.3 follow-up. See §3.6 for the full spec + golden fixture.
 
 **Sequencing rule:** Bronze (B0/B1) lands *before or with* the first Silver reprocessing-dependent fix, because the whole point of Silver fixes is to *replay* them — and replay needs Bronze. B0 (policy-only) is the cheapest, most reversible first move and can go immediately on staging. **And per ADR-0037 §4A, the `data_quality_event` substrate + emit-only invariant checks ship even earlier — Step 0 — so corruption is measured before any served value changes (instrument-before-remediate).**
 
