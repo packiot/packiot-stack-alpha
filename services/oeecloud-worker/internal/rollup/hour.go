@@ -210,6 +210,18 @@ const hourTargetsSQL = `
 	   AND el.target_customized IS NOT TRUE
 	   AND EXISTS (SELECT 1 FROM piot_get_shift_hour_begin_by_equipment(el.id_equipment, el.ts_value))`
 
+// ADR-0036 §5A lineage stamp (T0-2). Separate additive step, NOT in
+// HourStatementsForParity (see shift.go's shiftStampSQL rationale — the
+// parity SQL is diffed against a prod that lacks these columns). Scoped to
+// the tick's batch (hour_elig). source_watermark = LEAST(hour bucket end,
+// now()) — the latest event-time this hour row has visibility through.
+const hourStampSQL = `
+	UPDATE %[1]s.equipment_runtime_1hour e SET
+	       computed_at = now(),
+	       source_watermark = LEAST(e.ts_value + interval '1 hour', now())
+	  FROM hour_elig el
+	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
+
 const hourReflagSQL = `
 	UPDATE %[1]s.equipment_runtime_1hour SET recalc_needed = true
 	 WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
@@ -243,6 +255,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		{"events", fmt.Sprintf(hourEventsSQL, d.EvSchema)},
 		{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)},
 		{"targets", fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema)},
+		{"stamp", fmt.Sprintf(hourStampSQL, d.EvSchema)},
 		{"reflag", fmt.Sprintf(hourReflagSQL, d.EvSchema)},
 	}
 	for _, s := range steps {

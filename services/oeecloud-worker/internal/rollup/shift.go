@@ -241,6 +241,22 @@ const shiftTargetsSQL = `
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND ev.target_customized IS NOT TRUE`
 
+// ADR-0036 §5A lineage stamp (T0-2). SEPARATE, additive step — deliberately
+// NOT part of ShiftStatementsForParity: the parity accessors are diffed
+// against PROD (F2), which does not carry these columns until the gated
+// prod-apply, so folding the stamp into the value SQL would break the
+// comparator. Runs inside RunShift's tx, scoped to the just-processed batch
+// (shift_elig). computed_at = compute wall-clock; source_watermark = the
+// latest event-time the row has visibility through (LEAST(bucket_end, now));
+// for a live shift the two coincide, for a replayed old shift computed_at is
+// recent while source_watermark settles at ts_end — the auditable distinction.
+const shiftStampSQL = `
+	UPDATE %[1]s.equipment_runtime_shift e SET
+	       computed_at = now(),
+	       source_watermark = LEAST(COALESCE(e.ts_end, e.ts_value + interval '1 day'), now())
+	  FROM shift_elig el
+	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
+
 const shiftReflagSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET recalc_needed = true
 	 WHERE e.ts_value >= now() - interval '12 hours'
@@ -294,6 +310,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, d.EvSchema)},
 		{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
 		{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
+		{"stamp", fmt.Sprintf(shiftStampSQL, d.EvSchema)},
 	}
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {

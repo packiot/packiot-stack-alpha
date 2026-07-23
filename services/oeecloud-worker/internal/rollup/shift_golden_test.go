@@ -36,7 +36,7 @@ import (
 // vl_day = 86400 everywhere ⇒ proportional_target == elapsed-productive seconds.
 const shiftGoldenSchema = `
 	CREATE TABLE golden.shifts (id_shift int, cd_shift text);
-	CREATE TABLE golden.area_runtime_shift (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false);
+	CREATE TABLE golden.area_runtime_shift (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
 	CREATE TABLE golden.production_targets (id_equipment int, vl_day double precision);
 	CREATE TABLE golden.equipment_values (
 	    id_equipment int, ts_value timestamptz, ideal_production_speed double precision
@@ -61,7 +61,9 @@ const shiftGoldenSchema = `
 	    ideal_production double precision, downtime double precision,
 	    changeover_time double precision, oee double precision,
 	    oee_a double precision, oee_p double precision, oee_q double precision,
-	    target double precision, proportional_target double precision
+	    target double precision, proportional_target double precision,
+	    -- ADR-0036 §5A lineage columns (T0-2).
+	    computed_at timestamptz, source_watermark timestamptz
 	);
 	-- stub: shift_size 28800 (8h). NOTE: shift_size is intentionally UNUSED by
 	-- the fixed formula (elapsed-based) — the LATERAL is retained only as the

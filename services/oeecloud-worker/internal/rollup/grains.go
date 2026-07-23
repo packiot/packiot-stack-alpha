@@ -91,7 +91,13 @@ const grainRollupSQL = `
 	       recalc_needed   = false,
 	       oee   = COALESCE(s.net / NULLIF(s.ideal_production, 0), 0),
 	       oee_a = COALESCE(s.running_time / NULLIF(s.total_time - s.planned_downtime, 0), 0),
-	       oee_q = COALESCE(s.net / NULLIF(s.gross, 0), 0)
+	       oee_q = COALESCE(s.net / NULLIF(s.gross, 0), 0),
+	       -- ADR-0036 §5A lineage stamp (T0-2). Folded directly here (grains
+	       -- has no ForParity accessor, so this never reaches the prod
+	       -- comparator). ts_value is DATE → cast; %[4]s is the grain unit
+	       -- ('week'|'month') so the interval is the true bucket span.
+	       computed_at = now(),
+	       source_watermark = LEAST(e.ts_value::timestamptz + interval '1 %[4]s', now())
 	  FROM eligible el
 	  LEFT JOIN sums s ON s.id_equipment = el.id_equipment AND s.ts_value = el.ts_value
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`

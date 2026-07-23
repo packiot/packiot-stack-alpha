@@ -53,10 +53,17 @@ CREATE TABLE v3.equipment_runtime_shift (
     stopped_time double precision, planned_downtime double precision,
     ideal_production double precision, downtime double precision,
     changeover_time double precision, oee double precision,
-    proportional_target double precision
+    -- oee_a/oee_p/oee_q written by the shift events-update since ADR-0037 C
+    -- (this fixture had drifted without them — RunShift's events-update needs them).
+    oee_a double precision, oee_p double precision, oee_q double precision,
+    proportional_target double precision,
+    -- ADR-0036 §5A lineage columns (T0-2). REQUIRED: TestBoundedShiftDrain
+    -- drives RunShift, whose stamp step writes these; without them RunShift errors.
+    computed_at timestamptz, source_watermark timestamptz
 );
 CREATE TABLE v3.area_runtime_shift (
-    id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false
+    id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false,
+    computed_at timestamptz, source_watermark timestamptz
 );
 
 -- flow-plane inputs

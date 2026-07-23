@@ -110,6 +110,14 @@ const entityFillList = `
 // SCOPE = source scoping predicate, JOINEXPR = bucket-matching pred.
 func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name, SQL string } {
 	scope := fmt.Sprintf(sp.ScopePred, evSchema, refSchema)
+	// ADR-0036 §5A lineage stamp (T0-2), folded into each entity rollup's SET
+	// list. entity_grains has no ForParity accessor, so this never reaches the
+	// prod comparator. ts_value on area/site grains may be DATE or timestamptz
+	// → ::timestamptz normalizes both; source_watermark = LEAST(bucket end,
+	// now()) with the span passed per grain.
+	stamp := func(span string) string {
+		return ",\n\t       computed_at = now(),\n\t       source_watermark = LEAST(e.ts_value::timestamptz + interval '" + span + "', now())"
+	}
 	rollup := func(tbl, src, joinExpr, extraFill, window string, scoped bool) string {
 		srcPred := scope
 		if !scoped {
@@ -179,7 +187,7 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	       oee_p = COALESCE((s.net / NULLIF(s.ideal_production, 0)) /
 	               NULLIF(s.running_time::float / NULLIF(s.available_time, 0) * (s.net::float / NULLIF(s.gross, 0)), 0), 0),
 	       proportional_target = s.target,
-	       recalc_needed = false
+	       recalc_needed = false` + stamp("1 hour") + `
 	  FROM el
 	  JOIN sums s ON s.` + sp.Key + ` = el.` + sp.Key + ` AND s.ts_value = el.ts_value
 	 WHERE e.` + sp.Key + ` = el.` + sp.Key + ` AND e.ts_value = el.ts_value`
@@ -238,19 +246,19 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	   AND t.ts_value = (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(h.` + sp.Key + `, h.ts_value) LIMIT 1)`},
 		{sp.Name + "-hour-tail", hourTail},
 		{sp.Name + "-day", rollup(sp.Name+"_runtime_1day", sp.DaySource, sameBucket, `,
-	       proportional_target = COALESCE(s.proportional_target, 0)`, monthWindow, true)},
+	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 day"), monthWindow, true)},
 		{sp.Name + "-day-oeep", oeeP(sp.Name + "_runtime_1day")},
 		{sp.Name + "-day-cascade-month", dayCascades},
 		{sp.Name + "-day-cascade-week", dayCascadeWeek},
-		{sp.Name + "-shift", rollup(sp.Name+"_runtime_shift", sp.ShiftSource, sameBucket, ``, monthWindow, true)},
+		{sp.Name + "-shift", rollup(sp.Name+"_runtime_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
 		{sp.Name + "-shift-oeep", oeeP(sp.Name + "_runtime_shift")},
 		{sp.Name + "-shift-tail", shiftTail},
 		{sp.Name + "-week", rollup(sp.Name+"_runtime_1week", ownDay, weekSpan, `,
-	       proportional_target = COALESCE(s.proportional_target, 0)`, weekWindow, false)},
+	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("7 days"), weekWindow, false)},
 		{sp.Name + "-week-oeep", oeeP(sp.Name + "_runtime_1week")},
 		{sp.Name + "-week-tail", weekTail},
 		{sp.Name + "-month", rollup(sp.Name+"_runtime_1month", ownDay, monthSpan, `,
-	       proportional_target = COALESCE(s.proportional_target, 0)`, weekWindow, false)},
+	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 month"), weekWindow, false)},
 		{sp.Name + "-month-oeep", oeeP(sp.Name + "_runtime_1month")},
 		{sp.Name + "-month-tail", monthTail},
 	}
