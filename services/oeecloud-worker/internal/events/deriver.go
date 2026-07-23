@@ -47,14 +47,33 @@ import (
 // Dest is one derivation destination — the shared flows.Dest.
 type Dest = flows.Dest
 
+// SCOPE ($3 = EVENTS_WIDEROW_STATE_ENTERPRISES, ADR-0031 Incoplast/ent4):
+// the deriver's native scope is status_type=4 equipment (StateCurrent-driven,
+// paired with BuildEventMint per the ADR-0014 P3a contract). A second class of
+// tenant — the "wide-row state" tenants (e.g. Incoplast) — writes the `state`
+// column directly into equipment_values via a wide-row tee and registers NO
+// StateCurrent/Count LEAF topics in packml_register. For them BuildEventMint
+// never fires (no KindStateCurrent metric resolves) AND they are status_type=0,
+// so BOTH the per-sample minter and this deriver skip them → 0 equipment_events
+// → no downtimes/availability/OEE. Because ca_discrete_changes_1s already
+// carries their `state` keyed by id_equipment (resolved from the row itself, no
+// leaf topic needed), the SAME gaps-and-islands derivation mints correct
+// interval events for them. We opt those enterprises in by id via $3, restricted
+// to tp_equipment=1 MACHINES (lines aggregate from members — deriving line
+// events from a wide-row would double-count, cf. the two-writer line bug). The
+// widened scope is applied IDENTICALLY to the upsert (minter) and correct/delete
+// (cleaner) passes so a minted OPEN event always has a cleaner in the same scope
+// — never an orphan open row that running_time counts to now() (the int-overflow
+// class from the EventMint↔deriver scope-mismatch bug).
 const transitionsCTE = `
 WITH stream AS (
     SELECT ca.ts_value AS ts_event, ca.id_equipment, ca.id_enterprise, ca.state,
            count(ca.state) OVER (PARTITION BY ca.id_equipment ORDER BY ca.ts_value) AS grp
       FROM %[1]s.ca_discrete_changes_1s ca
-      JOIN %[2]s.equipments e ON e.id_equipment = ca.id_equipment AND e.status_type = 4
+      JOIN %[2]s.equipments e ON e.id_equipment = ca.id_equipment
      WHERE ca.ts_value > now() - interval '25 hours'
-       AND e.tp_equipment > 0
+       AND ((e.status_type = 4 AND e.tp_equipment > 0)
+            OR (e.id_enterprise = ANY($3) AND e.tp_equipment = 1))
        AND NOT (e.id_area = ANY($1)) AND NOT (e.id_enterprise = ANY($2))
 ), filled AS (
     SELECT ts_event, id_equipment, id_enterprise,
@@ -88,19 +107,23 @@ DELETE FROM %[1]s.equipment_events ev
  WHERE ev.ts_event > now() - interval '1 day'
    AND NOT ev.forced_creation_system
    AND ev.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
-        WHERE status_type = 4 AND tp_equipment > 0
+        WHERE ((status_type = 4 AND tp_equipment > 0)
+               OR (id_enterprise = ANY($3) AND tp_equipment = 1))
           AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
    AND NOT EXISTS (SELECT 1 FROM trans t
         WHERE t.id_equipment = ev.id_equipment
           AND t.ts_event = ev.ts_event AND t.status = ev.status)`
 
 // RunOnce derives events for one destination: correct, then upsert.
-func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises []int) (deleted, upserted int64, err error) {
-	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises)
+// widerowEnterprises ($3) opts extra enterprises' machines (tp=1) into the
+// derivation for the wide-row-state tenants that carry no StateCurrent leaf
+// topic — see the transitionsCTE scope note. Empty = native status_type=4 only.
+func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises, widerowEnterprises []int) (deleted, upserted int64, err error) {
+	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return 0, 0, fmt.Errorf("correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises)
+	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return del.RowsAffected(), 0, fmt.Errorf("upsert pass: %w", err)
 	}
@@ -111,12 +134,13 @@ func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises []int) (del
 // (prod's mega-proc ran the reviewer every minute). One tick = all
 // destinations; per-destination failures are logged and the tick
 // reports error if any destination failed.
-func Loop(ctx context.Context, dests []Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
-	logger.Info("events deriver started (ADR-0014 P3a)", slog.Int("destinations", len(dests)))
+func Loop(ctx context.Context, dests []Dest, exclAreas, exclEnterprises, widerowEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("events deriver started (ADR-0014 P3a)",
+		slog.Int("destinations", len(dests)), slog.Int("widerow_enterprises", len(widerowEnterprises)))
 	jobs.Loop(ctx, jobs.Job{Name: "events-deriver", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			del, ups, err := RunOnce(ctx, d, exclAreas, exclEnterprises)
+			del, ups, err := RunOnce(ctx, d, exclAreas, exclEnterprises, widerowEnterprises)
 			if err != nil {
 				logger.Warn("deriver pass failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
