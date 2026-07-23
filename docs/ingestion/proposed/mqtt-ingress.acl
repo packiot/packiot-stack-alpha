@@ -1,0 +1,30 @@
+# PROPOSAL — mqtt-ingress ACL for ADR-0032 Path B. NOT applied. Reference only.
+# Username = client-cert CN (use_identity_as_username true). Each tenant may
+# publish ONLY to its own SparkPlug group's DATA subtree, and may NOT write any
+# command topic. See docs/ingestion/mqtt-ingress-design.md §3.1 (A2/A3/A7).
+#
+# Default (no matching user line): deny. Mosquitto denies topics not granted.
+
+# ── CPACK (client cert CN=CPACK) ──────────────────────────────────────────────
+user CPACK
+topic write spBv1.0/CPACK/NBIRTH/#
+topic write spBv1.0/CPACK/NDATA/#
+topic write spBv1.0/CPACK/NDEATH/#
+topic write spBv1.0/CPACK/DBIRTH/#
+topic write spBv1.0/CPACK/DDATA/#
+topic write spBv1.0/CPACK/DDEATH/#
+# Explicit deny is implicit (no grant) — CPACK cannot write DCMD/NCMD nor any
+# other tenant's subtree. No read grants: an ingress publisher never subscribes.
+
+# ── INCOPLAST (client cert CN=INCOPLAST) ──────────────────────────────────────
+user INCOPLAST
+topic write spBv1.0/INCOPLAST/NBIRTH/#
+topic write spBv1.0/INCOPLAST/NDATA/#
+topic write spBv1.0/INCOPLAST/NDEATH/#
+topic write spBv1.0/INCOPLAST/DBIRTH/#
+topic write spBv1.0/INCOPLAST/DDATA/#
+topic write spBv1.0/INCOPLAST/DDEATH/#
+
+# NOTE: the bridge connection authenticates internally to `mosquitto:1883`
+# (loopback, allow_anonymous) — it is NOT an external user and needs no ACL
+# entry here; command topics are excluded at the bridge `topic` lines, not here.

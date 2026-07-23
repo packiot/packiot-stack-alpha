@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROPOSAL — do NOT merge into compose.staging.yml until design §8 (Q1-Q5) sign-off.
+# ADR-0032 Path B edge-facing MQTT broker. Publishing this service + opening SG
+# 8883 is the act that creates the public surface — gated on USER approval.
+# See docs/ingestion/mqtt-ingress-design.md.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ── mqtt-ingress (public TLS+mTLS SparkPlug B ingress → bridge → internal) ────
+  mqtt-ingress:
+    image: eclipse-mosquitto:2
+    container_name: mqtt-ingress
+    restart: unless-stopped
+    # tini reaps the docker-exec'd healthcheck children (same zombie-leak guard
+    # as the internal broker — incident 2026-07-09).
+    init: true
+    ports:
+      # PUBLIC MQTT-over-TLS. SG must scope this to customer egress CIDRs
+      # (proposed rule in security-group-8883.snippet.tf) — never 0.0.0.0/0.
+      - "8883:8883"
+    volumes:
+      - ./docs/ingestion/proposed/mqtt-ingress.mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docs/ingestion/proposed/mqtt-ingress.acl:/mosquitto/config/mqtt-ingress.acl:ro
+      # Server cert/key + CA + (mTLS) trust — provisioned at deploy, NOT in git.
+      - /opt/packiot/mqtt-ingress/certs:/mosquitto/certs:ro
+      - mqtt-ingress-data:/mosquitto/data
+    networks:
+      # Static IP (avoid the dynamic-pool squat that has bitten this stack).
+      packiot-net:
+        ipv4_address: 172.18.0.35
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      # TLS probe: a self-loop mosquitto_sub connect proves the listener + certs
+      # are up. Uses the CA + a probe client cert mounted alongside the server pair.
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub --cafile /mosquitto/certs/ca.crt --cert /mosquitto/certs/probe.crt --key /mosquitto/certs/probe.key -h 127.0.0.1 -p 8883 -t 'healthcheck/ping' -m ok -q 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+# volumes:  (add under the existing top-level `volumes:` key)
+#   mqtt-ingress-data:
