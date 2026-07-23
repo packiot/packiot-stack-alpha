@@ -38,6 +38,7 @@ volumes:
   authentik-certs:
   mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:  # ADR-0011 P2: SQLite outbox survives container restart
+  edge_transformer_agent_outbox:  # ADR-0042 P1: sparkplug-agent-cpack store-and-forward outbox
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
@@ -172,6 +173,78 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.200
     mem_limit: 64m
+
+  # ── sparkplug-agent-cpack (ADR-0042 P1 — Mode-A CPACK validation) ─────────────
+  # The Tier-2 transmission plane fed by a TEE of CPACK's real Node-RED raw
+  # tags. The tee POSTs the rawtag JSON envelope to this agent's HTTP
+  # front-door (:9104, /v1/tags); the agent runs a full SparkPlug B session and
+  # publishes spBv1.0/CPACK/... to the INTERNAL mosquitto — which edge-transformer
+  # already subscribes to (USE_GO_PORT + CALC_CUTOVER_REFACTORED on) → full prod
+  # Calc → F3. This closes the standing "CPACK real data bypasses the Calc" gap
+  # (today ent3 is plc-sim synthetic).
+  #
+  # OPT-IN — profile `cpack-tee`, so it does NOT start on a default bring-up.
+  # Staging keeps running on plc-sim until the tee is ready. The agent uses a
+  # DISTINCT edge_node_id (cpack-tee ≠ plc-sim's node), so if BOTH ran they would
+  # DOUBLE-SOURCE ent3 (two edge nodes, same CPACK metric names → double-count).
+  #
+  #   ── CUTOVER (real tee goes live) ──────────────────────────────────────────
+  #     docker compose -f compose.staging.yml stop plc-sim
+  #     docker compose -f compose.staging.yml --profile cpack-tee up -d sparkplug-agent-cpack
+  #   ── ROLLBACK (back to sim) ────────────────────────────────────────────────
+  #     docker compose -f compose.staging.yml stop sparkplug-agent-cpack
+  #     docker compose -f compose.staging.yml start plc-sim
+  #
+  # The HTTP front-door is INTERNAL-ONLY here (no host port published). The
+  # public HTTPS front-door (nginx + cert + SG rule scoped to CPACK's egress IP)
+  # is spec'd in docs/adr/0042-cpack-tee-frontdoor.md — the SG open is
+  # USER-gated (terraform), NOT applied by this compose.
+  sparkplug-agent-cpack:
+    profiles: ["cpack-tee"]
+    build:
+      context: ./services/edge-transformer
+    container_name: sparkplug-agent-cpack
+    entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      AGENT_CONFIG: /etc/packiot/agent.yaml
+      HEALTH_PORT: "9103"
+      # Loopback with no live raw-tag MQTT publisher (tags arrive via HTTP) is
+      # idle by design — disable the idle-degradation check so /healthz tracks
+      # broker connectivity only. A permanently-red probe trains ops to ignore red.
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      OUTBOX_PATH: /var/lib/edge-transformer/agent-outbox.db
+      # ── HTTP raw-tag front-door (Mode-A direct-to-ingest) ─────────────────
+      AGENT_HTTP_INGEST_ENABLED: "true"
+      AGENT_INGEST_PORT: "9104"
+      # Ingest API key — REQUIRED, no default (agent refuses to serve ingest
+      # unset). Value lives in /opt/packiot/.env; hand it to the CPACK Node-RED
+      # tee as the X-Ingest-Key header. # FILL AT DEPLOY
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:-}
+    volumes:
+      # agentcfg descriptor (topic prefix + raw_tag_map) — read-only.
+      - ./docs/clients/cpack-agent.yaml:/etc/packiot/agent.yaml:ro
+      - edge_transformer_agent_outbox:/var/lib/edge-transformer
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.38   # next free in the /24 ledger (2–37, .200 taken)
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    # Distroless → binary self-probes /healthz via the --healthcheck subcommand.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
 
   # ── S7 end-to-end (profile: s7) — S1/#32 PR3 ──────────────────────────────────
   # Opt-in scaffolding to run the REAL S7 read path live in staging, where there

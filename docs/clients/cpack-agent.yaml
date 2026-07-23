@@ -1,0 +1,121 @@
+# cpack-agent.yaml — sparkplug-agent descriptor for CPACK (ADR-0042 P1, Mode-A).
+#
+# This is the agentcfg schema (services/edge-transformer/internal/agent/agentcfg),
+# NOT the edge-transformer client.yaml. It drives ONE sparkplug-agent process
+# that turns CPACK's raw PLC tags (POSTed by the real CPACK Node-RED tee over
+# the HTTP front-door) into SparkPlug B, publishing to the INTERNAL mosquitto
+# that edge-transformer already subscribes to → the full prod Calc → F3.
+#
+# ── Topology provenance ──────────────────────────────────────────────────────
+# Derived from services/edge-transformer/cmd/plc-sim/main.go (the synthetic
+# CPACK feed this tee REPLACES) and VERIFIED against the live staging
+# packml_register (enterprise 3, SELECT-only / BEGIN READ ONLY, 2026-07-23):
+#
+#   Lines (tp_equipment=3, id_unit NULL):  L8=51  L5=47  L3=48  L4=49
+#   Members (machines, id_unit=id):        L5/BREYER=53  L5/TEXA=57
+#                                          L3/PTH=61      L4/TEXA=63
+#
+# Scope = EXACTLY the 8 equipment plc-sim feeds today ({47,48,49,51,53,57,61,63}),
+# so the agent-fed F3 is an apples-to-apples swap for the sim-fed F3 in the
+# bake comparator. edge-transformer resolves each metric NAME to id_equipment
+# by longest-prefix match on packml_topic — the Calc's min-speed downtime
+# (MachSpeed/30750-30751) and line Phase-9 (Parameter30700) inputs are all
+# present. Extending to CPACK's full ~30-equipment topology (L6/L10, CELULA*,
+# SLEEVE, FLEXO) is a follow-up once the tee proves out.
+#
+# ── Prefix / suffix discipline (ADR-0042 §2.3) ───────────────────────────────
+# packml_topic is the common tenant prefix; the tee sends metric SUFFIXES only
+# (the part AFTER "CPACK/SC/LINHAS"). full name = packml_topic + suffix, which
+# the tee builds by stripping the prefix from its existing PLC-read topic. All
+# 8 equipment share the "CPACK/SC/LINHAS" prefix, so it factors cleanly.
+
+sparkplug:
+  group_id: CPACK
+  # DISTINCT from plc-sim's edge node ("plc-sim"). Two SparkPlug edge nodes
+  # under the SAME group publishing the SAME metric names would double-source
+  # ent3 at edge-transformer — which is why the cutover STOPS plc-sim before
+  # the agent goes live (see compose service comment + PR description).
+  edge_node_id: cpack-tee
+  packml_topic: CPACK/SC/LINHAS
+
+  # Mode-A: the agent both subscribes raw tags from AND publishes SparkPlug to
+  # the internal mosquitto. In Mode-A direct-to-ingest the raw-tag MQTT
+  # subscriber sits idle (tags arrive via the HTTP front-door instead); the
+  # uplink publishes spBv1.0/CPACK/... which edge-transformer decodes.
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/cpack/#
+  uplink_broker: tcp://mosquitto:1883
+
+  # Mode-B mTLS material (secret refs, never values). Empty on the staging
+  # loopback — no WAN crossing to authenticate here.
+  uplink_tls_cert_ref: ""
+  uplink_tls_key_ref: ""
+  uplink_ca_ref: ""
+
+# ── raw_tag_map ──────────────────────────────────────────────────────────────
+# suffix (what the tee sends) → SparkPlug type. full name = packml_topic+suffix.
+# Types match what plc-sim emits AND what the Calc expects:
+#   Prod{Consumed,Processed,Defective}Count → double (cumulative counters)
+#   MachSpeed                                → double (min-speed downtime input)
+#   StateCurrent                             → long   (PackML state, Phase-8/9)
+#   Parameter30700                           → string (line-machines CSV, lines only)
+raw_tag_map:
+  # ── L8 line (eq 51) ─────────────────────────────────────────────────────
+  - {metric_suffix: /L8/Admin/ProdConsumedCount/51/Unit,  type: double}
+  - {metric_suffix: /L8/Admin/ProdProcessedCount/51/Unit, type: double}
+  - {metric_suffix: /L8/Admin/ProdDefectiveCount/51/Unit, type: double}
+  - {metric_suffix: /L8/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L8/Status/StateCurrent,              type: long}
+  - {metric_suffix: /L8/Status/Parameter30700,            type: string}
+
+  # ── L5 line (eq 47) ─────────────────────────────────────────────────────
+  - {metric_suffix: /L5/Admin/ProdConsumedCount/47/Unit,  type: double}
+  - {metric_suffix: /L5/Admin/ProdProcessedCount/47/Unit, type: double}
+  - {metric_suffix: /L5/Admin/ProdDefectiveCount/47/Unit, type: double}
+  - {metric_suffix: /L5/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L5/Status/StateCurrent,              type: long}
+  - {metric_suffix: /L5/Status/Parameter30700,            type: string}
+
+  # ── L3 line (eq 48) ─────────────────────────────────────────────────────
+  - {metric_suffix: /L3/Admin/ProdConsumedCount/48/Unit,  type: double}
+  - {metric_suffix: /L3/Admin/ProdProcessedCount/48/Unit, type: double}
+  - {metric_suffix: /L3/Admin/ProdDefectiveCount/48/Unit, type: double}
+  - {metric_suffix: /L3/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L3/Status/StateCurrent,              type: long}
+  - {metric_suffix: /L3/Status/Parameter30700,            type: string}
+
+  # ── L4 line (eq 49) ─────────────────────────────────────────────────────
+  - {metric_suffix: /L4/Admin/ProdConsumedCount/49/Unit,  type: double}
+  - {metric_suffix: /L4/Admin/ProdProcessedCount/49/Unit, type: double}
+  - {metric_suffix: /L4/Admin/ProdDefectiveCount/49/Unit, type: double}
+  - {metric_suffix: /L4/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L4/Status/StateCurrent,              type: long}
+  - {metric_suffix: /L4/Status/Parameter30700,            type: string}
+
+  # ── L5/BREYER member (eq 53, count idx 61) ──────────────────────────────
+  - {metric_suffix: /L5/BREYER/Admin/ProdConsumedCount/61/Unit,  type: double}
+  - {metric_suffix: /L5/BREYER/Admin/ProdProcessedCount/61/Unit, type: double}
+  - {metric_suffix: /L5/BREYER/Admin/ProdDefectiveCount/61/Unit, type: double}
+  - {metric_suffix: /L5/BREYER/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L5/BREYER/Status/StateCurrent,              type: long}
+
+  # ── L5/TEXA member (eq 57, count idx 65) ────────────────────────────────
+  - {metric_suffix: /L5/TEXA/Admin/ProdConsumedCount/65/Unit,  type: double}
+  - {metric_suffix: /L5/TEXA/Admin/ProdProcessedCount/65/Unit, type: double}
+  - {metric_suffix: /L5/TEXA/Admin/ProdDefectiveCount/65/Unit, type: double}
+  - {metric_suffix: /L5/TEXA/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L5/TEXA/Status/StateCurrent,              type: long}
+
+  # ── L3/PTH member (eq 61, count idx 81) ─────────────────────────────────
+  - {metric_suffix: /L3/PTH/Admin/ProdConsumedCount/81/Unit,  type: double}
+  - {metric_suffix: /L3/PTH/Admin/ProdProcessedCount/81/Unit, type: double}
+  - {metric_suffix: /L3/PTH/Admin/ProdDefectiveCount/81/Unit, type: double}
+  - {metric_suffix: /L3/PTH/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L3/PTH/Status/StateCurrent,              type: long}
+
+  # ── L4/TEXA member (eq 63, count idx 63) ────────────────────────────────
+  - {metric_suffix: /L4/TEXA/Admin/ProdConsumedCount/63/Unit,  type: double}
+  - {metric_suffix: /L4/TEXA/Admin/ProdProcessedCount/63/Unit, type: double}
+  - {metric_suffix: /L4/TEXA/Admin/ProdDefectiveCount/63/Unit, type: double}
+  - {metric_suffix: /L4/TEXA/Status/MachSpeed,                 type: double}
+  - {metric_suffix: /L4/TEXA/Status/StateCurrent,              type: long}
