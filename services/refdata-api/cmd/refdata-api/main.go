@@ -254,7 +254,11 @@ func main() {
 	// promhttp default registry — request counts come from reqCount
 	// (incremented in makeHandler's wrapper below); Go runtime metrics
 	// ride along free.
-	mux.Handle("/metrics", promhttp.Handler())
+	// EnableOpenMetrics lets the handler negotiate the OpenMetrics exposition
+	// (Prometheus sends Accept: application/openmetrics-text) — the only format
+	// that carries the trace_id exemplars httpmetrics attaches. Plain-text
+	// scrapers simply get the histogram without exemplars.
+	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{EnableOpenMetrics: true}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // New registers the histogram on reg and returns a middleware to wrap the
@@ -46,8 +47,20 @@ func New(reg prometheus.Registerer) func(http.Handler) http.Handler {
 			if route == "" {
 				route = "unmatched"
 			}
-			dur.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).
-				Observe(time.Since(start).Seconds())
+			obs := dur.WithLabelValues(r.Method, route, strconv.Itoa(rec.status))
+			elapsed := time.Since(start).Seconds()
+			// Attach the active trace's ID as a Prometheus exemplar so a latency
+			// spike on the RED panel links straight to its Tempo trace. otelhttp
+			// is the outer handler, so r.Context() already carries the server
+			// span. Exemplars only surface when /metrics is scraped as
+			// OpenMetrics (see the promhttp EnableOpenMetrics option in main).
+			if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+				if eo, ok := obs.(prometheus.ExemplarObserver); ok {
+					eo.ObserveWithExemplar(elapsed, prometheus.Labels{"trace_id": sc.TraceID().String()})
+					return
+				}
+			}
+			obs.Observe(elapsed)
 		})
 	}
 }
