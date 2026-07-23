@@ -1214,6 +1214,14 @@ services:
       # id_shift surface — no panel contamination). The shift TRIGGER
       # DROP still waits for its 168h (0014-p2-bake-closeout-ready.sql).
       EVENTS_DERIVER_ENABLED: "true"
+      # ADR-0031 — Incoplast (ent4) writes `state` as a wide-row with NO
+      # StateCurrent/Count LEAF topic in packml_register, so both BuildEventMint
+      # and the native status_type=4 deriver scope skip it → 0 equipment_events
+      # (no downtimes/availability/OEE). Its `state` IS in ca_discrete_changes_1s
+      # keyed by id_equipment, so opting ent4's tp=1 machines into the deriver
+      # mints their interval events directly (minter+cleaner share the widened
+      # scope → no orphan-open events). CSV of enterprise ids; empty = off.
+      EVENTS_WIDEROW_STATE_ENTERPRISES: "4"
       # ADR-0010 10.3 slice 1 — enabled 2026-07-03 for synthetic-inject
       # verification. SourceType-gated to shadow paths (PR #235), so the
       # only 30800s it can ever see on staging are our injects.

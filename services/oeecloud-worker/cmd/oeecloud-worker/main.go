@@ -313,6 +313,7 @@ func main() {
 	// DISABLED; enabled at the Jul-9 close-out (one bake at a time).
 	if cfg.EventsDeriverEnabled {
 		go events.Loop(ctx, flows.Standard(pool, shadowPool), config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+			config.CSVInts(cfg.EventsWiderowStateEnterprises),
 			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger, jobObs)
 	}
 

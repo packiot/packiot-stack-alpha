@@ -121,6 +121,12 @@ type Config struct {
 	EventsDeriverIntervalMin  int
 	EventsExcludedAreas       string // csv int list (prod parity: config, not hardcode)
 	EventsExcludedEnterprises string
+	// EventsWiderowStateEnterprises — csv enterprise-id list whose tp=1
+	// machines write `state` as a wide-row (no StateCurrent leaf topic) and so
+	// are invisible to BuildEventMint AND to the native status_type=4 deriver
+	// scope. Opting them in here lets the deriver mint their events from
+	// ca_discrete_changes_1s directly (ADR-0031 Incoplast/ent4). Empty = off.
+	EventsWiderowStateEnterprises string
 
 	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
 	// sync (verbatim-embedded state machine).
@@ -226,6 +232,7 @@ func Load() (*Config, error) {
 		EventsDeriverIntervalMin:         getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
 		EventsExcludedAreas:              getenv("EVENTS_EXCLUDED_AREAS", ""),
 		EventsExcludedEnterprises:        getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
+		EventsWiderowStateEnterprises:    getenv("EVENTS_WIDEROW_STATE_ENTERPRISES", ""),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
