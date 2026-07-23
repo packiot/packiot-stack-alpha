@@ -61,6 +61,9 @@ func (m *Metrics) Registerer() prometheus.Registerer { return m.registry }
 // Handler returns an http.Handler serving /metrics from this registry.
 func (m *Metrics) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{Registry: m.registry}))
+	// EnableOpenMetrics negotiates the OpenMetrics exposition when Prometheus
+	// asks for it — the only format that carries httpmetrics' trace_id
+	// exemplars. Plain scrapers still get the histogram, just without exemplars.
+	mux.Handle("/metrics", promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{Registry: m.registry, EnableOpenMetrics: true}))
 	return mux
 }

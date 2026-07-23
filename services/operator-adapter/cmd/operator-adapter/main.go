@@ -117,7 +117,10 @@ func main() {
 
 	srv := adapter.NewServer(cfg, edge, resolver, metrics, logger)
 	mux := srv.Handler()
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	// EnableOpenMetrics negotiates the OpenMetrics exposition when Prometheus
+	// asks for it — the only format that carries httpmetrics' trace_id
+	// exemplars. Plain scrapers still get the histogram, just without exemplars.
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true}))
 
 	port := getenv("PORT", "8443")
 	certFile := os.Getenv("TLS_CERT_FILE")
