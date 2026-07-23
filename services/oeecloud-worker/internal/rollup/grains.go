@@ -154,7 +154,7 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 
 // LoopGrains schedules runtime-rollup (the cascade tier; steps grow
 // as hour/day/shift are ported).
-func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, dqEnabled bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, dqEnabled, clampEnabled bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("runtime-rollup started (P3b cascade: week+month; more grains as ported)")
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
@@ -205,6 +205,21 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 				}
 			} else if n > 0 {
 				logger.Info("data-quality events recorded", slog.String("dest", d.Name), slog.Int64("upserted", n))
+			}
+			// ADR-0036 §4 Silver invariant layer: ENFORCE the domain invariants on
+			// the Gold rows just computed — clamp any out-of-range value to its
+			// bound, ALWAYS paired with an INVARIANT_CLAMPED_* data_quality_event
+			// (never silent). Runs AFTER RunDQScan so the detector first records the
+			// raw outlier magnitude, and BEFORE RunUnmetered so its "not metered"
+			// NULLs are applied last (the clamp's WHERE never selects a NULL row).
+			// No-op on clean data (0 rows) — expected steady state post-source-fix.
+			if n, err := RunSilverClamp(ctx, d, clampEnabled); err != nil {
+				logger.Warn("silver invariant clamp failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else if n > 0 {
+				logger.Warn("silver invariant clamp CHANGED gold rows (regression tripwire)", slog.String("dest", d.Name), slog.Int64("rows", n))
 			}
 			// Not-metered machine correction (OEE audit Defect B): line-metered
 			// enterprises' tp=1 skeleton rows carry a misleading flat 0% OEE that no

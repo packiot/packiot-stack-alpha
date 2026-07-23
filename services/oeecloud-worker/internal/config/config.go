@@ -165,6 +165,15 @@ type Config struct {
 	// data_quality_event (pure side-write; NO served value is altered). Default true
 	// on staging; flip off to disable detection entirely (reversible).
 	DQAlarmsEnabled bool
+	// SilverClampEnabled — ADR-0036 §4 Silver invariant layer. When true, a
+	// dedicated pass runs AFTER the grain rollups each tick and ENFORCES the domain
+	// invariants on the served Gold rows (0≤oee,oee_a,oee_p,oee_q≤1; net≤gross via
+	// scrap=GREATEST(gross-net,0); non-negative counts/durations), clamping any
+	// out-of-range value to its bound. Every clamp that CHANGES a value is paired
+	// with an INVARIANT_CLAMPED_* data_quality_event (never silent). No-op on clean
+	// rows (WHERE only selects genuine violators → zero writes → byte-identical, so
+	// the F2↔F3 identity comparator holds). Default true on staging; reversible.
+	SilverClampEnabled bool
 	// Backfill drains recalc_needed hour rows stranded OUTSIDE the live rollup's
 	// 65-min window (bounded per tick, oldest-first). Both original blockers are
 	// now solved: the shadow cagg scheduler self-heal made the widened join fast
@@ -248,6 +257,7 @@ func Load() (*Config, error) {
 		RuntimeProvisionIntervalHours:    getenvInt("RUNTIME_PROVISION_INTERVAL_HOURS", 6),
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		DQAlarmsEnabled:                  getenv("DQ_ALARMS_ENABLED", "true") == "true",
+		SilverClampEnabled:               getenv("SILVER_CLAMP_ENABLED", "true") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
 		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
 		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
