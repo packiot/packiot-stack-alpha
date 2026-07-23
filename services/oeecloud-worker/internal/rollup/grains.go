@@ -200,6 +200,22 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 			} else if n > 0 {
 				logger.Info("data-quality events recorded", slog.String("dest", d.Name), slog.Int64("upserted", n))
 			}
+			// Not-metered machine correction (OEE audit Defect B): line-metered
+			// enterprises' tp=1 skeleton rows carry a misleading flat 0% OEE that no
+			// grain computes — null them to "not metered" (NULL, not 0). Idempotent
+			// and cheap in steady state. Runs LAST so it overrides any 0 left on a
+			// machine row of a non-machine-level enterprise. Gate = tp=1 AND
+			// enterprise NOT IN machineLevelEnterprises (the exact complement of the
+			// shift grain's machine-metered inclusion) → machine-metered tenants are
+			// never touched.
+			if n, err := RunUnmetered(ctx, d, machineLevelEnterprises); err != nil {
+				logger.Warn("runtime-rollup-unmetered failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else if n > 0 {
+				logger.Info("runtime-rollup-unmetered nulled line-metered machine OEE", slog.String("dest", d.Name), slog.Int64("rows", n))
+			}
 		}
 		return firstErr
 	}}, logger, obs)
