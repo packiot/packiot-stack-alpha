@@ -162,13 +162,55 @@ type Metric struct {
 	LineAggregated bool `json:"-"`
 }
 
-// Calc runs the 11-phase decision tree against msg + state and returns
-// a Decision the caller applies.
+// Config carries the ADR-0037 "Silver" ingest-side cleaning-rule feature
+// flags into Calc. The ZERO value = every rule OFF = byte-identical to the
+// pre-ADR-0037 Node-RED-parity behavior (the golden/comparator contract).
+// Each field maps to exactly one env flag wired in cmd/edge-transformer
+// (config.Config), default OFF, so F3 output is UNCHANGED until a flag is
+// deliberately flipped. This is BUILD-AND-PROVE, not a cutover.
+type Config struct {
+	// MonotonicityGuard (ADR-0037 finding b, P1 — Silver). When true, a
+	// counter message whose ts_value is NOT strictly newer than the last-
+	// processed ts_value for its (equipment, counter) is dropped as a late/
+	// reordered redelivery. RabbitMQ reorders across nack/requeue + multiple
+	// consumer lanes (CONSUME_LANES>1), so a late message carrying an older,
+	// smaller totalizer reading arrives AFTER a newer larger one, looks like
+	// prev>cur, is misread as a counter reset (rebaseline-to-0), and the next
+	// legitimate reading then emits as a full-value increment from zero →
+	// PHANTOM PRODUCTION (the NET_GT_GROSS / NEGATIVE_METRIC DQ tripwires).
+	// Env: CALC_MONOTONICITY_GUARD. Default false.
+	MonotonicityGuard bool
+
+	// CounterRollover (ADR-0037 finding f, P2 — Silver). When true, a prev>cur
+	// decrease that is consistent with a FIXED-WIDTH TOTALIZER WRAP (prev near
+	// the per-equipment counter_max, cur small) is treated as a rollover: the
+	// increment is (counter_max-prev)+cur, NOT a rebaseline-to-0. The legacy
+	// path conflates rollover with an operator/PLC reset-to-zero and DISCARDS
+	// the production between the last reading and the wrap → undercount. Needs
+	// a per-equipment counter_max in State (refdata param, key
+	// "<unit>/Status/CounterMax"); when counter_max is unset (0) the classifier
+	// can't prove a wrap and falls back to the reset path (byte-identical).
+	// Env: CALC_COUNTER_ROLLOVER. Default false.
+	CounterRollover bool
+}
+
+// Calc runs the 11-phase decision tree with EVERY ADR-0037 Silver rule OFF —
+// the byte-identical, Node-RED-parity default. Kept as the zero-config entry
+// point so existing callers/tests are unchanged and continue to exercise (and
+// prove) the flags-off contract. New callers that want the flags use
+// CalcWithConfig.
+func Calc(msg Message, state State) (Decision, error) {
+	return CalcWithConfig(msg, state, Config{})
+}
+
+// CalcWithConfig is Calc with the ADR-0037 Silver cleaning-rule flags applied.
+// A zero Config is exactly Calc (all rules off). See Config for the per-flag
+// semantics and the byte-identical-when-off guarantee.
 //
 // The port implements phases 1-8 + 10-11. Phase 9 (line/sector aggregation)
 // is deferred to a follow-up PR — its topology needs line-config fixtures
 // the capture binary can't easily produce.
-func Calc(msg Message, state State) (Decision, error) {
+func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 	dec := Decision{
 		EnrichedMsg: map[string]any{},
 	}
@@ -232,6 +274,43 @@ func Calc(msg Message, state State) (Decision, error) {
 	sendMsg := false
 	resetLineScrap := false
 
+	// ── ADR-0037 (b): per-counter timestamp-monotonicity guard (flag-gated) ─
+	// The topic of the counter THIS message carries; used as the (equipment,
+	// counter) key for the last-processed-ts watermark. Empty for kinds that
+	// never reach the guard (the main switch's default returns first).
+	curTopic := ""
+	switch kind {
+	case CounterKindProcessed:
+		curTopic = topicProcessed
+	case CounterKindConsumed:
+		curTopic = topicConsumed
+	case CounterKindDefective:
+		curTopic = topicDefective
+	}
+	if cfg.MonotonicityGuard && curTopic != "" {
+		lastTsKey := curTopic + "___LAST_TS"
+		if lastTs, _ := state.TimeMs(lastTsKey); lastTs != 0 && timestampMs <= lastTs {
+			// Late/reordered redelivery — refuse to let it drive the reset
+			// path (or any emission). Drop silently, matching the other
+			// Phase-1/2 short-circuits. The watermark is NOT advanced (this
+			// message is older than what we've already processed).
+			dec.EnrichedMsg["skipped_reason"] = "non_monotonic_ts"
+			return dec, nil
+		}
+		// In-order: advance the per-counter watermark (deferred write, applied
+		// by the caller alongside the other state mutations).
+		lastTsKeyCopy, tsCopy := lastTsKey, timestampMs
+		dec.StateUpdates = append(dec.StateUpdates, StateMutation{
+			Kind: "counter.last_ts", Key: lastTsKeyCopy, TimeMs: tsCopy,
+			Setter: func(s State) error { return s.SetTimeMs(lastTsKeyCopy, tsCopy) },
+		})
+	}
+
+	// ADR-0037 (f): per-equipment totalizer wrap width (0 = unknown → rollover
+	// classifier is inert, reset path preserved). Read unconditionally (a cheap
+	// state map read with no output effect); only consulted when the flag is on.
+	counterMax, _ := state.Int(unitTopic + "/Status/CounterMax")
+
 	switch kind {
 	case CounterKindProcessed:
 		curProcessed = msg.Payload
@@ -239,8 +318,13 @@ func Calc(msg Message, state State) (Decision, error) {
 			sendMsg = true
 		}
 		if prevProcessed > curProcessed {
-			prevProcessed = 0
-			resetLineScrap = true
+			newPrev, isRollover := rolloverAdjustedPrev(prevProcessed, curProcessed, counterMax, cfg)
+			prevProcessed = newPrev
+			if !isRollover {
+				// Genuine reset — rebaseline line scrap. A rollover is NOT a
+				// reset (production continues), so it must NOT trigger this.
+				resetLineScrap = true
+			}
 			sendMsg = true
 		}
 	case CounterKindConsumed:
@@ -249,8 +333,11 @@ func Calc(msg Message, state State) (Decision, error) {
 			sendMsg = true
 		}
 		if prevConsumed > curConsumed {
-			prevConsumed = 0
-			resetLineScrap = true
+			newPrev, isRollover := rolloverAdjustedPrev(prevConsumed, curConsumed, counterMax, cfg)
+			prevConsumed = newPrev
+			if !isRollover {
+				resetLineScrap = true
+			}
 			sendMsg = true
 		}
 	case CounterKindDefective:
@@ -259,9 +346,10 @@ func Calc(msg Message, state State) (Decision, error) {
 			sendMsg = true
 		}
 		if prevDefective > curDefective {
-			prevDefective = 0
+			newPrev, _ := rolloverAdjustedPrev(prevDefective, curDefective, counterMax, cfg)
+			prevDefective = newPrev
 			// JS: Defective reset does NOT set reset_line_scrap_counter
-			// (only Processed + Consumed do). Preserve.
+			// (only Processed + Consumed do). Preserve — rollover or reset.
 			sendMsg = true
 		}
 	default:

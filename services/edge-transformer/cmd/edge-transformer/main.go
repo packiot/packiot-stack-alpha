@@ -354,6 +354,16 @@ func main() {
 			errors:         calcErrors,
 			metricsEmitted: calcMetricsEmitted,
 			stateSeeds:     calcStateSeeds,
+			// ADR-0037 Silver rules — off unless the env flags are set.
+			calcCfg: calc_production_counters.Config{
+				MonotonicityGuard: cfg.CalcMonotonicityGuard,
+				CounterRollover:   cfg.CalcCounterRollover,
+			},
+		}
+		if cfg.CalcMonotonicityGuard || cfg.CalcCounterRollover {
+			logger.Info("ADR-0037 Silver cleaning rules ENABLED in Calc port",
+				slog.Bool("monotonicity_guard", cfg.CalcMonotonicityGuard),
+				slog.Bool("counter_rollover", cfg.CalcCounterRollover))
 		}
 
 		// ADR-0011 P2 outbox — store-and-forward between decode + publish.
@@ -640,6 +650,9 @@ type calcHooks struct {
 	metricsEmitted *prometheus.CounterVec
 	// stateSeeds counts non-counter metrics recognized by seedFromMetric.
 	stateSeeds *prometheus.CounterVec
+	// calcCfg carries the ADR-0037 Silver cleaning-rule flags into every
+	// Calc evaluation. Zero value = all rules off = byte-identical output.
+	calcCfg calc_production_counters.Config
 }
 
 // enabled reports whether shadow-mode Calc is on. All hooks are nil when off.
@@ -909,7 +922,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		Tenant:     tenant,
 		CmdTrigger: true,
 	}
-	dec, err := calc_production_counters.Calc(msg, h.state)
+	dec, err := calc_production_counters.CalcWithConfig(msg, h.state, h.calcCfg)
 	if err != nil {
 		h.errors.WithLabelValues(tenant, "calc_error").Inc()
 		logger.Warn("calc_production_counters: evaluation error",

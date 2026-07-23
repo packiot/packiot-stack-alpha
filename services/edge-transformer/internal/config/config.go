@@ -98,6 +98,24 @@ type Config struct {
 	// source — set -1 there so /healthz doesn't stay permanently red.
 	MQTTStaleThresholdSeconds int
 
+	// ── ADR-0037 "Silver" ingest-side cleaning rules (BUILD-AND-PROVE) ────
+	// Each rule is behind its OWN flag, default OFF, so the Calc port's F3
+	// output stays byte-identical until a flag is deliberately flipped. These
+	// map 1:1 onto calc_production_counters.Config (see CalcConfig()).
+	//
+	//   - CalcMonotonicityGuard (finding b, P1): drop a counter message whose
+	//     ts_value is not strictly newer than the last-processed ts for its
+	//     (equipment, counter) — kills phantom production from RabbitMQ
+	//     reordering. Env CALC_MONOTONICITY_GUARD. Expected DQ effect when ON:
+	//     cuts NET_GT_GROSS / NEGATIVE_METRIC.
+	//   - CalcCounterRollover (finding f, P2): treat a prev>cur wrap (prev near
+	//     per-equipment counter_max, cur small) as a rollover — increment
+	//     (counter_max-prev)+cur instead of rebaselining to 0 (fixes
+	//     undercount). Env CALC_COUNTER_ROLLOVER. Expected DQ effect when ON:
+	//     cuts NEGATIVE_METRIC / NET_GT_GROSS from mis-classified resets.
+	CalcMonotonicityGuard bool
+	CalcCounterRollover   bool
+
 	// UseGoPort — feature flag for ADR-0010 Phase 3. When true, the
 	// calc_production_counters Go port runs in SHADOW mode: it evaluates
 	// every counter-topic Sparkplug metric against its own State store,
@@ -199,6 +217,10 @@ func Load() (*Config, error) {
 		MQTTUsername:              getenv("MQTT_USERNAME", ""),
 		MQTTPassword:              getenv("MQTT_PASSWORD", ""),
 		MQTTStaleThresholdSeconds: getenvInt("MQTT_STALE_THRESHOLD_SECONDS", 60),
+
+		// ADR-0037 Silver ingest-side cleaning rules (each off by default)
+		CalcMonotonicityGuard: getenvBool("CALC_MONOTONICITY_GUARD", false),
+		CalcCounterRollover:   getenvBool("CALC_COUNTER_ROLLOVER", false),
 
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),

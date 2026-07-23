@@ -6,6 +6,43 @@ import (
 	"strings"
 )
 
+// rolloverHighPct / rolloverLowPct define the wrap-detection band for the
+// ADR-0037 (f) rollover classifier. A prev>cur decrease is read as a fixed-
+// width totalizer WRAP (rather than an operator/PLC reset-to-zero) only when
+// prev sat in the TOP rolloverHighPct% of counter_max AND cur landed in the
+// BOTTOM rolloverLowPct% — i.e. the counter was near its ceiling and wrapped
+// to near-zero. A reset-to-zero from a mid-range prev fails the high test and
+// is (correctly) still treated as a reset. Conservative band → false-rollover
+// is very unlikely; a missed rollover just degrades to the legacy reset (the
+// pre-flag behavior), never worse.
+const (
+	rolloverHighPct = 90
+	rolloverLowPct  = 10
+)
+
+// rolloverAdjustedPrev classifies a prev>cur counter decrease and returns the
+// prev value to use for the increment computation:
+//
+//   - ROLLOVER (flag on, counter_max known, wrap-band satisfied): returns
+//     prev-counter_max, so the downstream `cur - prev'` yields
+//     (counter_max - prev) + cur — the production between the last reading and
+//     the wrap, which the reset path would have DISCARDED (undercount). Second
+//     return is true.
+//   - RESET / flag off / counter_max unknown: returns 0 (and false) — exactly
+//     the legacy `prev = 0` rebaseline, so `cur - prev'` = cur. This is the
+//     byte-identical default; the whole classifier is inert unless
+//     cfg.CounterRollover is on AND a positive counter_max is present.
+//
+// Pure — no state, no I/O — so it is exhaustively unit-testable.
+func rolloverAdjustedPrev(prev, cur, counterMax int64, cfg Config) (newPrev int64, isRollover bool) {
+	if cfg.CounterRollover && counterMax > 0 &&
+		prev >= counterMax*rolloverHighPct/100 &&
+		cur <= counterMax*rolloverLowPct/100 {
+		return prev - counterMax, true
+	}
+	return 0, false
+}
+
 // applyTrigCorrections implements Phase 4 — the ***TRIG_* suffix corrections.
 // Ordering matters: the JS's `count_zeros` gate makes TRIG_CS and TRIG_CI
 // exclusive (only one fires per message even if both suffixes present, which
