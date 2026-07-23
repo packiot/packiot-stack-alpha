@@ -151,13 +151,15 @@ const grainGoldenSchema = `
 	    changeover_time double precision, oee double precision,
 	    oee_a double precision, oee_p double precision, oee_q double precision,
 	    target double precision, proportional_target double precision,
-	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false
+	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
+	    -- ADR-0036 §5A lineage columns (T0-2) — mirror the migrated prod schema.
+	    computed_at timestamptz, source_watermark timestamptz
 	);
-	-- 1day/1week/1month inherit oee_a/oee_p/oee_q via LIKE (they now live on 1hour too — ADR-0037 C).
+	-- 1day/1week/1month inherit oee_a/oee_p/oee_q + computed_at/source_watermark via LIKE (they now live on 1hour too — ADR-0037 C).
 	CREATE TABLE golden.equipment_runtime_1day (LIKE golden.equipment_runtime_1hour INCLUDING ALL);
 	CREATE TABLE golden.equipment_runtime_1week (LIKE golden.equipment_runtime_1day INCLUDING ALL);
 	CREATE TABLE golden.equipment_runtime_1month (LIKE golden.equipment_runtime_1day INCLUDING ALL);
-	CREATE TABLE golden.area_runtime_1hour (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false);
+	CREATE TABLE golden.area_runtime_1hour (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
 	CREATE TABLE golden.ca_agg_equipment_values_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    state int, speed double precision, ideal_production_speed double precision,

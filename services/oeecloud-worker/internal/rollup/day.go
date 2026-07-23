@@ -159,6 +159,18 @@ const dayCascadeWeekSQL = `
 	 WHERE w.id_equipment = el.id_equipment AND w.ts_value = el.ts_week
 	   AND w.ts_value >= el.ts_week`
 
+// ADR-0036 §5A lineage stamp (T0-2). Separate additive step, NOT in
+// DayStatementsForParity (parity SQL is diffed against a prod lacking these
+// columns; see shift.go). Scoped to the tick's batch (day_elig). ts_value on
+// the day grain is DATE → cast to timestamptz; source_watermark = LEAST(day
+// bucket end, now()).
+const dayStampSQL = `
+	UPDATE %[1]s.equipment_runtime_1day e SET
+	       computed_at = now(),
+	       source_watermark = LEAST(e.ts_value::timestamptz + interval '1 day', now())
+	  FROM day_elig el
+	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
+
 const dayReflagSQL = `
 	UPDATE %[1]s.equipment_runtime_1day e SET recalc_needed = true
 	 WHERE e.ts_value >= (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(e.id_equipment, now()) LIMIT 1)
@@ -190,6 +202,7 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 		{"rollup", fmt.Sprintf(dayRollupSQL, d.EvSchema)},
 		{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.EvSchema)},
 		{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.EvSchema)},
+		{"stamp", fmt.Sprintf(dayStampSQL, d.EvSchema)},
 	}
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {

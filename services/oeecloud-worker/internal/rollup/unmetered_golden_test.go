@@ -33,7 +33,9 @@ const unmeteredGoldenSchema = `
 	CREATE TABLE ug.equipment_runtime_1hour (
 	    id_equipment int, ts_value timestamptz,
 	    oee double precision, oee_a double precision,
-	    oee_p double precision, oee_q double precision
+	    oee_p double precision, oee_q double precision,
+	    -- ADR-0036 §5A lineage columns (T0-2); propagate to every grain via LIKE.
+	    computed_at timestamptz, source_watermark timestamptz
 	);
 	CREATE TABLE ug.equipment_runtime_1day        (LIKE ug.equipment_runtime_1hour INCLUDING ALL);
 	CREATE TABLE ug.equipment_runtime_1week       (LIKE ug.equipment_runtime_1hour INCLUDING ALL);

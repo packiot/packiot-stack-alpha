@@ -62,7 +62,9 @@ const dayClampSchema = `
 	    ideal_production double precision, target double precision,
 	    gross double precision, net double precision, downtime double precision,
 	    changeover_time double precision, scrap double precision, speed double precision,
-	    proportional_target double precision
+	    proportional_target double precision,
+	    -- ADR-0036 §5A lineage columns (T0-2).
+	    computed_at timestamptz, source_watermark timestamptz
 	);
 	CREATE TABLE dayclamp.equipment_runtime_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production date,
