@@ -194,20 +194,29 @@ Revisit only if raw process count becomes a real operational cost on a shared ed
 
 ---
 
-## 4. Phased path — built vs gap
+## 4. Phased build plan — shipped vs gap
 
-| Phase | Deliverable | Status |
+**Already shipped — the normalization mechanism (§2.3 Option B), proven, flags default OFF:**
+
+| Shipped | Deliverable |
+|---|---|
+| ✅ **#593 / ADR-0043** | tenant conversion profile schema (`tenantprofile`) with `prefix_fixups`/`metric_aliases`/`parameter_aliases`/`count_index`/`metric_templates`; register-driven loader (flag `AGENT_TAGMAP_FROM_REGISTER`, default OFF); equivalence proof vs the hand YAML (`TestBuildRawTagMap_MatchesPR590Yaml`, 44 entries). |
+| ✅ **#601** | full CPACK topology profile (62 equipment, 5 cells, 330 entries) + the **count-index finding** (indices are arbitrary PLC channels, per-member overrides required, confirmed-vs-inferred tracked); Incoplast draft profile (accent/case/pad folds, `id_unit` indices). |
+| ✅ **#602 / ADR-0044** | id-driven **Parameter decomposition** (`parameter_decomposition` rule + `RawTag.ParamID` on the wire + agent-ingest rewrite; flag `AGENT_PARAM_DECOMPOSITION`, default OFF); e2e proof Phase-9 line CSV reaches the cloud decoder. |
+
+The chosen architecture — normalize in the Go agent, Node-RED stays connectivity-only, downstream sees only canonical — is therefore **already the running mechanism**. Everything below is **provisioning ergonomics + observability** on top of it.
+
+**The gap — the build plan:**
+
+| Phase | Deliverable | Status / owner |
 |---|---|---|
-| **Built — schema + mechanism (proven)** | tenant conversion profile schema (`tenantprofile`) with `prefix_fixups`/`metric_aliases`/`parameter_aliases`/`count_index`/`metric_templates`; register-driven loader (flag `AGENT_TAGMAP_FROM_REGISTER`, default OFF); equivalence proof vs the hand YAML (`TestBuildRawTagMap_MatchesPR590Yaml`, 44 entries). | ✅ #593 / ADR-0043 |
-| | Full CPACK topology profile (62 equipment, 5 cells, 330 entries) + the **count-index finding** (indices are arbitrary PLC channels, per-member overrides required, confirmed-vs-inferred tracked); Incoplast draft profile (accent/case/pad folds, `id_unit` indices). | ✅ #601 |
-| | id-driven **Parameter decomposition** (`parameter_decomposition` rule + `RawTag.ParamID` on the wire + agent-ingest rewrite; flag `AGENT_PARAM_DECOMPOSITION`, default OFF); e2e proof Phase-9 line CSV reaches the cloud decoder. | ✅ #602 / ADR-0044 |
-| **P0 — Canonical model of record** | Ratify §2.1 as the downstream contract (this ADR). | this ADR |
-| **P1 — Descriptor + generator (GAP)** | The `client descriptor` schema + `make onboard <tenant>` generating profile + `client.yaml` + `packml_register` seed + tee snippet from one source. Retires hand-authoring of the four artifacts. | **gap** |
-| **P2 — Reject-don't-drop + DQ report (GAP)** | `sparkplug_agent_tag_unmapped_total{reason}` + the onboarding unmapped-topic DQ surface; validation gate on empty-unmapped. | **gap** (§2.4a) |
-| **P3 — Live-capture tool (GAP)** | Agent observe-posture that records distinct count indices + real name forms from a live tee and emits confirmed `count_index.overrides` / `prefix_fixups` for the profile. | **gap** (§2.4b) — done by hand for CPACK L6 |
-| **P4 — Self-service surface + cutover (GAP)** | CS-Admin form driving the descriptor; the ①→⑤ flow wired with the Mode-A parity-gate; per-tenant flag flip. | **gap** (§2.5) — CPACK flags await the deliberate flip |
+| **P0 — Validate-and-flag (kill silent-drop)** | `sparkplug_agent_tag_unmapped_total{tenant, reason}` + LOG + the onboarding unmapped-topic DQ surface; validation gate on empty-unmapped. Turns the strict-allowlist silent-drop (what hid L6's inferred-index mismatch) into a debuggable, surfaced event. | **being built separately now** (§2.4a) |
+| **P1 — Client descriptor → generated artifacts** | The `client descriptor` schema (SSoT) + generator producing, from one source: the **tenant conversion profile** + **agent `client.yaml`** + **`packml_register` seed** + **Node-RED tee snippet**. Retires hand-authoring of all four. | **gap** (§2.2) |
+| **P2 — Live-tee index-capture tool/procedure** | Agent observe-posture that records the distinct count indices + real name forms a live tee actually emits, and writes them back as *confirmed* `count_index.overrides` / `prefix_fixups`. Indices are unknowable PLC facts (§2.4b) — this is how they enter the descriptor. | **gap** — done by hand for CPACK L6 |
+| **P3 — Self-service onboarding UI/flow** | CS-Admin form driving the descriptor; the ①→⑤ sequence (§2.5) wired with the Mode-A parity-gate; per-tenant flag flip. | **gap** — CPACK flags await the deliberate flip |
+| **+ Agent-topology recommendation** | one multi-tenant *image*, one *instance per tenant* (§2.6; resolves ADR-0042 open-Q3). | **decided** (this ADR) |
 
-Ordering rationale: the *mechanism* is proven (the flags work, the maps synthesize, the e2e passes). The gap is entirely **provisioning ergonomics + observability** — turning a forensic multi-PR arc into a descriptor + a capture tool + a validation gate. Each phase is independently valuable; P2 (reject-don't-drop) alone removes the silent-failure class even before the generator lands.
+Ordering rationale: **P0 first** — validate-and-flag removes the silent-failure class and makes every later step debuggable, so it lands even before the generator (it is being built separately now). **P1** turns the multi-PR forensic arc into a descriptor + `make onboard`. **P2** feeds P1 the one thing that cannot be generated (observed PLC facts). **P3** puts a CS-Admin surface on the whole loop. Each phase is independently valuable and reversible.
 
 ---
 
@@ -261,5 +270,5 @@ Ordering rationale: the *mechanism* is proven (the flags work, the maps synthesi
 |---|---|---|
 | 2026-07-23 | Onboarding architecture drafted: client descriptor SSoT → generated artifacts; normalization stack-side in the agent profile; live-capture for unknowable PLC facts; reject-don't-drop; per-tenant agent instance of a multi-tenant image; describe→generate→capture→validate→cutover flow. Status: Proposed. | chief architect + Claude |
 | TBD | USER review + sign-off | |
-| TBD | P1 descriptor + generator | |
-| TBD | P2 reject-don't-drop + DQ report | |
+| TBD | P0 validate-and-flag (being built separately) | |
+| TBD | P1 client descriptor → generated artifacts | |
