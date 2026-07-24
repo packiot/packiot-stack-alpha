@@ -1337,6 +1337,19 @@ services:
       # Incoplast (enterprise 4) validated F1<->F3 on its own series without
       # diluting CPACK's (enterprise 3) readiness signal.
       BAKE_ENTERPRISE_IDS: "3,4"
+      # PR #600 — counters-only AVAILABILITY fallback (idle-timeout sessionization).
+      # L6's counters cut over (gross production flows) but its state events did
+      # not, so the events phase never touches its equipment_runtime_* rows →
+      # running_time stays ~0 → oee_a floors near 0 (~0.008) while it is producing.
+      # Enabled ONLY for L6 (ent-3): line id 50 + member machines 68-72. A bucket
+      # is auto-engaged only when it has NO state events, so a machine that emits
+      # state is left entirely on the state path (per-bucket auto-deselect). The
+      # fallback runs as a separate appended pass, never in the parity accessors,
+      # so flags-off output is byte-identical. Reversible: set ENABLED=false +
+      # redeploy. Idle timeout 300s = grace after last count before "stopped".
+      COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
+      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "50,68,69,70,71,72"
+      COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
