@@ -202,6 +202,19 @@ type Config struct {
 	// OFF until synthetic-inject verification (staging has no live
 	// 30800 traffic; see the port design doc).
 	POControlEnabled bool
+
+	// BronzeRawAppend — ADR-0036 §3.6 B1 append-only Bronze dual-write.
+	// When true, the worker ADDITIONALLY appends every decoded equipment_values
+	// / equipment_events sample into the separate append-only *_raw hypertables
+	// (pure INSERT, no ON CONFLICT, ms-precision ts, source_seq tiebreak) — the
+	// live merged UPSERT stays byte-identical (additive dual-write, NOT a
+	// cutover). DEFAULT OFF: with the flag off NO _raw write is issued and the
+	// write path is byte-for-byte what it was, so prod-parity + the F2↔F3
+	// comparator are untouched. Requires the `db/42` migration
+	// (0036-b1-bronze-raw-append.sql) to have created the *_raw tables. The
+	// read-cutover that retires the merge is a LATER phase, gated post-ADR-0032
+	// F2 collapse (§3.6.5) — this flag only starts *retaining* raw going forward.
+	BronzeRawAppend bool
 }
 
 func Load() (*Config, error) {
@@ -243,6 +256,7 @@ func Load() (*Config, error) {
 		EventsExcludedEnterprises:        getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
 		EventsWiderowStateEnterprises:    getenv("EVENTS_WIDEROW_STATE_ENTERPRISES", ""),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
+		BronzeRawAppend:                  getenv("BRONZE_RAW_APPEND", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
 		UnsRefreshEnabled:                getenv("UNS_REFRESH_ENABLED", "false") == "true",

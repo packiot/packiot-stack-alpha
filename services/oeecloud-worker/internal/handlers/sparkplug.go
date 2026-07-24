@@ -205,6 +205,8 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		var q *writers.Query
 		var shiftQ *writers.Query
 		var eventQ *writers.Query
+		var rawQ *writers.Query      // ADR-0036 §3.6 B1 — append-only Bronze (values)
+		var rawEventQ *writers.Query // ADR-0036 §3.6 B1 — append-only Bronze (events)
 		var buildErr error
 
 		// ADR-0010 10.3 slice 1: PO lifecycle params run their own tx
@@ -245,6 +247,15 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 					// remains its writer until the §6 flip.
 					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
 				}
+				// ADR-0036 §3.6 B1 append-only Bronze dual-write. Both return
+				// nil unless BRONZE_RAW_APPEND is on (flag lives on the writer),
+				// so this is byte-identical to pre-B1 by default. The values
+				// append rides wherever the merged UPSERT does; the events
+				// append shadows BuildEventMint's shadow-only scope.
+				rawQ, _ = h.equipmentValues.BuildRaw(ctx, m, schema)
+				if p.SourceType != "" {
+					rawEventQ, _ = h.equipmentValues.BuildEventMintRaw(ctx, m, schema)
+				}
 			}
 		case h.unsMetrics.CanWrite(kind):
 			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
@@ -278,6 +289,16 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		if eventQ != nil {
 			batch.Queue(eventQ.SQL, eventQ.Args...)
 			descs = append(descs, eventQ.Desc)
+		}
+		// ADR-0036 §3.6 B1 — append-only Bronze appends, queued after the merged
+		// write(s) in the same batch. Non-nil only when BRONZE_RAW_APPEND is on.
+		if rawQ != nil {
+			batch.Queue(rawQ.SQL, rawQ.Args...)
+			descs = append(descs, rawQ.Desc)
+		}
+		if rawEventQ != nil {
+			batch.Queue(rawEventQ.SQL, rawEventQ.Args...)
+			descs = append(descs, rawEventQ.Desc)
 		}
 	}
 

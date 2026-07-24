@@ -210,6 +210,18 @@ func main() {
 			slog.Bool("shift_fill_folded", cfg.ShiftFillFolded))
 	}
 
+	// ADR-0036 §3.6 B1 — append-only Bronze dual-write (BRONZE_RAW_APPEND).
+	// Default OFF: with the flag off no *_raw write is issued and the write
+	// path is byte-identical to pre-B1. On, the worker ALSO appends every
+	// decoded equipment_values/equipment_events sample into the separate
+	// append-only *_raw hypertables (0036-b1-bronze-raw-append.sql). The merged
+	// UPSERT is untouched — this is a dual-write, not a cutover. The read-
+	// cutover that retires the merge is gated post-ADR-0032 F2 collapse.
+	equipmentValuesWriter.SetBronzeRawAppend(cfg.BronzeRawAppend)
+	if cfg.BronzeRawAppend {
+		logger.Info("append-only Bronze dual-write ENABLED (ADR-0036 §3.6 B1) — *_raw tables required")
+	}
+
 	mx := metrics.New()
 	// One observer for every scheduled job → jobs_ticks_total{job,outcome}.
 	jobObs := func(job, outcome string) { mx.JobTicks.WithLabelValues(job, outcome).Inc() }
