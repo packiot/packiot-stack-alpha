@@ -354,6 +354,13 @@ func main() {
 			errors:         calcErrors,
 			metricsEmitted: calcMetricsEmitted,
 			stateSeeds:     calcStateSeeds,
+			countersOnly:   cfg.CountersOnlyEnabled,
+			idealRates:     cfg.CountersOnlyIdealRates,
+		}
+		if cfg.CountersOnlyEnabled {
+			logger.Info("counters-only OEE mode ENABLED",
+				slog.Int("opted_in_equipment", len(cfg.CountersOnlyIdealRates)),
+			)
 		}
 
 		// ADR-0011 P2 outbox — store-and-forward between decode + publish.
@@ -640,6 +647,16 @@ type calcHooks struct {
 	metricsEmitted *prometheus.CounterVec
 	// stateSeeds counts non-counter metrics recognized by seedFromMetric.
 	stateSeeds *prometheus.CounterVec
+
+	// countersOnly / idealRates — the counters-only OEE seam. When
+	// countersOnly is true, a counter metric whose unit topic is present in
+	// idealRates (unit topic → configured rated speed, parts/min) is
+	// evaluated in counters-only mode: the Calc Phase-8 glitch guard uses the
+	// configured rated speed instead of the absent MachSpeed. Both are the
+	// zero value (false / nil) when COUNTERS_ONLY_OEE_ENABLED is off, so the
+	// shadow path is unchanged. A nil map indexes safely (returns 0 → opt-out).
+	countersOnly bool
+	idealRates   map[string]float64
 }
 
 // enabled reports whether shadow-mode Calc is on. All hooks are nil when off.
@@ -908,6 +925,19 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		Timestamp:  ts,
 		Tenant:     tenant,
 		CmdTrigger: true,
+	}
+	// Counters-only opt-in: if the feature is on and this equipment's unit
+	// topic has a configured rated speed, tell Calc to use the rated-speed
+	// glitch guard instead of the absent MachSpeed guard. Auto-selection
+	// (machSpeed==0) still happens inside Calc, so a machine that DOES report
+	// speed is unaffected even when opted in.
+	if h.countersOnly {
+		if unitTopic, _, perr := calc_production_counters.ParseTopic(metric.Name); perr == nil {
+			if rate, ok := h.idealRates[unitTopic]; ok && rate > 0 {
+				msg.CountersOnly = true
+				msg.IdealRate = rate
+			}
+		}
 	}
 	dec, err := calc_production_counters.Calc(msg, h.state)
 	if err != nil {

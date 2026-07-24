@@ -15,6 +15,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -108,6 +109,29 @@ type Config struct {
 	// Default false — port is opt-in until the 30-day comparator soak
 	// passes.
 	UseGoPort bool
+
+	// ── Counters-only OEE mode (Modbus counters-only client class) ─────────
+	// Some clients (e.g. CPACK L6, staging ent 3) emit production counters
+	// via Modbus but have NO physical speed sensor — no MachSpeed metric ever
+	// arrives. The Calc Phase-8 glitch guard `prodSpeed < 3*machSpeed` then
+	// rejects every counter (machSpeed=0 → bound 0), yielding zero OEE. When
+	// this mode is on, Calc swaps that guard for a CONFIGURED rated-speed
+	// bound for opted-in equipment so counts flow and OEE computes.
+	//
+	// CountersOnlyEnabled gates the whole feature. Default false → zero
+	// behavior change (the per-equipment map is never consulted).
+	CountersOnlyEnabled bool
+	// CountersOnlyIdealRates maps a Sparkplug UNIT topic (5-segment
+	// Enterprise/Site/Area/Line/Unit) to that equipment's configured ideal /
+	// rated speed in parts-per-minute — the SAME value CS Admin sets as
+	// equipments.production_speed during onboarding (task #13). This env map
+	// is the INTERIM edge seam until the edge-transformer can source the rate
+	// from refdata or an inbound Parameter30701 metric. Parsed from the JSON
+	// env var COUNTERS_ONLY_IDEAL_RATES, e.g.
+	//   {"CPACK/SC/LINHAS/L6/MEMBER1":90,"CPACK/SC/LINHAS/L6/MEMBER2":120}
+	// An equipment absent from this map is NOT treated as counters-only even
+	// when the flag is on (explicit opt-in, never guessed).
+	CountersOnlyIdealRates map[string]float64
 
 	// ADR-0011 P2 outbox — store-and-forward between decode and publish.
 	// When enabled, decoded Sparkplug DATA envelopes get written to a
@@ -203,6 +227,10 @@ func Load() (*Config, error) {
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),
 
+		// Counters-only OEE mode (default OFF — no behavior change)
+		CountersOnlyEnabled:    getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
+		CountersOnlyIdealRates: getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
+
 		// ADR-0011 P2 outbox
 		OutboxEnabled: getenvBool("OUTBOX_ENABLED", false),
 		OutboxPath:    getenv("OUTBOX_PATH", "/var/lib/edge-transformer/outbox.db"),
@@ -259,6 +287,25 @@ func getenv(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getenvFloatMap parses a JSON object of string→number from an env var into
+// a map[string]float64. Unset/empty/malformed → an empty (non-nil) map, so
+// callers can index safely without a nil check. Used for the counters-only
+// per-equipment ideal-rate seam (COUNTERS_ONLY_IDEAL_RATES).
+func getenvFloatMap(name string) map[string]float64 {
+	out := map[string]float64{}
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(v), &out); err != nil {
+		// Malformed config must not crash boot; return empty so the feature
+		// is simply inert (no equipment opted in). Ops see it via the startup
+		// log line that reports the parsed entry count.
+		return map[string]float64{}
+	}
+	return out
 }
 
 func getenvInt(name string, fallback int) int {
