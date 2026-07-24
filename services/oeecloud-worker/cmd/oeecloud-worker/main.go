@@ -256,7 +256,13 @@ func main() {
 		go rollup.LoopGrains(ctx, flows.Standard(pool, shadowPool),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
-			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled, time.Minute, logger, jobObs)
+			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
+			rollup.CountersAvail{
+				Enabled:        cfg.CountersOnlyAvailEnabled,
+				Equipments:     config.CSVInts(cfg.CountersOnlyAvailEquipments),
+				IdleTimeoutSec: cfg.CountersOnlyAvailIdleTimeoutSec,
+			},
+			time.Minute, logger, jobObs)
 	}
 	// Drain recalc_needed hour rows the live rollup can't reach (stranded outside
 	// its 65-min window). OFF by default — see RollupBackfillEnabled: needs query
