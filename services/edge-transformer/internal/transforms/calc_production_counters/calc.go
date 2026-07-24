@@ -86,7 +86,42 @@ type Message struct {
 	// SparkPlugAddMetrics — key/value bag merged into every emitted metric.
 	// Passthrough for downstream consumers.
 	SparkPlugAddMetrics map[string]any
+
+	// ── Counters-only OEE mode (Modbus counters-only client class) ─────────
+	// A counters-only machine reports production counters (ProdProcessed /
+	// Consumed / Defective) but has NO physical speed sensor, so no MachSpeed
+	// metric ever seeds State. Phase 8's default glitch guard
+	// `prodSpeed < 3*machSpeed` then evaluates to `prodSpeed < 0`, which is
+	// false for every non-negative rate — so EVERY counter is rejected and
+	// the machine produces zero OEE.
+	//
+	// When CountersOnly is true AND IdealRate > 0, Phase 8 replaces the
+	// absent-speed guard with a CONFIGURED rated-speed guard
+	// (`prodSpeed < countersOnlyGuardK * IdealRate`). This is a strictly
+	// better sanity bound (it rejects counter glitches relative to the rated
+	// speed the machine is designed for) and it stops rejecting valid counts.
+	//
+	// Both fields default to zero (false / 0). The caller (main.go) only sets
+	// them when COUNTERS_ONLY_OEE_ENABLED is on AND the equipment is opted in
+	// via config, so with the flag off behavior is byte-identical to before.
+	//
+	// IMPORTANT: this does NOT derive Performance from the counts. Performance
+	// is computed downstream in the oeecloud-worker rollup as
+	// net / (ideal_time * ideal_speed), where ideal_speed comes from the
+	// CONFIGURED equipments.production_speed / production_orders.ideal_production_speed
+	// — never from a speed derived from the same counts (which would be
+	// circular and always ~100%). IdealRate here is used ONLY as the guard
+	// bound; it should carry that same configured rated speed for consistency.
+	CountersOnly bool
+	IdealRate    float64
 }
+
+// countersOnlyGuardK is the multiplier for the counters-only glitch guard:
+// a derived count-rate above K× the configured rated speed is treated as a
+// counter glitch and rejected. K=3 mirrors the original `3*machSpeed` guard's
+// 3× tolerance, so the guard's shape is unchanged — only its reference speed
+// swaps from the (absent) measured MachSpeed to the configured rated speed.
+const countersOnlyGuardK = 3.0
 
 // StateMutation is a deferred state write emitted by Calc. Callers apply
 // mutations AFTER inspecting Decision.SendDownstream. Two-phase apply lets
@@ -350,6 +385,21 @@ func Calc(msg Message, state State) (Decision, error) {
 
 	dec.EnrichedMsg["machspeed"] = machSpeed
 
+	// ── Phase 8 glitch-guard bound ─────────────────────────────────────────
+	// The default guard rejects a metric whose derived rate exceeds 3× the
+	// measured machine speed (a counter glitch / rollover artifact). For a
+	// counters-only machine machSpeed is absent (0), which would reject every
+	// count. In counters-only mode we swap the reference to the CONFIGURED
+	// rated speed. The bound is identical to `3*machSpeed` whenever the mode
+	// is off, so flag-off behavior is byte-for-byte unchanged.
+	glitchBound := 3 * machSpeed
+	countersOnly := msg.CountersOnly && msg.IdealRate > 0 && machSpeed == 0
+	if countersOnly {
+		glitchBound = countersOnlyGuardK * msg.IdealRate
+		dec.EnrichedMsg["counters_only_mode"] = true
+		dec.EnrichedMsg["ideal_rate"] = msg.IdealRate
+	}
+
 	// ── Phase 8: emit unit metrics ─────────────────────────────────────────
 	// JS resets sendMsg to false and each metric emission that succeeds
 	// sets it back to true.
@@ -360,7 +410,7 @@ func Calc(msg Message, state State) (Decision, error) {
 	prodProcessedSet := false
 
 	// Consumed metric — also owns threshold logic in the base case.
-	if consIncr > 0 && curConsumed >= 0 && prodSpeed < 3*machSpeed {
+	if consIncr > 0 && curConsumed >= 0 && prodSpeed < glitchBound {
 		metric := Metric{
 			Timestamp: timestampMs,
 			Name:      topicConsumed,
@@ -392,7 +442,7 @@ func Calc(msg Message, state State) (Decision, error) {
 	}
 
 	// Processed metric.
-	if procIncr > 0 && curProcessed >= 0 && prodSpeed < 3*machSpeed {
+	if procIncr > 0 && curProcessed >= 0 && prodSpeed < glitchBound {
 		metric := Metric{
 			Timestamp: timestampMs,
 			Name:      topicProcessed,
@@ -423,8 +473,11 @@ func Calc(msg Message, state State) (Decision, error) {
 	}
 
 	// Defective metric. NB: JS also checks defIncr < 3*machspeed here (not
-	// prodSpeed). Preserve that.
-	if defIncr > 0 && curDefective >= 0 && float64(defIncr) < 3*machSpeed {
+	// prodSpeed). Preserve that: when counters-only mode is off, glitchBound
+	// is exactly 3*machSpeed so parity holds. In counters-only mode the same
+	// rated-speed bound applies so scrap counters aren't universally rejected
+	// when machSpeed is absent.
+	if defIncr > 0 && curDefective >= 0 && float64(defIncr) < glitchBound {
 		metric := Metric{
 			Timestamp: timestampMs,
 			Name:      topicDefective,
