@@ -50,7 +50,6 @@ package tenantprofile
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -324,14 +323,5 @@ func (p *Profile) NormalizeTopic(rawTopic string, class EquipClass) string {
 		}
 		out = strings.Replace(out, pa.From, pa.To, 1)
 	}
-	return out
-}
-
-// sortedSynth returns metrics in a stable order (by suffix) — handy for
-// deterministic output + test diffs. Not required for correctness (the agent
-// resolver is a map).
-func sortedSynth(ms []SynthMetric) []SynthMetric {
-	out := append([]SynthMetric(nil), ms...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Suffix < out[j].Suffix })
 	return out
 }
