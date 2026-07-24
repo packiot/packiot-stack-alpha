@@ -202,6 +202,29 @@ type Config struct {
 	// OFF until synthetic-inject verification (staging has no live
 	// 30800 traffic; see the port design doc).
 	POControlEnabled bool
+
+	// ── Counters-only Availability fallback (state-less Modbus machines) ──
+	// Follow-up to the counters-only OEE mode (PR #591). #591 lets a
+	// speed-sensorless machine compute PERFORMANCE from counts against a
+	// configured rated speed. But AVAILABILITY = running_time / planned_time
+	// is derived from StateCurrent/downtime events, so a machine that is
+	// counters-only AND emits NO state has no availability basis
+	// (running_time stays 0 → oee_a 0). When enabled, the hour + shift
+	// rollups INFER running-vs-stopped from COUNT ACTIVITY for opted-in
+	// equipment whose bucket carried no state events: a bucket is "running"
+	// while its counter advanced within the idle timeout, "stopped/idle"
+	// otherwise. Availability = active-count-time / planned-time.
+	//
+	// Default OFF → byte-identical rollup (the fallback pass is never
+	// appended to the statement stream). Auto-engages per bucket only when
+	// BOTH hold: (1) the id_equipment is in CountersOnlyAvailEquipments
+	// (explicit opt-in — the rollup-side analog of #591's per-equipment
+	// COUNTERS_ONLY_IDEAL_RATES seam), and (2) the bucket has no state events
+	// (hour: still flagged after phase E; shift: absent from shift_ev).
+	// State-driven Availability is left untouched for machines with state.
+	CountersOnlyAvailEnabled        bool
+	CountersOnlyAvailEquipments     string // CSV of id_equipment (config.CSVInts)
+	CountersOnlyAvailIdleTimeoutSec int    // grace secs after last count before "stopped"
 }
 
 func Load() (*Config, error) {
@@ -273,6 +296,10 @@ func Load() (*Config, error) {
 		Sync06EnterpriseID:               getenvInt("SYNC06_ENTERPRISE_ID", 6),
 		Sync06Target:                     getenv("SYNC06_TARGET", ""),
 		Boxes13IntervalMinutes:           getenvInt("BOXES13_INTERVAL_MINUTES", 5),
+		// Counters-only Availability fallback (default OFF — no behavior change)
+		CountersOnlyAvailEnabled:        getenv("COUNTERS_ONLY_AVAILABILITY_ENABLED", "false") == "true",
+		CountersOnlyAvailEquipments:     getenv("COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS", ""),
+		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
 	}, nil
 }
 

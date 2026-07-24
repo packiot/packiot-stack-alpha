@@ -154,14 +154,14 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 
 // LoopGrains schedules runtime-rollup (the cascade tier; steps grow
 // as hour/day/shift are ported).
-func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, dqEnabled, clampEnabled bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, dqEnabled, clampEnabled bool, ca CountersAvail, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("runtime-rollup started (P3b cascade: week+month; more grains as ported)")
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
 			// hour first (the foundation), then day2 (sums hours),
 			// then week+month — prod's intra-minute cascade order.
-			if err := RunHour(ctx, d, exclAreas, exclEnterprises); err != nil {
+			if err := RunHour(ctx, d, exclAreas, exclEnterprises, ca); err != nil {
 				logger.Warn("runtime-rollup-hour failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err
@@ -173,7 +173,7 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 					firstErr = err
 				}
 			}
-			if n, err := RunShift(ctx, d, exclAreas, exclEnterprises, machineLevelEnterprises, shiftLimit); err != nil {
+			if n, err := RunShift(ctx, d, exclAreas, exclEnterprises, machineLevelEnterprises, shiftLimit, ca); err != nil {
 				logger.Warn("runtime-rollup-shift failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err

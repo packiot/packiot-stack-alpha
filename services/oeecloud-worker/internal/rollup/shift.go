@@ -272,7 +272,7 @@ const shiftReflagSQL = `
 // to `limit` of the OLDEST flagged shift rows and returns how many it processed
 // (0 = backlog empty). LoopGrains ticks every 60s, so a backlog drains `limit` rows
 // per tick until empty; the recent tail (shiftReflagSQL) then keeps it at zero.
-func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, limit int) (int64, error) {
+func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, limit int, ca CountersAvail) (int64, error) {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -303,15 +303,24 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	if _, err := tx.Exec(ctx, `ANALYZE shift_elig`); err != nil {
 		return 0, fmt.Errorf("shift elig analyze: %w", err)
 	}
-	steps := []struct{ name, sql string }{
+	steps := []rollupStep{
 		{"values", fmt.Sprintf(shiftValuesSQL, d.EvSchema, d.RefSchema)},
 		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, d.EvSchema, d.RefSchema)},
 		{"events-bank", fmt.Sprintf(shiftEventsSQL, d.EvSchema)},
 		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, d.EvSchema)},
-		{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
-		{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
-		{"stamp", fmt.Sprintf(shiftStampSQL, d.EvSchema)},
 	}
+	// Counters-only Availability fallback — flag + opt-in gated, positioned
+	// after events-update (shift_ev exists → the NOT-EXISTS state-less anti-
+	// join resolves) and before oee-p. Inert (not appended) when not engaged.
+	if ca.engaged() {
+		steps = append(steps, rollupStep{"counters-avail",
+			fmt.Sprintf(shiftCountsAvailSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	steps = append(steps,
+		rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
+		rollupStep{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
+		rollupStep{"stamp", fmt.Sprintf(shiftStampSQL, d.EvSchema)},
+	)
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
 			return 0, fmt.Errorf("shift %s: %w", s.name, err)

@@ -229,7 +229,11 @@ const hourReflagSQL = `
 
 // RunHour executes one hour pass for one destination — one tx,
 // prod's phase order (V → cascades → speed → E → targets → re-flag).
-func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
+// When ca.engaged() it splices the counters-only Availability fallback in
+// AFTER phase E (so it targets only the state-less rows E left flagged) and
+// BEFORE oee-p (so hourOeePSQL back-solves oee_p for them); when disabled the
+// statement stream is byte-identical to the state-only rollup.
+func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, ca CountersAvail) error {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -247,17 +251,26 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	if _, err := tx.Exec(ctx, fmt.Sprintf(hourEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("hour eligible: %w", err)
 	}
-	steps := []struct{ name, sql string }{
+	steps := []rollupStep{
 		{"values", fmt.Sprintf(hourValuesSQL, d.EvSchema)},
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
 		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, d.EvSchema, d.RefSchema)},
 		{"speed", fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema)},
 		{"events", fmt.Sprintf(hourEventsSQL, d.EvSchema)},
-		{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)},
-		{"targets", fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema)},
-		{"stamp", fmt.Sprintf(hourStampSQL, d.EvSchema)},
-		{"reflag", fmt.Sprintf(hourReflagSQL, d.EvSchema)},
 	}
+	// Counters-only Availability fallback — flag + opt-in gated, positioned
+	// after events / before oee-p. Inert (not appended) when not engaged, so
+	// the disabled path executes the exact original statement stream.
+	if ca.engaged() {
+		steps = append(steps, rollupStep{"counters-avail",
+			fmt.Sprintf(hourCountsAvailSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	steps = append(steps,
+		rollupStep{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)},
+		rollupStep{"targets", fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema)},
+		rollupStep{"stamp", fmt.Sprintf(hourStampSQL, d.EvSchema)},
+		rollupStep{"reflag", fmt.Sprintf(hourReflagSQL, d.EvSchema)},
+	)
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
 			return fmt.Errorf("hour %s: %w", s.name, err)
