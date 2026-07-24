@@ -1556,6 +1556,25 @@ services:
       # redeploy — the else-branch legacy BuildEnvelope path is retained, no DB
       # change needed to roll back.
       CALC_CUTOVER_REFACTORED: "true"
+      # ── Counters-only OEE mode (PR #591) — CPACK L6 go-live (ADR-0042 P1) ──
+      # L6 is a Modbus counters-only line: the live tee confirmed SPEED:NO, so
+      # NO MachSpeed metric ever seeds Calc State. Calc's Phase-8 glitch guard
+      # `prodSpeed < 3*machSpeed` then collapses to `prodSpeed < 0` and rejects
+      # EVERY counter → zero OEE. This flag swaps that guard for a CONFIGURED
+      # rated-speed bound (3 × ideal) for the opted-in equipment below so counts
+      # flow and the member machines produce F3 OEE. SURGICAL: scoped to ent-3
+      # L6 only via the explicit opt-in map; no other tenant/line is touched,
+      # and machines that DO report speed auto-deselect inside Calc.
+      COUNTERS_ONLY_OEE_ENABLED: "true"
+      # Opt-in map: Sparkplug UNIT topic → configured rated speed (parts/min).
+      # This map is BOTH the opt-in allowlist AND the guard bound. Keys are the
+      # 5-seg unit topics ParseTopic yields from the agent-published names
+      # (parts[:5]); the LINE key is .../L6/Admin (line counts have no member
+      # segment). Rate 147 = equipments.production_speed for L6 (uniform, line +
+      # members), the SAME value the oeecloud-worker rollup uses as the Perf
+      # denominator, so no separate ideal override is needed. Staging equipment
+      # ids: line 50, BREYER 68, TEXA 69, POLYTYPE 70, RMH 71, PTH 72.
+      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147}'
       # ── ADR-0019 C1 edge command channel (machine-write path) ─────────
       # The RETURN path: an operator action writes a value DOWN to the PLC
       # (SparkPlug DCMD). This is the ONLY machine-write path in the stack,

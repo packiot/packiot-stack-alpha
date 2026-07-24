@@ -932,7 +932,11 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	// (machSpeed==0) still happens inside Calc, so a machine that DOES report
 	// speed is unaffected even when opted in.
 	if h.countersOnly {
-		if unitTopic, _, perr := calc_production_counters.ParseTopic(metric.Name); perr == nil {
+		// ParseTopic requires the "***"-delimited counter topic shape; the
+		// bare metric.Name has no "***" so it would ALWAYS error, leaving the
+		// opt-in inert. msg.Topic (metric.Name + "***TRIG", built just above)
+		// is the form ParseTopic expects and yields the 5-seg unit topic key.
+		if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
 			if rate, ok := h.idealRates[unitTopic]; ok && rate > 0 {
 				msg.CountersOnly = true
 				msg.IdealRate = rate
