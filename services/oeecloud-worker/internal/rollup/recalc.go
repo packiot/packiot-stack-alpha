@@ -50,6 +50,14 @@ import (
 // The formulas are prod-verbatim: quality = net/gross;
 // oee = net / (((total-planned)/60) * ideal_speed);
 // availability = running/available; performance = oee/(avail*quality).
+//
+// ADR-0037 (c) SCOPE NOTE: the changeover→Availability reclassification lives at
+// the EQUIPMENT availability grains (hour.go / shift.go, propagated up), NOT here.
+// This PO grain sums production_orders_runtime.{available_time, planned_downtime},
+// which the Go worker never classifies from raw events (compute.go writes only
+// running/stopped/gross/net; the planned/available split on that table is sourced
+// upstream). There is no changeover column to reclassify at this grain, so the
+// R3c flag deliberately does not reach it — see availability.go.
 const recalcSQL = `
 	WITH eligible AS (
 	    SELECT e.id_production_order

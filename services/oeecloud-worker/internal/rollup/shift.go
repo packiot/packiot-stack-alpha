@@ -145,11 +145,15 @@ const shiftCascadeAreaSQL = `
 	   AND a.ts_value >= now() - interval '30 day'`
 
 // Phase E: conditional; banks hits + ts_planned for the targets pass.
+// %[1]s = EvSchema. %[2]s = the ts_planned classification predicate
+// (plannedDowntimeExpr) — ADR-0037 (c): off = "ee.planned_downtime = true"
+// (prod-verbatim); on = changeover excluded from the planned bucket so it
+// stays inside (ts_total − ts_planned) and depresses Availability.
 const shiftEventsSQL = `
 	CREATE TEMP TABLE shift_ev ON COMMIT DROP AS
 	SELECT el.id_equipment, el.ts_value, el.ts_end, el.target_customized,
 	       extract(epoch FROM (least(el.ts_end, now()) - el.ts_value)) AS ts_total,
-	       COALESCE(sum(CASE WHEN ee.planned_downtime = true THEN
+	       COALESCE(sum(CASE WHEN %[2]s THEN
 	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
 	       COALESCE(sum(CASE WHEN ee.change_over = true THEN
 	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
@@ -272,7 +276,10 @@ const shiftReflagSQL = `
 // to `limit` of the OLDEST flagged shift rows and returns how many it processed
 // (0 = backlog empty). LoopGrains ticks every 60s, so a backlog drains `limit` rows
 // per tick until empty; the recent tail (shiftReflagSQL) then keeps it at zero.
-func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, limit int) (int64, error) {
+// changeoverAvailability (ADR-0037 c) selects the ts_planned classification:
+// false = prod-verbatim (changeover counted as planned), true = changeover
+// excluded from the planned bucket so it depresses Availability.
+func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, limit int, changeoverAvailability bool) (int64, error) {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -306,7 +313,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	steps := []struct{ name, sql string }{
 		{"values", fmt.Sprintf(shiftValuesSQL, d.EvSchema, d.RefSchema)},
 		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, d.EvSchema, d.RefSchema)},
-		{"events-bank", fmt.Sprintf(shiftEventsSQL, d.EvSchema)},
+		{"events-bank", fmt.Sprintf(shiftEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability))},
 		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, d.EvSchema)},
 		{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
 		{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
@@ -340,7 +347,9 @@ func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL st
 		{"eligible", fmt.Sprintf(shiftEligibleSQL, evSchema, refSchema, parityShiftLimit)},
 		{"values", fmt.Sprintf(shiftValuesSQL, evSchema, refSchema)},
 		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, evSchema, refSchema)},
-		{"events-bank", fmt.Sprintf(shiftEventsSQL, evSchema)},
+		// Parity accessor frozen to the prod-verbatim (off) classification —
+		// diffed against prod (F2), which has no changeover reclassification.
+		{"events-bank", fmt.Sprintf(shiftEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, evSchema)},
 		{"oee-p", fmt.Sprintf(shiftOeePSQL, evSchema)},
 		{"targets", fmt.Sprintf(shiftTargetsSQL, evSchema, refSchema)},

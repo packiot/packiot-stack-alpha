@@ -83,7 +83,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 	const limit = 4
 
 	// Tick 1: drains exactly `limit`, the OLDEST rows first.
-	n, err := rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit)
+	n, err := rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit, false)
 	if err != nil {
 		t.Fatalf("RunShift tick1: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 	afterTick1 := oldestFlagged() // the 5th-oldest row is now the frontier
 
 	// Tick 2: drains another `limit`; the frontier must ADVANCE (oldest-first).
-	n, err = rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit)
+	n, err = rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit, false)
 	if err != nil {
 		t.Fatalf("RunShift tick2: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 	}
 
 	// Tick 3: only total-2*limit remain → drains the remainder, backlog → 0.
-	n, err = rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit)
+	n, err = rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit, false)
 	if err != nil {
 		t.Fatalf("RunShift tick3: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 
 	// Tick 4: empty backlog → drains 0 and stays 0 (idempotent steady state; the
 	// reflag tail touches nothing because no row lives in [now-12h, now+18h]).
-	n, err = rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit)
+	n, err = rollup.RunShift(ctx, d, exclAreas, exclEnt, machineEnt, limit, false)
 	if err != nil {
 		t.Fatalf("RunShift tick4: %v", err)
 	}

@@ -174,6 +174,19 @@ type Config struct {
 	// rows (WHERE only selects genuine violators → zero writes → byte-identical, so
 	// the F2↔F3 identity comparator holds). Default true on staging; reversible.
 	SilverClampEnabled bool
+	// ChangeoverAvailabilityEnabled — ADR-0037 finding (c) (medallion R3c). When
+	// true, a changeover/setup event (change_over=true) is EXCLUDED from the
+	// Planned Production Time bucket at the equipment availability grains
+	// (hour/shift → propagated to day/week/month/entity), so its time stays INSIDE
+	// the availability denominator (ts_total − ts_planned) and DEPRESSES
+	// Availability as a real Six-Big-Losses loss instead of being removed from the
+	// clock. Default FALSE → availability is computed exactly as today (changeover
+	// counted as planned, per the 13-downtime-reasons seed's planned_downtime=true).
+	// Forward-first / flag-gated: the base-grain event SQL is byte-identical to prod
+	// when off (the parity accessors + golden fixtures pin that). changeover_time is
+	// always tracked separately, so enabling only moves changeover from "removed
+	// from the clock" into the availability loss bucket — never changes reporting.
+	ChangeoverAvailabilityEnabled bool
 	// Backfill drains recalc_needed hour rows stranded OUTSIDE the live rollup's
 	// 65-min window (bounded per tick, oldest-first). Both original blockers are
 	// now solved: the shadow cagg scheduler self-heal made the widened join fast
@@ -258,6 +271,7 @@ func Load() (*Config, error) {
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
 		DQAlarmsEnabled:                  getenv("DQ_ALARMS_ENABLED", "true") == "true",
 		SilverClampEnabled:               getenv("SILVER_CLAMP_ENABLED", "true") == "true",
+		ChangeoverAvailabilityEnabled:    getenv("CHANGEOVER_AVAILABILITY_ENABLED", "false") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
 		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
 		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
