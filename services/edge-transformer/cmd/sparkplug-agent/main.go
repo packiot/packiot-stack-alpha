@@ -43,6 +43,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/session"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tagstore"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/unmapped"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/uplink"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/outbox"
@@ -111,22 +112,37 @@ func main() {
 	}, []string{"reason"})
 	reg.MustRegister(dropped)
 
+	// ADR-0045 §2.4a P0 — "reject-don't-drop." A tag whose suffix is not in the
+	// raw_tag_map is still dropped (we can't type-and-publish an unknown tag),
+	// but every drop is now OBSERVABLE: a bounded-cardinality counter + a
+	// throttled WARN + an opt-in verbose /healthz dump of the distinct unmapped
+	// set. This is what turns "L6's inferred count index silently vanished"
+	// (#601) into a debuggable, surfaced onboarding signal.
+	unmappedTags := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_unmapped_tags_total",
+		Help: "Raw tags dropped because their suffix is not in raw_tag_map, by tenant group + line/machine segment + reason. Nonzero during onboarding ⇒ a tag (often a count index) maps to nothing and its data is vanishing.",
+	}, []string{"group", "segment", "reason"})
+	reg.MustRegister(unmappedTags)
+	unmappedReporter := unmapped.New(
+		cfg.Sparkplug.GroupID,
+		unmappedTags,
+		logger,
+		getenvBool("AGENT_UNMAPPED_VERBOSE", false),
+		unmappedLogWindow(),
+	)
+
 	// ingest is the SHARED pipeline entry point: resolve each raw tag against
 	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
 	// internal MQTT subscriber (Mode-B / full architecture) and the HTTP
 	// front-door (Mode-A direct-to-ingest tee) call it, so the two front-doors
-	// feed one tagstore→session→uplink path. Returns (accepted, total):
-	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
+	// feed one tagstore→session→uplink path — and observe unmapped drops
+	// identically. Returns (accepted, total): accepted resolved to a mapped
+	// metric; the rest were dropped-with-metric.
 	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
-		for _, t := range tags {
-			if _, _, ok := resolver.Resolve(t.Metric); !ok {
-				dropped.WithLabelValues("unmapped").Inc()
-				continue
-			}
-			store.Apply(t)
-			accepted++
-		}
-		return accepted, len(tags)
+		return ingestTags(tags, resolver, store, func(suffix string) {
+			dropped.WithLabelValues("unmapped").Inc()
+			unmappedReporter.Observe(suffix)
+		})
 	}
 
 	// Internal-broker subscriber: decode JSON → RBE-apply mapped tags.
@@ -150,6 +166,7 @@ func main() {
 	multi := health.NewMulti()
 	multi.Add(sub)
 	multi.Add(up)
+	multi.Add(unmappedReporter) // ADR-0045 P0: unmapped-tag DQ surface on /healthz
 	healthAddr := fmt.Sprintf(":%d", healthPort())
 	hsrv := health.New(healthAddr, multi, reg, logger)
 	hsrv.Start()
@@ -250,6 +267,24 @@ func main() {
 	}
 }
 
+// ingestTags is the shared resolve→apply loop, extracted so both front-doors
+// share ONE code path (and so it is unit-testable without a live broker). Each
+// tag is resolved against the raw_tag_map: a mapped tag is RBE-applied to the
+// store; an UNMAPPED tag is NOT applied (it cannot be typed/published) and is
+// handed to onUnmapped for observation (metric + throttled WARN). Returns
+// (accepted, total).
+func ingestTags(tags []rawtag.RawTag, r *resolver, store *tagstore.Store, onUnmapped func(suffix string)) (accepted, total int) {
+	for _, t := range tags {
+		if _, _, ok := r.Resolve(t.Metric); !ok {
+			onUnmapped(t.Metric)
+			continue
+		}
+		store.Apply(t)
+		accepted++
+	}
+	return accepted, len(tags)
+}
+
 // resolver implements session.Resolver over the agent's raw_tag_map.
 type resolver struct {
 	prefix string
@@ -318,6 +353,17 @@ func setupLogger(level string) *slog.Logger {
 }
 
 func healthPort() int { return getenvInt("HEALTH_PORT", 9103) }
+
+// unmappedLogWindow throttles the per-suffix unmapped-tag WARN. Default is the
+// package default (once/hour per distinct suffix). AGENT_UNMAPPED_LOG_WINDOW_SEC=0
+// logs each distinct suffix exactly once for the process lifetime; a positive
+// value re-logs every N seconds so the signal re-surfaces.
+func unmappedLogWindow() time.Duration {
+	if v := os.Getenv("AGENT_UNMAPPED_LOG_WINDOW_SEC"); v != "" {
+		return time.Duration(getenvInt("AGENT_UNMAPPED_LOG_WINDOW_SEC", 0)) * time.Second
+	}
+	return unmapped.DefaultLogWindow
+}
 
 // staleThreshold: MQTT_STALE_THRESHOLD_SECONDS <= 0 disables idle checks
 // (staging loopback with no live source is idle by design).
