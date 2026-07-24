@@ -37,15 +37,21 @@ nginx on a dedicated port, reusing the existing Let's Encrypt wildcard cert
 header (constant-time compared in the agent) — **no Authentik gate** here, same
 carve-out as the `api` vhost.
 
-`/etc/nginx/conf.d/cpack-ingest.conf` (add on the staging App EC2):
+> **Codified.** This vhost is now written by `nginx_setup.sh` (the
+> `cpack-ingest.conf` block) on every App-EC2 (re)build — the hand-added
+> `/etc/nginx/conf.d/cpack-ingest.conf` on the live host is no longer drift. The
+> `server_name` and cert path are driven by `$STAGING_DOMAIN`
+> (= `staging.packiot.app`). The literal below is the resolved output.
+
+`/etc/nginx/conf.d/cpack-ingest.conf` (rendered by `nginx_setup.sh`):
 
 ```nginx
 server {
     listen 8447 ssl;
-    server_name cpack-ingest.staging.packiot.com;
+    server_name cpack-ingest.staging.packiot.app;
 
-    ssl_certificate     /etc/letsencrypt/live/staging.packiot.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/staging.packiot.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/staging.packiot.app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/staging.packiot.app/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
@@ -64,29 +70,40 @@ server {
 
 `nginx -t && systemctl reload nginx` after writing it.
 
-### Security-group rule (terraform — DO NOT APPLY without the USER)
+### Security-group rule (codified — apply is still USER-gated)
 
 Open **inbound TCP 8447 from CPACK's egress IP ONLY** on the staging App EC2 SG.
-Everything else stays denied — the port is not world-open. Spec (fill the real
-CIDR from CPACK ops; do not guess):
+Everything else stays denied — the port is not world-open.
+
+**Where it lives.** The staging App EC2 SG, Route53 zone, EIP, and Secrets
+Manager bundle are all managed by **`packiot-stack-alpha/terraform/staging`**
+(S3 backend) — **not** the sibling `api-terraform` repo (that tree is the
+separate prod EKS infra and does not own `staging.packiot.app`). So the rule is
+codified here as an **inline `ingress` block** on `aws_security_group.app`
+(`terraform/staging/security_groups.tf`), not a standalone
+`aws_security_group_rule` — that SG defines its rules inline, and mixing the two
+forms makes Terraform revoke the standalone rule on every apply:
 
 ```hcl
-# api-terraform (staging) — app EC2 security group
-resource "aws_security_group_rule" "cpack_agent_ingest" {
-  type              = "ingress"
-  from_port         = 8447
-  to_port           = 8447
-  protocol          = "tcp"
-  cidr_blocks       = ["<CPACK_EGRESS_IP>/32"]   # FILL from CPACK ops
-  security_group_id = var.app_ec2_sg_id
-  description       = "ADR-0042 P1 CPACK Node-RED tee → sparkplug-agent /v1/tags"
+# terraform/staging/security_groups.tf — inside resource "aws_security_group" "app"
+ingress {
+  description = "ADR-0042 P1 CPACK Node-RED tee -> sparkplug-agent /v1/tags (CPACK egress /32 only)"
+  from_port   = 8447
+  to_port     = 8447
+  protocol    = "tcp"
+  cidr_blocks = ["179.162.112.58/32"]   # CPACK egress /32
 }
 ```
 
-Until this rule is applied the front-door is unreachable externally — which is
-the desired state for the **internal validation** (synthetic-frame test in-cluster,
-port still closed). Publish the port + open the SG only when the real CPACK tee
-is scheduled to go live.
+The matching DNS A record (`cpack-ingest.staging.packiot.app` →
+`aws_eip.app.public_ip`) is in `terraform/staging/dns.tf`
+(`aws_route53_record.cpack_ingest`).
+
+**Still USER-gated:** committing the HCL does not open the port — someone must
+`terraform apply`. Until applied, the front-door stays unreachable externally,
+which is the desired state for **internal validation** (synthetic-frame test
+in-cluster, port still closed). Apply only when the real CPACK tee is scheduled
+to go live.
 
 ## 3. plc-sim cutover (reversible, NOT applied by default)
 

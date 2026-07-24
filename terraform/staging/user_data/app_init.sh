@@ -85,6 +85,18 @@ AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
 AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
 AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
 
+# CPACK sparkplug-agent ingest key (ADR-0042 P1) — OPTIONAL / populate-manually.
+# Absent until the CPACK tee is provisioned (secret packiot/staging/agent-ingest),
+# so this is a guarded fetch defaulting to empty rather than a required get_secret.
+# Materializing it here means a full re-init re-creates AGENT_INGEST_API_KEY in
+# .env, instead of the operator having to hand-append it (drops on rebuild).
+AGENT_INGEST_API_KEY=""
+if aws secretsmanager describe-secret \
+    --secret-id packiot/staging/agent-ingest \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+  AGENT_INGEST_API_KEY=$(get_secret "packiot/staging/agent-ingest" | jq -r '.api_key // ""')
+fi
+
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
@@ -135,6 +147,11 @@ RABBITMQ_URL=amqp://$MQ_USER:$MQ_PASS@rabbitmq:5672
 # Grafana
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
 GF_SERVER_ROOT_URL=https://grafana.$STAGING_DOMAIN
+
+# CPACK sparkplug-agent ingest (ADR-0042 P1) — empty until the agent-ingest
+# secret is populated; the sparkplug-agent-cpack service (profile cpack-tee)
+# reads this to auth CPACK's Node-RED tee.
+AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
 
 # Compose substitution helpers
 STAGING_DOMAIN=$STAGING_DOMAIN
