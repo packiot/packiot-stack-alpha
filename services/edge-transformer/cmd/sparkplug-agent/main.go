@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -94,6 +95,45 @@ func main() {
 		tagSource = "packml_register"
 	}
 
+	// ── parameter decomposition (task #54 follow-up, ADR-0042) ────────────────
+	// Flag-gated + additive: default OFF = current behaviour (a bare
+	// "/Status/Parameter" is unmapped → dropped, and Phase-9 line aggregation
+	// never fires on real CPACK data). ON loads the tenant profile's
+	// parameter_decomposition rule; the ingest closure then rewrites each
+	// inbound bare-Parameter tag to its canonical numbered leaf using the tag's
+	// PackML parameter id — giving the Calc its Parameter30700 (and 30701/30750/
+	// 30751/30758) inputs. Load failure is fatal (fail-closed, same as above).
+	var decomposer *tenantprofile.Profile
+	if getenvBool("AGENT_PARAM_DECOMPOSITION", false) {
+		profPath := os.Getenv("AGENT_PROFILE_PATH")
+		if profPath == "" {
+			logger.Error("AGENT_PARAM_DECOMPOSITION=true requires AGENT_PROFILE_PATH")
+			os.Exit(1)
+		}
+		prof, err := tenantprofile.LoadProfile(profPath)
+		if err != nil {
+			logger.Error("param-decomposition profile load", "err", err)
+			os.Exit(1)
+		}
+		// A mis-pointed AGENT_PROFILE_PATH must not silently apply another
+		// tenant's decomposition. (Tenant is optional in the schema; enforce
+		// only when set — the same guard the register loader uses.)
+		if prof.Tenant != "" && prof.Tenant != cfg.Sparkplug.GroupID {
+			logger.Error("param-decomposition profile tenant mismatch",
+				"profile_tenant", prof.Tenant, "agent_group_id", cfg.Sparkplug.GroupID)
+			os.Exit(1)
+		}
+		if prof.ParameterDecomposition.SourceLeaf == "" {
+			logger.Error("AGENT_PARAM_DECOMPOSITION=true but profile has no parameter_decomposition.source_leaf",
+				"profile", profPath)
+			os.Exit(1)
+		}
+		decomposer = prof
+		logger.Info("parameter decomposition enabled",
+			"source_leaf", prof.ParameterDecomposition.SourceLeaf,
+			"params", len(prof.ParameterDecomposition.Params))
+	}
+
 	logger.Info("sparkplug-agent starting",
 		"group_id", cfg.Sparkplug.GroupID,
 		"edge_node_id", cfg.Sparkplug.EdgeNodeID,
@@ -131,6 +171,11 @@ func main() {
 		Help: "Raw-tag messages dropped, by reason (queue_full|unmapped|decode_error).",
 	}, []string{"reason"})
 	reg.MustRegister(dropped)
+	decomposed := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_param_decomposed_total",
+		Help: "Bare-Parameter raw tags rewritten to a canonical numbered leaf, by PackML parameter id.",
+	}, []string{"param_id"})
+	reg.MustRegister(decomposed)
 
 	// ingest is the SHARED pipeline entry point: resolve each raw tag against
 	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
@@ -140,6 +185,18 @@ func main() {
 	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
 	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
 		for _, t := range tags {
+			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
+			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the
+			// allowlist lookup, so the numbered entry (e.g. Parameter30700) both
+			// resolves here and publishes under the name the Calc keys on. A
+			// tag that doesn't match the rule is returned unchanged. `t` is a
+			// range copy, so mutating t.Metric is local to this iteration.
+			if decomposer != nil && t.ParamID != 0 {
+				if newSuffix, ok := decomposer.DecomposeParameterSuffix(t.Metric, t.ParamID); ok {
+					t.Metric = newSuffix
+					decomposed.WithLabelValues(strconv.Itoa(t.ParamID)).Inc()
+				}
+			}
 			if _, _, ok := resolver.Resolve(t.Metric); !ok {
 				dropped.WithLabelValues("unmapped").Inc()
 				continue

@@ -28,12 +28,38 @@ prefix_fixups:
 metric_aliases:
   - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}
 
-# ── (3) ambiguous Parameter — per-tenant disambiguation ──────────────────────
-# A bare "Status/Parameter" is ambiguous (30700 line-machines CSV | 30750 min
-# speed | 30758 event trigger). For CPACK the line-level Parameter carried to
-# the Calc is 30700 (line-machines CSV) — scoped to lines only.
+# ── (3) ambiguous Parameter — per-tenant disambiguation (single-rename) ──────
+# LEGACY / simple-tenant path. A single class-scoped rename of a bare
+# "Status/Parameter". Kept for a tenant whose Parameter topic only ever carries
+# ONE parameter. CPACK does NOT — see parameter_decomposition below, which
+# supersedes this for CPACK. (Left here as documentation of the #593 stopgap.)
 parameter_aliases:
   - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}
+
+# ── (3b) parameter decomposition — id-driven, the real CPACK shape ───────────
+# PROD FACT (SELECT-only read of ent-1 packml_register + the oeecloud ingestion
+# flow, 2026-07-23): CPACK publishes ONE metric per equipment, ".../Status/
+# Parameter" (no numbered topics exist on the wire). The PackML parameter NUMBER
+# rides in the SparkPlug metric's id/alias field —
+#     {name:"C-PACK/SC/LINHAS/L5/Status/Parameter", id:30700, value:"61,62,..."}
+# — and the current cloud reads `parameter_id = JSON.parse(metric).id` to route
+# it. The refactored Calc keys on the metric NAME suffix (Parameter30700 etc.),
+# so the agent must rewrite the bare leaf to the numbered one PER TAG, using the
+# id the tee copies into the rawtag envelope's `param` field.
+#
+# This is a DECLARED allowlist: an id absent below is NOT decomposed (left bare →
+# dropped as unmapped), so a PO-control write (30800+) can never be mistaken for
+# a Calc seed. Flag-gated at the agent: AGENT_PARAM_DECOMPOSITION (default OFF).
+# The rewritten metric's wire type comes from the raw_tag_map entry it resolves
+# to (metric_templates below), not from here.
+parameter_decomposition:
+  source_leaf: "/Status/Parameter"
+  params:
+    - {id: 30700, leaf: "/Status/Parameter30700", applies_to: line}   # line-machines CSV → Phase-9 line aggregation
+    - {id: 30701, leaf: "/Status/Parameter30701"}                     # ideal production speed
+    - {id: 30750, leaf: "/Status/Parameter30750"}                     # min-speed threshold (quantity)
+    - {id: 30751, leaf: "/Status/Parameter30751"}                     # min-speed threshold (time)
+    - {id: 30758, leaf: "/Status/Parameter30758"}                     # event trigger type (0=instant|4=5-min avg)
 
 # ── (4) count-index rules ────────────────────────────────────────────────────
 # The count metric embeds an index. Default = the equipment's own id_equipment

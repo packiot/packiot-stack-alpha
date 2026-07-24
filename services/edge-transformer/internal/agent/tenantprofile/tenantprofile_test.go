@@ -14,6 +14,14 @@ func cpackProfile() *Profile {
 		ParameterAliases: []ParameterAlias{
 			{From: "Status/Parameter", To: "Status/Parameter30700", AppliesTo: ClassLine},
 		},
+		ParameterDecomposition: ParameterDecomposition{
+			SourceLeaf: "/Status/Parameter",
+			Params: []DecomposedParam{
+				{ID: 30700, Leaf: "/Status/Parameter30700", AppliesTo: ClassLine},
+				{ID: 30701, Leaf: "/Status/Parameter30701"},
+				{ID: 30758, Leaf: "/Status/Parameter30758"},
+			},
+		},
 		CountIndex: CountIndexRule{
 			Mode:      "equipment_id",
 			Overrides: map[string]int{"/L5/BREYER": 61},
@@ -128,5 +136,113 @@ func TestSynthesizeEquipment(t *testing.T) {
 	}
 	if byS["/L8/Status/Parameter30700"] != "string" {
 		t.Error("line must get Parameter30700")
+	}
+}
+
+func TestDecomposeParameterSuffix(t *testing.T) {
+	p := cpackProfile()
+	cases := []struct {
+		name    string
+		suffix  string
+		paramID int
+		want    string
+		wantOK  bool
+	}{
+		// The load-bearing case: a LINE's bare Parameter + id 30700 becomes the
+		// canonical numbered leaf the Calc's seedFromMetric + Phase-9 read.
+		{"line 30700 CSV", "/L5/Status/Parameter", 30700, "/L5/Status/Parameter30700", true},
+		{"line 30701 ideal speed", "/L5/Status/Parameter", 30701, "/L5/Status/Parameter30701", true},
+		{"line 30758 event trigger", "/L8/Status/Parameter", 30758, "/L8/Status/Parameter30758", true},
+		// Undeclared id → left bare (dropped downstream, never misrouted).
+		{"undeclared PO-control 30800", "/L5/Status/Parameter", 30800, "/L5/Status/Parameter", false},
+		// A non-Parameter suffix is never touched even with an id present.
+		{"non-parameter leaf", "/L5/Status/MachSpeed", 30700, "/L5/Status/MachSpeed", false},
+		// No id on the tag → not a decomposable Parameter write.
+		{"no param id", "/L5/Status/Parameter", 0, "/L5/Status/Parameter", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := p.DecomposeParameterSuffix(c.suffix, c.paramID)
+			if got != c.want || ok != c.wantOK {
+				t.Errorf("Decompose(%q, %d) = (%q, %v), want (%q, %v)",
+					c.suffix, c.paramID, got, ok, c.want, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestDecompose_ProvesPhase9Input pins the exact property Phase-9 depends on:
+// the decomposed full metric name ends with "/Status/Parameter30700", the
+// literal suffix cmd/edge-transformer seedFromMetric HasSuffix-matches to seed
+// the line-machines CSV that calc_production_counters.runPhase9LineAggregation
+// reads. Before decomposition the bare name matches none of the seeds.
+func TestDecompose_ProvesPhase9Input(t *testing.T) {
+	p := cpackProfile()
+	bareSuffix := "/L5/Status/Parameter"
+	bareFull := p.TenantPrefix + bareSuffix
+	if got := hasParam30700(bareFull); got {
+		t.Fatalf("bare Parameter should NOT match the Calc's Parameter30700 seed: %q", bareFull)
+	}
+	decSuffix, ok := p.DecomposeParameterSuffix(bareSuffix, 30700)
+	if !ok {
+		t.Fatal("expected 30700 to decompose")
+	}
+	decFull := p.TenantPrefix + decSuffix
+	if !hasParam30700(decFull) {
+		t.Fatalf("decomposed name must match the Calc's Parameter30700 seed, got %q", decFull)
+	}
+}
+
+// hasParam30700 mirrors the exact check in cmd/edge-transformer seedFromMetric
+// (HasSuffix(name, "/Status/Parameter30700")) and line_aggregation's key build.
+func hasParam30700(fullName string) bool {
+	const suf = "/Status/Parameter30700"
+	return len(fullName) >= len(suf) && fullName[len(fullName)-len(suf):] == suf
+}
+
+func TestValidate_ParameterDecomposition(t *testing.T) {
+	base := func() *Profile { return cpackProfile() }
+
+	if err := base().Validate(); err != nil {
+		t.Fatalf("valid cpack profile rejected: %v", err)
+	}
+
+	p := base()
+	p.ParameterDecomposition.Params = nil
+	if err := p.Validate(); err == nil {
+		t.Error("source_leaf set with empty params should be rejected")
+	}
+
+	p = base()
+	p.ParameterDecomposition.Params = []DecomposedParam{{ID: 30700, Leaf: ""}}
+	if err := p.Validate(); err == nil {
+		t.Error("empty leaf should be rejected")
+	}
+
+	p = base()
+	p.ParameterDecomposition.Params = []DecomposedParam{{ID: 0, Leaf: "/x"}}
+	if err := p.Validate(); err == nil {
+		t.Error("id <= 0 should be rejected")
+	}
+
+	p = base()
+	p.ParameterDecomposition.Params = []DecomposedParam{
+		{ID: 30700, Leaf: "/a"}, {ID: 30700, Leaf: "/b"},
+	}
+	if err := p.Validate(); err == nil {
+		t.Error("duplicate id should be rejected")
+	}
+
+	p = base()
+	p.ParameterDecomposition.Params = []DecomposedParam{{ID: 30700, Leaf: "/x", AppliesTo: "bogus"}}
+	if err := p.Validate(); err == nil {
+		t.Error("invalid applies_to should be rejected")
+	}
+
+	// Absent rule (SourceLeaf empty) is valid.
+	p = base()
+	p.ParameterDecomposition = ParameterDecomposition{}
+	if err := p.Validate(); err != nil {
+		t.Errorf("absent parameter_decomposition should be valid: %v", err)
 	}
 }

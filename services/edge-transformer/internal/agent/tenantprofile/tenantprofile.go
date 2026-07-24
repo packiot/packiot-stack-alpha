@@ -97,13 +97,25 @@ type Profile struct {
 	// leaf). Example: {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}.
 	MetricAliases []Rewrite `yaml:"metric_aliases"`
 
-	// ParameterAliases disambiguate a bare, overloaded "Parameter" tag. Real
-	// PLCs may publish "Status/Parameter" for what the Calc keys as
-	// Parameter30700 (line-machines CSV), Parameter30750 (min speed), or
-	// Parameter30758 (event trigger) — the raw name alone cannot tell them
-	// apart, so CS Admin states the mapping per tenant, optionally scoped to a
-	// class (Parameter30700 is a line concept).
+	// ParameterAliases disambiguate a bare, overloaded "Parameter" tag by a
+	// single per-class rename. Real PLCs may publish "Status/Parameter" for what
+	// the Calc keys as Parameter30700 (line-machines CSV), Parameter30750 (min
+	// speed), or Parameter30758 (event trigger) — the raw name alone cannot tell
+	// them apart, so CS Admin states the mapping per tenant, optionally scoped to
+	// a class (Parameter30700 is a line concept).
+	//
+	// LIMITATION (why ParameterDecomposition below exists): a bare "Parameter"
+	// carries DIFFERENT parameters on the SAME topic over time — the same line
+	// emits 30700, 30701, 30750, 30758 all as ".../Status/Parameter". A single
+	// class-scoped rename can only pick ONE, so ParameterAliases alone cannot
+	// route a real CPACK stream. It stays for the simple single-parameter tenant;
+	// CPACK needs the per-tag id-driven ParameterDecomposition.
 	ParameterAliases []ParameterAlias `yaml:"parameter_aliases"`
+
+	// ParameterDecomposition decomposes a bare, id-carrying "Parameter" metric
+	// into its canonical numbered leaf using the tag's PackML parameter id — the
+	// #593 follow-up that makes Phase-9 line aggregation fire on real CPACK data.
+	ParameterDecomposition ParameterDecomposition `yaml:"parameter_decomposition"`
 
 	// ── SYNTHESIZE side (build canonical raw_tag_map from register) ───────────
 
@@ -128,6 +140,71 @@ type ParameterAlias struct {
 	From      string     `yaml:"from"`
 	To        string     `yaml:"to"`
 	AppliesTo EquipClass `yaml:"applies_to,omitempty"`
+}
+
+// ParameterDecomposition resolves the CPACK-class "one overloaded Parameter
+// metric, disambiguated by a metric-level id" quirk.
+//
+// The prod reality (SELECT-only read of the ent-1 register + the oeecloud
+// ingestion flow, 2026-07-23): CPACK publishes a SINGLE SparkPlug metric per
+// equipment named ".../Status/Parameter" — there are NO numbered Parameter
+// topics on the wire. The PackML parameter NUMBER travels in the SparkPlug
+// metric's id/alias field: {name:".../Status/Parameter", id:30700, value:"5"}.
+// The current cloud (oeecloud-node-red "01 · Ingestion & Writes") reads
+// `parameter_id = JSON.parse(metric).id` and branches on it (30700 line order,
+// 30701 ideal speed, 30750 min-speed, 30758 event trigger, 30800+ PO control).
+//
+// The refactored Calc, by contrast, keys its state seeds on the metric NAME
+// suffix (HasSuffix(name,"/Status/Parameter30700")). A bare "Parameter" matches
+// none of them, and — unlike ParameterAliases — one topic carries MANY
+// parameters over time, so no single rename works. This rule closes the gap by
+// decomposing PER TAG: the inbound tag carries its id (rawtag.RawTag.ParamID),
+// the id selects a DECLARED canonical numbered leaf, and the agent rewrites the
+// suffix before it hits the raw_tag_map allowlist. Decomposition is an explicit
+// allowlist (Params), never a blind numeric append: an undeclared id is left
+// bare (→ dropped as unmapped), so a stray PO-control write can never be
+// mistaken for a Calc seed.
+type ParameterDecomposition struct {
+	// SourceLeaf is the bare, overloaded leaf the tee sends, e.g.
+	// "/Status/Parameter". A tag whose suffix ends with this leaf AND carries a
+	// param id present in Params is rewritten to that id's canonical leaf.
+	// Empty ⇒ decomposition disabled for this tenant.
+	SourceLeaf string `yaml:"source_leaf"`
+
+	// Params is the declared id → canonical-numbered-leaf table. The SparkPlug
+	// datatype of the rewritten metric is NOT set here — it comes from the
+	// raw_tag_map allowlist entry the rewritten suffix resolves to (metric_
+	// templates for the register path, or the hand YAML), keeping one source of
+	// truth for wire types.
+	Params []DecomposedParam `yaml:"params"`
+}
+
+// DecomposedParam is one id → canonical leaf mapping. AppliesTo optionally
+// documents/scopes the parameter to a class (30700 is a line concept); it is
+// advisory — the raw_tag_map allowlist is the hard gate (only lines carry a
+// Parameter30700 entry, so a member's decomposed 30700 is dropped anyway).
+type DecomposedParam struct {
+	ID        int        `yaml:"id"`
+	Leaf      string     `yaml:"leaf"`
+	AppliesTo EquipClass `yaml:"applies_to,omitempty"`
+}
+
+// DecomposeParameterSuffix rewrites an inbound bare-Parameter metric SUFFIX to
+// its canonical numbered suffix using the tag's PackML parameter id. Returns
+// (rewritten, true) when the rule is configured, suffix ends with SourceLeaf,
+// and paramID is a declared param; otherwise (suffix, false) — the caller
+// leaves the tag untouched (bare Parameter stays unmapped → dropped).
+func (p *Profile) DecomposeParameterSuffix(suffix string, paramID int) (string, bool) {
+	d := p.ParameterDecomposition
+	if d.SourceLeaf == "" || paramID == 0 || !strings.HasSuffix(suffix, d.SourceLeaf) {
+		return suffix, false
+	}
+	for _, pr := range d.Params {
+		if pr.ID == paramID {
+			return strings.TrimSuffix(suffix, d.SourceLeaf) + pr.Leaf, true
+		}
+	}
+	return suffix, false
 }
 
 // CountIndexRule tells the synthesizer what integer to substitute for "{idx}".
@@ -208,6 +285,32 @@ func (p *Profile) Validate() error {
 			if !validTypes[t.Type] {
 				return fmt.Errorf("metric_templates.%s[%d] (%s): type=%q must be double|float|long|int|bool|string",
 					class, i, t.Leaf, t.Type)
+			}
+		}
+	}
+	// parameter_decomposition: strict when configured (a bad id→leaf mapping
+	// would silently misroute a Calc seed). Absent (SourceLeaf empty) is fine.
+	if d := p.ParameterDecomposition; d.SourceLeaf != "" {
+		if len(d.Params) == 0 {
+			return fmt.Errorf("parameter_decomposition.source_leaf set but params is empty")
+		}
+		seen := map[int]bool{}
+		for i, pr := range d.Params {
+			if pr.ID <= 0 {
+				return fmt.Errorf("parameter_decomposition.params[%d]: id must be > 0", i)
+			}
+			if seen[pr.ID] {
+				return fmt.Errorf("parameter_decomposition.params[%d]: duplicate id %d", i, pr.ID)
+			}
+			seen[pr.ID] = true
+			if strings.TrimSpace(pr.Leaf) == "" {
+				return fmt.Errorf("parameter_decomposition.params[%d] (id %d): leaf is required", i, pr.ID)
+			}
+			switch pr.AppliesTo {
+			case "", ClassLine, ClassMember:
+			default:
+				return fmt.Errorf("parameter_decomposition.params[%d] (id %d): applies_to=%q must be line|member|empty",
+					i, pr.ID, pr.AppliesTo)
 			}
 		}
 	}
