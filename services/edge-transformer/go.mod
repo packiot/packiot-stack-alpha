@@ -8,9 +8,11 @@ go 1.25.0
 // pattern from oeecloud-worker or mirror-worker-go MUST NOT be re-implemented
 // in edge-transformer." Locked deps make pattern drift detectable.
 //
-// pgx is intentionally NOT included in this skeleton — Phase 2 will add it
-// only if the transformer needs DB access for tenant discovery. Today the
-// tenant set is read from a YAML file on disk (clientconfig package).
+// pgx (jackc/pgx/v5) was added in task #13 (ADR-0009 Phase-2 / ADR-0042): the
+// sparkplug-agent's packml_register-driven raw_tag_map loader needs DB access
+// for tenant equipment discovery. It is used ONLY by the agent register loader
+// (internal/agent/agentcfg/register_pg.go) and dialled ONLY when
+// AGENT_TAGMAP_FROM_REGISTER=true — the default agent run stays DB-free.
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.3
@@ -24,6 +26,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/goburrow/modbus v0.1.0
 	github.com/gopcua/opcua v0.9.0
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/robinson/gos7 v0.0.0-20260622162611-2d6806f80c8b
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
@@ -57,6 +60,9 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
