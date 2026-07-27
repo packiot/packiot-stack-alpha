@@ -1175,6 +1175,21 @@ services:
       # Rollback: set "false" + redeploy.
       RECONCILE_FINISHER_ENABLED: "true"
       RECONCILE_FINISHER_GRACE_MINUTES: "30"
+      # Prod-terminal orphan closer — the LAST G0b finisher blemish. Closes
+      # mirror-CREATED CPACK POs (nm LIKE 'CPACK-reconcile-%') stuck at
+      # status IN (1,2) whose prod twin has already FINISHED (status=3). The #48
+      # finisher can't reach these: its candidate set is status=2 ONLY (misses a
+      # never-started status=1 orphan like the wedge PO 894561), and
+      # FinishOrphanPO trips the production_orders_ts_start_ts_end check (23514)
+      # when ts_start is NULL (also wedges 894720). This closer widens the set to
+      # status IN (1,2) and closes at prod's finish ts with a NULL-ts_start-safe
+      # zero-duration seal. ONLY prod-terminal (status=3) twins close — a
+      # status=2 (running) twin is SKIPPED (894330/894668/894749 stay untouched;
+      # their revive is a SEPARATE, already-mapped-shadow gap). SELECT-only on
+      # prod. Watch mirror_worker_reconciler_prod_terminal_closer_total{outcome}
+      # — expect ~2 finished (894561, 894720) then flat. Rollback: set "false" +
+      # redeploy → finisher path byte-identical to before. STAGING ONLY.
+      RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS: "true"
       # Event-driven reconciler split. tail mode runs the two reconciler halves
       # on independent tickers: the cheap create-diff (a 0.33ms cached status=2
       # index scan) polls every RECONCILE_CREATE_INTERVAL_SEC for sub-3s
