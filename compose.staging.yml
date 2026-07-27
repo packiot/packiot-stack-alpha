@@ -1154,6 +1154,18 @@ services:
       # Rollback: set "false" + redeploy.
       RECONCILE_FINISHER_ENABLED: "true"
       RECONCILE_FINISHER_GRACE_MINUTES: "30"
+      # Event-driven reconciler split. tail mode runs the two reconciler halves
+      # on independent tickers: the cheap create-diff (a 0.33ms cached status=2
+      # index scan) polls every RECONCILE_CREATE_INTERVAL_SEC for sub-3s
+      # PO-start detection, while the heavier finisher stays at
+      # RECONCILE_FINISHER_INTERVAL_SEC (stop latency is grace-bound anyway).
+      # Cuts PO-start invisibility from up to ~5min to ~3s (~100x) at ~0.01%
+      # extra prod load — all SELECT-only, no new prod object/grant/schema.
+      # Rollback: RECONCILE_MODE=poll (or remove these 3) + redeploy →
+      # byte-identical to the pre-split single-interval scheduler. STAGING ONLY.
+      RECONCILE_MODE: tail
+      RECONCILE_CREATE_INTERVAL_SEC: "3"
+      RECONCILE_FINISHER_INTERVAL_SEC: "300"
       # task #63/#86 — shadow-driven event close-sweep. Fixes >48h-late-close
       # open-row strands + ts_end/duration drift that count-parity hides.
       # RE-ENABLED after the #86 convergence fix: the candidate query now
