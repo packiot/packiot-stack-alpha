@@ -1,0 +1,155 @@
+# cpack.descriptor.yaml — CPACK CLIENT DESCRIPTOR (ADR-0045 P1, the SSoT).
+#
+# WHAT THIS IS
+# ------------
+# The ONE artifact a Customer Success engineer authors to onboard CPACK. From
+# this single descriptor the onboard generator (cmd/onboard-gen) emits all four
+# downstream artifacts — hand-editing none of them (ADR-0045 §2.2 "generate,
+# never hand-edit"):
+#
+#   1. tenant conversion profile   → docs/clients/cpack-full-profile.yaml
+#      (the #593/ADR-0043 tenantprofile schema: prefix/alias/param/count-index)
+#   2. packml_register INSERT SQL  → topic ↔ id_equipment rows (62 equipment)
+#   3. agent client.yaml           → the agentcfg descriptor (sparkplug identity,
+#      brokers, mTLS CN, register-derived raw_tag_map)
+#   4. Node-RED tee snippet        → the Tier-1 raw forwarder (ADR-0042 §2.3)
+#
+# It is the CPACK worked example that ADR-0045 §2.5 maps to the onboarding flow:
+# describe (this file) → generate → capture → validate → cut over. It is proven
+# EQUIVALENT to the hand-built cpack-full-profile.yaml by the generator's golden
+# test (clientdescriptor_test.go) — the ADR-0045 P1 acceptance gate.
+#
+# THE CONFIRMED-vs-INFERRED DISCIPLINE (ADR-0045 §2.4b, the load-bearing rule)
+# ---------------------------------------------------------------------------
+# A member's count index (…/ProdProcessedCount/<IDX>/Unit) is an ARBITRARY PLC
+# channel number, NOT derivable from any table (#601: BREYER1→26 while its id is
+# 340; L4 uses a 6/7/8/9 series). It is captured from a live tee, member by
+# member, and tagged confidence: confirmed | inferred. The generator REFUSES to
+# emit a cutover-ready config while any inferred index remains (--cutover) — no
+# tenant cuts over on inferred data. CPACK currently carries 20 inferred members
+# (L8/L10/SLEEVE + most CELULA), so cutover generation fails until the CAPTURE
+# step (P3) confirms them. Draft/observe generation (default) emits everything.
+
+tenant: CPACK
+enterprise_id: 3                       # staging CPACK (prod=1); register cross-tenant guard
+
+canonical:
+  prefix: CPACK/SC                     # tenant_prefix — the canonical (post-fixup) head
+
+# ── raw → canonical mapping (the per-client quirks, normalized STACK-SIDE in the
+#    agent profile per ADR-0045 §2.3 Option B) ─────────────────────────────────
+mapping:
+  count_index_default_mode: equipment_id   # fallback for any un-captured member
+  prefix_fixups:
+    - {from: "C-PACK/", to: "CPACK/"}                        # real PLC head → canonical
+  metric_aliases:
+    - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"} # real prod leaf (#590) → Calc input
+  parameter_aliases:
+    - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}
+  # parameter_decomposition: (ADR-0044) — the id-driven path for tenants whose
+  # bare Status/Parameter carries MANY params over time. CPACK's hand profile
+  # uses the single parameter_aliases rename above; decomposition is the
+  # forward direction (#602). Left empty here to match the equivalence target.
+
+# ── line-vs-member canonical metric templates (superset allowlist) ────────────
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+# ── equipment inventory (62: 20 lines tp=3 + 42 members tp=1) ─────────────────
+# id_equipment = the staging register surrogate id (drives packml_register SQL +
+# id resolution). count_index.value = the OBSERVED PLC channel index (drives the
+# member's count leaf); it is NOT the id (the whole #601 finding). confidence
+# gates cutover.
+equipment:
+  - {topic: CPACK/SC/CELULA1/CER400, id_equipment: 83, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/CER400/CER400, id_equipment: 88, tp_equipment: 1, id_unit: 88, count_index: {value: 107, confidence: confirmed}}
+  - {topic: CPACK/SC/CELULA1/DUBUTI1, id_equipment: 84, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/DUBUTI1/DUBUTI1, id_equipment: 89, tp_equipment: 1, id_unit: 89, count_index: {value: 334, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/DUBUTI2, id_equipment: 81, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/DUBUTI2/DUBUTI2, id_equipment: 86, tp_equipment: 1, id_unit: 86, count_index: {value: 97, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/HOTMADAG, id_equipment: 82, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/HOTMADAG/HOTMADAG, id_equipment: 87, tp_equipment: 1, id_unit: 87, count_index: {value: 99, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/ISIMAT, id_equipment: 85, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/ISIMAT/ISIMAT, id_equipment: 90, tp_equipment: 1, id_unit: 90, count_index: {value: 335, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/BREYER1, id_equipment: 95, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/BREYER1/BREYER1, id_equipment: 101, tp_equipment: 1, id_unit: 101, count_index: {value: 26, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/BREYER2, id_equipment: 91, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/BREYER2/BREYER2, id_equipment: 97, tp_equipment: 1, id_unit: 97, count_index: {value: 101, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE1, id_equipment: 93, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1, id_equipment: 99, tp_equipment: 1, id_unit: 99, count_index: {value: 110, confidence: confirmed}}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE2, id_equipment: 96, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2, id_equipment: 102, tp_equipment: 1, id_unit: 102, count_index: {value: 29, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/PTH40-03, id_equipment: 94, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/PTH40-03/PTH40-03, id_equipment: 100, tp_equipment: 1, id_unit: 100, count_index: {value: 339, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/PTH80S, id_equipment: 92, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/PTH80S/PTH80S, id_equipment: 98, tp_equipment: 1, id_unit: 98, count_index: {value: 105, confidence: confirmed}}
+  - {topic: CPACK/SC/CELULA9/FLEXO, id_equipment: 103, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA9/FLEXO/FLEXO, id_equipment: 104, tp_equipment: 1, id_unit: 104, count_index: {value: 557, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10, id_equipment: 52, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L10/DXL, id_equipment: 77, tp_equipment: 1, id_unit: 77, count_index: {value: 564, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10/PTH, id_equipment: 78, tp_equipment: 1, id_unit: 78, count_index: {value: 565, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10/TCX, id_equipment: 79, tp_equipment: 1, id_unit: 79, count_index: {value: 566, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10/TEXA, id_equipment: 80, tp_equipment: 1, id_unit: 80, count_index: {value: 567, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L3, id_equipment: 48, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L3/BREYER, id_equipment: 58, tp_equipment: 1, id_unit: 58, count_index: {value: 76, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/POLYTYPE, id_equipment: 62, tp_equipment: 1, id_unit: 62, count_index: {value: 82, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/PTH, id_equipment: 61, tp_equipment: 1, id_unit: 61, count_index: {value: 81, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/RMH, id_equipment: 59, tp_equipment: 1, id_unit: 59, count_index: {value: 79, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/TEXA, id_equipment: 60, tp_equipment: 1, id_unit: 60, count_index: {value: 80, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4, id_equipment: 49, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L4/BREYER, id_equipment: 66, tp_equipment: 1, id_unit: 66, count_index: {value: 6, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/POLYTYPE, id_equipment: 67, tp_equipment: 1, id_unit: 67, count_index: {value: 7, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/PTH, id_equipment: 64, tp_equipment: 1, id_unit: 64, count_index: {value: 8, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/RMH, id_equipment: 65, tp_equipment: 1, id_unit: 65, count_index: {value: 9, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/TEXA, id_equipment: 63, tp_equipment: 1, id_unit: 63, count_index: {value: 10, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L5, id_equipment: 47, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L5/BREYER, id_equipment: 53, tp_equipment: 1, id_unit: 53, count_index: {value: 61, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/POLYTYPE, id_equipment: 54, tp_equipment: 1, id_unit: 54, count_index: {value: 62, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/PTH, id_equipment: 55, tp_equipment: 1, id_unit: 55, count_index: {value: 63, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/RMH, id_equipment: 56, tp_equipment: 1, id_unit: 56, count_index: {value: 64, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/TEXA, id_equipment: 57, tp_equipment: 1, id_unit: 57, count_index: {value: 65, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6, id_equipment: 50, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L6/BREYER, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L8, id_equipment: 51, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L8/DXL, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/PTH, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TCX, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TEXA, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE1, id_equipment: 105, tp_equipment: 3}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1, id_equipment: 107, tp_equipment: 1, id_unit: 107, count_index: {value: 763, confidence: inferred}}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE2, id_equipment: 106, tp_equipment: 3}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2, id_equipment: 108, tp_equipment: 1, id_unit: 108, count_index: {value: 823, confidence: inferred}}
+
+# ── agent wiring (→ client.yaml, the agentcfg descriptor) ─────────────────────
+agent:
+  edge_node_id: cpack-tee              # DISTINCT from plc-sim's edge node
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/cpack/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:                                # Mode-B mTLS CN=<tenant>; secret refs, never values
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee snippet parameters (→ cpack-tee-node.json) ───────────────────
+tee:
+  ingest_url: "https://ec2-100-28-20-195.compute-1.amazonaws.com:8446/ingest/sparkplug"
+  ingest_key_env: CPACK_INGEST_KEY     # tee reads the key from env, never hardcoded
+  gateway: cpack-edge
+  tls_insecure: true                   # staging self-signed
