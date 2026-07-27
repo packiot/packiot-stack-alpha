@@ -1,0 +1,25 @@
+{
+  "healthy": true,
+  "started_at": "2026-07-26T09:00:00Z",
+  "uptime_seconds": 5400,
+  "components": {
+    "unmapped_tags": {
+      "group": "CPACK",
+      "total_dropped": 18412,
+      "distinct_suffixes_seen": 5,
+      "verbose": true,
+      "unmapped_suffixes": [
+        {"suffix": "/L6/BREYER/Status/CurMachSpeed", "count": 902},
+        {"suffix": "/L8/DXL/Admin/ProdProcessedCount/511/Unit", "count": 4110},
+        {"suffix": "/L8/GLUER/Admin/ProdProcessedCount/514/Unit", "count": 3771},
+        {"suffix": "/L8/PTH/Admin/ProdProcessedCount/512/Unit", "count": 4980},
+        {"suffix": "/L8/TCX/Admin/ProdProcessedCount/513/Unit", "count": 4649}
+      ]
+    },
+    "raw_subscriber": {
+      "connected": true,
+      "last_message_age_seconds": 1
+    }
+  },
+  "degraded_components": []
+}
