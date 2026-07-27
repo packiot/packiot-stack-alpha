@@ -111,6 +111,16 @@ func main() {
 	}, []string{"reason"})
 	reg.MustRegister(dropped)
 
+	// task #31: rebirths triggered by an inbound "Node Control/Rebirth" NCMD.
+	// This is how the cloud edge-transformer self-heals its alias/counter
+	// baseline after a restart — it asks us to rebirth, we re-publish NBIRTH.
+	rebirths := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_rebirths_total",
+		Help: "Full NBIRTH re-publishes triggered by an inbound Rebirth NCMD (task #31).",
+	})
+	reg.MustRegister(rebirths)
+	up.SetRebirthMetric(rebirths.Inc)
+
 	// ingest is the SHARED pipeline entry point: resolve each raw tag against
 	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
 	// internal MQTT subscriber (Mode-B / full architecture) and the HTTP
