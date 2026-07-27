@@ -828,7 +828,13 @@ services:
   # add it via the exporter's multi-target mode (a second scrape target with a
   # ?target= relabel, same shape as blackbox) — no new exporter needed.
   redis-exporter:
-    image: oliver006/redis_exporter:v1.62.0-alpine
+    # NOTE: use the non-alpine tag — it is the only multi-arch manifest list
+    # (linux/amd64 + linux/arm64/v8). The `-alpine` tag ships a single amd64
+    # manifest, so on this arm64 staging host it crashlooped with
+    # `exec /redis_exporter: exec format error` (1774+ restarts, reddening the
+    # deploy service-state gate). platform pins the arm64 variant explicitly.
+    image: oliver006/redis_exporter:v1.62.0
+    platform: linux/arm64
     container_name: redis-exporter
     restart: unless-stopped
     environment:
