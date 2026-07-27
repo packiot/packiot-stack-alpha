@@ -1,0 +1,4 @@
+# NEVER commit resolved secrets or a filled env into the edge bundle.
+.env
+certs/
+!certs/.gitkeep

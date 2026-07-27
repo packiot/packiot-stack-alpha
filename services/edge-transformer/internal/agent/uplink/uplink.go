@@ -18,6 +18,7 @@ package uplink
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,6 +45,12 @@ type Config struct {
 	PublishTimeout time.Duration
 	DrainBatch     int
 	DrainInterval  time.Duration
+
+	// TLS is the mTLS material for the Mode-B WAN crossing (ADR-0042 §6): a
+	// per-tenant client cert whose CN=<tenant> the cloud broker's ACL keys
+	// isolation on. Nil on the Mode-A staging loopback (tcp:// → no TLS). When
+	// set, it is applied to the paho client for an ssl:// / tls:// broker.
+	TLS *tls.Config
 }
 
 func (c *Config) withDefaults() {
@@ -173,6 +180,16 @@ func (u *Uplink) Run(ctx context.Context) error {
 		SetBinaryWill(u.deathTopic, willBody, 1, false).
 		SetOnConnectHandler(u.onConnect).
 		SetConnectionLostHandler(u.onConnectionLost)
+
+	// Mode-B mTLS (ADR-0042 §6): apply the per-tenant client cert on an
+	// ssl:// / tls:// broker. Paho selects TLS from the broker scheme; the
+	// cert asserts CN=<tenant> so the broker ACL scopes spBv1.0/<tenant>/# —
+	// the client never names its own tenant on the wire. Nil on the Mode-A
+	// loopback (tcp://), so staging is unaffected.
+	if u.cfg.TLS != nil {
+		opts.SetTLSConfig(u.cfg.TLS)
+		u.logger.Info("uplink: mTLS enabled for WAN crossing", "broker", u.cfg.BrokerURL)
+	}
 
 	client := paho.NewClient(opts)
 	u.mu.Lock()
