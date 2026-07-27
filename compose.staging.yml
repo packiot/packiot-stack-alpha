@@ -1390,6 +1390,18 @@ services:
       COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
       COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "50,68,69,70,71,72"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
+      # ADR-0037 Silver invariant — per-equipment production-increment SANITY
+      # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
+      # K · equipments.production_speed · Δt (a physically-impossible count at
+      # the machine's rated speed since its last reading) BEFORE it reaches the
+      # equipment_values UPSERT / cagg SUM, and records a data_quality_event
+      # (INVARIANT_CLAMPED_INCREMENT). Stops the ACTIVE corruption of eq 57
+      # (L5/TEXA): its shared per-topic baseline is fed by BOTH plc-sim
+      # (totalizer ≈1.9k) and the real agent (≈830k), minting a ≈828k phantom
+      # increment on every publisher switch. Defends ALL equipment against
+      # future double-source / reordered-sample phantoms. K=4, Δt floored 60s.
+      # Reversible: set ENABLED=false + redeploy → byte-identical prior writes.
+      INCREMENT_SANITY_CLAMP_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
@@ -1627,7 +1639,15 @@ services:
       # members), the SAME value the oeecloud-worker rollup uses as the Perf
       # denominator, so no separate ideal override is needed. Staging equipment
       # ids: line 50, BREYER 68, TEXA 69, POLYTYPE 70, RMH 71, PTH 72.
-      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147}'
+      #
+      # L5/TEXA (eq 57) added (ADR-0037 / #13): it is the target of the
+      # agent-only cutover. Opting it in swaps Calc's Phase-8 guard from the
+      # absent-MachSpeed `3·machSpeed` bound to `3·IdealRate`, fixing the
+      # post-SparkPlug-Rebirth stall (Bug 2) that rejected every count once the
+      # agent became sole publisher. Rate 147 = equipments.production_speed for
+      # eq 57 (same as L6). This PREPARES the agent-only cutover; it does NOT
+      # perform the plc-sim L5/TEXA drop (a separate coordinated step).
+      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147,"CPACK/SC/LINHAS/L5/TEXA":147}'
       # ── ADR-0019 C1 edge command channel (machine-write path) ─────────
       # The RETURN path: an operator action writes a value DOWN to the PLC
       # (SparkPlug DCMD). This is the ONLY machine-write path in the stack,

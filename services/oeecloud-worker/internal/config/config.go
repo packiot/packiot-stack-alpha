@@ -234,6 +234,21 @@ type Config struct {
 	CountersOnlyAvailEnabled        bool
 	CountersOnlyAvailEquipments     string // CSV of id_equipment (config.CSVInts)
 	CountersOnlyAvailIdleTimeoutSec int    // grace secs after last count before "stopped"
+
+	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
+	// When enabled, the equipment_values writer rejects any production
+	// increment (Processed/Consumed/Defective delta) that exceeds
+	// K · equipments.production_speed · Δt — a physically-impossible count
+	// for a machine at its rated speed since the last reading. The rejected
+	// increment is written as 0 and recorded as a data_quality_event
+	// (INVARIANT_CLAMPED_INCREMENT). Default OFF → byte-identical writes.
+	// Defends the cagg SUM against double-source / reordered-sample phantoms
+	// (e.g. plc-sim + real-agent feeding one topic with different totalizer
+	// origins). K defaults 4; MinDt floors Δt (secs) so a sub-interval burst
+	// can't collapse the bound.
+	IncrementSanityClampEnabled  bool
+	IncrementSanityClampK        float64
+	IncrementSanityClampMinDtSec int
 }
 
 func Load() (*Config, error) {
@@ -310,7 +325,24 @@ func Load() (*Config, error) {
 		CountersOnlyAvailEnabled:        getenv("COUNTERS_ONLY_AVAILABILITY_ENABLED", "false") == "true",
 		CountersOnlyAvailEquipments:     getenv("COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS", ""),
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
+		// Increment sanity clamp (default OFF — no behavior change)
+		IncrementSanityClampEnabled:  getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
+		IncrementSanityClampK:        getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
+		IncrementSanityClampMinDtSec: getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
 	}, nil
+}
+
+// getenvFloat parses a float env var, falling back on empty/invalid.
+func getenvFloat(name string, fallback float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func getenv(name, fallback string) string {

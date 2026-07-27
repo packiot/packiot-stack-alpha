@@ -48,10 +48,40 @@ type EquipmentValues struct {
 	// legacy split runs: UPSERT without shift columns + BuildShiftFill's
 	// companion UPDATE. Set via SetShiftFillFolded.
 	foldShift bool
+
+	// clamp — the per-equipment production-increment SANITY CLAMP
+	// (ADR-0037 Silver invariant). nil ⇒ disabled
+	// (INCREMENT_SANITY_CLAMP_ENABLED=false), the default; when nil Build
+	// behaves byte-for-byte as before. Set via SetIncrementClamp.
+	clamp *incrementClamp
 }
 
 func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
 	return &EquipmentValues{resolver: r, logger: logger}
+}
+
+// SetIncrementClamp enables the production-increment sanity clamp
+// (INCREMENT_SANITY_CLAMP_ENABLED). k is the plausibility factor
+// (K·rate·Δt) and minDtSec floors Δt so a burst of sub-interval samples
+// can't produce a near-zero bound that false-positives a legitimate count.
+// Passing enabled=false leaves the clamp nil (no-op — flag-off parity).
+func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int) {
+	if !enabled {
+		w.clamp = nil
+		return
+	}
+	if k <= 0 {
+		k = 4.0
+	}
+	if minDtSec <= 0 {
+		minDtSec = 60
+	}
+	w.clamp = &incrementClamp{
+		k:      k,
+		minDt:  time.Duration(minDtSec) * time.Second,
+		last:   make(map[clampKey]int64),
+		logger: w.logger,
+	}
 }
 
 // SetShiftResolver enables the ADR-0014 Phase 2 shift fill. Whether it is
@@ -159,23 +189,29 @@ func (w *EquipmentValues) CanWrite(kind sparkplug.MetricKind) bool {
 	return false
 }
 
-// Build returns the *Query for one metric, or (nil, nil) when the topic
+// Build returns the *Query for one metric, or (nil, nil, nil) when the topic
 // is not in packml_register (skip — not a write error). Returns an error
 // for unexpected kinds or unparseable values.
+//
+// The middle return is a non-nil *ClampEvent ONLY when the increment sanity
+// clamp (INCREMENT_SANITY_CLAMP_ENABLED) rejected this metric's increment: the
+// *Query already carries the clamped (zeroed) value, and the caller records
+// the event as a data_quality_event (observability, best-effort). It is always
+// nil when the clamp is disabled — flag-off is byte-for-byte the old behavior.
 //
 // The `schema` parameter selects the target schema (public vs shadow_go_port
 // per ADR-0010 Phase 3 shadow-mode DB comparison). Caller validates the
 // value against a whitelist before calling — the writer trusts it.
-func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ string, schema string) (*Query, error) {
+func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ string, schema string) (*Query, *ClampEvent, error) {
 	kind := m.Classify()
 	if !w.CanWrite(kind) {
-		return nil, fmt.Errorf("EquipmentValues.Build called with unsupported kind %s", kind)
+		return nil, nil, fmt.Errorf("EquipmentValues.Build called with unsupported kind %s", kind)
 	}
 
 	topic := m.TopicForRegister()
 	info, err := w.resolver.Resolve(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
+		return nil, nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
 	if info == nil {
 		// INFO 1-in-32 sample (was Debug = invisible): the f1
@@ -188,7 +224,7 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 				slog.String("kind", kind.String()),
 			)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	ts := time.UnixMilli(m.Timestamp).Truncate(time.Second).UTC()
@@ -208,7 +244,7 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 				slog.String("name", m.Name), slog.String("kind", kind.String()),
 				slog.String("raw", truncateRaw(m.Value, 48)))
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Absurd-value guard (oscillator incident 2026-07-04): no factory
 	// counter/state value approaches 1e12; beyond it the payload is
@@ -216,7 +252,26 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	if math.Abs(value) > 1e12 || math.IsNaN(value) || math.IsInf(value, 0) {
 		w.logger.Error("equipment_values: ABSURD value rejected (stream-poison guard)",
 			slog.String("name", m.Name), slog.Float64("value", value))
-		return nil, nil
+		return nil, nil, nil
+	}
+
+	// ── Increment sanity clamp (ADR-0037 Silver invariant, flag-gated) ──────
+	// For the three production counters, reject a physically-impossible
+	// increment (> K · rated_speed · Δt) BEFORE it reaches the UPSERT and the
+	// cagg SUM. w.clamp is nil (default) → no-op, value unchanged. clampEv is
+	// non-nil only when this metric was clamped; the caller records it.
+	var clampEv *ClampEvent
+	if w.clamp != nil {
+		switch kind {
+		case sparkplug.KindProdProcessedCount,
+			sparkplug.KindProdConsumedCount,
+			sparkplug.KindProdDefectiveCount:
+			var rate float64
+			if info.ProductionSpeed != nil {
+				rate = float64(*info.ProductionSpeed)
+			}
+			value, clampEv = w.clamp.eval(info.IDEquipment, info.IDEnterprise, kind, m.Timestamp, rate, value)
+		}
 	}
 
 	tpEquipment := 1
@@ -251,13 +306,13 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 
 	switch kind {
 	case sparkplug.KindProdProcessedCount:
-		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
+		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
 	case sparkplug.KindProdConsumedCount:
-		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
+		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
 	case sparkplug.KindProdDefectiveCount:
-		return buildDefective(ts, info, tpEquipment, value, (*float64)(m.Counter), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
+		return buildDefective(ts, info, tpEquipment, value, (*float64)(m.Counter), faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
 	case sparkplug.KindStateCurrent:
-		return buildState(ts, info, tpEquipment, int(value), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
+		return buildState(ts, info, tpEquipment, int(value), faults, checkNumber, schema, withShift, idShift, idShiftHour), nil, nil
 	case sparkplug.KindUnitModeCurrent:
 		// UnitModeCurrent payload may carry sub_mode in metric.alias —
 		// extract as string if present and non-null.
@@ -268,9 +323,9 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 				subMode = &s
 			}
 		}
-		return buildMode(ts, info, tpEquipment, int(value), subMode, faults, checkNumber, schema, withShift, idShift, idShiftHour), nil
+		return buildMode(ts, info, tpEquipment, int(value), subMode, faults, checkNumber, schema, withShift, idShift, idShiftHour), nil, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // parseNumericValue accepts a Sparkplug metric value as either a JSON number
