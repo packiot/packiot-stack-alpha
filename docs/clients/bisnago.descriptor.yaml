@@ -1,0 +1,136 @@
+# bisnago.descriptor.yaml — BISNAGO CLIENT DESCRIPTOR (ADR-0045 P1) — PARTIAL / TEMPLATE.
+#
+# ⚠️  THIS IS NOT A RUNNABLE DESCRIPTOR YET. ⚠️
+# It is reverse-engineered from the legacy bisnago Node-RED flow
+# (/home/podesta/Downloads/bisnago.json — 70 nodes, Siemens S7 → numeric-counter
+# → GCP PubSub `bispharma_bisnago_publisher`). Every value tagged CONFIRMED below
+# is traceable to a specific flow node. Every `NEEDS-CLIENT` / `NEEDS-LEGACY-DB`
+# is an UNKNOWN the flow CANNOT answer — see bisnago-profile.md for the reasoning.
+#
+# WHY IT IS PARTIAL (the load-bearing finding)
+# --------------------------------------------
+# Bisnago's legacy flow does NOT use the SparkPlug-B / packml_topic-string model
+# that this descriptor (and CPACK/bispharma) is built around. It emits a payload
+# of NUMERIC COUNTER IDs (670..683) into `counters[].counterData[]` and publishes
+# it to a GCP PubSub topic. The counter-id → equipment (line/machine, and the
+# enterprise/site/area topic tree) mapping lives in the LEGACY packiot cloud DB
+# (enterprise 119), NOT in the flow. So this descriptor CANNOT be completed from
+# the flow alone: `canonical.prefix`, every `topic:`, every `id_equipment`, and
+# the count-index confidences must come from the legacy ent-119 tables (SELECT-
+# only) + a live tee capture. onboard-gen WILL FAIL validation until they land
+# (prefix required; topic must start with prefix; id_equipment must be > 0).
+#
+# WHAT IS CONFIRMED FROM THE FLOW
+# -------------------------------
+#   • 7 ACTIVE production lines (of 19 configured S7 endpoints — 12 are dormant,
+#     see profile). Line labels, PLC IP/rack/slot/cycle: CONFIRMED.
+#   • Counters are DINT (32-bit) ABSOLUTE TOTALIZERS; the flow also derives a
+#     per-poll `increment` (delta, clamped to 0 on decrease). CONFIRMED.
+#   • COUNTERS-ONLY: no MachSpeed sensor, no StateCurrent signal anywhere.
+#     CONFIRMED (0 occurrences of speed/state/packml/sparkplug in the flow).
+#   • 2 counter ids per line (14 total, 670..683). Which DINT → which id: CONFIRMED.
+#   • ZERO back4 / HTTP customization calls in the flow (no shim needed). CONFIRMED.
+
+tenant: BISNAGO
+enterprise_id: 0                 # NEEDS-LEGACY-DB / tenant-prep: legacy PROD enterprise
+                                 # = 119 (per task brief). Staging gets its own surrogate
+                                 # (cf. CPACK prod 1 → staging 3). Decide reuse-119 vs a
+                                 # fresh bisnago-staging id in tenant-prep. MUST be > 0.
+                                 # This is the packml_register cross-tenant guard.
+
+canonical:
+  prefix: BISNAGO/TODO_SITE      # NEEDS-CLIENT/LEGACY-DB: the legacy flow builds NO topic
+                                 # strings at all (routing is by numeric counter id). The
+                                 # canonical prefix + site short-code must be chosen in
+                                 # tenant-prep (e.g. BISNAGO/SP). Discovery lower-cases the
+                                 # leading tenant segment.
+
+# ── raw → canonical mapping ────────────────────────────────────────────────────
+# The legacy flow emits numeric counter ids, NOT canonical leaf strings, so there
+# are no prefix/metric/parameter quirks to absorb from IT. Any mapping here comes
+# from the NEW edge (client-edge container or a rebuilt tee) once its raw shape is
+# decided. Left empty; revisit after §edge decision.
+mapping:
+  count_index_default_mode: equipment_id
+  prefix_fixups: []
+  metric_aliases: []
+  parameter_aliases: []
+
+# ── line-vs-member canonical metric templates ─────────────────────────────────
+# COUNTERS-ONLY tenant: NO /Status/MachSpeed and NO /Status/StateCurrent leaves —
+# neither signal exists on any bisnago PLC (CONFIRMED from flow). Performance must
+# come from a rated/ideal speed per line (equipments.production_speed, NEEDS-CLIENT
+# §speed); Availability is inferred from counter activity (status_type != 4).
+# Whether bisnago carries a Consumed/Defective counter as its 2nd id, or that 2nd
+# id is a second machine, is NEEDS-LEGACY-DB — templates below are the minimal
+# processed-count-only shape; add Consumed/Defective leaves only once confirmed.
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    # - {leaf: "/Admin/ProdConsumedCount", type: double}   # NEEDS-LEGACY-DB: is 2nd id a consumed count?
+    # - {leaf: "/Admin/ProdDefectiveCount", type: double}  # NEEDS-LEGACY-DB
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    # NO /Status/MachSpeed  — counters-only (CONFIRMED)
+    # NO /Status/StateCurrent — no state signal (CONFIRMED)
+
+# ── equipment inventory ────────────────────────────────────────────────────────
+# NEEDS-LEGACY-DB: the flow gives 7 line LABELS + 14 numeric counter ids, but NO
+# topic strings, NO id_equipment surrogates, NO machine names, NO site/area tree.
+# The rows below are PLACEHOLDERS carrying the ONLY facts the flow proves: the line
+# label, its PLC, and its 2 legacy counter ids (in `count_index.value`, tagged
+# `inferred` because they are the LEGACY counter id, not a captured new-stack
+# ProdProcessedCount channel — must be re-confirmed by a live tee on the new edge).
+# id_equipment values here are SENTINELS (9001+), NOT real — assign from a free
+# staging block in tenant-prep. Delete/replace once the ent-119 tree is pulled.
+#
+#   line   PLC IP          rack/slot  counter ids (DINT→id)
+#   L71    192.168.7.5     0/2        DW8→670, DW0→671
+#   L72    192.168.7.9     0/2        DW12→672, DW0→673
+#   L73    192.168.7.13    0/2        DW4→674, DW0→675
+#   L56    192.168.7.17    0/2        DW0→676, DW4→677
+#   L57    192.168.7.21    0/2        DW0→678, DW4→679
+#   L58    192.168.7.25    0/2        DW0→680, DW4→681
+#   L60    192.168.7.29    0/2        DW0→682, DW4→683
+equipment:
+  # ---- PLACEHOLDER rows (replace with real ent-119 tree). One line + one member
+  #      per line shown; add the 2nd counter id per line once its meaning (2nd
+  #      machine vs consumed/defective) is resolved. ----
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L71,      id_equipment: 9071, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L71/M671, id_equipment: 9671, tp_equipment: 1, id_unit: 9671, count_index: {value: 671, confidence: inferred}}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L72,      id_equipment: 9072, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L72/M673, id_equipment: 9673, tp_equipment: 1, id_unit: 9673, count_index: {value: 673, confidence: inferred}}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L73,      id_equipment: 9073, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L73/M675, id_equipment: 9675, tp_equipment: 1, id_unit: 9675, count_index: {value: 675, confidence: inferred}}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L56,      id_equipment: 9056, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L56/M676, id_equipment: 9676, tp_equipment: 1, id_unit: 9676, count_index: {value: 676, confidence: inferred}}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L57,      id_equipment: 9057, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L57/M678, id_equipment: 9678, tp_equipment: 1, id_unit: 9678, count_index: {value: 678, confidence: inferred}}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L58,      id_equipment: 9058, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L58/M680, id_equipment: 9680, tp_equipment: 1, id_unit: 9680, count_index: {value: 680, confidence: inferred}}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L60,      id_equipment: 9060, tp_equipment: 3}
+  - {topic: BISNAGO/TODO_SITE/TODO_AREA/L60/M682, id_equipment: 9682, tp_equipment: 1, id_unit: 9682, count_index: {value: 682, confidence: inferred}}
+
+# ── agent wiring (→ bisnago-agent.yaml) ───────────────────────────────────────
+# NEEDS-DECISION (edge shape): the legacy flow ran on a Raspberry Pi
+# (queuePath /home/pi/.node-red/queue.sqlite) reading S7 and publishing to GCP
+# PubSub. On the new stack bisnago becomes EITHER a rebuilt tee OR our client-edge
+# container reading the same 7 S7 PLCs. Broker/topic below are the staging
+# loopback defaults; mTLS refs empty on staging.
+agent:
+  edge_node_id: bisnago-tee
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bisnago/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee / client-edge forwarder parameters ───────────────────────────
+tee:
+  ingest_url: "https://TODO-staging-ingest-front-door:8446/ingest/sparkplug"  # NEEDS: staging ingest-shim front-door for bisnago
+  ingest_key_env: BISNAGO_INGEST_KEY
+  gateway: bisnago-edge
+  tls_insecure: true
