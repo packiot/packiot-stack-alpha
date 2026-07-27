@@ -77,6 +77,34 @@ resource "aws_cognito_user_pool" "staging" {
     }
   }
 
+  # Custom attribute → surfaces as `custom:firebase_uid`. Set by the User
+  # Migration Lambda (ADR-0034 §4) when a Firebase user is migrated on login: it
+  # carries the legacy Firebase uid (localId) forward so a later reconciler can
+  # map Firebase uid ↔ Cognito sub. Cognito never removes custom attributes, so
+  # this is purely additive; harmless once the migration window closes.
+  schema {
+    name                     = "firebase_uid"
+    attribute_data_type      = "String"
+    developer_only_attribute = false
+    mutable                  = true
+    required                 = false
+    string_attribute_constraints {
+      min_length = 1
+      max_length = 128
+    }
+  }
+
+  # ── User Migration trigger (ADR-0034 §4 — JIT Firebase→Cognito) ─────────────
+  # Wires the migrate-on-login Lambda as the pool's UserMigration trigger. This
+  # is ADDITIVE + INERT until cutover: the Lambda's MIGRATION_ENABLED flag
+  # defaults OFF and the Firebase-verify secret is unpopulated, so every
+  # invocation denies (a login for a non-existent Cognito user fails exactly as
+  # it does today). Reversible: remove this block (or set the ARN to null) to
+  # detach the trigger. See cognito_migration_lambda.tf.
+  lambda_config {
+    user_migration = aws_lambda_function.user_migration.arn
+  }
+
   # No advanced security (threat protection) — that requires the paid PLUS tier.
 
   tags = {
