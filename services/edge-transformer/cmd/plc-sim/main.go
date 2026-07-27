@@ -108,7 +108,8 @@ var lines = []line{
 	{"L3", "", 48, 140},
 	{"L4", "", 49, 147},
 	{"L5", "BREYER", 61, 110},
-	{"L5", "TEXA", 65, 100},
+	// L5/TEXA (eq 57) served by real CPACK tee — see ADR-0042 / session-88;
+	// remove sim entries as each line is teed to stay disjoint (no double-source).
 	{"L3", "PTH", 81, 90},
 	{"L4", "TEXA", 63, 95},
 }
