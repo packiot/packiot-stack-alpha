@@ -13,11 +13,15 @@
 -- `ee.cd_category::text = dc.description`, so the DESCRIPTION strings must match exactly —
 -- a label mismatch silently drops every stop into the no-reason/microstop buckets.
 --
--- KNOWN RISK THIS QUERY EXISTS TO CATCH: the report reads the label from the jsonb
--- `->'name'->>'en-US'` key; the R5 backfill populated downtime_reason.label from
--- `->'description'->>'en-US'`. If the live key is 'name', the dim `description` is NULL and
--- side B below returns fewer/empty rows → the EXCEPT diffs are non-empty → DO NOT ENABLE;
--- fix the R5 backfill key (task #34) first.
+-- DEFINITIVE LIVE FINDING (packiot_shadow, 2026-07-26): the report reads the label from
+-- the jsonb `->'name'->>'en-US'` key, but on live data the `name` key is NEVER present
+-- (categories name=0/description=1400; subcategories 0/3640). So the jsonb side's
+-- `description` is NULL for every row, while the dim side (R5 backfill reads `->'description'`)
+-- has real labels. The EXCEPT sets below will therefore be NON-EMPTY: this is NOT a dim
+-- regression — it exposes a pre-existing reports bug (jsonb path yields all-NULL descriptions,
+-- so the downstream `ee.cd_category::text = dc.description` join never matches). Enabling
+-- SAP13_REASONS_FROM_DIM is a BEHAVIORAL FIX requiring the report owner's sign-off, not a
+-- byte-parity swap. Use this query to quantify exactly which categories start matching.
 
 BEGIN READ ONLY;
 

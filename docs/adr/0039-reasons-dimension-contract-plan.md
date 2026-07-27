@@ -100,31 +100,46 @@ by `SAP13_REASONS_FROM_DIM` (default **false** = byte-identical jsonb path):
 - `SAP13_REPORT_ENABLED` is already `true` on staging, so the flag is a live, reversible A/B lever.
   jsonb NOT dropped.
 
-**Verify (the gate before flipping the flag on):** row-for-row parity between the jsonb-derived and
-dimension-derived `downtime_codes` over the same equipment set — counts + `(position, description)`
-pairs identical per enterprise (parity query: `docs/adr/reference/designs/0039-sap13-reasons-parity.sql`).
-**Known parity risk to check first:** the report reads the category label from the jsonb
-`->'name'->>'en-US'` key, but the R5 backfill populated `downtime_reason.label` from
-`->'description'->>'en-US'`. If the live jsonb key is actually `name` (not `description`), the dimension
-label is NULL/wrong and the downstream `ee.cd_category::text = dc.description` join silently misses →
-every stop falls into the no-reason/microstop buckets. **Confirm the labels match on staging
-`packiot_shadow` before enabling;** if they diverge, fix the R5 backfill key (task #34) — do not enable
-the flag. Reports are offline/batch, so a regression is caught in the diff, not by an operator.
+**Verify before flipping the flag on:** run `docs/adr/reference/designs/0039-sap13-reasons-parity.sql`
+(SELECT-only, staging `packiot_shadow`) — the two EXCEPT sets show exactly how the jsonb- and
+dimension-derived `(position, description)` vocabularies differ.
+
+**IMPORTANT — this is a latent bug-fix, NOT byte-parity (definitive live finding, packiot_shadow
+2026-07-26):** the report reads the category label from the jsonb `->'name'->>'en-US'` key, but on the
+live data the `name` key is **never present** (categories: `name`=0 / `description`=1400; subcategories:
+0 / 3640). So the jsonb path's `downtime_codes.description` is **NULL for every row**, the downstream
+`ee.cd_category::text = dc.description` join never matches, and every stop today falls into the
+no-reason/microstop buckets — a pre-existing reports bug. The R5 backfill correctly reads
+`->'description'`, so the **dimension path is the correct one**: flipping `SAP13_REASONS_FROM_DIM=true`
+starts matching categories that never matched before. Therefore the flag default stays **OFF** (preserves
+today's behavior) and flipping it is a **behavioral change requiring the report owner's sign-off**, not a
+silent parity swap. Reports are offline/batch, so the change is caught in the diff, not by an operator.
 - **Rollback:** set `SAP13_REASONS_FROM_DIM=false` (or revert); jsonb still present.
 
 (BigQuery exports: no export reads the reason vocabulary today — `sap13` is the only jsonb reader in the
 reports/export surface. A future export that reads reasons repoints to the dimension the same way.)
 
-### Step 2 — front4 (medium risk: read-only UI, no PackML write)
+### Step 2 — front4 (medium risk: read-only UI, no PackML write) — BUILT (flag-gated dual-read, default OFF; front4 PR #218)
 Consumers: `pages/Settings/DowntimeReasons2/*` (config viewer/uploader), `pages/Downtimes/*`
-(`DowntimeReason.jsx`, `DialogEdit.jsx`, split/trim dialogs), StatusHistory.
-- Switch these reads from the Hasura/jsonb path to the refdata `equipment-downtime-reasons-dim`
-  dataset. Reshape the two-level tree from `category`/`parent_id`/`reason_level` (was: nested jsonb).
-- **Verify:** the DowntimeReasons2 tree and the Downtimes reason picker render an identical set of
-  categories/subcategories (labels, codes, classification flags) before vs after, per enterprise.
-  Note the **upload/write** path in `DowntimeReasonsUpload.jsx` — if front4 still *writes* the jsonb,
-  that write path must be handled in Step 3's write-side design or kept dual-writing until then.
-- **Rollback:** feature-flag or revert the component reads; jsonb still present.
+(`DialogEdit.jsx`, split/trim dialogs). (`DowntimeReason.jsx` reads downtime *aggregates*, and
+`_MissionControl/StatusHistory.jsx` reads status *percentages* — neither reads the reason vocabulary;
+both verified and left untouched.)
+
+**What shipped (front4 branch `feat/task12-r5-front4-reasons-dim`, PR #218 → front4 `staging`, NOT
+merged):** the five vocabulary consumers were already on refdata (reading the legacy
+`equipment-downtime-reasons` jsonb dataset from the ADR-0032 cutover). Added a `VITE_REASONS_FROM_DIM`
+flag (default **OFF** = legacy jsonb path), a pure `reshapeReasonsDimRows()` helper (folds the flat
+`equipment-downtime-reasons-dim` rows back into the `machine → category → subcategory` tree via
+`reason_level` + `category`/`parent_id`), and a `useLazyDowntimeReasons()` seam swapped into each
+consumer. 8/8 touched-file tests green. Upload/write path (`DowntimeReasonsUpload.jsx` CSV POST) left
+intact for Step 3's write-side design.
+
+**Verify before flipping:** DowntimeReasons2 tree + Downtimes picker render the same categories/
+subcategories (labels, codes, flags) per enterprise. **Two known fidelity gaps (same root as Step 3):**
+the flat dimension drops the top-level **machine** grouping (front4 synthesizes one node keyed on
+`nm_equipment`, so the machine `code`/`cd_machine` preselect differs from the legacy value) and exposes a
+single `label` (so reshaped `name` === `description`). Both are why it ships dark.
+- **Rollback:** `VITE_REASONS_FROM_DIM=false` or revert the component reads; jsonb still present.
 
 ### Step 3 — edge-node-red operator justify-event flow (HIGHEST RISK — LIVE picker + PackML write)
 Consumer: `subflows/Create/justify events` + the GraphQL loader in `flows/GraphQL.json` that
@@ -142,19 +157,48 @@ populates the `_downtime_reasons` global (keyed by `packmlTopic`), consumed as
   must **re-nest** the dimension rows into the exact shape the subflow consumes — byte-for-byte for
   the fields the subflow reads.
 
-Cutover procedure (staging first, long bake):
-1. Change **only the GraphQL loader** that builds `_downtime_reasons` to source from
-   `downtime_reason` + `equipment_downtime_reason` (or the refdata dataset), re-nesting to the exact
-   legacy shape. Do **not** touch the justify subflow's consumption logic yet.
-2. **Shape-diff** the rebuilt `_downtime_reasons` global against the jsonb-derived one for every
-   `packmlTopic` on staging — assert deep-equality of the keys/fields the subflow reads.
-3. Bake over a full shift cycle on staging with real operator justifications; confirm PackML 30810
-   payloads are identical to the jsonb path.
+**DESIGN PRODUCED (this pass, NOT cut over)** — full design + shape-diff + bake plan in
+`docs/adr/reference/designs/0039-operator-justify-reasons-migration.md` and
+`docs/adr/reference/designs/0039-operator-justify-shapediff.sql`. Definitive live findings:
+- **Loader nodes:** `flows/GraphQL.json` node `89e16e3913a15d57` ("Save Downtime Reasons") sets
+  `_downtime_reasons[packml_topic] = <raw jsonb array>` (no transform); the query builder is node
+  `a6785d6d4f173dd0`. Consumer: `flows/API.json` node `63b722c0c1851e52` ("Build Justify Event Request",
+  emits `.../Status/Parameter[30810]`), entered via node `0878e826d0603bef`.
+- **The top-level per-machine grouping is LOAD-BEARING, not presentation.** The emitter enters the tree
+  via `downtimeReasons.find(m => m.code == idMachine)`; if no machine node matches `idMachine` it sets
+  `error=true` → HTTP 400 → **no 30810 write**. And that per-equipment set of machine codes lives **only
+  in the jsonb** (the junction records only `(id_equipment, id_reason)`, flattening it away) and follows
+  no clean hierarchy rule (e.g. the tp=3 lines each list the same 28 cross-line machine codes). So it
+  **cannot** be safely reconstructed from the dimension alone for a PLC write path.
+- **Label key = `description`, definitively** (name=0 rows live); re-nest emits `description` from
+  `label_i18n` + `code`, never synthesizes `name`.
+
+Cutover procedure (staging first, long bake — GATED, do NOT execute now):
+1. Change **only** the global-builder node `89e16e3913a15d57` to re-nest: source the **vocabulary** from
+   the dimension (`equipment-downtime-reasons-dim` or GraphQL on the junction→dimension), fold flat rows
+   into `categories[{code, description, planned_downtime, change_over, idle, subcategories[...]}]` by
+   `parent_id`/`reason_level`, and source the **top-level machine codes** from a thin
+   `downtime_reasons[*].code` jsonb read; emit the outer product per `packml_topic`. Do **not** touch the
+   justify subflow consumption logic.
+2. **Shape-diff** (`0039-operator-justify-shapediff.sql`) the rebuilt global vs the jsonb-derived one for
+   every `packmlTopic` — deep-equality of the fields the subflow reads. (A1 category + A2 subcategory
+   already ran clean against enterprise 3 on staging.)
+3. Bake over a full shift cycle on staging with real operator justifications; confirm 30810 payloads are
+   identical to the jsonb path.
 4. Also update `hasura/metadata.json` if the loader's GraphQL relationship changes.
 - **Rollback:** the loader is one node — revert it; the subflow and jsonb are untouched.
 
 ### Step 4 — CONTRACT: DROP the jsonb (irreversible — final, all-green gate)
 Only after Steps 1–3 are live and verified in prod for a bake period with **zero** reads of the jsonb.
+
+**⚠️ BLOCKER (definitive): the `downtime_reasons` jsonb CANNOT be fully dropped after Step 3 as-is.** The
+top-level per-machine attribution set per equipment — which gates the operator's PackML 30810 write
+(Step 3) — exists **only** in the jsonb; R5 stores nothing of it, and both the reports (Step 1, if
+enabled) and the front4/operator re-nests still read it thinly. Dropping the column is gated on one of:
+(a) a new **R5b `equipment_attribution_machine(id_equipment, id_machine)` junction** backfilled from
+`jsonb_path_query(downtime_reasons,'$[*].code')`, then repoint the machine-code read to it; or
+(b) retain a **minimal jsonb skeleton** holding only the top-level `code` array (drop only the nested
+`categories`/`subcategories` vocabulary, which R5 fully covers). Choose (a) for a clean CONTRACT.
 - Confirm no reader remains: grep the four consumer surfaces (refdata `equipment-downtime-reasons`
   legacy dataset, `/v1/downtime-reasons` route in `main.go`, front4, edge-node-red, reports/BigQuery)
   for `downtime_reasons` / `scrap_reasons`; confirm the legacy refdata dataset + route are removed or
@@ -172,14 +216,14 @@ Only after Steps 1–3 are live and verified in prod for a bake period with **ze
 
 ## 4. Dependency-order summary
 
-| Step | Consumer | Risk | Live write? | Rollback |
-|------|----------|------|-------------|----------|
-| 0 (this PR) | refdata additive dataset | none (additive/dual-read) | no | revert dataset |
-| P | prod-apply R5 migration | low (additive DDL) | no | drop 4 tables |
-| 1 | reports / BigQuery | low (offline batch) | no | revert query |
-| 2 | front4 Settings/Downtimes | medium (read UI) | jsonb upload path TBD | revert reads |
-| **3** | **edge-node-red operator justify flow** | **HIGHEST (live picker + PackML 30810 write)** | **yes** | revert one loader node |
-| 4 | `DROP COLUMN` jsonb | irreversible | n/a | restore only |
+| Step | Consumer | Risk | Live write? | Status | Rollback |
+|------|----------|------|-------------|--------|----------|
+| 0 (this PR) | refdata additive dataset | none (additive/dual-read) | no | **DONE** | revert dataset |
+| P | prod-apply R5 migration | low (additive DDL) | no | pending (gated) | drop 4 tables |
+| 1 (this PR) | reports / BigQuery (`sap13`) | low (offline batch) | no | **BUILT — flag OFF** (`SAP13_REASONS_FROM_DIM`) | flag off / revert |
+| 2 (front4 PR #218) | front4 Settings/Downtimes | medium (read UI) | jsonb upload path intact | **BUILT — flag OFF** (`VITE_REASONS_FROM_DIM`) | flag off / revert reads |
+| **3** | **edge-node-red operator justify flow** | **HIGHEST (live picker + PackML 30810 write)** | **yes** | **DESIGNED — NOT cut over** | revert one loader node |
+| 4 | `DROP COLUMN` jsonb | irreversible | n/a | **BLOCKED** on R5b attribution junction (or minimal jsonb skeleton) | restore only |
 
 **One-line risk callout:** the load-bearing, do-it-last, bake-the-longest step is the **operator
 justify-event flow** — a live factory-floor picker that feeds a PackML write; a shape mismatch there
