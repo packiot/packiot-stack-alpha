@@ -108,19 +108,18 @@ var lines = []line{
 	{"L3", "", 48, 140},
 	{"L4", "", 49, 147},
 	{"L5", "BREYER", 61, 110},
-	// L5/TEXA (eq 57): RESTORED (rollback of #611). The real CPACK tee DOES feed
-	// eq 57 (F1/packiot stays fresh from the agent alone), but the refactored Calc
-	// path (source_type=refactored → F2/F3) could NOT re-establish eq 57's counter
-	// baseline after a deploy restarted edge-transformer: the agent never rebirths
-	// (mosquitto/agent stay up across an app-stack deploy, so no reconnect → no
-	// NBIRTH), edge-transformer logs a SparkPlug "sequence gap" for CPACK/cpack-tee,
-	// and F2/F3 eq 57 went dark from the restart onward. plc-sim MASKED this because
-	// it rebirths on every restart and its dense stream re-seeds the Calc baseline.
-	// PREREQUISITE before dropping a teed line from plc-sim: the agent must issue a
-	// SparkPlug rebirth on edge-transformer restart (or ET must send a Rebirth NCMD
-	// on a sequence gap). See ADR-0042 / session-88. Until then, keep this entry so
-	// the migration-target DB (packiot_shadow) has no dark equipment across deploys.
-	{"L5", "TEXA", 65, 100},
+	// L5/TEXA (eq 57): served by the REAL CPACK tee (sparkplug-agent-cpack), no
+	// longer simulated here — this is the clean agent-only cutover (re-applies
+	// #611, whose earlier revert #612 was ONLY because the rebirth prerequisite
+	// was unmet). That prerequisite is now MET and PROVEN on staging: PR #613
+	// added the SparkPlug Rebirth mechanism (ET publishes a "Node Control/Rebirth"
+	// NCMD on a seq-gap / NDATA-before-NBIRTH; the agent re-publishes its full
+	// NBIRTH), gated by ET_REQUEST_REBIRTH_ENABLED (=true on staging). Verified:
+	// an edge-transformer restart now self-heals eq 57's CPACK/cpack-tee stream
+	// (edge_transformer_rebirth_requests_total + sparkplug_agent_rebirths_total
+	// increment, cpack-tee seq resets to a fresh NBIRTH) so F2/F3 eq 57 stays
+	// fresh across deploys WITHOUT plc-sim masking it. See ADR-0042 / session-88.
+	// Removing the sim entry keeps plc-sim and the agent DISJOINT (no double-source).
 	{"L3", "PTH", 81, 90},
 	{"L4", "TEXA", 63, 95},
 }
