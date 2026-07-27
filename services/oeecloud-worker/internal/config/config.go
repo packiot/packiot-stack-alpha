@@ -249,6 +249,29 @@ type Config struct {
 	IncrementSanityClampEnabled  bool
 	IncrementSanityClampK        float64
 	IncrementSanityClampMinDtSec int
+
+	// ── Provisional ideal-speed inference (counters-only, no nameplate) ──
+	// Sibling of the counters-only OEE mode (#591): #591 gives a
+	// speed-sensorless machine a CONFIGURED rated speed to compute Performance
+	// from counts; this task DISCOVERS a provisional one from history for a
+	// tenant (bispharma) that has neither PLC param 30701 nor a nameplate, so
+	// equipments.production_speed is NULL and the rollup's ideal_speed COALESCE
+	// chain (hour.go/shift.go end in equipments.production_speed) can't compute
+	// oee_p. When enabled, an hourly loop infers production_speed for opted-in
+	// tp=3 lines from the p95 of observed per-minute good-count throughput
+	// (ca_agg_equipment_values_1min.gross_production_incr) over a trailing
+	// window, filling ONLY NULL-or-'inferred' rows (never a client-confirmed
+	// nameplate — see the production_speed_source marker + db/init/04 migration).
+	//
+	// Default OFF → no goroutine, zero statements, byte-identical rollup. See
+	// internal/rollup/inferspeed.go for the estimator + guardrail derivation.
+	// engaged() requires Enabled && at least one opted-in id_equipment.
+	ProvisionalSpeedEnabled     bool
+	ProvisionalSpeedEquipments  string // CSV of id_equipment (opted-in tp=3 lines; config.CSVInts)
+	ProvisionalSpeedWindowHours int    // trailing observation window (default 72)
+	ProvisionalSpeedMinMinutes  int    // require >= this many productive minutes before writing (default 240)
+	ProvisionalSpeedPercentile  float64 // percentile_cont fraction (default 0.95)
+	ProvisionalSpeedFloor       float64 // skip if the percentile < this (default 1.0)
 }
 
 func Load() (*Config, error) {
@@ -329,6 +352,13 @@ func Load() (*Config, error) {
 		IncrementSanityClampEnabled:  getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:        getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
 		IncrementSanityClampMinDtSec: getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
+		// Provisional ideal-speed inference (default OFF — no behavior change)
+		ProvisionalSpeedEnabled:     getenv("PROVISIONAL_SPEED_INFERENCE_ENABLED", "false") == "true",
+		ProvisionalSpeedEquipments:  getenv("PROVISIONAL_SPEED_EQUIPMENTS", ""),
+		ProvisionalSpeedWindowHours: getenvInt("PROVISIONAL_SPEED_WINDOW_HOURS", 72),
+		ProvisionalSpeedMinMinutes:  getenvInt("PROVISIONAL_SPEED_MIN_MINUTES", 240),
+		ProvisionalSpeedPercentile:  getenvFloat("PROVISIONAL_SPEED_PERCENTILE", 0.95),
+		ProvisionalSpeedFloor:       getenvFloat("PROVISIONAL_SPEED_FLOOR", 1.0),
 	}, nil
 }
 

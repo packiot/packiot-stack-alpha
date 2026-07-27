@@ -302,6 +302,24 @@ func main() {
 		go rollup.LoopProvision(ctx, flows.Standard(pool, shadowPool), provisionEvery, logger, jobObs)
 	}
 
+	// Provisional ideal-speed inference (counters-only tenants w/o nameplate).
+	// Own loop, default OFF: fills equipments.production_speed from p95 observed
+	// throughput for opted-in tp=3 lines so the rollup's ideal_speed COALESCE
+	// chain can compute Performance. Disabled → no goroutine, zero statements,
+	// byte-identical rollup. See internal/rollup/inferspeed.go.
+	if cfg.ProvisionalSpeedEnabled {
+		go rollup.LoopInferSpeed(ctx, flows.Standard(pool, shadowPool),
+			rollup.ProvisionalSpeed{
+				Enabled:     cfg.ProvisionalSpeedEnabled,
+				Equipments:  config.CSVInts(cfg.ProvisionalSpeedEquipments),
+				WindowHours: cfg.ProvisionalSpeedWindowHours,
+				MinMinutes:  cfg.ProvisionalSpeedMinMinutes,
+				Percentile:  cfg.ProvisionalSpeedPercentile,
+				Floor:       cfg.ProvisionalSpeedFloor,
+			},
+			logger, jobObs)
+	}
+
 	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
 	if cfg.UnsRefreshEnabled {
 		go uns.Loop(ctx, flows.Standard(pool, shadowPool),

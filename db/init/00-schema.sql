@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS equipments (
     tp_equipment        INTEGER NOT NULL DEFAULT 1,  -- 1=machine 2=sector 3=line
     status_type         INTEGER NOT NULL DEFAULT 1,
     production_speed    INTEGER,                     -- ideal speed (units/min); used for Performance %
+    production_speed_source TEXT,                    -- provenance of production_speed: NULL=unset, 'inferred'=provisional (inferspeed.go), 'client'=confirmed nameplate
     lead_machine        INTEGER REFERENCES equipments(id_equipment)
 );
 
