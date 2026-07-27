@@ -153,6 +153,21 @@ services:
 
   # ── plc-sim (10.9-staging: THE ingest source — Sparkplug B over MQTT) ──
   plc-sim:
+    # OPT-IN — profile `plc-sim`. Historically plc-sim was a DEFAULT service (no
+    # profiles key), so every `docker compose up -d` (the deploy step recreates
+    # the stack) unconditionally (re)started it. That made a CPACK cutover
+    # non-durable: `stop plc-sim` + `--profile cpack-tee up sparkplug-agent-cpack`
+    # holds until the next deploy, whose `up -d` resurrects plc-sim while the
+    # profiled agent (already running, not an orphan) survives untouched → BOTH
+    # sources publish the SAME CPACK/SC/LINHAS namespace under two edge nodes
+    # (plc-sim + cpack-tee) → ent3 is DOUBLE-SOURCED at edge-transformer. Gating
+    # plc-sim behind its own profile makes the deploy honor the intended
+    # end-state: `COMPOSE_PROFILES` (GH Actions env / EC2 /opt/packiot/.env)
+    # selects exactly one source — `plc-sim` (sim-on/agent-off, the historical
+    # default) OR `cpack-tee` (agent-on/sim-off, the real-tee cutover). Setting
+    # BOTH is the double-source trap above — the two scopes are IDENTICAL (the
+    # same 8 equipment {47,48,49,51,53,57,61,63}), so they must NEVER both run.
+    profiles: ["plc-sim"]
     build:
       context: ./services/edge-transformer
     entrypoint: ["/usr/local/bin/plc-sim"]
