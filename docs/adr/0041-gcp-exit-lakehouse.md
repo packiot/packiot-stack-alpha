@@ -1,6 +1,6 @@
 # ADR-0041 — GCP Exit → single cloud: an AWS-native lakehouse (S3 + Glue + Athena) replacing BigQuery, plus the single-cloud teardown checklist
 
-**Status:** Proposed · **Date:** 2026-07-22 · **Scope:** DESIGN / SCOPING ONLY (read-only inventory + target architecture + phased cutover; **no infra is provisioned, no prod is touched, no GCP resource is mutated by this ADR**). STAGING-first; every GCP-teardown / prod-touching step is explicitly **USER-gated**. · **Decision owner:** data/platform architect (pending USER review).
+**Status:** Proposed · **Date:** 2026-07-22 (rev. 2026-07-23 — added §10 concrete P0→P3 build plan + reference build-plan doc + unrooted Terraform scaffold) · **Scope:** DESIGN / SCOPING ONLY (read-only inventory + target architecture + phased cutover + P0 scaffold; **no infra is provisioned, no prod is touched, no GCP resource is mutated by this ADR — the Terraform module is unrooted and applies nothing**). STAGING-first; every GCP-teardown / prod-touching step is explicitly **USER-gated**. · **Decision owner:** data/platform architect (pending USER review).
 
 **This ADR is the execution-scoping companion to the north-star A0 milestone.** [ADR-0038 §6](0038-north-star-factory-platform.md) names **A0 — "GCP exit → single cloud (AWS)"** as a *foundation* milestone (removes cross-cloud seams before new pillars assume one IAM). [ADR-0038 §5.9](0038-north-star-factory-platform.md) states the principle: *"one cloud: one IAM, one billing, no cross-cloud seams, no service-account keys shuttling between providers."* This ADR takes that principle from slogan to **evidence-cited inventory + a phased, reversible cutover with a teardown checklist.**
 
@@ -75,7 +75,7 @@ RabbitMQ (`rabbitmq:3.13-management`, `RABBITMQ_HOST`) is the active bus across 
 
 ## 3. Target architecture — the AWS-native gold-offline lakehouse
 
-Per ADR-0036 §2.4, the offline/analytics tier is **AWS-native S3 + Glue + Athena**, fed *from the immutable Bronze tier* on a **batch cadence**, and **never** in the live serving path (the hot path stays entirely on Timescale, 0036 §2.2). This ADR fills in the concrete shape.
+Per ADR-0036 §2.4, the offline/analytics tier is **AWS-native S3 + Glue + Athena**, fed *from the immutable Bronze tier* on a **batch cadence**, and **never** in the live serving path (the hot path stays entirely on Timescale, 0036 §2.2). This ADR fills in the concrete shape; the **full engineering spec** (parquet-column type mapping, Glue projection DDL, export-job algorithm + watermark, parity harness) lives in the reference companion — [`reference/designs/0041-lakehouse-build-plan.md`](reference/designs/0041-lakehouse-build-plan.md) — with the Athena DDL at [`reference/migrations/0041-glue-catalog-ddl.sql`](reference/migrations/0041-glue-catalog-ddl.sql) and a **scaffold (unrooted, non-applying) Terraform module** at [`terraform/modules/lakehouse/`](../../terraform/modules/lakehouse/README.md).
 
 ```
 TIMESCALE (live medallion — unchanged)
@@ -247,3 +247,18 @@ The AWS-native replacement is a **rounding error** against the $1,670/mo run-rat
 4. **USER-gated, last:** L2 — execute the teardown checklist (§5.2) in dependency order, closing the `fbpackiot`/`packiot-dev` projects only after all consumers are cut and baked.
 
 **The single most important sequencing rule:** the BigQuery leg is *independent and cheap* — ship it now; the project-**close** waits on Firebase (ADR-0034). Don't couple the two, and don't fire an irreversible teardown step before its consumer is confirmed dead (step 1 gates step 3; step 5 gates on the 0034 bake; step 9 is last).
+
+---
+
+## 10. Concrete build plan — P0 → P3 (the BigQuery leg, decomposed)
+
+§5/§9 frame the two *legs* (BigQuery vs Firebase) and the teardown gates. This section decomposes the **BigQuery leg into four shippable phases**. Full engineering detail (DDL, parquet schema, export-job algorithm, watermark, parity SQL) is in [`reference/designs/0041-lakehouse-build-plan.md`](reference/designs/0041-lakehouse-build-plan.md) §8; this is the ADR-level headline.
+
+| Phase | Name | What lands | Prod/GCP touch | Exit criteria |
+|---|---|---|---|---|
+| **P0** | **Scaffold** *(this PR)* | The reference build-plan doc; the Glue DDL (`reference/migrations/0041-glue-catalog-ddl.sql`); the **unrooted** Terraform module (`terraform/modules/lakehouse/` — S3 + Glue DBs + Athena workgroup, referenced by no root → `apply` is a no-op); this §10. **No infra.** | **No** | Doc + scaffold merged; module `terraform validate`s standalone; DDL + type-mapping reviewed. |
+| **P1** | **Export** | Wire the module into `terraform/staging` (a new `lakehouse.tf` calling `../modules/lakehouse`) → apply **staging only**; build the read-only, watermark-driven Bronze+Gold export job (EventBridge Scheduler → Fargate); first parquet partitions land in `s3://packiot-lake-staging/`. | **No** (new AWS infra only; nothing depends on it → fully reversible) | Job green for a tenant-day; parquet in S3; watermark advances; re-run overwrites the partition idempotently. |
+| **P2** | **Athena** | Run the Glue DDL; validate partition projection prunes; run the **parity harness** (Timescale ↔ Athena per `(tenant, dt)`); enforce the workgroup bytes-scanned cap + results lifecycle. | **No** | Zero row-count drift + in-band `sum(metric)` over a bake cycle; sample checksums match; cap enforced. |
+| **P3** | **Repoint `cq-logs`** *(sibling repo, own PR)* | Swap the vendored `google-cloud-bigquery` Lambda layer → `pyathena`/`boto3` handler; land the `cq_logs` dataset as parquet in the lake; ship. This makes the §5.2 teardown checklist **actionable** (all USER-gated). | **No** for the build; **teardown = USER-gated** | `cq-logs` reads the lake green → hand off §5.2 (rotate leaked pw; revoke SA key post-0034; close GCP project — each USER-gated, dependency-ordered). |
+
+**Autonomy line:** P0–P3 are **staging + new-AWS-only, autonomous-eligible** (no GCP mutation, no prod write — matches the standing autonomy authorization). Only the §5.2 teardown steps (irreversible / prod / external) are USER-gated. **P0 is this PR — design + scaffold, zero infra provisioned.**
