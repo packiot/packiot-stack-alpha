@@ -330,18 +330,65 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
+  # ── knex ↔ F3 reconciliation (one-shot) — ROADMAP W1.5 ────────────────────────
+  # Fake-baselines edge-api's knex migrations against the F3 schema so `db-migrate`
+  # does NOT rebuild the legacy F1 shape over F3. edge-api's early migrations are
+  # plain `CREATE TABLE x` (no guard) authored to build F1 from an empty DB — run
+  # against the F3-shaped `public` with an empty knex_migrations, knex tries them
+  # all and dies on the first (`equipment_values already exists`), aborting the
+  # boot; with an EMPTY F3 schema it would instead silently build F1 → WRONG OEE.
+  #
+  # db/init-f3/knex-baseline.sql seeds knex_migrations with every migration whose
+  # object F3 already provides (or deliberately omits — the update_prev event
+  # trigger, the FK/EXCLUDE constraints, shadow_go_port). `db-migrate` then applies
+  # ONLY the genuinely edge-api-specific migrations F3 lacks (labels, sample_boxes,
+  # scanned_boxes, idempotency_keys, mirror_replay_dlq + the additive id_label /
+  # operator_pw_hash columns edge-api reads/writes at runtime).
+  #
+  # PROVEN on a throwaway timescaledb:2.25.2-pg16 (db-schema-f3 → THIS → db-migrate):
+  # CLOBBER=0 (no F3 column dropped/type-changed; equipment_values stays a
+  # hypertable), all edge-api tables present — see
+  # docs/adr/reference/production-knex-f3-reconciliation.md +
+  # scripts/prod-knex-f3-reconcile-check.sh.
+  db-knex-baseline:
+    image: postgres:16-alpine
+    env_file: [.env]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "== fake-baselining knex against F3 (db/init-f3/knex-baseline.sql) =="
+        psql -v ON_ERROR_STOP=1 -f /f3/knex-baseline.sql
+        echo "knex baseline seeded. db-migrate will now apply only edge-api-only migrations."
+    volumes:
+      - ./db/init-f3:/f3:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-schema-f3:
+        condition: service_completed_successfully
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.21
+    restart: "no"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── DB Migrations (one-shot) ──────────────────────────────────────────────────
-  # Runs edge-api's knex migrations against the local postgres AFTER db-schema-f3.
-  # ⚠ ROADMAP W1.4 RESIDUAL (reconciliation, flagged for USER): edge-api's knex
-  # set was authored to build the legacy F1 `public` shape. In F3-native prod the
-  # F3 schema already exists (db-schema-f3), so knex must be reduced to ONLY its
-  # migration-tracking/idempotent DDL — it must NOT recreate or reshape F1 tables
-  # over the F3 schema. Options (USER decision): (a) mark all F1-building
-  # migrations as already-applied (knex `up` no-ops via IF NOT EXISTS on an
-  # F3-shaped DB), or (b) an F3 baseline migration + `knex migrate:up` from there,
-  # or (c) drop db-migrate entirely if edge-api needs no runtime knex state.
-  # Kept in the chain (ordered after db-schema-f3) so the decision is explicit and
-  # the boot order is correct; verify with the parity gate before any client data.
+  # Runs edge-api's knex `migrate:latest` AFTER db-schema-f3 + db-knex-baseline.
+  # ROADMAP W1.5 (reconciliation RESOLVED — see db-knex-baseline above): because
+  # the F3-overlapping migrations are fake-baselined, knex applies only the 16
+  # edge-api-specific migrations F3 lacks and leaves every F3 table untouched.
+  # Verify before any client data flows:
+  #   1. scripts/prod-f3-schema-parity-check.sh   (after db-schema-f3: F3_MISSING=0)
+  #   2. scripts/prod-knex-f3-reconcile-check.sh   (after db-migrate: CLOBBER=0)
   db-migrate:
     build:
       context: ./edge-api
@@ -356,6 +403,8 @@ services:
       postgres:
         condition: service_healthy
       db-schema-f3:
+        condition: service_completed_successfully
+      db-knex-baseline:
         condition: service_completed_successfully
     networks:
       packiot-net:
