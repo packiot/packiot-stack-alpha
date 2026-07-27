@@ -1183,7 +1183,8 @@ services:
       # FinishOrphanPO trips the production_orders_ts_start_ts_end check (23514)
       # when ts_start is NULL (also wedges 894720). This closer widens the set to
       # status IN (1,2) and closes at prod's finish ts with a NULL-ts_start-safe
-      # zero-duration seal. ONLY prod-terminal (status=3) twins close — a
+      # seal (ts_end=finish ts, ts_start=1s-earlier floor for the STRICT
+      # ts_start<ts_end check constraint). ONLY prod-terminal (status=3) twins close — a
       # status=2 (running) twin is SKIPPED (894330/894668/894749 stay untouched;
       # their revive is a SEPARATE, already-mapped-shadow gap). SELECT-only on
       # prod. Watch mirror_worker_reconciler_prod_terminal_closer_total{outcome}

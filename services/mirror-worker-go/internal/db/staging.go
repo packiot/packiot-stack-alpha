@@ -492,16 +492,14 @@ func (s *Staging) TerminalOrphanCandidatePOs(ctx context.Context, enterpriseID i
 }
 
 // CloseProdTerminalOrphanPO closes a mirror-created staging PO whose prod twin
-// has FINISHED, at prod's finish ts (closeTs). It is the STATUS-1-AWARE,
-// NULL-ts_start-SAFE superset of FinishOrphanPO:
+// has FINISHED, AT prod's finish ts (closeTs). It is the STATUS-1-AWARE,
+// NULL-ts_start-SAFE, STRICT-constraint-safe superset of FinishOrphanPO:
 //   - the header UPDATE matches status IN (1,2) (not just 2), so a never-started
-//     orphan (status=1) closes too;
-//   - ts_start is seeded to closeTs when NULL (zero-duration close), and ts_end
-//     is clamped to GREATEST(closeTs, ts_start) so the write can never produce
-//     ts_end < ts_start — the two ways to trip production_orders_ts_start_ts_end
-//     (23514). For a status=1 orphan whose staging ts_start was NULL this yields
-//     ts_start == ts_end == closeTs; for a status=2 orphan whose ts_start
-//     precedes prod's finish it yields the same shape FinishOrphanPO does.
+//     orphan (status=1) closes too; and
+//   - it satisfies the strict production_orders_ts_start_ts_end check (a status=3
+//     row demands ts_start < ts_end, NOT <=) by pinning ts_end = closeTs and
+//     anchoring ts_start to LEAST(existing, closeTs - 1s) — see
+//     sqlCloseProdTerminalOrphanHeader for the full constraint + rationale.
 //
 // Returns whether a header row was actually closed (false = already status 3/4
 // → idempotent no-op). Idempotency is structural: the segment seal only matches
@@ -509,13 +507,33 @@ func (s *Staging) TerminalOrphanCandidatePOs(ctx context.Context, enterpriseID i
 // lets staging's per-minute cron recompute the now-closed PO's final OEE.
 // sqlCloseProdTerminalOrphanHeader is the header close for the prod-terminal
 // orphan closer, extracted as a const so its 23514-avoidance invariants are
-// unit-guarded (staging_test.go): it MUST match status IN (1,2) (reach the
-// status=1 orphan the finisher can't), COALESCE ts_start to closeTs (seed a
-// NULL start), and GREATEST-clamp ts_end so ts_end >= ts_start always holds.
+// unit-guarded (staging_test.go). The live check constraint
+// production_orders_ts_start_ts_end is STRICTER than a naive ts_start<=ts_end:
+//
+//	CHECK ((ts_start < ts_end AND status IN (3,4))
+//	    OR (status=1 AND ts_start IS NULL)
+//	    OR (status=1 AND ts_end IS NULL)
+//	    OR (status=2 AND ts_start IS NOT NULL))
+//
+// so a status=3 row needs ts_start STRICTLY BEFORE ts_end — a zero-duration
+// close (ts_start == ts_end) is REJECTED. And because these orphans are
+// late-mirrored, staging's ts_start (when set) is usually AFTER prod's finish
+// ts, so we cannot just stamp ts_end = closeTs onto the existing ts_start
+// either. This close therefore:
+//   - pins ts_end = closeTs (prod's real finish ts — the faithful value); and
+//   - sets ts_start = LEAST(COALESCE(ts_start, closeTs), closeTs - 1s), i.e.
+//     it keeps a genuinely-earlier existing start but otherwise anchors a
+//     1-SECOND window ending exactly at the prod finish ts.
+//
+// That guarantees ts_start < ts_end for every input shape (NULL start,
+// start-before-finish, or the common start-after-finish) — closing the PO at
+// prod's finish moment with the minimal positive duration the constraint
+// admits. Header matches status IN (1,2) so a never-started (status=1) orphan
+// closes too.
 const sqlCloseProdTerminalOrphanHeader = `UPDATE production_orders
 	    SET status = 3,
-	        ts_start = COALESCE(ts_start, $2),
-	        ts_end = GREATEST($2::timestamptz, COALESCE(ts_start, $2)),
+	        ts_start = LEAST(COALESCE(ts_start, $2::timestamptz), $2::timestamptz - interval '1 second'),
+	        ts_end = $2,
 	        recalc_needed = true
 	  WHERE id_production_order = $1
 	    AND status IN (1, 2)`
