@@ -38,6 +38,20 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # ADR-0042 P1 — CPACK Node-RED tee → sparkplug-agent /v1/tags front-door.
+  # Unlike the other ingress rules this is NOT world-open: it admits only CPACK's
+  # egress /32. Nginx terminates TLS on 8447 (nginx_setup.sh cpack-ingest.conf)
+  # and proxies to sparkplug-agent-cpack. Inline block (not a standalone
+  # aws_security_group_rule) so it stays inside this SG's authoritative rule set
+  # — mixing the two forms makes Terraform revoke the standalone rule on apply.
+  ingress {
+    description = "ADR-0042 P1 CPACK Node-RED tee -> sparkplug-agent /v1/tags (CPACK egress /32 only)"
+    from_port   = 8447
+    to_port     = 8447
+    protocol    = "tcp"
+    cidr_blocks = ["179.162.112.58/32"]
+  }
+
   egress {
     description = "All outbound - Docker Hub pulls, GitHub, AWS APIs, DB"
     from_port   = 0

@@ -67,3 +67,17 @@ resource "aws_route53_record" "auth" {
   ttl     = 60
   records = [aws_eip.app.public_ip]
 }
+
+# CPACK agent ingest front-door (ADR-0042 P1) — cpack-ingest.staging.packiot.app.
+# Not in var.services because it's a dedicated port-8447 TLS reverse-proxy for
+# the sparkplug-agent /v1/tags endpoint (not a standard 443 HTTP vhost). Nginx
+# on the App EC2 (terraform/staging/user_data/nginx_setup.sh) terminates TLS and
+# proxies to sparkplug-agent-cpack; the App EC2 SG admits 8447 from CPACK's
+# egress /32 only (security_groups.tf).
+resource "aws_route53_record" "cpack_ingest" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "cpack-ingest.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}

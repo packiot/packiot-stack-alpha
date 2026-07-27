@@ -234,6 +234,44 @@ NGINX
 nginx -t && nginx -s reload
 echo "Authentik SSO vhost configured at https://auth.$STAGING_DOMAIN"
 
+# ── CPACK agent ingest front-door (ADR-0042 P1) ───────────────────────────────
+# Public HTTPS front-door for CPACK's Node-RED tee → sparkplug-agent-cpack.
+# Deliberately NOT one of the Authentik-gated 443 service vhosts above: it
+# terminates TLS on a dedicated port (8447) and reverse-proxies ONLY the exact
+# path `/v1/tags` to the agent's plaintext HTTP listener on packiot-net
+# (compose static IP 172.18.0.38:9104). Auth is the agent's own X-Ingest-Key
+# header (constant-time compared) — the same "no Authentik" carve-out the /api/
+# vhost uses. Inbound 8447 is admitted for CPACK's egress /32 ONLY, in the App
+# EC2 security group (see terraform/staging/security_groups.tf). Reuses the
+# Let's Encrypt wildcard cert (*.$STAGING_DOMAIN covers cpack-ingest.*).
+# Rewritten every run (idempotent by overwrite) so it tracks cert renewals,
+# matching the auth.conf vhost above.
+cat > /etc/nginx/conf.d/cpack-ingest.conf <<NGINX
+server {
+    listen 8447 ssl;
+    server_name cpack-ingest.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.38:9104;   # sparkplug-agent-cpack
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v1/tags"
+
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.
 dnf install -y cronie

@@ -90,6 +90,27 @@ resource "aws_secretsmanager_secret_version" "app" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ── CPACK agent ingest key (ADR-0042 P1) ──────────────────────────────────────
+# The X-Ingest-Key the sparkplug-agent-cpack service authenticates CPACK's
+# Node-RED tee against (compose env AGENT_INGEST_API_KEY). NOT a random_password:
+# the value must MATCH what CPACK's Node-RED is already configured with, so it is
+# chosen out-of-band and populated MANUALLY (same pattern as github-runner). No
+# secret_version here on purpose — Terraform must never generate, store, or echo
+# this value in state/plan. app_init.sh reads it (guarded) and writes it into
+# /opt/packiot/.env, so a full instance re-init re-materializes it instead of the
+# operator having to hand-append it (which drops on rebuild).
+#
+# Populate once (out-of-band value from CPACK ops):
+#   aws secretsmanager put-secret-value \
+#     --secret-id packiot/staging/agent-ingest \
+#     --region us-east-1 \
+#     --secret-string '{"api_key":"<AGENT_INGEST_API_KEY>"}'
+resource "aws_secretsmanager_secret" "agent_ingest" {
+  name                    = "packiot/staging/agent-ingest"
+  recovery_window_in_days = 0
+  description             = "CPACK sparkplug-agent X-Ingest-Key (ADR-0042 P1) — populate manually, see comment above"
+}
+
 # ── Node-RED admin auth ────────────────────────────────────────────────────────
 # Both edge-nodered and oeecloud use this single credential pair.
 # settings.js reads NODE_RED_ADMIN_USERNAME + NODE_RED_ADMIN_PASSWORD_HASH from env.
