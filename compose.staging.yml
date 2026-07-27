@@ -1315,6 +1315,13 @@ services:
       # prod-read harness before the flip gate.
       SAP13_REPORT_ENABLED: "true"
       SAP13_INTERVAL_MINUTES: "15"
+      # ADR-0039 R5 CONTRACT Step 1 (task #12) — source the downtime-reason
+      # vocabulary from the R5 dimension (downtime_reason + equipment_downtime_reason)
+      # instead of the equipments.downtime_reasons jsonb. DEFAULT OFF: keep OFF until
+      # row-for-row parity is verified on staging (the report joins on the category
+      # label; confirm the dimension label matches the jsonb key it replaces — see
+      # the Step-1 parity gate in docs/adr/0039-reasons-dimension-contract-plan.md).
+      SAP13_REASONS_FROM_DIM: "false"
       # ADR-0014 P3a events deriver — ENABLED 2026-07-03. Runs its own
       # bake on equipment_events (separate table from the shift bake's
       # id_shift surface — no panel contamination). The shift TRIGGER

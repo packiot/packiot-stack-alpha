@@ -411,6 +411,42 @@
     ]
   },
   {
+    "ref": "equipment-downtime-reasons-dim",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "downtime_reason",
+    "columns": [
+      "id",
+      "code",
+      "label",
+      "label_i18n",
+      "category",
+      "parent_id",
+      "reason_level",
+      "planned_downtime",
+      "change_over",
+      "idle"
+    ]
+  },
+  {
+    "ref": "equipment-downtime-reasons-dim",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipment_downtime_reason",
+    "columns": [
+      "id_equipment"
+    ]
+  },
+  {
+    "ref": "equipment-downtime-reasons-dim",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "nm_equipment"
+    ]
+  },
+  {
     "ref": "equipment-info",
     "source": "dataset",
     "kind": "relation",
