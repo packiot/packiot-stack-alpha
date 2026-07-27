@@ -1,0 +1,121 @@
+# bispharma.descriptor.yaml — BISPHARMA CLIENT DESCRIPTOR (ADR-0045 P1) — TEMPLATE.
+#
+# ⚠️  THIS IS A TEMPLATE, NOT A RUNNABLE DESCRIPTOR. ⚠️
+# Every `TODO` / `TODO(...)` below is an UNKNOWN that must be filled from the
+# client-intake doc (docs/clients/bispharma-intake.md). The placeholder values
+# (enterprise_id: 0, TODO_SITE/TODO_LINE topics, the example rows) are SENTINELS,
+# not real config — generating from this as-is would emit a nonsense topology
+# pointing at no tenant. Fill the TODOs, delete the two EXAMPLE rows, and only
+# THEN run onboard-gen. (enterprise_id MUST be > 0 or downstream id-resolution
+# and the register cross-tenant guard are meaningless.)
+#
+# WHAT THIS IS
+# ------------
+# The ONE artifact a Customer Success engineer authors to onboard Bispharma. From
+# this single descriptor `cmd/onboard-gen` (ADR-0045 P1, landing via #608) emits
+# all four downstream artifacts — hand-editing none:
+#   1. tenant conversion profile → bispharma-profile.yaml   (tenantprofile schema)
+#   2. packml_register INSERT SQL → topic ↔ id_equipment rows
+#   3. agent client.yaml          → bispharma-agent.yaml (agentcfg)
+#   4. Node-RED tee snippet       → bispharma-tee-node.json (Tier-1 raw forwarder)
+#
+# Bispharma is GREENFIELD: legacy enterprise 4 is a shell (≈65 Firebase users,
+# ZERO topology, ZERO PLC data). Nothing here is reverse-engineered — it is all
+# supplied by the client. Compare cpack.descriptor.yaml for a fully-worked example.
+#
+# THE CONFIRMED-vs-INFERRED DISCIPLINE (ADR-0045 §2.4b — load-bearing)
+# -------------------------------------------------------------------
+# A member's count index (…/Admin/ProdProcessedCount/<IDX>/Unit) is an ARBITRARY
+# PLC channel number, NOT derivable from any table (#601). Author each member
+# below as `confidence: inferred` (a guess) — the P2 capture step (onboard-capture)
+# on a live staging tee turns it into `confirmed`. `onboard-gen --cutover` REFUSES
+# to emit a cutover config while any inferred index remains. Draft/observe
+# generation (default, no --cutover) emits everything for validation.
+
+tenant: BISPHARMA
+enterprise_id: 0                 # TODO(tenant-prep): the STAGING enterprise id for
+                                 # Bispharma on packiot_shadow (F3). Legacy PROD ent
+                                 # = 4, but staging gets its own surrogate (CPACK:
+                                 # prod 1 → staging 3). Decide reuse-4-on-staging vs
+                                 # a fresh bispharma-staging id in tenant-prep, then
+                                 # set it here. MUST be > 0 or generation fails.
+                                 # This is the packml_register cross-tenant guard.
+
+canonical:
+  prefix: BISPHARMA/TODO_SITE    # TODO(§7 intake): the canonical tenant_prefix, the
+                                 # head EVERY topic below must start with. Set once
+                                 # the site short-code is known, e.g. BISPHARMA/SP.
+                                 # Discovery lower-cases the leading tenant segment.
+
+# ── raw → canonical mapping (per-client quirks; normalized STACK-SIDE in the
+#    agent profile per ADR-0045 §2.3 Option B — the tee stays a dumb forwarder) ──
+mapping:
+  count_index_default_mode: equipment_id   # fallback for any member whose count leaf
+                                           # is BARE (no /<IDX>/). Keep unless intake
+                                           # says otherwise.
+  # Fill these ONLY if intake §7 finds a raw≠canonical difference. Leave empty if the
+  # PLC already emits canonical strings. Examples (from CPACK) shown as guidance:
+  prefix_fixups: []
+    # - {from: "BIS-PHARMA/", to: "BISPHARMA/"}        # TODO(§7): real PLC head → canonical, if any
+  metric_aliases: []
+    # - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}  # TODO(§7): wrong leaf → Calc input, if any
+  parameter_aliases: []
+    # - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}  # TODO: if bare Parameter
+  # parameter_decomposition: (ADR-0044) — only if a bare Status/Parameter carries
+  # MANY params over time. Most greenfield tenants do not need it. Leave empty.
+
+# ── line-vs-member canonical metric templates (superset allowlist) ────────────
+# Keep only the leaves the machines ACTUALLY emit (intake §4). A machine with no
+# speed sensor drops /Status/MachSpeed here and relies on production_speed (rated)
+# for Performance (the COUNTERS-ONLY path). A machine with no state signal drops
+# /Status/StateCurrent and infers Availability from activity.
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}        # TODO(§4): drop if no line speed
+    - {leaf: "/Status/StateCurrent", type: long}       # TODO(§4): drop if no line state
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}        # TODO(§4): drop for counters-only machines
+    - {leaf: "/Status/StateCurrent", type: long}       # TODO(§4): drop if no state signal
+
+# ── equipment inventory ───────────────────────────────────────────────────────
+# TODO(§3 intake): replace the two example rows with Bispharma's REAL tree.
+#   • one tp_equipment=3 row per LINE  (no count_index — lines carry bare counts)
+#   • one tp_equipment=1 row per MACHINE (id_unit = id_equipment;
+#     count_index authored `inferred`, confirmed later by P2 capture)
+#   • tp_equipment=2 for SECTORS if the tree uses them
+# id_equipment = the STAGING register surrogate id (drives the SQL + id resolution);
+# it is NOT the count index (the whole #601 finding). Assign ids in tenant-prep from
+# a free block on staging F3. count_index.value = a GUESS until P2 confirms it.
+equipment:
+  # ---- EXAMPLE (delete; shows the shape) ----
+  - {topic: BISPHARMA/TODO_SITE/TODO_AREA/TODO_LINE1, id_equipment: 1001, tp_equipment: 3}
+  - {topic: BISPHARMA/TODO_SITE/TODO_AREA/TODO_LINE1/TODO_MACHINE1, id_equipment: 1002, tp_equipment: 1, id_unit: 1002, count_index: {value: 0, confidence: inferred}}
+  # ---- repeat per line/machine from the intake tree ----
+
+# ── agent wiring (→ bispharma-agent.yaml, the agentcfg descriptor) ────────────
+agent:
+  edge_node_id: bispharma-tee          # DISTINCT from plc-sim + every other tenant's node
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bispharma/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:                                # Mode-B mTLS CN=<tenant>; secret REFS, never values
+    cert_ref: ""                       # empty on the staging loopback
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee snippet parameters (→ bispharma-tee-node.json) ───────────────
+# Only relevant if Bispharma ALREADY runs Node-RED (intake §2). If we deploy the
+# client-edge container instead, the container forwards raw tags directly and this
+# block parameterizes the equivalent forwarder config.
+tee:
+  ingest_url: "https://TODO-staging-ingest-front-door:8446/ingest/sparkplug"  # TODO(tenant-prep): the staging ingest-shim front-door for Bispharma
+  ingest_key_env: BISPHARMA_INGEST_KEY # forwarder reads the key from env, never hardcoded
+  gateway: bispharma-edge
+  tls_insecure: true                   # staging self-signed
