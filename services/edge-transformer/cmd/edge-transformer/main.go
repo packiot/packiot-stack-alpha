@@ -289,9 +289,42 @@ func main() {
 	var sparkplugStore *sparkplug.StateStore
 	var mqttSub *mqtt.Subscriber
 	var shadowPub *shadowpub.Publisher
-	var outboxStore *outbox.Store // hoisted so shutdown block can close it
+	var outboxStore *outbox.Store               // hoisted so shutdown block can close it
+	var rebirthRequester *mqtt.RebirthRequester // task #31 — hoisted for handler + shutdown
 	if cfg.MQTTEnabled {
 		sparkplugStore = sparkplug.NewStateStore()
+
+		// ── SparkPlug B Rebirth requester (task #31 / ADR-0042) ──────────────
+		// When on, a sequence gap or NDATA-before-NBIRTH triggers a
+		// "Node Control/Rebirth" NCMD to the offending edge node, which then
+		// re-publishes its full NBIRTH and re-seeds our alias table + the
+		// refactored Calc counter baseline. This is the durable self-heal for
+		// an agent-only line after an edge-transformer restart (PR #611
+		// scenario). Default OFF → flags-off is the current behaviour.
+		if cfg.RequestRebirthEnabled {
+			var rerr error
+			rebirthRequester, rerr = mqtt.NewRebirthRequester(
+				cfg.MQTTBrokerURL, cfg.MQTTClientID+"-rebirth", cfg.MQTTUsername, cfg.MQTTPassword,
+				time.Duration(cfg.RequestRebirthMinIntervalSeconds)*time.Second, logger)
+			if rerr != nil {
+				logger.Error("rebirth requester init failed — rebirth requests DISABLED",
+					slog.String("err", rerr.Error()))
+				rebirthRequester = nil
+			} else {
+				rebirthReqCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
+					Name: "edge_transformer_rebirth_requests_total",
+					Help: "Rebirth NCMDs published to edge nodes, by trigger (seq_gap|no_birth) — task #31.",
+				}, []string{"group", "edge_node", "trigger"})
+				mx.Registry.MustRegister(rebirthReqCounter)
+				rebirthRequester.SetMetric(func(group, edgeNode, trigger string) {
+					rebirthReqCounter.WithLabelValues(group, edgeNode, trigger).Inc()
+				})
+				logger.Info("sparkplug rebirth requests ENABLED (task #31)",
+					slog.Int("min_interval_seconds", cfg.RequestRebirthMinIntervalSeconds))
+			}
+		} else {
+			logger.Info("sparkplug rebirth requests disabled (ET_REQUEST_REBIRTH_ENABLED=false)")
+		}
 
 		// ADR-0011 P1: sparkplug sequence-gap counter, labelled per publisher.
 		// The OnSeqGap callback below feeds this counter, so ops can graph
@@ -304,6 +337,12 @@ func main() {
 				slog.Uint64("expected", expected),
 				slog.Uint64("got", got),
 			)
+			// task #31: a seq gap means we missed data OR restarted and a
+			// retained NBIRTH re-seeded lastSeq=0 while the live NDATA is far
+			// ahead — ask the edge node to rebirth so our baseline realigns.
+			if rebirthRequester != nil {
+				rebirthRequester.Request(key.GroupID, key.EdgeNodeID, "seq_gap")
+			}
 		})
 
 		// Shadow publisher — publishes resolved metrics to edge.plc-normalized
@@ -420,7 +459,7 @@ func main() {
 			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
 				slog.Bool("use_go_port", cfg.UseGoPort))
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, emitCutoverRefactored, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -619,6 +658,9 @@ func main() {
 	}
 	if cmdDevice != nil {
 		cmdDevice.Close()
+	}
+	if rebirthRequester != nil {
+		rebirthRequester.Close()
 	}
 	if outboxStore != nil {
 		_ = outboxStore.Close()
@@ -1229,7 +1271,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction, cutoverRefactored bool, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1263,6 +1305,13 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 					slog.String("publisher", key.String()),
 					slog.String("message_type", topic.MessageType),
 				)
+				// task #31: after a restart our StateStore is empty, so the first
+				// NDATA has no alias table — ask the edge node to rebirth instead
+				// of waiting (possibly forever, for an agent-only line) for its
+				// next reconnect. Debounced per node inside Request.
+				if rebirthRequester != nil {
+					rebirthRequester.Request(key.GroupID, key.EdgeNodeID, "no_birth")
+				}
 				return nil
 			}
 			return fmt.Errorf("ingest: %w", err)

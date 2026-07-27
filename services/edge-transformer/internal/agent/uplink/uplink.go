@@ -82,16 +82,18 @@ type Uplink struct {
 	snapshot func() []rawtag.RawTag // typically tagstore.Snapshot
 	logger   *slog.Logger
 
-	birthTopic, deathTopic, dataTopic string
+	birthTopic, deathTopic, dataTopic, ncmdTopic string
 
 	mu        sync.RWMutex
 	client    paho.Client
 	connected bool
 	lastErr   string
 
-	pendingRebirth atomic.Bool // set on (re)connect; consumed by drainLoop
+	pendingRebirth atomic.Bool // set on (re)connect OR on a Rebirth NCMD; consumed by drainLoop
+	onRebirthNCMD  func()      // nil-safe Prometheus hook — fired per accepted Rebirth NCMD
 	published      atomic.Uint64
 	births         atomic.Uint64
+	rebirthsNCMD   atomic.Uint64 // rebirths triggered by an inbound Rebirth NCMD (task #31)
 	startedAt      time.Time
 }
 
@@ -109,9 +111,15 @@ func New(cfg Config, pub *session.Publisher, store *outbox.Store, snapshot func(
 		birthTopic: base + "/NBIRTH/" + cfg.EdgeNodeID,
 		deathTopic: base + "/NDEATH/" + cfg.EdgeNodeID,
 		dataTopic:  base + "/NDATA/" + cfg.EdgeNodeID,
+		ncmdTopic:  base + "/NCMD/" + cfg.EdgeNodeID,
 		startedAt:  time.Now(),
 	}
 }
+
+// SetRebirthMetric wires the Prometheus counter bumped each time an inbound
+// Rebirth NCMD is accepted (sparkplug_agent_rebirths_total). Nil-safe; call
+// before Run.
+func (u *Uplink) SetRebirthMetric(fn func()) { u.onRebirthNCMD = fn }
 
 // DataTopic is the NDATA topic the agent buffers encoded payloads under.
 func (u *Uplink) DataTopic() string { return u.dataTopic }
@@ -161,7 +169,7 @@ func (u *Uplink) Run(ctx context.Context) error {
 		SetConnectTimeout(u.cfg.ConnectTimeout).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
-		SetMaxReconnectInterval(30 * time.Second).
+		SetMaxReconnectInterval(30*time.Second).
 		SetBinaryWill(u.deathTopic, willBody, 1, false).
 		SetOnConnectHandler(u.onConnect).
 		SetConnectionLostHandler(u.onConnectionLost)
@@ -215,17 +223,60 @@ func (u *Uplink) drainLoop(ctx context.Context) {
 	}
 }
 
-// onConnect fires on every (re)connect. It only records state + arms a
-// pending rebirth; the drainLoop (single drainer) performs the rebirth-then-
-// drain on its next tick. Keeps the paho callback non-blocking and guarantees
-// exactly one drainer.
-func (u *Uplink) onConnect(_ paho.Client) {
+// onConnect fires on every (re)connect. It records state, arms a pending
+// rebirth, and (re)subscribes to the inbound NCMD topic so a host-side Rebirth
+// request reaches us. Clean-session drops subscriptions across reconnect, so
+// the subscribe MUST happen here, not once at startup. The drainLoop (single
+// drainer) performs the rebirth-then-drain on its next tick; keeping the paho
+// callback non-blocking guarantees exactly one drainer.
+func (u *Uplink) onConnect(c paho.Client) {
 	u.mu.Lock()
 	u.connected = true
 	u.lastErr = ""
 	u.mu.Unlock()
 	u.pendingRebirth.Store(true)
 	u.logger.Info("uplink: connected — rebirth armed", "broker", u.cfg.BrokerURL)
+
+	// Subscribe to the Rebirth NCMD channel (task #31). Don't Wait() the token
+	// on the paho callback goroutine indefinitely — bound it and log failure.
+	go func() {
+		tok := c.Subscribe(u.ncmdTopic, 1, u.onNCMD)
+		if !tok.WaitTimeout(5 * time.Second) {
+			u.logger.Error("uplink: NCMD subscribe timeout", "topic", u.ncmdTopic)
+			return
+		}
+		if err := tok.Error(); err != nil {
+			u.logger.Error("uplink: NCMD subscribe failed", "topic", u.ncmdTopic, "err", err)
+			return
+		}
+		u.logger.Info("uplink: subscribed to Rebirth NCMD", "topic", u.ncmdTopic)
+	}()
+}
+
+// onNCMD handles inbound NCMDs on spBv1.0/<group>/NCMD/<edge_node>. A
+// "Node Control/Rebirth"=true request re-arms pendingRebirth, so the drainLoop
+// republishes the full NBIRTH (seq reset to 0) on its next tick — reusing the
+// single-drainer rebirth-then-drain path rather than publishing off the paho
+// callback goroutine. This is the edge-node half of the task #31 self-heal:
+// after the cloud edge-transformer restarts and loses its alias/counter
+// baseline, it asks us to rebirth and we re-seed it. Non-rebirth NCMDs (none
+// defined yet) are logged and ignored.
+func (u *Uplink) onNCMD(_ paho.Client, msg paho.Message) {
+	p, err := sparkplug.Decode(msg.Payload())
+	if err != nil {
+		u.logger.Warn("uplink: NCMD decode failed", "topic", msg.Topic(), "err", err)
+		return
+	}
+	if !sparkplug.IsRebirthRequest(p) {
+		u.logger.Debug("uplink: NCMD ignored (not a rebirth request)", "topic", msg.Topic())
+		return
+	}
+	u.rebirthsNCMD.Add(1)
+	if u.onRebirthNCMD != nil {
+		u.onRebirthNCMD()
+	}
+	u.pendingRebirth.Store(true)
+	u.logger.Info("rebirth requested via NCMD", "topic", msg.Topic(), "rebirths_ncmd_total", u.rebirthsNCMD.Load())
 }
 
 func (u *Uplink) onConnectionLost(_ paho.Client, err error) {
@@ -336,6 +387,7 @@ type Snapshot struct {
 	BrokerURL      string `json:"broker_url"`
 	PublishedTotal uint64 `json:"published_total"`
 	BirthsTotal    uint64 `json:"births_total"`
+	RebirthsNCMD   uint64 `json:"rebirths_ncmd_total"`
 	OutboxDepth    int    `json:"outbox_depth"`
 	StartedAt      string `json:"started_at"`
 	LastErr        string `json:"last_error,omitempty"`
@@ -352,6 +404,7 @@ func (u *Uplink) SnapshotDetail() any {
 		BrokerURL:      u.cfg.BrokerURL,
 		PublishedTotal: u.published.Load(),
 		BirthsTotal:    u.births.Load(),
+		RebirthsNCMD:   u.rebirthsNCMD.Load(),
 		OutboxDepth:    depth,
 		StartedAt:      u.startedAt.Format(time.RFC3339),
 		LastErr:        lastErr,

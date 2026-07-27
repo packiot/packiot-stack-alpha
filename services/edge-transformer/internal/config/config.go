@@ -99,6 +99,24 @@ type Config struct {
 	// source — set -1 there so /healthz doesn't stay permanently red.
 	MQTTStaleThresholdSeconds int
 
+	// ── SparkPlug B Rebirth request (task #31 / ADR-0042) ──────────────────
+	// When a stateful consumer (this edge-transformer) restarts, it loses its
+	// per-publisher alias table AND the refactored Calc counter baseline. An
+	// agent-only edge node (sparkplug-agent) does NOT re-birth on its own
+	// (mosquitto + agent stay up across an app-stack deploy → no reconnect →
+	// no NBIRTH), so F2/F3 for that line FREEZES from the restart onward. The
+	// durable fix: on a sequence gap or NDATA-before-NBIRTH, publish a
+	// "Node Control/Rebirth" NCMD to the edge node, which then re-publishes its
+	// full NBIRTH and re-seeds us.
+	//
+	// RequestRebirthEnabled gates the whole behaviour. Default FALSE →
+	// flags-off is exactly the current (frozen-on-restart) behaviour; enabling
+	// it is the point, but we prove it first. Requires MQTT_ENABLED=true.
+	RequestRebirthEnabled bool
+	// RequestRebirthMinIntervalSeconds throttles requests per edge node so a
+	// burst of gapped NDATA can't storm a node with NCMDs (one every N s max).
+	RequestRebirthMinIntervalSeconds int
+
 	// UseGoPort — feature flag for ADR-0010 Phase 3. When true, the
 	// calc_production_counters Go port runs in SHADOW mode: it evaluates
 	// every counter-topic Sparkplug metric against its own State store,
@@ -223,6 +241,10 @@ func Load() (*Config, error) {
 		MQTTUsername:              getenv("MQTT_USERNAME", ""),
 		MQTTPassword:              getenv("MQTT_PASSWORD", ""),
 		MQTTStaleThresholdSeconds: getenvInt("MQTT_STALE_THRESHOLD_SECONDS", 60),
+
+		// SparkPlug B Rebirth request (task #31 — off by default; prove then enable)
+		RequestRebirthEnabled:            getenvBool("ET_REQUEST_REBIRTH_ENABLED", false),
+		RequestRebirthMinIntervalSeconds: getenvInt("ET_REQUEST_REBIRTH_MIN_INTERVAL_SECONDS", 30),
 
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),
