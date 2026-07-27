@@ -90,7 +90,7 @@ Legend: ✅ met · ⚠️ partial / needs confirmation · ⛔ not met / blocking
 | `users` seed ent 3/4 | `packiot_shadow.users` ent3/4 = **1 row** (ADR expected empty → needed SEED). Thin — confirm 1 row is sufficient for the auth/role reads front4/operator make, else seed more. | ⚠️ |
 | Grafana F3 datasource + `$datasource` var | both datasources provisioned; template var on boards (PR #537) | ✅ built |
 | front4 Phase-G analytics flag | `REFDATA_ANALYTICS_ENABLED` / `VITE_REFDATA_ENABLED` wired in dashboard hooks, default-off | ✅ built |
-| **Fidelity gate harness** | `scripts/adr0032-f3-fidelity-check.sh` exists — A/B/C per-tenant F1-vs-F3 matrix, READ-ONLY. **Caveat: transport uses `AWS-RunShellScript` send-command, which is POLICY-BLOCKED on this account** (see §6). Port it to the `AWS-StartNonInteractiveCommand` start-session transport before relying on it. | ✅ built, ⚠️ transport |
+| **Fidelity gate harness** | `scripts/adr0032-f3-fidelity-check.sh` — A/B/C per-tenant F1-vs-F3 matrix, READ-ONLY. **Transport PORTED (2026-07-26)** from the policy-blocked `AWS-RunShellScript` send-command to the `AWS-StartNonInteractiveCommand` start-session path (base64 SQL → `sudo bash` → unique remote `mktemp` → `docker exec -i timescaledb psql` over stdin, `BEGIN READ ONLY`). **Ran green read-only** — see the acceptance note below. | ✅ built + ported + green |
 
 ### 3.3 Hard gates from ADR-0032 §6
 
@@ -111,7 +111,9 @@ Legend: ✅ met · ⚠️ partial / needs confirmation · ⛔ not met / blocking
 ### Pre-flight (do all before Step 1)
 - **P1.** Confirm **G-DEPLOY**: check the running refdata container's effective `REFDATA_FLOW`. If the intent is "flip now," it moves to `f3`; if it is already `f3`, capture that as the starting truth.
 - **P2.** Confirm **G0** on Grafana `v2-po-staleness-gate` (ent 3,4): 409-rate 0, liveness non-zero.
-- **P3.** Port `scripts/adr0032-f3-fidelity-check.sh` transport from `send-command` to `start-session` (§6), then **run it to capture the F1 golden baseline** (A/B/C matrix, ent 3&4). This baseline is the yardstick for every later step.
+- **P3.** ✅ **DONE (2026-07-26):** transport ported `send-command`→`start-session` (§6); harness ran green read-only. **Then run it each step to capture the F3 A/B/C matrix, ent 3&4.**
+
+  > **⚠️ Gate acceptance = F3-HEALTHY, not F1-identical.** F1's OEE compute is a corpse — `uns_current_shift` frozen since 2026-07-08, and F1 itself carries anomalous rows (2026-07-26 run: F1 ent-3 = **88 `oee>1` + 18 `oee<0`**, median 0.09; F3 ent-3 = **0 anomalies**, median 0.59, telemetry fresh to *now*). Byte-identity vs F1 is therefore **the wrong yardstick** and would fail on F1's own corpse artifacts. **PASS ⇔** for ent 3&4: F3 `equipment_values` max_ts ≈ now · F3 rollups compute to now (`uns_equipment_current_metrics` fresh) · F3 OEE anomaly-free (`oee_gt1=0`, `oee_neg=0`) · render surface present (≥91 `h_piot_*` fns + the 6 config relations) · operator PO/event heads track F1 within minutes. F1 columns in the matrix are a **sanity reference only**.
 - **P4.** Take an **EBS snapshot** of the staging DB volume (cheap insurance; mandatory before Step 5, harmless now).
 
 ### Step 1 — Re-point READ/RENDER plane to F3 (the long pole; do FIRST). Satisfies criterion (C).
@@ -160,6 +162,13 @@ Order (no-consumer first; **F1 is NOT dropped here** — it survives as the Phas
 
 ### 🔒 GATED / OUT OF SCOPE
 Phase 2 edge-api-direct (ADR-0024 step 3), promoting `packiot_shadow` to operational (true ADR-0016 flip), Hasura retirement + front4 full re-point, any prod cutover.
+
+### 🧷 Ride-along hardening — carry these three into the flip runbook (do NOT execute here)
+These are not new gates; they are pre-flip insurance items that MUST be explicit in the executed runbook so they aren't skipped under time pressure:
+
+1. **EBS snapshot before the point of no return.** Take a fresh snapshot of the staging DB volume immediately before Step 4 (the atomic flip) and again before each Step-5 `DROP` (ties to P4 · R10). Rollback of Steps 1–4 is flag/routing revert; rollback of Step 5 is *snapshot-restore only*. No snapshot ⇒ no Step 5.
+2. **Thin ent 3/4 `users` seed.** `packiot_shadow.users` for ent 3/4 = **1 row** (R8). Before treating Step 1 as green, confirm that single seed covers the role/menu reads front4/operator make under `f3` (`v_menu_per_user_role` / `user_roles` must not come back empty in the gate); seed more rows if they do.
+3. **ent 4 / Incoplast is NOT flip-ready — the flip carries ent 3 (CPACK) only.** Incoplast F3 behavior is un-blessed (R6, ADR-0022 gap) and its F3 rollups are still thin (2026-07-26: ent-4 `producing_shifts=0` on F3). Keep ent-4 telemetry flagged un-blessed; the acceptance bar and the Step-4 flip are scoped to **ent 3**. Do not gate the flip on ent-4 parity, and do not treat ent-4 F3 as production-ready.
 
 ---
 
