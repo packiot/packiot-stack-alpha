@@ -115,6 +115,15 @@ type Config struct {
 	Sap13IntervalMinutes int
 	Sap13CustomerID      int
 
+	// Sap13ReasonsFromDim — ADR-0039 R5 CONTRACT Step 1 (task #12): when true the
+	// sap13 report sources the downtime-reason category vocabulary from the R5
+	// dimension (downtime_reason) + junction (equipment_downtime_reason) instead of
+	// the equipments.downtime_reasons jsonb. DEFAULT OFF (byte-identical jsonb path).
+	// Flip only after row-for-row parity is verified on staging — the jsonb key the
+	// report joins on may be 'name' while the dimension label was backfilled from
+	// 'description'; confirm labels match before enabling. jsonb NOT dropped this pass.
+	Sap13ReasonsFromDim bool
+
 	// ADR-0014 P3a events deriver. DEFAULT OFF — enable 2026-07-09
 	// after the shift-bake close-out (one bake at a time).
 	EventsDeriverEnabled      bool
@@ -260,6 +269,7 @@ func Load() (*Config, error) {
 		Sap13ReportEnabled:               getenv("SAP13_REPORT_ENABLED", "false") == "true",
 		Sap13IntervalMinutes:             getenvInt("SAP13_INTERVAL_MINUTES", 15),
 		Sap13CustomerID:                  getenvInt("SAP13_CUSTOMER_ID", 13),
+		Sap13ReasonsFromDim:              getenv("SAP13_REASONS_FROM_DIM", "false") == "true",
 		EventsDeriverEnabled:             getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
 		EventsDeriverIntervalMin:         getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
 		EventsExcludedAreas:              getenv("EVENTS_EXCLUDED_AREAS", ""),

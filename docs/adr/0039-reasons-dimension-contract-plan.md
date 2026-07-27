@@ -83,13 +83,37 @@ the pattern is proven on safer surfaces. The `DROP COLUMN` is strictly last.
   with the projected columns. FK integrity clean (0 orphans). jsonb columns still intact.
 - **Rollback:** DROP the 4 new tables + `set_updated_at()` (additive DDL, fully reversible).
 
-### Step 1 — reports / BigQuery (lowest risk: offline, no live write path)
+### Step 1 — reports / BigQuery (lowest risk: offline, no live write path) — BUILT (flag-gated dual-read, default OFF)
 Consumers: `oeecloud-worker/reports` `sap13_body.sql`, BigQuery exports that read the reason vocabulary.
-- Repoint these SELECTs to `downtime_reason` + `equipment_downtime_reason` (or the new dataset).
-- **Verify:** row-for-row parity between the jsonb-derived report and the dimension-derived report
-  over a fixed window (counts + code sets + i18n labels identical). Reports are offline/batch, so a
-  regression is caught in the diff, not by an operator.
-- **Rollback:** revert the query; jsonb still present.
+
+**What shipped (this PR):** the `sap13` report (NEOPAC ent 13 — the only reports consumer that reads
+the jsonb; it builds a category-code→description vocabulary lookup) now has a **dual-read swap**, gated
+by `SAP13_REASONS_FROM_DIM` (default **false** = byte-identical jsonb path):
+- The verbatim `sap13_body.sql` (ADR-0012 Wave-2 prod port) is **unchanged**. Its jsonb reason CTE
+  chain (`top_level → category_level → downtime_codes`) is extracted byte-for-byte into
+  `sap13_reasons_jsonb.sql`; the normalized replacement (`downtime_reason` + `equipment_downtime_reason`,
+  `reason_level=1` categories) lives in `sap13_reasons_dim.sql`. Both emit the same
+  `downtime_codes(position, description)` contract, so every downstream CTE is untouched.
+- At run time, `SAP13_REASONS_FROM_DIM=true` swaps the jsonb block for the dim block via an exact
+  substring replace that **fails loud** if the body drifted (never a silent no-op). A unit test locks
+  the block-to-body match (exactly-once substring), the swap correctness, and the loud-failure path.
+- `SAP13_REPORT_ENABLED` is already `true` on staging, so the flag is a live, reversible A/B lever.
+  jsonb NOT dropped.
+
+**Verify (the gate before flipping the flag on):** row-for-row parity between the jsonb-derived and
+dimension-derived `downtime_codes` over the same equipment set — counts + `(position, description)`
+pairs identical per enterprise (parity query: `docs/adr/reference/designs/0039-sap13-reasons-parity.sql`).
+**Known parity risk to check first:** the report reads the category label from the jsonb
+`->'name'->>'en-US'` key, but the R5 backfill populated `downtime_reason.label` from
+`->'description'->>'en-US'`. If the live jsonb key is actually `name` (not `description`), the dimension
+label is NULL/wrong and the downstream `ee.cd_category::text = dc.description` join silently misses →
+every stop falls into the no-reason/microstop buckets. **Confirm the labels match on staging
+`packiot_shadow` before enabling;** if they diverge, fix the R5 backfill key (task #34) — do not enable
+the flag. Reports are offline/batch, so a regression is caught in the diff, not by an operator.
+- **Rollback:** set `SAP13_REASONS_FROM_DIM=false` (or revert); jsonb still present.
+
+(BigQuery exports: no export reads the reason vocabulary today — `sap13` is the only jsonb reader in the
+reports/export surface. A future export that reads reasons repoints to the dimension the same way.)
 
 ### Step 2 — front4 (medium risk: read-only UI, no PackML write)
 Consumers: `pages/Settings/DowntimeReasons2/*` (config viewer/uploader), `pages/Downtimes/*`

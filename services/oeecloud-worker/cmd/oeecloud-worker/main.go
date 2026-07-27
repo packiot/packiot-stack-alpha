@@ -228,7 +228,7 @@ func main() {
 	// (cust 13). Ships disabled: cutover gated on #223 (back4-api must
 	// target the pool key first).
 	if cfg.Sap13ReportEnabled {
-		go reports.LoopSap13(ctx, pool, cfg.Sap13CustomerID, time.Duration(cfg.Sap13IntervalMinutes)*time.Minute, logger, jobObs)
+		go reports.LoopSap13(ctx, pool, cfg.Sap13CustomerID, cfg.Sap13ReasonsFromDim, time.Duration(cfg.Sap13IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P4 — enterprise-6 production data sync (main flow).
