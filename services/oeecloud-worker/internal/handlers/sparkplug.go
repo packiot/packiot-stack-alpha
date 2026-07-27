@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/pocontrol"
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/rollup"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/writers"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -48,6 +49,7 @@ type SparkplugHandler struct {
 	skippedUnk           atomic.Uint64
 	buildErrors          atomic.Uint64
 	execErrors           atomic.Uint64
+	clampDQErrSample     atomic.Uint64 // samples the best-effort DQ side-write failure log
 
 	pool            *pgxpool.Pool
 	shadowPool      *pgxpool.Pool // may be nil — set only if POSTGRES_SHADOW_DB_NAME configured
@@ -198,6 +200,11 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	batch := &pgx.Batch{}
 	descs := make([]string, 0, len(p.Metrics))
 	var firstErr error
+	// clampEvents accumulates increment-sanity-clamp rejections (usually
+	// none). They are side-written as data_quality_event rows AFTER the
+	// batch, best-effort — never in the ingest batch, so a missing DQ table
+	// can never nack the delivery (poison-storm guard).
+	var clampEvents []*writers.ClampEvent
 	for i := range p.Metrics {
 		m := &p.Metrics[i]
 		kind := m.Classify()
@@ -205,6 +212,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		var q *writers.Query
 		var shiftQ *writers.Query
 		var eventQ *writers.Query
+		var clampEv *writers.ClampEvent
 		var buildErr error
 
 		// ADR-0010 10.3 slice 1: PO lifecycle params run their own tx
@@ -236,7 +244,10 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			// production values (keep-existing-else-fill COALESCE + the
 			// session-tz ts_value::date cast). The Go resolver is the sole
 			// shift writer on ALL routes now (the F1 trigger is retired).
-			q, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
+			q, clampEv, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
+			if clampEv != nil {
+				clampEvents = append(clampEvents, clampEv)
+			}
 			if buildErr == nil && q != nil {
 				// Returns nil under the fold flag (skip the separate UPDATE).
 				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
@@ -315,7 +326,73 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 	}
 
+	// Increment-sanity-clamp observability: side-write one data_quality_event
+	// per rejected increment. Best-effort — a failure here (e.g. the DQ table
+	// absent in this schema) is LOGGED and swallowed, never returned, so it
+	// can never nack the delivery. The clamp itself already zeroed the value
+	// in the batch above; this is purely to make the rejection visible.
+	h.emitClampDQ(ctx, pool, schema, clampEvents)
+
 	return firstErr
+}
+
+// clampDQInsertSQL upserts one INVARIANT_CLAMPED_INCREMENT event into the
+// flow schema's data_quality_event (migration 34), reusing the same dedup
+// index the DQ scanner uses so a redelivery refreshes-in-place. %s = schema.
+const clampDQInsertSQL = `
+	INSERT INTO %s.data_quality_event
+	    (id_enterprise, id_equipment, grain, bucket_ts, rule, observed_value, severity)
+	VALUES ($1, $2, $3, $4, $5, $6, 'error')
+	ON CONFLICT (id_enterprise, COALESCE(id_equipment, 0), grain, bucket_ts, rule)
+	DO UPDATE SET observed_value = EXCLUDED.observed_value,
+	              severity       = EXCLUDED.severity,
+	              detected_at     = now()`
+
+// emitClampDQ side-writes a data_quality_event per increment-sanity-clamp
+// rejection. BEST-EFFORT: every failure is logged and swallowed so ingest is
+// never blocked (the clamp already zeroed the value in the committed batch).
+// One Exec per event — clamps are rare, so the extra round-trips are noise.
+func (h *SparkplugHandler) emitClampDQ(ctx context.Context, pool *pgxpool.Pool, schema string, events []*writers.ClampEvent) {
+	if len(events) == 0 {
+		return
+	}
+	sql := fmt.Sprintf(clampDQInsertSQL, schema)
+	for _, ev := range events {
+		// grain encodes the counter stream so the three counters can coexist
+		// at the same equipment-second under the dedup index.
+		grain := "ingest_" + clampGrainSuffix(ev.Kind)
+		if _, err := pool.Exec(ctx, sql,
+			ev.IDEnterprise, ev.IDEquipment, grain, ev.BucketTS,
+			string(rollup.DQRuleInvariantClampedIncrement), ev.Observed,
+		); err != nil {
+			// Best-effort: swallow (the value was already clamped in the
+			// committed batch). Sample the log 1/64 so a schema whose
+			// data_quality_event table is absent (e.g. shadow_go_port, which the
+			// DQ scanner also doesn't populate) can't spam a Warn per phantom.
+			if h.clampDQErrSample.Add(1)%64 == 1 {
+				h.logger.Warn("increment clamp: data_quality_event side-write failed (swallowed; sampled 1/64)",
+					slog.String("schema", schema),
+					slog.Int("id_equipment", ev.IDEquipment),
+					slog.Float64("observed", ev.Observed),
+					slog.String("err", err.Error()),
+				)
+			}
+		}
+	}
+}
+
+// clampGrainSuffix names the counter stream for the DQ grain column.
+func clampGrainSuffix(kind sparkplug.MetricKind) string {
+	switch kind {
+	case sparkplug.KindProdProcessedCount:
+		return "net_incr"
+	case sparkplug.KindProdConsumedCount:
+		return "gross_incr"
+	case sparkplug.KindProdDefectiveCount:
+		return "scrap_incr"
+	default:
+		return "incr"
+	}
 }
 
 // routeForSource picks the (pool, schema) tuple based on envelope
