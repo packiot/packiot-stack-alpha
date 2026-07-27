@@ -108,8 +108,19 @@ var lines = []line{
 	{"L3", "", 48, 140},
 	{"L4", "", 49, 147},
 	{"L5", "BREYER", 61, 110},
-	// L5/TEXA (eq 57) served by real CPACK tee — see ADR-0042 / session-88;
-	// remove sim entries as each line is teed to stay disjoint (no double-source).
+	// L5/TEXA (eq 57): RESTORED (rollback of #611). The real CPACK tee DOES feed
+	// eq 57 (F1/packiot stays fresh from the agent alone), but the refactored Calc
+	// path (source_type=refactored → F2/F3) could NOT re-establish eq 57's counter
+	// baseline after a deploy restarted edge-transformer: the agent never rebirths
+	// (mosquitto/agent stay up across an app-stack deploy, so no reconnect → no
+	// NBIRTH), edge-transformer logs a SparkPlug "sequence gap" for CPACK/cpack-tee,
+	// and F2/F3 eq 57 went dark from the restart onward. plc-sim MASKED this because
+	// it rebirths on every restart and its dense stream re-seeds the Calc baseline.
+	// PREREQUISITE before dropping a teed line from plc-sim: the agent must issue a
+	// SparkPlug rebirth on edge-transformer restart (or ET must send a Rebirth NCMD
+	// on a sequence gap). See ADR-0042 / session-88. Until then, keep this entry so
+	// the migration-target DB (packiot_shadow) has no dark equipment across deploys.
+	{"L5", "TEXA", 65, 100},
 	{"L3", "PTH", 81, 90},
 	{"L4", "TEXA", 63, 95},
 }
