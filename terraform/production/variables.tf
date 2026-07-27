@@ -104,6 +104,101 @@ variable "db_user" {
   default     = "postgres"
 }
 
+# ── Dedicated DB EC2 (W6 — split DB off the app box) ──────────────────────────
+#
+# The production-buildout roadmap (docs/adr/reference/production-buildout-roadmap.md
+# §W6) flags the app-box t4g.medium + *local* TimescaleDB container as fatal for
+# a real client: TimescaleDB continuous-aggregate refresh is memory-hungry and
+# staging already swap-died on the same class. W6.1 splits the DB onto its own
+# EC2 in the reserved 10.20.10.0/24 private subnet; W6.2 right-sizes it onto a
+# MEMORY-family instance (not t4g). This is the greenfield single-flow F3-native
+# DB (ADR-0032): ONE database whose `public` schema *is* the F3 schema — no
+# packiot_shadow, no F1/F2 legs, no comparator schemas.
+#
+# NOTE: config/plan-only. Standing this up + rewiring the compose DATABASE_URL
+# from the local container to this instance is the W1 compose-parity follow-up.
+
+variable "private_subnet_cidr" {
+  description = "Private subnet for the dedicated DB EC2 — reserved 10.20.10.0/24, no direct internet route (egress via NAT)"
+  type        = string
+  default     = "10.20.10.0/24"
+}
+
+variable "db_instance_type" {
+  description = <<-EOT
+    Dedicated DB EC2 instance type. MEMORY-family Graviton3 (r7g) — NOT t4g.
+    r7g.large = 2 vCPU / 16 GB (arm64, matches the AL2023 arm64 AMI). Bump to
+    r7g.xlarge (4 vCPU / 32 GB) if cagg-refresh memory pressure appears under a
+    real client's load. r7g is chosen over t-family because TimescaleDB's
+    background cagg refresh is a sustained (not bursty) memory+CPU workload —
+    burst credits are the wrong model and the staging swap incident proved it.
+  EOT
+  type        = string
+  default     = "r7g.large"
+}
+
+variable "db_volume_size_gb" {
+  description = "Dedicated DB EC2 gp3 root volume — holds the F3 TimescaleDB data dir + WAL"
+  type        = number
+  default     = 100
+}
+
+variable "db_iops" {
+  description = "Provisioned gp3 IOPS for the DB volume (gp3 free baseline is 3000; TimescaleDB WAL+cagg writes benefit from headroom)"
+  type        = number
+  default     = 4000
+}
+
+variable "db_throughput_mbps" {
+  description = "Provisioned gp3 throughput MB/s for the DB volume (gp3 free baseline is 125)"
+  type        = number
+  default     = 250
+}
+
+variable "db_private_ip" {
+  description = "Static private IP for the DB EC2 in the private subnet (stable target for the app's DATABASE_URL / pgbouncer upstream)"
+  type        = string
+  default     = "10.20.10.89"
+}
+
+# ── Ingest front-door (W2 — ADR-0042 mTLS SparkPlug uplink) ────────────────────
+#
+# The client-edge bundle (PR #624, ADR-0042 §6) ships a per-tenant sparkplug-agent
+# that publishes SparkPlug B over mTLS to `ssl://<ingest-host>:8883`. New-prod is
+# the LANDING ZONE for that uplink — a public mosquitto TLS listener that
+# terminates mTLS, uses the client cert CN as identity, and a CN-keyed ACL scopes
+# each tenant to `spBv1.0/<CN>/#` (ADR-0042 §6: "the client never spells its
+# tenant on the wire; the mTLS CN does, and the broker ACL enforces it").
+#
+# Unlike staging's ADR-0042 P1 path (nginx TLS :8447 → sparkplug-agent HTTP
+# /v1/tags), this is a broker-terminated mTLS listener: the SG opens 8883
+# straight to mosquitto — nginx is NOT in this path.
+
+variable "ingest_subdomain" {
+  description = "Left label of the prod ingest hostname (<ingest_subdomain>.prod.packiot.app → app EIP). The client agent connects ssl://<this>:8883."
+  type        = string
+  default     = "ingest"
+}
+
+variable "ingest_mqtts_port" {
+  description = "mTLS SparkPlug uplink port the mosquitto TLS listener binds and the app SG admits (client-edge bundle #624 dials ssl://…:8883)"
+  type        = number
+  default     = 8883
+}
+
+variable "client_ingest_egress_cidrs" {
+  description = <<-EOT
+    Allow-list of client factory-edge PUBLIC egress /32s permitted to reach the
+    8883 mTLS ingest listener. NOT world-open (mirrors staging's CPACK /32 gate),
+    just parameterized. The default is an RFC 5737 TEST-NET placeholder that
+    reaches nothing — REPLACE with bispharma's real edge egress /32 (from client
+    ops) before any apply. Port stays effectively closed until this is filled and
+    the client tee is scheduled live.
+  EOT
+  type        = list(string)
+  default     = ["203.0.113.1/32"] # RFC 5737 TEST-NET-3 placeholder — REPLACE per client
+}
+
 # ── SSH access ────────────────────────────────────────────────────────────────
 
 variable "ops_ssh_public_key" {

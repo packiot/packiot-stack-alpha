@@ -1,0 +1,28 @@
+# prod-ingest.acl — CN-keyed tenant isolation for the prod mTLS ingest broker.
+# Loaded by mosquitto-prod-ingest.conf (acl_file). See ADR-0042 §6.
+#
+# mosquitto ACL semantics used here:
+#   - Plain `topic` lines (before any `user` block) apply to ANONYMOUS clients.
+#     On this broker the only anonymous clients are the internal consumers on
+#     the 1883 loopback listener (edge-transformer) — never a WAN client, since
+#     8883 sets require_certificate.
+#   - `pattern` lines apply to every AUTHENTICATED user, substituting %u = the
+#     username. With use_identity_as_username, %u = the client cert CN. So each
+#     mTLS tenant is scoped to exactly its own SparkPlug group namespace.
+#
+# The invariant: a WAN client authenticated as CN=BISPHARMA can ONLY touch
+# spBv1.0/BISPHARMA/# — it cannot publish or subscribe as any other tenant,
+# regardless of what topic it names. The cert asserts the tenant; the ACL binds
+# it. This is the write-side analogue of refdata's server-derived id_enterprise.
+
+# ── Internal consumers (anonymous, 1883 loopback only) ────────────────────────
+# edge-transformer needs to read every tenant's decoded stream off the internal
+# bus. These lines grant the anonymous internal consumer full SparkPlug access;
+# they do NOT apply to the authenticated (mTLS) WAN tenants above.
+topic readwrite spBv1.0/#
+topic read $SYS/#
+
+# ── Per-tenant WAN publishers (mTLS, %u = client-cert CN) ─────────────────────
+# One rule covers every current and future tenant — no per-tenant edit needed;
+# onboarding a tenant is issuing its CN=<tenant> cert, not touching this file.
+pattern readwrite spBv1.0/%u/#

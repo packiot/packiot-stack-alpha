@@ -1,16 +1,15 @@
-# Production VPC — single public subnet, single EC2 (dry-run phase).
+# Production VPC — public subnet (app EC2 + NAT) + private subnet (DB EC2).
 #
-# Simpler than staging on purpose:
-#   - No private subnet (the only EC2 lives in public; no DB EC2 to isolate).
-#   - No NAT instance (no private subnet → nothing to NAT from).
-#   - CIDR room reserved (10.20.10.0/24) for a future private subnet if/when
-#     we split out the DB.
+# W6 of the production-buildout roadmap split the DB onto its own instance:
+#   - Public subnet: app EC2 (Nginx + service plane) + the NAT instance.
+#   - Private subnet: the dedicated DB EC2 (database.tf), reachable only from
+#     the app SG; egress via the NAT instance (nat.tf).
+#   - The private subnet uses the 10.20.10.0/24 space variables.tf always
+#     reserved for exactly this split.
 #
-# The single-EC2 design is a deliberate dry-run phase choice. When the
-# customer migration brings real workload, the split-out to a 2-EC2
-# topology (app public + db private + NAT) is mechanical: add private
-# subnet + nat.tf (copied from staging) + a second aws_instance, then
-# `terraform apply`.
+# Until the compose DATABASE_URL is repointed (W1 compose-parity follow-up), the
+# app box still runs its local TimescaleDB container; the DB EC2 is the
+# right-sized target it migrates onto. config/plan-only — nothing applied.
 
 resource "aws_vpc" "production" {
   cidr_block           = var.vpc_cidr
@@ -36,7 +35,17 @@ resource "aws_subnet" "public" {
   tags                    = { Name = "packiot-production-public" }
 }
 
-# ── Route table ────────────────────────────────────────────────────────────────
+# Private: dedicated DB EC2 (W6). No inbound from internet; egress via the NAT
+# instance (nat.tf). Uses the reserved 10.20.10.0/24 space that variables.tf
+# always documented for the DB split.
+resource "aws_subnet" "private" {
+  vpc_id            = aws_vpc.production.id
+  cidr_block        = var.private_subnet_cidr
+  availability_zone = var.az
+  tags              = { Name = "packiot-production-private" }
+}
+
+# ── Route tables ───────────────────────────────────────────────────────────────
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.production.id
@@ -50,6 +59,22 @@ resource "aws_route_table" "public" {
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
+}
+
+# Private route: 0.0.0.0/0 → NAT instance ENI (nat.tf). The DB EC2 has no public
+# IP; this is its only path to OS updates / SSM / Docker Hub / Secrets Manager.
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.production.id
+  route {
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = aws_instance.nat.primary_network_interface_id
+  }
+  tags = { Name = "packiot-production-private-rt" }
+}
+
+resource "aws_route_table_association" "private" {
+  subnet_id      = aws_subnet.private.id
+  route_table_id = aws_route_table.private.id
 }
 
 # ── Elastic IP for the app EC2 ─────────────────────────────────────────────────
