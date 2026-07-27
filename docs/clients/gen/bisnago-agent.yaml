@@ -1,0 +1,53 @@
+sparkplug:
+    group_id: BISNAGO
+    edge_node_id: bisnago-tee
+    packml_topic: BISNAGO/SP
+    internal_broker: tcp://mosquitto:1883
+    raw_topic: edge/raw/bisnago/#
+    uplink_broker: tcp://mosquitto:1883
+    uplink_tls_cert_ref: ""
+    uplink_tls_key_ref: ""
+    uplink_ca_ref: ""
+raw_tag_map:
+    - metric_suffix: /LINHAS/L71/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L71/M670/Admin/ProdProcessedCount/670/Unit
+      type: double
+    - metric_suffix: /LINHAS/L71/M671/Admin/ProdProcessedCount/671/Unit
+      type: double
+    - metric_suffix: /LINHAS/L72/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L72/M672/Admin/ProdProcessedCount/672/Unit
+      type: double
+    - metric_suffix: /LINHAS/L72/M673/Admin/ProdProcessedCount/673/Unit
+      type: double
+    - metric_suffix: /LINHAS/L73/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L73/M674/Admin/ProdProcessedCount/674/Unit
+      type: double
+    - metric_suffix: /LINHAS/L73/M675/Admin/ProdProcessedCount/675/Unit
+      type: double
+    - metric_suffix: /LINHAS/L56/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L56/M676/Admin/ProdProcessedCount/676/Unit
+      type: double
+    - metric_suffix: /LINHAS/L56/M677/Admin/ProdProcessedCount/677/Unit
+      type: double
+    - metric_suffix: /LINHAS/L57/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L57/M678/Admin/ProdProcessedCount/678/Unit
+      type: double
+    - metric_suffix: /LINHAS/L57/M679/Admin/ProdProcessedCount/679/Unit
+      type: double
+    - metric_suffix: /LINHAS/L58/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L58/M680/Admin/ProdProcessedCount/680/Unit
+      type: double
+    - metric_suffix: /LINHAS/L58/M681/Admin/ProdProcessedCount/681/Unit
+      type: double
+    - metric_suffix: /LINHAS/L60/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /LINHAS/L60/M682/Admin/ProdProcessedCount/682/Unit
+      type: double
+    - metric_suffix: /LINHAS/L60/M683/Admin/ProdProcessedCount/683/Unit
+      type: double

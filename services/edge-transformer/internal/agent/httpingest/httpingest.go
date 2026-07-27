@@ -36,6 +36,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/numeric"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 )
 
@@ -66,6 +67,19 @@ type Config struct {
 
 	// MaxBodyBytes caps the request body; <=0 → DefaultMaxBodyBytes.
 	MaxBodyBytes int64
+
+	// Numeric, when non-nil, mounts the STACK-SIDE numeric-count-index
+	// translation front-door POST /v1/counters (ADR-0045 §2.3 Option-B): it
+	// accepts the legacy `counterData[{id,value}]` shape, translates each
+	// numeric id → a canonical rawtag via the tenant's count-index table, and
+	// feeds the SAME sink as /v1/tags. Nil ⇒ the endpoint is not mounted (a
+	// non-numeric tenant), so the surface stays off unless a tenant needs it.
+	Numeric *numeric.Translator
+
+	// NumericUnmapped, when non-nil, counts legacy count ids seen on
+	// /v1/counters that resolved to no canonical metric — the onboarding DQ
+	// signal (ADR-0045 §2.4a "reject-don't-drop"). Optional.
+	NumericUnmapped prometheus.Counter
 }
 
 // Outcome label values for the ingest counter (mirrors ingest-shim/metrics so
@@ -81,12 +95,14 @@ const (
 // Server is the HTTP front-door. It is an http.Handler; main mounts it on the
 // ingest listener (a separate port from /healthz).
 type Server struct {
-	apiKey     []byte
-	scopeGroup string
-	maxBody    int64
-	sink       Sink
-	outcomes   *prometheus.CounterVec
-	logger     *slog.Logger
+	apiKey          []byte
+	scopeGroup      string
+	maxBody         int64
+	sink            Sink
+	outcomes        *prometheus.CounterVec
+	numeric         *numeric.Translator
+	numericUnmapped prometheus.Counter
+	logger          *slog.Logger
 }
 
 // New builds the handler. outcomes is a CounterVec with a single "outcome"
@@ -104,20 +120,26 @@ func New(cfg Config, sink Sink, outcomes *prometheus.CounterVec, logger *slog.Lo
 		maxBody = DefaultMaxBodyBytes
 	}
 	return &Server{
-		apiKey:     []byte(cfg.APIKey),
-		scopeGroup: strings.ToUpper(strings.TrimSpace(cfg.ScopeGroup)),
-		maxBody:    maxBody,
-		sink:       sink,
-		outcomes:   outcomes,
-		logger:     logger,
+		apiKey:          []byte(cfg.APIKey),
+		scopeGroup:      strings.ToUpper(strings.TrimSpace(cfg.ScopeGroup)),
+		maxBody:         maxBody,
+		sink:            sink,
+		outcomes:        outcomes,
+		numeric:         cfg.Numeric,
+		numericUnmapped: cfg.NumericUnmapped,
+		logger:          logger,
 	}
 }
 
-// Handler returns the routed mux (POST /v1/tags only; /healthz stays on the
-// agent's health server).
+// Handler returns the routed mux (POST /v1/tags always; POST /v1/counters only
+// when a numeric translator is configured). /healthz stays on the agent's
+// health server.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/tags", s.handleTags)
+	if s.numeric != nil {
+		mux.HandleFunc("POST /v1/counters", s.handleCounters)
+	}
 	return mux
 }
 
@@ -185,6 +207,80 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 		slog.Int("total", total),
 		slog.Int("bytes", len(body)))
 	writeJSON(w, http.StatusAccepted, `{"status":"accepted","accepted":`+itoa(accepted)+`,"total":`+itoa(total)+`}`)
+}
+
+// handleCounters is the STACK-SIDE numeric-count-index translation front-door
+// (ADR-0045 §2.3 Option-B). It accepts the legacy `counterData[{id,value}]`
+// shape a dumb tee forwards, translates each numeric id → a canonical rawtag via
+// the tenant's count-index table, and feeds the SAME sink as /v1/tags — so a
+// counters-only tenant that speaks no topic strings still lands canonical
+// SparkPlug metrics at the cloud decoder (one ingest contract, ADR-0032). Auth /
+// body-cap / scope guard mirror handleTags byte-for-byte.
+func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
+	s.inc(OutcomeReceived)
+
+	got := []byte(r.Header.Get("X-Ingest-Key"))
+	if subtle.ConstantTimeCompare(got, s.apiKey) != 1 {
+		s.reject(w, http.StatusUnauthorized, OutcomeRejectedAuth, "unauthorized", "", 0)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			return
+		}
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "cannot read body", "", int64(len(body)))
+		return
+	}
+	if len(body) == 0 {
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "empty body", "", 0)
+		return
+	}
+
+	if s.scopeGroup != "" {
+		if g, ok := probeGroup(body); ok && !strings.EqualFold(g, s.scopeGroup) {
+			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "out-of-scope group", g, int64(len(body)))
+			return
+		}
+	}
+
+	env, counters, err := numeric.DecodeEnvelope(body)
+	if err != nil {
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "undecodable counter envelope", "", int64(len(body)))
+		return
+	}
+
+	endpoint := env.Endpoint
+	if endpoint == "" {
+		endpoint = env.Gateway
+	}
+	tags, unmapped := s.numeric.Translate(counters, endpoint, env.EnvelopeTS())
+	if s.numericUnmapped != nil && len(unmapped) > 0 {
+		s.numericUnmapped.Add(float64(len(unmapped)))
+	}
+
+	// Feed the shared pipeline. accepted<len(tags) means a translated suffix was
+	// still unmapped by the resolver (a raw_tag_map / translation-table skew —
+	// should never happen since both derive from the same profile, but surfaced
+	// not swallowed).
+	accepted, total := s.sink(tags)
+	s.inc(OutcomeAccepted)
+	s.logger.Info("counters translated",
+		slog.Int("counters", len(counters)),
+		slog.Int("translated", len(tags)),
+		slog.Int("accepted", accepted),
+		slog.Int("resolver_total", total),
+		slog.Int("unmapped_index", len(unmapped)),
+		slog.Int("bytes", len(body)))
+	writeJSON(w, http.StatusAccepted,
+		`{"status":"accepted","counters":`+itoa(len(counters))+
+			`,"translated":`+itoa(len(tags))+
+			`,"accepted":`+itoa(accepted)+
+			`,"unmapped_index":`+itoa(len(unmapped))+`}`)
 }
 
 // reject centralises the metric bump + structured log (never the key or tag
