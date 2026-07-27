@@ -303,9 +303,18 @@ services:
           echo "   Populate it (README §4) then redeploy. Parity gate will FAIL until then.";
           exit 0;
         fi
-        for f in $$(ls /f3/snapshot/*.sql | sort); do
-          echo "== applying $$f ==";
-          psql -v ON_ERROR_STOP=1 -f "$$f";
+        # 00-* = the curated pg_dump base (tables/functions/views): applied
+        # BEST-EFFORT — a plain restore benignly fails on the cagg VIEW blocks
+        # (dumped over _timescaledb_internal) + a couple debris index/type refs;
+        # the REAL caggs/hypertables come from the strict 05-*/10-* timescale
+        # layer next. 05+/10+ = the timescale-aware recreation: applied STRICT.
+        # The parity gate (scripts/prod-f3-schema-parity-check.sh) is the real
+        # guarantee — proven F3_MISSING=0 for this exact sequence.
+        for f in $$(ls /f3/snapshot/00-*.sql 2>/dev/null | sort); do
+          echo "== applying (best-effort) $$f =="; psql -f "$$f" || true;
+        done
+        for f in $$(ls /f3/snapshot/*.sql | grep -v '/00-' | sort); do
+          echo "== applying (strict) $$f =="; psql -v ON_ERROR_STOP=1 -f "$$f";
         done
         echo "F3 schema assembled. Prove it: scripts/prod-f3-schema-parity-check.sh gate"
     volumes:

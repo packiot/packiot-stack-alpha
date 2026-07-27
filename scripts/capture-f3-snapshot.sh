@@ -45,7 +45,12 @@ EOF
   exit 3
 fi
 
-# remote: run pg_dump in the container, gzip+base64 to stdout
+# remote: run pg_dump in the container, gzip+base64 to stdout. Excludes the
+# staging debris (mirrors db/init-f3/DEBRIS.exclude). NOTE: pg_dump CANNOT
+# restore TimescaleDB continuous aggregates via plain psql (it dumps them as
+# views over _timescaledb_internal._materialized_hypertable_NN). Those + the
+# hypertables are recreated by the strict 05-*/10-* timescale layer, NOT here —
+# see the post-process below and db/init-f3/README.md §3.
 remote=$(cat <<'REMOTE'
 set -e
 docker exec -i timescaledb pg_dump -U postgres -d __DB__ \
@@ -56,6 +61,8 @@ docker exec -i timescaledb pg_dump -U postgres -d __DB__ \
   --exclude-table='*_13_po_func_ret' \
   --exclude-table='hasura_test' \
   --exclude-table='dt5min_po_function_returns' \
+  --exclude-table='lab_equipment_values' \
+  --exclude-table='*lab_equipment_values*' \
   | gzip -9 | base64 -w0
 REMOTE
 )
@@ -72,5 +79,30 @@ script -qec "aws ssm start-session --target $INSTANCE \
   | tr -d '\n' | base64 -d | gunzip > "$OUT/00-packiot_shadow-schema.sql"
 
 echo "wrote $OUT/00-packiot_shadow-schema.sql ($(wc -l < "$OUT/00-packiot_shadow-schema.sql") lines)" >&2
-echo "NEXT: split into ordered NN-*.sql (ext→tables→hypertables→caggs→fns/views→" >&2
-echo "constraints), re-tune cagg policies for prod, then run the parity gate." >&2
+
+# ── post-process: strip the object blocks a plain restore can't handle ─────────
+# (cagg VIEW blocks over _timescaledb_internal, cross-schema refs, residual
+# debris). The strict 05-*/10-* timescale layer recreates the real caggs. This
+# is the exact strip proven to yield parity F3_MISSING=0 (README §3/§5).
+python3 - "$OUT/00-packiot_shadow-schema.sql" <<'PY'
+import re, sys
+src=sys.argv[1]; text=open(src).read()
+parts=re.split(r'(?m)^(?=--\n-- Name: )', text)
+def drop(p):
+    m=re.search(r'-- Name: (.+?); Type: (.+?); Schema:', p)
+    name,typ=(m.group(1),m.group(2)) if m else ('','')
+    body=p
+    if typ in ('VIEW','MATERIALIZED VIEW') and ('_materialized_hypertable' in body or '_timescaledb_internal' in body): return True
+    if typ in ('VIEW','MATERIALIZED VIEW','FUNCTION') and ('customer_reports.' in body or 'customer_dashboards.' in body): return True
+    if re.search(r'\b(hasura_test|_po_func_ret|_po_function_returns|piot4_13_get_|c33_dashboard_|c35_dashboard_|report_[a-z]+_enterprsie_|equipment_boxes_cust_|agg_lab_|ca_lab_)', name): return True
+    if 'lab_equipment_values' in name: return True
+    return False
+kept=[p for p in parts if not drop(p)]
+open(src,'w').write(''.join(kept).replace('CREATE SCHEMA public;','CREATE SCHEMA IF NOT EXISTS public;'))
+print(f"stripped {len(parts)-len(kept)} debris/cagg-view blocks; kept {len(kept)}", file=sys.stderr)
+PY
+
+echo "NEXT: ensure the strict timescale layer is present (committed):" >&2
+echo "  05-f3-cagg-agg.sql          = docs/adr/reference/migrations/0012-f3-cagg-layer.sql" >&2
+echo "  10-f3-timescale-supplement.sql = 3 raw hypertables + 5 ca_* caggs (introspected)" >&2
+echo "Then prove: CANDIDATE_DSN=<fresh-db> scripts/prod-f3-schema-parity-check.sh gate" >&2

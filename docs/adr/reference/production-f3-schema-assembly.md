@@ -55,8 +55,29 @@ F3_MISSING = 344   EXTRA = 377   → FAIL
 ```
 
 Neither subset nor superset — a divergent shape. **Conclusion: greenfield prod
-must NOT be built by concatenating fragments.** The authoritative method is a
-curated schema-only dump of live `packiot_shadow` (matches by construction).
+must NOT be built by concatenating fragments.**
+
+## The authoritative method — PRODUCED and PROVEN to parity
+
+A curated schema-only dump of live `packiot_shadow`, plus a timescale-aware cagg
+layer (a plain pg_dump **cannot** restore TimescaleDB continuous aggregates — it
+dumps them as views over `_timescaledb_internal._materialized_hypertable_NN`).
+Three ordered files (`db/init-f3/snapshot/`): `00` curated dump (best-effort) +
+`05` = `0012-f3-cagg-layer.sql` (agg caggs, strict) + `10` introspected
+supplement (ca_* caggs + raw hypertables, strict). Full end-to-end on a fresh
+`timescaledb:2.25.2-pg16`:
+
+```
+TARGET (curated canonical F3)   T=152 V=10 F=129 C=14 H=4   total 309
+CANDIDATE (00+05+10 from empty)  T=152 V=10 F=129 C=14 H=4   total 309
+F3_MISSING = 0   EXTRA = 0   → PASS
+```
+
+**Version finding (USER decision):** staging F3 = **pg15.17**; prod image =
+**pg16 / tsdb-2.25.2**. The gate compares **user objects only** (extension-owned
+excluded) because the two TimescaleDB versions expose different internal function
+sets (466 vs the 129 user-relevant). The user schema matches exactly across the
+gap; the version bump is a real, conscious change (README §7).
 
 ## What was built
 
@@ -75,11 +96,14 @@ curated schema-only dump of live `packiot_shadow` (matches by construction).
 
 ## Validated vs gated
 
-- ✅ target manifest (live, SELECT-only); gate FAILs empty DB (562) + fragment
-  assembly (344); `docker compose config` exit 0; fragment divergence measured.
-- ⛔ **Populate `snapshot/`** via `capture-f3-snapshot.sh` — needs staging DB read
-  + USER go (schema-only, read-only-in-effect).
+- ✅ target manifest (live, SELECT-only); **snapshot produced** (curated dump +
+  `05`/`10` timescale layer); **full assembly gates to F3_MISSING=0, EXTRA=0** on
+  a fresh `timescaledb:2.25.2-pg16`; gate FAILs empty DB (562) + fragment
+  assembly (344); `docker compose config` exit 0.
+- ⚠ **PG version delta** pg15.17 (staging) → pg16/2.25.2 (prod image) — USER
+  decision (README §7); cagg refresh/retention policies carried from staging-tuned
+  `0012-f3-cagg-layer` should be re-tuned for prod (does not affect schema parity).
 - ⛔ **Reconcile edge-api knex** so it doesn't rebuild F1 over F3 (USER decision;
   options in the `compose.production.yml` `db-migrate` comment).
-- ⛔ **W1.6 prod dry-run boot** on an empty F3 DB — needs the snapshot + a deploy
-  (do NOT run against prod).
+- ⛔ **W1.6 prod dry-run boot** on an empty F3 DB — needs a deploy (do NOT run
+  against prod).

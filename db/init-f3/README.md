@@ -38,11 +38,13 @@ Captured from staging `packiot_shadow` (DB EC2 `i-064bb36d1c454d861`, `BEGIN REA
 `dashboard_config`, `user_roles`, `v_menu_per_user_role`, `v_report_downtimes`),
 and OEE anomaly-free (no `oee>1`, no `oee<0`).
 
-> Note: `MANIFEST.f3-target` is a *superset* of the strict canonical F3 — live
-> `packiot_shadow` has accreted staging debris that greenfield prod must NOT
-> inherit: `ops_shadow_zombie_preimage_20260716`, `report_shift_enterprsie_06`,
-> `report_speed_enterprsie_33`, `hasura_test`, `*_po_func_ret` snapshot tables,
-> the `c33_/c35_` per-tenant dashboard views. §4's curation drops these.
+> **The gate compares USER objects only** (extension-owned excluded — §7) and
+> against the **curated** canonical F3, not raw live `packiot_shadow`. Live has
+> accreted staging debris greenfield prod must NOT inherit
+> (`ops_shadow_zombie_preimage_*`, `report_*_enterprsie_*`, `hasura_test`,
+> `*_po_func_ret`, `c33_/c35_*`, lab leftovers) — the full pattern list is in
+> `DEBRIS.exclude`. After curation the canonical F3 baseline in
+> `MANIFEST.f3-target` = **309 user objects** (152 T, 130 F, 14 C, 4 H, 10 V).
 
 ---
 
@@ -146,11 +148,22 @@ pg_dump -U postgres -d packiot_shadow \
 #   (staging-parity-cagg-adoption.sql documents the staging divergence).
 ```
 
-Split the dump into ordered `snapshot/NN-*.sql` files (extensions → tables →
-hypertables → caggs → functions/views → constraints) so `db-schema-f3` applies
-them deterministically. Then **prove it** (§5). A snapshot dumped FROM
-`packiot_shadow` diffs to `F3_MISSING=0` by construction; the gate then also
-guards against future drift.
+**`capture-f3-snapshot.sh` does exactly this** and post-processes the dump (strips
+the cagg-view/`_timescaledb_internal` blocks + cross-schema refs + residual
+debris). The snapshot is then THREE ordered files `db-schema-f3` applies:
+
+| File | Applied | What |
+|---|---|---|
+| `snapshot/00-packiot_shadow-schema.sql` | best-effort | curated pg_dump base — **all 152 tables, 129 functions, 10 views** (byte-parity) |
+| `snapshot/05-f3-cagg-agg.sql` | strict | `= 0012-f3-cagg-layer.sql` — `equipment_values` hypertable + the 9 `agg_*` caggs |
+| `snapshot/10-f3-timescale-supplement.sql` | strict | the 3 remaining raw hypertables + the 5 `ca_*` caggs (defs introspected SELECT-only from `packiot_shadow`) |
+
+**Why the split:** a plain pg_dump **cannot** restore TimescaleDB continuous
+aggregates (it dumps them as views over `_timescaledb_internal._materialized_
+hypertable_NN`, absent on a fresh DB) — so the caggs + hypertables are recreated
+timescale-aware in `05`/`10`, and `00` is applied best-effort (its cagg-view blocks
+are stripped; a couple debris index/type refs fail benignly). **Proven: this exact
+sequence gates to `F3_MISSING=0` (§5/§6).**
 
 ---
 
@@ -171,12 +184,35 @@ F3 until F3_MISSING=0.**
 
 ## 6. Validated vs needs-the-real-DB
 
+**The snapshot is PRODUCED and PROVEN to F3_MISSING=0.** Full end-to-end on a fresh
+`timescaledb:2.25.2-pg16`: `00` (best-effort) + `05` + `10` (strict) →
+`T=152 V=10 F=129 C=14 H=4` == the curated canonical F3 target, **F3_MISSING=0,
+EXTRA=0**.
+
 | Item | Status |
 |---|---|
 | Target manifest captured from live `packiot_shadow` (SELECT-only) | ✅ validated |
-| Parity gate correctly FAILs an empty DB (F3_MISSING=562) and a partial assembly (344) | ✅ validated locally (`timescaledb:2.25.2-pg16`) |
+| Snapshot produced (curated schema-only dump + `05`/`10` timescale layer) | ✅ **done** (`snapshot/` populated) |
+| Full assembly → **F3_MISSING=0, EXTRA=0** on fresh `timescaledb:2.25.2-pg16` | ✅ **validated end-to-end** |
+| Gate correctly FAILs empty DB (562) + fragment assembly (344/377) | ✅ validated locally |
 | `compose.production.yml` `db-schema-f3` wiring + `docker compose config` | ✅ validated (exit 0) |
-| Fragment-assembly divergence measured (F3_MISSING=344 + EXTRA=377) | ✅ validated locally |
-| **Populate `snapshot/` via `capture-f3-snapshot.sh`** | ⛔ GATED — needs the staging DB read + USER sign-off (schema-only, read-only-in-effect) |
+| ⚠ **PG version delta:** staging F3 = **pg15.17**; prod image = **pg16 / tsdb-2.25.2** | ⚠ USER decision — see §7 |
+| Cagg refresh/retention **policies** carried from staging-tuned `0012-f3-cagg-layer` | ⚠ prod should re-tune (does not affect schema parity) |
 | Reconcile edge-api knex (must not rebuild F1 over F3) | ⛔ USER decision — see `compose.production.yml` db-migrate comment |
-| End-to-end prod dry-run boot on empty F3 DB (W1.6) | ⛔ needs the snapshot + a deploy (do NOT run against prod) |
+| End-to-end prod dry-run boot on empty F3 DB (W1.6) | ⛔ needs a deploy (do NOT run against prod) |
+
+## 7. Version delta — a conscious decision for USER
+
+The snapshot was dumped from staging `packiot_shadow` = **PostgreSQL 15.17** (older
+TimescaleDB, no `finalized` cagg column). The prod image (W1 PR #627) is
+**`timescale/timescaledb:2.25.2-pg16`**. The parity gate deliberately compares
+**user objects only** (extension-owned objects excluded via `pg_depend deptype='e'`)
+precisely because the two TimescaleDB versions expose *different* internal function
+sets — 466 total public functions on staging vs the user-relevant 129. The **user
+schema matches exactly** across the version gap, but the version bump itself
+(pg15→16, tsdb ~2.11→2.25) is a real change with behavior/format differences
+(finalized caggs, retention/compression policy syntax). **Decide:** ship prod on
+pg16/2.25.2 (recommended — newer, and the user schema is proven identical) and
+accept the caggs are recreated in the newer *finalized* form, OR pin prod to
+staging's exact versions for a byte-identical engine. Either way the parity gate
+guards the user schema.

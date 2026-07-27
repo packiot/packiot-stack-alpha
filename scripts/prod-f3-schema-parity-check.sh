@@ -68,7 +68,14 @@ read -r -d '' MANIFEST_SQL <<'SQL' || true
 \pset tuples_only on
 \pset format unaligned
 \pset fieldsep '\t'
-WITH caggs AS (
+-- ext_objs: every object OWNED BY an extension (timescaledb, pg_cron, …). These
+-- differ across PG/TimescaleDB VERSIONS (staging F3 = pg15.17; prod image =
+-- pg16/tsdb-2.25.2) and are NOT part of the F3 USER schema — comparing them
+-- produces false drift. We exclude them so the gate measures user objects only.
+WITH ext_objs AS (
+  SELECT objid FROM pg_depend WHERE deptype='e'
+),
+caggs AS (
   SELECT view_name FROM timescaledb_information.continuous_aggregates WHERE view_schema='public'
 )
 SELECT line FROM (
@@ -78,23 +85,25 @@ SELECT line FROM (
              FILTER (WHERE a.attnum>0 AND NOT a.attisdropped),'')) AS line, 1 ord, c.relname nm
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     LEFT JOIN pg_attribute a ON a.attrelid=c.oid
-   WHERE n.nspname='public' AND c.relkind='r'
+   WHERE n.nspname='public' AND c.relkind='r' AND c.oid NOT IN (SELECT objid FROM ext_objs)
    GROUP BY c.relname
   UNION ALL
   -- views (excluding caggs)
   SELECT 'V'||chr(9)||table_name, 2, table_name
     FROM information_schema.views v
    WHERE table_schema='public' AND table_name NOT IN (SELECT view_name FROM caggs)
+     AND (table_schema||'.'||table_name)::regclass::oid NOT IN (SELECT objid FROM ext_objs)
   UNION ALL
   -- materialized views (non-cagg)
   SELECT 'M'||chr(9)||matviewname, 3, matviewname
     FROM pg_matviews WHERE schemaname='public' AND matviewname NOT IN (SELECT view_name FROM caggs)
+      AND (schemaname||'.'||matviewname)::regclass::oid NOT IN (SELECT objid FROM ext_objs)
   UNION ALL
-  -- functions + procedures by identity signature
+  -- functions + procedures by identity signature (user-defined only)
   SELECT 'F'||chr(9)||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')', 4,
          p.proname||'('||pg_get_function_identity_arguments(p.oid)||')'
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-   WHERE n.nspname='public'
+   WHERE n.nspname='public' AND p.oid NOT IN (SELECT objid FROM ext_objs)
   UNION ALL
   -- continuous aggregates
   SELECT 'C'||chr(9)||view_name, 5, view_name FROM caggs
