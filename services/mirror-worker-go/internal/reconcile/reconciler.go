@@ -342,6 +342,11 @@ const (
 	outcomeSkipGrace       finisherOutcome = "skipped_grace"
 	outcomeSkipNoActivity  finisherOutcome = "skipped_no_activity"
 	outcomeSkipUnverified  finisherOutcome = "skipped_unverified"
+	// outcomeSkipNotTerminal is the prod-terminal closer's extra rung: the prod
+	// twin exists and is NOT status=2, but is also NOT status=3 (FINISHED) —
+	// e.g. still available (1) or paused (4). The closer only closes FINISHED
+	// twins, so it leaves these for a future pass / the #48 finisher.
+	outcomeSkipNotTerminal finisherOutcome = "skipped_not_terminal"
 )
 
 // finisherDecision applies the per-candidate safety ladder AFTER the set diff
@@ -385,7 +390,125 @@ func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO)
 	if err := r.runF1Finisher(ctx, prodPOs); err != nil {
 		return err
 	}
-	return r.runShadowFanout(ctx, prodPOs)
+	if err := r.runShadowFanout(ctx, prodPOs); err != nil {
+		return err
+	}
+	// Prod-terminal orphan closer (task follow-up to #48). Flag-gated + INERT by
+	// default: with RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS off this returns
+	// immediately, so runFinisher above is byte-identical to today's behavior.
+	// Sequenced LAST so it reads staging state that already reflects this pass's
+	// F1 closes — a status=2 orphan the finisher just sealed is now status=3 and
+	// the closer's status IN (1,2) candidate query skips it (no double work).
+	return r.runProdTerminalCloser(ctx, prodPOs)
+}
+
+// terminalCloserDecision is the prod-terminal closer's per-candidate safety
+// ladder — the pure twin of finisherDecision. It closes ONLY when the prod twin
+// is authoritatively FINISHED (status=3); every other state is a safety skip:
+//   - unverified: prod has no row for this id_order → can't confirm → skip;
+//   - still active: prod's FRESH read shows status=2 → skip (never close a
+//     running PO — the load-bearing safety rung, protects 894330/894668/894749);
+//   - not terminal: prod is neither 2 nor 3 (available/paused) → skip (this
+//     closer only closes FINISHED twins);
+//   - no activity: prod gave no last-activity ts → skip (never fabricate one);
+//   - grace: prod last-activity is inside the grace window → skip (possible
+//     flap / mid-transition).
+//
+// Only a status=3 twin past all rungs returns outcomeFinish, with the close ts.
+func terminalCloserDecision(info db.ProdPOFinishInfo, present bool, graceCutoff time.Time) finisherOutcome {
+	if !present {
+		return outcomeSkipUnverified
+	}
+	if info.Status == 2 {
+		return outcomeSkipStillActive
+	}
+	if info.Status != 3 {
+		return outcomeSkipNotTerminal
+	}
+	if !info.HasActivity {
+		return outcomeSkipNoActivity
+	}
+	if info.LastActivity.After(graceCutoff) {
+		return outcomeSkipGrace
+	}
+	return outcomeFinish
+}
+
+// runProdTerminalCloser closes the LAST finisher blemish: mirror-CREATED staging
+// POs stuck at status IN (1,2) whose prod twin has already FINISHED (status=3).
+// It reuses the finisher's prod authority (FetchPOFinishInfo) + grace window,
+// but on a WIDER staging candidate set (TerminalOrphanCandidatePOs = status IN
+// (1,2), reconcile-named only) and with a NULL-ts_start-safe close
+// (CloseProdTerminalOrphanPO). SELECT-only on prod; the only mutation is the
+// idempotent staging close. No-op (returns nil before any DB read) unless the
+// flag is on, so it costs nothing until deliberately enabled.
+func (r *Reconciler) runProdTerminalCloser(ctx context.Context, prodPOs []db.ProdActivePO) error {
+	if !r.cfg.ReconcileCloseProdTerminalOrphans {
+		return nil
+	}
+	candidatesMap, err := r.staging.TerminalOrphanCandidatePOs(ctx, r.cfg.StagingEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("fetch mirror-created terminal-orphan candidates: %w", err)
+	}
+
+	// Reuse computeOrphans' set diff (layer 1): a candidate still in prod's
+	// status=2 set is a legitimately-running PO and is excluded before any
+	// per-candidate work.
+	candidates := computeOrphans(candidatesMap, prodPOs)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	idOrders := make([]int64, len(candidates))
+	for i, c := range candidates {
+		idOrders[i] = c.IDOrder
+	}
+	info, err := r.prodDB.FetchPOFinishInfo(ctx, r.cfg.ProdEnterpriseID, idOrders)
+	if err != nil {
+		return fmt.Errorf("fetch prod PO finish info (terminal closer): %w", err)
+	}
+
+	graceCutoff := time.Now().UTC().Add(-time.Duration(r.cfg.ReconcileFinisherGraceMinutes) * time.Minute)
+	r.logger.Info("prod-terminal closer: evaluating candidates",
+		slog.Int("candidates", len(candidates)),
+		slog.Int("grace_minutes", r.cfg.ReconcileFinisherGraceMinutes))
+
+	for _, c := range candidates {
+		pi, present := info[c.IDOrder]
+		decision := terminalCloserDecision(pi, present, graceCutoff)
+		if decision != outcomeFinish {
+			metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues(string(decision)).Inc()
+			r.logger.Info("prod-terminal closer: skipping candidate",
+				slog.Int64("id_order", c.IDOrder),
+				slog.Int64("staging_po", c.StagingPOID),
+				slog.String("decision", string(decision)),
+				slog.Int("prod_status", pi.Status))
+			continue
+		}
+
+		closed, err := r.staging.CloseProdTerminalOrphanPO(ctx, c.StagingPOID, pi.LastActivity)
+		if err != nil {
+			metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues("failed").Inc()
+			r.logger.Warn("prod-terminal closer: close failed — next pass will retry",
+				slog.Int64("id_order", c.IDOrder),
+				slog.Int64("staging_po", c.StagingPOID),
+				slog.String("err", err.Error()))
+			continue
+		}
+		if !closed {
+			// Header already status!=(1,2) — a prior pass, the F1 finisher, or
+			// another writer beat us. The idempotency guard did its job.
+			metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues("skipped_idempotent").Inc()
+			continue
+		}
+		metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues(string(outcomeFinish)).Inc()
+		r.logger.Info("prod-terminal closer: closed orphaned PO at prod finish ts",
+			slog.Int64("id_order", c.IDOrder),
+			slog.Int64("staging_po", c.StagingPOID),
+			slog.Int("prod_status", pi.Status),
+			slog.Time("close_ts", pi.LastActivity))
+	}
+	return nil
 }
 
 // runF1Finisher executes one Flow-1 finisher pass on the prod-active snapshot

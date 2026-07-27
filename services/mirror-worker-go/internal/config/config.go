@@ -112,6 +112,23 @@ type Config struct {
 	ReconcileFinisherEnabled      bool
 	ReconcileFinisherGraceMinutes int
 
+	// Prod-terminal orphan closer (task follow-up to #48). Closes the LAST
+	// finisher blemish: a MIRROR-CREATED staging PO (nm LIKE 'CPACK-reconcile-%')
+	// that is stuck NOT-YET-RUNNING (status=1, ts_start NULL) or running
+	// (status=2) while its prod twin has already FINISHED (status=3). The #48
+	// finisher can't reach these two ways: (a) its candidate set is status=2
+	// ONLY — a status=1 orphan (never observed a start) is invisible to it; and
+	// (b) FinishOrphanPO's header UPDATE hard-gates on status=2 AND its ts_end
+	// write trips the production_orders_ts_start_ts_end check (23514) when
+	// ts_start is NULL. This closer widens the candidate set to status IN (1,2)
+	// and closes at prod's finish ts with a NULL-ts_start-safe, zero-duration
+	// seal (ts_start := ts_end := prod finish ts). It ONLY closes prod-terminal
+	// (status=3) twins — a prod-active (status=2) twin is SKIPPED, same safety
+	// posture as the finisher. Ships INERT (default false): with the flag off
+	// the finisher path is byte-identical to today's behavior. Enabled
+	// deliberately after review, staging-only.
+	ReconcileCloseProdTerminalOrphans bool
+
 	// Value-sync layer. The existence pass (above) tracks which POs are
 	// active. The value pass tracks WHAT they show: production_real,
 	// gross_production, net_production, qt_stops, OEE rollups. Without
@@ -273,11 +290,14 @@ func Load() (*Config, error) {
 		// Finisher ships INERT (default false) — enabled deliberately after review.
 		ReconcileFinisherEnabled:      getenvBool("RECONCILE_FINISHER_ENABLED", false),
 		ReconcileFinisherGraceMinutes: getenvInt("RECONCILE_FINISHER_GRACE_MINUTES", 30),
-		ReconcileValuesEnabled:        getenvBool("RECONCILE_VALUES_ENABLED", true),
-		ReconcileValuesIntervalSec:    getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
-		ReconcileEventsEnabled:        getenvBool("RECONCILE_EVENTS_ENABLED", true),
-		ReconcileEventsIntervalSec:    getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
-		ReconcileEventsBatchSize:      getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
+		// Prod-terminal orphan closer ships INERT (default false) — enabled
+		// deliberately after review; flag off = finisher behaves exactly as today.
+		ReconcileCloseProdTerminalOrphans: getenvBool("RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS", false),
+		ReconcileValuesEnabled:            getenvBool("RECONCILE_VALUES_ENABLED", true),
+		ReconcileValuesIntervalSec:        getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
+		ReconcileEventsEnabled:            getenvBool("RECONCILE_EVENTS_ENABLED", true),
+		ReconcileEventsIntervalSec:        getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
+		ReconcileEventsBatchSize:          getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
 
 		ReconcileEventsCloseSweepEnabled:     getenvBool("RECONCILE_EVENTS_CLOSE_SWEEP_ENABLED", false),
 		ReconcileEventsCloseSweepEveryNTicks: getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_EVERY_N_TICKS", 10),
