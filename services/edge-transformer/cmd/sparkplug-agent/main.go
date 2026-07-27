@@ -27,12 +27,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
@@ -43,6 +46,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/session"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tagstore"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tenantprofile"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/uplink"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/outbox"
@@ -71,16 +75,73 @@ func main() {
 		logger.Error("config load", "err", err)
 		os.Exit(1)
 	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// ── register-driven tag map (task #13, ADR-0009 / ADR-0042) ───────────────
+	// Flag-gated + additive: default OFF keeps the static YAML raw_tag_map
+	// byte-for-byte. ON builds the tag map from packml_register + the tenant
+	// conversion profile — the config-not-code replacement for hand-editing the
+	// per-client raw_tag_map (PR #590). A load failure here is fatal (a partial
+	// tag map would silently drop metrics), the same fail-closed discipline as
+	// the static loader.
+	tagSource := "static_yaml"
+	if getenvBool("AGENT_TAGMAP_FROM_REGISTER", false) {
+		if err := loadTagMapFromRegister(ctx, cfg, logger); err != nil {
+			logger.Error("register tag-map load", "err", err)
+			os.Exit(1)
+		}
+		tagSource = "packml_register"
+	}
+
+	// ── parameter decomposition (task #54 follow-up, ADR-0042) ────────────────
+	// Flag-gated + additive: default OFF = current behaviour (a bare
+	// "/Status/Parameter" is unmapped → dropped, and Phase-9 line aggregation
+	// never fires on real CPACK data). ON loads the tenant profile's
+	// parameter_decomposition rule; the ingest closure then rewrites each
+	// inbound bare-Parameter tag to its canonical numbered leaf using the tag's
+	// PackML parameter id — giving the Calc its Parameter30700 (and 30701/30750/
+	// 30751/30758) inputs. Load failure is fatal (fail-closed, same as above).
+	var decomposer *tenantprofile.Profile
+	if getenvBool("AGENT_PARAM_DECOMPOSITION", false) {
+		profPath := os.Getenv("AGENT_PROFILE_PATH")
+		if profPath == "" {
+			logger.Error("AGENT_PARAM_DECOMPOSITION=true requires AGENT_PROFILE_PATH")
+			os.Exit(1)
+		}
+		prof, err := tenantprofile.LoadProfile(profPath)
+		if err != nil {
+			logger.Error("param-decomposition profile load", "err", err)
+			os.Exit(1)
+		}
+		// A mis-pointed AGENT_PROFILE_PATH must not silently apply another
+		// tenant's decomposition. (Tenant is optional in the schema; enforce
+		// only when set — the same guard the register loader uses.)
+		if prof.Tenant != "" && prof.Tenant != cfg.Sparkplug.GroupID {
+			logger.Error("param-decomposition profile tenant mismatch",
+				"profile_tenant", prof.Tenant, "agent_group_id", cfg.Sparkplug.GroupID)
+			os.Exit(1)
+		}
+		if prof.ParameterDecomposition.SourceLeaf == "" {
+			logger.Error("AGENT_PARAM_DECOMPOSITION=true but profile has no parameter_decomposition.source_leaf",
+				"profile", profPath)
+			os.Exit(1)
+		}
+		decomposer = prof
+		logger.Info("parameter decomposition enabled",
+			"source_leaf", prof.ParameterDecomposition.SourceLeaf,
+			"params", len(prof.ParameterDecomposition.Params))
+	}
+
 	logger.Info("sparkplug-agent starting",
 		"group_id", cfg.Sparkplug.GroupID,
 		"edge_node_id", cfg.Sparkplug.EdgeNodeID,
 		"internal_broker", cfg.Sparkplug.InternalBroker,
 		"uplink_broker", cfg.Sparkplug.UplinkBroker,
 		"raw_topic", cfg.Sparkplug.RawTopic,
+		"tag_source", tagSource,
 		"tags", len(cfg.RawTagMap))
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	// ── pipeline construction ────────────────────────────────────────────
 	resolver := newResolver(cfg)
@@ -110,6 +171,11 @@ func main() {
 		Help: "Raw-tag messages dropped, by reason (queue_full|unmapped|decode_error).",
 	}, []string{"reason"})
 	reg.MustRegister(dropped)
+	decomposed := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_param_decomposed_total",
+		Help: "Bare-Parameter raw tags rewritten to a canonical numbered leaf, by PackML parameter id.",
+	}, []string{"param_id"})
+	reg.MustRegister(decomposed)
 
 	// ingest is the SHARED pipeline entry point: resolve each raw tag against
 	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
@@ -119,6 +185,18 @@ func main() {
 	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
 	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
 		for _, t := range tags {
+			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
+			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the
+			// allowlist lookup, so the numbered entry (e.g. Parameter30700) both
+			// resolves here and publishes under the name the Calc keys on. A
+			// tag that doesn't match the rule is returned unchanged. `t` is a
+			// range copy, so mutating t.Metric is local to this iteration.
+			if decomposer != nil && t.ParamID != 0 {
+				if newSuffix, ok := decomposer.DecomposeParameterSuffix(t.Metric, t.ParamID); ok {
+					t.Metric = newSuffix
+					decomposed.WithLabelValues(strconv.Itoa(t.ParamID)).Inc()
+				}
+			}
 			if _, _, ok := resolver.Resolve(t.Metric); !ok {
 				dropped.WithLabelValues("unmapped").Inc()
 				continue
@@ -248,6 +326,89 @@ func main() {
 			}
 		}
 	}
+}
+
+// loadTagMapFromRegister replaces cfg.RawTagMap with a map built from
+// packml_register + the tenant conversion profile (task #13). It reads the
+// profile from AGENT_PROFILE_PATH, dials Postgres from the DB_* env (only here,
+// only when the flag is on), fetches the tenant's equipment rows, synthesizes
+// the canonical suffix→type map, and installs it (re-validated). The tenant is
+// scoped by the profile's enterprise_id — the cross-tenant guard.
+func loadTagMapFromRegister(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) error {
+	profPath := os.Getenv("AGENT_PROFILE_PATH")
+	if profPath == "" {
+		return fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
+	}
+	prof, err := tenantprofile.LoadProfile(profPath)
+	if err != nil {
+		return fmt.Errorf("load profile: %w", err)
+	}
+	// Guard: a profile's tenant must match the agent it configures, so a
+	// mis-pointed AGENT_PROFILE_PATH can't silently build another tenant's map.
+	if prof.Tenant != "" && prof.Tenant != cfg.Sparkplug.GroupID {
+		return fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
+	}
+	if prof.EnterpriseID == 0 {
+		return fmt.Errorf("profile enterprise_id is required for the register loader")
+	}
+
+	dsn, err := registerDSN()
+	if err != nil {
+		return err
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("pgx pool: %w", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		return fmt.Errorf("db ping: %w", err)
+	}
+
+	fetcher := agentcfg.NewPGRegisterFetcher(pool)
+	rows, err := fetcher.FetchEquipment(ctx, prof.EnterpriseID, prof.TenantPrefix)
+	if err != nil {
+		return fmt.Errorf("fetch equipment: %w", err)
+	}
+	entries, err := agentcfg.BuildRawTagMapFromRegister(prof, rows)
+	if err != nil {
+		return fmt.Errorf("build tag map: %w", err)
+	}
+	if err := cfg.SetRawTagMap(entries); err != nil {
+		return fmt.Errorf("install tag map: %w", err)
+	}
+	logger.Info("register-driven tag map built",
+		"tenant", prof.Tenant,
+		"enterprise_id", prof.EnterpriseID,
+		"equipment_rows", len(rows),
+		"tags", len(entries))
+	return nil
+}
+
+// registerDSN builds a postgres DSN. AGENT_REGISTER_DSN wins if set (a full
+// URL); otherwise it is assembled from DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/
+// DB_NAME with proper percent-encoding — the same DB_* convention the sibling
+// services use.
+func registerDSN() (string, error) {
+	if v := os.Getenv("AGENT_REGISTER_DSN"); v != "" {
+		return v, nil
+	}
+	user := os.Getenv("DB_USER")
+	pass := os.Getenv("DB_PASSWORD")
+	if user == "" || pass == "" {
+		return "", fmt.Errorf("register loader needs AGENT_REGISTER_DSN or DB_USER+DB_PASSWORD (+DB_HOST/DB_PORT/DB_NAME)")
+	}
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, pass),
+		Host:   fmt.Sprintf("%s:%d", getenv("DB_HOST", "postgres"), getenvInt("DB_PORT", 5432)),
+		Path:   "/" + getenv("DB_NAME", "packiot"),
+	}
+	q := u.Query()
+	q.Set("sslmode", getenv("DB_SSLMODE", "disable"))
+	q.Set("application_name", "sparkplug-agent-register")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // resolver implements session.Resolver over the agent's raw_tag_map.
