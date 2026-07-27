@@ -449,6 +449,17 @@ func main() {
 		// corrected shape while F2 stays raw as the tsp12 divergence control.
 		// Requires USE_GO_PORT=true (Calc must be running) to have any effect.
 		emitCutoverRefactored := os.Getenv("CALC_CUTOVER_REFACTORED") == "true"
+		// ADR-0032 §6 Step 3 (F2 collapse): gate the F2 ("go" → shadow_go_port
+		// on packiot) emit leg. Default TRUE = current triple-emit behavior — the
+		// go leg still emits, so NOTHING changes until this is deliberately flipped
+		// false at the collapse. Sense is INVERTED vs the default-false siblings
+		// above: only an exact "false" turns it off (unset / anything-else stays
+		// on), matching a fail-safe default-on idiom so an accidental typo can't
+		// silently drop the ADR-0010 validation leg.
+		emitGo := os.Getenv("SHADOW_EMIT_GO") != "false"
+		if !emitGo {
+			logger.Info("F2 emit leg DISABLED (SHADOW_EMIT_GO=false): source_type=go dropped from emit set (ADR-0032 §6 Step 3)")
+		}
 		if emitRefactored {
 			logger.Info("shadow dual-emit enabled: publishing source_type=go AND source_type=refactored envelopes")
 		}
@@ -459,7 +470,7 @@ func main() {
 			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
 				slog.Bool("use_go_port", cfg.UseGoPort))
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -1271,7 +1282,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1399,7 +1410,14 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			// was feeding the tables). Tenant rides inside the envelope.
 			routingKey := "sparkplug.data"
 
-			sourceTypes := []string{"go"}
+			// ADR-0032 §6 Step 3: the F2 ("go") leg is now gated by
+			// SHADOW_EMIT_GO (default true). With all flags at their
+			// current-behavior defaults the set is ["go","refactored",""],
+			// byte-identical to the previous hardcoded triple-emit.
+			sourceTypes := make([]string, 0, 3)
+			if emitGo {
+				sourceTypes = append(sourceTypes, "go")
+			}
 			if emitRefactored {
 				sourceTypes = append(sourceTypes, "refactored")
 			}

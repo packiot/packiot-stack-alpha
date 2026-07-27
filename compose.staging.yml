@@ -1491,6 +1491,20 @@ services:
       # Scope guard: only payloads whose topic/group first segment is
       # INCOPLAST (case-insensitive) are admitted; everything else → 403.
       SCOPE_GROUP: INCOPLAST
+      # Fan-out (ADR-0032 §6 Step 4 safety): make the source_type fan-out
+      # EXPLICIT rather than relying on the code default. This value is the
+      # current-behavior default from ingest-shim config.go
+      # (getenv("FANOUT_SOURCE_TYPES","legacy,go,refactored")) — the shim
+      # republishes each Incoplast message once per flow: "legacy"→F1 (""),
+      # "go"→F2, "refactored"→F3. It was UNSET on staging, so the running
+      # container already used exactly this triple; making it explicit is a
+      # NO-OP today (byte-identical fan-out) and turns the Step-4 flip into a
+      # one-line change.
+      #
+      # ⚠️ STEP-4 FLIP (do NOT change here now): set this to `refactored` so
+      # Incoplast lands in F3 only once F1 emit/compute is stopped. Leaving it
+      # implicit would let Incoplast keep landing in F1 after the collapse.
+      FANOUT_SOURCE_TYPES: legacy,go,refactored
       # Public TLS API on 8444; Prometheus metrics on 9105 (internal).
       HTTP_ADDR: ":8444"
       METRICS_ADDR: ":9105"
