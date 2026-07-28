@@ -1,0 +1,114 @@
+tenant: BISPHARMA
+enterprise_id: 4
+tenant_prefix: BISPHARMA/SP
+prefix_fixups: []
+metric_aliases: []
+parameter_aliases: []
+parameter_decomposition:
+    source_leaf: ""
+    params: []
+count_index:
+    mode: equipment_id
+    overrides:
+        /LINHAS/L01/S1_INFEED: 168
+        /LINHAS/L01/S3: 164
+        /LINHAS/L01/S4: 165
+        /LINHAS/L01/S5: 166
+        /LINHAS/L01/S6_OUTPUT: 167
+        /LINHAS/L01/SCRAP: 169
+        /LINHAS/L03/S1_INFEED: 311
+        /LINHAS/L03/S3: 307
+        /LINHAS/L03/S4: 308
+        /LINHAS/L03/S5: 309
+        /LINHAS/L03/S6_OUTPUT: 310
+        /LINHAS/L03/SCRAP: 312
+        /LINHAS/L04/S1_INFEED: 318
+        /LINHAS/L04/S3: 314
+        /LINHAS/L04/S4: 315
+        /LINHAS/L04/S5: 316
+        /LINHAS/L04/S6_OUTPUT: 317
+        /LINHAS/L04/SCRAP: 319
+        /LINHAS/L05/S1_INFEED: 628
+        /LINHAS/L05/S3: 624
+        /LINHAS/L05/S4: 625
+        /LINHAS/L05/S5: 626
+        /LINHAS/L05/S6_OUTPUT: 627
+        /LINHAS/L05/SCRAP: 629
+        /LINHAS/L06/S1_INFEED: 261
+        /LINHAS/L06/S3: 257
+        /LINHAS/L06/S4: 258
+        /LINHAS/L06/S5: 259
+        /LINHAS/L06/S6_OUTPUT: 260
+        /LINHAS/L06/SCRAP: 262
+        /LINHAS/L07/S1_INFEED: 324
+        /LINHAS/L07/S3: 320
+        /LINHAS/L07/S4: 321
+        /LINHAS/L07/S5: 322
+        /LINHAS/L07/S6_OUTPUT: 323
+        /LINHAS/L07/SCRAP: 325
+        /LINHAS/L09/S1_INFEED: 128
+        /LINHAS/L09/S3: 124
+        /LINHAS/L09/S4: 125
+        /LINHAS/L09/S5: 126
+        /LINHAS/L09/S6_OUTPUT: 127
+        /LINHAS/L09/SCRAP: 129
+        /LINHAS/L11/S1_INFEED: 174
+        /LINHAS/L11/S3: 170
+        /LINHAS/L11/S4: 171
+        /LINHAS/L11/S5: 172
+        /LINHAS/L11/S6_OUTPUT: 173
+        /LINHAS/L11/SCRAP: 175
+        /LINHAS/L12/S1_INFEED: 180
+        /LINHAS/L12/S3: 176
+        /LINHAS/L12/S4: 177
+        /LINHAS/L12/S5: 178
+        /LINHAS/L12/S6_OUTPUT: 179
+        /LINHAS/L12/SCRAP: 181
+        /LINHAS/L13/S1_INFEED: 305
+        /LINHAS/L13/S3: 301
+        /LINHAS/L13/S4: 302
+        /LINHAS/L13/S5: 303
+        /LINHAS/L13/S6_OUTPUT: 304
+        /LINHAS/L13/SCRAP: 306
+        /LINHAS/L14/S1_INFEED: 336
+        /LINHAS/L14/S3: 332
+        /LINHAS/L14/S4: 333
+        /LINHAS/L14/S5: 334
+        /LINHAS/L14/S6_OUTPUT: 335
+        /LINHAS/L14/SCRAP: 337
+        /LINHAS/L16/S1_INFEED: 186
+        /LINHAS/L16/S3: 182
+        /LINHAS/L16/S4: 183
+        /LINHAS/L16/S5: 184
+        /LINHAS/L16/S6_OUTPUT: 185
+        /LINHAS/L16/SCRAP: 187
+        /LINHAS/L18/ACUMULADOR: 546
+        /LINHAS/L18/IMPRESSAO: 548
+        /LINHAS/L18/PRENSA: 543
+        /LINHAS/L18/TAMPADEIRA: 549
+        /LINHAS/L18/TORNO: 544
+        /LINHAS/L19/S1_INFEED: 647
+        /LINHAS/L19/S3: 643
+        /LINHAS/L19/S4: 644
+        /LINHAS/L19/S5: 645
+        /LINHAS/L19/S6_OUTPUT: 646
+        /LINHAS/L19/SCRAP: 648
+        /LINHAS/L20/S1_INFEED: 653
+        /LINHAS/L20/S3: 649
+        /LINHAS/L20/S4: 650
+        /LINHAS/L20/S5: 651
+        /LINHAS/L20/S6_OUTPUT: 652
+        /LINHAS/L20/SCRAP: 654
+        /LINHAS/L90/S1_INFEED: 684
+        /LINHAS/L90/S2_OUTPUT: 685
+metric_templates:
+    line:
+        - leaf: /Admin/ProdProcessedCount
+          type: double
+        - leaf: /Admin/ProdConsumedCount
+          type: double
+        - leaf: /Admin/ProdDefectiveCount
+          type: double
+    member:
+        - leaf: /Admin/ProdProcessedCount/{idx}/Unit
+          type: double

@@ -48,6 +48,19 @@ type RawTag struct {
 	// Quality is the tag quality flag (envelope "q"). Absent ⇒ good (true):
 	// a connectivity plane that omits quality is asserting a good read.
 	Quality bool
+
+	// ParamID is the PackML parameter number (envelope "param") that
+	// disambiguates an overloaded, id-carrying metric — CPACK's real
+	// ".../Status/Parameter" write, whose parameter number (30700 line-machines
+	// CSV, 30701 ideal speed, 30750/30751 min-speed threshold, 30758 event
+	// trigger, 30800+ PO control) travels in the SparkPlug metric's id/alias
+	// field, NOT the topic (verified against prod 2026-07-23: a single bare
+	// ".../Status/Parameter" topic per equipment; the id sits on the metric).
+	// The tee copies that id here; the agent's parameter_decomposition step
+	// (tenantprofile) rewrites the bare suffix to its canonical numbered leaf.
+	// 0 ⇒ absent — the vast majority of tags carry no param id (valid PackML
+	// ids are ≥30000, so 0 is an unambiguous sentinel).
+	ParamID int
 }
 
 // envelope is the on-wire JSON shape (ADR-0042 §2.3): an endpoint + scan
@@ -61,9 +74,10 @@ type envelope struct {
 type envelopeTag struct {
 	Metric string          `json:"metric"`
 	Value  json.RawMessage `json:"value"`
-	Q      *bool           `json:"q,omitempty"`    // absent ⇒ good
-	Long   bool            `json:"long,omitempty"` // type hint
-	TS     int64           `json:"ts,omitempty"`   // per-tag override of scan_ts
+	Q      *bool           `json:"q,omitempty"`     // absent ⇒ good
+	Long   bool            `json:"long,omitempty"`  // type hint
+	TS     int64           `json:"ts,omitempty"`    // per-tag override of scan_ts
+	Param  int             `json:"param,omitempty"` // PackML parameter id (id-carrying Parameter metric); 0 ⇒ absent
 }
 
 // Decode parses one raw-tag envelope body into per-tag readings. An empty
@@ -103,6 +117,7 @@ func Decode(body []byte) ([]RawTag, error) {
 			Type:           typ,
 			TsMillis:       ts,
 			Quality:        quality,
+			ParamID:        t.Param,
 		})
 	}
 	return out, nil

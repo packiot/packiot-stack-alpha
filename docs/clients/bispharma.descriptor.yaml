@@ -1,0 +1,230 @@
+# bispharma.descriptor.yaml — BISPHARMA CLIENT DESCRIPTOR (ADR-0045 P1).
+#
+# FILLED FROM THE CLIENT'S LEGACY NODE-RED FLOW (bispharma.json — 16 S7 endpoints,
+# 16 s7-in, 19 function nodes, 1 GCP PubSub out). Unlike the intake doc's original
+# "greenfield, zero PLC facts" assumption, the legacy flow IS the client's ground
+# truth and resolves intake §1/§2/§4/§5 outright. See docs/clients/bispharma-profile.md
+# for the full extraction, node-by-node provenance, and the CONFIRMED-vs-NEEDS-CLIENT
+# ledger. Every equipment row below cites the flow node it came from.
+#
+# ⚠️  DRAFT / OBSERVE-MODE descriptor. It VALIDATES and onboard-gen emits all four
+#     artifacts from it, but it is NOT cutover-ready — three classes of value are
+#     PROVISIONAL and must be confirmed before a real cutover (see profile.md §Gaps):
+#       1. enterprise_id + all id_equipment  → synthetic staging block; reassign in tenant-prep
+#       2. site/area/machine NAMES           → only L18's machines are named by the flow;
+#          "SP", "LINHAS", and S1..S6 station labels are placeholders (COSMETIC / NEEDS-CLIENT)
+#       3. rated speeds                       → NONE in the flow (counters-only); NEEDS-CLIENT
+#     count_index values, by contrast, are CONFIRMED-FROM-FLOW (the flow emits `id:<N>`
+#     verbatim) — the inverse of CPACK, whose indices were inferred pending a live tee.
+#
+# HOW BISPHARMA DIFFERS FROM CPACK (do NOT assume CPACK conventions — see profile.md):
+#   • NO topic strings in the flow at all — routing is by numeric count-index id
+#     (124..685). The canonical topics below are SYNTHESIZED by us to fit the
+#     stack's topic-keyed model; the count_index is the real legacy routing key.
+#   • Counters-ONLY: no MachSpeed, no StateCurrent, no PackML Parameter tags.
+#     → Performance needs rated speeds (NEEDS-CLIENT); Availability inferred from activity.
+#   • Absolute totalizers (S7 DINTs) — BUT the edge flow already computes per-cycle
+#     deltas (`increment`) in Node-RED context with a reset-guard. Both value+increment
+#     are published. See profile.md for the delta-ownership implication.
+#   • Pure telemetry — ZERO back4-api / http-request / customization nodes (2nd axis empty).
+
+tenant: BISPHARMA
+
+enterprise_id: 4                 # PROVISIONAL — legacy prod bispharma enterprise = 4 (a
+                                 # ~65-user shell with zero topology). Staging will likely
+                                 # assign its own surrogate in tenant-prep (CPACK: prod 1 →
+                                 # staging 3). MUST be > 0 for the register cross-tenant guard.
+
+canonical:
+  prefix: BISPHARMA/SP           # PROVISIONAL site code "SP". The flow carries NO topic
+                                 # strings, so this whole prefix is our synthesis. Confirm the
+                                 # real site short-code with the client (intake §7).
+
+# ── raw → canonical mapping ───────────────────────────────────────────────────
+# The flow emits count-index JSON, NOT topic strings, so there are no raw-topic
+# quirks to fix up here (no C-PACK/→CPACK/ analogue). The raw→canonical bridge for
+# bispharma is the count-index → synthesized-topic map, expressed per-member below
+# as count_index overrides. Left empty; see profile.md "edge approach" for the
+# count-index→SparkPlug transform the tee must add.
+mapping:
+  count_index_default_mode: equipment_id   # fallback only; every member pins an explicit
+                                           # confirmed count_index override below.
+  prefix_fixups: []
+  metric_aliases: []
+  parameter_aliases: []
+
+# ── metric templates — COUNTERS-ONLY (no speed, no state, no Parameter) ────────
+# Each bispharma count-index is a SINGLE S7 DINT totalizer, so a member carries
+# exactly one indexed count leaf. MachSpeed/StateCurrent are DROPPED (absent on the
+# PLC) → the counters-only OEE path: Performance from rated speed (NEEDS-CLIENT),
+# Availability inferred from count activity. NOTE (profile.md §semantics): the count
+# leaf is labelled ProdProcessedCount for every channel, but a channel's TRUE role
+# (infeed / station / final-output / scrap) is set by its station position — the
+# SCRAP members (…/SCRAP) are really ProdDefectiveCount (DW0−DW4). Assign OEE roles
+# per line once the client confirms which station is the line's good-output counter.
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+
+# ── equipment inventory (16 lines tp=3 + 91 members tp=1) ─────────────────────
+# ONE tp=3 line per S7 PLC (flow: 16 'counters LXX' nodes). ONE tp=1 member per
+# emitted count-index (the flow's counterData[].id). id_equipment = SYNTHETIC staging
+# block 40001+ (lines) / 40101+ (members) — reassign from a free staging block in
+# tenant-prep; NOT the count index (#601). count_index.value = the flow's literal id
+# (CONFIRMED-from-flow). Member names: L18's are the flow's real station labels
+# (Prensa/Torno/Acumulador/Impressao/Tampadeira); all other Sn labels are positional
+# placeholders by DW offset (DW0=S1_INFEED, DW8=S3, DW12=S4, DW16=S5, DW20=S6_OUTPUT,
+# DW0−DW4=SCRAP) — COSMETIC, rename on client confirmation. L18's 3 'livre' (spare,
+# unwired) channels 545/547/550 are intentionally NOT registered.
+equipment:
+  # ── L01  (PLC 192.168.5.3, rack0/slot2, 30s cycle)  flow node: 'counters L01' ──
+  - {topic: BISPHARMA/SP/LINHAS/L01, id_equipment: 40001, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S3, id_equipment: 40101, tp_equipment: 1, id_unit: 40101, count_index: {value: 164, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L01/S4, id_equipment: 40102, tp_equipment: 1, id_unit: 40102, count_index: {value: 165, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L01/S5, id_equipment: 40103, tp_equipment: 1, id_unit: 40103, count_index: {value: 166, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L01/S6_OUTPUT, id_equipment: 40104, tp_equipment: 1, id_unit: 40104, count_index: {value: 167, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L01/S1_INFEED, id_equipment: 40105, tp_equipment: 1, id_unit: 40105, count_index: {value: 168, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L01/SCRAP, id_equipment: 40106, tp_equipment: 1, id_unit: 40106, count_index: {value: 169, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L03  (PLC 192.168.5.11, rack0/slot2, 30s cycle)  flow node: 'counters L03' ──
+  - {topic: BISPHARMA/SP/LINHAS/L03, id_equipment: 40002, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S3, id_equipment: 40107, tp_equipment: 1, id_unit: 40107, count_index: {value: 307, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L03/S4, id_equipment: 40108, tp_equipment: 1, id_unit: 40108, count_index: {value: 308, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L03/S5, id_equipment: 40109, tp_equipment: 1, id_unit: 40109, count_index: {value: 309, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L03/S6_OUTPUT, id_equipment: 40110, tp_equipment: 1, id_unit: 40110, count_index: {value: 310, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L03/S1_INFEED, id_equipment: 40111, tp_equipment: 1, id_unit: 40111, count_index: {value: 311, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L03/SCRAP, id_equipment: 40112, tp_equipment: 1, id_unit: 40112, count_index: {value: 312, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L04  (PLC 192.168.5.14, rack0/slot2, 30s cycle)  flow node: 'counters L04' ──
+  - {topic: BISPHARMA/SP/LINHAS/L04, id_equipment: 40003, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S3, id_equipment: 40113, tp_equipment: 1, id_unit: 40113, count_index: {value: 314, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L04/S4, id_equipment: 40114, tp_equipment: 1, id_unit: 40114, count_index: {value: 315, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L04/S5, id_equipment: 40115, tp_equipment: 1, id_unit: 40115, count_index: {value: 316, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L04/S6_OUTPUT, id_equipment: 40116, tp_equipment: 1, id_unit: 40116, count_index: {value: 317, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L04/S1_INFEED, id_equipment: 40117, tp_equipment: 1, id_unit: 40117, count_index: {value: 318, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L04/SCRAP, id_equipment: 40118, tp_equipment: 1, id_unit: 40118, count_index: {value: 319, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L05  (PLC 192.168.5.15, rack0/slot2, 30s cycle)  flow node: 'counters L05' ──
+  - {topic: BISPHARMA/SP/LINHAS/L05, id_equipment: 40004, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S3, id_equipment: 40119, tp_equipment: 1, id_unit: 40119, count_index: {value: 624, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L05/S4, id_equipment: 40120, tp_equipment: 1, id_unit: 40120, count_index: {value: 625, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L05/S5, id_equipment: 40121, tp_equipment: 1, id_unit: 40121, count_index: {value: 626, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L05/S6_OUTPUT, id_equipment: 40122, tp_equipment: 1, id_unit: 40122, count_index: {value: 627, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L05/S1_INFEED, id_equipment: 40123, tp_equipment: 1, id_unit: 40123, count_index: {value: 628, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L05/SCRAP, id_equipment: 40124, tp_equipment: 1, id_unit: 40124, count_index: {value: 629, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L06  (PLC 192.168.5.8, rack0/slot2, 30s cycle)  flow node: 'counters L06' ──
+  - {topic: BISPHARMA/SP/LINHAS/L06, id_equipment: 40005, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S3, id_equipment: 40125, tp_equipment: 1, id_unit: 40125, count_index: {value: 257, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L06/S4, id_equipment: 40126, tp_equipment: 1, id_unit: 40126, count_index: {value: 258, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L06/S5, id_equipment: 40127, tp_equipment: 1, id_unit: 40127, count_index: {value: 259, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L06/S6_OUTPUT, id_equipment: 40128, tp_equipment: 1, id_unit: 40128, count_index: {value: 260, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L06/S1_INFEED, id_equipment: 40129, tp_equipment: 1, id_unit: 40129, count_index: {value: 261, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L06/SCRAP, id_equipment: 40130, tp_equipment: 1, id_unit: 40130, count_index: {value: 262, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L07  (PLC 192.168.5.13, rack0/slot2, 30s cycle)  flow node: 'counters L07' ──
+  - {topic: BISPHARMA/SP/LINHAS/L07, id_equipment: 40006, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S3, id_equipment: 40131, tp_equipment: 1, id_unit: 40131, count_index: {value: 320, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L07/S4, id_equipment: 40132, tp_equipment: 1, id_unit: 40132, count_index: {value: 321, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L07/S5, id_equipment: 40133, tp_equipment: 1, id_unit: 40133, count_index: {value: 322, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L07/S6_OUTPUT, id_equipment: 40134, tp_equipment: 1, id_unit: 40134, count_index: {value: 323, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L07/S1_INFEED, id_equipment: 40135, tp_equipment: 1, id_unit: 40135, count_index: {value: 324, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L07/SCRAP, id_equipment: 40136, tp_equipment: 1, id_unit: 40136, count_index: {value: 325, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L09  (PLC 192.168.5.4, rack0/slot2, 30s cycle)  flow node: 'counters L09' ──
+  - {topic: BISPHARMA/SP/LINHAS/L09, id_equipment: 40007, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S3, id_equipment: 40137, tp_equipment: 1, id_unit: 40137, count_index: {value: 124, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L09/S4, id_equipment: 40138, tp_equipment: 1, id_unit: 40138, count_index: {value: 125, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L09/S5, id_equipment: 40139, tp_equipment: 1, id_unit: 40139, count_index: {value: 126, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L09/S6_OUTPUT, id_equipment: 40140, tp_equipment: 1, id_unit: 40140, count_index: {value: 127, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L09/S1_INFEED, id_equipment: 40141, tp_equipment: 1, id_unit: 40141, count_index: {value: 128, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L09/SCRAP, id_equipment: 40142, tp_equipment: 1, id_unit: 40142, count_index: {value: 129, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L11  (PLC 192.168.5.5, rack0/slot2, 30s cycle)  flow node: 'counters L11' ──
+  - {topic: BISPHARMA/SP/LINHAS/L11, id_equipment: 40008, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S3, id_equipment: 40143, tp_equipment: 1, id_unit: 40143, count_index: {value: 170, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L11/S4, id_equipment: 40144, tp_equipment: 1, id_unit: 40144, count_index: {value: 171, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L11/S5, id_equipment: 40145, tp_equipment: 1, id_unit: 40145, count_index: {value: 172, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L11/S6_OUTPUT, id_equipment: 40146, tp_equipment: 1, id_unit: 40146, count_index: {value: 173, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L11/S1_INFEED, id_equipment: 40147, tp_equipment: 1, id_unit: 40147, count_index: {value: 174, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L11/SCRAP, id_equipment: 40148, tp_equipment: 1, id_unit: 40148, count_index: {value: 175, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L12  (PLC 192.168.5.6, rack0/slot2, 30s cycle)  flow node: 'counters L12' ──
+  - {topic: BISPHARMA/SP/LINHAS/L12, id_equipment: 40009, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S3, id_equipment: 40149, tp_equipment: 1, id_unit: 40149, count_index: {value: 176, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L12/S4, id_equipment: 40150, tp_equipment: 1, id_unit: 40150, count_index: {value: 177, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L12/S5, id_equipment: 40151, tp_equipment: 1, id_unit: 40151, count_index: {value: 178, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L12/S6_OUTPUT, id_equipment: 40152, tp_equipment: 1, id_unit: 40152, count_index: {value: 179, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L12/S1_INFEED, id_equipment: 40153, tp_equipment: 1, id_unit: 40153, count_index: {value: 180, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L12/SCRAP, id_equipment: 40154, tp_equipment: 1, id_unit: 40154, count_index: {value: 181, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L13  (PLC 192.168.5.9, rack0/slot2, 30s cycle)  flow node: 'counters L13' ──
+  - {topic: BISPHARMA/SP/LINHAS/L13, id_equipment: 40010, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S3, id_equipment: 40155, tp_equipment: 1, id_unit: 40155, count_index: {value: 301, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L13/S4, id_equipment: 40156, tp_equipment: 1, id_unit: 40156, count_index: {value: 302, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L13/S5, id_equipment: 40157, tp_equipment: 1, id_unit: 40157, count_index: {value: 303, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L13/S6_OUTPUT, id_equipment: 40158, tp_equipment: 1, id_unit: 40158, count_index: {value: 304, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L13/S1_INFEED, id_equipment: 40159, tp_equipment: 1, id_unit: 40159, count_index: {value: 305, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L13/SCRAP, id_equipment: 40160, tp_equipment: 1, id_unit: 40160, count_index: {value: 306, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L14  (PLC 192.168.5.10, rack0/slot2, 30s cycle)  flow node: 'counters L14' ──
+  - {topic: BISPHARMA/SP/LINHAS/L14, id_equipment: 40011, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S3, id_equipment: 40161, tp_equipment: 1, id_unit: 40161, count_index: {value: 332, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L14/S4, id_equipment: 40162, tp_equipment: 1, id_unit: 40162, count_index: {value: 333, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L14/S5, id_equipment: 40163, tp_equipment: 1, id_unit: 40163, count_index: {value: 334, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L14/S6_OUTPUT, id_equipment: 40164, tp_equipment: 1, id_unit: 40164, count_index: {value: 335, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L14/S1_INFEED, id_equipment: 40165, tp_equipment: 1, id_unit: 40165, count_index: {value: 336, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L14/SCRAP, id_equipment: 40166, tp_equipment: 1, id_unit: 40166, count_index: {value: 337, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L16  (PLC 192.168.5.7, rack0/slot2, 30s cycle)  flow node: 'counters L16' ──
+  - {topic: BISPHARMA/SP/LINHAS/L16, id_equipment: 40012, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S3, id_equipment: 40167, tp_equipment: 1, id_unit: 40167, count_index: {value: 182, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L16/S4, id_equipment: 40168, tp_equipment: 1, id_unit: 40168, count_index: {value: 183, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L16/S5, id_equipment: 40169, tp_equipment: 1, id_unit: 40169, count_index: {value: 184, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L16/S6_OUTPUT, id_equipment: 40170, tp_equipment: 1, id_unit: 40170, count_index: {value: 185, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L16/S1_INFEED, id_equipment: 40171, tp_equipment: 1, id_unit: 40171, count_index: {value: 186, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L16/SCRAP, id_equipment: 40172, tp_equipment: 1, id_unit: 40172, count_index: {value: 187, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L18  (PLC 192.168.5.12, rack0/slot2, 30s cycle)  flow node: 'counters L18' ──
+  - {topic: BISPHARMA/SP/LINHAS/L18, id_equipment: 40013, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L18/PRENSA, id_equipment: 40173, tp_equipment: 1, id_unit: 40173, count_index: {value: 543, confidence: confirmed}}  # DW8  I3 Prensa
+  - {topic: BISPHARMA/SP/LINHAS/L18/TORNO, id_equipment: 40174, tp_equipment: 1, id_unit: 40174, count_index: {value: 544, confidence: confirmed}}  # DW12  I4 Torno
+  - {topic: BISPHARMA/SP/LINHAS/L18/ACUMULADOR, id_equipment: 40175, tp_equipment: 1, id_unit: 40175, count_index: {value: 546, confidence: confirmed}}  # DW16  I5 Acumulador
+  - {topic: BISPHARMA/SP/LINHAS/L18/IMPRESSAO, id_equipment: 40176, tp_equipment: 1, id_unit: 40176, count_index: {value: 548, confidence: confirmed}}  # DW20  I6 Impressao
+  - {topic: BISPHARMA/SP/LINHAS/L18/TAMPADEIRA, id_equipment: 40177, tp_equipment: 1, id_unit: 40177, count_index: {value: 549, confidence: confirmed}}  # DW0  I1 Tampadeira
+  # ── L19  (PLC 192.168.5.17, rack0/slot2, 30s cycle)  flow node: 'counters L19' ──
+  - {topic: BISPHARMA/SP/LINHAS/L19, id_equipment: 40014, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L19/S3, id_equipment: 40178, tp_equipment: 1, id_unit: 40178, count_index: {value: 643, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L19/S4, id_equipment: 40179, tp_equipment: 1, id_unit: 40179, count_index: {value: 644, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L19/S5, id_equipment: 40180, tp_equipment: 1, id_unit: 40180, count_index: {value: 645, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L19/S6_OUTPUT, id_equipment: 40181, tp_equipment: 1, id_unit: 40181, count_index: {value: 646, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L19/S1_INFEED, id_equipment: 40182, tp_equipment: 1, id_unit: 40182, count_index: {value: 647, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L19/SCRAP, id_equipment: 40183, tp_equipment: 1, id_unit: 40183, count_index: {value: 648, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L20  (PLC 192.168.5.16, rack0/slot2, 30s cycle)  flow node: 'counters L20' ──
+  - {topic: BISPHARMA/SP/LINHAS/L20, id_equipment: 40015, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L20/S3, id_equipment: 40184, tp_equipment: 1, id_unit: 40184, count_index: {value: 649, confidence: confirmed}}  # DW8
+  - {topic: BISPHARMA/SP/LINHAS/L20/S4, id_equipment: 40185, tp_equipment: 1, id_unit: 40185, count_index: {value: 650, confidence: confirmed}}  # DW12
+  - {topic: BISPHARMA/SP/LINHAS/L20/S5, id_equipment: 40186, tp_equipment: 1, id_unit: 40186, count_index: {value: 651, confidence: confirmed}}  # DW16
+  - {topic: BISPHARMA/SP/LINHAS/L20/S6_OUTPUT, id_equipment: 40187, tp_equipment: 1, id_unit: 40187, count_index: {value: 652, confidence: confirmed}}  # DW20
+  - {topic: BISPHARMA/SP/LINHAS/L20/S1_INFEED, id_equipment: 40188, tp_equipment: 1, id_unit: 40188, count_index: {value: 653, confidence: confirmed}}  # DW0
+  - {topic: BISPHARMA/SP/LINHAS/L20/SCRAP, id_equipment: 40189, tp_equipment: 1, id_unit: 40189, count_index: {value: 654, confidence: confirmed}}  # DW0-DW4  reject=DW0-DW4
+  # ── L90  (PLC 192.168.5.82, rack0/slot2, 30s cycle)  flow node: 'counters L90' ──
+  - {topic: BISPHARMA/SP/LINHAS/L90, id_equipment: 40016, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L90/S1_INFEED, id_equipment: 40190, tp_equipment: 1, id_unit: 40190, count_index: {value: 684, confidence: confirmed}}  # DW0  sensor entrada da linha
+  - {topic: BISPHARMA/SP/LINHAS/L90/S2_OUTPUT, id_equipment: 40191, tp_equipment: 1, id_unit: 40191, count_index: {value: 685, confidence: confirmed}}  # DW1  sensor saída da linha
+
+# ── agent wiring (→ bispharma-agent.yaml) ─────────────────────────────────────
+agent:
+  edge_node_id: bispharma-tee          # DISTINCT from plc-sim + every other tenant
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bispharma/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:                                # Mode-B mTLS CN=<tenant>; secret REFS only. Empty on staging loopback.
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee snippet parameters (→ bispharma-tee-node.json) ───────────────
+# Bispharma ALREADY runs Node-RED on-site (flow: pack-queue at /home/pi/.node-red,
+# pm2, Raspberry Pi) → the tee path (their-NodeRED + tee), NOT our client-edge
+# container. BUT their tee is NOT a dumb forwarder like CPACK's: their flow emits
+# count-index JSON, so the tee needs a transform that maps each counterData{id,value}
+# to a SparkPlug metric  name=<TOPIC>/Admin/ProdProcessedCount/<id>/Unit  before POSTing.
+# See profile.md "Recommended edge approach". ingest_url is the staging front-door TBD.
+tee:
+  ingest_url: "https://TODO-staging-ingest-front-door:8446/ingest/sparkplug"  # TODO(tenant-prep)
+  ingest_key_env: BISPHARMA_INGEST_KEY
+  gateway: bispharma-edge
+  tls_insecure: true                   # staging self-signed
