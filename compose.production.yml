@@ -40,15 +40,25 @@
 #       refdata-api · app-redis · operator-adapter.
 #
 # Deploy chain (unchanged): push `production` → self-hosted arm64 runner on the
-# prod EC2 → `docker compose -f compose.production.yml -p packiot-prod up -d
-# --wait --remove-orphans`. `.env` is symlinked from /opt/packiot/.env (written
-# by app_init.sh from Secrets Manager). services/* build contexts are in-repo
-# (NOT submodules); only edge-api + operator are submodules.
+# prod EC2 → `docker compose -f compose.production.yml up -d --remove-orphans`.
+# `.env` is symlinked from /opt/packiot/.env (written by app_init.sh from
+# Secrets Manager). services/* build contexts are in-repo (NOT submodules);
+# only edge-api + operator are submodules.
 #
 # W1 exit posture: all services boot healthy against a FRESH F3-schema DB;
 # oeecloud-worker + edge-transformer idle-but-ready (no client tee live yet).
 # Several values are "# FILL AT DEPLOY" — the container boots + serves /healthz
 # but rejects real traffic until the deploy fills them (same pattern as staging).
+
+# Top-level `name:` pins the Compose project name regardless of working
+# directory or `-p` flag. Without it, app_init.sh (runs from /opt/packiot/stack)
+# infers `stack` while the deploy-production.yml workflow (runs from the repo
+# root /_work/.../packiot-stack-alpha) infers `packiot-stack-alpha`, creating
+# TWO separate sets of containers/networks that fight for the same subnet
+# ("Pool overlaps with other one on this address space"). Pinning `stack` makes
+# the project name environment-independent — the deploy workflow drops `-p` and
+# app_init.sh's directory-inferred name already matches.
+name: stack
 
 networks:
   packiot-net:
@@ -271,7 +281,11 @@ services:
       - "127.0.0.1:8081:8080"
     depends_on:
       # Gate on the external DB being reachable (pgbouncer healthcheck probes the
-      # r7g). HASURA_GRAPHQL_DATABASE_URL (.env) still routes via pgbouncer:5432.
+      # r7g). NOTE: HASURA_GRAPHQL_DATABASE_URL (.env) connects DIRECTLY to the
+      # r7g (POSTGRES_URL_DIRECT), NOT via pgbouncer — Hasura's prepared
+      # statements collide under pgbouncer transaction-pooling (42P05). The
+      # pgbouncer healthcheck is still a valid readiness proxy: pgbouncer healthy
+      # ⇒ the r7g is reachable. HASURA_GRAPHQL_PG_CONNECTIONS=5 caps the pool.
       pgbouncer:
         condition: service_healthy
     networks:
@@ -1085,37 +1099,10 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── Operator (production-facing SPA) ──────────────────────────────────────────
-  # Vite-built React SPA + nginx, behind Authentik SSO. nginx injects the
-  # enterprise api key on proxied /api/* writes (edge-api) and the per-tenant
-  # read key on proxied /v1/* reads (refdata) — the browser never holds either.
-  # Depends on edge-api (NOT edge-nodered, which is absent in prod).
-  operator:
-    build:
-      context: ./operator
-      dockerfile: Dockerfile.staging
-      args:
-        # #31 — durable offline PO write-queue. VITE_* is baked at build time,
-        # so this must be a build-arg (a container env flip won't work).
-        VITE_PO_WRITE_QUEUE_ENABLED: "true"
-    container_name: operator
-    restart: unless-stopped
-    environment:
-      # edge-api enterprise api_key (writes) + refdata per-tenant read key.
-      # # FILL AT DEPLOY (OPERATOR_EDGE_API_KEY = prod client enterprises.api_key;
-      # OPERATOR_REFDATA_API_KEY = the prod-client entry from refdata QUERY_API_KEYS).
-      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
-      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:-}
-    ports:
-      - "127.0.0.1:8083:80"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.19
-    depends_on:
-      edge-api:
-        condition: service_started
-    mem_limit: 128m
-    cpus: 0.25
-    logging:
-      driver: json-file
-      options: {max-size: "5m", max-file: "2"}
+  # ── Operator ──────────────────────────────────────────────────────────────────
+  # NOT included in the central cloud stack (deliberately removed — first-dry-run
+  # boot lesson). The operator SPA's nginx reverse-proxies API routes to
+  # `edge-nodered`, which does NOT run in the cloud stack (per-factory only, per
+  # ADR-0005). With no such upstream in the compose network the container
+  # crash-loops on "host not found in upstream edge-nodered". Operator deploys
+  # alongside edge-nodered per-factory — its .19 address (172.18.0.19) is freed.
