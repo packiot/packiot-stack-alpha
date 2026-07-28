@@ -1068,6 +1068,7 @@ services:
   operator-adapter:
     build: ./services/operator-adapter
     container_name: operator-adapter
+    profiles: ["client-ingest"]  # GATED: needs OPERATOR_API_KEY + a bespoke-operator client — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
     env_file: [.env]
     environment:
