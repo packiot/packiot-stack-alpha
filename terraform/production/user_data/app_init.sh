@@ -97,6 +97,10 @@ HASURA_JWT_JSON="{\"type\":\"HS256\",\"key\":\"$HASURA_JWT_KEY\"}"
 API_KEY=$(echo "$APP_SECRET"   | jq -r '.edge_api_key')
 MQ_USER=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_user')
 MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
+# ingest-shim requires INGEST_API_KEY (the shared secret the client HTTP tee
+# presents as X-Ingest-Key). Not part of any AWS secret — generate a stable
+# per-box value here; the .env guard below keeps it stable across re-runs.
+INGEST_API_KEY=$(openssl rand -hex 24)
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
 AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
 AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
@@ -173,6 +177,9 @@ ID_ENTERPRISE=
 RABBITMQ_USER=$MQ_USER
 RABBITMQ_PASSWORD=$MQ_PASS
 RABBITMQ_URL=amqp://$MQ_USER:$MQ_PASS@rabbitmq:5672
+
+# ingest-shim — shared secret the client HTTP tee presents as X-Ingest-Key.
+INGEST_API_KEY=$INGEST_API_KEY
 
 # Grafana
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
