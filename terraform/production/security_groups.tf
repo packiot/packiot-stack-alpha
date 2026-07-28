@@ -46,7 +46,7 @@ resource "aws_security_group" "app" {
   # NOTE: staging's world-open AMQPS 5671 rule is deliberately NOT copied —
   # prod's factory uplink is mTLS-CN-scoped 8883, not an open AMQP broker.
   ingress {
-    description = "ADR-0042 mTLS SparkPlug uplink (client-edge #624 -> mosquitto :8883; client egress /32 only)"
+    description = "ADR-0042 mTLS SparkPlug uplink (client-edge #624 to mosquitto :8883; client egress /32 only)"
     from_port   = var.ingest_mqtts_port
     to_port     = var.ingest_mqtts_port
     protocol    = "tcp"
