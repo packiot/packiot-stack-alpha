@@ -129,7 +129,8 @@ var (
 	// status=3 — e.g. still available/paused — so this closer, which only
 	// closes FINISHED twins, leaves it). finished=a mirror-created status IN
 	// (1,2) orphan whose prod twin is status=3 was closed at prod's finish ts
-	// (NULL-ts_start-safe, zero-duration); skipped_still_active=prod twin is
+	// (NULL-ts_start-safe, 1s-window for the strict ts_start<ts_end check);
+	// skipped_still_active=prod twin is
 	// status=2 (running) — never close; skipped_idempotent=already !=(1,2);
 	// failed=the close tx errored. Everything but finished/failed is a SAFETY
 	// skip — the closer errs toward under-closing, same as the finisher.

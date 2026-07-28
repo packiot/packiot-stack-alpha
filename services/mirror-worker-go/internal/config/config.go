@@ -121,8 +121,10 @@ type Config struct {
 	// (b) FinishOrphanPO's header UPDATE hard-gates on status=2 AND its ts_end
 	// write trips the production_orders_ts_start_ts_end check (23514) when
 	// ts_start is NULL. This closer widens the candidate set to status IN (1,2)
-	// and closes at prod's finish ts with a NULL-ts_start-safe, zero-duration
-	// seal (ts_start := ts_end := prod finish ts). It ONLY closes prod-terminal
+	// and closes at prod's finish ts with a NULL-ts_start-safe, strict-constraint
+	// -safe seal (ts_end := prod finish ts; ts_start := a 1-second-earlier floor,
+	// because production_orders_ts_start_ts_end demands ts_start < ts_end STRICTLY
+	// for status=3). It ONLY closes prod-terminal
 	// (status=3) twins — a prod-active (status=2) twin is SKIPPED, same safety
 	// posture as the finisher. Ships INERT (default false): with the flag off
 	// the finisher path is byte-identical to today's behavior. Enabled
