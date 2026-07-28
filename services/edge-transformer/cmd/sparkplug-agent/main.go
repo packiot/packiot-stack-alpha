@@ -80,19 +80,25 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// ── register-driven tag map (task #13, ADR-0009 / ADR-0042) ───────────────
-	// Flag-gated + additive: default OFF keeps the static YAML raw_tag_map
-	// byte-for-byte. ON builds the tag map from packml_register + the tenant
-	// conversion profile — the config-not-code replacement for hand-editing the
-	// per-client raw_tag_map (PR #590). A load failure here is fatal (a partial
-	// tag map would silently drop metrics), the same fail-closed discipline as
-	// the static loader.
+	// ── register-driven tag map + per-tenant cutover flip (ADR-0045 P2a) ──────
+	// Which tag map this tenant boots with. Precedence:
+	//   AGENT_TAGMAP_FROM_REGISTER (global override) > client_descriptors.status
+	//   (per-tenant, DB-driven — edge-api's cutover endpoint sets it to 'cutover').
+	// register.go builds the map from packml_register + the tenant profile; the
+	// default stays the static YAML raw_tag_map byte-for-byte. Fail-safe: no
+	// profile / no DSN / unreachable DB / missing descriptor row / non-cutover
+	// status all keep the static map — never a silent flip, never a crash. Only
+	// a DEFINITE signal (override, or status==cutover) builds the register map,
+	// and a register build that was explicitly selected but fails is fatal (a
+	// partial map would silently drop metrics). Cutover is a BOOT read (Option A):
+	// a mid-run flip applies on the agent's next restart.
+	tagSrc, err := resolveTagMap(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("tag-map resolution", "err", err)
+		os.Exit(1)
+	}
 	tagSource := "static_yaml"
-	if getenvBool("AGENT_TAGMAP_FROM_REGISTER", false) {
-		if err := loadTagMapFromRegister(ctx, cfg, logger); err != nil {
-			logger.Error("register tag-map load", "err", err)
-			os.Exit(1)
-		}
+	if tagSrc.UseRegister {
 		tagSource = "packml_register"
 	}
 
@@ -142,6 +148,7 @@ func main() {
 		"uplink_broker", cfg.Sparkplug.UplinkBroker,
 		"raw_topic", cfg.Sparkplug.RawTopic,
 		"tag_source", tagSource,
+		"tag_source_reason", tagSrc.Reason,
 		"tags", len(cfg.RawTagMap))
 
 	// ── pipeline construction ────────────────────────────────────────────
@@ -201,6 +208,22 @@ func main() {
 		Help: "Bare-Parameter raw tags rewritten to a canonical numbered leaf, by PackML parameter id.",
 	}, []string{"param_id"})
 	reg.MustRegister(decomposed)
+
+	// ADR-0045 P2a: whether the register-driven (config-as-data) tag map is
+	// active for this tenant, and why. 1 = register-driven, 0 = static YAML.
+	// Set once at boot from the resolved source (Option A — the flip is a boot
+	// read). The `reason` label carries the selection outcome (env_override /
+	// descriptor_cutover / descriptor_absent / descriptor_error / …).
+	tagmapRegisterActive := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "sparkplug_agent_tagmap_register_active",
+		Help: "1 when the register-driven (config-as-data) tag map is active for the tenant, 0 when the static YAML map is used. Labeled by tenant (SparkPlug group_id) and the selection reason.",
+	}, []string{"tenant", "reason"})
+	reg.MustRegister(tagmapRegisterActive)
+	activeVal := 0.0
+	if tagSrc.UseRegister {
+		activeVal = 1.0
+	}
+	tagmapRegisterActive.WithLabelValues(cfg.Sparkplug.GroupID, tagSrc.Reason).Set(activeVal)
 
 	// task #31: rebirths triggered by an inbound "Node Control/Rebirth" NCMD.
 	// This is how the cloud edge-transformer self-heals its alias/counter
@@ -401,43 +424,111 @@ func main() {
 	}
 }
 
-// loadTagMapFromRegister replaces cfg.RawTagMap with a map built from
-// packml_register + the tenant conversion profile (task #13). It reads the
-// profile from AGENT_PROFILE_PATH, dials Postgres from the DB_* env (only here,
-// only when the flag is on), fetches the tenant's equipment rows, synthesizes
-// the canonical suffix→type map, and installs it (re-validated). The tenant is
-// scoped by the profile's enterprise_id — the cross-tenant guard.
-func loadTagMapFromRegister(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) error {
+// resolveTagMap decides + installs the tenant's raw_tag_map for this boot and
+// returns the chosen source (for the boot log + the register-active gauge).
+//
+// Decision (ADR-0045 P2a): AGENT_TAGMAP_FROM_REGISTER (global override) wins;
+// else the tenant's client_descriptors.status decides (cutover ⇒ register).
+// The path is fail-safe to the CURRENT behaviour (the static YAML map):
+//   - no AGENT_PROFILE_PATH ........ nothing to build/scope → static (no DB touched)
+//   - no DB DSN .................... can't read the descriptor → static
+//   - DB unreachable / read error .. → static (warn-logged)
+//   - status != cutover / no row ... → static
+//
+// Only a DEFINITE signal (override, or status==cutover) builds the register
+// map; a register build that was explicitly selected but fails is FATAL (a
+// partial/absent map would silently drop metrics — the same discipline as the
+// original loader). It opens ONE pgxpool and reuses it for BOTH the status read
+// and (if cutover) the register fetch — never a second pool.
+//
+// The agent resolves its tenant from the tenant profile: prof.EnterpriseID is
+// packml_register.id_enterprise, which is exactly client_descriptors.id_enterprise
+// — the authoritative cross-tenant scope for both the descriptor read and the
+// register fetch. (cfg.Sparkplug.GroupID is the tenant short-name / group_id;
+// it must equal prof.Tenant, guarded below.)
+func resolveTagMap(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) (agentcfg.TagMapSource, error) {
+	envOverride := getenvBool("AGENT_TAGMAP_FROM_REGISTER", false)
 	profPath := os.Getenv("AGENT_PROFILE_PATH")
+
+	// Without a profile there is no register map to build and no enterprise scope
+	// to check a descriptor against. An explicit override with no profile is a
+	// hard misconfig (the original loader's own guard); otherwise stay static and
+	// touch no DB — un-migrated tenants keep zero DB dependency.
 	if profPath == "" {
-		return fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
+		if envOverride {
+			return agentcfg.TagMapSource{}, fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
+		}
+		return agentcfg.TagMapSource{UseRegister: false, Reason: "no_profile"}, nil
 	}
+
 	prof, err := tenantprofile.LoadProfile(profPath)
 	if err != nil {
-		return fmt.Errorf("load profile: %w", err)
+		return agentcfg.TagMapSource{}, fmt.Errorf("load profile: %w", err)
 	}
 	// Guard: a profile's tenant must match the agent it configures, so a
-	// mis-pointed AGENT_PROFILE_PATH can't silently build another tenant's map.
+	// mis-pointed AGENT_PROFILE_PATH can't build/scope another tenant's map.
 	if prof.Tenant != "" && prof.Tenant != cfg.Sparkplug.GroupID {
-		return fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
+		return agentcfg.TagMapSource{}, fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
 	}
 	if prof.EnterpriseID == 0 {
-		return fmt.Errorf("profile enterprise_id is required for the register loader")
+		return agentcfg.TagMapSource{}, fmt.Errorf("profile enterprise_id is required for the register loader / cutover check")
 	}
 
 	dsn, err := registerDSN()
 	if err != nil {
-		return err
+		if envOverride {
+			return agentcfg.TagMapSource{}, err
+		}
+		// No DB creds → can't read the descriptor. Stay static (current behaviour).
+		logger.Warn("no DB DSN for the cutover-status check — staying on the static tag map", "err", err)
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, nil
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return fmt.Errorf("pgx pool: %w", err)
+		if envOverride {
+			return agentcfg.TagMapSource{}, fmt.Errorf("pgx pool: %w", err)
+		}
+		logger.Warn("could not open the DB pool for the cutover-status check — staying on the static tag map", "err", err)
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, nil
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("db ping: %w", err)
+		if envOverride {
+			return agentcfg.TagMapSource{}, fmt.Errorf("db ping: %w", err)
+		}
+		logger.Warn("client_descriptors DB unreachable — staying on the static tag map", "err", err)
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, nil
 	}
 
+	// Read the per-tenant flip signal (skipped when the global override forces
+	// register-driven — SelectTagMapSource short-circuits on it anyway, so we
+	// don't pay a descriptor read for an already-decided tenant).
+	var status string
+	var statusErr error
+	if !envOverride {
+		status, statusErr = agentcfg.NewDescriptorStatusFetcher(pool).FetchStatus(ctx, prof.EnterpriseID)
+		if statusErr != nil {
+			logger.Warn("client_descriptors status read failed — staying on the static tag map", "err", statusErr)
+		}
+	}
+	src := agentcfg.SelectTagMapSource(envOverride, status, statusErr)
+	if !src.UseRegister {
+		return src, nil
+	}
+
+	// Cutover (or override): build + install the register-driven map with the
+	// SAME pool. A failure here is fatal — register was explicitly selected.
+	if err := installRegisterTagMap(ctx, cfg, prof, pool, logger); err != nil {
+		return agentcfg.TagMapSource{}, err
+	}
+	return src, nil
+}
+
+// installRegisterTagMap replaces cfg.RawTagMap with a map built from
+// packml_register + the tenant conversion profile (task #13), reusing the
+// caller's already-open pool. It fetches the tenant's equipment rows,
+// synthesizes the canonical suffix→type map, and installs it (re-validated).
+func installRegisterTagMap(ctx context.Context, cfg *agentcfg.Config, prof *tenantprofile.Profile, pool *pgxpool.Pool, logger *slog.Logger) error {
 	fetcher := agentcfg.NewPGRegisterFetcher(pool)
 	rows, err := fetcher.FetchEquipment(ctx, prof.EnterpriseID, prof.TenantPrefix)
 	if err != nil {
