@@ -844,6 +844,7 @@ services:
   edge-transformer:
     build: ./services/edge-transformer
     container_name: edge-transformer
+    profiles: ["client-ingest"]  # GATED: needs a tenant client.yaml (tenant_id) — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -934,6 +935,7 @@ services:
   ingest-shim:
     build: ./services/ingest-shim
     container_name: ingest-shim
+    profiles: ["client-ingest"]  # GATED: needs a tenant + mTLS ingest certs — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
     env_file: [.env]
     environment:
