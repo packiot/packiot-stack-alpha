@@ -74,3 +74,29 @@ func TestDecode_EmptyTags(t *testing.T) {
 		t.Fatalf("got %d tags, want 0", len(tags))
 	}
 }
+
+func TestDecode_ParamID(t *testing.T) {
+	body := []byte(`{
+	  "endpoint": "L5",
+	  "scan_ts": 1782849957000,
+	  "tags": [
+	    {"metric": "/L5/Status/Parameter", "value": "61,62,63", "param": 30700},
+	    {"metric": "/L5/Status/MachSpeed", "value": 118.4}
+	  ]
+	}`)
+	tags, err := Decode(body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The id-carrying Parameter tag surfaces its PackML param id.
+	if tags[0].ParamID != 30700 {
+		t.Errorf("ParamID: got %d, want 30700", tags[0].ParamID)
+	}
+	if v, _ := tags[0].Value.(string); v != "61,62,63" {
+		t.Errorf("Parameter value: got %q", tags[0].Value)
+	}
+	// A tag with no `param` field is 0 (absent) — the common case.
+	if tags[1].ParamID != 0 {
+		t.Errorf("non-parameter tag ParamID: got %d, want 0", tags[1].ParamID)
+	}
+}

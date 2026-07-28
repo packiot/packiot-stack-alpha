@@ -1,0 +1,96 @@
+# cpack-profile.yaml — CPACK tenant CONVERSION PROFILE (task #13, ADR-0009 /
+# ADR-0042). This is the CS-Admin-owned, declarative replacement for the
+# hand-edited raw_tag_map in cpack-agent.yaml (PR #590).
+#
+# It expresses — as data, not code — the four quirk classes the CPACK L6 tee
+# validation surfaced. The sparkplug-agent loads this profile + packml_register
+# and BUILDS the raw_tag_map; no per-client Go. See
+# services/edge-transformer/internal/agent/tenantprofile.
+#
+# Equivalence: BuildRawTagMapFromRegister(this profile, the enterprise-3 CPACK
+# equipment rows) reproduces cpack-agent.yaml's raw_tag_map exactly (same
+# suffixes + types) — proven in register_test.go
+# (TestBuildRawTagMap_MatchesPR590Yaml).
+
+tenant: CPACK
+enterprise_id: 3                    # staging CPACK (prod=1); the register query's cross-tenant guard
+tenant_prefix: CPACK/SC/LINHAS      # canonical (post-fixup) prefix shared by every CPACK equipment
+
+# ── (1) prefix fixups — real PLC head → canonical ────────────────────────────
+# The real CPACK PLC/tee publishes "C-PACK/…"; canonical is "CPACK/…" (same
+# single-replace translate.RemapTopic already applies on the mirror path).
+prefix_fixups:
+  - {from: "C-PACK/", to: "CPACK/"}
+
+# ── (2) metric aliases — real leaf → canonical leaf ──────────────────────────
+# CPACK's PLC names its live speed tag "Status/CurMachSpeed"; the Calc's
+# min-speed downtime input is "Status/MachSpeed".
+metric_aliases:
+  - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}
+
+# ── (3) ambiguous Parameter — per-tenant disambiguation (single-rename) ──────
+# LEGACY / simple-tenant path. A single class-scoped rename of a bare
+# "Status/Parameter". Kept for a tenant whose Parameter topic only ever carries
+# ONE parameter. CPACK does NOT — see parameter_decomposition below, which
+# supersedes this for CPACK. (Left here as documentation of the #593 stopgap.)
+parameter_aliases:
+  - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}
+
+# ── (3b) parameter decomposition — id-driven, the real CPACK shape ───────────
+# PROD FACT (SELECT-only read of ent-1 packml_register + the oeecloud ingestion
+# flow, 2026-07-23): CPACK publishes ONE metric per equipment, ".../Status/
+# Parameter" (no numbered topics exist on the wire). The PackML parameter NUMBER
+# rides in the SparkPlug metric's id/alias field —
+#     {name:"C-PACK/SC/LINHAS/L5/Status/Parameter", id:30700, value:"61,62,..."}
+# — and the current cloud reads `parameter_id = JSON.parse(metric).id` to route
+# it. The refactored Calc keys on the metric NAME suffix (Parameter30700 etc.),
+# so the agent must rewrite the bare leaf to the numbered one PER TAG, using the
+# id the tee copies into the rawtag envelope's `param` field.
+#
+# This is a DECLARED allowlist: an id absent below is NOT decomposed (left bare →
+# dropped as unmapped), so a PO-control write (30800+) can never be mistaken for
+# a Calc seed. Flag-gated at the agent: AGENT_PARAM_DECOMPOSITION (default OFF).
+# The rewritten metric's wire type comes from the raw_tag_map entry it resolves
+# to (metric_templates below), not from here.
+parameter_decomposition:
+  source_leaf: "/Status/Parameter"
+  params:
+    - {id: 30700, leaf: "/Status/Parameter30700", applies_to: line}   # line-machines CSV → Phase-9 line aggregation
+    - {id: 30701, leaf: "/Status/Parameter30701"}                     # ideal production speed
+    - {id: 30750, leaf: "/Status/Parameter30750"}                     # min-speed threshold (quantity)
+    - {id: 30751, leaf: "/Status/Parameter30751"}                     # min-speed threshold (time)
+    - {id: 30758, leaf: "/Status/Parameter30758"}                     # event trigger type (0=instant|4=5-min avg)
+
+# ── (4) count-index rules ────────────────────────────────────────────────────
+# The count metric embeds an index. Default = the equipment's own id_equipment
+# (register). Overrides pin the index where the PLC embeds a legacy/foreign id
+# that diverges from the staging surrogate id — the CPACK members whose metric
+# index (the prod id_equipment) differs from their staging register id.
+count_index:
+  mode: equipment_id
+  overrides:
+    "/L5/BREYER": 61   # staging id 53, PLC count index 61
+    "/L5/TEXA": 65     # staging id 57, PLC count index 65
+    "/L3/PTH": 81      # staging id 61, PLC count index 81
+    # "/L4/TEXA" omitted — its PLC index (63) equals its staging id, so the
+    # equipment_id default is correct.
+
+# ── line-vs-member metric templates ──────────────────────────────────────────
+# The canonical metric leaves emitted per equipment class. "{idx}" is filled
+# from count_index. Lines (tp_equipment 3/2) additionally publish
+# Parameter30700 (the line-machines CSV); members (tp_equipment 1) do not — that
+# single difference IS the line-vs-member pattern, as data.
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
