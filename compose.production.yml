@@ -355,6 +355,14 @@ services:
     command:
       - |
         set -e
+        # IDEMPOTENCY GUARD: the strict 05+/10+ layer (CREATE continuous aggregate,
+        # no IF NOT EXISTS) is NOT re-runnable — on a re-deploy against an already
+        # assembled r7g it errors "continuous aggregate already exists" (exit 3),
+        # blocking db-migrate → stranding edge-api/oeecloud. Skip if F3 is present.
+        if [ "$$(psql -tAc "SELECT to_regclass('public.agg_equipment_values_1min') IS NOT NULL" 2>/dev/null)" = "t" ]; then
+          echo "F3 schema already assembled (agg_equipment_values_1min exists) — skipping (idempotent).";
+          exit 0;
+        fi
         if ! ls /f3/snapshot/*.sql >/dev/null 2>&1; then
           echo "⚠⚠ db/init-f3/snapshot/ is EMPTY — F3 schema NOT assembled.";
           echo "   Populate it (README §4) then redeploy. Parity gate will FAIL until then.";
