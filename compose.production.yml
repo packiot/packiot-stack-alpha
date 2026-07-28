@@ -20,9 +20,14 @@
 # re-pointed at prod config (packiot/production/* secrets, prod DB, single flow).
 #
 # Differences vs staging:
-#   - Adds a LOCAL `postgres` (TimescaleDB) service — staging uses an external
-#     DB-EC2. Prod runs the DB on-box for client #1 (ADR-0003); W6 of the
-#     roadmap splits it onto a dedicated memory-sized instance before real load.
+#   - DB is EXTERNAL (roadmap W6/W1-rewire): the stack talks to the dedicated
+#     r7g TimescaleDB EC2 (aws_instance.db, private subnet, ${POSTGRES_HOST_UPSTREAM}
+#     = 10.20.10.89) — there is NO local `postgres` container. pgbouncer is the
+#     pooler in front of it; DDL/migration/authentik/adminer connect to the r7g
+#     directly (advisory locks + prepared statements break under transaction
+#     pooling). This mirrors staging's external-DB-EC2 topology. Earlier dry-run
+#     phases ran a local on-box TimescaleDB container; W6 split it onto the
+#     memory-family r7g before real load (staging swap-died on the app-box class).
 #   - EXCLUDES staging-only / migration-only services:
 #       plc-sim · simulator · sparkplug-agent-cpack · s7-softplc · s7-reader
 #       (all synthetic / CPACK-specific ingest) ; mirror-worker-go (prod IS the
@@ -53,7 +58,8 @@ networks:
         - subnet: 172.18.0.0/24
 
 volumes:
-  pg-data:           # local TimescaleDB persistent storage
+  # NOTE: no `pg-data` volume — the DB lives on the dedicated r7g EC2
+  # (aws_instance.db, data dir /opt/packiot/pgdata on that box), NOT on the app box.
   grafana-data:
   loki-data:
   prom-data:
@@ -70,75 +76,102 @@ volumes:
 # .15 hasura-init     .16 db-migrate        .17 adminer
 # .19 operator        .20 oeecloud-worker   .22 prometheus
 # .23 edge-transformer  .24 mosquitto       .26 refdata-api
-# .29 ingest-shim     .30 postgres          .31 operator-adapter   .35 app-redis
+# .29 ingest-shim     .30 db-init-bootstrap .31 operator-adapter   .35 app-redis
 #
 # DELIBERATELY ABSENT vs staging (see header):
 # .4  edge-nodered · .11 simulator/plc-sim · .21 mirror-worker-go · .25 shadow-mirror
+# The DB is EXTERNAL (r7g @ ${POSTGRES_HOST_UPSTREAM}) — no in-net `postgres` (.30 freed).
 
 services:
-  # ── PostgreSQL (LOCAL TimescaleDB) ────────────────────────────────────────────
-  # ⚠ ROADMAP W1.4 (highest-care) — BUILT: the F3 schema is NOT what edge-api's
-  # knex migrations produce (those build the legacy F1 `public` shape). Prod's DB
+  # ── DATABASE: EXTERNAL dedicated r7g TimescaleDB EC2 (W6 / W1 rewire) ──────────
+  # There is NO local `postgres` service. The DB runs on aws_instance.db
+  # (terraform/production/database.tf) — an r7g memory-family EC2 in the private
+  # subnet at ${POSTGRES_HOST_UPSTREAM} (= 10.20.10.89, from .env via app_init.sh).
+  # Its own user_data starts an EMPTY `timescale/timescaledb:2.25.2-pg16` with the
+  # managed superuser password; the F3 schema is assembled INTO it by the boot
+  # chain below (db-init-bootstrap → db-schema-f3 → db-knex-baseline → db-migrate).
+  #
+  # ⚠ ROADMAP W1.4 (highest-care) — the F3 schema is NOT what edge-api's knex
+  # migrations produce (those build the legacy F1 `public` shape). Prod's DB
   # `public` MUST be the F3 schema staging's `packiot_shadow` carries, or the
-  # compute chain silently produces wrong OEE. The `db-schema-f3` one-shot below
-  # assembles it BEFORE knex/edge-api boot; the parity gate
-  # (scripts/prod-f3-schema-parity-check.sh) proves it == packiot_shadow.
-  #
-  # ⚠ CORRECTION to the earlier note here: the roadmap's "assemble from
-  # edge-node-red/db/*.sql + oeecloud-worker rollup DDL" is INCOMPLETE and partly
-  # wrong (see db/init-f3/README.md, verified against live packiot_shadow):
-  #   • edge-node-red/db/00-schema.sql is a NON-RUNNABLE introspection dump.
-  #   • 22-agg-views.sql builds agg_*/ca_* as PLAIN VIEWS; F3 needs REAL caggs
-  #     (0012-f3-cagg-layer.sql) on a hypertable equipment_values.
-  #   • the oeecloud-worker owns NO DDL — it only POPULATES tables the SQL files
-  #     create (search_path over verbatim piot_create_*_runtime fns).
-  # A raw concatenation of the fragments does NOT reach parity (measured:
-  # F3_MISSING=344 + EXTRA=377). The AUTHORITATIVE source is a curated
-  # schema-only snapshot of live packiot_shadow → db/init-f3/snapshot/ (gated,
-  # README §4). db-schema-f3 applies that snapshot.
-  #
-  # ⚠ ROADMAP W6/R2: t4g.medium + a local TimescaleDB swaps under real load
-  # (staging proved it). Split the DB onto a dedicated memory-family instance
-  # (r7g.large+) before a real client — this local container is for the
-  # boot/dry-run phase only.
-  postgres:
-    image: timescale/timescaledb:2.25.2-pg16
-    restart: unless-stopped
+  # compute chain silently produces wrong OEE. `db-schema-f3` assembles it BEFORE
+  # knex/edge-api boot; the parity gate (scripts/prod-f3-schema-parity-check.sh)
+  # proves it == packiot_shadow. The AUTHORITATIVE source is a curated schema-only
+  # snapshot of live packiot_shadow → db/init-f3/snapshot/ (gated, README §4) —
+  # a raw concatenation of edge-node-red/db fragments does NOT reach parity
+  # (measured F3_MISSING=344 + EXTRA=377).
+
+  # ── DB bootstrap (one-shot): extensions + authentik role/DB ───────────────────
+  # The removed local `postgres` container auto-ran db/docker-entrypoint-initdb.d/
+  # on first boot to create the timescaledb/pg_cron extensions and the `authentik`
+  # role + database. The external r7g's user_data does NOT run those scripts, so
+  # this one-shot re-establishes that setup against the r7g (direct superuser
+  # connection). WITHOUT it, authentik-server crashes with `FATAL: role
+  # "authentik" does not exist`. Idempotent — safe to re-run on every deploy
+  # (IF NOT EXISTS + pg_database guard), unlike the raw initdb .sh scripts which
+  # assume a fresh empty PGDATA. Runs FIRST so extensions exist before the F3
+  # schema load and the authentik DB exists before authentik boots.
+  db-init-bootstrap:
+    image: postgres:16-alpine
+    env_file: [.env]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      # Passed through so db/docker-entrypoint-initdb.d/01-create-authentik-db.sh
-      # can create the `authentik` role on first boot (Authentik crashes with
-      # `FATAL: role "authentik" does not exist` otherwise).
-      AUTHENTIK_DB_PASSWORD: ${AUTHENTIK_DB_PASSWORD}
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-      - ./db/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}   # DIRECT to the r7g (superuser DDL)
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "== extensions in ${POSTGRES_DB} (timescaledb auto-created by image; pg_cron best-effort) =="
+        psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
+        # pg_cron requires shared_preload_libraries — tolerate absence so a missing
+        # preload never fails the deploy (F3 single-flow does rollups in Go).
+        psql -c "CREATE EXTENSION IF NOT EXISTS pg_cron;" \
+          && psql -c "GRANT USAGE ON SCHEMA cron TO \"$$PGUSER\";" \
+          || echo "pg_cron unavailable (no preload) — skipping (OK for F3-native prod)";
+        echo "== authentik role + database (idempotent) =="
+        if [ -z "$${AUTHENTIK_DB_PASSWORD:-}" ]; then
+          echo "AUTHENTIK_DB_PASSWORD unset — authentik-server WILL fail; set it in .env"; exit 1;
+        fi
+        # Shell guards instead of DO/dollar-quoting — CREATE ROLE/DATABASE are not
+        # IF NOT EXISTS, and $$-quoting collides with Compose interpolation.
+        if [ "$$(psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='authentik'")" != "1" ]; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE ROLE authentik WITH LOGIN PASSWORD '$$AUTHENTIK_DB_PASSWORD';";
+        fi
+        if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='authentik'")" != "1" ]; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE authentik WITH OWNER = authentik;";
+        fi
+        psql -v ON_ERROR_STOP=1 -d authentik -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+        echo "db-init-bootstrap complete."
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
     networks:
       packiot-net:
         ipv4_address: 172.18.0.30
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
+    restart: "no"
     logging:
       driver: json-file
-      options: {max-size: "10m", max-file: "5"}
+      options: {max-size: "5m", max-file: "2"}
 
-  # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
-  # SINGLE pool → the local `packiot` DB (public = F3). No `packiot_shadow`
+  # ── PgBouncer (PostgreSQL connection pooler → external r7g) ────────────────────
+  # SINGLE pool → the `packiot` DB (public = F3) on the r7g. No `packiot_shadow`
   # pool: staging's sed-injected second pool is dual-flow scaffolding that does
-  # not exist in a single-flow prod.
-  # ⚠ Hasura still does NOT use PgBouncer — prepared statements are incompatible
-  # with transaction pooling (it connects to postgres directly).
+  # not exist in a single-flow prod. Upstream = ${POSTGRES_HOST_UPSTREAM} (the r7g
+  # private IP from .env), NOT a local container.
+  # ⚠ Hasura, DDL/migrations, authentik, and adminer do NOT use PgBouncer —
+  # prepared statements + session advisory locks + SET search_path all break
+  # under transaction pooling; those connect to the r7g directly.
+  # The healthcheck probes the r7g so dependents can gate on "external DB
+  # reachable" (`condition: service_healthy`) now that the local postgres — whose
+  # healthcheck used to be that gate — is gone.
   pgbouncer:
     image: edoburu/pgbouncer:1.22.1-p0
     restart: unless-stopped
     environment:
-      DB_HOST: postgres
+      DB_HOST: ${POSTGRES_HOST_UPSTREAM}
       DB_PORT: "5432"
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
@@ -151,12 +184,18 @@ services:
       SERVER_RESET_QUERY_ALWAYS: "1"
       QUERY_TIMEOUT: "60"
       SERVER_IDLE_TIMEOUT: "120"
-    depends_on:
-      postgres:
-        condition: service_healthy
     networks:
       packiot-net:
         ipv4_address: 172.18.0.10
+    healthcheck:
+      # pg_isready straight at the r7g upstream — proves the external DB is
+      # reachable/accepting connections (pgbouncer itself answers pg_isready even
+      # when the upstream is down, so we probe the upstream host directly).
+      test: ["CMD-SHELL", "pg_isready -h ${POSTGRES_HOST_UPSTREAM} -p 5432 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
@@ -231,7 +270,9 @@ services:
     ports:
       - "127.0.0.1:8081:8080"
     depends_on:
-      postgres:
+      # Gate on the external DB being reachable (pgbouncer healthcheck probes the
+      # r7g). HASURA_GRAPHQL_DATABASE_URL (.env) still routes via pgbouncer:5432.
+      pgbouncer:
         condition: service_healthy
     networks:
       packiot-net:
@@ -289,7 +330,9 @@ services:
     image: postgres:16-alpine
     env_file: [.env]
     environment:
-      PGHOST: postgres
+      # DIRECT to the r7g — the F3 schema assembly is DDL (hypertables, caggs,
+      # functions) that must NOT go through pgbouncer transaction pooling.
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}
       PGPORT: "5432"
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
@@ -320,8 +363,11 @@ services:
     volumes:
       - ./db/init-f3:/f3:ro
     depends_on:
-      postgres:
+      # pgbouncer healthy = r7g reachable; db-init-bootstrap = extensions present.
+      pgbouncer:
         condition: service_healthy
+      db-init-bootstrap:
+        condition: service_completed_successfully
     networks:
       packiot-net:
         ipv4_address: 172.18.0.18
@@ -354,7 +400,8 @@ services:
     image: postgres:16-alpine
     env_file: [.env]
     environment:
-      PGHOST: postgres
+      # DIRECT to the r7g — same DDL/advisory-lock rationale as db-schema-f3.
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}
       PGPORT: "5432"
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
@@ -369,7 +416,7 @@ services:
     volumes:
       - ./db/init-f3:/f3:ro
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       db-schema-f3:
         condition: service_completed_successfully
@@ -396,11 +443,13 @@ services:
     env_file: [.env]
     environment:
       POSTGRES_PORT: "5432"
-      POSTGRES_HOST: postgres
+      # DIRECT to the r7g — knex `migrate:latest` takes a session-level advisory
+      # lock, which transaction pooling (pgbouncer) does not preserve.
+      POSTGRES_HOST: ${POSTGRES_HOST_UPSTREAM}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       db-schema-f3:
         condition: service_completed_successfully
@@ -554,7 +603,8 @@ services:
 
   # ── Authentik SSO ──────────────────────────────────────────────────────────────
   # Prod gets its own Authentik install (redis + server + worker), dedicated
-  # `authentik` DB on the local TimescaleDB. First-run setup:
+  # `authentik` DB on the r7g (created by db-init-bootstrap; authentik connects
+  # DIRECT, not via pgbouncer). First-run setup:
   #   https://auth.prod.packiot.app/if/flow/initial-setup/
   authentik-redis:
     image: redis:7-alpine
@@ -575,7 +625,9 @@ services:
     env_file: [.env]
     environment:
       AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: postgres
+      # DIRECT to the r7g — Authentik (Django) runs migrations + uses advisory
+      # locks / server-side cursors that break under pgbouncer transaction pooling.
+      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST_UPSTREAM}
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
@@ -593,8 +645,10 @@ services:
     depends_on:
       authentik-redis:
         condition: service_started
-      postgres:
-        condition: service_healthy
+      # The `authentik` role + DB live on the r7g only after db-init-bootstrap
+      # runs (the removed local postgres used to create them via initdb.d).
+      db-init-bootstrap:
+        condition: service_completed_successfully
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
@@ -607,7 +661,8 @@ services:
     env_file: [.env]
     environment:
       AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: postgres
+      # DIRECT to the r7g (same rationale as authentik-server).
+      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST_UPSTREAM}
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
@@ -622,23 +677,23 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   # ── Adminer (PostgreSQL web UI) ───────────────────────────────────────────────
-  # Connects to local postgres directly (bypasses pgbouncer — transaction
-  # pooling breaks Adminer's SET search_path). Behind Authentik SSO at
-  # adminer.prod.packiot.app.
+  # Connects to the r7g directly (bypasses pgbouncer — transaction pooling breaks
+  # Adminer's SET search_path). Behind Authentik SSO at adminer.prod.packiot.app.
+  # The default-server field is pre-filled with the r7g upstream IP.
   adminer:
     build: ./adminer
     container_name: adminer
     restart: unless-stopped
     env_file: [.env]
     environment:
-      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DEFAULT_SERVER: ${POSTGRES_HOST_UPSTREAM}
     ports:
       - "127.0.0.1:8082:8080"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.17
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
     logging:
       driver: json-file
