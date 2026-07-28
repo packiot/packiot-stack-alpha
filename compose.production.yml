@@ -77,13 +77,25 @@ volumes:
 
 services:
   # ── PostgreSQL (LOCAL TimescaleDB) ────────────────────────────────────────────
-  # ⚠ ROADMAP W1.4 (highest-care): the F3 schema is NOT what edge-api's knex
-  # migrations produce (those build the legacy F1 `public` shape). The F3 schema
-  # is assembled from edge-node-red/db/*.sql (e.g. 19-hasura-full-parity.sql,
-  # 29-f3-analytics-port.sql) + the oeecloud-worker rollup DDL. Prod's DB
-  # provisioning path MUST assemble the F3 schema as `public`, or the compute
-  # chain silently produces wrong OEE. db-migrate below is the boot-bootstrap;
-  # reconciling it to the full F3 schema is the W1.4 build task.
+  # ⚠ ROADMAP W1.4 (highest-care) — BUILT: the F3 schema is NOT what edge-api's
+  # knex migrations produce (those build the legacy F1 `public` shape). Prod's DB
+  # `public` MUST be the F3 schema staging's `packiot_shadow` carries, or the
+  # compute chain silently produces wrong OEE. The `db-schema-f3` one-shot below
+  # assembles it BEFORE knex/edge-api boot; the parity gate
+  # (scripts/prod-f3-schema-parity-check.sh) proves it == packiot_shadow.
+  #
+  # ⚠ CORRECTION to the earlier note here: the roadmap's "assemble from
+  # edge-node-red/db/*.sql + oeecloud-worker rollup DDL" is INCOMPLETE and partly
+  # wrong (see db/init-f3/README.md, verified against live packiot_shadow):
+  #   • edge-node-red/db/00-schema.sql is a NON-RUNNABLE introspection dump.
+  #   • 22-agg-views.sql builds agg_*/ca_* as PLAIN VIEWS; F3 needs REAL caggs
+  #     (0012-f3-cagg-layer.sql) on a hypertable equipment_values.
+  #   • the oeecloud-worker owns NO DDL — it only POPULATES tables the SQL files
+  #     create (search_path over verbatim piot_create_*_runtime fns).
+  # A raw concatenation of the fragments does NOT reach parity (measured:
+  # F3_MISSING=344 + EXTRA=377). The AUTHORITATIVE source is a curated
+  # schema-only snapshot of live packiot_shadow → db/init-f3/snapshot/ (gated,
+  # README §4). db-schema-f3 applies that snapshot.
   #
   # ⚠ ROADMAP W6/R2: t4g.medium + a local TimescaleDB swaps under real load
   # (staging proved it). Split the DB onto a dedicated memory-family instance
@@ -257,10 +269,79 @@ services:
         exit 0
     restart: "no"
 
+  # ── F3 schema assembly (one-shot) — ROADMAP W1.4 ──────────────────────────────
+  # Assembles the F3 (refactored single-flow) schema as `public` on the fresh DB,
+  # BEFORE knex/edge-api touch it. This is what makes greenfield prod "born F3".
+  #
+  # It applies db/init-f3/snapshot/*.sql (alphabetical) — the AUTHORITATIVE curated
+  # schema-only dump of staging's packiot_shadow (populated via the gated
+  # `capture-f3-snapshot` step, db/init-f3/README.md §4). Data-free, DDL only.
+  # Runs once against an empty DB; a re-run against a populated DB is a no-op guard
+  # (each file is CREATE ... IF NOT EXISTS / idempotent per the dump curation).
+  #
+  # ⚠ Until db/init-f3/snapshot/ is populated (gated: needs the staging DB read +
+  # USER sign-off), this service exits 0 with a LOUD warning and the schema is NOT
+  # built — the parity gate (scripts/prod-f3-schema-parity-check.sh) then FAILS,
+  # which is the intended safe state (no client data flows until parity is clean).
+  # db/init-f3/assemble.sh is the reviewable fragment-scaffold (does NOT reach
+  # parity by itself — see README) used to author/verify the snapshot, not run here.
+  db-schema-f3:
+    image: postgres:16-alpine
+    env_file: [.env]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if ! ls /f3/snapshot/*.sql >/dev/null 2>&1; then
+          echo "⚠⚠ db/init-f3/snapshot/ is EMPTY — F3 schema NOT assembled.";
+          echo "   Populate it (README §4) then redeploy. Parity gate will FAIL until then.";
+          exit 0;
+        fi
+        # 00-* = the curated pg_dump base (tables/functions/views): applied
+        # BEST-EFFORT — a plain restore benignly fails on the cagg VIEW blocks
+        # (dumped over _timescaledb_internal) + a couple debris index/type refs;
+        # the REAL caggs/hypertables come from the strict 05-*/10-* timescale
+        # layer next. 05+/10+ = the timescale-aware recreation: applied STRICT.
+        # The parity gate (scripts/prod-f3-schema-parity-check.sh) is the real
+        # guarantee — proven F3_MISSING=0 for this exact sequence.
+        for f in $$(ls /f3/snapshot/00-*.sql 2>/dev/null | sort); do
+          echo "== applying (best-effort) $$f =="; psql -f "$$f" || true;
+        done
+        for f in $$(ls /f3/snapshot/*.sql | grep -v '/00-' | sort); do
+          echo "== applying (strict) $$f =="; psql -v ON_ERROR_STOP=1 -f "$$f";
+        done
+        echo "F3 schema assembled. Prove it: scripts/prod-f3-schema-parity-check.sh gate"
+    volumes:
+      - ./db/init-f3:/f3:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.18
+    restart: "no"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── DB Migrations (one-shot) ──────────────────────────────────────────────────
-  # Runs edge-api's knex migrations against the local postgres. ⚠ This builds the
-  # legacy F1 `public` shape — reconciling to the full F3 schema is roadmap W1.4
-  # (see the postgres service comment).
+  # Runs edge-api's knex migrations against the local postgres AFTER db-schema-f3.
+  # ⚠ ROADMAP W1.4 RESIDUAL (reconciliation, flagged for USER): edge-api's knex
+  # set was authored to build the legacy F1 `public` shape. In F3-native prod the
+  # F3 schema already exists (db-schema-f3), so knex must be reduced to ONLY its
+  # migration-tracking/idempotent DDL — it must NOT recreate or reshape F1 tables
+  # over the F3 schema. Options (USER decision): (a) mark all F1-building
+  # migrations as already-applied (knex `up` no-ops via IF NOT EXISTS on an
+  # F3-shaped DB), or (b) an F3 baseline migration + `knex migrate:up` from there,
+  # or (c) drop db-migrate entirely if edge-api needs no runtime knex state.
+  # Kept in the chain (ordered after db-schema-f3) so the decision is explicit and
+  # the boot order is correct; verify with the parity gate before any client data.
   db-migrate:
     build:
       context: ./edge-api
@@ -274,6 +355,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      db-schema-f3:
+        condition: service_completed_successfully
     networks:
       packiot-net:
         ipv4_address: 172.18.0.16
