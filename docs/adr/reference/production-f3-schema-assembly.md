@@ -103,7 +103,9 @@ gap; the version bump is a real, conscious change (README §7).
 - ⚠ **PG version delta** pg15.17 (staging) → pg16/2.25.2 (prod image) — USER
   decision (README §7); cagg refresh/retention policies carried from staging-tuned
   `0012-f3-cagg-layer` should be re-tuned for prod (does not affect schema parity).
-- ⛔ **Reconcile edge-api knex** so it doesn't rebuild F1 over F3 (USER decision;
-  options in the `compose.production.yml` `db-migrate` comment).
+- ✅ **Reconcile edge-api knex** so it doesn't rebuild F1 over F3 — DONE (W1.5):
+  fake-baseline via `db/init-f3/knex-baseline.sql` + `db-knex-baseline` one-shot;
+  proven `CLOBBER=0` post-knex. See
+  [production-knex-f3-reconciliation](./production-knex-f3-reconciliation.md).
 - ⛔ **W1.6 prod dry-run boot** on an empty F3 DB — needs a deploy (do NOT run
   against prod).
