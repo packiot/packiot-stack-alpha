@@ -109,6 +109,27 @@ resource "aws_secretsmanager_secret_version" "app" {
 # from production. No Node-RED runs in compose.production.yml (per ADR-0003
 # scope — edge-nodered is per-factory, not in the cloud stack).
 
+# ── RabbitMQ creds for oeecloud-worker ────────────────────────────────────────
+# oeecloud-worker fetches its own AMQP creds from a DEDICATED secret at startup
+# rather than reading RABBITMQ_USER/RABBITMQ_PASSWORD from .env (the worker does
+# NOT fall back to env — it refuses to run if this secret is missing). First
+# dry-run boot surfaced the missing declaration. In dry-run we reuse the admin
+# creds from `app` (random_password.rabbitmq); phase 2 should split these into a
+# least-priv AMQP user once real factory traffic flows.
+resource "aws_secretsmanager_secret" "rabbitmq_oeecloud_creds" {
+  name                    = "packiot/production/rabbitmq-oeecloud-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_oeecloud_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_oeecloud_creds.id
+  secret_string = jsonencode({
+    username = "packiot"
+    password = random_password.rabbitmq.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
 # ── Nginx basic auth ──────────────────────────────────────────────────────────
 # All production service vhosts behind Nginx require this credential pair.
 # nginx_setup.sh fetches at runtime and writes /etc/nginx/.htpasswd.
