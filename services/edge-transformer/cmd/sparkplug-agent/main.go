@@ -42,6 +42,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawmqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/session"
@@ -301,6 +302,41 @@ func main() {
 		}()
 	}
 
+	// ── onboard control-plane API (ADR-0045 P1 — config-as-data) ──────────
+	// A separate, authenticated `POST /v1/onboard/generate` front-door that turns
+	// one client descriptor into the four onboarding artifacts over the wire, so
+	// edge-api / CS-Admin can generate a tenant's config server-to-server. It is
+	// UNRELATED to the tenant ingest plane (its own listener + its own bearer
+	// key), and dark by default: mounted only when ONBOARD_API_ENABLED=true AND an
+	// ONBOARD_API_KEY is present (enabled-but-keyless fails closed — auth is never
+	// optional, the same discipline as the ingest front-door above).
+	var onboardSrv *http.Server
+	if getenvBool("ONBOARD_API_ENABLED", false) {
+		key := os.Getenv("ONBOARD_API_KEY")
+		if key == "" {
+			logger.Error("ONBOARD_API_ENABLED=true but ONBOARD_API_KEY is empty — refusing to serve the onboard API with auth disabled")
+			os.Exit(1)
+		}
+		onboardOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sparkplug_agent_onboard_generate_total",
+			Help: "Onboard /v1/onboard/generate requests by outcome (received|generated|rejected_auth|rejected_bad|error).",
+		}, []string{"outcome"})
+		reg.MustRegister(onboardOutcomes)
+		oapi := onboardapi.New(onboardapi.Config{
+			APIKey:       key,
+			MaxBodyBytes: int64(getenvInt("ONBOARD_API_MAX_BODY_BYTES", 0)),
+		}, onboardOutcomes, logger)
+		onboardAddr := fmt.Sprintf(":%d", getenvInt("ONBOARD_API_PORT", 9105))
+		onboardSrv = &http.Server{Addr: onboardAddr, Handler: oapi.Handler()}
+		go func() {
+			logger.Info("onboard API listening", "addr", onboardAddr)
+			if err := onboardSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("onboard API server exited", "err", err)
+				cancel()
+			}
+		}()
+	}
+
 	// ── run subscriber + uplink + tick loop ──────────────────────────────
 	go func() {
 		if err := sub.Run(ctx); err != nil && ctx.Err() == nil {
@@ -326,6 +362,9 @@ func main() {
 			shutctx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 			if ingestSrv != nil {
 				_ = ingestSrv.Shutdown(shutctx)
+			}
+			if onboardSrv != nil {
+				_ = onboardSrv.Shutdown(shutctx)
 			}
 			_ = hsrv.Shutdown(shutctx)
 			sc()
