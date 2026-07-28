@@ -1,0 +1,51 @@
+sparkplug:
+    group_id: BISPHARMA
+    edge_node_id: bispharma-edge
+    packml_topic: BISPHARMA/SP
+    internal_broker: tcp://mosquitto:1883
+    raw_topic: edge/raw/bispharma/#
+    uplink_broker: ssl://ingest.packiot.com:8883
+    uplink_tls_cert_ref: secret://packiot/prod/bispharma/uplink-cert
+    uplink_tls_key_ref: secret://packiot/prod/bispharma/uplink-key
+    uplink_ca_ref: secret://packiot/prod/bispharma/uplink-ca
+raw_tag_map:
+    - metric_suffix: /BLISTER1/Admin/ProdConsumedCount
+      type: double
+    - metric_suffix: /BLISTER1/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /BLISTER1/Admin/ProdDefectiveCount
+      type: double
+    - metric_suffix: /BLISTER1/Status/MachSpeed
+      type: double
+    - metric_suffix: /BLISTER1/Status/StateCurrent
+      type: long
+    - metric_suffix: /BLISTER1/Status/Parameter30700
+      type: string
+    - metric_suffix: /BLISTER1/UHLMANN/Admin/ProdProcessedCount/0/Unit
+      type: double
+    - metric_suffix: /BLISTER1/UHLMANN/Admin/ProdDefectiveCount/0/Unit
+      type: double
+    - metric_suffix: /BLISTER1/UHLMANN/Status/MachSpeed
+      type: double
+    - metric_suffix: /BLISTER1/UHLMANN/Status/StateCurrent
+      type: long
+    - metric_suffix: /CARTONER1/Admin/ProdConsumedCount
+      type: double
+    - metric_suffix: /CARTONER1/Admin/ProdProcessedCount
+      type: double
+    - metric_suffix: /CARTONER1/Admin/ProdDefectiveCount
+      type: double
+    - metric_suffix: /CARTONER1/Status/MachSpeed
+      type: double
+    - metric_suffix: /CARTONER1/Status/StateCurrent
+      type: long
+    - metric_suffix: /CARTONER1/Status/Parameter30700
+      type: string
+    - metric_suffix: /CARTONER1/MARCHESINI/Admin/ProdProcessedCount/0/Unit
+      type: double
+    - metric_suffix: /CARTONER1/MARCHESINI/Admin/ProdDefectiveCount/0/Unit
+      type: double
+    - metric_suffix: /CARTONER1/MARCHESINI/Status/MachSpeed
+      type: double
+    - metric_suffix: /CARTONER1/MARCHESINI/Status/StateCurrent
+      type: long
