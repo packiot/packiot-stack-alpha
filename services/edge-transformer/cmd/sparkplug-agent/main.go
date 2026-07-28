@@ -41,6 +41,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/capture"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawmqtt"
@@ -92,7 +93,7 @@ func main() {
 	// and a register build that was explicitly selected but fails is fatal (a
 	// partial map would silently drop metrics). Cutover is a BOOT read (Option A):
 	// a mid-run flip applies on the agent's next restart.
-	tagSrc, err := resolveTagMap(ctx, cfg, logger)
+	tagSrc, boot, err := resolveTagMap(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("tag-map resolution", "err", err)
 		os.Exit(1)
@@ -100,6 +101,28 @@ func main() {
 	tagSource := "static_yaml"
 	if tagSrc.UseRegister {
 		tagSource = "packml_register"
+	}
+
+	// ── live-capture OBSERVE posture (ADR-0045 Phase-2b) ──────────────────────
+	// Whether this boot records what count indices/topics actually arrive from a
+	// live tee, so CS can promote descriptor entries inferred→confirmed. Two
+	// gates: the master flag AGENT_CAPTURE_ENABLED (dark by default) AND the
+	// per-tenant client_descriptors.status == "captured" (the observe posture,
+	// read at boot by resolveTagMap on the SAME pool). Off ⇒ zero hot-path cost.
+	// The recorder REUSES the register pool (kept alive past boot only when
+	// observing) — never a second pool. Fail-safe: any DB/parse error is a
+	// logged drop, never a block or crash of the ingest path.
+	captureEnabled := getenvBool("AGENT_CAPTURE_ENABLED", false)
+	observing := boot != nil && capture.ShouldObserve(captureEnabled, boot.status)
+	// The register pool is boot-transient by default; keep it open ONLY when the
+	// recorder will write through it, else close it now (Phase-2a behaviour).
+	if boot != nil && boot.pool != nil {
+		if observing {
+			defer boot.pool.Close()
+		} else {
+			boot.pool.Close()
+			boot.pool = nil
+		}
 	}
 
 	// ── parameter decomposition (task #54 follow-up, ADR-0042) ────────────────
@@ -235,6 +258,49 @@ func main() {
 	reg.MustRegister(rebirths)
 	up.SetRebirthMetric(rebirths.Inc)
 
+	// ── live-capture recorder (ADR-0045 Phase-2b) ────────────────────────────
+	// Built only in the observe posture. It records, per equipment topic, which
+	// count indices actually arrive — buffered in-memory and flushed on a ticker
+	// to capture_observations via the (reused) register pool. The count-leaf
+	// TEMPLATES come from the tenant profile's metric_templates ({idx}-bearing
+	// leaves); with no profile there are no count families to recognize, so the
+	// recorder stays nil and Observe is a no-op.
+	var recorder *capture.Recorder
+	if observing {
+		var leaves []string
+		if boot.profile != nil {
+			for _, t := range boot.profile.MetricTemplates.Member {
+				leaves = append(leaves, t.Leaf)
+			}
+			for _, t := range boot.profile.MetricTemplates.Line {
+				leaves = append(leaves, t.Leaf)
+			}
+		}
+		templates := capture.CountLeafTemplates(leaves)
+		if len(templates) == 0 {
+			logger.Warn("capture observe posture active but the tenant profile declares no count-metric leaves — nothing to capture",
+				"enterprise_id", boot.enterpriseID)
+		}
+		captureObs := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sparkplug_agent_capture_observations_total",
+			Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
+		}, []string{"tenant"})
+		reg.MustRegister(captureObs)
+		obsCounter := captureObs.WithLabelValues(cfg.Sparkplug.GroupID)
+		recorder = capture.New(capture.Config{
+			EnterpriseID: boot.enterpriseID,
+			Templates:    templates,
+			Sink:         capture.NewPGSink(boot.pool),
+			Logger:       logger,
+			OnObserved:   obsCounter.Inc,
+		})
+		go recorder.Run(ctx, time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))*time.Second)
+		logger.Info("live-capture observe posture ENABLED",
+			"enterprise_id", boot.enterpriseID,
+			"count_leaf_templates", len(templates),
+			"flush_sec", getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))
+	}
+
 	// ingest is the SHARED pipeline entry point: resolve each raw tag against
 	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
 	// internal MQTT subscriber (Mode-B / full architecture) and the HTTP
@@ -243,6 +309,14 @@ func main() {
 	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
 	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
 		for _, t := range tags {
+			// Live-capture OBSERVE (ADR-0045 P2b): record what count indices
+			// ACTUALLY arrive — BEFORE the allowlist, so an inferred-index tag
+			// that the current map would drop as unmapped is still observed (that
+			// mismatch is exactly the DQ evidence CS confirms against). No-op when
+			// not observing (recorder is nil) or the tag is not count-bearing.
+			// Uses the raw arriving suffix (count leaves are never decomposed).
+			recorder.Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
+
 			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
 			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the
 			// allowlist lookup, so the numbered entry (e.g. Parameter30700) both
@@ -446,7 +520,8 @@ func main() {
 // — the authoritative cross-tenant scope for both the descriptor read and the
 // register fetch. (cfg.Sparkplug.GroupID is the tenant short-name / group_id;
 // it must equal prof.Tenant, guarded below.)
-func resolveTagMap(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) (agentcfg.TagMapSource, error) {
+func resolveTagMap(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) (agentcfg.TagMapSource, *bootDB, error) {
+	boot := &bootDB{}
 	envOverride := getenvBool("AGENT_TAGMAP_FROM_REGISTER", false)
 	profPath := os.Getenv("AGENT_PROFILE_PATH")
 
@@ -456,72 +531,94 @@ func resolveTagMap(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logge
 	// touch no DB — un-migrated tenants keep zero DB dependency.
 	if profPath == "" {
 		if envOverride {
-			return agentcfg.TagMapSource{}, fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
+			return agentcfg.TagMapSource{}, boot, fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
 		}
-		return agentcfg.TagMapSource{UseRegister: false, Reason: "no_profile"}, nil
+		return agentcfg.TagMapSource{UseRegister: false, Reason: "no_profile"}, boot, nil
 	}
 
 	prof, err := tenantprofile.LoadProfile(profPath)
 	if err != nil {
-		return agentcfg.TagMapSource{}, fmt.Errorf("load profile: %w", err)
+		return agentcfg.TagMapSource{}, boot, fmt.Errorf("load profile: %w", err)
 	}
 	// Guard: a profile's tenant must match the agent it configures, so a
 	// mis-pointed AGENT_PROFILE_PATH can't build/scope another tenant's map.
 	if prof.Tenant != "" && prof.Tenant != cfg.Sparkplug.GroupID {
-		return agentcfg.TagMapSource{}, fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
+		return agentcfg.TagMapSource{}, boot, fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
 	}
 	if prof.EnterpriseID == 0 {
-		return agentcfg.TagMapSource{}, fmt.Errorf("profile enterprise_id is required for the register loader / cutover check")
+		return agentcfg.TagMapSource{}, boot, fmt.Errorf("profile enterprise_id is required for the register loader / cutover check")
 	}
+	boot.profile = prof
+	boot.enterpriseID = prof.EnterpriseID
 
 	dsn, err := registerDSN()
 	if err != nil {
 		if envOverride {
-			return agentcfg.TagMapSource{}, err
+			return agentcfg.TagMapSource{}, boot, err
 		}
 		// No DB creds → can't read the descriptor. Stay static (current behaviour).
 		logger.Warn("no DB DSN for the cutover-status check — staying on the static tag map", "err", err)
-		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, nil
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, boot, nil
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		if envOverride {
-			return agentcfg.TagMapSource{}, fmt.Errorf("pgx pool: %w", err)
+			return agentcfg.TagMapSource{}, boot, fmt.Errorf("pgx pool: %w", err)
 		}
 		logger.Warn("could not open the DB pool for the cutover-status check — staying on the static tag map", "err", err)
-		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, nil
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, boot, nil
 	}
-	defer pool.Close()
+	// The pool is now owned by the caller (bootDB.pool): main keeps it alive only
+	// when the capture recorder writes through it, and closes it otherwise. On
+	// every fail-safe/fatal path BELOW we close it explicitly (nil pool returned)
+	// — a pool only escapes on a healthy path.
 	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		if envOverride {
-			return agentcfg.TagMapSource{}, fmt.Errorf("db ping: %w", err)
+			return agentcfg.TagMapSource{}, boot, fmt.Errorf("db ping: %w", err)
 		}
 		logger.Warn("client_descriptors DB unreachable — staying on the static tag map", "err", err)
-		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, nil
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, boot, nil
 	}
+	boot.pool = pool
 
-	// Read the per-tenant flip signal (skipped when the global override forces
-	// register-driven — SelectTagMapSource short-circuits on it anyway, so we
-	// don't pay a descriptor read for an already-decided tenant).
-	var status string
-	var statusErr error
-	if !envOverride {
-		status, statusErr = agentcfg.NewDescriptorStatusFetcher(pool).FetchStatus(ctx, prof.EnterpriseID)
-		if statusErr != nil {
-			logger.Warn("client_descriptors status read failed — staying on the static tag map", "err", statusErr)
-		}
+	// Read the per-tenant descriptor status. It drives BOTH the tag-map cutover
+	// flip (Phase-2a) and the capture observe posture (Phase-2b), so it is read
+	// unconditionally here and stashed in bootDB — even under envOverride, where
+	// SelectTagMapSource ignores it for the tag-map decision but capture still
+	// needs it. A read error is a safe static fallback (never a flip).
+	status, statusErr := agentcfg.NewDescriptorStatusFetcher(pool).FetchStatus(ctx, prof.EnterpriseID)
+	if statusErr != nil {
+		logger.Warn("client_descriptors status read failed — staying on the static tag map", "err", statusErr)
+	} else {
+		boot.status = status
 	}
 	src := agentcfg.SelectTagMapSource(envOverride, status, statusErr)
 	if !src.UseRegister {
-		return src, nil
+		return src, boot, nil
 	}
 
 	// Cutover (or override): build + install the register-driven map with the
 	// SAME pool. A failure here is fatal — register was explicitly selected.
 	if err := installRegisterTagMap(ctx, cfg, prof, pool, logger); err != nil {
-		return agentcfg.TagMapSource{}, err
+		pool.Close()
+		boot.pool = nil
+		return agentcfg.TagMapSource{}, boot, err
 	}
-	return src, nil
+	return src, boot, nil
+}
+
+// bootDB carries the DB-derived boot resources that outlive resolveTagMap: the
+// (optionally kept-open) register pool, the loaded tenant profile, the tenant's
+// enterprise id, and the descriptor status. main owns the pool's lifetime — it
+// keeps it open past boot ONLY for the capture recorder, else closes it. Any
+// field may be zero/nil (static tenant, no DB, read error) — every consumer
+// nil-checks. pool is non-nil ONLY on a healthy DB path.
+type bootDB struct {
+	pool         *pgxpool.Pool
+	profile      *tenantprofile.Profile
+	enterpriseID int
+	status       string
 }
 
 // installRegisterTagMap replaces cfg.RawTagMap with a map built from
