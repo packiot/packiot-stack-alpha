@@ -1,0 +1,169 @@
+# compose.edge.yml — ADR-0042 §4.2 Mode-B CLIENT-EDGE bundle.
+#
+# WHAT THIS IS
+# -----------------------------------------------------------------------------
+# The deployable edge a Customer Success engineer runs AT a client factory. It
+# is the productized counterpart to the Mode-A staging validation
+# (compose.staging.yml `sparkplug-agent-cpack`): the SAME agent image + tenant
+# config, now with a real Node-RED connectivity plane and a real mTLS WAN
+# crossing to new-production (ADR-0042 §4 "one image pair, two compose overlays").
+#
+# THE THREE TIERS (ADR-0042 §2.1), all on one loopback network:
+#
+#   PLC(s) ──fieldbus──▶ [ nodered ]  Tier-1 connectivity plane (per-client)
+#                          │  emits RAW suffix tags — SparkPlug-IGNORANT
+#                          │  (a) publish to internal mosquitto  edge/raw/<tenant>/#
+#                          │  (b) OR tee-POST to the agent HTTP ingest :9104/v1/tags
+#                          ▼
+#   [ mosquitto ] internal loopback bus (no TLS, no WAN, no cross-tenant)
+#                          │
+#                          ▼
+#                     [ sparkplug-agent ]  Tier-2 transmission plane (uniform)
+#                          │  alias-ASSIGN · NBIRTH/NDATA/NDEATH-LWT · RBE ·
+#                          │  store-and-forward outbox · protobuf encode
+#                          ▼  spBv1.0/<tenant>/…  over mTLS (CN=<tenant>)
+#                   ══════ OT/IT WAN ══════▶  new-prod ingest broker (DEPENDENCY)
+#
+# EVERYTHING per-client is env (see .env.template) + the generated <tenant>/
+# artifacts (onboard-gen output). A new client is a new .env + a new <tenant>/
+# dir — NEVER a fork (north-star #2, ADR-0042 §5.3).
+#
+# DEPLOY:   cp .env.template .env && edit .env    (or use a generated .env)
+#           docker compose -f compose.edge.yml --env-file .env config   # validate
+#           docker compose -f compose.edge.yml --env-file .env up -d
+# VALIDATE: curl -fsS localhost:${AGENT_HEALTH_PORT}/healthz  → {"healthy":true}
+#
+# See README.md for the full describe→generate→capture→validate→cutover runbook.
+
+name: packiot-edge-${TENANT_SLUG}
+
+networks:
+  edge-net:
+    driver: bridge
+
+volumes:
+  agent-outbox:        # ADR-0011 store-and-forward — survives a WAN outage
+  nodered-data:        # Node-RED flow/credential store
+  mosquitto-data:      # retained NBIRTHs survive a broker restart
+
+services:
+
+  # ── Tier-1 CONNECTIVITY PLANE ────────────────────────────────────────────────
+  # The per-client Node-RED: PLC/OPC-UA/S7/Modbus I/O + the ADR-0042 §2.3 tee
+  # (a SECOND wire off the SparkPlug-assembly node that forwards RAW suffix tags).
+  # It is SparkPlug-IGNORANT — it MUST NOT publish spBv1.0/* (the agent owns that
+  # namespace). Its flows are the client's connectivity export + the generated
+  # <tenant>-tee-node.json imported onto the assembly node.
+  nodered:
+    image: ${NODERED_IMAGE:-nodered/node-red:4.0}
+    container_name: edge-${TENANT_SLUG}-nodered
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      # The tee reads the ingest key from THIS env var (never hardcoded in a
+      # flow) — matches the generated tee snippet's ingest_key_env.
+      ${TENANT_UPPER}_INGEST_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+    volumes:
+      - nodered-data:/data
+      # The client's connectivity flows (their PLC I/O export + the imported tee).
+      - ${NODERED_FLOWS_DIR:-./bispharma/nodered}:/data/flows-import:ro
+    ports:
+      - "${NODERED_UI_PORT:-1880}:1880"   # editor UI — bind to a LAN/VPN iface in prod
+    networks: [edge-net]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── INTERNAL LOOPBACK BUS ────────────────────────────────────────────────────
+  # The Tier-1→Tier-2 hop (ADR-0042 §2.3). Plain JSON raw tags, no TLS, no WAN,
+  # no cross-tenant — standardization happens only at the WAN crossing, not here.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: edge-${TENANT_SLUG}-mosquitto
+    restart: unless-stopped
+    init: true                            # reap zombies (mosquitto runs as PID 1)
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    networks: [edge-net]
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t healthcheck/ping -m ok -q 0"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Tier-2 TRANSMISSION PLANE ────────────────────────────────────────────────
+  # The uniform Go SparkPlug agent. Consumes raw tags (internal broker AND/OR the
+  # HTTP tee), runs the full SparkPlug session, and publishes to new-prod over
+  # mTLS. The image is either PINNED (AGENT_IMAGE, the released artifact) or built
+  # locally from the multi-arch Dockerfile.agent.
+  sparkplug-agent:
+    image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+    build:
+      context: ../../../services/edge-transformer
+      dockerfile: Dockerfile.agent
+    container_name: edge-${TENANT_SLUG}-agent
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AGENT_CONFIG: /etc/packiot/agent.yaml
+      AGENT_PROFILE_PATH: /etc/packiot/profile.yaml
+      HEALTH_PORT: "9103"
+      OUTBOX_PATH: /var/lib/edge-transformer/agent-outbox.db
+
+      # ── HTTP raw-tag front-door (the CPACK-style tee target) ────────────────
+      # Enabled by default at the edge so the generated tee can POST directly.
+      # Fails closed if the key is empty (auth is never optional).
+      AGENT_HTTP_INGEST_ENABLED: "${AGENT_HTTP_INGEST_ENABLED:-true}"
+      AGENT_INGEST_PORT: "9104"
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+
+      # ── Mode-B mTLS uplink (ADR-0042 §6) ────────────────────────────────────
+      # Resolved cert FILE paths (secrets resolved out of band → mounted below).
+      # Unset ⇒ Mode-A plaintext (staging only). CN=<tenant> asserts the tenant;
+      # the broker ACL scopes spBv1.0/<tenant>/#.
+      AGENT_UPLINK_TLS_CERT: ${AGENT_UPLINK_TLS_CERT:-/etc/packiot/certs/uplink-cert.pem}
+      AGENT_UPLINK_TLS_KEY:  ${AGENT_UPLINK_TLS_KEY:-/etc/packiot/certs/uplink-key.pem}
+      AGENT_UPLINK_CA:       ${AGENT_UPLINK_CA:-/etc/packiot/certs/uplink-ca.pem}
+
+      # ── Register-driven tag map + parameter decomposition (ADR-0043/0044) ────
+      # Default OFF = the static raw_tag_map in agent.yaml, byte-for-byte. The
+      # CUTOVER step (VALIDATE green) flips these on. NOTE: these flags +
+      # AGENT_PROFILE_PATH activate only once the ADR-0043/0044 agent features
+      # land on staging (separate PRs); the base agent already on staging serves
+      # the static tag map + the HTTP-ingest tee path, so DESCRIBE→VALIDATE all
+      # work today — only the final register-driven CUTOVER waits on those merges.
+      AGENT_TAGMAP_FROM_REGISTER: "${AGENT_TAGMAP_FROM_REGISTER:-false}"
+      AGENT_PARAM_DECOMPOSITION: "${AGENT_PARAM_DECOMPOSITION:-false}"
+    volumes:
+      # Generated per-tenant artifacts (onboard-gen output) — read-only.
+      - ${AGENT_CONFIG_FILE:-./bispharma/bispharma-agent.yaml}:/etc/packiot/agent.yaml:ro
+      - ${AGENT_PROFILE_FILE:-./bispharma/bispharma-profile.yaml}:/etc/packiot/profile.yaml:ro
+      # mTLS material — resolved out of band into ./certs/ (gitignored). Read-only.
+      - ${CERTS_DIR:-./certs}:/etc/packiot/certs:ro
+      - agent-outbox:/var/lib/edge-transformer
+    ports:
+      - "${AGENT_HEALTH_PORT:-9103}:9103"   # /healthz + /metrics (scrape target)
+    networks: [edge-net]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 256m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

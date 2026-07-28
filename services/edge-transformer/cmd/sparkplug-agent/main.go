@@ -95,11 +95,35 @@ func main() {
 	}
 	defer ob.Close()
 
+	// Mode-B mTLS material (ADR-0042 §6). The agentcfg descriptor holds the
+	// cert/key/CA as secret:// REFERENCES only; the deploy resolves them to
+	// files (AWS Secrets Manager → mounted secret) and points these env vars at
+	// the RESOLVED PATHS. Unset ⇒ Mode-A loopback (tcp://, no TLS). A partial
+	// set fails closed (never a silent plaintext downgrade).
+	tlsCfg, err := uplink.LoadTLSConfig(uplink.TLSFiles{
+		CertFile: os.Getenv("AGENT_UPLINK_TLS_CERT"),
+		KeyFile:  os.Getenv("AGENT_UPLINK_TLS_KEY"),
+		CAFile:   os.Getenv("AGENT_UPLINK_CA"),
+	})
+	if err != nil {
+		logger.Error("uplink mTLS config", "err", err)
+		os.Exit(1)
+	}
+	if tlsCfg == nil && strings.HasPrefix(cfg.Sparkplug.UplinkBroker, "ssl://") {
+		// An ssl:// broker with no cert material is almost always a misconfig
+		// (the WAN crossing needs the per-tenant cert). Warn loudly; paho will
+		// still attempt server-auth-only TLS against the system roots.
+		logger.Warn("uplink_broker is ssl:// but no AGENT_UPLINK_TLS_* files supplied — "+
+			"connecting without a client cert (the broker ACL will likely reject this)",
+			"broker", cfg.Sparkplug.UplinkBroker)
+	}
+
 	up := uplink.New(uplink.Config{
 		BrokerURL:  cfg.Sparkplug.UplinkBroker,
 		ClientID:   "sparkplug-agent-uplink-" + cfg.Sparkplug.EdgeNodeID + "-" + fmt.Sprint(os.Getpid()),
 		GroupID:    cfg.Sparkplug.GroupID,
 		EdgeNodeID: cfg.Sparkplug.EdgeNodeID,
+		TLS:        tlsCfg,
 	}, pub, ob, store.SnapshotForBirth, logger)
 
 	// Prometheus registry (Go + process runtime + the agent drop counter).
