@@ -177,20 +177,38 @@ type TeeParams struct {
 	TLSInsecure bool `yaml:"tls_insecure"`
 }
 
-// Load reads + validates a client descriptor from disk.
+// Parse unmarshals + validates a client descriptor from raw bytes. It is the
+// byte-oriented core Load wraps, so a descriptor that arrives over the wire (the
+// ADR-0045 P1 onboard API) is parsed and validated through the EXACT same path a
+// file on disk is — one descriptor schema, one validation, no drift between the
+// CLI and the HTTP surface.
+//
+// The body is decoded as YAML. JSON callers are handled transparently: JSON is a
+// strict subset of YAML, and yaml.v3 honours the same struct tags, so a JSON
+// request body unmarshals into the descriptor with no separate code path.
+func Parse(raw []byte) (*Descriptor, error) {
+	var d Descriptor
+	if err := yaml.Unmarshal(raw, &d); err != nil {
+		return nil, fmt.Errorf("clientdescriptor: parse: %w", err)
+	}
+	if err := d.Validate(); err != nil {
+		return nil, fmt.Errorf("clientdescriptor: validate: %w", err)
+	}
+	return &d, nil
+}
+
+// Load reads + validates a client descriptor from disk. It delegates the
+// unmarshal + validation to Parse so the file and wire paths share one core.
 func Load(path string) (*Descriptor, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("clientdescriptor: read %s: %w", path, err)
 	}
-	var d Descriptor
-	if err := yaml.Unmarshal(raw, &d); err != nil {
-		return nil, fmt.Errorf("clientdescriptor: parse %s: %w", path, err)
+	d, err := Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("clientdescriptor: %s: %w", path, err)
 	}
-	if err := d.Validate(); err != nil {
-		return nil, fmt.Errorf("clientdescriptor: validate %s: %w", path, err)
-	}
-	return &d, nil
+	return d, nil
 }
 
 // Validate checks the descriptor is internally consistent BEFORE generation — a
