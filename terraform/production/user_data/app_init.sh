@@ -110,6 +110,13 @@ AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
 # adminer services read.
 POSTGRES_HOST_UPSTREAM="${db_private_ip}"
 POSTGRES_URL_VIA_POOL="postgresql://$DB_USER_FROM_SECRET:$DB_PASS@pgbouncer:5432/$DB_NAME_FROM_SECRET"
+# DIRECT-to-r7g URL (bypasses pgbouncer) for consumers that use prepared
+# statements or advisory locks, which are incompatible with pgbouncer's
+# transaction-pooling mode. Hasura in particular fails every BEGIN with
+# 42P05 "prepared statement '0' already exists" when routed through pgbouncer.
+# This targets the r7g upstream ($${POSTGRES_HOST_UPSTREAM}) DIRECTLY — there is
+# NO local `postgres` container in the F3-native prod stack (W1 DB rewire).
+POSTGRES_URL_DIRECT="postgresql://$DB_USER_FROM_SECRET:$DB_PASS@$${POSTGRES_HOST_UPSTREAM}:5432/$DB_NAME_FROM_SECRET"
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
@@ -145,8 +152,11 @@ POSTGRES_USER=$DB_USER_FROM_SECRET
 POSTGRES_DB=$DB_NAME_FROM_SECRET
 POSTGRES_PASSWORD=$DB_PASS
 
-# Hasura (routes via pgbouncer:5432 → r7g upstream)
-HASURA_GRAPHQL_DATABASE_URL=$POSTGRES_URL_VIA_POOL
+# Hasura — DIRECT to the r7g (POSTGRES_URL_DIRECT), NOT via pgbouncer. Hasura
+# uses prepared statements that collide under pgbouncer's transaction-pooling
+# mode (error 42P05 "prepared statement '0' already exists" on every BEGIN).
+# HASURA_GRAPHQL_PG_CONNECTIONS=5 (compose) caps the pool against the r7g.
+HASURA_GRAPHQL_DATABASE_URL=$POSTGRES_URL_DIRECT
 HASURA_GRAPHQL_ADMIN_SECRET=$HASURA_ADMIN
 HASURA_GRAPHQL_JWT_SECRET=$HASURA_JWT_JSON
 HASURA_GRAPHQL_ENABLE_CONSOLE=true
@@ -190,6 +200,20 @@ GITHUB_PAT=$(get_secret "packiot/production/github-runner" | jq -r '.pat')
 
 # Rewrite packiot HTTPS URLs to embed the PAT. Longest-prefix matching ensures
 # this only applies to packiot org repos, not github.com at large.
+#
+# IDEMPOTENCY: `git config --global url.X.insteadOf Y` keys on the literal URL
+# string X (which includes the PAT). Re-running this script with a different
+# PAT — e.g. after rotation — would ADD a second section rather than replace
+# the first. Two competing insteadOf rules silently break git auth (older
+# stale rule may win). Strip every prior packiot-PAT section before re-adding.
+python3 -c "
+import re, os, sys
+path = '/root/.gitconfig'
+if not os.path.exists(path): sys.exit(0)
+with open(path) as f: c = f.read()
+c = re.sub(r'\[url \"https://x-access-token:[^\"]+@github\.com/packiot/\"\][^\[]*', '', c)
+with open(path, 'w') as f: f.write(c)
+"
 git config --global url."https://x-access-token:$${GITHUB_PAT}@github.com/packiot/".insteadOf "https://github.com/packiot/"
 
 echo "GitHub auth configured"
@@ -203,7 +227,10 @@ if [ -d "stack/.git" ]; then
   git fetch origin
   git checkout production
   git pull origin production
-  git submodule update --init -- edge-api operator \
+  # --force ensures git retries clones for submodules whose checkout dir
+  # exists but is empty/stale (left over from a previous auth failure) — a
+  # failed first clone otherwise leaves empty placeholder dirs that block retry.
+  git submodule update --init --force -- edge-api operator \
     || echo "WARNING: submodule update failed — continuing with existing state"
   cd /opt/packiot
 else
