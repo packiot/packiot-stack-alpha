@@ -161,6 +161,7 @@ V	v_operator_po_list_setup_4
 V	v_po_box_totals
 V	v_report_downtimes
 F	box_scans_no_mutate()
+F	bronze_raw_no_mutate()
 F	h_piot_downtimes_duration_by_category(idequipment integer)
 F	h_piot_get_downtimes(_tsstart timestamp without time zone, _tsend timestamp without time zone)
 F	h_piot_get_downtimes_equipment_level(in_ids_sites text, in_ids_areas text, in_ids_equipments text, _tsstart timestamp without time zone, _tsend timestamp without time zone)
