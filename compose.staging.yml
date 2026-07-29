@@ -1624,6 +1624,11 @@ services:
       # (routes to packiot_shadow public via oeecloud-worker's shadow
       # pool). Requires POSTGRES_SHADOW_DB_NAME set on oeecloud-worker.
       SHADOW_EMIT_REFACTORED: "true"
+      # ADR-0032 F3-collapse Step 3 knob: the F2 source_type="go" leg
+      # (shadow_go_port comparison shadow) was hardcoded-always-on. Now gated —
+      # default "true" (no change). Set "false" to STOP emitting the F2 leg when
+      # collapsing to single-flow F3 (reversible: set back to "true" + redeploy).
+      SHADOW_EMIT_GO: "true"
       # #276 Phase-4 Calc CUTOVER (PR #450, merged flag-OFF): flip the F3
       # (source_type="refactored") emit from raw cumulative counters to the
       # Calc port's delta+cumulative shape (Value=delta, Counter=cumulative —
