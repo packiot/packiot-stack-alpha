@@ -71,7 +71,7 @@ const computeValuesSQL = `
 	UPDATE %[1]s.production_orders_runtime e SET
 	       gross_production = COALESCE(s.gross, 0),
 	       net_production   = COALESCE(s.net, 0),
-	       oee_q            = LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), -- ADR-0037 clamp (net≤gross)
+	       oee_q            = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
 	       speed            = COALESCE(s.speed, 0),
 	       recalc_needed    = false
 	  FROM eligible el
