@@ -77,7 +77,8 @@ const dayEligibleSQL = `
 const dayRollupSQL = `
 	WITH sums AS (
 	    SELECT el.id_equipment, el.ts_value,
-	           sum(hr.net) / NULLIF(sum(hr.ideal_production), 0) AS oee,
+	           -- ADR-0037 output-invariant clamp (#576 extended): bound to [0,1].
+	           LEAST(sum(hr.net) / NULLIF(sum(hr.ideal_production), 0), 1) AS oee,
 	           -- ADR-0037 C: the OEE waterfall (A×P×Q), previously unwritten at
 	           -- the day grain (only composite oee). Availability = running /
 	           -- planned-production-time ; Quality = net / gross ; Performance
@@ -85,7 +86,7 @@ const dayRollupSQL = `
 	           -- week/month grain (grains.go) and legacy pg engine.
 	           LEAST(sum(hr.running_time), el.day_len_s)
 	               / NULLIF(LEAST(sum(hr.available_time), el.day_len_s), 0) AS oee_a,
-	           sum(hr.net) / NULLIF(sum(hr.gross), 0) AS oee_q,
+	           LEAST(sum(hr.net) / NULLIF(sum(hr.gross), 0), 1) AS oee_q,
 	           -- Physical invariant: a production-day's time-in-state cannot
 	           -- exceed the day's own wall-clock length (el.day_len_s). The
 	           -- HOUR grain is :00-aligned, but a non-hour-aligned site
@@ -128,7 +129,7 @@ const dayRollupSQL = `
 	       oee              = COALESCE(s.oee, 0),
 	       oee_a            = COALESCE(s.oee_a, 0),
 	       oee_q            = COALESCE(s.oee_q, 0),
-	       oee_p            = COALESCE(s.oee / NULLIF(s.oee_a * s.oee_q, 0), 0),
+	       oee_p            = LEAST(COALESCE(s.oee / NULLIF(s.oee_a * s.oee_q, 0), 0), 1),
 	       available_time   = COALESCE(s.available_time, 0),
 	       running_time     = COALESCE(s.running_time, 0),
 	       stopped_time     = COALESCE(s.stopped_time, 0),

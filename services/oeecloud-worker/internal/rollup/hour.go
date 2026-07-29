@@ -175,14 +175,19 @@ const hourEventsSQL = `
 	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
 	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
-	       oee = COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0),
+	       -- ADR-0037 output-invariant clamp (#576 extended): bound every served
+	       -- OEE factor to [0,1]. Historical corrupt running_time (billions, from
+	       -- the already-fixed unclosed-event class) + net>gross would otherwise
+	       -- surface as oee=13918 / oee_q>1 at this grain. Clamp only the derived
+	       -- oee* ratios; raw net/gross/running columns stay as the lineage truth.
+	       oee = LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1),
 	       -- ADR-0037 C: the OEE waterfall (A×P×Q) was never written at this
 	       -- grain — only the composite oee. Populate Availability + Quality
 	       -- directly (running / planned-production-time ; net / gross); the
 	       -- companion hourOeePSQL back-solves Performance so oee = a·p·q holds,
 	       -- matching the week/month grain (grains.go) and the legacy pg engine.
 	       oee_a = COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0),
-	       oee_q = COALESCE(e.net / NULLIF(e.gross, 0), 0)
+	       oee_q = LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1)
 	  FROM ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '6 hour'`
@@ -193,7 +198,7 @@ const hourEventsSQL = `
 // event-hit rows (recalc_needed just cleared). NULLIF guards a 0 A or Q.
 const hourOeePSQL = `
 	UPDATE %[1]s.equipment_runtime_1hour e
-	   SET oee_p = COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0)
+	   SET oee_p = LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND NOT e.recalc_needed

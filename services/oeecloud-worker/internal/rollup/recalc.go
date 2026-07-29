@@ -81,18 +81,19 @@ const recalcSQL = `
 	       running_time     = COALESCE(s.run, 0),
 	       stopped_time     = COALESCE(s.stop, 0),
 	       planned_downtime = COALESCE(s.planned, 0),
-	       oee = COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
+	       -- ADR-0037 output-invariant clamp (#576 extended): PO OEE factors to [0,1].
+	       oee = LEAST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	             NULLIF(COALESCE(e.ideal_production_speed,
 	                 (SELECT q.production_speed FROM %[2]s.equipments q
-	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0),
-	       oee_availability = COALESCE(s.run / NULLIF(s.avail, 0), 0),
-	       oee_performance  = COALESCE(
+	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 1),
+	       oee_availability = LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1),
+	       oee_performance  = LEAST(COALESCE(
 	             COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	                 NULLIF(COALESCE(e.ideal_production_speed,
 	                     (SELECT q.production_speed FROM %[2]s.equipments q
 	                       WHERE q.id_equipment = e.id_equipment)), 0), 0), 0)
 	             / NULLIF(COALESCE(s.run / NULLIF(s.avail, 0), 0) *
-	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0),
+	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 1),
 	       recalc_needed = false,
 	       last_update   = now()
 	  FROM eligible el
