@@ -58,6 +58,25 @@ const (
 	ConfidenceInferred  = "inferred"
 )
 
+// LineRole roles select the canonical count leaf for a line-level count binding.
+// Naming mirrors the platform's counter-intuitive leaves (see LineRole doc):
+// consumed=GROSS total, processed=NET good, defective=scrap.
+const (
+	LineRoleConsumed  = "consumed"  // → /Admin/ProdConsumedCount/<idx>/Unit  (gross)
+	LineRoleProcessed = "processed" // → /Admin/ProdProcessedCount/<idx>/Unit (net/good)
+	LineRoleDefective = "defective" // → /Admin/ProdDefectiveCount/<idx>/Unit (scrap)
+)
+
+// lineRoleLeaf maps a LineRole role to its canonical count-leaf metric name. The
+// generator fills `/Admin/<leaf>/<idx>/Unit` from this — the same leaf strings
+// the member template and the oeecloud-worker classifier key off, so a line-role
+// count is classified identically to a member count of the same role.
+var lineRoleLeaf = map[string]string{
+	LineRoleConsumed:  "ProdConsumedCount",
+	LineRoleProcessed: "ProdProcessedCount",
+	LineRoleDefective: "ProdDefectiveCount",
+}
+
 // Descriptor is the parsed client descriptor — the CS-Admin SSoT.
 type Descriptor struct {
 	// Tenant is the SparkPlug group_id / enterprise short-name, e.g. "CPACK".
@@ -129,6 +148,41 @@ type Equipment struct {
 	// CountIndex is the CAPTURED PLC channel index for a member's count metric,
 	// with its confidence. Lines omit it (their template carries bare counts).
 	CountIndex *CountIndexCapture `yaml:"count_index,omitempty"`
+
+	// LineRoles bind a LINE's (tp!=1) OEE count roles to specific PLC count
+	// indices. A member owns one count leaf (CountIndex); a line owns SEVERAL at
+	// DISTINCT indices — gross total vs net good vs scrap — which the single-index
+	// member path cannot express (the line metric_templates carry only bare,
+	// non-count-routable leaves). Each role emits `/Admin/Prod<Role>Count/<idx>/Unit`
+	// under the line topic, so a numeric-counter tee's gross and net channels land
+	// on the SAME line id_equipment and the rollup's oee_q = net/gross computes.
+	// Only valid on tp=2|3 (Validate rejects it on a member). Empty for a member
+	// or a line whose counts come via Phase-9 member aggregation.
+	LineRoles []LineRole `yaml:"line_roles,omitempty"`
+}
+
+// LineRole binds one canonical count-leaf ROLE on a line to a specific PLC count
+// index. It is the line-level analogue of a member's CountIndexCapture, but keyed
+// by role because a line owns multiple count leaves at once.
+//
+// ⚠ The platform's leaf naming is counter-intuitive (oeecloud-worker
+// parse.go / equipment_values.go): ProdConsumedCount → gross_production (TOTAL
+// in), ProdProcessedCount → net_production (GOOD out), ProdDefectiveCount →
+// scrap. The rollup computes oee_q = net/gross = ProdProcessedCount /
+// ProdConsumedCount. So for a standard line: gross infeed → role "consumed",
+// net good → role "processed".
+type LineRole struct {
+	// Role is one of the LineRole* roles below (consumed=gross | processed=net |
+	// defective=scrap). It selects the canonical count leaf.
+	Role string `yaml:"role"`
+
+	// CountIndex is the legacy PLC channel id whose absolute totalizer feeds this
+	// role — the same numeric id the tee forwards (count_index.value semantics).
+	CountIndex int `yaml:"count_index"`
+
+	// Confidence is confirmed (observed on a live tee) or inferred. Cutover
+	// requires confirmed, exactly like a member's CountIndexCapture.
+	Confidence string `yaml:"confidence"`
 }
 
 // CountIndexCapture is one observed count index + provenance.
@@ -232,6 +286,12 @@ func (d *Descriptor) Validate() error {
 	}
 	seenTopic := map[string]bool{}
 	seenID := map[int]bool{}
+	// seenCountIndex tracks every count index claimed by a member (CountIndex) or a
+	// line role (LineRoles), so a collision is caught at descriptor-validate time
+	// rather than surfacing as numeric.BuildIndexFromTagMap's runtime error (a
+	// numeric id must resolve to exactly one canonical metric). Maps index → the
+	// topic that first claimed it, for a precise error.
+	seenCountIndex := map[int]string{}
 	for i, e := range d.Equipment {
 		if strings.TrimSpace(e.Topic) == "" {
 			return fmt.Errorf("equipment[%d]: topic is required", i)
@@ -262,6 +322,42 @@ func (d *Descriptor) Validate() error {
 			default:
 				return fmt.Errorf("equipment[%d] (%s): count_index.confidence=%q must be confirmed|inferred",
 					i, e.Topic, e.CountIndex.Confidence)
+			}
+			if prev, dup := seenCountIndex[e.CountIndex.Value]; dup {
+				return fmt.Errorf("equipment[%d] (%s): count_index %d already claimed by %s "+
+					"(a numeric id must map to exactly one canonical metric)", i, e.Topic, e.CountIndex.Value, prev)
+			}
+			seenCountIndex[e.CountIndex.Value] = e.Topic
+		}
+		// line_roles: a line's (tp!=1) multi-leaf count binding. A member (tp=1)
+		// carries CountIndex, not line_roles — reject the mix so a role can't
+		// silently land on a member's single-leaf synthesis path.
+		if len(e.LineRoles) > 0 {
+			if e.TPEquipment == 1 {
+				return fmt.Errorf("equipment[%d] (%s): line_roles is only valid on a line/sector (tp_equipment=2|3), not a member (tp=1)",
+					i, e.Topic)
+			}
+			seenRole := map[string]bool{}
+			for j, r := range e.LineRoles {
+				if _, ok := lineRoleLeaf[r.Role]; !ok {
+					return fmt.Errorf("equipment[%d] (%s): line_roles[%d].role=%q must be consumed|processed|defective",
+						i, e.Topic, j, r.Role)
+				}
+				if seenRole[r.Role] {
+					return fmt.Errorf("equipment[%d] (%s): line_roles has duplicate role %q", i, e.Topic, r.Role)
+				}
+				seenRole[r.Role] = true
+				switch r.Confidence {
+				case ConfidenceConfirmed, ConfidenceInferred:
+				default:
+					return fmt.Errorf("equipment[%d] (%s): line_roles[%d].confidence=%q must be confirmed|inferred",
+						i, e.Topic, j, r.Confidence)
+				}
+				if prev, dup := seenCountIndex[r.CountIndex]; dup {
+					return fmt.Errorf("equipment[%d] (%s): line_roles[%d] count_index %d already claimed by %s "+
+						"(a numeric id must map to exactly one canonical metric)", i, e.Topic, j, r.CountIndex, prev)
+				}
+				seenCountIndex[r.CountIndex] = e.Topic
 			}
 		}
 	}
