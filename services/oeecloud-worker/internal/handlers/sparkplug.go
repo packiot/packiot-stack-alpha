@@ -212,6 +212,8 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		var q *writers.Query
 		var shiftQ *writers.Query
 		var eventQ *writers.Query
+		var rawQ *writers.Query      // ADR-0036 B1 Bronze append (nil unless BRONZE_RAW_APPEND)
+		var eventRawQ *writers.Query // ADR-0036 B1 Bronze event append (nil unless flag on)
 		var clampEv *writers.ClampEvent
 		var buildErr error
 
@@ -251,10 +253,17 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			if buildErr == nil && q != nil {
 				// Returns nil under the fold flag (skip the separate UPDATE).
 				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
+				// ADR-0036 B1 medallion Bronze append (flag-gated,
+				// BRONZE_RAW_APPEND). Returns nil when the flag is off, so
+				// nothing extra is queued and the batch is byte-identical.
+				// Same schema/pool as the merged UPSERT → symmetric to whatever
+				// F2/F3 destination this delivery routes to.
+				rawQ, _ = h.equipmentValues.BuildRawAppend(ctx, m, schema)
 				if p.SourceType != "" {
 					// Event mint stays shadow-only: F1's EVENT trigger
 					// remains its writer until the §6 flip.
 					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
+					eventRawQ, _ = h.equipmentValues.BuildEventMintRaw(ctx, m, schema)
 				}
 			}
 		case h.unsMetrics.CanWrite(kind):
@@ -289,6 +298,17 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		if eventQ != nil {
 			batch.Queue(eventQ.SQL, eventQ.Args...)
 			descs = append(descs, eventQ.Desc)
+		}
+		// ADR-0036 B1 Bronze appends — queued after the merged writes so the
+		// operational UPSERT is unaffected by an append failure ordering-wise.
+		// nil unless BRONZE_RAW_APPEND is on.
+		if rawQ != nil {
+			batch.Queue(rawQ.SQL, rawQ.Args...)
+			descs = append(descs, rawQ.Desc)
+		}
+		if eventRawQ != nil {
+			batch.Queue(eventRawQ.SQL, eventRawQ.Args...)
+			descs = append(descs, eventRawQ.Desc)
 		}
 	}
 

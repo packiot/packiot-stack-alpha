@@ -54,6 +54,14 @@ type EquipmentValues struct {
 	// (INCREMENT_SANITY_CLAMP_ENABLED=false), the default; when nil Build
 	// behaves byte-for-byte as before. Set via SetIncrementClamp.
 	clamp *incrementClamp
+
+	// bronzeRaw — ADR-0036 B1 medallion dual-write flag (BRONZE_RAW_APPEND).
+	// false (default) ⇒ BuildRawAppend / BuildEventMintRaw return nil and no
+	// _raw INSERT is ever queued, so the writer is byte-for-byte the old
+	// behavior. true ⇒ every merged UPSERT is shadowed by an append-only
+	// INSERT into the immutable Bronze *_raw hypertable. Set via
+	// SetBronzeRawAppend.
+	bronzeRaw bool
 }
 
 func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
@@ -83,6 +91,12 @@ func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec in
 		logger: w.logger,
 	}
 }
+
+// SetBronzeRawAppend toggles the ADR-0036 B1 medallion Bronze dual-write
+// (BRONZE_RAW_APPEND). enabled=false (default) leaves BuildRawAppend /
+// BuildEventMintRaw returning nil — no _raw INSERT is ever queued, so the
+// writer is byte-for-byte the old behavior.
+func (w *EquipmentValues) SetBronzeRawAppend(enabled bool) { w.bronzeRaw = enabled }
 
 // SetShiftResolver enables the ADR-0014 Phase 2 shift fill. Whether it is
 // applied as a fold (into the UPSERT) or as a separate companion UPDATE
@@ -556,4 +570,151 @@ func buildMode(
 		Desc: fmt.Sprintf("upsert %s.equipment_values (mode) eq=%d ts=%s",
 			schema, info.IDEquipment, ts.Format(time.RFC3339)),
 	}
+}
+
+// ── ADR-0036 B1 — Bronze raw append (medallion immutable landing zone) ────────
+
+// BuildRawAppend produces the append-only INSERT into %s.equipment_values_raw for
+// one metric — flag-gated (BRONZE_RAW_APPEND via SetBronzeRawAppend). Returns nil
+// when the flag is off, the kind is not an equipment_values kind, the topic is
+// unregistered, or the value is non-numeric/absurd (the SAME skip semantics as
+// Build, so Bronze receives exactly the samples the merged UPSERT would have).
+// Unlike the merged UPSERT it:
+//   - appends every sample (NO ON CONFLICT) — a per-second column collision that
+//     the merged write folds into ONE row is preserved here as N distinct rows,
+//     disambiguated by the source_seq sequence default;
+//   - keeps the ORIGINAL sub-second precision (NO Truncate(time.Second));
+//   - stores the RAW value — the increment sanity clamp is a Silver invariant and
+//     is deliberately NOT applied to Bronze (corrections land as new appended rows,
+//     never in-place edits — enforced by the bronze_raw_no_mutate trigger).
+func (w *EquipmentValues) BuildRawAppend(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
+	if !w.bronzeRaw {
+		return nil, nil
+	}
+	kind := m.Classify()
+	if !w.CanWrite(kind) {
+		return nil, nil
+	}
+	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	if err != nil {
+		return nil, err
+	}
+	if info == nil {
+		return nil, nil
+	}
+	value, ok := parseNumericValue(m.Value)
+	if !ok {
+		return nil, nil
+	}
+	if math.Abs(value) > 1e12 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, nil
+	}
+	ts := time.UnixMilli(m.Timestamp).UTC() // FULL precision — no Truncate.
+
+	tpEquipment := 1
+	if m.IsLineTopic() {
+		tpEquipment = 3
+	}
+	var faults *string
+	if len(m.Faults) > 0 && string(m.Faults) != "null" {
+		s := string(m.Faults)
+		faults = &s
+	}
+	var subMode *string
+	if kind == sparkplug.KindUnitModeCurrent && len(m.Alias) > 0 && string(m.Alias) != "null" {
+		var s string
+		if err := json.Unmarshal(m.Alias, &s); err == nil && s != "" {
+			subMode = &s
+		}
+	}
+	return buildRawAppend(kind, ts, info, tpEquipment, value,
+		(*float64)(m.Counter), (*float64)(m.CurSpeed), subMode, faults, m.Timestamp, schema), nil
+}
+
+// buildRawAppend assembles the append-only INSERT into <schema>.equipment_values_raw,
+// mirroring — per kind — the exact column set the corresponding merged builder writes
+// (buildProcessed/buildConsumed/buildDefective/buildState/buildMode), minus the
+// shift-fold columns (shift resolution is a Silver enrichment, not raw truth) and with
+// NO ON CONFLICT clause. source_seq is left to its sequence default so every append is
+// a distinct row even when (id_equipment, ts_value) collide.
+func buildRawAppend(
+	kind sparkplug.MetricKind, ts time.Time, info *sparkplug.EquipmentInfo,
+	tpEquipment int, value float64, counter, curspeed *float64, subMode, faults *string,
+	checkNumber int64, schema string,
+) *Query {
+	cols := "ts_value, id_enterprise, id_site, id_area, id_equipment, tp_equipment"
+	args := []any{ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment, tpEquipment}
+	switch kind {
+	case sparkplug.KindProdProcessedCount:
+		cols += ", net_production_incr, net_production_val, speed, signal_quality, faults, check_number"
+		args = append(args, value, counter, curspeed, info.SignalQuality, faults, checkNumber)
+	case sparkplug.KindProdConsumedCount:
+		cols += ", gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number"
+		args = append(args, value, counter, curspeed, info.SignalQuality, faults, checkNumber)
+	case sparkplug.KindProdDefectiveCount:
+		cols += ", scrap_incr, scrap_val, signal_quality, faults, check_number"
+		args = append(args, value, counter, info.SignalQuality, faults, checkNumber)
+	case sparkplug.KindStateCurrent:
+		cols += ", state, signal_quality, faults, check_number"
+		args = append(args, int(value), info.SignalQuality, faults, checkNumber)
+	case sparkplug.KindUnitModeCurrent:
+		cols += ", mode, sub_mode, signal_quality, faults, check_number"
+		args = append(args, int(value), subMode, info.SignalQuality, faults, checkNumber)
+	default:
+		return nil
+	}
+	return &Query{
+		SQL: fmt.Sprintf("INSERT INTO %s.equipment_values_raw (%s) VALUES (%s)",
+			schema, cols, placeholders(len(args))),
+		Args: args,
+		Desc: fmt.Sprintf("bronze-append %s.equipment_values_raw (%s) eq=%d ts=%s",
+			schema, kind.String(), info.IDEquipment, ts.Format(time.RFC3339Nano)),
+	}
+}
+
+// BuildEventMintRaw is the Bronze append companion to BuildEventMint (ADR-0036 B1).
+// When BRONZE_RAW_APPEND is on it appends the raw state event to the immutable
+// equipment_events_raw with NO ON CONFLICT and ORIGINAL precision. Mirrors
+// BuildEventMint's scope EXACTLY (KindStateCurrent, status_type=4; the caller gates
+// on shadow SourceType) so Bronze receives the same events the merged mint would.
+func (w *EquipmentValues) BuildEventMintRaw(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
+	if !w.bronzeRaw {
+		return nil, nil
+	}
+	if m.Classify() != sparkplug.KindStateCurrent {
+		return nil, nil
+	}
+	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	if err != nil || info == nil {
+		return nil, err
+	}
+	if info.StatusType != 4 {
+		return nil, nil
+	}
+	var value float64
+	if err := json.Unmarshal(m.Value, &value); err != nil {
+		return nil, fmt.Errorf("parse state value (name=%s): %w", m.Name, err)
+	}
+	ts := time.UnixMilli(m.Timestamp).UTC() // FULL precision — no Truncate.
+	return &Query{
+		SQL: fmt.Sprintf(
+			"INSERT INTO %s.equipment_events_raw (id_equipment, ts_event, id_enterprise, status) VALUES ($1, $2, $3, $4)",
+			schema),
+		Args: []any{info.IDEquipment, ts, info.IDEnterprise, int(value)},
+		Desc: fmt.Sprintf("bronze-append %s.equipment_events_raw eq=%d ts=%s",
+			schema, info.IDEquipment, ts.Format(time.RFC3339Nano)),
+	}, nil
+}
+
+// placeholders returns a comma-separated "$1, $2, …, $n" parameter list.
+func placeholders(n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteString(", ")
+		}
+		b.WriteByte('$')
+		b.WriteString(strconv.Itoa(i))
+	}
+	return b.String()
 }
