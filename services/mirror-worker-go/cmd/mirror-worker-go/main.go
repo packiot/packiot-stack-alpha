@@ -100,6 +100,7 @@ func main() {
 	// degrades to shadow_go_port only (Flow 2), surfaced by the metric.
 	if cfg.ShadowValueFanout {
 		stagingDB.EnableValueFanout()
+		stagingDB.SetF2Fanout(cfg.ShadowFanoutF2) // ADR-0032: false ⇒ fan only F3
 		if cfg.ShadowDBName != "" {
 			if err := stagingDB.AttachShadowPool(ctx, stagingCreds, cfg.ShadowDBHost, cfg.ShadowDBName); err != nil {
 				logger.Error("shadow pool init failed — fan-out degraded to shadow_go_port only",

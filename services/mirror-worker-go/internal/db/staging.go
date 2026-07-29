@@ -22,6 +22,11 @@ type Staging struct {
 	// ADR-0012 3-flow parity fan-out (see InsertEquipmentValueDelta).
 	valueFanout bool
 	shadowPool  *pgxpool.Pool // packiot_shadow (Flow 3); nil = not attached
+	// ADR-0032 F3-collapse: gate the F2 (shadow_go_port) fan-out leg so it can be
+	// retired without a code change (the SHADOW_EMIT_GO analog for the mirror).
+	// Zero value (false) ⇒ F2 fanned as before; set true (SHADOW_FANOUT_F2=false)
+	// ⇒ mirror fans ONLY F3, so shadow_go_port stops receiving mirror writes.
+	f2Disabled bool
 }
 
 func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*Staging, error) {
@@ -60,6 +65,12 @@ func (s *Staging) Close() {
 // InsertEquipmentValueDelta row is also written to packiot.shadow_go_port
 // (same pool) and, when AttachShadowPool succeeded, packiot_shadow.public.
 func (s *Staging) EnableValueFanout() { s.valueFanout = true }
+
+// SetF2Fanout controls whether the mirror fans the F2 (shadow_go_port) leg.
+// enabled=true keeps the ADR-0012 behavior; enabled=false (SHADOW_FANOUT_F2=false)
+// makes the mirror fan ONLY F3 (packiot_shadow) — the ADR-0032 collapse step that
+// stops shadow_go_port receiving mirror writes so it can be frozen + dropped.
+func (s *Staging) SetF2Fanout(enabled bool) { s.f2Disabled = !enabled }
 
 // AttachShadowPool connects the ADR-0012 shadow DB (packiot_shadow) so
 // value fan-out reaches Flow 3. Separate pool because pgbouncer's static
@@ -599,7 +610,10 @@ func (s *Staging) ShadowFlows() []ShadowFlow {
 	if !s.valueFanout {
 		return nil
 	}
-	flows := []ShadowFlow{{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"}}
+	var flows []ShadowFlow
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		flows = append(flows, ShadowFlow{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"})
+	}
 	if s.shadowPool != nil {
 		flows = append(flows, ShadowFlow{Name: "packiot_shadow", pool: s.shadowPool, schema: "public"})
 	}
@@ -917,8 +931,10 @@ func (s *Staging) InsertEquipmentValueDelta(
 	if !s.valueFanout {
 		return nil
 	}
-	s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
-		ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
+			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
+	}
 	if s.shadowPool != nil {
 		s.fanoutValueDelta(ctx, s.shadowPool, "public", "packiot_shadow",
 			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
@@ -974,8 +990,10 @@ func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID,
 	if !s.valueFanout {
 		return
 	}
-	s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
-		fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
+			fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
+	}
 	if s.shadowPool != nil {
 		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-state",
 			fmt.Sprintf(sqlInsertStateRow, "public"), stagingEqID, ts, enterpriseID, status)
