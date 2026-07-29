@@ -133,4 +133,55 @@ CREATE MATERIALIZED VIEW public.ca_agg_equipment_values_1hour WITH (timescaledb.
 WITH NO DATA;
 
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- ADR-0036 B1 — Bronze raw immutability + compression + 2-year retention.
+-- Folded from migration docs/adr/reference/migrations/0036-b1-bronze-raw-
+-- immutability.sql so a FRESH F3 bootstrap reproduces the immutable, multi-year
+-- Bronze landing zone (single source of truth). The _raw hypertables were created
+-- above (lines 12-13). See that migration's header for the full rationale; the
+-- load-bearing point: the DB writer is a SUPERUSER, so REVOKE is silently useless
+-- — immutability MUST be a RAISEing BEFORE UPDATE OR DELETE trigger. drop_chunks
+-- retention drops whole chunks via DDL (not row DELETE), so the FOR EACH ROW guard
+-- never fires on it.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION public.bronze_raw_no_mutate() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RAISE EXCEPTION
+        'Bronze raw table %.% is append-only (attempted %); corrections are new appended rows, never in-place edits',
+        TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP
+        USING ERRCODE = 'restrict_violation';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_equipment_values_raw_no_mutate ON public.equipment_values_raw;
+CREATE TRIGGER trg_equipment_values_raw_no_mutate
+    BEFORE UPDATE OR DELETE ON public.equipment_values_raw
+    FOR EACH ROW EXECUTE FUNCTION public.bronze_raw_no_mutate();
+
+DROP TRIGGER IF EXISTS trg_equipment_events_raw_no_mutate ON public.equipment_events_raw;
+CREATE TRIGGER trg_equipment_events_raw_no_mutate
+    BEFORE UPDATE OR DELETE ON public.equipment_events_raw
+    FOR EACH ROW EXECUTE FUNCTION public.bronze_raw_no_mutate();
+
+-- Columnstore (matches live packiot_shadow: 7-day warm window, orderby carries
+-- source_seq DESC after the ts key) + 2-year drop horizon (== B0). if_not_exists
+-- makes both a no-op where already configured.
+ALTER TABLE public.equipment_values_raw SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'id_equipment',
+    timescaledb.compress_orderby   = 'ts_value DESC, source_seq DESC');
+SELECT add_compression_policy('public.equipment_values_raw', compress_after => INTERVAL '7 days', if_not_exists => true);
+SELECT add_retention_policy('public.equipment_values_raw', drop_after => INTERVAL '2 years', if_not_exists => true);
+
+ALTER TABLE public.equipment_events_raw SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'id_equipment',
+    timescaledb.compress_orderby   = 'ts_event DESC, source_seq DESC');
+SELECT add_compression_policy('public.equipment_events_raw', compress_after => INTERVAL '7 days', if_not_exists => true);
+SELECT add_retention_policy('public.equipment_events_raw', drop_after => INTERVAL '2 years', if_not_exists => true);
+
+
 

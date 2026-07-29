@@ -6,7 +6,11 @@
 SET statement_timeout = 0;
 SELECT create_hypertable('public.equipment_values', 'ts_value',
        chunk_time_interval => INTERVAL '1 day', migrate_data => true, if_not_exists => true);
-SELECT add_retention_policy('public.equipment_values', INTERVAL '180 days', if_not_exists => true);
+-- Retention horizon = 2 years (ADR-0036 B0, 0036-b0-retention-compress-to-years.sql).
+-- Was INTERVAL '180 days' — a fresh F3 init must NOT regress B0's 2-year historian
+-- horizon (Bronze/operational raw is the multi-year replay source; a 180-day rolling
+-- DROP silently deletes exactly the history Silver/Gold corrections replay over).
+SELECT add_retention_policy('public.equipment_values', INTERVAL '2 years', if_not_exists => true);
 
 CREATE MATERIALIZED VIEW public.agg_equipment_values_1min
 WITH (timescaledb.continuous) AS
