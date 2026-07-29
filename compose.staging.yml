@@ -24,7 +24,15 @@ networks:
     driver: bridge
     ipam:
       config:
+        # Static ipv4_address assignments (below) occupy .2–.38 + .200. Without an
+        # ip_range, Docker auto-assigns dynamic/hand-run containers from the WHOLE
+        # subnet — so a hand-run container (e.g. an onboarding sim/agent) can grab a
+        # static slot whose service is momentarily down, and that service then fails
+        # to (re)create with "Address already in use" (the hasura-init exit-128 /
+        # gate-red incident; cf. #75). Confine dynamic allocation to .128–.191, well
+        # clear of every static, so explicit statics and dynamic containers never race.
         - subnet: 172.18.0.0/24
+          ip_range: 172.18.0.128/26
 
 volumes:
   nr-edge-data:
