@@ -65,7 +65,13 @@ networks:
     driver: bridge
     ipam:
       config:
+        # Confine dynamic/hand-run container IPs to .128–.191, clear of the static
+        # ipv4_address assignments (.2–.35), so a hand-run container can never grab a
+        # static slot whose service is momentarily down and block it from recreating
+        # with "Address already in use" (cf. the staging hasura-init exit-128 incident
+        # / #75). Explicit statics may still be anywhere in the subnet.
         - subnet: 172.18.0.0/24
+          ip_range: 172.18.0.128/26
 
 volumes:
   # NOTE: no `pg-data` volume — the DB lives on the dedicated r7g EC2
