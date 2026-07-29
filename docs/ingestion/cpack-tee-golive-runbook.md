@@ -32,11 +32,19 @@ pass. What is already true on staging **right now**:
 1. **USER applies the SG rule** (+ nginx vhost) opening the public front-door — §1.
 2. **The operator runs the cutover** (`stop plc-sim` → `up sparkplug-agent-cpack`) — §2.
 
-> ⚠️ **Key durability caveat.** The key lives in `/opt/packiot/.env`, appended
-> by hand. A full instance re-init (`app_init.sh` rewriting `.env` from Secrets
-> Manager) would DROP it. **Durable follow-up:** add `AGENT_INGEST_API_KEY` to
-> the staging Secrets Manager bundle so re-init re-materializes it. Until then,
-> if the app EC2 is rebuilt, re-append the key before the cutover (see §Appendix).
+> ✅ **Key durability — now codified.** The hand-appended `/opt/packiot/.env`
+> line used to DROP on a full instance re-init (`app_init.sh` rewriting `.env`).
+> Fixed: a `packiot/staging/agent-ingest` secret + a guarded fetch in
+> `app_init.sh` now re-materialize `AGENT_INGEST_API_KEY` into `.env` on every
+> rebuild (`terraform/staging/secrets.tf` + `user_data/app_init.sh`). **One-time
+> operator step:** populate the secret with the key CPACK is configured with
+> (out-of-band — the value is never in Terraform state or git):
+> ```bash
+> aws secretsmanager put-secret-value --secret-id packiot/staging/agent-ingest \
+>   --region us-east-1 --secret-string '{"api_key":"<AGENT_INGEST_API_KEY>"}'
+> ```
+> Until the secret is populated the fetch defaults to empty (agent auth stays
+> closed). The §Appendix hand-append is now only a break-glass path.
 
 ---
 
@@ -48,14 +56,18 @@ and open the SG to CPACK's egress IP **only**. Full spec:
 [`0042-cpack-tee-frontdoor.md` §2](../adr/0042-cpack-tee-frontdoor.md).
 
 **(a) nginx vhost** — `/etc/nginx/conf.d/cpack-ingest.conf` on the staging App
-EC2 (`i-06c9547a2c7091ab7`), reusing the existing Let's Encrypt wildcard cert:
+EC2 (`i-06c9547a2c7091ab7`), reusing the existing Let's Encrypt wildcard cert.
+**Now codified** in `terraform/staging/user_data/nginx_setup.sh` (the
+`cpack-ingest.conf` block, `server_name`/cert driven by `$STAGING_DOMAIN`) — it
+is rewritten on every (re)build, so this is no longer hand-added drift. Resolved
+output:
 
 ```nginx
 server {
     listen 8447 ssl;
-    server_name cpack-ingest.staging.packiot.com;
-    ssl_certificate     /etc/letsencrypt/live/staging.packiot.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/staging.packiot.com/privkey.pem;
+    server_name cpack-ingest.staging.packiot.app;
+    ssl_certificate     /etc/letsencrypt/live/staging.packiot.app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/staging.packiot.app/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     client_max_body_size 1m;               # matches the agent's MaxBodyBytes cap
     location = /v1/tags {
@@ -68,30 +80,35 @@ server {
     }
 }
 ```
-Then `nginx -t && systemctl reload nginx`.
+On a fresh build `nginx_setup.sh` runs `nginx -t && nginx -s reload` for you;
+for a manual repair, write the file and run `nginx -t && systemctl reload nginx`.
 
-**(b) Security-group rule (terraform — USER APPLIES, do NOT auto-apply).** Open
-inbound **TCP 8447 from CPACK's egress `/32` ONLY** on the App EC2 SG. Fill the
-real CIDR from CPACK ops — do not guess:
+**(b) Security-group rule + DNS (codified in `packiot-stack-alpha/terraform/staging`
+— apply is still USER-gated).** Open inbound **TCP 8447 from CPACK's egress `/32`
+ONLY** on the App EC2 SG. The staging SG/zone/EIP live in **this** repo's
+`terraform/staging` (S3 backend), **not** in `api-terraform` (that is the prod
+EKS tree). Codified as an inline `ingress` on `aws_security_group.app`
+(`security_groups.tf`) plus the `cpack-ingest` A record (`dns.tf`):
 
 ```hcl
-# api-terraform (staging) — app EC2 security group
-resource "aws_security_group_rule" "cpack_agent_ingest" {
-  type              = "ingress"
-  from_port         = 8447
-  to_port           = 8447
-  protocol          = "tcp"
-  cidr_blocks       = ["<CPACK_EGRESS_IP>/32"]   # FILL from CPACK ops
-  security_group_id = var.app_ec2_sg_id
-  description       = "ADR-0042 P1 CPACK Node-RED tee → sparkplug-agent /v1/tags"
+# terraform/staging/security_groups.tf — inside aws_security_group.app
+ingress {
+  description = "ADR-0042 P1 CPACK Node-RED tee -> sparkplug-agent /v1/tags (CPACK egress /32 only)"
+  from_port   = 8447
+  to_port     = 8447
+  protocol    = "tcp"
+  cidr_blocks = ["179.162.112.58/32"]   # CPACK egress /32
 }
 ```
+
+Committing the HCL does **not** open the port — someone must `terraform apply`.
+Do NOT auto-apply.
 
 **(c) Hand CPACK the tee.** Install [`cpack-agent-tee-function.js`](cpack-agent-tee-function.js)
 as a SECOND wire off CPACK's PLC-read node (a tee, not a redirect — the existing
 publish path stays wired). Set the Node-RED env var `CPACK_AGENT_INGEST_KEY` to
 the agent's `AGENT_INGEST_API_KEY` **out-of-band** (never in the flow), and
-optionally `CPACK_AGENT_INGEST_URL = https://cpack-ingest.staging.packiot.com:8447/v1/tags`.
+optionally `CPACK_AGENT_INGEST_URL = https://cpack-ingest.staging.packiot.app:8447/v1/tags`.
 
 ---
 
@@ -207,5 +224,8 @@ grep -q '^AGENT_INGEST_API_KEY=' "$ENV" || printf 'AGENT_INGEST_API_KEY=%s\n' "$
 cd /opt/actions-runner/_work/packiot-stack-alpha/packiot-stack-alpha
 docker compose -f compose.staging.yml --profile cpack-tee config | grep -A2 -i AGENT_INGEST_API_KEY
 ```
-The durable fix is to put `AGENT_INGEST_API_KEY` in the staging Secrets Manager
-bundle `app_init.sh` reads, so re-init re-materializes it automatically.
+The durable fix is **already codified** (see the §0 caveat): the
+`packiot/staging/agent-ingest` secret + the guarded fetch in `app_init.sh` make
+re-init re-materialize the key automatically. This hand-append is now only a
+break-glass path for when the secret hasn't been populated yet. Prefer
+populating the secret with `put-secret-value` over re-appending by hand.

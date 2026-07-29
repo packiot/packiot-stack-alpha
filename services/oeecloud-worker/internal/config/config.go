@@ -115,6 +115,15 @@ type Config struct {
 	Sap13IntervalMinutes int
 	Sap13CustomerID      int
 
+	// Sap13ReasonsFromDim — ADR-0039 R5 CONTRACT Step 1 (task #12): when true the
+	// sap13 report sources the downtime-reason category vocabulary from the R5
+	// dimension (downtime_reason) + junction (equipment_downtime_reason) instead of
+	// the equipments.downtime_reasons jsonb. DEFAULT OFF (byte-identical jsonb path).
+	// Flip only after row-for-row parity is verified on staging — the jsonb key the
+	// report joins on may be 'name' while the dimension label was backfilled from
+	// 'description'; confirm labels match before enabling. jsonb NOT dropped this pass.
+	Sap13ReasonsFromDim bool
+
 	// ADR-0014 P3a events deriver. DEFAULT OFF — enable 2026-07-09
 	// after the shift-bake close-out (one bake at a time).
 	EventsDeriverEnabled      bool
@@ -225,6 +234,21 @@ type Config struct {
 	CountersOnlyAvailEnabled        bool
 	CountersOnlyAvailEquipments     string // CSV of id_equipment (config.CSVInts)
 	CountersOnlyAvailIdleTimeoutSec int    // grace secs after last count before "stopped"
+
+	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
+	// When enabled, the equipment_values writer rejects any production
+	// increment (Processed/Consumed/Defective delta) that exceeds
+	// K · equipments.production_speed · Δt — a physically-impossible count
+	// for a machine at its rated speed since the last reading. The rejected
+	// increment is written as 0 and recorded as a data_quality_event
+	// (INVARIANT_CLAMPED_INCREMENT). Default OFF → byte-identical writes.
+	// Defends the cagg SUM against double-source / reordered-sample phantoms
+	// (e.g. plc-sim + real-agent feeding one topic with different totalizer
+	// origins). K defaults 4; MinDt floors Δt (secs) so a sub-interval burst
+	// can't collapse the bound.
+	IncrementSanityClampEnabled  bool
+	IncrementSanityClampK        float64
+	IncrementSanityClampMinDtSec int
 }
 
 func Load() (*Config, error) {
@@ -260,6 +284,7 @@ func Load() (*Config, error) {
 		Sap13ReportEnabled:               getenv("SAP13_REPORT_ENABLED", "false") == "true",
 		Sap13IntervalMinutes:             getenvInt("SAP13_INTERVAL_MINUTES", 15),
 		Sap13CustomerID:                  getenvInt("SAP13_CUSTOMER_ID", 13),
+		Sap13ReasonsFromDim:              getenv("SAP13_REASONS_FROM_DIM", "false") == "true",
 		EventsDeriverEnabled:             getenv("EVENTS_DERIVER_ENABLED", "false") == "true",
 		EventsDeriverIntervalMin:         getenvInt("EVENTS_DERIVER_INTERVAL_MINUTES", 1),
 		EventsExcludedAreas:              getenv("EVENTS_EXCLUDED_AREAS", ""),
@@ -300,7 +325,24 @@ func Load() (*Config, error) {
 		CountersOnlyAvailEnabled:        getenv("COUNTERS_ONLY_AVAILABILITY_ENABLED", "false") == "true",
 		CountersOnlyAvailEquipments:     getenv("COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS", ""),
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
+		// Increment sanity clamp (default OFF — no behavior change)
+		IncrementSanityClampEnabled:  getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
+		IncrementSanityClampK:        getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
+		IncrementSanityClampMinDtSec: getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
 	}, nil
+}
+
+// getenvFloat parses a float env var, falling back on empty/invalid.
+func getenvFloat(name string, fallback float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func getenv(name, fallback string) string {

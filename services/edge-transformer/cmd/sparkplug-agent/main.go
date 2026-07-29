@@ -41,8 +41,10 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/capture"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/numeric"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawmqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/session"
@@ -80,20 +82,48 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// ── register-driven tag map (task #13, ADR-0009 / ADR-0042) ───────────────
-	// Flag-gated + additive: default OFF keeps the static YAML raw_tag_map
-	// byte-for-byte. ON builds the tag map from packml_register + the tenant
-	// conversion profile — the config-not-code replacement for hand-editing the
-	// per-client raw_tag_map (PR #590). A load failure here is fatal (a partial
-	// tag map would silently drop metrics), the same fail-closed discipline as
-	// the static loader.
+	// ── register-driven tag map + per-tenant cutover flip (ADR-0045 P2a) ──────
+	// Which tag map this tenant boots with. Precedence:
+	//   AGENT_TAGMAP_FROM_REGISTER (global override) > client_descriptors.status
+	//   (per-tenant, DB-driven — edge-api's cutover endpoint sets it to 'cutover').
+	// register.go builds the map from packml_register + the tenant profile; the
+	// default stays the static YAML raw_tag_map byte-for-byte. Fail-safe: no
+	// profile / no DSN / unreachable DB / missing descriptor row / non-cutover
+	// status all keep the static map — never a silent flip, never a crash. Only
+	// a DEFINITE signal (override, or status==cutover) builds the register map,
+	// and a register build that was explicitly selected but fails is fatal (a
+	// partial map would silently drop metrics). Cutover is a BOOT read (Option A):
+	// a mid-run flip applies on the agent's next restart.
+	tagSrc, boot, err := resolveTagMap(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("tag-map resolution", "err", err)
+		os.Exit(1)
+	}
 	tagSource := "static_yaml"
-	if getenvBool("AGENT_TAGMAP_FROM_REGISTER", false) {
-		if err := loadTagMapFromRegister(ctx, cfg, logger); err != nil {
-			logger.Error("register tag-map load", "err", err)
-			os.Exit(1)
-		}
+	if tagSrc.UseRegister {
 		tagSource = "packml_register"
+	}
+
+	// ── live-capture OBSERVE posture (ADR-0045 Phase-2b) ──────────────────────
+	// Whether this boot records what count indices/topics actually arrive from a
+	// live tee, so CS can promote descriptor entries inferred→confirmed. Two
+	// gates: the master flag AGENT_CAPTURE_ENABLED (dark by default) AND the
+	// per-tenant client_descriptors.status == "captured" (the observe posture,
+	// read at boot by resolveTagMap on the SAME pool). Off ⇒ zero hot-path cost.
+	// The recorder REUSES the register pool (kept alive past boot only when
+	// observing) — never a second pool. Fail-safe: any DB/parse error is a
+	// logged drop, never a block or crash of the ingest path.
+	captureEnabled := getenvBool("AGENT_CAPTURE_ENABLED", false)
+	observing := boot != nil && capture.ShouldObserve(captureEnabled, boot.status)
+	// The register pool is boot-transient by default; keep it open ONLY when the
+	// recorder will write through it, else close it now (Phase-2a behaviour).
+	if boot != nil && boot.pool != nil {
+		if observing {
+			defer boot.pool.Close()
+		} else {
+			boot.pool.Close()
+			boot.pool = nil
+		}
 	}
 
 	// ── parameter decomposition (task #54 follow-up, ADR-0042) ────────────────
@@ -142,6 +172,7 @@ func main() {
 		"uplink_broker", cfg.Sparkplug.UplinkBroker,
 		"raw_topic", cfg.Sparkplug.RawTopic,
 		"tag_source", tagSource,
+		"tag_source_reason", tagSrc.Reason,
 		"tags", len(cfg.RawTagMap))
 
 	// ── pipeline construction ────────────────────────────────────────────
@@ -157,11 +188,35 @@ func main() {
 	}
 	defer ob.Close()
 
+	// Mode-B mTLS material (ADR-0042 §6). The agentcfg descriptor holds the
+	// cert/key/CA as secret:// REFERENCES only; the deploy resolves them to
+	// files (AWS Secrets Manager → mounted secret) and points these env vars at
+	// the RESOLVED PATHS. Unset ⇒ Mode-A loopback (tcp://, no TLS). A partial
+	// set fails closed (never a silent plaintext downgrade).
+	tlsCfg, err := uplink.LoadTLSConfig(uplink.TLSFiles{
+		CertFile: os.Getenv("AGENT_UPLINK_TLS_CERT"),
+		KeyFile:  os.Getenv("AGENT_UPLINK_TLS_KEY"),
+		CAFile:   os.Getenv("AGENT_UPLINK_CA"),
+	})
+	if err != nil {
+		logger.Error("uplink mTLS config", "err", err)
+		os.Exit(1)
+	}
+	if tlsCfg == nil && strings.HasPrefix(cfg.Sparkplug.UplinkBroker, "ssl://") {
+		// An ssl:// broker with no cert material is almost always a misconfig
+		// (the WAN crossing needs the per-tenant cert). Warn loudly; paho will
+		// still attempt server-auth-only TLS against the system roots.
+		logger.Warn("uplink_broker is ssl:// but no AGENT_UPLINK_TLS_* files supplied — "+
+			"connecting without a client cert (the broker ACL will likely reject this)",
+			"broker", cfg.Sparkplug.UplinkBroker)
+	}
+
 	up := uplink.New(uplink.Config{
 		BrokerURL:  cfg.Sparkplug.UplinkBroker,
 		ClientID:   "sparkplug-agent-uplink-" + cfg.Sparkplug.EdgeNodeID + "-" + fmt.Sprint(os.Getpid()),
 		GroupID:    cfg.Sparkplug.GroupID,
 		EdgeNodeID: cfg.Sparkplug.EdgeNodeID,
+		TLS:        tlsCfg,
 	}, pub, ob, store.SnapshotForBirth, logger)
 
 	// Prometheus registry (Go + process runtime + the agent drop counter).
@@ -178,6 +233,75 @@ func main() {
 	}, []string{"param_id"})
 	reg.MustRegister(decomposed)
 
+	// ADR-0045 P2a: whether the register-driven (config-as-data) tag map is
+	// active for this tenant, and why. 1 = register-driven, 0 = static YAML.
+	// Set once at boot from the resolved source (Option A — the flip is a boot
+	// read). The `reason` label carries the selection outcome (env_override /
+	// descriptor_cutover / descriptor_absent / descriptor_error / …).
+	tagmapRegisterActive := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "sparkplug_agent_tagmap_register_active",
+		Help: "1 when the register-driven (config-as-data) tag map is active for the tenant, 0 when the static YAML map is used. Labeled by tenant (SparkPlug group_id) and the selection reason.",
+	}, []string{"tenant", "reason"})
+	reg.MustRegister(tagmapRegisterActive)
+	activeVal := 0.0
+	if tagSrc.UseRegister {
+		activeVal = 1.0
+	}
+	tagmapRegisterActive.WithLabelValues(cfg.Sparkplug.GroupID, tagSrc.Reason).Set(activeVal)
+
+	// task #31: rebirths triggered by an inbound "Node Control/Rebirth" NCMD.
+	// This is how the cloud edge-transformer self-heals its alias/counter
+	// baseline after a restart — it asks us to rebirth, we re-publish NBIRTH.
+	rebirths := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_rebirths_total",
+		Help: "Full NBIRTH re-publishes triggered by an inbound Rebirth NCMD (task #31).",
+	})
+	reg.MustRegister(rebirths)
+	up.SetRebirthMetric(rebirths.Inc)
+
+	// ── live-capture recorder (ADR-0045 Phase-2b) ────────────────────────────
+	// Built only in the observe posture. It records, per equipment topic, which
+	// count indices actually arrive — buffered in-memory and flushed on a ticker
+	// to capture_observations via the (reused) register pool. The count-leaf
+	// TEMPLATES come from the tenant profile's metric_templates ({idx}-bearing
+	// leaves); with no profile there are no count families to recognize, so the
+	// recorder stays nil and Observe is a no-op.
+	var recorder *capture.Recorder
+	if observing {
+		var leaves []string
+		if boot.profile != nil {
+			for _, t := range boot.profile.MetricTemplates.Member {
+				leaves = append(leaves, t.Leaf)
+			}
+			for _, t := range boot.profile.MetricTemplates.Line {
+				leaves = append(leaves, t.Leaf)
+			}
+		}
+		templates := capture.CountLeafTemplates(leaves)
+		if len(templates) == 0 {
+			logger.Warn("capture observe posture active but the tenant profile declares no count-metric leaves — nothing to capture",
+				"enterprise_id", boot.enterpriseID)
+		}
+		captureObs := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sparkplug_agent_capture_observations_total",
+			Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
+		}, []string{"tenant"})
+		reg.MustRegister(captureObs)
+		obsCounter := captureObs.WithLabelValues(cfg.Sparkplug.GroupID)
+		recorder = capture.New(capture.Config{
+			EnterpriseID: boot.enterpriseID,
+			Templates:    templates,
+			Sink:         capture.NewPGSink(boot.pool),
+			Logger:       logger,
+			OnObserved:   obsCounter.Inc,
+		})
+		go recorder.Run(ctx, time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))*time.Second)
+		logger.Info("live-capture observe posture ENABLED",
+			"enterprise_id", boot.enterpriseID,
+			"count_leaf_templates", len(templates),
+			"flush_sec", getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))
+	}
+
 	// ingest is the SHARED pipeline entry point: resolve each raw tag against
 	// the tag_map and RBE-apply the mapped ones to the tagstore. BOTH the
 	// internal MQTT subscriber (Mode-B / full architecture) and the HTTP
@@ -186,6 +310,14 @@ func main() {
 	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
 	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
 		for _, t := range tags {
+			// Live-capture OBSERVE (ADR-0045 P2b): record what count indices
+			// ACTUALLY arrive — BEFORE the allowlist, so an inferred-index tag
+			// that the current map would drop as unmapped is still observed (that
+			// mismatch is exactly the DQ evidence CS confirms against). No-op when
+			// not observing (recorder is nil) or the tag is not count-bearing.
+			// Uses the raw arriving suffix (count leaves are never decomposed).
+			recorder.Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
+
 			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
 			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the
 			// allowlist lookup, so the numbered entry (e.g. Parameter30700) both
@@ -304,6 +436,41 @@ func main() {
 		}()
 	}
 
+	// ── onboard control-plane API (ADR-0045 P1 — config-as-data) ──────────
+	// A separate, authenticated `POST /v1/onboard/generate` front-door that turns
+	// one client descriptor into the four onboarding artifacts over the wire, so
+	// edge-api / CS-Admin can generate a tenant's config server-to-server. It is
+	// UNRELATED to the tenant ingest plane (its own listener + its own bearer
+	// key), and dark by default: mounted only when ONBOARD_API_ENABLED=true AND an
+	// ONBOARD_API_KEY is present (enabled-but-keyless fails closed — auth is never
+	// optional, the same discipline as the ingest front-door above).
+	var onboardSrv *http.Server
+	if getenvBool("ONBOARD_API_ENABLED", false) {
+		key := os.Getenv("ONBOARD_API_KEY")
+		if key == "" {
+			logger.Error("ONBOARD_API_ENABLED=true but ONBOARD_API_KEY is empty — refusing to serve the onboard API with auth disabled")
+			os.Exit(1)
+		}
+		onboardOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sparkplug_agent_onboard_generate_total",
+			Help: "Onboard /v1/onboard/generate requests by outcome (received|generated|rejected_auth|rejected_bad|error).",
+		}, []string{"outcome"})
+		reg.MustRegister(onboardOutcomes)
+		oapi := onboardapi.New(onboardapi.Config{
+			APIKey:       key,
+			MaxBodyBytes: int64(getenvInt("ONBOARD_API_MAX_BODY_BYTES", 0)),
+		}, onboardOutcomes, logger)
+		onboardAddr := fmt.Sprintf(":%d", getenvInt("ONBOARD_API_PORT", 9105))
+		onboardSrv = &http.Server{Addr: onboardAddr, Handler: oapi.Handler()}
+		go func() {
+			logger.Info("onboard API listening", "addr", onboardAddr)
+			if err := onboardSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("onboard API server exited", "err", err)
+				cancel()
+			}
+		}()
+	}
+
 	// ── run subscriber + uplink + tick loop ──────────────────────────────
 	go func() {
 		if err := sub.Run(ctx); err != nil && ctx.Err() == nil {
@@ -329,6 +496,9 @@ func main() {
 			shutctx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 			if ingestSrv != nil {
 				_ = ingestSrv.Shutdown(shutctx)
+			}
+			if onboardSrv != nil {
+				_ = onboardSrv.Shutdown(shutctx)
 			}
 			_ = hsrv.Shutdown(shutctx)
 			sc()
@@ -365,43 +535,134 @@ func main() {
 	}
 }
 
-// loadTagMapFromRegister replaces cfg.RawTagMap with a map built from
-// packml_register + the tenant conversion profile (task #13). It reads the
-// profile from AGENT_PROFILE_PATH, dials Postgres from the DB_* env (only here,
-// only when the flag is on), fetches the tenant's equipment rows, synthesizes
-// the canonical suffix→type map, and installs it (re-validated). The tenant is
-// scoped by the profile's enterprise_id — the cross-tenant guard.
-func loadTagMapFromRegister(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) error {
+// resolveTagMap decides + installs the tenant's raw_tag_map for this boot and
+// returns the chosen source (for the boot log + the register-active gauge).
+//
+// Decision (ADR-0045 P2a): AGENT_TAGMAP_FROM_REGISTER (global override) wins;
+// else the tenant's client_descriptors.status decides (cutover ⇒ register).
+// The path is fail-safe to the CURRENT behaviour (the static YAML map):
+//   - no AGENT_PROFILE_PATH ........ nothing to build/scope → static (no DB touched)
+//   - no DB DSN .................... can't read the descriptor → static
+//   - DB unreachable / read error .. → static (warn-logged)
+//   - status != cutover / no row ... → static
+//
+// Only a DEFINITE signal (override, or status==cutover) builds the register
+// map; a register build that was explicitly selected but fails is FATAL (a
+// partial/absent map would silently drop metrics — the same discipline as the
+// original loader). It opens ONE pgxpool and reuses it for BOTH the status read
+// and (if cutover) the register fetch — never a second pool.
+//
+// The agent resolves its tenant from the tenant profile: prof.EnterpriseID is
+// packml_register.id_enterprise, which is exactly client_descriptors.id_enterprise
+// — the authoritative cross-tenant scope for both the descriptor read and the
+// register fetch. (cfg.Sparkplug.GroupID is the tenant short-name / group_id;
+// it must equal prof.Tenant, guarded below.)
+func resolveTagMap(ctx context.Context, cfg *agentcfg.Config, logger *slog.Logger) (agentcfg.TagMapSource, *bootDB, error) {
+	boot := &bootDB{}
+	envOverride := getenvBool("AGENT_TAGMAP_FROM_REGISTER", false)
 	profPath := os.Getenv("AGENT_PROFILE_PATH")
+
+	// Without a profile there is no register map to build and no enterprise scope
+	// to check a descriptor against. An explicit override with no profile is a
+	// hard misconfig (the original loader's own guard); otherwise stay static and
+	// touch no DB — un-migrated tenants keep zero DB dependency.
 	if profPath == "" {
-		return fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
+		if envOverride {
+			return agentcfg.TagMapSource{}, boot, fmt.Errorf("AGENT_TAGMAP_FROM_REGISTER=true requires AGENT_PROFILE_PATH")
+		}
+		return agentcfg.TagMapSource{UseRegister: false, Reason: "no_profile"}, boot, nil
 	}
+
 	prof, err := tenantprofile.LoadProfile(profPath)
 	if err != nil {
-		return fmt.Errorf("load profile: %w", err)
+		return agentcfg.TagMapSource{}, boot, fmt.Errorf("load profile: %w", err)
 	}
 	// Guard: a profile's tenant must match the agent it configures, so a
-	// mis-pointed AGENT_PROFILE_PATH can't silently build another tenant's map.
+	// mis-pointed AGENT_PROFILE_PATH can't build/scope another tenant's map.
 	if prof.Tenant != "" && prof.Tenant != cfg.Sparkplug.GroupID {
-		return fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
+		return agentcfg.TagMapSource{}, boot, fmt.Errorf("profile tenant %q != agent group_id %q", prof.Tenant, cfg.Sparkplug.GroupID)
 	}
 	if prof.EnterpriseID == 0 {
-		return fmt.Errorf("profile enterprise_id is required for the register loader")
+		return agentcfg.TagMapSource{}, boot, fmt.Errorf("profile enterprise_id is required for the register loader / cutover check")
 	}
+	boot.profile = prof
+	boot.enterpriseID = prof.EnterpriseID
 
 	dsn, err := registerDSN()
 	if err != nil {
-		return err
+		if envOverride {
+			return agentcfg.TagMapSource{}, boot, err
+		}
+		// No DB creds → can't read the descriptor. Stay static (current behaviour).
+		logger.Warn("no DB DSN for the cutover-status check — staying on the static tag map", "err", err)
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, boot, nil
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return fmt.Errorf("pgx pool: %w", err)
+		if envOverride {
+			return agentcfg.TagMapSource{}, boot, fmt.Errorf("pgx pool: %w", err)
+		}
+		logger.Warn("could not open the DB pool for the cutover-status check — staying on the static tag map", "err", err)
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, boot, nil
 	}
-	defer pool.Close()
+	// The pool is now owned by the caller (bootDB.pool): main keeps it alive only
+	// when the capture recorder writes through it, and closes it otherwise. On
+	// every fail-safe/fatal path BELOW we close it explicitly (nil pool returned)
+	// — a pool only escapes on a healthy path.
 	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("db ping: %w", err)
+		pool.Close()
+		if envOverride {
+			return agentcfg.TagMapSource{}, boot, fmt.Errorf("db ping: %w", err)
+		}
+		logger.Warn("client_descriptors DB unreachable — staying on the static tag map", "err", err)
+		return agentcfg.TagMapSource{UseRegister: false, Reason: agentcfg.ReasonDescriptorError}, boot, nil
+	}
+	boot.pool = pool
+
+	// Read the per-tenant descriptor status. It drives BOTH the tag-map cutover
+	// flip (Phase-2a) and the capture observe posture (Phase-2b), so it is read
+	// unconditionally here and stashed in bootDB — even under envOverride, where
+	// SelectTagMapSource ignores it for the tag-map decision but capture still
+	// needs it. A read error is a safe static fallback (never a flip).
+	status, statusErr := agentcfg.NewDescriptorStatusFetcher(pool).FetchStatus(ctx, prof.EnterpriseID)
+	if statusErr != nil {
+		logger.Warn("client_descriptors status read failed — staying on the static tag map", "err", statusErr)
+	} else {
+		boot.status = status
+	}
+	src := agentcfg.SelectTagMapSource(envOverride, status, statusErr)
+	if !src.UseRegister {
+		return src, boot, nil
 	}
 
+	// Cutover (or override): build + install the register-driven map with the
+	// SAME pool. A failure here is fatal — register was explicitly selected.
+	if err := installRegisterTagMap(ctx, cfg, prof, pool, logger); err != nil {
+		pool.Close()
+		boot.pool = nil
+		return agentcfg.TagMapSource{}, boot, err
+	}
+	return src, boot, nil
+}
+
+// bootDB carries the DB-derived boot resources that outlive resolveTagMap: the
+// (optionally kept-open) register pool, the loaded tenant profile, the tenant's
+// enterprise id, and the descriptor status. main owns the pool's lifetime — it
+// keeps it open past boot ONLY for the capture recorder, else closes it. Any
+// field may be zero/nil (static tenant, no DB, read error) — every consumer
+// nil-checks. pool is non-nil ONLY on a healthy DB path.
+type bootDB struct {
+	pool         *pgxpool.Pool
+	profile      *tenantprofile.Profile
+	enterpriseID int
+	status       string
+}
+
+// installRegisterTagMap replaces cfg.RawTagMap with a map built from
+// packml_register + the tenant conversion profile (task #13), reusing the
+// caller's already-open pool. It fetches the tenant's equipment rows,
+// synthesizes the canonical suffix→type map, and installs it (re-validated).
+func installRegisterTagMap(ctx context.Context, cfg *agentcfg.Config, prof *tenantprofile.Profile, pool *pgxpool.Pool, logger *slog.Logger) error {
 	fetcher := agentcfg.NewPGRegisterFetcher(pool)
 	rows, err := fetcher.FetchEquipment(ctx, prof.EnterpriseID, prof.TenantPrefix)
 	if err != nil {

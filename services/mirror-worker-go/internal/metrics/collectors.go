@@ -123,6 +123,22 @@ var (
 		Help: "Finisher per-candidate outcomes (finished|failed|skipped_*).",
 	}, []string{"outcome"})
 
+	// ReconcilerProdTerminalCloserTotal — per-candidate outcomes of the
+	// prod-terminal orphan closer (task follow-up to #48). Same outcome
+	// vocabulary as the finisher plus skipped_not_terminal (prod twin is not
+	// status=3 — e.g. still available/paused — so this closer, which only
+	// closes FINISHED twins, leaves it). finished=a mirror-created status IN
+	// (1,2) orphan whose prod twin is status=3 was closed at prod's finish ts
+	// (NULL-ts_start-safe, 1s-window for the strict ts_start<ts_end check);
+	// skipped_still_active=prod twin is
+	// status=2 (running) — never close; skipped_idempotent=already !=(1,2);
+	// failed=the close tx errored. Everything but finished/failed is a SAFETY
+	// skip — the closer errs toward under-closing, same as the finisher.
+	ReconcilerProdTerminalCloserTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mirror_worker_reconciler_prod_terminal_closer_total",
+		Help: "Prod-terminal orphan closer per-candidate outcomes (finished|failed|skipped_*).",
+	}, []string{"outcome"})
+
 	// ReconcilerOrphanCandidates — gauge of mirror-managed staging POs that
 	// are status=2 but absent from prod's status=2 set at the start of the
 	// last finisher pass (before per-candidate prod cross-check / grace).
@@ -373,6 +389,7 @@ func init() {
 		ReconcilerPOsTotal,
 		ReconcilerActiveDriftPOs,
 		ReconcilerFinisherTotal,
+		ReconcilerProdTerminalCloserTotal,
 		ReconcilerOrphanCandidates,
 		ReconcilerValuesSyncedTotal,
 		ReconcilerShadowFanoutTotal,

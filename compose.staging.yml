@@ -153,6 +153,21 @@ services:
 
   # ── plc-sim (10.9-staging: THE ingest source — Sparkplug B over MQTT) ──
   plc-sim:
+    # OPT-IN — profile `plc-sim`. Historically plc-sim was a DEFAULT service (no
+    # profiles key), so every `docker compose up -d` (the deploy step recreates
+    # the stack) unconditionally (re)started it. That made a CPACK cutover
+    # non-durable: `stop plc-sim` + `--profile cpack-tee up sparkplug-agent-cpack`
+    # holds until the next deploy, whose `up -d` resurrects plc-sim while the
+    # profiled agent (already running, not an orphan) survives untouched → BOTH
+    # sources publish the SAME CPACK/SC/LINHAS namespace under two edge nodes
+    # (plc-sim + cpack-tee) → ent3 is DOUBLE-SOURCED at edge-transformer. Gating
+    # plc-sim behind its own profile makes the deploy honor the intended
+    # end-state: `COMPOSE_PROFILES` (GH Actions env / EC2 /opt/packiot/.env)
+    # selects exactly one source — `plc-sim` (sim-on/agent-off, the historical
+    # default) OR `cpack-tee` (agent-on/sim-off, the real-tee cutover). Setting
+    # BOTH is the double-source trap above — the two scopes are IDENTICAL (the
+    # same 8 equipment {47,48,49,51,53,57,61,63}), so they must NEVER both run.
+    profiles: ["plc-sim"]
     build:
       context: ./services/edge-transformer
     entrypoint: ["/usr/local/bin/plc-sim"]
@@ -813,7 +828,13 @@ services:
   # add it via the exporter's multi-target mode (a second scrape target with a
   # ?target= relabel, same shape as blackbox) — no new exporter needed.
   redis-exporter:
-    image: oliver006/redis_exporter:v1.62.0-alpine
+    # NOTE: use the non-alpine tag — it is the only multi-arch manifest list
+    # (linux/amd64 + linux/arm64/v8). The `-alpine` tag ships a single amd64
+    # manifest, so on this arm64 staging host it crashlooped with
+    # `exec /redis_exporter: exec format error` (1774+ restarts, reddening the
+    # deploy service-state gate). platform pins the arm64 variant explicitly.
+    image: oliver006/redis_exporter:v1.62.0
+    platform: linux/arm64
     container_name: redis-exporter
     restart: unless-stopped
     environment:
@@ -1154,6 +1175,22 @@ services:
       # Rollback: set "false" + redeploy.
       RECONCILE_FINISHER_ENABLED: "true"
       RECONCILE_FINISHER_GRACE_MINUTES: "30"
+      # Prod-terminal orphan closer — the LAST G0b finisher blemish. Closes
+      # mirror-CREATED CPACK POs (nm LIKE 'CPACK-reconcile-%') stuck at
+      # status IN (1,2) whose prod twin has already FINISHED (status=3). The #48
+      # finisher can't reach these: its candidate set is status=2 ONLY (misses a
+      # never-started status=1 orphan like the wedge PO 894561), and
+      # FinishOrphanPO trips the production_orders_ts_start_ts_end check (23514)
+      # when ts_start is NULL (also wedges 894720). This closer widens the set to
+      # status IN (1,2) and closes at prod's finish ts with a NULL-ts_start-safe
+      # seal (ts_end=finish ts, ts_start=1s-earlier floor for the STRICT
+      # ts_start<ts_end check constraint). ONLY prod-terminal (status=3) twins close — a
+      # status=2 (running) twin is SKIPPED (894330/894668/894749 stay untouched;
+      # their revive is a SEPARATE, already-mapped-shadow gap). SELECT-only on
+      # prod. Watch mirror_worker_reconciler_prod_terminal_closer_total{outcome}
+      # — expect ~2 finished (894561, 894720) then flat. Rollback: set "false" +
+      # redeploy → finisher path byte-identical to before. STAGING ONLY.
+      RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS: "true"
       # Event-driven reconciler split. tail mode runs the two reconciler halves
       # on independent tickers: the cheap create-diff (a 0.33ms cached status=2
       # index scan) polls every RECONCILE_CREATE_INTERVAL_SEC for sub-3s
@@ -1294,6 +1331,13 @@ services:
       # prod-read harness before the flip gate.
       SAP13_REPORT_ENABLED: "true"
       SAP13_INTERVAL_MINUTES: "15"
+      # ADR-0039 R5 CONTRACT Step 1 (task #12) — source the downtime-reason
+      # vocabulary from the R5 dimension (downtime_reason + equipment_downtime_reason)
+      # instead of the equipments.downtime_reasons jsonb. DEFAULT OFF: keep OFF until
+      # row-for-row parity is verified on staging (the report joins on the category
+      # label; confirm the dimension label matches the jsonb key it replaces — see
+      # the Step-1 parity gate in docs/adr/0039-reasons-dimension-contract-plan.md).
+      SAP13_REASONS_FROM_DIM: "false"
       # ADR-0014 P3a events deriver — ENABLED 2026-07-03. Runs its own
       # bake on equipment_events (separate table from the shift bake's
       # id_shift surface — no panel contamination). The shift TRIGGER
@@ -1362,6 +1406,18 @@ services:
       COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
       COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "50,68,69,70,71,72"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
+      # ADR-0037 Silver invariant — per-equipment production-increment SANITY
+      # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
+      # K · equipments.production_speed · Δt (a physically-impossible count at
+      # the machine's rated speed since its last reading) BEFORE it reaches the
+      # equipment_values UPSERT / cagg SUM, and records a data_quality_event
+      # (INVARIANT_CLAMPED_INCREMENT). Stops the ACTIVE corruption of eq 57
+      # (L5/TEXA): its shared per-topic baseline is fed by BOTH plc-sim
+      # (totalizer ≈1.9k) and the real agent (≈830k), minting a ≈828k phantom
+      # increment on every publisher switch. Defends ALL equipment against
+      # future double-source / reordered-sample phantoms. K=4, Δt floored 60s.
+      # Reversible: set ENABLED=false + redeploy → byte-identical prior writes.
+      INCREMENT_SANITY_CLAMP_ENABLED: "true"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
@@ -1599,7 +1655,15 @@ services:
       # members), the SAME value the oeecloud-worker rollup uses as the Perf
       # denominator, so no separate ideal override is needed. Staging equipment
       # ids: line 50, BREYER 68, TEXA 69, POLYTYPE 70, RMH 71, PTH 72.
-      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147}'
+      #
+      # L5/TEXA (eq 57) added (ADR-0037 / #13): it is the target of the
+      # agent-only cutover. Opting it in swaps Calc's Phase-8 guard from the
+      # absent-MachSpeed `3·machSpeed` bound to `3·IdealRate`, fixing the
+      # post-SparkPlug-Rebirth stall (Bug 2) that rejected every count once the
+      # agent became sole publisher. Rate 147 = equipments.production_speed for
+      # eq 57 (same as L6). This PREPARES the agent-only cutover; it does NOT
+      # perform the plc-sim L5/TEXA drop (a separate coordinated step).
+      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147,"CPACK/SC/LINHAS/L5/TEXA":147}'
       # ── ADR-0019 C1 edge command channel (machine-write path) ─────────
       # The RETURN path: an operator action writes a value DOWN to the PLC
       # (SparkPlug DCMD). This is the ONLY machine-write path in the stack,

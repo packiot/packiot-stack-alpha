@@ -72,6 +72,56 @@ func (d *Descriptor) InferredMembers() []string {
 	return out
 }
 
+// InferredIndex is one member whose captured count index is still inferred: its
+// topic and the (unconfirmed) index value. The onboard API surfaces these so a
+// caller (CS-Admin UI / edge-api) can show exactly which channels need a live-tee
+// CAPTURE before the tenant is cutover-eligible.
+type InferredIndex struct {
+	Topic string
+	Index int
+}
+
+// InferredIndices returns, in descriptor order, every member whose count index is
+// still inferred, paired with the captured value. Empty ⇒ cutover-eligible on
+// count-index grounds — the same condition Generate(Cutover:true) enforces. It is
+// the detail form of InferredMembers (which returns bare topics).
+func (d *Descriptor) InferredIndices() []InferredIndex {
+	var out []InferredIndex
+	for _, e := range d.Equipment {
+		if e.CountIndex != nil && e.CountIndex.Confidence == ConfidenceInferred {
+			out = append(out, InferredIndex{Topic: e.Topic, Index: e.CountIndex.Value})
+		}
+	}
+	return out
+}
+
+// UnmappedTopics returns descriptor topics that synthesize NO canonical metric —
+// i.e. equipment that contributes nothing to the agent tag-map / register. Under
+// the current templates every well-formed equipment maps, so this is normally
+// empty; it is a forward data-quality signal so an onboarding surface can flag a
+// member the metric templates don't cover. It reuses the SAME synthesis path
+// GenerateAgentConfig uses (SynthesizeEquipment), so it can never disagree with
+// what actually gets generated.
+func (d *Descriptor) UnmappedTopics() ([]string, error) {
+	profile, err := d.GenerateProfile()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range d.Equipment {
+		seg := d.localSegment(e.Topic)
+		class := tenantprofile.ClassOf(e.TPEquipment)
+		metrics, err := profile.SynthesizeEquipment(seg, class, e.IDEquipment)
+		if err != nil {
+			return nil, fmt.Errorf("synthesize %s: %w", e.Topic, err)
+		}
+		if len(metrics) == 0 {
+			out = append(out, e.Topic)
+		}
+	}
+	return out, nil
+}
+
 // GenerateProfile builds the tenant conversion profile (artifact 1). The
 // descriptor's per-member captured count index becomes the profile's
 // count_index.overrides map (keyed by LOCAL SEGMENT — exactly how the hand-built

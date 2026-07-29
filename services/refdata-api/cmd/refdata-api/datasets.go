@@ -745,6 +745,44 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, pEquip},
 	},
 
+	// equipment-downtime-reasons-dim (task #12, ADR-0039 R5 CONTRACT — dual-read):
+	// the NORMALIZED read of the same per-equipment downtime-reason vocabulary,
+	// sourced from the R5 dimension (downtime_reason) + junction
+	// (equipment_downtime_reason) instead of the inline equipments.downtime_reasons
+	// jsonb. This is the forward-path read; the jsonb-sourced dataset above is KEPT
+	// (dual-source) so no consumer is forced off the old shape in this pass. The
+	// jsonb column is dropped only after every consumer migrates (see the sequenced
+	// CONTRACT plan in docs/adr/0039-reasons-dimension-contract-plan.md).
+	//
+	// Ownership shape is identical to equipment-downtime-reasons: enterprise self-
+	// scopes to $1, the equipment id is the required client filter ($2). The join
+	// is FK-clean end-to-end (junction → dimension, dimension → enterprise), so a
+	// tenant can only ever read reason rows FK'd to its own equipment. The full
+	// i18n label map is preserved (label_i18n jsonb, not just the flattened en-US
+	// label), and the category↔subcategory hierarchy is exposed via
+	// category/parent_id/reason_level so the operator picker can rebuild the two
+	// levels it renders today. Rows are ordered category-first then code so the
+	// tree is stable without a client sort.
+	//
+	// PROD GATING: downtime_reason / equipment_downtime_reason exist on staging
+	// packiot_shadow only (R5 migration is prod-GATED). The manual live-drift gate
+	// (refdata-contract-drift.yml, workflow_dispatch) will CORRECTLY flag these two
+	// relations as absent from prod until the R5 migration is prod-applied — that
+	// prod-apply is a prerequisite step in the contract plan, not a regression.
+	"equipment-downtime-reasons-dim": {
+		group: "settings", doc: "Per-equipment downtime reasons from the R5 dimension (downtime_reason + equipment_downtime_reason junction; FK-clean, i18n preserved). Dual-read forward path for equipment-downtime-reasons.",
+		sql: `SELECT j.id_equipment, e.nm_equipment, r.id AS id_reason, r.code, r.label,
+				r.label_i18n, r.category, r.parent_id, r.reason_level,
+				r.planned_downtime, r.change_over, r.idle
+			FROM equipment_downtime_reason j
+			JOIN downtime_reason r ON r.id = j.id_reason
+			JOIN equipments e ON e.id_equipment = j.id_equipment
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
+				AND j.active AND r.active
+			ORDER BY r.reason_level, r.category, r.code`,
+		params: []dsParam{pEnt, pEquip},
+	},
+
 	// custom-target-{month,week,day}: Settings/Targets reads the customized
 	// (manually-overridden) target series per equipment from the
 	// equipment_runtime_1{month,week,day} rollup tables. Those tables carry

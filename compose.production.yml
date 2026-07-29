@@ -1,26 +1,64 @@
-# compose.production.yml — Single-EC2 production-dryrun service stack (us-east-1)
+# compose.production.yml — Single-EC2 production service stack (us-east-1)
 #
-# Adapted from compose.staging.yml. Differences:
-#   - Adds `postgres` service (local TimescaleDB container) — staging uses an
-#     external DB-EC2 + `extra_hosts`, production-dryrun keeps everything on
-#     one box per ADR-0003 + the 2026-06-29 cost convo.
-#   - Removes `mirror-worker-go` — no upstream to mirror from (production IS
-#     the source). See docs/adr/0003-production-deployment-parent-stack.md.
-#   - Removes `simulator` — staging-only synthetic PLC.
-#   - Removes `edge-nodered` — handled per-factory via manual workflow_dispatch
-#     on customer-side self-hosted runners; not in the cloud stack.
-#   - NOT including `edge-api-db` despite the earlier ask: it's defined in
-#     `edge-api/docker-compose.yml` as a dev-only sidecar (postgres:15-alpine
-#     for local devs running edge-api standalone). The container observed
-#     running on staging was a vestigial manual run, NOT part of
-#     compose.staging.yml. The production edge-api connects to the main
-#     TimescaleDB via pgbouncer, same as staging.
+# ┌─ ANCHOR: greenfield production is born SINGLE-FLOW F3-NATIVE ─────────────────┐
+# │ See docs/adr/reference/production-buildout-roadmap.md (§3.1) and             │
+# │ docs/adr/0032-collapse-to-single-flow-f3.md.                                 │
+# │                                                                             │
+# │ Prod is a NEW environment with no legacy customer, so it skips staging's    │
+# │ painful F1→F3 migration entirely and is born at the end-state:              │
+# │   • ONE database. Its `public` schema IS the F3 schema — there is no         │
+# │     `packiot_shadow` DB/pool, no `shadow_go_port` schema.                    │
+# │   • NO triple-emit (SHADOW_EMIT_PRODUCTION/"go" legs), NO comparator,        │
+# │     NO shadow-mirror, NO mirror-worker-go, NO plc-sim.                       │
+# │   • edge-transformer emits `refactored` ONLY; oeecloud-worker runs the       │
+# │     refactored lane only and (with POSTGRES_SHADOW_DB_NAME unset) writes      │
+# │     `refactored` envelopes straight to the main pool / `public` = F3         │
+# │     (oeecloud-worker routeForSource nil-shadow fallback).                    │
+# └─────────────────────────────────────────────────────────────────────────────┘
 #
-# Dry-run phase: services boot against the local empty TimescaleDB. When phase 2
-# lands (real prod DB connection to tsp12), update packiot/production/db to
-# include host/port/url pointing at tsp12 and restart the affected services.
+# Adapted from compose.staging.yml, stripped of ALL migration scaffolding and
+# re-pointed at prod config (packiot/production/* secrets, prod DB, single flow).
 #
-# Deploy: docker compose -f compose.production.yml up -d --build
+# Differences vs staging:
+#   - DB is EXTERNAL (roadmap W6/W1-rewire): the stack talks to the dedicated
+#     r7g TimescaleDB EC2 (aws_instance.db, private subnet, ${POSTGRES_HOST_UPSTREAM}
+#     = 10.20.10.89) — there is NO local `postgres` container. pgbouncer is the
+#     pooler in front of it; DDL/migration/authentik/adminer connect to the r7g
+#     directly (advisory locks + prepared statements break under transaction
+#     pooling). This mirrors staging's external-DB-EC2 topology. Earlier dry-run
+#     phases ran a local on-box TimescaleDB container; W6 split it onto the
+#     memory-family r7g before real load (staging swap-died on the app-box class).
+#   - EXCLUDES staging-only / migration-only services:
+#       plc-sim · simulator · sparkplug-agent-cpack · s7-softplc · s7-reader
+#       (all synthetic / CPACK-specific ingest) ; mirror-worker-go (prod IS the
+#       source, nothing to mirror) ; shadow-mirror (no F1→F3 cross-DB bridge in a
+#       single-flow DB — edge-api writes F3 directly, roadmap §5) ; edge-nodered
+#       (per-factory, ADR-0005) ; barcode-service / tempo / alertmanager /
+#       *-exporter / cadvisor / blackbox (nice-to-have, port after the data path).
+#   - INCLUDES the migrated data/read/PO plane (roadmap §1.1 blockers):
+#       mosquitto · edge-transformer · ingest-shim · oeecloud-worker ·
+#       refdata-api · app-redis · operator-adapter.
+#
+# Deploy chain (unchanged): push `production` → self-hosted arm64 runner on the
+# prod EC2 → `docker compose -f compose.production.yml up -d --remove-orphans`.
+# `.env` is symlinked from /opt/packiot/.env (written by app_init.sh from
+# Secrets Manager). services/* build contexts are in-repo (NOT submodules);
+# only edge-api + operator are submodules.
+#
+# W1 exit posture: all services boot healthy against a FRESH F3-schema DB;
+# oeecloud-worker + edge-transformer idle-but-ready (no client tee live yet).
+# Several values are "# FILL AT DEPLOY" — the container boots + serves /healthz
+# but rejects real traffic until the deploy fills them (same pattern as staging).
+
+# Top-level `name:` pins the Compose project name regardless of working
+# directory or `-p` flag. Without it, app_init.sh (runs from /opt/packiot/stack)
+# infers `stack` while the deploy-production.yml workflow (runs from the repo
+# root /_work/.../packiot-stack-alpha) infers `packiot-stack-alpha`, creating
+# TWO separate sets of containers/networks that fight for the same subnet
+# ("Pool overlaps with other one on this address space"). Pinning `stack` makes
+# the project name environment-independent — the deploy workflow drops `-p` and
+# app_init.sh's directory-inferred name already matches.
+name: stack
 
 networks:
   packiot-net:
@@ -30,85 +68,120 @@ networks:
         - subnet: 172.18.0.0/24
 
 volumes:
-  pg-data:           # NEW for production: local TimescaleDB persistent storage
+  # NOTE: no `pg-data` volume — the DB lives on the dedicated r7g EC2
+  # (aws_instance.db, data dir /opt/packiot/pgdata on that box), NOT on the app box.
   grafana-data:
   loki-data:
   prom-data:
   rabbitmq-data:
   authentik-media:
   authentik-certs:
+  mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
+  edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
-# .2  hasura          .3  edge-api      .5  rabbitmq
-# .7  grafana         .8  loki          .9  promtail
+# .2  hasura          .3  edge-api          .5  rabbitmq
+# .7  grafana         .8  loki              .9  promtail
 # .10 pgbouncer       .12 authentik-server  .13 authentik-worker  .14 authentik-redis
-# .15 hasura-init     .16 db-migrate    .17 adminer
-# .19 operator        .20 oeecloud-worker  .22 prometheus
-# .30 postgres        ← NEW for production (local TimescaleDB)
+# .15 hasura-init     .16 db-migrate        .17 adminer
+# .19 operator        .20 oeecloud-worker   .22 prometheus
+# .23 edge-transformer  .24 mosquitto       .26 refdata-api
+# .29 ingest-shim     .30 db-init-bootstrap .31 operator-adapter   .35 app-redis
 #
-# DELIBERATELY ABSENT vs staging:
-# .4  edge-nodered (per-factory, not cloud)
-# .11 simulator (staging-only)
-# .21 mirror-worker-go (no upstream to mirror)
+# DELIBERATELY ABSENT vs staging (see header):
+# .4  edge-nodered · .11 simulator/plc-sim · .21 mirror-worker-go · .25 shadow-mirror
+# The DB is EXTERNAL (r7g @ ${POSTGRES_HOST_UPSTREAM}) — no in-net `postgres` (.30 freed).
 
 services:
-  # ── PostgreSQL (LOCAL TimescaleDB for the dry-run phase) ──────────────────────
-  # New for production: the staging stack uses an external DB EC2, while
-  # production-dryrun runs the DB as a Docker container on the single app EC2.
+  # ── DATABASE: EXTERNAL dedicated r7g TimescaleDB EC2 (W6 / W1 rewire) ──────────
+  # There is NO local `postgres` service. The DB runs on aws_instance.db
+  # (terraform/production/database.tf) — an r7g memory-family EC2 in the private
+  # subnet at ${POSTGRES_HOST_UPSTREAM} (= 10.20.10.89, from .env via app_init.sh).
+  # Its own user_data starts an EMPTY `timescale/timescaledb:2.25.2-pg16` with the
+  # managed superuser password; the F3 schema is assembled INTO it by the boot
+  # chain below (db-init-bootstrap → db-schema-f3 → db-knex-baseline → db-migrate).
   #
-  # When phase 2 lands (real connection to tsp12), this service still runs but
-  # is unused — services point at tsp12 via updated POSTGRES_HOST env var.
-  # Removing it then is one compose edit + restart.
-  #
-  # TimescaleDB 2.25.2 + Postgres 16 — same image as compose.development.yml.
-  # Schema-version note: prod tsp12 is on PG 12.11; this local container is
-  # on PG 16. For dry-run boot validation that's fine (knex migrations create
-  # the same schema). For phase 2 connecting to real tsp12, schema differences
-  # don't matter (we connect remotely, version is decided server-side).
-  postgres:
-    image: timescale/timescaledb:2.25.2-pg16
-    restart: unless-stopped
+  # ⚠ ROADMAP W1.4 (highest-care) — the F3 schema is NOT what edge-api's knex
+  # migrations produce (those build the legacy F1 `public` shape). Prod's DB
+  # `public` MUST be the F3 schema staging's `packiot_shadow` carries, or the
+  # compute chain silently produces wrong OEE. `db-schema-f3` assembles it BEFORE
+  # knex/edge-api boot; the parity gate (scripts/prod-f3-schema-parity-check.sh)
+  # proves it == packiot_shadow. The AUTHORITATIVE source is a curated schema-only
+  # snapshot of live packiot_shadow → db/init-f3/snapshot/ (gated, README §4) —
+  # a raw concatenation of edge-node-red/db fragments does NOT reach parity
+  # (measured F3_MISSING=344 + EXTRA=377).
+
+  # ── DB bootstrap (one-shot): extensions + authentik role/DB ───────────────────
+  # The removed local `postgres` container auto-ran db/docker-entrypoint-initdb.d/
+  # on first boot to create the timescaledb/pg_cron extensions and the `authentik`
+  # role + database. The external r7g's user_data does NOT run those scripts, so
+  # this one-shot re-establishes that setup against the r7g (direct superuser
+  # connection). WITHOUT it, authentik-server crashes with `FATAL: role
+  # "authentik" does not exist`. Idempotent — safe to re-run on every deploy
+  # (IF NOT EXISTS + pg_database guard), unlike the raw initdb .sh scripts which
+  # assume a fresh empty PGDATA. Runs FIRST so extensions exist before the F3
+  # schema load and the authentik DB exists before authentik boots.
+  db-init-bootstrap:
+    image: postgres:16-alpine
+    env_file: [.env]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      # Passed through so db/docker-entrypoint-initdb.d/01-create-authentik-db.sh
-      # can create the `authentik` role with this password on first boot.
-      # Authentik-server/worker connect to that role; without this init the
-      # Authentik containers crash with `FATAL: role "authentik" does not exist`.
-      AUTHENTIK_DB_PASSWORD: ${AUTHENTIK_DB_PASSWORD}
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-      # Init scripts run once on first boot of an empty data volume (postgres
-      # docker convention). Two scripts:
-      #   00-init-extensions.sh         — TimescaleDB + pg_cron extensions
-      #   01-create-authentik-db.sh     — `authentik` role + database
-      - ./db/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}   # DIRECT to the r7g (superuser DDL)
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "== extensions in ${POSTGRES_DB} (timescaledb auto-created by image; pg_cron best-effort) =="
+        psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
+        # pg_cron requires shared_preload_libraries — tolerate absence so a missing
+        # preload never fails the deploy (F3 single-flow does rollups in Go).
+        psql -c "CREATE EXTENSION IF NOT EXISTS pg_cron;" \
+          && psql -c "GRANT USAGE ON SCHEMA cron TO \"$$PGUSER\";" \
+          || echo "pg_cron unavailable (no preload) — skipping (OK for F3-native prod)";
+        echo "== authentik role + database (idempotent) =="
+        if [ -z "$${AUTHENTIK_DB_PASSWORD:-}" ]; then
+          echo "AUTHENTIK_DB_PASSWORD unset — authentik-server WILL fail; set it in .env"; exit 1;
+        fi
+        # Shell guards instead of DO/dollar-quoting — CREATE ROLE/DATABASE are not
+        # IF NOT EXISTS, and $$-quoting collides with Compose interpolation.
+        if [ "$$(psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='authentik'")" != "1" ]; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE ROLE authentik WITH LOGIN PASSWORD '$$AUTHENTIK_DB_PASSWORD';";
+        fi
+        if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='authentik'")" != "1" ]; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE authentik WITH OWNER = authentik;";
+        fi
+        psql -v ON_ERROR_STOP=1 -d authentik -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+        echo "db-init-bootstrap complete."
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
     networks:
       packiot-net:
         ipv4_address: 172.18.0.30
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
+    restart: "no"
     logging:
       driver: json-file
-      options: {max-size: "10m", max-file: "5"}
+      options: {max-size: "5m", max-file: "2"}
 
-  # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
-  # Points at the LOCAL postgres service (vs staging's external DB EC2).
-  # Same pool config as staging — transaction mode, multiplexes 200 clients
-  # onto 20 server connections.
-  #
-  # ⚠ Hasura still does NOT use PgBouncer — prepared statements incompatible
-  # with transaction pooling.
+  # ── PgBouncer (PostgreSQL connection pooler → external r7g) ────────────────────
+  # SINGLE pool → the `packiot` DB (public = F3) on the r7g. No `packiot_shadow`
+  # pool: staging's sed-injected second pool is dual-flow scaffolding that does
+  # not exist in a single-flow prod. Upstream = ${POSTGRES_HOST_UPSTREAM} (the r7g
+  # private IP from .env), NOT a local container.
+  # ⚠ Hasura, DDL/migrations, authentik, and adminer do NOT use PgBouncer —
+  # prepared statements + session advisory locks + SET search_path all break
+  # under transaction pooling; those connect to the r7g directly.
+  # The healthcheck probes the r7g so dependents can gate on "external DB
+  # reachable" (`condition: service_healthy`) now that the local postgres — whose
+  # healthcheck used to be that gate — is gone.
   pgbouncer:
     image: edoburu/pgbouncer:1.22.1-p0
     restart: unless-stopped
     environment:
-      DB_HOST: postgres
+      DB_HOST: ${POSTGRES_HOST_UPSTREAM}
       DB_PORT: "5432"
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
@@ -121,23 +194,26 @@ services:
       SERVER_RESET_QUERY_ALWAYS: "1"
       QUERY_TIMEOUT: "60"
       SERVER_IDLE_TIMEOUT: "120"
-    depends_on:
-      postgres:
-        condition: service_healthy
     networks:
       packiot-net:
         ipv4_address: 172.18.0.10
+    healthcheck:
+      # pg_isready straight at the r7g upstream — proves the external DB is
+      # reachable/accepting connections (pgbouncer itself answers pg_isready even
+      # when the upstream is down, so we probe the upstream host directly).
+      test: ["CMD-SHELL", "pg_isready -h ${POSTGRES_HOST_UPSTREAM} -p 5432 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
   # ── RabbitMQ (message bus) ─────────────────────────────────────────────────────
-  # Same as staging. The oeecloud-worker consumes from this; in production-dryrun
-  # there's no publisher today (edge-nodered runs per-factory) so the queues
-  # will be empty until phase 2 wires real factory traffic.
-  #
-  # Management UI port 15672 is NOT exposed via Nginx in production (no
-  # external `mq.prod.packiot.app` vhost — see terraform/production/dns.tf).
+  # oeecloud-worker consumes the `oee` exchange; edge-transformer + ingest-shim
+  # publish to it. Management UI (15672) is loopback-only — no external
+  # mq.prod.packiot.app vhost (see terraform/production/dns.tf).
   rabbitmq:
     image: rabbitmq:3.13-management
     restart: unless-stopped
@@ -162,6 +238,35 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
 
+  # ── Mosquitto (internal MQTT broker) ───────────────────────────────────────────
+  # The SparkPlug-B ingest broker for the AGENT front-door: a per-client edge
+  # agent (ADR-0042, deployed separately) publishes decoded tags here →
+  # edge-transformer subscribes → Go Calc → `oee` → oeecloud-worker → F3.
+  # init:true reaps the docker-exec healthcheck children (incident 2026-07-09:
+  # 4578 zombie PIDs blocked deploys). Loopback-only host bind; factory edges
+  # reach us via the ingest front-door (roadmap W2), not this port.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.24
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
   # ── Hasura GraphQL ─────────────────────────────────────────────────────────────
   hasura:
     image: hasura/graphql-engine:v2.44.0
@@ -175,7 +280,13 @@ services:
     ports:
       - "127.0.0.1:8081:8080"
     depends_on:
-      postgres:
+      # Gate on the external DB being reachable (pgbouncer healthcheck probes the
+      # r7g). NOTE: HASURA_GRAPHQL_DATABASE_URL (.env) connects DIRECTLY to the
+      # r7g (POSTGRES_URL_DIRECT), NOT via pgbouncer — Hasura's prepared
+      # statements collide under pgbouncer transaction-pooling (42P05). The
+      # pgbouncer healthcheck is still a valid readiness proxy: pgbouncer healthy
+      # ⇒ the r7g is reachable. HASURA_GRAPHQL_PG_CONNECTIONS=5 caps the pool.
+      pgbouncer:
         condition: service_healthy
     networks:
       packiot-net:
@@ -201,26 +312,152 @@ services:
         condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-    # Hasura metadata source: edge-node-red repo carries the canonical
-    # metadata.json. In production we don't clone the edge-node-red submodule
-    # (it's per-factory). Use a placeholder no-op instead until the metadata
-    # gets relocated to the parent repo OR until the first phase-2 deploy
-    # syncs metadata from staging via a separate workflow.
-    #
-    # For dry-run boot validation, an empty Hasura is acceptable — the API
-    # responds to /healthz and we can iterate later.
+    # No-op for the boot/dry-run phase. ⚠ ROADMAP W1.4: Hasura metadata must be
+    # made to track the F3 objects (not the legacy F1 shape) — done when the F3
+    # schema assembly lands. New/refactored read consumers use refdata-api, not
+    # Hasura, so this staying minimal is acceptable.
     entrypoint:
       - sh
       - -c
       - |
-        echo "Hasura init: dry-run phase — no metadata applied (see comment in compose.production.yml)"
+        echo "Hasura init: boot phase — no metadata applied (see comment + roadmap W1.4)"
         exit 0
     restart: "no"
 
+  # ── F3 schema assembly (one-shot) — ROADMAP W1.4 ──────────────────────────────
+  # Assembles the F3 (refactored single-flow) schema as `public` on the fresh DB,
+  # BEFORE knex/edge-api touch it. This is what makes greenfield prod "born F3".
+  #
+  # It applies db/init-f3/snapshot/*.sql (alphabetical) — the AUTHORITATIVE curated
+  # schema-only dump of staging's packiot_shadow (populated via the gated
+  # `capture-f3-snapshot` step, db/init-f3/README.md §4). Data-free, DDL only.
+  # Runs once against an empty DB; a re-run against a populated DB is a no-op guard
+  # (each file is CREATE ... IF NOT EXISTS / idempotent per the dump curation).
+  #
+  # ⚠ Until db/init-f3/snapshot/ is populated (gated: needs the staging DB read +
+  # USER sign-off), this service exits 0 with a LOUD warning and the schema is NOT
+  # built — the parity gate (scripts/prod-f3-schema-parity-check.sh) then FAILS,
+  # which is the intended safe state (no client data flows until parity is clean).
+  # db/init-f3/assemble.sh is the reviewable fragment-scaffold (does NOT reach
+  # parity by itself — see README) used to author/verify the snapshot, not run here.
+  db-schema-f3:
+    image: postgres:16-alpine
+    env_file: [.env]
+    environment:
+      # DIRECT to the r7g — the F3 schema assembly is DDL (hypertables, caggs,
+      # functions) that must NOT go through pgbouncer transaction pooling.
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # IDEMPOTENCY GUARD: the strict 05+/10+ layer (CREATE continuous aggregate,
+        # no IF NOT EXISTS) is NOT re-runnable — on a re-deploy against an already
+        # assembled r7g it errors "continuous aggregate already exists" (exit 3),
+        # blocking db-migrate → stranding edge-api/oeecloud. Skip if F3 is present.
+        if [ "$$(psql -tAc "SELECT to_regclass('public.agg_equipment_values_1min') IS NOT NULL" 2>/dev/null)" = "t" ]; then
+          echo "F3 schema already assembled (agg_equipment_values_1min exists) — skipping (idempotent).";
+          exit 0;
+        fi
+        if ! ls /f3/snapshot/*.sql >/dev/null 2>&1; then
+          echo "⚠⚠ db/init-f3/snapshot/ is EMPTY — F3 schema NOT assembled.";
+          echo "   Populate it (README §4) then redeploy. Parity gate will FAIL until then.";
+          exit 0;
+        fi
+        # 00-* = the curated pg_dump base (tables/functions/views): applied
+        # BEST-EFFORT — a plain restore benignly fails on the cagg VIEW blocks
+        # (dumped over _timescaledb_internal) + a couple debris index/type refs;
+        # the REAL caggs/hypertables come from the strict 05-*/10-* timescale
+        # layer next. 05+/10+ = the timescale-aware recreation: applied STRICT.
+        # The parity gate (scripts/prod-f3-schema-parity-check.sh) is the real
+        # guarantee — proven F3_MISSING=0 for this exact sequence.
+        for f in $$(ls /f3/snapshot/00-*.sql 2>/dev/null | sort); do
+          echo "== applying (best-effort) $$f =="; psql -f "$$f" || true;
+        done
+        for f in $$(ls /f3/snapshot/*.sql | grep -v '/00-' | sort); do
+          echo "== applying (strict) $$f =="; psql -v ON_ERROR_STOP=1 -f "$$f";
+        done
+        echo "F3 schema assembled. Prove it: scripts/prod-f3-schema-parity-check.sh gate"
+    volumes:
+      - ./db/init-f3:/f3:ro
+    depends_on:
+      # pgbouncer healthy = r7g reachable; db-init-bootstrap = extensions present.
+      pgbouncer:
+        condition: service_healthy
+      db-init-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.18
+    restart: "no"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── knex ↔ F3 reconciliation (one-shot) — ROADMAP W1.5 ────────────────────────
+  # Fake-baselines edge-api's knex migrations against the F3 schema so `db-migrate`
+  # does NOT rebuild the legacy F1 shape over F3. edge-api's early migrations are
+  # plain `CREATE TABLE x` (no guard) authored to build F1 from an empty DB — run
+  # against the F3-shaped `public` with an empty knex_migrations, knex tries them
+  # all and dies on the first (`equipment_values already exists`), aborting the
+  # boot; with an EMPTY F3 schema it would instead silently build F1 → WRONG OEE.
+  #
+  # db/init-f3/knex-baseline.sql seeds knex_migrations with every migration whose
+  # object F3 already provides (or deliberately omits — the update_prev event
+  # trigger, the FK/EXCLUDE constraints, shadow_go_port). `db-migrate` then applies
+  # ONLY the genuinely edge-api-specific migrations F3 lacks (labels, sample_boxes,
+  # scanned_boxes, idempotency_keys, mirror_replay_dlq + the additive id_label /
+  # operator_pw_hash columns edge-api reads/writes at runtime).
+  #
+  # PROVEN on a throwaway timescaledb:2.25.2-pg16 (db-schema-f3 → THIS → db-migrate):
+  # CLOBBER=0 (no F3 column dropped/type-changed; equipment_values stays a
+  # hypertable), all edge-api tables present — see
+  # docs/adr/reference/production-knex-f3-reconciliation.md +
+  # scripts/prod-knex-f3-reconcile-check.sh.
+  db-knex-baseline:
+    image: postgres:16-alpine
+    env_file: [.env]
+    environment:
+      # DIRECT to the r7g — same DDL/advisory-lock rationale as db-schema-f3.
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "== fake-baselining knex against F3 (db/init-f3/knex-baseline.sql) =="
+        psql -v ON_ERROR_STOP=1 -f /f3/knex-baseline.sql
+        echo "knex baseline seeded. db-migrate will now apply only edge-api-only migrations."
+    volumes:
+      - ./db/init-f3:/f3:ro
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      db-schema-f3:
+        condition: service_completed_successfully
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.21
+    restart: "no"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── DB Migrations (one-shot) ──────────────────────────────────────────────────
-  # Runs edge-api's knex migrations against the local postgres. Same Docker
-  # target as staging (the `migrate` stage in edge-api's Dockerfile bundles
-  # knex + ts-node as devDependencies).
+  # Runs edge-api's knex `migrate:latest` AFTER db-schema-f3 + db-knex-baseline.
+  # ROADMAP W1.5 (reconciliation RESOLVED — see db-knex-baseline above): because
+  # the F3-overlapping migrations are fake-baselined, knex applies only the 16
+  # edge-api-specific migrations F3 lacks and leaves every F3 table untouched.
+  # Verify before any client data flows:
+  #   1. scripts/prod-f3-schema-parity-check.sh   (after db-schema-f3: F3_MISSING=0)
+  #   2. scripts/prod-knex-f3-reconcile-check.sh   (after db-migrate: CLOBBER=0)
   db-migrate:
     build:
       context: ./edge-api
@@ -228,12 +465,18 @@ services:
     env_file: [.env]
     environment:
       POSTGRES_PORT: "5432"
-      POSTGRES_HOST: postgres
+      # DIRECT to the r7g — knex `migrate:latest` takes a session-level advisory
+      # lock, which transaction pooling (pgbouncer) does not preserve.
+      POSTGRES_HOST: ${POSTGRES_HOST_UPSTREAM}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
+      db-schema-f3:
+        condition: service_completed_successfully
+      db-knex-baseline:
+        condition: service_completed_successfully
     networks:
       packiot-net:
         ipv4_address: 172.18.0.16
@@ -243,6 +486,10 @@ services:
       options: {max-size: "5m", max-file: "2"}
 
   # ── Edge API (NestJS) ──────────────────────────────────────────────────────────
+  # In single-flow prod, edge-api writes operator actions (PO lifecycle,
+  # downtimes) DIRECTLY to the single F3 DB via pgbouncer — ADR-0032's
+  # "Phase 2 edge-api-direct" end-state, reached for free (no shadow-mirror
+  # bridge needed, roadmap §5/W4).
   edge-api:
     build:
       context: ./edge-api
@@ -271,22 +518,13 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # NOTE: edge-nodered is DELIBERATELY ABSENT — per-factory deployment via
-  # manual workflow_dispatch (see docs/archive/production-out-of-scope.md +
-  # docs/adr/0005-edge-nodered-self-hosted-runner-deploys.md).
-  #
-  # NOTE: simulator is DELIBERATELY ABSENT — staging-only synthetic PLC.
-  #
-  # NOTE: mirror-worker-go is DELIBERATELY ABSENT — no upstream to mirror
-  # from in production (production IS the source).
-
   # ── Grafana ────────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:11.5.0
     restart: unless-stopped
     env_file: [.env]
     labels:
-      - "provisioning_rev=2026-06-29-production-initial"
+      - "provisioning_rev=2026-07-27-production-f3native"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -358,7 +596,7 @@ services:
     container_name: prometheus
     restart: unless-stopped
     labels:
-      - "config_rev=2026-06-29-production-initial"
+      - "config_rev=2026-07-27-production-f3native"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -386,13 +624,9 @@ services:
       options: {max-size: "5m", max-file: "2"}
 
   # ── Authentik SSO ──────────────────────────────────────────────────────────────
-  # Production gets its own Authentik install (independent of staging's).
-  # Same shape as staging: redis + server + worker, dedicated `authentik`
-  # database on the local TimescaleDB. Auto-bootstrap admin user via
-  # AUTHENTIK_BOOTSTRAP_PASSWORD + AUTHENTIK_BOOTSTRAP_TOKEN from
-  # packiot/production/authentik (per user's locked decision 2026-06-29).
-  #
-  # First-run setup confirms via:
+  # Prod gets its own Authentik install (redis + server + worker), dedicated
+  # `authentik` DB on the r7g (created by db-init-bootstrap; authentik connects
+  # DIRECT, not via pgbouncer). First-run setup:
   #   https://auth.prod.packiot.app/if/flow/initial-setup/
   authentik-redis:
     image: redis:7-alpine
@@ -413,7 +647,9 @@ services:
     env_file: [.env]
     environment:
       AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: postgres
+      # DIRECT to the r7g — Authentik (Django) runs migrations + uses advisory
+      # locks / server-side cursors that break under pgbouncer transaction pooling.
+      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST_UPSTREAM}
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
@@ -431,8 +667,10 @@ services:
     depends_on:
       authentik-redis:
         condition: service_started
-      postgres:
-        condition: service_healthy
+      # The `authentik` role + DB live on the r7g only after db-init-bootstrap
+      # runs (the removed local postgres used to create them via initdb.d).
+      db-init-bootstrap:
+        condition: service_completed_successfully
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
@@ -445,7 +683,8 @@ services:
     env_file: [.env]
     environment:
       AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: postgres
+      # DIRECT to the r7g (same rationale as authentik-server).
+      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST_UPSTREAM}
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
@@ -460,36 +699,72 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   # ── Adminer (PostgreSQL web UI) ───────────────────────────────────────────────
-  # Connects to local postgres directly (bypasses pgbouncer — transaction
-  # pooling breaks Adminer's SET search_path calls). Access via Authentik SSO
-  # at adminer.prod.packiot.app.
+  # Connects to the r7g directly (bypasses pgbouncer — transaction pooling breaks
+  # Adminer's SET search_path). Behind Authentik SSO at adminer.prod.packiot.app.
+  # The default-server field is pre-filled with the r7g upstream IP.
   adminer:
     build: ./adminer
     container_name: adminer
     restart: unless-stopped
     env_file: [.env]
     environment:
-      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DEFAULT_SERVER: ${POSTGRES_HOST_UPSTREAM}
     ports:
       - "127.0.0.1:8082:8080"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.17
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
-  # ── oeecloud Worker (Go) ──────────────────────────────────────────────────────
-  # AMQP consumer for OEE events. In production-dryrun there's NO publisher
-  # today (edge-nodered runs per-factory, not in this stack) so the queues
-  # are empty — the worker idles. Kept in compose for parity so phase-2
-  # wiring is just an env var change + restart, not a new service deploy.
+  # ── app-redis (ADR-0035 — refdata cache-aside) ────────────────────────────────
+  # Dedicated APPLICATION cache — SEPARATE from authentik-redis (.14). Backs
+  # refdata-api's cache-aside layer (fail-open: refdata serves from the DB if
+  # this is down). CACHE, not a store: bounded 256mb + allkeys-lru, no persist.
   #
-  # Secrets: PG via packiot/production/db; AMQP via packiot/production/rabbitmq-oeecloud-creds
-  # (not yet provisioned — worker startup will retry until that secret exists).
+  # ⚠ DECISION (roadmap "ready-vs-needs-decision"): ADR-0035 says prod should
+  # use managed ElastiCache (provisioned in api-terraform) rather than this
+  # container — point refdata's REDIS_URL at the ElastiCache endpoint and drop
+  # this service once ElastiCache exists. Shipped here as the boot-phase bridge
+  # so the read plane is complete on-box today.
+  app-redis:
+    image: redis:7-alpine
+    container_name: app-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save ""
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.35
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    mem_limit: 320m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── oeecloud Worker (Go) — SINGLE-FLOW F3-NATIVE ──────────────────────────────
+  # AMQP consumer for OEE events. Idle-but-ready until a client tee is live
+  # (roadmap W1 exit). All F1/F2/comparator/report-job/tenant-specific env is
+  # STRIPPED — this runs the refactored lane only, writing to the main pool /
+  # `public` (= F3) because POSTGRES_SHADOW_DB_NAME is unset (routeForSource
+  # nil-shadow fallback → main pool, public).
+  #
+  # Secrets: PG via packiot/production/db; AMQP via
+  # packiot/production/rabbitmq-oeecloud-creds (least-privilege consumer).
   oeecloud-worker:
     build: ./services/oeecloud-worker
     container_name: oeecloud-worker
@@ -511,7 +786,40 @@ services:
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
+      # Single flow → no F1/F2/F3 triple to spread; keep lanes small. 2 keeps
+      # po-control strictly ordered (read-modify-write) while data processes
+      # concurrently. Bump only if a real client's volume needs it.
+      CONSUME_LANES: "2"
+      # Byte-identical statement-count optimization (fold shift-fill into the
+      # equipment_values UPSERT). Keep on.
+      SHIFT_FILL_FOLDED: "true"
       HEALTH_PORT: "9101"
+      # NO POSTGRES_SHADOW_DB_NAME → shadow pool nil → `refactored` envelopes
+      # write to (main pool, public) = F3. This IS the single-flow topology.
+      # Go shift resolver fills id_shift/id_shift_hour on writes (F3 has no
+      # PL/pgSQL trigger — this is the sole shift-resolution path in prod).
+      SHIFT_RESOLVER_ENABLED: "true"
+      # Core F3 compute chain (availability events, PO lifecycle, UNS, rollups):
+      EVENTS_DERIVER_ENABLED: "true"
+      PO_CONTROL_ENABLED: "true"
+      UNS_REFRESH_ENABLED: "true"
+      UNS_CURRENT_METRICS_ENABLED: "true"
+      PO_RECALC_ENABLED: "true"
+      RUNTIME_PROVISION_ENABLED: "true"
+      RUNTIME_ROLLUP_ENABLED: "true"
+      # Consume the shim-path `sparkplug.data` raw ingest (ingest-shim) as well
+      # as edge-transformer's `refactored` envelopes. Both land on `oee`.
+      LEGACY_INGEST_ENABLED: "true"
+      # ADR-0037 Silver invariant — reject physically-impossible count deltas
+      # (double-source / reordered-sample phantoms) before the UPSERT. Defends
+      # ALL equipment; good prod default.
+      INCREMENT_SANITY_CLAMP_ENABLED: "true"
+      # OMITTED (default OFF in code) — existing-customer / staging-only:
+      #   SHADOW_EMIT_* (edge-transformer's concern) · POSTGRES_SHADOW_DB_NAME ·
+      #   BAKE_COMPARATOR_ENABLED/BAKE_ENTERPRISE_IDS (no comparator) ·
+      #   SPEED33/SHIFT06/SAP13/BOXES13/SYNC06/BOXES_BRIDGE report jobs
+      #   (customers 33/6/neopac) · EVENTS_WIDEROW_STATE_ENTERPRISES (ent4) ·
+      #   COUNTERS_ONLY_AVAILABILITY_* (ent3 L6). Enable per-client at onboarding.
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
@@ -534,29 +842,278 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
-  # ── Operator (production-facing SPA) ──────────────────────────────────────────
-  # Vite-built React SPA + nginx. Same build as staging; behind Authentik SSO.
-  # In dry-run phase the SPA loads but back-end API calls return empty/no-data
-  # (DB is empty) — that's the validation: UI loads, auth works, no crashes.
-  operator:
-    build:
-      context: ./operator
-      # Reuses staging's Dockerfile — the build itself isn't environment-aware;
-      # env-specific values (VITE_API_URL) are injected at runtime by Nginx
-      # rewrite (operator/Dockerfile.staging entrypoint).
-      dockerfile: Dockerfile.staging
-    container_name: operator
+  # ── edge-transformer (SparkPlug decode + Go Calc → F3) ────────────────────────
+  # Consumes SparkPlug from mosquitto (agent front-door), runs the Go Calc, and
+  # emits `refactored` envelopes to `oee` → oeecloud-worker → F3. Single-flow:
+  # emit `refactored` ONLY (no SHADOW_EMIT_PRODUCTION "" leg, no "go" leg).
+  #
+  # Secrets: AMQP via packiot/production/rabbitmq-edge-transformer-creds
+  # (publish-perm on `oee`). Idle until a client agent publishes to mosquitto.
+  edge-transformer:
+    build: ./services/edge-transformer
+    container_name: edge-transformer
+    profiles: ["client-ingest"]  # GATED: needs a tenant client.yaml (tenant_id) — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8083:80"
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      EDGE_TRANSFORMER_MODE: factory
+      AWS_REGION: us-east-1
+      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-edge-transformer-creds
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: edge.plc-normalized
+      WORKER_QUEUE: edge-transformer-q
+      RETRY_EXCHANGE: edge.plc-normalized-retry
+      RETRY_QUEUE: edge-transformer-q-retry-30s
+      FAILED_EXCHANGE: dlx.edge.plc-normalized
+      FAILED_QUEUE: edge-transformer-q-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      HEALTH_PORT: "9102"
+      CLIENT_YAML_PATH: /etc/packiot/client.yaml
+      MQTT_ENABLED: "true"
+      # MQTT is THE ingest; no AMQP nodered-wrap source in prod.
+      AMQP_SOURCE_ENABLED: "false"
+      MQTT_BROKER_URL: "tcp://mosquitto:1883"
+      MQTT_CLIENT_ID: "edge-transformer-production"
+      MQTT_USERNAME: ""
+      MQTT_PASSWORD: ""
+      # -1 disables idle-degradation for the boot/dry-run phase (no client tee
+      # yet → MQTT silence is expected, not a failure). ⚠ FLIP TO 60 (the real
+      # factory default) once the client tee is live so /healthz surfaces a
+      # genuine data-stall.
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      # ── Single-flow F3-native emit ──
+      USE_GO_PORT: "true"                 # Go Calc port authoritative
+      SHADOW_EMIT_PRODUCTION: "false"     # no F1 legacy leg
+      SHADOW_EMIT_REFACTORED: "true"      # emit `refactored` → F3
+      # #276 Calc CUTOVER: emit the Calc delta+cumulative shape (Value=delta,
+      # Counter=cumulative) so the cagg does not SUM cumulative counters into
+      # billions on direct-line-emit lines. REQUIRED for correct F3 OEE.
+      CALC_CUTOVER_REFACTORED: "true"
+      # ADR-0011 P2 outbox — store-and-forward between MQTT decode + RMQ publish.
+      OUTBOX_ENABLED: "true"
+      OUTBOX_PATH: "/var/lib/edge-transformer/outbox.db"
+      OUTBOX_CAP: "100000"
+      # ADR-0019 C1 machine-write path — ships INERT (fail-safe). Flip only after
+      # an edge-api producer endpoint lands + review against the live client.
+      EDGE_COMMANDS_ENABLED: "false"
+      EDGE_COMMANDS_ALLOWED: "po_setup,param_write"
+      # OMITTED (default OFF) — CPACK/ent-3-specific counters-only-OEE tuning
+      # (COUNTERS_ONLY_OEE_ENABLED / COUNTERS_ONLY_IDEAL_RATES). Set per-client
+      # at onboarding IF the client is a Modbus/counters-only line with no
+      # MachSpeed metric (see ADR-0042 P1 / ADR-0037).
+    volumes:
+      # ⚠ FILL AT DEPLOY: replace with the real per-client client.yaml
+      # (docs/clients/<client>.yaml, ADR-0004). The example is mounted so the
+      # container boots during the dry-run phase.
+      - ./docs/clients/cpack.example.yaml:/etc/packiot/client.yaml:ro
+      - edge_transformer_outbox:/var/lib/edge-transformer
     networks:
       packiot-net:
-        ipv4_address: 172.18.0.19
+        ipv4_address: 172.18.0.23
     depends_on:
-      edge-api:
-        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/edge-transformer", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── ingest-shim (HTTPS→RabbitMQ ingress) — SHIM front-door ────────────────────
+  # The alternate to the agent path: a client Node-RED node POSTs SparkPlug-JSON
+  # over HTTPS (X-Ingest-Key) → this shim republishes VERBATIM onto `oee` with
+  # routing key `sparkplug.data.<client>` → oeecloud-worker → F3. RabbitMQ stays
+  # internal; only the shim is exposed, and it never hands broker creds to the
+  # client. Install ONE front-door per client (agent OR shim) — roadmap W2.
+  #
+  # Secrets: AMQP via packiot/production/rabbitmq-edge-transformer-creds
+  # (publish-perm on `oee`). INGEST_API_KEY + TLS cert/key are deploy-filled.
+  ingest-shim:
+    build: ./services/ingest-shim
+    container_name: ingest-shim
+    profiles: ["client-ingest"]  # GATED: needs a tenant + mTLS ingest certs — starts only when a client is onboarded (--profile client-ingest)
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-edge-transformer-creds
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      EXCHANGE: oee
+      # Per-client routing key → per-tenant worker queue. FILL AT DEPLOY with the
+      # client's key (e.g. sparkplug.data.bispharma); defaults to the generic key.
+      ROUTING_KEY: ${INGEST_ROUTING_KEY:-sparkplug.data}
+      # Scope guard: only payloads whose topic/group first segment matches (case-
+      # insensitive) are admitted; everything else → 403. FILL AT DEPLOY with the
+      # client's topic prefix (e.g. BISPHARMA).
+      SCOPE_GROUP: ${INGEST_SCOPE_GROUP:-}
+      HTTP_ADDR: ":8444"
+      METRICS_ADDR: ":9105"
+      # REQUIRED — the shim refuses real traffic unset (hand it to the client's
+      # Node-RED node as the X-Ingest-Key header). # FILL AT DEPLOY
+      INGEST_API_KEY: ${INGEST_API_KEY:-}
+      # TLS is mandatory — no plaintext public listener. # FILL AT DEPLOY (mount below)
+      TLS_CERT_FILE: /certs/server.crt
+      TLS_KEY_FILE: /certs/server.key
+    volumes:
+      # ⚠ FILL AT DEPLOY: host path holds the TLS server cert + key for :8444.
+      - /opt/packiot/ingest-shim/certs:/certs:ro
+    ports:
+      # Public HTTPS ingress — Nginx/SG gate external access (SG `/32` from the
+      # client egress only; port stays closed until the client tee is scheduled).
+      - "8444:8444"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.29
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ingest-shim", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     mem_limit: 128m
     cpus: 0.25
     logging:
       driver: json-file
-      options: {max-size: "5m", max-file: "2"}
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── refdata-api (F3 read plane) ───────────────────────────────────────────────
+  # The reference-read API front4 + operator read through (replaces Hasura for
+  # the refactored stack). Internal-only — no public route; the operator SPA and
+  # front4 reach it via nginx which injects the per-tenant read key.
+  #
+  # SINGLE-FLOW NOTE: staging's f1/f3 switch selects between two DATABASES
+  # (packiot vs packiot_shadow). Greenfield prod has ONE DB (packiot, public=F3),
+  # so we run REFDATA_FLOW=f3 to pick the F3 dataset SQL variants but point
+  # DB_NAME_F3 at the single `packiot` pool — there is no separate packiot_shadow
+  # DB/pool. Every dataset's SQL is object-name-identical between the flows, so
+  # this reads the F3 `public` objects correctly. ⚠ Verify against the assembled
+  # F3 schema at W1.4 (any R5-dimension datasets with a divergent sqlF3 must have
+  # their backing objects present in prod `public`).
+  refdata-api:
+    build: ./services/refdata-api
+    container_name: refdata-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      REFDATA_FLOW: f3
+      # Single DB: F3 target IS the main `packiot` pool (no packiot_shadow).
+      DB_NAME_F3: ${POSTGRES_DB}
+      HEALTH_PORT: "9104"
+      # Per-tenant read keys → customer(enterprise) id, resolved SERVER-SIDE
+      # (never client-supplied). # FILL AT DEPLOY from packiot/production/refdata-query-keys
+      # (e.g. "prod-<client>-key:<enterprise_id>").
+      QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:-}
+      # Dual JWT verify. front4 sends a Firebase JWT (fbpackiot project — PUBLIC
+      # id, not a secret). Cognito is OFF until a prod pool is chosen (roadmap
+      # W3.2); flip COGNITO_AUTH_ENABLED=true + set the prod issuer/client-id.
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
+      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-false}
+      COGNITO_ISSUER: ${COGNITO_ISSUER:-}
+      COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-}
+      # ADR-0035 cache-aside over app-redis (fail-open). Point REDIS_URL at
+      # managed ElastiCache instead once provisioned (see app-redis note).
+      REDIS_CACHE_ENABLED: "true"
+      REDIS_URL: ${REDIS_URL:-redis://app-redis:6379/0}
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.26
+    depends_on:
+      # Soft dependency: refdata fails open, so only wait for the container to
+      # start — a slow cache must never block the read plane from booting.
+      app-redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/refdata-api", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── operator-adapter (bespoke-operator-UI PO tee) ─────────────────────────────
+  # Operator twin of the ingest-shim: a client whose bespoke operator UI
+  # justifies downtimes / starts POs WITHOUT calling edge-api tees each action
+  # here over HTTPS; the adapter maps it to the matching edge-api call (which
+  # writes the single F3 DB). ⚠ ONLY needed if the prod client uses a bespoke
+  # operator UI (roadmap W4.2) — if they use the operator PWA, its durable
+  # write-queue is the path and this can be dropped. Included for parity; boots
+  # to /healthz, filled per-client at onboarding.
+  #
+  # Secrets: PG resolver via packiot/production/db; OPERATOR_API_KEY +
+  # OPERATOR_EDGE_API_KEY (the client enterprise api_key) + TLS are deploy-filled.
+  operator-adapter:
+    build: ./services/operator-adapter
+    container_name: operator-adapter
+    profiles: ["client-ingest"]  # GATED: needs OPERATOR_API_KEY + a bespoke-operator client — starts only when a client is onboarded (--profile client-ingest)
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      PORT: "8443"
+      EDGE_API_URL: http://edge-api:8080
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: packiot/production/db
+      # The prod client's enterprise id + topic prefix (code env keys are the
+      # legacy INCOPLAST_* names; values are the prod client's). # FILL AT DEPLOY
+      INCOPLAST_ENTERPRISE_ID: ${OPERATOR_ADAPTER_ENTERPRISE_ID:-}
+      INCOPLAST_TOPIC_PREFIX: ${OPERATOR_ADAPTER_TOPIC_PREFIX:-}
+      # Shared secret the client tee presents (X-Ingest-Key), and the client
+      # enterprise api_key edge-api authenticates. # FILL AT DEPLOY
+      OPERATOR_API_KEY: ${OPERATOR_API_KEY:-}
+      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
+      # TLS — refuses plaintext. # FILL AT DEPLOY (mount below)
+      TLS_CERT_FILE: /opt/packiot/operator-adapter/certs/tls.crt
+      TLS_KEY_FILE: /opt/packiot/operator-adapter/certs/tls.key
+    volumes:
+      # ⚠ FILL AT DEPLOY: place tls.crt + tls.key on the host here.
+      - /opt/packiot/operator-adapter/certs:/opt/packiot/operator-adapter/certs:ro
+    ports:
+      - "8445:8443"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.31
+    depends_on:
+      edge-api:
+        condition: service_started
+      pgbouncer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/operator-adapter", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── Operator ──────────────────────────────────────────────────────────────────
+  # NOT included in the central cloud stack (deliberately removed — first-dry-run
+  # boot lesson). The operator SPA's nginx reverse-proxies API routes to
+  # `edge-nodered`, which does NOT run in the cloud stack (per-factory only, per
+  # ADR-0005). With no such upstream in the compose network the container
+  # crash-loops on "host not found in upstream edge-nodered". Operator deploys
+  # alongside edge-nodered per-factory — its .19 address (172.18.0.19) is freed.

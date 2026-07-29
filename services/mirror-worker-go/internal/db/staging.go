@@ -437,6 +437,134 @@ func (s *Staging) FinishOrphanPO(ctx context.Context, stagingPOID int64, closeTs
 	return finished, err
 }
 
+// ──── Prod-terminal orphan closer (task follow-up to #48) ───────────────
+//
+// The #48 finisher above closes the STATUS=2 zombie class. Two blemishes it
+// structurally cannot reach:
+//   - a mirror-created PO stuck at STATUS=1 (available, ts_start NULL) whose
+//     prod twin already FINISHED — never a finisher candidate because
+//     ReconcileActivePOIDOrders only returns status=2; and
+//   - the ts_start-NULL close itself — FinishOrphanPO's header write trips the
+//     production_orders_ts_start_ts_end check (23514) the moment it sets ts_end
+//     on a row whose ts_start is still NULL.
+// These two helpers close exactly that gap, flag-gated by the reconciler.
+
+// TerminalOrphanCandidatePOs returns the MIRROR-CREATED staging POs in
+// status IN (1,2) for the enterprise, as id_order → id_production_order.
+// DELIBERATELY NARROWER than ReconcileActivePOIDOrders in two ways:
+//   - status IN (1,2), not just 2 — so a never-started (status=1, ts_start
+//     NULL) orphan is reachable; and
+//   - the origin predicate is nm_production_order LIKE 'CPACK-reconcile-%'
+//     ALONE (no mirror_id_map union) — this closer performs a header-status
+//     rewrite (status=1→3), a heavier mutation than the finisher's segment
+//     seal, so it is scoped to POs the reconciler itself CREATED. Operator- and
+//     manual-origin POs (even ones that happen to have a mirror_id_map row) are
+//     never touched.
+//
+// Enterprise scope ($2 = StagingEnterpriseID) is what makes this safe against
+// staging-only enterprises, exactly as in ReconcileActivePOIDOrders: the caller
+// diffs the result against prod's authority (FetchPOFinishInfo) and closes only
+// twins prod reports as status=3, so a PO from a no-prod-authority enterprise
+// can never be closed here (wrong id_enterprise → not returned; and no prod row
+// → skipped_unverified upstream).
+func (s *Staging) TerminalOrphanCandidatePOs(ctx context.Context, enterpriseID int) (map[int64]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT po.id_order, po.id_production_order
+		   FROM production_orders po
+		  WHERE po.id_enterprise = $1
+		    AND po.status IN (1, 2)
+		    AND po.nm_production_order LIKE 'CPACK-reconcile-%'`,
+		enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query mirror-created terminal-orphan candidate POs: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var idOrder, idPO int64
+		if err := rows.Scan(&idOrder, &idPO); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[idOrder] = idPO
+	}
+	return out, rows.Err()
+}
+
+// CloseProdTerminalOrphanPO closes a mirror-created staging PO whose prod twin
+// has FINISHED, AT prod's finish ts (closeTs). It is the STATUS-1-AWARE,
+// NULL-ts_start-SAFE, STRICT-constraint-safe superset of FinishOrphanPO:
+//   - the header UPDATE matches status IN (1,2) (not just 2), so a never-started
+//     orphan (status=1) closes too; and
+//   - it satisfies the strict production_orders_ts_start_ts_end check (a status=3
+//     row demands ts_start < ts_end, NOT <=) by pinning ts_end = closeTs and
+//     anchoring ts_start to LEAST(existing, closeTs - 1s) — see
+//     sqlCloseProdTerminalOrphanHeader for the full constraint + rationale.
+//
+// Returns whether a header row was actually closed (false = already status 3/4
+// → idempotent no-op). Idempotency is structural: the segment seal only matches
+// open segments, the header UPDATE only matches status IN (1,2). recalc_needed
+// lets staging's per-minute cron recompute the now-closed PO's final OEE.
+// sqlCloseProdTerminalOrphanHeader is the header close for the prod-terminal
+// orphan closer, extracted as a const so its 23514-avoidance invariants are
+// unit-guarded (staging_test.go). The live check constraint
+// production_orders_ts_start_ts_end is STRICTER than a naive ts_start<=ts_end:
+//
+//	CHECK ((ts_start < ts_end AND status IN (3,4))
+//	    OR (status=1 AND ts_start IS NULL)
+//	    OR (status=1 AND ts_end IS NULL)
+//	    OR (status=2 AND ts_start IS NOT NULL))
+//
+// so a status=3 row needs ts_start STRICTLY BEFORE ts_end — a zero-duration
+// close (ts_start == ts_end) is REJECTED. And because these orphans are
+// late-mirrored, staging's ts_start (when set) is usually AFTER prod's finish
+// ts, so we cannot just stamp ts_end = closeTs onto the existing ts_start
+// either. This close therefore:
+//   - pins ts_end = closeTs (prod's real finish ts — the faithful value); and
+//   - sets ts_start = LEAST(COALESCE(ts_start, closeTs), closeTs - 1s), i.e.
+//     it keeps a genuinely-earlier existing start but otherwise anchors a
+//     1-SECOND window ending exactly at the prod finish ts.
+//
+// That guarantees ts_start < ts_end for every input shape (NULL start,
+// start-before-finish, or the common start-after-finish) — closing the PO at
+// prod's finish moment with the minimal positive duration the constraint
+// admits. Header matches status IN (1,2) so a never-started (status=1) orphan
+// closes too.
+const sqlCloseProdTerminalOrphanHeader = `UPDATE production_orders
+	    SET status = 3,
+	        ts_start = LEAST(COALESCE(ts_start, $2::timestamptz), $2::timestamptz - interval '1 second'),
+	        ts_end = $2,
+	        recalc_needed = true
+	  WHERE id_production_order = $1
+	    AND status IN (1, 2)`
+
+func (s *Staging) CloseProdTerminalOrphanPO(ctx context.Context, stagingPOID int64, closeTs time.Time) (bool, error) {
+	var closed bool
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		// Seal any open runtime segment (the status=2 case; a status=1 orphan
+		// has none — this simply matches zero rows, same GREATEST clamp guard
+		// against an inverted range as FinishOrphanPO).
+		if _, err := tx.Exec(ctx,
+			`UPDATE production_orders_runtime
+			    SET runtime_timerange = tstzrange(
+			          lower(runtime_timerange),
+			          GREATEST($2::timestamptz, lower(runtime_timerange))),
+			        recalc_needed = true
+			  WHERE id_production_order = $1
+			    AND upper(runtime_timerange) IS NULL`,
+			stagingPOID, closeTs); err != nil {
+			return fmt.Errorf("close runtime segment: %w", err)
+		}
+		ct, err := tx.Exec(ctx, sqlCloseProdTerminalOrphanHeader, stagingPOID, closeTs)
+		if err != nil {
+			return fmt.Errorf("close prod-terminal orphan production_order: %w", err)
+		}
+		closed = ct.RowsAffected() > 0
+		return nil
+	})
+	return closed, err
+}
+
 // ──── ADR-0025 shadow fan-out (task #51) ───────────────────────────────
 //
 // FinishOrphanPO above closes ONLY Flow 1 (public schema, by the F1 surrogate

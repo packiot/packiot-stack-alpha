@@ -42,6 +42,14 @@ const (
 	// DQRuleIdealSpeedNullProducing — ideal_speed IS NULL or 0 while net > 0 (P3-4).
 	// The OEE denominator collapses → oee silently 0 (or divide-by-zero-guarded loss).
 	DQRuleIdealSpeedNullProducing DQRule = "IDEAL_SPEED_NULL_WHILE_PRODUCING"
+	// DQRuleInvariantClampedIncrement — the ingest-time production-increment
+	// SANITY CLAMP (ADR-0037 Silver invariant) rejected a physically-impossible
+	// increment (> K · rated_speed · Δt) before it reached equipment_values /
+	// the cagg SUM. Unlike the grain rules above (detected by RunDQScan over
+	// runtime rows), this event is written DIRECTLY by the ingest writer path
+	// (handler.emitClampDQ) at grain "ingest"; RunDQScan never produces it.
+	// observed_value carries the rejected increment. severity=error.
+	DQRuleInvariantClampedIncrement DQRule = "INVARIANT_CLAMPED_INCREMENT"
 	// DQRuleMetricMissingAllLevels — a metric present at no aggregation level (P3-2).
 	// RESERVED: this is a CROSS-LEVEL condition (a value that appears in no grain at
 	// all), not cheaply detectable from a single grain row, so DetectGrain does NOT

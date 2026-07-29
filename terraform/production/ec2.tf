@@ -16,8 +16,15 @@ resource "aws_s3_object" "app_init" {
   bucket = local.state_bucket
   key    = "scripts/production/app_init.sh"
   content = templatefile("${path.module}/user_data/app_init.sh", {
-    db_name           = var.db_name
-    db_user           = var.db_user
+    db_name = var.db_name
+    db_user = var.db_user
+    # Upstream DB host: the dedicated r7g EC2's private IP. pgbouncer (and the
+    # direct-connect DDL/authentik/adminer services) point at this in .env via
+    # POSTGRES_HOST_UPSTREAM. Sourced from the resource attribute (single source
+    # of truth) — this makes aws_s3_object.app_init depend on aws_instance.db, so
+    # the app box's init script always carries the live DB IP (and the app box
+    # boots after the DB EC2 exists). No cycle: the DB EC2 depends on neither.
+    db_private_ip     = aws_instance.db.private_ip
     production_domain = var.production_domain
     aws_region        = var.aws_region
     github_repo       = var.github_repo

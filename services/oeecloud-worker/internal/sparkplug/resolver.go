@@ -26,6 +26,14 @@ type EquipmentInfo struct {
 	// interval events; BuildEventMint gates on it so it never mints raw
 	// per-sample events for equipment the deriver won't clean (0 = absent).
 	StatusType int
+	// ProductionSpeed is equipments.production_speed — the machine's CONFIGURED
+	// rated speed in parts/min (same field the rollup uses as ideal_speed and
+	// the counters-only guard uses). nil ⇒ NULL/unset. Used ONLY by the
+	// increment sanity clamp (ADR-0037 Silver invariant) as the rated-rate
+	// bound for a plausible per-sample production increment; a nil/0 value
+	// makes the clamp fail-open for that equipment (no rated speed to bound
+	// against). It never feeds an emitted value.
+	ProductionSpeed *int
 }
 
 // Resolver maps packml_topic → EquipmentInfo. Memoised in-process —
@@ -110,7 +118,8 @@ func (r *Resolver) Resolve(ctx context.Context, topic string) (*EquipmentInfo, e
 func (r *Resolver) query(ctx context.Context, topic string) (*EquipmentInfo, error) {
 	const q = `
 		SELECT pr.id_enterprise, pr.id_site, pr.id_area, pr.id_equipment,
-		       pr.signal_quality, a.day_begin, COALESCE(e.status_type, 0)
+		       pr.signal_quality, a.day_begin, COALESCE(e.status_type, 0),
+		       e.production_speed
 		  FROM packml_register pr
 		  JOIN areas a ON a.id_area = pr.id_area
 		  LEFT JOIN equipments e ON e.id_equipment = pr.id_equipment
@@ -121,7 +130,8 @@ func (r *Resolver) query(ctx context.Context, topic string) (*EquipmentInfo, err
 	row := r.pool.QueryRow(ctx, q, topic)
 	var info EquipmentInfo
 	err := row.Scan(&info.IDEnterprise, &info.IDSite, &info.IDArea,
-		&info.IDEquipment, &info.SignalQuality, &info.DayBegin, &info.StatusType)
+		&info.IDEquipment, &info.SignalQuality, &info.DayBegin, &info.StatusType,
+		&info.ProductionSpeed)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
