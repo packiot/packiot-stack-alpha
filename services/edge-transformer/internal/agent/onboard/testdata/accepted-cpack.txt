@@ -1,0 +1,18 @@
+# accepted-cpack.txt (CAPTURE test fixture) — the ACCEPTED/mapped suffix set,
+# as would be sourced read-only from the CPACK agent's SparkPlug NBIRTH
+# (the tagstore snapshot = every mapped metric that has received a value).
+#
+# L6's five members map cleanly (their confirmed indices are correct), so their
+# ProdProcessedCount suffixes appear here → CONFIRMED on positive evidence.
+# L8 sends its counts at DIFFERENT indices than the descriptor's inferred
+# guesses, so L8 counts are NOT here (they land in the unmapped set instead);
+# L8/TEXA is dormant and appears in neither → MISSING.
+
+/L6/BREYER/Admin/ProdProcessedCount/91/Unit
+/L6/POLYTYPE/Admin/ProdProcessedCount/93/Unit
+/L6/PTH/Admin/ProdProcessedCount/95/Unit
+/L6/RMH/Admin/ProdProcessedCount/94/Unit
+/L6/TEXA/Admin/ProdProcessedCount/92/Unit
+# non-count mapped tags are ignored by index reconciliation:
+/L6/BREYER/Status/MachSpeed
+/L6/BREYER/Status/StateCurrent

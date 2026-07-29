@@ -1,0 +1,45 @@
+# cpack.descriptor.yaml (CAPTURE test fixture) — a trimmed CPACK client
+# descriptor (ADR-0045 P1 shape) covering the L6 + L8 lines, the worked example
+# for the ADR-0045 P2 capture tool. L6's five members are already `confirmed`;
+# L8's four members are `inferred` (their prod count topics were unregistered,
+# so P1 could only guess). This fixture is the "expected" side; the paired
+# healthz-cpack.json + accepted-cpack.txt are the "observed" side.
+#
+# NOTE the canonical prefix is CPACK/SC (whole-plant, per #601), so an L6 member
+# local segment is /LINHAS/L6/BREYER — while the deployed agent publishes the
+# line-level suffix /L6/BREYER/... The capture tool reconciles by the trailing
+# LINE/MEMBER key (L6/BREYER), so it is robust to that prefix difference.
+
+tenant: CPACK
+enterprise_id: 3
+
+canonical:
+  prefix: CPACK/SC
+
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+equipment:
+  # ── L6 (all confirmed) — the clean, cutover-READY line ──────────────────────
+  - {topic: CPACK/SC/LINHAS/L6, id_equipment: 50, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L6/BREYER, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+  # ── L8 (all inferred) — the line the capture step must resolve ──────────────
+  - {topic: CPACK/SC/LINHAS/L8, id_equipment: 51, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L8/DXL, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/PTH, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TCX, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TEXA, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}
