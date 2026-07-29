@@ -106,9 +106,9 @@ const entityFillList = `
 	       -- summed raw — so a historical corrupt running_time (billions) or
 	       -- net>gross on ONE contributor surfaced as oee_a=38316 / oee_q>1 here.
 	       -- Bound every served factor to [0,1]; raw summed columns untouched.
-	       oee   = LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1),
-	       oee_a = LEAST(COALESCE(s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1),
-	       oee_q = LEAST(COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 1)`
+	       oee   = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1), 0),
+	       oee_q = GREATEST(LEAST(COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 1), 0)`
 
 // entityStatements builds the ordered SQL for one entity tier.
 // KEY = spec key column, TBL = grain table, SRC = source table,
@@ -150,7 +150,7 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	oeeP := func(tbl string) string {
 		return `
 	UPDATE ` + evSchema + `.` + tbl + ` e
-	   SET oee_p = LEAST(COALESCE(e.oee::float / NULLIF(e.oee_a * e.oee_q, 0), 0), 1)
+	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee::float / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
 	 WHERE NOT e.recalc_needed AND e.ts_value >= now() - interval '1 month'`
 	}
 	monthWindow := `d.ts_value >= now() - interval '1 month' AND d.ts_value <= now()`
@@ -181,16 +181,16 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	)
 	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1hour e SET
 	       gross = s.gross, net = s.net, scrap = s.scrap,
-	       oee_q = LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), -- ADR-0037 clamp (net≤gross)
+	       oee_q = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
 	       available_time = s.available_time, running_time = s.running_time,
 	       stopped_time = s.stopped_time, planned_downtime = s.planned_downtime,
 	       ideal_production = s.ideal_production,
 	       idle_time = s.idle_time, idle_starved = s.idle_starved, idle_blocked = s.idle_blocked,
 	       target = s.target, downtime = s.downtime, changeover_time = s.changeover_time,
-	       oee   = LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1), -- ADR-0037 clamp [0,1]
-	       oee_a = LEAST(COALESCE(s.running_time::float / NULLIF(s.available_time, 0), 0), 1),
-	       oee_p = LEAST(COALESCE((s.net / NULLIF(s.ideal_production, 0)) /
-	               NULLIF(s.running_time::float / NULLIF(s.available_time, 0) * (s.net::float / NULLIF(s.gross, 0)), 0), 0), 1),
+	       oee   = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1), 0), -- ADR-0037 clamp [0,1]
+	       oee_a = GREATEST(LEAST(COALESCE(s.running_time::float / NULLIF(s.available_time, 0), 0), 1), 0),
+	       oee_p = GREATEST(LEAST(COALESCE((s.net / NULLIF(s.ideal_production, 0)) /
+	               NULLIF(s.running_time::float / NULLIF(s.available_time, 0) * (s.net::float / NULLIF(s.gross, 0)), 0), 0), 1), 0),
 	       proportional_target = s.target,
 	       recalc_needed = false` + stamp("1 hour") + `
 	  FROM el

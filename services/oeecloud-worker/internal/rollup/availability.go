@@ -135,9 +135,9 @@ const hourCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), -- ADR-0037 clamp
+	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
 	       oee_a = COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0),
-	       oee_q = LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1)
+	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
@@ -197,9 +197,9 @@ const shiftCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), -- ADR-0037 clamp
+	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
 	       oee_a = COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0),
-	       oee_q = LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1),
+	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
 	       oee_p = COALESCE(
 	             COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
 	             / NULLIF(
