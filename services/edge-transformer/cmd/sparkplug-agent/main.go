@@ -50,6 +50,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/session"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tagstore"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tenantprofile"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/unmapped"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/uplink"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/outbox"
@@ -227,6 +228,21 @@ func main() {
 		Help: "Raw-tag messages dropped, by reason (queue_full|unmapped|decode_error).",
 	}, []string{"reason"})
 	reg.MustRegister(dropped)
+	// ADR-0045 P0: turn the silent unmapped-tag drop (a suffix not in raw_tag_map,
+	// so its data vanishes — the #601/onboarding failure mode) into a surfaced DQ
+	// signal: a per-segment counter + a throttled WARN + a /healthz component.
+	unmappedTags := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_unmapped_tags_total",
+		Help: "Raw tags dropped because their suffix is not in raw_tag_map, by tenant group + line/machine segment + reason. Nonzero during onboarding ⇒ a tag (often a count index) maps to nothing and its data is vanishing.",
+	}, []string{"group", "segment", "reason"})
+	reg.MustRegister(unmappedTags)
+	unmappedReporter := unmapped.New(
+		cfg.Sparkplug.GroupID,
+		unmappedTags,
+		logger,
+		getenvBool("AGENT_UNMAPPED_VERBOSE", false),
+		unmapped.DefaultLogWindow,
+	)
 	decomposed := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "sparkplug_agent_param_decomposed_total",
 		Help: "Bare-Parameter raw tags rewritten to a canonical numbered leaf, by PackML parameter id.",
@@ -332,6 +348,7 @@ func main() {
 			}
 			if _, _, ok := resolver.Resolve(t.Metric); !ok {
 				dropped.WithLabelValues("unmapped").Inc()
+				unmappedReporter.Observe(t.Metric)
 				continue
 			}
 			store.Apply(t)
@@ -361,6 +378,7 @@ func main() {
 	multi := health.NewMulti()
 	multi.Add(sub)
 	multi.Add(up)
+	multi.Add(unmappedReporter) // ADR-0045 P0: unmapped-tag DQ surface on /healthz
 	healthAddr := fmt.Sprintf(":%d", healthPort())
 	hsrv := health.New(healthAddr, multi, reg, logger)
 	hsrv.Start()
