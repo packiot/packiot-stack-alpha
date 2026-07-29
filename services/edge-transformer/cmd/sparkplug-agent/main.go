@@ -43,6 +43,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/capture"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/numeric"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawmqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
@@ -383,10 +384,46 @@ func main() {
 			Help: "HTTP raw-tag ingest requests by outcome (received|accepted|rejected_auth|rejected_scope|rejected_bad).",
 		}, []string{"outcome"})
 		reg.MustRegister(ingestOutcomes)
+
+		// ── numeric-count-index translation front-door (ADR-0045 §2.3, task #13) ──
+		// Flag-gated + additive: default OFF. ON mounts POST /v1/counters, which
+		// accepts a legacy numeric `counterData[{id,value}]` payload from a DUMB
+		// tee and translates each numeric id → a canonical rawtag using a table
+		// DERIVED from this agent's finalized raw_tag_map (every count leaf
+		// `.../<X>Count/<idx>/Unit` yields idx→suffix). This is the stack-side
+		// "proper translation layer" for bispharma/bisnago-class counters-only
+		// tenants. A skewed/empty table is fatal here (fail-closed: a numeric
+		// tenant with nothing to translate is a misconfiguration, not a silent
+		// no-op).
+		var translator *numeric.Translator
+		var numericUnmapped prometheus.Counter
+		if getenvBool("AGENT_NUMERIC_INGEST_ENABLED", false) {
+			byIndex, err := numeric.BuildIndexFromTagMap(cfg.RawTagMap)
+			if err != nil {
+				logger.Error("numeric translation table", "err", err)
+				os.Exit(1)
+			}
+			if len(byIndex) == 0 {
+				logger.Error("AGENT_NUMERIC_INGEST_ENABLED=true but no count-leaf metrics in raw_tag_map — nothing to translate",
+					"tags", len(cfg.RawTagMap))
+				os.Exit(1)
+			}
+			translator = numeric.NewTranslator(byIndex)
+			numericUnmapped = prometheus.NewCounter(prometheus.CounterOpts{
+				Name: "sparkplug_agent_numeric_unmapped_total",
+				Help: "Legacy numeric count ids received on /v1/counters that matched no canonical metric (onboarding DQ).",
+			})
+			reg.MustRegister(numericUnmapped)
+			logger.Info("numeric-count-index translation enabled",
+				"count_indices", translator.Len())
+		}
+
 		hi := httpingest.New(httpingest.Config{
-			APIKey:       key,
-			ScopeGroup:   cfg.Sparkplug.GroupID, // agent serves exactly one tenant
-			MaxBodyBytes: int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
+			APIKey:          key,
+			ScopeGroup:      cfg.Sparkplug.GroupID, // agent serves exactly one tenant
+			MaxBodyBytes:    int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
+			Numeric:         translator,
+			NumericUnmapped: numericUnmapped,
 		}, ingest, ingestOutcomes, logger)
 		ingestAddr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 		ingestSrv = &http.Server{Addr: ingestAddr, Handler: hi.Handler()}
