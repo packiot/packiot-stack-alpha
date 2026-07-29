@@ -1,0 +1,87 @@
+# incoplast.descriptor.yaml — INCOPLAST CLIENT DESCRIPTOR (ADR-0045 P1, the SSoT).
+#
+# WHAT THIS IS
+# ------------
+# The config-as-data descriptor for Incoplast (Copobras, São Ludgero). From this
+# single file `cmd/onboard-gen` emits the four onboarding artifacts (profile /
+# packml_register SQL / agent client.yaml / Node-RED tee) — none hand-edited.
+# Incoplast is a full-SparkPlug/PackML tenant (S7 PLCs → SparkPlug), NOT a
+# numeric-counter tenant like bispharma — so its count leaves carry real metric
+# names, no numeric translation layer.
+#
+# ⚠️ STATUS: DRAFT (describe phase). The IDENTITY + TOPOLOGY below are
+# CONFIRMED-FROM-REGISTER — reverse-engineered from the LIVE staging ent-4
+# packml_register (Incoplast has been validated live since Session 78), so the
+# generated register SQL matches production reality. The METRIC TEMPLATES and
+# per-member COUNT INDICES are marked `confidence: inferred` — they are the
+# platform-standard defaults, NOT yet confirmed against Incoplast's real
+# SparkPlug leaves. Confirm them via a live-tee CAPTURE (ADR-0045 P2/P3,
+# cmd/onboard-capture) or the Incoplast Node-RED flow export BEFORE `--cutover`
+# (the generator refuses cutover while any index is inferred — by design).
+#
+# Two open confirmations the capture resolves:
+#   1. count-leaf shape: indexed `/Admin/ProdProcessedCount/{idx}/Unit` (assumed
+#      here, the platform standard) vs bare `/Admin/ProdProcessedCount`.
+#   2. the real per-machine count index (an arbitrary PLC channel, #601) — the
+#      inferred values below are placeholders (= id_equipment).
+
+tenant: INCOPLAST
+enterprise_id: 4                       # staging Incoplast (ent 4); register cross-tenant guard
+
+canonical:
+  prefix: INCOPLAST/SAO_LUDGERO        # tenant_prefix — the canonical (post-fixup) head
+
+# ── raw → canonical mapping ───────────────────────────────────────────────────
+mapping:
+  count_index_default_mode: equipment_id   # fallback for any un-captured member
+  # NOTE (capture): the live register carries a 5-segment variant
+  # `.../IMPRESSAO/<MACHINE>/<MACHINE>` alongside the canonical 4-segment
+  # `.../IMPRESSAO/<MACHINE>` (the topic-shape collapse, feedback_bug_incoplast_
+  # topic_shape_mismatch). The tee's collapsed form is registered separately;
+  # this descriptor emits the canonical 4-segment machine topic. If the live tee
+  # sends the 5-seg form, add a prefix_fixup/metric_alias here once capture
+  # confirms the on-wire shape.
+  prefix_fixups: []
+  metric_aliases: []
+  parameter_aliases: []
+
+# ── canonical metric templates (DRAFT — platform standard; confirm via capture)─
+# Incoplast = 4 standalone printing machines (tp=1), no tp=3 line grouping in the
+# register. Only the member set is used. MachSpeed present (S7 speed reads → real
+# Performance, NOT counters-only). StateCurrent present (PackML status word).
+metric_templates:
+  line: []
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+# ── equipment inventory (4 machines tp=1) — CONFIRMED-FROM-REGISTER ────────────
+# id_equipment = the live staging register surrogate id. count_index.value is a
+# PLACEHOLDER (= id_equipment) marked inferred — capture confirms the real PLC
+# channel index before cutover.
+equipment:
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15, id_equipment: 990015, tp_equipment: 1, id_unit: 990015, count_index: {value: 990015, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_11, id_equipment: 990016, tp_equipment: 1, id_unit: 990016, count_index: {value: 990016, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/PRIMAFLEX_9, id_equipment: 990017, tp_equipment: 1, id_unit: 990017, count_index: {value: 990017, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/MIRAFLEX_28, id_equipment: 990018, tp_equipment: 1, id_unit: 990018, count_index: {value: 990018, confidence: inferred}}
+
+# ── sparkplug-agent wiring (→ incoplast-agent.yaml) ───────────────────────────
+agent:
+  edge_node_id: incoplast-tee          # DISTINCT edge node id
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/incoplast/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:                                # Mode-B mTLS CN=incoplast; secret refs, never values
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee snippet parameters (→ incoplast-tee-node.json) ───────────────
+tee:
+  ingest_url: "https://localhost:8444/v1/counters"   # staging ingest-shim (Incoplast front-door)
+  ingest_key_env: INCOPLAST_INGEST_KEY   # tee reads the key from env, never hardcoded
+  gateway: incoplast-edge
+  tls_insecure: true                     # staging self-signed
