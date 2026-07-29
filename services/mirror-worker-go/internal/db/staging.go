@@ -1011,8 +1011,10 @@ func (s *Staging) FanoutEventRow(ctx context.Context, stagingEqID, enterpriseID 
 	if !s.valueFanout {
 		return
 	}
-	s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
-		fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
+			fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
+	}
 	if s.shadowPool != nil {
 		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-event",
 			fmt.Sprintf(sqlInsertShadowEvent, "public"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
@@ -1190,8 +1192,10 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 		return nil
 	}
 
-	if err := collect(s.pool, "shadow_go_port"); err != nil {
-		return nil, err
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		if err := collect(s.pool, "shadow_go_port"); err != nil {
+			return nil, err
+		}
 	}
 	if err := collect(s.shadowPool, "public"); err != nil {
 		return nil, err
@@ -1231,8 +1235,10 @@ func (s *Staging) CountShadowOpenStrands(ctx context.Context, enterpriseID, olde
 		out[plane] = n
 		return nil
 	}
-	if err := count(s.pool, "f2", "shadow_go_port"); err != nil {
-		return nil, err
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		if err := count(s.pool, "f2", "shadow_go_port"); err != nil {
+			return nil, err
+		}
 	}
 	if err := count(s.shadowPool, "f3", "public"); err != nil {
 		return nil, err

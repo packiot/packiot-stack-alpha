@@ -1169,6 +1169,15 @@ services:
       # shadow write failures never fail the Flow 1 write; watch
       # mirror_worker_value_fanout_total{outcome!="ok"}.
       SHADOW_VALUE_FANOUT: "true"
+      # ADR-0032 Step 5 (F3 collapse): stop fanning the F2 (shadow_go_port)
+      # leg. The flip (#652) is live — reads are on F3 (REFDATA_FLOW=f3),
+      # SHADOW_EMIT_PRODUCTION=false, the comparator is off (parity was drift=0),
+      # so shadow_go_port is dead scaffolding. false ⇒ the mirror fans ONLY F3
+      # (packiot_shadow), so shadow_go_port stops receiving writes and can be
+      # frozen + dropped. Reversible: unset (default true) + redeploy → F2
+      # fan-out resumes. Pairs with the complete-gate code fix (FanoutEventRow +
+      # comparator legs now also honor this).
+      SHADOW_FANOUT_F2: "false"
       POSTGRES_SHADOW_DB_NAME: packiot_shadow
       # Direct to postgres — pgbouncer's static database list doesn't
       # include packiot_shadow (same bypass shadow-mirror uses).
