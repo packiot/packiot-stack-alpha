@@ -67,6 +67,14 @@ func (d *Descriptor) InferredMembers() []string {
 		if e.CountIndex != nil && e.CountIndex.Confidence == ConfidenceInferred {
 			out = append(out, e.Topic)
 		}
+		// A line whose count roles are still inferred is no more cutover-eligible
+		// than a member — one inferred role gates the whole line.
+		for _, r := range e.LineRoles {
+			if r.Confidence == ConfidenceInferred {
+				out = append(out, e.Topic)
+				break
+			}
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -90,6 +98,11 @@ func (d *Descriptor) InferredIndices() []InferredIndex {
 	for _, e := range d.Equipment {
 		if e.CountIndex != nil && e.CountIndex.Confidence == ConfidenceInferred {
 			out = append(out, InferredIndex{Topic: e.Topic, Index: e.CountIndex.Value})
+		}
+		for _, r := range e.LineRoles {
+			if r.Confidence == ConfidenceInferred {
+				out = append(out, InferredIndex{Topic: e.Topic, Index: r.CountIndex})
+			}
 		}
 	}
 	return out
@@ -233,8 +246,37 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 				Type:         m.Type,
 			})
 		}
+		// A line's line_roles add indexed count leaves the class template can't
+		// (the line templates are bare/non-routable). Each becomes a numeric-
+		// routable suffix `<seg>/Admin/Prod<Role>Count/<idx>/Unit` so the tee's
+		// gross/net channels land on THIS line's id_equipment.
+		for _, m := range lineRoleMetrics(seg, e.LineRoles) {
+			cfg.RawTagMap = append(cfg.RawTagMap, m)
+		}
 	}
 	return cfg, nil
+}
+
+// lineRoleMetrics expands a line's line_roles into indexed count-leaf tag-map
+// entries. seg is the line's local segment (prefix already stripped). The leaf
+// shape `/Admin/Prod<Role>Count/<idx>/Unit` matches the member count template so
+// numeric.countIndexOf routes the tee's <idx> channel onto it and the
+// oeecloud-worker classifier assigns the same role a member of that role gets.
+// Type is "double" to match the count templates. Validate() has already checked
+// the roles + index uniqueness, so this is a pure expansion.
+func lineRoleMetrics(seg string, roles []LineRole) []agentcfg.TagMapEntry {
+	if len(roles) == 0 {
+		return nil
+	}
+	out := make([]agentcfg.TagMapEntry, 0, len(roles))
+	for _, r := range roles {
+		leaf := lineRoleLeaf[r.Role] // validated present
+		out = append(out, agentcfg.TagMapEntry{
+			MetricSuffix: fmt.Sprintf("%s/Admin/%s/%d/Unit", seg, leaf, r.CountIndex),
+			Type:         "double",
+		})
+	}
+	return out
 }
 
 // GenerateTeeSnippet builds the Node-RED tee flow (artifact 4): a raw SparkPlug
