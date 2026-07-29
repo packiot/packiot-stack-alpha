@@ -89,9 +89,11 @@ const grainRollupSQL = `
 	       downtime        = COALESCE(s.downtime, 0),
 	       changeover_time = COALESCE(s.changeover_time, 0),
 	       recalc_needed   = false,
-	       oee   = COALESCE(s.net / NULLIF(s.ideal_production, 0), 0),
-	       oee_a = COALESCE(s.running_time / NULLIF(s.total_time - s.planned_downtime, 0), 0),
-	       oee_q = COALESCE(s.net / NULLIF(s.gross, 0), 0),
+	       -- ADR-0037 output-invariant clamp (#576 extended): bound every served
+	       -- OEE factor to [0,1] (week/month grain summed raw before).
+	       oee   = LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1),
+	       oee_a = LEAST(COALESCE(s.running_time / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1),
+	       oee_q = LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1),
 	       -- ADR-0036 §5A lineage stamp (T0-2). Folded directly here (grains
 	       -- has no ForParity accessor, so this never reaches the prod
 	       -- comparator). ts_value is DATE → cast; %[4]s is the grain unit
@@ -106,7 +108,7 @@ const grainRollupSQL = `
 // where the week→1month amber bug lives, verbatim).
 const grainOeePSQL = `
 	UPDATE %[1]s.%[3]s e
-	   SET oee_p = COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0)
+	   SET oee_p = LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1)
 	  FROM (SELECT d.id_equipment, d.ts_value FROM %[1]s.%[4]s d
 	         WHERE d.recalc_needed = false
 	           AND d.ts_value >= now() - interval '1 year') el
