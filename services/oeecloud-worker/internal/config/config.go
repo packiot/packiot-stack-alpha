@@ -267,11 +267,23 @@ type Config struct {
 	// internal/rollup/inferspeed.go for the estimator + guardrail derivation.
 	// engaged() requires Enabled && at least one opted-in id_equipment.
 	ProvisionalSpeedEnabled     bool
-	ProvisionalSpeedEquipments  string // CSV of id_equipment (opted-in tp=3 lines; config.CSVInts)
-	ProvisionalSpeedWindowHours int    // trailing observation window (default 72)
-	ProvisionalSpeedMinMinutes  int    // require >= this many productive minutes before writing (default 240)
+	ProvisionalSpeedEquipments  string  // CSV of id_equipment (opted-in tp=3 lines; config.CSVInts)
+	ProvisionalSpeedWindowHours int     // trailing observation window (default 72)
+	ProvisionalSpeedMinMinutes  int     // require >= this many productive minutes before writing (default 240)
 	ProvisionalSpeedPercentile  float64 // percentile_cont fraction (default 0.95)
 	ProvisionalSpeedFloor       float64 // skip if the percentile < this (default 1.0)
+
+	// ── Bronze raw append (ADR-0036 B1 medallion dual-write) ─────────────
+	// When enabled, ALONGSIDE each merged equipment_values UPSERT (and each
+	// equipment_events mint) the writer ALSO appends the raw sample to the
+	// immutable Bronze landing zone (equipment_values_raw / equipment_events_raw)
+	// with NO ON CONFLICT (every sample kept as its own source_seq row) and NO
+	// sub-second truncation (original precision retained). The merged UPSERT is
+	// unchanged — Bronze is a pure side-append. Default OFF → the raw INSERT is
+	// never queued, so behavior is byte-identical (the F2↔F3 identity comparator
+	// holds). Enable only where the *_raw hypertables exist in the target
+	// schema/DB (currently packiot_shadow.public) — a separate gated step.
+	BronzeRawAppend bool
 }
 
 func Load() (*Config, error) {
@@ -359,6 +371,8 @@ func Load() (*Config, error) {
 		ProvisionalSpeedMinMinutes:  getenvInt("PROVISIONAL_SPEED_MIN_MINUTES", 240),
 		ProvisionalSpeedPercentile:  getenvFloat("PROVISIONAL_SPEED_PERCENTILE", 0.95),
 		ProvisionalSpeedFloor:       getenvFloat("PROVISIONAL_SPEED_FLOOR", 1.0),
+		// Bronze raw append (ADR-0036 B1) — default OFF → byte-identical no-op.
+		BronzeRawAppend: getenv("BRONZE_RAW_APPEND", "false") == "true",
 	}, nil
 }
 

@@ -224,6 +224,15 @@ func main() {
 			slog.Int("min_dt_seconds", cfg.IncrementSanityClampMinDtSec))
 	}
 
+	// ADR-0036 B1 medallion Bronze dual-write (BRONZE_RAW_APPEND). Default OFF →
+	// no _raw INSERT is ever queued, so the writer is byte-identical. When on,
+	// every merged equipment_values UPSERT (and event mint) is shadowed by an
+	// append-only INSERT into the immutable equipment_values_raw/_events_raw.
+	equipmentValuesWriter.SetBronzeRawAppend(cfg.BronzeRawAppend)
+	if cfg.BronzeRawAppend {
+		logger.Info("Bronze raw append ENABLED (ADR-0036 B1) — dual-write to *_raw immutable landing zone")
+	}
+
 	mx := metrics.New()
 	// One observer for every scheduled job → jobs_ticks_total{job,outcome}.
 	jobObs := func(job, outcome string) { mx.JobTicks.WithLabelValues(job, outcome).Inc() }
