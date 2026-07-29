@@ -13,7 +13,7 @@
         "current": {
           "selected": false,
           "text": "Packiot PostgreSQL",
-          "value": "packiot-postgres"
+          "value": "packiot-postgres-shadow"
         },
         "hide": 0,
         "includeAll": false,
