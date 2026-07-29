@@ -10,6 +10,10 @@ terraform/production/*.tfplan
 __pycache__/
 *.pyc
 
+# Node dependencies — any service's installed deps (e.g. services/cognito-user-migration).
+# Never committed; restored via `npm ci`.
+node_modules/
+
 # LaTeX / Pandoc presentation build artifacts.
 # `presentation/` is a working scratch dir for slide decks; not part of the stack.
 presentation/
