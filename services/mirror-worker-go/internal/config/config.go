@@ -50,7 +50,11 @@ type Config struct {
 	// the shadow pool — pgbouncer's static database list doesn't include
 	// packiot_shadow, so staging passes the DB EC2 address directly.
 	ShadowValueFanout bool
-	ShadowDBName      string
+	// ShadowFanoutF2 gates the F2 (shadow_go_port) leg of the fan-out (ADR-0032
+	// collapse). Default true = fan both F2+F3; false = fan ONLY F3 so
+	// shadow_go_port can be frozen + dropped. Only meaningful when ShadowValueFanout.
+	ShadowFanoutF2 bool
+	ShadowDBName   string
 	ShadowDBHost      string
 
 	// Event-event interval-overlap matcher thresholds (Phase A4b).
@@ -276,6 +280,7 @@ func Load() (*Config, error) {
 		PerPostDelayMs:        getenvInt("PER_POST_DELAY_MS", 50),
 		StagingAPIBaseURL:     getenv("STAGING_API_URL", "http://edge-api:8080"),
 		ShadowValueFanout:     getenvBool("SHADOW_VALUE_FANOUT", false),
+		ShadowFanoutF2:        getenvBool("SHADOW_FANOUT_F2", true),
 		ShadowDBName:          getenv("POSTGRES_SHADOW_DB_NAME", ""),
 		ShadowDBHost:          getenv("SHADOW_DB_HOST", ""),
 		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
