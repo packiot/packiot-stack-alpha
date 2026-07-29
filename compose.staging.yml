@@ -1387,7 +1387,9 @@ services:
       # oee). This is the transitional leg — the forward unified path (all tenants via
       # transformer + S7 → oee) is post-flip onboarding (S1). Reversible.
       LEGACY_INGEST_ENABLED: "true"
-      BAKE_COMPARATOR_ENABLED: "true"
+      # ADR-0032 Step 2 (F3 collapse): comparator has served its purpose (48h
+      # bake, drift 0) — silence it. Reversible: "true" + redeploy.
+      BAKE_COMPARATOR_ENABLED: "false"
       # Per-tenant surface bake (ADR-0022). First id = the frozen CPACK gate
       # (verbatim SQL, byte-identical flip signal); additional ids run scoped.
       # Incoplast (enterprise 4) validated F1<->F3 on its own series without
@@ -1488,6 +1490,10 @@ services:
       # queue via packml_register tenant discovery (lower(split_part(topic,'/',1))).
       EXCHANGE: oee
       ROUTING_KEY: sparkplug.data.incoplast
+      # ADR-0032 Step 4 (F3 collapse): fan Incoplast to the refactored (F3) flow
+      # ONLY. The stale default is "legacy"/F1 — without this, Incoplast collapses
+      # to F1, not F3. Reversible: remove/redeploy restores the default.
+      FANOUT_SOURCE_TYPES: refactored
       # Scope guard: only payloads whose topic/group first segment is
       # INCOPLAST (case-insensitive) are admitted; everything else → 403.
       SCOPE_GROUP: INCOPLAST
@@ -1593,7 +1599,10 @@ services:
       AMQP_SOURCE_ENABLED: "false"
       # Triple-emit: "" (F1 production route) + go + refactored — one
       # source feeds all flows; the bake stays same-reality.
-      SHADOW_EMIT_PRODUCTION: "true"
+      # ADR-0032 Step 4 (F3 collapse): stop the F1 production leg. Reads are
+      # already on F3 (REFDATA_FLOW=f3), so F3 becomes sole telemetry-compute.
+      # Reversible: set back to "true" + redeploy → F1 resumes.
+      SHADOW_EMIT_PRODUCTION: "false"
       MQTT_BROKER_URL: "tcp://mosquitto:1883"
       MQTT_CLIENT_ID: "edge-transformer-staging"
       MQTT_USERNAME: ""
@@ -1628,7 +1637,10 @@ services:
       # (shadow_go_port comparison shadow) was hardcoded-always-on. Now gated —
       # default "true" (no change). Set "false" to STOP emitting the F2 leg when
       # collapsing to single-flow F3 (reversible: set back to "true" + redeploy).
-      SHADOW_EMIT_GO: "true"
+      # ADR-0032 Step 3 (F3 collapse): stop the F2 "go" comparison leg
+      # (shadow_go_port — pure validation shadow, zero product consumer).
+      # Reversible: "true" + redeploy.
+      SHADOW_EMIT_GO: "false"
       # #276 Phase-4 Calc CUTOVER (PR #450, merged flag-OFF): flip the F3
       # (source_type="refactored") emit from raw cumulative counters to the
       # Calc port's delta+cumulative shape (Value=delta, Counter=cumulative —
