@@ -1,0 +1,13 @@
+{
+  "group_id": "BISNAGO",
+  "edge_node_id": "bisnago-tee",
+  "devices": [
+    {
+      "device_key": "BISNAGO-SP-LINHAS-L71",
+      "metrics": [
+        { "name": "L71/gross", "alias": 670, "datatype": "Int64", "counter_role": "gross", "source_ref": "idx:671" },
+        { "name": "L71/net",   "alias": 671, "datatype": "Int64", "counter_role": "net",   "source_ref": "idx:670" }
+      ]
+    }
+  ]
+}
