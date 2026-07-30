@@ -1606,6 +1606,17 @@ services:
       PREFETCH: "50"
       HEALTH_PORT: "9102"   # deliberately NOT 9101 — oeecloud-worker owns that
       CLIENT_YAML_PATH: /etc/packiot/client.yaml
+      # ── ADR-0046 birth-bound routing wiring (resolver ON, routing OFF) ────────
+      # The refdata resolver is wired but INERT until BIRTH_BOUND_ROUTING flips on
+      # — the resolver is only consulted on the birth-bound path. Safe no-op today.
+      # resolve-by-device_key (globally unique) → no BIRTH_BOUND_ENTERPRISE_ID.
+      BIRTH_BOUND_RESOLVER: refdata
+      REFDATA_URL: http://refdata-api:9104
+      REFDATA_INTERNAL_KEY: ${INTERNAL_API_KEY:-}
+      # THE FLIP (per-tenant, after INTERNAL_API_KEY is set + resolver smoke-tested):
+      #   plc-sim EMIT_DEFINITIVE_BIRTH=true  +  edge-transformer BIRTH_BOUND_ROUTING=true
+      # → observe CPACK counters keep flowing on F3 (equivalence proven, #672).
+      # Default OFF today: BIRTH_BOUND_ROUTING unset ⇒ legacy name-parse path, no change.
       # ADR-0010 Phase 2 MQTT subscriber — turned ON in staging for the
       # end-to-end shadow-mode test. Default remains false in code (P0-safe).
       # ADR-0011 rule 4: /healthz will surface degraded state when the
@@ -1828,6 +1839,11 @@ services:
       # dataset's SQL to packiot_shadow objects. Flip to f3 only after that lands
       # and the per-dataset F3 parity gate (ADR-0032 §6 Step 1) is green.
       REFDATA_FLOW: f3
+      # ADR-0046 #19a: the internal device_key→id_equipment resolver endpoint
+      # (GET /internal/resolve-device). Shared secret with edge-transformer's
+      # REFDATA_INTERNAL_KEY. Empty ⇒ endpoint fail-closed/inert (401) — set
+      # INTERNAL_API_KEY in /opt/packiot/.env before the birth-bound flip.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
       DB_NAME_F3: packiot_shadow
       HEALTH_PORT: "9104"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; a /v1 read
