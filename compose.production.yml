@@ -915,7 +915,10 @@ services:
       # ⚠ FILL AT DEPLOY: replace with the real per-client client.yaml
       # (docs/clients/<client>.yaml, ADR-0004). The example is mounted so the
       # container boots during the dry-run phase.
-      - ./docs/clients/cpack.example.yaml:/etc/packiot/client.yaml:ro
+      # ADR-0004: real per-client client.yaml (tenant_id: cpack) — CPACK onboarded
+      # to new-prod (topology seeded ent-3). Was cpack.example.yaml (no tenant_id,
+      # dry-run placeholder) → edge-transformer rejected it. Now the live tenant config.
+      - ./docs/clients/cpack.yaml:/etc/packiot/client.yaml:ro
       - edge_transformer_outbox:/var/lib/edge-transformer
     networks:
       packiot-net:
