@@ -151,6 +151,27 @@ type Config struct {
 	// when the flag is on (explicit opt-in, never guessed).
 	CountersOnlyIdealRates map[string]float64
 
+	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
+	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
+	// — properties["counter_role"] + device_key → id_equipment via
+	// packml_register — and cached as (edge_node, alias) → (id_equipment, role).
+	// On DDATA a bound alias routes DIRECTLY to Calc with NO metric-name string
+	// parsing; an unbound alias fails closed (rebirth + drop, ADR-0042). OFF
+	// (default) keeps the legacy string-parse path byte-identical — a no-op
+	// deploy. Mirrors the SHADOW_EMIT_*/CALC_CUTOVER_* reversible-flip discipline.
+	BirthBoundRouting bool
+	// BirthBoundDeviceMap is the operator-supplied device_key → id_equipment
+	// resolver used by the birth binder. It is the INTERIM edge seam (like
+	// COUNTERS_ONLY_IDEAL_RATES) until edge-transformer can resolve device_key
+	// against packml_register directly — the transformer has no DB pool today,
+	// and the current packml_register keys on packml_topic (slash-delimited),
+	// NOT the ADR-0046 device_key (hyphen-delimited), so no automatic mapping is
+	// invented here. Parsed from JSON env BIRTH_BOUND_DEVICE_MAP, e.g.
+	//   {"CPACK-SC-LINHAS-L5":40004,"CPACK-SC-LINHAS-L5-BREYER":40010}
+	// A device_key absent from this map does NOT resolve → its counters fail
+	// closed (explicit config, never guessed).
+	BirthBoundDeviceMap map[string]int
+
 	// ADR-0011 P2 outbox — store-and-forward between decode and publish.
 	// When enabled, decoded Sparkplug DATA envelopes get written to a
 	// SQLite outbox before publishing. A separate drain goroutine
@@ -253,6 +274,10 @@ func Load() (*Config, error) {
 		CountersOnlyEnabled:    getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
 		CountersOnlyIdealRates: getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
 
+		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
+		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),
+		BirthBoundDeviceMap: getenvIntMap("BIRTH_BOUND_DEVICE_MAP"),
+
 		// ADR-0011 P2 outbox
 		OutboxEnabled: getenvBool("OUTBOX_ENABLED", false),
 		OutboxPath:    getenv("OUTBOX_PATH", "/var/lib/edge-transformer/outbox.db"),
@@ -326,6 +351,22 @@ func getenvFloatMap(name string) map[string]float64 {
 		// is simply inert (no equipment opted in). Ops see it via the startup
 		// log line that reports the parsed entry count.
 		return map[string]float64{}
+	}
+	return out
+}
+
+// getenvIntMap parses a JSON object of string→integer from an env var into a
+// map[string]int. Unset/empty/malformed → an empty (non-nil) map so callers
+// index safely. Used for the birth-bound device_key → id_equipment seam
+// (BIRTH_BOUND_DEVICE_MAP).
+func getenvIntMap(name string) map[string]int {
+	out := map[string]int{}
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(v), &out); err != nil {
+		return map[string]int{}
 	}
 	return out
 }
