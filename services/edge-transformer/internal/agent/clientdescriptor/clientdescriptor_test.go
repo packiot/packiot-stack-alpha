@@ -170,12 +170,17 @@ func TestGenerateRegisterSQL(t *testing.T) {
 	if !strings.Contains(sql, "ON CONFLICT (packml_topic) DO NOTHING;") {
 		t.Error("register SQL must be idempotent on the packml_topic unique key")
 	}
-	// A line (tp=3) → id_unit NULL; a member (tp=1) → id_unit = its id.
-	if !strings.Contains(sql, "(3, 47, 'CPACK/SC/LINHAS/L5', true, NULL)") {
-		t.Errorf("expected L5 line row with NULL id_unit; got:\n%s", sql)
+	// The INSERT must carry the device_key column (ADR-0046 §2 declared identity).
+	if !strings.Contains(sql, "device_key)") {
+		t.Errorf("register INSERT must include the device_key column; got:\n%s", sql)
 	}
-	if !strings.Contains(sql, "(3, 53, 'CPACK/SC/LINHAS/L5/BREYER', true, 53)") {
-		t.Errorf("expected L5/BREYER member row id_unit=53; got:\n%s", sql)
+	// A line (tp=3) → id_unit NULL; a member (tp=1) → id_unit = its id. Each row now
+	// ends with the resolved device_key (dash form of the topic).
+	if !strings.Contains(sql, "(3, 47, 'CPACK/SC/LINHAS/L5', true, NULL, 'CPACK-SC-LINHAS-L5')") {
+		t.Errorf("expected L5 line row with NULL id_unit + device_key; got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "(3, 53, 'CPACK/SC/LINHAS/L5/BREYER', true, 53, 'CPACK-SC-LINHAS-L5-BREYER')") {
+		t.Errorf("expected L5/BREYER member row id_unit=53 + device_key; got:\n%s", sql)
 	}
 	// One VALUES row per equipment.
 	rows := strings.Count(sql, "true,")
@@ -311,5 +316,35 @@ func TestValidate_RejectsBadDescriptor(t *testing.T) {
 	d.Equipment[1].CountIndex = &bad
 	if err := d.Validate(); err == nil {
 		t.Error("bad count_index.confidence must be rejected")
+	}
+
+	// device_key with an illegal char (a "/" — it must be the flat identity).
+	d = *base
+	d.Equipment = append([]Equipment(nil), base.Equipment...)
+	d.Equipment[0].DeviceKey = "CPACK/SC/BAD"
+	if err := d.Validate(); err == nil {
+		t.Error("device_key with '/' must be rejected (flat identity, not a topic)")
+	}
+
+	// Duplicate DECLARED device_key across two equipment.
+	d = *base
+	d.Equipment = append([]Equipment(nil), base.Equipment...)
+	d.Equipment[0].DeviceKey = "DUPKEY"
+	d.Equipment[1].DeviceKey = "DUPKEY"
+	if err := d.Validate(); err == nil {
+		t.Error("duplicate device_key across equipment must be rejected")
+	}
+}
+
+// TestResolvedDeviceKey pins the declared-else-derived rule: a declared key is
+// returned verbatim; an absent one is the dash-joined topic (the fixture form).
+func TestResolvedDeviceKey(t *testing.T) {
+	declared := Equipment{Topic: "CPACK/SC/LINHAS/L5/BREYER", DeviceKey: "CUSTOM-KEY"}
+	if got := declared.ResolvedDeviceKey(); got != "CUSTOM-KEY" {
+		t.Errorf("declared device_key: got %q, want CUSTOM-KEY", got)
+	}
+	derived := Equipment{Topic: "CPACK/SC/LINHAS/L5/BREYER"}
+	if got := derived.ResolvedDeviceKey(); got != "CPACK-SC-LINHAS-L5-BREYER" {
+		t.Errorf("derived device_key: got %q, want CPACK-SC-LINHAS-L5-BREYER", got)
 	}
 }

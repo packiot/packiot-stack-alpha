@@ -82,85 +82,85 @@ metric_templates:
 # unwired) channels 545/547/550 are intentionally NOT registered.
 equipment:
   # ── L01  (PLC 192.168.5.3, rack0/slot2, 30s cycle)  flow node: 'counters L01' ──
-- {topic: BISPHARMA/SP/LINHAS/L01, id_equipment: 40001, tp_equipment: 3, line_roles: [{role: consumed, count_index: 168, confidence: confirmed}, {role: processed, count_index: 169, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L01/S3, id_equipment: 40101, tp_equipment: 1, id_unit: 40101, count_index: {value: 164, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L01/S4, id_equipment: 40102, tp_equipment: 1, id_unit: 40102, count_index: {value: 165, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L01/S5, id_equipment: 40103, tp_equipment: 1, id_unit: 40103, count_index: {value: 166, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L01/S6_OUTPUT, id_equipment: 40104, tp_equipment: 1, id_unit: 40104, count_index: {value: 167, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L03, id_equipment: 40002, tp_equipment: 3, line_roles: [{role: consumed, count_index: 311, confidence: confirmed}, {role: processed, count_index: 312, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L03/S3, id_equipment: 40107, tp_equipment: 1, id_unit: 40107, count_index: {value: 307, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L03/S4, id_equipment: 40108, tp_equipment: 1, id_unit: 40108, count_index: {value: 308, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L03/S5, id_equipment: 40109, tp_equipment: 1, id_unit: 40109, count_index: {value: 309, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L03/S6_OUTPUT, id_equipment: 40110, tp_equipment: 1, id_unit: 40110, count_index: {value: 310, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L04, id_equipment: 40003, tp_equipment: 3, line_roles: [{role: consumed, count_index: 318, confidence: confirmed}, {role: processed, count_index: 319, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L04/S3, id_equipment: 40113, tp_equipment: 1, id_unit: 40113, count_index: {value: 314, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L04/S4, id_equipment: 40114, tp_equipment: 1, id_unit: 40114, count_index: {value: 315, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L04/S5, id_equipment: 40115, tp_equipment: 1, id_unit: 40115, count_index: {value: 316, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L04/S6_OUTPUT, id_equipment: 40116, tp_equipment: 1, id_unit: 40116, count_index: {value: 317, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L05, id_equipment: 40004, tp_equipment: 3, line_roles: [{role: consumed, count_index: 628, confidence: confirmed}, {role: processed, count_index: 629, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L05/S3, id_equipment: 40119, tp_equipment: 1, id_unit: 40119, count_index: {value: 624, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L05/S4, id_equipment: 40120, tp_equipment: 1, id_unit: 40120, count_index: {value: 625, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L05/S5, id_equipment: 40121, tp_equipment: 1, id_unit: 40121, count_index: {value: 626, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L05/S6_OUTPUT, id_equipment: 40122, tp_equipment: 1, id_unit: 40122, count_index: {value: 627, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L06, id_equipment: 40005, tp_equipment: 3, line_roles: [{role: consumed, count_index: 261, confidence: confirmed}, {role: processed, count_index: 262, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L06/S3, id_equipment: 40125, tp_equipment: 1, id_unit: 40125, count_index: {value: 257, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L06/S4, id_equipment: 40126, tp_equipment: 1, id_unit: 40126, count_index: {value: 258, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L06/S5, id_equipment: 40127, tp_equipment: 1, id_unit: 40127, count_index: {value: 259, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L06/S6_OUTPUT, id_equipment: 40128, tp_equipment: 1, id_unit: 40128, count_index: {value: 260, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L07, id_equipment: 40006, tp_equipment: 3, line_roles: [{role: consumed, count_index: 324, confidence: confirmed}, {role: processed, count_index: 325, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L07/S3, id_equipment: 40131, tp_equipment: 1, id_unit: 40131, count_index: {value: 320, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L07/S4, id_equipment: 40132, tp_equipment: 1, id_unit: 40132, count_index: {value: 321, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L07/S5, id_equipment: 40133, tp_equipment: 1, id_unit: 40133, count_index: {value: 322, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L07/S6_OUTPUT, id_equipment: 40134, tp_equipment: 1, id_unit: 40134, count_index: {value: 323, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L09, id_equipment: 40007, tp_equipment: 3, line_roles: [{role: consumed, count_index: 128, confidence: confirmed}, {role: processed, count_index: 129, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L09/S3, id_equipment: 40137, tp_equipment: 1, id_unit: 40137, count_index: {value: 124, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L09/S4, id_equipment: 40138, tp_equipment: 1, id_unit: 40138, count_index: {value: 125, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L09/S5, id_equipment: 40139, tp_equipment: 1, id_unit: 40139, count_index: {value: 126, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L09/S6_OUTPUT, id_equipment: 40140, tp_equipment: 1, id_unit: 40140, count_index: {value: 127, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L11, id_equipment: 40008, tp_equipment: 3, line_roles: [{role: consumed, count_index: 174, confidence: confirmed}, {role: processed, count_index: 175, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L11/S3, id_equipment: 40143, tp_equipment: 1, id_unit: 40143, count_index: {value: 170, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L11/S4, id_equipment: 40144, tp_equipment: 1, id_unit: 40144, count_index: {value: 171, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L11/S5, id_equipment: 40145, tp_equipment: 1, id_unit: 40145, count_index: {value: 172, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L11/S6_OUTPUT, id_equipment: 40146, tp_equipment: 1, id_unit: 40146, count_index: {value: 173, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L12, id_equipment: 40009, tp_equipment: 3, line_roles: [{role: consumed, count_index: 180, confidence: confirmed}, {role: processed, count_index: 181, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L12/S3, id_equipment: 40149, tp_equipment: 1, id_unit: 40149, count_index: {value: 176, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L12/S4, id_equipment: 40150, tp_equipment: 1, id_unit: 40150, count_index: {value: 177, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L12/S5, id_equipment: 40151, tp_equipment: 1, id_unit: 40151, count_index: {value: 178, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L12/S6_OUTPUT, id_equipment: 40152, tp_equipment: 1, id_unit: 40152, count_index: {value: 179, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L13, id_equipment: 40010, tp_equipment: 3, line_roles: [{role: consumed, count_index: 305, confidence: confirmed}, {role: processed, count_index: 306, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L13/S3, id_equipment: 40155, tp_equipment: 1, id_unit: 40155, count_index: {value: 301, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L13/S4, id_equipment: 40156, tp_equipment: 1, id_unit: 40156, count_index: {value: 302, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L13/S5, id_equipment: 40157, tp_equipment: 1, id_unit: 40157, count_index: {value: 303, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L13/S6_OUTPUT, id_equipment: 40158, tp_equipment: 1, id_unit: 40158, count_index: {value: 304, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L14, id_equipment: 40011, tp_equipment: 3, line_roles: [{role: consumed, count_index: 336, confidence: confirmed}, {role: processed, count_index: 337, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L14/S3, id_equipment: 40161, tp_equipment: 1, id_unit: 40161, count_index: {value: 332, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L14/S4, id_equipment: 40162, tp_equipment: 1, id_unit: 40162, count_index: {value: 333, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L14/S5, id_equipment: 40163, tp_equipment: 1, id_unit: 40163, count_index: {value: 334, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L14/S6_OUTPUT, id_equipment: 40164, tp_equipment: 1, id_unit: 40164, count_index: {value: 335, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L16, id_equipment: 40012, tp_equipment: 3, line_roles: [{role: consumed, count_index: 186, confidence: confirmed}, {role: processed, count_index: 187, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L16/S3, id_equipment: 40167, tp_equipment: 1, id_unit: 40167, count_index: {value: 182, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L16/S4, id_equipment: 40168, tp_equipment: 1, id_unit: 40168, count_index: {value: 183, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L16/S5, id_equipment: 40169, tp_equipment: 1, id_unit: 40169, count_index: {value: 184, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L16/S6_OUTPUT, id_equipment: 40170, tp_equipment: 1, id_unit: 40170, count_index: {value: 185, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L18, id_equipment: 40013, tp_equipment: 3}
-- {topic: BISPHARMA/SP/LINHAS/L18/PRENSA, id_equipment: 40173, tp_equipment: 1, id_unit: 40173, count_index: {value: 543, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L18/TORNO, id_equipment: 40174, tp_equipment: 1, id_unit: 40174, count_index: {value: 544, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L18/ACUMULADOR, id_equipment: 40175, tp_equipment: 1, id_unit: 40175, count_index: {value: 546, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L18/IMPRESSAO, id_equipment: 40176, tp_equipment: 1, id_unit: 40176, count_index: {value: 548, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L18/TAMPADEIRA, id_equipment: 40177, tp_equipment: 1, id_unit: 40177, count_index: {value: 549, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L19, id_equipment: 40014, tp_equipment: 3, line_roles: [{role: consumed, count_index: 647, confidence: confirmed}, {role: processed, count_index: 648, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L19/S3, id_equipment: 40178, tp_equipment: 1, id_unit: 40178, count_index: {value: 643, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L19/S4, id_equipment: 40179, tp_equipment: 1, id_unit: 40179, count_index: {value: 644, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L19/S5, id_equipment: 40180, tp_equipment: 1, id_unit: 40180, count_index: {value: 645, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L19/S6_OUTPUT, id_equipment: 40181, tp_equipment: 1, id_unit: 40181, count_index: {value: 646, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L20, id_equipment: 40015, tp_equipment: 3, line_roles: [{role: consumed, count_index: 653, confidence: confirmed}, {role: processed, count_index: 654, confidence: confirmed}]}
-- {topic: BISPHARMA/SP/LINHAS/L20/S3, id_equipment: 40184, tp_equipment: 1, id_unit: 40184, count_index: {value: 649, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L20/S4, id_equipment: 40185, tp_equipment: 1, id_unit: 40185, count_index: {value: 650, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L20/S5, id_equipment: 40186, tp_equipment: 1, id_unit: 40186, count_index: {value: 651, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L20/S6_OUTPUT, id_equipment: 40187, tp_equipment: 1, id_unit: 40187, count_index: {value: 652, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L90, id_equipment: 40016, tp_equipment: 3}
-- {topic: BISPHARMA/SP/LINHAS/L90/S1_INFEED, id_equipment: 40190, tp_equipment: 1, id_unit: 40190, count_index: {value: 684, confidence: confirmed}}
-- {topic: BISPHARMA/SP/LINHAS/L90/S2_OUTPUT, id_equipment: 40191, tp_equipment: 1, id_unit: 40191, count_index: {value: 685, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L01, device_key: BISPHARMA-SP-LINHAS-L01, id_equipment: 40001, tp_equipment: 3, line_roles: [{role: consumed, count_index: 168, confidence: confirmed}, {role: processed, count_index: 169, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L01/S3, device_key: BISPHARMA-SP-LINHAS-L01-S3, id_equipment: 40101, tp_equipment: 1, id_unit: 40101, count_index: {value: 164, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L01/S4, device_key: BISPHARMA-SP-LINHAS-L01-S4, id_equipment: 40102, tp_equipment: 1, id_unit: 40102, count_index: {value: 165, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L01/S5, device_key: BISPHARMA-SP-LINHAS-L01-S5, id_equipment: 40103, tp_equipment: 1, id_unit: 40103, count_index: {value: 166, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L01/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L01-S6_OUTPUT, id_equipment: 40104, tp_equipment: 1, id_unit: 40104, count_index: {value: 167, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L03, device_key: BISPHARMA-SP-LINHAS-L03, id_equipment: 40002, tp_equipment: 3, line_roles: [{role: consumed, count_index: 311, confidence: confirmed}, {role: processed, count_index: 312, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L03/S3, device_key: BISPHARMA-SP-LINHAS-L03-S3, id_equipment: 40107, tp_equipment: 1, id_unit: 40107, count_index: {value: 307, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L03/S4, device_key: BISPHARMA-SP-LINHAS-L03-S4, id_equipment: 40108, tp_equipment: 1, id_unit: 40108, count_index: {value: 308, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L03/S5, device_key: BISPHARMA-SP-LINHAS-L03-S5, id_equipment: 40109, tp_equipment: 1, id_unit: 40109, count_index: {value: 309, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L03/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L03-S6_OUTPUT, id_equipment: 40110, tp_equipment: 1, id_unit: 40110, count_index: {value: 310, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L04, device_key: BISPHARMA-SP-LINHAS-L04, id_equipment: 40003, tp_equipment: 3, line_roles: [{role: consumed, count_index: 318, confidence: confirmed}, {role: processed, count_index: 319, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L04/S3, device_key: BISPHARMA-SP-LINHAS-L04-S3, id_equipment: 40113, tp_equipment: 1, id_unit: 40113, count_index: {value: 314, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L04/S4, device_key: BISPHARMA-SP-LINHAS-L04-S4, id_equipment: 40114, tp_equipment: 1, id_unit: 40114, count_index: {value: 315, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L04/S5, device_key: BISPHARMA-SP-LINHAS-L04-S5, id_equipment: 40115, tp_equipment: 1, id_unit: 40115, count_index: {value: 316, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L04/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L04-S6_OUTPUT, id_equipment: 40116, tp_equipment: 1, id_unit: 40116, count_index: {value: 317, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L05, device_key: BISPHARMA-SP-LINHAS-L05, id_equipment: 40004, tp_equipment: 3, line_roles: [{role: consumed, count_index: 628, confidence: confirmed}, {role: processed, count_index: 629, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L05/S3, device_key: BISPHARMA-SP-LINHAS-L05-S3, id_equipment: 40119, tp_equipment: 1, id_unit: 40119, count_index: {value: 624, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L05/S4, device_key: BISPHARMA-SP-LINHAS-L05-S4, id_equipment: 40120, tp_equipment: 1, id_unit: 40120, count_index: {value: 625, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L05/S5, device_key: BISPHARMA-SP-LINHAS-L05-S5, id_equipment: 40121, tp_equipment: 1, id_unit: 40121, count_index: {value: 626, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L05/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L05-S6_OUTPUT, id_equipment: 40122, tp_equipment: 1, id_unit: 40122, count_index: {value: 627, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L06, device_key: BISPHARMA-SP-LINHAS-L06, id_equipment: 40005, tp_equipment: 3, line_roles: [{role: consumed, count_index: 261, confidence: confirmed}, {role: processed, count_index: 262, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L06/S3, device_key: BISPHARMA-SP-LINHAS-L06-S3, id_equipment: 40125, tp_equipment: 1, id_unit: 40125, count_index: {value: 257, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L06/S4, device_key: BISPHARMA-SP-LINHAS-L06-S4, id_equipment: 40126, tp_equipment: 1, id_unit: 40126, count_index: {value: 258, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L06/S5, device_key: BISPHARMA-SP-LINHAS-L06-S5, id_equipment: 40127, tp_equipment: 1, id_unit: 40127, count_index: {value: 259, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L06/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L06-S6_OUTPUT, id_equipment: 40128, tp_equipment: 1, id_unit: 40128, count_index: {value: 260, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L07, device_key: BISPHARMA-SP-LINHAS-L07, id_equipment: 40006, tp_equipment: 3, line_roles: [{role: consumed, count_index: 324, confidence: confirmed}, {role: processed, count_index: 325, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L07/S3, device_key: BISPHARMA-SP-LINHAS-L07-S3, id_equipment: 40131, tp_equipment: 1, id_unit: 40131, count_index: {value: 320, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L07/S4, device_key: BISPHARMA-SP-LINHAS-L07-S4, id_equipment: 40132, tp_equipment: 1, id_unit: 40132, count_index: {value: 321, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L07/S5, device_key: BISPHARMA-SP-LINHAS-L07-S5, id_equipment: 40133, tp_equipment: 1, id_unit: 40133, count_index: {value: 322, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L07/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L07-S6_OUTPUT, id_equipment: 40134, tp_equipment: 1, id_unit: 40134, count_index: {value: 323, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L09, device_key: BISPHARMA-SP-LINHAS-L09, id_equipment: 40007, tp_equipment: 3, line_roles: [{role: consumed, count_index: 128, confidence: confirmed}, {role: processed, count_index: 129, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L09/S3, device_key: BISPHARMA-SP-LINHAS-L09-S3, id_equipment: 40137, tp_equipment: 1, id_unit: 40137, count_index: {value: 124, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L09/S4, device_key: BISPHARMA-SP-LINHAS-L09-S4, id_equipment: 40138, tp_equipment: 1, id_unit: 40138, count_index: {value: 125, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L09/S5, device_key: BISPHARMA-SP-LINHAS-L09-S5, id_equipment: 40139, tp_equipment: 1, id_unit: 40139, count_index: {value: 126, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L09/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L09-S6_OUTPUT, id_equipment: 40140, tp_equipment: 1, id_unit: 40140, count_index: {value: 127, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L11, device_key: BISPHARMA-SP-LINHAS-L11, id_equipment: 40008, tp_equipment: 3, line_roles: [{role: consumed, count_index: 174, confidence: confirmed}, {role: processed, count_index: 175, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L11/S3, device_key: BISPHARMA-SP-LINHAS-L11-S3, id_equipment: 40143, tp_equipment: 1, id_unit: 40143, count_index: {value: 170, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L11/S4, device_key: BISPHARMA-SP-LINHAS-L11-S4, id_equipment: 40144, tp_equipment: 1, id_unit: 40144, count_index: {value: 171, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L11/S5, device_key: BISPHARMA-SP-LINHAS-L11-S5, id_equipment: 40145, tp_equipment: 1, id_unit: 40145, count_index: {value: 172, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L11/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L11-S6_OUTPUT, id_equipment: 40146, tp_equipment: 1, id_unit: 40146, count_index: {value: 173, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L12, device_key: BISPHARMA-SP-LINHAS-L12, id_equipment: 40009, tp_equipment: 3, line_roles: [{role: consumed, count_index: 180, confidence: confirmed}, {role: processed, count_index: 181, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L12/S3, device_key: BISPHARMA-SP-LINHAS-L12-S3, id_equipment: 40149, tp_equipment: 1, id_unit: 40149, count_index: {value: 176, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L12/S4, device_key: BISPHARMA-SP-LINHAS-L12-S4, id_equipment: 40150, tp_equipment: 1, id_unit: 40150, count_index: {value: 177, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L12/S5, device_key: BISPHARMA-SP-LINHAS-L12-S5, id_equipment: 40151, tp_equipment: 1, id_unit: 40151, count_index: {value: 178, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L12/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L12-S6_OUTPUT, id_equipment: 40152, tp_equipment: 1, id_unit: 40152, count_index: {value: 179, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L13, device_key: BISPHARMA-SP-LINHAS-L13, id_equipment: 40010, tp_equipment: 3, line_roles: [{role: consumed, count_index: 305, confidence: confirmed}, {role: processed, count_index: 306, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L13/S3, device_key: BISPHARMA-SP-LINHAS-L13-S3, id_equipment: 40155, tp_equipment: 1, id_unit: 40155, count_index: {value: 301, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L13/S4, device_key: BISPHARMA-SP-LINHAS-L13-S4, id_equipment: 40156, tp_equipment: 1, id_unit: 40156, count_index: {value: 302, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L13/S5, device_key: BISPHARMA-SP-LINHAS-L13-S5, id_equipment: 40157, tp_equipment: 1, id_unit: 40157, count_index: {value: 303, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L13/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L13-S6_OUTPUT, id_equipment: 40158, tp_equipment: 1, id_unit: 40158, count_index: {value: 304, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L14, device_key: BISPHARMA-SP-LINHAS-L14, id_equipment: 40011, tp_equipment: 3, line_roles: [{role: consumed, count_index: 336, confidence: confirmed}, {role: processed, count_index: 337, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L14/S3, device_key: BISPHARMA-SP-LINHAS-L14-S3, id_equipment: 40161, tp_equipment: 1, id_unit: 40161, count_index: {value: 332, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L14/S4, device_key: BISPHARMA-SP-LINHAS-L14-S4, id_equipment: 40162, tp_equipment: 1, id_unit: 40162, count_index: {value: 333, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L14/S5, device_key: BISPHARMA-SP-LINHAS-L14-S5, id_equipment: 40163, tp_equipment: 1, id_unit: 40163, count_index: {value: 334, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L14/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L14-S6_OUTPUT, id_equipment: 40164, tp_equipment: 1, id_unit: 40164, count_index: {value: 335, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L16, device_key: BISPHARMA-SP-LINHAS-L16, id_equipment: 40012, tp_equipment: 3, line_roles: [{role: consumed, count_index: 186, confidence: confirmed}, {role: processed, count_index: 187, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L16/S3, device_key: BISPHARMA-SP-LINHAS-L16-S3, id_equipment: 40167, tp_equipment: 1, id_unit: 40167, count_index: {value: 182, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L16/S4, device_key: BISPHARMA-SP-LINHAS-L16-S4, id_equipment: 40168, tp_equipment: 1, id_unit: 40168, count_index: {value: 183, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L16/S5, device_key: BISPHARMA-SP-LINHAS-L16-S5, id_equipment: 40169, tp_equipment: 1, id_unit: 40169, count_index: {value: 184, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L16/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L16-S6_OUTPUT, id_equipment: 40170, tp_equipment: 1, id_unit: 40170, count_index: {value: 185, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L18, device_key: BISPHARMA-SP-LINHAS-L18, id_equipment: 40013, tp_equipment: 3}
+- {topic: BISPHARMA/SP/LINHAS/L18/PRENSA, device_key: BISPHARMA-SP-LINHAS-L18-PRENSA, id_equipment: 40173, tp_equipment: 1, id_unit: 40173, count_index: {value: 543, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L18/TORNO, device_key: BISPHARMA-SP-LINHAS-L18-TORNO, id_equipment: 40174, tp_equipment: 1, id_unit: 40174, count_index: {value: 544, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L18/ACUMULADOR, device_key: BISPHARMA-SP-LINHAS-L18-ACUMULADOR, id_equipment: 40175, tp_equipment: 1, id_unit: 40175, count_index: {value: 546, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L18/IMPRESSAO, device_key: BISPHARMA-SP-LINHAS-L18-IMPRESSAO, id_equipment: 40176, tp_equipment: 1, id_unit: 40176, count_index: {value: 548, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L18/TAMPADEIRA, device_key: BISPHARMA-SP-LINHAS-L18-TAMPADEIRA, id_equipment: 40177, tp_equipment: 1, id_unit: 40177, count_index: {value: 549, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L19, device_key: BISPHARMA-SP-LINHAS-L19, id_equipment: 40014, tp_equipment: 3, line_roles: [{role: consumed, count_index: 647, confidence: confirmed}, {role: processed, count_index: 648, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L19/S3, device_key: BISPHARMA-SP-LINHAS-L19-S3, id_equipment: 40178, tp_equipment: 1, id_unit: 40178, count_index: {value: 643, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L19/S4, device_key: BISPHARMA-SP-LINHAS-L19-S4, id_equipment: 40179, tp_equipment: 1, id_unit: 40179, count_index: {value: 644, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L19/S5, device_key: BISPHARMA-SP-LINHAS-L19-S5, id_equipment: 40180, tp_equipment: 1, id_unit: 40180, count_index: {value: 645, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L19/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L19-S6_OUTPUT, id_equipment: 40181, tp_equipment: 1, id_unit: 40181, count_index: {value: 646, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L20, device_key: BISPHARMA-SP-LINHAS-L20, id_equipment: 40015, tp_equipment: 3, line_roles: [{role: consumed, count_index: 653, confidence: confirmed}, {role: processed, count_index: 654, confidence: confirmed}]}
+- {topic: BISPHARMA/SP/LINHAS/L20/S3, device_key: BISPHARMA-SP-LINHAS-L20-S3, id_equipment: 40184, tp_equipment: 1, id_unit: 40184, count_index: {value: 649, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L20/S4, device_key: BISPHARMA-SP-LINHAS-L20-S4, id_equipment: 40185, tp_equipment: 1, id_unit: 40185, count_index: {value: 650, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L20/S5, device_key: BISPHARMA-SP-LINHAS-L20-S5, id_equipment: 40186, tp_equipment: 1, id_unit: 40186, count_index: {value: 651, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L20/S6_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L20-S6_OUTPUT, id_equipment: 40187, tp_equipment: 1, id_unit: 40187, count_index: {value: 652, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L90, device_key: BISPHARMA-SP-LINHAS-L90, id_equipment: 40016, tp_equipment: 3}
+- {topic: BISPHARMA/SP/LINHAS/L90/S1_INFEED, device_key: BISPHARMA-SP-LINHAS-L90-S1_INFEED, id_equipment: 40190, tp_equipment: 1, id_unit: 40190, count_index: {value: 684, confidence: confirmed}}
+- {topic: BISPHARMA/SP/LINHAS/L90/S2_OUTPUT, device_key: BISPHARMA-SP-LINHAS-L90-S2_OUTPUT, id_equipment: 40191, tp_equipment: 1, id_unit: 40191, count_index: {value: 685, confidence: confirmed}}
 agent:
   edge_node_id: bispharma-tee          # DISTINCT from plc-sim + every other tenant
   internal_broker: tcp://mosquitto:1883

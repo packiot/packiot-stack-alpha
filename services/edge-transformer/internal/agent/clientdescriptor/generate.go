@@ -186,7 +186,7 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 	fmt.Fprintf(&b, "-- packml_register rows for tenant %s (enterprise %d) — generated from the\n",
 		d.Tenant, d.EnterpriseID)
 	fmt.Fprintf(&b, "-- client descriptor (ADR-0045 P1). DO NOT hand-edit; edit the descriptor + regenerate.\n")
-	b.WriteString("INSERT INTO packml_register (id_enterprise, id_equipment, packml_topic, active, id_unit)\nVALUES\n")
+	b.WriteString("INSERT INTO packml_register (id_enterprise, id_equipment, packml_topic, active, id_unit, device_key)\nVALUES\n")
 	for i, e := range d.Equipment {
 		idUnit := "NULL"
 		if e.IDUnit != nil {
@@ -196,8 +196,11 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 		if i == len(d.Equipment)-1 {
 			sep = ""
 		}
-		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s)%s\n",
-			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sep)
+		// device_key is the DECLARED-else-derived stable identity (ADR-0046 §2),
+		// persisted so the register loader + birth resolution key off it instead of
+		// re-parsing the topic string.
+		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s, %s)%s\n",
+			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sqlQuote(e.ResolvedDeviceKey()), sep)
 	}
 	b.WriteString("ON CONFLICT (packml_topic) DO NOTHING;\n")
 	return b.String()
@@ -240,17 +243,23 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("synthesize %s: %w", e.Topic, err)
 		}
+		// device_key is stamped on every one of this equipment's tag-map entries so
+		// the runtime birth (session → birth.CounterMetricPropsWithDeviceKey) emits
+		// the DECLARED identity instead of re-deriving it from the metric name
+		// (ADR-0046 §2). All of an equipment's metrics share one device key.
+		dk := e.ResolvedDeviceKey()
 		for _, m := range metrics {
 			cfg.RawTagMap = append(cfg.RawTagMap, agentcfg.TagMapEntry{
 				MetricSuffix: m.Suffix,
 				Type:         m.Type,
+				DeviceKey:    dk,
 			})
 		}
 		// A line's line_roles add indexed count leaves the class template can't
 		// (the line templates are bare/non-routable). Each becomes a numeric-
 		// routable suffix `<seg>/Admin/Prod<Role>Count/<idx>/Unit` so the tee's
 		// gross/net channels land on THIS line's id_equipment.
-		for _, m := range lineRoleMetrics(seg, e.LineRoles) {
+		for _, m := range lineRoleMetrics(seg, dk, e.LineRoles) {
 			cfg.RawTagMap = append(cfg.RawTagMap, m)
 		}
 	}
@@ -264,7 +273,7 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 // oeecloud-worker classifier assigns the same role a member of that role gets.
 // Type is "double" to match the count templates. Validate() has already checked
 // the roles + index uniqueness, so this is a pure expansion.
-func lineRoleMetrics(seg string, roles []LineRole) []agentcfg.TagMapEntry {
+func lineRoleMetrics(seg, deviceKey string, roles []LineRole) []agentcfg.TagMapEntry {
 	if len(roles) == 0 {
 		return nil
 	}
@@ -274,6 +283,7 @@ func lineRoleMetrics(seg string, roles []LineRole) []agentcfg.TagMapEntry {
 		out = append(out, agentcfg.TagMapEntry{
 			MetricSuffix: fmt.Sprintf("%s/Admin/%s/%d/Unit", seg, leaf, r.CountIndex),
 			Type:         "double",
+			DeviceKey:    deviceKey,
 		})
 	}
 	return out

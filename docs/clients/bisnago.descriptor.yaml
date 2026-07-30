@@ -98,33 +98,33 @@ metric_templates:
 #   L60    192.168.7.29    0/2        DW0→682, DW4→683          41007     41113/41114
 equipment:
   # ── L71 (PLC 192.168.7.5) ──
-  - {topic: BISNAGO/SP/LINHAS/L71,       id_equipment: 41001, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L71/M670,  id_equipment: 41101, tp_equipment: 1, id_unit: 41101, count_index: {value: 670, confidence: inferred}}  # DW8
-  - {topic: BISNAGO/SP/LINHAS/L71/M671,  id_equipment: 41102, tp_equipment: 1, id_unit: 41102, count_index: {value: 671, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L71, device_key: BISNAGO-SP-LINHAS-L71,       id_equipment: 41001, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L71/M670, device_key: BISNAGO-SP-LINHAS-L71-M670,  id_equipment: 41101, tp_equipment: 1, id_unit: 41101, count_index: {value: 670, confidence: inferred}}  # DW8
+  - {topic: BISNAGO/SP/LINHAS/L71/M671, device_key: BISNAGO-SP-LINHAS-L71-M671,  id_equipment: 41102, tp_equipment: 1, id_unit: 41102, count_index: {value: 671, confidence: inferred}}  # DW0
   # ── L72 (PLC 192.168.7.9) ──
-  - {topic: BISNAGO/SP/LINHAS/L72,       id_equipment: 41002, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L72/M672,  id_equipment: 41103, tp_equipment: 1, id_unit: 41103, count_index: {value: 672, confidence: inferred}}  # DW12
-  - {topic: BISNAGO/SP/LINHAS/L72/M673,  id_equipment: 41104, tp_equipment: 1, id_unit: 41104, count_index: {value: 673, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L72, device_key: BISNAGO-SP-LINHAS-L72,       id_equipment: 41002, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L72/M672, device_key: BISNAGO-SP-LINHAS-L72-M672,  id_equipment: 41103, tp_equipment: 1, id_unit: 41103, count_index: {value: 672, confidence: inferred}}  # DW12
+  - {topic: BISNAGO/SP/LINHAS/L72/M673, device_key: BISNAGO-SP-LINHAS-L72-M673,  id_equipment: 41104, tp_equipment: 1, id_unit: 41104, count_index: {value: 673, confidence: inferred}}  # DW0
   # ── L73 (PLC 192.168.7.13) ──
-  - {topic: BISNAGO/SP/LINHAS/L73,       id_equipment: 41003, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L73/M674,  id_equipment: 41105, tp_equipment: 1, id_unit: 41105, count_index: {value: 674, confidence: inferred}}  # DW4
-  - {topic: BISNAGO/SP/LINHAS/L73/M675,  id_equipment: 41106, tp_equipment: 1, id_unit: 41106, count_index: {value: 675, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L73, device_key: BISNAGO-SP-LINHAS-L73,       id_equipment: 41003, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L73/M674, device_key: BISNAGO-SP-LINHAS-L73-M674,  id_equipment: 41105, tp_equipment: 1, id_unit: 41105, count_index: {value: 674, confidence: inferred}}  # DW4
+  - {topic: BISNAGO/SP/LINHAS/L73/M675, device_key: BISNAGO-SP-LINHAS-L73-M675,  id_equipment: 41106, tp_equipment: 1, id_unit: 41106, count_index: {value: 675, confidence: inferred}}  # DW0
   # ── L56 (PLC 192.168.7.17) ──
-  - {topic: BISNAGO/SP/LINHAS/L56,       id_equipment: 41004, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L56/M676,  id_equipment: 41107, tp_equipment: 1, id_unit: 41107, count_index: {value: 676, confidence: inferred}}  # DW0
-  - {topic: BISNAGO/SP/LINHAS/L56/M677,  id_equipment: 41108, tp_equipment: 1, id_unit: 41108, count_index: {value: 677, confidence: inferred}}  # DW4
+  - {topic: BISNAGO/SP/LINHAS/L56, device_key: BISNAGO-SP-LINHAS-L56,       id_equipment: 41004, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L56/M676, device_key: BISNAGO-SP-LINHAS-L56-M676,  id_equipment: 41107, tp_equipment: 1, id_unit: 41107, count_index: {value: 676, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L56/M677, device_key: BISNAGO-SP-LINHAS-L56-M677,  id_equipment: 41108, tp_equipment: 1, id_unit: 41108, count_index: {value: 677, confidence: inferred}}  # DW4
   # ── L57 (PLC 192.168.7.21) ──
-  - {topic: BISNAGO/SP/LINHAS/L57,       id_equipment: 41005, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L57/M678,  id_equipment: 41109, tp_equipment: 1, id_unit: 41109, count_index: {value: 678, confidence: inferred}}  # DW0
-  - {topic: BISNAGO/SP/LINHAS/L57/M679,  id_equipment: 41110, tp_equipment: 1, id_unit: 41110, count_index: {value: 679, confidence: inferred}}  # DW4
+  - {topic: BISNAGO/SP/LINHAS/L57, device_key: BISNAGO-SP-LINHAS-L57,       id_equipment: 41005, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L57/M678, device_key: BISNAGO-SP-LINHAS-L57-M678,  id_equipment: 41109, tp_equipment: 1, id_unit: 41109, count_index: {value: 678, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L57/M679, device_key: BISNAGO-SP-LINHAS-L57-M679,  id_equipment: 41110, tp_equipment: 1, id_unit: 41110, count_index: {value: 679, confidence: inferred}}  # DW4
   # ── L58 (PLC 192.168.7.25) ──
-  - {topic: BISNAGO/SP/LINHAS/L58,       id_equipment: 41006, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L58/M680,  id_equipment: 41111, tp_equipment: 1, id_unit: 41111, count_index: {value: 680, confidence: inferred}}  # DW0
-  - {topic: BISNAGO/SP/LINHAS/L58/M681,  id_equipment: 41112, tp_equipment: 1, id_unit: 41112, count_index: {value: 681, confidence: inferred}}  # DW4
+  - {topic: BISNAGO/SP/LINHAS/L58, device_key: BISNAGO-SP-LINHAS-L58,       id_equipment: 41006, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L58/M680, device_key: BISNAGO-SP-LINHAS-L58-M680,  id_equipment: 41111, tp_equipment: 1, id_unit: 41111, count_index: {value: 680, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L58/M681, device_key: BISNAGO-SP-LINHAS-L58-M681,  id_equipment: 41112, tp_equipment: 1, id_unit: 41112, count_index: {value: 681, confidence: inferred}}  # DW4
   # ── L60 (PLC 192.168.7.29) ──
-  - {topic: BISNAGO/SP/LINHAS/L60,       id_equipment: 41007, tp_equipment: 3}
-  - {topic: BISNAGO/SP/LINHAS/L60/M682,  id_equipment: 41113, tp_equipment: 1, id_unit: 41113, count_index: {value: 682, confidence: inferred}}  # DW0
-  - {topic: BISNAGO/SP/LINHAS/L60/M683,  id_equipment: 41114, tp_equipment: 1, id_unit: 41114, count_index: {value: 683, confidence: inferred}}  # DW4
+  - {topic: BISNAGO/SP/LINHAS/L60, device_key: BISNAGO-SP-LINHAS-L60,       id_equipment: 41007, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L60/M682, device_key: BISNAGO-SP-LINHAS-L60-M682,  id_equipment: 41113, tp_equipment: 1, id_unit: 41113, count_index: {value: 682, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L60/M683, device_key: BISNAGO-SP-LINHAS-L60-M683,  id_equipment: 41114, tp_equipment: 1, id_unit: 41114, count_index: {value: 683, confidence: inferred}}  # DW4
 
 # ── agent wiring (→ bisnago-agent.yaml) ───────────────────────────────────────
 # NEEDS-DECISION (edge shape): the legacy flow ran on a Raspberry Pi reading 7 S7

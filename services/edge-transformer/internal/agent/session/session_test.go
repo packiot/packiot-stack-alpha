@@ -31,6 +31,49 @@ func newPub() *session.Publisher {
 	return session.New(newMapResolver(), aliasmap.New())
 }
 
+// TestDefinitiveBirth_DeclaredDeviceKey proves the ADR-0046 task-#18 wiring: with
+// definitive birth on and a WithDeviceKeys map, the NBIRTH count metric carries the
+// DECLARED device_key; with no map entry it derives from the topic (the bridge).
+func TestDefinitiveBirth_DeclaredDeviceKey(t *testing.T) {
+	const countName = parityPrefix + "/Admin/ProdProcessedCount/1/Unit"
+
+	deviceKeyOf := func(pub *session.Publisher) string {
+		t.Helper()
+		pl, err := pub.BuildNBIRTH([]rawtag.RawTag{rt("/Admin/ProdProcessedCount/1/Unit", 42.0)})
+		if err != nil {
+			t.Fatalf("BuildNBIRTH: %v", err)
+		}
+		for _, m := range pl.GetMetrics() {
+			if m.GetName() != countName {
+				continue
+			}
+			ps := m.GetProperties()
+			for i, k := range ps.GetKeys() {
+				if k == "device_key" {
+					return ps.GetValues()[i].GetStringValue()
+				}
+			}
+			t.Fatal("count metric carries no device_key property")
+		}
+		t.Fatalf("count metric %q not in NBIRTH", countName)
+		return ""
+	}
+
+	// Declared key wins.
+	declared := session.New(newMapResolver(), aliasmap.New(),
+		session.WithDefinitiveBirth(true),
+		session.WithDeviceKeys(map[string]string{countName: "CPACK-DECLARED-L5-BREYER"}))
+	if got := deviceKeyOf(declared); got != "CPACK-DECLARED-L5-BREYER" {
+		t.Errorf("declared: device_key = %q, want CPACK-DECLARED-L5-BREYER", got)
+	}
+
+	// No map entry → topic-derived bridge (parityPrefix dash-joined).
+	derived := session.New(newMapResolver(), aliasmap.New(), session.WithDefinitiveBirth(true))
+	if got := deviceKeyOf(derived); got != "CPACK-SC-LINHAS-L5-BREYER" {
+		t.Errorf("derived: device_key = %q, want CPACK-SC-LINHAS-L5-BREYER", got)
+	}
+}
+
 func TestSeqResetOnBirth(t *testing.T) {
 	pub := newPub()
 	pub.NewConnection()

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS packml_register (
     id_outfeedcounter   INTEGER,
     id_rejectcounter    INTEGER,
     device_nm           VARCHAR,
+    device_key          TEXT,        -- ADR-0046 §2 declared equipment identity (birth device_key)
     UNIQUE (packml_topic)
 );
 
@@ -262,6 +263,10 @@ CREATE INDEX IF NOT EXISTS idx_ee_equipment    ON equipment_events (id_equipment
 CREATE INDEX IF NOT EXISTS idx_ee_ts           ON equipment_events (ts_event DESC);
 CREATE INDEX IF NOT EXISTS idx_pr_topic        ON packml_register (packml_topic);
 CREATE INDEX IF NOT EXISTS idx_pr_id_equipment ON packml_register (id_equipment);
+-- ADR-0046 §2: one declared device_key per (enterprise, key). Partial so the many
+-- legacy NULL-device_key rows are exempt (they still resolve by topic).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pr_enterprise_device_key
+    ON packml_register (id_enterprise, device_key) WHERE device_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_po_equip_status ON production_orders (id_equipment, status);
 CREATE INDEX IF NOT EXISTS idx_por_po          ON production_order_runtime (id_production_order);
 CREATE INDEX IF NOT EXISTS idx_por_equipment   ON production_order_runtime (id_equipment, ts_start DESC);

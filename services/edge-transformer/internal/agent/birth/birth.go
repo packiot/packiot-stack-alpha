@@ -30,21 +30,26 @@
 // — and lift the physical <idx> into source_ref="idx:<n>" as LINEAGE only. The
 // index never appears in the routing path; the role does.
 //
-// DEVICE_KEY — flagged gap (do not invent silently)
-// -------------------------------------------------
-// The client descriptor has NO explicit device_key field today: an Equipment
-// carries a surrogate `id_equipment` + a canonical `topic` string, nothing else
-// (clientdescriptor.Equipment). Until a stable key is added to the descriptor /
-// packml_register, we DERIVE the device_key from the canonical topic embedded in
-// the metric name: strip the 4-segment count-leaf tail (`Admin/Prod<Kind>Count/
-// <idx>/Unit`) and dash-join the remaining topic segments —
+// DEVICE_KEY — DECLARED first, derivation as the bridge (ADR-0046 task #18)
+// ------------------------------------------------------------------------
+// clientdescriptor.Equipment now carries an explicit `device_key`
+// (Equipment.DeviceKey / ResolvedDeviceKey), persisted to packml_register.device_key
+// and stamped onto each agent tag-map entry (agentcfg.TagMapEntry.DeviceKey). When
+// that DECLARED key reaches here (session passes it to
+// CounterMetricPropsWithDeviceKey), it is AUTHORITATIVE — identity is DECLARED, not
+// string-derived (contract §2 "identity is DECLARED at birth, never derived").
+//
+// When NO declared key is supplied (a descriptor that predates the field, or the
+// register-loader cutover path which does not yet carry it), we fall back to
+// DERIVING the device_key from the canonical topic embedded in the metric name:
+// strip the 4-segment count-leaf tail (`Admin/Prod<Kind>Count/<idx>/Unit`) and
+// dash-join the remaining topic segments —
 // `CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit` → device_key
-// `CPACK-SC-LINHAS-L5-BREYER`. This matches the golden fixtures exactly
-// (docs/reference/fixtures/*-birth-example.json). PROPOSAL: promote device_key
-// to an explicit descriptor field so identity is DECLARED, not string-derived
-// (contract §2 "identity is DECLARED at birth, never derived"); the derivation
-// here is the transitional bridge, and it is the ONLY string-parse of a name —
-// it happens once at birth, never on DDATA.
+// `CPACK-SC-LINHAS-L5-BREYER`. Because the descriptors DECLARE exactly this dash
+// form, declared and derived agree byte-for-byte (and both match the golden
+// fixtures docs/reference/fixtures/*-birth-example.json). The derivation is the
+// transitional BRIDGE — the ONLY string-parse of a name, and it happens once at
+// birth, never on DDATA.
 package birth
 
 import (
@@ -133,16 +138,31 @@ func parseCounterLeaf(name string) (parsedLeaf, bool) {
 // govern (counters only, §3). The agent calls this per NBIRTH metric only when
 // the EMIT_DEFINITIVE_BIRTH flag is set.
 func CounterMetricProps(name string) (*sparkplug.PropertySet, bool) {
+	return CounterMetricPropsWithDeviceKey(name, "")
+}
+
+// CounterMetricPropsWithDeviceKey is CounterMetricProps with an explicitly DECLARED
+// device_key preferred over the topic derivation (ADR-0046 task #18: identity
+// DECLARED, not string-derived). A non-empty declaredKey is authoritative; an empty
+// one falls back to the dash-joined-topic derivation — the transitional bridge, so a
+// descriptor that predates the device_key field (or the register-loader path that
+// does not yet carry it) still emits the correct, fixture-matching key. ok=false for
+// a non-counter metric (state/speed/bdSeq), exactly like CounterMetricProps.
+func CounterMetricPropsWithDeviceKey(name, declaredKey string) (*sparkplug.PropertySet, bool) {
 	leaf, ok := parseCounterLeaf(name)
 	if !ok {
 		return nil, false
+	}
+	deviceKey := leaf.deviceKey
+	if k := strings.TrimSpace(declaredKey); k != "" {
+		deviceKey = k
 	}
 	return &sparkplug.PropertySet{
 		Keys: []string{PropCounterRole, PropSourceRef, PropDeviceKey},
 		Values: []*sparkplug.PropertyValue{
 			strProp(leaf.role),
 			strProp(leaf.sourceRef),
-			strProp(leaf.deviceKey),
+			strProp(deviceKey),
 		},
 	}, true
 }
