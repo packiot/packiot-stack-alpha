@@ -84,6 +84,48 @@ func TestCounterMetricProps(t *testing.T) {
 	}
 }
 
+// TestCounterMetricPropsWithDeviceKey pins the ADR-0046 task-#18 rule: a DECLARED
+// device_key is authoritative; an empty one falls back to the topic derivation
+// (the bridge), and role/source_ref are unaffected either way.
+func TestCounterMetricPropsWithDeviceKey(t *testing.T) {
+	const metric = "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit"
+	cases := []struct {
+		name          string
+		declared      string
+		wantDeviceKey string
+	}{
+		{"declared wins", "CPACK-CUSTOM-KEY", "CPACK-CUSTOM-KEY"},
+		{"empty falls back to derivation", "", "CPACK-SC-LINHAS-L5-BREYER"},
+		{"whitespace-only falls back", "   ", "CPACK-SC-LINHAS-L5-BREYER"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ps, ok := birth.CounterMetricPropsWithDeviceKey(metric, tc.declared)
+			if !ok {
+				t.Fatal("expected a counter metric")
+			}
+			got := map[string]string{}
+			for i, k := range ps.GetKeys() {
+				got[k] = ps.GetValues()[i].GetStringValue()
+			}
+			if got[birth.PropDeviceKey] != tc.wantDeviceKey {
+				t.Errorf("device_key: got %q, want %q", got[birth.PropDeviceKey], tc.wantDeviceKey)
+			}
+			// role + source_ref are independent of the device_key source.
+			if got[birth.PropCounterRole] != birth.RoleGross {
+				t.Errorf("counter_role: got %q, want gross", got[birth.PropCounterRole])
+			}
+			if got[birth.PropSourceRef] != "idx:61" {
+				t.Errorf("source_ref: got %q, want idx:61", got[birth.PropSourceRef])
+			}
+		})
+	}
+	// A non-counter metric carries no properties regardless of a declared key.
+	if ps, ok := birth.CounterMetricPropsWithDeviceKey("CPACK/SC/LINHAS/L5/Status/MachSpeed", "K"); ok || ps != nil {
+		t.Errorf("non-counter metric must stay clean, got ok=%v ps=%+v", ok, ps)
+	}
+}
+
 // ── end-to-end: the agent's birth for a descriptor validates + groups by device ──
 
 // descriptorTagMap models the canonical suffixes clientdescriptor.GenerateAgentConfig

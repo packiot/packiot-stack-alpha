@@ -11,43 +11,64 @@ sparkplug:
 raw_tag_map:
     - metric_suffix: /LINHAS/L71/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L71
     - metric_suffix: /LINHAS/L71/M670/Admin/ProdProcessedCount/670/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L71-M670
     - metric_suffix: /LINHAS/L71/M671/Admin/ProdProcessedCount/671/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L71-M671
     - metric_suffix: /LINHAS/L72/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L72
     - metric_suffix: /LINHAS/L72/M672/Admin/ProdProcessedCount/672/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L72-M672
     - metric_suffix: /LINHAS/L72/M673/Admin/ProdProcessedCount/673/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L72-M673
     - metric_suffix: /LINHAS/L73/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L73
     - metric_suffix: /LINHAS/L73/M674/Admin/ProdProcessedCount/674/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L73-M674
     - metric_suffix: /LINHAS/L73/M675/Admin/ProdProcessedCount/675/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L73-M675
     - metric_suffix: /LINHAS/L56/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L56
     - metric_suffix: /LINHAS/L56/M676/Admin/ProdProcessedCount/676/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L56-M676
     - metric_suffix: /LINHAS/L56/M677/Admin/ProdProcessedCount/677/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L56-M677
     - metric_suffix: /LINHAS/L57/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L57
     - metric_suffix: /LINHAS/L57/M678/Admin/ProdProcessedCount/678/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L57-M678
     - metric_suffix: /LINHAS/L57/M679/Admin/ProdProcessedCount/679/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L57-M679
     - metric_suffix: /LINHAS/L58/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L58
     - metric_suffix: /LINHAS/L58/M680/Admin/ProdProcessedCount/680/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L58-M680
     - metric_suffix: /LINHAS/L58/M681/Admin/ProdProcessedCount/681/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L58-M681
     - metric_suffix: /LINHAS/L60/Admin/ProdProcessedCount
       type: double
+      device_key: BISNAGO-SP-LINHAS-L60
     - metric_suffix: /LINHAS/L60/M682/Admin/ProdProcessedCount/682/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L60-M682
     - metric_suffix: /LINHAS/L60/M683/Admin/ProdProcessedCount/683/Unit
       type: double
+      device_key: BISNAGO-SP-LINHAS-L60-M683

@@ -43,6 +43,13 @@ type Publisher struct {
 	// unchanged. Set once at construction from the EMIT_DEFINITIVE_BIRTH flag.
 	definitive bool
 
+	// deviceKeys maps a full SparkPlug metric name → its DECLARED device_key
+	// (ADR-0046 task #18), sourced from the client descriptor via the agent
+	// tag-map. When definitive birth is on, a counter metric present here emits the
+	// DECLARED identity; absent, birth falls back to the topic derivation. nil/empty
+	// ⇒ pure derivation (the pre-#18 behaviour), so this is fully additive.
+	deviceKeys map[string]string
+
 	mu      sync.Mutex
 	seq     uint64 // rolling NDATA sequence (mod 256); NBIRTH resets to 0
 	bdSeq   uint64 // birth/death sequence — same value across a birth+its death
@@ -58,6 +65,13 @@ type Option func(*Publisher)
 // no-op deploy. Wired from EMIT_DEFINITIVE_BIRTH in cmd/sparkplug-agent.
 func WithDefinitiveBirth(on bool) Option {
 	return func(p *Publisher) { p.definitive = on }
+}
+
+// WithDeviceKeys supplies the DECLARED device_key per full metric name (ADR-0046
+// task #18). Only consulted when definitive birth is on; a name absent from the map
+// falls back to the topic-derived key. nil/empty ⇒ pure derivation (additive).
+func WithDeviceKeys(m map[string]string) Option {
+	return func(p *Publisher) { p.deviceKeys = m }
 }
 
 // New constructs a Publisher. The alias allocator is owned here so BIRTH and
@@ -131,7 +145,7 @@ func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, e
 		// non-counter metric (state/speed) gets none — ok=false leaves it clean.
 		// DDATA never resends these (BuildNDATA emits alias+value only).
 		if p.definitive {
-			if ps, ok := birth.CounterMetricProps(name); ok {
+			if ps, ok := birth.CounterMetricPropsWithDeviceKey(name, p.deviceKeys[name]); ok {
 				m.Properties = ps
 			}
 		}

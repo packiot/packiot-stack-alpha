@@ -70,6 +70,11 @@ type TagMapEntry struct {
 	// Type is the SparkPlug value type: double | float | long | int | bool |
 	// string. It is authoritative over the wire's optional `long` hint.
 	Type string `yaml:"type"`
+	// DeviceKey is the equipment's DECLARED ADR-0046 §2 identity, carried from the
+	// client descriptor so the definitive-birth path emits the declared device_key
+	// instead of re-deriving it from the metric name. Optional: empty ⇒ the birth
+	// side derivation bridge (dash-joined topic) still applies, byte-unchanged.
+	DeviceKey string `yaml:"device_key,omitempty"`
 }
 
 // DefaultRawTopic is the internal subscription filter when unset.

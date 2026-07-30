@@ -44,12 +44,19 @@ package clientdescriptor
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tenantprofile"
 )
+
+// deviceKeyPattern constrains a DECLARED device_key to the same safe charset the
+// SparkPlug <device_id> / packml_register.device_key accept: alphanumerics plus
+// dot, underscore, hyphen. It deliberately excludes "/" — a device_key is the
+// FLAT identity string, not a topic path (the dash form of the topic, ADR-0046 §2).
+var deviceKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Confidence tags a captured count index. Only a confirmed index — observed on a
 // real tee payload — is cutover-eligible (ADR-0045 §2.4b).
@@ -134,6 +141,17 @@ type Equipment struct {
 	// "CPACK/SC/LINHAS/L5/BREYER". Must start with Canonical.Prefix.
 	Topic string `yaml:"topic"`
 
+	// DeviceKey is the equipment's STABLE identity — the ADR-0046 §2 device key
+	// that rides on every birth counter metric (properties["device_key"]) and
+	// keys packml_register.device_key. It is DECLARED, not string-derived: when
+	// set it is AUTHORITATIVE; when empty the birth side falls back to the
+	// dash-joined-topic derivation (the transitional bridge, see birth pkg), so
+	// nothing breaks for a descriptor that predates this field. Charset
+	// [A-Za-z0-9._-]+ (no "/" — it is the flat identity, not a topic path);
+	// unique per tenant. Use ResolvedDeviceKey() to read the declared-else-derived
+	// value — that is the single place the fallback rule lives.
+	DeviceKey string `yaml:"device_key,omitempty"`
+
 	// IDEquipment is the register surrogate id (drives packml_register SQL + id
 	// resolution). It is NOT the count index — those diverge (#601).
 	IDEquipment int `yaml:"id_equipment"`
@@ -159,6 +177,19 @@ type Equipment struct {
 	// Only valid on tp=2|3 (Validate rejects it on a member). Empty for a member
 	// or a line whose counts come via Phase-9 member aggregation.
 	LineRoles []LineRole `yaml:"line_roles,omitempty"`
+}
+
+// ResolvedDeviceKey returns the equipment's DECLARED device_key, or — when none is
+// declared — the dash-joined-topic derivation (the transitional bridge form the
+// birth side and the golden fixtures use, e.g. "CPACK/SC/LINHAS/L5/BREYER" →
+// "CPACK-SC-LINHAS-L5-BREYER"). This is the single source of the declared-else-
+// derived rule; the register SQL, the agent tag-map, and (via them) the runtime
+// birth all read identity through here so producer and consumer cannot disagree.
+func (e Equipment) ResolvedDeviceKey() string {
+	if k := strings.TrimSpace(e.DeviceKey); k != "" {
+		return k
+	}
+	return strings.ReplaceAll(e.Topic, "/", "-")
 }
 
 // LineRole binds one canonical count-leaf ROLE on a line to a specific PLC count
@@ -286,6 +317,10 @@ func (d *Descriptor) Validate() error {
 	}
 	seenTopic := map[string]bool{}
 	seenID := map[int]bool{}
+	// seenDeviceKey tracks every RESOLVED device key (declared or topic-derived) so
+	// a collision is caught here rather than at the packml_register partial-unique
+	// index (id_enterprise, device_key). Maps key → the topic that first claimed it.
+	seenDeviceKey := map[string]string{}
 	// seenCountIndex tracks every count index claimed by a member (CountIndex) or a
 	// line role (LineRoles), so a collision is caught at descriptor-validate time
 	// rather than surfacing as numeric.BuildIndexFromTagMap's runtime error (a
@@ -311,6 +346,21 @@ func (d *Descriptor) Validate() error {
 			return fmt.Errorf("equipment[%d] (%s): duplicate id_equipment %d", i, e.Topic, e.IDEquipment)
 		}
 		seenID[e.IDEquipment] = true
+		// device_key: when DECLARED it must be a non-empty, /-free identity string
+		// (the flat key, not a topic path). Uniqueness is enforced on the RESOLVED
+		// key (declared-else-derived) so a declared key that collides with another
+		// equipment's derived key is caught too — both land in the same
+		// packml_register.device_key column under one partial-unique index.
+		if e.DeviceKey != "" && !deviceKeyPattern.MatchString(e.DeviceKey) {
+			return fmt.Errorf("equipment[%d] (%s): device_key=%q must match [A-Za-z0-9._-]+ (no '/'; it is the flat identity, not a topic)",
+				i, e.Topic, e.DeviceKey)
+		}
+		dk := e.ResolvedDeviceKey()
+		if prev, dup := seenDeviceKey[dk]; dup {
+			return fmt.Errorf("equipment[%d] (%s): device_key %q already claimed by %s "+
+				"(unique per tenant — it keys packml_register.device_key)", i, e.Topic, dk, prev)
+		}
+		seenDeviceKey[dk] = e.Topic
 		switch e.TPEquipment {
 		case 1, 2, 3:
 		default:

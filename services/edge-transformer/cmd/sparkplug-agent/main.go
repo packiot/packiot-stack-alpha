@@ -185,7 +185,12 @@ func main() {
 	emitDefinitiveBirth := getenvBool("EMIT_DEFINITIVE_BIRTH", false)
 	resolver := newResolver(cfg)
 	aliases := aliasmap.New()
-	pub := session.New(resolver, aliases, session.WithDefinitiveBirth(emitDefinitiveBirth))
+	// ADR-0046 task #18: the DECLARED device_key per full metric name, sourced from
+	// the tag map (client-descriptor origin). Passed to the session so definitive
+	// birth emits the declared identity; absent entries fall back to the derivation.
+	pub := session.New(resolver, aliases,
+		session.WithDefinitiveBirth(emitDefinitiveBirth),
+		session.WithDeviceKeys(deviceKeysFromTagMap(cfg)))
 	store := tagstore.New()
 
 	ob, err := outbox.Open(outbox.Config{Path: getenv("OUTBOX_PATH", "/var/lib/edge-transformer/agent-outbox.db")})
@@ -742,6 +747,22 @@ type resolver struct {
 type entry struct {
 	name string
 	dt   sparkplug.DataType
+}
+
+// deviceKeysFromTagMap builds the full-metric-name → DECLARED device_key map the
+// session consults for definitive birth (ADR-0046 task #18). Entries with no
+// declared key are omitted, so the birth side derives them (the bridge). The full
+// name is resolved the same way the resolver does (packml_topic + suffix, or an
+// explicit Name), so the keys line up with what BuildNBIRTH looks up.
+func deviceKeysFromTagMap(cfg *agentcfg.Config) map[string]string {
+	m := make(map[string]string)
+	for _, e := range cfg.RawTagMap {
+		if e.DeviceKey == "" {
+			continue
+		}
+		m[e.FullName(cfg.Sparkplug.PackMLTopic)] = e.DeviceKey
+	}
+	return m
 }
 
 func newResolver(cfg *agentcfg.Config) *resolver {
