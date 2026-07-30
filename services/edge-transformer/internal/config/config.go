@@ -172,6 +172,35 @@ type Config struct {
 	// closed (explicit config, never guessed).
 	BirthBoundDeviceMap map[string]int
 
+	// ── Birth-bound device resolver selection (ADR-0046 #19a) ─────────────
+	// Which DeviceResolver backs the birth binder. "map" (DEFAULT) keeps the
+	// existing transitional behaviour byte-identical — the operator-supplied
+	// BIRTH_BOUND_DEVICE_MAP above. "refdata" swaps in the HTTP resolver that
+	// asks refdata-api's /internal/resolve-device to resolve device_key →
+	// id_equipment against packml_register (the SSoT), so the map no longer has
+	// to be hand-maintained per tenant. The transformer keeps its pgx-free
+	// default — the DB lookup lives behind refdata's pool, reached over HTTP.
+	// Unknown values fall back to "map" (fail-safe, never a boot crash).
+	BirthBoundResolver string
+	// RefdataURL is the base URL of refdata-api (e.g. http://refdata-api:9104).
+	// Required when BirthBoundResolver=="refdata"; empty ⇒ the refdata resolver
+	// cannot be built and the binder falls back to a fail-closed empty map.
+	RefdataURL string
+	// RefdataInternalKey is the shared secret sent as X-Internal-Key on every
+	// resolve call (matches refdata-api's INTERNAL_API_KEY). Empty is allowed
+	// (refdata will 401) but then nothing resolves — fail-closed, as intended.
+	RefdataInternalKey string
+	// BirthBoundEnterpriseID is the tenant id the refdata resolver scopes its
+	// device_key lookups to (the ?enterprise= arg). The DeviceResolver interface
+	// is enterprise-less (a per-tenant daemon knows its own id), so it is fixed
+	// here from config, not per call. 0 ⇒ unset ⇒ refdata resolver not built.
+	BirthBoundEnterpriseID int
+	// Resolver cache TTLs (seconds). Birth is infrequent, so a successful
+	// lookup is cached for a good while (positive) and a miss only briefly
+	// (negative) so a freshly-registered device is picked up soon.
+	BirthBoundResolverTTLSeconds    int
+	BirthBoundResolverNegTTLSeconds int
+
 	// ADR-0011 P2 outbox — store-and-forward between decode and publish.
 	// When enabled, decoded Sparkplug DATA envelopes get written to a
 	// SQLite outbox before publishing. A separate drain goroutine
@@ -277,6 +306,14 @@ func Load() (*Config, error) {
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),
 		BirthBoundDeviceMap: getenvIntMap("BIRTH_BOUND_DEVICE_MAP"),
+
+		// ADR-0046 #19a device resolver selection (default "map" — no behavior change)
+		BirthBoundResolver:              strings.ToLower(getenv("BIRTH_BOUND_RESOLVER", "map")),
+		RefdataURL:                      getenv("REFDATA_URL", ""),
+		RefdataInternalKey:              getenv("REFDATA_INTERNAL_KEY", ""),
+		BirthBoundEnterpriseID:          getenvInt("BIRTH_BOUND_ENTERPRISE_ID", 0),
+		BirthBoundResolverTTLSeconds:    getenvInt("BIRTH_BOUND_RESOLVER_TTL_SECONDS", 600),
+		BirthBoundResolverNegTTLSeconds: getenvInt("BIRTH_BOUND_RESOLVER_NEG_TTL_SECONDS", 30),
 
 		// ADR-0011 P2 outbox
 		OutboxEnabled: getenvBool("OUTBOX_ENABLED", false),

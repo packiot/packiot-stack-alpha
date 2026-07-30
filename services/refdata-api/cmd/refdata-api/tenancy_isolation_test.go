@@ -235,13 +235,16 @@ func TestRouteManifestCoversEveryRoute(t *testing.T) {
 			t.Errorf("route %q is a /v1 read but is auth-exempt — every read must resolve the tenant from the key", path)
 		}
 		switch class {
-		case routeInfra, routeExternalShim:
+		case routeInfra, routeExternalShim, routeInternal:
+			// routeInternal (ADR-0046 #19a) is exempt from the tenant middleware
+			// and self-authenticates via X-Internal-Key — the same shape as the
+			// external shims. It must NOT be a /v1/ read (guarded above).
 			if !exempt[path] {
 				t.Errorf("route %q (class %d) must be in the auth-exempt set", path, class)
 			}
 		default:
 			if exempt[path] {
-				t.Errorf("route %q is auth-exempt but is neither infra nor an external shim", path)
+				t.Errorf("route %q is auth-exempt but is neither infra, an external shim, nor an internal route", path)
 			}
 		}
 	}

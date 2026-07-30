@@ -57,6 +57,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/mqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/outbox"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/refdataresolver"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
@@ -477,12 +478,44 @@ func main() {
 		// pool and the key formats differ). A device_key absent from the map fails
 		// closed (rebirth), never guessed.
 		birthBoundRouting := cfg.BirthBoundRouting
-		birthBindTable := birthbind.NewTable(birthbind.MapResolver(cfg.BirthBoundDeviceMap))
+		// ADR-0046 #19a resolver selection. Default "map" keeps the existing
+		// transitional behaviour byte-identical (operator-supplied device map). When
+		// "refdata", swap in the HTTP resolver that asks refdata-api's
+		// /internal/resolve-device to resolve device_key → id_equipment against
+		// packml_register (the SSoT). Misconfig fails CLOSED (empty map, nothing
+		// resolves) — never a boot crash and never the wrong default.
+		var deviceResolver birthbind.DeviceResolver = birthbind.MapResolver(cfg.BirthBoundDeviceMap)
+		if cfg.BirthBoundResolver == "refdata" {
+			if cfg.RefdataURL == "" || cfg.BirthBoundEnterpriseID == 0 {
+				logger.Error("ADR-0046 #19a: BIRTH_BOUND_RESOLVER=refdata but REFDATA_URL or BIRTH_BOUND_ENTERPRISE_ID unset — resolver fails closed (nothing resolves)",
+					slog.String("refdata_url", cfg.RefdataURL),
+					slog.Int("enterprise_id", cfg.BirthBoundEnterpriseID))
+				deviceResolver = birthbind.MapResolver(nil)
+			} else {
+				deviceResolver = refdataresolver.New(refdataresolver.Config{
+					BaseURL:      cfg.RefdataURL,
+					EnterpriseID: cfg.BirthBoundEnterpriseID,
+					InternalKey:  cfg.RefdataInternalKey,
+					PositiveTTL:  time.Duration(cfg.BirthBoundResolverTTLSeconds) * time.Second,
+					NegativeTTL:  time.Duration(cfg.BirthBoundResolverNegTTLSeconds) * time.Second,
+					Logger:       logger,
+				})
+				logger.Info("ADR-0046 #19a: birth-bound device resolver = refdata (HTTP)",
+					slog.String("refdata_url", cfg.RefdataURL),
+					slog.Int("enterprise_id", cfg.BirthBoundEnterpriseID),
+					slog.Int("positive_ttl_s", cfg.BirthBoundResolverTTLSeconds),
+					slog.Int("negative_ttl_s", cfg.BirthBoundResolverNegTTLSeconds))
+			}
+		}
+		birthBindTable := birthbind.NewTable(deviceResolver)
 		if birthBoundRouting {
 			logger.Info("ADR-0046 birth-bound routing ENABLED — DDATA counters route by (edge_node, alias)→(id_equipment, counter_role) from birth; legacy counter name-parser bypassed",
+				slog.String("resolver", cfg.BirthBoundResolver),
 				slog.Int("device_map_entries", len(cfg.BirthBoundDeviceMap)),
 				slog.Bool("use_go_port", cfg.UseGoPort))
-			if len(cfg.BirthBoundDeviceMap) == 0 {
+			// The empty-map warning only applies to the static "map" resolver; the
+			// refdata resolver has no local map to be empty.
+			if cfg.BirthBoundResolver != "refdata" && len(cfg.BirthBoundDeviceMap) == 0 {
 				logger.Warn("ADR-0046 birth-bound routing ON but BIRTH_BOUND_DEVICE_MAP is empty — every counter fails closed (rebirth) until a resolver is configured")
 			}
 		}

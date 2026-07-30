@@ -52,6 +52,16 @@ const (
 	// refdata is still the single injection authority; the tenant fence is the
 	// per-shim owner binding (external.go), gated by external_golden_test.go.
 	routeExternalShim
+	// routeInternal: ADR-0046 #19a service-to-service internal endpoints
+	// (/internal/*). EXEMPT from the tenant-injection middleware — like the
+	// external shims, they do NOT derive the tenant from a browser/operator
+	// credential. The caller is TRUSTED INFRA (edge-transformer) that names its
+	// OWN enterprise explicitly (?enterprise=), and it self-authenticates via a
+	// shared internal secret (X-Internal-Key ↔ INTERNAL_API_KEY, internal.go).
+	// Fail-closed: an unset/mismatched key 401s inside the handler, and an unset
+	// key leaves the endpoint inert. These routes serve resolver plumbing (a
+	// device_key → id_equipment lookup), never browser/tenant business data.
+	routeInternal
 )
 
 // mountedRoute is one entry in the route manifest.
@@ -135,12 +145,13 @@ var infraRoutes = []mountedRoute{
 // A new route that isn't listed here (or an endpoint without a class) is a
 // build failure in the gate, not a silent tenancy hole.
 func routeManifest() []mountedRoute {
-	m := make([]mountedRoute, 0, len(endpoints)+len(queryAPIRoutes)+len(infraRoutes)+len(externalShims))
+	m := make([]mountedRoute, 0, len(endpoints)+len(queryAPIRoutes)+len(infraRoutes)+len(internalRoutes)+len(externalShims))
 	for _, ep := range endpoints {
 		m = append(m, mountedRoute{ep.path, ep.class})
 	}
 	m = append(m, queryAPIRoutes...)
 	m = append(m, infraRoutes...)
+	m = append(m, internalRoutes...)   // ADR-0046 #19a service-to-service (internal.go)
 	m = append(m, externalRoutes()...) // ADR-0031 Workstream B (external.go)
 	return m
 }
@@ -159,14 +170,16 @@ func infraExemptSet() map[string]bool {
 }
 
 // authExemptSet is what the auth middleware ACTUALLY lets through: the infra
-// probes PLUS the external-contract shims (routeExternalShim), which self-
-// authenticate to reproduce a foreign auth contract's exact status shapes. This
-// is the middleware's exemption source of truth (main.go); the isolation gate
-// asserts that only these two classes are ever exempt.
+// probes, the external-contract shims (routeExternalShim), and the
+// service-to-service internal endpoints (routeInternal) — all of which self-
+// authenticate (the shims reproduce a foreign auth contract's exact status
+// shapes; the internal endpoints check a shared X-Internal-Key). This is the
+// middleware's exemption source of truth (main.go); the isolation gate asserts
+// that only these classes are ever exempt.
 func authExemptSet() map[string]bool {
 	exempt := map[string]bool{}
 	for _, rt := range routeManifest() {
-		if rt.class == routeInfra || rt.class == routeExternalShim {
+		if rt.class == routeInfra || rt.class == routeExternalShim || rt.class == routeInternal {
 			exempt[rt.path] = true
 		}
 	}
