@@ -249,6 +249,7 @@ func main() {
 	}
 	ensureSchema(pool)                  // startup migrations (P2 screen-config table)
 	registerQueryAPI(mux, pool, qcache) // ADR-0015 P1-P3 + ADR-0035 cache-aside
+	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
 
 	// Gap-closure 2026-07-07: the only service without /metrics.
 	// promhttp default registry — request counts come from reqCount
