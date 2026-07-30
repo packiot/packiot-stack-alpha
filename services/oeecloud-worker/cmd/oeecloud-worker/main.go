@@ -527,7 +527,7 @@ func runIdentitySentinel() int {
 	if cfg.PGShadowDBName == "" {
 		// No F3 plane configured → nothing to gate. Not a failure: on a plain
 		// prod-shaped deploy without the shadow DB the sentinel is a no-op.
-		logger.Warn("identity-sentinel: POSTGRES_SHADOW_DB_NAME unset — no F3 plane to compare; skipping (exit 0)")
+		logger.Warn("identity-sentinel: POSTGRES_SHADOW_DB_NAME unset — no F3 plane to check; skipping (exit 0)")
 		return 0
 	}
 
@@ -539,12 +539,9 @@ func runIdentitySentinel() int {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: fetch db creds: %v\n", err)
 		return 1
 	}
-	f2, err := db.New(ctx, dbCreds, 2, logger)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "identity-sentinel: F2 pool: %v\n", err)
-		return 1
-	}
-	defer f2.Close()
+	// ADR-0032 Step 5: the F2 (shadow_go_port) plane is gone. Only the F3 plane
+	// (public in packiot_shadow) is opened; the sentinel is now the per-plane
+	// int-overflow gate on F3 (GATE 2 survived; the F2==F3 identity gates 1/3 did not).
 	f3, err := db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "identity-sentinel-shadow", 2, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: F3 pool: %v\n", err)
@@ -556,7 +553,7 @@ func runIdentitySentinel() int {
 	logger.Info("identity-sentinel running", slog.Any("enterprises", enterprises),
 		slog.String("f3_db", cfg.PGShadowDBName))
 
-	rep, err := bake.RunSentinel(ctx, f2, f3, enterprises)
+	rep, err := bake.RunSentinel(ctx, f3, enterprises)
 	if err != nil {
 		// Query-level failure: the gate could not evaluate. Fail closed — print
 		// whatever partial report we have plus the error.
@@ -564,10 +561,10 @@ func runIdentitySentinel() int {
 		fmt.Println(rep.String())
 		return 1
 	}
-	fmt.Println("F2/F3 IDENTITY + INT-OVERFLOW SENTINEL")
+	fmt.Println("F3 INT-OVERFLOW SENTINEL")
 	fmt.Println(rep.String())
 	if rep.Failed() {
-		fmt.Fprintln(os.Stderr, "identity-sentinel: GATE FAILED — F2/F3 determinism regression or int-overflow detected")
+		fmt.Fprintln(os.Stderr, "identity-sentinel: GATE FAILED — F3 int-overflow detected")
 		return 1
 	}
 	return 0

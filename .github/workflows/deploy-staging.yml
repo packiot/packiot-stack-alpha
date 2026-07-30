@@ -539,17 +539,54 @@ jobs:
           echo "=== Spot-check E: equipment_events_man — still populated? ==="
           $PSQL -c "SELECT relname, n_live_tup AS rows, n_tup_ins AS inserts_ever, n_tup_upd AS updates_ever, last_analyze::date, last_autovacuum::date FROM pg_stat_user_tables WHERE relname='equipment_events_man';"
 
-      # ── ADR-0032 Step 5: F2 (shadow_go_port) RETIRED ──────────────────────
-      # The 3-flow bake is over. The single-flow collapse dropped the F2
-      # shadow_go_port schema (staging DB), so the two former steps here —
-      #   (1) "Shadow DB comparison — count shadow_go_port rows post-inject"
-      #   (2) "F2/F3 identity + int-overflow sentinel" (GATE 1/3 = F2==F3)
-      # — compared against a schema that no longer exists and are removed.
-      # FOLLOW-UP: GATE 2 (int-overflow: running_time ≤ bucket-span × 1.05,
-      # the L8 P0 guard) was per-plane and is still worth keeping — re-home it
-      # as an F3-ONLY overflow gate (see internal/bake/sentinel.go GATE 2).
-      # Interim backstop: the oee_bounds CHECK constraints (#663) reject an
-      # overflow-driven oee blow-up at the DB layer.
+      - name: F3 int-overflow sentinel (ADR-0032 Step 5 — re-homed GATE 2)
+        # ── HISTORY ────────────────────────────────────────────────────────
+        # This was the "F2/F3 identity + int-overflow sentinel". The single-flow
+        # collapse dropped the F2 (shadow_go_port) plane, so the two F2==F3
+        # EQUALITY gates (GATE 1 core byte-exact, GATE 3 raw count) were retired.
+        # GATE 2 (int-overflow) was never a comparison — it's a per-plane invariant
+        # (no row's running_time may exceed its bucket wall-clock span × 1.05 — the
+        # guard that caught the L8 P0 overflow, ~112,000,000 vs ~11,195) — so it
+        # SURVIVES, now run on F3 (public in packiot_shadow) ONLY. Same binary
+        # subcommand + soft-launch/enforce mechanics as before; internal/bake/
+        # sentinel.go is now overflow-only. Backstop: the #663 *_oee_bounds CHECK
+        # constraints reject an overflow-driven oee blow-up at the DB write.
+        #
+        # ENFORCE MODE (IDENTITY_SENTINEL_ENFORCE): "false" = warn-only bake-in
+        # (run + ::warning:: on a non-zero exit, do NOT fail the deploy); "true" =
+        # a non-zero exit FAILS the deploy. The binary always exits non-zero on a
+        # violation OR if the check could not run (fail-closed).
+        env:
+          IDENTITY_SENTINEL_ENFORCE: "false"
+        run: |
+          set +e
+          echo "=== waiting for oeecloud-worker to report healthy before sentinel ==="
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' oeecloud-worker 2>/dev/null || echo missing)
+            if [ "$status" = "healthy" ]; then echo "  oeecloud-worker healthy after ${i}s"; break; fi
+            sleep 2
+          done
+          if ! docker ps --format '{{.Names}}' | grep -qx oeecloud-worker; then
+            echo "::warning title=f3-overflow-sentinel skipped::oeecloud-worker container not running — cannot run F3 overflow gate"
+            exit 0
+          fi
+
+          echo "=== running F3 int-overflow sentinel (SELECT-only, F3 plane) ==="
+          docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
+          RC=$?
+          echo "sentinel exit code: $RC"
+
+          if [ "$RC" -eq 0 ]; then
+            echo "F3 int-overflow gate: PASS (or SKIP on empty window / no F3 db)"
+            exit 0
+          fi
+          if [ "${IDENTITY_SENTINEL_ENFORCE}" = "true" ]; then
+            echo "::error title=F3 overflow gate FAILED::sentinel exit $RC — running_time int-overflow on F3 (see report above). Failing the deploy (ENFORCE=true)."
+            exit 1
+          else
+            echo "::warning title=F3 overflow gate (warn-only)::sentinel exit $RC — running_time int-overflow on F3 detected (see report above). NOT failing the deploy while IDENTITY_SENTINEL_ENFORCE=false. Triage then flip ENFORCE=true."
+            exit 0
+          fi
 
       - name: Chaos test — kill RMQ, prove outbox durability (ADR-0011 P3)
         # Proves the store-and-forward payoff: with outbox enabled, an RMQ
