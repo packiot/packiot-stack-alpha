@@ -69,6 +69,9 @@ type (
 	Metric_StringValue  = pb.Payload_Metric_StringValue
 )
 
+// PropertySet / PropertyValue / PropertyValue_StringValue re-exports live in
+// properties.go (added by ADR-0046 step 1) — this package owns them once.
+
 // Decode parses a binary Sparkplug B payload (as received over MQTT) into
 // the canonical structure. Returns a wrapped error on protobuf failures.
 //

@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/birth"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
@@ -36,16 +37,37 @@ type Publisher struct {
 	resolver Resolver
 	aliases  *aliasmap.Table
 
+	// definitive gates the ADR-0046 definitive-birth declaration: when set,
+	// NBIRTH counter metrics carry properties[counter_role|source_ref|
+	// device_key]. Default (false) = the legacy string-name birth, byte-
+	// unchanged. Set once at construction from the EMIT_DEFINITIVE_BIRTH flag.
+	definitive bool
+
 	mu      sync.Mutex
 	seq     uint64 // rolling NDATA sequence (mod 256); NBIRTH resets to 0
 	bdSeq   uint64 // birth/death sequence — same value across a birth+its death
 	started bool   // has the first connection cycle begun?
 }
 
+// Option configures a Publisher at construction (the functional-options pattern,
+// so New's core signature stays stable for every existing caller).
+type Option func(*Publisher)
+
+// WithDefinitiveBirth turns on ADR-0046 step-2 definitive-birth emission. Absent
+// (the default), the birth is the legacy string-name form, byte-unchanged — a
+// no-op deploy. Wired from EMIT_DEFINITIVE_BIRTH in cmd/sparkplug-agent.
+func WithDefinitiveBirth(on bool) Option {
+	return func(p *Publisher) { p.definitive = on }
+}
+
 // New constructs a Publisher. The alias allocator is owned here so BIRTH and
 // DATA share one stable name↔alias table.
-func New(resolver Resolver, aliases *aliasmap.Table) *Publisher {
-	return &Publisher{resolver: resolver, aliases: aliases}
+func New(resolver Resolver, aliases *aliasmap.Table, opts ...Option) *Publisher {
+	p := &Publisher{resolver: resolver, aliases: aliases}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 // NewConnection advances the birth/death sequence for a new connection cycle
@@ -102,6 +124,16 @@ func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, e
 		}
 		if err := setValue(m, dt, t.Value); err != nil {
 			return nil, fmt.Errorf("session: NBIRTH metric %q: %w", name, err)
+		}
+		// ADR-0046 step 2: when the definitive-birth flag is on, a counter metric
+		// carries its resolved counter_role + source_ref (lineage) + device_key as
+		// birth-only properties (birth pkg resolves index→role at the edge). A
+		// non-counter metric (state/speed) gets none — ok=false leaves it clean.
+		// DDATA never resends these (BuildNDATA emits alias+value only).
+		if p.definitive {
+			if ps, ok := birth.CounterMetricProps(name); ok {
+				m.Properties = ps
+			}
 		}
 		pl.Metrics = append(pl.Metrics, m)
 	}
@@ -268,6 +300,6 @@ func tagTS(t rawtag.RawTag, fallback uint64) uint64 {
 	return fallback
 }
 
-func u64(v uint64) *uint64 { return &v }
-func u32(v uint32) *uint32 { return &v }
+func u64(v uint64) *uint64  { return &v }
+func u32(v uint32) *uint32  { return &v }
 func strp(s string) *string { return &s }
