@@ -1,0 +1,99 @@
+name: Client Edge Deploy (controlled — any client → staging|production)
+
+# REUSABLE controlled client-edge deploy (ADR-0042 Mode-B, compose.edge.yml).
+# Stands up a NEW, PARALLEL Node-RED + sparkplug-agent AT a client site that co-tees
+# the PLCs (read-only) → the chosen environment's ingest. The client's LEGACY
+# Node-RED/stack is NOT touched. Use it to onboard a NEW client or migrate an existing
+# one, into STAGING (for a test) or PRODUCTION (for the real cutover).
+#
+# This is the NEW-stack model — NOT the legacy edge-node-red deploy-template.yml (PubSub).
+#
+# PER-CLIENT, ONE-TIME PREREQUISITES:
+#   • A GitHub self-hosted runner on the client's edge host, LABEL = the client slug
+#     (e.g. `cpack`) — this is what makes the deploy land AT that client.
+#   • docs/clients/edge-deployment/<client>/ bundle committed (onboard-gen output) +
+#     docs/clients/edge-deployment/<client>.env.example.
+#   • mTLS uplink certs (CN=<client>) at the edge host CERTS_DIR.
+#   • Target-env security group allows inbound :8446 from the client site egress IP.
+#
+# PER-ENV SECRETS (set once): STAGING_INGEST_API_KEY, PRODUCTION_INGEST_API_KEY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: 'Client slug (must match: the runner label, the bundle dir, and <client>.env.example)'
+        required: true
+        type: string
+      target:
+        description: 'Which environment ingest to feed'
+        required: true
+        type: choice
+        options: [staging, production]
+      confirm:
+        description: 'Type the client slug again to confirm'
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    if: ${{ github.event.inputs.confirm == github.event.inputs.client }}
+    runs-on: [self-hosted, "${{ github.event.inputs.client }}"]   # the runner AT the client
+    defaults:
+      run:
+        working-directory: docs/clients/edge-deployment
+    env:
+      CLIENT: ${{ github.event.inputs.client }}
+      TARGET: ${{ github.event.inputs.target }}
+      # per-env ingest key (only the matching one is consumed)
+      STAGING_INGEST_API_KEY: ${{ secrets.STAGING_INGEST_API_KEY }}
+      PRODUCTION_INGEST_API_KEY: ${{ secrets.PRODUCTION_INGEST_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target ingest host + key
+        id: tgt
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "production" ]; then
+            HOST="ec2-3-232-9-118.compute-1.amazonaws.com"        # new-prod app node public DNS
+            KEY="$PRODUCTION_INGEST_API_KEY"
+          else
+            HOST="ec2-100-28-20-195.compute-1.amazonaws.com"      # staging ingest host
+            KEY="$STAGING_INGEST_API_KEY"
+          fi
+          [ -n "$KEY" ] || { echo "::error::${TARGET^^}_INGEST_API_KEY secret not set"; exit 1; }
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "resolved target=$TARGET host=$HOST (client=$CLIENT)"
+
+      - name: Materialize <client>.env (inject env-specific host + key)
+        env:
+          INGEST_HOST: ${{ steps.tgt.outputs.host }}
+          INGEST_KEY: ${{ steps.tgt.outputs.key }}
+        run: |
+          set -euo pipefail
+          SRC="${CLIENT}.env.example"
+          [ -f "$SRC" ] || { echo "::error::$SRC not found — is the client bundle committed?"; exit 1; }
+          sed -e "s|^AGENT_INGEST_API_KEY=.*|AGENT_INGEST_API_KEY=${INGEST_KEY}|" \
+              -e "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" \
+              "$SRC" > .env
+          # repoint the client's tee-node to the chosen env's ingest host too
+          if [ -f "${CLIENT}/${CLIENT}-tee-node.json" ]; then
+            sed -i "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" "${CLIENT}/${CLIENT}-tee-node.json"
+          fi
+          echo "materialized .env for CLIENT=${CLIENT} → ${INGEST_HOST}:8446"
+
+      - name: Bring up the parallel edge stack (Node-RED + mosquitto + agent)
+        run: docker compose --env-file .env -f compose.edge.yml up -d --wait
+
+      - name: Verify health (agent /healthz; legacy untouched)
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env -f compose.edge.yml ps
+          for i in $(seq 1 30); do
+            curl -fsS "http://localhost:$(grep -E '^AGENT_HEALTH_PORT=' .env | cut -d= -f2 || echo 9103)/healthz" >/dev/null 2>&1 && { echo "agent healthy"; exit 0; }
+            sleep 3
+          done
+          echo "::warning::agent /healthz not green in 90s — check logs (may be awaiting first PLC read)"

@@ -1,0 +1,86 @@
+tenant: CPACK
+enterprise_id: 3
+tenant_prefix: CPACK/SC
+prefix_fixups:
+    - from: C-PACK/
+      to: CPACK/
+metric_aliases:
+    - from: Status/CurMachSpeed
+      to: Status/MachSpeed
+parameter_aliases:
+    - from: Status/Parameter
+      to: Status/Parameter30700
+      applies_to: line
+parameter_decomposition:
+    source_leaf: ""
+    params: []
+count_index:
+    mode: equipment_id
+    overrides:
+        /CELULA1/CER400/CER400: 107
+        /CELULA1/DUBUTI1/DUBUTI1: 334
+        /CELULA1/DUBUTI2/DUBUTI2: 97
+        /CELULA1/HOTMADAG/HOTMADAG: 99
+        /CELULA1/ISIMAT/ISIMAT: 335
+        /CELULA2/BREYER1/BREYER1: 26
+        /CELULA2/BREYER2/BREYER2: 101
+        /CELULA2/POLYTYPE1/POLYTYPE1: 110
+        /CELULA2/POLYTYPE2/POLYTYPE2: 29
+        /CELULA2/PTH40-03/PTH40-03: 339
+        /CELULA2/PTH80S/PTH80S: 105
+        /CELULA9/FLEXO/FLEXO: 557
+        /LINHAS/L3/BREYER: 76
+        /LINHAS/L3/POLYTYPE: 82
+        /LINHAS/L3/PTH: 81
+        /LINHAS/L3/RMH: 79
+        /LINHAS/L3/TEXA: 80
+        /LINHAS/L4/BREYER: 6
+        /LINHAS/L4/POLYTYPE: 7
+        /LINHAS/L4/PTH: 8
+        /LINHAS/L4/RMH: 9
+        /LINHAS/L4/TEXA: 10
+        /LINHAS/L5/BREYER: 61
+        /LINHAS/L5/POLYTYPE: 62
+        /LINHAS/L5/PTH: 63
+        /LINHAS/L5/RMH: 64
+        /LINHAS/L5/TEXA: 65
+        /LINHAS/L6/BREYER: 91
+        /LINHAS/L6/POLYTYPE: 93
+        /LINHAS/L6/PTH: 95
+        /LINHAS/L6/RMH: 94
+        /LINHAS/L6/TEXA: 92
+        /LINHAS/L8/DXL: 219
+        /LINHAS/L8/PTH: 220
+        /LINHAS/L8/TCX: 221
+        /LINHAS/L8/TEXA: 222
+        /LINHAS/L10/DXL: 564
+        /LINHAS/L10/PTH: 565
+        /LINHAS/L10/TCX: 566
+        /LINHAS/L10/TEXA: 567
+        /SLEEVE/SLEEVE1/SLEEVE1: 763
+        /SLEEVE/SLEEVE2/SLEEVE2: 823
+metric_templates:
+    line:
+        - leaf: /Admin/ProdConsumedCount
+          type: double
+        - leaf: /Admin/ProdProcessedCount
+          type: double
+        - leaf: /Admin/ProdDefectiveCount
+          type: double
+        - leaf: /Status/MachSpeed
+          type: double
+        - leaf: /Status/StateCurrent
+          type: long
+        - leaf: /Status/Parameter30700
+          type: string
+    member:
+        - leaf: /Admin/ProdConsumedCount/{idx}/Unit
+          type: double
+        - leaf: /Admin/ProdProcessedCount/{idx}/Unit
+          type: double
+        - leaf: /Admin/ProdDefectiveCount/{idx}/Unit
+          type: double
+        - leaf: /Status/MachSpeed
+          type: double
+        - leaf: /Status/StateCurrent
+          type: long
