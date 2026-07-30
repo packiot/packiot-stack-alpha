@@ -151,8 +151,15 @@ func (r *Resolver) fetch(deviceKey string) (int, bool) {
 		r.logger.Warn("refdataresolver: no REFDATA_URL — cannot resolve", slog.String("device_key", deviceKey))
 		return 0, false
 	}
-	reqURL := fmt.Sprintf("%s/internal/resolve-device?enterprise=%d&device_key=%s",
-		trimSlash(r.baseURL), r.enterpriseID, url.QueryEscape(deviceKey))
+	// ADR-0046 resolve-by-device_key: device_key is globally unique (tenant-
+	// prefixed), so a multi-tenant edge-transformer resolves ANY tenant's key
+	// without an enterprise. enterpriseID>0 is only sent by a per-tenant caller
+	// as a belt-and-suspenders filter.
+	reqURL := fmt.Sprintf("%s/internal/resolve-device?device_key=%s",
+		trimSlash(r.baseURL), url.QueryEscape(deviceKey))
+	if r.enterpriseID > 0 {
+		reqURL += fmt.Sprintf("&enterprise=%d", r.enterpriseID)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), r.client.Timeout)
 	defer cancel()

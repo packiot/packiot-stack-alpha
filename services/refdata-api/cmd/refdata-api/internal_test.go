@@ -37,8 +37,10 @@ func TestResolveDeviceHandlerFailClosed(t *testing.T) {
 		// Configured key, missing/mismatched header ⇒ 401.
 		{"missing_header", goodKey, http.MethodGet, "", "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusUnauthorized},
 		{"wrong_header", goodKey, http.MethodGet, "nope", "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusUnauthorized},
-		// Authed but malformed input ⇒ 400 (still no DB touch).
-		{"missing_enterprise", goodKey, http.MethodGet, goodKey, "?device_key=CPACK-SC-LINHAS-L5", http.StatusBadRequest},
+		// Authed but malformed input ⇒ 400 (still no DB touch). NB: a MISSING
+		// enterprise is NOT malformed — it is the ADR-0046 resolve-by-device_key
+		// path (enterprise optional; device_key globally unique), which reaches
+		// the DB, so it is exercised in the DB-backed resolution test, not here.
 		{"nonnumeric_enterprise", goodKey, http.MethodGet, goodKey, "?enterprise=abc&device_key=CPACK-SC-LINHAS-L5", http.StatusBadRequest},
 		{"nonpositive_enterprise", goodKey, http.MethodGet, goodKey, "?enterprise=0&device_key=CPACK-SC-LINHAS-L5", http.StatusBadRequest},
 		{"missing_device_key", goodKey, http.MethodGet, goodKey, "?enterprise=1", http.StatusBadRequest},

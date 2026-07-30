@@ -486,8 +486,11 @@ func main() {
 		// resolves) — never a boot crash and never the wrong default.
 		var deviceResolver birthbind.DeviceResolver = birthbind.MapResolver(cfg.BirthBoundDeviceMap)
 		if cfg.BirthBoundResolver == "refdata" {
-			if cfg.RefdataURL == "" || cfg.BirthBoundEnterpriseID == 0 {
-				logger.Error("ADR-0046 #19a: BIRTH_BOUND_RESOLVER=refdata but REFDATA_URL or BIRTH_BOUND_ENTERPRISE_ID unset — resolver fails closed (nothing resolves)",
+			// ADR-0046 resolve-by-device_key: only REFDATA_URL is required now.
+			// BIRTH_BOUND_ENTERPRISE_ID is OPTIONAL (device_key is globally unique)
+			// — a multi-tenant edge-transformer leaves it 0 and resolves any tenant.
+			if cfg.RefdataURL == "" {
+				logger.Error("ADR-0046: BIRTH_BOUND_RESOLVER=refdata but REFDATA_URL unset — resolver fails closed (nothing resolves)",
 					slog.String("refdata_url", cfg.RefdataURL),
 					slog.Int("enterprise_id", cfg.BirthBoundEnterpriseID))
 				deviceResolver = birthbind.MapResolver(nil)
