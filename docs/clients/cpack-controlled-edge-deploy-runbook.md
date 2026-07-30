@@ -18,7 +18,9 @@ internal mosquitto + sparkplug-agent). This is the NEW-stack path — **not** th
 - `docs/clients/edge-deployment/cpack/` — generated bundle (agent.yaml, profile.yaml,
   register.sql, tee-node.json). **tee-node already repointed to new-prod's `:8446`.**
 - `docs/clients/edge-deployment/cpack.env.example` — the `compose.edge` `.env` for CPACK.
-- `.github/workflows/enterprise-cpack-edge-deploy.yml` — the `workflow_dispatch` deploy.
+- `.github/workflows/client-edge-deploy.yml` — the **reusable** `workflow_dispatch` deploy,
+  parameterized by `(client, target=staging|production)` — so you can fire ANY client's
+  edge into EITHER environment (test a new/migrating client on staging, or cut over on prod).
 
 ## PREREQUISITES you must set before firing (⚠ not automatable from here)
 1. **Self-hosted runner** on the CPACK edge host, **label `cpack`** (the workflow's
@@ -34,9 +36,14 @@ internal mosquitto + sparkplug-agent). This is the NEW-stack path — **not** th
    Node-RED flows in `cpack/nodered/` read them.
 
 ## Fire it
-Actions tab → **"Enterprise CPACK — Edge Deploy (controlled, new-prod)"** →
-Run workflow → type `cpack` to confirm. It: materializes `.env` (injects the secret),
-`docker compose -f compose.edge.yml up -d --wait`, health-checks the agent.
+Actions tab → **"Client Edge Deploy (controlled)"** → Run workflow →
+`client: cpack`, `target: production`, `confirm: cpack`. It resolves the target's ingest
+host + `PRODUCTION_INGEST_API_KEY`, materializes `.env`, repoints the tee-node to the
+target host, `docker compose -f compose.edge.yml up -d --wait`, health-checks the agent.
+
+**Per-env secrets (set once):** `STAGING_INGEST_API_KEY`, `PRODUCTION_INGEST_API_KEY`.
+The workflow picks the right one by `target`. To test a client on STAGING first, fire with
+`target: staging` — same client bundle, different environment.
 
 ## Verify data flow (after firing + PLCs connected)
 - Edge host: `curl localhost:9103/healthz` (agent) + Node-RED UI on `:1880`.
