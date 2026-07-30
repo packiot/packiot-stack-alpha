@@ -31,6 +31,7 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/birth"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
@@ -181,6 +182,15 @@ func main() {
 	broker := flag.String("broker", getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"), "MQTT broker")
 	edgeNode := flag.String("edge-node", getenv("PLC_SIM_EDGE_NODE", "plc-sim"), "Sparkplug edge node id")
 	tickSec := flag.Int("tick", getenvInt("PLC_SIM_TICK_SEC", 5), "seconds between NDATA")
+	// ADR-0046 step 2 (default OFF, same env name as the sparkplug-agent's
+	// EMIT_DEFINITIVE_BIRTH): when ON, each counter metric's NBIRTH carries the
+	// role-typed properties (counter_role/source_ref/device_key) that the
+	// birth-bound consumer (internal/birthbind) needs to route by alias. OFF ⇒
+	// the birth is byte-identical to the legacy string-name form (a no-op deploy),
+	// so a birth-bound flip requires flipping BOTH producer and consumer.
+	emitDefinitive := flag.Bool("definitive-birth",
+		getenvBool("EMIT_DEFINITIVE_BIRTH", false),
+		"ADR-0046: attach counter_role/source_ref/device_key properties on NBIRTH")
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "plc-sim")
 
@@ -202,35 +212,7 @@ func main() {
 
 	publishBirth := func(c paho.Client) {
 		mu.Lock()
-		var ms []sparkplug.SimMetric
-		for i, l := range lines {
-			base := uint64((i + 1) * 10)
-			defs := l.metrics(base)
-			ms = append(ms,
-				sparkplug.SimMetric{Name: defs[0].name, Alias: defs[0].alias, Double: states[i].consumed},
-				sparkplug.SimMetric{Name: defs[1].name, Alias: defs[1].alias, Double: states[i].processed},
-				sparkplug.SimMetric{Name: defs[2].name, Alias: defs[2].alias, Double: states[i].defective},
-				sparkplug.SimMetric{Name: defs[3].name, Alias: defs[3].alias, Double: states[i].effSpeed(l.MachSpeed)},
-				sparkplug.SimMetric{Name: defs[4].name, Alias: defs[4].alias, Long: states[i].state, IsLong: true},
-			)
-			// Parameter30700 (the line-machines CSV Phase-9 reads) is published
-			// ONLY by line entries (Unit==""). #16: a member publishing it would
-			// put a MEMBER index in the line's CSV, arming Phase-9 line-derivation
-			// — a SECOND line-counter writer on top of the line's own-stream (the
-			// #456 two-writer double-count, oee>1.0). A line entry publishes its
-			// OWN self-referential idx, which matches no member, so member-
-			// derivation never fires and the line's counter comes solely from its
-			// own-stream. Single-writer per line, exactly as L8 already behaves.
-			if l.Unit == "" {
-				poText := states[i].poParam
-				if poText == "" {
-					poText = fmt.Sprint(l.Idx)
-				}
-				ms = append(ms,
-					sparkplug.SimMetric{Name: defs[5].name, Alias: defs[5].alias, Text: poText, IsText: true},
-				)
-			}
-		}
+		ms := buildBirthMetrics(lines, states, *emitDefinitive)
 		mu.Unlock()
 		seq = 0
 		body, err := sparkplug.EncodeSim(ms, &seq, true)
@@ -352,6 +334,70 @@ func main() {
 	}
 }
 
+// buildBirthMetrics freezes the current sim state into the NBIRTH metric set —
+// the pure, testable core of publishBirth (extracted so the producer↔consumer
+// round-trip test can drive the REAL birth builder, not a stand-in). Caller
+// holds the state mutex (states is read here without locking).
+//
+// When emitDefinitive is set, each canonical count-leaf metric carries its
+// ADR-0046 definitive-birth PropertySet (see definitiveProps); every other
+// metric — and the whole set when the flag is OFF — is byte-identical to the
+// legacy string-name birth.
+func buildBirthMetrics(lines []line, states []simState, emitDefinitive bool) []sparkplug.SimMetric {
+	var ms []sparkplug.SimMetric
+	for i, l := range lines {
+		base := uint64((i + 1) * 10)
+		defs := l.metrics(base)
+		ms = append(ms,
+			sparkplug.SimMetric{Name: defs[0].name, Alias: defs[0].alias, Double: states[i].consumed, Props: definitiveProps(defs[0].name, emitDefinitive)},
+			sparkplug.SimMetric{Name: defs[1].name, Alias: defs[1].alias, Double: states[i].processed, Props: definitiveProps(defs[1].name, emitDefinitive)},
+			sparkplug.SimMetric{Name: defs[2].name, Alias: defs[2].alias, Double: states[i].defective, Props: definitiveProps(defs[2].name, emitDefinitive)},
+			sparkplug.SimMetric{Name: defs[3].name, Alias: defs[3].alias, Double: states[i].effSpeed(l.MachSpeed)},
+			sparkplug.SimMetric{Name: defs[4].name, Alias: defs[4].alias, Long: states[i].state, IsLong: true},
+		)
+		// Parameter30700 (the line-machines CSV Phase-9 reads) is published
+		// ONLY by line entries (Unit==""). #16: a member publishing it would
+		// put a MEMBER index in the line's CSV, arming Phase-9 line-derivation
+		// — a SECOND line-counter writer on top of the line's own-stream (the
+		// #456 two-writer double-count, oee>1.0). A line entry publishes its
+		// OWN self-referential idx, which matches no member, so member-
+		// derivation never fires and the line's counter comes solely from its
+		// own-stream. Single-writer per line, exactly as L8 already behaves.
+		if l.Unit == "" {
+			poText := states[i].poParam
+			if poText == "" {
+				poText = fmt.Sprint(l.Idx)
+			}
+			ms = append(ms,
+				sparkplug.SimMetric{Name: defs[5].name, Alias: defs[5].alias, Text: poText, IsText: true},
+			)
+		}
+	}
+	return ms
+}
+
+// definitiveProps returns the ADR-0046 definitive-birth PropertySet for a metric
+// NAME when emitDefinitive is on and the name is a canonical count-leaf, else nil.
+// It REUSES internal/agent/birth (the sparkplug-agent's producer) so the role
+// mapping (ProdConsumedCount→gross, ProdProcessedCount→net, ProdDefectiveCount→
+// scrap) and the device_key = dash-joined equipment topic derivation are never
+// duplicated in the sim. A non-counter metric (MachSpeed/StateCurrent/
+// Parameter30700) yields nil, and OFF yields nil — either way the metric stays
+// byte-clean, exactly like the agent's session.BuildNBIRTH.
+func definitiveProps(name string, emitDefinitive bool) *sparkplug.PropertySet {
+	if !emitDefinitive {
+		return nil
+	}
+	// Empty declared key ⇒ the birth package derives device_key by stripping the
+	// 4-segment count-leaf tail and dash-joining the remaining topic — i.e. the
+	// dash-joined equipment topic (CPACK/SC/LINHAS/L5/BREYER → CPACK-SC-LINHAS-L5-
+	// BREYER), which matches what the birth-bound consumer resolves against.
+	if ps, ok := birth.CounterMetricProps(name); ok {
+		return ps
+	}
+	return nil
+}
+
 // dcmdDouble extracts a numeric DCMD metric value as float64 (the executor
 // encodes param_write values as Double, but tolerate the other numeric wire
 // forms defensively).
@@ -471,4 +517,20 @@ func getenvInt(k string, d int) int {
 		return n
 	}
 	return d
+}
+
+// getenvBool reads a boolean env var (1/t/true/y/yes on, anything else off),
+// falling back to d when unset — the same OFF-by-default gate shape the
+// sparkplug-agent uses for EMIT_DEFINITIVE_BIRTH.
+func getenvBool(k string, d bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(k)))
+	if v == "" {
+		return d
+	}
+	switch v {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
