@@ -69,6 +69,18 @@ type (
 	Metric_StringValue  = pb.Payload_Metric_StringValue
 )
 
+// PropertySet + PropertyValue are the per-metric SparkPlug B property carrier
+// (the `properties` field on a Metric). Re-exported so a producer can attach
+// birth-only metric properties — the ADR-0046 definitive-birth counter_role /
+// source_ref / device_key tags — without importing the internal subpath.
+// PropertySet is parallel Keys[] + Values[]; each value is a typed oneof, the
+// same shape as a Metric value (PropertyValue_StringValue{StringValue: v}).
+type (
+	PropertySet               = pb.Payload_PropertySet
+	PropertyValue             = pb.Payload_PropertyValue
+	PropertyValue_StringValue = pb.Payload_PropertyValue_StringValue
+)
+
 // Decode parses a binary Sparkplug B payload (as received over MQTT) into
 // the canonical structure. Returns a wrapped error on protobuf failures.
 //

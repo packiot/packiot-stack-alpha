@@ -174,12 +174,18 @@ func main() {
 		"raw_topic", cfg.Sparkplug.RawTopic,
 		"tag_source", tagSource,
 		"tag_source_reason", tagSrc.Reason,
+		"emit_definitive_birth", getenvBool("EMIT_DEFINITIVE_BIRTH", false),
 		"tags", len(cfg.RawTagMap))
 
 	// ── pipeline construction ────────────────────────────────────────────
+	// ADR-0046 step 2 (EMIT_DEFINITIVE_BIRTH, default OFF, following SHADOW_EMIT_*):
+	// OFF ⇒ the current string-name NBIRTH, byte-unchanged (a no-op deploy).
+	// ON ⇒ each NBIRTH counter metric additionally carries its role-typed
+	// properties (counter_role/source_ref/device_key), the definitive birth.
+	emitDefinitiveBirth := getenvBool("EMIT_DEFINITIVE_BIRTH", false)
 	resolver := newResolver(cfg)
 	aliases := aliasmap.New()
-	pub := session.New(resolver, aliases)
+	pub := session.New(resolver, aliases, session.WithDefinitiveBirth(emitDefinitiveBirth))
 	store := tagstore.New()
 
 	ob, err := outbox.Open(outbox.Config{Path: getenv("OUTBOX_PATH", "/var/lib/edge-transformer/agent-outbox.db")})
