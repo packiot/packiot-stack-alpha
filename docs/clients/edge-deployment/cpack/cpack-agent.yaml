@@ -1,0 +1,1001 @@
+sparkplug:
+    group_id: CPACK
+    edge_node_id: cpack-tee
+    packml_topic: CPACK/SC
+    internal_broker: tcp://mosquitto:1883
+    raw_topic: edge/raw/cpack/#
+    uplink_broker: tcp://mosquitto:1883
+    uplink_tls_cert_ref: ""
+    uplink_tls_key_ref: ""
+    uplink_ca_ref: ""
+raw_tag_map:
+    - metric_suffix: /CELULA1/CER400/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400
+    - metric_suffix: /CELULA1/CER400/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400
+    - metric_suffix: /CELULA1/CER400/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400
+    - metric_suffix: /CELULA1/CER400/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400
+    - metric_suffix: /CELULA1/CER400/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-CER400
+    - metric_suffix: /CELULA1/CER400/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA1-CER400
+    - metric_suffix: /CELULA1/CER400/CER400/Admin/ProdConsumedCount/107/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400-CER400
+    - metric_suffix: /CELULA1/CER400/CER400/Admin/ProdProcessedCount/107/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400-CER400
+    - metric_suffix: /CELULA1/CER400/CER400/Admin/ProdDefectiveCount/107/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400-CER400
+    - metric_suffix: /CELULA1/CER400/CER400/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-CER400-CER400
+    - metric_suffix: /CELULA1/CER400/CER400/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-CER400-CER400
+    - metric_suffix: /CELULA1/DUBUTI1/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/DUBUTI1/Admin/ProdConsumedCount/334/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/DUBUTI1/Admin/ProdProcessedCount/334/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/DUBUTI1/Admin/ProdDefectiveCount/334/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/DUBUTI1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI1/DUBUTI1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-DUBUTI1-DUBUTI1
+    - metric_suffix: /CELULA1/DUBUTI2/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA1-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/DUBUTI2/Admin/ProdConsumedCount/97/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/DUBUTI2/Admin/ProdProcessedCount/97/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/DUBUTI2/Admin/ProdDefectiveCount/97/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/DUBUTI2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-DUBUTI2-DUBUTI2
+    - metric_suffix: /CELULA1/DUBUTI2/DUBUTI2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-DUBUTI2-DUBUTI2
+    - metric_suffix: /CELULA1/HOTMADAG/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA1-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Admin/ProdConsumedCount/99/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Admin/ProdProcessedCount/99/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Admin/ProdDefectiveCount/99/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-HOTMADAG-HOTMADAG
+    - metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-HOTMADAG-HOTMADAG
+    - metric_suffix: /CELULA1/ISIMAT/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA1-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdConsumedCount/335/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdProcessedCount/335/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdDefectiveCount/335/Unit
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/ISIMAT/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA1-ISIMAT-ISIMAT
+    - metric_suffix: /CELULA1/ISIMAT/ISIMAT/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA1-ISIMAT-ISIMAT
+    - metric_suffix: /CELULA2/BREYER1/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA2-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/BREYER1/Admin/ProdConsumedCount/26/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/BREYER1/Admin/ProdProcessedCount/26/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/BREYER1/Admin/ProdDefectiveCount/26/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/BREYER1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER1-BREYER1
+    - metric_suffix: /CELULA2/BREYER1/BREYER1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-BREYER1-BREYER1
+    - metric_suffix: /CELULA2/BREYER2/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/BREYER2/Admin/ProdConsumedCount/101/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/BREYER2/Admin/ProdProcessedCount/101/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/BREYER2/Admin/ProdDefectiveCount/101/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/BREYER2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-BREYER2-BREYER2
+    - metric_suffix: /CELULA2/BREYER2/BREYER2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-BREYER2-BREYER2
+    - metric_suffix: /CELULA2/POLYTYPE1/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA2-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdConsumedCount/110/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdProcessedCount/110/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdDefectiveCount/110/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/POLYTYPE1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE1-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE1/POLYTYPE1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-POLYTYPE1-POLYTYPE1
+    - metric_suffix: /CELULA2/POLYTYPE2/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdConsumedCount/29/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdProcessedCount/29/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdDefectiveCount/29/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/POLYTYPE2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-POLYTYPE2-POLYTYPE2
+    - metric_suffix: /CELULA2/POLYTYPE2/POLYTYPE2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-POLYTYPE2-POLYTYPE2
+    - metric_suffix: /CELULA2/PTH40-03/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA2-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/PTH40-03/Admin/ProdConsumedCount/339/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/PTH40-03/Admin/ProdProcessedCount/339/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/PTH40-03/Admin/ProdDefectiveCount/339/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/PTH40-03/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH40-03-PTH40-03
+    - metric_suffix: /CELULA2/PTH40-03/PTH40-03/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-PTH40-03-PTH40-03
+    - metric_suffix: /CELULA2/PTH80S/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA2-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/PTH80S/Admin/ProdConsumedCount/105/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/PTH80S/Admin/ProdProcessedCount/105/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/PTH80S/Admin/ProdDefectiveCount/105/Unit
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/PTH80S/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA2-PTH80S-PTH80S
+    - metric_suffix: /CELULA2/PTH80S/PTH80S/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA2-PTH80S-PTH80S
+    - metric_suffix: /CELULA9/FLEXO/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA9-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-CELULA9-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/FLEXO/Admin/ProdConsumedCount/557/Unit
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/FLEXO/Admin/ProdProcessedCount/557/Unit
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/FLEXO/Admin/ProdDefectiveCount/557/Unit
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/FLEXO/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-CELULA9-FLEXO-FLEXO
+    - metric_suffix: /CELULA9/FLEXO/FLEXO/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-CELULA9-FLEXO-FLEXO
+    - metric_suffix: /LINHAS/L10/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L10
+    - metric_suffix: /LINHAS/L10/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L10
+    - metric_suffix: /LINHAS/L10/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L10
+    - metric_suffix: /LINHAS/L10/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L10
+    - metric_suffix: /LINHAS/L10/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L10
+    - metric_suffix: /LINHAS/L10/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-LINHAS-L10
+    - metric_suffix: /LINHAS/L10/DXL/Admin/ProdConsumedCount/564/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-DXL
+    - metric_suffix: /LINHAS/L10/DXL/Admin/ProdProcessedCount/564/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-DXL
+    - metric_suffix: /LINHAS/L10/DXL/Admin/ProdDefectiveCount/564/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-DXL
+    - metric_suffix: /LINHAS/L10/DXL/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-DXL
+    - metric_suffix: /LINHAS/L10/DXL/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L10-DXL
+    - metric_suffix: /LINHAS/L10/PTH/Admin/ProdConsumedCount/565/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-PTH
+    - metric_suffix: /LINHAS/L10/PTH/Admin/ProdProcessedCount/565/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-PTH
+    - metric_suffix: /LINHAS/L10/PTH/Admin/ProdDefectiveCount/565/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-PTH
+    - metric_suffix: /LINHAS/L10/PTH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-PTH
+    - metric_suffix: /LINHAS/L10/PTH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L10-PTH
+    - metric_suffix: /LINHAS/L10/TCX/Admin/ProdConsumedCount/566/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TCX
+    - metric_suffix: /LINHAS/L10/TCX/Admin/ProdProcessedCount/566/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TCX
+    - metric_suffix: /LINHAS/L10/TCX/Admin/ProdDefectiveCount/566/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TCX
+    - metric_suffix: /LINHAS/L10/TCX/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TCX
+    - metric_suffix: /LINHAS/L10/TCX/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L10-TCX
+    - metric_suffix: /LINHAS/L10/TEXA/Admin/ProdConsumedCount/567/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TEXA
+    - metric_suffix: /LINHAS/L10/TEXA/Admin/ProdProcessedCount/567/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TEXA
+    - metric_suffix: /LINHAS/L10/TEXA/Admin/ProdDefectiveCount/567/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TEXA
+    - metric_suffix: /LINHAS/L10/TEXA/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L10-TEXA
+    - metric_suffix: /LINHAS/L10/TEXA/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L10-TEXA
+    - metric_suffix: /LINHAS/L3/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L3
+    - metric_suffix: /LINHAS/L3/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L3
+    - metric_suffix: /LINHAS/L3/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L3
+    - metric_suffix: /LINHAS/L3/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L3
+    - metric_suffix: /LINHAS/L3/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L3
+    - metric_suffix: /LINHAS/L3/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-LINHAS-L3
+    - metric_suffix: /LINHAS/L3/BREYER/Admin/ProdConsumedCount/76/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-BREYER
+    - metric_suffix: /LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-BREYER
+    - metric_suffix: /LINHAS/L3/BREYER/Admin/ProdDefectiveCount/76/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-BREYER
+    - metric_suffix: /LINHAS/L3/BREYER/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-BREYER
+    - metric_suffix: /LINHAS/L3/BREYER/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L3-BREYER
+    - metric_suffix: /LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-POLYTYPE
+    - metric_suffix: /LINHAS/L3/POLYTYPE/Admin/ProdProcessedCount/82/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-POLYTYPE
+    - metric_suffix: /LINHAS/L3/POLYTYPE/Admin/ProdDefectiveCount/82/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-POLYTYPE
+    - metric_suffix: /LINHAS/L3/POLYTYPE/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-POLYTYPE
+    - metric_suffix: /LINHAS/L3/POLYTYPE/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L3-POLYTYPE
+    - metric_suffix: /LINHAS/L3/PTH/Admin/ProdConsumedCount/81/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-PTH
+    - metric_suffix: /LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-PTH
+    - metric_suffix: /LINHAS/L3/PTH/Admin/ProdDefectiveCount/81/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-PTH
+    - metric_suffix: /LINHAS/L3/PTH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-PTH
+    - metric_suffix: /LINHAS/L3/PTH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L3-PTH
+    - metric_suffix: /LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-RMH
+    - metric_suffix: /LINHAS/L3/RMH/Admin/ProdProcessedCount/79/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-RMH
+    - metric_suffix: /LINHAS/L3/RMH/Admin/ProdDefectiveCount/79/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-RMH
+    - metric_suffix: /LINHAS/L3/RMH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-RMH
+    - metric_suffix: /LINHAS/L3/RMH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L3-RMH
+    - metric_suffix: /LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-TEXA
+    - metric_suffix: /LINHAS/L3/TEXA/Admin/ProdProcessedCount/80/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-TEXA
+    - metric_suffix: /LINHAS/L3/TEXA/Admin/ProdDefectiveCount/80/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-TEXA
+    - metric_suffix: /LINHAS/L3/TEXA/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L3-TEXA
+    - metric_suffix: /LINHAS/L3/TEXA/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L3-TEXA
+    - metric_suffix: /LINHAS/L4/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L4
+    - metric_suffix: /LINHAS/L4/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L4
+    - metric_suffix: /LINHAS/L4/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L4
+    - metric_suffix: /LINHAS/L4/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L4
+    - metric_suffix: /LINHAS/L4/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L4
+    - metric_suffix: /LINHAS/L4/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-LINHAS-L4
+    - metric_suffix: /LINHAS/L4/BREYER/Admin/ProdConsumedCount/6/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-BREYER
+    - metric_suffix: /LINHAS/L4/BREYER/Admin/ProdProcessedCount/6/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-BREYER
+    - metric_suffix: /LINHAS/L4/BREYER/Admin/ProdDefectiveCount/6/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-BREYER
+    - metric_suffix: /LINHAS/L4/BREYER/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-BREYER
+    - metric_suffix: /LINHAS/L4/BREYER/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L4-BREYER
+    - metric_suffix: /LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/7/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-POLYTYPE
+    - metric_suffix: /LINHAS/L4/POLYTYPE/Admin/ProdProcessedCount/7/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-POLYTYPE
+    - metric_suffix: /LINHAS/L4/POLYTYPE/Admin/ProdDefectiveCount/7/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-POLYTYPE
+    - metric_suffix: /LINHAS/L4/POLYTYPE/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-POLYTYPE
+    - metric_suffix: /LINHAS/L4/POLYTYPE/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L4-POLYTYPE
+    - metric_suffix: /LINHAS/L4/PTH/Admin/ProdConsumedCount/8/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-PTH
+    - metric_suffix: /LINHAS/L4/PTH/Admin/ProdProcessedCount/8/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-PTH
+    - metric_suffix: /LINHAS/L4/PTH/Admin/ProdDefectiveCount/8/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-PTH
+    - metric_suffix: /LINHAS/L4/PTH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-PTH
+    - metric_suffix: /LINHAS/L4/PTH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L4-PTH
+    - metric_suffix: /LINHAS/L4/RMH/Admin/ProdConsumedCount/9/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-RMH
+    - metric_suffix: /LINHAS/L4/RMH/Admin/ProdProcessedCount/9/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-RMH
+    - metric_suffix: /LINHAS/L4/RMH/Admin/ProdDefectiveCount/9/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-RMH
+    - metric_suffix: /LINHAS/L4/RMH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-RMH
+    - metric_suffix: /LINHAS/L4/RMH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L4-RMH
+    - metric_suffix: /LINHAS/L4/TEXA/Admin/ProdConsumedCount/10/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-TEXA
+    - metric_suffix: /LINHAS/L4/TEXA/Admin/ProdProcessedCount/10/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-TEXA
+    - metric_suffix: /LINHAS/L4/TEXA/Admin/ProdDefectiveCount/10/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-TEXA
+    - metric_suffix: /LINHAS/L4/TEXA/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L4-TEXA
+    - metric_suffix: /LINHAS/L4/TEXA/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L4-TEXA
+    - metric_suffix: /LINHAS/L5/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L5
+    - metric_suffix: /LINHAS/L5/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L5
+    - metric_suffix: /LINHAS/L5/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L5
+    - metric_suffix: /LINHAS/L5/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L5
+    - metric_suffix: /LINHAS/L5/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L5
+    - metric_suffix: /LINHAS/L5/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-LINHAS-L5
+    - metric_suffix: /LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-BREYER
+    - metric_suffix: /LINHAS/L5/BREYER/Admin/ProdProcessedCount/61/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-BREYER
+    - metric_suffix: /LINHAS/L5/BREYER/Admin/ProdDefectiveCount/61/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-BREYER
+    - metric_suffix: /LINHAS/L5/BREYER/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-BREYER
+    - metric_suffix: /LINHAS/L5/BREYER/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L5-BREYER
+    - metric_suffix: /LINHAS/L5/POLYTYPE/Admin/ProdConsumedCount/62/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-POLYTYPE
+    - metric_suffix: /LINHAS/L5/POLYTYPE/Admin/ProdProcessedCount/62/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-POLYTYPE
+    - metric_suffix: /LINHAS/L5/POLYTYPE/Admin/ProdDefectiveCount/62/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-POLYTYPE
+    - metric_suffix: /LINHAS/L5/POLYTYPE/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-POLYTYPE
+    - metric_suffix: /LINHAS/L5/POLYTYPE/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L5-POLYTYPE
+    - metric_suffix: /LINHAS/L5/PTH/Admin/ProdConsumedCount/63/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-PTH
+    - metric_suffix: /LINHAS/L5/PTH/Admin/ProdProcessedCount/63/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-PTH
+    - metric_suffix: /LINHAS/L5/PTH/Admin/ProdDefectiveCount/63/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-PTH
+    - metric_suffix: /LINHAS/L5/PTH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-PTH
+    - metric_suffix: /LINHAS/L5/PTH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L5-PTH
+    - metric_suffix: /LINHAS/L5/RMH/Admin/ProdConsumedCount/64/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-RMH
+    - metric_suffix: /LINHAS/L5/RMH/Admin/ProdProcessedCount/64/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-RMH
+    - metric_suffix: /LINHAS/L5/RMH/Admin/ProdDefectiveCount/64/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-RMH
+    - metric_suffix: /LINHAS/L5/RMH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-RMH
+    - metric_suffix: /LINHAS/L5/RMH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L5-RMH
+    - metric_suffix: /LINHAS/L5/TEXA/Admin/ProdConsumedCount/65/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-TEXA
+    - metric_suffix: /LINHAS/L5/TEXA/Admin/ProdProcessedCount/65/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-TEXA
+    - metric_suffix: /LINHAS/L5/TEXA/Admin/ProdDefectiveCount/65/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-TEXA
+    - metric_suffix: /LINHAS/L5/TEXA/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L5-TEXA
+    - metric_suffix: /LINHAS/L5/TEXA/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L5-TEXA
+    - metric_suffix: /LINHAS/L6/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L6
+    - metric_suffix: /LINHAS/L6/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L6
+    - metric_suffix: /LINHAS/L6/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L6
+    - metric_suffix: /LINHAS/L6/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L6
+    - metric_suffix: /LINHAS/L6/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L6
+    - metric_suffix: /LINHAS/L6/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-LINHAS-L6
+    - metric_suffix: /LINHAS/L6/BREYER/Admin/ProdConsumedCount/91/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-BREYER
+    - metric_suffix: /LINHAS/L6/BREYER/Admin/ProdProcessedCount/91/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-BREYER
+    - metric_suffix: /LINHAS/L6/BREYER/Admin/ProdDefectiveCount/91/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-BREYER
+    - metric_suffix: /LINHAS/L6/BREYER/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-BREYER
+    - metric_suffix: /LINHAS/L6/BREYER/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L6-BREYER
+    - metric_suffix: /LINHAS/L6/POLYTYPE/Admin/ProdConsumedCount/93/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-POLYTYPE
+    - metric_suffix: /LINHAS/L6/POLYTYPE/Admin/ProdProcessedCount/93/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-POLYTYPE
+    - metric_suffix: /LINHAS/L6/POLYTYPE/Admin/ProdDefectiveCount/93/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-POLYTYPE
+    - metric_suffix: /LINHAS/L6/POLYTYPE/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-POLYTYPE
+    - metric_suffix: /LINHAS/L6/POLYTYPE/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L6-POLYTYPE
+    - metric_suffix: /LINHAS/L6/PTH/Admin/ProdConsumedCount/95/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-PTH
+    - metric_suffix: /LINHAS/L6/PTH/Admin/ProdProcessedCount/95/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-PTH
+    - metric_suffix: /LINHAS/L6/PTH/Admin/ProdDefectiveCount/95/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-PTH
+    - metric_suffix: /LINHAS/L6/PTH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-PTH
+    - metric_suffix: /LINHAS/L6/PTH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L6-PTH
+    - metric_suffix: /LINHAS/L6/RMH/Admin/ProdConsumedCount/94/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-RMH
+    - metric_suffix: /LINHAS/L6/RMH/Admin/ProdProcessedCount/94/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-RMH
+    - metric_suffix: /LINHAS/L6/RMH/Admin/ProdDefectiveCount/94/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-RMH
+    - metric_suffix: /LINHAS/L6/RMH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-RMH
+    - metric_suffix: /LINHAS/L6/RMH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L6-RMH
+    - metric_suffix: /LINHAS/L6/TEXA/Admin/ProdConsumedCount/92/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-TEXA
+    - metric_suffix: /LINHAS/L6/TEXA/Admin/ProdProcessedCount/92/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-TEXA
+    - metric_suffix: /LINHAS/L6/TEXA/Admin/ProdDefectiveCount/92/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-TEXA
+    - metric_suffix: /LINHAS/L6/TEXA/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L6-TEXA
+    - metric_suffix: /LINHAS/L6/TEXA/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L6-TEXA
+    - metric_suffix: /LINHAS/L8/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L8
+    - metric_suffix: /LINHAS/L8/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L8
+    - metric_suffix: /LINHAS/L8/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-LINHAS-L8
+    - metric_suffix: /LINHAS/L8/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L8
+    - metric_suffix: /LINHAS/L8/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L8
+    - metric_suffix: /LINHAS/L8/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-LINHAS-L8
+    - metric_suffix: /LINHAS/L8/DXL/Admin/ProdConsumedCount/219/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-DXL
+    - metric_suffix: /LINHAS/L8/DXL/Admin/ProdProcessedCount/219/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-DXL
+    - metric_suffix: /LINHAS/L8/DXL/Admin/ProdDefectiveCount/219/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-DXL
+    - metric_suffix: /LINHAS/L8/DXL/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-DXL
+    - metric_suffix: /LINHAS/L8/DXL/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L8-DXL
+    - metric_suffix: /LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-PTH
+    - metric_suffix: /LINHAS/L8/PTH/Admin/ProdProcessedCount/220/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-PTH
+    - metric_suffix: /LINHAS/L8/PTH/Admin/ProdDefectiveCount/220/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-PTH
+    - metric_suffix: /LINHAS/L8/PTH/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-PTH
+    - metric_suffix: /LINHAS/L8/PTH/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L8-PTH
+    - metric_suffix: /LINHAS/L8/TCX/Admin/ProdConsumedCount/221/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TCX
+    - metric_suffix: /LINHAS/L8/TCX/Admin/ProdProcessedCount/221/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TCX
+    - metric_suffix: /LINHAS/L8/TCX/Admin/ProdDefectiveCount/221/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TCX
+    - metric_suffix: /LINHAS/L8/TCX/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TCX
+    - metric_suffix: /LINHAS/L8/TCX/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L8-TCX
+    - metric_suffix: /LINHAS/L8/TEXA/Admin/ProdConsumedCount/222/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TEXA
+    - metric_suffix: /LINHAS/L8/TEXA/Admin/ProdProcessedCount/222/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TEXA
+    - metric_suffix: /LINHAS/L8/TEXA/Admin/ProdDefectiveCount/222/Unit
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TEXA
+    - metric_suffix: /LINHAS/L8/TEXA/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-LINHAS-L8-TEXA
+    - metric_suffix: /LINHAS/L8/TEXA/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-LINHAS-L8-TEXA
+    - metric_suffix: /SLEEVE/SLEEVE1/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-SLEEVE-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-SLEEVE-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdConsumedCount/763/Unit
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdProcessedCount/763/Unit
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdDefectiveCount/763/Unit
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1
+    - metric_suffix: /SLEEVE/SLEEVE2/Admin/ProdConsumedCount
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/Admin/ProdProcessedCount
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/Admin/ProdDefectiveCount
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-SLEEVE-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/Status/Parameter30700
+      type: string
+      device_key: CPACK-SC-SLEEVE-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdConsumedCount/823/Unit
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdProcessedCount/823/Unit
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdDefectiveCount/823/Unit
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Status/MachSpeed
+      type: double
+      device_key: CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2
+    - metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Status/StateCurrent
+      type: long
+      device_key: CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2

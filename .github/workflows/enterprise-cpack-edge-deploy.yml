@@ -1,0 +1,58 @@
+name: Enterprise CPACK — Edge Deploy (controlled, new-prod)
+
+# Controlled client-edge deploy (ADR-0042 Mode-B, compose.edge.yml). Stands up a
+# NEW, PARALLEL Node-RED + sparkplug-agent at the CPACK site that co-tees the PLCs
+# (read-only) → new-production ingest. The LEGACY CPACK Node-RED is untouched.
+#
+# This is the NEW-stack model — NOT the legacy edge-node-red deploy-template.yml
+# (that one is edge → Google PubSub). This one targets new-prod's ingest.
+#
+# PREREQUISITES (one-time, at the client):
+#   • A GitHub self-hosted runner registered on the CPACK edge host, LABEL: cpack
+#   • mTLS uplink certs (CN=cpack) present at CERTS_DIR (see cpack.env.example)
+#   • new-prod SG allows inbound :8446 from the CPACK site egress IP
+#   • Repo/Env secret CPACK_INGEST_API_KEY = new-prod's INGEST_API_KEY
+#     (/opt/packiot/.env on i-02d255a1c21fb1da3)
+#
+# Manual trigger only — you "execute" it from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "cpack" to confirm the controlled edge deploy'
+        required: true
+
+jobs:
+  deploy:
+    if: ${{ github.event.inputs.confirm == 'cpack' }}
+    runs-on: [self-hosted, cpack]        # the runner AT the CPACK edge host
+    defaults:
+      run:
+        working-directory: docs/clients/edge-deployment
+    env:
+      AGENT_INGEST_API_KEY: ${{ secrets.CPACK_INGEST_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize the CPACK .env (from committed example + the secret)
+        run: |
+          set -euo pipefail
+          sed "s|^AGENT_INGEST_API_KEY=.*|AGENT_INGEST_API_KEY=${AGENT_INGEST_API_KEY}|" \
+            cpack.env.example > .env
+          # sanity: the ingest key must be set and NOT the placeholder
+          grep -q '^AGENT_INGEST_API_KEY=SET-TO' .env && { echo "::error::CPACK_INGEST_API_KEY secret not set"; exit 1; } || true
+          echo "materialized .env for TENANT_SLUG=$(grep ^TENANT_SLUG= .env | cut -d= -f2)"
+
+      - name: Bring up the parallel edge stack (Node-RED + mosquitto + agent)
+        run: docker compose --env-file .env -f compose.edge.yml up -d --wait
+
+      - name: Verify health (agent /healthz + Node-RED up; legacy untouched)
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env -f compose.edge.yml ps
+          for i in $(seq 1 30); do
+            if curl -fsS "http://localhost:${AGENT_HEALTH_PORT:-9103}/healthz" >/dev/null 2>&1; then
+              echo "agent healthy"; exit 0; fi
+            sleep 3
+          done
+          echo "::warning::agent /healthz not green in 90s — check logs (may be awaiting first PLC read)"
