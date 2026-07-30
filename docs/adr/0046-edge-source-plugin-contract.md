@@ -1,6 +1,10 @@
 # ADR-0046 — The Edge-Source Plugin Contract (native agent ⇄ HighByte ⇄ any)
 
-**Status:** Draft · **Date:** 2026-07-30 · **Relates:** ADR-0009 (edge-transformer/Node-RED split), ADR-0010 (SparkPlug decode in Go), ADR-0042 (rebirth/alias), ADR-0045 (config-as-data onboarding)
+**Status:** Draft (core decisions settled 2026-07-30) · **Date:** 2026-07-30 · **Relates:** ADR-0009 (edge-transformer/Node-RED split), ADR-0010 (SparkPlug decode in Go), ADR-0042 (rebirth/alias), ADR-0045 (config-as-data onboarding)
+
+> **Design stance:** there is exactly **ONE** definitive topic layer (§3). The current
+> string-grammar is a **retiring scaffold**, not a supported "v1" — it is deleted when the
+> last producer converges (§4). No permanent dual-standard.
 
 ## Context
 
@@ -85,12 +89,32 @@ DDATA name and *without* a physical index. Concretely:
   slicing the topic string.
 - **Tenant authority = the SparkPlug `group_id`.** The metric name need not repeat it.
 
-### The boundary (where a producer connects)
+### The definitive topic layer (THE form — settled)
 
-Primary: **canonical SparkPlug B on the internal `mosquitto`** — `spBv1.0/<tenant>/#`.
-Fallback: the **HTTP ingest front-doors** already in place — `ingest-shim :8444`
-(SparkPlug over HTTPS) and `sparkplug-agent :9104 /v1/counters` (numeric). Any of the
-three satisfies the contract as long as the birth declaration conforms.
+One canonical shape, SparkPlug-idiomatic (equipment = device, not a flattened string):
+
+```
+Transport   spBv1.0/<tenant>/<type>/<edge_node>/<device>
+              <tenant>  = SparkPlug group_id (the ONLY tenant authority)
+              <device>  = the equipment's stable device key
+Identity    <device> ──(packml_register, the SSoT — decision #2)──► id_equipment (+ tp, id_unit)
+              bound ONCE at DBIRTH, cached; never re-derived from a string
+DBIRTH       declares, per metric:  { alias, counter_role, [source_ref?] }
+              counter_role ∈ { gross, net, scrap }   ← closed enum (decision #3)
+              source_ref (index/register) = OPTIONAL lineage only, NEVER routing
+DDATA        <device> + alias + value  ──►  (id_equipment, counter_role, value)
+              zero per-message string parsing; zero positional logic; zero index-in-path
+```
+
+- A **line** (tp=3) whose roles come from different physical counters (today's `line_roles`)
+  declares them as separate role-typed metrics on the line device — the index→role mapping
+  is resolved **at the edge adapter**, never shipped. `line_roles` thus moves out of the
+  stack's consumed config and into the adapter's own mapping.
+- Any human-readable metric name is **display only** (observability), never authoritative.
+- **Boundary (decision #1): canonical SparkPlug B on the internal `mosquitto`** —
+  `spBv1.0/<tenant>/#` — is the definitive ingress. The HTTP front-doors (`ingest-shim
+  :8444`, `sparkplug-agent :9104`) remain only as REST fallbacks for producers that cannot
+  speak MQTT; they must satisfy the same birth declaration.
 
 ### The adapter model
 
@@ -109,18 +133,28 @@ three satisfies the contract as long as the birth declaration conforms.
   count indices — so it **dissolves smell #2** for the tenants it fronts. The native agent
   keeps serving the S7/numeric tenants that don't need HighByte's protocol breadth.
 
-## 4. Migration (non-breaking, staged)
+## 4. Convergence to the one form (bounded scaffold, then delete)
 
-- **v1 (current, string-grammar birth):** stays fully supported — CPACK is live on it,
-  bispharma/bisnago onboarded on it. No forced change.
-- **v2 (birth-bound, role-typed, index-free):** new target. edge-transformer gains a birth
-  handler that, when a DBIRTH declares explicit `(id_equipment, role)` bindings, caches
-  them and **skips** the per-DDATA string parse; when it doesn't, it falls back to the v1
-  parser. Producers migrate at their own pace; **HighByte targets v2 directly.**
-- **Contract test (the de-risking artifact):** publish a JSON-schema + golden fixtures for
-  a conformant birth declaration, so any external producer (HighByte) self-validates its
-  output against exactly what edge-transformer accepts — the same golden-fixture discipline
-  the Go services already use.
+There is **one** topic layer (§3). The current string-grammar is a **migration scaffold**
+with a scheduled death — the same discipline that retired the F2 shadow: converge every
+producer, then **delete** the legacy path so no dual-standard survives.
+
+1. **Add the birth handler.** edge-transformer gains the DBIRTH→`(id_equipment,
+   counter_role)` binding + alias cache; DDATA routes via the cache.
+2. **Converge producers, one at a time.** The native `sparkplug-agent` emits the definitive
+   birth (it already owns the descriptor mapping — it resolves index→role at the edge and
+   declares role-typed metrics). Each live tenant (CPACK, bispharma, bisnago) is cut over
+   and verified (shadow-compare old vs new decode for that tenant before flipping). HighByte
+   is *born* on the definitive form.
+3. **Delete the scaffold.** Once every producer emits the definitive birth, **remove** the
+   string-grammar parser (`isCounterMetricName` substring + `parts[4]` positional + prefix→
+   `packml_topic` derivation). Its deletion is the definition of done — tracked, not
+   indefinite. The `err/skip/scaffold-then-delete` discipline, not a permanent fallback.
+4. **Contract test = the de-risking artifact.** A JSON-schema + golden fixtures for a
+   conformant birth declaration, so any producer (HighByte, the native agent, a client tee)
+   self-validates against exactly what edge-transformer accepts — the golden-fixture
+   discipline the Go services already use. This is what lets us delete the scaffold safely:
+   the schema, not the fallback parser, is the compatibility guarantee.
 
 ## 5. Consequences
 
@@ -131,17 +165,25 @@ three satisfies the contract as long as the birth declaration conforms.
   and the positional/prefix fragility (correctness +).
 - **The count-index constraint becomes adapter-local**, not a stack-wide invariant — and
   vanishes entirely for semantic producers (HighByte).
-- **Cost:** a birth-handler code path in edge-transformer + the contract schema/test; the v1
-  parser stays until the last v1 producer retires. Net: additive, dual-path during transition.
+- **Cost:** a birth-handler code path in edge-transformer + the contract schema/test; the
+  scaffold parser lives only through the convergence window (§4), then is deleted. Net:
+  additive during transition, **single form** at the end.
 
-## 6. Open decisions (surface before building)
+## 6. Decisions (settled 2026-07-30)
 
-1. **Primary boundary for HighByte** — mosquitto SparkPlug (idiomatic, stateful, gets rebirth
-   for free) **vs** the HTTP ingest-shim (simpler for a REST-only HighByte output). Recommend
-   **mosquitto SparkPlug** as primary; ingest-shim as the REST fallback.
-2. **Where the `(id_equipment, role)` binding is authored for v2** — carried in the producer's
-   DBIRTH payload, or looked up from `packml_register` keyed by a stable device id? Recommend
-   `packml_register` remains the SSoT (ADR-0009), with DBIRTH carrying the stable device key +
-   role, so the stack still owns identity.
-3. **Role vocabulary** — fix `gross|net|scrap` (+ any others: `rework`?) as the closed contract
-   enum, mapped from both the v1 counter-names and HighByte model attributes.
+1. **Primary boundary — mosquitto SparkPlug B.** Idiomatic, stateful, gets rebirth/recovery
+   for free (ADR-0042). The HTTP front-doors (`ingest-shim`, `:9104`) are REST fallbacks only.
+2. **Identity SSoT — `packml_register`** (per ADR-0009). DBIRTH carries a **stable device key +
+   counter_role**; the stack resolves the key → `id_equipment`. The stack keeps owning identity;
+   producers assert *keys*, not *ids*.
+3. **Role vocabulary — closed enum `{ gross, net, scrap }`.** Nothing else. Both the retiring
+   counter-names (`ProdConsumedCount`→gross, `ProdProcessedCount`→net, `ProdDefectiveCount`→
+   scrap) and HighByte model attributes map onto exactly these three.
+
+## 7. Next (implementation, separate PRs)
+
+1. edge-transformer DBIRTH binding handler + alias→`(id_equipment, counter_role)` cache.
+2. `sparkplug-agent` emits the definitive birth (role-typed, index-free); shadow-verify per tenant.
+3. Contract JSON-schema + golden fixtures.
+4. Cut over CPACK → bispharma → bisnago; then **delete the string-grammar parser** (done = one form).
+5. HighByte adapter: born on the definitive contract; POC on one tenant → mosquitto.
