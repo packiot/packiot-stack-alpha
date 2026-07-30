@@ -47,6 +47,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqp"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/birthbind"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/config"
@@ -468,7 +469,24 @@ func main() {
 			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
 				slog.Bool("use_go_port", cfg.UseGoPort))
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
+		// ADR-0046 step 1: birth-bound routing. Default OFF (BIRTH_BOUND_ROUTING),
+		// so the handler keeps the legacy string-parse path byte-identical. When
+		// ON, counter identity+role come from the birth declaration; the device
+		// resolver is the operator-supplied BIRTH_BOUND_DEVICE_MAP (no automatic
+		// device_key→packml_topic mapping is invented — the transformer has no DB
+		// pool and the key formats differ). A device_key absent from the map fails
+		// closed (rebirth), never guessed.
+		birthBoundRouting := cfg.BirthBoundRouting
+		birthBindTable := birthbind.NewTable(birthbind.MapResolver(cfg.BirthBoundDeviceMap))
+		if birthBoundRouting {
+			logger.Info("ADR-0046 birth-bound routing ENABLED — DDATA counters route by (edge_node, alias)→(id_equipment, counter_role) from birth; legacy counter name-parser bypassed",
+				slog.Int("device_map_entries", len(cfg.BirthBoundDeviceMap)),
+				slog.Bool("use_go_port", cfg.UseGoPort))
+			if len(cfg.BirthBoundDeviceMap) == 0 {
+				logger.Warn("ADR-0046 birth-bound routing ON but BIRTH_BOUND_DEVICE_MAP is empty — every counter fails closed (rebirth) until a resolver is configured")
+			}
+		}
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, birthBoundRouting, birthBindTable, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -729,6 +747,24 @@ func isCounterMetricName(name string) calc_production_counters.CounterKind {
 	}
 }
 
+// roleToCounterKind maps an ADR-0046 birth-declared counter_role to the Calc
+// port's CounterKind. This is the SEMANTIC bridge that lets the birth-bound
+// path drive Calc without touching the metric name: gross=infeed/consumed,
+// net=good/processed, scrap=defective (contract §4). An unknown role maps to
+// Unknown so the caller drops it (fail-closed).
+func roleToCounterKind(r birthbind.Role) calc_production_counters.CounterKind {
+	switch r {
+	case birthbind.RoleGross:
+		return calc_production_counters.CounterKindConsumed
+	case birthbind.RoleNet:
+		return calc_production_counters.CounterKindProcessed
+	case birthbind.RoleScrap:
+		return calc_production_counters.CounterKindDefective
+	default:
+		return calc_production_counters.CounterKindUnknown
+	}
+}
+
 // isLineLevelMetricName reports whether a metric name is a LINE-level
 // (unit-less) topic rather than a per-machine (Unit) topic. It mirrors the
 // canonical line-vs-unit rule used everywhere else in the stack — the
@@ -934,6 +970,32 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	if kind == calc_production_counters.CounterKindUnknown {
 		return nil
 	}
+	return h.evalCounter(ctx, tenant, kind, metric, ts, logger)
+}
+
+// runShadowBound is the ADR-0046 (step 1) birth-bound counter path. The counter
+// KIND is supplied by the caller from the BIRTH-declared counter_role — NOT
+// parsed from the metric name — and idEquipment is the birth-resolved
+// equipment. Unlike runShadow it does NOT seed non-counter state (the caller
+// routes only aliases the birth bound as counters) and it never calls
+// isCounterMetricName. idEquipment is logged for lineage and reserved for the
+// Calc-rekey step (Calc is still topic-keyed today; re-keying it on
+// id_equipment is a later ADR-0046 step, not step 1).
+func (h calcHooks) runShadowBound(ctx context.Context, tenant string, idEquipment int, kind calc_production_counters.CounterKind, metric sparkplug.ResolvedMetric, ts time.Time, logger *slog.Logger) []calc_production_counters.Metric {
+	logger.Debug("birthbind: routing bound counter to Calc",
+		slog.String("tenant", tenant),
+		slog.Int("id_equipment", idEquipment),
+		slog.String("counter_role", kind.String()),
+		slog.Uint64("alias", metric.Alias))
+	return h.evalCounter(ctx, tenant, kind, metric, ts, logger)
+}
+
+// evalCounter runs one counter metric of a KNOWN kind through the Calc port,
+// applies its state mutations, counts emissions, and returns the emitted
+// metrics. The kind is supplied by the caller — derived from the metric NAME
+// (runShadow, legacy string-parse path) or the birth-declared ROLE
+// (runShadowBound, ADR-0046) — so this shared core is byte-identical either way.
+func (h calcHooks) evalCounter(ctx context.Context, tenant string, kind calc_production_counters.CounterKind, metric sparkplug.ResolvedMetric, ts time.Time, logger *slog.Logger) []calc_production_counters.Metric {
 	// Build a Calc.Message. For shadow-mode observability we assume every
 	// ResolvedMetric that matches a counter topic IS a trigger event —
 	// the actual ***TRIG tagging happens upstream in Node-RED today. This
@@ -1280,7 +1342,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, birthBoundRouting bool, birthBindTable *birthbind.Table, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1326,6 +1388,13 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			return fmt.Errorf("ingest: %w", err)
 		}
 		if resolved == nil {
+			// ADR-0046 step 1: on (N/D)BIRTH, bind every declared counter's
+			// (edge_node, alias) → (id_equipment, counter_role) so DDATA routes
+			// with no name parsing. Only when the flag is ON — OFF leaves the
+			// table empty and the DATA path unchanged.
+			if birthBoundRouting && (topic.MessageType == "DBIRTH" || topic.MessageType == "NBIRTH") {
+				birthBindTable.ApplyBirth(topic.EdgeNodeID, topic.DeviceID, payload, logger)
+			}
 			// BIRTH/DEATH/CMD — state updated, no downstream output.
 			// EXCEPTION for Phase 3 shadow: seed non-counter parameters from
 			// NBIRTH so subsequent NDATA has the parameter context (MachSpeed,
@@ -1372,6 +1441,27 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 				var ts time.Time
 				if src := m.Timestamp; src > 0 {
 					ts = time.UnixMilli(int64(src))
+				}
+				if birthBoundRouting {
+					// ADR-0046 path: route by the birth binding, NOT the name.
+					if b, ok := birthBindTable.Lookup(topic.EdgeNodeID, m.Alias); ok {
+						kind := roleToCounterKind(b.Role)
+						if kind == calc_production_counters.CounterKindUnknown {
+							continue // defensive: an invalid role never binds
+						}
+						calcMetrics = append(calcMetrics, calc.runShadowBound(ctx, topic.GroupID, b.IDEquipment, kind, m, ts, logger)...)
+						continue
+					}
+					// Unbound alias. Non-counter state metrics (MachSpeed,
+					// Parameter*) are out of contract v1.0 scope (counters only)
+					// and are still seeded by suffix so OEE has its parameter
+					// context. A metric that is neither a bound counter NOR a
+					// recognized state metric is a genuine unbound alias →
+					// fail-closed: request a rebirth (ADR-0042) + drop it.
+					if !calc.seedFromMetric(topic.GroupID, m) && rebirthRequester != nil {
+						rebirthRequester.Request(key.GroupID, key.EdgeNodeID, "unbound_alias")
+					}
+					continue
 				}
 				calcMetrics = append(calcMetrics, calc.runShadow(ctx, topic.GroupID, m, ts, logger)...)
 			}
