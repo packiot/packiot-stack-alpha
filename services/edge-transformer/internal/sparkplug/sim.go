@@ -17,6 +17,16 @@ type SimMetric struct {
 	Text   string
 	IsLong bool
 	IsText bool
+
+	// Props, when non-nil, is the ADR-0046 definitive-birth PropertySet
+	// (counter_role/source_ref/device_key) attached to this metric ON BIRTH
+	// only — DDATA metrics leave it nil, so the DATA path stays alias+value
+	// only (contract §3). The caller builds it via internal/agent/birth so the
+	// role mapping + device_key derivation are never duplicated here (sim.go
+	// lives in package sparkplug, which birth imports — attaching a pre-built
+	// PropertySet keeps that dependency one-directional). nil ⇒ byte-identical
+	// to the pre-ADR-0046 birth (the flag-OFF no-op).
+	Props *PropertySet
 }
 
 // EncodeSim builds and encodes a payload from SimMetrics, advancing
@@ -45,6 +55,13 @@ func EncodeSim(ms []SimMetric, seq *uint64, isBirth bool) ([]byte, error) {
 		default:
 			pm.Datatype = simU32(uint32(DataType_Double))
 			pm.Value = &Metric_DoubleValue{DoubleValue: m.Double}
+		}
+		// ADR-0046 definitive birth: attach the role/device_key/source_ref
+		// PropertySet ON BIRTH only. DDATA metrics carry Props==nil (and are
+		// alias-only anyway), so the DATA path is unchanged. Props==nil on birth
+		// (flag OFF) leaves the metric byte-identical to the legacy birth.
+		if isBirth && m.Props != nil {
+			pm.Properties = m.Props
 		}
 		p.Metrics = append(p.Metrics, pm)
 	}
