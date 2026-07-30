@@ -45,12 +45,16 @@ import (
 )
 
 // resolveDeviceSQL is the identity lookup — packml_register is the SSoT
-// (ADR-0009). The (id_enterprise, device_key) pair is unique per the partial
-// index db/init/09 adds (WHERE device_key IS NOT NULL), so at most one active
-// row matches; `active` fences soft-deleted registrations. Simple protocol
-// (QueryExecModeSimpleProtocol is set pool-wide) so $1/$2 bind fine under
-// pgbouncer transaction pooling.
-const resolveDeviceSQL = `SELECT id_equipment FROM packml_register WHERE id_enterprise = $1 AND device_key = $2 AND active`
+// (ADR-0009). device_key is tenant-prefixed (CPACK-…, BISNAGO-…) hence GLOBALLY
+// unique — the global unique index db/init/10 adds (WHERE device_key IS NOT NULL)
+// guarantees ≤1 active row for `device_key` alone, so a single multi-tenant
+// edge-transformer resolves any tenant's key without knowing the enterprise
+// (ADR-0046: resolve-by-device_key). `enterprise` remains an OPTIONAL
+// belt-and-suspenders filter for a per-tenant caller. `active` fences
+// soft-deleted registrations. Simple protocol (QueryExecModeSimpleProtocol is
+// set pool-wide) so binds work under pgbouncer transaction pooling.
+const resolveByKeySQL = `SELECT id_equipment FROM packml_register WHERE device_key = $1 AND active`
+const resolveByKeyEntSQL = `SELECT id_equipment FROM packml_register WHERE device_key = $1 AND id_enterprise = $2 AND active`
 
 // internalResolveTotal counts resolver outcomes so ops can graph hit/miss/deny
 // rates alongside the RED metrics httpmetrics already emits for the route.
@@ -111,14 +115,6 @@ func resolveDeviceHandler(pool *pgxpool.Pool, internalKey string, logger *slog.L
 			http.Error(w, `{"error":"missing or invalid internal credentials"}`, http.StatusUnauthorized)
 			return
 		}
-		entRaw := r.URL.Query().Get("enterprise")
-		ent, err := strconv.Atoi(entRaw)
-		if entRaw == "" || err != nil || ent <= 0 {
-			internalResolveTotal.WithLabelValues("bad_request").Inc()
-			failed.Add(1)
-			http.Error(w, `{"error":"enterprise must be a positive integer"}`, http.StatusBadRequest)
-			return
-		}
 		deviceKey := r.URL.Query().Get("device_key")
 		if deviceKey == "" {
 			internalResolveTotal.WithLabelValues("bad_request").Inc()
@@ -126,11 +122,31 @@ func resolveDeviceHandler(pool *pgxpool.Pool, internalKey string, logger *slog.L
 			http.Error(w, `{"error":"device_key is required"}`, http.StatusBadRequest)
 			return
 		}
+		// enterprise is OPTIONAL (ADR-0046 resolve-by-device_key). If present it
+		// must be a positive int (belt-and-suspenders filter for a per-tenant
+		// caller); if absent we resolve by the globally-unique device_key alone.
+		entRaw := r.URL.Query().Get("enterprise")
+		var ent int
+		if entRaw != "" {
+			var perr error
+			ent, perr = strconv.Atoi(entRaw)
+			if perr != nil || ent <= 0 {
+				internalResolveTotal.WithLabelValues("bad_request").Inc()
+				failed.Add(1)
+				http.Error(w, `{"error":"enterprise, when given, must be a positive integer"}`, http.StatusBadRequest)
+				return
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		var idEquipment int
-		err = pool.QueryRow(ctx, resolveDeviceSQL, ent, deviceKey).Scan(&idEquipment)
+		var err error
+		if ent > 0 {
+			err = pool.QueryRow(ctx, resolveByKeyEntSQL, deviceKey, ent).Scan(&idEquipment)
+		} else {
+			err = pool.QueryRow(ctx, resolveByKeySQL, deviceKey).Scan(&idEquipment)
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Fail-closed on the transformer side: an unmapped key drops the
 			// counter into a rebirth. A 404 is the expected, non-error miss.
