@@ -4,10 +4,12 @@
 // downstream onboarding artifacts, so onboarding a factory is "fill a
 // descriptor + regenerate", not "hand-edit four files and keep them in sync":
 //
-//	1. <tenant>-profile.yaml    — the tenant conversion profile (tenantprofile)
-//	2. <tenant>-register.sql     — packml_register INSERT (topic ↔ id_equipment)
-//	3. <tenant>-agent.yaml       — the sparkplug-agent descriptor (agentcfg)
-//	4. <tenant>-tee-node.json    — the Node-RED Tier-1 raw-forwarder flow
+//  1. <tenant>-profile.yaml    — the tenant conversion profile (tenantprofile)
+//  2. <tenant>-register.sql     — packml_register INSERT (topic ↔ id_equipment)
+//  3. <tenant>-agent.yaml       — the sparkplug-agent descriptor (agentcfg)
+//  4. <tenant>-tee-node.json    — the Node-RED Tier-1 raw-forwarder flow
+//  5. <tenant>-client.yaml      — the Go PLC readers' config (clientconfig),
+//     emitted ONLY when the descriptor has a plc block
 //
 // Usage:
 //
@@ -18,6 +20,16 @@
 // The --cutover flag enforces the ADR-0045 §2.4b rule: no tenant cuts over on
 // inferred count indices. Without it, generation is draft/observe (everything
 // emitted; not cutover-eligible). Runs once and exits.
+//
+// GREENFIELD scaffolding (a NEW client with no legacy flow to import):
+//
+//	onboard-gen scaffold --tenant acme --site sp --lines 3 --protocols s7,modbus
+//	onboard-gen scaffold --tenant acme --site sp --lines 2 --out gen/
+//
+// The scaffold subcommand emits a VALID starter descriptor (round-trips through
+// Parse) so the CS engineer edits fill-in-the-blanks values instead of authoring
+// against a blank file. A multi-protocol scaffold shows the multi-source pattern
+// (two endpoints → one equipment) in its commented tag-map guidance.
 package main
 
 import (
@@ -31,10 +43,69 @@ import (
 )
 
 func main() {
+	// Git-style subcommand dispatch: `onboard-gen scaffold …` is the greenfield
+	// path; the bare form (flags only) is the generate-from-descriptor path.
+	if len(os.Args) > 1 && os.Args[1] == "scaffold" {
+		if err := runScaffold(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "onboard-gen scaffold:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "onboard-gen:", err)
 		os.Exit(1)
 	}
+}
+
+// runScaffold implements `onboard-gen scaffold` — the greenfield starter-descriptor
+// generator. It emits ONE file (<tenant>.descriptor.yaml) to --out, or to stdout
+// when --out is empty. Pure core (clientdescriptor.ScaffoldYAML) + thin CLI.
+func runScaffold(args []string) error {
+	fs := flag.NewFlagSet("scaffold", flag.ContinueOnError)
+	var (
+		tenant    = fs.String("tenant", "", "tenant slug / group_id, e.g. acme (required)")
+		site      = fs.String("site", "", "site short-name, e.g. sp (required)")
+		lines     = fs.Int("lines", 1, "number of production lines to stub (>= 1)")
+		protocols = fs.String("protocols", "s7", "comma list of PLC protocols: s7,modbus,opcua")
+		outDir    = fs.String("out", "", "output directory; if empty, print the descriptor to stdout")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var protos []string
+	for _, p := range strings.Split(*protocols, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			protos = append(protos, p)
+		}
+	}
+
+	opts := clientdescriptor.ScaffoldOptions{
+		Tenant:    *tenant,
+		Site:      *site,
+		Lines:     *lines,
+		Protocols: protos,
+	}
+	out, err := clientdescriptor.ScaffoldYAML(opts)
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(*outDir) == "" {
+		os.Stdout.Write(out)
+		return nil
+	}
+	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+		return fmt.Errorf("create out dir: %w", err)
+	}
+	name := strings.ToLower(strings.TrimSpace(*tenant)) + ".descriptor.yaml"
+	p := filepath.Join(*outDir, name)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", p, err)
+	}
+	fmt.Fprintf(os.Stderr, "onboard-gen scaffold: wrote %s\n", p)
+	return nil
 }
 
 func run() error {
@@ -80,6 +151,14 @@ func run() error {
 		{tenant + "-register.sql", []byte(art.RegisterSQL)},
 		{tenant + "-agent.yaml", art.AgentYAML},
 		{tenant + "-tee-node.json", art.TeeSnippet},
+	}
+	// Artifact 5: the Go PLC readers' client.yaml, emitted only when the
+	// descriptor declares a plc block (art.ClientYAML is nil otherwise).
+	if art.ClientYAML != nil {
+		files = append(files, struct {
+			name string
+			data []byte
+		}{tenant + "-client.yaml", art.ClientYAML})
 	}
 
 	if *outDir == "" {

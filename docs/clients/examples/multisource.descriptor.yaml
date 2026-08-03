@@ -1,0 +1,90 @@
+# ACME — MULTI-SOURCE composition example (ADR-0045 P2).
+#
+# What this proves
+# ----------------
+# ONE equipment's canonical SparkPlug message can be composed from TWO PLCs of
+# DIFFERENT protocols. Here a single machine, ACME/SP/LINE1/FILLER, gets:
+#
+#   - its NET production count  (/Admin/ProdProcessedCount/7/Unit) from an S7 PLC
+#     data block  (DB1,DINT0)
+#   - its machine speed         (/Status/MachSpeed)                from a Modbus
+#     PLC holding register      (holding @100, float32)
+#
+# The mechanism (no new schema — this is what the LIST-valued *_tag_map slices in
+# clientconfig were built for): BOTH tag-map entries carry the SAME packml_topic
+# (ACME/SP/LINE1/FILLER) and the SAME id_equipment (4201). The agent's raw_tag_map
+# is synthesized per-equipment from metric_templates, so it contains BOTH leaves;
+# each reader emits <packml_topic><metric> and the agent resolves both onto the one
+# equipment — the two source PLCs assemble into one SparkPlug message.
+#
+# The §C invariant (checkClientAgentConsistency) is what makes this safe: every
+# reader metric, minus canonical.prefix, must equal a synthesized agent
+# metric_suffix — else the agent would silently drop it. Run through onboard-gen
+# this descriptor PASSES §C, proving the composition is wired end to end.
+#
+# tenant / enterprise_id / ids below are illustrative placeholders for a fictional
+# client; nothing here is a real tenant.
+
+tenant: ACME
+enterprise_id: 4200
+canonical:
+  prefix: ACME/SP
+mapping:
+  count_index_default_mode: equipment_id
+metric_templates:
+  member:
+    # The two canonical leaves this machine owns. Multi-source works precisely
+    # because these two leaves can be fed from two DIFFERENT PLCs — the template
+    # says nothing about WHERE each metric comes from; the tag maps below do.
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+agent:
+  edge_node_id: acme-edge
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: acme/raw
+  uplink_broker: ssl://ingest.example.invalid:8883
+  mtls:
+    cert_ref: secret://packiot/staging/acme/uplink-cert
+    key_ref: secret://packiot/staging/acme/uplink-key
+    ca_ref: secret://packiot/staging/acme/uplink-ca
+tee:
+  ingest_url: https://localhost:8444/v1/tags
+  tls_insecure: true
+equipment:
+  # ONE equipment — the machine whose message is built from two source PLCs.
+  - topic: ACME/SP/LINE1/FILLER
+    id_equipment: 4201
+    tp_equipment: 1
+    id_unit: 4201
+    count_index: {value: 7, confidence: confirmed}
+plc:
+  endpoints:
+    # Source PLC #1 — Siemens S7 (owns the count).
+    - name: filler-s7
+      protocol: s7
+      host_ref: secret://packiot/staging/acme/filler-s7-host
+      rack: 0
+      slot: 1
+      polling_interval: 1s
+    # Source PLC #2 — Modbus TCP (owns the speed). A DIFFERENT protocol, a
+    # DIFFERENT physical device, feeding the SAME equipment.
+    - name: filler-modbus
+      protocol: modbus_tcp
+      host_ref: secret://packiot/staging/acme/filler-modbus-host
+      unit_id: 1
+      polling_interval: 1s
+  # ── The composition — both maps target id_equipment 4201 / ACME/SP/LINE1/FILLER ──
+  s7_tag_map:
+    - endpoint: filler-s7
+      packml_topic: ACME/SP/LINE1/FILLER
+      id_equipment: 4201
+      tags:
+        # Count index 7 matches the equipment's count_index above, so this lands
+        # on the synthesized /Admin/ProdProcessedCount/7/Unit leaf.
+        - {metric: "/Admin/ProdProcessedCount/7/Unit", db: 1, offset: 0, type: dint}
+  modbus_tag_map:
+    - endpoint: filler-modbus
+      packml_topic: ACME/SP/LINE1/FILLER   # SAME equipment as the S7 map above
+      id_equipment: 4201
+      tags:
+        - {metric: "/Status/MachSpeed", kind: holding, address: 100, type: float32}

@@ -279,17 +279,27 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	// Normalize BEFORE validate: lowercased tenant id to match the
-	// per-tenant queue naming convention used in internal/amqp/topology.go.
-	// CS Admin often writes uppercase customer codes (CPACK, SIMCORP) so
-	// the normalize step here saves a class of "almost-matches" bugs.
-	// Doing it first also lets validateV11's tenant_id↔topic check compare
-	// the canonical (lowercased) form directly.
-	cfg.TenantID = strings.ToLower(strings.TrimSpace(cfg.TenantID))
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// Validate normalizes and validates an in-memory Config — the exact checks Load
+// runs on a file, exposed so a PRODUCER of a Config (e.g. the onboard
+// generator's GenerateClientYAML) can hold a generated config to the loader
+// contract without round-tripping through a temp file. Load delegates to it, so
+// there is one source of truth for "is this a valid client.yaml?".
+//
+// Normalize BEFORE validate: lowercased tenant id to match the per-tenant queue
+// naming convention used in internal/amqp/topology.go. CS Admin often writes
+// uppercase customer codes (CPACK, SIMCORP) so the normalize step here saves a
+// class of "almost-matches" bugs. Doing it first also lets validateV11's
+// tenant_id↔topic check compare the canonical (lowercased) form directly. It is
+// idempotent, so calling Validate on an already-normalized config is safe.
+func (c *Config) Validate() error {
+	c.TenantID = strings.ToLower(strings.TrimSpace(c.TenantID))
+	return c.validate()
 }
 
 func (c *Config) validate() error {
