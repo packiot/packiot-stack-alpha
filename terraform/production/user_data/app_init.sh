@@ -102,6 +102,9 @@ MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
 # per-box value here; the .env guard below keeps it stable across re-runs.
 INGEST_API_KEY=$(openssl rand -hex 24)
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
+# CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
+# POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
+GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
 AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
 AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
 AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
@@ -168,6 +171,8 @@ HASURA_GRAPHQL_DEV_MODE=false
 
 # Edge API
 EDGE_API_KEY=$API_KEY
+# CS-Admin edge-bundle dispatch (ADR-0045 P5)
+GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
 EDGE_API_URL=https://api.$PRODUCTION_DOMAIN
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>

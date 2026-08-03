@@ -78,6 +78,9 @@ API_KEY=$(echo "$APP_SECRET"   | jq -r '.edge_api_key')
 MQ_USER=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_user')
 MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
+# CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
+# POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
+GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
@@ -129,6 +132,8 @@ HASURA_GRAPHQL_DEV_MODE=false
 
 # Edge API / Node-RED
 EDGE_API_KEY=$API_KEY
+# CS-Admin edge-bundle dispatch (ADR-0045 P5)
+GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 # NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward
