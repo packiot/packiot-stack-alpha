@@ -190,13 +190,16 @@ variable "client_ingest_egress_cidrs" {
   description = <<-EOT
     Allow-list of client factory-edge PUBLIC egress /32s permitted to reach the
     8883 mTLS ingest listener. NOT world-open (mirrors staging's CPACK /32 gate),
-    just parameterized. The default is an RFC 5737 TEST-NET placeholder that
-    reaches nothing — REPLACE with bispharma's real edge egress /32 (from client
-    ops) before any apply. Port stays effectively closed until this is filled and
-    the client tee is scheduled live.
+    just parameterized. Each entry is the client factory's PUBLIC internet egress
+    IP (what `curl https://checkip.amazonaws.com` returns FROM the factory box) —
+    NOT its private/VPN address (there is no VPN into this VPC; the factory reaches
+    prod over the public internet to the EIP). Port stays effectively closed to
+    everyone else. ⚠ If a client's ISP egress is DYNAMIC, this /32 breaks on IP
+    change — confirm it's static (or re-apply on change).
   EOT
   type        = list(string)
-  default     = ["203.0.113.1/32"] # RFC 5737 TEST-NET-3 placeholder — REPLACE per client
+  # CPACK factory public egress /32 (confirmed from the factory box 2026-08-03).
+  default = ["179.162.112.58/32"]
 }
 
 # ── SSH access ────────────────────────────────────────────────────────────────
