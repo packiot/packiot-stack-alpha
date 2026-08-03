@@ -4,10 +4,16 @@ sparkplug:
     packml_topic: CPACK/SC
     internal_broker: tcp://mosquitto:1883
     raw_topic: edge/raw/cpack/#
-    uplink_broker: tcp://mosquitto:1883
-    uplink_tls_cert_ref: ""
-    uplink_tls_key_ref: ""
-    uplink_ca_ref: ""
+    # Mode-B WAN uplink (ADR-0042 §6): real SparkPlug B over mTLS to the new-prod
+    # mosquitto :8883 listener. ssl:// + the AGENT_UPLINK_TLS_* env files (mounted
+    # from CERTS_DIR by compose.edge.yml) trigger mTLS; the server cert SAN must
+    # equal this host (ec2-3-232-9-118 = new-prod Elastic IP, stable).
+    uplink_broker: ssl://ec2-3-232-9-118.compute-1.amazonaws.com:8883
+    # secret:// REFERENCES only (agentcfg rejects inline PEM). Resolved out of band
+    # into the CERTS_DIR files at deploy; the agent reads the FILES via env, not these.
+    uplink_tls_cert_ref: secret://packiot/production/cpack-mtls/cert
+    uplink_tls_key_ref: secret://packiot/production/cpack-mtls/key
+    uplink_ca_ref: secret://packiot/production/cpack-mtls/ca
 raw_tag_map:
     - metric_suffix: /CELULA1/CER400/Admin/ProdConsumedCount
       type: double

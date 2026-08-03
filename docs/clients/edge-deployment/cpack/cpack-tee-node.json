@@ -2,17 +2,17 @@
   {
     "disabled": false,
     "id": "cpack_tab",
-    "info": "Generated from the ADR-0045 client descriptor. Wire your SparkPlug-assembly node's output into 'CPACK tee'. Set env CPACK_INGEST_KEY to the ingest key (never hardcode).",
+    "info": "Direction-B tee (ADR-0042 §2.3). Wire your PLC/SparkPlug-assembly node's output into 'CPACK tee'. It POSTs RAW tags to the LOCAL sparkplug-agent (http://localhost:9104/v1/tags); the agent builds SparkPlug B and uplinks over mTLS. Node-RED stays SparkPlug-ignorant. Set env CPACK_INGEST_KEY = the local tee↔agent key (compose.edge.yml wires it from AGENT_INGEST_API_KEY).",
     "label": "CPACK ingest tee",
     "type": "tab"
   },
   {
     "finalize": "",
-    "func": "// CPACK → ingest tee — generated from the ADR-0045 client descriptor.\n// Place on a SECOND wire off your SparkPlug-assembly node (a tee, not a redirect).\n// The shim enforces the group scope (first topic segment) = \"CPACK\" and routes\n// the tenant on lower(\"CPACK\"). Key is read from env CPACK_INGEST_KEY — NEVER hardcoded.\n\nconst key = env.get(\"CPACK_INGEST_KEY\");\nif (!key) {\n    node.error(\"CPACK_INGEST_KEY env var is not set — refusing to POST without an ingest key\", msg);\n    return null;\n}\n\nlet envelope = msg.payload;\nif (Array.isArray(envelope)) {\n    envelope = { timestamp: Date.now(), gateway: \"cpack-edge\", metrics: envelope };\n} else if (envelope \u0026\u0026 !envelope.timestamp) {\n    envelope.timestamp = Date.now();\n}\nif (!envelope || !Array.isArray(envelope.metrics) || envelope.metrics.length === 0) {\n    node.warn(\"tee: payload has no metrics[]; skipping this message\");\n    return null;\n}\n\nmsg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\nmsg.payload = envelope;\nreturn msg;\n",
+    "func": "// CPACK → LOCAL AGENT tee — Direction B (ADR-0042 §2.3).\n// Place on a SECOND wire off your PLC read / assembly node (a tee, not a redirect).\n// Sends RAW tags to the local sparkplug-agent's POST /v1/tags; the AGENT builds\n// SparkPlug B and does the mTLS uplink. Key is env CPACK_INGEST_KEY (the local\n// tee↔agent shared secret) — NEVER hardcoded.\n\nconst key = env.get(\"CPACK_INGEST_KEY\");\nif (!key) {\n    node.error(\"CPACK_INGEST_KEY env var is not set — refusing to POST without an ingest key\", msg);\n    return null;\n}\n\n// Normalize the upstream output into the agent's /v1/tags rawtag envelope:\n//   { group, scan_ts, tags: [ { metric, value, long? } ] }\n// `metric` MUST match a raw_tag_map metric_suffix in cpack-agent.yaml (e.g.\n// \"/CELULA1/CER400/Admin/ProdConsumedCount\"). Unmatched tags increment the agent\n// metric sparkplug_agent_raw_dropped_total{reason=\"unmapped\"} (reject-don't-drop),\n// so a wrong name is VISIBLE, not silent. Adapt the .metric/.value pull below to\n// your assembly node's field names.\nlet src = msg.payload;\nif (src && Array.isArray(src.metrics)) src = src.metrics;   // {metrics:[…]} → […]\nif (!Array.isArray(src) || src.length === 0) {\n    node.warn(\"tee: payload has no tags/metrics[]; skipping\");\n    return null;\n}\nconst tags = src.map(m => {\n    const t = { metric: m.metric || m.name, value: m.value };\n    if (m.long === true) t.long = true;   // optional int hint; agent config is authoritative\n    return t;\n}).filter(t => t.metric != null && t.value != null);\nif (tags.length === 0) {\n    node.warn(\"tee: no {metric,value} pairs after mapping; skipping\");\n    return null;\n}\n\nmsg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\nmsg.payload = { group: \"CPACK\", scan_ts: Date.now(), tags };\nreturn msg;\n",
     "id": "cpack_fn",
     "initialize": "",
     "libs": [],
-    "name": "CPACK tee (set headers + key)",
+    "name": "CPACK tee (build /v1/tags envelope)",
     "noerr": 0,
     "outputs": 1,
     "type": "function",
@@ -31,15 +31,15 @@
     "id": "cpack_http",
     "insecureHTTPParser": false,
     "method": "POST",
-    "name": "POST https://ec2-3-232-9-118.compute-1.amazonaws.com:8446/ingest/sparkplug",
+    "name": "POST http://localhost:9104/v1/tags (local agent)",
     "paytoqs": "ignore",
     "persist": false,
     "proxy": "",
     "ret": "obj",
     "senderr": true,
-    "tls": "cpack_tls",
+    "tls": "",
     "type": "http request",
-    "url": "https://ec2-3-232-9-118.compute-1.amazonaws.com:8446/ingest/sparkplug",
+    "url": "http://localhost:9104/v1/tags",
     "wires": [
       [
         "cpack_route"
@@ -105,19 +105,5 @@
     "x": 1050,
     "y": 160,
     "z": "cpack_tab"
-  },
-  {
-    "alpnprotocol": "",
-    "ca": "",
-    "caname": "",
-    "cert": "",
-    "certname": "",
-    "id": "cpack_tls",
-    "key": "",
-    "keyname": "",
-    "name": "CPACK ingest (self-signed ok=true)",
-    "servername": "",
-    "type": "tls-config",
-    "verifyservercert": false
   }
 ]

@@ -257,8 +257,19 @@ services:
     init: true
     ports:
       - "127.0.0.1:1883:1883"
+      # WAN mTLS SparkPlug uplink (ADR-0042 §6). Bound on all interfaces but the
+      # prod SG admits ONLY var.client_ingest_egress_cidrs (the client /32) on
+      # :8883 (terraform/production/security_groups.tf). require_certificate makes
+      # it useless without a CA-signed client cert even inside that /32.
+      - "8883:8883"
     volumes:
-      - ./configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      # PROD variant of the broker config — adds the :8883 mTLS listener. The
+      # shared base mosquitto.conf is NOT used here (see mosquitto.prod.conf header).
+      - ./configs/mosquitto/mosquitto.prod.conf:/mosquitto/config/mosquitto.conf:ro
+      # mTLS material — server cert/key + client CA. Deploy-provisioned out of
+      # band (Secrets Manager → this host path); see edge-deployment provisioning
+      # runbook. Read-only.
+      - /opt/packiot/mosquitto/certs:/mosquitto/certs:ro
       - mosquitto-data:/mosquitto/data
     networks:
       packiot-net:
