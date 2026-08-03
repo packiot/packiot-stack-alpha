@@ -21,6 +21,25 @@ func FindEndpoint(cfg *clientconfig.Config, name string) (*clientconfig.PLCEndpo
 	return nil, false
 }
 
+// Endpoints returns the DISTINCT endpoint names referenced by this tenant's
+// opcua_tag_map, in config order — the OPC-UA analogue of s7.Endpoints. The
+// opcua-reader drives ALL of them when no single --endpoint is pinned.
+func Endpoints(cfg *clientconfig.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range cfg.OPCUATagMap {
+		if m.Endpoint == "" || seen[m.Endpoint] {
+			continue
+		}
+		seen[m.Endpoint] = true
+		out = append(out, m.Endpoint)
+	}
+	return out
+}
+
 // TagsForEndpoint compiles the tenant's opcua_tag_map entries for one endpoint
 // into poller Tags. The full SparkPlug metric name is <packml_topic><tag.metric>;
 // aliases are assigned 1..N in config order (stable within a boot — the NBIRTH

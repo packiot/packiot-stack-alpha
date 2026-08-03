@@ -21,6 +21,25 @@ func FindEndpoint(cfg *clientconfig.Config, name string) (*clientconfig.PLCEndpo
 	return nil, false
 }
 
+// Endpoints returns the DISTINCT endpoint names referenced by this tenant's
+// modbus_tag_map, in config order — the Modbus analogue of s7.Endpoints. The
+// modbus-reader drives ALL of them when no single --endpoint is pinned.
+func Endpoints(cfg *clientconfig.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range cfg.ModbusTagMap {
+		if m.Endpoint == "" || seen[m.Endpoint] {
+			continue
+		}
+		seen[m.Endpoint] = true
+		out = append(out, m.Endpoint)
+	}
+	return out
+}
+
 // TagsForEndpoint compiles the tenant's modbus_tag_map entries for one endpoint
 // into poller Tags. The full SparkPlug metric name is <packml_topic><tag.metric>;
 // aliases are assigned 1..N in config order (stable within a boot — the NBIRTH

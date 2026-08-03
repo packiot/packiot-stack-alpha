@@ -20,6 +20,27 @@ func FindEndpoint(cfg *clientconfig.Config, name string) (*clientconfig.PLCEndpo
 	return nil, false
 }
 
+// Endpoints returns the DISTINCT endpoint names referenced by this tenant's
+// s7_tag_map, in config order. The s7-reader drives ALL of them (one poller +
+// one PLC connection each) when no single --endpoint is pinned — the multi-PLC
+// path (e.g. CPACK's nine S7 cells). An endpoint with no s7_tag_map entry is not
+// returned, so a mixed-protocol client.yaml yields only this reader's endpoints.
+func Endpoints(cfg *clientconfig.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range cfg.S7TagMap {
+		if m.Endpoint == "" || seen[m.Endpoint] {
+			continue
+		}
+		seen[m.Endpoint] = true
+		out = append(out, m.Endpoint)
+	}
+	return out
+}
+
 // TagsForEndpoint compiles the tenant's s7_tag_map entries for one endpoint
 // into poller Tags. The full SparkPlug metric name is
 // <packml_topic><tag.metric>; aliases are assigned 1..N in config order

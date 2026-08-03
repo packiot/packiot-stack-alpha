@@ -16,15 +16,23 @@ container that the ADR-0045 onboarding flow's **generate** step produces and
 
 | Path | What it is | Who produces it |
 |---|---|---|
-| `compose.edge.yml` | the 3-tier edge stack (Node-RED + internal mosquitto + sparkplug-agent) | this repo (reusable) |
-| `.env.template` | every per-client parameter (copy → `.env`) | CS fills at deploy |
+| `compose.edge.yml` | the edge stack — internal mosquitto + sparkplug-agent (always on) plus TWO opt-in Tier-1 producers behind compose profiles: `reader` (Go PLC reader) and `nodered` (low-code tee) | this repo (reusable) |
+| `.env.template` | every per-client parameter for the Node-RED tee path (copy → `.env`) | CS fills at deploy |
+| `<tenant>.reader.env.example` | per-client parameters for the **reader** path (config-as-data Tier-1) | CS fills at deploy |
+| `README-reader.md` | the reader-path deploy runbook (no Node-RED) | this repo (reusable) |
 | `mosquitto/mosquitto.conf` | the internal Tier-1→Tier-2 loopback bus | this repo (reusable) |
 | `bispharma/bispharma.descriptor.yaml` | the CS-Admin SSoT (describe output) | CS authors |
 | `bispharma/bispharma-agent.yaml` | agentcfg descriptor — SparkPlug identity, brokers, mTLS refs, tag map | **generated** (`onboard-gen`) |
 | `bispharma/bispharma-profile.yaml` | tenant conversion profile (prefix/alias/param/count-index) | **generated** |
 | `bispharma/bispharma-register.sql` | `packml_register` INSERT (topic ↔ id_equipment) | **generated** |
 | `bispharma/bispharma-tee-node.json` | the Node-RED Tier-1 raw-forwarder (tee) flow | **generated** |
+| `<tenant>/<tenant>-client.yaml` | the Go PLC readers' config (endpoints + tag maps) — emitted only when the descriptor has a `plc` block | **generated** (`onboard-gen` artifact 5) |
 | `certs/` | resolved mTLS material (gitignored) | provisioned at deploy |
+
+> **Two Tier-1 options, one transport.** mosquitto + sparkplug-agent are shared and
+> always run. Pick the connectivity plane with a compose profile: `--profile reader`
+> (the config-as-data Go reader — no Node-RED, see **README-reader.md**) or
+> `--profile nodered` (the low-code tee). Everything below the internal bus is identical.
 
 The agent image is built multi-arch (amd64 **and** arm64 — client hardware may be
 either) from `services/edge-transformer/Dockerfile.agent`.
@@ -142,6 +150,13 @@ cp .env.template .env && $EDITOR .env          # fill TENANT_*, image, key, cert
 #      certs/uplink-cert.pem   (client cert, CN=<TENANT>)
 #      certs/uplink-key.pem    (client private key)
 #      certs/uplink-ca.pem     (CA that signs the cloud broker's server cert)
+#
+#    ⚠️ KEY PERMISSIONS (CPACK bring-up bug). The agent runs as NON-ROOT uid
+#    65532. A 0600 root/1000-owned uplink-key.pem is UNREADABLE inside the
+#    container → the uplink TLS load fails and the agent crash-loops. After
+#    placing the key, hand it to 65532:
+#      sudo chown 65532:65532 ./certs/uplink-key.pem      # (or: sudo chmod 0644)
+#    The cert + CA are public, but do the same if their mode is restrictive.
 
 # 2. Build (or pull) the agent image. Multi-arch build+push once, centrally:
 docker buildx build --platform linux/amd64,linux/arm64 \
