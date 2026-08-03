@@ -50,6 +50,16 @@ on:
         description: "(optional) PLC host to prefill (s7: host[:102] | modbus: host:502 | opcua: opc.tcp://host:4840/path)."
         required: false
         type: string
+      agent_image:
+        description: "Pinned edge image (sparkplug-agent + s7/modbus/opcua-reader). Default = the released production/edge-transformer tag."
+        required: false
+        default: "639178078294.dkr.ecr.us-east-1.amazonaws.com/production/edge-transformer:0.1.0-rc.1"
+        type: string
+      bundle_image:
+        description: "Embed the image in the bundle (docker save → tar). Required for clients that cannot pull the PRIVATE ECR repo (no AWS creds on the factory box). Uncheck only if the client can pull it directly."
+        required: false
+        default: true
+        type: boolean
 
 # No cross-run serialization needed — each run writes an isolated bundle/ and
 # uploads a per-client artifact. Group per client so a re-run supersedes.
@@ -264,6 +274,11 @@ jobs:
           set_kv TENANT_SLUG "$CLIENT"
           set_kv TENANT_UPPER "$UPPER"
           set_kv COMPOSE_PROFILES reader
+          # Pin the edge image (agent + all readers = the full Dockerfile build, NOT
+          # Dockerfile.agent which lacks the reader binaries). The bundle references
+          # THIS tag; if bundle_image=true the image is embedded as a tar below so a
+          # private-ECR client needs no AWS creds to pull it.
+          set_kv AGENT_IMAGE "${{ inputs.agent_image }}"
           set_kv CLIENT_CONFIG_FILE  "./$CLIENT/$CLIENT-client.yaml"
           set_kv AGENT_CONFIG_FILE   "./$CLIENT/$CLIENT-agent.yaml"
           set_kv AGENT_PROFILE_FILE  "./$CLIENT/$CLIENT-profile.yaml"
@@ -319,6 +334,37 @@ jobs:
           echo "--- assembled bundle tree ---"
           find bundle -maxdepth 2 -type f | sort
 
+      # Embed the pinned edge image as a portable tar so a client whose box cannot
+      # authenticate to the PRIVATE ECR repo (no AWS creds on the factory floor —
+      # e.g. CPACK's EOL Ubuntu 18.04) can `docker load` it. The runner pulls with
+      # its EC2 instance role, so that role needs ECR *read* on
+      # production/edge-transformer (ecr:GetAuthorizationToken, BatchGetImage,
+      # GetDownloadUrlForLayer). --platform linux/amd64: factory boxes are x86_64;
+      # an arm64 client needs a multi-arch image (follow-up).
+      - name: Embed edge image (docker save)
+        if: ${{ inputs.bundle_image }}
+        run: |
+          set -euo pipefail
+          IMG="${{ inputs.agent_image }}"
+          REG="${IMG%%/*}"
+          echo "::group::ECR login + pull $IMG (linux/amd64)"
+          aws ecr get-login-password --region "${AWS_REGION:-us-east-1}" \
+            | docker login --username AWS --password-stdin "$REG"
+          docker pull --platform linux/amd64 "$IMG"
+          echo "::endgroup::"
+          mkdir -p bundle/images
+          docker save "$IMG" | gzip > bundle/images/edge-transformer.tar.gz
+          # A tiny loader so the deploy is one command on the client box.
+          cat > bundle/load-image.sh <<LOAD
+          #!/bin/sh
+          # Load the embedded edge image — run once before 'docker compose up'.
+          set -e
+          gunzip -c images/edge-transformer.tar.gz | docker load
+          echo "loaded: $IMG"
+          LOAD
+          chmod +x bundle/load-image.sh
+          ls -lh bundle/images/edge-transformer.tar.gz
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
@@ -352,12 +398,13 @@ jobs:
             echo "| \`compose.edge.yml\`, \`mosquitto/\`, \`README-reader.md\`, \`gen-mtls-certs.sh\` | static deploy assets |"
             echo "| \`.env.example\` | prefilled from the reader template (tenant + artifact paths normalized to \`$CLIENT\`) |"
             echo
-            echo "> The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. Set \`AGENT_IMAGE\` in \`.env\` to a **pinned, pullable** \`sparkplug-agent\` image — the bundle has no build context."
+            echo "> The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. \`AGENT_IMAGE\` is **pre-pinned** to \`${{ inputs.agent_image }}\` (agent + all readers) and, when \`bundle_image\` is set, **embedded** as \`images/edge-transformer.tar.gz\` — no ECR auth needed on the client box."
             echo
             echo "### Deploy on the client box"
             echo '```bash'
             echo "unzip $CLIENT-edge-bundle.zip -d $CLIENT-edge && cd $CLIENT-edge"
-            echo "cp .env.example .env && \$EDITOR .env      # fill AGENT_IMAGE, AGENT_INGEST_API_KEY, the PLC host secret"
+            echo "./load-image.sh                            # docker load the embedded edge image"
+            echo "cp .env.example .env && \$EDITOR .env      # fill AGENT_INGEST_API_KEY + the PLC host secret(s)"
             echo "sudo chown 65532:65532 certs/uplink-key.pem   # agent runs as non-root uid 65532"
             echo "docker compose --profile reader -f compose.edge.yml --env-file .env up -d"
             echo '```'
