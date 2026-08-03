@@ -53,5 +53,10 @@ echo "   server-cert.pem/server-key.pem  → cloud mosquitto /mosquitto/certs/{s
 echo "   ${TENANT}-cert.pem/${TENANT}-key.pem → edge host CERTS_DIR as uplink-cert.pem/uplink-key.pem (+ client-ca.pem as uplink-ca.pem)"
 echo "   ca-key.pem = OFFLINE signing key — store in Secrets Manager, deploy NOWHERE."
 echo
+echo "⚠️  AFTER placing uplink-key.pem at CERTS_DIR on the edge host: make it"
+echo "   readable by the agent's NON-ROOT uid 65532, or the agent crash-loops on"
+echo "   the TLS key load (CPACK bring-up bug):"
+echo "       sudo chown 65532:65532 \$CERTS_DIR/uplink-key.pem   # (or: chmod 0644)"
+echo
 echo "verify chain:"
 openssl verify -CAfile client-ca.pem server-cert.pem "${TENANT}-cert.pem"
