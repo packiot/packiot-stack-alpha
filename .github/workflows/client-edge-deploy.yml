@@ -79,11 +79,34 @@ jobs:
           sed -e "s|^AGENT_INGEST_API_KEY=.*|AGENT_INGEST_API_KEY=${INGEST_KEY}|" \
               -e "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" \
               "$SRC" > .env
-          # repoint the client's tee-node to the chosen env's ingest host too
+          # Repoint any shim-style tee-node to the chosen env's ingest host. This
+          # is a no-op for a Mode-B (agent-mTLS) tee, whose http node targets
+          # http://localhost:9104 (the regex only matches an ec2-…amazonaws.com host).
           if [ -f "${CLIENT}/${CLIENT}-tee-node.json" ]; then
             sed -i "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" "${CLIENT}/${CLIENT}-tee-node.json"
           fi
-          echo "materialized .env for CLIENT=${CLIENT} → ${INGEST_HOST}:8446"
+          echo "materialized .env for CLIENT=${CLIENT} (ingest host ${INGEST_HOST})"
+
+      - name: Guard — Mode-B mTLS certs present (fail closed)
+        # If the client's agent.yaml uplinks over ssl:// (Mode-B, ADR-0042 §6), the
+        # three cert files MUST be on the edge host at CERTS_DIR before we bring the
+        # stack up — an ssl:// broker with no certs silently downgrades to plaintext
+        # (uplink/tls.go warns + connects plaintext), which the mTLS broker refuses.
+        # A Mode-A (shim/tcp://) client skips this guard entirely.
+        run: |
+          set -euo pipefail
+          AGENT_YAML="${CLIENT}/${CLIENT}-agent.yaml"
+          if grep -qE '^\s*uplink_broker:\s*ssl://' "$AGENT_YAML" 2>/dev/null; then
+            CERTS_DIR="$(grep -E '^CERTS_DIR=' .env | cut -d= -f2)"; CERTS_DIR="${CERTS_DIR:-./certs}"
+            missing=0
+            for f in uplink-cert.pem uplink-key.pem uplink-ca.pem; do
+              [ -s "${CERTS_DIR}/${f}" ] || { echo "::error::Mode-B requires ${CERTS_DIR}/${f} — run gen-mtls-certs.sh + place the ${CLIENT} client cert/key + CA here (see FIRE-CPACK.md)"; missing=1; }
+            done
+            [ "$missing" = 0 ] || exit 1
+            echo "Mode-B mTLS certs present in ${CERTS_DIR}."
+          else
+            echo "Mode-A client (no ssl:// uplink) — skipping mTLS cert guard."
+          fi
 
       - name: Bring up the parallel edge stack (Node-RED + mosquitto + agent)
         run: docker compose --env-file .env -f compose.edge.yml up -d --wait
