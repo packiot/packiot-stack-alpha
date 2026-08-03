@@ -17,11 +17,11 @@
 # only signs. Store it (and all keys) in Secrets Manager, never in git.
 #
 # USAGE
-#   TENANT=cpack SERVER_DNS=ec2-3-232-9-118.compute-1.amazonaws.com ./gen-mtls-certs.sh
+#   TENANT=cpack SERVER_DNS=ingest.prod.packiot.app ./gen-mtls-certs.sh
 set -euo pipefail
 
 TENANT="${TENANT:?set TENANT (e.g. cpack) — becomes the client cert CN}"
-SERVER_DNS="${SERVER_DNS:?set SERVER_DNS — the hostname the agent dials, e.g. ec2-3-232-9-118.compute-1.amazonaws.com}"
+SERVER_DNS="${SERVER_DNS:?set SERVER_DNS — the hostname the agent dials, e.g. ingest.prod.packiot.app}"
 OUT="${OUT:-./mtls-out}"
 DAYS="${DAYS:-1825}"          # 5y; rotate before expiry
 mkdir -p "$OUT"; cd "$OUT"

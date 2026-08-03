@@ -6,9 +6,10 @@ sparkplug:
     raw_topic: edge/raw/cpack/#
     # Mode-B WAN uplink (ADR-0042 §6): real SparkPlug B over mTLS to the new-prod
     # mosquitto :8883 listener. ssl:// + the AGENT_UPLINK_TLS_* env files (mounted
-    # from CERTS_DIR by compose.edge.yml) trigger mTLS; the server cert SAN must
-    # equal this host (ec2-3-232-9-118 = new-prod Elastic IP, stable).
-    uplink_broker: ssl://ec2-3-232-9-118.compute-1.amazonaws.com:8883
+    # from CERTS_DIR by compose.edge.yml) trigger mTLS. The dialed host is the
+    # stable, IP-decoupled ingest name (terraform var.ingest_subdomain →
+    # ingest.prod.packiot.app → app EIP); the server cert SAN matches it.
+    uplink_broker: ssl://ingest.prod.packiot.app:8883
     # secret:// REFERENCES only (agentcfg rejects inline PEM). Resolved out of band
     # into the CERTS_DIR files at deploy; the agent reads the FILES via env, not these.
     uplink_tls_cert_ref: secret://packiot/production/cpack-mtls/cert

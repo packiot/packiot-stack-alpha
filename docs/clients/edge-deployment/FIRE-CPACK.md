@@ -69,7 +69,7 @@ These are the steps I hold until you approve (prod writes + secrets + redeploy).
 ### P1. Generate the mTLS material (safe; local)
 ```bash
 cd docs/clients/edge-deployment
-TENANT=cpack SERVER_DNS=ec2-3-232-9-118.compute-1.amazonaws.com ./gen-mtls-certs.sh
+TENANT=cpack SERVER_DNS=ingest.prod.packiot.app ./gen-mtls-certs.sh
 # → ./mtls-out/{client-ca,server-cert,server-key,cpack-cert,cpack-key,ca-key}.pem
 ```
 Server-cert SAN = the new-prod Elastic IP DNS (stable). The `ca-key.pem` never
