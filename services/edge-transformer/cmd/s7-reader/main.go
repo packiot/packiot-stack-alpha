@@ -1,16 +1,23 @@
-// s7-reader — reads a Siemens S7 PLC and republishes its tags as SparkPlug B
-// over MQTT, making a real S7 line (e.g. Incoplast) look to the rest of the
-// stack exactly like plc-sim / a native SparkPlug PLC. It is an additive
-// PRODUCER: the edge-transformer decode→transform→publish pipeline consumes it
-// unchanged, so onboarding a real S7 client needs no hot-path changes.
+// s7-reader — reads a Siemens S7 PLC and publishes its tags at the factory
+// edge, making a real S7 line (e.g. Incoplast) look to the rest of the stack
+// exactly like plc-sim. It is an additive PRODUCER: the pipeline downstream
+// consumes it unchanged, so onboarding a real S7 client needs no hot-path
+// changes.
 //
-// PR 1 (S1/#32, foundational): one endpoint, a hardcoded tag set for one
-// Incoplast machine, read from a single data block each tick. PR 2 replaces the
-// hardcoded tags with the per-tenant client.yaml s7_tag_map (ADR-0019 G4).
+// Two emit modes (--raw-emit, default TRUE — ADR-0042 Option A):
 //
-// Protocol shape mirrors plc-sim exactly (the decoder + StateStore were built
-// against it): retained NBIRTH with the name↔alias table on connect, NDATA
-// with alias-only values every tick.
+//   - RAW-EMIT (default): publish the plain-JSON raw-tag envelope (package
+//     rawtag) to the LOOPBACK topic edge/raw/<tenant>. The local sparkplug-agent
+//     subscribes there, decodes via rawtag.Decode, and owns ALL SparkPlug
+//     assembly + mTLS uplink + store-and-forward. The reader is SparkPlug-
+//     IGNORANT: no birth, no alias table, no seq — just readings.
+//   - LEGACY SparkPlug (--raw-emit=false): republish directly as SparkPlug B —
+//     retained NBIRTH with the name↔alias table on connect, NDATA with
+//     alias-only values every tick. Kept byte-for-byte for the plc-sim/staging
+//     path and back-compat.
+//
+// PR 1 (S1/#32): one endpoint, a hardcoded demo tag set. PR 2: per-tenant
+// client.yaml s7_tag_map (ADR-0019 G4).
 package main
 
 import (
@@ -19,11 +26,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/s7"
 )
@@ -39,12 +48,17 @@ func main() {
 	db := flag.Int("db", getenvInt("S7_DB", 100), "data block number for the demo tag set")
 	clientCfg := flag.String("client-config", getenv("CLIENT_CONFIG", ""), "path to client.yaml (s7_tag_map); empty = demo tags")
 	endpoint := flag.String("endpoint", getenv("S7_ENDPOINT", ""), "plc.endpoints[].name to drive (with --client-config)")
+	rawEmit := flag.Bool("raw-emit", getenvBool("RAW_EMIT", true), "emit raw-tag envelopes to edge/raw/<tenant> (agent owns SparkPlug); false = legacy direct SparkPlug B")
+	tenant := flag.String("tenant", getenv("TENANT", ""), "raw-emit tenant for edge/raw/<tenant> (default: lowercased --group)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "s7-reader")
 	if *s7Host == "" {
 		logger.Error("S7_HOST is required (the PLC endpoint) — refusing to start")
 		os.Exit(1)
+	}
+	if *tenant == "" {
+		*tenant = strings.ToLower(*group)
 	}
 
 	// Tag set: from client.yaml s7_tag_map (PR2) when --client-config is set,
@@ -93,6 +107,15 @@ func main() {
 	opts := paho.NewClientOptions().AddBroker(*broker).
 		SetClientID("s7-reader-" + fmt.Sprint(os.Getpid())).
 		SetAutoReconnect(true).SetConnectRetry(true)
+
+	// RAW-EMIT (default, ADR-0042 Option A): publish plain-JSON raw-tag
+	// envelopes to the loopback topic edge/raw/<tenant> and let the local
+	// sparkplug-agent own birth/alias/seq/mTLS. No NBIRTH, no birthed state
+	// machine — the agent is the SparkPlug session authority.
+	if *rawEmit {
+		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, *s7Host, *s7Rack, *s7Slot, *tickSec)
+		return
+	}
 
 	publishBirth := func(c paho.Client) {
 		body, err := poller.EncodeBirth(client.Read)
@@ -154,6 +177,92 @@ func main() {
 	}
 }
 
+// runRawEmit drives the ADR-0042 Option A path: each tick, sample the PLC and
+// publish a plain-JSON raw-tag envelope to edge/raw/<tenant>. No SparkPlug, no
+// birth — the local sparkplug-agent decodes the envelope (rawtag.Decode) and
+// owns the wire protocol + uplink.
+func runRawEmit(
+	logger *slog.Logger,
+	opts *paho.ClientOptions,
+	poller *s7.Poller,
+	read s7.ReadFunc,
+	broker, tenant, endpoint, host string,
+	rack, slot, tickSec int,
+) {
+	topic := "edge/raw/" + tenant
+	// The envelope endpoint field is diagnostic (ADR-0042 open-Q4); fall back
+	// to a stable literal when --endpoint is empty (demo-tag mode).
+	ep := endpoint
+	if ep == "" {
+		ep = "s7"
+	}
+
+	opts.SetOnConnectHandler(func(c paho.Client) {
+		logger.Info("MQTT connected", "broker", broker, "mode", "raw-emit", "topic", topic)
+	})
+	mqtt := paho.NewClient(opts)
+	if tok := mqtt.Connect(); tok.Wait() && tok.Error() != nil {
+		logger.Error("MQTT connect", "err", tok.Error())
+		os.Exit(1)
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	tick := time.NewTicker(time.Duration(tickSec) * time.Second)
+	defer tick.Stop()
+	logger.Info("s7-reader running", "plc", host, "rack", rack, "slot", slot,
+		"tick_sec", tickSec, "mode", "raw-emit", "topic", topic, "endpoint", ep)
+
+	published := false
+	lastCount := -1
+	for {
+		select {
+		case <-stop:
+			logger.Info("s7-reader stopping")
+			mqtt.Disconnect(250)
+			return
+		case <-tick.C:
+			// birth=true so Sample populates metric NAMES. The raw envelope is
+			// name-addressed every tick (no alias table on the loopback), and
+			// Sample's birth flag only toggles name inclusion — it never touches
+			// the poller seq (that lives in EncodeSim), so this has no SparkPlug
+			// side effect. On read failure, skip the tick; no re-birth needed.
+			ms, err := poller.Sample(read, true)
+			if err != nil {
+				logger.Warn("PLC read failed — skipping tick", "err", err)
+				continue
+			}
+			outTags := make([]rawtag.OutTag, 0, len(ms))
+			for _, m := range ms {
+				var v any
+				switch {
+				case m.IsText:
+					v = m.Text
+				case m.IsLong:
+					v = m.Long
+				default:
+					v = m.Double
+				}
+				outTags = append(outTags, rawtag.OutTag{Metric: m.Name, Value: v, Long: m.IsLong})
+			}
+			body, err := rawtag.Encode(ep, time.Now().UnixMilli(), outTags)
+			if err != nil {
+				logger.Warn("encode raw envelope failed — skipping tick", "err", err)
+				continue
+			}
+			tok := mqtt.Publish(topic, 0, false, body)
+			tok.Wait()
+			// Log the first publish and any change in tag count; stay quiet on
+			// steady-state ticks to avoid per-tick log spam.
+			if !published || len(outTags) != lastCount {
+				logger.Info("raw envelope published", "topic", topic, "endpoint", ep, "tags", len(outTags))
+				published = true
+				lastCount = len(outTags)
+			}
+		}
+	}
+}
+
 func getenv(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -168,4 +277,22 @@ func getenvInt(k string, d int) int {
 		return n
 	}
 	return d
+}
+
+// getenvBool reads a boolean env var (1/t/true/0/f/false, case-insensitive),
+// falling back to d when unset or unparseable. Used for RAW_EMIT, which
+// defaults to true.
+func getenvBool(k string, d bool) bool {
+	v := os.Getenv(k)
+	if v == "" {
+		return d
+	}
+	switch strings.ToLower(v) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	case "0", "f", "false", "no", "n", "off":
+		return false
+	default:
+		return d
+	}
 }
