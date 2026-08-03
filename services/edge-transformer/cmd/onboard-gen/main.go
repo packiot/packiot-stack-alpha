@@ -8,6 +8,8 @@
 //	2. <tenant>-register.sql     — packml_register INSERT (topic ↔ id_equipment)
 //	3. <tenant>-agent.yaml       — the sparkplug-agent descriptor (agentcfg)
 //	4. <tenant>-tee-node.json    — the Node-RED Tier-1 raw-forwarder flow
+//	5. <tenant>-client.yaml      — the Go PLC readers' config (clientconfig),
+//	                                emitted ONLY when the descriptor has a plc block
 //
 // Usage:
 //
@@ -80,6 +82,14 @@ func run() error {
 		{tenant + "-register.sql", []byte(art.RegisterSQL)},
 		{tenant + "-agent.yaml", art.AgentYAML},
 		{tenant + "-tee-node.json", art.TeeSnippet},
+	}
+	// Artifact 5: the Go PLC readers' client.yaml, emitted only when the
+	// descriptor declares a plc block (art.ClientYAML is nil otherwise).
+	if art.ClientYAML != nil {
+		files = append(files, struct {
+			name string
+			data []byte
+		}{tenant + "-client.yaml", art.ClientYAML})
 	}
 
 	if *outDir == "" {

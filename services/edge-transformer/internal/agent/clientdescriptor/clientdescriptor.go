@@ -50,6 +50,21 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tenantprofile"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
+)
+
+// secretScheme is the required prefix for any host/URL reference in the plc
+// block — the descriptor NEVER carries a secret VALUE inline, only a pointer
+// into the secret store (mirrors clientconfig.validateV11 Rule 1a).
+const secretScheme = "secret://"
+
+// PLC endpoint protocol tokens. They select which Go reader
+// (s7/modbus/opcua-reader) drives an endpoint, and gate which tag map may
+// reference it (an s7_tag_map may only reference an s7 endpoint, etc).
+const (
+	PLCProtocolS7        = "s7"
+	PLCProtocolModbusTCP = "modbus_tcp"
+	PLCProtocolOPCUA     = "opcua"
 )
 
 // deviceKeyPattern constrains a DECLARED device_key to the same safe charset the
@@ -112,6 +127,55 @@ type Descriptor struct {
 
 	// Tee parameterizes the generated Node-RED tee snippet.
 	Tee TeeParams `yaml:"tee"`
+
+	// PLC is the OPTIONAL PLC-connectivity + tag-map block. When present the
+	// generator emits a 5th artifact, <tenant>-client.yaml (a clientconfig.Config
+	// the Go s7/modbus/opcua-reader loads). When absent (nil) the descriptor
+	// behaves EXACTLY as before — the four-artifact set is unchanged — so every
+	// descriptor authored before this field keeps generating byte-identically.
+	PLC *DescriptorPLC `yaml:"plc,omitempty"`
+}
+
+// DescriptorPLC is the descriptor's PLC-connectivity + tag-map section. It maps
+// 1:1 onto the clientconfig.Config PLC surface the readers consume: the three
+// tag-map slices are the SAME clientconfig types (reused verbatim, so a client.yaml
+// tag map is a faithful copy with zero translation loss), and Endpoints mirror
+// clientconfig.PLCEndpoint field-for-field plus a per-endpoint Protocol token
+// (which clientconfig's PLCEndpoint does not carry) so the descriptor can validate
+// that an s7 tag map only references an s7 endpoint.
+type DescriptorPLC struct {
+	// Endpoints are the reachable PLCs. host_ref / endpoint_url_ref are secret
+	// references, never values.
+	Endpoints []DescriptorPLCEndpoint `yaml:"endpoints"`
+
+	// S7TagMap / ModbusTagMap / OPCUATagMap are the per-protocol tag→PackML
+	// bindings, reused directly from clientconfig so the emitted client.yaml is a
+	// straight copy. Each entry's Endpoint references a DescriptorPLCEndpoint.Name.
+	S7TagMap     []clientconfig.S7EndpointTags     `yaml:"s7_tag_map,omitempty"`
+	ModbusTagMap []clientconfig.ModbusEndpointTags `yaml:"modbus_tag_map,omitempty"`
+	OPCUATagMap  []clientconfig.OPCUAEndpointTags  `yaml:"opcua_tag_map,omitempty"`
+}
+
+// DescriptorPLCEndpoint is one reachable PLC. It mirrors clientconfig.PLCEndpoint
+// field-for-field and adds Protocol. Rack/Slot are S7-specific, UnitID is
+// Modbus-specific, EndpointURLRef/SecurityPolicy/SecurityMode are OPC-UA-specific
+// — all pointers/omitempty so "absent" is distinguishable from a zero value.
+type DescriptorPLCEndpoint struct {
+	Name string `yaml:"name"`
+	// Protocol ∈ {s7, modbus_tcp, opcua}. Selects the reader + gates which tag
+	// map may reference this endpoint.
+	Protocol string `yaml:"protocol"`
+	// HostRef (S7/Modbus) is a secret:// reference to the PLC host, never a value.
+	HostRef string `yaml:"host_ref,omitempty"`
+	Rack    *int   `yaml:"rack,omitempty"` // S7
+	Slot    *int   `yaml:"slot,omitempty"` // S7
+	UnitID  *int   `yaml:"unit_id,omitempty"`
+	// EndpointURLRef (OPC-UA) is a secret:// reference to the server URL, never a
+	// value — the OPC-UA analogue of host_ref.
+	EndpointURLRef  string `yaml:"endpoint_url_ref,omitempty"`
+	SecurityPolicy  string `yaml:"security_policy,omitempty"`
+	SecurityMode    string `yaml:"security_mode,omitempty"`
+	PollingInterval string `yaml:"polling_interval,omitempty"`
 }
 
 // Canonical holds the canonical topic-model head.
@@ -416,5 +480,95 @@ func (d *Descriptor) Validate() error {
 	if _, err := d.GenerateProfile(); err != nil {
 		return fmt.Errorf("generated profile invalid: %w", err)
 	}
+	// The optional plc block: descriptor-native structural checks (endpoint
+	// protocol tokens, endpoint-reference-and-protocol integrity, secret refs).
+	if err := d.validatePLC(); err != nil {
+		return err
+	}
+	// And — like GenerateProfile above — build the client.yaml so a bad tag map
+	// (invalid type token, prefix violation, OR a metric with no matching agent
+	// raw_tag_map entry) is caught at descriptor-validate time, not fanned out to
+	// a silently-broken artifact. GenerateClientYAML runs the full clientconfig
+	// validator + the client⇄agent consistency invariant (ADR-0045 §C).
+	if d.PLC != nil {
+		if _, err := d.GenerateClientYAML(); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// validatePLC checks the plc block's descriptor-native invariants — the ones
+// clientconfig cannot make because its PLCEndpoint carries no protocol: endpoint
+// names are unique + non-empty, every protocol is a known token, host/URL fields
+// are secret references (never inline values), and every tag map references a
+// defined endpoint WHOSE protocol matches the map kind (an s7_tag_map may only
+// bind an s7 endpoint). The per-tag TYPE + tenant-prefix + non-empty-tags rules
+// are delegated to clientconfig via GenerateClientYAML, so there is no duplicate
+// (drift-prone) copy of them here.
+func (d *Descriptor) validatePLC() error {
+	if d.PLC == nil {
+		return nil
+	}
+	epProto := map[string]string{} // endpoint name → its protocol
+	for i, ep := range d.PLC.Endpoints {
+		if strings.TrimSpace(ep.Name) == "" {
+			return fmt.Errorf("plc.endpoints[%d]: name is required", i)
+		}
+		if _, dup := epProto[ep.Name]; dup {
+			return fmt.Errorf("plc.endpoints[%d]: duplicate name %q", i, ep.Name)
+		}
+		switch ep.Protocol {
+		case PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA:
+		default:
+			return fmt.Errorf("plc.endpoints[%d] (%s): protocol=%q must be %s|%s|%s",
+				i, ep.Name, ep.Protocol, PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA)
+		}
+		epProto[ep.Name] = ep.Protocol
+		if err := requireSecretRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
+			return err
+		}
+		if err := requireSecretRef("plc.endpoints", i, ep.Name, "endpoint_url_ref", ep.EndpointURLRef); err != nil {
+			return err
+		}
+	}
+	// Each tag map's endpoint must exist AND carry the map's protocol.
+	checkRef := func(section, endpoint string, i int, wantProto string) error {
+		proto, ok := epProto[endpoint]
+		if !ok {
+			return fmt.Errorf("plc.%s[%d].endpoint=%q must reference a plc.endpoints[].name", section, i, endpoint)
+		}
+		if proto != wantProto {
+			return fmt.Errorf("plc.%s[%d].endpoint=%q is protocol %q, but this tag map requires %q",
+				section, i, endpoint, proto, wantProto)
+		}
+		return nil
+	}
+	for i, m := range d.PLC.S7TagMap {
+		if err := checkRef("s7_tag_map", m.Endpoint, i, PLCProtocolS7); err != nil {
+			return err
+		}
+	}
+	for i, m := range d.PLC.ModbusTagMap {
+		if err := checkRef("modbus_tag_map", m.Endpoint, i, PLCProtocolModbusTCP); err != nil {
+			return err
+		}
+	}
+	for i, m := range d.PLC.OPCUATagMap {
+		if err := checkRef("opcua_tag_map", m.Endpoint, i, PLCProtocolOPCUA); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// requireSecretRef enforces "empty, or a secret:// reference" on a host/URL
+// field — a non-empty value that is not a reference is a leaked credential
+// (mirrors clientconfig.requireSecretRef so both surfaces reject the same shape).
+func requireSecretRef(section string, idx int, label, field, val string) error {
+	if val == "" || strings.HasPrefix(val, secretScheme) {
+		return nil
+	}
+	return fmt.Errorf("%s[%d] (%s): %s=%q must be empty or a %s reference, not a value",
+		section, idx, label, field, val, secretScheme)
 }

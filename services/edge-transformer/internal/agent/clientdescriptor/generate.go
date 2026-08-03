@@ -22,6 +22,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/tenantprofile"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,6 +40,12 @@ type Artifacts struct {
 	AgentYAML   []byte
 
 	TeeSnippet []byte // Node-RED flow JSON (an array of nodes)
+
+	// ClientYAML is the per-tenant client.yaml (a clientconfig.Config) the Go
+	// s7/modbus/opcua-reader loads. Non-nil ONLY when the descriptor carries a
+	// plc block; nil otherwise — so a descriptor without plc emits the same four
+	// artifacts as before (artifact 5 is strictly additive).
+	ClientYAML []byte
 }
 
 // GenerateOptions gates cutover-readiness.
@@ -410,6 +417,153 @@ func teeFunctionBody(tenant, gateway, keyEnv string) string {
 		"return msg;\n"
 }
 
+// GenerateClientYAML builds the per-tenant client.yaml (artifact 5) the Go PLC
+// readers load: a clientconfig.Config assembled from the descriptor's plc block.
+// It is only meaningful when d.PLC != nil (returns an error otherwise — callers
+// gate on d.PLC before calling, and Generate only invokes it when present).
+//
+// Three guarantees before it returns bytes:
+//  1. the assembled config passes the REAL clientconfig validator (the same code
+//     the readers run at boot) — via clientconfig.Config.Validate, so there is one
+//     source of truth for client.yaml validity and no drift from a reimplemented
+//     copy;
+//  2. the client⇄agent consistency invariant holds (checkClientAgentConsistency);
+//  3. it marshals to YAML.
+func (d *Descriptor) GenerateClientYAML() (string, error) {
+	if d.PLC == nil {
+		return "", fmt.Errorf("descriptor has no plc block — nothing to generate for client.yaml")
+	}
+	cfg := d.toClientConfig()
+	if err := cfg.Validate(); err != nil {
+		return "", fmt.Errorf("generated client.yaml invalid: %w", err)
+	}
+	if err := d.checkClientAgentConsistency(cfg); err != nil {
+		return "", err
+	}
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("marshal client.yaml: %w", err)
+	}
+	return string(out), nil
+}
+
+// toClientConfig assembles the clientconfig.Config from the descriptor. The tag
+// maps are copied by reference (same clientconfig types); the endpoints are
+// mapped field-for-field, dropping only the descriptor-only Protocol token —
+// which is folded into PLC.Protocol when the tenant is single-protocol (the
+// common case) and left empty for a mixed-protocol tenant (each reader still
+// selects its endpoint by name). Environment is not modeled on the descriptor;
+// it is a deploy-time concern, so a safe "staging" default is emitted that keeps
+// the config loadable — the ops team's placed client.yaml supplies the real one.
+func (d *Descriptor) toClientConfig() *clientconfig.Config {
+	cfg := &clientconfig.Config{
+		SchemaVersion: "1.1",
+		TenantID:      strings.ToLower(d.Tenant),
+		Customer:      d.Tenant,
+		Environment:   "staging",
+		// The reader strips this off each full metric in raw-emit mode to emit the
+		// group-relative metric_suffix the agent resolves by (packml_topic here IS
+		// the tenant/site prefix). Same value the agent carries as its packml_topic.
+		CanonicalPrefix: d.Canonical.Prefix,
+	}
+	if d.PLC == nil {
+		return cfg
+	}
+	eps := make([]clientconfig.PLCEndpoint, 0, len(d.PLC.Endpoints))
+	protos := map[string]bool{}
+	for _, ep := range d.PLC.Endpoints {
+		protos[ep.Protocol] = true
+		eps = append(eps, clientconfig.PLCEndpoint{
+			Name:            ep.Name,
+			HostRef:         ep.HostRef,
+			Rack:            ep.Rack,
+			Slot:            ep.Slot,
+			UnitID:          ep.UnitID,
+			EndpointURLRef:  ep.EndpointURLRef,
+			SecurityPolicy:  ep.SecurityPolicy,
+			SecurityMode:    ep.SecurityMode,
+			PollingInterval: ep.PollingInterval,
+		})
+	}
+	plc := &clientconfig.PLC{Endpoints: eps}
+	if len(protos) == 1 {
+		for p := range protos {
+			plc.Protocol = p
+		}
+	}
+	cfg.PLC = plc
+	cfg.S7TagMap = d.PLC.S7TagMap
+	cfg.ModbusTagMap = d.PLC.ModbusTagMap
+	cfg.OPCUATagMap = d.PLC.OPCUATagMap
+	return cfg
+}
+
+// checkClientAgentConsistency enforces the ADR-0045 §C invariant that keeps the
+// two independently-authored artifacts in lockstep: EVERY full SparkPlug metric
+// the client.yaml tag maps produce — which each reader forms as
+// <packml_topic><tag.metric> (s7/modbus/opcua mapping.go TagsForEndpoint) — MUST
+// resolve to an entry in the generated agent.yaml raw_tag_map. If one does not,
+// the agent SILENTLY DROPS the reader's tag as unmapped and the metric never
+// reaches Calc — a data-loss bug invisible until someone notices a dead counter.
+//
+// Why a check and not derivation: the plc tag map carries PHYSICAL addressing
+// (S7 db/offset, Modbus register, OPC-UA node_id) the equipment-template
+// synthesis has no source for, so the two are authored independently. The only
+// way to trust they line up is to verify it — here, at generate time, failing
+// loudly with the exact offending metric(s).
+//
+// The comparison is on FULL metric names (agent FullName = packml_topic prefix +
+// metric_suffix), so it is independent of how the agent strips the prefix at
+// runtime — the same string the reader puts on the wire is the one we match.
+func (d *Descriptor) checkClientAgentConsistency(cfg *clientconfig.Config) error {
+	agentCfg, err := d.GenerateAgentConfig()
+	if err != nil {
+		return err
+	}
+	// The agent resolves an incoming raw tag by matching its metric DIRECTLY
+	// against raw_tag_map.metric_suffix (sparkplug-agent newResolver keys byName
+	// on e.MetricSuffix; Resolve does NOT strip the packml_topic). The reader, in
+	// raw-emit mode, emits <s7_tag_map.packml_topic><tag.metric> with the
+	// canonical_prefix TrimPrefix'd off (clientconfig.CanonicalPrefix). So the
+	// consistency key is the SUFFIX, and we must strip the same prefix here.
+	agentSuffix := make(map[string]bool, len(agentCfg.RawTagMap))
+	for _, e := range agentCfg.RawTagMap {
+		agentSuffix[e.MetricSuffix] = true
+	}
+	var missing []string
+	check := func(packmlTopic, metric string) {
+		emitted := strings.TrimPrefix(packmlTopic+metric, cfg.CanonicalPrefix)
+		if !agentSuffix[emitted] {
+			missing = append(missing, emitted)
+		}
+	}
+	for _, m := range cfg.S7TagMap {
+		for _, t := range m.Tags {
+			check(m.PackMLTopic, t.Metric)
+		}
+	}
+	for _, m := range cfg.ModbusTagMap {
+		for _, t := range m.Tags {
+			check(m.PackMLTopic, t.Metric)
+		}
+	}
+	for _, m := range cfg.OPCUATagMap {
+		for _, t := range m.Tags {
+			check(m.PackMLTopic, t.Metric)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf(
+			"client.yaml ⇄ agent.yaml mismatch: %d reader metric(s) have NO matching raw_tag_map metric_suffix "+
+				"(the agent resolves by metric_suffix and would DROP these as unmapped, ADR-0045 §C) — each plc "+
+				"tag-map <packml_topic><metric> with canonical_prefix stripped must EQUAL a raw_tag_map "+
+				"metric_suffix; align the tag metric to the equipment's template leaf + resolved count index: %s",
+			len(missing), strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // Generate produces the full artifact set from a descriptor, enforcing the
 // cutover gate. It is the one entry point a caller (CLI / CS-Admin surface)
 // should use.
@@ -447,6 +601,17 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		return nil, err
 	}
 
+	// Artifact 5 (client.yaml) is emitted ONLY when the descriptor carries a plc
+	// block. A descriptor without one produces exactly the historical four.
+	var clientYAML []byte
+	if d.PLC != nil {
+		s, err := d.GenerateClientYAML()
+		if err != nil {
+			return nil, err
+		}
+		clientYAML = []byte(s)
+	}
+
 	return &Artifacts{
 		Profile:     profile,
 		ProfileYAML: profileYAML,
@@ -454,5 +619,6 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		AgentConfig: agentCfg,
 		AgentYAML:   agentYAML,
 		TeeSnippet:  tee,
+		ClientYAML:  clientYAML,
 	}, nil
 }
