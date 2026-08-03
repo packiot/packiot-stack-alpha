@@ -186,6 +186,12 @@ variable "ingest_mqtts_port" {
   default     = 8883
 }
 
+variable "ingest_https_port" {
+  description = "HTTPS ingest-shim front-door port the app SG admits for the client-edge tee (POSTs SparkPlug-JSON with X-Ingest-Key). Live on the new-prod app node as HTTP_ADDR=:8444."
+  type        = number
+  default     = 8444
+}
+
 variable "client_ingest_egress_cidrs" {
   description = <<-EOT
     Allow-list of client factory-edge PUBLIC egress /32s permitted to reach the

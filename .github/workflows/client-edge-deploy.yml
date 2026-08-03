@@ -55,22 +55,30 @@ jobs:
         id: tgt
         run: |
           set -euo pipefail
+          # The ingest-shim HTTPS front-door differs by env: prod runs it on :8444
+          # (verified live on the new-prod app node), staging on :8446. The tee
+          # POSTs SparkPlug-JSON there with X-Ingest-Key — get the PORT right or the
+          # POST lands on a dead port and the deploy "succeeds" while dropping data.
           if [ "$TARGET" = "production" ]; then
-            HOST="ec2-3-232-9-118.compute-1.amazonaws.com"        # new-prod app node public DNS
+            HOST="ec2-3-232-9-118.compute-1.amazonaws.com"        # new-prod app node (Elastic IP 3.232.9.118 — stable)
+            PORT="8444"                                           # prod ingest-shim HTTP_ADDR
             KEY="$PRODUCTION_INGEST_API_KEY"
           else
             HOST="ec2-100-28-20-195.compute-1.amazonaws.com"      # staging ingest host
+            PORT="8446"                                           # staging ingest-shim port
             KEY="$STAGING_INGEST_API_KEY"
           fi
           [ -n "$KEY" ] || { echo "::error::${TARGET^^}_INGEST_API_KEY secret not set"; exit 1; }
           echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "port=$PORT" >> "$GITHUB_OUTPUT"
           echo "::add-mask::$KEY"
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "resolved target=$TARGET host=$HOST (client=$CLIENT)"
+          echo "resolved target=$TARGET host=$HOST port=$PORT (client=$CLIENT)"
 
-      - name: Materialize <client>.env (inject env-specific host + key)
+      - name: Materialize <client>.env (inject env-specific host + port + key)
         env:
           INGEST_HOST: ${{ steps.tgt.outputs.host }}
+          INGEST_PORT: ${{ steps.tgt.outputs.port }}
           INGEST_KEY: ${{ steps.tgt.outputs.key }}
         run: |
           set -euo pipefail
@@ -79,11 +87,14 @@ jobs:
           sed -e "s|^AGENT_INGEST_API_KEY=.*|AGENT_INGEST_API_KEY=${INGEST_KEY}|" \
               -e "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" \
               "$SRC" > .env
-          # repoint the client's tee-node to the chosen env's ingest host too
+          # Repoint the client's tee-node to the chosen env's ingest host AND port.
+          # Both must move together: the shim listens on :8444 (prod) / :8446 (staging).
           if [ -f "${CLIENT}/${CLIENT}-tee-node.json" ]; then
-            sed -i "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" "${CLIENT}/${CLIENT}-tee-node.json"
+            sed -i -e "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" \
+                   -e "s|\(${INGEST_HOST}\):84[0-9][0-9]|\1:${INGEST_PORT}|g" \
+                   "${CLIENT}/${CLIENT}-tee-node.json"
           fi
-          echo "materialized .env for CLIENT=${CLIENT} → ${INGEST_HOST}:8446"
+          echo "materialized .env for CLIENT=${CLIENT} → ${INGEST_HOST}:${INGEST_PORT}"
 
       - name: Bring up the parallel edge stack (Node-RED + mosquitto + agent)
         run: docker compose --env-file .env -f compose.edge.yml up -d --wait

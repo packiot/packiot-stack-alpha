@@ -53,6 +53,20 @@ resource "aws_security_group" "app" {
     cidr_blocks = var.client_ingest_egress_cidrs
   }
 
+  # ADR-0042 Mode-A (as-built) — HTTPS ingest-shim front door on :8444.
+  # The CPACK Node-RED tee POSTs SparkPlug-JSON here (X-Ingest-Key); the shim
+  # republishes onto RabbitMQ → worker → F3. Same client-egress /32 gate as the
+  # :8883 rule above; the two coexist (shim path today, agent+mTLS path is the
+  # tracked durability follow-up). NOT world-open — the shim TLS-terminates and
+  # refuses any request without the ingest key even inside the /32.
+  ingress {
+    description = "ADR-0042 HTTPS SparkPlug ingest-shim (client-edge tee to :8444; client egress /32 only)"
+    from_port   = var.ingest_https_port
+    to_port     = var.ingest_https_port
+    protocol    = "tcp"
+    cidr_blocks = var.client_ingest_egress_cidrs
+  }
+
   egress {
     description = "All outbound - Docker Hub pulls, GitHub, AWS APIs, DB EC2"
     from_port   = 0

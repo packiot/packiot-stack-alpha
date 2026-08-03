@@ -31,7 +31,7 @@
     "id": "cpack_http",
     "insecureHTTPParser": false,
     "method": "POST",
-    "name": "POST https://ec2-3-232-9-118.compute-1.amazonaws.com:8446/ingest/sparkplug",
+    "name": "POST https://ec2-3-232-9-118.compute-1.amazonaws.com:8444/ingest/sparkplug",
     "paytoqs": "ignore",
     "persist": false,
     "proxy": "",
@@ -39,7 +39,7 @@
     "senderr": true,
     "tls": "cpack_tls",
     "type": "http request",
-    "url": "https://ec2-3-232-9-118.compute-1.amazonaws.com:8446/ingest/sparkplug",
+    "url": "https://ec2-3-232-9-118.compute-1.amazonaws.com:8444/ingest/sparkplug",
     "wires": [
       [
         "cpack_route"
