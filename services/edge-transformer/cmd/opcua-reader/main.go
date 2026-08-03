@@ -118,7 +118,7 @@ func main() {
 	// sparkplug-agent own birth/alias/seq/mTLS. No NBIRTH, no birthed state
 	// machine — the agent is the SparkPlug session authority.
 	if *rawEmit {
-		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, *endpointURL, policy, mode, *tickSec)
+		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, cfg.CanonicalPrefix, *endpointURL, policy, mode, *tickSec)
 		return
 	}
 
@@ -191,7 +191,7 @@ func runRawEmit(
 	opts *paho.ClientOptions,
 	poller *opcua.Poller,
 	read opcua.ReadFunc,
-	broker, tenant, endpoint, endpointURL, policy, mode string,
+	broker, tenant, endpoint, canonicalPrefix, endpointURL, policy, mode string,
 	tickSec int,
 ) {
 	topic := "edge/raw/" + tenant
@@ -248,7 +248,7 @@ func runRawEmit(
 				default:
 					v = m.Double
 				}
-				outTags = append(outTags, rawtag.OutTag{Metric: m.Name, Value: v, Long: m.IsLong})
+				outTags = append(outTags, rawtag.OutTag{Metric: strings.TrimPrefix(m.Name, canonicalPrefix), Value: v, Long: m.IsLong})
 			}
 			body, err := rawtag.Encode(ep, time.Now().UnixMilli(), outTags)
 			if err != nil {

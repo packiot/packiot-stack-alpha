@@ -66,12 +66,17 @@ func main() {
 	// production-shaped path; the endpoint's rack/slot (when present) default
 	// the S7 connection so only the secret host_ref (→ S7_HOST env) is external.
 	var tags []s7.Tag
+	// canonicalPrefix (from client.yaml) is stripped off each metric in raw-emit
+	// mode so the reader emits the group-relative metric_suffix the agent resolves
+	// by. Empty for the demo path ⇒ TrimPrefix is a no-op (full name emitted).
+	var canonicalPrefix string
 	if *clientCfg != "" {
 		cfg, err := clientconfig.Load(*clientCfg)
 		if err != nil {
 			logger.Error("load client config", "path", *clientCfg, "err", err)
 			os.Exit(1)
 		}
+		canonicalPrefix = cfg.CanonicalPrefix
 		if ep, ok := s7.FindEndpoint(cfg, *endpoint); ok {
 			if ep.Rack != nil {
 				*s7Rack = *ep.Rack
@@ -113,7 +118,7 @@ func main() {
 	// sparkplug-agent own birth/alias/seq/mTLS. No NBIRTH, no birthed state
 	// machine — the agent is the SparkPlug session authority.
 	if *rawEmit {
-		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, *s7Host, *s7Rack, *s7Slot, *tickSec)
+		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, canonicalPrefix, *s7Host, *s7Rack, *s7Slot, *tickSec)
 		return
 	}
 
@@ -186,7 +191,7 @@ func runRawEmit(
 	opts *paho.ClientOptions,
 	poller *s7.Poller,
 	read s7.ReadFunc,
-	broker, tenant, endpoint, host string,
+	broker, tenant, endpoint, canonicalPrefix, host string,
 	rack, slot, tickSec int,
 ) {
 	topic := "edge/raw/" + tenant
@@ -243,7 +248,7 @@ func runRawEmit(
 				default:
 					v = m.Double
 				}
-				outTags = append(outTags, rawtag.OutTag{Metric: m.Name, Value: v, Long: m.IsLong})
+				outTags = append(outTags, rawtag.OutTag{Metric: strings.TrimPrefix(m.Name, canonicalPrefix), Value: v, Long: m.IsLong})
 			}
 			body, err := rawtag.Encode(ep, time.Now().UnixMilli(), outTags)
 			if err != nil {

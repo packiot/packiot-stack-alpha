@@ -64,6 +64,15 @@ type Config struct {
 	// log context; in Phase 2 it gates which SM secret-ID prefix is used.
 	Environment string `yaml:"environment"`
 
+	// CanonicalPrefix is the tenant/site SparkPlug prefix (e.g. "CPACK/SC") the
+	// agent carries as its packml_topic. In raw-emit mode the reader strips it
+	// from each compiled tag's full metric name so it emits the GROUP-RELATIVE
+	// metric_suffix (e.g. "/CELULA1/CER400/Status/MachSpeed") — the exact string
+	// the agent resolves by (newResolver keys byName on metric_suffix; it does
+	// NOT strip its own prefix). Optional; empty ⇒ no strip (emit the full name,
+	// e.g. the demo-tag path). Set by onboard-gen from descriptor.canonical.prefix.
+	CanonicalPrefix string `yaml:"canonical_prefix,omitempty"`
+
 	// Equipments is the static topic→equipment mapping. Empty in the
 	// skeleton; Phase 2 fills it from packml_register exports or
 	// CS-Admin onboarding output.
