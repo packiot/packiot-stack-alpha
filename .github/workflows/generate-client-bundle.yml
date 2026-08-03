@@ -1,0 +1,327 @@
+name: Generate Client Edge Bundle
+
+# ADR-0045 config-as-data — Phase 4: the "bundle-artifact" edge deploy model.
+#
+# This workflow GENERATES a per-client edge bundle as a downloadable GitHub
+# artifact. There is NO self-hosted runner AT the client: a CS engineer downloads
+# the artifact, drops it on the client box, fills the two SECRETS the box needs
+# (PLC host + ingest key are optional/pre-filled), and runs
+#   docker compose --profile reader -f compose.edge.yml --env-file .env up -d
+#
+# What goes in the bundle (all runner-free, self-contained):
+#   compose.edge.yml + mosquitto/ + README-reader.md + gen-mtls-certs.sh   (static)
+#   <client>/<client>-{profile,register,agent,tee-node}.yaml[+client.yaml]  (onboard-gen)
+#   certs/uplink-{cert,key,ca}.pem                                          (minted here)
+#   .env.example                                                           (prefilled)
+#
+# The client mTLS cert is signed HERE against the EXISTING prod CA (the prod
+# mosquitto already trusts it), so the client never touches the CA. The CA private
+# key is pulled from Secrets Manager, used to sign, then SHREDDED — it never lands
+# in the bundle. The bundle DOES contain the client private key: the artifact is
+# the secure handoff (GitHub artifacts are repo-access-controlled).
+#
+# Runs on the production self-hosted runner (same as deploy-production.yml): the
+# EC2 instance role gives Secrets Manager access; go + openssl + aws are available.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: "Client slug (lowercase). MUST match the descriptor dir docs/clients/edge-deployment/<client>/ and is the cert CN."
+        required: true
+        type: string
+      target:
+        description: "Deploy target — selects the CA Secrets Manager namespace (packiot/<target>/edge-uplink-ca) + the ingest host."
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+      protocol:
+        description: "(optional) Reader protocol to prefill: s7 | modbus | opcua. Leave blank for the CS engineer to fill."
+        required: false
+        type: string
+      endpoint:
+        description: "(optional) READER_ENDPOINT to prefill = a plc.endpoints[].name in the generated client.yaml."
+        required: false
+        type: string
+      plc_host:
+        description: "(optional) PLC host to prefill (s7: host[:102] | modbus: host:502 | opcua: opc.tcp://host:4840/path)."
+        required: false
+        type: string
+
+# No cross-run serialization needed — each run writes an isolated bundle/ and
+# uploads a per-client artifact. Group per client so a re-run supersedes.
+concurrency:
+  group: generate-client-bundle-${{ inputs.client }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  generate:
+    # Mirror deploy-production: the prod runner's EC2 role has Secrets Manager
+    # access, and go/openssl/aws are on PATH there.
+    runs-on: [self-hosted, production, linux, arm64]
+
+    env:
+      CLIENT: ${{ inputs.client }}
+      TARGET: ${{ inputs.target }}
+      PROTOCOL: ${{ inputs.protocol }}
+      ENDPOINT: ${{ inputs.endpoint }}
+      PLC_HOST: ${{ inputs.plc_host }}
+      AWS_REGION: us-east-1
+      ED: docs/clients/edge-deployment
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Validate inputs (fail closed)
+        run: |
+          set -euo pipefail
+          # Slug must be a safe lowercase token — it is spliced into paths, a cert
+          # CN, and container/artifact names. Reject anything that could escape.
+          if ! printf '%s' "$CLIENT" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; then
+            echo "::error::client slug '$CLIENT' is invalid (must match ^[a-z0-9][a-z0-9_-]*$)"
+            exit 1
+          fi
+          if [ -n "${PROTOCOL:-}" ]; then
+            case "$PROTOCOL" in
+              s7|modbus|opcua) ;;
+              *) echo "::error::protocol '$PROTOCOL' must be one of: s7 | modbus | opcua (or blank)"; exit 1 ;;
+            esac
+          fi
+          echo "client=$CLIENT target=$TARGET protocol=${PROTOCOL:-<blank>} endpoint=${ENDPOINT:-<blank>}"
+
+      - name: Build onboard-gen
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null 2>&1 || { echo "::error::go is not on PATH on this runner"; exit 1; }
+          cd services/edge-transformer
+          go build -o /tmp/onboard-gen ./cmd/onboard-gen
+          echo "built /tmp/onboard-gen"
+
+      - name: Locate descriptor (fail closed)
+        run: |
+          set -euo pipefail
+          DESC="$ED/$CLIENT/$CLIENT.descriptor.yaml"
+          if [ ! -f "$DESC" ]; then
+            echo "::error::descriptor not found: $DESC — commit it before generating a bundle for '$CLIENT'."
+            exit 1
+          fi
+          echo "DESC=$DESC" >> "$GITHUB_ENV"
+          echo "found descriptor: $DESC"
+
+      - name: Generate onboarding artifacts
+        run: |
+          set -euo pipefail
+          rm -rf bundle
+          mkdir -p "bundle/$CLIENT"
+          # Draft generation (no --cutover): a bundle is fine on inferred count
+          # indices — capture happens on a live tee post-deploy. onboard-gen prints
+          # the inferred-index / cutover-readiness report to stderr; surface it.
+          /tmp/onboard-gen --descriptor "$DESC" --out "bundle/$CLIENT/"
+          echo "--- generated files ---"
+          ls -l "bundle/$CLIENT/"
+          # The generator prefixes filenames with the descriptor's tenant
+          # (lowercased). If that != the client slug, the bundle's .env paths
+          # (which use $CLIENT) would dangle — fail closed.
+          if [ ! -f "bundle/$CLIENT/$CLIENT-profile.yaml" ]; then
+            echo "::error::descriptor tenant does not match client slug '$CLIENT' — generated files are prefixed differently (see ls above)."
+            exit 1
+          fi
+          if [ -f "bundle/$CLIENT/$CLIENT-client.yaml" ]; then
+            echo "reader client.yaml generated (descriptor has a plc: block) — reader profile is deployable."
+          else
+            echo "::warning::no <client>-client.yaml generated (descriptor has no plc: block) — the reader profile has nothing to drive; add a plc: block to the descriptor for the reader deploy model."
+          fi
+
+      - name: Mint client mTLS cert (sign against the existing prod CA)
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null 2>&1 || { echo "::error::python3 is required to parse the CA secret JSON"; exit 1; }
+          CA_SECRET_ID="packiot/${TARGET}/edge-uplink-ca"
+          echo "pulling CA from Secrets Manager: $CA_SECRET_ID"
+
+          # Pull the CA JSON {ca_cert, ca_key}. Mask it immediately so no later
+          # accidental echo leaks the CA material. --output text yields the raw
+          # SecretString (single JSON line).
+          SECRET_JSON="$(aws secretsmanager get-secret-value \
+            --secret-id "$CA_SECRET_ID" --region "$AWS_REGION" \
+            --query SecretString --output text)"
+          echo "::add-mask::$SECRET_JSON"
+
+          # Write ca.pem + ca-key.pem to a temp dir OUTSIDE the bundle. Pass the
+          # secret via env (not argv) so it never appears in the process table.
+          CADIR="$(mktemp -d)"
+          CA_SECRET_JSON="$SECRET_JSON" python3 - "$CADIR" <<'PY'
+          import json, os, sys
+          cadir = sys.argv[1]
+          d = json.loads(os.environ["CA_SECRET_JSON"])
+          for k in ("ca_cert", "ca_key"):
+              if k not in d or not str(d[k]).strip():
+                  sys.exit(f"CA secret missing key: {k}")
+          with open(os.path.join(cadir, "ca.pem"), "w") as f:
+              f.write(d["ca_cert"])
+          fd = os.open(os.path.join(cadir, "ca-key.pem"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          with os.fdopen(fd, "w") as f:
+              f.write(d["ca_key"])
+          PY
+          unset SECRET_JSON
+
+          # Sign a 4096 client cert, CN=<client>, clientAuth EKU, ~5y — the same
+          # shape gen-mtls-certs.sh issues, but against the EXISTING CA only.
+          openssl genrsa -out "$CADIR/client-key.pem" 4096 2>/dev/null
+          openssl req -new -key "$CADIR/client-key.pem" \
+            -subj "/O=Packiot/CN=${CLIENT}" -out "$CADIR/client.csr"
+          openssl x509 -req -in "$CADIR/client.csr" \
+            -CA "$CADIR/ca.pem" -CAkey "$CADIR/ca-key.pem" -CAcreateserial \
+            -days 1825 -sha256 -out "$CADIR/client-cert.pem" \
+            -extfile <(printf 'extendedKeyUsage=clientAuth\n')
+
+          # Place into the bundle: cert + key (the handoff) + the CA cert (public).
+          mkdir -p bundle/certs
+          cp "$CADIR/client-cert.pem" bundle/certs/uplink-cert.pem
+          cp "$CADIR/client-key.pem"  bundle/certs/uplink-key.pem
+          cp "$CADIR/ca.pem"          bundle/certs/uplink-ca.pem
+          chmod 0644 bundle/certs/uplink-cert.pem bundle/certs/uplink-ca.pem
+          chmod 0640 bundle/certs/uplink-key.pem
+
+          # Verify the chain before we hand it off.
+          openssl verify -CAfile bundle/certs/uplink-ca.pem bundle/certs/uplink-cert.pem
+
+          # SHRED the CA private key — it must never leave this runner.
+          shred -u "$CADIR/ca-key.pem" 2>/dev/null || rm -f "$CADIR/ca-key.pem"
+          rm -rf "$CADIR"
+
+          cat > bundle/certs/CERTS-README.txt <<EOF
+          mTLS material for ${CLIENT} — SparkPlug uplink to ${TARGET} (ADR-0042 §6)
+
+            uplink-cert.pem   client cert, CN=${CLIENT}, signed by the Packiot Edge Uplink CA
+            uplink-key.pem    client PRIVATE KEY (RSA 4096) — KEEP SECRET
+            uplink-ca.pem     the CA cert (public trust anchor)
+
+          The private key is IN this bundle by design: the GitHub artifact is the
+          secure handoff (artifacts are repo-access-controlled). Do NOT re-share it.
+
+          On the client box, BEFORE 'docker compose up', make the key readable by
+          the agent's NON-ROOT runtime uid (else the agent crash-loops on TLS load):
+
+            sudo chown 65532:65532 uplink-key.pem      # (or: sudo chmod 0644 uplink-key.pem)
+
+          Cert validity: ~5 years. Rotate (re-run this workflow) before expiry.
+          EOF
+          echo "certs minted:"; ls -l bundle/certs/
+
+      - name: Assemble static bundle files + prefill .env.example
+        run: |
+          set -euo pipefail
+          # Static deploy assets.
+          cp "$ED/compose.edge.yml"  bundle/
+          cp -r "$ED/mosquitto"      bundle/
+          cp "$ED/README-reader.md"  bundle/
+          cp "$ED/gen-mtls-certs.sh" bundle/
+
+          # Pick the env template: the client-specific reader env if committed,
+          # else the generic template.
+          if [ -f "$ED/$CLIENT.reader.env.example" ]; then
+            SRC="$ED/$CLIENT.reader.env.example"
+          elif [ -f "$ED/.env.template" ]; then
+            SRC="$ED/.env.template"
+          else
+            echo "::error::no env template found ($ED/$CLIENT.reader.env.example or $ED/.env.template)"
+            exit 1
+          fi
+          cp "$SRC" bundle/.env.example
+          echo "env template: $SRC"
+
+          ENVF=bundle/.env.example
+          # Idempotent key setter: replace the line if the key exists, else append.
+          # awk -v assigns the value literally (no regex/backref interpretation), so
+          # URLs / colons / slashes in a value are safe.
+          set_kv() {
+            local k="$1" v="$2"
+            awk -v k="$k" -v v="$v" '
+              $0 ~ "^"k"=" { print k"="v; done=1; next }
+              { print }
+              END { if (!done) print k"="v }
+            ' "$ENVF" > "$ENVF.tmp" && mv "$ENVF.tmp" "$ENVF"
+          }
+
+          # Normalize tenant identity + reader profile + the GENERATED artifact
+          # paths to THIS client, so a generic (or cpack-labeled) template is
+          # correctly specialized for the bundle layout.
+          UPPER="$(printf '%s' "$CLIENT" | tr '[:lower:]' '[:upper:]')"
+          set_kv TENANT_SLUG "$CLIENT"
+          set_kv TENANT_UPPER "$UPPER"
+          set_kv COMPOSE_PROFILES reader
+          set_kv CLIENT_CONFIG_FILE  "./$CLIENT/$CLIENT-client.yaml"
+          set_kv AGENT_CONFIG_FILE   "./$CLIENT/$CLIENT-agent.yaml"
+          set_kv AGENT_PROFILE_FILE  "./$CLIENT/$CLIENT-profile.yaml"
+          set_kv CERTS_DIR "./certs"
+
+          # Optional operator-supplied prefills.
+          [ -n "${PROTOCOL:-}" ] && set_kv READER_PROTOCOL "$PROTOCOL" || true
+          [ -n "${ENDPOINT:-}" ] && set_kv READER_ENDPOINT "$ENDPOINT" || true
+          if [ -n "${PLC_HOST:-}" ]; then
+            case "${PROTOCOL:-s7}" in
+              modbus) set_kv MODBUS_HOST "$PLC_HOST" ;;
+              opcua)  set_kv OPCUA_ENDPOINT_URL "$PLC_HOST" ;;
+              *)      set_kv S7_HOST "$PLC_HOST" ;;
+            esac
+          fi
+
+          echo "--- assembled bundle tree ---"
+          find bundle -maxdepth 2 -type f | sort
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.client }}-edge-bundle
+          path: bundle/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          UPPER="$(printf '%s' "$CLIENT" | tr '[:lower:]' '[:upper:]')"
+          HAS_CLIENT_YAML=no
+          [ -f "bundle/$CLIENT/$CLIENT-client.yaml" ] && HAS_CLIENT_YAML=yes
+          {
+            echo "## Edge bundle: \`$CLIENT\` → \`$TARGET\`"
+            echo
+            echo "Artifact **\`$CLIENT-edge-bundle\`** (retention 7 days). Download it, unzip on the client box, then deploy — no runner needed at the client."
+            echo
+            echo "### What's in the bundle"
+            echo '```'
+            find bundle -maxdepth 2 -type f | sort | sed 's#^bundle/#  #'
+            echo '```'
+            echo
+            echo "| Piece | Source |"
+            echo "|---|---|"
+            echo "| \`$CLIENT/$CLIENT-*.{yaml,sql,json}\` | onboard-gen (draft; capture count indices on a live tee before cutover) |"
+            echo "| \`$CLIENT/$CLIENT-client.yaml\` | reader config — generated: **$HAS_CLIENT_YAML** (needs a \`plc:\` block in the descriptor) |"
+            echo "| \`certs/uplink-{cert,key,ca}.pem\` | client cert CN=\`$CLIENT\`, signed against \`packiot/$TARGET/edge-uplink-ca\` (CA key shredded) |"
+            echo "| \`compose.edge.yml\`, \`mosquitto/\`, \`README-reader.md\`, \`gen-mtls-certs.sh\` | static deploy assets |"
+            echo "| \`.env.example\` | prefilled from the reader template (tenant + artifact paths normalized to \`$CLIENT\`) |"
+            echo
+            echo "> The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. Set \`AGENT_IMAGE\` in \`.env\` to a **pinned, pullable** \`sparkplug-agent\` image — the bundle has no build context."
+            echo
+            echo "### Deploy on the client box"
+            echo '```bash'
+            echo "unzip $CLIENT-edge-bundle.zip -d $CLIENT-edge && cd $CLIENT-edge"
+            echo "cp .env.example .env && \$EDITOR .env      # fill AGENT_IMAGE, AGENT_INGEST_API_KEY, the PLC host secret"
+            echo "sudo chown 65532:65532 certs/uplink-key.pem   # agent runs as non-root uid 65532"
+            echo "docker compose --profile reader -f compose.edge.yml --env-file .env up -d"
+            echo '```'
+            echo
+            echo "Validate: \`curl -fsS localhost:\${AGENT_HEALTH_PORT:-9103}/healthz\` → \`{\"healthy\":true}\`. See \`README-reader.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
