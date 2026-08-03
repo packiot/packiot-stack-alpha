@@ -12,15 +12,19 @@
 //     rawtag) to the LOOPBACK topic edge/raw/<tenant>. The local sparkplug-agent
 //     subscribes there, decodes via rawtag.Decode, and owns ALL SparkPlug
 //     assembly + mTLS uplink + store-and-forward. The reader is SparkPlug-
-//     IGNORANT: no birth, no alias table, no seq — just readings.
+//     IGNORANT: no birth, no alias table, no seq — just readings. In this mode a
+//     SINGLE modbus-reader drives EVERY Modbus endpoint in the mounted
+//     client.yaml (one poller + device connection each) — the multi-PLC path
+//     (ADR-0045). Pin one with --endpoint; leave it empty to drive them all.
 //   - LEGACY SparkPlug (--raw-emit=false): republish directly as SparkPlug B —
 //     retained NBIRTH with the name↔alias table on connect, NDATA with
 //     alias-only values every tick. Kept byte-for-byte for the plc-sim/staging
-//     path and back-compat.
+//     path and back-compat. Single endpoint only.
 //
-// Config-driven via --client-config + --endpoint (per-tenant client.yaml
-// modbus_tag_map). The device host + unit id are external (secret / env
-// MODBUS_HOST + MODBUS_UNIT_ID) so the descriptor carries no plaintext host.
+// Config-driven via --client-config (per-tenant client.yaml modbus_tag_map). Each
+// endpoint's host is external (secret): the protocol-wide MODBUS_HOST env
+// (single-endpoint), or a per-endpoint PLC_HOST_<NAME> override (multi-PLC) — see
+// internal/rawemit.HostForEndpoint.
 package main
 
 import (
@@ -35,54 +39,144 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
-	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/modbus"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/rawemit"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
 func main() {
 	broker := flag.String("broker", getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"), "MQTT broker")
 	edgeNode := flag.String("edge-node", getenv("MODBUS_EDGE_NODE", "modbus-reader"), "Sparkplug edge node id")
 	group := flag.String("group", getenv("MODBUS_GROUP", "INCOPLAST"), "Sparkplug group_id (tenant)")
-	mbHost := flag.String("modbus-host", getenv("MODBUS_HOST", ""), "Modbus device host:port")
+	mbHost := flag.String("modbus-host", getenv("MODBUS_HOST", ""), "Modbus device host:port — protocol-wide fallback host")
 	mbUnit := flag.Int("modbus-unit", getenvInt("MODBUS_UNIT_ID", 1), "Modbus unit/slave id")
 	tickSec := flag.Int("tick", getenvInt("MODBUS_TICK_SEC", 5), "seconds between NDATA reads")
 	clientCfg := flag.String("client-config", getenv("CLIENT_CONFIG", ""), "path to client.yaml (modbus_tag_map)")
-	endpoint := flag.String("endpoint", getenv("MODBUS_ENDPOINT", ""), "plc.endpoints[].name to drive (with --client-config)")
+	endpoint := flag.String("endpoint", getenv("MODBUS_ENDPOINT", ""), "plc.endpoints[].name to drive; empty = ALL Modbus endpoints")
 	rawEmit := flag.Bool("raw-emit", getenvBool("RAW_EMIT", true), "emit raw-tag envelopes to edge/raw/<tenant> (agent owns SparkPlug); false = legacy direct SparkPlug B")
 	tenant := flag.String("tenant", getenv("TENANT", ""), "raw-emit tenant for edge/raw/<tenant> (default: lowercased --group)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "modbus-reader")
-	if *mbHost == "" {
-		logger.Error("MODBUS_HOST is required (the device endpoint) — refusing to start")
-		os.Exit(1)
-	}
-	if *clientCfg == "" || *endpoint == "" {
-		logger.Error("--client-config and --endpoint are required (modbus_tag_map is config-driven)")
+	if *clientCfg == "" {
+		logger.Error("--client-config is required (modbus_tag_map is config-driven)")
 		os.Exit(1)
 	}
 	if *tenant == "" {
 		*tenant = strings.ToLower(*group)
 	}
 
-	cfg, err := clientconfig.Load(*clientCfg)
+	// RAW-EMIT (default): drive every Modbus endpoint in the client.yaml (or the
+	// one pinned by --endpoint), each publishing raw-tag envelopes to
+	// edge/raw/<tenant>. The local sparkplug-agent owns birth/alias/seq/mTLS.
+	if *rawEmit {
+		eps := buildEndpoints(logger, *clientCfg, *endpoint, *mbHost, *mbUnit, *tickSec)
+		opts := paho.NewClientOptions().AddBroker(*broker).
+			SetClientID("modbus-reader-" + fmt.Sprint(os.Getpid())).
+			SetAutoReconnect(true).SetConnectRetry(true)
+		rawemit.Run(logger, opts, *broker, *tenant, *tickSec, eps)
+		return
+	}
+
+	runLegacy(logger, *broker, *edgeNode, *group, *clientCfg, *endpoint, *mbHost, *mbUnit, *tickSec)
+}
+
+// buildEndpoints compiles the set of rawemit.Endpoints this reader drives: ALL
+// Modbus endpoints in the client.yaml (or the single pinned --endpoint). Each
+// resolves its own host (PLC_HOST_<NAME> override → MODBUS_HOST fallback) and its
+// unit id (from the endpoint's unit_id, else MODBUS_UNIT_ID). Exits 0 when there
+// is nothing to drive (umbrella `reader` profile on a client with no Modbus line);
+// exits 1 on a real misconfig.
+func buildEndpoints(logger *slog.Logger, clientCfg, endpoint, mbHostFallback string, unitFallback, tickSec int) []rawemit.Endpoint {
+	timeout := time.Duration(tickSec) * time.Second
+
+	cfg, err := clientconfig.Load(clientCfg)
 	if err != nil {
-		logger.Error("load client config", "path", *clientCfg, "err", err)
+		logger.Error("load client config", "path", clientCfg, "err", err)
 		os.Exit(1)
 	}
-	// The endpoint's unit_id (when present) defaults the Modbus connection so
-	// only the secret host_ref (→ MODBUS_HOST env) is external, mirroring how
-	// s7-reader defaults rack/slot from the endpoint.
-	if ep, ok := modbus.FindEndpoint(cfg, *endpoint); ok && ep.UnitID != nil {
-		*mbUnit = *ep.UnitID
+
+	names := modbus.Endpoints(cfg)
+	if endpoint != "" {
+		if !contains(names, endpoint) {
+			logger.Info("pinned --endpoint is not a Modbus endpoint in client.yaml — nothing to drive", "endpoint", endpoint)
+			os.Exit(0)
+		}
+		names = []string{endpoint}
 	}
-	tags, err := modbus.TagsForEndpoint(cfg, *endpoint)
-	if err != nil {
-		logger.Error("compile modbus tag map", "endpoint", *endpoint, "err", err)
+	if len(names) == 0 {
+		logger.Info("no Modbus endpoints in client.yaml — nothing to drive", "path", clientCfg)
+		os.Exit(0)
+	}
+
+	var eps []rawemit.Endpoint
+	for _, name := range names {
+		host := rawemit.HostForEndpoint(name, mbHostFallback)
+		if host == "" {
+			logger.Warn("no host for Modbus endpoint — set PLC_HOST_<NAME> or MODBUS_HOST — skipping", "endpoint", name)
+			continue
+		}
+		unit := unitFallback
+		if ep, ok := modbus.FindEndpoint(cfg, name); ok && ep.UnitID != nil {
+			unit = *ep.UnitID
+		}
+		tags, err := modbus.TagsForEndpoint(cfg, name)
+		if err != nil {
+			logger.Error("compile modbus tag map", "endpoint", name, "err", err)
+			os.Exit(1)
+		}
+		poller, err := modbus.NewPoller(tags)
+		if err != nil {
+			logger.Error("build poller", "endpoint", name, "err", err)
+			os.Exit(1)
+		}
+		client := modbus.NewClient(host, byte(unit), timeout)
+		logger.Info("modbus endpoint compiled", "endpoint", name, "tags", len(tags), "unit", unit, "host_set", true)
+		eps = append(eps, sampleEndpoint(name, cfg.CanonicalPrefix, poller, client))
+	}
+	if len(eps) == 0 {
+		logger.Error("Modbus endpoints present in client.yaml but none had a host — set PLC_HOST_<NAME> or MODBUS_HOST", "endpoints", len(names))
 		os.Exit(1)
 	}
-	logger.Info("loaded modbus tag map from config", "path", *clientCfg, "endpoint", *endpoint, "tags", len(tags))
+	return eps
+}
+
+// sampleEndpoint binds a modbus poller + client into a rawemit.Endpoint.
+func sampleEndpoint(name, canonicalPrefix string, poller *modbus.Poller, client *modbus.Client) rawemit.Endpoint {
+	return rawemit.Endpoint{
+		Name:            name,
+		CanonicalPrefix: canonicalPrefix,
+		Sample:          func(birth bool) ([]sparkplug.SimMetric, error) { return poller.Sample(client.Read, birth) },
+		Close:           client.Close,
+	}
+}
+
+// runLegacy is the --raw-emit=false direct-SparkPlug path: ONE endpoint,
+// retained NBIRTH + alias-only NDATA. Kept byte-for-byte for back-compat.
+func runLegacy(logger *slog.Logger, broker, edgeNode, group, clientCfg, endpoint, mbHost string, mbUnit, tickSec int) {
+	if mbHost == "" {
+		logger.Error("MODBUS_HOST is required (the device endpoint) — refusing to start")
+		os.Exit(1)
+	}
+	if endpoint == "" {
+		logger.Error("--endpoint is required on the legacy path (modbus_tag_map is config-driven)")
+		os.Exit(1)
+	}
+	cfg, err := clientconfig.Load(clientCfg)
+	if err != nil {
+		logger.Error("load client config", "path", clientCfg, "err", err)
+		os.Exit(1)
+	}
+	if ep, ok := modbus.FindEndpoint(cfg, endpoint); ok && ep.UnitID != nil {
+		mbUnit = *ep.UnitID
+	}
+	tags, err := modbus.TagsForEndpoint(cfg, endpoint)
+	if err != nil {
+		logger.Error("compile modbus tag map", "endpoint", endpoint, "err", err)
+		os.Exit(1)
+	}
+	logger.Info("loaded modbus tag map from config", "path", clientCfg, "endpoint", endpoint, "tags", len(tags))
 
 	poller, err := modbus.NewPoller(tags)
 	if err != nil {
@@ -90,21 +184,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := modbus.NewClient(*mbHost, byte(*mbUnit), time.Duration(*tickSec)*time.Second)
+	client := modbus.NewClient(mbHost, byte(mbUnit), time.Duration(tickSec)*time.Second)
 	defer client.Close()
 
-	opts := paho.NewClientOptions().AddBroker(*broker).
+	opts := paho.NewClientOptions().AddBroker(broker).
 		SetClientID("modbus-reader-" + fmt.Sprint(os.Getpid())).
 		SetAutoReconnect(true).SetConnectRetry(true)
-
-	// RAW-EMIT (default, ADR-0042 Option A): publish plain-JSON raw-tag
-	// envelopes to the loopback topic edge/raw/<tenant> and let the local
-	// sparkplug-agent own birth/alias/seq/mTLS. No NBIRTH, no birthed state
-	// machine — the agent is the SparkPlug session authority.
-	if *rawEmit {
-		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, cfg.CanonicalPrefix, *mbHost, *mbUnit, *tickSec)
-		return
-	}
 
 	publishBirth := func(c paho.Client) {
 		body, err := poller.EncodeBirth(client.Read)
@@ -114,9 +199,9 @@ func main() {
 			logger.Warn("NBIRTH skipped (Modbus read failed)", "err", err)
 			return
 		}
-		tok := c.Publish("spBv1.0/"+*group+"/NBIRTH/"+*edgeNode, 0, true, body)
+		tok := c.Publish("spBv1.0/"+group+"/NBIRTH/"+edgeNode, 0, true, body)
 		tok.Wait()
-		logger.Info("NBIRTH published", "group", *group, "node", *edgeNode)
+		logger.Info("NBIRTH published", "group", group, "node", edgeNode)
 	}
 
 	// birthed tracks whether a retained NBIRTH is currently valid. It drops to
@@ -124,7 +209,7 @@ func main() {
 	// birth before any NDATA — the StateStore drops DATA seen before BIRTH.
 	birthed := false
 	opts.SetOnConnectHandler(func(c paho.Client) {
-		logger.Info("MQTT connected", "broker", *broker)
+		logger.Info("MQTT connected", "broker", broker)
 		publishBirth(c)
 		birthed = true
 	})
@@ -137,9 +222,9 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	tick := time.NewTicker(time.Duration(*tickSec) * time.Second)
+	tick := time.NewTicker(time.Duration(tickSec) * time.Second)
 	defer tick.Stop()
-	logger.Info("modbus-reader running", "device", *mbHost, "unit", *mbUnit, "tick_sec", *tickSec)
+	logger.Info("modbus-reader running", "device", mbHost, "unit", mbUnit, "tick_sec", tickSec)
 
 	for {
 		select {
@@ -160,96 +245,20 @@ func main() {
 				birthed = false // force NBIRTH once the device is reachable again
 				continue
 			}
-			tok := mqtt.Publish("spBv1.0/"+*group+"/NDATA/"+*edgeNode, 0, false, body)
+			tok := mqtt.Publish("spBv1.0/"+group+"/NDATA/"+edgeNode, 0, false, body)
 			tok.Wait()
 		}
 	}
 }
 
-// runRawEmit drives the ADR-0042 Option A path: each tick, sample the Modbus
-// device and publish a plain-JSON raw-tag envelope to edge/raw/<tenant>. No
-// SparkPlug, no birth — the local sparkplug-agent decodes the envelope
-// (rawtag.Decode) and owns the wire protocol + uplink.
-func runRawEmit(
-	logger *slog.Logger,
-	opts *paho.ClientOptions,
-	poller *modbus.Poller,
-	read modbus.ReadFunc,
-	broker, tenant, endpoint, canonicalPrefix, device string,
-	unit, tickSec int,
-) {
-	topic := "edge/raw/" + tenant
-	// The envelope endpoint field is diagnostic (ADR-0042 open-Q4); fall back
-	// to a stable literal when --endpoint is empty.
-	ep := endpoint
-	if ep == "" {
-		ep = "modbus"
-	}
-
-	opts.SetOnConnectHandler(func(c paho.Client) {
-		logger.Info("MQTT connected", "broker", broker, "mode", "raw-emit", "topic", topic)
-	})
-	mqtt := paho.NewClient(opts)
-	if tok := mqtt.Connect(); tok.Wait() && tok.Error() != nil {
-		logger.Error("MQTT connect", "err", tok.Error())
-		os.Exit(1)
-	}
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	tick := time.NewTicker(time.Duration(tickSec) * time.Second)
-	defer tick.Stop()
-	logger.Info("modbus-reader running", "device", device, "unit", unit,
-		"tick_sec", tickSec, "mode", "raw-emit", "topic", topic, "endpoint", ep)
-
-	published := false
-	lastCount := -1
-	for {
-		select {
-		case <-stop:
-			logger.Info("modbus-reader stopping")
-			mqtt.Disconnect(250)
-			return
-		case <-tick.C:
-			// birth=true so Sample populates metric NAMES. The raw envelope is
-			// name-addressed every tick (no alias table on the loopback), and
-			// Sample's birth flag only toggles name inclusion — it never touches
-			// the poller seq (that lives in EncodeSim), so this has no SparkPlug
-			// side effect. On read failure, skip the tick; no re-birth needed.
-			ms, err := poller.Sample(read, true)
-			if err != nil {
-				logger.Warn("Modbus read failed — skipping tick", "err", err)
-				continue
-			}
-			outTags := make([]rawtag.OutTag, 0, len(ms))
-			for _, m := range ms {
-				var v any
-				switch {
-				case m.IsText:
-					v = m.Text
-				case m.IsLong:
-					v = m.Long
-				default:
-					v = m.Double
-				}
-				outTags = append(outTags, rawtag.OutTag{Metric: strings.TrimPrefix(m.Name, canonicalPrefix), Value: v, Long: m.IsLong})
-			}
-			body, err := rawtag.Encode(ep, time.Now().UnixMilli(), outTags)
-			if err != nil {
-				logger.Warn("encode raw envelope failed — skipping tick", "err", err)
-				continue
-			}
-			tok := mqtt.Publish(topic, 0, false, body)
-			tok.Wait()
-			// Log the first publish and any change in tag count; stay quiet on
-			// steady-state ticks to avoid per-tick log spam.
-			if !published || len(outTags) != lastCount {
-				logger.Info("raw envelope published", "topic", topic, "endpoint", ep, "tags", len(outTags))
-				published = true
-				lastCount = len(outTags)
-			}
+// contains reports whether s is in xs.
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
 		}
 	}
+	return false
 }
 
 func getenv(k, d string) string {

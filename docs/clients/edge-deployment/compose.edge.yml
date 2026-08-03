@@ -46,6 +46,44 @@ volumes:
   nodered-data:        # Node-RED flow/credential store
   mosquitto-data:      # retained NBIRTHs survive a broker restart
 
+# Shared base for the three config-as-data PLC readers (s7/modbus/opcua). Defined
+# as a TOP-LEVEL x-extension (not a service) so the &anchor is merged into each
+# reader via `<<: *reader-base` without itself becoming a runnable service. See
+# the reader block under `services:` for the multi-PLC / mixed-protocol design.
+x-reader-base: &reader-base
+  image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+  build:
+    context: ../../../services/edge-transformer
+    dockerfile: Dockerfile
+  restart: on-failure
+  env_file:
+    # Pass the deploy .env through so per-endpoint PLC_HOST_<NAME> overrides
+    # (which compose cannot enumerate as `environment:` keys) reach the reader.
+    # required:false so `docker compose config` parses in the repo (no .env).
+    - path: .env
+      required: false
+  environment:
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    TZ: ${TZ:-UTC}
+    # Protocol-wide fallback host (single-endpoint). Per-endpoint PLC_HOST_<NAME>
+    # overrides arrive via env_file above.
+    S7_HOST: ${S7_HOST:-}                       # s7:     host[:102] (or IP)
+    MODBUS_HOST: ${MODBUS_HOST:-}               # modbus: host:502
+    OPCUA_ENDPOINT_URL: ${OPCUA_ENDPOINT_URL:-} # opcua:  opc.tcp://host:4840/path
+  volumes:
+    # The GENERATED reader config (onboard-gen artifact 5) — all endpoints +
+    # tag maps. Mounts read-only at the path the --client-config flag points to.
+    - ${CLIENT_CONFIG_FILE:-./${TENANT_SLUG}/${TENANT_SLUG}-client.yaml}:/etc/packiot/client.yaml:ro
+  networks: [edge-net]
+  depends_on:
+    mosquitto:
+      condition: service_healthy
+  mem_limit: 128m
+  cpus: 0.25
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
 services:
 
   # ── Tier-1 CONNECTIVITY PLANE ────────────────────────────────────────────────
@@ -85,40 +123,51 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
-  # ── Tier-1 CONNECTIVITY PLANE (config-as-data Go READER) ─────────────────────
+  # ── Tier-1 CONNECTIVITY PLANE (config-as-data Go READERS) ────────────────────
   # PROFILE-GATED (`reader`): the productized replacement for the Node-RED tee.
-  # A single Go PLC reader (s7 | modbus | opcua) polls ONE PLC endpoint and
-  # publishes RAW suffix tags to the internal mosquitto (edge/raw/<tenant>/#) —
-  # the exact wire the agent already consumes. It is SparkPlug-IGNORANT (the
-  # agent owns spBv1.0/*), needs NO certs (internal-only) and NO ingest key
-  # (anonymous internal bus). All per-endpoint facts come from the GENERATED
-  # <tenant>-client.yaml (onboard-gen artifact 5) + the .env host secret.
+  # Go PLC readers (s7 | modbus | opcua) poll the factory PLCs and publish RAW
+  # suffix tags to the internal mosquitto (edge/raw/<tenant>/#) — the exact wire
+  # the agent already consumes. They are SparkPlug-IGNORANT (the agent owns
+  # spBv1.0/*), need NO certs (internal-only) and NO ingest key (anonymous
+  # internal bus). All per-endpoint facts come from the GENERATED
+  # <tenant>-client.yaml (onboard-gen artifact 5) + the .env host secret(s).
   #
-  # The image is the MAIN edge-transformer Dockerfile (NOT Dockerfile.agent) —
-  # it ships /usr/local/bin/{s7,modbus,opcua}-reader. READER_PROTOCOL picks the
-  # binary; compose interpolates it into the entrypoint at config-time (the
-  # distroless runtime has no shell, so this is compose-level substitution, not
-  # in-container `$VAR` expansion).
+  # MULTI-PLC, MIXED-PROTOCOL (ADR-0045): a real client (e.g. CPACK: 9 S7 + 1
+  # Modbus) has MANY endpoints of the same protocol. Each protocol reader drives
+  # EVERY endpoint of its protocol in client.yaml (one poller + PLC connection
+  # each) — so N endpoints of any mix collapse to ≤3 reader services, no
+  # per-endpoint service explosion. The agent composes per-equipment from
+  # edge/raw/<tenant>, so an equipment fed by an S7 counter + a Modbus speed just
+  # works once both readers emit.
   #
-  # ONE reader process = ONE PLC endpoint. A multi-PLC client duplicates this
-  # service as reader-<endpoint> blocks (one per plc.endpoints[] entry), or runs
-  # `docker compose --profile reader up -d --scale reader=N` with per-instance
-  # env. This template ships the single-endpoint shape.
-  reader:
-    image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
-    build:
-      context: ../../../services/edge-transformer
-      dockerfile: Dockerfile
-    container_name: edge-${TENANT_SLUG}-reader
-    profiles: ["reader"]
-    restart: unless-stopped
-    # NOTE: no `:?` hard-guards here on READER_ENDPOINT — compose interpolates the
-    # WHOLE file (all profiles) before selecting one, so a `:?` on a reader-only
-    # var would break `--profile nodered` config for a Node-RED-only client. The
-    # reader binary validates --endpoint against the client.yaml at boot (unknown
-    # endpoint = fatal with a clear log), so a missing value fails loudly at start.
+  # PROFILES: each reader carries the umbrella `reader` (start them all — the
+  # config-as-data path) AND a per-protocol `reader-s7`/`reader-modbus`/
+  # `reader-opcua` (start only the ones a client needs). A reader whose protocol
+  # has NO endpoints in client.yaml logs "nothing to drive" and exits 0 (hence
+  # `restart: on-failure`, NOT unless-stopped — a clean exit must not loop), so the
+  # umbrella `reader` profile is safe for any protocol mix.
+  #
+  # HOSTS: each endpoint resolves its host from PLC_HOST_<ENDPOINT> (multi-PLC:
+  # give every cell its own host in .env), falling back to the protocol-wide
+  # S7_HOST / MODBUS_HOST / OPCUA_ENDPOINT_URL (single-endpoint, back-compat).
+  # `env_file` (required:false) passes the .env through so the per-endpoint
+  # PLC_HOST_* vars — whose names compose cannot enumerate — reach the container.
+  #
+  # The image is the MAIN edge-transformer Dockerfile (NOT Dockerfile.agent) — it
+  # ships /usr/local/bin/{s7,modbus,opcua}-reader.
+  #
+  # NOTE: reader-only vars stay `${VAR:-}` (soft) — compose interpolates the WHOLE
+  # file (all profiles) before selecting one, so a `:?` on a reader-only var would
+  # break `--profile nodered` config for a Node-RED-only client. `--endpoint`
+  # empty ⇒ drive ALL of the protocol's endpoints; set it to pin ONE. The shared
+  # base is the top-level `x-reader-base` anchor above.
+
+  s7-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG}-s7-reader
+    profiles: ["reader", "reader-s7"]
     entrypoint:
-      - /usr/local/bin/${READER_PROTOCOL:-s7}-reader
+      - /usr/local/bin/s7-reader
       - --client-config
       - /etc/packiot/client.yaml
       - --endpoint
@@ -130,28 +179,42 @@ services:
       - --broker
       - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
       - --raw-emit=true          # publish edge/raw/<tenant> (agent owns SparkPlug)
-    environment:
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      TZ: ${TZ:-UTC}
-      # PLC host secret — .env carries ONLY the one the chosen protocol needs
-      # (deploy-provisioned; never committed). The reader reads its host from the
-      # matching env var; the others stay empty and unused.
-      S7_HOST: ${S7_HOST:-}                       # s7:     host[:102] (or IP)
-      MODBUS_HOST: ${MODBUS_HOST:-}               # modbus: host:502
-      OPCUA_ENDPOINT_URL: ${OPCUA_ENDPOINT_URL:-} # opcua:  opc.tcp://host:4840/path
-    volumes:
-      # The GENERATED per-endpoint reader config (onboard-gen artifact 5). Mounts
-      # read-only at the path the --client-config flag points to.
-      - ${CLIENT_CONFIG_FILE:-./${TENANT_SLUG}/${TENANT_SLUG}-client.yaml}:/etc/packiot/client.yaml:ro
-    networks: [edge-net]
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-    mem_limit: 128m
-    cpus: 0.25
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
+
+  modbus-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG}-modbus-reader
+    profiles: ["reader", "reader-modbus"]
+    entrypoint:
+      - /usr/local/bin/modbus-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER}
+      - --tenant
+      - ${TENANT_SLUG}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
+
+  opcua-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG}-opcua-reader
+    profiles: ["reader", "reader-opcua"]
+    entrypoint:
+      - /usr/local/bin/opcua-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER}
+      - --tenant
+      - ${TENANT_SLUG}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
 
   # ── INTERNAL LOOPBACK BUS ────────────────────────────────────────────────────
   # The Tier-1→Tier-2 hop (ADR-0042 §2.3). Plain JSON raw tags, no TLS, no WAN,

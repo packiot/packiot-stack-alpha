@@ -10,14 +10,19 @@
 //     rawtag) to the LOOPBACK topic edge/raw/<tenant>. The local sparkplug-agent
 //     subscribes there, decodes via rawtag.Decode, and owns ALL SparkPlug
 //     assembly + mTLS uplink + store-and-forward. The reader is SparkPlug-
-//     IGNORANT: no birth, no alias table, no seq — just readings.
+//     IGNORANT: no birth, no alias table, no seq — just readings. In this mode a
+//     SINGLE s7-reader drives EVERY S7 endpoint in the mounted client.yaml (one
+//     poller + PLC connection each) — the multi-PLC path (ADR-0045). Pin one with
+//     --endpoint; leave it empty to drive them all.
 //   - LEGACY SparkPlug (--raw-emit=false): republish directly as SparkPlug B —
 //     retained NBIRTH with the name↔alias table on connect, NDATA with
 //     alias-only values every tick. Kept byte-for-byte for the plc-sim/staging
-//     path and back-compat.
+//     path and back-compat. Single endpoint only.
 //
-// PR 1 (S1/#32): one endpoint, a hardcoded demo tag set. PR 2: per-tenant
-// client.yaml s7_tag_map (ADR-0019 G4).
+// Config-driven via --client-config (per-tenant client.yaml s7_tag_map, ADR-0019
+// G4). Each endpoint's host is external (secret): the protocol-wide S7_HOST env
+// (single-endpoint), or a per-endpoint PLC_HOST_<NAME> override (multi-PLC) —
+// see internal/rawemit.HostForEndpoint. Empty --client-config ⇒ the PR1 demo tags.
 package main
 
 import (
@@ -32,73 +37,188 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
-	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/rawemit"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/s7"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/sparkplug"
 )
 
 func main() {
 	broker := flag.String("broker", getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"), "MQTT broker")
 	edgeNode := flag.String("edge-node", getenv("S7_EDGE_NODE", "s7-reader"), "Sparkplug edge node id")
 	group := flag.String("group", getenv("S7_GROUP", "INCOPLAST"), "Sparkplug group_id (tenant)")
-	s7Host := flag.String("s7-host", getenv("S7_HOST", ""), "S7 PLC host:port (or IP)")
+	s7Host := flag.String("s7-host", getenv("S7_HOST", ""), "S7 PLC host:port (or IP) — protocol-wide fallback host")
 	s7Rack := flag.Int("s7-rack", getenvInt("S7_RACK", 0), "S7 rack")
 	s7Slot := flag.Int("s7-slot", getenvInt("S7_SLOT", 2), "S7 slot")
 	tickSec := flag.Int("tick", getenvInt("S7_TICK_SEC", 5), "seconds between NDATA reads")
 	db := flag.Int("db", getenvInt("S7_DB", 100), "data block number for the demo tag set")
 	clientCfg := flag.String("client-config", getenv("CLIENT_CONFIG", ""), "path to client.yaml (s7_tag_map); empty = demo tags")
-	endpoint := flag.String("endpoint", getenv("S7_ENDPOINT", ""), "plc.endpoints[].name to drive (with --client-config)")
+	endpoint := flag.String("endpoint", getenv("S7_ENDPOINT", ""), "plc.endpoints[].name to drive (with --client-config); empty = ALL S7 endpoints")
 	rawEmit := flag.Bool("raw-emit", getenvBool("RAW_EMIT", true), "emit raw-tag envelopes to edge/raw/<tenant> (agent owns SparkPlug); false = legacy direct SparkPlug B")
 	tenant := flag.String("tenant", getenv("TENANT", ""), "raw-emit tenant for edge/raw/<tenant> (default: lowercased --group)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "s7-reader")
-	if *s7Host == "" {
-		logger.Error("S7_HOST is required (the PLC endpoint) — refusing to start")
-		os.Exit(1)
-	}
 	if *tenant == "" {
 		*tenant = strings.ToLower(*group)
 	}
 
-	// Tag set: from client.yaml s7_tag_map (PR2) when --client-config is set,
-	// else the PR1 hardcoded demo (one Incoplast machine). Config-driven is the
-	// production-shaped path; the endpoint's rack/slot (when present) default
-	// the S7 connection so only the secret host_ref (→ S7_HOST env) is external.
-	var tags []s7.Tag
-	// canonicalPrefix (from client.yaml) is stripped off each metric in raw-emit
-	// mode so the reader emits the group-relative metric_suffix the agent resolves
-	// by. Empty for the demo path ⇒ TrimPrefix is a no-op (full name emitted).
-	var canonicalPrefix string
-	if *clientCfg != "" {
-		cfg, err := clientconfig.Load(*clientCfg)
-		if err != nil {
-			logger.Error("load client config", "path", *clientCfg, "err", err)
+	// RAW-EMIT (default, ADR-0042 Option A): drive every S7 endpoint in the
+	// client.yaml (or the one pinned by --endpoint), each publishing raw-tag
+	// envelopes to edge/raw/<tenant>. The local sparkplug-agent owns birth/alias/
+	// seq/mTLS.
+	if *rawEmit {
+		eps := buildEndpoints(logger, *clientCfg, *endpoint, *s7Host, *s7Rack, *s7Slot, *db, *tickSec)
+		opts := paho.NewClientOptions().AddBroker(*broker).
+			SetClientID("s7-reader-" + fmt.Sprint(os.Getpid())).
+			SetAutoReconnect(true).SetConnectRetry(true)
+		rawemit.Run(logger, opts, *broker, *tenant, *tickSec, eps)
+		return
+	}
+
+	runLegacy(logger, *broker, *edgeNode, *group, *clientCfg, *endpoint, *s7Host, *s7Rack, *s7Slot, *db, *tickSec)
+}
+
+// buildEndpoints compiles the set of rawemit.Endpoints this reader drives. With a
+// client.yaml it drives ALL S7 endpoints (or the single pinned --endpoint); with
+// none it falls back to the PR1 demo tag set (one synthetic endpoint). Each
+// endpoint resolves its own host (PLC_HOST_<NAME> override → S7_HOST fallback), so
+// a multi-PLC client gives each cell a distinct host. Exits 0 when there is
+// nothing to drive (so the umbrella `reader` profile can start this reader for a
+// client with no S7 line without crash-looping); exits 1 on a real misconfig.
+func buildEndpoints(logger *slog.Logger, clientCfg, endpoint, s7HostFallback string, rack, slot, db, tickSec int) []rawemit.Endpoint {
+	timeout := time.Duration(tickSec) * time.Second
+
+	// Demo path — no client.yaml: one synthetic endpoint "s7", full-name emit.
+	if clientCfg == "" {
+		if s7HostFallback == "" {
+			logger.Error("S7_HOST is required for the demo path (no --client-config) — refusing to start")
 			os.Exit(1)
 		}
-		canonicalPrefix = cfg.CanonicalPrefix
-		if ep, ok := s7.FindEndpoint(cfg, *endpoint); ok {
+		poller, err := s7.NewPoller(demoTags(db))
+		if err != nil {
+			logger.Error("build demo poller", "err", err)
+			os.Exit(1)
+		}
+		client := s7.NewClient(s7HostFallback, rack, slot, timeout)
+		logger.Info("s7-reader demo tags", "plc_set", true, "rack", rack, "slot", slot)
+		return []rawemit.Endpoint{sampleEndpoint("s7", "", poller, client)}
+	}
+
+	cfg, err := clientconfig.Load(clientCfg)
+	if err != nil {
+		logger.Error("load client config", "path", clientCfg, "err", err)
+		os.Exit(1)
+	}
+
+	names := s7.Endpoints(cfg)
+	if endpoint != "" {
+		// A pinned --endpoint restricts this reader to that one endpoint. If it is
+		// not an S7 endpoint (e.g. READER_ENDPOINT names a Modbus cell under the
+		// umbrella profile), there is nothing for THIS reader to drive — retire
+		// cleanly rather than error.
+		if !contains(names, endpoint) {
+			logger.Info("pinned --endpoint is not an S7 endpoint in client.yaml — nothing to drive", "endpoint", endpoint)
+			os.Exit(0)
+		}
+		names = []string{endpoint}
+	}
+	if len(names) == 0 {
+		logger.Info("no S7 endpoints in client.yaml — nothing to drive", "path", clientCfg)
+		os.Exit(0)
+	}
+
+	var eps []rawemit.Endpoint
+	for _, name := range names {
+		host := rawemit.HostForEndpoint(name, s7HostFallback)
+		if host == "" {
+			logger.Warn("no host for S7 endpoint — set PLC_HOST_<NAME> or S7_HOST — skipping", "endpoint", name)
+			continue
+		}
+		r, s := rack, slot
+		if ep, ok := s7.FindEndpoint(cfg, name); ok {
 			if ep.Rack != nil {
-				*s7Rack = *ep.Rack
+				r = *ep.Rack
 			}
 			if ep.Slot != nil {
-				*s7Slot = *ep.Slot
+				s = *ep.Slot
 			}
 		}
-		tags, err = s7.TagsForEndpoint(cfg, *endpoint)
+		tags, err := s7.TagsForEndpoint(cfg, name)
 		if err != nil {
-			logger.Error("compile s7 tag map", "endpoint", *endpoint, "err", err)
+			logger.Error("compile s7 tag map", "endpoint", name, "err", err)
 			os.Exit(1)
 		}
-		logger.Info("loaded s7 tag map from config", "path", *clientCfg, "endpoint", *endpoint, "tags", len(tags))
-	} else {
-		const prefix = "INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15/NOVOFLEX_15"
-		tags = []s7.Tag{
-			{Metric: prefix + "/Admin/ProdProcessedCount/1/Unit", Alias: 1, DB: *db, Offset: 0, Type: s7.TypeDInt},
-			{Metric: prefix + "/Admin/ProdConsumedCount/1/Unit", Alias: 2, DB: *db, Offset: 4, Type: s7.TypeDInt},
-			{Metric: prefix + "/Status/MachSpeed", Alias: 3, DB: *db, Offset: 8, Type: s7.TypeReal},
-			{Metric: prefix + "/Status/StateCurrent", Alias: 4, DB: *db, Offset: 12, Type: s7.TypeInt, Long: true},
+		poller, err := s7.NewPoller(tags)
+		if err != nil {
+			logger.Error("build poller", "endpoint", name, "err", err)
+			os.Exit(1)
 		}
+		client := s7.NewClient(host, r, s, timeout)
+		logger.Info("s7 endpoint compiled", "endpoint", name, "tags", len(tags), "rack", r, "slot", s, "host_set", true)
+		eps = append(eps, sampleEndpoint(name, cfg.CanonicalPrefix, poller, client))
+	}
+	if len(eps) == 0 {
+		logger.Error("S7 endpoints present in client.yaml but none had a host — set PLC_HOST_<NAME> or S7_HOST", "endpoints", len(names))
+		os.Exit(1)
+	}
+	return eps
+}
+
+// sampleEndpoint binds an s7 poller + client into a rawemit.Endpoint. The Sample
+// closure captures both so package rawemit stays protocol-agnostic.
+func sampleEndpoint(name, canonicalPrefix string, poller *s7.Poller, client *s7.Client) rawemit.Endpoint {
+	return rawemit.Endpoint{
+		Name:            name,
+		CanonicalPrefix: canonicalPrefix,
+		Sample:          func(birth bool) ([]sparkplug.SimMetric, error) { return poller.Sample(client.Read, birth) },
+		Close:           client.Close,
+	}
+}
+
+// demoTags is the PR1 hardcoded demo tag set (one Incoplast machine), used when
+// no --client-config is given. Full metric names (no canonical prefix to strip).
+func demoTags(db int) []s7.Tag {
+	const prefix = "INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15/NOVOFLEX_15"
+	return []s7.Tag{
+		{Metric: prefix + "/Admin/ProdProcessedCount/1/Unit", Alias: 1, DB: db, Offset: 0, Type: s7.TypeDInt},
+		{Metric: prefix + "/Admin/ProdConsumedCount/1/Unit", Alias: 2, DB: db, Offset: 4, Type: s7.TypeDInt},
+		{Metric: prefix + "/Status/MachSpeed", Alias: 3, DB: db, Offset: 8, Type: s7.TypeReal},
+		{Metric: prefix + "/Status/StateCurrent", Alias: 4, DB: db, Offset: 12, Type: s7.TypeInt, Long: true},
+	}
+}
+
+// runLegacy is the --raw-emit=false direct-SparkPlug path: ONE endpoint,
+// retained NBIRTH + alias-only NDATA. Kept byte-for-byte for the plc-sim/staging
+// back-compat path (multi-endpoint is a raw-emit-only concern).
+func runLegacy(logger *slog.Logger, broker, edgeNode, group, clientCfg, endpoint, s7Host string, rack, slot, db, tickSec int) {
+	if s7Host == "" {
+		logger.Error("S7_HOST is required (the PLC endpoint) — refusing to start")
+		os.Exit(1)
+	}
+	var tags []s7.Tag
+	if clientCfg != "" {
+		cfg, err := clientconfig.Load(clientCfg)
+		if err != nil {
+			logger.Error("load client config", "path", clientCfg, "err", err)
+			os.Exit(1)
+		}
+		if ep, ok := s7.FindEndpoint(cfg, endpoint); ok {
+			if ep.Rack != nil {
+				rack = *ep.Rack
+			}
+			if ep.Slot != nil {
+				slot = *ep.Slot
+			}
+		}
+		tags, err = s7.TagsForEndpoint(cfg, endpoint)
+		if err != nil {
+			logger.Error("compile s7 tag map", "endpoint", endpoint, "err", err)
+			os.Exit(1)
+		}
+		logger.Info("loaded s7 tag map from config", "path", clientCfg, "endpoint", endpoint, "tags", len(tags))
+	} else {
+		tags = demoTags(db)
 	}
 	poller, err := s7.NewPoller(tags)
 	if err != nil {
@@ -106,21 +226,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := s7.NewClient(*s7Host, *s7Rack, *s7Slot, time.Duration(*tickSec)*time.Second)
+	client := s7.NewClient(s7Host, rack, slot, time.Duration(tickSec)*time.Second)
 	defer client.Close()
 
-	opts := paho.NewClientOptions().AddBroker(*broker).
+	opts := paho.NewClientOptions().AddBroker(broker).
 		SetClientID("s7-reader-" + fmt.Sprint(os.Getpid())).
 		SetAutoReconnect(true).SetConnectRetry(true)
-
-	// RAW-EMIT (default, ADR-0042 Option A): publish plain-JSON raw-tag
-	// envelopes to the loopback topic edge/raw/<tenant> and let the local
-	// sparkplug-agent own birth/alias/seq/mTLS. No NBIRTH, no birthed state
-	// machine — the agent is the SparkPlug session authority.
-	if *rawEmit {
-		runRawEmit(logger, opts, poller, client.Read, *broker, *tenant, *endpoint, canonicalPrefix, *s7Host, *s7Rack, *s7Slot, *tickSec)
-		return
-	}
 
 	publishBirth := func(c paho.Client) {
 		body, err := poller.EncodeBirth(client.Read)
@@ -130,9 +241,9 @@ func main() {
 			logger.Warn("NBIRTH skipped (PLC read failed)", "err", err)
 			return
 		}
-		tok := c.Publish("spBv1.0/"+*group+"/NBIRTH/"+*edgeNode, 0, true, body)
+		tok := c.Publish("spBv1.0/"+group+"/NBIRTH/"+edgeNode, 0, true, body)
 		tok.Wait()
-		logger.Info("NBIRTH published", "group", *group, "node", *edgeNode)
+		logger.Info("NBIRTH published", "group", group, "node", edgeNode)
 	}
 
 	// birthed tracks whether a retained NBIRTH is currently valid. It drops to
@@ -140,7 +251,7 @@ func main() {
 	// the birth before any NDATA — the StateStore drops DATA seen before BIRTH.
 	birthed := false
 	opts.SetOnConnectHandler(func(c paho.Client) {
-		logger.Info("MQTT connected", "broker", *broker)
+		logger.Info("MQTT connected", "broker", broker)
 		publishBirth(c)
 		birthed = true
 	})
@@ -153,9 +264,9 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	tick := time.NewTicker(time.Duration(*tickSec) * time.Second)
+	tick := time.NewTicker(time.Duration(tickSec) * time.Second)
 	defer tick.Stop()
-	logger.Info("s7-reader running", "plc", *s7Host, "rack", *s7Rack, "slot", *s7Slot, "tick_sec", *tickSec)
+	logger.Info("s7-reader running", "plc", s7Host, "rack", rack, "slot", slot, "tick_sec", tickSec)
 
 	for {
 		select {
@@ -176,96 +287,20 @@ func main() {
 				birthed = false // force NBIRTH once the PLC is reachable again
 				continue
 			}
-			tok := mqtt.Publish("spBv1.0/"+*group+"/NDATA/"+*edgeNode, 0, false, body)
+			tok := mqtt.Publish("spBv1.0/"+group+"/NDATA/"+edgeNode, 0, false, body)
 			tok.Wait()
 		}
 	}
 }
 
-// runRawEmit drives the ADR-0042 Option A path: each tick, sample the PLC and
-// publish a plain-JSON raw-tag envelope to edge/raw/<tenant>. No SparkPlug, no
-// birth — the local sparkplug-agent decodes the envelope (rawtag.Decode) and
-// owns the wire protocol + uplink.
-func runRawEmit(
-	logger *slog.Logger,
-	opts *paho.ClientOptions,
-	poller *s7.Poller,
-	read s7.ReadFunc,
-	broker, tenant, endpoint, canonicalPrefix, host string,
-	rack, slot, tickSec int,
-) {
-	topic := "edge/raw/" + tenant
-	// The envelope endpoint field is diagnostic (ADR-0042 open-Q4); fall back
-	// to a stable literal when --endpoint is empty (demo-tag mode).
-	ep := endpoint
-	if ep == "" {
-		ep = "s7"
-	}
-
-	opts.SetOnConnectHandler(func(c paho.Client) {
-		logger.Info("MQTT connected", "broker", broker, "mode", "raw-emit", "topic", topic)
-	})
-	mqtt := paho.NewClient(opts)
-	if tok := mqtt.Connect(); tok.Wait() && tok.Error() != nil {
-		logger.Error("MQTT connect", "err", tok.Error())
-		os.Exit(1)
-	}
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	tick := time.NewTicker(time.Duration(tickSec) * time.Second)
-	defer tick.Stop()
-	logger.Info("s7-reader running", "plc", host, "rack", rack, "slot", slot,
-		"tick_sec", tickSec, "mode", "raw-emit", "topic", topic, "endpoint", ep)
-
-	published := false
-	lastCount := -1
-	for {
-		select {
-		case <-stop:
-			logger.Info("s7-reader stopping")
-			mqtt.Disconnect(250)
-			return
-		case <-tick.C:
-			// birth=true so Sample populates metric NAMES. The raw envelope is
-			// name-addressed every tick (no alias table on the loopback), and
-			// Sample's birth flag only toggles name inclusion — it never touches
-			// the poller seq (that lives in EncodeSim), so this has no SparkPlug
-			// side effect. On read failure, skip the tick; no re-birth needed.
-			ms, err := poller.Sample(read, true)
-			if err != nil {
-				logger.Warn("PLC read failed — skipping tick", "err", err)
-				continue
-			}
-			outTags := make([]rawtag.OutTag, 0, len(ms))
-			for _, m := range ms {
-				var v any
-				switch {
-				case m.IsText:
-					v = m.Text
-				case m.IsLong:
-					v = m.Long
-				default:
-					v = m.Double
-				}
-				outTags = append(outTags, rawtag.OutTag{Metric: strings.TrimPrefix(m.Name, canonicalPrefix), Value: v, Long: m.IsLong})
-			}
-			body, err := rawtag.Encode(ep, time.Now().UnixMilli(), outTags)
-			if err != nil {
-				logger.Warn("encode raw envelope failed — skipping tick", "err", err)
-				continue
-			}
-			tok := mqtt.Publish(topic, 0, false, body)
-			tok.Wait()
-			// Log the first publish and any change in tag count; stay quiet on
-			// steady-state ticks to avoid per-tick log spam.
-			if !published || len(outTags) != lastCount {
-				logger.Info("raw envelope published", "topic", topic, "endpoint", ep, "tags", len(outTags))
-				published = true
-				lastCount = len(outTags)
-			}
+// contains reports whether s is in xs.
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
 		}
 	}
+	return false
 }
 
 func getenv(k, d string) string {

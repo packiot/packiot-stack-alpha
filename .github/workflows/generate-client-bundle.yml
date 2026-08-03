@@ -256,7 +256,10 @@ jobs:
 
           # Normalize tenant identity + reader profile + the GENERATED artifact
           # paths to THIS client, so a generic (or cpack-labeled) template is
-          # correctly specialized for the bundle layout.
+          # correctly specialized for the bundle layout. COMPOSE_PROFILES=reader is
+          # the umbrella profile: it starts every protocol reader (s7/modbus/opcua);
+          # a reader whose protocol has no endpoints in client.yaml self-retires
+          # (exits 0), so this is correct for ANY protocol mix without introspection.
           UPPER="$(printf '%s' "$CLIENT" | tr '[:lower:]' '[:upper:]')"
           set_kv TENANT_SLUG "$CLIENT"
           set_kv TENANT_UPPER "$UPPER"
@@ -266,8 +269,11 @@ jobs:
           set_kv AGENT_PROFILE_FILE  "./$CLIENT/$CLIENT-profile.yaml"
           set_kv CERTS_DIR "./certs"
 
-          # Optional operator-supplied prefills.
-          [ -n "${PROTOCOL:-}" ] && set_kv READER_PROTOCOL "$PROTOCOL" || true
+          # Optional operator-supplied prefills. READER_ENDPOINT is left EMPTY for
+          # the multi-endpoint model (each reader drives ALL its protocol's
+          # endpoints); set it only to pin a single endpoint. --protocol/--plc_host
+          # prefill the protocol-wide FALLBACK host (single-PLC clients); multi-PLC
+          # clients fill the per-endpoint PLC_HOST_<NAME> lines emitted below.
           [ -n "${ENDPOINT:-}" ] && set_kv READER_ENDPOINT "$ENDPOINT" || true
           if [ -n "${PLC_HOST:-}" ]; then
             case "${PROTOCOL:-s7}" in
@@ -275,6 +281,39 @@ jobs:
               opcua)  set_kv OPCUA_ENDPOINT_URL "$PLC_HOST" ;;
               *)      set_kv S7_HOST "$PLC_HOST" ;;
             esac
+          fi
+
+          # Emit a per-endpoint PLC_HOST_<NAME> placeholder for EVERY endpoint the
+          # generated client.yaml drives, so a multi-PLC client (e.g. CPACK: 9 S7 +
+          # 1 Modbus) has a ready-to-fill slot per PLC. Names are sanitized to match
+          # internal/rawemit.HostForEndpoint (upper-cased, non-alphanumeric → '_').
+          # The reader resolves PLC_HOST_<NAME> first, then the protocol-wide
+          # fallback above. Values are BLANK secrets — the CS engineer fills them.
+          CY="bundle/$CLIENT/$CLIENT-client.yaml"
+          if [ -f "$CY" ]; then
+            python3 - "$CY" "$ENVF" <<'PY'
+          import re, sys, yaml
+          cy, envf = sys.argv[1], sys.argv[2]
+          cfg = yaml.safe_load(open(cy)) or {}
+          def suffix(n): return re.sub(r'[^A-Z0-9]', '_', n.upper())
+          seen, lines = set(), []
+          for proto, key in (("s7", "s7_tag_map"), ("modbus", "modbus_tag_map"), ("opcua", "opcua_tag_map")):
+              for m in cfg.get(key) or []:
+                  ep = m.get("endpoint")
+                  if not ep or ep in seen:
+                      continue
+                  seen.add(ep)
+                  lines.append(f"PLC_HOST_{suffix(ep)}=   # {proto} endpoint {ep}")
+          if lines:
+              body = open(envf).read().rstrip("\n")
+              hdr = "\n\n# ── PER-ENDPOINT PLC HOSTS (multi-PLC) — fill each secret ──\n"
+              hdr += "# One line per PLC the readers drive. PLC_HOST_<NAME> overrides the\n"
+              hdr += "# protocol-wide fallback (S7_HOST/MODBUS_HOST/OPCUA_ENDPOINT_URL).\n"
+              open(envf, "w").write(body + hdr + "\n".join(lines) + "\n")
+              print(f"emitted {len(lines)} PLC_HOST_* placeholder(s)")
+          else:
+              print("no driven endpoints found in client.yaml — no PLC_HOST_* placeholders")
+          PY
           fi
 
           echo "--- assembled bundle tree ---"
