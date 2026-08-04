@@ -44,8 +44,8 @@ jobs:
         #   was removed in the 2026-06-24 decommission (replaced by the Go
         #   worker baked into services/oeecloud-worker).
         run: |
-          git submodule sync edge-api edge-node-red operator
-          git submodule update --init edge-api edge-node-red operator
+          git submodule sync edge-api edge-node-red operator csadmin
+          git submodule update --init edge-api edge-node-red operator csadmin
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
