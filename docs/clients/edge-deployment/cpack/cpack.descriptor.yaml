@@ -193,6 +193,15 @@ plc:
       host_ref: secret://packiot/staging/cpack/sleeves-host
       rack: 0
       slot: 2
+    # OPC-UA endpoint for CELULA9/FLEXO (L9). The legacy flow's OpcUa-Endpoint node
+    # (opc.tcp://…:4840) sets secpol/secmode=None and login=false — NO credentials —
+    # so there is no username/password to carry (the endpoint auth is anonymous). URL
+    # is a secret:// ref; real value lives in Secrets Manager, never committed.
+    - name: OPC UA L9 FLEXO
+      protocol: opcua
+      endpoint_url_ref: secret://packiot/staging/cpack/opcua-l9-flexo-url
+      security_policy: None
+      security_mode: None
   s7_tag_map:
     - endpoint: S7 S8
       packml_topic: CPACK/SC/LINHAS/L8/DXL
@@ -346,11 +355,111 @@ plc:
           offset: 4
           type: dint
 
-  # ── modbus_tag_map SKELETON (per-register map from the downstream function node — NOT in this flow) ──
-  # modbus_tag_map:
-  #   - L6 Read Counters: HoldingRegister block adr 0..79 (80 regs) — per-register→metric map lives in the downstream function node
-  #   - L6 Input Registers: InputRegister block adr 0..109 (110 regs) — per-register→metric map lives in the downstream function node
-  #     TODO: bind each register to /Admin/Prod{Consumed,Processed}Count/<idx>/Unit on its member topic
+  # ── opcua_tag_map (CELULA9/FLEXO/L9 — OPC-UA source) ──────────────────────────
+  # Lifted from the legacy flow's OpcUa-Item nodes (endpoint "OPC UA L9 FLEXO",
+  # OpcUa-Client action=read). Each item's `item` is the OPC-UA node_id; the node's
+  # `name` carries the canonical topic. This is the MULTI-SOURCE case: FLEXO/FLEXO
+  # (id 104) is ALSO an S7 endpoint (see "PLC Flexo" in s7_tag_map above) — S7 emits
+  # Status/MachSpeed while OPC-UA emits the count totalizer + speed; both tag-maps
+  # land on the SAME id_equipment (multiple readers → one equipment, expected).
+  # Applied metric_alias Status/CurMachSpeed → Status/MachSpeed (declared above) so
+  # the emitted suffix matches the FLEXO member template leaf (ADR-0045 §C). The
+  # ***TRIG_… suffix on the totalMeterCounter item name is a legacy tee marker,
+  # stripped. A duplicate actualSpeed item (feeding the RE-CONNECT client, not the
+  # read client) is de-duplicated.
+  opcua_tag_map:
+    - endpoint: OPC UA L9 FLEXO
+      packml_topic: CPACK/SC/CELULA9/FLEXO/FLEXO
+      id_equipment: 104
+      tags:
+        - metric: /Admin/ProdConsumedCount/557/Unit
+          node_id: ns=6;s=::OPCUAData:totalMeterCounter
+          type: float
+        - metric: /Status/MachSpeed
+          node_id: ns=6;s=::OPCUAData:actualSpeed
+          type: float
+
+  # ── modbus_tag_map (LINHAS/L6 — Modbus TCP source, endpoint PLC_L6) ───────────
+  # Traced from the legacy flow: two modbus-read nodes on modbus-client "PLC_L6"
+  # (unit 1, :502) — "L6 Read Counters" (HoldingRegister, adr 0, qty 80) and
+  # "L6 Input Registers" (InputRegister, adr 0, qty 110) — BOTH wire into ONE
+  # function "Prepare L6", which decodes 32-bit counters as reg[n+1]<<16 | reg[n]
+  # (first register = LOW word ⇒ CDAB ⇒ word_swap: true; type uint32 totalizer).
+  # The generic counter tags are then bound to canonical topics by the downstream
+  # "PackML device config" function's tag→topic table. Register offset → member:
+  #   counter  regs 60,61  → L6/BREYER   ProdConsumedCount/91
+  #   counter3 regs 10,11  → L6/POLYTYPE ProdConsumedCount/93
+  #   counter6 regs 100,101→ L6/PTH      ProdConsumedCount/95   (offset >79 ⇒ INPUT block; holding qty 80 can't serve it)
+  #   counter4 regs 50,51  → L6/PTH      ProdProcessedCount/95  AND  L6/RMH ProdConsumedCount/94  (one register feeds two metrics — faithful to the flow's fan-out)
+  #   counter2 regs 0,1    → L6/RMH ProdProcessedCount/94  AND  L6/TEXA ProdConsumedCount/92  AND  L6/TEXA ProdProcessedCount/92
+  #
+  # KIND (holding vs input) — the ONE residual: "Prepare L6" is source-agnostic
+  # (it reads msg.payload[n] regardless of which read fired), so for offsets ≤79 the
+  # value could come from EITHER block. Assigned holding for 0..61 (the node is
+  # literally named "L6 Read Counters" = HoldingRegister, and qty 80 covers them)
+  # and input for 100,101 (forced — beyond the 80-register holding block). If a live
+  # tee shows the low-offset counters actually track the Input block, flip their kind.
+  modbus_tag_map:
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/BREYER
+      id_equipment: 68
+      tags:
+        - metric: /Admin/ProdConsumedCount/91/Unit    # counter  regs 60,61
+          kind: holding
+          address: 60
+          type: uint32
+          word_swap: true
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/POLYTYPE
+      id_equipment: 70
+      tags:
+        - metric: /Admin/ProdConsumedCount/93/Unit    # counter3 regs 10,11
+          kind: holding
+          address: 10
+          type: uint32
+          word_swap: true
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/PTH
+      id_equipment: 72
+      tags:
+        - metric: /Admin/ProdConsumedCount/95/Unit    # counter6 regs 100,101 (INPUT)
+          kind: input
+          address: 100
+          type: uint32
+          word_swap: true
+        - metric: /Admin/ProdProcessedCount/95/Unit   # counter4 regs 50,51
+          kind: holding
+          address: 50
+          type: uint32
+          word_swap: true
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/RMH
+      id_equipment: 71
+      tags:
+        - metric: /Admin/ProdConsumedCount/94/Unit    # counter4 regs 50,51 (same register as PTH ProdProcessed — flow fan-out)
+          kind: holding
+          address: 50
+          type: uint32
+          word_swap: true
+        - metric: /Admin/ProdProcessedCount/94/Unit   # counter2 regs 0,1
+          kind: holding
+          address: 0
+          type: uint32
+          word_swap: true
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/TEXA
+      id_equipment: 69
+      tags:
+        - metric: /Admin/ProdConsumedCount/92/Unit    # counter2 regs 0,1 (same register as RMH ProdProcessed + TEXA ProdProcessed)
+          kind: holding
+          address: 0
+          type: uint32
+          word_swap: true
+        - metric: /Admin/ProdProcessedCount/92/Unit   # counter2 regs 0,1 (gross==net on same register — flow oddity, faithful)
+          kind: holding
+          address: 0
+          type: uint32
+          word_swap: true
 
   # ── UNRESOLVED S7 tags (count-index / opaque names — NOT dropped, resolve then add to s7_tag_map) ──
   #   endpoint "S7 115": DB1,DINT0 → count-index 514 UNRESOLVED (no descriptor mapping) — resolve to equipment + count_index
