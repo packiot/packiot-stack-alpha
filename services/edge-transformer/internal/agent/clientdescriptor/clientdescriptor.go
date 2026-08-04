@@ -241,6 +241,46 @@ type Equipment struct {
 	// Only valid on tp=2|3 (Validate rejects it on a member). Empty for a member
 	// or a line whose counts come via Phase-9 member aggregation.
 	LineRoles []LineRole `yaml:"line_roles,omitempty"`
+
+	// Derived declares agent-side SYNTHESIS rules for equipment whose PLC does not
+	// emit a canonical count directly (ADR-0045 P2c). Two generic shapes:
+	//   - integral: an analog rate (e.g. FLEXO's speed) integrated over time into
+	//     a monotonic production counter — the PLC has NO count register at all.
+	//   - sum: several count registers (e.g. PTH's A+B) latched and summed into one
+	//     canonical count.
+	// Each rule's Emit leaves become the equipment's canonical count suffixes,
+	// synthesized into the raw_tag_map allowlist (SynthesizeEquipment) so §C holds;
+	// the runtime deriver computes their VALUES. Leaves are RELATIVE (a leading
+	// "/…"), with the usual {idx} placeholder resolved from this equipment's count
+	// index. Empty for equipment whose PLC emits canonical counts directly.
+	Derived []DerivedMetric `yaml:"derived,omitempty"`
+}
+
+// DerivedMetric is one agent-side synthesis rule as CS Admin declares it in the
+// descriptor. Exactly one of {Integral, Sum} is set. Its leaves are RELATIVE
+// (equipment-local, optional {idx}); GenerateProfile resolves them to the FULL
+// segment-qualified suffixes the runtime deriver + allowlist use. The Integral /
+// Sum source types are reused verbatim from tenantprofile so the descriptor
+// expresses exactly what the profile (and thus the deriver) can hold.
+type DerivedMetric struct {
+	// Emit are the canonical count leaves this rule publishes, e.g.
+	// ["/Admin/ProdConsumedCount/{idx}/Unit", "/Admin/ProdProcessedCount/{idx}/Unit"].
+	// A FLEXO with no NET/GROSS distinction lists BOTH (gross=net, oee_quality=1):
+	// the legacy ***TRIG_C=O trick is NOT propagated cloud-side, so emit both leaves
+	// rather than trying to reattach a TRIG variant.
+	Emit []string `yaml:"emit"`
+
+	// Type is the SparkPlug type of the emitted count — the tenant's count type
+	// (CPACK = "double"). The deriver floors before emit so the cloud's float→int64
+	// truncation stays monotonic.
+	Type string `yaml:"type"`
+
+	// Integral integrates an analog source rate into a monotonic count. Source is
+	// the RAW arriving suffix (the tee's real name, e.g. "/Status/CurMachSpeed").
+	Integral *tenantprofile.IntegralSource `yaml:"integral,omitempty"`
+
+	// Sum latches + sums several arriving count registers (Addends, ≥2) into one.
+	Sum *tenantprofile.SumSource `yaml:"sum,omitempty"`
 }
 
 // ResolvedDeviceKey returns the equipment's DECLARED device_key, or — when none is
@@ -474,6 +514,15 @@ func (d *Descriptor) Validate() error {
 				seenCountIndex[r.CountIndex] = e.Topic
 			}
 		}
+		// derived: agent-side synthesis rules. Validate the shape here (one-of,
+		// non-empty emit, sum≥2 addends, integral.source) so a bad rule fails at
+		// descriptor time, not fanned out. The RESOLVED form is re-validated by the
+		// generated profile (GenerateProfile → Profile.Validate).
+		for j, dm := range e.Derived {
+			if err := validateDerivedMetric(i, e.Topic, j, dm); err != nil {
+				return err
+			}
+		}
 	}
 	// The generated profile must itself validate — build + validate it here so a
 	// bad mapping/template is caught at descriptor-validate time.
@@ -494,6 +543,43 @@ func (d *Descriptor) Validate() error {
 		if _, err := d.GenerateClientYAML(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validTypes is the SparkPlug type set a derived Emit may declare (mirrors
+// tenantprofile.validTypes so a descriptor can never declare a type the profile
+// would later reject).
+var validTypes = map[string]bool{
+	"double": true, "float": true, "long": true,
+	"int": true, "bool": true, "string": true,
+}
+
+// validateDerivedMetric enforces the DerivedMetric shape at descriptor time:
+// exactly one of {integral, sum}; emit non-empty with a valid type; sum needs
+// ≥2 addends; integral needs a source. i/topic/j give a precise error location.
+func validateDerivedMetric(i int, topic string, j int, dm DerivedMetric) error {
+	hasIntegral := dm.Integral != nil
+	hasSum := dm.Sum != nil
+	if hasIntegral == hasSum {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d] must set exactly one of {integral, sum}", i, topic, j)
+	}
+	if len(dm.Emit) == 0 {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d].emit must list at least one canonical count leaf", i, topic, j)
+	}
+	for k, e := range dm.Emit {
+		if strings.TrimSpace(e) == "" {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].emit[%d] is empty", i, topic, j, k)
+		}
+	}
+	if !validTypes[dm.Type] {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d].type=%q must be double|float|long|int|bool|string", i, topic, j, dm.Type)
+	}
+	if hasIntegral && strings.TrimSpace(dm.Integral.Source) == "" {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d].integral.source is required", i, topic, j)
+	}
+	if hasSum && len(dm.Sum.Addends) < 2 {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d].sum.addends must list at least two suffixes (a one-addend sum is a rename)", i, topic, j)
 	}
 	return nil
 }

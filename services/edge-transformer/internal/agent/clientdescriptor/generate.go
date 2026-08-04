@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
@@ -175,10 +176,89 @@ func (d *Descriptor) GenerateProfile() (*tenantprofile.Profile, error) {
 		},
 		MetricTemplates: d.MetricTemplates,
 	}
+	// Resolve each equipment's Derived rules into segment-qualified, {idx}-filled
+	// profile rules — the form both SynthesizeEquipment (allowlist) and the runtime
+	// deriver (values) consume. Resolution reuses the SAME ResolveCountIndex the
+	// count templates use, so a derived count leaf and a member count leaf land on
+	// the same index.
+	derived, err := d.generateDerivedRules(p)
+	if err != nil {
+		return nil, err
+	}
+	p.Derived = derived
 	if err := p.Validate(); err != nil {
 		return nil, fmt.Errorf("generated profile invalid: %w", err)
 	}
 	return p, nil
+}
+
+// generateDerivedRules resolves every equipment's descriptor DerivedMetrics into
+// the profile's fully-resolved DerivedRules: leaves prefixed with the equipment
+// local segment and {idx} substituted from the equipment's resolved count index
+// (via the same p.ResolveCountIndex the templates use). p must already carry the
+// count-index rule + overrides (it does — the caller builds it first).
+func (d *Descriptor) generateDerivedRules(p *tenantprofile.Profile) ([]tenantprofile.DerivedRule, error) {
+	var rules []tenantprofile.DerivedRule
+	for _, e := range d.Equipment {
+		if len(e.Derived) == 0 {
+			continue
+		}
+		seg := d.localSegment(e.Topic)
+		// Resolve the count index once per equipment, lazily: only a leaf carrying
+		// {idx} needs it, so an integral/sum on index-free leaves never forces a
+		// (possibly failing, in explicit mode) resolution.
+		idx := 0
+		idxResolved := false
+		resolveLeaf := func(leaf string) (string, error) {
+			if strings.Contains(leaf, tenantprofile.IdxPlaceholder) {
+				if !idxResolved {
+					v, err := p.ResolveCountIndex(seg, e.IDEquipment)
+					if err != nil {
+						return "", fmt.Errorf("equipment %q: derived count index: %w", e.Topic, err)
+					}
+					idx = v
+					idxResolved = true
+				}
+				leaf = strings.ReplaceAll(leaf, tenantprofile.IdxPlaceholder, strconv.Itoa(idx))
+			}
+			return seg + leaf, nil
+		}
+		for _, dm := range e.Derived {
+			r := tenantprofile.DerivedRule{Segment: seg, Type: dm.Type}
+			for _, leaf := range dm.Emit {
+				full, err := resolveLeaf(leaf)
+				if err != nil {
+					return nil, err
+				}
+				r.Emit = append(r.Emit, full)
+			}
+			if dm.Integral != nil {
+				src, err := resolveLeaf(dm.Integral.Source)
+				if err != nil {
+					return nil, err
+				}
+				r.Integral = &tenantprofile.IntegralSource{
+					Source:     src,
+					Conversion: dm.Integral.Conversion,
+					ClampMin:   dm.Integral.ClampMin,
+					MaxRate:    dm.Integral.MaxRate,
+				}
+			}
+			if dm.Sum != nil {
+				sum := &tenantprofile.SumSource{}
+				for _, a := range dm.Sum.Addends {
+					full, err := resolveLeaf(a)
+					if err != nil {
+						return nil, err
+					}
+					sum.Addends = append(sum.Addends, full)
+				}
+				r.Sum = sum
+			}
+			rules = append(rules, r)
+		}
+	}
+	return rules, nil
 }
 
 // GenerateRegisterSQL builds the packml_register INSERT (artifact 2): one row
