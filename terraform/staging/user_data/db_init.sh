@@ -60,6 +60,18 @@ rm -rf /tmp/packiot-stack
 # ── Run TimescaleDB + pg_cron via Docker ───────────────────────────────────────
 # shared_preload_libraries and cron.database_name must be passed via -c args:
 # the timescale Alpine image reads only $PGDATA/postgresql.conf (no conf.d).
+#
+# IMPORTANT: because shared_preload_libraries is set here via `-c` (the
+# postmaster command line), it takes precedence over postgresql.conf AND
+# postgresql.auto.conf. `ALTER SYSTEM SET shared_preload_libraries` on the
+# running cluster is therefore IGNORED (pg_settings.source = 'command line').
+# To change the preloaded library set you MUST edit this line and recreate
+# the container (docker rm -f timescaledb && re-run this docker run) — a
+# plain `docker restart` reuses the baked-in Config.Cmd and changes nothing.
+#
+# timescaledb MUST stay first in the list (TimescaleDB requirement).
+# pg_stat_statements is preloaded for the DB observability dashboard
+# (top/slow-query panels); it is a lightweight in-memory query-stats collector.
 mkdir -p /var/lib/postgresql/data
 
 docker run -d \
@@ -73,7 +85,7 @@ docker run -d \
   -e TIMESCALEDB_TELEMETRY=off \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
   packiot-postgres:local \
-  -c "shared_preload_libraries=timescaledb,pg_cron" \
+  -c "shared_preload_libraries=timescaledb,pg_cron,pg_stat_statements" \
   -c "cron.database_name=${db_name}"
 
 echo "TimescaleDB container started, waiting for PostgreSQL to accept connections..."
@@ -87,8 +99,14 @@ docker exec timescaledb psql -U ${db_user} -d ${db_name} <<SQL
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 GRANT USAGE ON SCHEMA cron TO "${db_user}";
+-- pg_stat_statements: per-query execution stats for the DB observability
+-- dashboard. Requires pg_stat_statements in shared_preload_libraries (above).
+-- The shadow DB (packiot_shadow) needs the same CREATE EXTENSION run in it
+-- wherever it is provisioned; the preload is cluster-wide so one flag covers
+-- both databases.
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
-echo "Database '${db_name}' ready with TimescaleDB + pg_cron"
+echo "Database '${db_name}' ready with TimescaleDB + pg_cron + pg_stat_statements"
 
 # ── OEECloud tables ────────────────────────────────────────────────────────────
 # uns_equipment_current_metrics: one row per equipment, tracks latest UNS state.
