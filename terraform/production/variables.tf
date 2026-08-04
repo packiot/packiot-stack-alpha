@@ -47,9 +47,9 @@ variable "public_subnet_cidr" {
 # Bump to t4g.large later if observability stack memory creeps up.
 
 variable "app_instance_type" {
-  description = "Single t4g.medium handles the full dry-run stack — see sizing comment above"
+  description = "Graviton2 app host — upgrade if OOM"
   type        = string
-  default     = "t4g.medium" # 2 vCPU / 4 GB — ~$24/mo on-demand
+  default     = "t4g.large" # 2 vCPU / 8 GB — ~$48/mo; upgraded from t4g.medium: docker compose build of ~10 services OOM/swap-thrashed on 4GB. 8GB removes the thrash.
 }
 
 variable "app_volume_size_gb" {
