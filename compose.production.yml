@@ -1085,6 +1085,37 @@ services:
   #
   # Secrets: PG resolver via packiot/production/db; OPERATOR_API_KEY +
   # OPERATOR_EDGE_API_KEY (the client enterprise api_key) + TLS are deploy-filled.
+  # CS-Admin SPA (Vite + nginx). Vhost csadmin.prod.packiot.app is generated from
+  # var.services (terraform) behind the wildcard cert + Authentik. nginx here
+  # reverse-proxies /api -> edge-api:8080, /v1 -> refdata-api:9104.
+  csadmin:
+    build:
+      context: ./csadmin
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_FIREBASE_API_KEY: ${CSADMIN_FIREBASE_API_KEY:-}
+        VITE_FIREBASE_AUTH_DOMAIN: ${CSADMIN_FIREBASE_AUTH_DOMAIN:-}
+        VITE_FIREBASE_PROJECT_ID: ${CSADMIN_FIREBASE_PROJECT_ID:-}
+        VITE_FIREBASE_STORAGE_BUCKET: ${CSADMIN_FIREBASE_STORAGE_BUCKET:-}
+        VITE_FIREBASE_MESSAGING_SENDER_ID: ${CSADMIN_FIREBASE_MESSAGING_SENDER_ID:-}
+        VITE_FIREBASE_APP_ID: ${CSADMIN_FIREBASE_APP_ID:-}
+    container_name: csadmin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8084:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.40
+    depends_on:
+      edge-api:
+        condition: service_started
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   operator-adapter:
     build: ./services/operator-adapter
     container_name: operator-adapter
