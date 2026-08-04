@@ -1,0 +1,17 @@
+{
+  "name": "cognito-user-migration",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Cognito User Migration trigger Lambda — JIT Firebase→Cognito migrate-on-login (ADR-0034)",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.600.0"
+  }
+}
