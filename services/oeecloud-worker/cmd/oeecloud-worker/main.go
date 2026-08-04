@@ -364,6 +364,20 @@ func main() {
 			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0010 §10.4 GAP-1 — CPAC (status_type=0) stop deriver. DARK,
+	// DEFAULT OFF. Parallel path to the status_type=4 deriver above; writes a
+	// separate shadow comparison table so flag-off is byte-identical. Do NOT
+	// enable until the comparator (cpac_deriver_comparator.sql) gate passes.
+	if cfg.CPACEventDerivationEnabled {
+		go events.LoopCPAC(ctx, flows.Standard(pool, shadowPool),
+			events.CPACConfig{
+				Enterprises:     config.CSVInts(cfg.CPACEventEnterprises),
+				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
+				TargetTable:     cfg.CPACEventTargetTable,
+			},
+			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
+	}
+
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
 	// Parses the AMQP payload, builds one Query per metric via the right
 	// writer, and sends them as a single pgx.Batch.
