@@ -10,3 +10,7 @@
 	path = operator
 	url = https://github.com/packiot/operator4.git
 	branch = staging
+[submodule "csadmin"]
+	path = csadmin
+	url = https://github.com/packiot/csadmin.git
+	branch = claude-version
