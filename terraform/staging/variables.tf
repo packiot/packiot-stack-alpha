@@ -43,7 +43,7 @@ variable "db_instance_type" {
 variable "app_instance_type" {
   description = "On-demand Graviton2 — t4g.small saves ~$12/mo vs medium; upgrade if OOM"
   type        = string
-  default     = "t4g.medium" # 2 vCPU / 4 GB — ~$24/mo; upgraded from t4g.small due to Authentik OOM
+  default     = "t4g.large" # 2 vCPU / 8 GB — ~$48/mo; upgraded from t4g.medium: docker compose build of ~10 services OOM/swap-thrashed on 4GB (npm ci ECONNRESET + exit 137). 8GB removes the thrash.
 }
 
 variable "db_volume_size_gb" {
