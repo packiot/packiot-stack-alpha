@@ -137,6 +137,26 @@ type Config struct {
 	// ca_discrete_changes_1s directly (ADR-0031 Incoplast/ent4). Empty = off.
 	EventsWiderowStateEnterprises string
 
+	// ADR-0010 §10.4 GAP-1 — the CPAC (status_type=0) stop deriver. DARK,
+	// DEFAULT OFF. A PARALLEL path to the status_type=4 deriver above: it mints
+	// stop/run interval events from COUNT-ACTIVITY silence (the only independent
+	// live signal CPACK's edge produces — its `state` is NULL on the live path)
+	// into a SHADOW comparison table, so deploying it flag-off is byte-identical.
+	// Enablement is gated on the comparator (cpac_deriver_comparator.sql).
+	CPACEventDerivationEnabled bool
+	CPACEventIntervalMin       int
+	CPACEventEnterprises       string // csv int list of status_type=0 enterprises (CPACK=3); empty ⇒ inert
+	// CPACStopThresholdDefaultSec — fallback stop horizon when
+	// equipments.stop_threshold_time (Parameter 30751) IS NULL/0 (it is NULL for
+	// all CPACK equipment on staging). This is THE tuning knob the comparator
+	// gates; too tight over-detects count-cadence gaps as stops.
+	CPACStopThresholdDefaultSec int
+	// CPACEventTargetTable — the shadow comparison table in EvSchema the
+	// derivation writes to (default equipment_events_cpac_shadow). Kept separate
+	// from equipment_events (owned by the mirror fan-out + operators for CPACK)
+	// so the comparator is a clean two-table diff and flag-off parity is total.
+	CPACEventTargetTable string
+
 	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
 	// sync (verbatim-embedded state machine).
 	Sync06ReportEnabled   bool
@@ -325,6 +345,11 @@ func Load() (*Config, error) {
 		EventsExcludedAreas:              getenv("EVENTS_EXCLUDED_AREAS", ""),
 		EventsExcludedEnterprises:        getenv("EVENTS_EXCLUDED_ENTERPRISES", ""),
 		EventsWiderowStateEnterprises:    getenv("EVENTS_WIDEROW_STATE_ENTERPRISES", ""),
+		CPACEventDerivationEnabled:       getenv("CPAC_EVENT_DERIVATION_ENABLED", "false") == "true",
+		CPACEventIntervalMin:             getenvInt("CPAC_EVENT_DERIVATION_INTERVAL_MINUTES", 1),
+		CPACEventEnterprises:             getenv("CPAC_EVENT_ENTERPRISES", ""),
+		CPACStopThresholdDefaultSec:      getenvInt("CPAC_STOP_THRESHOLD_DEFAULT_SEC", 300),
+		CPACEventTargetTable:             getenv("CPAC_EVENT_TARGET_TABLE", "equipment_events_cpac_shadow"),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
