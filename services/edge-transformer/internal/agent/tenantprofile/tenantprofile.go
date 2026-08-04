@@ -125,6 +125,77 @@ type Profile struct {
 	// MetricTemplates are the per-class canonical metric leaves the loader emits
 	// for each equipment. "{idx}" in a leaf is filled from CountIndex.
 	MetricTemplates MetricTemplates `yaml:"metric_templates"`
+
+	// Derived are the per-equipment agent-side SYNTHESIS rules (ADR-0045 P2c).
+	// Each rule is FULLY RESOLVED at generate time (GenerateProfile): its Emit /
+	// Source / Addends are segment-qualified suffixes with {idx} already
+	// substituted, so both the register-synthesis path (SynthesizeEquipment adds
+	// the Emit suffixes to the allowlist) and the runtime deriver (which computes
+	// their VALUES) consume the profile directly, with no descriptor at runtime.
+	// A profile with no derived rules is a no-op (the deriver stays empty).
+	Derived []DerivedRule `yaml:"derived,omitempty"`
+}
+
+// DerivedRule is one equipment's agent-side derive rule, fully resolved.
+// Exactly one of {Integral, Sum} is set. The Emit suffixes are the canonical
+// count leaves the deriver publishes (they must ALSO appear in the synthesized
+// raw_tag_map allowlist so the resolver accepts them — SynthesizeEquipment adds
+// them). Segment is the equipment LOCAL SEGMENT (e.g. "/L5/FLEXO") the rule
+// belongs to, so SynthesizeEquipment (called per equipment) can match its rules.
+type DerivedRule struct {
+	// Segment is the equipment local segment (topic minus tenant prefix), e.g.
+	// "/L5/FLEXO". Used only to attach the rule's Emit leaves to that equipment's
+	// synthesis; the runtime deriver keys on the FULL Source/Addend suffixes.
+	Segment string `yaml:"segment"`
+
+	// Emit are the FULL (segment-qualified) canonical count suffixes the deriver
+	// publishes the computed value to, e.g. "/L5/FLEXO/Admin/ProdConsumedCount/61/Unit".
+	Emit []string `yaml:"emit"`
+
+	// Type is the SparkPlug type of the emitted count (the tenant's count type,
+	// e.g. "double" for CPACK). Used as the allowlist entry's type when the Emit
+	// suffix is not already produced by a metric template.
+	Type string `yaml:"type"`
+
+	// Integral synthesizes a monotonic count by integrating an analog source rate
+	// over time (FLEXO: an analog speed → a virtual production counter).
+	Integral *IntegralSource `yaml:"integral,omitempty"`
+
+	// Sum synthesizes a count by summing several register addends (PTH: A+B).
+	Sum *SumSource `yaml:"sum,omitempty"`
+}
+
+// IntegralSource declares an analog→count time integral. In a descriptor its
+// Source is a RELATIVE leaf with an optional {idx}; in a resolved profile it is
+// the FULL segment-qualified arriving suffix the tee actually sends.
+type IntegralSource struct {
+	// Source is the analog rate metric suffix to integrate, e.g.
+	// "/Status/CurMachSpeed" (descriptor, relative) →
+	// "/L5/FLEXO/Status/CurMachSpeed" (profile, resolved). ⚠ It matches the RAW
+	// ARRIVING suffix — the agent ingest does NOT run metric aliases inbound
+	// (those are register-side), so declare the raw name the tee emits.
+	Source string `yaml:"source"`
+
+	// Conversion scales the source value into a per-second production rate
+	// (units/s = value * conversion). E.g. a speed in units/min → 1.0/60.
+	Conversion float64 `yaml:"conversion"`
+
+	// ClampMin floors the computed rate (default 0 keeps the integral monotonic
+	// even if the source briefly reports a negative/garbage rate).
+	ClampMin float64 `yaml:"clamp_min,omitempty"`
+
+	// MaxRate, when > 0, rejects a sample whose computed rate exceeds it (a spike
+	// guard): the sample is skipped entirely (no accumulation, lastTs unchanged).
+	MaxRate float64 `yaml:"max_rate,omitempty"`
+}
+
+// SumSource declares a multi-register sum. In a descriptor the Addends are
+// RELATIVE leaves; in a resolved profile they are FULL segment-qualified
+// arriving suffixes. At least two addends (a one-addend "sum" is a rename).
+type SumSource struct {
+	// Addends are the arriving suffixes to latch-and-sum, e.g.
+	// ["/L5/PTH/Status/CountA", "/L5/PTH/Status/CountB"].
+	Addends []string `yaml:"addends"`
 }
 
 // Rewrite is an ordered from→to string rewrite.
@@ -314,6 +385,44 @@ func (p *Profile) Validate() error {
 			}
 		}
 	}
+	// derived: strict when present (a bad synthesis rule would silently corrupt a
+	// tenant's counts). Exactly one of {integral, sum}; Emit non-empty + valid
+	// type; sum needs ≥2 addends; integral needs a source.
+	for i, r := range p.Derived {
+		if err := r.validate(fmt.Sprintf("derived[%d]", i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validate checks one resolved DerivedRule. label is the caller's positional
+// context for a precise error. The shape rules mirror the descriptor's
+// DerivedMetric validation (one source of truth for "is a derive rule sane"),
+// but on the RESOLVED form (segment-qualified suffixes).
+func (r DerivedRule) validate(label string) error {
+	hasIntegral := r.Integral != nil
+	hasSum := r.Sum != nil
+	if hasIntegral == hasSum {
+		return fmt.Errorf("%s: exactly one of {integral, sum} must be set", label)
+	}
+	if len(r.Emit) == 0 {
+		return fmt.Errorf("%s: emit must list at least one canonical count suffix", label)
+	}
+	for j, e := range r.Emit {
+		if strings.TrimSpace(e) == "" {
+			return fmt.Errorf("%s: emit[%d] is empty", label, j)
+		}
+	}
+	if !validTypes[r.Type] {
+		return fmt.Errorf("%s: type=%q must be double|float|long|int|bool|string", label, r.Type)
+	}
+	if hasIntegral && strings.TrimSpace(r.Integral.Source) == "" {
+		return fmt.Errorf("%s: integral.source is required", label)
+	}
+	if hasSum && len(r.Sum.Addends) < 2 {
+		return fmt.Errorf("%s: sum.addends must list at least two suffixes (a one-addend sum is a rename)", label)
+	}
 	return nil
 }
 
@@ -376,9 +485,17 @@ type SynthMetric struct {
 
 // SynthesizeEquipment expands one equipment (local segment + class + id) into
 // its canonical metric suffixes using the class templates and count-index rule.
+//
+// It ALSO appends the Emit suffixes of every Derived rule that belongs to this
+// equipment's segment (ADR-0045 P2c): a derived count leaf must be in the agent
+// raw_tag_map allowlist or the resolver would drop the deriver's synthesized tag
+// as unmapped. A derived Emit that a metric template already produces is skipped
+// (same suffix — the template's entry already declares the allowlist + type),
+// so a FLEXO whose count leaf is both templated AND derived maps exactly once.
 func (p *Profile) SynthesizeEquipment(localSegment string, class EquipClass, idEquipment int) ([]SynthMetric, error) {
 	tmpls := p.templatesFor(class)
 	out := make([]SynthMetric, 0, len(tmpls))
+	seen := make(map[string]bool, len(tmpls))
 	var idx int
 	var idxErr error
 	idxResolved := false
@@ -394,7 +511,24 @@ func (p *Profile) SynthesizeEquipment(localSegment string, class EquipClass, idE
 			}
 			leaf = strings.ReplaceAll(leaf, IdxPlaceholder, strconv.Itoa(idx))
 		}
-		out = append(out, SynthMetric{Suffix: localSegment + leaf, Type: t.Type})
+		suffix := localSegment + leaf
+		seen[suffix] = true
+		out = append(out, SynthMetric{Suffix: suffix, Type: t.Type})
+	}
+	// Derived Emit leaves (already segment-qualified + {idx}-resolved) — add any
+	// not already produced by a template so the allowlist covers the deriver's
+	// synthesized counts.
+	for _, r := range p.Derived {
+		if r.Segment != localSegment {
+			continue
+		}
+		for _, suffix := range r.Emit {
+			if seen[suffix] {
+				continue
+			}
+			seen[suffix] = true
+			out = append(out, SynthMetric{Suffix: suffix, Type: r.Type})
+		}
 	}
 	return out, nil
 }

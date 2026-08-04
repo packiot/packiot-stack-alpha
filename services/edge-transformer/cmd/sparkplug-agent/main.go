@@ -42,6 +42,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/capture"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/deriver"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/numeric"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
@@ -166,6 +167,25 @@ func main() {
 			"params", len(prof.ParameterDecomposition.Params))
 	}
 
+	// ── agent-side DERIVE stage (ADR-0045 P2c) ────────────────────────────────
+	// Additive + config-driven: built from the tenant profile's `derived` rules
+	// (loaded by resolveTagMap into boot.profile). It synthesizes canonical counts
+	// for equipment whose PLC emits an analog rate (integral) or split registers
+	// (sum) instead of a counter. A profile with no derived rules yields an empty
+	// deriver whose Process is a no-op, so this is safe to build unconditionally.
+	// The Emit suffixes are already allowlisted (SynthesizeEquipment), so the
+	// synthesized counts resolve on the shared ingest path like any other tag.
+	var derive *deriver.Deriver
+	if boot != nil && boot.profile != nil {
+		derive = deriver.New(boot.profile)
+		if !derive.Empty() {
+			logger.Info("agent-side derive stage enabled",
+				"derived_rules", len(boot.profile.Derived))
+		} else {
+			derive = nil // no rules → skip the Process call entirely
+		}
+	}
+
 	logger.Info("sparkplug-agent starting",
 		"group_id", cfg.Sparkplug.GroupID,
 		"edge_node_id", cfg.Sparkplug.EdgeNodeID,
@@ -259,6 +279,14 @@ func main() {
 		Help: "Bare-Parameter raw tags rewritten to a canonical numbered leaf, by PackML parameter id.",
 	}, []string{"param_id"})
 	reg.MustRegister(decomposed)
+	// ADR-0045 P2c: canonical count tags SYNTHESIZED by the agent-side derive
+	// stage (integral/sum). Nonzero ⇒ the deriver is producing counts a PLC does
+	// not emit directly.
+	derivedSynth := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_derived_synth_total",
+		Help: "Canonical count tags synthesized by the agent-side derive stage (integral|sum).",
+	})
+	reg.MustRegister(derivedSynth)
 
 	// ADR-0045 P2a: whether the register-driven (config-as-data) tag map is
 	// active for this tenant, and why. 1 = register-driven, 0 = static YAML.
@@ -336,7 +364,22 @@ func main() {
 	// feed one tagstore→session→uplink path. Returns (accepted, total):
 	// accepted resolved to a mapped metric; the rest were dropped-with-metric.
 	ingest := func(tags []rawtag.RawTag) (accepted, total int) {
+		// Agent-side DERIVE stage (ADR-0045 P2c): synthesize canonical counts from
+		// analog integrals / register sums declared per-equipment in the profile,
+		// and mark the sum ADDEND suffixes as consumed (they must be dropped, not
+		// republished — a partial passthrough looks like a totalizer drop to Calc).
+		// It keys on the RAW arriving suffix, so it runs BEFORE parameter
+		// decomposition (disjoint tag sets — counts/speeds vs bare Parameter).
+		var synth []rawtag.RawTag
+		var consumed map[string]bool
+		if derive != nil {
+			synth, consumed = derive.Process(tags)
+		}
 		for _, t := range tags {
+			// A sum addend the deriver folded in: drop it (do not republish).
+			if consumed[t.Metric] {
+				continue
+			}
 			// Live-capture OBSERVE (ADR-0045 P2b): record what count indices
 			// ACTUALLY arrive — BEFORE the allowlist, so an inferred-index tag
 			// that the current map would drop as unmapped is still observed (that
@@ -364,6 +407,19 @@ func main() {
 			}
 			store.Apply(t)
 			accepted++
+		}
+		// Synthesized counts resolve + store on the SAME path (their Emit suffixes
+		// are allowlisted via SynthesizeEquipment). They are NOT observed (agent-
+		// generated, not from the live tee) and do not count toward the input
+		// (accepted,total) — that pair reports the incoming envelope only.
+		for _, t := range synth {
+			if _, _, ok := resolver.Resolve(t.Metric); !ok {
+				dropped.WithLabelValues("unmapped").Inc()
+				unmappedReporter.Observe(t.Metric)
+				continue
+			}
+			store.Apply(t)
+			derivedSynth.Inc()
 		}
 		return accepted, len(tags)
 	}

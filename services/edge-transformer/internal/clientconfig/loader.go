@@ -134,6 +134,11 @@ type S7Tag struct {
 	Type   string  `yaml:"type"`            // int | dint | real | bool
 	Scale  float64 `yaml:"scale,omitempty"` // 0 = 1 (no scaling)
 	Long   bool    `yaml:"long,omitempty"`  // emit as SparkPlug Long (state metrics) vs Double
+	// Source (ADR-0045 P2c) marks this tag as DERIVED, not polled: its value is
+	// synthesized by the agent-side derive stage (integral/sum) from OTHER tags,
+	// so it has NO physical S7 address. When set, the db/offset/type checks are
+	// skipped (there is nothing to read). Mirrors the agent DerivedRule shape.
+	Source *TagSource `yaml:"source,omitempty"`
 }
 
 // ModbusEndpointTags binds one PLC endpoint's Modbus tag set to a PackML
@@ -156,6 +161,10 @@ type ModbusTag struct {
 	Scale    float64 `yaml:"scale,omitempty"`     // 0 = 1 (no scaling)
 	Long     bool    `yaml:"long,omitempty"`      // emit as SparkPlug Long vs Double
 	WordSwap bool    `yaml:"word_swap,omitempty"` // swap the two registers of a 32-bit value (CDAB vs ABCD)
+	// Source (ADR-0045 P2c) marks this tag as DERIVED, not polled (see S7Tag.Source):
+	// its value is synthesized by the agent-side derive stage, so it has no Modbus
+	// address. When set, the kind/type/address checks are skipped.
+	Source *TagSource `yaml:"source,omitempty"`
 }
 
 // OPCUAEndpointTags binds one PLC endpoint's OPC-UA tag set to a PackML
@@ -175,6 +184,36 @@ type OPCUATag struct {
 	Type   string  `yaml:"type"`            // int | float | bool | string
 	Scale  float64 `yaml:"scale,omitempty"` // 0 = 1 (no scaling)
 	Long   bool    `yaml:"long,omitempty"`  // emit as SparkPlug Long vs Double
+	// Source (ADR-0045 P2c) marks this tag as DERIVED, not polled (see S7Tag.Source):
+	// its value is synthesized by the agent-side derive stage, so it has no OPC-UA
+	// node_id. When set, the node_id/type checks are skipped.
+	Source *TagSource `yaml:"source,omitempty"`
+}
+
+// TagSource is the reader-side mirror of the agent DerivedRule shape (ADR-0045
+// P2c): a tag whose value is SYNTHESIZED (integral or sum) rather than read from
+// a physical address. It carries no addressing — the agent-side deriver owns the
+// computation; this is the schema record so a client.yaml can DECLARE a derived
+// tag (and the §C consistency check still sees its metric). Exactly one of
+// {Integral, Sum} is set.
+type TagSource struct {
+	Integral *IntegralSource `yaml:"integral,omitempty"`
+	Sum      *SumSource      `yaml:"sum,omitempty"`
+}
+
+// IntegralSource declares an analog→count time integral (see the agent
+// tenantprofile.IntegralSource; duplicated here so clientconfig has no import
+// dependency on the agent packages).
+type IntegralSource struct {
+	Source     string  `yaml:"source"`
+	Conversion float64 `yaml:"conversion"`
+	ClampMin   float64 `yaml:"clamp_min,omitempty"`
+	MaxRate    float64 `yaml:"max_rate,omitempty"`
+}
+
+// SumSource declares a multi-register sum (≥2 addends).
+type SumSource struct {
+	Addends []string `yaml:"addends"`
 }
 
 // EquipmentMapping is one row of the topic↔equipment table — the same
@@ -402,6 +441,14 @@ func (c *Config) validateV11() error {
 			if strings.TrimSpace(t.Metric) == "" {
 				return fmt.Errorf("s7_tag_map[%d].tags[%d]: metric is required", i, j)
 			}
+			// A DERIVED tag (Source set) has no physical address — validate the
+			// source shape and skip the db/offset/type checks.
+			if t.Source != nil {
+				if err := validateTagSource("s7_tag_map", i, j, t.Metric, t.Source); err != nil {
+					return err
+				}
+				continue
+			}
 			switch t.Type {
 			case "int", "dint", "real", "bool":
 			default:
@@ -425,6 +472,12 @@ func (c *Config) validateV11() error {
 		for j, t := range m.Tags {
 			if strings.TrimSpace(t.Metric) == "" {
 				return fmt.Errorf("modbus_tag_map[%d].tags[%d]: metric is required", i, j)
+			}
+			if t.Source != nil {
+				if err := validateTagSource("modbus_tag_map", i, j, t.Metric, t.Source); err != nil {
+					return err
+				}
+				continue
 			}
 			isBit := false
 			switch t.Kind {
@@ -458,6 +511,12 @@ func (c *Config) validateV11() error {
 			if strings.TrimSpace(t.Metric) == "" {
 				return fmt.Errorf("opcua_tag_map[%d].tags[%d]: metric is required", i, j)
 			}
+			if t.Source != nil {
+				if err := validateTagSource("opcua_tag_map", i, j, t.Metric, t.Source); err != nil {
+					return err
+				}
+				continue
+			}
 			if strings.TrimSpace(t.NodeID) == "" {
 				return fmt.Errorf("opcua_tag_map[%d].tags[%d] (%s): node_id is required", i, j, t.Metric)
 			}
@@ -487,6 +546,25 @@ func validateMapHeader(section string, i int, endpoint, packmlTopic string, idEq
 	}
 	if nTags == 0 {
 		return fmt.Errorf("%s[%d] (%s): no tags", section, i, endpoint)
+	}
+	return nil
+}
+
+// validateTagSource checks a DERIVED tag's Source shape (ADR-0045 P2c): exactly
+// one of {integral, sum}; integral needs a source; sum needs ≥2 addends. It is
+// the clientconfig mirror of the agent-side DerivedMetric validation, so a
+// client.yaml that declares a derived tag fails the same way the descriptor does.
+func validateTagSource(section string, i, j int, metric string, s *TagSource) error {
+	hasIntegral := s.Integral != nil
+	hasSum := s.Sum != nil
+	if hasIntegral == hasSum {
+		return fmt.Errorf("%s[%d].tags[%d] (%s): source must set exactly one of {integral, sum}", section, i, j, metric)
+	}
+	if hasIntegral && strings.TrimSpace(s.Integral.Source) == "" {
+		return fmt.Errorf("%s[%d].tags[%d] (%s): source.integral.source is required", section, i, j, metric)
+	}
+	if hasSum && len(s.Sum.Addends) < 2 {
+		return fmt.Errorf("%s[%d].tags[%d] (%s): source.sum.addends must list at least two suffixes", section, i, j, metric)
 	}
 	return nil
 }
