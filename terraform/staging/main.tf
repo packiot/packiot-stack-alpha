@@ -33,5 +33,22 @@ provider "aws" {
   }
 }
 
+# us-east-1-pinned provider for the edge layer (edge.tf). CloudFront viewer ACM
+# certs and WAFv2 web ACLs with scope=CLOUDFRONT MUST be created in us-east-1.
+# The root provider already defaults there (var.aws_region), but pinning an
+# explicit alias keeps the edge resources correct even if aws_region is changed.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "packiot"
+      Environment = "staging"
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
