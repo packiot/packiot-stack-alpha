@@ -44,3 +44,12 @@ untouched: refdata, api (own token auth).
 ## Rollback (per vhost)
 Restore `/etc/nginx/conf.d/oauth2-bak/<vhost>.conf.<ts>` and reload nginx.
 Authentik stays running until the separate retirement PR.
+
+## Production (same playbook, prod values)
+- Client `oauth2-proxy-prod` (25i5je849qsd1hetcinrbm2t2c); cookie `.prod.packiot.app`;
+  redirect `https://auth.prod.packiot.app/oauth2/callback`; cert `prod.packiot.app`.
+- Gated vhosts: grafana/adminer/hasura/rabbitmq (cs-admin), operator (any-auth),
+  api (root cs-admin, `/api/*` bypass — edge-api x-api-key). No nodereds/refdata.
+- oauth2-proxy in `compose.production.yml`; reaches the prod host via
+  `promote production←staging` → deploy-production. Proven end-to-end (adminer +
+  grafana login as a cs-admin Cognito user).
