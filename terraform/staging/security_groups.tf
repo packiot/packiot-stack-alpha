@@ -52,11 +52,11 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description = "AMQPS - factory edge clients publishing to RabbitMQ via Nginx TLS proxy"
+    description = "AMQPS (retiring, superseded by Node-RED agent mTLS 8883). CPACK egress /32 only"
     from_port   = 5671
     to_port     = 5671
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["179.162.112.58/32"]
   }
 
   # ADR-0042 P1 — CPACK Node-RED tee → sparkplug-agent /v1/tags front-door.
@@ -66,7 +66,7 @@ resource "aws_security_group" "app" {
   # aws_security_group_rule) so it stays inside this SG's authoritative rule set
   # — mixing the two forms makes Terraform revoke the standalone rule on apply.
   ingress {
-    description = "ADR-0042 P1 CPACK Node-RED tee -> sparkplug-agent /v1/tags (CPACK egress /32 only)"
+    description = "ADR-0042 P1 CPACK Node-RED tee to sparkplug-agent v1 tags (CPACK egress /32 only)"
     from_port   = 8447
     to_port     = 8447
     protocol    = "tcp"
