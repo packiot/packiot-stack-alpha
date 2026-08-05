@@ -47,6 +47,14 @@ type Artifacts struct {
 	// plc block; nil otherwise — so a descriptor without plc emits the same four
 	// artifacts as before (artifact 5 is strictly additive).
 	ClientYAML []byte
+
+	// ReaderFlow is the Node-RED PLC-reader flow (artifact 6): the AUTONOMOUS-edge
+	// alternative to the tee — protocol input nodes → normalize → POST raw tags to
+	// the local sparkplug-agent, plus a first-class per-client customizations tab.
+	// Generated from the SAME descriptor `plc:` block as ClientYAML, so it is non-nil
+	// on exactly the same condition (d.PLC != nil) and can never disagree with the Go
+	// reader's config; nil otherwise, leaving the historical artifact set unchanged.
+	ReaderFlow []byte
 }
 
 // GenerateOptions gates cutover-readiness.
@@ -681,15 +689,24 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		return nil, err
 	}
 
-	// Artifact 5 (client.yaml) is emitted ONLY when the descriptor carries a plc
-	// block. A descriptor without one produces exactly the historical four.
-	var clientYAML []byte
+	// Artifacts 5 (client.yaml) AND 6 (Node-RED reader flow) are BOTH emitted ONLY
+	// when the descriptor carries a plc block — they are the two consumers of the
+	// SAME `plc:` source of truth (the Go reader's config and the Node-RED reader's
+	// flow), so a tenant can deploy either reader off one descriptor. A descriptor
+	// without a plc block produces exactly the historical four artifacts.
+	var clientYAML, readerFlow []byte
 	if d.PLC != nil {
 		s, err := d.GenerateClientYAML()
 		if err != nil {
 			return nil, err
 		}
 		clientYAML = []byte(s)
+
+		rf, err := d.GeneratePlcReaderFlow()
+		if err != nil {
+			return nil, fmt.Errorf("generate plc reader flow: %w", err)
+		}
+		readerFlow = rf
 	}
 
 	return &Artifacts{
@@ -700,5 +717,6 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		AgentYAML:   agentYAML,
 		TeeSnippet:  tee,
 		ClientYAML:  clientYAML,
+		ReaderFlow:  readerFlow,
 	}, nil
 }

@@ -10,6 +10,10 @@
 //  4. <tenant>-tee-node.json    — the Node-RED Tier-1 raw-forwarder flow
 //  5. <tenant>-client.yaml      — the Go PLC readers' config (clientconfig),
 //     emitted ONLY when the descriptor has a plc block
+//  6. <tenant>-reader-flow.json — the Node-RED own-reader flow (S7/OPC-UA/Modbus
+//     → normalize → POST raw tags to the local sparkplug-agent) + a per-client
+//     customizations tab, emitted ONLY when the descriptor has a plc block (the
+//     autonomous-edge deployable, generated from the SAME block as artifact 5)
 //
 // Usage:
 //
@@ -159,6 +163,15 @@ func run() error {
 			name string
 			data []byte
 		}{tenant + "-client.yaml", art.ClientYAML})
+	}
+	// Artifact 6: the Node-RED own-reader flow, emitted (like artifact 5) only when
+	// the descriptor carries a plc block (art.ReaderFlow is nil otherwise) — the
+	// autonomous-edge deployable + per-client customization surface.
+	if art.ReaderFlow != nil {
+		files = append(files, struct {
+			name string
+			data []byte
+		}{tenant + "-reader-flow.json", art.ReaderFlow})
 	}
 
 	if *outDir == "" {
