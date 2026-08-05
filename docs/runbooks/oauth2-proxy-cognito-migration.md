@@ -53,3 +53,11 @@ Authentik stays running until the separate retirement PR.
 - oauth2-proxy in `compose.production.yml`; reaches the prod host via
   `promote production←staging` → deploy-production. Proven end-to-end (adminer +
   grafana login as a cs-admin Cognito user).
+
+## Edge cutover status (2026-08-05)
+- STAGING: steps (d) DNS→CloudFront + (c) X-Origin-Verify LIVE. `edge_cutover`
+  default flipped to `true` in `terraform/staging/edge.tf`. Origin rejects any
+  non-CloudFront request (403 via `/etc/nginx/snippets/origin-verify.conf`,
+  included in the 8 fronted vhosts — NOT auth/mq/amqp/cpack-ingest). Secret =
+  the CloudFront custom origin header `X-Origin-Verify` (TF state, not committed).
+  WAF still `count` mode; SG-lock (f) NOT applied (would need auth fronted).
