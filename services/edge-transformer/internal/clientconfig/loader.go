@@ -139,6 +139,13 @@ type S7Tag struct {
 	// so it has NO physical S7 address. When set, the db/offset/type checks are
 	// skipped (there is nothing to read). Mirrors the agent DerivedRule shape.
 	Source *TagSource `yaml:"source,omitempty"`
+	// CounterDerive declares, for a COUNT tag, which of gross/net/scrap this
+	// equipment physically senses and how the agent derives the rest (ADR-0045,
+	// decoded from CPACK's Calc_Counters). One of the CounterDerive* tokens; empty
+	// ⇒ full (all three sensed, pass-through). Non-count tags leave it empty (or
+	// "none"). The runtime lives in internal/agent/counterderive; the reader stays
+	// a dumb physical-tag reader (the agent owns derivation).
+	CounterDerive string `yaml:"counter_derive,omitempty"`
 }
 
 // ModbusEndpointTags binds one PLC endpoint's Modbus tag set to a PackML
@@ -165,6 +172,9 @@ type ModbusTag struct {
 	// its value is synthesized by the agent-side derive stage, so it has no Modbus
 	// address. When set, the kind/type/address checks are skipped.
 	Source *TagSource `yaml:"source,omitempty"`
+	// CounterDerive — see S7Tag.CounterDerive. Sensor-presence + derivation mode for
+	// a count tag; empty ⇒ full. Owned by the agent-side counterderive stage.
+	CounterDerive string `yaml:"counter_derive,omitempty"`
 }
 
 // OPCUAEndpointTags binds one PLC endpoint's OPC-UA tag set to a PackML
@@ -188,6 +198,9 @@ type OPCUATag struct {
 	// its value is synthesized by the agent-side derive stage, so it has no OPC-UA
 	// node_id. When set, the node_id/type checks are skipped.
 	Source *TagSource `yaml:"source,omitempty"`
+	// CounterDerive — see S7Tag.CounterDerive. Sensor-presence + derivation mode for
+	// a count tag; empty ⇒ full. Owned by the agent-side counterderive stage.
+	CounterDerive string `yaml:"counter_derive,omitempty"`
 }
 
 // TagSource is the reader-side mirror of the agent DerivedRule shape (ADR-0045
@@ -306,6 +319,46 @@ type Integration struct {
 // descriptor NEVER carries secret values inline — only pointers into the
 // secret store. Enforced by validate() so a leaked credential fails CI.
 const secretScheme = "secret://"
+
+// CounterDerive* are the closed enum of per-count sensor-presence + derivation
+// modes a tag may declare (ADR-0045, decoded from CPACK's Calc_Counters). Each
+// says which of gross/net/scrap the factory physically senses and how the
+// agent-side counterderive stage fills in the rest. Empty ⇒ CounterDeriveFull.
+// The EXACT arithmetic lives in internal/agent/counterderive.Apply — this file
+// owns only the schema + the closed-enum lint (matching the inline type-token
+// validation style already used for s7/modbus/opcua types).
+const (
+	// CounterDeriveFull — all three counts sensed; no derivation (pass-through).
+	CounterDeriveFull = "full"
+	// CounterDeriveOutfeedOnly — one outfeed sensor: net := gross; scrap := 0.
+	CounterDeriveOutfeedOnly = "outfeed_only"
+	// CounterDeriveInfeedOnly — one infeed sensor: gross := net; scrap := 0.
+	CounterDeriveInfeedOnly = "infeed_only"
+	// CounterDeriveScrapDerived — gross+net sensed, no scrap sensor: scrap := gross-net (floored at 0).
+	CounterDeriveScrapDerived = "scrap_derived"
+	// CounterDeriveGrossDerived — net+scrap sensed, no gross sensor: gross := net+scrap.
+	CounterDeriveGrossDerived = "gross_derived"
+	// CounterDeriveOutfeedDerived — line edge-case; best-effort net := max(gross-scrap,0)
+	// (an approximation of the legacy stateful formula — see counterderive.Apply).
+	CounterDeriveOutfeedDerived = "outfeed_derived"
+	// CounterDeriveNone — not a counter; ignore.
+	CounterDeriveNone = "none"
+)
+
+// validateCounterDerive rejects any counter_derive value outside the closed
+// enum above. Empty is allowed (treated as CounterDeriveFull downstream). The
+// section/i/j/metric coordinates give a precise error, matching the tag-type
+// checks in validateV11.
+func validateCounterDerive(section string, i, j int, metric, v string) error {
+	switch v {
+	case "", CounterDeriveFull, CounterDeriveOutfeedOnly, CounterDeriveInfeedOnly,
+		CounterDeriveScrapDerived, CounterDeriveGrossDerived, CounterDeriveOutfeedDerived, CounterDeriveNone:
+		return nil
+	default:
+		return fmt.Errorf("%s[%d].tags[%d] (%s): counter_derive=%q must be full|outfeed_only|infeed_only|scrap_derived|gross_derived|outfeed_derived|none",
+			section, i, j, metric, v)
+	}
+}
 
 // Load parses client.yaml from disk. Returns a useful error for the
 // common failure modes (missing file, bad YAML, missing required field).
@@ -441,6 +494,9 @@ func (c *Config) validateV11() error {
 			if strings.TrimSpace(t.Metric) == "" {
 				return fmt.Errorf("s7_tag_map[%d].tags[%d]: metric is required", i, j)
 			}
+			if err := validateCounterDerive("s7_tag_map", i, j, t.Metric, t.CounterDerive); err != nil {
+				return err
+			}
 			// A DERIVED tag (Source set) has no physical address — validate the
 			// source shape and skip the db/offset/type checks.
 			if t.Source != nil {
@@ -472,6 +528,9 @@ func (c *Config) validateV11() error {
 		for j, t := range m.Tags {
 			if strings.TrimSpace(t.Metric) == "" {
 				return fmt.Errorf("modbus_tag_map[%d].tags[%d]: metric is required", i, j)
+			}
+			if err := validateCounterDerive("modbus_tag_map", i, j, t.Metric, t.CounterDerive); err != nil {
+				return err
 			}
 			if t.Source != nil {
 				if err := validateTagSource("modbus_tag_map", i, j, t.Metric, t.Source); err != nil {
@@ -510,6 +569,9 @@ func (c *Config) validateV11() error {
 		for j, t := range m.Tags {
 			if strings.TrimSpace(t.Metric) == "" {
 				return fmt.Errorf("opcua_tag_map[%d].tags[%d]: metric is required", i, j)
+			}
+			if err := validateCounterDerive("opcua_tag_map", i, j, t.Metric, t.CounterDerive); err != nil {
+				return err
 			}
 			if t.Source != nil {
 				if err := validateTagSource("opcua_tag_map", i, j, t.Metric, t.Source); err != nil {

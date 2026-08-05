@@ -191,3 +191,95 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// counterDeriveDescriptorYAML declares a member whose PLC senses only the NET
+// count (infeed_only) — so the descriptor's s7_tag_map ProdProcessedCount tag
+// carries counter_derive: infeed_only. The equipment templates emit all three
+// count leaves so the agent has raw_tag_map slots for the synthesized siblings.
+const counterDeriveDescriptorYAML = `
+tenant: ACME
+enterprise_id: 9
+canonical:
+  prefix: ACME/SP
+mapping:
+  count_index_default_mode: equipment_id
+metric_templates:
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+agent:
+  edge_node_id: acme-edge
+  internal_broker: tcp://mosquitto:1883
+  uplink_broker: tcp://ingest:1883
+tee:
+  ingest_url: https://localhost:8444/v1/tags
+equipment:
+  - topic: ACME/SP/LINE1/M1
+    id_equipment: 9001
+    tp_equipment: 1
+    id_unit: 9001
+    count_index: {value: 5, confidence: confirmed}
+plc:
+  endpoints:
+    - name: line1-plc
+      protocol: s7
+      host_ref: "secret://packiot/staging/acme/line1-host"
+      rack: 0
+      slot: 1
+  s7_tag_map:
+    - endpoint: line1-plc
+      packml_topic: ACME/SP/LINE1/M1
+      id_equipment: 9001
+      tags:
+        - {metric: "/Admin/ProdProcessedCount/5/Unit", db: 1, offset: 0, type: dint, counter_derive: infeed_only}
+`
+
+// TestCounterDerive_DescriptorToClientYAMLAndAgent proves the ADR-0045
+// counter_derive field (1) round-trips descriptor → GenerateClientYAML →
+// clientconfig.Load, and (2) the generator STAMPS the mode onto the matching
+// agent raw_tag_map entry (the join that lets the agent-side counterderive stage
+// see it), while leaving non-count entries unstamped.
+func TestCounterDerive_DescriptorToClientYAMLAndAgent(t *testing.T) {
+	d, err := Parse([]byte(counterDeriveDescriptorYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// (1) client.yaml round-trip carries counter_derive on the tag.
+	clientYAML, err := d.GenerateClientYAML()
+	if err != nil {
+		t.Fatalf("GenerateClientYAML: %v", err)
+	}
+	tmp := filepath.Join(t.TempDir(), "acme-client.yaml")
+	if err := os.WriteFile(tmp, []byte(clientYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := clientconfig.Load(tmp)
+	if err != nil {
+		t.Fatalf("generated client.yaml rejected: %v\n%s", err, clientYAML)
+	}
+	if len(loaded.S7TagMap) != 1 || len(loaded.S7TagMap[0].Tags) != 1 {
+		t.Fatalf("s7_tag_map did not round-trip: %+v", loaded.S7TagMap)
+	}
+	if got := loaded.S7TagMap[0].Tags[0].CounterDerive; got != clientconfig.CounterDeriveInfeedOnly {
+		t.Errorf("counter_derive did not round-trip: got %q want %q", got, clientconfig.CounterDeriveInfeedOnly)
+	}
+
+	// (2) the mode is stamped onto the matching agent raw_tag_map entry (net leaf),
+	// and only that entry — the synthesized gross/scrap slots stay unstamped.
+	agentCfg, err := d.GenerateAgentConfig()
+	if err != nil {
+		t.Fatalf("GenerateAgentConfig: %v", err)
+	}
+	modeBySuffix := map[string]string{}
+	for _, e := range agentCfg.RawTagMap {
+		modeBySuffix[e.MetricSuffix] = e.CounterDerive
+	}
+	if got := modeBySuffix["/LINE1/M1/Admin/ProdProcessedCount/5/Unit"]; got != "infeed_only" {
+		t.Errorf("net leaf counter_derive not stamped: got %q want infeed_only", got)
+	}
+	if got := modeBySuffix["/LINE1/M1/Admin/ProdConsumedCount/5/Unit"]; got != "" {
+		t.Errorf("gross (derived) leaf must NOT be stamped, got %q", got)
+	}
+}

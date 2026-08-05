@@ -322,3 +322,59 @@ func TestLoadS7TagMap_Invalid(t *testing.T) {
 
 func strings_Replace(s, old, new string) string { return strings.ReplaceAll(s, old, new) }
 func contains(s, sub string) bool               { return strings.Contains(s, sub) }
+
+// s7CounterDerive is s7Valid with a counter_derive on the count tag — the
+// ADR-0045 field the agent-side stage consumes.
+const s7CounterDerive = `
+schema_version: "1.1"
+tenant_id: incoplast
+customer: Incoplast
+environment: staging
+plc:
+  protocol: s7
+  endpoints:
+    - name: NOVOFLEX_15
+      host_ref: secret://incoplast/plc/nf15
+      rack: 0
+      slot: 2
+s7_tag_map:
+  - endpoint: NOVOFLEX_15
+    packml_topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15/NOVOFLEX_15
+    id_equipment: 990015
+    tags:
+      - {metric: /Admin/ProdProcessedCount/5/Unit, db: 100, offset: 8, type: dint, counter_derive: infeed_only}
+`
+
+// TestCounterDerive_RoundTrips proves a valid counter_derive value survives
+// os.ReadFile → yaml.Unmarshal → validate.
+func TestCounterDerive_RoundTrips(t *testing.T) {
+	cfg, err := Load(writeConfig(t, s7CounterDerive))
+	if err != nil {
+		t.Fatalf("valid counter_derive must Load: %v", err)
+	}
+	if got := cfg.S7TagMap[0].Tags[0].CounterDerive; got != CounterDeriveInfeedOnly {
+		t.Errorf("counter_derive did not round-trip: got %q want %q", got, CounterDeriveInfeedOnly)
+	}
+}
+
+// TestCounterDerive_RejectsBadValue proves an out-of-enum counter_derive is
+// rejected by the closed-enum lint, on every tag-map protocol.
+func TestCounterDerive_RejectsBadValue(t *testing.T) {
+	body := strings_Replace(s7CounterDerive, "counter_derive: infeed_only", "counter_derive: sideways")
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !contains(err.Error(), "counter_derive=\"sideways\"") {
+		t.Fatalf("want counter_derive enum error, got %v", err)
+	}
+}
+
+// TestCounterDerive_EmptyIsAccepted proves an absent counter_derive (the common
+// case) is valid and leaves the field empty (treated as full downstream).
+func TestCounterDerive_EmptyIsAccepted(t *testing.T) {
+	cfg, err := Load(writeConfig(t, s7Valid))
+	if err != nil {
+		t.Fatalf("s7Valid (no counter_derive) must Load: %v", err)
+	}
+	if got := cfg.S7TagMap[0].Tags[0].CounterDerive; got != "" {
+		t.Errorf("absent counter_derive should be empty, got %q", got)
+	}
+}
