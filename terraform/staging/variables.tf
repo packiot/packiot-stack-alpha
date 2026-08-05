@@ -77,6 +77,7 @@ variable "services" {
     rabbitmq         = 15672 # RabbitMQ management UI
     adminer          = 8082  # PostgreSQL web UI (Adminer)
     operator         = 8083  # Dev operator SPA (Vite + nginx, container port 80)
+    csadmin          = 8084  # CS-Admin SPA (staging tier; same image as prod)
   }
 }
 
