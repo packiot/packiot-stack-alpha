@@ -522,6 +522,14 @@ services:
       AUTH_BEARER_ENABLED: "true"
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
+      # CS-Admin auth + onboarding for csadmin.staging (the staging test tier).
+      # Hardcoded here (not .env) so a deploy that regenerates .env can't wipe
+      # them — that broke csadmin.staging auth (403) until they were restored.
+      # Dual-accept: no Bearer → api-key path unchanged (safe for other consumers).
+      COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
+      COGNITO_CS_ADMIN_GROUP: cs-admin
+      EDGE_API_COGNITO_AUTH_ENABLED: "true"
+      EDGE_API_ONBOARDING_ENABLED: "true"
       FIREBASE_ISSUER: https://securetoken.google.com/fbpackiot
       FIREBASE_AUDIENCE: fbpackiot
     ports:
