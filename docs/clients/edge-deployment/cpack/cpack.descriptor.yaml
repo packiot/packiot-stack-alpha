@@ -203,170 +203,206 @@ plc:
       security_policy: None
       security_mode: None
   s7_tag_map:
-    - endpoint: S7 S8
-      packml_topic: CPACK/SC/LINHAS/L8/DXL
-      id_equipment: 73
-      tags:
-        - metric: /Admin/ProdProcessedCount/219/Unit
-          db: 1
-          offset: 0
-          type: dint
-    - endpoint: S7 S8
-      packml_topic: CPACK/SC/LINHAS/L8/PTH
-      id_equipment: 74
-      tags:
-        - metric: /Admin/ProdConsumedCount/220/Unit
-          db: 1
-          offset: 32
-          type: int
-    - endpoint: S7 S8
-      packml_topic: CPACK/SC/LINHAS/L8/TCX
-      id_equipment: 75
-      tags:
-        - metric: /Admin/ProdProcessedCount/221/Unit
-          db: 1
-          offset: 16
-          type: dint
-    - endpoint: S7 S8
-      packml_topic: CPACK/SC/LINHAS/L8/TEXA
-      id_equipment: 76
-      tags:
-        - metric: /Admin/ProdProcessedCount/222/Unit
-          db: 1
-          offset: 20
-          type: dint
     - endpoint: PLC Flexo
       packml_topic: CPACK/SC/CELULA9/FLEXO/FLEXO
       id_equipment: 104
       tags:
-        # flow leaf is Status/CurMachSpeed; applied the descriptor's declared
-        # metric_alias (Status/CurMachSpeed → Status/MachSpeed) so the reader emits
-        # the canonical leaf the agent raw_tag_map carries (ADR-0045 §C).
-        - metric: /Status/MachSpeed
-          db: 1
-          offset: 50
-          type: int
-    - endpoint: S7 L10
-      packml_topic: CPACK/SC/LINHAS/L10/DXL
-      id_equipment: 77
-      tags:
-        - metric: /Admin/ProdProcessedCount/564/Unit
-          db: 1
-          offset: 0
-          type: dint
-    - endpoint: S7 L10
-      packml_topic: CPACK/SC/LINHAS/L10/PTH
-      id_equipment: 78
-      tags:
-        - metric: /Admin/ProdConsumedCount/565/Unit
-          db: 1
-          offset: 32
-          type: int
-    - endpoint: S7 L10
-      packml_topic: CPACK/SC/LINHAS/L10/TCX
-      id_equipment: 79
-      tags:
-        - metric: /Admin/ProdProcessedCount/566/Unit
-          db: 1
-          offset: 16
-          type: dint
-    - endpoint: S7 L10
-      packml_topic: CPACK/SC/LINHAS/L10/TEXA
-      id_equipment: 80
-      tags:
-        - metric: /Admin/ProdProcessedCount/567/Unit
-          db: 1
-          offset: 20
-          type: dint
-    # ── PLC L4 tag-map HELD AS TODO — descriptor/flow count-index CONFLICT ────────
-    # The legacy flow emits L4 count-indices 88/89/86/87/84 (BREYER/POLYTYPE/PTH/
-    # RMH/TEXA), but this descriptor's equipment block (and its header note, #601)
-    # records L4 as a CONFIRMED 6/7/8/9/10 series. The two disagree, so onboard-gen's
-    # ADR-0045 §C check would (correctly) reject these as unmatched raw_tag_map
-    # suffixes. Do NOT silently pick one: the descriptor is the SSoT, and its L4
-    # indices are marked confirmed — the flow may be stale, or #601's capture was
-    # mislabeled. Physical addressing (endpoint "PLC L4", rack 1/slot 2, db/offset
-    # below) is TRUSTWORTHY; only the count-index needs reconciliation on a live tee.
-    # RESOLVE: confirm L4's real per-member count-index, then either update the
-    # equipment block's count_index and re-import, or uncomment with the true index.
-    #   - endpoint: PLC L4  packml_topic: CPACK/SC/LINHAS/L4/BREYER   id 66  DB1,DINT0  (flow idx 88, descriptor 6)
-    #   - endpoint: PLC L4  packml_topic: CPACK/SC/LINHAS/L4/PTH      id 64  DB1,DINT4 consumed + DB1,INT32 processed (flow idx 86, descriptor 8)
-    #   - endpoint: PLC L4  packml_topic: CPACK/SC/LINHAS/L4/POLYTYPE id 67  DB1,DINT20 (flow idx 89, descriptor 7)
-    #   - endpoint: PLC L4  packml_topic: CPACK/SC/LINHAS/L4/RMH      id 65  DB1,DINT24 (flow idx 87, descriptor 9)
-    #   - endpoint: PLC L4  packml_topic: CPACK/SC/LINHAS/L4/TEXA     id 63  DB1,DINT28 (flow idx 84, descriptor 10)
+        - { metric: /Status/MachSpeed, db: 1, offset: 50, type: int }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/BREYER
       id_equipment: 58
       tags:
-        - metric: /Admin/ProdProcessedCount/76/Unit
-          db: 1
-          offset: 0
-          type: dint
-    - endpoint: PLC L3
-      packml_topic: CPACK/SC/LINHAS/L3/PTH
-      id_equipment: 61
-      tags:
-        - metric: /Admin/ProdConsumedCount/81/Unit
-          db: 1
-          offset: 4
-          type: dint
-        - metric: /Admin/ProdProcessedCount/81/Unit
-          db: 1
-          offset: 32
-          type: int
+        - { metric: /Admin/ProdProcessedCount/76/Unit, db: 1, offset: 0, type: dint }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/POLYTYPE
       id_equipment: 62
       tags:
-        - metric: /Admin/ProdConsumedCount/82/Unit
-          db: 1
-          offset: 20
-          type: dint
+        - { metric: /Admin/ProdConsumedCount/82/Unit, db: 1, offset: 20, type: dint }
+    - endpoint: PLC L3
+      packml_topic: CPACK/SC/LINHAS/L3/PTH
+      id_equipment: 61
+      tags:
+        - { metric: /Admin/ProdConsumedCount/81/Unit, db: 1, offset: 4, type: dint }
+        - { metric: /Admin/ProdProcessedCount/81/Unit, db: 1, offset: 32, type: int }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/RMH
       id_equipment: 59
       tags:
-        - metric: /Admin/ProdConsumedCount/79/Unit
-          db: 1
-          offset: 24
-          type: dint
+        - { metric: /Admin/ProdConsumedCount/79/Unit, db: 1, offset: 24, type: dint }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/TEXA
       id_equipment: 60
       tags:
-        - metric: /Admin/ProdConsumedCount/80/Unit
-          db: 1
-          offset: 28
-          type: dint
+        - { metric: /Admin/ProdConsumedCount/80/Unit, db: 1, offset: 28, type: dint }
+    - endpoint: PLC L4
+      packml_topic: CPACK/SC/LINHAS/L4/BREYER
+      id_equipment: 66
+      tags:
+        - { metric: /Admin/ProdConsumedCount/6/Unit, db: 1, offset: 0, type: dint }
+    - endpoint: PLC L4
+      packml_topic: CPACK/SC/LINHAS/L4/POLYTYPE
+      id_equipment: 67
+      tags:
+        - { metric: /Admin/ProdConsumedCount/7/Unit, db: 1, offset: 20, type: dint }
+    - endpoint: PLC L4
+      packml_topic: CPACK/SC/LINHAS/L4/PTH
+      id_equipment: 64
+      tags:
+        - { metric: /Admin/ProdConsumedCount/8/Unit, db: 1, offset: 4, type: dint }
+        - { metric: /Admin/ProdProcessedCount/8/Unit, db: 1, offset: 32, type: int }
+    - endpoint: PLC L4
+      packml_topic: CPACK/SC/LINHAS/L4/RMH
+      id_equipment: 65
+      tags:
+        - { metric: /Admin/ProdConsumedCount/9/Unit, db: 1, offset: 24, type: dint }
+    - endpoint: PLC L4
+      packml_topic: CPACK/SC/LINHAS/L4/TEXA
+      id_equipment: 63
+      tags:
+        - { metric: /Admin/ProdConsumedCount/10/Unit, db: 1, offset: 28, type: dint }
+    - endpoint: S7 115
+      packml_topic: CPACK/SC/CELULA1/CER400/CER400
+      id_equipment: 88
+      tags:
+        - { metric: /Admin/ProdProcessedCount/107/Unit, db: 1, offset: 32, type: dint, counter_derive: gross_derived }
+        - { metric: /Admin/ProdDefectiveCount/107/Unit, db: 1, offset: 36, type: dint }
+    - endpoint: S7 115
+      packml_topic: CPACK/SC/CELULA1/DUBUTI1/DUBUTI1
+      id_equipment: 89
+      tags:
+        - { metric: /Admin/ProdConsumedCount/334/Unit, db: 1, offset: 0, type: dint }
+        - { metric: /Admin/ProdProcessedCount/334/Unit, db: 1, offset: 4, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 115
+      packml_topic: CPACK/SC/CELULA1/DUBUTI2/DUBUTI2
+      id_equipment: 86
+      tags:
+        - { metric: /Admin/ProdConsumedCount/97/Unit, db: 1, offset: 16, type: dint }
+        - { metric: /Admin/ProdProcessedCount/97/Unit, db: 1, offset: 20, type: dint }
+    - endpoint: S7 115
+      packml_topic: CPACK/SC/CELULA1/HOTMADAG/HOTMADAG
+      id_equipment: 87
+      tags:
+        - { metric: /Admin/ProdConsumedCount/99/Unit, db: 1, offset: 24, type: dint }
+        - { metric: /Admin/ProdProcessedCount/99/Unit, db: 1, offset: 28, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 115
+      packml_topic: CPACK/SC/CELULA1/ISIMAT/ISIMAT
+      id_equipment: 90
+      tags:
+        - { metric: /Admin/ProdProcessedCount/335/Unit, db: 1, offset: 8, type: dint, counter_derive: gross_derived }
+        - { metric: /Admin/ProdDefectiveCount/335/Unit, db: 1, offset: 12, type: dint }
+    - endpoint: S7 116
+      packml_topic: CPACK/SC/CELULA2/BREYER1/BREYER1
+      id_equipment: 101
+      tags:
+        - { metric: /Admin/ProdConsumedCount/26/Unit, db: 1, offset: 32, type: dint }
+        - { metric: /Admin/ProdProcessedCount/26/Unit, db: 1, offset: 32, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 116
+      packml_topic: CPACK/SC/CELULA2/BREYER2/BREYER2
+      id_equipment: 97
+      tags:
+        - { metric: /Admin/ProdConsumedCount/101/Unit, db: 1, offset: 52, type: dint }
+        - { metric: /Admin/ProdProcessedCount/101/Unit, db: 1, offset: 52, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 116
+      packml_topic: CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1
+      id_equipment: 99
+      tags:
+        - { metric: /Admin/ProdConsumedCount/110/Unit, db: 1, offset: 56, type: dint }
+        - { metric: /Admin/ProdProcessedCount/110/Unit, db: 1, offset: 60, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 116
+      packml_topic: CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2
+      id_equipment: 102
+      tags:
+        - { metric: /Admin/ProdConsumedCount/29/Unit, db: 1, offset: 36, type: dint }
+        - { metric: /Admin/ProdProcessedCount/29/Unit, db: 1, offset: 40, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 116
+      packml_topic: CPACK/SC/CELULA2/PTH40-03/PTH40-03
+      id_equipment: 100
+      tags:
+        - { metric: /Admin/ProdConsumedCount/339/Unit, db: 1, offset: 24, type: dint }
+        - { metric: /Admin/ProdProcessedCount/339/Unit, db: 1, offset: 28, type: dint }
+    - endpoint: S7 116
+      packml_topic: CPACK/SC/CELULA2/PTH80S/PTH80S
+      id_equipment: 98
+      tags:
+        - { metric: /Admin/ProdConsumedCount/105/Unit, db: 1, offset: 44, type: dint }
+        - { metric: /Admin/ProdProcessedCount/105/Unit, db: 1, offset: 48, type: dint }
+    - endpoint: S7 L10
+      packml_topic: CPACK/SC/LINHAS/L10/DXL
+      id_equipment: 77
+      tags:
+        - { metric: /Admin/ProdProcessedCount/564/Unit, db: 1, offset: 0, type: dint }
+    - endpoint: S7 L10
+      packml_topic: CPACK/SC/LINHAS/L10/PTH
+      id_equipment: 78
+      tags:
+        - { metric: /Admin/ProdConsumedCount/565/Unit, db: 1, offset: 32, type: int }
+    - endpoint: S7 L10
+      packml_topic: CPACK/SC/LINHAS/L10/TCX
+      id_equipment: 79
+      tags:
+        - { metric: /Admin/ProdProcessedCount/566/Unit, db: 1, offset: 16, type: dint }
+    - endpoint: S7 L10
+      packml_topic: CPACK/SC/LINHAS/L10/TEXA
+      id_equipment: 80
+      tags:
+        - { metric: /Admin/ProdProcessedCount/567/Unit, db: 1, offset: 20, type: dint }
+    - endpoint: S7 L5
+      packml_topic: CPACK/SC/LINHAS/L5/BREYER
+      id_equipment: 53
+      tags:
+        - { metric: /Admin/ProdConsumedCount/61/Unit, db: 1, offset: 0, type: dint, counter_derive: outfeed_only }
+    - endpoint: S7 L5
+      packml_topic: CPACK/SC/LINHAS/L5/POLYTYPE
+      id_equipment: 54
+      tags:
+        - { metric: /Admin/ProdConsumedCount/62/Unit, db: 1, offset: 4, type: dint, counter_derive: outfeed_only }
+    - endpoint: S7 L5
+      packml_topic: CPACK/SC/LINHAS/L5/PTH
+      id_equipment: 55
+      tags:
+        - { metric: /Admin/ProdProcessedCount/63/Unit, db: 1, offset: 20, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 L5
+      packml_topic: CPACK/SC/LINHAS/L5/RMH
+      id_equipment: 56
+      tags:
+        - { metric: /Admin/ProdConsumedCount/64/Unit, db: 1, offset: 20, type: dint }
+        - { metric: /Admin/ProdProcessedCount/64/Unit, db: 1, offset: 24, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 L5
+      packml_topic: CPACK/SC/LINHAS/L5/TEXA
+      id_equipment: 57
+      tags:
+        - { metric: /Admin/ProdConsumedCount/65/Unit, db: 1, offset: 24, type: dint }
+        - { metric: /Admin/ProdProcessedCount/65/Unit, db: 1, offset: 24, type: dint, counter_derive: scrap_derived }
+    - endpoint: S7 S8
+      packml_topic: CPACK/SC/LINHAS/L8/DXL
+      id_equipment: 73
+      tags:
+        - { metric: /Admin/ProdProcessedCount/219/Unit, db: 1, offset: 0, type: dint }
+    - endpoint: S7 S8
+      packml_topic: CPACK/SC/LINHAS/L8/PTH
+      id_equipment: 74
+      tags:
+        - { metric: /Admin/ProdConsumedCount/220/Unit, db: 1, offset: 32, type: int }
+    - endpoint: S7 S8
+      packml_topic: CPACK/SC/LINHAS/L8/TCX
+      id_equipment: 75
+      tags:
+        - { metric: /Admin/ProdProcessedCount/221/Unit, db: 1, offset: 16, type: dint }
+    - endpoint: S7 S8
+      packml_topic: CPACK/SC/LINHAS/L8/TEXA
+      id_equipment: 76
+      tags:
+        - { metric: /Admin/ProdProcessedCount/222/Unit, db: 1, offset: 20, type: dint }
     - endpoint: SLEEVES
       packml_topic: CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1
       id_equipment: 107
       tags:
-        - metric: /Admin/ProdProcessedCount/763/Unit
-          db: 1
-          offset: 0
-          type: dint
+        - { metric: /Admin/ProdProcessedCount/763/Unit, db: 1, offset: 0, type: dint }
     - endpoint: SLEEVES
       packml_topic: CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2
       id_equipment: 108
       tags:
-        - metric: /Admin/ProdProcessedCount/823/Unit
-          db: 1
-          offset: 4
-          type: dint
-
-  # ── opcua_tag_map (CELULA9/FLEXO/L9 — OPC-UA source) ──────────────────────────
-  # Lifted from the legacy flow's OpcUa-Item nodes (endpoint "OPC UA L9 FLEXO",
-  # OpcUa-Client action=read). Each item's `item` is the OPC-UA node_id; the node's
-  # `name` carries the canonical topic. This is the MULTI-SOURCE case: FLEXO/FLEXO
-  # (id 104) is ALSO an S7 endpoint (see "PLC Flexo" in s7_tag_map above) — S7 emits
-  # Status/MachSpeed while OPC-UA emits the count totalizer + speed; both tag-maps
-  # land on the SAME id_equipment (multiple readers → one equipment, expected).
-  # Applied metric_alias Status/CurMachSpeed → Status/MachSpeed (declared above) so
-  # the emitted suffix matches the FLEXO member template leaf (ADR-0045 §C). The
-  # ***TRIG_… suffix on the totalMeterCounter item name is a legacy tee marker,
-  # stripped. A duplicate actualSpeed item (feeding the RE-CONNECT client, not the
-  # read client) is de-duplicated.
+        - { metric: /Admin/ProdProcessedCount/823/Unit, db: 1, offset: 4, type: dint }
   opcua_tag_map:
     - endpoint: OPC UA L9 FLEXO
       packml_topic: CPACK/SC/CELULA9/FLEXO/FLEXO
