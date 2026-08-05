@@ -38,6 +38,14 @@ on:
         options:
           - production
           - staging
+      edge_model:
+        description: "Tier-1 connectivity model the prefilled .env/README deploys. nodered = the GENERATED Node-RED reader-flow, autoloaded on first boot (customizable). reader = the config-as-data Go PLC readers (no Node-RED runtime)."
+        required: true
+        default: nodered
+        type: choice
+        options:
+          - nodered
+          - reader
       protocol:
         description: "(optional) Reader protocol to prefill: s7 | modbus | opcua. Leave blank for the CS engineer to fill."
         required: false
@@ -80,6 +88,7 @@ jobs:
     env:
       CLIENT: ${{ inputs.client }}
       TARGET: ${{ inputs.target }}
+      EDGE_MODEL: ${{ inputs.edge_model }}
       PROTOCOL: ${{ inputs.protocol }}
       ENDPOINT: ${{ inputs.endpoint }}
       PLC_HOST: ${{ inputs.plc_host }}
@@ -150,6 +159,18 @@ jobs:
             echo "reader client.yaml generated (descriptor has a plc: block) — reader profile is deployable."
           else
             echo "::warning::no <client>-client.yaml generated (descriptor has no plc: block) — the reader profile has nothing to drive; add a plc: block to the descriptor for the reader deploy model."
+          fi
+          # The autonomous Node-RED reader-flow (artifact 6) is emitted into the same
+          # bundle/$CLIENT/ dir by onboard-gen under the SAME condition (a plc: block).
+          # It is what the compose `nodered` service seeds as /data/flows.json on first
+          # boot. For edge_model=nodered it is REQUIRED — fail closed if it is missing.
+          if [ -f "bundle/$CLIENT/$CLIENT-reader-flow.json" ]; then
+            echo "reader-flow.json generated — the nodered profile autoloads it as active flows."
+          elif [ "$EDGE_MODEL" = "nodered" ]; then
+            echo "::error::edge_model=nodered but no bundle/$CLIENT/$CLIENT-reader-flow.json was generated — the descriptor needs a plc: block for the Node-RED reader deploy model (or run with edge_model=reader)."
+            exit 1
+          else
+            echo "::warning::no <client>-reader-flow.json generated (descriptor has no plc: block) — the nodered autoload path is unavailable."
           fi
 
       - name: Mint client mTLS cert (sign against the existing prod CA)
@@ -264,16 +285,30 @@ jobs:
             ' "$ENVF" > "$ENVF.tmp" && mv "$ENVF.tmp" "$ENVF"
           }
 
-          # Normalize tenant identity + reader profile + the GENERATED artifact
-          # paths to THIS client, so a generic (or cpack-labeled) template is
-          # correctly specialized for the bundle layout. COMPOSE_PROFILES=reader is
-          # the umbrella profile: it starts every protocol reader (s7/modbus/opcua);
-          # a reader whose protocol has no endpoints in client.yaml self-retires
-          # (exits 0), so this is correct for ANY protocol mix without introspection.
+          # Normalize tenant identity + the GENERATED artifact paths to THIS client,
+          # so a generic (or cpack-labeled) template is correctly specialized for the
+          # bundle layout.
           UPPER="$(printf '%s' "$CLIENT" | tr '[:lower:]' '[:upper:]')"
           set_kv TENANT_SLUG "$CLIENT"
           set_kv TENANT_UPPER "$UPPER"
-          set_kv COMPOSE_PROFILES reader
+
+          # Tier-1 connectivity model → the profile the CS engineer runs.
+          #   nodered — the `nodered` service autoloads the GENERATED reader-flow as
+          #             active flows on first boot (NODERED_READER_FLOW below); the CS
+          #             engineer can add integrations on the "<client> customizations"
+          #             tab. This is the default.
+          #   reader  — the umbrella `reader` profile starts every protocol reader
+          #             (s7/modbus/opcua); a reader whose protocol has no endpoints in
+          #             client.yaml self-retires (exits 0), so it is correct for ANY
+          #             protocol mix without introspection. No Node-RED runtime.
+          if [ "$EDGE_MODEL" = "nodered" ]; then
+            set_kv COMPOSE_PROFILES nodered
+            # Point the compose `nodered` seed mount at the generated reader-flow so
+            # `docker compose --profile nodered up` boots it as /data/flows.json.
+            set_kv NODERED_READER_FLOW "./$CLIENT/$CLIENT-reader-flow.json"
+          else
+            set_kv COMPOSE_PROFILES reader
+          fi
           # Pin the edge image (agent + all readers = the full Dockerfile build, NOT
           # Dockerfile.agent which lacks the reader binaries). The bundle references
           # THIS tag; if bundle_image=true the image is embedded as a tar below so a
@@ -380,6 +415,11 @@ jobs:
           UPPER="$(printf '%s' "$CLIENT" | tr '[:lower:]' '[:upper:]')"
           HAS_CLIENT_YAML=no
           [ -f "bundle/$CLIENT/$CLIENT-client.yaml" ] && HAS_CLIENT_YAML=yes
+          HAS_READER_FLOW=no
+          [ -f "bundle/$CLIENT/$CLIENT-reader-flow.json" ] && HAS_READER_FLOW=yes
+          # The prefilled .env sets COMPOSE_PROFILES, so `up` needs no --profile; show
+          # the explicit flag anyway so the command is copy-pasteable + self-documenting.
+          PROFILE="${EDGE_MODEL:-nodered}"
           {
             echo "## Edge bundle: \`$CLIENT\` → \`$TARGET\`"
             echo
@@ -393,12 +433,17 @@ jobs:
             echo "| Piece | Source |"
             echo "|---|---|"
             echo "| \`$CLIENT/$CLIENT-*.{yaml,sql,json}\` | onboard-gen (draft; capture count indices on a live tee before cutover) |"
-            echo "| \`$CLIENT/$CLIENT-client.yaml\` | reader config — generated: **$HAS_CLIENT_YAML** (needs a \`plc:\` block in the descriptor) |"
+            echo "| \`$CLIENT/$CLIENT-client.yaml\` | Go-reader config — generated: **$HAS_CLIENT_YAML** (needs a \`plc:\` block in the descriptor) |"
+            echo "| \`$CLIENT/$CLIENT-reader-flow.json\` | Node-RED reader flow — generated: **$HAS_READER_FLOW**; autoloaded as active flows when \`edge_model=nodered\` |"
             echo "| \`certs/uplink-{cert,key,ca}.pem\` | client cert CN=\`$CLIENT\`, signed against \`packiot/$TARGET/edge-uplink-ca\` (CA key shredded) |"
             echo "| \`compose.edge.yml\`, \`mosquitto/\`, \`README-reader.md\`, \`gen-mtls-certs.sh\` | static deploy assets |"
             echo "| \`.env.example\` | prefilled from the reader template (tenant + artifact paths normalized to \`$CLIENT\`) |"
             echo
-            echo "> The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. \`AGENT_IMAGE\` is **pre-pinned** to \`${{ inputs.agent_image }}\` (agent + all readers) and, when \`bundle_image\` is set, **embedded** as \`images/edge-transformer.tar.gz\` — no ECR auth needed on the client box."
+            echo "> Tier-1 model: **\`$PROFILE\`**. The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. \`AGENT_IMAGE\` is **pre-pinned** to \`${{ inputs.agent_image }}\` (agent + all readers) and, when \`bundle_image\` is set, **embedded** as \`images/edge-transformer.tar.gz\` — no ECR auth needed on the client box."
+            if [ "$PROFILE" = "nodered" ]; then
+              echo
+              echo "> \`edge_model=nodered\`: the \`nodered\` service SEEDS \`$CLIENT/$CLIENT-reader-flow.json\` as Node-RED's active flows on FIRST boot (\`NODERED_READER_FLOW\` is prefilled) — no manual import. Add per-client integrations on the **\`$CLIENT customizations\`** tab; they persist in the \`nodered-data\` volume. Fill the per-PLC \`PLC_HOST_<NAME>\` secrets in \`.env\`."
+            fi
             echo
             echo "### Deploy on the client box"
             echo '```bash'
@@ -406,7 +451,7 @@ jobs:
             echo "./load-image.sh                            # docker load the embedded edge image"
             echo "cp .env.example .env && \$EDITOR .env      # fill AGENT_INGEST_API_KEY + the PLC host secret(s)"
             echo "sudo chown 65532:65532 certs/uplink-key.pem   # agent runs as non-root uid 65532"
-            echo "docker compose --profile reader -f compose.edge.yml --env-file .env up -d"
+            echo "docker compose --profile $PROFILE -f compose.edge.yml --env-file .env up -d"
             echo '```'
             echo
             echo "Validate: \`curl -fsS localhost:\${AGENT_HEALTH_PORT:-9103}/healthz\` → \`{\"healthy\":true}\`. See \`README-reader.md\`."
