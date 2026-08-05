@@ -93,25 +93,82 @@ services:
   # namespace). Its flows are the client's connectivity export + the generated
   # <tenant>-tee-node.json imported onto the assembly node.
   #
-  # PROFILE-GATED (`nodered`): the low-code tee path is now OPT-IN. A tenant that
+  # PROFILE-GATED (`nodered`): the low-code path is now OPT-IN. A tenant that
   # onboards via the config-as-data Go reader (profile `reader`, below) does NOT
   # run Node-RED at all — the reader is the SparkPlug-ignorant Tier-1 producer.
-  # Bring this service up only for clients who keep the Node-RED connectivity
-  # export + generated tee flow:
+  # Bring this service up only for clients who deploy the Node-RED connectivity
+  # plane (the GENERATED reader flow, or a hand-exported flow + the tee):
   #     docker compose --profile nodered -f compose.edge.yml --env-file .env up -d
+  #
+  # AUTONOMOUS FLOW LOAD (ADR-0045 config-as-data, the reader-flow deploy model)
+  # ---------------------------------------------------------------------------
+  # onboard-gen artifact 6, `<tenant>-reader-flow.json`, is a COMPLETE Node-RED flow
+  # (PLC input nodes → normalize fn → POST to sparkplug-agent :9104, plus a
+  # first-class "<tenant> customizations" tab). We SEED it as Node-RED's ACTIVE flow
+  # file (/data/flows.json) on FIRST boot only, so a client deploy runs the reader
+  # with ZERO manual import. Mechanics:
+  #   • NODERED_READER_FLOW is bind-mounted read-only at /data/reader-flow.seed.json.
+  #   • The entrypoint wrapper copies it to /data/flows.json and drops a
+  #     /data/.reader-seeded sentinel ONLY on first boot, then execs the stock
+  #     Node-RED entrypoint. The sentinel (NOT the presence of flows.json) is the
+  #     first-boot test on purpose: the node-red image SHIPS a default /data/flows.json,
+  #     which the named-volume copy-on-create places before the entrypoint runs, so a
+  #     "flows.json missing?" guard would never fire — the seed would be skipped.
+  #   • /data is the `nodered-data` NAMED VOLUME (writable), so after first boot
+  #     /data/flows.json is owned by Node-RED — UI edits and any integration nodes a
+  #     CS engineer adds on the "<tenant> customizations" tab PERSIST across restarts
+  #     (regeneration only ever rewrites the reader tab, never the customizations one).
+  # BACK-COMPAT: if NODERED_READER_FLOW is UNSET it resolves to /dev/null (a size-0
+  # non-regular file), the `-s` seed guard skips, and nothing is auto-loaded — the
+  # service falls back to the legacy manual-import workflow via the /data/flows-import
+  # mount below, exactly as before. Hand-flow + tee clients are unaffected.
   nodered:
     image: ${NODERED_IMAGE:-nodered/node-red:4.0}
     container_name: edge-${TENANT_SLUG}-nodered
     profiles: ["nodered"]
     restart: unless-stopped
+    # First-boot seed → exec the stock entrypoint. `exec` hands PID 1 (and thus the
+    # image's SIGINT/SIGTERM trap for a clean flow flush) to the real Node-RED. The
+    # image's WORKDIR is /usr/src/node-red, so ./entrypoint.sh resolves; it launches
+    # red.js with `--userDir /data $FLOWS`, and FLOWS=flows.json (set below) is the
+    # file the seed writes — so the seeded flow IS the active flow set.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /data/.reader-seeded ] && [ -s /data/reader-flow.seed.json ]; then
+          cp /data/reader-flow.seed.json /data/flows.json
+          touch /data/.reader-seeded
+          echo "[edge-seed] first boot: seeded /data/flows.json from the generated reader-flow"
+        else
+          echo "[edge-seed] already seeded or no seed mounted — leaving active flows as-is"
+        fi
+        exec ./entrypoint.sh
+    env_file:
+      # Pass the deploy .env through so the reader flow's per-endpoint PLC_HOST_<NAME>
+      # host secrets — which compose cannot enumerate as `environment:` keys — and an
+      # optional <TENANT_UPPER>_AGENT_URL override reach Node-RED at runtime.
+      # required:false so `docker compose config` parses in the repo (no .env).
+      - path: .env
+        required: false
     environment:
       TZ: ${TZ:-UTC}
-      # The tee reads the ingest key from THIS env var (never hardcoded in a
-      # flow) — matches the generated tee snippet's ingest_key_env.
+      FLOWS: flows.json   # the active flow file the seed writes (also the image default)
+      # The tee (manual-import path) reads the ingest key from THIS env var (never
+      # hardcoded in a flow) — matches the generated tee snippet's ingest_key_env.
+      # Harmless on the reader-flow path (the generated reader POSTs no ingest key).
       ${TENANT_UPPER}_INGEST_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
     volumes:
       - nodered-data:/data
-      # The client's connectivity flows (their PLC I/O export + the imported tee).
+      # The GENERATED reader flow (onboard-gen artifact 6) — seeded to /data/flows.json
+      # on FIRST boot by the entrypoint above. Unset ⇒ /dev/null ⇒ seed guard skips
+      # (back-compat: legacy manual-import via /data/flows-import stays the only path).
+      # The reader flow POSTs to http://sparkplug-agent:9104/v1/tags — the agent
+      # service name on edge-net (this service shares that network below).
+      - ${NODERED_READER_FLOW:-/dev/null}:/data/reader-flow.seed.json:ro
+      # LEGACY manual-import staging dir (back-compat): a client that still hand-exports
+      # its connectivity flow + imports the generated tee drops it here and imports it
+      # from the editor. Untouched by the seed path above.
       - ${NODERED_FLOWS_DIR:-./bispharma/nodered}:/data/flows-import:ro
     ports:
       - "${NODERED_UI_PORT:-1880}:1880"   # editor UI — bind to a LAN/VPN iface in prod
