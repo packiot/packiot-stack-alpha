@@ -10,6 +10,9 @@
 //  4. <tenant>-tee-node.json    — the Node-RED Tier-1 raw-forwarder flow
 //  5. <tenant>-client.yaml      — the Go PLC readers' config (clientconfig),
 //     emitted ONLY when the descriptor has a plc block
+//  6. <tenant>-reader-flow.json — the Node-RED own-reader flow (S7/OPC-UA/Modbus
+//     → normalize → POST raw tags to the local sparkplug-agent), emitted ONLY when
+//     a sibling PLC-reader doc is passed via --plc (the autonomous-edge artifact)
 //
 // Usage:
 //
@@ -111,6 +114,7 @@ func runScaffold(args []string) error {
 func run() error {
 	var (
 		descriptorPath = flag.String("descriptor", "", "path to the client descriptor YAML (required)")
+		plcPath        = flag.String("plc", "", "path to the sibling PLC-reader doc (<tenant>.plc.yaml); emits the Node-RED own-reader flow (artifact 6)")
 		outDir         = flag.String("out", "", "output directory; if empty, print all artifacts to stdout")
 		cutover        = flag.Bool("cutover", false, "emit CUTOVER-ready config: refuse if any count index is still inferred")
 	)
@@ -126,6 +130,16 @@ func run() error {
 		return err
 	}
 
+	// Optional PLC-reader doc: when supplied, Generate emits artifact 6 (the
+	// autonomous-edge Node-RED reader flow) in addition to the usual set.
+	var plcReader *clientdescriptor.PlcReaderDoc
+	if strings.TrimSpace(*plcPath) != "" {
+		plcReader, err = clientdescriptor.LoadPlcReader(*plcPath)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Always surface the inferred-index picture — the reviewer needs to know the
 	// cutover-readiness state whether or not --cutover was passed.
 	if inferred := d.InferredMembers(); len(inferred) > 0 {
@@ -137,7 +151,7 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "onboard-gen: all count indices CONFIRMED — cutover-eligible.")
 	}
 
-	art, err := d.Generate(clientdescriptor.GenerateOptions{Cutover: *cutover})
+	art, err := d.Generate(clientdescriptor.GenerateOptions{Cutover: *cutover, PlcReader: plcReader})
 	if err != nil {
 		return err
 	}
@@ -159,6 +173,14 @@ func run() error {
 			name string
 			data []byte
 		}{tenant + "-client.yaml", art.ClientYAML})
+	}
+	// Artifact 6: the Node-RED own-reader flow, emitted only when a --plc doc was
+	// supplied (art.ReaderFlow is nil otherwise) — the autonomous-edge alternative.
+	if art.ReaderFlow != nil {
+		files = append(files, struct {
+			name string
+			data []byte
+		}{tenant + "-reader-flow.json", art.ReaderFlow})
 	}
 
 	if *outDir == "" {

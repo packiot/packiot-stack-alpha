@@ -47,6 +47,13 @@ type Artifacts struct {
 	// plc block; nil otherwise — so a descriptor without plc emits the same four
 	// artifacts as before (artifact 5 is strictly additive).
 	ClientYAML []byte
+
+	// ReaderFlow is the Node-RED PLC-reader flow (artifact 6): the AUTONOMOUS-edge
+	// alternative to the tee — protocol input nodes → normalize → POST raw tags to
+	// the local sparkplug-agent. Non-nil ONLY when a PLC-reader document is supplied
+	// (GenerateOptions.PlcReader); nil otherwise, so the historical artifact set is
+	// unchanged for callers that do not onboard a self-contained reader.
+	ReaderFlow []byte
 }
 
 // GenerateOptions gates cutover-readiness.
@@ -57,6 +64,14 @@ type GenerateOptions struct {
 	// The default (false, i.e. draft/observe) emits everything so onboarding can
 	// proceed up to — but not through — the cutover step.
 	Cutover bool
+
+	// PlcReader is the OPTIONAL PLC-reader document (the sibling <tenant>.plc.yaml
+	// authored alongside the descriptor). When supplied, Generate emits artifact 6,
+	// the Node-RED own-reader flow (Artifacts.ReaderFlow). It is passed in — not read
+	// off the Descriptor — because the reader block is a distinct, standalone document
+	// (a sequence of physical PLC connections) that cannot share the descriptor's
+	// `plc:` key with the Go-reader client.yaml block. nil ⇒ no reader flow emitted.
+	PlcReader *PlcReaderDoc
 }
 
 // localSegment returns a topic with the canonical prefix stripped, e.g.
@@ -692,6 +707,17 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		clientYAML = []byte(s)
 	}
 
+	// Artifact 6 (Node-RED own-reader flow) is emitted ONLY when a PLC-reader
+	// document is supplied. Absent one, callers get exactly the historical set.
+	var readerFlow []byte
+	if opts.PlcReader != nil && len(opts.PlcReader.Plc) > 0 {
+		rf, err := opts.PlcReader.GeneratePlcReaderFlow()
+		if err != nil {
+			return nil, fmt.Errorf("generate plc reader flow: %w", err)
+		}
+		readerFlow = rf
+	}
+
 	return &Artifacts{
 		Profile:     profile,
 		ProfileYAML: profileYAML,
@@ -700,5 +726,6 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		AgentYAML:   agentYAML,
 		TeeSnippet:  tee,
 		ClientYAML:  clientYAML,
+		ReaderFlow:  readerFlow,
 	}, nil
 }
