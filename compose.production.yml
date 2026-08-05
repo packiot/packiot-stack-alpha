@@ -80,8 +80,6 @@ volumes:
   loki-data:
   prom-data:
   rabbitmq-data:
-  authentik-media:
-  authentik-certs:
   mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
 
@@ -639,81 +637,6 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
-
-  # ── Authentik SSO ──────────────────────────────────────────────────────────────
-  # Prod gets its own Authentik install (redis + server + worker), dedicated
-  # `authentik` DB on the r7g (created by db-init-bootstrap; authentik connects
-  # DIRECT, not via pgbouncer). First-run setup:
-  #   https://auth.prod.packiot.app/if/flow/initial-setup/
-  authentik-redis:
-    image: redis:7-alpine
-    container_name: authentik-redis
-    restart: unless-stopped
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.14
-    logging:
-      driver: json-file
-      options: {max-size: "5m", max-file: "2"}
-
-  authentik-server:
-    image: ghcr.io/goauthentik/server:2024.12.3
-    container_name: authentik-server
-    command: server
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      # DIRECT to the r7g — Authentik (Django) runs migrations + uses advisory
-      # locks / server-side cursors that break under pgbouncer transaction pooling.
-      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST_UPSTREAM}
-      AUTHENTIK_POSTGRESQL__NAME: authentik
-      AUTHENTIK_POSTGRESQL__USER: authentik
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
-      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
-      AUTHENTIK_LOG_LEVEL: info
-    volumes:
-      - authentik-media:/media
-      - authentik-certs:/certs
-    ports:
-      - "127.0.0.1:9000:9000"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.12
-    depends_on:
-      authentik-redis:
-        condition: service_started
-      # The `authentik` role + DB live on the r7g only after db-init-bootstrap
-      # runs (the removed local postgres used to create them via initdb.d).
-      db-init-bootstrap:
-        condition: service_completed_successfully
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
-
-  authentik-worker:
-    image: ghcr.io/goauthentik/server:2024.12.3
-    container_name: authentik-worker
-    command: worker
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      # DIRECT to the r7g (same rationale as authentik-server).
-      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST_UPSTREAM}
-      AUTHENTIK_POSTGRESQL__NAME: authentik
-      AUTHENTIK_POSTGRESQL__USER: authentik
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
-      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.13
-    depends_on: [authentik-redis, authentik-server]
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
 
   # ── oauth2-proxy (ADR-0034 §C — Cognito forward-auth, replaces Authentik) ─────
   # Nginx `auth_request` gate for the internal admin UIs (grafana/hasura/adminer/

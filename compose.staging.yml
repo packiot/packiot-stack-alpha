@@ -42,8 +42,6 @@ volumes:
   tempo-data:   # Tempo trace blocks + WAL (48h retention)
   alertmanager-data:   # Alertmanager silences + notification state
   rabbitmq-data:
-  authentik-media:
-  authentik-certs:
   mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:  # ADR-0011 P2: SQLite outbox survives container restart
   edge_transformer_agent_outbox:  # ADR-0042 P1: sparkplug-agent-cpack store-and-forward outbox
@@ -831,7 +829,7 @@ services:
   # redis-exporter: white-box Redis metrics (memory, keyspace, hit/miss,
   # connected clients, evictions, blocked clients, ops/sec). Redis was a total
   # telemetry blind spot — authentik-redis backs the whole auth flow yet emitted
-  # ZERO metrics. REDIS_ADDR points at authentik-redis (the only Redis today).
+  # ZERO metrics. REDIS_ADDR points at app-redis (authentik retired, ADR-0034 §C).
   # When ADR-0035's app-redis (.35) lands as the refdata-api cache-aside store,
   # add it via the exporter's multi-target mode (a second scrape target with a
   # ?target= relabel, same shape as blackbox) — no new exporter needed.
@@ -846,7 +844,7 @@ services:
     container_name: redis-exporter
     restart: unless-stopped
     environment:
-      REDIS_ADDR: redis://authentik-redis:6379
+      REDIS_ADDR: redis://app-redis:6379
     networks:
       packiot-net:
         ipv4_address: 172.18.0.37
@@ -1017,78 +1015,6 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
-
-  # ── Authentik SSO ──────────────────────────────────────────────────────────────
-  # Self-hosted IdP providing browser SSO for all staging service vhosts via Nginx
-  # forward auth. The embedded outpost inside authentik-server handles
-  # /outpost.goauthentik.io/auth/nginx subrequests from Nginx.
-  #
-  # DB: dedicated 'authentik' database on the existing TimescaleDB EC2 (not a
-  # separate postgres container — avoids ~100 MB overhead on the t4g.small).
-  # Credentials: AUTHENTIK_DB_PASSWORD + AUTHENTIK_SECRET_KEY from .env.
-  #
-  # First-run setup (one-time, after stack starts):
-  #   https://auth.staging.packiot.app/if/flow/initial-setup/
-  authentik-redis:
-    image: redis:7-alpine
-    container_name: authentik-redis
-    restart: unless-stopped
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.14
-    logging:
-      driver: json-file
-      options: {max-size: "5m", max-file: "2"}
-
-  authentik-server:
-    image: ghcr.io/goauthentik/server:2024.12.3
-    container_name: authentik-server
-    command: server
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST}
-      AUTHENTIK_POSTGRESQL__NAME: authentik
-      AUTHENTIK_POSTGRESQL__USER: authentik
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
-      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
-      AUTHENTIK_LOG_LEVEL: info
-    volumes:
-      - authentik-media:/media
-      - authentik-certs:/certs
-    ports:
-      - "127.0.0.1:9000:9000"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.12
-    depends_on: [authentik-redis]
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
-
-  authentik-worker:
-    image: ghcr.io/goauthentik/server:2024.12.3
-    container_name: authentik-worker
-    command: worker
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: ${POSTGRES_HOST}
-      AUTHENTIK_POSTGRESQL__NAME: authentik
-      AUTHENTIK_POSTGRESQL__USER: authentik
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD}
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
-      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.13
-    depends_on: [authentik-redis, authentik-server]
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
 
   # ── oauth2-proxy (ADR-0034 §C — Cognito forward-auth, replaces Authentik) ─────
   # Nginx `auth_request` gate for the internal admin UIs (grafana/hasura/adminer/
