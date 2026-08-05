@@ -82,7 +82,7 @@ variable "services" {
     rabbitmq = 15672
     adminer  = 8082
     operator = 8083
-    csadmin  = 8084  # CS-Admin SPA (Vite + nginx, container port 80)
+    csadmin  = 8084 # CS-Admin SPA (Vite + nginx, container port 80)
   }
 }
 

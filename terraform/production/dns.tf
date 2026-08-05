@@ -26,8 +26,13 @@ resource "aws_route53_record" "production_ns" {
 
 # One A record per service → App EC2 static EIP.
 # Nginx on the App EC2 routes each hostname to its local Docker port.
+#
+# Edge cutover (edge.tf, var.edge_cutover): when the flag is FALSE (default) this
+# stays the live path — A → EIP, exactly as before. When TRUE, the for_each goes
+# empty and the parallel `aws_route53_record.services_edge` (edge.tf) takes over
+# with ALIAS → CloudFront. One variable flips the whole service plane.
 resource "aws_route53_record" "services" {
-  for_each = var.services
+  for_each = var.edge_cutover ? {} : var.services
   zone_id  = aws_route53_zone.production.zone_id
   name     = "${each.key}.${var.production_domain}"
   type     = "A"
