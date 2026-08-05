@@ -7,177 +7,74 @@ package clientdescriptor
 // off an EXISTING SparkPlug-assembly node the client already runs. That assumes a
 // factory whose Node-RED already reads its PLCs. A greenfield client onboarded from
 // CS-Admin has no such flow: the descriptor is the ONLY thing authored, so the
-// generated bundle must also bring its OWN PLC reader.
+// generated bundle must also bring its OWN PLC reader — as a Node-RED flow, which
+// doubles as the per-client customization/integration surface.
 //
-// This file turns a descriptor's `plc:` block — one entry per reachable PLC, each
-// with its S7/OPC-UA/Modbus addressing and the raw tags to poll — into a runnable
-// Node-RED flow: protocol input nodes (node-red-contrib-s7 / -opcua / -modbus)
-// → a shared normalize `function` → an `http request` that POSTs the raw
-// { timestamp, gateway, metrics[] } envelope to the LOCAL sparkplug-agent HTTP
-// ingest (:9104/v1/tags). The agent then does the real work — canonical mapping,
-// numeric count-index routing, SparkPlug-B birth/data — exactly as it does for the
-// tee. So the reader is a dumb producer of raw named tags, and every per-tenant
-// quirk still lives stack-side in the agent profile (ADR-0045 §2.3 Option B), never
-// in the generated flow.
-//
-// Why a distinct parse type (PlcReaderDoc) and not the main Descriptor:
-// the reader `plc:` block is a SEQUENCE of physical connections carrying INLINE
-// factory-LAN addresses + {name,address} tags (see docs/clients/cpack.plc.yaml),
-// a different shape from — and authored alongside — the main client descriptor
-// (whose `plc:` key already binds the DescriptorPLC → Go-reader client.yaml path,
-// #684). Keeping it a standalone document lets a CS engineer capture PLC wiring
-// read-only from a live Node-RED (GET /admin/flows) into one file the generator
-// consumes, without entangling it with the full descriptor's validation surface.
+// ONE plc config, two readers
+// ---------------------------
+// The single source of truth is the descriptor's `plc:` block (Descriptor.PLC, the
+// #684 DescriptorPLC schema: endpoints + s7/modbus/opcua tag maps). It already
+// drives GenerateClientYAML (the Go s7/modbus/opcua-reader's client.yaml). This
+// file adds the SECOND consumer of the SAME block: GeneratePlcReaderFlow, which maps
+// those endpoints + tag maps into a Node-RED flow — protocol input nodes
+// (node-red-contrib-s7 / -opcua / -modbus) → a shared normalize `function` → an
+// `http request` that POSTs the raw { timestamp, gateway, metrics[] } envelope to
+// the LOCAL sparkplug-agent HTTP ingest (:9104/v1/tags). Both readers are dumb
+// producers of raw named tags; the agent owns all canonical mapping (ADR-0045
+// §2.3 Option B), so every per-tenant quirk still lives stack-side, never in the
+// generated flow. A tenant picks ONE reader deployable (Go container OR Node-RED)
+// off the one config, and they can never disagree because they read the same block.
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
+	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 )
 
-// PlcReaderDoc is the parsed PLC-reader document — the SSoT for one tenant's edge
-// PLC connectivity. It is authored (or captured from a live Node-RED) as a sibling
-// to the main client descriptor: same tenant/enterprise, but carrying the physical
-// connection + tag detail the generator turns into a Node-RED reader flow.
-type PlcReaderDoc struct {
-	// Tenant is the SparkPlug group_id / enterprise short-name, e.g. "CPACK". It
-	// seeds the deterministic node-id prefix and the default gateway/env-var names.
-	Tenant string `yaml:"tenant"`
+// defaultAgentURL is the local sparkplug-agent HTTP ingest the reader POSTs to. It
+// is a Docker service name (sparkplug-agent) reachable inside the edge bundle's
+// compose network — the same fix as the CPACK live-box bug (a localhost URL only
+// worked from the host, not from the Node-RED container).
+const defaultAgentURL = "http://sparkplug-agent:9104/v1/tags"
 
-	// EnterpriseID mirrors the descriptor's enterprise_id (informational here — the
-	// reader emits raw tags; the agent owns enterprise scoping). Kept so the two
-	// sibling documents are self-describing and cross-checkable.
-	EnterpriseID int `yaml:"enterprise_id"`
-
-	// Plc is the list of reachable PLCs, one entry per physical connection.
-	Plc []PlcConn `yaml:"plc"`
-}
-
-// PlcConn is one reachable PLC and the raw tags to poll from it. Protocol selects
-// which node-red-contrib palette drives it; the addressing fields are
-// protocol-specific (Rack/Slot → S7, Unit → Modbus, Endpoint holds the OPC-UA URL
-// or host[:port]).
-type PlcConn struct {
-	// Protocol ∈ {s7, opcua, modbus_tcp} — the same tokens the descriptor uses
-	// (PLCProtocol* constants), so a tag map authored either side speaks one vocab.
-	Protocol string `yaml:"protocol"`
-
-	// Name is a human label (S7/Modbus). Empty is allowed (OPC-UA connections in the
-	// wild often omit it); the generator falls back to the endpoint for the label.
-	Name string `yaml:"name"`
-
-	// Endpoint is the reachable address. For s7/modbus_tcp it is host or host:port
-	// (10.135.16.115, 10.135.1.128:502); for opcua the full opc.tcp:// URL.
-	Endpoint string `yaml:"endpoint"`
-
-	// Rack/Slot are the S7 CPU rack/slot (default 0/… per the PLC).
-	Rack int `yaml:"rack"`
-	Slot int `yaml:"slot"`
-
-	// PollMS is the poll cycle in milliseconds — the S7 endpoint cycletime, the
-	// OPC-UA read tick, the Modbus read rate. 0 ⇒ a protocol-sensible default.
-	PollMS int `yaml:"poll_ms"`
-
-	// Unit is the Modbus unit_id (slave address). Ignored for s7/opcua.
-	Unit int `yaml:"unit"`
-
-	// Tags are the raw tags to read. Each tag's Name is the CANONICAL topic (or a
-	// numeric count index the agent's numeric routing resolves); Address is the
-	// protocol-native address (S7 "DB1,DINT0", OPC-UA node-id "ns=6;s=…").
-	Tags []PlcTag `yaml:"tags"`
-}
-
-// PlcTag is one raw tag to poll: Name is what goes on the wire as the metric name
-// (a canonical topic or a numeric count index), Address is the physical location.
-type PlcTag struct {
-	Name    string `yaml:"name"`
-	Address string `yaml:"address"`
-}
-
-// ParsePlcReader unmarshals + light-validates a PLC-reader document from raw bytes.
-// It is the byte core LoadPlcReader wraps — so a document that arrives over the
-// wire (the onboard API) is validated through the same path a file on disk is. JSON
-// callers are handled transparently (JSON ⊂ YAML, same struct tags).
-func ParsePlcReader(raw []byte) (*PlcReaderDoc, error) {
-	var doc PlcReaderDoc
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("clientdescriptor: parse plc reader: %w", err)
-	}
-	if err := doc.validate(); err != nil {
-		return nil, fmt.Errorf("clientdescriptor: validate plc reader: %w", err)
-	}
-	return &doc, nil
-}
-
-// LoadPlcReader reads + validates a PLC-reader document from disk, delegating the
-// unmarshal + validation to ParsePlcReader so the file and wire paths share a core.
-func LoadPlcReader(path string) (*PlcReaderDoc, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("clientdescriptor: read %s: %w", path, err)
-	}
-	doc, err := ParsePlcReader(raw)
-	if err != nil {
-		return nil, fmt.Errorf("clientdescriptor: %s: %w", path, err)
-	}
-	return doc, nil
-}
-
-// validate enforces the reader document's structural invariants BEFORE generation:
-// a tenant, at least one connection, a known protocol per connection, a non-empty
-// endpoint. Tag-level shape is intentionally permissive — a reader is a dumb
-// producer, and the agent (not this flow) rejects tags it cannot resolve.
-func (doc *PlcReaderDoc) validate() error {
-	if strings.TrimSpace(doc.Tenant) == "" {
-		return fmt.Errorf("tenant is required")
-	}
-	if len(doc.Plc) == 0 {
-		return fmt.Errorf("plc must list at least one connection (nothing to read)")
-	}
-	for i, c := range doc.Plc {
-		switch c.Protocol {
-		case PLCProtocolS7, PLCProtocolOPCUA, PLCProtocolModbusTCP:
-		default:
-			return fmt.Errorf("plc[%d] (%s): protocol=%q must be %s|%s|%s",
-				i, c.label(), c.Protocol, PLCProtocolS7, PLCProtocolOPCUA, PLCProtocolModbusTCP)
-		}
-		if strings.TrimSpace(c.Endpoint) == "" {
-			return fmt.Errorf("plc[%d] (%s): endpoint is required", i, c.label())
-		}
-	}
-	return nil
-}
-
-// label returns a stable human label for a connection — Name when set, else the
-// endpoint. Used in errors + node names so a nameless OPC-UA connection still reads.
-func (c PlcConn) label() string {
-	if n := strings.TrimSpace(c.Name); n != "" {
-		return n
-	}
-	return c.Endpoint
-}
+// Reader poll defaults (ms) when an endpoint omits polling_interval.
+const (
+	defaultOpcuaPollMS  = 10000
+	defaultModbusPollMS = 15000
+	defaultS7PollMS     = 15000
+	defaultModbusPort   = "502"
+)
 
 // GeneratePlcReaderFlow builds the Node-RED PLC-reader flow (the autonomous-edge
-// artifact): one tab, protocol input nodes per connection, a shared normalize
-// function, and an http-request POST to the local sparkplug-agent. It is a PURE
-// function of the (validated) document, and node ids are DETERMINISTIC (derived
-// from tenant + protocol + index) so regenerating the same document yields a
-// byte-stable diff — the same discipline every ADR-0045 generator holds.
+// artifact) from the descriptor's `plc:` block. It is a PURE function of the
+// (already-validated) descriptor, and node ids are DETERMINISTIC (derived from
+// tenant + protocol + endpoint index) so regenerating the same descriptor yields a
+// byte-stable diff — the discipline every ADR-0045 generator holds.
 //
-// Wire shape (left → right): each protocol source → the normalize function →
-// http request → a statusCode switch → ok/err debug. S7 "all"-mode and Modbus
-// reads self-drive on their cycle; OPC-UA reads are driven by a per-connection
-// inject tick (the OPC-UA client is request/response, not a subscription here).
-func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
-	p := strings.ToLower(doc.Tenant) // node-id prefix + default gateway/env stems
+// It returns an error when the descriptor carries no plc block (d.PLC == nil): the
+// caller (Generate) gates on d.PLC before invoking, exactly like GenerateClientYAML.
+//
+// Two tabs are emitted:
+//   - "<Tenant> PLC reader" — the generated reader (sources → normalize → POST).
+//   - "<Tenant> customizations" — a first-class, intentionally EMPTY tab where a CS
+//     engineer adds per-client integrations. Node-RED is the customization surface,
+//     not just a reader; keeping customizations on their own tab means regenerating
+//     the reader tab never clobbers them.
+func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
+	if d.PLC == nil {
+		return nil, fmt.Errorf("descriptor has no plc block — nothing to generate for the reader flow")
+	}
+
+	p := strings.ToLower(d.Tenant) // node-id prefix + default gateway/env stems
 	gateway := p + "-edge"
-	urlEnv := strings.ToUpper(doc.Tenant) + "_AGENT_URL"
+	urlEnv := strings.ToUpper(d.Tenant) + "_AGENT_URL"
 
 	tabID := p + "_reader_tab"
+	custTabID := p + "_cust_tab"
 	fnID := p + "_reader_norm"
 	httpID := p + "_reader_http"
 	switchID := p + "_reader_route"
@@ -188,36 +85,54 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 		{
 			"id":       tabID,
 			"type":     "tab",
-			"label":    doc.Tenant + " PLC reader",
+			"label":    d.Tenant + " PLC reader",
 			"disabled": false,
-			"info": "Generated from the ADR-0045 plc reader block (docs/clients/<tenant>.plc.yaml). " +
-				"Reads the factory PLCs and POSTs raw named tags to the local sparkplug-agent " +
-				"(default " + defaultAgentURL + ", override with env " + urlEnv + "). The agent does the " +
-				"canonical mapping — this flow is a DUMB producer. Do not hand-edit; edit the plc doc + regenerate.",
+			"info": "Generated from the ADR-0045 descriptor plc: block — the SAME source of truth " +
+				"the Go reader's client.yaml is generated from. Reads the factory PLCs and POSTs raw " +
+				"named tags (variable name = full canonical topic) to the local sparkplug-agent (default " +
+				defaultAgentURL + ", override with env " + urlEnv + "). Each endpoint's HOST is read from " +
+				"a Node-RED env var PLC_HOST_<ENDPOINT> (never a baked secret) — e.g. an endpoint " +
+				"\"S7 115\" reads ${PLC_HOST_S7_115}. This flow is a DUMB producer; the agent does the " +
+				"canonical mapping. Do not hand-edit — edit the descriptor + regenerate. Put per-client " +
+				"integrations on the '" + d.Tenant + " customizations' tab instead.",
+		},
+		{
+			"id":       custTabID,
+			"type":     "tab",
+			"label":    d.Tenant + " customizations",
+			"disabled": false,
+			"info": "Per-client customization surface — the reason the edge deployable is Node-RED, not " +
+				"just a Go reader. Add integration function nodes, extra http-request calls to edge-api " +
+				"(PO control / downtimes), bespoke transforms, dashboards, etc. HERE. This tab is NEVER " +
+				"touched by regeneration: onboard-gen only rewrites the '" + d.Tenant + " PLC reader' tab, " +
+				"so anything on this tab survives a descriptor edit + regenerate. Start it empty.",
 		},
 	}
 
 	// yCursor lays flow nodes out top-to-bottom in the source column so a large
-	// tenant (CPACK: 9 S7 + 1 OPC-UA + 4 Modbus) stays readable. Config nodes
-	// (endpoints/clients) carry no x/y — Node-RED keeps them in the config drawer.
+	// tenant stays readable. Config nodes (endpoints/clients) carry no x/y — Node-RED
+	// keeps them in the config drawer.
 	const (
-		xSource = 180
-		xItem   = 380
-		xClient = 580
+		xSource = 200
+		xItem   = 420
+		xClient = 640
 		yStep   = 80
 	)
 	yCursor := 100
 
-	for i, c := range doc.Plc {
-		switch c.Protocol {
+	for i, ep := range d.PLC.Endpoints {
+		hostVar := "${" + hostEnvVar(ep.Name) + "}"
+
+		switch ep.Protocol {
 		case PLCProtocolS7:
 			epID := fmt.Sprintf("%s_s7_%d_ep", p, i)
 			inID := fmt.Sprintf("%s_s7_%d_in", p, i)
-			nodes = append(nodes, s7EndpointNode(epID, c))
+			vartable := s7Vartable(d.PLC.S7TagMap, ep.Name)
+			nodes = append(nodes, s7EndpointNode(epID, ep, hostVar, vartable))
 			nodes = append(nodes, map[string]any{
 				"id": inID, "type": "s7 in", "z": tabID,
 				"endpoint": epID, "mode": "all", "variable": "", "diff": false,
-				"name": "read " + c.label(),
+				"name": "read " + ep.Name,
 				"x":    xSource, "y": yCursor, "wires": []any{[]any{fnID}},
 			})
 			yCursor += yStep
@@ -226,27 +141,38 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 			epID := fmt.Sprintf("%s_opcua_%d_ep", p, i)
 			clientID := fmt.Sprintf("%s_opcua_%d_client", p, i)
 			tickID := fmt.Sprintf("%s_opcua_%d_tick", p, i)
-			nodes = append(nodes, opcuaEndpointNode(epID, c))
-			// One inject tick drives every item of this connection; each item feeds
-			// the client, which performs the read and emits value → normalize.
-			itemIDs := make([]any, 0, len(c.Tags))
+			nodes = append(nodes, opcuaEndpointNode(epID, ep, hostVar))
+			// One inject tick drives every item of this endpoint; each item feeds the
+			// client, which performs the read and emits value → normalize.
+			itemIDs := make([]any, 0)
 			itemY := yCursor
-			for j, t := range c.Tags {
-				itemID := fmt.Sprintf("%s_opcua_%d_item_%d", p, i, j)
-				itemIDs = append(itemIDs, itemID)
-				nodes = append(nodes, map[string]any{
-					"id": itemID, "type": "OpcUa-Item", "z": tabID,
-					"item": t.Address, "datatype": "Double", "value": "",
-					"name": t.Name,
-					"x":    xItem, "y": itemY, "wires": []any{[]any{clientID}},
-				})
-				itemY += yStep
+			j := 0
+			for _, m := range d.PLC.OPCUATagMap {
+				if m.Endpoint != ep.Name {
+					continue
+				}
+				for _, t := range m.Tags {
+					if t.Source != nil { // derived tag — no OPC-UA node to read
+						continue
+					}
+					itemID := fmt.Sprintf("%s_opcua_%d_item_%d", p, i, j)
+					j++
+					itemIDs = append(itemIDs, itemID)
+					nodes = append(nodes, map[string]any{
+						"id": itemID, "type": "OpcUa-Item", "z": tabID,
+						"item": t.NodeID, "datatype": opcuaDatatype(t.Type), "value": "",
+						"name": m.PackMLTopic + t.Metric,
+						"x":    xItem, "y": itemY, "wires": []any{[]any{clientID}},
+					})
+					itemY += yStep
+				}
 			}
 			nodes = append(nodes, map[string]any{
 				"id": tickID, "type": "inject", "z": tabID,
-				"name": "poll " + c.label(),
-				"props": []any{map[string]any{"p": "payload"}},
-				"repeat": strconv.Itoa(pollSeconds(c.PollMS, defaultOpcuaPollMS)), "crontab": "", "once": true, "onceDelay": "1",
+				"name":   "poll " + ep.Name,
+				"props":  []any{map[string]any{"p": "payload"}},
+				"repeat": strconv.Itoa(pollSeconds(pollMS(ep.PollingInterval, defaultOpcuaPollMS))),
+				"crontab": "", "once": true, "onceDelay": "1",
 				"topic": "", "payload": "", "payloadType": "date",
 				"x": xSource, "y": yCursor, "wires": []any{itemIDs},
 			})
@@ -257,7 +183,7 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 				"securitymode": "None", "securitypolicy": "None", "folderName4PKI": "",
 				"useTransport": false, "maxChunkCount": "", "maxMessageSize": "",
 				"receiveBufferSize": "", "sendBufferSize": "",
-				"name": "read " + c.label(),
+				"name": "read " + ep.Name,
 				"x":    xClient, "y": yCursor, "wires": []any{[]any{fnID}},
 			})
 			if itemY > yCursor+yStep {
@@ -268,35 +194,54 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 
 		case PLCProtocolModbusTCP:
 			clientID := fmt.Sprintf("%s_mb_%d_client", p, i)
-			readID := fmt.Sprintf("%s_mb_%d_read", p, i)
-			host, port := splitHostPort(c.Endpoint, "502")
-			nodes = append(nodes, modbusClientNode(clientID, c, host, port))
-			nodes = append(nodes, map[string]any{
-				"id": readID, "type": "modbus-read", "z": tabID,
-				"name": "read " + c.label(), "topic": "",
-				"showStatusActivities": false, "logIOActivities": false,
-				"showErrors": false, "showWarnings": true,
-				"unitid": strconv.Itoa(c.Unit), "dataType": "HoldingRegister",
-				"adr": "0", "quantity": "1",
-				"rate": strconv.Itoa(pollSeconds(c.PollMS, defaultModbusPollMS)), "rateUnit": "s",
-				"delayOnStart": false, "startDelayTime": "",
-				"server": clientID, "useIOFile": false, "ioFile": "",
-				"useIOForPayload": false, "emptyMsgOnFail": false,
-				"x": xSource, "y": yCursor, "wires": []any{[]any{fnID}, []any{}},
-			})
-			yCursor += yStep
+			unit := 1
+			if ep.UnitID != nil {
+				unit = *ep.UnitID
+			}
+			nodes = append(nodes, modbusClientNode(clientID, ep, hostVar, unit))
+			// One modbus-read per polled tag: the read's `topic` carries the full
+			// canonical topic so the normalize fn can name the register value.
+			for _, m := range d.PLC.ModbusTagMap {
+				if m.Endpoint != ep.Name {
+					continue
+				}
+				for k, t := range m.Tags {
+					if t.Source != nil { // derived tag — no register to read
+						continue
+					}
+					readID := fmt.Sprintf("%s_mb_%d_read_%d", p, i, k)
+					qty := t.Quantity
+					if qty <= 0 {
+						qty = 1
+					}
+					nodes = append(nodes, map[string]any{
+						"id": readID, "type": "modbus-read", "z": tabID,
+						"name": "read " + ep.Name, "topic": m.PackMLTopic + t.Metric,
+						"showStatusActivities": false, "logIOActivities": false,
+						"showErrors": false, "showWarnings": true,
+						"unitid": strconv.Itoa(unit), "dataType": modbusDataType(t.Kind),
+						"adr": strconv.Itoa(t.Address), "quantity": strconv.Itoa(qty),
+						"rate": strconv.Itoa(pollSeconds(pollMS(ep.PollingInterval, defaultModbusPollMS))), "rateUnit": "s",
+						"delayOnStart": false, "startDelayTime": "",
+						"server": clientID, "useIOFile": false, "ioFile": "",
+						"useIOForPayload": false, "emptyMsgOnFail": false,
+						"x": xSource, "y": yCursor, "wires": []any{[]any{fnID}, []any{}},
+					})
+					yCursor += yStep
+				}
+			}
 		}
 	}
 
-	// Shared normalize function + POST chain. Placed to the right of the sources.
-	midY := 100 + (len(nodes)*yStep)/6 // roughly centred on the source column
+	// Shared normalize function + POST chain, to the right of the sources.
+	midY := 100 + (len(nodes)*yStep)/6
 	nodes = append(nodes,
 		map[string]any{
 			"id": fnID, "type": "function", "z": tabID,
-			"name":    doc.Tenant + " normalize → raw tags",
-			"func":    readerFunctionBody(doc.Tenant, gateway, urlEnv),
+			"name":    d.Tenant + " normalize → raw tags",
+			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv),
 			"outputs": 1, "noerr": 0, "initialize": "", "finalize": "", "libs": []any{},
-			"x": 820, "y": midY, "wires": []any{[]any{httpID}},
+			"x": 900, "y": midY, "wires": []any{[]any{httpID}},
 		},
 		map[string]any{
 			"id": httpID, "type": "http request", "z": tabID,
@@ -307,7 +252,7 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 			"url": "", "tls": "", "persist": false, "proxy": "",
 			"insecureHTTPParser": false, "authType": "", "senderr": true,
 			"headers": []any{},
-			"x":       1040, "y": midY, "wires": []any{[]any{switchID}},
+			"x":       1120, "y": midY, "wires": []any{[]any{switchID}},
 		},
 		map[string]any{
 			"id": switchID, "type": "switch", "z": tabID,
@@ -317,17 +262,17 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 				map[string]any{"t": "else"},
 			},
 			"checkall": "false", "repair": false, "outputs": 2,
-			"x": 1240, "y": midY, "wires": []any{[]any{okID}, []any{errID}},
+			"x": 1320, "y": midY, "wires": []any{[]any{okID}, []any{errID}},
 		},
 		map[string]any{
 			"id": okID, "type": "debug", "z": tabID, "name": "2xx accepted",
 			"active": true, "tosidebar": true, "console": false, "complete": "statusCode",
-			"x": 1440, "y": midY - 40, "wires": []any{},
+			"x": 1520, "y": midY - 40, "wires": []any{},
 		},
 		map[string]any{
 			"id": errID, "type": "debug", "z": tabID, "name": "ingest error",
 			"active": true, "tosidebar": true, "console": true, "complete": "payload",
-			"x": 1440, "y": midY + 40, "wires": []any{},
+			"x": 1520, "y": midY + 40, "wires": []any{},
 		},
 	)
 
@@ -338,74 +283,89 @@ func (doc *PlcReaderDoc) GeneratePlcReaderFlow() ([]byte, error) {
 	return append(out, '\n'), nil
 }
 
-// defaultAgentURL is the local sparkplug-agent HTTP ingest the reader POSTs to. It
-// is a Docker service name (sparkplug-agent) reachable inside the edge bundle's
-// compose network — the same fix as the CPACK live-box bug (a localhost URL only
-// worked from the host, not from the Node-RED container).
-const defaultAgentURL = "http://sparkplug-agent:9104/v1/tags"
-
-// Protocol poll defaults (ms) when a connection omits poll_ms.
-const (
-	defaultOpcuaPollMS  = 10000
-	defaultModbusPollMS = 15000
-	defaultS7PollMS     = 15000
-)
+// s7Vartable builds the node-red-contrib-s7 endpoint `vartable` for one endpoint by
+// aggregating every s7 tag map that references it (the multisource "two maps, one
+// PLC" shape). Each vartable entry's Node-RED variable NAME is the FULL canonical
+// topic (packml_topic + metric — the exact string the agent resolves), and its addr
+// is built from {db, offset, type} → "DB<db>,<TYPE><offset>". Derived tags
+// (Source != nil) have no physical S7 address and are skipped.
+func s7Vartable(maps []clientconfig.S7EndpointTags, endpoint string) []any {
+	var vartable []any
+	for _, m := range maps {
+		if m.Endpoint != endpoint {
+			continue
+		}
+		for _, t := range m.Tags {
+			if t.Source != nil {
+				continue
+			}
+			vartable = append(vartable, map[string]any{
+				"addr": s7Address(t.DB, t.Offset, t.Bit, t.Type),
+				"name": m.PackMLTopic + t.Metric,
+				"type": strings.ToUpper(t.Type),
+			})
+		}
+	}
+	return vartable
+}
 
 // s7EndpointNode builds a node-red-contrib-s7 `s7 endpoint` config node. Field names
 // + defaults are copied verbatim from the real CPACK flow so the palette recognises
-// them; cycletime carries the poll interval and the vartable is built from Tags.
-func s7EndpointNode(id string, c PlcConn) map[string]any {
-	vartable := make([]any, 0, len(c.Tags))
-	for _, t := range c.Tags {
-		vartable = append(vartable, map[string]any{
-			"addr": t.Address,
-			"name": t.Name,
-			"type": inferS7Type(t.Address),
-		})
-	}
-	cycle := c.PollMS
-	if cycle == 0 {
-		cycle = defaultS7PollMS
+// them. address is a ${PLC_HOST_<ENDPOINT>} env reference (Node-RED substitutes it at
+// deploy time) — never the secret host_ref value. cycletime carries the endpoint's
+// polling_interval; the vartable is the caller-built canonical-name table.
+func s7EndpointNode(id string, ep DescriptorPLCEndpoint, hostVar string, vartable []any) map[string]any {
+	if vartable == nil {
+		vartable = []any{}
 	}
 	return map[string]any{
 		"id": id, "type": "s7 endpoint",
-		"transport": "iso-on-tcp", "address": c.Endpoint, "port": "102",
-		"rack": strconv.Itoa(c.Rack), "slot": strconv.Itoa(c.Slot),
+		"transport": "iso-on-tcp", "address": hostVar, "port": "102",
+		"rack": strconv.Itoa(intOr(ep.Rack, 0)), "slot": strconv.Itoa(intOr(ep.Slot, 0)),
 		"localtsaphi": "01", "localtsaplo": "00",
 		"remotetsaphi": "02", "remotetsaplo": "00",
-		"connmode": "rack-slot", "adapter": "", "busaddr": strconv.Itoa(c.Slot),
-		"cycletime": strconv.Itoa(cycle), "timeout": "1500",
-		"name":     c.label(),
+		"connmode": "rack-slot", "adapter": "", "busaddr": strconv.Itoa(intOr(ep.Slot, 0)),
+		"cycletime": strconv.Itoa(pollMS(ep.PollingInterval, defaultS7PollMS)), "timeout": "1500",
+		"name":     ep.Name,
 		"vartable": vartable,
 	}
 }
 
-// opcuaEndpointNode builds a node-red-contrib-opcua `OpcUa-Endpoint` config node
-// with anonymous, no-security defaults (secpol/secmode "None") — the shape the real
-// CPACK OPC-UA connection uses. Security material is a deploy-time concern the CS
-// engineer fills in on the endpoint, not something the generator invents.
-func opcuaEndpointNode(id string, c PlcConn) map[string]any {
+// opcuaEndpointNode builds a node-red-contrib-opcua `OpcUa-Endpoint` config node.
+// endpoint is a ${PLC_HOST_<ENDPOINT>} env reference (the OPC-UA URL is a secret,
+// endpoint_url_ref, so it is injected at runtime, never baked). secpol/secmode
+// default to the endpoint's declared policy/mode or "None" (the MVP default).
+func opcuaEndpointNode(id string, ep DescriptorPLCEndpoint, hostVar string) map[string]any {
+	secpol := ep.SecurityPolicy
+	if secpol == "" {
+		secpol = "None"
+	}
+	secmode := ep.SecurityMode
+	if secmode == "" {
+		secmode = "None"
+	}
 	return map[string]any{
 		"id": id, "type": "OpcUa-Endpoint",
-		"endpoint": c.Endpoint, "secpol": "None", "secmode": "None",
-		"none": true, "login": false, "usercert": false,
+		"endpoint": hostVar, "secpol": secpol, "secmode": secmode,
+		"none": secpol == "None", "login": false, "usercert": false,
 		"usercertificate": "", "userprivatekey": "",
 	}
 }
 
 // modbusClientNode builds a node-red-contrib-modbus `modbus-client` config node
-// (TCP) from a split host:port and the connection's unit id. Serial fields carry
-// the palette's harmless defaults so the node validates even though clienttype=tcp.
-func modbusClientNode(id string, c PlcConn, host, port string) map[string]any {
+// (TCP). tcpHost is a ${PLC_HOST_<ENDPOINT>} env reference; the port defaults to 502
+// (the descriptor's host_ref carries only the host). Serial fields carry the
+// palette's harmless defaults so the node validates even though clienttype=tcp.
+func modbusClientNode(id string, ep DescriptorPLCEndpoint, hostVar string, unit int) map[string]any {
 	return map[string]any{
 		"id": id, "type": "modbus-client",
-		"name": c.label(), "clienttype": "tcp",
+		"name": ep.Name, "clienttype": "tcp",
 		"bufferCommands": true, "stateLogEnabled": false, "queueLogEnabled": false,
-		"tcpHost": host, "tcpPort": port, "tcpType": "DEFAULT",
+		"tcpHost": hostVar, "tcpPort": defaultModbusPort, "tcpType": "DEFAULT",
 		"serialPort": "/dev/ttyUSB", "serialType": "RTU-BUFFERD",
 		"serialBaudrate": "9600", "serialDatabits": "8", "serialStopbits": "1",
 		"serialParity": "none", "serialConnectionDelay": "100",
-		"unit_id": c.Unit, "commandDelay": 1, "clientTimeout": 1000,
+		"unit_id": unit, "commandDelay": 1, "clientTimeout": 1000,
 		"reconnectOnTimeout": true, "reconnectTimeout": 30000,
 		"parallelUnitIdsAllowed": false,
 	}
@@ -413,21 +373,24 @@ func modbusClientNode(id string, c PlcConn, host, port string) map[string]any {
 
 // readerFunctionBody renders the shared normalize `function` node body. It reads the
 // agent ingest URL from env (default defaultAgentURL), maps each incoming PLC read
-// to a { name, value, timestamp } metric, and emits the same { timestamp, gateway,
-// metrics[] } envelope teeFunctionBody produces — so the agent's ingest path is
-// identical whether the raw tags came from a tee or from this own-reader flow.
+// to a { name, value, timestamp } metric keyed by the FULL canonical topic, and
+// emits the same { timestamp, gateway, metrics[] } envelope teeFunctionBody produces
+// — so the agent's ingest path is identical whether raw tags came from a tee, the Go
+// reader, or this Node-RED reader.
 //
-// It handles the two source shapes this flow produces:
-//   - S7 "all" mode → msg.payload is an OBJECT { varName: value, … }: one metric per
-//     numeric entry (varName is the canonical topic or numeric count index).
-//   - OPC-UA read → msg.payload is a scalar with msg.topic/name the tag identity.
-//
-// (Modbus reads emit register arrays with no per-tag names in this scaffold; they
-// are skipped until the plc doc's modbus connections carry a tag map — the fn warns
-// so the gap is visible rather than silent.)
+// Source shapes it handles:
+//   - S7 "all" mode → msg.payload is an OBJECT { canonicalTopic: value, … }: the
+//     s7-endpoint vartable names ARE full canonical topics, so one metric per entry.
+//   - Modbus read → msg.payload is a register ARRAY with msg.topic = the canonical
+//     topic (the modbus-read `topic` field): metric { name: msg.topic, value: reg0 }.
+//   - OPC-UA read → msg.payload is a scalar; identity is on msg.topic (the item
+//     name/nodeId). See the point-2 caveat in the flow tab info — some opcua palettes
+//     emit the nodeId, not the canonical name, on msg.topic; if so, add a rename on
+//     the customizations tab. The item's `name` is set to the canonical topic to make
+//     that mapping obvious.
 func readerFunctionBody(tenant, gateway, urlEnv string) string {
-	return "// " + tenant + " PLC reader → sparkplug-agent — generated from the ADR-0045 plc reader block.\n" +
-		"// DUMB producer: emits raw named tags; the agent does the canonical mapping.\n" +
+	return "// " + tenant + " PLC reader → sparkplug-agent — generated from the descriptor plc: block.\n" +
+		"// DUMB producer: emits raw named tags (name = full canonical topic); the agent maps them.\n" +
 		"// Override the agent ingest URL with env " + urlEnv + " (default " + defaultAgentURL + ").\n" +
 		"\n" +
 		"const url = env.get(\"" + urlEnv + "\") || \"" + defaultAgentURL + "\";\n" +
@@ -435,19 +398,23 @@ func readerFunctionBody(tenant, gateway, urlEnv string) string {
 		"const metrics = [];\n" +
 		"const p = msg.payload;\n" +
 		"if (p && typeof p === \"object\" && !Array.isArray(p)) {\n" +
-		"    // S7 \"all\" mode: { varName: value, … } — one metric per numeric entry.\n" +
+		"    // S7 \"all\" mode: { canonicalTopic: value, … } — one metric per numeric entry.\n" +
 		"    for (const k of Object.keys(p)) {\n" +
 		"        const v = p[k];\n" +
 		"        if (typeof v === \"number\" && isFinite(v)) metrics.push({ name: k, value: v, timestamp: ts });\n" +
 		"    }\n" +
+		"} else if (Array.isArray(p) && msg.topic) {\n" +
+		"    // Modbus read: register array + canonical topic on msg.topic → first register.\n" +
+		"    const v = Number(p[0]);\n" +
+		"    if (isFinite(v)) metrics.push({ name: msg.topic, value: v, timestamp: ts });\n" +
 		"} else if (typeof p === \"number\" && isFinite(p)) {\n" +
-		"    // OPC-UA (or any scalar) read: identity is on msg.topic / msg.name.\n" +
+		"    // OPC-UA (or any scalar) read: identity on msg.topic / msg.name (see caveat).\n" +
 		"    const name = msg.topic || msg.name;\n" +
 		"    if (name) metrics.push({ name: name, value: p, timestamp: ts });\n" +
 		"}\n" +
 		"\n" +
 		"if (metrics.length === 0) {\n" +
-		"    node.warn(\"reader: no numeric tags in this message (modbus arrays need a tag map); skipping\");\n" +
+		"    node.warn(\"reader: no numeric tags in this message; skipping\");\n" +
 		"    return null;\n" +
 		"}\n" +
 		"\n" +
@@ -457,39 +424,85 @@ func readerFunctionBody(tenant, gateway, urlEnv string) string {
 		"return msg;\n"
 }
 
-// inferS7Type reads the S7 data-type token out of an address like "DB1,DINT0" →
-// "DINT", "DB1,INT48" → "INT", "DB1,X1024.7" → "X" (bit), "DB1,WORD1118" → "WORD".
-// node-red-contrib-s7 derives the real type from the addr string itself; the
-// vartable `type` field is informational, so an unrecognised shape falls back to
-// "DINT" (the dominant CPACK count type) rather than failing generation.
-func inferS7Type(address string) string {
-	// Take the substring after the last comma (the area+type+offset token), then
-	// read the leading run of letters — that is the type mnemonic.
-	tok := address
-	if i := strings.LastIndex(address, ","); i >= 0 {
-		tok = address[i+1:]
+// s7Address builds a node-red-contrib-s7 address from a tag's {db, offset, bit, type}.
+// The type token is uppercased (int→INT, dint→DINT, real→REAL); a bool becomes the
+// bit form "DB<db>,X<offset>.<bit>". This is the inverse of the S7 addressing the Go
+// s7-reader parses, so the same physical tag is addressed identically both ways.
+func s7Address(db, offset, bit int, typ string) string {
+	t := strings.ToUpper(strings.TrimSpace(typ))
+	if t == "BOOL" || t == "X" {
+		return fmt.Sprintf("DB%d,X%d.%d", db, offset, bit)
 	}
-	var b strings.Builder
-	for _, r := range tok {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
-			b.WriteRune(r)
-			continue
-		}
-		break
-	}
-	if t := strings.ToUpper(b.String()); t != "" {
-		return t
-	}
-	return "DINT"
+	return fmt.Sprintf("DB%d,%s%d", db, t, offset)
 }
 
-// pollSeconds converts a poll_ms (or a default when 0) to whole seconds, floored to
-// a minimum of 1 — the unit the inject `repeat` and modbus `rate` fields expect.
-func pollSeconds(pollMS, defaultMS int) int {
-	ms := pollMS
-	if ms <= 0 {
-		ms = defaultMS
+// opcuaDatatype maps a descriptor OPC-UA tag type (int|float|bool|string) to the
+// node-red-contrib-opcua OpcUa-Item datatype token. Counters read as Double.
+func opcuaDatatype(typ string) string {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "bool":
+		return "Boolean"
+	case "string":
+		return "String"
+	case "int":
+		return "Int32"
+	default:
+		return "Double"
 	}
+}
+
+// modbusDataType maps a descriptor Modbus tag kind (holding|input|coil|discrete) to
+// the node-red-contrib-modbus modbus-read dataType token.
+func modbusDataType(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "input":
+		return "InputRegister"
+	case "coil":
+		return "Coil"
+	case "discrete":
+		return "DiscreteInput"
+	default:
+		return "HoldingRegister"
+	}
+}
+
+// hostEnvVar derives the Node-RED env var an endpoint's host is read from:
+// PLC_HOST_<SANITIZED_NAME>, where the name is uppercased and every run of
+// non-alphanumeric characters collapses to a single underscore (so "S7 115" →
+// PLC_HOST_S7_115, "PLC L4 10.135.1.126" → PLC_HOST_PLC_L4_10_135_1_126). This
+// matches the per-endpoint reader host convention and keeps the flow secret-free.
+func hostEnvVar(name string) string {
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range strings.ToUpper(strings.TrimSpace(name)) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevUnderscore = false
+			continue
+		}
+		if !prevUnderscore {
+			b.WriteByte('_')
+			prevUnderscore = true
+		}
+	}
+	return "PLC_HOST_" + strings.Trim(b.String(), "_")
+}
+
+// pollMS resolves an endpoint's polling_interval (a Go duration string like "1s" /
+// "30s") to milliseconds, falling back to the protocol default when empty or
+// unparseable — a bad duration should degrade to a sane poll, not fail generation.
+func pollMS(pollingInterval string, defaultMS int) int {
+	if s := strings.TrimSpace(pollingInterval); s != "" {
+		if dur, err := time.ParseDuration(s); err == nil && dur > 0 {
+			return int(dur.Milliseconds())
+		}
+	}
+	return defaultMS
+}
+
+// pollSeconds converts milliseconds to whole seconds, floored to 1 — the unit the
+// inject `repeat` and modbus `rate` fields expect.
+func pollSeconds(ms int) int {
 	s := ms / 1000
 	if s < 1 {
 		s = 1
@@ -497,17 +510,10 @@ func pollSeconds(pollMS, defaultMS int) int {
 	return s
 }
 
-// splitHostPort splits an "host:port" endpoint, defaulting the port when absent.
-// A bare host (or an IPv4 with no port) returns (host, defaultPort). It deliberately
-// does not handle bracketed IPv6 — factory PLC endpoints are IPv4/host:port.
-func splitHostPort(endpoint, defaultPort string) (string, string) {
-	e := strings.TrimSpace(endpoint)
-	if i := strings.LastIndex(e, ":"); i >= 0 {
-		host := e[:i]
-		port := e[i+1:]
-		if host != "" && port != "" {
-			return host, port
-		}
+// intOr dereferences an optional int (endpoint rack/slot), returning def when nil.
+func intOr(p *int, def int) int {
+	if p != nil {
+		return *p
 	}
-	return e, defaultPort
+	return def
 }
