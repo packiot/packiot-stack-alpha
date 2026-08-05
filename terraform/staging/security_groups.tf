@@ -22,12 +22,33 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "HTTPS - all staging service endpoints"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  # HTTPS 443 — the edge origin-lock toggle (edge.tf, var.edge_origin_lock).
+  # FALSE (default): world-open, exactly as before. TRUE: admit 443 ONLY from the
+  # AWS-managed CloudFront origin-facing prefix list (pl-3b927c52) so the origin
+  # can no longer be reached by bypassing CloudFront. Exactly one of these two
+  # dynamic blocks is ever rendered. Port 80 stays world-open below: letsencrypt
+  # http-01 renewals come from Let's Encrypt's own servers (not CloudFront), and
+  # CloudFront dials the origin https-only so :80 carries no service traffic.
+  dynamic "ingress" {
+    for_each = var.edge_origin_lock ? [] : [1]
+    content {
+      description = "HTTPS - all staging service endpoints (world-open; pre origin-lock)"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.edge_origin_lock ? [1] : []
+    content {
+      description     = "HTTPS - CloudFront edge only (origin-lock; managed prefix list)"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      prefix_list_ids = [var.cloudfront_prefix_list_id]
+    }
   }
 
   ingress {
