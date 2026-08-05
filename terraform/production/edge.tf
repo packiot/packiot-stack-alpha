@@ -38,7 +38,7 @@ variable "edge_cutover" {
     each vhost (runbook step (d)). Rollback = set back to false.
   EOT
   type        = bool
-  default     = false
+  default     = true # CUTOVER LIVE (prod) 2026-08-05 — svc records ALIAS→CloudFront
 }
 
 variable "edge_origin_lock" {

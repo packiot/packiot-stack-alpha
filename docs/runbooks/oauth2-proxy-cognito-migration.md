@@ -61,3 +61,16 @@ Authentik stays running until the separate retirement PR.
   included in the 8 fronted vhosts — NOT auth/mq/amqp/cpack-ingest). Secret =
   the CloudFront custom origin header `X-Origin-Verify` (TF state, not committed).
   WAF still `count` mode; SG-lock (f) NOT applied (would need auth fronted).
+
+## Edge cutover status — PRODUCTION (2026-08-05)
+- PROD: steps (d) DNS→CloudFront + (c) X-Origin-Verify LIVE. `edge_cutover`
+  default=true in `terraform/production/edge.tf`. All 7 var.services fronted
+  (api/hasura/grafana/rabbitmq/adminer/operator/csadmin). csadmin's out-of-band
+  manual A record was atomically UPSERTed to the CloudFront ALIAS + imported.
+  X-Origin-Verify (secret = CloudFront custom header, TF state) on those 7 vhosts
+  (NOT auth/ingest/dash). WAF count-mode; SG-lock (f) not applied. Full Cognito
+  login + csadmin SPA proven through CloudFront.
+- NB: the A→ALIAS swap races in parallel apply (services destroy vs services_edge
+  create, no ordering) → "already exists" conflicts needing import-to-reconcile.
+  FOLLOW-UP: add `allow_overwrite = true` + `depends_on = [services]` to
+  services_edge in both edge.tf to make the swap clean.
