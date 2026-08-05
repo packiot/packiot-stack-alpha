@@ -1091,6 +1091,35 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
+  # ── CS Admin (staging) — same image/config as prod ────────────────────────────
+  # Gives csadmin the staging tier every other service has, so csadmin changes are
+  # tested on csadmin.staging.packiot.app BEFORE promote→prod (was prod-only). The
+  # SPA is same-origin: its own nginx reverse-proxies /api → edge-api and /v1 →
+  # refdata-api, so this image automatically talks to STAGING edge-api on this
+  # network — no per-env API URL. Auth is app-level Cognito (shared pool, baked in
+  # the build); staging edge-api verifies the token (EDGE_API_COGNITO_AUTH_ENABLED).
+  csadmin:
+    build:
+      context: ./csadmin
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_API_BASE_URL: ""
+    container_name: csadmin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8084:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.40
+    depends_on:
+      edge-api:
+        condition: service_started
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── Mirror Worker (TS) — DECOMMISSIONED 2026-06-24 ────────────────────────────
   # Replaced by `mirror-worker-go` (Go) below. Removal flow:
   #   1. MW-2 phase 2 shipped 18591d7 (2026-06-23) — all 10 operator eventTypes
