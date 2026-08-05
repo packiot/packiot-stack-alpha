@@ -350,8 +350,66 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 			cfg.RawTagMap = append(cfg.RawTagMap, m)
 		}
 	}
+	// ADR-0045 counter_derive: carry each count tag's derivation mode from the plc
+	// tag map onto its matching raw_tag_map entry, so the agent-side counterderive
+	// stage (which loads agent.yaml, not client.yaml) knows how to synthesize the
+	// missing gross/net/scrap siblings. This is a pure join on the SAME suffix key
+	// the §C consistency check uses; a mode of ""/full/none is a pass-through and is
+	// NOT stamped, so a descriptor without counter_derive generates a byte-identical
+	// agent.yaml.
+	d.stampCounterDerive(cfg)
 	return cfg, nil
 }
+
+// stampCounterDerive copies each plc tag map count tag's counter_derive mode onto
+// the matching raw_tag_map entry, keyed by the emitted metric SUFFIX (the same key
+// checkClientAgentConsistency matches on: <packml_topic><metric> with the
+// canonical prefix stripped). A no-op mode (""/full/none) is skipped so the
+// generated agent.yaml is byte-identical when no derivation is declared. A tag
+// whose suffix has no raw_tag_map entry is silently ignored here — the §C
+// consistency check (run separately) is what fails loudly on such a mismatch.
+func (d *Descriptor) stampCounterDerive(cfg *agentcfg.Config) {
+	if d.PLC == nil {
+		return
+	}
+	idx := make(map[string]int, len(cfg.RawTagMap))
+	for i, e := range cfg.RawTagMap {
+		idx[e.MetricSuffix] = i
+	}
+	stamp := func(packmlTopic, metric, mode string) {
+		if mode == "" || mode == counterDeriveFull || mode == counterDeriveNone {
+			return
+		}
+		suffix := strings.TrimPrefix(packmlTopic+metric, d.Canonical.Prefix)
+		if i, ok := idx[suffix]; ok {
+			cfg.RawTagMap[i].CounterDerive = mode
+		}
+	}
+	for _, m := range d.PLC.S7TagMap {
+		for _, t := range m.Tags {
+			stamp(m.PackMLTopic, t.Metric, t.CounterDerive)
+		}
+	}
+	for _, m := range d.PLC.ModbusTagMap {
+		for _, t := range m.Tags {
+			stamp(m.PackMLTopic, t.Metric, t.CounterDerive)
+		}
+	}
+	for _, m := range d.PLC.OPCUATagMap {
+		for _, t := range m.Tags {
+			stamp(m.PackMLTopic, t.Metric, t.CounterDerive)
+		}
+	}
+}
+
+// counterDeriveFull / counterDeriveNone are the pass-through counter_derive tokens
+// (mirrors clientconfig.CounterDeriveFull / CounterDeriveNone) that the stamp step
+// skips. Duplicated locally to avoid widening this generator's import surface for
+// two string constants.
+const (
+	counterDeriveFull = "full"
+	counterDeriveNone = "none"
+)
 
 // lineRoleMetrics expands a line's line_roles into indexed count-leaf tag-map
 // entries. seg is the line's local segment (prefix already stripped). The leaf

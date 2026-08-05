@@ -42,6 +42,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/capture"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/counterderive"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/deriver"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/httpingest"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/numeric"
@@ -186,6 +187,27 @@ func main() {
 		}
 	}
 
+	// ── agent-side COUNTER-DERIVE stage (ADR-0045) ────────────────────────────
+	// Config-driven + additive: built from the raw_tag_map entries that carry a
+	// counter_derive mode (the generator stamps it from the client descriptor's
+	// tag map). It synthesizes the gross/net/scrap counts a factory does NOT
+	// physically sense — the declared-config replacement for CPACK's hand-written
+	// Calc_Counters. A raw_tag_map with no counter_derive modes yields an empty
+	// stage whose Process is a no-op, so building it unconditionally is free.
+	var cderive *counterderive.Stage
+	{
+		entries := make([]counterderive.Entry, 0, len(cfg.RawTagMap))
+		for _, e := range cfg.RawTagMap {
+			if e.CounterDerive != "" {
+				entries = append(entries, counterderive.Entry{Suffix: e.MetricSuffix, Mode: e.CounterDerive})
+			}
+		}
+		if s := counterderive.New(entries); !s.Empty() {
+			cderive = s
+			logger.Info("agent-side counter-derive stage enabled", "count_groups", len(entries))
+		}
+	}
+
 	logger.Info("sparkplug-agent starting",
 		"group_id", cfg.Sparkplug.GroupID,
 		"edge_node_id", cfg.Sparkplug.EdgeNodeID,
@@ -287,6 +309,13 @@ func main() {
 		Help: "Canonical count tags synthesized by the agent-side derive stage (integral|sum).",
 	})
 	reg.MustRegister(derivedSynth)
+	// ADR-0045 counter_derive: gross/net/scrap count tags SYNTHESIZED by the
+	// agent-side counter-derive stage (a factory that senses only some of the three).
+	counterDerivedSynth := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_counter_derived_synth_total",
+		Help: "Canonical count tags synthesized by the agent-side counter-derive stage (gross/net/scrap filled from the sensed subset per counter_derive).",
+	})
+	reg.MustRegister(counterDerivedSynth)
 
 	// ADR-0045 P2a: whether the register-driven (config-as-data) tag map is
 	// active for this tenant, and why. 1 = register-driven, 0 = static YAML.
@@ -375,6 +404,15 @@ func main() {
 		if derive != nil {
 			synth, consumed = derive.Process(tags)
 		}
+		// Counter-derive (ADR-0045): synthesize the gross/net/scrap counts the
+		// factory does not sense, from the sensed subset present in this batch. It
+		// keys on the SAME canonical count suffixes (post nothing — counts are never
+		// decomposed), does NOT consume its inputs (a sensed count still publishes),
+		// and its synth tags resolve+store on the shared path below like any tag.
+		var counterSynth []rawtag.RawTag
+		if cderive != nil {
+			counterSynth = cderive.Process(tags)
+		}
 		for _, t := range tags {
 			// A sum addend the deriver folded in: drop it (do not republish).
 			if consumed[t.Metric] {
@@ -420,6 +458,19 @@ func main() {
 			}
 			store.Apply(t)
 			derivedSynth.Inc()
+		}
+		// Counter-derived counts resolve+store on the SAME path. A synthesized
+		// sibling whose suffix is NOT in raw_tag_map (the equipment's metric
+		// templates omit that count leaf) surfaces as an unmapped drop — the
+		// fail-safe DQ signal that the templates need the derived leaf, never a crash.
+		for _, t := range counterSynth {
+			if _, _, ok := resolver.Resolve(t.Metric); !ok {
+				dropped.WithLabelValues("unmapped").Inc()
+				unmappedReporter.Observe(t.Metric)
+				continue
+			}
+			store.Apply(t)
+			counterDerivedSynth.Inc()
 		}
 		return accepted, len(tags)
 	}

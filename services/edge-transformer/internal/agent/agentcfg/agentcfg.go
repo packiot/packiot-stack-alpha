@@ -75,6 +75,13 @@ type TagMapEntry struct {
 	// instead of re-deriving it from the metric name. Optional: empty ⇒ the birth
 	// side derivation bridge (dash-joined topic) still applies, byte-unchanged.
 	DeviceKey string `yaml:"device_key,omitempty"`
+	// CounterDerive is the per-count sensor-presence + derivation mode (ADR-0045),
+	// carried from the client descriptor's tag map onto the matching count leaf so
+	// the agent-side counterderive stage can synthesize the missing gross/net/scrap
+	// siblings. Optional: empty/full/none ⇒ pass-through (no derivation). Only count
+	// leaves ever carry it; the generator stamps it (GenerateAgentConfig), never a
+	// human. See internal/agent/counterderive.
+	CounterDerive string `yaml:"counter_derive,omitempty"`
 }
 
 // DefaultRawTopic is the internal subscription filter when unset.
