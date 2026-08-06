@@ -35,9 +35,9 @@ variable "private_subnet_cidr" {
 # ── EC2 ────────────────────────────────────────────────────────────────────────
 
 variable "db_instance_type" {
-  description = "t4g = Graviton2 (ARM, ~20% cheaper than t3 equivalent)"
+  description = "Graviton3 r7g.large — memory-optimized (16 GB). The DB workload (caggs/comparators, bg workers) OOM'd + swapped on t4g.medium (4 GB); ops upsized out-of-band, now codified so a terraform apply can't silently revert it (2026-08-06)."
   type        = string
-  default     = "t4g.medium" # 2 vCPU / 4 GB — $24/mo on-demand
+  default     = "r7g.large" # 2 vCPU / 16 GB — memory headroom for the DB workload
 }
 
 variable "app_instance_type" {
