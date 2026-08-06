@@ -876,6 +876,11 @@ services:
       ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       SHADOW_EMIT_PRODUCTION: "false"     # no F1 legacy leg
       SHADOW_EMIT_REFACTORED: "true"      # emit `refactored` → F3
+      SHADOW_EMIT_GO: "false"             # single-flow prod: NO `go`/shadow_go_port
+                                          # comparator leg (that schema doesn't exist
+                                          # here; the always-on leg was nacking every
+                                          # message and aborting the refactored→public
+                                          # write — G1). Default true = staging compare.
       # #276 Calc CUTOVER: emit the Calc delta+cumulative shape (Value=delta,
       # Counter=cumulative) so the cagg does not SUM cumulative counters into
       # billions on direct-line-emit lines. REQUIRED for correct F3 OEE.

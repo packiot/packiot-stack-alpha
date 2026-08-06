@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -50,6 +52,7 @@ type SparkplugHandler struct {
 	buildErrors          atomic.Uint64
 	execErrors           atomic.Uint64
 	clampDQErrSample     atomic.Uint64 // samples the best-effort DQ side-write failure log
+	shadowAbsentSample   atomic.Uint64 // samples the swallowed shadow_go_port-absent log
 
 	pool            *pgxpool.Pool
 	shadowPool      *pgxpool.Pool // may be nil — set only if POSTGRES_SHADOW_DB_NAME configured
@@ -353,7 +356,55 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// in the batch above; this is purely to make the rejection visible.
 	h.emitClampDQ(ctx, pool, schema, clampEvents)
 
+	// Missing-shadow-schema backstop (G1). A "go" leg routes to the
+	// shadow_go_port comparator schema, which only exists on the staging
+	// dual-flow stack. On a single-flow production stack it is absent, so
+	// every write in this batch fails 42P01 (undefined_table) / 3F000
+	// (invalid_schema_name). That is EXPECTED here — not a real ingest
+	// failure — so swallow it and ACK the delivery instead of returning the
+	// error and triggering nack → DLX → redeliver forever (a poison storm
+	// that, worse, starves the real production "" legs sharing the queue).
+	// firstErr is the FIRST failing Exec, i.e. the true 42P01/3F000 (the
+	// followers report 25P02 in_failed_sql_transaction and never overwrite
+	// it), so matching its SQLSTATE is sufficient. Belt-and-braces with the
+	// decoder's SHADOW_EMIT_GO=false gate: even a stray "go" envelope can no
+	// longer wedge the queue. Only shadow_go_port qualifies — public
+	// (production/refactored) errors stay fatal and still nack+retry.
+	if shouldSwallowShadowErr(schema, firstErr) {
+		if h.shadowAbsentSample.Add(1)%64 == 1 {
+			h.logger.Warn("sparkplug: shadow_go_port schema absent — 'go' comparator leg swallowed (delivery ACKed, not retried; sampled 1/64)",
+				slog.String("schema", schema),
+				slog.String("err", firstErr.Error()),
+			)
+		}
+		return nil
+	}
+
 	return firstErr
+}
+
+// shouldSwallowShadowErr reports whether a batch error must be treated as the
+// EXPECTED "shadow_go_port comparator schema absent" case rather than a real
+// ingest failure. Only the shadow_go_port schema (the ADR-0010 "go" leg)
+// qualifies, and only for a missing-relation SQLSTATE — public
+// (production/refactored) errors always propagate so they still nack+retry.
+func shouldSwallowShadowErr(schema string, err error) bool {
+	if err == nil || schema != "shadow_go_port" {
+		return false
+	}
+	return isMissingRelation(err)
+}
+
+// isMissingRelation matches Postgres SQLSTATE 42P01 (undefined_table) and
+// 3F000 (invalid_schema_name) via pgconn.PgError — the two codes a write to a
+// nonexistent shadow_go_port.<table> produces. Structured SQLSTATE match, not
+// string matching, so a table named "...does not exist..." can't false-positive.
+func isMissingRelation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42P01" || pgErr.Code == "3F000"
+	}
+	return false
 }
 
 // clampDQInsertSQL upserts one INVARIANT_CLAMPED_INCREMENT event into the
