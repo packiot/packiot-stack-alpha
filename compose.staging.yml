@@ -530,6 +530,11 @@ services:
       COGNITO_CS_ADMIN_GROUP: cs-admin
       EDGE_API_COGNITO_AUTH_ENABLED: "true"
       EDGE_API_ONBOARDING_ENABLED: "true"
+      # Onboarding generate path: edge-api proxies the stored descriptor to
+      # edge-transformer's onboard server (POST /v1/onboard/generate). Config here,
+      # the shared key from .env/Secrets.
+      ONBOARD_GENERATE_URL: http://edge-transformer:9105/v1/onboard/generate
+      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       FIREBASE_ISSUER: https://securetoken.google.com/fbpackiot
       FIREBASE_AUDIENCE: fbpackiot
     ports:
@@ -1662,6 +1667,11 @@ services:
       # calc_evaluations_total / calc_state_mutations_total / calc_errors_total
       # scraped via /metrics. Default remains false in code (P0-safe).
       USE_GO_PORT: "true"
+      # Onboard-generate server (POST /v1/onboard/generate :9105) — turns a stored
+      # descriptor into the reader/agent bundle. Fails closed without the key.
+      ONBOARD_API_ENABLED: "true"
+      ONBOARD_API_PORT: "9105"
+      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       # ADR-0011 P2 outbox — store-and-forward between MQTT decode + RMQ
       # publish. When ON, every decoded envelope is persisted to SQLite
       # BEFORE the RMQ publish; a drain goroutine handles the publish +
