@@ -105,6 +105,10 @@ GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
 # CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
 # POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
 GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
+# Onboard-generate API key (ADR-0045 §generate) — bearer that edge-api uses to
+# call the edge-transformer onboard server (:9105). Durable so a fresh instance
+# does not lose it (it was hand-added to .env once; codified 2026-08-05).
+ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
 AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
 AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
 AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
@@ -173,6 +177,8 @@ HASURA_GRAPHQL_DEV_MODE=false
 EDGE_API_KEY=$API_KEY
 # CS-Admin edge-bundle dispatch (ADR-0045 P5)
 GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
+# Onboard-generate bearer: edge-api → edge-transformer:9105 (ADR-0045 §generate)
+ONBOARD_API_KEY=$ONBOARD_API_KEY
 EDGE_API_URL=https://api.$PRODUCTION_DOMAIN
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
