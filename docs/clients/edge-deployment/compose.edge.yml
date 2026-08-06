@@ -127,11 +127,11 @@ services:
     container_name: edge-${TENANT_SLUG}-nodered
     profiles: ["nodered"]
     restart: unless-stopped
-    # First-boot seed → exec the stock entrypoint. `exec` hands PID 1 (and thus the
-    # image's SIGINT/SIGTERM trap for a clean flow flush) to the real Node-RED. The
-    # image's WORKDIR is /usr/src/node-red, so ./entrypoint.sh resolves; it launches
-    # red.js with `--userDir /data $FLOWS`, and FLOWS=flows.json (set below) is the
-    # file the seed writes — so the seeded flow IS the active flow set.
+    # First-boot seed → install PLC palettes → exec the stock entrypoint. `exec` hands
+    # PID 1 (and thus the image's SIGINT/SIGTERM trap for a clean flow flush) to the
+    # real Node-RED. The image's WORKDIR is /usr/src/node-red, so ./entrypoint.sh
+    # resolves; it launches red.js with `--userDir /data $FLOWS`, and FLOWS=flows.json
+    # (set below) is the file the seed writes — so the seeded flow IS the active flow set.
     entrypoint:
       - /bin/sh
       - -c
@@ -143,6 +143,20 @@ services:
         else
           echo "[edge-seed] already seeded or no seed mounted — leaving active flows as-is"
         fi
+        # The vanilla nodered/node-red image ships NO PLC palettes, so the seeded reader
+        # flow's s7/modbus/opcua nodes are "missing types" and the flow never starts.
+        # Install the 3 contrib packs into /data (the userDir, a named volume) on FIRST
+        # boot only — idempotent (skip if already present) so restarts stay fast and
+        # offline. ALTERNATIVE: bake them into a prebuilt NODERED_IMAGE and skip this.
+        if [ ! -d /data/node_modules/node-red-contrib-s7 ]; then
+          echo "[edge-seed] installing PLC palettes (s7/modbus/opcua) into /data — first boot"
+          cd /data && npm install --no-audit --no-fund \
+            node-red-contrib-s7 node-red-contrib-modbus node-red-contrib-opcua \
+            || echo "[edge-seed] WARNING: PLC palette install failed — reader nodes may be missing"
+        else
+          echo "[edge-seed] PLC palettes already installed — skipping"
+        fi
+        cd /usr/src/node-red
         exec ./entrypoint.sh
     env_file:
       # Pass the deploy .env through so the reader flow's per-endpoint PLC_HOST_<NAME>
@@ -154,10 +168,12 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       FLOWS: flows.json   # the active flow file the seed writes (also the image default)
-      # The tee (manual-import path) reads the ingest key from THIS env var (never
-      # hardcoded in a flow) — matches the generated tee snippet's ingest_key_env.
-      # Harmless on the reader-flow path (the generated reader POSTs no ingest key).
-      ${TENANT_UPPER}_INGEST_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+      # The generated reader flow reads its ingest key from AGENT_INGEST_API_KEY and
+      # POSTs it as X-Ingest-Key to the agent (constant-time match). Set the CONCRETE
+      # key name here: docker compose does NOT interpolate a variable used as an env-var
+      # KEY (`${TENANT_UPPER}_INGEST_KEY:` never expands → the container gets no usable
+      # key var → the agent logs accepted:0). Use the fixed name both sides agree on.
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
     volumes:
       - nodered-data:/data
       # The GENERATED reader flow (onboard-gen artifact 6) — seeded to /data/flows.json
