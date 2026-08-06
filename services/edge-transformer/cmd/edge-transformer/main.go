@@ -46,6 +46,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/amqp"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/command"
@@ -53,7 +54,6 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/log"
-	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/mqtt"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/outbox"
@@ -485,6 +485,16 @@ func main() {
 		// corrected shape while F2 stays raw as the tsp12 divergence control.
 		// Requires USE_GO_PORT=true (Calc must be running) to have any effect.
 		emitCutoverRefactored := os.Getenv("CALC_CUTOVER_REFACTORED") == "true"
+		// SHADOW_EMIT_GO gates the ADR-0010 "go" → shadow_go_port comparator leg.
+		// Default true (back-compat: existing staging comparison unchanged). Set
+		// false on a single-flow production stack that has NO shadow_go_port schema —
+		// otherwise the always-emitted "go" write hits a missing relation (42P01) and
+		// nacks the whole message, aborting the production ("refactored"/"") write in
+		// the same handler pass.
+		emitGo := os.Getenv("SHADOW_EMIT_GO") != "false"
+		if !emitGo {
+			logger.Info("SHADOW_EMIT_GO=false: 'go'/shadow_go_port comparator leg disabled (single-flow prod)")
+		}
 		if emitRefactored {
 			logger.Info("shadow dual-emit enabled: publishing source_type=go AND source_type=refactored envelopes")
 		}
@@ -495,7 +505,7 @@ func main() {
 			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
 				slog.Bool("use_go_port", cfg.UseGoPort))
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -1131,6 +1141,35 @@ func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved
 	return out
 }
 
+// emittedSourceTypes builds the ordered list of envelope source_types to
+// publish for one decoded event, given the three emit gates. It is the pure
+// core of the fan-out fork so the ordering + gating stays unit-testable
+// without booting the MQTT handler.
+//
+//   - "go"         → shadow_go_port comparator leg (ADR-0010). Emitted by
+//     default; SHADOW_EMIT_GO=false drops it on a single-flow
+//     prod stack that has no shadow_go_port schema — otherwise
+//     its missing-relation (42P01) write nacks the whole
+//     message and aborts the production write in the same pass.
+//   - "refactored" → packiot_shadow public (ADR-0012), gated by SHADOW_EMIT_REFACTORED.
+//   - ""           → F1 production route (public), gated by SHADOW_EMIT_PRODUCTION.
+//
+// Back-compat: with SHADOW_EMIT_GO unset (emitGo=true) the output is byte
+// identical to the previous unconditional []string{"go"} start.
+func emittedSourceTypes(emitGo, emitRefactored, emitProduction bool) []string {
+	sourceTypes := []string{}
+	if emitGo {
+		sourceTypes = append(sourceTypes, "go")
+	}
+	if emitRefactored {
+		sourceTypes = append(sourceTypes, "refactored")
+	}
+	if emitProduction {
+		sourceTypes = append(sourceTypes, "") // F1 production route
+	}
+	return sourceTypes
+}
+
 // sparkplugHandler is the MQTT subscriber's Handler for ADR-0010 Phase 2
 // shadow mode. Decodes → resolves via the alias table → logs the resolved
 // metric names + values. In the follow-up PR that adds the shadow AMQP
@@ -1307,7 +1346,7 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1421,8 +1460,10 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			// so oeecloud-worker's per-tenant queue picks it up.
 			//
 			// Source types emitted (ADR-0012 Phase 3):
-			//   - "go"         → shadow_go_port.* on packiot DB (default,
-			//                    ADR-0010 comparison, always emitted)
+			//   - "go"         → shadow_go_port.* on packiot DB (ADR-0010
+			//                    comparison; emitted by default, gated by
+			//                    SHADOW_EMIT_GO — set false on single-flow
+			//                    prod where shadow_go_port does not exist)
 			//   - "refactored" → public.* on packiot_shadow DB (opt-in via
 			//                    SHADOW_EMIT_REFACTORED=true env)
 			tenant := strings.ToLower(topic.GroupID)
@@ -1435,13 +1476,7 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			// was feeding the tables). Tenant rides inside the envelope.
 			routingKey := "sparkplug.data"
 
-			sourceTypes := []string{"go"}
-			if emitRefactored {
-				sourceTypes = append(sourceTypes, "refactored")
-			}
-			if emitProduction {
-				sourceTypes = append(sourceTypes, "") // F1 production route
-			}
+			sourceTypes := emittedSourceTypes(emitGo, emitRefactored, emitProduction)
 			for _, st := range sourceTypes {
 				flow := "f2_shadow_go_port"
 				switch st {

@@ -311,7 +311,7 @@ func TestBuildCutoverMetricsSuppressesLineCounters(t *testing.T) {
 
 	calcMetrics := []calc_production_counters.Metric{
 		{Name: machConsumed, Value: 5, Counter: 95, Timestamp: 1000},
-		{Name: aggConsumed, Value: 5, Counter: 95, Timestamp: 1000, LineAggregated: true},  // suppressed
+		{Name: aggConsumed, Value: 5, Counter: 95, Timestamp: 1000, LineAggregated: true}, // suppressed
 		{Name: machProcessed, Value: 4, Counter: 80, Timestamp: 1000},
 		{Name: aggProcessed, Value: 4, Counter: 80, Timestamp: 1000, LineAggregated: true}, // suppressed
 		{Name: machStatus, Value: 6, Counter: 6, Timestamp: 1000},                          // machine status → keep
@@ -351,5 +351,45 @@ func TestBuildCutoverMetricsSuppressesLineCounters(t *testing.T) {
 	if len(out) != 4 {
 		t.Fatalf("expected 4 surviving metrics (2 machine counters + status + own-stream line), got %d: %+v",
 			len(out), out)
+	}
+}
+
+// TestEmittedSourceTypes locks the fan-out fork gating that the G1 fix hinges
+// on. The "go"/shadow_go_port comparator leg is emitted by default (back-compat
+// with the pre-fix unconditional []string{"go"}), but SHADOW_EMIT_GO=false must
+// drop it on a single-flow production stack that has no shadow_go_port schema —
+// otherwise its missing-relation write nacks the whole message and aborts the
+// production write in the same pass. Ordering is load-bearing (go, refactored,
+// then "") because the worker processes each leg in order.
+func TestEmittedSourceTypes(t *testing.T) {
+	cases := []struct {
+		name           string
+		emitGo         bool
+		emitRefactored bool
+		emitProduction bool
+		want           []string
+	}{
+		{"default: go only (back-compat, emitGo=true)", true, false, false, []string{"go"}},
+		{"emitGo=false drops go entirely (single-flow prod)", false, false, false, []string{}},
+		{"emitGo=false but refactored on → refactored only, no go", false, true, false, []string{"refactored"}},
+		{"go + refactored (staging dual-emit)", true, true, false, []string{"go", "refactored"}},
+		{"triple emit (go, refactored, production)", true, true, true, []string{"go", "refactored", ""}},
+		{"single-flow prod: production only", false, false, true, []string{""}},
+		{"emitGo=false with refactored + production", false, true, true, []string{"refactored", ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := emittedSourceTypes(tc.emitGo, tc.emitRefactored, tc.emitProduction)
+			if len(got) != len(tc.want) {
+				t.Fatalf("emittedSourceTypes(%v,%v,%v) = %#v, want %#v",
+					tc.emitGo, tc.emitRefactored, tc.emitProduction, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("emittedSourceTypes(%v,%v,%v)[%d] = %q, want %q (full: %#v)",
+						tc.emitGo, tc.emitRefactored, tc.emitProduction, i, got[i], tc.want[i], got)
+				}
+			}
+		})
 	}
 }
