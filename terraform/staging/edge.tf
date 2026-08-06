@@ -191,11 +191,16 @@ resource "aws_acm_certificate_validation" "edge" {
 # roll out in count mode, watch CloudWatch for false positives, then flip to block.
 locals {
   # Ordered → priorities 1..N are derived from list index (rate rule takes 0).
+  # `count_rules` = sub-rules kept in COUNT even when the group is enforced
+  # (block). SizeRestrictions_BODY caps request bodies at 8 KB — but the
+  # onboarding descriptor POST (/api/onboarding/generate + descriptor save) is
+  # ~23 KB, so blocking it would break CS-Admin onboarding. Keep it observe-only;
+  # the rest of CommonRuleSet + the other three groups enforce normally.
   waf_managed_groups = [
-    { name = "AWSManagedRulesCommonRuleSet", metric = "CommonRuleSet" },
-    { name = "AWSManagedRulesKnownBadInputsRuleSet", metric = "KnownBadInputs" },
-    { name = "AWSManagedRulesSQLiRuleSet", metric = "SQLiRuleSet" },
-    { name = "AWSManagedRulesAmazonIpReputationList", metric = "AmazonIpReputation" },
+    { name = "AWSManagedRulesCommonRuleSet", metric = "CommonRuleSet", count_rules = ["SizeRestrictions_BODY"] },
+    { name = "AWSManagedRulesKnownBadInputsRuleSet", metric = "KnownBadInputs", count_rules = [] },
+    { name = "AWSManagedRulesSQLiRuleSet", metric = "SQLiRuleSet", count_rules = [] },
+    { name = "AWSManagedRulesAmazonIpReputationList", metric = "AmazonIpReputation", count_rules = [] },
   ]
 }
 
@@ -257,6 +262,18 @@ resource "aws_wafv2_web_acl" "edge" {
         managed_rule_group_statement {
           name        = rule.value.name
           vendor_name = "AWS"
+
+          # Force selected sub-rules to COUNT even when the group enforces
+          # (block) — see local.waf_managed_groups.count_rules rationale.
+          dynamic "rule_action_override" {
+            for_each = toset(rule.value.count_rules)
+            content {
+              name = rule_action_override.value
+              action_to_use {
+                count {}
+              }
+            }
+          }
         }
       }
 
