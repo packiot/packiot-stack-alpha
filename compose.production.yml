@@ -870,6 +870,10 @@ services:
       MQTT_STALE_THRESHOLD_SECONDS: "-1"
       # ── Single-flow F3-native emit ──
       USE_GO_PORT: "true"                 # Go Calc port authoritative
+      # Onboard-generate server (POST /v1/onboard/generate :9105). Fails closed w/o key.
+      ONBOARD_API_ENABLED: "true"
+      ONBOARD_API_PORT: "9105"
+      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       SHADOW_EMIT_PRODUCTION: "false"     # no F1 legacy leg
       SHADOW_EMIT_REFACTORED: "true"      # emit `refactored` → F3
       # #276 Calc CUTOVER: emit the Calc delta+cumulative shape (Value=delta,
@@ -1016,8 +1020,18 @@ services:
       # W3.2); flip COGNITO_AUTH_ENABLED=true + set the prod issuer/client-id.
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
       COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-false}
-      COGNITO_ISSUER: ${COGNITO_ISSUER:-}
-      COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-}
+      COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
+      COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
+      # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}
+      # from .env, which isn't in Secrets Manager → a fresh instance would lack it
+      # and csadmin.prod auth would break). Dual-accept: no Bearer → api-key
+      # path unchanged (safe for other consumers).
+      COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
+      COGNITO_CS_ADMIN_GROUP: cs-admin
+      EDGE_API_COGNITO_AUTH_ENABLED: "true"
+      EDGE_API_ONBOARDING_ENABLED: "true"
+      ONBOARD_GENERATE_URL: http://edge-transformer:9105/v1/onboard/generate
+      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       # ADR-0035 cache-aside over app-redis (fail-open). Point REDIS_URL at
       # managed ElastiCache instead once provisioned (see app-redis note).
       REDIS_CACHE_ENABLED: "true"
