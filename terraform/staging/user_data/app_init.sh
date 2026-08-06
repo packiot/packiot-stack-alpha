@@ -66,7 +66,6 @@ DB_SECRET=$(get_secret "packiot/staging/db")
 APP_SECRET=$(get_secret "packiot/staging/app")
 HASURA_SECRET=$(get_secret "packiot/staging/hasura")
 NR_AUTH=$(get_secret "packiot/staging/nodered-auth")
-AUTHENTIK_SECRET=$(get_secret "packiot/staging/authentik")
 
 DB_URL=$(echo "$DB_SECRET"     | jq -r '.url')
 DB_PASS=$(echo "$DB_SECRET"    | jq -r '.password')
@@ -87,10 +86,12 @@ GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""
 ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
-AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
-AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
-AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
-AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
+# oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
+# the packiot/staging/app secret (keys populated out-of-band). client_id + issuer
+# + redirect/cookie domains are non-secret and stay in the compose service block;
+# only these two are secrets.
+OAUTH2_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_client_secret // ""')
+OAUTH2_COOKIE_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_cookie_secret // ""')
 
 # CPACK sparkplug-agent ingest key (ADR-0042 P1) — OPTIONAL / populate-manually.
 # Absent until the CPACK tee is provisioned (secret packiot/staging/agent-ingest),
@@ -110,6 +111,20 @@ mkdir -p /opt/packiot
 # Guard: skip .env regeneration if it already exists.
 # NODE_RED_CREDENTIAL_SECRET must stay stable — Node-RED uses it to decrypt
 # flows_cred.json; regenerating it on a re-run makes credentials unreadable.
+#
+# ⚠ oauth2-proxy (ADR-0034 §C): the guard means a box booted under an EARLIER
+# .env (Authentik-era) will NOT gain the OAUTH2_PROXY_*/COGNITO_* keys
+# automatically. To patch a RUNNING box without a full re-init, on the box:
+#   SEC=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app \
+#         --region us-east-1 --query SecretString --output text)
+#   {
+#     echo "OAUTH2_PROXY_CLIENT_SECRET=$(echo "$SEC" | jq -r '.oauth2_proxy_client_secret')"
+#     echo "OAUTH2_PROXY_COOKIE_SECRET=$(echo "$SEC" | jq -r '.oauth2_proxy_cookie_secret')"
+#     echo "COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt"
+#     echo "COGNITO_CS_ADMIN_GROUP=cs-admin"
+#     echo "EDGE_API_COGNITO_AUTH_ENABLED=true"
+#   } >> /opt/packiot/.env
+# then: cd /opt/packiot/stack && docker compose -f compose.staging.yml up -d oauth2-proxy edge-api
 if [ -f /opt/packiot/.env ]; then
   echo ".env already exists — skipping generation to preserve NODE_RED_CREDENTIAL_SECRET"
 else
@@ -167,13 +182,14 @@ AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
 # Compose substitution helpers
 STAGING_DOMAIN=$STAGING_DOMAIN
 
-# Authentik SSO
-AUTHENTIK_DB_PASSWORD=$AUTHENTIK_DB_PASS
-AUTHENTIK_SECRET_KEY=$AUTHENTIK_SK
-AUTHENTIK_WEB__WORKERS=1
-AUTHENTIK_BOOTSTRAP_EMAIL=admin@packiot.com
-AUTHENTIK_BOOTSTRAP_PASSWORD=$AUTHENTIK_BOOT_PASS
-AUTHENTIK_BOOTSTRAP_TOKEN=$AUTHENTIK_BOOT_TOK
+# oauth2-proxy (Cognito OIDC) — replaces Authentik (ADR-0034 §C). The oauth2-proxy
+# compose service reads these; nginx auth_request gates admin UIs on the cs-admin
+# group. edge-api validates Cognito JWTs when EDGE_API_COGNITO_AUTH_ENABLED=true.
+OAUTH2_PROXY_CLIENT_SECRET=$OAUTH2_CLIENT_SECRET
+OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET
+COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt
+COGNITO_CS_ADMIN_GROUP=cs-admin
+EDGE_API_COGNITO_AUTH_ENABLED=true
 ENV
 fi
 

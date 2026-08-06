@@ -81,6 +81,33 @@ variable "services" {
   }
 }
 
+# Per-vhost oauth2-proxy auth tier, consumed by nginx_setup.sh (ADR-0034 §C).
+# Drives which forward-auth block each `services` vhost gets:
+#   csadmin           — origin-verify + auth_request /oauth2/auth-csadmin (cs-admin group; admin UIs + node-red editors)
+#   any               — origin-verify + auth_request /oauth2/auth (any pool user; operator)
+#   api               — origin-verify + cs-admin gate on /, but ~^/api/ bypasses (edge-api x-api-key)
+#   none-originverify — origin-verify only, no oauth2 gate (csadmin SPA owns its own login)
+# The generic staff-tier loop in nginx_setup.sh emits vhosts for tier "csadmin";
+# "api"/"any"/"none-originverify" are emitted as explicit blocks. The
+# deliberately-open carve-outs (mq / refdata / cpack-ingest) are NOT in the
+# `services` map — they have their own explicit blocks + DNS records. Any service
+# absent from this map defaults to the (gated) "csadmin" tier.
+variable "service_auth" {
+  description = "oauth2-proxy auth tier per nginx vhost (csadmin|any|api|none-originverify)"
+  type        = map(string)
+  default = {
+    api              = "api"
+    hasura           = "csadmin"
+    grafana          = "csadmin"
+    edge-nodered     = "csadmin"
+    oeecloud-nodered = "csadmin"
+    rabbitmq         = "csadmin"
+    adminer          = "csadmin"
+    operator         = "any"
+    csadmin          = "none-originverify"
+  }
+}
+
 # ── Database ───────────────────────────────────────────────────────────────────
 
 variable "db_name" {
