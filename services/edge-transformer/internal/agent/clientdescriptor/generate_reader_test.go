@@ -222,12 +222,28 @@ func TestGeneratePlcReaderFlow(t *testing.T) {
 		t.Errorf("modbus-read topic = %v, want the full canonical topic", mr["topic"])
 	}
 
-	// 7. The normalize function reads the agent URL env + the default; http POST has
-	//    an empty url so the fn's msg.url from env wins.
+	// 7. The normalize function reads the agent URL + ingest key from env, strips the
+	//    tenant prefix to the canonical SUFFIX (matching the agent's raw_tag_map key),
+	//    and emits the rawtag envelope { endpoint, scan_ts, tags[{metric,value,ts}] }
+	//    with the X-Ingest-Key auth header. http POST has an empty url so the fn's
+	//    msg.url from env wins.
 	fn := byType["function"][0]
 	body, _ := fn["func"].(string)
-	if !containsAll(body, "CPACK_AGENT_URL", defaultAgentURL, "metrics") {
-		t.Errorf("normalize function body missing expected wiring:\n%s", body)
+	// Rawtag envelope + ingest auth + URL wiring.
+	if !containsAll(body, "CPACK_AGENT_URL", defaultAgentURL, "AGENT_INGEST_API_KEY",
+		"X-Ingest-Key", "scan_ts", "tags", "metric") {
+		t.Errorf("normalize function body missing expected rawtag/auth wiring:\n%s", body)
+	}
+	// It must NOT emit the OLD (wrong) envelope the agent's /v1/tags rejected.
+	for _, bad := range []string{"gateway:", "metrics:"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("normalize function still emits the old envelope token %q — agent rejects it:\n%s", bad, body)
+		}
+	}
+	// Prefix strip: the SUFFIX key must be derived from the tenant prefix (CPACK/SC),
+	// otherwise every tag is dropped unmapped by the agent (the live accepted:0 bug).
+	if !containsAll(body, `PREFIX = "CPACK/SC"`, ".slice(PREFIX.length)") {
+		t.Errorf("normalize function body missing the tenant-prefix suffix strip:\n%s", body)
 	}
 	httpReq := byType["http request"][0]
 	if httpReq["method"] != "POST" {

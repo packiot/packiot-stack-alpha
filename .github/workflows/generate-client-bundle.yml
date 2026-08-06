@@ -407,6 +407,10 @@ jobs:
           path: bundle/
           retention-days: 7
           if-no-files-found: error
+          # upload-artifact@v4 SKIPS dotfiles by default, so .env.example (a hidden
+          # file) would never ship in the bundle. Keep hidden files so the deploy
+          # runbook's `cp .env.example .env` works out of the box.
+          include-hidden-files: true
 
       - name: Summary
         if: always()

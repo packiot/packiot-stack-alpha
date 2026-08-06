@@ -18,9 +18,10 @@ package clientdescriptor
 // file adds the SECOND consumer of the SAME block: GeneratePlcReaderFlow, which maps
 // those endpoints + tag maps into a Node-RED flow — protocol input nodes
 // (node-red-contrib-s7 / -opcua / -modbus) → a shared normalize `function` → an
-// `http request` that POSTs the raw { timestamp, gateway, metrics[] } envelope to
-// the LOCAL sparkplug-agent HTTP ingest (:9104/v1/tags). Both readers are dumb
-// producers of raw named tags; the agent owns all canonical mapping (ADR-0045
+// `http request` that POSTs the rawtag { endpoint, scan_ts, tags[] } envelope
+// (with an X-Ingest-Key auth header) to the LOCAL sparkplug-agent HTTP ingest
+// (:9104/v1/tags — rawtag.Decode). Both readers are dumb producers of raw named
+// tags (metric = canonical SUFFIX); the agent owns all canonical mapping (ADR-0045
 // §2.3 Option B), so every per-tenant quirk still lives stack-side, never in the
 // generated flow. A tenant picks ONE reader deployable (Go container OR Node-RED)
 // off the one config, and they can never disagree because they read the same block.
@@ -89,7 +90,8 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 			"disabled": false,
 			"info": "Generated from the ADR-0045 descriptor plc: block — the SAME source of truth " +
 				"the Go reader's client.yaml is generated from. Reads the factory PLCs and POSTs raw " +
-				"named tags (variable name = full canonical topic) to the local sparkplug-agent (default " +
+				"tags (metric = canonical SUFFIX, tenant prefix stripped) in the rawtag { endpoint, scan_ts, " +
+				"tags[] } envelope with an X-Ingest-Key header to the local sparkplug-agent (default " +
 				defaultAgentURL + ", override with env " + urlEnv + "). Each endpoint's HOST is read from " +
 				"a Node-RED env var PLC_HOST_<ENDPOINT> (never a baked secret) — e.g. an endpoint " +
 				"\"S7 115\" reads ${PLC_HOST_S7_115}. This flow is a DUMB producer; the agent does the " +
@@ -239,7 +241,7 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 		map[string]any{
 			"id": fnID, "type": "function", "z": tabID,
 			"name":    d.Tenant + " normalize → raw tags",
-			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv),
+			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv, "AGENT_INGEST_API_KEY", d.Canonical.Prefix),
 			"outputs": 1, "noerr": 0, "initialize": "", "finalize": "", "libs": []any{},
 			"x": 900, "y": midY, "wires": []any{[]any{httpID}},
 		},
@@ -372,55 +374,60 @@ func modbusClientNode(id string, ep DescriptorPLCEndpoint, hostVar string, unit 
 }
 
 // readerFunctionBody renders the shared normalize `function` node body. It reads the
-// agent ingest URL from env (default defaultAgentURL), maps each incoming PLC read
-// to a { name, value, timestamp } metric keyed by the FULL canonical topic, and
-// emits the same { timestamp, gateway, metrics[] } envelope teeFunctionBody produces
-// — so the agent's ingest path is identical whether raw tags came from a tee, the Go
-// reader, or this Node-RED reader.
+// per-endpoint payload shape, folds each reading into a { metric, value, ts } tag
+// keyed by the canonical SUFFIX (full canonical topic with the tenant prefix stripped,
+// matching how the agent's raw_tag_map is keyed — ADR-0045 §2.4), and emits the
+// rawtag envelope { endpoint, scan_ts, tags[] } that the agent's /v1/tags endpoint
+// (rawtag.Decode) expects. The ingest key is read from env (never hardcoded).
 //
-// Source shapes it handles:
-//   - S7 "all" mode → msg.payload is an OBJECT { canonicalTopic: value, … }: the
-//     s7-endpoint vartable names ARE full canonical topics, so one metric per entry.
-//   - Modbus read → msg.payload is a register ARRAY with msg.topic = the canonical
-//     topic (the modbus-read `topic` field): metric { name: msg.topic, value: reg0 }.
-//   - OPC-UA read → msg.payload is a scalar; identity is on msg.topic (the item
-//     name/nodeId). See the point-2 caveat in the flow tab info — some opcua palettes
-//     emit the nodeId, not the canonical name, on msg.topic; if so, add a rename on
-//     the customizations tab. The item's `name` is set to the canonical topic to make
-//     that mapping obvious.
-func readerFunctionBody(tenant, gateway, urlEnv string) string {
+// Payload shapes (see the source nodes):
+//   - S7 "all" mode → msg.payload is an OBJECT { canonicalTopic: value, … }.
+//   - Modbus read → register ARRAY with msg.topic = the canonical topic.
+//   - OPC-UA read → scalar; identity on msg.topic / msg.name.
+func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string) string {
 	return "// " + tenant + " PLC reader → sparkplug-agent — generated from the descriptor plc: block.\n" +
-		"// DUMB producer: emits raw named tags (name = full canonical topic); the agent maps them.\n" +
+		"// DUMB producer: emits raw tags (metric = canonical suffix); the agent maps them.\n" +
 		"// Override the agent ingest URL with env " + urlEnv + " (default " + defaultAgentURL + ").\n" +
+		"// The ingest key is read from env " + keyEnv + " — NEVER hardcoded.\n" +
 		"\n" +
 		"const url = env.get(\"" + urlEnv + "\") || \"" + defaultAgentURL + "\";\n" +
+		"const key = env.get(\"" + keyEnv + "\");\n" +
+		"if (!key) {\n" +
+		"    node.error(\"" + keyEnv + " env var is not set — refusing to POST without an ingest key\", msg);\n" +
+		"    return null;\n" +
+		"}\n" +
+		"// The agent's raw_tag_map is keyed by the canonical SUFFIX (topic minus the\n" +
+		"// tenant prefix). Source-node names carry the FULL canonical topic, so strip\n" +
+		"// the prefix here to match the map — otherwise every tag is dropped unmapped.\n" +
+		"const PREFIX = \"" + prefix + "\";\n" +
+		"function suffix(n) { return (n && n.indexOf(PREFIX) === 0) ? n.slice(PREFIX.length) : n; }\n" +
 		"const ts = Date.now();\n" +
-		"const metrics = [];\n" +
+		"const tags = [];\n" +
 		"const p = msg.payload;\n" +
 		"if (p && typeof p === \"object\" && !Array.isArray(p)) {\n" +
-		"    // S7 \"all\" mode: { canonicalTopic: value, … } — one metric per numeric entry.\n" +
+		"    // S7 \"all\" mode: { canonicalTopic: value, … } — one tag per numeric entry.\n" +
 		"    for (const k of Object.keys(p)) {\n" +
 		"        const v = p[k];\n" +
-		"        if (typeof v === \"number\" && isFinite(v)) metrics.push({ name: k, value: v, timestamp: ts });\n" +
+		"        if (typeof v === \"number\" && isFinite(v)) tags.push({ metric: suffix(k), value: v, ts: ts });\n" +
 		"    }\n" +
 		"} else if (Array.isArray(p) && msg.topic) {\n" +
 		"    // Modbus read: register array + canonical topic on msg.topic → first register.\n" +
 		"    const v = Number(p[0]);\n" +
-		"    if (isFinite(v)) metrics.push({ name: msg.topic, value: v, timestamp: ts });\n" +
+		"    if (isFinite(v)) tags.push({ metric: suffix(msg.topic), value: v, ts: ts });\n" +
 		"} else if (typeof p === \"number\" && isFinite(p)) {\n" +
-		"    // OPC-UA (or any scalar) read: identity on msg.topic / msg.name (see caveat).\n" +
+		"    // OPC-UA (or any scalar) read: identity on msg.topic / msg.name.\n" +
 		"    const name = msg.topic || msg.name;\n" +
-		"    if (name) metrics.push({ name: name, value: p, timestamp: ts });\n" +
+		"    if (name) tags.push({ metric: suffix(name), value: p, ts: ts });\n" +
 		"}\n" +
 		"\n" +
-		"if (metrics.length === 0) {\n" +
+		"if (tags.length === 0) {\n" +
 		"    node.warn(\"reader: no numeric tags in this message; skipping\");\n" +
 		"    return null;\n" +
 		"}\n" +
 		"\n" +
 		"msg.url = url;\n" +
-		"msg.headers = { \"Content-Type\": \"application/json\" };\n" +
-		"msg.payload = { timestamp: ts, gateway: \"" + gateway + "\", metrics: metrics };\n" +
+		"msg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\n" +
+		"msg.payload = { endpoint: \"" + gateway + "\", scan_ts: ts, tags: tags };\n" +
 		"return msg;\n"
 }
 
