@@ -66,6 +66,17 @@ type Config struct {
 	// swap on main pool) untouched.
 	PGShadowDBName string
 
+	// ShadowGoPortEnabled — ADR-0045 G3. Selects the MAIN-POOL background-job
+	// flow (see flows.StandardFiltered). DEFAULT TRUE = the F2 comparator
+	// layout (staging: jobs run against the `shadow_go_port` schema alongside
+	// F1). Set FALSE on a single-flow deployment (new-prod), where the three
+	// flows have collapsed to one living in `public` on the main pool: the
+	// `shadow_go_port` schema does not exist there, so leaving it enabled makes
+	// every background rollup tick error 42P01 (and nothing writes to `public`).
+	// When false the jobs target `public` instead. Default-true keeps staging
+	// byte-identical.
+	ShadowGoPortEnabled bool
+
 	// Pool sizing. The original 5 assumed the ingest consumer runs one query
 	// at a time — but the background rollup/refresh jobs (LoopRefresh, bake,
 	// grains, uns) share the SAME pools and run concurrently. On the shadow
@@ -326,6 +337,7 @@ func Load() (*Config, error) {
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
 		PGShadowDBName:                   getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShadowGoPortEnabled:              getenv("SHADOW_GO_PORT_ENABLED", "true") == "true",
 		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
 		PGShadowMaxConns:                 getenvInt("POSTGRES_SHADOW_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
