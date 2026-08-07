@@ -316,6 +316,13 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		steps = append(steps, rollupStep{"counters-avail",
 			fmt.Sprintf(shiftCountsAvailSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
+	// Line-from-lead derivation — flag + enterprise gated, same region as the
+	// counters-avail fallback (before oee-p; shift back-solves oee_p inline).
+	// Inert (not appended) when not engaged. See line_lead.go.
+	if ca.engagedLineLead() {
+		steps = append(steps, rollupStep{"line-lead",
+			fmt.Sprintf(shiftLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+	}
 	steps = append(steps,
 		rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
 		rollupStep{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},

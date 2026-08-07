@@ -266,6 +266,13 @@ type Config struct {
 	CountersOnlyAvailEquipments     string // CSV of id_equipment (config.CSVInts)
 	CountersOnlyAvailIdleTimeoutSec int    // grace secs after last count before "stopped"
 
+	// Line-from-lead derivation (line-metered counter-only clients): tp=3 lines
+	// in these enterprises derive gross/net/availability from their designated
+	// lead_machine's cagg. Mutually exclusive with the counters-only fallback
+	// per client. Reuses CountersOnlyAvailIdleTimeoutSec for the sessionization.
+	CountersOnlyLineLeadEnabled     bool
+	CountersOnlyLineLeadEnterprises string // CSV of id_enterprise
+
 	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
 	// When enabled, the equipment_values writer rejects any production
 	// increment (Processed/Consumed/Defective delta) that exceeds
@@ -397,6 +404,8 @@ func Load() (*Config, error) {
 		CountersOnlyAvailEnabled:        getenv("COUNTERS_ONLY_AVAILABILITY_ENABLED", "false") == "true",
 		CountersOnlyAvailEquipments:     getenv("COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS", ""),
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
+		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
+		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:  getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:        getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),

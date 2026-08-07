@@ -270,6 +270,13 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		steps = append(steps, rollupStep{"counters-avail",
 			fmt.Sprintf(hourCountsAvailSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
+	// Line-from-lead derivation — flag + enterprise gated, after events / before
+	// oee-p (so hourOeePSQL back-solves oee_p off the just-cleared line rows).
+	// Inert (not appended) when not engaged. See line_lead.go.
+	if ca.engagedLineLead() {
+		steps = append(steps, rollupStep{"line-lead",
+			fmt.Sprintf(hourLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+	}
 	steps = append(steps,
 		rollupStep{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)},
 		rollupStep{"targets", fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema)},

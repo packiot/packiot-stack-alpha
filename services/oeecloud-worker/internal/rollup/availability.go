@@ -60,6 +60,12 @@ type CountersAvail struct {
 	Enabled        bool
 	Equipments     []int // opted-in id_equipment (empty → inert even if Enabled)
 	IdleTimeoutSec int   // grace seconds after the last count before "stopped"
+
+	// Line-from-lead derivation (line-metered counter-only clients): a tp=3 line
+	// with no own counter stream derives its entire runtime from its designated
+	// lead_machine's cagg. See line_lead.go.
+	LineLeadEnabled     bool
+	LineLeadEnterprises []int // enterprises whose tp=3 lines derive from lead_machine
 }
 
 // engaged reports whether the fallback pass should run this tick. Requires the
@@ -68,6 +74,11 @@ type CountersAvail struct {
 // zero-length session — nonsensical, so treat it as off).
 func (c CountersAvail) engaged() bool {
 	return c.Enabled && len(c.Equipments) > 0 && c.IdleTimeoutSec > 0
+}
+
+// engagedLineLead reports whether the line-from-lead derivation pass should run.
+func (c CountersAvail) engagedLineLead() bool {
+	return c.LineLeadEnabled && len(c.LineLeadEnterprises) > 0 && c.IdleTimeoutSec > 0
 }
 
 // pgIntArrayLiteral renders a []int as a Postgres bigint[] literal, e.g.
