@@ -84,8 +84,11 @@ const dayRollupSQL = `
 	           -- planned-production-time ; Quality = net / gross ; Performance
 	           -- back-solved in the UPDATE so oee = a·p·q — matching the
 	           -- week/month grain (grains.go) and legacy pg engine.
-	           LEAST(sum(hr.running_time), el.day_len_s)
-	               / NULLIF(LEAST(sum(hr.available_time), el.day_len_s), 0) AS oee_a,
+	           -- ADR-0037 *_oee_bounds clamp (#663): counter-only line day-rollups
+	           -- can carry running > available-basis → oee_a > 1 violates the
+	           -- CHECK. Clamp to [0,1]; no-op on in-range state-based data.
+	           GREATEST(LEAST(LEAST(sum(hr.running_time), el.day_len_s)
+	               / NULLIF(LEAST(sum(hr.available_time), el.day_len_s), 0), 1), 0) AS oee_a,
 	           GREATEST(LEAST(sum(hr.net) / NULLIF(sum(hr.gross), 0), 1), 0) AS oee_q,
 	           -- Physical invariant: a production-day's time-in-state cannot
 	           -- exceed the day's own wall-clock length (el.day_len_s). The

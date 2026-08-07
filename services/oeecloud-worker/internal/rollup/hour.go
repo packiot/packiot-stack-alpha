@@ -196,6 +196,9 @@ const hourEventsSQL = `
 // (matches grains.go grainOeePSQL + legacy 20-oee-engine-parity.sql:13282).
 // Runs after the events update has persisted oee / oee_a / oee_q on the
 // event-hit rows (recalc_needed just cleared). NULLIF guards a 0 A or Q.
+// Also runs after the counter-only line-lead pass (line_lead.go), whose
+// throughput can drive oee_p > 1; the GREATEST(LEAST(..,1),0) clamp keeps this
+// write inside the *_oee_bounds invariant (#663) so the tick's CHECK holds.
 const hourOeePSQL = `
 	UPDATE %[1]s.equipment_runtime_1hour e
 	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
