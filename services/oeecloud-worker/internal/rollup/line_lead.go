@@ -11,8 +11,14 @@
 // machine — equipments.lead_machine — REPRESENTS the line. Everything the line
 // grain needs is read off that lead machine's aggregates:
 //
-//   - gross / net    ← sum of the lead's ca_agg_equipment_values_1hour buckets
-//     over the grain window (the same _1hour cagg the machine grain sums).
+//   - gross / net    ← sum of ca_agg_equipment_values_1hour buckets over the
+//     grain window (the same _1hour cagg the machine grain sums). By default
+//     both come from lead_machine. A SPLIT-INSTRUMENTATION line (gross counter
+//     on the INPUT machine, net counter on a DIFFERENT OUTPUT machine — e.g.
+//     line L3) sets equipments.gross_machine to name the gross source: gross is
+//     then summed from gross_machine, net from lead_machine. When gross_machine
+//     is NULL, gross_id COALESCEs to lead_id and behaviour is byte-identical to
+//     the single-lead pass.
 //   - availability   ← idle-timeout sessionization of the lead's
 //     ca_agg_equipment_values_1min productive minutes (identical inference to
 //     availability.go: order the productive minutes, an inter-minute gap beyond
@@ -50,6 +56,10 @@ const shiftLineLeadSQL = `
 	           LEAST(el.ts_end, now()) AS bend,
 	           extract(epoch FROM (LEAST(el.ts_end, now()) - el.ts_value)) AS ts_total,
 	           eq.lead_machine AS lead_id,
+	           -- SPLIT-INSTRUMENTATION: gross may live on a different machine than
+	           -- net. gross_machine names the input/gross source; NULL ⇒ single-lead
+	           -- (gross_id == lead_id) so the COALESCE is a no-op for legacy lines.
+	           COALESCE(eq.gross_machine, eq.lead_machine) AS gross_id,
 	           (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = eq.lead_machine) AS lead_ideal
 	      FROM shift_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
@@ -57,14 +67,17 @@ const shiftLineLeadSQL = `
 	       AND eq.id_enterprise = ANY(%[3]s)
 	       AND el.ts_value >= now() - interval '2 days'
 	), counts AS (
+	    -- GROSS from gross_id (the input machine), NET from lead_id (the output
+	    -- machine). Correlated subqueries so each factor draws from its own source;
+	    -- few lines, so the per-line lookups are cheap.
 	    SELECT l.line_id, l.ts_value,
-	           sum(ca.gross_production_incr) AS gross,
-	           sum(ca.net_production_incr)   AS net
+	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
+	             WHERE cg.id_equipment = l.gross_id
+	               AND cg.ts_value >= l.ts_value AND cg.ts_value < l.bend) AS gross,
+	           (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
+	             WHERE cn.id_equipment = l.lead_id
+	               AND cn.ts_value >= l.ts_value AND cn.ts_value < l.bend) AS net
 	      FROM lines l
-	      JOIN %[1]s.ca_agg_equipment_values_1hour ca
-	        ON ca.id_equipment = l.lead_id
-	       AND ca.ts_value >= l.ts_value AND ca.ts_value < l.bend
-	     GROUP BY l.line_id, l.ts_value
 	), prod_min AS (
 	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
@@ -127,19 +140,24 @@ const hourLineLeadSQL = `
 	           LEAST(el.ts_value + interval '1 hour', now()) AS bend,
 	           extract(epoch FROM (LEAST(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total,
 	           eq.lead_machine AS lead_id,
+	           -- SPLIT-INSTRUMENTATION: gross may live on a different machine than
+	           -- net. gross_machine names the input/gross source; NULL ⇒ single-lead
+	           -- (gross_id == lead_id) so the COALESCE is a no-op for legacy lines.
+	           COALESCE(eq.gross_machine, eq.lead_machine) AS gross_id,
 	           (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = eq.lead_machine) AS lead_ideal
 	      FROM hour_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
 	       AND eq.id_enterprise = ANY(%[3]s)
 	), counts AS (
+	    -- GROSS from gross_id (the input machine), NET from lead_id (the output
+	    -- machine). Single-bucket lookups matching the hour join (ts_value = l.ts_value).
 	    SELECT l.line_id, l.ts_value,
-	           sum(ca.gross_production_incr) AS gross,
-	           sum(ca.net_production_incr)   AS net
+	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
+	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
+	           (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
+	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = l.ts_value) AS net
 	      FROM lines l
-	      JOIN %[1]s.ca_agg_equipment_values_1hour ca
-	        ON ca.id_equipment = l.lead_id AND ca.ts_value = l.ts_value
-	     GROUP BY l.line_id, l.ts_value
 	), prod_min AS (
 	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
