@@ -48,6 +48,7 @@ func TestGoldenLineLead(t *testing.T) {
 		-- single-lead fixture exercises the COALESCE(gross_machine, lead_machine)
 		-- no-op path (gross_id == lead_id ⇒ behaviour identical to pre-split).
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_runtime_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -65,7 +66,8 @@ func TestGoldenLineLead(t *testing.T) {
 		CREATE TABLE golden.ca_agg_equipment_values_1hour (
 		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
-		    gross_production_incr double precision, net_production_incr double precision
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
 		);
 		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
 		SET search_path TO golden, public;`
@@ -214,6 +216,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 	const splitSchema = `
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_runtime_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -231,7 +234,8 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		CREATE TABLE golden.ca_agg_equipment_values_1hour (
 		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
-		    gross_production_incr double precision, net_production_incr double precision
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
 		);
 		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
 		SET search_path TO golden, public;`
@@ -373,6 +377,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 	const netOnlySchema = `
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_runtime_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -390,7 +395,8 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 		CREATE TABLE golden.ca_agg_equipment_values_1hour (
 		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
-		    gross_production_incr double precision, net_production_incr double precision
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
 		);
 		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
 		SET search_path TO golden, public;`
@@ -471,5 +477,197 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 	// Availability still computes — from NET activity (the fix), not gross.
 	if !(r.oeeA > 0) || !approx(r.oeeA, 2040.0/3600.0) {
 		t.Errorf("net-only line oee_a = %v, want %v (availability from net cadence)", r.oeeA, 2040.0/3600.0)
+	}
+}
+
+// counterMatrixSchema — shared DDL for the identity-driven counter-role tests
+// (N+S, G+S, G-only). Identical to the other line-lead schemas now that they all
+// carry gross_machine + scrap_machine + the cagg scrap_incr column; goldenSchema
+// drops+recreates the schema first, so every test is fully isolated.
+const counterMatrixSchema = `
+	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
+	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+	CREATE TABLE golden.equipment_runtime_shift (
+	    id_equipment int, ts_value timestamptz, ts_end timestamptz,
+	    ts_value_production timestamptz, id_shift int, cd_shift text,
+	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
+	    gross double precision, net double precision, scrap double precision,
+	    speed double precision, ideal_speed double precision,
+	    available_time double precision, running_time double precision,
+	    stopped_time double precision, planned_downtime double precision,
+	    ideal_production double precision, downtime double precision,
+	    changeover_time double precision, oee double precision,
+	    oee_a double precision, oee_p double precision, oee_q double precision,
+	    target double precision, proportional_target double precision,
+	    computed_at timestamptz, source_watermark timestamptz
+	);
+	CREATE TABLE golden.ca_agg_equipment_values_1hour (
+	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
+	    id_shift int, state int, speed double precision, ideal_production_speed double precision,
+	    gross_production_incr double precision, net_production_incr double precision,
+	    scrap_incr double precision
+	);
+	CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+	SET search_path TO golden, public;`
+
+// runCounterMatrixCase — driver shared by the three identity tests. Builds a
+// single tp=3 line 900 whose lead 901 reports the given per-source hour totals
+// (net-or-gross 1min pulses at 0-9 and 40-59 for availability), designates
+// scrap_machine when scrapID>0, runs the shift line-lead pass, and returns the
+// reconciled row. Keeping the plumbing here lets each test assert ONLY the
+// identity outcome it is about.
+func runCounterMatrixCase(t *testing.T, hourGross, hourNet, hourScrap float64, scrapID int, minGross, minNet float64) (gross, net, scrap, oeeA, oeeQ float64) {
+	t.Helper()
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, s := range []string{goldenSchema, counterMatrixSchema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+
+	// scrap_machine on the line = 901 (the lead itself) when this case has scrap;
+	// NULL otherwise (⇒ scrap_id NULL ⇒ s=0). Gross always defaults to the lead
+	// (gross_machine NULL). The lead 901's own hour cagg carries all three totals.
+	scrapCol := "NULL"
+	if scrapID > 0 {
+		scrapCol = fmt.Sprintf("%d", scrapID)
+	}
+	fixture := fmt.Sprintf(`
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,scrap_machine)
+		VALUES (900,1,1,3,3,NULL,901,NULL,%s),
+		       (901,1,1,3,1,100,NULL,NULL,NULL);
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig
+		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
+		            date_trunc('hour', now()) - interval '2 hours';
+		INSERT INTO golden.equipment_runtime_shift
+		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
+		             date_trunc('hour', now()) - interval '2 hours',
+		             date_trunc('day', now()), 1, true, 0);
+		INSERT INTO golden.ca_agg_equipment_values_1hour
+		    (id_equipment, ts_value, gross_production_incr, net_production_incr, scrap_incr)
+		VALUES (901, date_trunc('hour', now()) - interval '3 hours', %v, %v, %v);
+		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), %v, %v
+		  FROM generate_series(0,9) m
+		UNION ALL
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), %v, %v
+		  FROM generate_series(40,59) m;`,
+		scrapCol, hourGross, hourNet, hourScrap, minGross, minNet, minGross, minNet)
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET search_path TO golden, public`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	stmt := fmt.Sprintf(ShiftLineLeadSQLForParity(), "golden", "golden", pgIntArrayLiteral([]int{3}), 300)
+	if _, err := conn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+	if err := conn.QueryRow(ctx,
+		`SELECT gross, net, scrap, oee_a, oee_q
+		   FROM golden.equipment_runtime_shift WHERE id_equipment = 900`).
+		Scan(&gross, &net, &scrap, &oeeA, &oeeQ); err != nil {
+		t.Fatal(err)
+	}
+	return gross, net, scrap, oeeA, oeeQ
+}
+
+// TestGoldenLineLeadNetPlusScrap — the N+S case. The line reports NET and SCRAP
+// but has NO gross counter. The identity gross = net + scrap fills gross, so
+// quality is real (net/(net+scrap) < 1) rather than the net-only default of 1.0.
+//
+//	lead 901 hour cagg: gross 0, net 950, scrap 50 ; scrap_machine = 901
+//	→ gross == net + scrap == 1000, oee_q == 950/1000 == 0.95, scrap == 50.
+func TestGoldenLineLeadNetPlusScrap(t *testing.T) {
+	// net-only 1min pulses (gross 0) → availability from net cadence.
+	gross, net, scrap, oeeA, oeeQ := runCounterMatrixCase(t, 0, 950, 50, 901, 0, 10)
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	if !approx(net, 950) {
+		t.Errorf("N+S line net = %v, want 950 (from lead)", net)
+	}
+	if !approx(gross, net+scrap) || !approx(gross, 1000) {
+		t.Errorf("N+S line gross = %v, want net+scrap == 1000 (gross = net + scrap identity)", gross)
+	}
+	if !approx(scrap, 50) {
+		t.Errorf("N+S line scrap = %v, want 50", scrap)
+	}
+	if !(oeeQ < 1.0) || !approx(oeeQ, 950.0/1000.0) {
+		t.Errorf("N+S line oee_q = %v, want %v (< 1, real scrap measured)", oeeQ, 950.0/1000.0)
+	}
+	if !(oeeA > 0 && oeeA < 1.0) {
+		t.Errorf("N+S line oee_a = %v, MUST be in (0,1)", oeeA)
+	}
+}
+
+// TestGoldenLineLeadGrossPlusScrap — the G+S case. The line reports GROSS and
+// SCRAP but has NO net counter. The identity net = gross - scrap fills net, so
+// quality is real ((gross-scrap)/gross < 1) rather than the gross-only default.
+//
+//	lead 901 hour cagg: gross 1000, net 0, scrap 50 ; scrap_machine = 901
+//	→ net == gross - scrap == 950, oee_q == 950/1000 == 0.95, scrap == 50.
+func TestGoldenLineLeadGrossPlusScrap(t *testing.T) {
+	// gross-only 1min pulses (net 0) → availability from gross cadence.
+	gross, net, scrap, oeeA, oeeQ := runCounterMatrixCase(t, 1000, 0, 50, 901, 10, 0)
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	if !approx(gross, 1000) {
+		t.Errorf("G+S line gross = %v, want 1000 (from lead)", gross)
+	}
+	if !approx(net, gross-scrap) || !approx(net, 950) {
+		t.Errorf("G+S line net = %v, want gross-scrap == 950 (net = gross - scrap identity)", net)
+	}
+	if !approx(scrap, 50) {
+		t.Errorf("G+S line scrap = %v, want 50", scrap)
+	}
+	if !(oeeQ < 1.0) || !approx(oeeQ, 950.0/1000.0) {
+		t.Errorf("G+S line oee_q = %v, want %v (< 1, real scrap measured)", oeeQ, 950.0/1000.0)
+	}
+	if !(oeeA > 0 && oeeA < 1.0) {
+		t.Errorf("G+S line oee_a = %v, MUST be in (0,1)", oeeA)
+	}
+}
+
+// TestGoldenLineLeadGrossOnly — the G-only case. The line reports GROSS but no
+// net and no scrap. With no way to measure defects, net defaults to gross and
+// quality is 1.0 with zero scrap (symmetric to the net-only convention).
+//
+//	lead 901 hour cagg: gross 1000, net 0, scrap 0 ; scrap_machine NULL
+//	→ net == gross == 1000, oee_q == 1.0, scrap == 0.
+func TestGoldenLineLeadGrossOnly(t *testing.T) {
+	// gross-only 1min pulses (net 0) → availability from gross cadence.
+	gross, net, scrap, oeeA, oeeQ := runCounterMatrixCase(t, 1000, 0, 0, 0, 10, 0)
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	if !approx(gross, 1000) {
+		t.Errorf("gross-only line gross = %v, want 1000 (from lead)", gross)
+	}
+	if !approx(net, gross) || !approx(net, 1000) {
+		t.Errorf("gross-only line net = %v, want gross == 1000 (net defaults to gross)", net)
+	}
+	if !approx(scrap, 0) {
+		t.Errorf("gross-only line scrap = %v, want 0 (no defect counter)", scrap)
+	}
+	if !approx(oeeQ, 1.0) {
+		t.Errorf("gross-only line oee_q = %v, want 1.0 (no scrap measured)", oeeQ)
+	}
+	if !(oeeA > 0 && oeeA < 1.0) {
+		t.Errorf("gross-only line oee_a = %v, MUST be in (0,1)", oeeA)
 	}
 }
