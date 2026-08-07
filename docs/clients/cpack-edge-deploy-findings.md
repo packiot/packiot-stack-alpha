@@ -309,14 +309,17 @@ edge. ✅ = landed, 🟡 = PR open / needs deploy, ⬜ = follow-up.
 | F4 | reader-gen emits `X-Ingest-Key` header | generate_reader.go | ✅ #739 |
 | F5 | reader-gen emits `rawtag` envelope `{endpoint,scan_ts,tags}` | generate_reader.go | ✅ #739 |
 | F6 | reader-gen strips tenant prefix → suffix for `metric` | generate_reader.go | ✅ #739 |
-| F7 | turnkey: seed `PLC_HOST_*` + auto-gen ingest key at bundle time | #738 | ⬜ open PR |
+| F7 | turnkey: DB-sourced descriptor + auto-gen ingest key at bundle time | #738 | ✅ #738 (merged) |
+| F8 | bundle DB-read: build DSN from components (`production/db` has no `.url` → silent fallback to stale descriptor = F2 regression) | generate-client-bundle.yml | ✅ #744 |
+| F9 | multi-PLC per-endpoint host prefill (today CS fills `PLC_HOST_*`; generator only prefills a single fallback host) | generate-client-bundle.yml | ⬜ (turnkey follow-up) |
 | G1 | gate dead `go`/`shadow_go_port` leg so it can't nack prod writes | edge-transformer + oeecloud-worker | ✅ #740 (deployed) |
 | G2 | increment clamp: seed baseline on first observation | oeecloud-worker | ⬜ |
 | G3 | worker runs `shadow_go_port` background rollup jobs on single-flow prod | oeecloud-worker | ⬜ (WARN-only) |
-| G4 | enable counters-only OEE + rated speeds for CPACK | compose.production.yml | 🟡 #742 (hotfixed live) |
+| G4 | enable counters-only OEE + rated speeds for CPACK | compose.production.yml | ✅ #742 (deployed + verified: equipment_values fills) |
 | G5 | reader-gen is counter-only — no StateCurrent/MachSpeed read; some equips unregistered in packml_register | descriptor / reader-gen | ⬜ (limits which equips emit) |
 | — | source counters-only rates from DB at boot (retire static map) | edge-transformer config | ⬜ (G4 follow-up) |
 | — | regression test: generated reader `msg` → `rawtag.Decode` → resolver asserts `accepted==total` | edge-transformer tests | ⬜ |
+| — | CS Admin fields for bundle setup | csadmin | see `csadmin-bundle-setup-gaps.md` |
 
 ## Deploy summary (2026-08-07)
 - PRs #741, #740, #739 merged to staging (admin path blocked; got CI to fire via a
@@ -325,3 +328,56 @@ edge. ✅ = landed, 🟡 = PR open / needs deploy, ⬜ = follow-up.
   decoding, line producing. **G1 done. G4 is the remaining blocker for OEE data.**
 - Residual noise: worker still runs `shadow_go_port` BACKGROUND rollup jobs (G3, WARN
   only). Debug tap was added + REMOVED from the box (clean).
+
+## Official bundle — regeneration guide (2026-08-07)
+
+The CPACK edge bundle is now **generatable from source with zero hand-patching** —
+every F0–F6 fix is baked in by the generator, F2 comes from the live DB descriptor.
+
+**Regenerate:**
+```
+gh workflow run generate-client-bundle.yml --ref staging \
+  -f client=cpack -f target=production -f edge_model=nodered -f bundle_image=true
+# then: gh run download <run-id> -D <dir>   → cpack-edge-bundle/
+```
+- Reads the LIVE descriptor from `client_descriptors` (prod DB) via #738/#744; committed
+  `docs/clients/edge-deployment/cpack/cpack.descriptor.yaml` is the fallback.
+- Verified bundle (run 31144455202): F0 `.env.example` ✅, F1 contrib install ✅,
+  F2 `uplink_broker: ssl://ingest.prod.packiot.app:8883` ✅, F3 concrete key ✅,
+  F4 `X-Ingest-Key` ✅, F5 rawtag envelope ✅, F6 suffix strip ✅, 10 `PLC_HOST_*` lines.
+
+**To re-deploy the box** (makes it a persisted/regenerable artifact, retiring the
+hand-patches): drop the bundle on the box, `load-image.sh`, fill the 10 `PLC_HOST_*`
+in `.env` from the manifest below, set `AGENT_INGEST_API_KEY`, `docker compose up -d`.
+
+### CPACK PLC hosts manifest (real factory IPs)
+The descriptor `host_ref`s are `secret://packiot/production/cpack/<slug>-host` (contract:
+never literal in the descriptor). The real IPs live on the box `.env` + here. Ideally
+→ Secrets Manager `packiot/production/cpack/<slug>-host` (turnkey F9).
+
+| Endpoint (`PLC_HOST_<NAME>`) | Host | Protocol |
+|---|---|---|
+| `PLC_HOST_PLC_L6` | `10.135.1.128:502` | modbus |
+| `PLC_HOST_S7_115` | `10.135.16.115` | s7 |
+| `PLC_HOST_S7_116` | `10.135.16.116` | s7 |
+| `PLC_HOST_S7_L5` | `10.135.16.117` | s7 |
+| `PLC_HOST_S7_S8` | `10.135.16.26` | s7 |
+| `PLC_HOST_PLC_FLEXO` | `10.135.16.123` | s7 |
+| `PLC_HOST_S7_L10` | `10.135.16.124` | s7 |
+| `PLC_HOST_PLC_L4` | `10.135.1.126` | s7 |
+| `PLC_HOST_PLC_L3` | `10.135.16.127` | s7 |
+| `PLC_HOST_SLEEVES` | `10.135.16.101` | s7 |
+| `OPC_UA_L9_FLEXO` | `opc.tcp://10.135.6.169:4840` | opcua |
+
+### CPACK counters-only rated speeds (`equipments.production_speed`, parts/min)
+Drive `COUNTERS_ONLY_IDEAL_RATES` (G4). All CPACK counter-equipments have
+`ideal_speed=NULL`; the rate lives in `production_speed`.
+`CER400=50 · BREYER2=100 · POLYTYPE1=80 · PTH80S=60 · L3/*=140 · L4/*=147 · L5/*=147`
+(18 registered counter-equipments; L10/L6/SLEEVE/L3-BREYER produce but are unregistered
+in `packml_register` — G5, so they don't emit yet).
+
+### CPACK descriptor state (prod DB `client_descriptors`)
+- `status = draft`; `agent.uplink_broker = ssl://ingest.prod.packiot.app:8883`;
+  11 `plc.endpoints` with `secret://` host_refs; ~20 count_indices still `inferred`
+  (works in draft; blocks `--cutover`). Onboarding CAPTURE (P2b observe) not yet run on
+  new-prod (`capture_observations` table absent there).
