@@ -536,7 +536,7 @@ agent:
   edge_node_id: cpack-tee              # DISTINCT from plc-sim's edge node
   internal_broker: tcp://mosquitto:1883
   raw_topic: edge/raw/cpack/#
-  uplink_broker: tcp://mosquitto:1883
+  uplink_broker: ssl://ingest.prod.packiot.app:8883
   mtls:                                # Mode-B mTLS CN=<tenant>; secret refs, never values
     cert_ref: ""
     key_ref: ""

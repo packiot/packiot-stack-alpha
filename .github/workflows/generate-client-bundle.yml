@@ -139,9 +139,15 @@ jobs:
           DB_OK=0
           DB_SECRET_ID="packiot/${TARGET}/db"
           echo "trying DB descriptor: secret=$DB_SECRET_ID tenant=$CLIENT"
+          # Build the DSN from the secret. Prefer an explicit `.url` key
+          # (staging/db has one), else assemble it from the standard component
+          # fields host/port/user/password/name (production/db has NO `.url`,
+          # so the old `jq -r .url` returned null and silently fell back to the
+          # stale committed descriptor — the F2 uplink_broker regression).
           if DBURL="$(aws secretsmanager get-secret-value \
                 --secret-id "$DB_SECRET_ID" --region "$AWS_REGION" \
-                --query SecretString --output text 2>/dev/null | jq -r .url 2>/dev/null)" \
+                --query SecretString --output text 2>/dev/null \
+                | jq -r '.url // ("postgresql://" + .user + ":" + .password + "@" + .host + ":" + (.port|tostring) + "/" + .name)' 2>/dev/null)" \
              && [ -n "${DBURL:-}" ] && [ "$DBURL" != "null" ]; then
             # The URL carries the DB password — mask so no later echo leaks it.
             echo "::add-mask::$DBURL"
