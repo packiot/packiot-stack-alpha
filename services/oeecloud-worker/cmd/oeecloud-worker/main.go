@@ -292,9 +292,11 @@ func main() {
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
 			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
 			rollup.CountersAvail{
-				Enabled:        cfg.CountersOnlyAvailEnabled,
-				Equipments:     config.CSVInts(cfg.CountersOnlyAvailEquipments),
-				IdleTimeoutSec: cfg.CountersOnlyAvailIdleTimeoutSec,
+				Enabled:             cfg.CountersOnlyAvailEnabled,
+				Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
+				IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
+				LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
+				LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
 			},
 			time.Minute, logger, jobObs)
 	}
