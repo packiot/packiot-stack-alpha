@@ -779,6 +779,11 @@ services:
       HEALTH_PORT: "9101"
       # NO POSTGRES_SHADOW_DB_NAME → shadow pool nil → `refactored` envelopes
       # write to (main pool, public) = F3. This IS the single-flow topology.
+      # G3 (#747): single-flow prod has no `shadow_go_port` schema. Default flows
+      # target it → background rollups error 42P01 AND never write OEE Gold to
+      # public. false REDIRECTS the main-pool dest to `public`, so the rollups
+      # (equipment_runtime_shift/1hour/…) actually compute on the live schema.
+      SHADOW_GO_PORT_ENABLED: "false"
       # Go shift resolver fills id_shift/id_shift_hour on writes (F3 has no
       # PL/pgSQL trigger — this is the sole shift-resolution path in prod).
       SHIFT_RESOLVER_ENABLED: "true"
@@ -897,14 +902,13 @@ services:
       # Modbus/S7 counter-only edge with NO MachSpeed sensor, so Calc's Phase-8
       # glitch guard (prodSpeed < 3*machSpeed) collapses to `prodSpeed < 0` and
       # drops EVERY counter (G4). Enabling counters-only swaps the guard to
-      # `prodSpeed < 3*IdealRate` using the configured rated speed per unit
-      # topic. Rates = equipments.production_speed (parts/min) for the 18
-      # registered CPACK counter-equipments. VERIFIED live: with this on,
-      # equipment_values fills for producing machines (was 0). FOLLOW-UP: source
-      # these rates from the DB at boot instead of a static map so CS Admin speed
-      # edits flow automatically (see findings doc G4 durable fix).
+      # `prodSpeed < 3*IdealRate` using the configured rated speed per unit topic.
+      # CONFIG-AS-DATA (#750): rates are now loaded from the DB at boot — for every
+      # tenant whose descriptor has `counters_only_oee=true`, keyed by unit topic
+      # from equipments.production_speed. Retires the hand-built static map (which
+      # only covered 18 of 42 machines → G5). CS-Admin speed edits now flow through.
       COUNTERS_ONLY_OEE_ENABLED: "true"
-      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/CELULA1/CER400":50,"CPACK/SC/CELULA1/CER400/CER400":50,"CPACK/SC/CELULA2/BREYER2":100,"CPACK/SC/CELULA2/POLYTYPE1":80,"CPACK/SC/CELULA2/PTH80S":60,"CPACK/SC/LINHAS/L3/POLYTYPE":140,"CPACK/SC/LINHAS/L3/PTH":140,"CPACK/SC/LINHAS/L3/RMH":140,"CPACK/SC/LINHAS/L3/TEXA":140,"CPACK/SC/LINHAS/L4/BREYER":147,"CPACK/SC/LINHAS/L4/POLYTYPE":147,"CPACK/SC/LINHAS/L4/PTH":147,"CPACK/SC/LINHAS/L4/RMH":147,"CPACK/SC/LINHAS/L5/BREYER":147,"CPACK/SC/LINHAS/L5/POLYTYPE":147,"CPACK/SC/LINHAS/L5/PTH":147,"CPACK/SC/LINHAS/L5/RMH":147,"CPACK/SC/LINHAS/L5/TEXA":147}'
+      COUNTERS_ONLY_FROM_DB: "true"
     volumes:
       # ⚠ FILL AT DEPLOY: replace with the real per-client client.yaml
       # (docs/clients/<client>.yaml, ADR-0004). The example is mounted so the
