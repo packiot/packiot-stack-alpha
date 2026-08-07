@@ -342,6 +342,14 @@ type firebaseBearerAuth struct {
 	// enterprise → errUnknownUID; a NULL role → identity with hasRole=false.
 	lookup func(ctx context.Context, uid string) (resolvedIdentity, error)
 
+	// link is the Cognito link-on-login self-heal (ADR-0034): given a verified
+	// Cognito `sub` + verified `email`, idempotently populate users.id_user_
+	// cognito for the matching row so an EXISTING user's FIRST-EVER Cognito login
+	// resolves instead of 401ing. Production impl is a closure over the pgx pool
+	// running linkCognitoSQL; tests inject a fake. nil disables the self-heal
+	// (the path then behaves exactly as before — unknown sub → errUnknownUID).
+	link func(ctx context.Context, sub, email string) error
+
 	// positive-only TTL cache: uid → resolvedIdentity. Bounded lifetime so a
 	// user's deactivation / enterprise move / ROLE change propagates within
 	// ttl. No negative caching — a valid-token-but-unknown-uid is nearly
@@ -361,8 +369,44 @@ func newFirebaseBearerAuth(v verifier, pool *pgxpool.Pool, ttl time.Duration) *f
 	return &firebaseBearerAuth{
 		verify: v,
 		lookup: dbEnterpriseLookup(pool),
+		link:   dbCognitoLink(pool),
 		ttl:    ttl,
 		cache:  map[string]cacheEntry{},
+	}
+}
+
+// linkCognitoSQL is the login-time self-heal (ADR-0034, option A). The column
+// users.id_user_cognito + a partial UNIQUE index (WHERE id_user_cognito IS NOT
+// NULL) already ship (migration 32-cognito-user-id.sql); nothing WRITES it, so
+// an existing user's first Cognito login finds no row → 401. This binds the
+// verified Cognito `sub` to the row whose email matches the VERIFIED email
+// claim, exactly once:
+//   - lower(email) = lower($2): case-insensitive match on the verified address.
+//   - id_user_cognito IS NULL: IDEMPOTENT — a row already linked is never
+//     re-touched, and the partial unique index means a `sub` binds to at most
+//     one user, once. A second login is a no-op (0 rows) and the re-lookup then
+//     resolves via the now-populated column.
+//   - active = true: never link a soft-deleted user.
+//
+// REVERSIBLE: `UPDATE users SET id_user_cognito = NULL WHERE …` backs it out.
+// SAFE on no match: 0 rows updated → the re-lookup stays empty → 401 as today
+// (a genuinely unknown user). $1/$2 are the VERIFIED sub/email — never request
+// body — bound as parameters, so no injection surface.
+const linkCognitoSQL = `UPDATE users SET id_user_cognito = $1
+	WHERE lower(email) = lower($2) AND id_user_cognito IS NULL AND active = true`
+
+// dbCognitoLink is the production link closure: run linkCognitoSQL against the
+// pool. A unique-index violation (an email shared by rows that would collide on
+// the same sub — not expected, emails are per-user) surfaces as an error, which
+// the caller treats as "link failed" → the login falls through to 401 rather
+// than mis-binding. A nil pool disables linking.
+func dbCognitoLink(pool *pgxpool.Pool) func(context.Context, string, string) error {
+	if pool == nil {
+		return nil
+	}
+	return func(ctx context.Context, sub, email string) error {
+		_, err := pool.Exec(ctx, linkCognitoSQL, sub, email)
+		return err
 	}
 }
 
@@ -405,11 +449,61 @@ func (a *firebaseBearerAuth) resolve(ctx context.Context, tokenStr string) (reso
 		return id, nil
 	}
 	id, err := a.lookup(ctx, uid)
+	if errors.Is(err, errUnknownUID) {
+		// Link-on-login self-heal (ADR-0034): a VERIFIED token whose sub maps to
+		// no user is, for a Cognito login, an EXISTING user whose id_user_cognito
+		// is still NULL (first-ever Cognito login). Bind the column by the token's
+		// verified email, then re-resolve. Only triggers on the rare miss path, so
+		// the happy path (and the whole Firebase path) is byte-for-byte unchanged.
+		if linked, ok := a.tryLinkCognito(ctx, tokenStr, uid); ok {
+			id, err = linked, nil
+		}
+	}
 	if err != nil {
 		return resolvedIdentity{}, err
 	}
 	a.cachePut(uid, id)
 	return id, nil
+}
+
+// tryLinkCognito attempts the Cognito link-on-login self-heal for a uid that
+// resolved to no user. It returns (identity, true) ONLY when the token is a
+// Cognito token carrying a VERIFIED email that matched an existing unlinked
+// user AND the subsequent re-lookup succeeded; otherwise (identity{}, false) so
+// the caller keeps the original errUnknownUID → 401. It is a strict NO-OP for:
+//   - a nil link closure (self-heal disabled),
+//   - a verifier that can't surface claims (Firebase-only deployments),
+//   - a Firebase token (idp != "cognito"),
+//   - a token with no / unverified email (never trust an unconfirmed mailbox),
+//   - no email match (a genuinely unknown user).
+//
+// Email + sub come from the SIGNATURE-VERIFIED claims — never the request body.
+// The re-verification here (VerifyClaims) is a second crypto check, but it only
+// runs on the rare unknown-uid miss, so the hot path pays nothing.
+func (a *firebaseBearerAuth) tryLinkCognito(ctx context.Context, tokenStr, uid string) (resolvedIdentity, bool) {
+	if a.link == nil {
+		return resolvedIdentity{}, false
+	}
+	cv, ok := a.verify.(claimsVerifier)
+	if !ok {
+		return resolvedIdentity{}, false
+	}
+	claims, err := cv.VerifyClaims(ctx, tokenStr)
+	if err != nil ||
+		claims.idp != "cognito" ||
+		claims.uid != uid || // paranoia: the two verifies must agree on the subject
+		claims.email == "" ||
+		!claims.emailVerified {
+		return resolvedIdentity{}, false
+	}
+	if err := a.link(ctx, uid, claims.email); err != nil {
+		return resolvedIdentity{}, false
+	}
+	id, err := a.lookup(ctx, uid)
+	if err != nil {
+		return resolvedIdentity{}, false
+	}
+	return id, true
 }
 
 func (a *firebaseBearerAuth) cacheGet(uid string) (resolvedIdentity, bool) {

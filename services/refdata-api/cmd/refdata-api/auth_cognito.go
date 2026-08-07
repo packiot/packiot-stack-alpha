@@ -158,8 +158,46 @@ func newCognitoVerifier(issuer, clientID, jwksURL string, client *http.Client) *
 // carries the client in a `client_id` claim. A single WithAudience can't express
 // that split, so we branch on token_use. A 60s leeway absorbs clock skew.
 func (v *cognitoVerifier) Verify(ctx context.Context, tokenStr string) (string, error) {
+	c, err := v.VerifyClaims(ctx, tokenStr)
+	return c.uid, err
+}
+
+// verifiedClaims carries the extra VERIFIED claims the Cognito link-on-login
+// self-heal (ADR-0034) needs beyond the bare uid. It is populated ONLY off a
+// signature-verified token, so the email is trustworthy — the browser cannot
+// forge the address a Cognito `sub` binds to.
+//
+//   - uid: the subject (`sub`) — a Cognito UUID or a Firebase uid.
+//   - email: the verified `email` claim, LOWERCASED for a case-insensitive
+//     match; "" when the token carries none (a Cognito ACCESS token, or a
+//     Firebase token — neither is a link candidate).
+//   - emailVerified: the Cognito `email_verified` claim (bool or "true"). The
+//     link matches by email, so a mailbox that Cognito has NOT confirmed must
+//     NOT be trusted — it would be an account-takeover vector.
+//   - idp: "cognito" | "firebase" — the link only ever fires for "cognito".
+type verifiedClaims struct {
+	uid           string
+	email         string
+	emailVerified bool
+	idp           string
+}
+
+// claimsVerifier is an OPTIONAL capability a verifier may implement to surface
+// the verified email + issuing IdP for the Cognito link-on-login self-heal
+// (auth_firebase.go resolve). cognitoVerifier and multiVerifier implement it;
+// firebaseVerifier deliberately does NOT — Firebase identities never link, so
+// the proven Firebase path stays byte-for-byte untouched.
+type claimsVerifier interface {
+	VerifyClaims(ctx context.Context, token string) (verifiedClaims, error)
+}
+
+// VerifyClaims runs the SAME signature + claim checks as Verify (see that
+// method's doc) and additionally extracts the verified `email` /
+// `email_verified` claims that the link-on-login self-heal needs. Verify is a
+// thin wrapper over it, so the two can never diverge on what they accept.
+func (v *cognitoVerifier) VerifyClaims(ctx context.Context, tokenStr string) (verifiedClaims, error) {
 	if v.clientID == "" || v.iss == "" {
-		return "", errCognitoNotConf
+		return verifiedClaims{}, errCognitoNotConf
 	}
 	tok, err := jwt.Parse(tokenStr, v.keyfunc(ctx),
 		jwt.WithValidMethods([]string{"RS256"}),
@@ -169,38 +207,57 @@ func (v *cognitoVerifier) Verify(ctx context.Context, tokenStr string) (string, 
 		jwt.WithLeeway(60*time.Second),
 	)
 	if err != nil {
-		return "", err
+		return verifiedClaims{}, err
 	}
 	claims, ok := tok.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", errBadClaims
+		return verifiedClaims{}, errBadClaims
 	}
 
 	use, _ := claims["token_use"].(string)
 	if !v.acceptedUse[use] {
-		return "", errWrongTokenUse
+		return verifiedClaims{}, errWrongTokenUse
 	}
-	// Audience check keyed on token_use (see method doc).
+	// Audience check keyed on token_use (see Verify doc).
 	switch use {
 	case "id":
 		// `aud` may be a string or []string per RFC 7519 — accept either.
 		if !audienceHas(claims["aud"], v.clientID) {
-			return "", errWrongAudience
+			return verifiedClaims{}, errWrongAudience
 		}
 	case "access":
 		if cid, _ := claims["client_id"].(string); cid != v.clientID {
-			return "", errWrongAudience
+			return verifiedClaims{}, errWrongAudience
 		}
 	}
 
 	sub, err := claims.GetSubject()
 	if err != nil {
-		return "", err
+		return verifiedClaims{}, err
 	}
 	if sub == "" {
-		return "", errEmptySubject
+		return verifiedClaims{}, errEmptySubject
 	}
-	return sub, nil
+	email, _ := claims["email"].(string)
+	return verifiedClaims{
+		uid:           sub,
+		email:         strings.ToLower(strings.TrimSpace(email)),
+		emailVerified: claimBool(claims["email_verified"]),
+		idp:           "cognito",
+	}, nil
+}
+
+// claimBool coerces a Cognito boolean claim that may arrive as a real JSON bool
+// OR the string "true" (Cognito serializes `email_verified` inconsistently
+// across id/access tokens and SDK versions). Anything else is false.
+func claimBool(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(strings.TrimSpace(b), "true")
+	}
+	return false
 }
 
 // audienceHas reports whether the JWT `aud` claim (a string or a []string, per
@@ -442,6 +499,49 @@ func (m *multiVerifier) Verify(ctx context.Context, tokenStr string) (string, er
 		}
 	}
 	return "", lastErr
+}
+
+// VerifyClaims mirrors Verify but returns the rich verifiedClaims (uid + verified
+// email + idp) the Cognito link-on-login self-heal consumes. It routes the token
+// to its issuer exactly like Verify. A verifier that implements claimsVerifier
+// (cognitoVerifier) yields the full claims; one that does NOT (firebaseVerifier)
+// is called through the plain Verify seam and its result wrapped with the routed
+// idp and an EMPTY email — so a Firebase identity can never be a link candidate.
+// This makes multiVerifier itself a claimsVerifier, which is what firebaseBearer
+// Auth.resolve type-asserts to decide whether to attempt the link.
+func (m *multiVerifier) VerifyClaims(ctx context.Context, tokenStr string) (verifiedClaims, error) {
+	if iss := unverifiedIssuer(tokenStr); iss != "" {
+		for _, nv := range m.verifiers {
+			if nv.iss == iss {
+				return verifyClaimsVia(ctx, nv, tokenStr)
+			}
+		}
+	}
+	// No issuer match — try each (full verify each time), return first success.
+	var lastErr error = errNoVerifier
+	for _, nv := range m.verifiers {
+		if c, err := verifyClaimsVia(ctx, nv, tokenStr); err == nil {
+			return c, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return verifiedClaims{}, lastErr
+}
+
+// verifyClaimsVia runs one namedVerifier and returns rich claims. If the
+// concrete verifier exposes claimsVerifier (Cognito) we use it directly;
+// otherwise (Firebase) we fall back to the plain Verify seam and stamp the
+// routed idp with no email — never a link candidate.
+func verifyClaimsVia(ctx context.Context, nv namedVerifier, tokenStr string) (verifiedClaims, error) {
+	if cv, ok := nv.v.(claimsVerifier); ok {
+		return cv.VerifyClaims(ctx, tokenStr)
+	}
+	uid, err := nv.v.Verify(ctx, tokenStr)
+	if err != nil {
+		return verifiedClaims{}, err
+	}
+	return verifiedClaims{uid: uid, idp: nv.idp}, nil
 }
 
 // unverifiedIssuer parses the token WITHOUT verifying its signature to read the
