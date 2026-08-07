@@ -18,7 +18,10 @@
 //     line L3) sets equipments.gross_machine to name the gross source: gross is
 //     then summed from gross_machine, net from lead_machine. When gross_machine
 //     is NULL, gross_id COALESCEs to lead_id and behaviour is byte-identical to
-//     the single-lead pass.
+//     the single-lead pass. NET-ONLY lines (no gross counter anywhere — L8/L10/
+//     SLEEVE) follow the legacy convention gross=net (eff_gross in the counts
+//     CTE): quality defaults to 100% (no scrap measured) and availability +
+//     performance still compute.
 //   - availability   ← idle-timeout sessionization of the lead's
 //     ca_agg_equipment_values_1min productive minutes (identical inference to
 //     availability.go: order the productive minutes, an inter-minute gap beyond
@@ -70,14 +73,25 @@ const shiftLineLeadSQL = `
 	    -- GROSS from gross_id (the input machine), NET from lead_id (the output
 	    -- machine). Correlated subqueries so each factor draws from its own source;
 	    -- few lines, so the per-line lookups are cheap.
-	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
-	             WHERE cg.id_equipment = l.gross_id
-	               AND cg.ts_value >= l.ts_value AND cg.ts_value < l.bend) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
-	             WHERE cn.id_equipment = l.lead_id
-	               AND cn.ts_value >= l.ts_value AND cn.ts_value < l.bend) AS net
-	      FROM lines l
+	    -- eff_gross — legacy convention: a net-only line (no gross counter) reports
+	    -- gross=net, so quality defaults to 1.0 (no scrap measured) and availability
+	    -- + performance still compute. Substitute net ONLY when gross is entirely
+	    -- absent (NOT GREATEST, which would wrongly inflate a real-but-lower gross).
+	    -- Used everywhere the OEE math needs gross (gross, scrap, oee_q) so they
+	    -- stay consistent. (Keep this const free of any literal percent sign: it is
+	    -- a fmt.Sprintf format string.)
+	    SELECT cc.line_id, cc.ts_value, cc.gross, cc.net,
+	           CASE WHEN COALESCE(cc.gross,0) > 0 THEN cc.gross ELSE COALESCE(cc.net,0) END AS eff_gross
+	      FROM (
+	        SELECT l.line_id, l.ts_value,
+	               (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
+	                 WHERE cg.id_equipment = l.gross_id
+	                   AND cg.ts_value >= l.ts_value AND cg.ts_value < l.bend) AS gross,
+	               (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
+	                 WHERE cn.id_equipment = l.lead_id
+	                   AND cn.ts_value >= l.ts_value AND cn.ts_value < l.bend) AS net
+	          FROM lines l
+	      ) cc
 	), prod_min AS (
 	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
@@ -107,9 +121,9 @@ const shiftLineLeadSQL = `
 	      FROM sessions GROUP BY line_id, ts_value
 	)
 	UPDATE %[1]s.equipment_runtime_shift e SET
-	       gross            = COALESCE(c.gross, 0),
+	       gross            = COALESCE(c.eff_gross, 0),
 	       net              = COALESCE(c.net, 0),
-	       scrap            = COALESCE(c.gross - c.net, 0),
+	       scrap            = GREATEST(COALESCE(c.eff_gross, 0) - COALESCE(c.net, 0), 0),
 	       available_time   = l.ts_total,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_total),
 	       stopped_time     = l.ts_total - LEAST(COALESCE(a.raw_running, 0), l.ts_total),
@@ -125,12 +139,12 @@ const shiftLineLeadSQL = `
 	       -- served factor; no-op on in-range data.
 	       oee   = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 1), 0),
+	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF(c.eff_gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(
 	             COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0)
 	             / NULLIF(
 	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0)
-	                 * COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 0), 0), 1), 0)
+	                 * COALESCE(COALESCE(c.net,0) / NULLIF(c.eff_gross, 0), 0), 0), 0), 1), 0)
 	  FROM lines l
 	  LEFT JOIN counts c ON c.line_id = l.line_id AND c.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
@@ -157,12 +171,23 @@ const hourLineLeadSQL = `
 	), counts AS (
 	    -- GROSS from gross_id (the input machine), NET from lead_id (the output
 	    -- machine). Single-bucket lookups matching the hour join (ts_value = l.ts_value).
-	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
-	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
-	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = l.ts_value) AS net
-	      FROM lines l
+	    -- eff_gross — legacy convention: a net-only line (no gross counter) reports
+	    -- gross=net, so quality defaults to 1.0 (no scrap measured) and availability
+	    -- + performance still compute. Substitute net ONLY when gross is entirely
+	    -- absent (NOT GREATEST, which would wrongly inflate a real-but-lower gross).
+	    -- Used everywhere the OEE math needs gross (gross, scrap, oee_q) so they
+	    -- stay consistent. (Keep this const free of any literal percent sign: it is
+	    -- a fmt.Sprintf format string.)
+	    SELECT cc.line_id, cc.ts_value, cc.gross, cc.net,
+	           CASE WHEN COALESCE(cc.gross,0) > 0 THEN cc.gross ELSE COALESCE(cc.net,0) END AS eff_gross
+	      FROM (
+	        SELECT l.line_id, l.ts_value,
+	               (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
+	                 WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
+	               (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
+	                 WHERE cn.id_equipment = l.lead_id AND cn.ts_value = l.ts_value) AS net
+	          FROM lines l
+	      ) cc
 	), prod_min AS (
 	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
@@ -192,9 +217,9 @@ const hourLineLeadSQL = `
 	      FROM sessions GROUP BY line_id, ts_value
 	)
 	UPDATE %[1]s.equipment_runtime_1hour e SET
-	       gross            = COALESCE(c.gross, 0),
+	       gross            = COALESCE(c.eff_gross, 0),
 	       net              = COALESCE(c.net, 0),
-	       scrap            = COALESCE(c.gross - c.net, 0),
+	       scrap            = GREATEST(COALESCE(c.eff_gross, 0) - COALESCE(c.net, 0), 0),
 	       available_time   = l.ts_total,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_total),
 	       stopped_time     = l.ts_total - LEAST(COALESCE(a.raw_running, 0), l.ts_total),
@@ -210,7 +235,7 @@ const hourLineLeadSQL = `
 	       -- hourOeePSQL (itself clamped) off the just-cleared rows.
 	       oee   = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF(c.eff_gross, 0), 0), 1), 0)
 	  FROM lines l
 	  LEFT JOIN counts c ON c.line_id = l.line_id AND c.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
