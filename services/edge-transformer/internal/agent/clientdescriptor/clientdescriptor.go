@@ -53,9 +53,10 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 )
 
-// secretScheme is the required prefix for any host/URL reference in the plc
-// block — the descriptor NEVER carries a secret VALUE inline, only a pointer
-// into the secret store (mirrors clientconfig.validateV11 Rule 1a).
+// secretScheme is the prefix for a SECRET reference in the plc block — the
+// descriptor NEVER carries a secret VALUE inline, only a pointer into the secret
+// store. A plain host, being network config rather than a secret, may instead be
+// a literal (mirrors clientconfig.validateV11 Rule 1a).
 const secretScheme = "secret://"
 
 // PLC endpoint protocol tokens. They select which Go reader
@@ -144,8 +145,8 @@ type Descriptor struct {
 // (which clientconfig's PLCEndpoint does not carry) so the descriptor can validate
 // that an s7 tag map only references an s7 endpoint.
 type DescriptorPLC struct {
-	// Endpoints are the reachable PLCs. host_ref / endpoint_url_ref are secret
-	// references, never values.
+	// Endpoints are the reachable PLCs. host_ref / endpoint_url_ref may be a
+	// secret:// reference OR a literal host (network config, not a secret).
 	Endpoints []DescriptorPLCEndpoint `yaml:"endpoints"`
 
 	// S7TagMap / ModbusTagMap / OPCUATagMap are the per-protocol tag→PackML
@@ -165,13 +166,14 @@ type DescriptorPLCEndpoint struct {
 	// Protocol ∈ {s7, modbus_tcp, opcua}. Selects the reader + gates which tag
 	// map may reference this endpoint.
 	Protocol string `yaml:"protocol"`
-	// HostRef (S7/Modbus) is a secret:// reference to the PLC host, never a value.
+	// HostRef (S7/Modbus) is the PLC host: a secret:// reference OR a literal
+	// host[:port] (network config, not a secret — see requireHostRef).
 	HostRef string `yaml:"host_ref,omitempty"`
 	Rack    *int   `yaml:"rack,omitempty"` // S7
 	Slot    *int   `yaml:"slot,omitempty"` // S7
 	UnitID  *int   `yaml:"unit_id,omitempty"`
-	// EndpointURLRef (OPC-UA) is a secret:// reference to the server URL, never a
-	// value — the OPC-UA analogue of host_ref.
+	// EndpointURLRef (OPC-UA) is the server URL — a secret:// reference OR a
+	// literal opc.tcp:// URL. The OPC-UA analogue of host_ref.
 	EndpointURLRef  string `yaml:"endpoint_url_ref,omitempty"`
 	SecurityPolicy  string `yaml:"security_policy,omitempty"`
 	SecurityMode    string `yaml:"security_mode,omitempty"`
@@ -611,10 +613,10 @@ func (d *Descriptor) validatePLC() error {
 				i, ep.Name, ep.Protocol, PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA)
 		}
 		epProto[ep.Name] = ep.Protocol
-		if err := requireSecretRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
+		if err := requireHostRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
 			return err
 		}
-		if err := requireSecretRef("plc.endpoints", i, ep.Name, "endpoint_url_ref", ep.EndpointURLRef); err != nil {
+		if err := requireEndpointURLRef("plc.endpoints", i, ep.Name, "endpoint_url_ref", ep.EndpointURLRef); err != nil {
 			return err
 		}
 	}
@@ -648,13 +650,28 @@ func (d *Descriptor) validatePLC() error {
 	return nil
 }
 
-// requireSecretRef enforces "empty, or a secret:// reference" on a host/URL
-// field — a non-empty value that is not a reference is a leaked credential
-// (mirrors clientconfig.requireSecretRef so both surfaces reject the same shape).
-func requireSecretRef(section string, idx int, label, field, val string) error {
-	if val == "" || strings.HasPrefix(val, secretScheme) {
+// requireHostRef enforces host_ref is empty, a secret:// reference, OR a literal
+// host[:port]. A PLC host is NETWORK config (an IP on the factory LAN), not a
+// secret, so a literal is allowed — this is what lets the bundle generator
+// prefill PLC_HOST_* from the descriptor (F9). The literal-host rule itself lives
+// in clientconfig (IsLiteralHost) and is REUSED here so the descriptor surface
+// and the client.yaml GenerateClientYAML emits accept byte-identical shapes —
+// otherwise a literal that passes here would be rejected at reader boot.
+func requireHostRef(section string, idx int, label, field, val string) error {
+	if val == "" || strings.HasPrefix(val, secretScheme) || clientconfig.IsLiteralHost(val) {
 		return nil
 	}
-	return fmt.Errorf("%s[%d] (%s): %s=%q must be empty or a %s reference, not a value",
+	return fmt.Errorf("%s[%d] (%s): %s=%q must be empty, a %s reference, or a literal host[:port]",
+		section, idx, label, field, val, secretScheme)
+}
+
+// requireEndpointURLRef is the OPC-UA analogue: empty, a secret:// reference, OR
+// a literal opc.tcp:// endpoint URL. Reuses clientconfig.IsOPCUAEndpointURL for
+// the same cross-surface consistency reason as requireHostRef.
+func requireEndpointURLRef(section string, idx int, label, field, val string) error {
+	if val == "" || strings.HasPrefix(val, secretScheme) || clientconfig.IsOPCUAEndpointURL(val) {
+		return nil
+	}
+	return fmt.Errorf("%s[%d] (%s): %s=%q must be empty, a %s reference, or an opc.tcp:// URL",
 		section, idx, label, field, val, secretScheme)
 }
