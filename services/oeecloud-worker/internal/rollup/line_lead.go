@@ -86,7 +86,12 @@ const shiftLineLeadSQL = `
 	      JOIN %[1]s.ca_agg_equipment_values_1min m
 	        ON m.id_equipment = l.lead_id
 	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
-	       AND m.gross_production_incr > 0
+	       -- A minute is "productive" if the lead moved EITHER input (gross) or
+	       -- output (net). A split-instrumentation line's lead is the net/output
+	       -- machine and is NET-ONLY (gross=0), so a gross-only filter misses all
+	       -- its activity → oee_a=0. For single-lead leads gross and net move
+	       -- together, so this is equivalent (no change to working lines).
+	       AND (m.gross_production_incr > 0 OR m.net_production_incr > 0)
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
 	           sum(CASE WHEN gap IS NULL OR gap > %[4]d THEN 1 ELSE 0 END)
@@ -166,7 +171,12 @@ const hourLineLeadSQL = `
 	      JOIN %[1]s.ca_agg_equipment_values_1min m
 	        ON m.id_equipment = l.lead_id
 	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
-	       AND m.gross_production_incr > 0
+	       -- A minute is "productive" if the lead moved EITHER input (gross) or
+	       -- output (net). A split-instrumentation line's lead is the net/output
+	       -- machine and is NET-ONLY (gross=0), so a gross-only filter misses all
+	       -- its activity → oee_a=0. For single-lead leads gross and net move
+	       -- together, so this is equivalent (no change to working lines).
+	       AND (m.gross_production_incr > 0 OR m.net_production_incr > 0)
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
 	           sum(CASE WHEN gap IS NULL OR gap > %[4]d THEN 1 ELSE 0 END)

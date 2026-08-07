@@ -271,11 +271,14 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		VALUES (902, date_trunc('hour', now()) - interval '3 hours', 1000, 0);
 		-- lead's 1min productive minutes drive availability (the output cadence).
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
-		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
+		-- REGRESSION GUARD: the lead is NET-ONLY (net_production_incr>0,
+		-- gross_production_incr=0). The old prod_min filter (gross>0) would see NO
+		-- productive minutes here → oee_a=0; the net-or-gross filter recovers them.
+		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
 		  FROM generate_series(0,9) m
 		UNION ALL
-		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
 		  FROM generate_series(40,59) m;`
 
 	conn, err := pool.Acquire(ctx)
