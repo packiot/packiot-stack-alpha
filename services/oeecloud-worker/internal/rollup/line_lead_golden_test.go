@@ -271,11 +271,14 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		VALUES (902, date_trunc('hour', now()) - interval '3 hours', 1000, 0);
 		-- lead's 1min productive minutes drive availability (the output cadence).
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
-		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
+		-- REGRESSION GUARD: the lead is NET-ONLY (net_production_incr>0,
+		-- gross_production_incr=0). The old prod_min filter (gross>0) would see NO
+		-- productive minutes here → oee_a=0; the net-or-gross filter recovers them.
+		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
 		  FROM generate_series(0,9) m
 		UNION ALL
-		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
 		  FROM generate_series(40,59) m;`
 
 	conn, err := pool.Acquire(ctx)
@@ -335,7 +338,138 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 	if !(r.oee > 0) {
 		t.Errorf("line oee = %v, MUST be > 0 (net 950 / ideal_production)", r.oee)
 	}
+	// Contrast with the net-only case: real gross ⇒ quality < 1.
+	if !(r.oeeQ < 1.0) {
+		t.Errorf("line oee_q = %v, MUST be < 1 (real gross 1000 > net 950)", r.oeeQ)
+	}
 	if r.recalc {
 		t.Error("line recalc_needed must be cleared by the pass")
+	}
+}
+
+// TestGoldenLineLeadNetOnly — the NET-ONLY line (L8/L10/SLEEVE case). The line
+// has a net/output counter but NO gross counter anywhere (gross_machine NULL, the
+// lead's gross is 0). Legacy convention: gross defaults to net, so no scrap is
+// measured and quality is 100%, while availability + performance still compute
+// off the lead's (net) cadence. Guards the eff_gross fallback AND that
+// availability is derived from NET activity (not gross).
+//
+//	line 900:  tp=3, lead_machine 901, gross_machine NULL
+//	mach 901:  NET-ONLY — 1hour net 950 / gross 0; 1min net pulses, gross 0
+//	→ line gross == net == 950, oee_q == 1.0, scrap == 0, oee_a > 0.
+func TestGoldenLineLeadNetOnly(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	const netOnlySchema = `
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		CREATE TABLE golden.equipment_runtime_shift (
+		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
+		    ts_value_production timestamptz, id_shift int, cd_shift text,
+		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
+		    gross double precision, net double precision, scrap double precision,
+		    speed double precision, ideal_speed double precision,
+		    available_time double precision, running_time double precision,
+		    stopped_time double precision, planned_downtime double precision,
+		    ideal_production double precision, downtime double precision,
+		    changeover_time double precision, oee double precision,
+		    oee_a double precision, oee_p double precision, oee_q double precision,
+		    target double precision, proportional_target double precision,
+		    computed_at timestamptz, source_watermark timestamptz
+		);
+		CREATE TABLE golden.ca_agg_equipment_values_1hour (
+		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
+		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
+		    gross_production_incr double precision, net_production_incr double precision
+		);
+		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+		SET search_path TO golden, public;`
+	for _, s := range []string{goldenSchema, netOnlySchema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+
+	// Fixture: line 900 with a single net-only lead 901 (gross_machine NULL).
+	// 901's 1hour cagg carries net 950 and NO gross anywhere; its 1min cagg has
+	// net pulses (gross 0) at 0-9 and 40-59 → running 2040s → Availability 0.5667.
+	const fixture = `
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine)
+		VALUES (900,1,1,3,3,NULL,901,NULL),  -- the LINE, single net-only lead
+		       (901,1,1,3,1,100,NULL,NULL);  -- NET-ONLY lead (rated speed 100)
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig
+		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
+		            date_trunc('hour', now()) - interval '2 hours';
+		INSERT INTO golden.equipment_runtime_shift
+		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
+		             date_trunc('hour', now()) - interval '2 hours',
+		             date_trunc('day', now()), 1, true, 0);
+		-- lead 901: net 950, NO gross (net-only line).
+		INSERT INTO golden.ca_agg_equipment_values_1hour
+		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 0, 950);
+		-- lead's 1min NET pulses (gross 0) drive availability.
+		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
+		  FROM generate_series(0,9) m
+		UNION ALL
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
+		  FROM generate_series(40,59) m;`
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET search_path TO golden, public`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	stmt := fmt.Sprintf(ShiftLineLeadSQLForParity(), "golden", "golden", pgIntArrayLiteral([]int{3}), 300)
+	if _, err := conn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+
+	var r struct {
+		gross, net, scrap, oeeA, oeeQ float64
+	}
+	if err := conn.QueryRow(ctx,
+		`SELECT gross, net, scrap, oee_a, oee_q
+		   FROM golden.equipment_runtime_shift WHERE id_equipment = 900`).
+		Scan(&r.gross, &r.net, &r.scrap, &r.oeeA, &r.oeeQ); err != nil {
+		t.Fatal(err)
+	}
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+
+	// HEADLINE: net-only ⇒ gross defaults to net, quality 100%, no scrap.
+	if !approx(r.gross, r.net) {
+		t.Errorf("net-only line gross = %v, want gross == net (%v) via eff_gross fallback", r.gross, r.net)
+	}
+	if !approx(r.net, 950) {
+		t.Errorf("net-only line net = %v, want 950 (from lead 901)", r.net)
+	}
+	if !approx(r.oeeQ, 1.0) {
+		t.Errorf("net-only line oee_q = %v, want 1.0 (net/net, no scrap measured)", r.oeeQ)
+	}
+	if !approx(r.scrap, 0) {
+		t.Errorf("net-only line scrap = %v, want 0 (gross == net)", r.scrap)
+	}
+	// Availability still computes — from NET activity (the fix), not gross.
+	if !(r.oeeA > 0) || !approx(r.oeeA, 2040.0/3600.0) {
+		t.Errorf("net-only line oee_a = %v, want %v (availability from net cadence)", r.oeeA, 2040.0/3600.0)
 	}
 }
