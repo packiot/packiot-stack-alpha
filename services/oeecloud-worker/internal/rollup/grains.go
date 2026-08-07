@@ -231,7 +231,7 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 			// enterprise NOT IN machineLevelEnterprises (the exact complement of the
 			// shift grain's machine-metered inclusion) → machine-metered tenants are
 			// never touched.
-			if n, err := RunUnmetered(ctx, d, machineLevelEnterprises); err != nil {
+			if n, err := RunUnmetered(ctx, d, machineLevelEnterprises, logger); err != nil {
 				logger.Warn("runtime-rollup-unmetered failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err

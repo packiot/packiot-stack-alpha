@@ -56,7 +56,11 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 )
@@ -100,7 +104,15 @@ const unmeteredNullSQL = `
 // shared runtime advisory lock (it writes the same grain tables). Skips
 // the tick (non-blocking) if provision holds the lock, like the other
 // grain passes. Returns the total rows corrected across all tables.
-func RunUnmetered(ctx context.Context, d flows.Dest, machineLevelEnterprises []int) (int64, error) {
+//
+// MISSING-TABLE TOLERANCE (G6): each table's UPDATE runs inside its own
+// SAVEPOINT so that a table absent from a given DB (SQLSTATE 42P01
+// undefined_table — e.g. a shift_1week/_1month that predates the schema-init
+// fix) is logged as a WARN and SKIPPED rather than aborting the whole pass.
+// Without the savepoint the first 42P01 would poison the outer tx and every
+// later table would fail with "current transaction is aborted". Any OTHER
+// error still fails the pass (real problems stay loud).
+func RunUnmetered(ctx context.Context, d flows.Dest, machineLevelEnterprises []int, logger *slog.Logger) (int64, error) {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -113,13 +125,38 @@ func RunUnmetered(ctx context.Context, d flows.Dest, machineLevelEnterprises []i
 	}
 	var total int64
 	for _, tbl := range unmeteredMachineTables {
-		tag, err := tx.Exec(ctx, fmt.Sprintf(unmeteredNullSQL, d.EvSchema, d.RefSchema, tbl), machineLevelEnterprises)
+		// pgx nested Begin issues a SAVEPOINT; Rollback on error rolls back TO
+		// the savepoint, leaving the outer tx usable for the remaining tables.
+		sp, err := tx.Begin(ctx)
 		if err != nil {
+			return 0, fmt.Errorf("savepoint %s: %w", tbl, err)
+		}
+		tag, err := sp.Exec(ctx, fmt.Sprintf(unmeteredNullSQL, d.EvSchema, d.RefSchema, tbl), machineLevelEnterprises)
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			if isUndefinedTable(err) {
+				if logger != nil {
+					logger.Warn("runtime-rollup-unmetered skipped missing grain table",
+						slog.String("dest", d.Name), slog.String("table", tbl))
+				}
+				continue
+			}
 			return 0, fmt.Errorf("unmetered %s: %w", tbl, err)
+		}
+		if err := sp.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("savepoint release %s: %w", tbl, err)
 		}
 		total += tag.RowsAffected()
 	}
 	return total, tx.Commit(ctx)
+}
+
+// isUndefinedTable reports whether err is Postgres SQLSTATE 42P01
+// (undefined_table), matched structurally via pgconn.PgError — not by string —
+// so an unrelated message can't false-positive.
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }
 
 // UnmeteredStatementsForParity exposes the per-table statements (single

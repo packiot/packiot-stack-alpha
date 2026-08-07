@@ -22,6 +22,7 @@ package rollup
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -71,11 +72,17 @@ type GrainMetrics struct {
 	Grain        string
 	BucketTS     time.Time
 
-	// The four OEE factors as written to the served row.
-	OEE  float64
-	OeeA float64
-	OeeP float64
-	OeeQ float64
+	// The four OEE factors as written to the served row. NULLABLE: line-metered
+	// machines are NULLed by RunUnmetered (oee = NULL means "not metered", not 0),
+	// so a runtime row's oee/oee_a/oee_p/oee_q can be SQL NULL. Scanning a NULL into
+	// a plain float64 aborts the WHOLE grain scan ("cannot scan NULL into *float64")
+	// — which is exactly what forced DQ_ALARMS off in prod. sql.NullFloat64 makes the
+	// read NULL-safe; a NULL factor is treated as "no reading" (skip the oee-based
+	// check for that row), NEVER as 0.
+	OEE  sql.NullFloat64
+	OeeA sql.NullFloat64
+	OeeP sql.NullFloat64
+	OeeQ sql.NullFloat64
 
 	Gross float64
 	Net   float64
@@ -128,14 +135,19 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 	}
 
 	// OEE_GT_1 — any of the four factors above 1.0 (100%). Report the WORST so the
-	// observed_value carries the magnitude of the outlier (the 8.2e18 case).
-	worst := m.OEE
-	for _, f := range []float64{m.OeeA, m.OeeP, m.OeeQ} {
-		if f > worst {
-			worst = f
+	// observed_value carries the magnitude of the outlier (the 8.2e18 case). NULL
+	// factors are "no reading" (line-metered machines nulled by RunUnmetered): they
+	// are SKIPPED, never treated as 0, and a row whose factors are ALL NULL simply
+	// does not fire this rule.
+	worst := 0.0
+	haveFactor := false
+	for _, f := range []sql.NullFloat64{m.OEE, m.OeeA, m.OeeP, m.OeeQ} {
+		if f.Valid && (!haveFactor || f.Float64 > worst) {
+			worst = f.Float64
+			haveFactor = true
 		}
 	}
-	if worst > 1.0 {
+	if haveFactor && worst > 1.0 {
 		v := worst
 		emit(DQRuleOEEGt1, dqSevError, &v)
 	}

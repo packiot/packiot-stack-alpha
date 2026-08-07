@@ -17,10 +17,15 @@
 //
 // THE INVARIANTS (ADR-0036 §4):
 //   - 0 ≤ oee, oee_a, oee_p, oee_q ≤ 1  → LEAST(GREATEST(x,0),1).
-//   - net ≤ gross                       → scrap = GREATEST(gross-net,0); oee_q,
-//     being net/gross, is caught by the [0,1] clamp above. gross/net themselves
-//     are NOT lowered (that would move the comparator's compared columns) — the
-//     violation is surfaced via oee_q's clamp + the NET_GT_GROSS event.
+//   - net ≤ gross                       → net is LOWERED to gross where it exceeds
+//     it (good output can never exceed consumed input; e.g. a counter reset spike
+//     net=523082 vs gross=11), paired with an INVARIANT_CLAMPED_NET_GT_GROSS event
+//     carrying the pre-clamp net. scrap stays GREATEST(scrap,0) (= gross-net = 0 at
+//     the shift/hour grains where scrap IS gross-net; the summed-scrap day/week/
+//     month case is left intact, see clampNegCols note). GROSS is NOT lowered — the
+//     comparator identity fingerprints count/sum(gross)/sum(running_time), none of
+//     which this touches, so lowering net stays parity-safe across F2↔F3. oee_q
+//     (net/gross) is additionally bounded by the [0,1] clamp above.
 //   - non-negative counts/durations     → GREATEST(x,0).
 //   - Performance capped at a sane bound → oee_p (today the residual
 //     oee/(oee_a·oee_q), which is UNBOUNDED when oee_a·oee_q is tiny) is bounded
@@ -66,6 +71,11 @@ const (
 	DQRuleInvariantClampedOEEP     DQRule = "INVARIANT_CLAMPED_OEE_P"
 	DQRuleInvariantClampedOEEQ     DQRule = "INVARIANT_CLAMPED_OEE_Q"
 	DQRuleInvariantClampedNegative DQRule = "INVARIANT_CLAMPED_NEGATIVE"
+	// DQRuleInvariantClampedNetGtGross — net (good output) exceeded gross (consumed
+	// input): physically impossible, so net is lowered to gross. observed_value is
+	// the PRE-clamp net (e.g. the 523082-vs-11 reset spike). Distinct from dq.go's
+	// pure-detection NET_GT_GROSS: this rule records an ACTUAL clamp of a Gold row.
+	DQRuleInvariantClampedNetGtGross DQRule = "INVARIANT_CLAMPED_NET_GT_GROSS"
 )
 
 // clampNegCols is the non-negative count/duration set clamped on every equipment
@@ -120,7 +130,7 @@ func silverNegLeast(a string) string {
 // enforced through the oee_q [0,1] clamp (oee_q=net/gross capped at 1); the raw
 // net>gross condition stays visible via RunDQScan's NET_GT_GROSS rule (this pass
 // records ACTUAL clamps only).
-func silverPredicates(a string) (factors []string, negs []string) {
+func silverPredicates(a string) (factors []string, negs []string, netGtGross string) {
 	factors = make([]string, len(silverFactorCols))
 	for i, c := range silverFactorCols {
 		factors[i] = fmt.Sprintf("(%[1]s.%[2]s IS NOT NULL AND %[1]s.%[2]s <> %[3]s)", a, c, factorClamp(a, c))
@@ -129,12 +139,17 @@ func silverPredicates(a string) (factors []string, negs []string) {
 	for i, c := range clampNegCols {
 		negs[i] = fmt.Sprintf("%s.%s < 0", a, c)
 	}
-	return factors, negs
+	// net>gross: the clamp lowers net to gross, so this is both the detect
+	// predicate and the "clamp would change net" idempotency test (after net=gross
+	// it is false → the row is never re-selected).
+	netGtGross = fmt.Sprintf("%[1]s.net > %[1]s.gross", a)
+	return factors, negs, netGtGross
 }
 
-// silverWhere ORs every per-metric change test into the clamp/detect WHERE.
-func silverWhere(factors, negs []string) string {
-	return strings.Join(append(append([]string{}, factors...), negs...), " OR ")
+// silverWhere ORs every per-metric change test (factors, negatives, net>gross)
+// into the clamp/detect WHERE.
+func silverWhere(factors, negs []string, netGtGross string) string {
+	return strings.Join(append(append(append([]string{}, factors...), negs...), netGtGross), " OR ")
 }
 
 // silverDetectSQL upserts one INVARIANT_CLAMPED_* event per (row, changed metric)
@@ -143,9 +158,9 @@ func silverWhere(factors, negs []string) string {
 // %[1]s=EvSchema, %[2]s=grain table, %[3]s=RefSchema (equipments→id_enterprise),
 // %[4]s=grain label literal (trusted, static). $1 = recency window interval.
 func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
-	fs, negs := silverPredicates("r")
+	fs, negs, netGtGross := silverPredicates("r")
 	negAny := strings.Join(negs, " OR ")
-	where := silverWhere(fs, negs)
+	where := silverWhere(fs, negs, netGtGross)
 	return fmt.Sprintf(`
 	INSERT INTO %[1]s.data_quality_event
 	    (id_enterprise, id_equipment, grain, bucket_ts, rule, observed_value, severity)
@@ -158,7 +173,8 @@ func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
 	      ('%[6]s',       r.oee_a, %[12]s),
 	      ('%[7]s',       r.oee_p, %[13]s),
 	      ('%[8]s',       r.oee_q, %[14]s),
-	      ('%[9]s',       %[10]s,  (%[15]s))
+	      ('%[9]s',       %[10]s,  (%[15]s)),
+	      ('%[17]s',      r.net,   (%[18]s))
 	  ) AS v(rule, observed, violated)
 	 WHERE r.ts_value >= now() - $1::interval
 	   AND (%[16]s)
@@ -171,7 +187,8 @@ func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
 		DQRuleInvariantClampedOEE, DQRuleInvariantClampedOEEA, DQRuleInvariantClampedOEEP,
 		DQRuleInvariantClampedOEEQ, DQRuleInvariantClampedNegative,
 		silverNegLeast("r"),
-		fs[0], fs[1], fs[2], fs[3], negAny, where)
+		fs[0], fs[1], fs[2], fs[3], negAny, where,
+		DQRuleInvariantClampedNetGtGross, netGtGross)
 }
 
 // silverClampSQL clamps every value the invariants would move to its bound. The
@@ -180,16 +197,26 @@ func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
 // number of rows clamped. NULL factors are preserved by the CASE guard AND by the
 // NULL-safe WHERE. %[1]s=EvSchema, %[2]s=grain table. $1 = recency window interval.
 func silverClampSQL(evSchema, table string) string {
-	fs, negs := silverPredicates("r")
+	fs, negs, netGtGross := silverPredicates("r")
 	var sets []string
 	for _, c := range silverFactorCols {
 		sets = append(sets, fmt.Sprintf("%[1]s = CASE WHEN r.%[1]s IS NULL THEN NULL ELSE %[2]s END", c, factorClamp("r", c)))
 	}
 	for _, c := range clampNegCols {
+		if c == "net" {
+			// net carries BOTH invariants: non-negative AND net ≤ gross. One SET
+			// clause per column, so fold them: GREATEST(LEAST(net,gross),0). All
+			// terms read the OLD row (a single UPDATE), so gross here is pre-clamp;
+			// if gross itself is negative its own GREATEST(gross,0) drives net to 0
+			// too, keeping net ≤ gross. Idempotent: once net ≤ gross and ≥ 0 this is
+			// a fixed point.
+			sets = append(sets, "net = GREATEST(LEAST(r.net, r.gross), 0)")
+			continue
+		}
 		sets = append(sets, fmt.Sprintf("%[1]s = GREATEST(r.%[1]s, 0)", c))
 	}
 	set := "\n\t       " + strings.Join(sets, ",\n\t       ")
-	where := silverWhere(fs, negs)
+	where := silverWhere(fs, negs, netGtGross)
 	return fmt.Sprintf(`
 	UPDATE %[1]s.%[2]s r SET%[3]s
 	 WHERE r.ts_value >= now() - $1::interval
