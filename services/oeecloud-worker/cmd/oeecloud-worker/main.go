@@ -161,6 +161,17 @@ func main() {
 		}
 	}
 
+	// Background-job destination list (rollups, events, uns, reports). Built
+	// ONCE and shared — the slice is read-only. On staging the main-pool flow
+	// is the F2 comparator (`shadow_go_port`); on a single-flow deployment set
+	// SHADOW_GO_PORT_ENABLED=false so the jobs target `public` (the collapsed
+	// F3-native flow) instead — otherwise every tick errors 42P01 on the absent
+	// shadow_go_port schema and nothing writes to `public` (ADR-0045 G3).
+	bgDests := flows.StandardFiltered(pool, shadowPool, cfg.ShadowGoPortEnabled)
+	logger.Info("background-job destinations resolved",
+		slog.Bool("shadow_go_port_enabled", cfg.ShadowGoPortEnabled),
+		slog.Int("dest_count", len(bgDests)))
+
 	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
 	// changes rarely — CS Admin re-onboards). 30 s negative TTL so unknown
 	// topics don't hammer the DB on noisy publishers.
@@ -262,7 +273,7 @@ func main() {
 	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
 	// closes the loop pocontrol opens).
 	if cfg.PORecalcEnabled {
-		go rollup.LoopRefresh(ctx, flows.Standard(pool, shadowPool),
+		go rollup.LoopRefresh(ctx, bgDests,
 			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
 			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
 			uns.RefreshCurrentJobs)
@@ -276,7 +287,7 @@ func main() {
 
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
-		go rollup.LoopGrains(ctx, flows.Standard(pool, shadowPool),
+		go rollup.LoopGrains(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
 			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
@@ -291,7 +302,7 @@ func main() {
 	// its 65-min window). OFF by default — see RollupBackfillEnabled: needs query
 	// work before it's safe to run against F2/F3.
 	if cfg.RuntimeRollupEnabled && cfg.RollupBackfillEnabled {
-		go rollup.LoopHourBackfill(ctx, flows.Standard(pool, shadowPool),
+		go rollup.LoopHourBackfill(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			cfg.RollupBackfillLimit,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
@@ -308,7 +319,7 @@ func main() {
 	// the 30-day horizon makes hourly re-walks wasteful (see LoopProvision).
 	if cfg.RuntimeProvisionEnabled {
 		provisionEvery := time.Duration(cfg.RuntimeProvisionIntervalHours) * time.Hour
-		go rollup.LoopProvision(ctx, flows.Standard(pool, shadowPool), provisionEvery, logger, jobObs)
+		go rollup.LoopProvision(ctx, bgDests, provisionEvery, logger, jobObs)
 	}
 
 	// Provisional ideal-speed inference (counters-only tenants w/o nameplate).
@@ -317,7 +328,7 @@ func main() {
 	// chain can compute Performance. Disabled → no goroutine, zero statements,
 	// byte-identical rollup. See internal/rollup/inferspeed.go.
 	if cfg.ProvisionalSpeedEnabled {
-		go rollup.LoopInferSpeed(ctx, flows.Standard(pool, shadowPool),
+		go rollup.LoopInferSpeed(ctx, bgDests,
 			rollup.ProvisionalSpeed{
 				Enabled:     cfg.ProvisionalSpeedEnabled,
 				Equipments:  config.CSVInts(cfg.ProvisionalSpeedEquipments),
@@ -331,7 +342,7 @@ func main() {
 
 	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
 	if cfg.UnsRefreshEnabled {
-		go uns.Loop(ctx, flows.Standard(pool, shadowPool),
+		go uns.Loop(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			time.Duration(cfg.UnsIntervalMinutes)*time.Minute, logger, jobObs)
 	}
@@ -342,24 +353,24 @@ func main() {
 	// Its OWN job + cadence — flag-off until the flip. Freeze story +
 	// per-column derivation ledger: internal/uns/current_metrics.go.
 	if cfg.UnsCurrentMetricsEnabled {
-		go uns.LoopCurrentMetrics(ctx, flows.Standard(pool, shadowPool),
+		go uns.LoopCurrentMetrics(ctx, bgDests,
 			time.Duration(cfg.UnsCurrentMetricsIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// obd port — the box→production bridge (descriptor-driven).
 	if cfg.BoxesBridgeEnabled {
-		go reports.LoopBoxesBridge(ctx, flows.Standard(pool, shadowPool), time.Minute, logger, jobObs)
+		go reports.LoopBoxesBridge(ctx, bgDests, time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 — the label-adapter boxes pipeline (descriptor-driven).
 	if cfg.Boxes13ReportEnabled {
-		go reports.LoopBoxes(ctx, flows.Standard(pool, shadowPool), time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)
+		go reports.LoopBoxes(ctx, bgDests, time.Duration(cfg.Boxes13IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3a — events deriver for the shadow flows. Deployed
 	// DISABLED; enabled at the Jul-9 close-out (one bake at a time).
 	if cfg.EventsDeriverEnabled {
-		go events.Loop(ctx, flows.Standard(pool, shadowPool), config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+		go events.Loop(ctx, bgDests, config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.EventsWiderowStateEnterprises),
 			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger, jobObs)
 	}
@@ -369,7 +380,7 @@ func main() {
 	// separate shadow comparison table so flag-off is byte-identical. Do NOT
 	// enable until the comparator (cpac_deriver_comparator.sql) gate passes.
 	if cfg.CPACEventDerivationEnabled {
-		go events.LoopCPAC(ctx, flows.Standard(pool, shadowPool),
+		go events.LoopCPAC(ctx, bgDests,
 			events.CPACConfig{
 				Enterprises:     config.CSVInts(cfg.CPACEventEnterprises),
 				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
