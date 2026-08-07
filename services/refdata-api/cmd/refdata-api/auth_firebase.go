@@ -381,7 +381,7 @@ func newFirebaseBearerAuth(v verifier, pool *pgxpool.Pool, ttl time.Duration) *f
 // an existing user's first Cognito login finds no row → 401. This binds the
 // verified Cognito `sub` to the row whose email matches the VERIFIED email
 // claim, exactly once:
-//   - lower(email) = lower($2): case-insensitive match on the verified address.
+//   - lower(user_email) = lower($2): case-insensitive match on the verified address.
 //   - id_user_cognito IS NULL: IDEMPOTENT — a row already linked is never
 //     re-touched, and the partial unique index means a `sub` binds to at most
 //     one user, once. A second login is a no-op (0 rows) and the re-lookup then
@@ -393,7 +393,7 @@ func newFirebaseBearerAuth(v verifier, pool *pgxpool.Pool, ttl time.Duration) *f
 // (a genuinely unknown user). $1/$2 are the VERIFIED sub/email — never request
 // body — bound as parameters, so no injection surface.
 const linkCognitoSQL = `UPDATE users SET id_user_cognito = $1
-	WHERE lower(email) = lower($2) AND id_user_cognito IS NULL AND active = true`
+	WHERE lower(user_email) = lower($2) AND id_user_cognito IS NULL AND active = true`
 
 // dbCognitoLink is the production link closure: run linkCognitoSQL against the
 // pool. A unique-index violation (an email shared by rows that would collide on
