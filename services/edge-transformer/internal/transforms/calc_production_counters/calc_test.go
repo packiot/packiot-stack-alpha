@@ -433,6 +433,162 @@ func TestCalcTrigCEqualsIMirror(t *testing.T) {
 	}
 }
 
+// ── G2: baseline seed on first observation (lost-first-increment-after-restart) ─
+
+// (1) First observation of a counter with EMPTY state must NOT emit the full
+// absolute totalizer as the increment (the oeecloud-worker clamp would reject
+// it). It must emit a zero delta and seed state to cur so the NEXT scan
+// differences correctly.
+func TestCalcFirstObservationSeedsBaseline(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	topic := base + "/Admin/ProdConsumedCount/61/Unit"
+
+	// Fresh decoder start: no prior state at all. Payload is an ABSOLUTE
+	// totalizer as CPACK PLCs report it.
+	msg := Message{
+		Topic:      topic + "***TRIG",
+		Payload:    674329,
+		CmdTrigger: true,
+		Timestamp:  time.UnixMilli(1700000000000),
+	}
+	dec, err := Calc(msg, s)
+	if err != nil {
+		t.Fatalf("Calc: %v", err)
+	}
+	if !dec.SendDownstream {
+		t.Fatalf("SendDownstream: got false, want true (seed metric is emitted)")
+	}
+	if got := dec.EnrichedMsg["counter_baseline_seed"]; got != true {
+		t.Errorf("counter_baseline_seed: got %v, want true", got)
+	}
+
+	var seeded *Metric
+	for i := range dec.Metrics {
+		if dec.Metrics[i].Name == topic {
+			seeded = &dec.Metrics[i]
+			break
+		}
+	}
+	if seeded == nil {
+		t.Fatalf("no seed metric emitted, got %d metrics: %+v", len(dec.Metrics), dec.Metrics)
+	}
+	if seeded.Value != 0 {
+		t.Errorf("seed delta: got %d, want 0 (must NOT inject the full totalizer)", seeded.Value)
+	}
+	if seeded.Counter != 674329 {
+		t.Errorf("seed Counter: got %d, want 674329 (cumulative baseline)", seeded.Counter)
+	}
+	// State must be seeded to cur so the next scan can difference against it.
+	if !hasCounterUpdate(dec.StateUpdates, topic, 674329) {
+		t.Errorf("state not seeded to cur=674329: %+v", dec.StateUpdates)
+	}
+}
+
+// (2) Second observation, with the baseline now in state, must emit the REAL
+// delta (cur - prev), not the totalizer. Drives the seed then a real increment
+// end-to-end through Calc.
+func TestCalcSecondObservationRealDelta(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	topic := base + "/Admin/ProdConsumedCount/61/Unit"
+	s.SetFloat(base+"/Status/MachSpeed", 1000.0) // headroom so the glitch guard passes
+
+	// First observation seeds the baseline; apply its state mutations.
+	first := Message{
+		Topic:      topic + "***TRIG",
+		Payload:    674329,
+		CmdTrigger: true,
+		Timestamp:  time.UnixMilli(1700000000000),
+	}
+	dec1, err := Calc(first, s)
+	if err != nil {
+		t.Fatalf("Calc first: %v", err)
+	}
+	for _, m := range dec1.StateUpdates {
+		if err := m.Apply(s); err != nil {
+			t.Fatalf("apply seed mutation: %v", err)
+		}
+	}
+
+	// Second observation: +5 real production.
+	second := Message{
+		Topic:      topic + "***TRIG",
+		Payload:    674334,
+		CmdTrigger: true,
+		Timestamp:  time.UnixMilli(1700000060000),
+	}
+	dec2, err := Calc(second, s)
+	if err != nil {
+		t.Fatalf("Calc second: %v", err)
+	}
+	if !dec2.SendDownstream {
+		t.Fatalf("second obs SendDownstream: got false, want true")
+	}
+	var consumed *Metric
+	for i := range dec2.Metrics {
+		if dec2.Metrics[i].Name == topic {
+			consumed = &dec2.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil {
+		t.Fatalf("no Consumed metric on second obs, got %d metrics: %+v", len(dec2.Metrics), dec2.Metrics)
+	}
+	if consumed.Value != 5 {
+		t.Errorf("second-obs delta: got %d, want 5 (cur-prev = 674334-674329)", consumed.Value)
+	}
+	if consumed.Counter != 674334 {
+		t.Errorf("second-obs Counter: got %d, want 674334", consumed.Counter)
+	}
+}
+
+// (3) The reset (prev > cur) path is unaffected by the seed change: when a
+// prior EXISTS and the counter rolls back (PLC restart), Calc still zeroes the
+// prior and differences from 0 — it must NOT take the seed branch.
+func TestCalcSeedDoesNotBreakReset(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	topic := base + "/Admin/ProdConsumedCount/61/Unit"
+	// Prior EXISTS (found=true) — this is NOT a first observation.
+	s.SetInt(topic, 5000)
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	msg := Message{
+		Topic:      topic + "***TRIG",
+		Payload:    10, // << 5000 → rollback / reset path
+		CmdTrigger: true,
+		Timestamp:  time.UnixMilli(1700000000000),
+	}
+	dec, err := Calc(msg, s)
+	if err != nil {
+		t.Fatalf("Calc: %v", err)
+	}
+	// Must NOT be treated as a baseline seed.
+	if got := dec.EnrichedMsg["counter_baseline_seed"]; got == true {
+		t.Fatalf("reset was misrouted through the seed branch: %+v", dec.EnrichedMsg)
+	}
+	if !dec.SendDownstream {
+		t.Fatalf("reset should send downstream")
+	}
+	var consumed *Metric
+	for i := range dec.Metrics {
+		if dec.Metrics[i].Name == topic {
+			consumed = &dec.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil {
+		t.Fatalf("no Consumed metric on reset, got: %+v", dec.Metrics)
+	}
+	if consumed.Value != 10 {
+		t.Errorf("reset delta: got %d, want 10 (prev zeroed → 10-0)", consumed.Value)
+	}
+	if consumed.Counter != 10 {
+		t.Errorf("reset Counter: got %d, want 10", consumed.Counter)
+	}
+}
+
 // ── Auxiliary ─────────────────────────────────────────────────────────────
 
 func hasCounterUpdate(mutations []StateMutation, key string, want int64) bool {
