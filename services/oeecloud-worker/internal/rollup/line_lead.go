@@ -101,14 +101,18 @@ const shiftLineLeadSQL = `
 	       ideal_speed      = COALESCE(l.lead_ideal, e.ideal_speed, 0),
 	       ideal_production = COALESCE((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
 	       recalc_needed    = false,
-	       oee   = COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0),
-	       oee_a = COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0),
-	       oee_q = COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0),
-	       oee_p = COALESCE(
+	       -- ADR-0037 *_oee_bounds clamp (#663): counter-only line throughput can
+	       -- exceed the rated-speed estimate, so net/ideal (and the back-solved
+	       -- oee_p) can top 1 and violate the BETWEEN 0 AND 1 CHECK. Clamp each
+	       -- served factor; no-op on in-range data.
+	       oee   = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0), 1), 0),
+	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 1), 0),
+	       oee_p = GREATEST(LEAST(COALESCE(
 	             COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0)
 	             / NULLIF(
 	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0)
-	                 * COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 0), 0)
+	                 * COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 0), 0), 1), 0)
 	  FROM lines l
 	  LEFT JOIN counts c ON c.line_id = l.line_id AND c.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
@@ -172,9 +176,13 @@ const hourLineLeadSQL = `
 	       ideal_speed      = COALESCE(l.lead_ideal, e.ideal_speed, 0),
 	       ideal_production = COALESCE((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
 	       recalc_needed    = false,
-	       oee   = COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0),
-	       oee_a = COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0),
-	       oee_q = COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0)
+	       -- ADR-0037 *_oee_bounds clamp (#663): counter-only line throughput can
+	       -- exceed the rated-speed estimate → net/ideal > 1 violates the CHECK.
+	       -- Clamp each served factor; no-op on in-range data. oee_p is left to
+	       -- hourOeePSQL (itself clamped) off the just-cleared rows.
+	       oee   = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0), 1), 0),
+	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(c.net,0) / NULLIF(c.gross, 0), 0), 1), 0)
 	  FROM lines l
 	  LEFT JOIN counts c ON c.line_id = l.line_id AND c.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
