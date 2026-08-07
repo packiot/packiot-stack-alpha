@@ -13,4 +13,4 @@
 [submodule "csadmin"]
 	path = csadmin
 	url = https://github.com/packiot/csadmin.git
-	branch = claude-version
+	branch = staging
