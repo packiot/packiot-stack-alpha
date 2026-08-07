@@ -808,6 +808,15 @@ services:
       #   SPEED33/SHIFT06/SAP13/BOXES13/SYNC06/BOXES_BRIDGE report jobs
       #   (customers 33/6/neopac) · EVENTS_WIDEROW_STATE_ENTERPRISES (ent4) ·
       #   COUNTERS_ONLY_AVAILABILITY_* (ent3 L6). Enable per-client at onboarding.
+      # Counter-only LINE-METERED OEE (CPACK ent 3). Each tp=3 line has no own
+      # counter stream; it derives its entire runtime from its lead_machine's
+      # cagg (gross/net + idle-timeout availability). Supersedes the counters-avail
+      # fallback for lines (mutually exclusive per client — do NOT also enable
+      # COUNTERS_ONLY_AVAILABILITY for a line-metered tenant, or lines double-write).
+      COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
+      COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
+      COUNTERS_ONLY_AVAILABILITY_ENABLED: "false"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
