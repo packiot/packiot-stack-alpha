@@ -36,6 +36,9 @@ func TestPhase9FirstMachineEmitsLineConsumed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/BREYER"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
+	// G2: seed a prior (0) so this tick is a genuine increment, not a
+	// first-observation baseline seed (which would early-return with delta 0).
+	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
@@ -75,6 +78,9 @@ func TestPhase9LastMachineEmitsLineProcessed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/PTH"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
+	// G2: seed a prior (0) so this tick is a genuine increment, not a
+	// first-observation baseline seed (which would early-return with delta 0).
+	_ = s.SetInt(unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdProcessedCount/63/Unit***TRIG",
@@ -162,6 +168,9 @@ func TestPhase9SectorLineDoublePass(t *testing.T) {
 	seedLineTopology(t, s, "LINHAS", "SEC01::LINE_A")
 	seedLineTopology(t, s, "LINHAS", "LINE_A")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
+	// G2: seed a prior (0) so this tick is a genuine increment, not a
+	// first-observation baseline seed (which would early-return with delta 0).
+	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
@@ -201,6 +210,9 @@ func TestPhase9LineDefectiveAccumulatesOnConsumed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/BREYER"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
+	// G2: seed a prior (0) so this tick is a genuine increment, not a
+	// first-observation baseline seed (which would early-return with delta 0).
+	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
@@ -236,6 +248,9 @@ func TestPhase9LineDefectiveDecreasesOnProcessed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/PTH"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
+	// G2: seed a prior (0) so this tick is a genuine increment, not a
+	// first-observation baseline seed (which would early-return with delta 0).
+	_ = s.SetInt(unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
 	// Seed prior line Defective = 200.
 	lineDefKey := "CPACK/SC/LINHAS/L5/Admin/ProdDefectiveCount"
 	_ = s.SetInt(lineDefKey, 200)
@@ -313,6 +328,9 @@ func TestPhase9DebounceSuppressesFirstEmission(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/BREYER"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
+	// G2: seed a prior (0) so this tick is a genuine increment, not a
+	// first-observation baseline seed (which would early-return with delta 0).
+	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",

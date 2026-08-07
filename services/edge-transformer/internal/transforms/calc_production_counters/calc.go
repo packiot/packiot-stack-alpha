@@ -253,9 +253,17 @@ func Calc(msg Message, state State) (Decision, error) {
 	// Read priors from state (JS: parseInt(global.get(topic)); missing→NaN).
 	// Missing key → 0 matches JS parseInt(undefined) → NaN, but we treat
 	// NaN as 0 for arithmetic (the JS does the same via isNaN guards).
-	prevProcessed, _ := state.Int(topicProcessed)
-	prevConsumed, _ := state.Int(topicConsumed)
-	prevDefective, _ := state.Int(topicDefective)
+	//
+	// G2 fix — we now KEEP the found flag. A MISSING prior means this is the
+	// FIRST observation of that counter stream (fresh decoder start / restart).
+	// PLC production counters are ABSOLUTE totalizers, so differencing cur
+	// against an implied-0 prior would emit the ENTIRE cumulative as the first
+	// increment — which the downstream oeecloud-worker increment sanity clamp
+	// rejects, dropping the first real production after every (re)start. The
+	// seed branch in the switch below handles the missing-prior case instead.
+	prevProcessed, okProcessed := state.Int(topicProcessed)
+	prevConsumed, okConsumed := state.Int(topicConsumed)
+	prevDefective, okDefective := state.Int(topicDefective)
 
 	// Current-counter value from msg.payload; the others start at their
 	// last-known values (JS: `ProdConsumedCount = ProdConsumedCount_Last`).
@@ -270,6 +278,11 @@ func Calc(msg Message, state State) (Decision, error) {
 	switch kind {
 	case CounterKindProcessed:
 		curProcessed = msg.Payload
+		if !okProcessed {
+			// G2 baseline seed: first observation of this stream — seed to cur
+			// and emit a zero delta instead of the full totalizer.
+			return seedBaseline(topicProcessed, curProcessed, timestampMs, msg), nil
+		}
 		if prevProcessed < curProcessed {
 			sendMsg = true
 		}
@@ -280,6 +293,11 @@ func Calc(msg Message, state State) (Decision, error) {
 		}
 	case CounterKindConsumed:
 		curConsumed = msg.Payload
+		if !okConsumed {
+			// G2 baseline seed: first observation of this stream — seed to cur
+			// and emit a zero delta instead of the full totalizer.
+			return seedBaseline(topicConsumed, curConsumed, timestampMs, msg), nil
+		}
 		if prevConsumed < curConsumed {
 			sendMsg = true
 		}
@@ -290,6 +308,11 @@ func Calc(msg Message, state State) (Decision, error) {
 		}
 	case CounterKindDefective:
 		curDefective = msg.Payload
+		if !okDefective {
+			// G2 baseline seed: first observation of this stream — seed to cur
+			// and emit a zero delta instead of the full totalizer.
+			return seedBaseline(topicDefective, curDefective, timestampMs, msg), nil
+		}
 		if prevDefective < curDefective {
 			sendMsg = true
 		}
@@ -522,6 +545,47 @@ func Calc(msg Message, state State) (Decision, error) {
 	// ── Phase 11: return ──────────────────────────────────────────────────
 	dec.SendDownstream = sendMsg
 	return dec, nil
+}
+
+// seedBaseline builds the Decision for the FIRST observation of a counter
+// stream (G2). PLC production counters are ABSOLUTE totalizers: on a fresh
+// decoder start there is no prior for this stream, so differencing cur against
+// a missing prior (treated as 0) would emit the ENTIRE cumulative (e.g. 674329)
+// as the first increment. The downstream oeecloud-worker increment sanity clamp
+// then rejects that implausible delta and DROPS the scan — so the first real
+// production after every (re)start was lost until the stream self-healed on the
+// next scan.
+//
+// Instead, on the first observation we SEED state to cur and emit a single
+// zero-delta metric (Value=0, Counter=cur). We cannot know how much was produced
+// before observation began, so 0 is the only defensible increment; the next scan
+// differences against this seeded baseline and flows through the normal path.
+func seedBaseline(topic string, cur int64, timestampMs int64, msg Message) Decision {
+	// Mirror Phase 5's defensive non-negative persist for the seed value.
+	seed := cur
+	if seed < 0 {
+		seed = 0
+	}
+	topicCopy, seedCopy := topic, seed
+	return Decision{
+		EnrichedMsg: map[string]any{
+			"counter_baseline_seed": true,
+		},
+		Metrics: []Metric{{
+			Timestamp: timestampMs,
+			Name:      topic,
+			Value:     0, // zero delta — do NOT inject the absolute totalizer
+			Type:      "int32",
+			Counter:   seed, // record the cumulative baseline for the worker
+			Timezone:  msg.SparkPlugTimezone,
+			Extra:     msg.SparkPlugAddMetrics,
+		}},
+		StateUpdates: []StateMutation{{
+			Kind: "counter.baseline_seed", Key: topicCopy, IntValue: seedCopy,
+			Setter: func(s State) error { return s.SetInt(topicCopy, seedCopy) },
+		}},
+		SendDownstream: true,
+	}
 }
 
 // stripTriggerSuffix returns everything before "***" in the topic, matching
