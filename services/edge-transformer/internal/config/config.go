@@ -150,6 +150,19 @@ type Config struct {
 	// An equipment absent from this map is NOT treated as counters-only even
 	// when the flag is on (explicit opt-in, never guessed).
 	CountersOnlyIdealRates map[string]float64
+	// CountersOnlyFromDB (config-as-data, ADR-0045 G4/G5) retires the hand-built
+	// COUNTERS_ONLY_IDEAL_RATES compose map. When true, the decoder queries the
+	// DB at boot and builds the unit-topic→rated-speed map from
+	// equipments.production_speed for every tenant whose client_descriptors row
+	// has descriptor->>'counters_only_oee' = 'true' — auto-covering EVERY machine
+	// with a configured speed (fixes G5, where the hand map missed producing
+	// machines like L10/DXL, L6/TEXA, SLEEVE2). The env map still merges on top
+	// (env entries WIN) so a manual override survives. Default false → pure env
+	// path, zero behavior change until flipped. Fail-open: a DB error at boot
+	// logs a warning and falls back to the env map (never crashes the decoder).
+	// DB creds reuse the POSTGRES_* env the sibling decode services use;
+	// COUNTERS_ONLY_DSN overrides with a full URL.
+	CountersOnlyFromDB bool
 
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
 	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
@@ -302,6 +315,7 @@ func Load() (*Config, error) {
 		// Counters-only OEE mode (default OFF — no behavior change)
 		CountersOnlyEnabled:    getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
 		CountersOnlyIdealRates: getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
+		CountersOnlyFromDB:     getenvBool("COUNTERS_ONLY_FROM_DB", false),
 
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),

@@ -51,6 +51,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/countersrate"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/log"
@@ -422,6 +423,35 @@ func main() {
 			mqttCfg.StaleThreshold = time.Duration(cfg.MQTTStaleThresholdSeconds) * time.Second
 		}
 
+		// Counters-only OEE rated speeds. Start from the env map, then — when
+		// COUNTERS_ONLY_FROM_DB is on (ADR-0045 G4/G5 config-as-data) — merge in
+		// the DB-derived unit-topic→production_speed map for every counters-only
+		// tenant (env entries WIN). Fail-open: a DB error here logs a warning and
+		// keeps the env map, so the decoder never regresses on a DB hiccup.
+		countersOnly := cfg.CountersOnlyEnabled
+		idealRates := cfg.CountersOnlyIdealRates
+		if cfg.CountersOnlyFromDB {
+			res, dberr := countersrate.LoadDBRates(ctx, logger)
+			if dberr != nil {
+				logger.Warn("counters-only OEE rates: DB load failed — falling back to the env map",
+					slog.String("err", dberr.Error()),
+					slog.Int("env_rate_entries", len(cfg.CountersOnlyIdealRates)),
+				)
+			} else {
+				merged := countersrate.Merge(res.Rates, cfg.CountersOnlyIdealRates)
+				idealRates = merged
+				if len(merged) > 0 {
+					countersOnly = true
+				}
+				logger.Info("counters-only OEE rates loaded from DB (config-as-data)",
+					slog.Int("tenants", res.Tenants),
+					slog.Int("db_rate_entries", len(res.Rates)),
+					slog.Int("env_rate_entries", len(cfg.CountersOnlyIdealRates)),
+					slog.Int("merged_rate_entries", len(merged)),
+				)
+			}
+		}
+
 		calcHooks := calcHooks{
 			state:          calcState,
 			evals:          calcEvals,
@@ -429,12 +459,12 @@ func main() {
 			errors:         calcErrors,
 			metricsEmitted: calcMetricsEmitted,
 			stateSeeds:     calcStateSeeds,
-			countersOnly:   cfg.CountersOnlyEnabled,
-			idealRates:     cfg.CountersOnlyIdealRates,
+			countersOnly:   countersOnly,
+			idealRates:     idealRates,
 		}
-		if cfg.CountersOnlyEnabled {
+		if countersOnly {
 			logger.Info("counters-only OEE mode ENABLED",
-				slog.Int("opted_in_equipment", len(cfg.CountersOnlyIdealRates)),
+				slog.Int("opted_in_equipment", len(idealRates)),
 			)
 		}
 
