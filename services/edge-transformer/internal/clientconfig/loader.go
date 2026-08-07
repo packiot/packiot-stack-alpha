@@ -29,7 +29,9 @@ package clientconfig
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -79,9 +81,11 @@ type Config struct {
 	Equipments []EquipmentMapping `yaml:"equipments,omitempty"`
 
 	// PLC (v1.1) describes how this factory's PLC is reached. Optional;
-	// nil for skeleton configs. Hosts are carried by REFERENCE only
-	// (host_ref: secret://…) — never inline values (the Incoplast
-	// cleartext-credentials lesson, made structural).
+	// nil for skeleton configs. Hosts may be a secret:// REFERENCE or a
+	// LITERAL host[:port] — a PLC host is network config (an IP on the
+	// factory LAN), not a secret, so a literal is allowed and lets the
+	// bundle generator prefill PLC_HOST_*. CREDENTIAL fields (dsn_ref)
+	// stay secret-only (the Incoplast cleartext-credentials lesson).
 	PLC *PLC `yaml:"plc,omitempty"`
 
 	// EquipmentMapping (v1.1) is the richer topic↔equipment table that
@@ -243,10 +247,11 @@ type PLC struct {
 	Endpoints []PLCEndpoint `yaml:"endpoints,omitempty"`
 }
 
-// PLCEndpoint is one reachable PLC. HostRef / EndpointURLRef are secret
-// references, never values; Rack/Slot are S7-specific (the schema gap ADR-0019
-// named) and UnitID is Modbus-specific — all pointers so "absent" is
-// distinguishable from "0".
+// PLCEndpoint is one reachable PLC. HostRef / EndpointURLRef are a secret://
+// reference OR a literal host (network config, not a secret — see
+// requireHostRef); Rack/Slot are S7-specific (the schema gap ADR-0019 named)
+// and UnitID is Modbus-specific — all pointers so "absent" is distinguishable
+// from "0".
 type PLCEndpoint struct {
 	Name    string `yaml:"name,omitempty"`
 	HostRef string `yaml:"host_ref,omitempty"`
@@ -256,9 +261,10 @@ type PLCEndpoint struct {
 	// on a native Ethernet device, or the RTU address behind a serial gateway.
 	// Pointer so "absent" is distinguishable from "0" (a valid broadcast id).
 	UnitID *int `yaml:"unit_id,omitempty"`
-	// EndpointURLRef (OPC-UA) is a secret reference to the server URL
-	// (opc.tcp://host:port/path) — the OPC-UA analogue of host_ref. Never a
-	// value; the requireSecretRef check rejects an inline URL.
+	// EndpointURLRef (OPC-UA) is the server URL (opc.tcp://host:port/path) —
+	// the OPC-UA analogue of host_ref. It may be a secret:// reference OR a
+	// literal opc.tcp:// URL (network config, not a secret); requireEndpointURLRef
+	// rejects any other scheme.
 	EndpointURLRef string `yaml:"endpoint_url_ref,omitempty"`
 	// SecurityPolicy / SecurityMode (OPC-UA) are optional; empty = "None" (the
 	// MVP default, see internal/opcua/client.go). Not secrets — plain tokens.
@@ -417,10 +423,13 @@ func (c *Config) validate() error {
 // of the forward-compatible parse-and-ignore contract.
 //
 // Rules (design doc §1a "Rules the descriptor enforces"):
-//  1. No secret VALUES anywhere: any host_ref / dsn_ref / endpoint_url_ref that
-//     is present must be a secret://… reference. There is deliberately NO
-//     plain-host field that could hold a value — the type system won't let you
-//     write one, and this check rejects a value smuggled through the ref field.
+//  1. No secret VALUES anywhere: a credential field (dsn_ref) that is present
+//     must be a secret://… reference — a DSN carries a username/password and is
+//     a secret. A PLC host_ref / endpoint_url_ref is NETWORK config, not a
+//     secret (an IP on the factory LAN grants no access), so it may ALSO be a
+//     literal host[:port] / opc.tcp:// URL — this is what lets the bundle
+//     generator prefill PLC_HOST_* from the descriptor (F9). Any other shape
+//     (e.g. an "oracle://user:pass@…" DSN smuggled through host_ref) is rejected.
 //  2. tenant_id must equal the lowercased first '/'-segment of EVERY
 //     equipment_mapping topic — the discovery contract, checked statically
 //     (guards the silent cross-tenant-drop class of bug).
@@ -432,13 +441,14 @@ func (c *Config) validate() error {
 //     (+ kind ∈ {holding,input,coil,discrete} for modbus; non-empty node_id
 //     for opcua).
 func (c *Config) validateV11() error {
-	// Rule 1a — plc endpoint hosts / URLs are references, never values.
+	// Rule 1a — plc endpoint hosts / URLs are a secret:// reference OR a literal
+	// (network config, not a secret); any other shape is rejected.
 	if c.PLC != nil {
 		for i, ep := range c.PLC.Endpoints {
-			if err := requireSecretRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
+			if err := requireHostRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
 				return err
 			}
-			if err := requireSecretRef("plc.endpoints", i, ep.Name, "endpoint_url_ref", ep.EndpointURLRef); err != nil {
+			if err := requireEndpointURLRef("plc.endpoints", i, ep.Name, "endpoint_url_ref", ep.EndpointURLRef); err != nil {
 				return err
 			}
 		}
@@ -631,9 +641,10 @@ func validateTagSource(section string, i, j int, metric string, s *TagSource) er
 	return nil
 }
 
-// requireSecretRef enforces "empty, or a secret:// reference" on a host/dsn
-// field. Empty is allowed (the field may simply be unset); a non-empty
+// requireSecretRef enforces "empty, or a secret:// reference" on a CREDENTIAL
+// field (dsn_ref). Empty is allowed (the field may simply be unset); a non-empty
 // value that isn't a secret reference is a leaked credential and is rejected.
+// Host fields relax this — see requireHostRef / requireEndpointURLRef.
 func requireSecretRef(section string, idx int, label, field, val string) error {
 	if val == "" || strings.HasPrefix(val, secretScheme) {
 		return nil
@@ -641,6 +652,106 @@ func requireSecretRef(section string, idx int, label, field, val string) error {
 	return fmt.Errorf(
 		"%s[%d] (%s): %s=%q must be empty or a %s reference, not a value",
 		section, idx, label, field, val, secretScheme)
+}
+
+// requireHostRef enforces host_ref is empty, a secret:// reference, OR a literal
+// host[:port]. Unlike a credential, a PLC host is NETWORK config — an IP or
+// hostname on the factory LAN, the same class of value carried in a compose
+// PLC_HOST_* env line; knowing it grants no access. Allowing a literal here is
+// what lets the turnkey bundle generator PREFILL PLC_HOST_* from the descriptor
+// (F9) instead of leaving the CS engineer a blank per-PLC line. Credential
+// fields (dsn_ref) deliberately do NOT get this relaxation — they stay
+// requireSecretRef.
+func requireHostRef(section string, idx int, label, field, val string) error {
+	if val == "" || strings.HasPrefix(val, secretScheme) || IsLiteralHost(val) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s[%d] (%s): %s=%q must be empty, a %s reference, or a literal host[:port]",
+		section, idx, label, field, val, secretScheme)
+}
+
+// requireEndpointURLRef is the OPC-UA analogue of requireHostRef: empty, a
+// secret:// reference, OR a literal opc.tcp:// endpoint URL. Any other scheme
+// (or a bare host without opc.tcp://) is rejected.
+func requireEndpointURLRef(section string, idx int, label, field, val string) error {
+	if val == "" || strings.HasPrefix(val, secretScheme) || IsOPCUAEndpointURL(val) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s[%d] (%s): %s=%q must be empty, a %s reference, or an opc.tcp:// URL",
+		section, idx, label, field, val, secretScheme)
+}
+
+// opcuaURLScheme is the only URL scheme an OPC-UA endpoint literal may carry.
+const opcuaURLScheme = "opc.tcp://"
+
+// IsLiteralHost reports whether val is a bare PLC host: an IPv4 address or a DNS
+// hostname, each with an OPTIONAL ":port". It deliberately rejects anything
+// carrying a scheme, path, credentials or whitespace (an "opc.tcp://…" URL or an
+// "oracle://user:pass@…" DSN is NOT a host). Exported so the descriptor validator
+// (clientdescriptor) reuses the exact same rule — one definition of "literal
+// host", so the descriptor and the client.yaml it generates accept the same shape.
+func IsLiteralHost(val string) bool {
+	host := val
+	// net.SplitHostPort succeeds only when there's exactly one ':' — a bare host
+	// ("10.0.0.7") returns a "missing port" error and is left whole; a scheme'd
+	// value ("opc.tcp://…") has too many colons and is likewise left whole (then
+	// rejected below). When a port IS present it must be a valid 1..65535.
+	if h, p, err := net.SplitHostPort(val); err == nil {
+		host = h
+		port, perr := strconv.Atoi(p)
+		if perr != nil || port < 1 || port > 65535 {
+			return false
+		}
+	}
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	return isHostname(host)
+}
+
+// IsOPCUAEndpointURL reports whether val is a literal OPC-UA endpoint URL —
+// "opc.tcp://<host>[:port][/path]". The host portion must itself be a literal
+// host (IsLiteralHost); the optional path is accepted verbatim. Exported for the
+// same cross-package reuse reason as IsLiteralHost.
+func IsOPCUAEndpointURL(val string) bool {
+	if !strings.HasPrefix(val, opcuaURLScheme) {
+		return false
+	}
+	rest := val[len(opcuaURLScheme):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i] // strip the optional /path, leaving host[:port]
+	}
+	return IsLiteralHost(rest)
+}
+
+// isHostname reports whether h is a syntactically valid DNS hostname: dot-joined
+// labels of [A-Za-z0-9-], each 1..63 chars and not starting/ending in '-'.
+func isHostname(h string) bool {
+	if len(h) == 0 || len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			default:
+				return false
+			}
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // firstTopicSegment returns the substring of topic before the first '/'

@@ -274,6 +274,40 @@ func TestGeneratePlcReaderFlowNoPLC(t *testing.T) {
 	}
 }
 
+// TestDescriptorLiteralHostRefAccepted proves the F9 relaxation on the DESCRIPTOR
+// surface (onboard-gen): a literal PLC host_ref / endpoint_url_ref passes Parse
+// (which runs Validate → validatePLC), so a DB descriptor can carry literal hosts
+// and onboard-gen no longer rejects them. This is the same shape GenerateClientYAML
+// copies into client.yaml — kept consistent by reusing clientconfig.IsLiteralHost.
+func TestDescriptorLiteralHostRefAccepted(t *testing.T) {
+	body := strings.ReplaceAll(readerDescriptorYAML,
+		`host_ref: "secret://packiot/staging/cpack/s7-s8-host"`, `host_ref: "10.135.1.128:102"`)
+	body = strings.ReplaceAll(body,
+		`endpoint_url_ref: "secret://packiot/staging/cpack/opc-l9-url"`, `endpoint_url_ref: "opc.tcp://10.135.6.169:4840"`)
+	body = strings.ReplaceAll(body,
+		`host_ref: "secret://packiot/staging/cpack/l6-host"`, `host_ref: "10.135.1.130"`)
+	d, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("descriptor with literal hosts must Parse: %v", err)
+	}
+	if d.PLC.Endpoints[0].HostRef != "10.135.1.128:102" ||
+		d.PLC.Endpoints[1].EndpointURLRef != "opc.tcp://10.135.6.169:4840" ||
+		d.PLC.Endpoints[2].HostRef != "10.135.1.130" {
+		t.Fatalf("literal hosts not parsed through: %+v", d.PLC.Endpoints)
+	}
+}
+
+// TestDescriptorHostRefRejectsGarbage keeps the guard on the descriptor surface:
+// a value that is neither a host, a secret:// ref, nor empty still fails Validate.
+func TestDescriptorHostRefRejectsGarbage(t *testing.T) {
+	body := strings.ReplaceAll(readerDescriptorYAML,
+		`host_ref: "secret://packiot/staging/cpack/s7-s8-host"`, `host_ref: "http://nope/../etc"`)
+	if _, err := Parse([]byte(body)); err == nil ||
+		!strings.Contains(err.Error(), "must be empty, a secret:// reference, or a literal host[:port]") {
+		t.Fatalf("want literal-host rejection, got %v", err)
+	}
+}
+
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if !strings.Contains(s, sub) {

@@ -170,7 +170,10 @@ func TestValidationRejects(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "plc host_ref is a value, not a secret reference",
+			// A literal IP is NETWORK config, not a secret — it is now ACCEPTED
+			// (see the *_Valid tests below). Only a truly malformed host_ref (a
+			// scheme'd DSN smuggled through the field) is rejected.
+			name: "plc host_ref is a credential-shaped value, not a host",
 			body: `
 tenant_id: incoplast
 customer: "Incoplast"
@@ -179,9 +182,9 @@ plc:
   protocol: s7
   endpoints:
     - name: NovoFlex-015
-      host_ref: 10.0.0.7
+      host_ref: "oracle://user:pass@10.0.0.9:1521/ORCL"
 `,
-			wantErr: "must be empty or a secret:// reference",
+			wantErr: "must be empty, a secret:// reference, or a literal host[:port]",
 		},
 		{
 			name: "integration dsn_ref is a value, not a secret reference",
@@ -313,6 +316,50 @@ func TestLoadS7TagMap_Invalid(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(writeConfig(t, tc.body))
+			if err == nil || !contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestLiteralHostRefAccepted proves the F9 relaxation: a LITERAL PLC host_ref
+// (an IP + optional port, or a hostname) Loads — a PLC host is network config,
+// not a secret. secret:// refs (s7Valid) and empty host_ref keep passing (the
+// other tests). A literal is what the bundle generator prefills PLC_HOST_* from.
+func TestLiteralHostRefAccepted(t *testing.T) {
+	cases := []string{
+		"10.135.1.128:502", // IPv4 + port (the CPACK Modbus shape)
+		"10.135.1.128",     // bare IPv4
+		"plc-l6.factory.local:102",
+		"plc-l6.factory.local",
+	}
+	for _, host := range cases {
+		t.Run(host, func(t *testing.T) {
+			body := strings_Replace(s7Valid, "host_ref: secret://incoplast/plc/nf15", "host_ref: "+host)
+			cfg, err := Load(writeConfig(t, body))
+			if err != nil {
+				t.Fatalf("literal host_ref %q must Load: %v", host, err)
+			}
+			if cfg.PLC.Endpoints[0].HostRef != host {
+				t.Fatalf("host_ref = %q, want %q", cfg.PLC.Endpoints[0].HostRef, host)
+			}
+		})
+	}
+}
+
+// TestLiteralHostRefRejectsGarbage keeps the guard: a value that is NOT a host,
+// a secret ref, or empty (a scheme'd URL/DSN, a bad port, whitespace) still fails.
+func TestLiteralHostRefRejectsGarbage(t *testing.T) {
+	cases := []struct{ name, host, wantErr string }{
+		{"dsn smuggled through host_ref", `"oracle://user:pass@10.0.0.9:1521/ORCL"`, "must be empty, a secret:// reference, or a literal host[:port]"},
+		{"non-numeric port", "10.0.0.7:notaport", "must be empty, a secret:// reference, or a literal host[:port]"},
+		{"opc url is not a bare host", "opc.tcp://10.0.0.5:4840", "must be empty, a secret:// reference, or a literal host[:port]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings_Replace(s7Valid, "host_ref: secret://incoplast/plc/nf15", "host_ref: "+tc.host)
+			_, err := Load(writeConfig(t, body))
 			if err == nil || !contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
 			}

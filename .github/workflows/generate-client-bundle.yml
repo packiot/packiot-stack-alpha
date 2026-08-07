@@ -387,12 +387,16 @@ jobs:
             esac
           fi
 
-          # Emit a per-endpoint PLC_HOST_<NAME> placeholder for EVERY endpoint the
-          # generated client.yaml drives, so a multi-PLC client (e.g. CPACK: 9 S7 +
-          # 1 Modbus) has a ready-to-fill slot per PLC. Names are sanitized to match
-          # internal/rawemit.HostForEndpoint (upper-cased, non-alphanumeric → '_').
-          # The reader resolves PLC_HOST_<NAME> first, then the protocol-wide
-          # fallback above. Values are BLANK secrets — the CS engineer fills them.
+          # Emit a per-endpoint PLC_HOST_<NAME> line for EVERY endpoint the generated
+          # client.yaml drives, so a multi-PLC client (e.g. CPACK: 9 S7 + 1 Modbus)
+          # has one slot per PLC. When the descriptor's host_ref/endpoint_url_ref is a
+          # LITERAL (not secret://), the line is PRE-FILLED (F9) so the CS engineer has
+          # one less secret to hunt; a secret:// (or empty) ref stays a BLANK line the
+          # CS engineer fills. Names are sanitized to match the reader-gen hostEnvVar
+          # (clientdescriptor/generate_reader.go): upper-case, collapse each run of
+          # non-alphanumerics to one '_', strip leading/trailing '_' — the exact var
+          # the generated Node-RED reader flow references. The reader resolves
+          # PLC_HOST_<NAME> first, then the protocol-wide fallback above.
           CY="bundle/$CLIENT/$CLIENT-client.yaml"
           if [ -f "$CY" ]; then
             python3 - "$CY" "$ENVF" "$DESC" <<'PY'
@@ -412,7 +416,11 @@ jobs:
               ref = str(ep.get("host_ref") or ep.get("endpoint_url_ref") or "").strip()
               if ref and not ref.startswith("secret://"):
                   hosts[name] = ref
-          def suffix(n): return re.sub(r'[^A-Z0-9]', '_', n.upper())
+          # Mirror clientdescriptor/generate_reader.go hostEnvVar EXACTLY: upper-case,
+          # collapse each run of non-[A-Z0-9] to one '_', strip leading/trailing '_'
+          # (so "S7 115" -> S7_115). This is the var the generated reader flow reads,
+          # so the prefilled .env line lines up with what the reader resolves.
+          def suffix(n): return re.sub(r'[^A-Z0-9]+', '_', n.upper()).strip('_')
           seen, lines = set(), []
           for proto, key in (("s7", "s7_tag_map"), ("modbus", "modbus_tag_map"), ("opcua", "opcua_tag_map")):
               for m in cfg.get(key) or []:

@@ -112,13 +112,37 @@ func TestLoadOPCUATagMap_Invalid(t *testing.T) {
 		{"wrong tenant prefix", replace(opcuaValid, "packml_topic: CPACK", "packml_topic: WRONGTENANT"), "must equal tenant_id"},
 		{"bad type", replace(opcuaValid, "type: int", "type: double"), "must be int|float|bool|string"},
 		{"empty node_id", replace(opcuaValid, `node_id: "ns=2;s=Count"`, `node_id: ""`), "node_id is required"},
-		{"url ref is a value not a secret", replace(opcuaValid, "endpoint_url_ref: secret://cpack/plc/mach1-url", "endpoint_url_ref: opc.tcp://10.0.0.5:4840"), "must be empty or a secret:// reference"},
+		// A literal opc.tcp:// URL is now ACCEPTED (see TestLiteralEndpointURLRefAccepted);
+		// only a wrong scheme / bare host in the URL field is rejected.
+		{"url ref has wrong scheme", replace(opcuaValid, "endpoint_url_ref: secret://cpack/plc/mach1-url", "endpoint_url_ref: http://10.0.0.5:4840"), "must be empty, a secret:// reference, or an opc.tcp:// URL"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(writeConfig(t, tc.body))
 			if err == nil || !contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestLiteralEndpointURLRefAccepted proves the OPC-UA side of the F9 relaxation:
+// a literal opc.tcp:// endpoint URL Loads (network config, not a secret) — the
+// value the bundle generator prefills PLC_HOST_* with for an OPC-UA endpoint.
+func TestLiteralEndpointURLRefAccepted(t *testing.T) {
+	for _, url := range []string{
+		"opc.tcp://10.135.6.169:4840",
+		"opc.tcp://10.135.6.169",
+		"opc.tcp://plc.factory.local:4840/UA/Server",
+	} {
+		t.Run(url, func(t *testing.T) {
+			body := replace(opcuaValid, "endpoint_url_ref: secret://cpack/plc/mach1-url", "endpoint_url_ref: "+url)
+			cfg, err := Load(writeConfig(t, body))
+			if err != nil {
+				t.Fatalf("literal endpoint_url_ref %q must Load: %v", url, err)
+			}
+			if cfg.PLC.Endpoints[0].EndpointURLRef != url {
+				t.Fatalf("endpoint_url_ref = %q, want %q", cfg.PLC.Endpoints[0].EndpointURLRef, url)
 			}
 		})
 	}
