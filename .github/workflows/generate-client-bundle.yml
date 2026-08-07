@@ -126,16 +126,58 @@ jobs:
           go build -o /tmp/onboard-gen ./cmd/onboard-gen
           echo "built /tmp/onboard-gen"
 
-      - name: Locate descriptor (fail closed)
+      - name: Locate descriptor (DB first, committed file fallback — fail closed)
         run: |
           set -euo pipefail
           DESC="$ED/$CLIENT/$CLIENT.descriptor.yaml"
-          if [ ! -f "$DESC" ]; then
-            echo "::error::descriptor not found: $DESC — commit it before generating a bundle for '$CLIENT'."
-            exit 1
+
+          # ADR-0045 config-as-data: the DB (client_descriptors, owned by edge-api) is
+          # the SOURCE OF TRUTH — CS-Admin edits land there. Prefer the LIVE descriptor
+          # from the target DB so those edits reach the bundle with NO repo commit.
+          # Fall back to the committed file if the DB has no row or the fetch errors;
+          # fail closed only if BOTH are absent.
+          DB_OK=0
+          DB_SECRET_ID="packiot/${TARGET}/db"
+          echo "trying DB descriptor: secret=$DB_SECRET_ID tenant=$CLIENT"
+          if DBURL="$(aws secretsmanager get-secret-value \
+                --secret-id "$DB_SECRET_ID" --region "$AWS_REGION" \
+                --query SecretString --output text 2>/dev/null | jq -r .url 2>/dev/null)" \
+             && [ -n "${DBURL:-}" ] && [ "$DBURL" != "null" ]; then
+            # The URL carries the DB password — mask so no later echo leaks it.
+            echo "::add-mask::$DBURL"
+            # Query the JSONB `descriptor` column for this tenant (case-insensitive).
+            # psql runs inside a throwaway postgres:16-alpine container (the runner has
+            # docker; no psql on the host). -tA = tuples-only, unaligned → the raw JSON
+            # on a single line (empty string when there is no row).
+            DESC_JSON="$(docker run --rm postgres:16-alpine \
+              psql "$DBURL" -tAc \
+              "select descriptor::text from client_descriptors where upper(tenant_code)=upper('$CLIENT')" \
+              2>/dev/null || true)"
+            if [ -n "$(printf '%s' "${DESC_JSON:-}" | tr -d '[:space:]')" ] && [ "$DESC_JSON" != "null" ]; then
+              mkdir -p "$(dirname "$DESC")"
+              # The JSONB has the SAME schema as the committed YAML. JSON IS valid YAML,
+              # but normalize to YAML so onboard-gen's YAML reader is unambiguously happy.
+              printf '%s' "$DESC_JSON" | python3 -c \
+                "import sys,json,yaml; yaml.safe_dump(json.load(sys.stdin), sys.stdout, sort_keys=False)" > "$DESC"
+              DB_OK=1
+              echo "descriptor source: DB (client_descriptors, tenant=$CLIENT, target=$TARGET)"
+            else
+              echo "no client_descriptors row for '$CLIENT' — falling back to the committed file"
+            fi
+          else
+            echo "could not read DB URL from Secrets Manager ($DB_SECRET_ID) — falling back to the committed file"
           fi
+
+          if [ "$DB_OK" -eq 0 ]; then
+            if [ ! -f "$DESC" ]; then
+              echo "::error::descriptor not found in DB or committed file: $DESC — seed client_descriptors (CS-Admin) or commit the descriptor before generating a bundle for '$CLIENT'."
+              exit 1
+            fi
+            echo "descriptor source: committed file ($DESC)"
+          fi
+
           echo "DESC=$DESC" >> "$GITHUB_ENV"
-          echo "found descriptor: $DESC"
+          echo "using descriptor: $DESC"
 
       - name: Generate onboarding artifacts
         run: |
@@ -319,6 +361,12 @@ jobs:
           set_kv AGENT_PROFILE_FILE  "./$CLIENT/$CLIENT-profile.yaml"
           set_kv CERTS_DIR "./certs"
 
+          # AGENT_INGEST_API_KEY authenticates the box-LOCAL Node-RED→agent HTTP hop
+          # (:9104) — it never leaves the client box, so auto-generate a fresh secret
+          # per bundle instead of shipping a CHANGE-ME placeholder the CS engineer must
+          # invent. openssl is on the runner (used above for the mTLS mint).
+          set_kv AGENT_INGEST_API_KEY "$(openssl rand -hex 32)"
+
           # Optional operator-supplied prefills. READER_ENDPOINT is left EMPTY for
           # the multi-endpoint model (each reader drives ALL its protocol's
           # endpoints); set it only to pin a single endpoint. --protocol/--plc_host
@@ -341,10 +389,23 @@ jobs:
           # fallback above. Values are BLANK secrets — the CS engineer fills them.
           CY="bundle/$CLIENT/$CLIENT-client.yaml"
           if [ -f "$CY" ]; then
-            python3 - "$CY" "$ENVF" <<'PY'
+            python3 - "$CY" "$ENVF" "$DESC" <<'PY'
           import re, sys, yaml
-          cy, envf = sys.argv[1], sys.argv[2]
+          cy, envf, desc = sys.argv[1], sys.argv[2], sys.argv[3]
           cfg = yaml.safe_load(open(cy)) or {}
+          # Build endpoint-name → LITERAL host map from the descriptor's plc.endpoints.
+          # host_ref (s7/modbus) / endpoint_url_ref (opcua) is either a `secret://…`
+          # reference (real value in Secrets Manager, stays a blank placeholder) or a
+          # literal host we can PRE-FILL so the CS engineer has one less secret to hunt.
+          d = yaml.safe_load(open(desc)) or {}
+          hosts = {}
+          for ep in ((d.get("plc") or {}).get("endpoints") or []):
+              name = ep.get("name")
+              if not name:
+                  continue
+              ref = str(ep.get("host_ref") or ep.get("endpoint_url_ref") or "").strip()
+              if ref and not ref.startswith("secret://"):
+                  hosts[name] = ref
           def suffix(n): return re.sub(r'[^A-Z0-9]', '_', n.upper())
           seen, lines = set(), []
           for proto, key in (("s7", "s7_tag_map"), ("modbus", "modbus_tag_map"), ("opcua", "opcua_tag_map")):
@@ -353,7 +414,11 @@ jobs:
                   if not ep or ep in seen:
                       continue
                   seen.add(ep)
-                  lines.append(f"PLC_HOST_{suffix(ep)}=   # {proto} endpoint {ep}")
+                  val = hosts.get(ep, "")
+                  if val:
+                      lines.append(f"PLC_HOST_{suffix(ep)}={val}   # {proto} endpoint {ep} (prefilled from descriptor)")
+                  else:
+                      lines.append(f"PLC_HOST_{suffix(ep)}=   # {proto} endpoint {ep}")
           if lines:
               body = open(envf).read().rstrip("\n")
               hdr = "\n\n# ── PER-ENDPOINT PLC HOSTS (multi-PLC) — fill each secret ──\n"
