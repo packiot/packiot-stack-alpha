@@ -19788,6 +19788,29 @@ WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.
 
 
 --
+-- Name: equipment_runtime_shift_1month; Type: TABLE; Schema: public; Owner: -
+--
+-- G6 durable-hardening (oeecloud-worker): the shift_1month / shift_1week rollup
+-- grains are written by piot_create_equipment_runtime_shift_1{month,week}() and
+-- corrected by the worker's not-metered pass (unmetered.go: unmeteredMachineTables),
+-- but they were absent from this snapshot and had to be hand-created on new-prod —
+-- so a fresh F3 DB-init lacked them and RunUnmetered failed with 42P01. Born here
+-- now, shaped exactly like their parent equipment_runtime_shift (LIKE ... INCLUDING
+-- ALL: every column, default, and constraint). IF NOT EXISTS keeps this a no-op on
+-- any DB where they were already hand-created.
+--
+
+CREATE TABLE IF NOT EXISTS public.equipment_runtime_shift_1month (LIKE public.equipment_runtime_shift INCLUDING ALL);
+
+
+--
+-- Name: equipment_runtime_shift_1week; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE IF NOT EXISTS public.equipment_runtime_shift_1week (LIKE public.equipment_runtime_shift INCLUDING ALL);
+
+
+--
 -- Name: equipment_scrap_reason; Type: TABLE; Schema: public; Owner: -
 --
 

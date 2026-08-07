@@ -14,11 +14,14 @@ package rollup
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/packiot/packiot-stack-alpha/services/oeecloud-worker/internal/flows"
 )
 
 // Dedicated schema: the seven per-machine grain tables, each with the
@@ -122,5 +125,53 @@ func TestGoldenUnmetered(t *testing.T) {
 		if o, _, _, _ := oeeOf(tbl, 103); o != 0 {
 			t.Errorf("%s eq103 (tp=2 sector) OEE changed: %v (sectors must be untouched)", tbl, o)
 		}
+	}
+}
+
+// G6 tolerance: RunUnmetered must SKIP a grain table absent from the DB (SQLSTATE
+// 42P01) — logged as a WARN — and still correct all the tables that DO exist,
+// rather than aborting the whole pass on the first missing one. This is the guard
+// for the shift_1week/_1month tables that were missing from the F3 schema-init.
+func TestGoldenUnmeteredToleratesMissingTable(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, s := range []string{unmeteredGoldenSchema, unmeteredGoldenFixture} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+	}
+	// Drop one table from the middle of the set so the pass hits a 42P01 and must
+	// keep going for the tables after it.
+	if _, err := pool.Exec(ctx, `DROP TABLE ug.equipment_runtime_shift_1month`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	d := flows.Dest{Name: "test", Pool: pool, EvSchema: "ug", RefSchema: "ug"}
+	// Machine-level set = {6}; a real logger (nil is also tolerated by the pass).
+	n, err := RunUnmetered(ctx, d, []int{6}, slog.Default())
+	if err != nil {
+		t.Fatalf("RunUnmetered must tolerate the missing table, got error: %v", err)
+	}
+	// 6 surviving tables × 1 line-metered machine (eq100) each = 6 rows nulled.
+	if n != 6 {
+		t.Errorf("nulled %d rows, want 6 (one per surviving table; the missing one skipped)", n)
+	}
+	// The tables that DO exist were still corrected (eq100 → NULL).
+	var oee *float64
+	if err := pool.QueryRow(ctx,
+		`SELECT oee FROM ug.equipment_runtime_shift WHERE id_equipment=100`).Scan(&oee); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if oee != nil {
+		t.Errorf("eq100 oee=%v in a surviving table, want NULL — pass must proceed past the missing table", *oee)
 	}
 }

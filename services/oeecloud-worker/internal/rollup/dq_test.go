@@ -1,11 +1,15 @@
 package rollup
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 )
 
 func ptr(f float64) *float64 { return &f }
+
+// nf builds a non-NULL sql.NullFloat64 (the four OEE factors are now nullable).
+func nf(f float64) sql.NullFloat64 { return sql.NullFloat64{Float64: f, Valid: true} }
 
 // rulesOf collects the rule set an event slice fired, for order-independent asserts.
 func rulesOf(evs []DQEvent) map[DQRule]DQEvent {
@@ -22,7 +26,7 @@ func TestDetectGrain_OEEOutlier(t *testing.T) {
 	ts := time.Date(2026, 7, 22, 6, 0, 0, 0, time.UTC)
 	got := DetectGrain(GrainMetrics{
 		IDEnterprise: 3, IDEquipment: 81, Grain: "shift", BucketTS: ts,
-		OEE: 8142, Gross: 100, Net: 100, IdealSpeed: ptr(58), IdealSpeedTracked: true,
+		OEE: nf(8142), Gross: 100, Net: 100, IdealSpeed: ptr(58), IdealSpeedTracked: true,
 	})
 	byRule := rulesOf(got)
 	e, ok := byRule[DQRuleOEEGt1]
@@ -138,7 +142,7 @@ func TestDetectGrain_NegativeMetric(t *testing.T) {
 func TestDetectGrain_Clean(t *testing.T) {
 	got := DetectGrain(GrainMetrics{
 		IDEnterprise: 3, IDEquipment: 81, Grain: "shift",
-		OEE: 0.82, OeeA: 0.9, OeeP: 0.95, OeeQ: 0.96,
+		OEE: nf(0.82), OeeA: nf(0.9), OeeP: nf(0.95), OeeQ: nf(0.96),
 		Gross: 1000, Net: 960, IdealSpeed: ptr(58),
 		AvailableTime: 25200, RunningTime: 22000, StoppedTime: 3200,
 		PlannedDowntime: 600, Downtime: 3200, ChangeoverTime: 300,
@@ -152,7 +156,7 @@ func TestDetectGrain_Clean(t *testing.T) {
 func TestDetectGrain_MultipleRules(t *testing.T) {
 	got := DetectGrain(GrainMetrics{
 		IDEnterprise: 3, IDEquipment: 81, Grain: "shift",
-		OEE:   8142,          // OEE_GT_1
+		OEE:   nf(8142),      // OEE_GT_1
 		Gross: 100, Net: 200, // NET_GT_GROSS (net>gross) + producing
 		IdealSpeed: ptr(0), IdealSpeedTracked: true, // IDEAL_SPEED_NULL_WHILE_PRODUCING
 		RunningTime: -10, // NEGATIVE_METRIC
@@ -168,5 +172,44 @@ func TestDetectGrain_MultipleRules(t *testing.T) {
 	// The reserved cross-level rule is NOT emitted per-row.
 	if _, ok := byRule[DQRuleMetricMissingAllLevels]; ok {
 		t.Errorf("METRIC_MISSING_ALL_LEVELS must not fire per grain-row")
+	}
+}
+
+// A line-metered machine row (oee/oee_a/oee_p/oee_q all SQL NULL — RunUnmetered's
+// output) must not abort the scan and must not fire OEE_GT_1: NULL is "no reading",
+// NOT a 0 or a >1 value. The other (non-OEE) rules must still evaluate normally.
+// This is the regression guard for the DQ_ALARMS "cannot scan NULL into *float64"
+// abort that kept the alarm substrate disabled in prod.
+func TestDetectGrain_NullOEEIsNoReading(t *testing.T) {
+	got := DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 42, Grain: "shift",
+		// OEE/OeeA/OeeP/OeeQ left as the zero value → Valid=false (SQL NULL).
+		Gross: 100, Net: 130, IdealSpeed: ptr(60), IdealSpeedTracked: true,
+	})
+	byRule := rulesOf(got)
+	if _, ok := byRule[DQRuleOEEGt1]; ok {
+		t.Errorf("all-NULL oee factors must NOT fire OEE_GT_1 (NULL = no reading), got %v", got)
+	}
+	// A NULL oee is not producing-with-null-ideal either — but net>gross still fires.
+	if _, ok := byRule[DQRuleNetGtGross]; !ok {
+		t.Errorf("non-OEE rules must still evaluate on a NULL-oee row; NET_GT_GROSS missing: %v", got)
+	}
+}
+
+// A partially-NULL row (oee NULL but oee_a valid and >1) must still fire OEE_GT_1
+// off the valid factor — NULL simply drops out of the worst-of search.
+func TestDetectGrain_PartialNullOEEStillDetects(t *testing.T) {
+	got := DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 43, Grain: "shift",
+		OeeA: nf(1.7), // oee/oee_p/oee_q NULL; oee_a valid and >1
+		Gross: 100, Net: 90, IdealSpeed: ptr(60), IdealSpeedTracked: true,
+	})
+	byRule := rulesOf(got)
+	e, ok := byRule[DQRuleOEEGt1]
+	if !ok {
+		t.Fatalf("valid oee_a=1.7 must fire OEE_GT_1 despite NULL siblings, got %v", got)
+	}
+	if e.ObservedValue == nil || *e.ObservedValue != 1.7 {
+		t.Errorf("observed = %v, want 1.7 (the one valid factor)", e.ObservedValue)
 	}
 }
