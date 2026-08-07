@@ -14,3 +14,7 @@
 	path = csadmin
 	url = https://github.com/packiot/csadmin.git
 	branch = staging
+[submodule "front4"]
+	path = front4
+	url = https://github.com/packiot/front4.git
+	branch = staging
