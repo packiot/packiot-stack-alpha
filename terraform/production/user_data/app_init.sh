@@ -46,8 +46,8 @@ dnf install -y git curl unzip jq python3-pip --allowerasing
 # PATH on the prod runner (alongside openssl/aws). Install the pinned toolchain to
 # /usr/local + symlink into /usr/local/bin (on the runner service's PATH). Idempotent.
 GO_VERSION=1.25.0
-if ! /usr/local/go/bin/go version 2>/dev/null | grep -q "go${GO_VERSION} "; then
-  curl -sSfL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz"
+if ! /usr/local/go/bin/go version 2>/dev/null | grep -q "go$${GO_VERSION} "; then
+  curl -sSfL -o /tmp/go.tgz "https://go.dev/dl/go$${GO_VERSION}.linux-arm64.tar.gz"
   rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
   ln -sf /usr/local/go/bin/go /usr/local/bin/go
   ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
