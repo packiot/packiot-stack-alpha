@@ -1,0 +1,239 @@
+# compose.superset.yml — W2 embedded self-service BI (Apache Superset).
+# ─────────────────────────────────────────────────────────────────────────────
+# OVERLAY, PROFILE-GATED, INERT BY DEFAULT. This file is NOT deployed by the W2
+# scaffold PR. It is applied ON TOP of the env base file, e.g.:
+#
+#   docker compose -f compose.production.yml -f compose.superset.yml \
+#     --profile superset up -d
+#
+# Every service carries `profiles: ["superset"]`, so even when this file is
+# `-f`-included in a plain `docker compose up` (no --profile), NOTHING here
+# starts — the default stack is unchanged. It attaches to the base file's
+# `packiot-net` (declared empty below so the merge is clean; the base file owns
+# the subnet/ipam). Free static IPs used: .42/.43/.44/.45 (base uses .2–.35).
+#
+# Pinned image: apache/superset:4.1.1 (Apache-2.0, FREE — no license, that's the
+# point of choosing Superset over Metabase Enterprise). Pin the DIGEST at apply.
+# Design: docs/plans/w2-embedded-superset.md.
+#
+# SECRETS: every value comes from .env (fed by app_init.sh from Secrets Manager).
+# There is NOT ONE password literal in this file. Keys required (add to Secrets
+# Manager packiot/<env>/app, then app_init.sh writes them into .env):
+#   SUPERSET_SECRET_KEY, SUPERSET_GUEST_TOKEN_JWT_SECRET, SUPERSET_DB_PASSWORD,
+#   SUPERSET_DB_RO_PASSWORD, SUPERSET_GUESTTOKEN_ADMIN_USER/_PASSWORD,
+#   SUPERSET_COGNITO_ISSUER, SUPERSET_COGNITO_CLIENT_ID/_SECRET,
+#   SUPERSET_OEE_DASHBOARD_UUID.
+
+x-superset-image: &superset-image apache/superset:4.1.1
+
+x-superset-env: &superset-env
+  # Shared by web + worker + init. SECRET_KEY and GUEST_TOKEN_JWT_SECRET MUST be
+  # identical across all three (a mismatch invalidates sessions + guest tokens).
+  SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+  SUPERSET_GUEST_TOKEN_JWT_SECRET: ${SUPERSET_GUEST_TOKEN_JWT_SECRET}
+  SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD}
+  SUPERSET_COGNITO_ISSUER: ${SUPERSET_COGNITO_ISSUER}
+  SUPERSET_COGNITO_CLIENT_ID: ${SUPERSET_COGNITO_CLIENT_ID}
+  SUPERSET_COGNITO_CLIENT_SECRET: ${SUPERSET_COGNITO_CLIENT_SECRET}
+  SUPERSET_FRAME_ANCESTOR: ${SUPERSET_FRAME_ANCESTOR:-https://front.prod.packiot.app}
+  SUPERSET_REDIS_HOST: superset-redis
+  PYTHONPATH: /app/pythonpath
+
+x-superset-config-mounts: &superset-config-mounts
+  - ./configs/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+  - ./configs/superset/custom_sso_security_manager.py:/app/pythonpath/custom_sso_security_manager.py:ro
+
+x-superset-logging: &superset-logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "5"}
+
+volumes:
+  superset-redis-data:
+
+networks:
+  packiot-net: {}   # merges with the base file's network (base owns subnet/ipam)
+
+services:
+  # ── superset-redis — DEDICATED broker+cache (NOT app-redis) ─────────────────
+  # app-redis runs allkeys-lru → a Celery broker there would silently DROP task
+  # messages under memory pressure. This one is noeviction (broker safety) with a
+  # small AOF. Logical DBs: 0=cache, 1=Celery results, 2=Celery broker.
+  superset-redis:
+    image: redis:7-alpine
+    container_name: superset-redis
+    profiles: ["superset"]
+    restart: unless-stopped
+    command: >
+      redis-server --maxmemory 256mb --maxmemory-policy noeviction
+      --appendonly yes --save ""
+    volumes:
+      - superset-redis-data:/data
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.45
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    mem_limit: 320m
+    cpus: 0.5
+    logging: *superset-logging
+
+  # ── superset-db-init — one-shot: create the `superset` metadata role + DB ───
+  # Mirrors db-init-bootstrap's authentik block: a SEPARATE role+DB on the r7g
+  # for Superset's own state (users, dashboards, RLS filters, embed configs) —
+  # NEVER the analytics DB. Shell guards (CREATE ROLE/DATABASE aren't IF NOT
+  # EXISTS). Password from .env; fails loudly if unset.
+  superset-db-init:
+    image: postgres:16-alpine
+    container_name: superset-db-init
+    profiles: ["superset"]
+    env_file: [.env]
+    environment:
+      PGHOST: ${POSTGRES_HOST_UPSTREAM}   # DIRECT to the r7g (superuser DDL)
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "== superset metadata role + database (idempotent) =="
+        if [ -z "$${SUPERSET_DB_PASSWORD:-}" ]; then
+          echo "SUPERSET_DB_PASSWORD unset — superset WILL fail; set it in .env"; exit 1;
+        fi
+        if [ "$$(psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='superset'")" != "1" ]; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE ROLE superset WITH LOGIN PASSWORD '$$SUPERSET_DB_PASSWORD';";
+        fi
+        if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='superset'")" != "1" ]; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE superset WITH OWNER = superset;";
+        fi
+        psql -v ON_ERROR_STOP=1 -d superset -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+        echo "superset-db-init complete."
+    networks:
+      packiot-net: {ipv4_address: 172.18.0.46}
+    restart: "no"
+    logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
+
+  # ── superset-init — one-shot: DB migrate + built-in roles + guest-token admin ─
+  # Runs AFTER the metadata DB exists. `superset db upgrade` migrates the metadata
+  # schema; `superset init` syncs Admin/Alpha/Gamma/Public + perms; then create
+  # the service account edge-api authenticates as to MINT guest tokens. In the
+  # real go-live, narrow it to a custom role with ONLY can_grant_guest_token
+  # (least privilege) — see spec §2.2.
+  superset-init:
+    image: *superset-image
+    container_name: superset-init
+    profiles: ["superset"]
+    env_file: [.env]
+    environment: *superset-env
+    volumes: *superset-config-mounts
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        superset db upgrade
+        superset init
+        superset fab create-admin \
+          --username "$${SUPERSET_GUESTTOKEN_ADMIN_USER}" \
+          --firstname guest --lastname minter --email guesttoken@packiot.app \
+          --password "$${SUPERSET_GUESTTOKEN_ADMIN_PASSWORD}" || true
+    depends_on:
+      superset-db-init:
+        condition: service_completed_successfully
+      superset-redis:
+        condition: service_healthy
+    networks:
+      packiot-net: {ipv4_address: 172.18.0.44}
+    restart: "no"
+    logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
+
+  # ── superset — the web app (gunicorn) ───────────────────────────────────────
+  superset:
+    image: *superset-image
+    container_name: superset
+    profiles: ["superset"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment: *superset-env
+    volumes: *superset-config-mounts
+    command:
+      - gunicorn
+      - --bind=0.0.0.0:8088
+      - --workers=4
+      - --worker-class=gthread
+      - --threads=20
+      - --timeout=120
+      - "superset.app:create_app()"
+    ports:
+      - "127.0.0.1:8088:8088"   # host-local; nginx vhost proxies this (see nginx_setup.sh)
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.42
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+      superset-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    mem_limit: 2g
+    cpus: 1.5
+    logging: *superset-logging
+
+  # ── superset-worker — Celery (async SQL Lab, alerts, thumbnails) ────────────
+  superset-worker:
+    image: *superset-image
+    container_name: superset-worker
+    profiles: ["superset"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment: *superset-env
+    volumes: *superset-config-mounts
+    command:
+      - celery
+      - --app=superset.tasks.celery_app:app
+      - worker
+      - --pool=prefork
+      - --concurrency=2
+      - -Ofair
+    depends_on:
+      superset:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.43
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app=superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1g
+    cpus: 1.0
+    logging: *superset-logging
+
+  # ── superset-beat — Celery scheduler (ONLY when alerts/reports are used) ─────
+  # Optional for the W2 MVP (viewing + authoring need no scheduler). Uncomment
+  # when scheduled email/Slack alerts land. MUST be a SINGLE replica (beat is a
+  # singleton). Reuses .44 after superset-init exits.
+  # superset-beat:
+  #   image: *superset-image
+  #   container_name: superset-beat
+  #   profiles: ["superset"]
+  #   restart: unless-stopped
+  #   env_file: [.env]
+  #   environment: *superset-env
+  #   volumes: *superset-config-mounts
+  #   command: ["celery", "--app=superset.tasks.celery_app:app", "beat",
+  #             "--pidfile", "/tmp/celerybeat.pid", "-s", "/tmp/celerybeat-schedule"]
+  #   depends_on: {superset: {condition: service_healthy}}
+  #   networks: {packiot-net: {ipv4_address: 172.18.0.44}}
+  #   logging: *superset-logging
