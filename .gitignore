@@ -32,6 +32,12 @@ monitoring/rabbitmq/definitions.json
 # Belt-and-suspenders alongside the gitleaks gate: keep credential-bearing file
 # shapes out of the index entirely so they can never reach a remote.
 .env                      # real env files (.env.local already ignored above)
+.env.posthog              # PostHog bring-up env (secrets); use compose.posthog.env.example as the template
+
+# Self-hosted PostHog: the pinned upstream repo checkout that compose.posthog.yml
+# mounts ClickHouse config/schema/idl from (cloned at bring-up, deploy-time
+# material — NOT repo source). See docs/posthog-selfhost-runbook.md.
+/posthog/
 *.pem                     # TLS / SSH private keys
 *.ovpn                    # OpenVPN client configs (embed inline keys/certs)
 *.tfvars                  # Terraform variable files (DB passwords, tokens)

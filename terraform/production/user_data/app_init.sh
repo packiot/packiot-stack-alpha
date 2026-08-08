@@ -434,6 +434,32 @@ echo "Docker Compose stack started"
 echo "NOTE: set ID_ENTERPRISE in /opt/packiot/.env after enterprise onboarding, then:"
 echo "      docker compose -f compose.production.yml restart oeecloud-worker"
 
+# ── Self-hosted PostHog (analytics backend) — DELIBERATE, out-of-band ─────────
+# PostHog (compose.posthog.yml) is NOT part of this stack's default bring-up and
+# is intentionally NOT started above — it is a heavy, separate service graph
+# (ClickHouse + Kafka + dedicated PG/Redis/minio) recommended on a DEDICATED box,
+# and brought up by hand per docs/posthog-selfhost-runbook.md. So we do NOT add
+# POSTHOG_* to the default OEE .env here.
+#
+# CODIFICATION (follows the ONBOARD_API_KEY / OAUTH2_PROXY_* precedent): the
+# credentials are terraform-managed in Secrets Manager (packiot/production/posthog,
+# secrets.tf). On the PostHog box, materialize them into that box's .env like so
+# (run once at bring-up — the runbook has the full sequence):
+#   SEC=$(aws secretsmanager get-secret-value --secret-id packiot/production/posthog \
+#         --region us-east-1 --query SecretString --output text)
+#   {
+#     echo "POSTHOG_APP_TAG=release-1.43.0"
+#     echo "POSTHOG_SITE_URL=https://e.$PRODUCTION_DOMAIN"
+#     echo "POSTHOG_SECRET=$(echo "$SEC" | jq -r '.secret')"
+#     echo "POSTHOG_POSTGRES_USER=$(echo "$SEC" | jq -r '.postgres_user')"
+#     echo "POSTHOG_POSTGRES_DB=$(echo "$SEC" | jq -r '.postgres_db')"
+#     echo "POSTHOG_POSTGRES_PASSWORD=$(echo "$SEC" | jq -r '.postgres_password')"
+#     echo "POSTHOG_OBJECT_STORAGE_ACCESS_KEY_ID=$(echo "$SEC" | jq -r '.object_storage_access_key')"
+#     echo "POSTHOG_OBJECT_STORAGE_SECRET_ACCESS_KEY=$(echo "$SEC" | jq -r '.object_storage_secret_key')"
+#   } >> /opt/packiot/.env
+# then enable the capture vhost: touch /opt/packiot/posthog.enabled && bash /tmp/nginx_setup.sh
+# and bring PostHog up: docker compose -f compose.posthog.yml --profile posthog up -d
+
 # NOTE: Staging's RabbitMQ client-user setup is DELIBERATELY ABSENT here.
 # Production doesn't expose AMQP to external factory edges from this stack
 # (no port 5671 ingress in security_groups.tf). If/when production becomes

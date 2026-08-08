@@ -359,6 +359,87 @@ server {
 }
 NGINX
 
+# ── posthog vhost (self-hosted PostHog capture front-door — ad-blocker dodge) ──
+# e.$PRODUCTION_DOMAIN. First-party analytics ingest for front4 (VITE_POSTHOG_HOST).
+# DELIBERATELY unlike every other vhost:
+#   • NO oauth2 forward-auth — this receives anonymous end-user BROWSER traffic
+#     (capture beacons), not staff/operator sessions. Gating it would break capture.
+#   • NO origin-verify — PostHog capture must NOT go through CloudFront/WAF (high-
+#     volume POSTs, no caching, WAF body limits). Its DNS record is a DIRECT A →
+#     EIP (like the ingest. record), NOT a CloudFront ALIAS. See runbook + dns note.
+#   • Large bodies allowed — session-recording payloads are big (raise
+#     client_max_body_size well above nginx's 1m default).
+#   • Passes through ALL PostHog paths: UI (/), assets (/static/), and the
+#     ingestion surface (/e/, /s/, /i/, /decide/, /array/, /flags/, /batch/,
+#     /capture/, /report/) — a single `location /` proxy covers them all.
+#   • CORS scoped to the front/operator SPA origins (browsers preflight /decide/).
+#
+# GATED (deliberate bring-up): only written when /opt/packiot/posthog.enabled
+# exists, so a routine app-box boot does NOT get a spurious PostHog vhost. Create
+# that sentinel (runbook) once PostHog is up + DNS points here. Cert: covered by
+# the *.$PRODUCTION_DOMAIN wildcard already obtained above — no extra cert.
+#
+# UPSTREAM: proxies http://127.0.0.1:8000 (PostHog `web`) for the CO-LOCATED case.
+# For a DEDICATED PostHog box (recommended — see runbook sizing), replace
+# 127.0.0.1:8000 with that box's private IP:8000 and open the SG path.
+if [ -f /opt/packiot/posthog.enabled ]; then
+cat > /etc/nginx/conf.d/posthog.conf <<NGINX
+map \$http_origin \$posthog_cors {
+    default "";
+    "~^https://(front|operator|dash)\.$PRODUCTION_DOMAIN\$" \$http_origin;
+    "~^https://dash\.packiot\.app\$" \$http_origin;
+}
+server {
+    listen 80;
+    server_name e.$PRODUCTION_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name e.$PRODUCTION_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # Session-recording payloads are large — raise well above the 1m default.
+    client_max_body_size 64m;
+
+    # NO origin-verify / NO oauth2 here (public capture front-door — see comment).
+    location / {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin  \$posthog_cors always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Vary Origin always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin  \$posthog_cors always;
+        add_header Vary Origin always;
+
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+
+        # PostHog live features (toolbar/heatmap) use websockets.
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+nginx -t && nginx -s reload
+echo "posthog capture vhost configured at https://e.$PRODUCTION_DOMAIN"
+else
+echo "SKIP: /opt/packiot/posthog.enabled absent — posthog vhost not written" \
+     "(deliberate bring-up; see docs/posthog-selfhost-runbook.md, then touch the sentinel + re-run)"
+fi
+
 nginx -t && nginx -s reload
 echo "oauth2-proxy forward-auth + origin-verify configured for all services"
 

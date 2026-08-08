@@ -1,0 +1,357 @@
+# compose.posthog.yml — Self-hosted PostHog analytics backend (SCAFFOLD ONLY)
+#
+# ┌─ READ FIRST ────────────────────────────────────────────────────────────────┐
+# │ This is a DELIBERATE-BRING-UP, PROFILE-GATED service graph. It is NOT part   │
+# │ of the OEE stack and is NEVER started by the normal production deploy.       │
+# │ app_init.sh runs `docker compose -f compose.production.yml up -d` only — it  │
+# │ does not reference this file, so a routine deploy can't touch PostHog.       │
+# │                                                                             │
+# │ To bring it up (see docs/posthog-selfhost-runbook.md), an operator runs it   │
+# │ as ITS OWN compose project, with the `posthog` profile explicitly enabled:   │
+# │                                                                             │
+# │   docker compose -f compose.posthog.yml --profile posthog up -d              │
+# │                                                                             │
+# │ Without `--profile posthog`, EVERY service below is inert (they all carry    │
+# │ `profiles: ["posthog"]`), so even an accidental `up` starts nothing.         │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# ── Provenance / pin ──────────────────────────────────────────────────────────
+# Adapted from PostHog's OFFICIAL self-host graph — docker-compose.base.yml +
+# docker-compose.hobby.yml at the pinned tag `release-1.43.0`
+# (https://github.com/PostHog/posthog/tree/release-1.43.0, image published
+# 2023-01-16). We did NOT hand-invent the service DAG; the images, commands and
+# inter-service wiring below track that upstream release. The app image is
+# pinned via ${POSTHOG_APP_TAG:-release-1.43.0}.
+#
+# Why a pinned classic release (not master): as of 2026 PostHog's `master`
+# self-host compose has exploded into ~40 services (Temporal, Elasticsearch,
+# SeaweedFS, Browserless, ~20 build-from-source Rust microservices) and no longer
+# publishes semver images (only :latest / :master / per-commit :sha-* tags).
+# release-1.43.0 is the last widely-deployed "classic" self-host topology whose
+# whole graph is image-pullable and understandable in one file. See the runbook
+# for the upgrade-path caveat.
+#
+# ── Isolation from the OEE stack (hard requirement) ───────────────────────────
+#   • `name: posthog` pins this to its OWN compose project — it never merges into
+#     the `stack` project even if someone `-f`-combines the files.
+#   • Its own bridge network `posthog-net` (172.28.0.0/24) — no shared network
+#     with packiot-net, so PostHog's `db`/`redis`/`clickhouse` never collide with
+#     the OEE app-redis / r7g / mosquitto. The upstream-canonical short service
+#     names (db, redis, clickhouse, zookeeper, kafka, object_storage) are kept
+#     DELIBERATELY: PostHog's ClickHouse config.xml + init SQL (mounted from the
+#     upstream checkout) hardcode `zookeeper:2181` and `kafka:9092`, so renaming
+#     them would break ClickHouse. Isolation comes from the separate project +
+#     network, not from renaming.
+#   • DEDICATED datastores: PostHog gets its OWN postgres, redis, clickhouse,
+#     kafka and minio. It shares NOTHING with the OEE Timescale/pgbouncer or the
+#     OEE app-redis. (Sizing note — this graph wants ~4GB+ RAM; the runbook
+#     recommends a DEDICATED EC2, not co-locating on the OEE app box.)
+#
+# ── ClickHouse config comes from the upstream checkout ────────────────────────
+# ClickHouse needs PostHog's config.xml/users.xml + the docker-entrypoint-initdb.d
+# schema (Kafka-engine + distributed tables) + the protobuf idl. These are NOT
+# hand-vendored here — clone the pinned PostHog repo next to this file (the
+# runbook's bring-up step 4):
+#   git clone --branch release-1.43.0 --depth 1 \
+#     https://github.com/PostHog/posthog.git posthog
+# and the clickhouse mounts below resolve against ${POSTHOG_SRC:-./posthog}.
+# The `posthog/` checkout is .gitignored — it is deploy-time material, not repo
+# source.
+#
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# NO real secrets live in this file. Every credential is an .env placeholder
+# (POSTHOG_SECRET, POSTHOG_POSTGRES_PASSWORD, POSTHOG_OBJECT_STORAGE_*). Those
+# keys belong in AWS Secrets Manager (packiot/production/posthog, declared in
+# terraform/production/secrets.tf) and are written into the PostHog box's .env at
+# bring-up. See compose.posthog.env.example for the full key list.
+
+name: posthog
+
+networks:
+  posthog-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  posthog-postgres-data:     # PostHog metadata DB (dedicated — NOT the OEE r7g)
+  posthog-clickhouse-data:   # event analytics store (grows fast — see runbook)
+  posthog-zookeeper-data:
+  posthog-zookeeper-datalog:
+  posthog-zookeeper-logs:
+  posthog-kafka-data:
+  posthog-object-storage:    # minio — session recordings (grows fast — see runbook)
+
+# ── Shared app/worker config (upstream &worker anchor, release-1.43.0) ─────────
+# web / worker / plugins / migrate all share this. Hostnames point at the
+# dedicated PostHog datastores on posthog-net.
+x-posthog-app: &posthog-app
+  image: posthog/posthog:${POSTHOG_APP_TAG:-release-1.43.0}
+  profiles: ["posthog"]
+  restart: on-failure
+  networks: [posthog-net]
+  environment: &posthog-app-env
+    # Django secret — MUST be stable across restarts (rotating it invalidates all
+    # sessions + breaks encrypted fields). From packiot/production/posthog.secret.
+    SECRET_KEY: ${POSTHOG_SECRET:?set POSTHOG_SECRET in .env (Secrets Manager packiot/production/posthog)}
+    # Public URL front4 + browsers reach this install at (the reverse-proxy vhost).
+    SITE_URL: ${POSTHOG_SITE_URL:-https://e.prod.packiot.app}
+    DISABLE_SECURE_SSL_REDIRECT: "true"   # TLS terminates at the nginx vhost
+    IS_BEHIND_PROXY: "true"
+    TRUST_ALL_PROXIES: "true"
+    # DEDICATED Postgres (posthog-db) — NOT the OEE Timescale DB.
+    DATABASE_URL: postgres://${POSTHOG_POSTGRES_USER:-posthog}:${POSTHOG_POSTGRES_PASSWORD:?set POSTHOG_POSTGRES_PASSWORD}@db:5432/${POSTHOG_POSTGRES_DB:-posthog}
+    PGHOST: db
+    PGUSER: ${POSTHOG_POSTGRES_USER:-posthog}
+    PGPASSWORD: ${POSTHOG_POSTGRES_PASSWORD:?set POSTHOG_POSTGRES_PASSWORD}
+    PGDATABASE: ${POSTHOG_POSTGRES_DB:-posthog}
+    # DEDICATED ClickHouse / Kafka / Redis.
+    CLICKHOUSE_HOST: clickhouse
+    CLICKHOUSE_DATABASE: posthog
+    CLICKHOUSE_SECURE: "false"
+    CLICKHOUSE_VERIFY: "false"
+    KAFKA_URL: kafka://kafka
+    KAFKA_HOSTS: kafka:9092
+    REDIS_URL: redis://redis:6379/
+    DEPLOYMENT: hobby-selfhost
+    # Session recordings + exports land in the dedicated minio (object_storage).
+    OBJECT_STORAGE_ENABLED: "true"
+    OBJECT_STORAGE_ENDPOINT: http://object_storage:19000
+    OBJECT_STORAGE_ACCESS_KEY_ID: ${POSTHOG_OBJECT_STORAGE_ACCESS_KEY_ID:-object_storage_root_user}
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: ${POSTHOG_OBJECT_STORAGE_SECRET_ACCESS_KEY:?set POSTHOG_OBJECT_STORAGE_SECRET_ACCESS_KEY}
+    OBJECT_STORAGE_BUCKET: posthog
+
+services:
+  # ── PostHog metadata DB (dedicated Postgres) ────────────────────────────────
+  db:
+    image: postgres:12-alpine
+    profiles: ["posthog"]
+    restart: on-failure
+    networks: [posthog-net]
+    environment:
+      POSTGRES_USER: ${POSTHOG_POSTGRES_USER:-posthog}
+      POSTGRES_DB: ${POSTHOG_POSTGRES_DB:-posthog}
+      POSTGRES_PASSWORD: ${POSTHOG_POSTGRES_PASSWORD:?set POSTHOG_POSTGRES_PASSWORD}
+    volumes:
+      - posthog-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTHOG_POSTGRES_USER:-posthog}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── PostHog Redis (dedicated — NOT the OEE app-redis) ────────────────────────
+  redis:
+    image: redis:6.2.7-alpine
+    profiles: ["posthog"]
+    restart: on-failure
+    command: redis-server --maxmemory-policy allkeys-lru --maxmemory 400mb
+    networks: [posthog-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── ClickHouse (event analytics column store) ───────────────────────────────
+  # Config + schema init + protobuf idl are mounted from the pinned upstream
+  # checkout (${POSTHOG_SRC:-./posthog}); see the header + runbook. These files
+  # reference `zookeeper:2181` and the `kafka:9092` Kafka engine — do NOT rename
+  # those services.
+  clickhouse:
+    image: ${POSTHOG_CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:22.3}
+    profiles: ["posthog"]
+    restart: on-failure
+    depends_on:
+      - kafka
+      - zookeeper
+    networks: [posthog-net]
+    volumes:
+      - ${POSTHOG_SRC:-./posthog}/posthog/idl:/idl
+      - ${POSTHOG_SRC:-./posthog}/docker/clickhouse/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+      - ${POSTHOG_SRC:-./posthog}/docker/clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ${POSTHOG_SRC:-./posthog}/docker/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+      - posthog-clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Zookeeper (Kafka coordination, upstream release-1.43.0 model) ───────────
+  # release-1.43.0 runs Kafka in classic zookeeper mode (bitnami/kafka:2.8.1).
+  # KRaft (zookeeper-less) is a modernization option — see the runbook — but is
+  # deliberately NOT used here to stay byte-faithful to the pinned upstream graph
+  # (PostHog's ClickHouse Kafka-engine wiring was validated against this pairing).
+  zookeeper:
+    image: zookeeper:3.7.0
+    profiles: ["posthog"]
+    restart: on-failure
+    networks: [posthog-net]
+    volumes:
+      - posthog-zookeeper-data:/data
+      - posthog-zookeeper-datalog:/datalog
+      - posthog-zookeeper-logs:/logs
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Kafka (event bus between capture → ClickHouse) ──────────────────────────
+  kafka:
+    image: bitnami/kafka:2.8.1-debian-10-r99
+    profiles: ["posthog"]
+    restart: on-failure
+    depends_on:
+      - zookeeper
+    networks: [posthog-net]
+    environment:
+      KAFKA_BROKER_ID: "1001"
+      KAFKA_CFG_RESERVED_BROKER_MAX_ID: "1001"
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      ALLOW_PLAINTEXT_LISTENER: "true"
+      # Bound retention so a self-host box's disk doesn't fill (events are durable
+      # in ClickHouse; Kafka is just the transport). Matches the hobby overlay.
+      KAFKA_CFG_LOG_RETENTION_HOURS: "24"
+    volumes:
+      - posthog-kafka-data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Object storage (minio) — session recordings + exports ───────────────────
+  # Dedicated minio. Session-recording blobs grow fast; the runbook covers a
+  # retention/lifecycle policy. Creds come from .env (Secrets Manager), NOT the
+  # upstream demo defaults.
+  object_storage:
+    image: minio/minio:RELEASE.2022-06-25T15-50-16Z
+    profiles: ["posthog"]
+    restart: on-failure
+    networks: [posthog-net]
+    environment:
+      MINIO_ROOT_USER: ${POSTHOG_OBJECT_STORAGE_ACCESS_KEY_ID:-object_storage_root_user}
+      MINIO_ROOT_PASSWORD: ${POSTHOG_OBJECT_STORAGE_SECRET_ACCESS_KEY:?set POSTHOG_OBJECT_STORAGE_SECRET_ACCESS_KEY}
+    entrypoint: sh
+    command: -c 'mkdir -p /data/posthog && minio server --address ":19000" --console-address ":19001" /data'
+    volumes:
+      - posthog-object-storage:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:19000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Migrations (one-shot) ───────────────────────────────────────────────────
+  # Runs Django + ClickHouse migrations before web/worker/plugins accept traffic.
+  # `run_async_migrations` completes the async-migration set for a fresh install.
+  # Idempotent — safe to re-run on every bring-up. web/worker/plugins gate on this
+  # completing successfully.
+  migrate:
+    <<: *posthog-app
+    command: >
+      sh -c "python manage.py migrate
+      && python manage.py migrate_clickhouse
+      && python manage.py run_async_migrations"
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── asyncmigrationscheck (one-shot guard) ───────────────────────────────────
+  # Upstream self-host guard: fails loudly if an async migration is required but
+  # not applied (blocks a half-migrated bring-up). replicas:0 → only runs when a
+  # bring-up explicitly targets it (`docker compose run asyncmigrationscheck`);
+  # kept for parity with upstream, not on the default critical path.
+  asyncmigrationscheck:
+    <<: *posthog-app
+    command: python manage.py run_async_migrations --check
+    restart: "no"
+    deploy:
+      replicas: 0
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # ── Web (Django app: UI + capture/decide/ingestion HTTP endpoints) ──────────
+  # Serves the PostHog UI AND the ingestion endpoints front4 posts to (/e/, /s/,
+  # /i/, /decide/, /array/, /flags/, /static/). The reverse-proxy vhost
+  # (e.prod.packiot.app) fronts THIS service. `bin/docker-server` is the image's
+  # built-in gunicorn/uvicorn launcher (used instead of the deploy-hobby
+  # /compose/start wrapper so no external /compose mount is needed). Listens :8000.
+  web:
+    <<: *posthog-app
+    command: ./bin/docker-server
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      object_storage:
+        condition: service_healthy
+    ports:
+      # Published on loopback so the host nginx vhost can proxy to it when PostHog
+      # is CO-LOCATED. For a DEDICATED PostHog box (recommended) the vhost's
+      # proxy_pass points at the box's private IP:8000 instead — see runbook.
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/_health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ── Worker (Celery: async jobs, schedules, exports) ─────────────────────────
+  worker:
+    <<: *posthog-app
+    command: ./bin/docker-worker-celery --with-scheduler
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      object_storage:
+        condition: service_healthy
+
+  # ── Plugin server (event ingestion pipeline + CDP/plugins) ──────────────────
+  # Consumes from Kafka, processes/transforms events, writes to ClickHouse.
+  plugins:
+    image: posthog/posthog:${POSTHOG_APP_TAG:-release-1.43.0}
+    profiles: ["posthog"]
+    restart: on-failure
+    command: ./bin/plugin-server --no-restart-loop
+    networks: [posthog-net]
+    environment:
+      <<: *posthog-app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      object_storage:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

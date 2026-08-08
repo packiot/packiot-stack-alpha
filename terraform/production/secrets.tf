@@ -190,6 +190,54 @@ resource "aws_secretsmanager_secret_version" "refdata_query_keys" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ── Self-hosted PostHog (analytics backend — DELIBERATE bring-up) ─────────────
+# Backs compose.posthog.yml (profile-gated; NOT started by a routine deploy) and
+# the e.prod.packiot.app capture vhost. Declared here — like refdata-query-keys /
+# rabbitmq-*-creds — so the credential material is terraform-managed and durable
+# rather than hand-provisioned on the box. app_init.sh has a codification note
+# (commented, following the ONBOARD_API_KEY / OAUTH2_PROXY_* precedent) showing
+# how these reach the PostHog box's .env at bring-up; they are NOT written into
+# the default OEE .env (PostHog is a separate, deliberately-brought-up service,
+# recommended on a DEDICATED box — see docs/posthog-selfhost-runbook.md).
+#
+# Keys (map compose.posthog.env.example → compose.posthog.yml):
+#   secret                     → POSTHOG_SECRET (Django SECRET_KEY; stable forever)
+#   postgres_password          → POSTHOG_POSTGRES_PASSWORD (dedicated PG, not the r7g)
+#   object_storage_secret_key  → POSTHOG_OBJECT_STORAGE_SECRET_ACCESS_KEY (minio)
+resource "random_password" "posthog_secret" {
+  length  = 50
+  special = false # Django SECRET_KEY — alphanumeric avoids .env quoting pain
+}
+
+resource "random_password" "posthog_postgres" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "posthog_object_storage" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "posthog" {
+  name                    = "packiot/production/posthog"
+  recovery_window_in_days = 7
+  description             = "Self-hosted PostHog — Django secret + dedicated PG + minio creds (deliberate bring-up; see docs/posthog-selfhost-runbook.md)"
+}
+
+resource "aws_secretsmanager_secret_version" "posthog" {
+  secret_id = aws_secretsmanager_secret.posthog.id
+  secret_string = jsonencode({
+    secret                    = random_password.posthog_secret.result
+    postgres_user             = "posthog"
+    postgres_db               = "posthog"
+    postgres_password         = random_password.posthog_postgres.result
+    object_storage_access_key = "object_storage_root_user"
+    object_storage_secret_key = random_password.posthog_object_storage.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
 # ── Nginx basic auth ──────────────────────────────────────────────────────────
 # All production service vhosts behind Nginx require this credential pair.
 # nginx_setup.sh fetches at runtime and writes /etc/nginx/.htpasswd.
