@@ -198,3 +198,47 @@ CUSTOM_SECURITY_MANAGER = CognitoTenantSecurityManager
 # "database" via the UI/API AFTER boot — deliberately not in code, so the
 # read-only analytics credential is managed as Superset-owned encrypted state,
 # never conflated with this metadata connection.
+
+# ── Per-request tenant GUC stamp — makes Postgres RLS a live CO-ENFORCER ───────
+# The bi.* datasets read RLS-protected base tables through a NOBYPASSRLS definer
+# view (bi_owner). Postgres RLS (db/superset/02-tenant-rls.sql) filters on the
+# session GUC `app.tenant_id`; with the GUC UNSET it fail-closes to ZERO rows
+# (spec §3.2). Superset serves the embed path from a SINGLE pooled `superset_ro`
+# connection, so unless we stamp `app.tenant_id` per request, every guest-token
+# chart-data query would deny-all (0 rows) — Layer-2 would over-block instead of
+# co-enforce. DB_CONNECTION_MUTATOR runs per query execution WITH the caller's
+# identity in flask.g; we derive the tenant from the caller's RLS (the guest
+# token's `id_enterprise = <id>` clause for the embed path, or the per-tenant
+# authoring RLS role) and stamp it as a libpq startup option, so each tenant gets
+# its own pooled connection with the correct GUC. If no tenant can be derived we
+# stamp NOTHING → GUC stays unset → deny-all (fail-closed). Only the analytics DB
+# (`packiot`) is stamped; the metadata DB (`superset`) is never touched.
+import re as _tenant_re  # noqa: E402
+from flask import g as _flask_g  # noqa: E402
+
+
+def _caller_tenant_id():
+    """The id_enterprise of the current caller, from their RLS rules, or None."""
+    user = getattr(_flask_g, "user", None)
+    if user is None:
+        return None
+    for rule in (getattr(user, "rls", None) or []):
+        clause = rule.get("clause") if isinstance(rule, dict) else getattr(rule, "clause", "")
+        m = _tenant_re.search(r"id_enterprise\s*=\s*(\d+)", clause or "")
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def DB_CONNECTION_MUTATOR(uri, params, username, security_manager, source):  # noqa: N802,E501
+    try:
+        if getattr(uri, "database", None) == "packiot":
+            tenant = _caller_tenant_id()
+            if tenant is not None:
+                connect_args = dict(params.get("connect_args") or {})
+                existing = connect_args.get("options", "")
+                connect_args["options"] = (existing + f" -c app.tenant_id={tenant}").strip()
+                params = {**params, "connect_args": connect_args}
+    except Exception:  # never let stamping break a query — worst case = deny-all
+        pass
+    return uri, params
