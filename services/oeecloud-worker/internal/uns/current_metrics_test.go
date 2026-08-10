@@ -40,6 +40,34 @@ func TestCurrentMetricsShape(t *testing.T) {
 	}
 }
 
+// TestLineLeadMachineInheritance guards the tp=3 line live-state
+// derivation: lines resolve their signal source to lead_machine and
+// probe values/events off sig_id, while the write is still keyed by
+// the entity (id_equipment). Machines (sig_id = id_equipment) are
+// unaffected — the change is additive.
+func TestLineLeadMachineInheritance(t *testing.T) {
+	for _, m := range []string{
+		// sig_id derivation — line inherits lead_machine, else self.
+		"e.tp_equipment = 3 AND e.lead_machine IS NOT NULL",
+		"THEN e.lead_machine ELSE e.id_equipment END AS sig_id",
+		// value/history/event probes key off the signal source.
+		"WHERE v.id_equipment = m.sig_id",
+		"JOIN machines m ON m.sig_id = ee.id_equipment",
+		// events remain keyed by the entity so the write stays per-line.
+		"SELECT DISTINCT ON (m.id_equipment)",
+		// classification config falls back to the entity's own.
+		"COALESCE(sig.production_speed, e.production_speed)",
+	} {
+		if !strings.Contains(currentMetricsSQL, m) {
+			t.Errorf("line lead-machine derivation lost %q", m)
+		}
+	}
+	// still writes one row per equipment (unchanged upsert key).
+	if !strings.Contains(currentMetricsSQL, "ON CONFLICT (id_equipment) DO UPDATE") {
+		t.Error("upsert must stay keyed by id_equipment")
+	}
+}
+
 func TestCurrentMetricsSQLBuilds(t *testing.T) {
 	for _, schemas := range [][2]string{
 		{"shadow_go_port", "public"}, // F2

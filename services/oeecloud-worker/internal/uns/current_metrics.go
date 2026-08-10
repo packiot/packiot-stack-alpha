@@ -21,7 +21,18 @@
 // edge-node-red/db/20-oee-engine-parity.sql):
 //   - Scope: machines AND lines (equipments.tp_equipment IN (1,3))
 //     that HAVE values (INNER lateral to the latest-values probe,
-//     7-day lookback for chunk pruning). Entities silent >7d keep
+//     7-day lookback for chunk pruning). LINE LIVE-STATE (added
+//     2026-08-10): a tp=3 line emits no raw equipment_values of its
+//     own (it is an aggregate), so it never satisfied the INNER
+//     values probe and its live-state row stayed frozen NULL → grey
+//     mission-control tile. A line with a configured lead_machine now
+//     resolves its signal SOURCE to that machine (sig_id, PackML param
+//     30702) and inherits its state / speed / open-event / status
+//     history — so the line shows its lead machine's live signal. A
+//     machine, or a line with NO lead_machine, is its own source
+//     (sig_id = id_equipment): behaviour is byte-identical to before,
+//     making the change purely additive and gracefully no-op when
+//     lead_machine is unset. Entities whose signal source is silent >7d keep
 //     their old row untouched — same as the ingest writer (no data,
 //     no update). Corrected 2026-07-08 to match the LIVE table, which
 //     holds 46 machines + 20 lines, and prod's proc (which covers
@@ -94,13 +105,31 @@ import (
 // %[1]s = EvSchema (flow tables), %[2]s = RefSchema (reference plane).
 const currentMetricsSQL = `
 	WITH machines AS (
+	    -- sig_id = the entity's live-signal SOURCE. A LINE (tp=3) that
+	    -- emits no raw equipment_values of its own inherits its
+	    -- configured lead_machine's signal (ADR — PackML param 30702:
+	    -- lead_machine is the machine that generates the line's events).
+	    -- A machine (tp=1), or a line with NO lead_machine configured,
+	    -- is its own source (sig_id = id_equipment) — behaviour is then
+	    -- byte-identical to before, so this is purely additive. The
+	    -- speed-classification config (ideal/production speed,
+	    -- threshold) is taken from the signal source too so
+	    -- running/lowSpeed stays coherent with the inherited speed,
+	    -- COALESCEd back to the entity's own if the sig row is missing.
 	    SELECT e.id_equipment, e.id_area, e.id_site, e.id_enterprise,
 	           e.nm_equipment, a.nm_area, s.nm_site,
-	           e.ideal_speed, e.production_speed,
-	           e.minimum_ideal_performance_threshold
+	           CASE WHEN e.tp_equipment = 3 AND e.lead_machine IS NOT NULL
+	                THEN e.lead_machine ELSE e.id_equipment END AS sig_id,
+	           COALESCE(sig.ideal_speed, e.ideal_speed) AS ideal_speed,
+	           COALESCE(sig.production_speed, e.production_speed) AS production_speed,
+	           COALESCE(sig.minimum_ideal_performance_threshold,
+	                    e.minimum_ideal_performance_threshold) AS minimum_ideal_performance_threshold
 	      FROM %[2]s.equipments e
 	      JOIN %[2]s.areas a ON a.id_area = e.id_area
 	      JOIN %[2]s.sites s ON s.id_site = e.id_site
+	      LEFT JOIN %[2]s.equipments sig ON sig.id_equipment =
+	           CASE WHEN e.tp_equipment = 3 AND e.lead_machine IS NOT NULL
+	                THEN e.lead_machine ELSE e.id_equipment END
 	     WHERE e.tp_equipment IN (1, 3)
 	), latest AS (
 	    SELECT m.*,
@@ -110,37 +139,40 @@ const currentMetricsSQL = `
 	      FROM machines m
 	      JOIN LATERAL (
 	          SELECT v.ts_value FROM %[1]s.equipment_values v
-	           WHERE v.id_equipment = m.id_equipment
+	           WHERE v.id_equipment = m.sig_id
 	             AND v.ts_value >= now() - interval '7 days'
 	           ORDER BY v.ts_value DESC LIMIT 1) la ON true
 	      LEFT JOIN LATERAL (
 	          SELECT v.state, v.ts_value FROM %[1]s.equipment_values v
-	           WHERE v.id_equipment = m.id_equipment AND v.state IS NOT NULL
+	           WHERE v.id_equipment = m.sig_id AND v.state IS NOT NULL
 	             AND v.ts_value >= now() - interval '7 days'
 	           ORDER BY v.ts_value DESC LIMIT 1) ls ON true
 	      LEFT JOIN LATERAL (
 	          SELECT v.speed FROM %[1]s.equipment_values v
-	           WHERE v.id_equipment = m.id_equipment AND v.speed IS NOT NULL
+	           WHERE v.id_equipment = m.sig_id AND v.speed IS NOT NULL
 	             AND v.ts_value >= now() - interval '7 days'
 	           ORDER BY v.ts_value DESC LIMIT 1) lp ON true
 	), open_event AS (
-	    SELECT DISTINCT ON (ee.id_equipment)
-	           ee.id_equipment, ee.ts_event, ee.cd_category, ee.cd_subcategory,
+	    -- keyed by the ENTITY (m.id_equipment) but sourced from the
+	    -- signal equipment's events (m.sig_id) so a line inherits its
+	    -- lead_machine's open downtime.
+	    SELECT DISTINCT ON (m.id_equipment)
+	           m.id_equipment, ee.ts_event, ee.cd_category, ee.cd_subcategory,
 	           ee.change_over
 	      FROM %[1]s.equipment_events ee
-	      JOIN machines m ON m.id_equipment = ee.id_equipment
+	      JOIN machines m ON m.sig_id = ee.id_equipment
 	     WHERE ee.ts_end IS NULL
 	       AND ee.ts_event >= now() - interval '15 days'
-	     ORDER BY ee.id_equipment, ee.ts_event DESC
+	     ORDER BY m.id_equipment, ee.ts_event DESC
 	), stop_events AS (
-	    SELECT ee.id_equipment,
+	    SELECT m.id_equipment,
 	           greatest(0, extract(epoch FROM
 	               least(COALESCE(ee.ts_end, now()), now())
 	             - greatest(ee.ts_event, now() - interval '24 hours')))::float8 AS dur,
 	           COALESCE(ee.change_over, false)      AS change_over,
 	           COALESCE(ee.planned_downtime, false) AS planned_downtime
 	      FROM %[1]s.equipment_events ee
-	      JOIN machines m ON m.id_equipment = ee.id_equipment
+	      JOIN machines m ON m.sig_id = ee.id_equipment
 	     WHERE ee.status IS DISTINCT FROM 6
 	       AND ee.ts_event >= now() - interval '15 days'
 	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now() + interval '60 seconds'))
@@ -167,7 +199,7 @@ const currentMetricsSQL = `
 	      LEFT JOIN LATERAL (
 	          SELECT mode() WITHIN GROUP (ORDER BY v.state) AS dominant_state
 	            FROM %[1]s.equipment_values v
-	           WHERE v.id_equipment = m.id_equipment
+	           WHERE v.id_equipment = m.sig_id
 	             AND v.state IS NOT NULL
 	             AND v.ts_value >= h.bucket
 	             AND v.ts_value <  h.bucket + interval '1 hour') hb ON true
