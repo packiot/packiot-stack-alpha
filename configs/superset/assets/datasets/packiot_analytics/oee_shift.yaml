@@ -1,0 +1,145 @@
+# bi.oee_shift — curated shift-grain OEE (source: equipment_runtime_shift ⋈ equipments).
+# Columns reconciled to the live F3 schema (PR #780 / fix/superset-golive-blockers):
+#   oee_a/oee_p/oee_q (NOT oee_availability/…), gross/net (NO `count`),
+#   ts_value/ts_end (NOT begin_time/end_time). Every row carries id_enterprise (RLS key).
+table_name: oee_shift
+main_dttm_col: ts_value
+description: Shift-grain OEE, one row per equipment x shift. Headline self-service aggregate.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a
+metrics:
+- metric_name: avg_oee
+  verbose_name: OEE
+  metric_type: null
+  expression: AVG(oee)
+  description: Mean overall OEE (0-1 fraction; front4 shiftOee total).
+  d3format: .1%
+  currency: null
+  warning_text: null
+  extra: null
+- metric_name: avg_oee_a
+  verbose_name: Availability
+  expression: AVG(oee_a)
+  d3format: .1%
+  description: front4 shiftOee Availability leg.
+  extra: null
+- metric_name: avg_oee_p
+  verbose_name: Performance
+  expression: AVG(oee_p)
+  d3format: .1%
+  description: front4 shiftOee Performance leg.
+  extra: null
+- metric_name: avg_oee_q
+  verbose_name: Quality
+  expression: AVG(oee_q)
+  d3format: .1%
+  description: front4 shiftOee Quality leg.
+  extra: null
+- metric_name: sum_net
+  verbose_name: Net production
+  expression: SUM(net)
+  d3format: .3~s
+  description: Good production (front4 shiftKpi net_production).
+  extra: null
+- metric_name: sum_gross
+  verbose_name: Gross production
+  expression: SUM(gross)
+  d3format: .3~s
+  description: Total production (front4 gross_production).
+  extra: null
+- metric_name: sum_scrap
+  verbose_name: Scrap
+  expression: SUM(gross - net)
+  d3format: .3~s
+  description: Derived scrap = gross - net (no native scrap column on the rollup).
+  extra: null
+- metric_name: sum_running_time
+  verbose_name: Running time
+  expression: SUM(running_time)
+  d3format: .3~s
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: Tenant key (RLS). Never expose in charts; used by the RLS filter.
+- column_name: id_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_equipment
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_shift
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: cd_shift
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: ts_value
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+  groupby: false
+  filterable: true
+  python_date_format: null
+- column_name: ts_end
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+- column_name: oee
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee_a
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee_p
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee_q
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: gross
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: net
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: running_time
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

@@ -1,0 +1,23 @@
+# front4 eventsTable "Last Events" — raw downtime/event rows. Table.
+# Columns mirror front4: machine / category / sub-category / start / end / duration.
+slice_name: Last events
+description: bi.downtimes rows (raw). front4 eventsTable / eventsTableCompact.
+certified_by: null
+certification_details: null
+viz_type: table
+params: |
+  {
+    "datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table",
+    "viz_type": "table",
+    "query_mode": "raw",
+    "all_columns": ["ts_value", "ts_end", "duration", "nm_equipment", "desc_category", "desc_subcategory", "planned_downtime", "change_over"],
+    "order_by_cols": ["[\"ts_value\", false]"],
+    "adhoc_filters": [],
+    "row_limit": 100,
+    "table_timestamp_format": "smart_date"
+  }
+query_context: null
+cache_timeout: null
+uuid: 18a6435f-64d3-440c-937e-053ebaad8d4a
+version: 1.0.0
+dataset_uuid: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05

@@ -1,0 +1,26 @@
+# front4 v3 availabilityGraph "Disponibilidade" — downtime duration by category,
+# top categories descending (a pareto). Categorical bar over desc_category.
+slice_name: Downtime by reason
+description: bi.downtimes SUM(duration) by desc_category, desc. front4 v3 availabilityGraph pareto.
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params: |
+  {
+    "datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table",
+    "viz_type": "dist_bar",
+    "metrics": ["total_duration"],
+    "groupby": ["desc_category"],
+    "columns": [],
+    "adhoc_filters": [],
+    "row_limit": 6,
+    "order_desc": true,
+    "y_axis_format": ".3~s",
+    "show_legend": false,
+    "time_range": "last week"
+  }
+query_context: null
+cache_timeout: null
+uuid: 7e15ed8e-3d2f-45bd-a996-14c48db7d881
+version: 1.0.0
+dataset_uuid: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05
