@@ -145,35 +145,71 @@ WTF_CSRF_EXEMPT_LIST = ["superset.views.core.log"]  # keep CSRF ON for everythin
 # path alone cannot satisfy. New users self-register as Gamma_BI (create on the
 # bi.* datasets, no admin). The CUSTOM security manager (below) additionally binds
 # each user to their per-tenant RLS on first login.
-from flask_appbuilder.security.manager import AUTH_OAUTH  # noqa: E402
+# AUTH MODE — FAIL-SAFE DEFAULT: database login (admin username/password form).
+#
+# The Cognito OIDC/OAuth2 authoring-SSO path below is engaged ONLY when it is
+# BOTH explicitly requested (SUPERSET_AUTH_MODE=oauth) AND actually wired (a
+# non-empty SUPERSET_COGNITO_CLIENT_ID). Otherwise we fall back to AUTH_DB so the
+# standard username/password form renders and the bootstrapped admin can log in.
+#
+# WHY THIS GATE EXISTS: with AUTH_TYPE=AUTH_OAUTH and an UNwired Cognito client
+# (empty client id/secret/issuer — the state we shipped), FAB renders an SSO-only
+# page ("Sign in with Cognito") with NO DB form and a dead OAuth button — locking
+# every admin out. DB login is the safe default until a real Cognito app client +
+# the superset_cognito_* secrets are provisioned. See docs/plans/w2-embedded-superset.md.
+#
+# The guest-token / embedded-SDK path (EMBEDDED_SUPERSET, GUEST_TOKEN_*, the
+# DB_CONNECTION_MUTATOR tenant stamp) is INDEPENDENT of this UI login mode and
+# keeps working in either — guest tokens are signed with GUEST_TOKEN_JWT_SECRET,
+# not minted through the FAB login form.
+_SUPERSET_AUTH_MODE = os.environ.get("SUPERSET_AUTH_MODE", "db").strip().lower()
+_SUPERSET_COGNITO_CLIENT_ID = os.environ.get("SUPERSET_COGNITO_CLIENT_ID", "").strip()
+_USE_COGNITO_OAUTH = _SUPERSET_AUTH_MODE == "oauth" and bool(_SUPERSET_COGNITO_CLIENT_ID)
 
-AUTH_TYPE = AUTH_OAUTH
-AUTH_USER_REGISTRATION = True
-AUTH_USER_REGISTRATION_ROLE = "Gamma_BI"     # least-privilege authoring role (see spec §2.3)
+if _USE_COGNITO_OAUTH:
+    # ── Authoring auth: Cognito as an OIDC/OAuth2 provider (Flask-AppBuilder) ──
+    # Gives each supervisor a REAL Superset account (Explore + SQL Lab) so they
+    # can BUILD their own reports. New users self-register as Gamma_BI. The CUSTOM
+    # security manager (further below) additionally binds each user to their
+    # per-tenant RLS on first login.
+    from flask_appbuilder.security.manager import AUTH_OAUTH  # noqa: E402
 
-COGNITO_ISSUER = os.environ["SUPERSET_COGNITO_ISSUER"]  # https://cognito-idp.us-east-1.amazonaws.com/<pool-id>
-OAUTH_PROVIDERS = [
-    {
-        "name": "cognito",
-        "icon": "fa-lock",
-        "token_key": "access_token",
-        "remote_app": {
-            "client_id": os.environ["SUPERSET_COGNITO_CLIENT_ID"],
-            "client_secret": os.environ["SUPERSET_COGNITO_CLIENT_SECRET"],
-            "server_metadata_url": f"{COGNITO_ISSUER}/.well-known/openid-configuration",
-            "api_base_url": f"{COGNITO_ISSUER}/",
-            "client_kwargs": {"scope": "openid email profile"},
-        },
+    AUTH_TYPE = AUTH_OAUTH
+    AUTH_USER_REGISTRATION = True
+    AUTH_USER_REGISTRATION_ROLE = "Gamma_BI"     # least-privilege authoring role (see spec §2.3)
+
+    COGNITO_ISSUER = os.environ["SUPERSET_COGNITO_ISSUER"]  # https://cognito-idp.us-east-1.amazonaws.com/<pool-id>
+    OAUTH_PROVIDERS = [
+        {
+            "name": "cognito",
+            "icon": "fa-lock",
+            "token_key": "access_token",
+            "remote_app": {
+                "client_id": _SUPERSET_COGNITO_CLIENT_ID,
+                "client_secret": os.environ["SUPERSET_COGNITO_CLIENT_SECRET"],
+                "server_metadata_url": f"{COGNITO_ISSUER}/.well-known/openid-configuration",
+                "api_base_url": f"{COGNITO_ISSUER}/",
+                "client_kwargs": {"scope": "openid email profile"},
+            },
+        }
+    ]
+
+    # Map a Cognito group claim → Superset roles (coarse RBAC). The FINE per-tenant
+    # binding is done by the custom security manager, not here.
+    AUTH_ROLES_MAPPING = {
+        "factory-supervisor": ["Gamma_BI"],
+        "packiot-bi-admin": ["Admin"],
     }
-]
+    AUTH_ROLES_SYNC_AT_LOGIN = True
+else:
+    # ── Database login (DEFAULT): standard username/password form via FAB ──────
+    # The bootstrapped admin (SUPERSET_GUESTTOKEN_ADMIN_USER, created by
+    # `superset fab create-admin` from Secrets Manager packiot/production/app)
+    # logs in here. No self-registration — the login form is the only entry.
+    from flask_appbuilder.security.manager import AUTH_DB  # noqa: E402
 
-# Map a Cognito group claim → Superset roles (coarse RBAC). The FINE per-tenant
-# binding is done by the custom security manager, not here.
-AUTH_ROLES_MAPPING = {
-    "factory-supervisor": ["Gamma_BI"],
-    "packiot-bi-admin": ["Admin"],
-}
-AUTH_ROLES_SYNC_AT_LOGIN = True
+    AUTH_TYPE = AUTH_DB
+    AUTH_USER_REGISTRATION = False
 
 # ── HARDENING: authors get NO native SQL against the analytics DB ─────────────
 # RLS rewrites DATASET queries only. A user with SQL Lab + raw analytics-DB access
@@ -190,8 +226,15 @@ SQL_MAX_ROW = 100_000
 # Bind id_enterprise → a per-tenant RLS filter on first/every OIDC login.
 # The class lives next to this file (configs/superset/custom_sso_security_manager.py,
 # also on PYTHONPATH). See the spec §2.3 for its body.
-from custom_sso_security_manager import CognitoTenantSecurityManager  # noqa: E402
-CUSTOM_SECURITY_MANAGER = CognitoTenantSecurityManager
+#
+# ONLY wired in OAuth mode: it exists to bind per-tenant RLS on OIDC login. In DB
+# mode there is no OIDC login to hook, so wiring it would only add dead
+# oauth_user_info/auth_user_oauth overrides. The guest-token embed path does NOT
+# use the custom manager (it rides GUEST_TOKEN_JWT_SECRET + the guest role), so
+# leaving it unwired here does not affect embeds.
+if _USE_COGNITO_OAUTH:
+    from custom_sso_security_manager import CognitoTenantSecurityManager  # noqa: E402
+    CUSTOM_SECURITY_MANAGER = CognitoTenantSecurityManager
 
 # ── Analytics DB connection is NOT configured here ────────────────────────────
 # The `bi` read surface (read as superset_ro) is registered as a Superset
