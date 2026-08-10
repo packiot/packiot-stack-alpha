@@ -412,15 +412,24 @@ resource "aws_route53_record" "services_edge" {
 
 # RISKY (var.edge_cutover) — dash.packiot.app cutover. dash lives in the PARENT
 # packiot.app zone (Z05633042U07OEHROHZCX), not the prod child zone, so it needs
-# its own resource. Created ONLY when cutover=true. If a manual dash A-record
-# already exists in the parent zone, remove it first (an ALIAS and an A record for
-# the same name conflict) — see runbook.
+# its own resource. Created ONLY when cutover=true.
+#
+# allow_overwrite=true — dash.packiot.app already exists in the parent zone as a
+# LIVE manual A record → 3.232.9.118 (the App EIP), which is why this resource was
+# held: creating an ALIAS for a name that already has an A record errors ("Tried
+# to create resource record set but it already exists"). Route53 ChangeResource
+# RecordSets is an atomic UPSERT, so overwriting the A record with the ALIAS is a
+# single in-place swap — there is NO dangling window where dash fails to resolve.
+# The ALIAS target (aws_cloudfront_distribution.edge = d3j5uz0jkgzea0.cloudfront.net)
+# is the SAME edge distribution that already carries dash.packiot.app in its alias
+# set + cert SAN, so this is the intended, cert-covered destination.
 resource "aws_route53_record" "dash_edge" {
   count = var.edge_cutover ? 1 : 0
 
-  zone_id = data.aws_route53_zone.packiot_app.zone_id
-  name    = "dash.packiot.app"
-  type    = "A"
+  zone_id         = data.aws_route53_zone.packiot_app.zone_id
+  name            = "dash.packiot.app"
+  type            = "A"
+  allow_overwrite = true
 
   alias {
     name                   = aws_cloudfront_distribution.edge.domain_name
