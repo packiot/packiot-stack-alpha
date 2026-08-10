@@ -77,6 +77,13 @@ SUPERSET_COGNITO_CLIENT_ID=$$(echo "$$APP_SECRET" | jq -r '.superset_cognito_cli
 SUPERSET_COGNITO_CLIENT_SECRET=$$(echo "$$APP_SECRET" | jq -r '.superset_cognito_client_secret // ""')
 SUPERSET_OEE_DASHBOARD_UUID=$$(echo "$$APP_SECRET" | jq -r '.superset_oee_dashboard_uuid // ""')
 
+# X-Origin-Verify origin-lock secret (bi_edge.tf): CloudFront stamps this header on
+# every origin request; nginx below 403s anything lacking it so the box is only
+# reachable through CloudFront. Read with `// ""` so a not-yet-created secret does
+# NOT lock the box (empty → guard is skipped, bi reachable directly). Dedicated
+# secret (not in packiot/production/app) — its own resource in bi_edge.tf.
+BI_ORIGIN_VERIFY=$$(get_secret "packiot/production/bi-origin-verify" 2>/dev/null | jq -r '.value // ""' || echo "")
+
 mkdir -p /opt/packiot
 if [ -f /opt/packiot/.env ]; then
   echo ".env already exists — skipping generation"
@@ -141,6 +148,16 @@ certbot certonly --dns-route53 \
 printf 'map $$http_upgrade $$ws_connection {\n    default upgrade;\n    "" close;\n}\n' \
   > /etc/nginx/conf.d/00-websocket.conf
 
+# Origin-lock guard line — only emitted when the X-Origin-Verify secret exists, so
+# a missing secret leaves bi reachable (fail-open on config, not a self-lockout).
+if [ -n "$$BI_ORIGIN_VERIFY" ]; then
+  ORIGIN_LOCK_LINE="    if (\$$http_x_origin_verify != \"$$BI_ORIGIN_VERIFY\") { return 403; }"
+  echo "Origin-lock: X-Origin-Verify guard ENABLED on bi nginx"
+else
+  ORIGIN_LOCK_LINE="    # X-Origin-Verify secret packiot/production/bi-origin-verify empty — origin-lock NOT enforced"
+  echo "Origin-lock: secret empty — guard skipped (bi reachable directly)"
+fi
+
 cat > /etc/nginx/conf.d/superset.conf <<NGINX
 server {
     listen 80;
@@ -155,6 +172,8 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/$$PRODUCTION_DOMAIN/privkey.pem;
 
     client_max_body_size 32m;
+
+$$ORIGIN_LOCK_LINE
 
     location / {
         proxy_pass          http://127.0.0.1:8088;

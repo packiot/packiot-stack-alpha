@@ -284,19 +284,29 @@ resource "aws_instance" "superset" {
   }
 }
 
-# ── DNS: bi.prod.packiot.app → Superset EIP ─────────────────────────────────────
-# A NEW record in the production child zone. Deliberately NOT added to var.services
-# (that would re-render aws_s3_object.app_init / nginx_setup — an in-place change to
-# existing resources). `bi` matches the CloudFront `*.prod.packiot.app` wildcard
-# alias, but this A record points DIRECTLY at the box (CloudFront fronting is
-# follow-up 4); a wildcard alias on the distribution does not create or conflict
-# with a Route53 record.
+# ── DNS: bi.prod.packiot.app → BI CloudFront (edge-hardening cutover) ────────────
+# ORIGINALLY this was an A record → Superset EIP (direct-to-box). The BI edge
+# (bi_edge.tf, superset.tf follow-up 4) fronts bi with CloudFront + WAF, so this
+# record is now an ALIAS → the BI CloudFront distribution. CloudFront then dials
+# the box over the non-fronted bi-origin.prod.packiot.app record (bi_edge.tf).
+#
+# allow_overwrite=true — Route53 ChangeResourceRecordSets is an atomic UPSERT, so
+# swapping this name's A record for the ALIAS is a single in-place change: DNS
+# never dangles (no delete-then-create window). depends_on the origin record +
+# distribution so the box is reachable through CloudFront BEFORE bi.prod cuts over.
 resource "aws_route53_record" "superset_bi" {
-  zone_id = aws_route53_zone.production.zone_id
-  name    = "${var.superset_subdomain}.${var.production_domain}"
-  type    = "A"
-  ttl     = 60
-  records = [aws_eip.superset.public_ip]
+  zone_id         = aws_route53_zone.production.zone_id
+  name            = "${var.superset_subdomain}.${var.production_domain}"
+  type            = "A"
+  allow_overwrite = true
+
+  alias {
+    name                   = aws_cloudfront_distribution.bi_edge.domain_name
+    zone_id                = "Z2FDTNDATAQYW2"
+    evaluate_target_health = false
+  }
+
+  depends_on = [aws_route53_record.superset_bi_origin]
 }
 
 # ── Disk-fill alarm (mirror app/DB boxes) ───────────────────────────────────────
