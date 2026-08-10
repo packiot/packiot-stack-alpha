@@ -17,7 +17,7 @@ params: |
     "row_limit": 100,
     "table_timestamp_format": "smart_date"
   }
-query_context: null
+query_context: '{"datasource": {"id": 5, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["id_production_order", "id_equipment", "ts_start", "ts_end", "oee", "oee_a", "oee_p", "oee_q", "net_production", "gross_production"], "orderby": [["ts_start", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "5__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["id_production_order", "id_equipment", "ts_start", "ts_end", "oee", "oee_a", "oee_p", "oee_q", "net_production", "gross_production"], "order_by_cols": ["[\"ts_start\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "slice_id": 8, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: bbc7f4b9-ce5a-45a4-86a3-66c2e51101df
 version: 1.0.0

@@ -17,7 +17,7 @@ params: |
     "order_by_cols": [],
     "time_range": "last week"
   }
-query_context: null
+query_context: '{"datasource": {"id": 4, "type": "table"}, "force": false, "queries": [{"time_range": "last week", "filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["nm_equipment", "cd_shift"], "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q", "sum_net", "sum_gross"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "4__table", "viz_type": "table", "query_mode": "aggregate", "groupby": ["nm_equipment", "cd_shift"], "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q", "sum_net", "sum_gross"], "adhoc_filters": [], "row_limit": 100, "order_by_cols": [], "time_range": "last week", "annotation_layers": [], "slice_id": 11, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 3b95c7b5-a542-4e39-9cf6-37264ac1f62b
 version: 1.0.0

@@ -273,10 +273,60 @@ def _caller_tenant_id():
     return None
 
 
+# PROD IS SINGLE-TENANT: enterprise 3 = CPACK. The ONLY tenant whose data lives on
+# this stack right now.
+_ADMIN_DEFAULT_TENANT = 3
+
+
+def _admin_default_tenant(security_manager):
+    """Default tenant stamp for an authenticated, non-guest **Admin** UI session.
+
+    WHY THIS EXISTS: the existing dashboards' charts read the `superset_ro` bi.*
+    datasets, whose Postgres RLS fail-closes to ZERO rows when `app.tenant_id` is
+    unset (definer-view semantics — a BYPASSRLS/native-Admin login is STILL
+    filtered). So without a stamp, an admin at bi.prod sees every dashboard blank.
+    An authoring/preview admin therefore gets the prod tenant stamped so the
+    dashboards render populated on the SAME datasets (no dataset duplication).
+
+    ISOLATION IS UNCHANGED: guests carry a guest token whose `id_enterprise = <id>`
+    RLS is already resolved by `_caller_tenant_id()` (which runs FIRST in the
+    mutator); guests are never defaulted here (we explicitly exclude guest users),
+    so the embed path keeps stamping the token's own tenant. This branch only adds
+    a stamp for a NON-guest, authenticated Admin session.
+
+    SINGLE-TENANT ASSUMPTION: when a 2nd tenant onboards, this must become
+    tenant-selectable (e.g. per-user preference / role), NOT a hardcoded default.
+    Out of scope while prod is single-tenant.
+    """
+    user = getattr(_flask_g, "user", None)
+    if user is None:
+        return None
+    try:
+        # Never default a guest — their tenant comes from the token RLS (above).
+        if security_manager.is_guest_user(user):
+            return None
+    except Exception:
+        # security_manager may be unavailable in some contexts; be conservative.
+        pass
+    # Anonymous (unauthenticated) sessions get NOTHING -> deny-all (fail-closed).
+    if not getattr(user, "is_authenticated", False):
+        return None
+    roles = getattr(user, "roles", None) or []
+    if any(getattr(r, "name", None) == "Admin" for r in roles):
+        return _ADMIN_DEFAULT_TENANT
+    return None
+
+
 def DB_CONNECTION_MUTATOR(uri, params, username, security_manager, source):  # noqa: N802,E501
     try:
         if getattr(uri, "database", None) == "packiot":
             tenant = _caller_tenant_id()
+            if tenant is None:
+                # No guest-token tenant: fall back to the admin default stamp for
+                # authenticated non-guest Admin sessions so the existing dashboards
+                # render populated at bi.prod. Guests/anonymous still get None here
+                # -> unstamped -> deny-all (isolation + fail-closed preserved).
+                tenant = _admin_default_tenant(security_manager)
             if tenant is not None:
                 connect_args = dict(params.get("connect_args") or {})
                 existing = connect_args.get("options", "")
