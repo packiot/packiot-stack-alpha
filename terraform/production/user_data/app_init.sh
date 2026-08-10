@@ -127,6 +127,16 @@ ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
 # block; only these two are secrets.
 OAUTH2_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_client_secret // ""')
 OAUTH2_COOKIE_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_cookie_secret // ""')
+# Superset embedded-BI guest-token broker (ADR-0045 W2). edge-api mints
+# tenant-scoped Superset guest tokens SERVER-SIDE; front4 embeds the dashboard.
+# It reaches Superset via the ORIGIN-LOCKED host (bi-origin.prod), so it must
+# stamp X-Origin-Verify (its own secret, packiot/production/bi-origin-verify).
+# Admin minter creds + the embed dashboard UUID live in the app secret. Any
+# absent → the /api/superset/* routes stay 503-dark (rest of edge-api unaffected).
+SUPERSET_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_user // ""')
+SUPERSET_ADMIN_PASS=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_password // ""')
+SUPERSET_DASH_UUID=$(echo "$APP_SECRET" | jq -r '.superset_oee_dashboard_uuid // ""')
+SUPERSET_ORIGIN_VERIFY=$(get_secret "packiot/production/bi-origin-verify" | jq -r '.value // ""')
 
 # DB URL (via pgbouncer): app services connect to the `pgbouncer` compose
 # service on :5432; pgbouncer proxies to the r7g upstream. The r7g private IP is
@@ -171,6 +181,20 @@ mkdir -p /opt/packiot
 #     echo "EDGE_API_COGNITO_AUTH_ENABLED=true"
 #   } >> /opt/packiot/.env
 # then: cd /opt/packiot/stack && docker compose -f compose.production.yml up -d oauth2-proxy edge-api
+# ⚠ Superset embed (ADR-0045 W2): a box booted before these keys existed will NOT
+# gain SUPERSET_* automatically. To patch a RUNNING box:
+#   APP=$(aws secretsmanager get-secret-value --secret-id packiot/production/app \
+#         --region us-east-1 --query SecretString --output text)
+#   XOV=$(aws secretsmanager get-secret-value --secret-id packiot/production/bi-origin-verify \
+#         --region us-east-1 --query SecretString --output text | jq -r '.value')
+#   {
+#     echo "SUPERSET_BASE_URL=https://bi-origin.prod.packiot.app"
+#     echo "SUPERSET_GUESTTOKEN_ADMIN_USER=$(echo "$APP" | jq -r '.superset_guesttoken_admin_user')"
+#     echo "SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$(echo "$APP" | jq -r '.superset_guesttoken_admin_password')"
+#     echo "SUPERSET_OEE_DASHBOARD_UUID=$(echo "$APP" | jq -r '.superset_oee_dashboard_uuid')"
+#     echo "SUPERSET_ORIGIN_VERIFY=$XOV"
+#   } >> /opt/packiot/.env
+# then: cd /opt/packiot/stack && docker compose -f compose.production.yml up -d edge-api
 if [ -f /opt/packiot/.env ]; then
   echo ".env already exists — skipping generation"
   echo "  NOTE (W1 DB rewire): ensure POSTGRES_HOST_UPSTREAM is present — see comment above."
@@ -211,6 +235,15 @@ EDGE_API_URL=https://api.$PRODUCTION_DOMAIN
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
 ID_ENTERPRISE=
+
+# Superset embedded-BI guest-token broker (ADR-0045 W2). edge-api reaches
+# Superset through the origin-locked host and stamps X-Origin-Verify. Routes
+# stay 503-dark until all four are present.
+SUPERSET_BASE_URL=https://bi-origin.$PRODUCTION_DOMAIN
+SUPERSET_GUESTTOKEN_ADMIN_USER=$SUPERSET_ADMIN_USER
+SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$SUPERSET_ADMIN_PASS
+SUPERSET_OEE_DASHBOARD_UUID=$SUPERSET_DASH_UUID
+SUPERSET_ORIGIN_VERIFY=$SUPERSET_ORIGIN_VERIFY
 
 # RabbitMQ
 RABBITMQ_USER=$MQ_USER
