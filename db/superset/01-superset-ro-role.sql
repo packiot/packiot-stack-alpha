@@ -101,6 +101,16 @@ GRANT USAGE ON SCHEMA bi TO superset_ro;
 
 -- Curated OEE aggregate — shift grain. Every row carries id_enterprise (via the
 -- equipments dimension) so both isolation layers have a tenant key.
+--
+-- ⚠ DATA-CORRECTNESS FILTER (audit F1/F2/F3, 2026-08-10). The shift-calendar
+-- pre-expands FUTURE, zero-activity buckets (equipment_runtime_shift ranges a
+-- MONTH into the future — 5 518 of 7 750 rows). The KPI charts AVG(oee) with no
+-- time filter, so those empty buckets dragged a real ~60% OEE down to ~2%. Two
+-- guards make every consumer honest without per-chart config:
+--   • ts_value <= now()   — future calendar buckets can never leak in (F3).
+--   • running_time > 0     — idle/empty shifts don't dilute the ratio (F1/F2).
+-- Effect: the OEE gauge + A/P/Q big numbers read the true running average
+-- (~0.59 / A 0.71 / P 0.60 / Q 0.93) instead of a misleading ~0.02.
 CREATE OR REPLACE VIEW bi.oee_shift AS
 SELECT
     eq.id_enterprise,
@@ -118,9 +128,12 @@ SELECT
     rs.net,
     rs.running_time
 FROM equipment_runtime_shift rs
-JOIN equipments eq ON eq.id_equipment = rs.id_equipment;  -- id_enterprise source
+JOIN equipments eq ON eq.id_equipment = rs.id_equipment  -- id_enterprise source
+WHERE rs.ts_value <= now()      -- F3: never expose future calendar buckets
+  AND rs.running_time > 0;      -- F1/F2: only shifts that actually operated
 
 -- Curated OEE aggregate — hourly grain (the workhorse for trend charts).
+-- Same F1/F2/F3 activity+future guard as bi.oee_shift.
 CREATE OR REPLACE VIEW bi.oee_hourly AS
 SELECT
     eq.id_enterprise,
@@ -135,7 +148,9 @@ SELECT
     rh.net,
     rh.running_time
 FROM equipment_runtime_1hour rh
-JOIN equipments eq ON eq.id_equipment = rh.id_equipment;
+JOIN equipments eq ON eq.id_equipment = rh.id_equipment
+WHERE rh.ts_value <= now()      -- F3: never expose future calendar buckets
+  AND rh.running_time > 0;      -- F1/F2: only hours that actually operated
 
 -- Production-order OEE (one row per PO run). production_orders_runtime has NO
 -- id_enterprise column on F3, so the tenant key is derived via the equipments
