@@ -125,7 +125,7 @@ func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterpri
 // index churn (the write-amplification cost the aggregates taxonomy
 // warns about, eaten at home).
 func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
-	logger.Info("uns refresher started (P3c: provisioner + equipment week/month)")
+	logger.Info("uns refresher started (P3c: provisioner + equipment hour/week/month + shift/day)")
 	provisionEvery := int(time.Hour / every)
 	if provisionEvery < 1 {
 		provisionEvery = 1
@@ -158,6 +158,12 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 			}
 			if err := RefreshEquipment(ctx, d, exclAreas, exclEnterprises); err != nil {
 				logger.Warn("uns refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if err := RefreshCurrentEquipmentShiftDay(ctx, d, exclAreas, exclEnterprises); err != nil {
+				logger.Warn("uns equipment shift/day refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -273,6 +279,119 @@ func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterp
 		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
 			return fmt.Errorf("uns hour trail %s: %w", e.uns, err)
 		}
+	}
+	return nil
+}
+
+// ── EQUIPMENT current-SHIFT + current-DAY refreshers (the grey-tile
+// unfreeze). BACKGROUND: prod's piot_refresh_uns runs hour+week+month
+// for the equipment grain but leaves DAY and SHIFT commented out
+// (dead) — so uns_equipment_current_shift/_day never advanced past
+// their Provision seed (INSERT … ON CONFLICT DO NOTHING). On the new
+// stack that froze the mission-control shift/day equipment tiles.
+// These two refreshers close that gap the SAME way the area/site
+// shift/day refreshers (current_rest.go) do — an UPDATE-from-join off
+// the now-filled RUNTIME grain (equipment_runtime_1day for day,
+// equipment_runtime_shift for shift), scoped to the SAME equipment
+// population as the working hour/week/month refreshers
+// (tp_equipment > 1 + the shared exclusion lists). They additionally
+// stamp last_updated = now() so the freshness signal on the tile
+// visibly advances every tick (the area refreshers omit it; the seed
+// leaves it NOT NULL at Provision time, which read as "frozen").
+
+// Equipment current-day: the single current-day runtime row → the UNS
+// day tile. Mirrors refreshHourEquipmentSQL at day grain (source
+// equipment_runtime_1day, keyed on ts_value = today's date).
+const refreshDayEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
+	           oee, oee_p, oee_a, oee_q, available_time, running_time,
+	           stopped_time, planned_downtime, ideal_production,
+	           idle_time, idle_starved, idle_blocked, target, proportional_target
+	      FROM %[1]s.equipment_runtime_1day v
+	     WHERE ts_value = date_trunc('day', now())::date
+	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	            WHERE tp_equipment > 1
+	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	)
+	UPDATE %[1]s.uns_equipment_current_day u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       speed = p.speed, begin_time = p.ts_value,
+	       end_time = (p.ts_value + interval '1 day')::date,
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, proportional_target = p.proportional_target,
+	       elapsed_time = extract(epoch FROM (now() - date_trunc('day', now())))::int,
+	       last_updated = now()
+	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+
+// Equipment current-shift: the CURRENT shift row (via
+// piot_get_shift_hour_begin_by_equipment — the equipment-grain analog
+// of the area shift refresher's piot_get_shift_hour_begin_by_area) +
+// the PREVIOUS shift block (prev1_*, one shift-duration earlier).
+// prod1 is LEFT-joined so the current tile still advances for an
+// equipment that has no prior shift row yet (prev1_* stay NULL) —
+// the area variant INNER-joins, which would keep such a row frozen.
+const refreshShiftEquipmentSQL = `
+	WITH ts AS (
+	    SELECT id_equipment, ts_value FROM (
+	        SELECT e.id_equipment,
+	               (SELECT ts_begin FROM piot_get_shift_hour_begin_by_equipment(e.id_equipment, now())) AS ts_value
+	          FROM %[2]s.equipments e
+	          JOIN %[2]s.enterprises et ON e.id_enterprise = et.id_enterprise AND et.active
+	         WHERE e.tp_equipment > 1
+	           AND NOT (e.id_area = ANY($1)) AND NOT (e.id_enterprise = ANY($2))) s1
+	     WHERE ts_value IS NOT NULL
+	), prod AS (
+	    SELECT v.id_equipment, v.ts_value, v.net, v.gross, v.scrap, v.speed,
+	           v.oee, v.oee_p, v.oee_a, v.oee_q, v.available_time, v.running_time,
+	           v.stopped_time, v.planned_downtime, v.ideal_production,
+	           v.idle_time, v.idle_starved, v.idle_blocked, v.target,
+	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration, v.proportional_target
+	      FROM %[1]s.equipment_runtime_shift v
+	      JOIN ts ON v.id_equipment = ts.id_equipment AND v.ts_value = ts.ts_value
+	), prod1 AS (
+	    SELECT v.id_equipment, v.ts_value, v.net, v.gross, v.scrap,
+	           v.oee, v.oee_a, v.oee_p, v.oee_q, v.target,
+	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration
+	      FROM %[1]s.equipment_runtime_shift v
+	      JOIN ts ON v.id_equipment = ts.id_equipment
+	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
+	)
+	UPDATE %[1]s.uns_equipment_current_shift u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       speed = p.speed,
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, id_shift = p.id_shift, id_shift_hour = p.id_shift_hour,
+	       begin_time = p.ts_value, end_time = p.ts_end, duration = p.duration,
+	       proportional_target = p.proportional_target,
+	       prev1_oee = p1.oee, prev1_oee_a = p1.oee_a, prev1_oee_p = p1.oee_p,
+	       prev1_oee_q = p1.oee_q, prev1_gross_production = p1.gross,
+	       prev1_net_production = p1.net, prev1_scrap = p1.scrap,
+	       prev1_target = p1.target, prev1_begin_time = p1.ts_value,
+	       prev1_end_time = p1.ts_end, prev1_id_shift = p1.id_shift,
+	       prev1_id_shift_hour = p1.id_shift_hour, prev1_duration = p1.duration,
+	       elapsed_time = extract(epoch FROM (now() - p.ts_value))::int,
+	       last_updated = now()
+	  FROM prod p LEFT JOIN prod1 p1 ON p.id_equipment = p1.id_equipment
+	 WHERE u.id_equipment = p.id_equipment`
+
+// RefreshCurrentEquipmentShiftDay runs the equipment shift + day
+// refreshers (the grey-tile unfreeze). Same exclusion lists as the
+// hour/week/month equipment refreshers.
+func RefreshCurrentEquipmentShiftDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns day equipment: %w", err)
+	}
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns shift equipment: %w", err)
 	}
 	return nil
 }
