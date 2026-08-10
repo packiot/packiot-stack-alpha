@@ -15,7 +15,7 @@ params: |
     "y_axis_format": ".1%",
     "subtitle": "Performance"
   }
-query_context: null
+query_context: '{"datasource": {"id": 4, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [], "metrics": ["avg_oee_p"], "annotation_layers": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}}], "form_data": {"datasource": "4__table", "viz_type": "big_number_total", "metric": "avg_oee_p", "adhoc_filters": [], "header_font_size": 0.4, "subheader_font_size": 0.15, "y_axis_format": ".1%", "subtitle": "Performance", "annotation_layers": [], "slice_id": 7, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: b6f6e3fd-cc9b-4131-8d7a-4ea89968f2f8
 version: 1.0.0

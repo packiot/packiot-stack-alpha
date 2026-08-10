@@ -15,7 +15,7 @@ params: |
     "y_axis_format": ".3~s",
     "subtitle": "Shift net production"
   }
-query_context: null
+query_context: '{"datasource":{"id":4,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":[],"metrics":["sum_net"],"annotation_layers":[],"series_limit":0,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"adhoc_filters":[],"annotation_layers":[],"datasource":"4__table","header_font_size":0.4,"metric":"sum_net","slice_id":12,"subheader_font_size":0.15,"subtitle":"Shift net production","viz_type":"big_number_total","y_axis_format":".3~s","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: e51140c4-b5da-4be7-970b-aa8ef7c742b4
 version: 1.0.0
