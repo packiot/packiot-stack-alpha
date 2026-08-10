@@ -13,6 +13,40 @@ sequence to bring embedded Superset up on **staging** and pass the
 
 ---
 
+## 0.0 Overlay go-live blocker fixes (this PR)
+
+Four scaffold defects surfaced during the staging live 2-tenant test (which
+**passed** — guest-token RLS isolation is proven). They are now fixed durably so
+this runbook is executable as-written:
+
+1. **Derived image** — the bare `apache/superset:4.1.1` ships no Postgres driver
+   and lacks `flask-cors`/`Authlib`/`flask-talisman`, so it could not boot our
+   config. `docker/superset/Dockerfile` adds exactly those four; the overlay's web/
+   worker/init services now `build:` it and tag it `packiot/superset:4.1.1-w2`
+   (arm64-buildable on the t4g runner). No more manual `pip install` in the container.
+2. **Metadata DB is UPSTREAM-DIRECT, not pgbouncer.** pgbouncer routes only
+   `packiot`/`packiot_shadow` (no `superset` route, no wildcard). Rather than edit
+   the shared base `pgbouncer` service `command:` (out of overlay scope; affects the
+   whole stack), the low-traffic Superset metadata DB connects direct to the r7g via
+   `POSTGRES_HOST_UPSTREAM` — the same host `superset-db-init` already uses, and the
+   safer home for Alembic migrations under transaction-pooling (same rationale as
+   hasura-direct). Wired in `superset_config.py` + `compose.superset.yml` env.
+3. **`bi.*` views reconciled to the REAL F3 schema** — see §5. OEE cols are
+   `oee_a/oee_p/oee_q`; timestamps `ts_value/ts_end`; counts `gross/net`;
+   `production_orders_runtime` has no `id_enterprise` (derived via equipments); the
+   `downtimes` table does not exist (source is `equipment_events`, a compressed
+   hypertable that can't take RLS → isolated transitively via the equipments join).
+   Validated ephemerally on staging (all views resolve, every view exposes
+   `id_enterprise`, tenant-set → own rows + 0 foreign, tenant-unset → 0; all
+   artifacts dropped afterward).
+4. **Guest-role grants baked into init** — `superset init` left the guest role
+   (`Public`) with zero perms, so `@protect()` 403'd chart-data before RLS ran.
+   `superset-init` now runs `configs/superset/bootstrap_guest_role.py` (idempotent):
+   grants `can_read` on Chart/Dashboard/Dataset + `can_explore`/`can_explore_json`
+   (+ `can_read` on EmbeddedDashboard, best-effort).
+
+---
+
 ## 0. What is already done (this PR / prior work)
 
 | Item | State | Evidence |
@@ -125,11 +159,16 @@ cd /opt/actions-runner/_work/packiot-stack-alpha/packiot-stack-alpha
 grep -q '^COMPOSE_PROFILES=' /opt/packiot/.env \
   && sed -i 's/^COMPOSE_PROFILES=.*/&,superset/' /opt/packiot/.env \
   || echo 'COMPOSE_PROFILES=superset' >> /opt/packiot/.env
+# a2) build the derived image (adds psycopg2 + flask-cors + Authlib + flask-talisman;
+#     arm64, ~1-2 min on the t4g runner). `up -d` also builds if missing, but build
+#     explicitly so a build error surfaces before the one-shots run.
+docker compose -f compose.staging.yml -f compose.superset.yml -p stack build superset
 # b) bring the profile up (init one-shots run first, then web+worker)
 docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d
 # c) confirm ordering completed
 docker logs superset-db-init --tail 20     # "superset-db-init complete."
-docker logs superset-init    --tail 40     # db upgrade + init + create-admin
+docker logs superset-init    --tail 40     # db upgrade + init + create-admin +
+                                           # "[bootstrap_guest_role] ... granted=..."
 docker compose -p stack ps superset superset-worker superset-redis
 curl -fsS http://127.0.0.1:8088/health     # → "OK"
 ```
@@ -166,13 +205,27 @@ psql "host=$PGH user=$PGU dbname=$PGDB" -v ON_ERROR_STOP=1 \
   -c "ALTER ROLE superset_ro LOGIN PASSWORD '$RO_PW';"
 ```
 
-> **Before applying `02` on the real analytics DB**, re-confirm the base tables it
-> RLS-locks (`equipments`, `production_orders_runtime`, `equipment_runtime_shift`,
-> `equipment_runtime_1hour`, `downtimes`) match production schema, and note the
-> TimescaleDB perf caveat (the `EXISTS`-join can defeat chunk exclusion on the
-> hypertable rollups — see the SQL's PERFORMANCE NOTE; benchmark, denormalize
-> `id_enterprise` onto hot rollups if latency bites). Enabling RLS is live-affecting
-> on those shared tables — validate on staging under real query load.
+> **Schema reconciliation (this PR).** `01`/`02` were rewritten to the REAL F3
+> schema (validated ephemerally on staging, id_enterprise=3). Corrections:
+> OEE cols `oee_a/oee_p/oee_q` (not `oee_availability/…`); time bounds
+> `ts_value/ts_end` (not `begin_time/end_time`); counts `gross/net` (no `count`);
+> `equipment_runtime_1hour` buckets on `ts_value` (no `bucket`);
+> `production_orders_runtime` has **no** `id_enterprise` → derived via the
+> `equipments` join (id_equipment 100% populated), run window from
+> `runtime_timerange` (tstzrange, `lower()/upper()`); the `downtimes` table does
+> **not** exist → the downtime source is `equipment_events` (via `bi.downtimes`).
+>
+> **RLS-locked base tables** are now `equipments`, `equipment_runtime_shift`,
+> `equipment_runtime_1hour`, `production_orders_runtime`. **`equipment_events` is
+> NOT RLS-locked** — it is a COMPRESSED TimescaleDB hypertable and `ENABLE ROW
+> LEVEL SECURITY` errors on columnstore hypertables; its isolation is TRANSITIVE
+> (the `bi.downtimes` view joins the RLS-protected `equipments` and exposes
+> `eq.id_enterprise`). Note the TimescaleDB perf caveat (the `EXISTS`-join can
+> defeat chunk exclusion on the hypertable rollups — see the SQL's PERFORMANCE
+> NOTE; denormalize `id_enterprise` onto hot rollups if latency bites). Enabling
+> RLS is live-affecting on those shared tables — validate on staging under real
+> query load. The ephemeral gate wraps all DDL in a transaction and ROLLBACKs, so
+> it does NOT leave RLS on the live tables.
 
 Then register the analytics DB **in Superset** as `superset_ro`, exposing **only
 the `bi` schema**, and create datasets for each `bi.*` view (§5 of the spec):

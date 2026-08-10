@@ -4,7 +4,10 @@
 --
 -- Postgres Row-Level Security as a REAL per-tenant CO-ENFORCER (not the
 -- fail-closed-only no-op the Metabase donor settled for). Every base table behind
--- a bi.* view gets an RLS policy keyed on the session GUC `app.tenant_id`:
+-- a bi.* view gets an RLS policy keyed on the session GUC `app.tenant_id` — with ONE
+-- documented exception: equipment_events is a compressed hypertable on the live DB
+-- and cannot take RLS, so bi.downtimes isolates it transitively via the RLS-protected
+-- equipments join (see that block below). The policy shape:
 --
 --   * GUC set to a tenant id → the policy FILTERS to that tenant's rows.
 --   * GUC unset/blank         → current_tenant() is NULL → the policy DENIES ALL
@@ -54,22 +57,60 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- ── Native-id tables (id_enterprise is a real column) — cheap policy ─────────
--- production_orders_runtime carries id_enterprise natively.
-ALTER TABLE production_orders_runtime ENABLE ROW LEVEL SECURITY;
-ALTER TABLE production_orders_runtime FORCE ROW LEVEL SECURITY;  -- applies even to the table owner
-DROP POLICY IF EXISTS tenant_isolation ON production_orders_runtime;
-CREATE POLICY tenant_isolation ON production_orders_runtime
-    USING (id_enterprise = current_tenant());
-
--- equipments carries id_enterprise natively (and is the dimension the other
--- policies reach through — protect it directly too).
+-- equipments carries id_enterprise natively (and is the dimension the reached-via
+-- policies below join through — protect it directly too).
 ALTER TABLE equipments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipments FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipments;
 CREATE POLICY tenant_isolation ON equipments
     USING (id_enterprise = current_tenant());
 
+-- equipment_events (the F3 downtime source — there is NO `downtimes` table) carries
+-- id_enterprise natively, BUT on the live analytics DB it is a COMPRESSED TimescaleDB
+-- hypertable, and `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` is rejected on
+-- columnstore hypertables ("operation not supported on hypertables that have
+-- columnstore enabled"). So we enable a native policy CONDITIONALLY: only when the
+-- table can actually take one (a plain table, or an uncompressed hypertable).
+--   * Live DB (compressed hypertable) → SKIP. bi.downtimes still isolates
+--     TRANSITIVELY: it joins equipment_events to the RLS-protected `equipments`
+--     dimension and exposes eq.id_enterprise, so only events for the session
+--     tenant's equipment surface. Superset's guest-token clause on the view column
+--     is the primary embed-path enforcer, as for every other bi.* view.
+--   * Plain-table deployments (e.g. the CI isolation-gate fixture, or a future
+--     decompressed equipment_events) → enable the native policy too, so the base
+--     table is directly protected (and the "every base table has a policy" gate holds).
+-- The to_regclass guard keeps this working on a bare Postgres with no TimescaleDB
+-- catalog (the timescaledb_information schema simply won't exist there).
+DO $$
+DECLARE is_columnstore boolean := false;
+BEGIN
+  IF to_regclass('timescaledb_information.hypertables') IS NOT NULL THEN
+    SELECT COALESCE(bool_or(compression_enabled), false) INTO is_columnstore
+    FROM timescaledb_information.hypertables
+    WHERE hypertable_name = 'equipment_events';
+  END IF;
+  IF is_columnstore THEN
+    RAISE NOTICE 'equipment_events is a compressed hypertable — RLS skipped; bi.downtimes isolates transitively via the equipments join';
+  ELSE
+    EXECUTE 'ALTER TABLE equipment_events ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE equipment_events FORCE ROW LEVEL SECURITY';
+    EXECUTE 'DROP POLICY IF EXISTS tenant_isolation ON equipment_events';
+    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING (id_enterprise = current_tenant())';
+  END IF;
+END$$;
+
 -- ── Reached-via-equipments tables (no native id_enterprise) — EXISTS policy ──
+-- production_orders_runtime has NO id_enterprise column on F3 (the earlier scaffold
+-- assumed one). id_equipment is 100% populated, so derive the tenant via equipments.
+ALTER TABLE production_orders_runtime ENABLE ROW LEVEL SECURITY;
+ALTER TABLE production_orders_runtime FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON production_orders_runtime;
+CREATE POLICY tenant_isolation ON production_orders_runtime
+    USING (EXISTS (
+        SELECT 1 FROM equipments e
+        WHERE e.id_equipment = production_orders_runtime.id_equipment
+          AND e.id_enterprise = current_tenant()));
+
 -- equipment_runtime_shift → equipments for the tenant key.
 ALTER TABLE equipment_runtime_shift ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_shift FORCE ROW LEVEL SECURITY;
@@ -90,15 +131,8 @@ CREATE POLICY tenant_isolation ON equipment_runtime_1hour
         WHERE e.id_equipment = equipment_runtime_1hour.id_equipment
           AND e.id_enterprise = current_tenant()));
 
--- downtimes → equipments.
-ALTER TABLE downtimes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE downtimes FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON downtimes;
-CREATE POLICY tenant_isolation ON downtimes
-    USING (EXISTS (
-        SELECT 1 FROM equipments e
-        WHERE e.id_equipment = downtimes.id_equipment
-          AND e.id_enterprise = current_tenant()));
+-- (The F3 downtime source equipment_events is handled above with a native-id
+-- policy — there is no `downtimes` table to protect.)
 
 -- PERFORMANCE NOTE (TimescaleDB): equipment_runtime_1hour / _shift are hypertable-
 -- backed; an EXISTS-join RLS predicate is pushed per-chunk and can defeat chunk

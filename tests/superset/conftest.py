@@ -77,6 +77,15 @@ def _wait_ready(dsn: str, timeout: float = 45.0) -> None:
 
 
 # ── minimal analytics base schema (only the columns the bi.* views read) ──────
+# RECONCILED to the REAL F3 schema (see db/superset/01): OEE cols oee_a/oee_p/oee_q;
+# time bounds ts_value/ts_end; counts gross/net (no `count`); _1hour buckets on
+# ts_value; production_orders_runtime has NO id_enterprise (derived via equipments)
+# and bounds its run with a runtime_timerange tstzrange; the `downtimes` table does
+# not exist — the downtime source is equipment_events (id_enterprise native here).
+# This fixture is a PLAIN Postgres (no TimescaleDB), so 02's conditional block DOES
+# enable a native RLS policy on equipment_events (the "every base table has a policy"
+# guard therefore holds); on the live compressed hypertable that policy is skipped
+# and bi.downtimes isolates transitively via the equipments join.
 _BASE_SCHEMA = """
 CREATE TABLE equipments (
     id_enterprise int  NOT NULL,
@@ -88,36 +97,35 @@ CREATE TABLE equipments (
     active        boolean NOT NULL DEFAULT true
 );
 CREATE TABLE equipment_runtime_shift (
-    id_equipment     int  NOT NULL,
-    id_shift         int  NOT NULL,
-    begin_time       timestamptz NOT NULL,
-    end_time         timestamptz NOT NULL,
-    oee              numeric, oee_availability numeric,
-    oee_performance  numeric, oee_quality numeric,
-    count numeric, gross numeric, running_time numeric
+    id_equipment int NOT NULL,
+    id_shift     int NOT NULL,
+    cd_shift     text,
+    ts_value     timestamptz NOT NULL,
+    ts_end       timestamptz NOT NULL,
+    oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
+    gross numeric, net numeric, running_time numeric
 );
 CREATE TABLE equipment_runtime_1hour (
     id_equipment int NOT NULL,
-    bucket       timestamptz NOT NULL,
-    oee numeric, oee_availability numeric,
-    oee_performance numeric, oee_quality numeric,
-    count numeric, gross numeric, running_time numeric
+    ts_value     timestamptz NOT NULL,
+    oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
+    gross numeric, net numeric, running_time numeric
 );
 CREATE TABLE production_orders_runtime (
-    id_enterprise       int NOT NULL,
     id_production_order int NOT NULL,
     id_equipment        int NOT NULL,
-    oee numeric, oee_availability numeric,
-    oee_performance numeric, oee_quality numeric,
-    count numeric, gross numeric,
-    begin_time timestamptz, end_time timestamptz
+    oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
+    gross_production numeric, net_production numeric, running_time numeric,
+    runtime_timerange tstzrange
 );
-CREATE TABLE downtimes (
-    id_downtime        int PRIMARY KEY,
+CREATE TABLE equipment_events (
+    id_equipment_event bigint PRIMARY KEY,
     id_equipment       int NOT NULL,
-    id_downtime_reason int,
-    begin_time timestamptz, end_time timestamptz,
-    duration numeric
+    id_enterprise      int NOT NULL,
+    ts_event timestamptz, ts_end timestamptz, duration numeric,
+    cd_category text, cd_subcategory text,
+    desc_category text, desc_subcategory text,
+    planned_downtime boolean, change_over boolean
 );
 """
 
@@ -140,24 +148,24 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
             (ent, eq, f"EQ-{eq}", ent, eq),
         )
         cur.execute(
-            "INSERT INTO equipment_runtime_shift (id_equipment,id_shift,begin_time,end_time,oee,oee_availability,oee_performance,oee_quality,count,gross,running_time)"
-            " VALUES (%s,1,now()-interval '8h',now(),0.8,0.9,0.95,0.93,100,110,7.2)",
+            "INSERT INTO equipment_runtime_shift (id_equipment,id_shift,cd_shift,ts_value,ts_end,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
+            " VALUES (%s,1,'T1',now()-interval '8h',now(),0.8,0.9,0.95,0.93,110,100,7.2)",
             (eq,),
         )
         cur.execute(
-            "INSERT INTO equipment_runtime_1hour (id_equipment,bucket,oee,oee_availability,oee_performance,oee_quality,count,gross,running_time)"
-            " VALUES (%s,date_trunc('hour',now()),0.8,0.9,0.95,0.93,20,22,0.9)",
+            "INSERT INTO equipment_runtime_1hour (id_equipment,ts_value,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
+            " VALUES (%s,date_trunc('hour',now()),0.8,0.9,0.95,0.93,22,20,0.9)",
             (eq,),
         )
         cur.execute(
-            "INSERT INTO downtimes (id_downtime,id_equipment,id_downtime_reason,begin_time,end_time,duration)"
-            " VALUES (%s,%s,7,now()-interval '1h',now(),3600)",
-            (base_dt + eq, eq),
+            "INSERT INTO equipment_events (id_equipment_event,id_equipment,id_enterprise,ts_event,ts_end,duration,cd_category,cd_subcategory,desc_category,desc_subcategory,planned_downtime,change_over)"
+            " VALUES (%s,%s,%s,now()-interval '1h',now(),3600,'MECH','JAM','Mechanical','Jam',false,false)",
+            (base_dt + eq, eq, ent),
         )
     cur.execute(
-        "INSERT INTO production_orders_runtime (id_enterprise,id_production_order,id_equipment,oee,oee_availability,oee_performance,oee_quality,count,gross,begin_time,end_time)"
-        " VALUES (%s,%s,%s,0.8,0.9,0.95,0.93,500,540,now()-interval '8h',now())",
-        (ent, base_po, equip_ids[0]),
+        "INSERT INTO production_orders_runtime (id_production_order,id_equipment,oee,oee_a,oee_p,oee_q,gross_production,net_production,running_time,runtime_timerange)"
+        " VALUES (%s,%s,0.8,0.9,0.95,0.93,540,500,7.2,tstzrange(now()-interval '8h', now()))",
+        (base_po, equip_ids[0]),
     )
 
 
@@ -212,7 +220,7 @@ def applied_db(superuser_dsn):
         cur.execute("DROP SCHEMA IF EXISTS bi CASCADE;")
         _drop_roles(cur)
         for tbl in ("equipments", "equipment_runtime_shift", "equipment_runtime_1hour",
-                    "production_orders_runtime", "downtimes"):
+                    "production_orders_runtime", "equipment_events"):
             cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE;")
 
         # Base schema + two tenants' data (as superuser → bypasses RLS for seeding).

@@ -76,18 +76,29 @@ CREATE SCHEMA IF NOT EXISTS bi AUTHORIZATION bi_owner;
 -- superset_ro still cannot touch base tables directly. RLS (02) filters what these
 -- grants can return per the session GUC.
 GRANT USAGE ON SCHEMA public TO bi_owner;
+-- NOTE (schema reconciliation, 2026-08): the F3 analytics schema has NO `downtimes`
+-- table — the real downtime source is `equipment_events` (which carries id_enterprise
+-- natively). The five base tables the bi.* views read on F3 are:
 GRANT SELECT ON
     equipments,
     equipment_runtime_shift,
     equipment_runtime_1hour,
     production_orders_runtime,
-    downtimes
+    equipment_events
   TO bi_owner;
 
 -- superset_ro may enter the bi schema and read its views — nothing else.
 GRANT USAGE ON SCHEMA bi TO superset_ro;
 
 -- ── 3. Curated views (every row carries id_enterprise) ───────────────────────
+-- SCHEMA-RECONCILED to the live F3 analytics schema (2026-08): OEE ratio columns
+-- are oee_a/oee_p/oee_q (NOT oee_availability/…); time bounds are ts_value/ts_end
+-- (NOT begin_time/end_time); counts are gross/net (there is NO `count` column);
+-- equipment_runtime_1hour buckets on ts_value (NOT `bucket`); production_orders_runtime
+-- has NO id_enterprise (derived via the equipments dimension) and bounds its run with
+-- runtime_timerange (a tstzrange); the downtimes table does not exist (source is
+-- equipment_events). Every view still GUARANTEES an id_enterprise column (the RLS key).
+
 -- Curated OEE aggregate — shift grain. Every row carries id_enterprise (via the
 -- equipments dimension) so both isolation layers have a tenant key.
 CREATE OR REPLACE VIEW bi.oee_shift AS
@@ -96,14 +107,15 @@ SELECT
     rs.id_equipment,
     eq.nm_equipment,
     rs.id_shift,
-    rs.begin_time,
-    rs.end_time,
+    rs.cd_shift,
+    rs.ts_value,
+    rs.ts_end,
     rs.oee,
-    rs.oee_availability,
-    rs.oee_performance,
-    rs.oee_quality,
-    rs.count,
+    rs.oee_a,
+    rs.oee_p,
+    rs.oee_q,
     rs.gross,
+    rs.net,
     rs.running_time
 FROM equipment_runtime_shift rs
 JOIN equipments eq ON eq.id_equipment = rs.id_equipment;  -- id_enterprise source
@@ -114,46 +126,63 @@ SELECT
     eq.id_enterprise,
     rh.id_equipment,
     eq.nm_equipment,
-    rh.bucket,
+    rh.ts_value,
     rh.oee,
-    rh.oee_availability,
-    rh.oee_performance,
-    rh.oee_quality,
-    rh.count,
+    rh.oee_a,
+    rh.oee_p,
+    rh.oee_q,
     rh.gross,
+    rh.net,
     rh.running_time
 FROM equipment_runtime_1hour rh
 JOIN equipments eq ON eq.id_equipment = rh.id_equipment;
 
--- Production-order OEE (one row per PO run). id_enterprise is native here.
+-- Production-order OEE (one row per PO run). production_orders_runtime has NO
+-- id_enterprise column on F3, so the tenant key is derived via the equipments
+-- dimension (id_equipment is 100% populated). The run window comes from the
+-- runtime_timerange tstzrange (lower/upper bounds).
 CREATE OR REPLACE VIEW bi.production_order_runtime AS
 SELECT
-    por.id_enterprise,
+    eq.id_enterprise,                       -- derived tenant key (no native column)
     por.id_production_order,
     por.id_equipment,
     por.oee,
-    por.oee_availability,
-    por.oee_performance,
-    por.oee_quality,
-    por.count,
-    por.gross,
-    por.begin_time,
-    por.end_time
-FROM production_orders_runtime por;
+    por.oee_a,
+    por.oee_p,
+    por.oee_q,
+    por.gross_production,
+    por.net_production,
+    por.running_time,
+    lower(por.runtime_timerange) AS ts_start,
+    upper(por.runtime_timerange) AS ts_end
+FROM production_orders_runtime por
+JOIN equipments eq ON eq.id_equipment = por.id_equipment;  -- id_enterprise source
 
--- Downtimes. Tenant key via the equipments dimension.
+-- Downtimes. The F3 schema has no `downtimes` table — the real downtime source is
+-- equipment_events (machine status/downtime events). equipment_events is a
+-- COMPRESSED TimescaleDB hypertable, so it cannot take an RLS policy directly
+-- (ENABLE ROW LEVEL SECURITY errors on columnstore hypertables). Its tenant key is
+-- therefore taken from the equipments dimension (eq.id_enterprise) — the JOIN to
+-- the RLS-protected equipments table is what co-enforces isolation on this view
+-- (02-tenant-rls.sql explains the transitive path). Every joined row belongs to the
+-- session tenant's equipment, so no cross-tenant event can surface.
 CREATE OR REPLACE VIEW bi.downtimes AS
 SELECT
-    eq.id_enterprise,
-    d.id_downtime,
-    d.id_equipment,
+    eq.id_enterprise,               -- tenant key from the RLS-protected dimension
+    ev.id_equipment_event AS id_downtime,
+    ev.id_equipment,
     eq.nm_equipment,
-    d.id_downtime_reason,
-    d.begin_time,
-    d.end_time,
-    d.duration
-FROM downtimes d
-JOIN equipments eq ON eq.id_equipment = d.id_equipment;
+    ev.cd_category,
+    ev.cd_subcategory,
+    ev.desc_category,
+    ev.desc_subcategory,
+    ev.ts_event AS ts_value,
+    ev.ts_end,
+    ev.duration,
+    ev.planned_downtime,
+    ev.change_over
+FROM equipment_events ev
+JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
 
 -- Equipment dimension (for joins/filters in the authoring UI). Active only.
 CREATE OR REPLACE VIEW bi.equipments AS

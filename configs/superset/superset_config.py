@@ -30,13 +30,28 @@ GUEST_TOKEN_JWT_EXP_SECONDS = 300          # 5 min; front4 re-mints on expiry
 GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens assume
 
 # ── Metadata DB (Superset's own state — SEPARATE from the analytics DB) ───────
-# The dedicated `superset` role+DB on the r7g, created by db-init-bootstrap
-# (mirrors authentik). Reached via pgbouncer. This is NOT where the OEE data
-# lives — the analytics DB (bi.* views, read as superset_ro) is registered
-# SEPARATELY inside the Superset UI as a "database", never here.
+# The dedicated `superset` role+DB on the r7g, created by superset-db-init (mirrors
+# authentik). This is NOT where the OEE data lives — the analytics DB (bi.* views,
+# read as superset_ro) is registered SEPARATELY inside the Superset UI as a
+# "database", never here.
+#
+# CONNECTS UPSTREAM-DIRECT to the r7g (POSTGRES_HOST_UPSTREAM), NOT via pgbouncer.
+# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_shadow` (the
+# entrypoint generates a route from DB_NAME=packiot and the compose command sed-adds
+# `packiot_shadow`; there is no wildcard and no `superset` route). Adding one would
+# mean editing the base `pgbouncer` service `command:` in compose.staging.yml /
+# compose.production.yml — a change to the shared DB path every stack service
+# depends on, well outside this profile-gated overlay. The metadata DB is
+# low-traffic (users, dashboards, RLS filters, embed configs — not analytics
+# queries), so it gains nothing from pooling, and a direct SESSION connection is
+# also the safer home for Alembic `db upgrade` migrations and SQLAlchemy session
+# state under pgbouncer's transaction-pooling mode (the same reason hasura is kept
+# pgbouncer-direct in the base stack). superset-db-init already targets this same
+# upstream host to CREATE the role+DB, so the metadata DB lives there anyway.
+SUPERSET_METADATA_DB_HOST = os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
 SQLALCHEMY_DATABASE_URI = (
-    "postgresql+psycopg2://superset:%s@pgbouncer:5432/superset"
-    % os.environ["SUPERSET_DB_PASSWORD"]
+    "postgresql+psycopg2://superset:%s@%s:5432/superset"
+    % (os.environ["SUPERSET_DB_PASSWORD"], SUPERSET_METADATA_DB_HOST)
 )
 
 # ── Redis (cache + Celery broker/results) ─────────────────────────────────────
