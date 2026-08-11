@@ -249,6 +249,13 @@ type Config struct {
 	IncrementSanityClampEnabled  bool
 	IncrementSanityClampK        float64
 	IncrementSanityClampMinDtSec int
+	// IncrementSanityClampSpikeFloor is the rate-INDEPENDENT backstop for the
+	// ADR-0045 P1 first-boot spike: an increment that consumes the whole
+	// absolute totalizer (value >= absolute) with absolute >= this floor is a
+	// delta-from-zero artifact and is rejected even with no configured rated
+	// speed (the counters-only line-lead path) and on the first sample after a
+	// worker restart. Defaults to 1000 parts.
+	IncrementSanityClampSpikeFloor float64
 }
 
 func Load() (*Config, error) {
@@ -326,9 +333,10 @@ func Load() (*Config, error) {
 		CountersOnlyAvailEquipments:     getenv("COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS", ""),
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
 		// Increment sanity clamp (default OFF — no behavior change)
-		IncrementSanityClampEnabled:  getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
-		IncrementSanityClampK:        getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
-		IncrementSanityClampMinDtSec: getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
+		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
+		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
+		IncrementSanityClampMinDtSec:   getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
+		IncrementSanityClampSpikeFloor: getenvFloat("INCREMENT_SANITY_CLAMP_SPIKE_FLOOR", 1000),
 	}, nil
 }
 

@@ -433,6 +433,174 @@ func TestCalcTrigCEqualsIMirror(t *testing.T) {
 	}
 }
 
+// ── ADR-0045 P1: first-observation seed (no delta-from-zero spike) ────────
+
+// The core P1 regression: with an EMPTY state (a decoder/agent restart), the
+// first sample of a counter stream must SEED the baseline and emit NOTHING —
+// never dump the whole absolute totalizer into the increment. The next sample
+// must then difference correctly against the seeded baseline.
+func TestCalcFirstObservationSeedsNoSpike(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	// NO prior counter state — memState is empty as after a restart.
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	msg := Message{
+		Topic:      base + "/Admin/ProdConsumedCount/61/Unit***TRIG",
+		Payload:    830000, // absolute totalizer on first observation
+		CmdTrigger: true,
+		Timestamp:  time.UnixMilli(1700000000000),
+	}
+	dec, err := Calc(msg, s)
+	if err != nil {
+		t.Fatalf("Calc: %v", err)
+	}
+	// NO metric — especially not a 830000 spike.
+	for _, m := range dec.Metrics {
+		if m.Name == base+"/Admin/ProdConsumedCount/61/Unit" {
+			t.Fatalf("first-obs spike emitted: value=%d counter=%d (want no metric)", m.Value, m.Counter)
+		}
+	}
+	if dec.SendDownstream {
+		t.Errorf("first-obs must drop (seed only), got SendDownstream=true")
+	}
+	if got := dec.EnrichedMsg["skipped_reason"]; got != "first_observation_seed" {
+		t.Errorf("skipped_reason: got %v, want first_observation_seed", got)
+	}
+	// Baseline must be seeded to the absolute so the NEXT sample is a real delta.
+	if !hasCounterUpdate(dec.StateUpdates, base+"/Admin/ProdConsumedCount/61/Unit", 830000) {
+		t.Fatalf("first-obs must seed baseline=830000, got updates: %+v", dec.StateUpdates)
+	}
+
+	// Apply the seed, then the second sample must be a small, correct delta.
+	for _, m := range dec.StateUpdates {
+		if err := m.Apply(s); err != nil {
+			t.Fatalf("apply seed: %v", err)
+		}
+	}
+	msg2 := msg
+	msg2.Payload = 830005
+	msg2.Timestamp = time.UnixMilli(1700000005000)
+	dec2, err := Calc(msg2, s)
+	if err != nil {
+		t.Fatalf("Calc(second): %v", err)
+	}
+	var consumed *Metric
+	for i := range dec2.Metrics {
+		if dec2.Metrics[i].Name == base+"/Admin/ProdConsumedCount/61/Unit" {
+			consumed = &dec2.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil {
+		t.Fatalf("second sample must emit a metric, got %d", len(dec2.Metrics))
+	}
+	if consumed.Value != 5 {
+		t.Errorf("post-seed delta: got %d, want 5 (830005-830000)", consumed.Value)
+	}
+	if consumed.Counter != 830005 {
+		t.Errorf("post-seed counter: got %d, want 830005", consumed.Counter)
+	}
+}
+
+// Each of the three counter streams seeds independently on ITS OWN first
+// sample — a seed on Consumed must not suppress the Processed stream's spike.
+func TestCalcFirstObservationPerStream(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	// First Consumed sample seeds Consumed only.
+	c1, _ := Calc(Message{
+		Topic:   base + "/Admin/ProdConsumedCount/61/Unit***TRIG",
+		Payload: 500000, CmdTrigger: true, Timestamp: time.UnixMilli(1700000000000),
+	}, s)
+	for _, m := range c1.StateUpdates {
+		m.Apply(s)
+	}
+	// Processed has still NEVER been seen → its first sample must ALSO seed
+	// (emit 0), not spike, even though Consumed already has a baseline.
+	p1, _ := Calc(Message{
+		Topic:   base + "/Admin/ProdProcessedCount/61/Unit***TRIG",
+		Payload: 480000, CmdTrigger: true, Timestamp: time.UnixMilli(1700000001000),
+	}, s)
+	for _, m := range p1.Metrics {
+		if m.Name == base+"/Admin/ProdProcessedCount/61/Unit" {
+			t.Fatalf("processed first-obs spiked: value=%d (want seed, no metric)", m.Value)
+		}
+	}
+	if !hasCounterUpdate(p1.StateUpdates, base+"/Admin/ProdProcessedCount/61/Unit", 480000) {
+		t.Errorf("processed first-obs must seed 480000, got: %+v", p1.StateUpdates)
+	}
+}
+
+// ── Phase 2: 16-bit rollover is a real wrap, not a spike or a lost count ───
+
+func TestCalcUint16RolloverKeepsWrapDelta(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L6/TEXA"
+	// Baselines present + just below the 65536 ceiling.
+	s.SetInt(base+"/Admin/ProdConsumedCount/70/Unit", 65530)
+	s.SetInt(base+"/Admin/ProdProcessedCount/70/Unit", 65530)
+	s.SetInt(base+"/Admin/ProdDefectiveCount/70/Unit", 0)
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	msg := Message{
+		Topic:      base + "/Admin/ProdConsumedCount/70/Unit***TRIG",
+		Payload:    3, // wrapped past 65536: 65530 → (65535) → 0 → 3
+		CmdTrigger: true,
+		Timestamp:  time.UnixMilli(1700000000000),
+	}
+	dec, err := Calc(msg, s)
+	if err != nil {
+		t.Fatalf("Calc: %v", err)
+	}
+	var consumed *Metric
+	for i := range dec.Metrics {
+		if dec.Metrics[i].Name == base+"/Admin/ProdConsumedCount/70/Unit" {
+			consumed = &dec.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil {
+		t.Fatalf("rollover must still emit a metric")
+	}
+	// True wrap delta = (65536-65530) + 3 = 9 — NOT 3 (naive reset) and NOT a spike.
+	if consumed.Value != 9 {
+		t.Errorf("wrap delta: got %d, want 9 ((65536-65530)+3)", consumed.Value)
+	}
+	if consumed.Counter != 3 {
+		t.Errorf("counter must be the post-wrap absolute 3, got %d", consumed.Counter)
+	}
+}
+
+// A big totalizer that drops to a small value is a genuine RESET (not a wrap):
+// prev is nowhere near the 16-bit ceiling, so the baseline drops to 0.
+func TestCalcLargeDropIsResetNotRollover(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	s.SetInt(base+"/Admin/ProdConsumedCount/61/Unit", 500000)
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	dec, _ := Calc(Message{
+		Topic:   base + "/Admin/ProdConsumedCount/61/Unit***TRIG",
+		Payload: 10, CmdTrigger: true, Timestamp: time.UnixMilli(1700000000000),
+	}, s)
+	var consumed *Metric
+	for i := range dec.Metrics {
+		if dec.Metrics[i].Name == base+"/Admin/ProdConsumedCount/61/Unit" {
+			consumed = &dec.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil {
+		t.Fatalf("reset should emit a metric")
+	}
+	if consumed.Value != 10 {
+		t.Errorf("reset delta: got %d, want 10 (baseline→0, cur=10)", consumed.Value)
+	}
+}
+
 // ── Auxiliary ─────────────────────────────────────────────────────────────
 
 func hasCounterUpdate(mutations []StateMutation, key string, want int64) bool {

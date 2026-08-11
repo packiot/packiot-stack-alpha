@@ -253,9 +253,58 @@ func Calc(msg Message, state State) (Decision, error) {
 	// Read priors from state (JS: parseInt(global.get(topic)); missing→NaN).
 	// Missing key → 0 matches JS parseInt(undefined) → NaN, but we treat
 	// NaN as 0 for arithmetic (the JS does the same via isNaN guards).
-	prevProcessed, _ := state.Int(topicProcessed)
-	prevConsumed, _ := state.Int(topicConsumed)
-	prevDefective, _ := state.Int(topicDefective)
+	//
+	// We ALSO capture the found bool for each stream: a MISSING baseline
+	// (found==false) is not the same as a genuine baseline of 0. It means this
+	// is the first sample of the stream since process start / a decoder-agent
+	// restart / a State reset — there is no prior absolute to difference
+	// against. See the first-observation guard immediately below.
+	prevProcessed, foundProcessed := state.Int(topicProcessed)
+	prevConsumed, foundConsumed := state.Int(topicConsumed)
+	prevDefective, foundDefective := state.Int(topicDefective)
+
+	// ── ADR-0045 P1: first-observation baseline seed ───────────────────────
+	// The counter increment is a DELTA differenced from the per-topic baseline
+	// held in State. When THIS metric's own baseline is absent, differencing
+	// cur−0 would dump the entire absolute totalizer into the increment column
+	// — the first-boot production SPIKE (incr == val, ~66% of summed CPACK
+	// production) that recurs on every reconnect/restart because memState is
+	// process-local and starts empty.
+	//
+	// The fix: on a genuinely-absent baseline, SEED it to the current absolute
+	// and emit NOTHING for this sample (increment 0). The seed persists via
+	// dec.StateUpdates (the caller applies them regardless of SendDownstream),
+	// so the NEXT sample differences correctly against a real baseline. This
+	// makes reconnects/restarts safe without a durable store: every stream is
+	// re-seeded on its first post-restart sample instead of spiking. It is
+	// distinct from the reset branch below (baseline PRESENT but > cur, a
+	// genuine rollback/rollover) — only an ABSENT baseline is seeded-and-zeroed,
+	// so steady-state decode is byte-for-byte unchanged.
+	var firstObs bool
+	var firstObsKey string
+	switch kind {
+	case CounterKindProcessed:
+		firstObs, firstObsKey = !foundProcessed, topicProcessed
+	case CounterKindConsumed:
+		firstObs, firstObsKey = !foundConsumed, topicConsumed
+	case CounterKindDefective:
+		firstObs, firstObsKey = !foundDefective, topicDefective
+	}
+	if firstObs {
+		seedVal := msg.Payload
+		if seedVal < 0 {
+			seedVal = 0
+		}
+		keyCopy, valCopy := firstObsKey, seedVal
+		dec.StateUpdates = append(dec.StateUpdates, StateMutation{
+			Kind: "counter.seed_baseline", Key: keyCopy, IntValue: valCopy,
+			Setter: func(s State) error { return s.SetInt(keyCopy, valCopy) },
+		})
+		dec.EnrichedMsg["skipped_reason"] = "first_observation_seed"
+		dec.EnrichedMsg["seeded_baseline"] = seedVal
+		// SendDownstream stays false: no delta-from-zero spike is emitted.
+		return dec, nil
+	}
 
 	// Current-counter value from msg.payload; the others start at their
 	// last-known values (JS: `ProdConsumedCount = ProdConsumedCount_Last`).
@@ -274,8 +323,9 @@ func Calc(msg Message, state State) (Decision, error) {
 			sendMsg = true
 		}
 		if prevProcessed > curProcessed {
-			prevProcessed = 0
-			resetLineScrap = true
+			var isReset bool
+			prevProcessed, isReset = handleCounterDrop(prevProcessed, curProcessed)
+			resetLineScrap = isReset
 			sendMsg = true
 		}
 	case CounterKindConsumed:
@@ -284,8 +334,9 @@ func Calc(msg Message, state State) (Decision, error) {
 			sendMsg = true
 		}
 		if prevConsumed > curConsumed {
-			prevConsumed = 0
-			resetLineScrap = true
+			var isReset bool
+			prevConsumed, isReset = handleCounterDrop(prevConsumed, curConsumed)
+			resetLineScrap = isReset
 			sendMsg = true
 		}
 	case CounterKindDefective:
@@ -294,9 +345,9 @@ func Calc(msg Message, state State) (Decision, error) {
 			sendMsg = true
 		}
 		if prevDefective > curDefective {
-			prevDefective = 0
 			// JS: Defective reset does NOT set reset_line_scrap_counter
 			// (only Processed + Consumed do). Preserve.
+			prevDefective, _ = handleCounterDrop(prevDefective, curDefective)
 			sendMsg = true
 		}
 	default:
@@ -522,6 +573,47 @@ func Calc(msg Message, state State) (Decision, error) {
 	// ── Phase 11: return ──────────────────────────────────────────────────
 	dec.SendDownstream = sendMsg
 	return dec, nil
+}
+
+// uint16Rollover is the wrap modulus of a 16-bit PLC counter (e.g. L6-TEXA);
+// uint16RolloverBand is how close to that boundary the prior reading must sit
+// (and how small the new reading must be) for a downward step to be read as a
+// legitimate wrap rather than a reset. The band is deliberately generous on
+// the low side (new value) and tight on the high side (prev near the ceiling)
+// so only a true wrap qualifies.
+const (
+	uint16Rollover     = 65536
+	uint16RolloverBand = 4096
+)
+
+// isUint16Rollover reports whether a downward counter step (cur < prev) is a
+// 16-bit wrap: the prior reading sat just below the 65536 ceiling and the new
+// reading is small. This distinguishes a benign wrap (legitimate production
+// that crossed the boundary) from a genuine totalizer reset.
+func isUint16Rollover(prev, cur int64) bool {
+	return prev >= uint16Rollover-uint16RolloverBand &&
+		prev < uint16Rollover &&
+		cur >= 0 && cur < uint16RolloverBand
+}
+
+// handleCounterDrop decides the new baseline when a counter reading went DOWN
+// (cur < prev). Returns (newPrev, isReset):
+//
+//   - 16-bit rollover: the counter wrapped the 65536 boundary, so the TRUE
+//     increment spans it. We return prev−65536 as the baseline so that
+//     cur−newPrev == (65536−prev)+cur (the real wrap delta), and isReset=false
+//     (a wrap is not a reset — line-scrap accumulators must not be cleared).
+//   - genuine reset/rollback: the totalizer restarted; baseline drops to 0 and
+//     the post-reset delta is cur. isReset=true.
+//
+// This is the point that separates the legitimate 16-bit wrap (L6-TEXA rolls at
+// 65,536) from a whole-totalizer artifact — neither of which is the first-boot
+// spike, which is caught earlier by the first-observation seed.
+func handleCounterDrop(prev, cur int64) (newPrev int64, isReset bool) {
+	if isUint16Rollover(prev, cur) {
+		return prev - uint16Rollover, false
+	}
+	return 0, true
 }
 
 // stripTriggerSuffix returns everything before "***" in the topic, matching

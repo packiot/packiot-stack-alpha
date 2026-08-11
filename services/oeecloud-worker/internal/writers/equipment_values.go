@@ -65,7 +65,7 @@ func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentVa
 // (K·rate·Δt) and minDtSec floors Δt so a burst of sub-interval samples
 // can't produce a near-zero bound that false-positives a legitimate count.
 // Passing enabled=false leaves the clamp nil (no-op — flag-off parity).
-func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int) {
+func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int, spikeFloor float64) {
 	if !enabled {
 		w.clamp = nil
 		return
@@ -76,11 +76,18 @@ func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec in
 	if minDtSec <= 0 {
 		minDtSec = 60
 	}
+	if spikeFloor <= 0 {
+		// Default: 1000 parts. Spikes are the whole totalizer (5–6 digits);
+		// a benign reset that ticks up a few parts (value==absolute, small) is
+		// well under this, so it is never mistaken for a spike.
+		spikeFloor = 1000
+	}
 	w.clamp = &incrementClamp{
-		k:      k,
-		minDt:  time.Duration(minDtSec) * time.Second,
-		last:   make(map[clampKey]int64),
-		logger: w.logger,
+		k:          k,
+		minDt:      time.Duration(minDtSec) * time.Second,
+		spikeFloor: spikeFloor,
+		last:       make(map[clampKey]int64),
+		logger:     w.logger,
 	}
 }
 
@@ -270,7 +277,16 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 			if info.ProductionSpeed != nil {
 				rate = float64(*info.ProductionSpeed)
 			}
-			value, clampEv = w.clamp.eval(info.IDEquipment, info.IDEnterprise, kind, m.Timestamp, rate, value)
+			// absolute = the cumulative totalizer (net/gross/scrap_val). The
+			// clamp compares it to the increment to catch the delta-from-zero
+			// spike (value >= absolute) even when rate is unset — the line-lead
+			// path. m.Counter is nil for producers that omit it → absolute 0 →
+			// spike catch inert, rate·Δt path unaffected.
+			var absolute float64
+			if m.Counter != nil {
+				absolute = float64(*m.Counter)
+			}
+			value, clampEv = w.clamp.eval(info.IDEquipment, info.IDEnterprise, kind, m.Timestamp, rate, value, absolute)
 		}
 	}
 
