@@ -228,11 +228,13 @@ func main() {
 		cfg.IncrementSanityClampEnabled,
 		cfg.IncrementSanityClampK,
 		cfg.IncrementSanityClampMinDtSec,
+		cfg.IncrementSanityClampSpikeFloor,
 	)
 	if cfg.IncrementSanityClampEnabled {
-		logger.Info("increment sanity clamp ENABLED (ADR-0037) — K·rated_speed·Δt increment bound",
+		logger.Info("increment sanity clamp ENABLED (ADR-0037/ADR-0045 P1) — K·rated_speed·Δt bound + delta-from-zero spike floor",
 			slog.Float64("k", cfg.IncrementSanityClampK),
-			slog.Int("min_dt_seconds", cfg.IncrementSanityClampMinDtSec))
+			slog.Int("min_dt_seconds", cfg.IncrementSanityClampMinDtSec),
+			slog.Float64("spike_floor", cfg.IncrementSanityClampSpikeFloor))
 	}
 
 	// ADR-0036 B1 medallion Bronze dual-write (BRONZE_RAW_APPEND). Default OFF →
