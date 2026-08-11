@@ -1167,10 +1167,74 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── Operator ──────────────────────────────────────────────────────────────────
-  # NOT included in the central cloud stack (deliberately removed — first-dry-run
-  # boot lesson). The operator SPA's nginx reverse-proxies API routes to
-  # `edge-nodered`, which does NOT run in the cloud stack (per-factory only, per
-  # ADR-0005). With no such upstream in the compose network the container
-  # crash-loops on "host not found in upstream edge-nodered". Operator deploys
-  # alongside edge-nodered per-factory — its .19 address (172.18.0.19) is freed.
+  # ── Operator SPA ────────────────────────────────────────────────────────────
+  # CPACK PO-control cutover (docs/clients/cpack-po-cutover-runbook.md, gap B1).
+  # The operator PWA served at operator.prod.packiot.app. Host nginx operator.conf
+  # already proxies operator.prod → 127.0.0.1:8083 (behind the oauth2/Cognito
+  # outer gate — runbook B4, a separate USER decision); this service is what
+  # finally listens there.
+  #
+  # ⚠ WHY Dockerfile.edge (NOT Dockerfile.staging): the staging image bakes
+  # nginx.staging.conf.template, whose legacy `location` block hard-proxies
+  # /machines,/set-event,/downtime-reasons,… to `http://edge-nodered:1880`.
+  # edge-nodered does NOT run in the cloud stack (per-factory only, ADR-0005), so
+  # nginx resolves that literal upstream at startup and emerg-fails
+  # ("host not found in upstream edge-nodered") → crash-loop. That is exactly why
+  # this service was removed on the first dry-run boot. Dockerfile.edge bakes
+  # nginx.edge.conf.template — the clean post-ADR-0018 surface with NO edge-nodered
+  # proxy: writes+/session → edge-api:8080, reads → refdata-api:9104 (both exist
+  # here), upstreams envsubst-configurable, so nginx starts cleanly. PO control
+  # (the cutover's scope) rides /api/production-orders/* → edge-api and the PO
+  # list/current-production reads ride /v1/operator-* → refdata — both resolve on
+  # new-prod. (Residual legacy-only SPA features — machine list, manual-event
+  # justify, language packs — 404 to the SPA catch-all until those routes migrate
+  # off edge-nodered; harmless while no kiosk/operator is pointed here yet — B3.)
+  #
+  # Secrets (deploy-filled into /opt/packiot/.env; NEVER committed):
+  #   EDGE_API_KEY    = OPERATOR_EDGE_API_KEY    = CPACK (ent 3) enterprises.api_key (B2)
+  #   REFDATA_API_KEY = OPERATOR_REFDATA_API_KEY = CPACK refdata read key, also in
+  #                     refdata's QUERY_API_KEYS map → ent 3 (B5)
+  # nginx injects both server-side (envsubst) on /api|/v1 — the browser NEVER
+  # holds a key. Reuses the .19 address freed when the old comment-only entry was
+  # removed. Kiosk repoint + operator provisioning stay OUT of this change.
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.edge
+    container_name: operator
+    restart: unless-stopped
+    environment:
+      # CPACK ent-3 enterprises.api_key — nginx injects it as x-api-key on /api/*.
+      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
+      # CPACK refdata read key — nginx injects it as x-api-key on /v1/*; refdata
+      # resolves customer_id (=3) from it server-side (ADR-0027 Surface-1).
+      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:-}
+      # Clean-surface upstreams (defaults baked in Dockerfile.edge; pinned here
+      # for clarity — both are live services in this compose network).
+      EDGE_API_UPSTREAM: http://edge-api:8080
+      REFDATA_UPSTREAM: http://refdata-api:9104
+    ports:
+      - "127.0.0.1:8083:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.19
+    depends_on:
+      # Ordering only — nginx needs the upstream NAMES to resolve at startup,
+      # which requires the containers to exist on the network. Neither gates on
+      # health (nginx tolerates a briefly-unready upstream at request time).
+      edge-api:
+        condition: service_started
+      refdata-api:
+        condition: service_started
+    healthcheck:
+      # nginx serves the SPA index on :80; busybox wget ships in nginx:alpine.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

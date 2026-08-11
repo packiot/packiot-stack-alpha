@@ -137,6 +137,22 @@ SUPERSET_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_use
 SUPERSET_ADMIN_PASS=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_password // ""')
 SUPERSET_DASH_UUID=$(echo "$APP_SECRET" | jq -r '.superset_oee_dashboard_uuid // ""')
 SUPERSET_ORIGIN_VERIFY=$(get_secret "packiot/production/bi-origin-verify" | jq -r '.value // ""')
+# Operator SPA + refdata read key (CPACK PO-control cutover —
+# docs/clients/cpack-po-cutover-runbook.md B2/B5). The operator service's nginx
+# injects these server-side (browser never holds a key):
+#   OPERATOR_EDGE_API_KEY    (B2) = CPACK (ent 3) enterprises.api_key — x-api-key
+#                                   on /api/* PO writes → edge-api.
+#   OPERATOR_REFDATA_API_KEY (B5) = CPACK refdata read key — x-api-key on /v1/*
+#                                   reads → refdata-api (ADR-0027 Surface-1).
+# Both are hand-filled fields on the app secret (populated out-of-band, like the
+# oauth2/superset keys above). The refdata read key ALSO appears in refdata's
+# QUERY_API_KEYS map (below) mapped to enterprise 3, so refdata resolves
+# customer_id server-side. All // "" → a box booted before onboarding still comes
+# up; operator/refdata simply deny reads until populated (no kiosk points here
+# until B3). REFDATA_QUERY_API_KEYS lives in its own secret (per-tenant map).
+OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
+OPERATOR_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_refdata_api_key // ""')
+REFDATA_QUERY_API_KEYS=$(get_secret "packiot/production/refdata-query-keys" 2>/dev/null | jq -r '.api_keys // ""' || echo "")
 
 # DB URL (via pgbouncer): app services connect to the `pgbouncer` compose
 # service on :5432; pgbouncer proxies to the r7g upstream. The r7g private IP is
@@ -235,6 +251,19 @@ EDGE_API_URL=https://api.$PRODUCTION_DOMAIN
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
 ID_ENTERPRISE=
+
+# Operator SPA (CPACK PO-control cutover — runbook B1/B2/B5). The `operator`
+# service's nginx injects these server-side on /api|/v1; the browser never holds
+# a key. OPERATOR_EDGE_API_KEY = CPACK ent-3 enterprises.api_key;
+# OPERATOR_REFDATA_API_KEY = CPACK refdata read key (same token as the CPACK entry
+# in REFDATA_QUERY_API_KEYS below, mapped to enterprise 3).
+OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
+OPERATOR_REFDATA_API_KEY=$OPERATOR_REFDATA_API_KEY
+
+# refdata-api per-tenant read-key map: "<key>:<enterprise_id>,<key2>:<id2>".
+# refdata derives customer_id SERVER-SIDE from the presented key (never client-
+# supplied). Empty = deny all X-Api-Key reads (non-blocking; refdata stays healthy).
+REFDATA_QUERY_API_KEYS=$REFDATA_QUERY_API_KEYS
 
 # Superset embedded-BI guest-token broker (ADR-0045 W2). edge-api reaches
 # Superset through the origin-locked host and stamps X-Origin-Verify. Routes
