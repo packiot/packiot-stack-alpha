@@ -276,6 +276,46 @@ $TF import aws_athena_workgroup.historian                          packiot_histo
 
 **Remaining (gated):**
 - Full backfill (all CPACK, then all tenants) — §8.
-- `terraform import` the 8 pilot resources; `apply` the IAM — §9.
-- Superset bring-up + `PyAthena` in the image; import the connection YAML — §7.
+- ~~`terraform import` the 8 pilot resources; `apply` the IAM~~ — **DONE 2026-08-11** (§9; imports verified no-change, IAM applied 0-destroy).
+- ~~`PyAthena` in the image; import the connection YAML~~ — **DONE 2026-08-11** (§7; `PyAthena[SQLAlchemy]==3.35.4` in `docker/superset/Dockerfile`, connection `packiot_historian` live on bi.prod, instance-role auth, test query green).
+- **Tenant scoping for historian dashboards — see §11 (MUST read before any embed/guest-token exposure).**
 - Optional: daily incremental top-up job (EventBridge → the script).
+
+---
+
+## 11. ⚠️ Tenant isolation for historian dashboards (READ BEFORE EMBEDDING)
+
+The historian is **not** covered by the tenant-isolation machinery that protects
+the operational `packiot_analytics` (bi.*) connection. Two independent reasons:
+
+1. **Different engine — the Postgres-GUC RLS co-enforcer does not reach Athena.**
+   `packiot_analytics` isolates via a Postgres `app.tenant_id` GUC + `NOBYPASSRLS`
+   roles behind `SECURITY DEFINER` bi.* views (`db/superset/02-tenant-rls.sql`).
+   The historian is **Athena over S3 Parquet** — there is no Postgres connection,
+   no GUC, no row-level policy. None of that fail-closed enforcement applies here.
+
+2. **Legacy id space.** The cold store deliberately preserves **legacy ids/topics**
+   (§8): CPACK is `enterprise=1` here, not its F3 tenant id (ent-3). A guest token
+   minted with an F3 tenant claim does **not** line up with the historian's
+   `enterprise` partition column without an explicit legacy→tenant map.
+
+**Consequence:** a chart/dataset built directly on `packiot_historian.equipment_values`
+and dropped into the front4 embed (guest-token / `GUEST_ROLE_NAME=Public`) path
+would serve **cross-tenant raw history** — no filter runs by default. Do **not**
+wire the historian into the tenant embed without one of the following first:
+
+- **Superset native RLS** (Settings → Row Level Security) on every historian
+  dataset, keyed on the `enterprise` column, with a **legacy-id→tenant** clause
+  bound to the guest token's tenant claim (the token carries the F3 id; the rule
+  must translate). This is the Athena-appropriate substitute for the Postgres-GUC
+  path — it must be authored and tested per dataset (extend `tests/superset/` with
+  a 2-tenant historian isolation case before exposing any nav item), OR
+- keep historian dashboards **internal-only** (authenticated Admin/analyst roles,
+  not the `Public` guest role), never reachable through a guest token, OR
+- publish **per-tenant curated Athena views/workgroups** so a given embed can only
+  ever resolve one tenant's partitions.
+
+Until one of those is in place, the historian connection is **SQL-Lab / internal
+analyst use only** — it is exposed in SQL Lab (`expose_in_sqllab=true`) but is
+**not** attached to any embedded dashboard. Flagged deliberately, not silently
+wired.
