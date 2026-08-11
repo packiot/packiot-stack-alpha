@@ -273,36 +273,53 @@ def _caller_tenant_id():
     return None
 
 
-# PROD IS SINGLE-TENANT: enterprise 3 = CPACK. The ONLY tenant whose data lives on
-# this stack right now.
-_ADMIN_DEFAULT_TENANT = 3
+# ── All-tenant super-admin sentinel ──────────────────────────────────────────
+# The stack is now MULTI-TENANT (enterprise 3 = CPACK, plus OPS-TEST and any future
+# tenant). The internal super-admin (dev@packiot.com, a native Superset **Admin**)
+# must see EVERY tenant's data on the shared bi.* dashboards — not a single hardcoded
+# tenant. Rather than stamp one enterprise id, an Admin UI session stamps a SENTINEL
+# that the Postgres RLS policies (db/superset/02-tenant-rls.sql) treat as "all
+# tenants" (`current_tenant() = _ALL_TENANT_SENTINEL` → policy allows every row).
+#
+# WHY -1 (not 0 or a real id): the sentinel must be UNFORGEABLE from the token path.
+# `_caller_tenant_id()` derives a tenant by regex `id_enterprise\s*=\s*(\d+)` — it
+# can only ever yield a NON-NEGATIVE integer. So a negative sentinel can be produced
+# ONLY by this admin branch below, never accidentally derived from a guest token's
+# RLS clause (even a pathological `id_enterprise = -1` clause would capture the digit
+# `1`, not `-1`). The sentinel is a property of the SESSION ROLE (native Admin), not
+# of any token — the embed/guest path can never reach it.
+_ALL_TENANT_SENTINEL = -1
 
 
-def _admin_default_tenant(security_manager):
-    """Default tenant stamp for an authenticated, non-guest **Admin** UI session.
+def _admin_all_tenant_stamp(security_manager):
+    """All-tenant sentinel stamp for an authenticated, non-guest **Admin** session.
 
-    WHY THIS EXISTS: the existing dashboards' charts read the `superset_ro` bi.*
-    datasets, whose Postgres RLS fail-closes to ZERO rows when `app.tenant_id` is
-    unset (definer-view semantics — a BYPASSRLS/native-Admin login is STILL
-    filtered). So without a stamp, an admin at bi.prod sees every dashboard blank.
-    An authoring/preview admin therefore gets the prod tenant stamped so the
-    dashboards render populated on the SAME datasets (no dataset duplication).
+    WHY THIS EXISTS: the dashboards' charts read the `superset_ro` bi.* datasets,
+    whose Postgres RLS fail-closes to ZERO rows when `app.tenant_id` is unset
+    (definer-view semantics — a BYPASSRLS/native-Admin login is STILL filtered). So
+    without a stamp, an admin at bi.prod sees every dashboard blank. An
+    authoring/super-admin session therefore gets the ALL-TENANT sentinel stamped so
+    the shared dashboards render populated across EVERY onboarded tenant (CPACK +
+    OPS-TEST + future) on the SAME datasets (no dataset duplication, no per-tenant
+    admin login).
 
     ISOLATION IS UNCHANGED: guests carry a guest token whose `id_enterprise = <id>`
     RLS is already resolved by `_caller_tenant_id()` (which runs FIRST in the
-    mutator); guests are never defaulted here (we explicitly exclude guest users),
-    so the embed path keeps stamping the token's own tenant. This branch only adds
-    a stamp for a NON-guest, authenticated Admin session.
+    mutator); guests are explicitly excluded here, so the embed path keeps stamping
+    the token's own single tenant and stays strictly per-tenant isolated. Only a
+    NON-guest, authenticated **Admin** UI session (the internal super-admin) reaches
+    the all-tenant sentinel. Anonymous/unauthenticated sessions get NOTHING → GUC
+    unset → deny-all (fail-closed).
 
-    SINGLE-TENANT ASSUMPTION: when a 2nd tenant onboards, this must become
-    tenant-selectable (e.g. per-user preference / role), NOT a hardcoded default.
-    Out of scope while prod is single-tenant.
+    "AT LEAST FOR NOW": this is the pragmatic super-admin-sees-all posture. A proper
+    per-role / tenant-selectable RBAC (e.g. an admin tenant-picker) is a later
+    refinement; a non-Admin authoring role still gets no cross-tenant reach here.
     """
     user = getattr(_flask_g, "user", None)
     if user is None:
         return None
     try:
-        # Never default a guest — their tenant comes from the token RLS (above).
+        # Never sentinel a guest — their tenant comes from the token RLS (above).
         if security_manager.is_guest_user(user):
             return None
     except Exception:
@@ -313,7 +330,7 @@ def _admin_default_tenant(security_manager):
         return None
     roles = getattr(user, "roles", None) or []
     if any(getattr(r, "name", None) == "Admin" for r in roles):
-        return _ADMIN_DEFAULT_TENANT
+        return _ALL_TENANT_SENTINEL
     return None
 
 
@@ -322,11 +339,12 @@ def DB_CONNECTION_MUTATOR(uri, params, username, security_manager, source):  # n
         if getattr(uri, "database", None) == "packiot":
             tenant = _caller_tenant_id()
             if tenant is None:
-                # No guest-token tenant: fall back to the admin default stamp for
-                # authenticated non-guest Admin sessions so the existing dashboards
-                # render populated at bi.prod. Guests/anonymous still get None here
-                # -> unstamped -> deny-all (isolation + fail-closed preserved).
-                tenant = _admin_default_tenant(security_manager)
+                # No guest-token tenant: fall back to the ALL-TENANT sentinel for
+                # authenticated non-guest Admin (super-admin) sessions so the shared
+                # dashboards render populated across every tenant at bi.prod.
+                # Guests/anonymous still get None here -> unstamped -> deny-all
+                # (per-tenant isolation + fail-closed preserved).
+                tenant = _admin_all_tenant_stamp(security_manager)
             if tenant is not None:
                 connect_args = dict(params.get("connect_args") or {})
                 existing = connect_args.get("options", "")
