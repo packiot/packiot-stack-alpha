@@ -287,6 +287,13 @@ type Config struct {
 	IncrementSanityClampEnabled  bool
 	IncrementSanityClampK        float64
 	IncrementSanityClampMinDtSec int
+	// IncrementSanityClampSpikeFloor is the rate-INDEPENDENT backstop for the
+	// ADR-0045 P1 first-boot spike: an increment that consumes the whole
+	// absolute totalizer (value >= absolute) with absolute >= this floor is a
+	// delta-from-zero artifact and is rejected even with no configured rated
+	// speed (the counters-only line-lead path) and on the first sample after a
+	// worker restart. Defaults to 1000 parts.
+	IncrementSanityClampSpikeFloor float64
 
 	// ── Provisional ideal-speed inference (counters-only, no nameplate) ──
 	// Sibling of the counters-only OEE mode (#591): #591 gives a
@@ -407,9 +414,10 @@ func Load() (*Config, error) {
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
 		// Increment sanity clamp (default OFF — no behavior change)
-		IncrementSanityClampEnabled:  getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
-		IncrementSanityClampK:        getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
-		IncrementSanityClampMinDtSec: getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
+		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
+		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
+		IncrementSanityClampMinDtSec:   getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
+		IncrementSanityClampSpikeFloor: getenvFloat("INCREMENT_SANITY_CLAMP_SPIKE_FLOOR", 1000),
 		// Provisional ideal-speed inference (default OFF — no behavior change)
 		ProvisionalSpeedEnabled:     getenv("PROVISIONAL_SPEED_INFERENCE_ENABLED", "false") == "true",
 		ProvisionalSpeedEquipments:  getenv("PROVISIONAL_SPEED_EQUIPMENTS", ""),
