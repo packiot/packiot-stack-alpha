@@ -6,11 +6,24 @@
 SET statement_timeout = 0;
 SELECT create_hypertable('public.equipment_values', 'ts_value',
        chunk_time_interval => INTERVAL '1 day', migrate_data => true, if_not_exists => true);
--- Retention horizon = 2 years (ADR-0036 B0, 0036-b0-retention-compress-to-years.sql).
--- Was INTERVAL '180 days' — a fresh F3 init must NOT regress B0's 2-year historian
--- horizon (Bronze/operational raw is the multi-year replay source; a 180-day rolling
--- DROP silently deletes exactly the history Silver/Gold corrections replay over).
-SELECT add_retention_policy('public.equipment_values', INTERVAL '2 years', if_not_exists => true);
+-- HOT/COLD TIERING (supersedes ADR-0036 B0's 2y horizon) — see
+-- docs/adr/reference/migrations/0045-f3-hot-cold-tiering-90d.sql.
+--   The S3+Parquet+Athena historian (terraform/production/historian.tf) is now the
+--   forever COLD tier holding the full raw archive; F3 only keeps raw HOT for the
+--   operational window. USER-APPROVED hot window = 90 days. B0's 2y was chosen when
+--   F3 was the ONLY multi-year replay source — that premise is obsolete now the
+--   historian exists. Compress cold (7d → columnstore), then drop > 90d (SAFE only
+--   because the historian append covers everything past the horizon; caggs
+--   materialise within ~2-3 days so OEE history survives the raw drop).
+--   ⚠ A fresh init installs 90d retention; on a young tenant it drops nothing until
+--   the historian has months of coverage. NEVER apply 90d retention to a tenant
+--   without a complete historian backfill + a running daily append (see 0045 SAFETY).
+ALTER TABLE public.equipment_values SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'id_equipment',
+  timescaledb.compress_orderby   = 'ts_value DESC');
+SELECT add_compression_policy('public.equipment_values', INTERVAL '7 days',  if_not_exists => true);
+SELECT add_retention_policy(  'public.equipment_values', INTERVAL '90 days', if_not_exists => true);
 
 CREATE MATERIALIZED VIEW public.agg_equipment_values_1min
 WITH (timescaledb.continuous) AS

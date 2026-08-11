@@ -319,3 +319,108 @@ Until one of those is in place, the historian connection is **SQL-Lab / internal
 analyst use only** — it is exposed in SQL Lab (`expose_in_sqllab=true`) but is
 **not** attached to any embedded dashboard. Flagged deliberately, not silently
 wired.
+
+---
+
+## 12. Ongoing incremental append + F3 hot/cold tiering (retention)
+
+This is the piece that makes the historian a **TIER** rather than a copy: F3 keeps
+raw `equipment_values` HOT for **90 days**; the historian holds the full raw
+archive FOREVER. F3 raw older than 90 days is dropped — **but only ever after the
+historian already holds it.**
+
+### 12.1 The append (F3 → S3, daily)
+
+- **Script:** `scripts/historian-append.sh` — DuckDB `postgres_query` streams the
+  trailing window (yesterday − `HISTORIAN_OVERLAP_DAYS`, default 2) of new-prod F3
+  `equipment_values` (DB `packiot`, host `POSTGRES_HOST_UPSTREAM`) and writes the
+  same 56-col Glue-shaped Parquet into the SAME partition layout as the backfill
+  (`enterprise=<id>/year=/month=/data-<day>.parquet`) plus a `_watermark/…` marker.
+  Idempotent (each day = one deterministic key, overwritten in place).
+- **Gate:** hard no-op unless `HISTORIAN_APPEND_ENABLED=true`. Enabled now that the
+  ADR-0045 **P1 first-boot decode fix is LIVE on prod (PR #788)** so it archives
+  clean data. `HISTORIAN_SPIKE_GUARD` is a belt-and-suspenders backstop only.
+- **Schedule:** `historian-append.service` + `historian-append.timer` (installed by
+  `terraform/production/user_data/app_init.sh`, daily **02:30 UTC**, enabled). The
+  `.env` self-heal in app_init appends the `HISTORIAN_*` keys on redeploy even on an
+  existing box, so activation is a redeploy — no hand-editing.
+- **Local proof:** `scripts/historian-append-verify.sh` stands up a throwaway
+  TimescaleDB, runs the REAL script, and reconciles Athena-equivalent count ==
+  source, proves idempotency + the spike backstop. ✅ passing.
+
+**First-run reconcile (the "a day archived, reconciles" check):** after the timer's
+first run (or a manual `HISTORIAN_APPEND_ENABLED=true bash scripts/historian-append.sh 3 <day> <next>`),
+confirm the day landed and matches F3:
+```sh
+# S3 object + watermark present:
+aws s3 ls s3://packiot-production-historian-639178078294/equipment_values/enterprise=3/ --recursive | tail
+aws s3 cp s3://packiot-production-historian-639178078294/_watermark/enterprise=3/last-append.json -
+# Athena count for the day == F3 count for the same day (should be equal).
+```
+
+### 12.2 The F3 tiering policies (compression + retention)
+
+Migration `docs/adr/reference/migrations/0045-f3-hot-cold-tiering-90d.sql`, codified
+into fresh-DB init at `db/init-f3/snapshot/05-f3-cagg-agg.sql`. On
+`equipment_values` **ONLY**:
+
+| Policy | Value | Was | Why |
+|---|---|---|---|
+| Compression | compress chunks > **7 days** | 14 days (0036-b0) | columnstore (~33x) shrinks the cold part of the hot window |
+| Retention | drop chunks > **90 days** | 2 years (0036-b0) | historian is now the forever tier; F3 only needs the operational window |
+
+**Scope guardrail:** retention @ 90d is on `equipment_values` and nothing else.
+`equipment_events` (2y), `equipment_events_raw`/`equipment_values_raw` (2y, the
+ADR-0045 capture layer — NOT archived by the historian), and `lab_equipment_values`
+(1y) keep their long horizons; the `agg_*`/`ca_*` caggs and `equipment_runtime_*`
+are downsampled OEE tiers, never retention-dropped.
+
+### 12.3 ⚠️ Safety + mandatory sequencing (non-negotiable)
+
+**F3 must never drop raw the historian does not already hold.** Two invariants,
+both proven:
+
+1. **Historian covers past the drop horizon.** Backfill complete (CPACK 2021→2026-08)
+   **AND** the daily append live + caught up (covers ~yesterday). Since 90d ≫ the
+   ~1-day append lag, there is ~89 days of margin. A newly-onboarded tenant whose
+   oldest F3 chunk is < 90d old drops **zero** rows on install (verified live on
+   staging: 0 chunks > 90d; the retention job ran and dropped nothing, rowcount
+   unchanged at 2,150,331). Its first real drop lands months later, long after the
+   append is proven.
+2. **Caggs materialize before the raw is dropped.** Every cagg over `equipment_values`
+   refreshes with a small finite `start_offset` (2h–3d live) — materialized ~87
+   days before the raw beneath it is dropped; materialized cagg data is **not**
+   cascade-deleted when source chunks drop. So dropping raw > 90d preserves all
+   OEE history. `scripts/f3-tiering-verify.sh` proves this deterministically
+   (synthesises > 90d chunks, materializes the cagg, drops raw, asserts raw gone +
+   cagg survives + hot raw untouched) and includes a counter-proof that an
+   **un**-materialized region is lost — i.e. the ordering is load-bearing. ✅ passing.
+
+**SEQUENCING (do not reorder):**
+```
+1. P1 decode fix live on prod ........................ DONE (PR #788)
+2. Historian backfill complete for the tenant ........ DONE (CPACK)
+3. Enable + run the daily append; confirm caught up .. codified enabled; PROD-GATED (redeploy)
+4. THEN enable F3 retention @ 90d .................... STAGING done (inert); PROD-GATED
+```
+Never enable step 4 on a tenant/env without steps 2–3 proven for it.
+
+### 12.4 Status (staging vs prod-gated)
+
+- **Staging (`packiot_shadow`):** tiering LIVE — compress@7d (job 1031) + retention@90d
+  (job 1032); inert (0 chunks > 90d); retention job executed clean, no loss; caggs
+  intact. Note staging has no historian (test data) — acceptable; prod is the
+  historian-backed env.
+- **Prod (`packiot`):** GATED. Append not yet deployed on the box (no ent=3 in S3
+  yet, no watermark). Promote = redeploy prod app box (installs+enables the timer +
+  self-heals `.env`), let the append run + catch up, verify coverage, THEN apply
+  migration 0045 to prod F3 under the prod-apply gate.
+
+### 12.5 Cost note (ledger)
+
+Retention @ 90d **shrinks** F3 EBS over time (a saving, not a cost): raw
+`equipment_values` stops growing unboundedly and settles at ~90 days on-disk
+(the 7–90d portion compressed ~33x). The full history moves to S3 at
+~$0.004–0.023/GB-mo (Standard→IA→GIR via the `historian.tf` lifecycle) — far cheaper
+per byte than EBS gp3 (~$0.08/GB-mo). Net: EBS/snapshot spend on the prod DB trends
+DOWN as old raw is dropped; historian S3 stays a few $/mo even at full scale.

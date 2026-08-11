@@ -268,8 +268,30 @@ OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET
 COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt
 COGNITO_CS_ADMIN_GROUP=cs-admin
 EDGE_API_COGNITO_AUTH_ENABLED=true
+
+# Historian incremental append (ongoing S3+Parquet+Athena micro-batch — the
+# ONGOING half of the historian; the backfill was one-shot from legacy). The
+# historian-append.timer (installed below) reads these from /opt/packiot/.env.
+# ENABLED now that the ADR-0045 P1 first-boot decode fix is LIVE on prod (PR #788)
+# — the job archives CLEAN data. This is the PRECONDITION for the F3 90-day
+# retention tier: raw is only dropped once the historian holds it.
+HISTORIAN_APPEND_ENABLED=true
+HISTORIAN_APPEND_ENTERPRISES=3
+HISTORIAN_OVERLAP_DAYS=2
+HISTORIAN_SPIKE_GUARD=false
 ENV
 fi
+
+# ── Historian .env self-heal (existing-.env boxes) ────────────────────────────
+# The .env block above only runs on FIRST boot (the `if [ -f .env ]` guard skips
+# regeneration on an existing box). A box provisioned before the historian keys
+# existed would therefore never gain them on redeploy. Idempotently append any
+# missing HISTORIAN_* key so a redeploy activates the append without hand-editing.
+for kv in "HISTORIAN_APPEND_ENABLED=true" "HISTORIAN_APPEND_ENTERPRISES=3" \
+          "HISTORIAN_OVERLAP_DAYS=2" "HISTORIAN_SPIKE_GUARD=false"; do
+  k="$${kv%%=*}"
+  grep -q "^$${k}=" /opt/packiot/.env 2>/dev/null || echo "$kv" >> /opt/packiot/.env
+done
 
 # ── GitHub auth ───────────────────────────────────────────────────────────────
 # Production uses the github-runner secret for both git clone AND runner
@@ -459,6 +481,53 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now docker-prune.timer
 echo "docker-prune.timer enabled"
+
+# ── Historian incremental-append systemd timer ────────────────────────────────
+# Daily micro-batch: new-prod F3 equipment_values → Parquet → S3 (the historian's
+# forever cold tier). Reads HISTORIAN_* from /opt/packiot/.env; hard-gates on
+# HISTORIAN_APPEND_ENABLED so a mis-fire is a no-op. Runs as root (needs the DB
+# creds in .env + the instance role for S3); DuckDB self-installs on first run.
+# This is the PRECONDITION for the F3 90-day retention tier — do NOT enable
+# retention until this has run and the historian covers past the 90-day horizon
+# (see docs/plans/historian-s3-athena-runbook.md §"Ongoing incremental append").
+cat > /etc/systemd/system/historian-append.service <<'UNIT'
+[Unit]
+Description=Historian incremental append (F3 equipment_values -> Parquet -> S3)
+Documentation=file:/opt/packiot/stack/docs/plans/historian-s3-athena-runbook.md
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/packiot/.env
+WorkingDirectory=/opt/packiot/stack
+ExecStart=/bin/bash /opt/packiot/stack/scripts/historian-append.sh
+TimeoutStartSec=3600
+Nice=10
+IOSchedulingClass=idle
+UNIT
+
+cat > /etc/systemd/system/historian-append.timer <<'UNIT'
+[Unit]
+Description=Daily historian incremental append
+
+[Timer]
+# 02:30 UTC — after midnight so "yesterday" is complete, before the 04:00 UTC
+# AWS Backup snapshot window so the two don't contend for the box.
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=historian-append.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+systemctl daemon-reload
+# Enabled: the ADR-0045 P1 decode fix is live, so the archive is clean. The
+# service still hard-gates on HISTORIAN_APPEND_ENABLED in .env (belt + suspenders).
+systemctl enable --now historian-append.timer
+echo "historian-append.timer enabled (next: $(systemctl show historian-append.timer -p NextElapseUSecRealtime --value 2>/dev/null || echo pending))"
 
 # ── Start Docker Compose stack ────────────────────────────────────────────────
 cd /opt/packiot/stack
