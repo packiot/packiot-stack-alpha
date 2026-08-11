@@ -65,6 +65,18 @@ type incrementClamp struct {
 	minDt  time.Duration
 	logger *slog.Logger
 
+	// spikeFloor is the rate-INDEPENDENT backstop for the ADR-0045 P1 first-boot
+	// spike: when an increment consumes the ENTIRE absolute totalizer
+	// (value >= absolute) and that totalizer is >= spikeFloor, the upstream
+	// differenced cur−0 on a missing/reset baseline — a physically-impossible
+	// "whole totalizer as one increment". This catch fires even when no rated
+	// speed is configured (the counters-only LINE-LEAD path, where the rate·Δt
+	// bound fails open) and on the first sample after a worker restart (empty Δt
+	// cache), the two holes the rate·Δt bound alone leaves open. The floor keeps
+	// a genuinely-small totalizer (a legit reset that ticked up a few parts,
+	// where value==absolute is benign) from being clamped.
+	spikeFloor float64
+
 	mu   sync.Mutex
 	last map[clampKey]int64 // stream → last sample ts (unix ms)
 }
@@ -74,13 +86,49 @@ type incrementClamp struct {
 // a ClampEvent for the caller to record. ratePerMin is the equipment's
 // configured rated speed (equipments.production_speed, units/min); a
 // non-positive rate fails the clamp open for this stream.
-func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsMs int64, ratePerMin, value float64) (float64, *ClampEvent) {
+func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsMs int64, ratePerMin, value, absolute float64) (float64, *ClampEvent) {
 	key := clampKey{eq, kind}
 
 	// Only positive increments can be phantom over-counts; 0/negative are
 	// upstream reset artifacts and pass untouched. Still advance the clock so
 	// the next positive sample has a Δt.
-	if value <= 0 || ratePerMin <= 0 {
+	if value <= 0 {
+		c.observe(key, tsMs)
+		return value, nil
+	}
+
+	// ── Delta-from-zero spike catch (rate-independent, first-sample-proof) ──
+	// The ADR-0045 P1 first-boot signature: the increment equals/exceeds the
+	// whole absolute totalizer because the upstream differenced cur−0 on a
+	// missing/reset baseline (*_incr == *_val). In steady state a delta is a
+	// tiny fraction of the cumulative, so value >= absolute >= spikeFloor is
+	// never real production. Checked BEFORE the rate·Δt path so it also guards
+	// the counters-only LINE-LEAD path (ratePerMin==0 → fails open below) and
+	// the first sample after a worker restart (no Δt yet → fails open below).
+	if c.spikeFloor > 0 && absolute >= c.spikeFloor && value >= absolute {
+		c.observe(key, tsMs)
+		if c.logger != nil {
+			c.logger.Warn("increment sanity clamp REJECTED delta-from-zero spike (increment ≈ absolute totalizer)",
+				slog.Int("id_equipment", eq),
+				slog.String("kind", kind.String()),
+				slog.Float64("observed", value),
+				slog.Float64("absolute", absolute),
+				slog.Float64("spike_floor", c.spikeFloor),
+			)
+		}
+		return 0, &ClampEvent{
+			IDEnterprise: enterprise,
+			IDEquipment:  eq,
+			Kind:         kind,
+			BucketTS:     time.UnixMilli(tsMs).Truncate(time.Second).UTC(),
+			Observed:     value,
+			Bound:        c.spikeFloor,
+		}
+	}
+
+	// The rate·Δt bound needs a configured rated speed; without one, fail open
+	// (the spike catch above is the only defense for rate-less streams).
+	if ratePerMin <= 0 {
 		c.observe(key, tsMs)
 		return value, nil
 	}

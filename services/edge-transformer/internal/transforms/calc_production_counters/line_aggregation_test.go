@@ -28,6 +28,19 @@ func seedMachSpeed(t *testing.T, s State, unitTopic string, v float64) {
 	}
 }
 
+// seedUnitCounter gives a member's own counter a KNOWN baseline so the tick
+// under test is a real increment, not a first-observation seed (ADR-0045 P1).
+// Phase-9 aggregation is a steady-state concern — the member already has a
+// baseline by the time it contributes to a line — so these tests seed one
+// explicitly (0 here, so increment == payload) rather than relying on the old
+// prev==0-means-difference-from-zero behavior the first-obs guard removed.
+func seedUnitCounter(t *testing.T, s State, counterTopic string, v int64) {
+	t.Helper()
+	if err := s.SetInt(counterTopic, v); err != nil {
+		t.Fatalf("seed unit counter %s: %v", counterTopic, err)
+	}
+}
+
 // TestPhase9FirstMachineEmitsLineConsumed: a Consumed tick on the FIRST
 // machine of a line should emit BOTH the unit metric AND a line-level
 // Consumed metric on the LINE topic.
@@ -36,9 +49,7 @@ func TestPhase9FirstMachineEmitsLineConsumed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/BREYER"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
-	// G2: seed a prior (0) so this tick is a genuine increment, not a
-	// first-observation baseline seed (which would early-return with delta 0).
-	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
+	seedUnitCounter(t, s, unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
@@ -78,9 +89,7 @@ func TestPhase9LastMachineEmitsLineProcessed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/PTH"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
-	// G2: seed a prior (0) so this tick is a genuine increment, not a
-	// first-observation baseline seed (which would early-return with delta 0).
-	_ = s.SetInt(unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
+	seedUnitCounter(t, s, unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdProcessedCount/63/Unit***TRIG",
@@ -168,9 +177,7 @@ func TestPhase9SectorLineDoublePass(t *testing.T) {
 	seedLineTopology(t, s, "LINHAS", "SEC01::LINE_A")
 	seedLineTopology(t, s, "LINHAS", "LINE_A")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
-	// G2: seed a prior (0) so this tick is a genuine increment, not a
-	// first-observation baseline seed (which would early-return with delta 0).
-	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
+	seedUnitCounter(t, s, unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
@@ -210,9 +217,7 @@ func TestPhase9LineDefectiveAccumulatesOnConsumed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/BREYER"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
-	// G2: seed a prior (0) so this tick is a genuine increment, not a
-	// first-observation baseline seed (which would early-return with delta 0).
-	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
+	seedUnitCounter(t, s, unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
@@ -248,9 +253,7 @@ func TestPhase9LineDefectiveDecreasesOnProcessed(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/PTH"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
-	// G2: seed a prior (0) so this tick is a genuine increment, not a
-	// first-observation baseline seed (which would early-return with delta 0).
-	_ = s.SetInt(unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
+	seedUnitCounter(t, s, unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
 	// Seed prior line Defective = 200.
 	lineDefKey := "CPACK/SC/LINHAS/L5/Admin/ProdDefectiveCount"
 	_ = s.SetInt(lineDefKey, 200)
@@ -328,9 +331,7 @@ func TestPhase9DebounceSuppressesFirstEmission(t *testing.T) {
 	unitTopic := "CPACK/SC/LINHAS/L5/BREYER"
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
-	// G2: seed a prior (0) so this tick is a genuine increment, not a
-	// first-observation baseline seed (which would early-return with delta 0).
-	_ = s.SetInt(unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
+	seedUnitCounter(t, s, unitTopic+"/Admin/ProdConsumedCount/61/Unit", 0)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdConsumedCount/61/Unit***TRIG",
