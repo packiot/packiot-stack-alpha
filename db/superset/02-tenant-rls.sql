@@ -56,6 +56,26 @@ LANGUAGE sql STABLE AS $$
   SELECT NULLIF(current_setting('app.tenant_id', true), '')::int
 $$;
 
+-- is_all_tenant(): TRUE when the session carries the super-admin ALL-TENANT
+-- sentinel (app.tenant_id = -1). This sentinel is stamped ONLY by the Superset
+-- DB_CONNECTION_MUTATOR for a native **Admin** (internal super-admin) UI session
+-- (superset_config.py::_admin_all_tenant_stamp) — never for a guest token or a
+-- per-tenant authoring role. It is UNFORGEABLE from the token path: the mutator
+-- derives per-tenant ids by a `\d+` regex, which can only yield a NON-NEGATIVE
+-- integer, so a negative value can come ONLY from the trusted admin branch.
+--
+-- Every tenant_isolation policy below is `is_all_tenant() OR <per-tenant match>`:
+--   * super-admin session (GUC = -1) → is_all_tenant() short-circuits TRUE →
+--     the policy returns EVERY tenant's rows (the internal super-admin sees all).
+--   * any tenant/guest session (GUC = <real id>) → is_all_tenant() FALSE → the
+--     per-tenant predicate bites exactly as before (strict per-tenant isolation).
+--   * GUC unset/blank → current_tenant() NULL, is_all_tenant() FALSE, per-tenant
+--     match NULL → deny-all (fail-closed) — unchanged.
+CREATE OR REPLACE FUNCTION is_all_tenant() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT current_tenant() = -1
+$$;
+
 -- ── Native-id tables (id_enterprise is a real column) — cheap policy ─────────
 -- equipments carries id_enterprise natively (and is the dimension the reached-via
 -- policies below join through — protect it directly too).
@@ -63,7 +83,7 @@ ALTER TABLE equipments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipments FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipments;
 CREATE POLICY tenant_isolation ON equipments
-    USING (id_enterprise = current_tenant());
+    USING (is_all_tenant() OR id_enterprise = current_tenant());
 
 -- equipment_events (the F3 downtime source — there is NO `downtimes` table) carries
 -- id_enterprise natively, BUT on the live analytics DB it is a COMPRESSED TimescaleDB
@@ -95,7 +115,7 @@ BEGIN
     EXECUTE 'ALTER TABLE equipment_events ENABLE ROW LEVEL SECURITY';
     EXECUTE 'ALTER TABLE equipment_events FORCE ROW LEVEL SECURITY';
     EXECUTE 'DROP POLICY IF EXISTS tenant_isolation ON equipment_events';
-    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING (id_enterprise = current_tenant())';
+    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING (is_all_tenant() OR id_enterprise = current_tenant())';
   END IF;
 END$$;
 
@@ -106,7 +126,7 @@ ALTER TABLE production_orders_runtime ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_orders_runtime FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON production_orders_runtime;
 CREATE POLICY tenant_isolation ON production_orders_runtime
-    USING (EXISTS (
+    USING (is_all_tenant() OR EXISTS (
         SELECT 1 FROM equipments e
         WHERE e.id_equipment = production_orders_runtime.id_equipment
           AND e.id_enterprise = current_tenant()));
@@ -116,7 +136,7 @@ ALTER TABLE equipment_runtime_shift ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_shift FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_shift;
 CREATE POLICY tenant_isolation ON equipment_runtime_shift
-    USING (EXISTS (
+    USING (is_all_tenant() OR EXISTS (
         SELECT 1 FROM equipments e
         WHERE e.id_equipment = equipment_runtime_shift.id_equipment
           AND e.id_enterprise = current_tenant()));
@@ -126,7 +146,7 @@ ALTER TABLE equipment_runtime_1hour ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_1hour FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_1hour;
 CREATE POLICY tenant_isolation ON equipment_runtime_1hour
-    USING (EXISTS (
+    USING (is_all_tenant() OR EXISTS (
         SELECT 1 FROM equipments e
         WHERE e.id_equipment = equipment_runtime_1hour.id_equipment
           AND e.id_enterprise = current_tenant()));
