@@ -71,10 +71,17 @@ columns:
   type: DOUBLE PRECISION
   is_dttm: false
   is_active: true
+  description: Effective current speed (units/min) — PLC MachSpeed tag, else inferred from counter throughput.
+- column_name: plc_speed
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+  description: Raw PLC MachSpeed tag (NULL/0 for machines without a speed sensor).
 - column_name: ideal_production_speed
   type: INTEGER
   is_dttm: false
   is_active: true
+  description: CSAdmin rated/target speed (equipments.production_speed) — the reference line.
 - column_name: id_shift
   type: INTEGER
   is_dttm: false

@@ -94,6 +94,7 @@ CREATE TABLE equipments (
     tp_equipment  int  NOT NULL DEFAULT 1,
     id_area       int,
     lead_machine  int,
+    production_speed int,   -- CSAdmin rated/ideal speed; bi.equipment_speed surfaces it
     active        boolean NOT NULL DEFAULT true
 );
 CREATE TABLE equipment_runtime_shift (
@@ -174,8 +175,8 @@ def _drop_roles(cur):
 def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int):
     for eq in equip_ids:
         cur.execute(
-            "INSERT INTO equipments (id_enterprise,id_equipment,nm_equipment,tp_equipment,id_area,lead_machine,active)"
-            " VALUES (%s,%s,%s,1,%s,%s,true)",
+            "INSERT INTO equipments (id_enterprise,id_equipment,nm_equipment,tp_equipment,id_area,lead_machine,production_speed,active)"
+            " VALUES (%s,%s,%s,1,%s,%s,360,true)",
             (ent, eq, f"EQ-{eq}", ent, eq),
         )
         cur.execute(

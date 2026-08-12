@@ -30,6 +30,11 @@ metrics:
   expression: AVG(speed)
   d3format: .3~s
   extra: null
+- metric_name: avg_ideal_speed
+  verbose_name: Avg ideal speed
+  expression: AVG(ideal_production_speed)
+  d3format: .3~s
+  extra: null
 - metric_name: sum_net
   verbose_name: Net (last counter)
   expression: SUM(net_production_val)
@@ -66,6 +71,17 @@ columns:
   type: DOUBLE PRECISION
   is_dttm: false
   is_active: true
+  description: Effective current speed (units/min) — PLC MachSpeed tag, else inferred from counter throughput.
+- column_name: plc_speed
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+  description: Raw PLC MachSpeed tag (NULL/0 for machines without a speed sensor).
+- column_name: ideal_production_speed
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  description: CSAdmin rated/target speed (equipments.production_speed).
 - column_name: state
   type: INTEGER
   is_dttm: false
