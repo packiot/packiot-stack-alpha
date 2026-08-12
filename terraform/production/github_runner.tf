@@ -34,6 +34,12 @@ variable "runner_version" {
   default     = "2.336.0"
 }
 
+variable "runner_repos" {
+  description = "Comma-separated org repos to register a REPO-level runner for (Free plan can't use org-level runners on private repos). Add a repo here when it gains CI/deploy workflows."
+  type        = string
+  default     = "edge-api" # csadmin has no workflows yet; add it here when it does
+}
+
 variable "runner_root_volume_gb" {
   description = "Root gp3 volume — Docker layer cache + build workspaces."
   type        = number
@@ -42,7 +48,7 @@ variable "runner_root_volume_gb" {
 
 locals {
   github_org    = "packiot"
-  runner_labels = "self-hosted,linux,arm64,packiot-prod"
+  runner_labels = "self-hosted,linux,arm64,packiot-ci"
 }
 
 # ── PAT secret: created empty, populated out-of-band (never in git/terraform) ──
@@ -142,6 +148,7 @@ resource "aws_instance" "runner" {
     aws_region           = var.aws_region
     runner_version       = var.runner_version
     runner_labels        = local.runner_labels
+    runner_repos         = var.runner_repos
   }))
 
   # user_data re-runs only on replacement; ignore so a version bump doesn't force
