@@ -121,9 +121,16 @@ def main():
             qc_raw = res.get("query_context")
             params = json.loads(res.get("params") or "{}")
             ds = params.get("datasource", "")
-            # Resolve dataset numeric id from the UUID-form "<uuid>__table".
-            uuid_part = ds.split("__")[0] if isinstance(ds, str) and "__" in ds else None
-            num_id = ds_by_uuid.get(uuid_part) if uuid_part else res.get("datasource_id")
+            # Resolve dataset numeric id. params.datasource may be either
+            # "<numeric_id>__table" (Superset already rewrote it on import) or
+            # "<uuid>__table" (pre-import codified form).
+            head = ds.split("__")[0] if isinstance(ds, str) and "__" in ds else None
+            if head and head.isdigit():
+                num_id = int(head)
+            elif head:
+                num_id = ds_by_uuid.get(head)
+            else:
+                num_id = res.get("datasource_id")
             if not num_id:
                 num_id = res.get("datasource_id")
             # Decide whether to touch: only null / placeholder(id 0/None) unless allowlisted.
@@ -139,6 +146,9 @@ def main():
                 needs = True
             if not needs:
                 continue
+            if not num_id:
+                print(f"  SKIP chart {cid} ({cuuid}): could not resolve dataset id")
+                continue
             # Rewrite params + query_context datasource to numeric.
             numeric_ds = f"{num_id}__table"
             params["datasource"] = numeric_ds
@@ -150,7 +160,14 @@ def main():
             qc.setdefault("result_type", "full")
             qc.setdefault("force", False)
             qc["form_data"] = fd
-            payload = {"params": json.dumps(params), "query_context": json.dumps(qc)}
+            # Also (re)bind the chart's datasource FK — import can leave it unset
+            # even when it rewrote params.datasource to the numeric id.
+            payload = {
+                "params": json.dumps(params),
+                "query_context": json.dumps(qc),
+                "datasource_id": num_id,
+                "datasource_type": "table",
+            }
             print(f"chart {cid} ({cuuid}) -> dataset {num_id}"
                   + (" [dry-run]" if args.dry_run else ""))
             if not args.dry_run:
