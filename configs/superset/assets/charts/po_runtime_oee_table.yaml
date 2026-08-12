@@ -1,6 +1,6 @@
 # Per-PO runtime OEE table — aggregate OEE/A/P/Q + net grouped by production order.
 # bi.production_order_runtime.
-slice_name: PO runtime OEE
+slice_name: PO runtime OEE — awaiting operator cutover (no data yet)
 description: bi.production_order_runtime AVG(oee/a/p/q) + SUM(net) by id_production_order.
 certified_by: null
 certification_details: null

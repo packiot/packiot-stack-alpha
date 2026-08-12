@@ -11,7 +11,7 @@ params:
   metrics:
   - avg_oee
   groupby:
-  - nm_production_order
+  - po_label
   columns: []
   adhoc_filters: []
   row_limit: 25
@@ -19,7 +19,7 @@ params:
   y_axis_format: .1%
   show_legend: false
   time_range: last week
-query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "nm_production_order", "label": "nm_production_order", "expressionType": "SQL"}], "metrics": ["avg_oee"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 25, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["nm_production_order"], "columns": [], "aggregates": {"avg_oee": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "35e34b8f-a476-4495-a981-4878b10556c2__table", "viz_type": "dist_bar", "metrics": ["avg_oee"], "groupby": ["nm_production_order"], "columns": [], "adhoc_filters": [], "row_limit": 25, "order_desc": true, "y_axis_format": ".1%", "show_legend": false, "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "po_label", "label": "po_label", "expressionType": "SQL"}], "metrics": ["avg_oee"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 25, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["po_label"], "columns": [], "aggregates": {"avg_oee": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "35e34b8f-a476-4495-a981-4878b10556c2__table", "viz_type": "dist_bar", "metrics": ["avg_oee"], "groupby": ["po_label"], "columns": [], "adhoc_filters": [], "row_limit": 25, "order_desc": true, "y_axis_format": ".1%", "show_legend": false, "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: dc739f02-6dd0-4c14-a721-e162af0720e9
 version: 1.0.0

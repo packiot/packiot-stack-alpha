@@ -10,7 +10,7 @@ params:
   metrics:
   - avg_speed
   groupby:
-  - nm_equipment
+  - equipment_label
   columns: []
   adhoc_filters: []
   row_limit: 50
@@ -18,7 +18,7 @@ params:
   y_axis_format: .3~s
   show_legend: false
   time_range: last week
-query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "nm_equipment", "label": "nm_equipment", "expressionType": "SQL"}], "metrics": ["avg_speed"], "orderby": [["avg_speed", false]], "annotation_layers": [], "row_limit": 50, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["nm_equipment"], "columns": [], "aggregates": {"avg_speed": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table", "viz_type": "echarts_timeseries_bar", "metrics": ["avg_speed"], "groupby": [], "adhoc_filters": [], "row_limit": 50, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "annotation_layers": [], "contributionMode": null, "zoomable": false, "markerEnabled": false, "truncateYAxis": true, "comparison_type": "values", "x_axis": "nm_equipment", "stack": null, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "equipment_label", "label": "equipment_label", "expressionType": "SQL"}], "metrics": ["avg_speed"], "orderby": [["avg_speed", false]], "annotation_layers": [], "row_limit": 50, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["equipment_label"], "columns": [], "aggregates": {"avg_speed": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table", "viz_type": "echarts_timeseries_bar", "metrics": ["avg_speed"], "groupby": [], "adhoc_filters": [], "row_limit": 50, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "annotation_layers": [], "contributionMode": null, "zoomable": false, "markerEnabled": false, "truncateYAxis": true, "comparison_type": "values", "x_axis": "equipment_label", "stack": null, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 242fc46c-c869-46f7-afbd-46df3de3b5e0
 version: 1.0.0

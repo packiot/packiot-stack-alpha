@@ -133,7 +133,10 @@ SELECT
     rs.oee_q,
     rs.gross,
     rs.net,
-    rs.running_time
+    rs.running_time,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_runtime_shift rs
 JOIN equipments eq ON eq.id_equipment = rs.id_equipment  -- id_enterprise source
 WHERE rs.ts_value <= now()      -- F3: never expose future calendar buckets
@@ -153,7 +156,10 @@ SELECT
     rh.oee_q,
     rh.gross,
     rh.net,
-    rh.running_time
+    rh.running_time,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_runtime_1hour rh
 JOIN equipments eq ON eq.id_equipment = rh.id_equipment
 WHERE rh.ts_value <= now()      -- F3: never expose future calendar buckets
@@ -188,6 +194,13 @@ JOIN equipments eq ON eq.id_equipment = por.id_equipment;  -- id_enterprise sour
 -- the RLS-protected equipments table is what co-enforces isolation on this view
 -- (02-tenant-rls.sql explains the transitive path). Every joined row belongs to the
 -- session tenant's equipment, so no cross-tenant event can surface.
+-- PRESENTATION (Track A): equipment_events.status is an enum — 6 = Running,
+-- 10 = Stopped (a "microstop" is just a short Stopped period, told apart by
+-- duration, not a distinct code). A *Downtimes* view must be actual downtimes, so
+-- we EXCLUDE Running(6): only non-running events (Stopped + planned) remain. `reason`
+-- gives every stop a legible label even before the operator is live to justify it
+-- on new-prod (desc_category is NULL until then) — NULL → 'Unjustified' (or 'Planned'
+-- / 'Changeover' from the flags). status_label and equipment_label are display aids.
 CREATE OR REPLACE VIEW bi.downtimes AS
 SELECT
     eq.id_enterprise,               -- tenant key from the RLS-protected dimension
@@ -202,9 +215,20 @@ SELECT
     ev.ts_end,
     ev.duration,
     ev.planned_downtime,
-    ev.change_over
+    ev.change_over,
+    ev.status,
+    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
+         ELSE ev.status::text END AS status_label,
+    COALESCE(ev.desc_category,
+             CASE WHEN ev.planned_downtime THEN 'Planned'
+                  WHEN ev.change_over      THEN 'Changeover'
+                  ELSE 'Unjustified' END) AS reason,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_events ev
-JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
+JOIN equipments eq ON eq.id_equipment = ev.id_equipment
+WHERE ev.status <> 6;               -- Downtimes = non-running events (exclude Running=6)
 
 -- Equipment dimension (for joins/filters in the authoring UI). Active only.
 CREATE OR REPLACE VIEW bi.equipments AS
@@ -214,7 +238,12 @@ SELECT
     nm_equipment,
     tp_equipment,
     id_area,
-    lead_machine
+    lead_machine,
+    -- Track A: same name can be a tp=3 line AND a tp=1 machine (BREYER1, CER400,…) —
+    -- distinct topics, not duplicates. equipment_label disambiguates them on charts.
+    nm_equipment || CASE tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipments
 WHERE active;
 
@@ -284,7 +313,10 @@ SELECT
     ev.id_shift,
     ev.id_production_order,
     ev.state,
-    ev.mode
+    ev.mode,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_values ev
 JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
 
@@ -312,12 +344,17 @@ SELECT DISTINCT ON (s.id_equipment)
     s.id_order,
     s.net_production_val,
     s.gross_production_val,
-    s.scrap_val
+    s.scrap_val,
+    s.nm_equipment || CASE s.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label,
+    COALESCE(NULLIF(s.id_order, ''), 'No production order') AS id_order_label
 FROM (
     SELECT
         eq.id_enterprise,
         ev.id_equipment,
         eq.nm_equipment,
+        eq.tp_equipment,
         ev.ts_value,
         ev.speed,
         eq.production_speed AS ideal_production_speed,
@@ -352,7 +389,10 @@ SELECT
     ev.ts_value,
     ev.net_production_incr,
     ev.gross_production_incr,
-    ev.scrap_incr
+    ev.scrap_incr,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_values ev
 JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
 
@@ -385,7 +425,15 @@ SELECT
     po.ts_start,
     po.ts_end,
     po.nm_production_order,
-    po.id_order_text
+    po.id_order_text,
+    -- Track A: nm_production_order is NULL on all 19.8k migrated CPACK POs (the human
+    -- order number rides with the operator cutover). Fall back to id_order_text, then
+    -- the numeric PK, so the order column is a legible identifier, never blank.
+    COALESCE(NULLIF(po.nm_production_order, ''), NULLIF(po.id_order_text, ''),
+             'PO #' || po.id_production_order) AS po_label,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM production_orders po
 JOIN equipments eq ON eq.id_equipment = po.id_equipment;
 

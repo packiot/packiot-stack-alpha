@@ -155,5 +155,19 @@ columns:
   is_active: true
   groupby: true
   filterable: true
+- column_name: po_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: "Order number, else id_order_text, else 'PO #<id>' — never blank."
+- column_name: equipment_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: nm_equipment + (line)/(machine)/(sector) — disambiguates line/machine name-pairs.
 version: 1.0.0
 database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

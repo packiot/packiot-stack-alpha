@@ -9,7 +9,7 @@ params:
   viz_type: table
   query_mode: raw
   all_columns:
-  - nm_equipment
+  - equipment_label
   - last_update
   - speed
   - ideal_production_speed
@@ -22,7 +22,7 @@ params:
   adhoc_filters: []
   row_limit: 100
   table_timestamp_format: smart_date
-query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["nm_equipment", "last_update", "speed", "ideal_production_speed", "state", "id_order", "net_production_val", "gross_production_val"], "orderby": [["last_update", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "d8b64344-0ce4-440d-bf8b-39fc0bf259d5__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["nm_equipment", "last_update", "speed", "ideal_production_speed", "state", "id_order", "net_production_val", "gross_production_val"], "order_by_cols": ["[\"last_update\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["equipment_label", "last_update", "speed", "ideal_production_speed", "state", "id_order", "net_production_val", "gross_production_val"], "orderby": [["last_update", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "d8b64344-0ce4-440d-bf8b-39fc0bf259d5__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["equipment_label", "last_update", "speed", "ideal_production_speed", "state", "id_order", "net_production_val", "gross_production_val"], "order_by_cols": ["[\"last_update\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 42f1fede-693c-41dd-9d5f-50e24d6a91e3
 version: 1.0.0

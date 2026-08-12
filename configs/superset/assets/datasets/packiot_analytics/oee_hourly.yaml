@@ -105,5 +105,12 @@ columns:
   type: DOUBLE PRECISION
   is_dttm: false
   is_active: true
+- column_name: equipment_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: nm_equipment + (line)/(machine)/(sector) — disambiguates line/machine name-pairs.
 version: 1.0.0
 database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

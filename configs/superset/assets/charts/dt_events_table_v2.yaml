@@ -13,7 +13,8 @@ params:
   - nm_equipment
   - ts_value
   - ts_end
-  - desc_category
+  - reason
+  - status_label
   - desc_subcategory
   - duration
   order_by_cols:
@@ -21,7 +22,7 @@ params:
   adhoc_filters: []
   row_limit: 100
   table_timestamp_format: smart_date
-query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["nm_equipment", "ts_value", "ts_end", "desc_category", "desc_subcategory", "duration"], "orderby": [["ts_value", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["nm_equipment", "ts_value", "ts_end", "desc_category", "desc_subcategory", "duration"], "order_by_cols": ["[\"ts_value\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["nm_equipment", "ts_value", "ts_end", "reason", "status_label", "desc_subcategory", "duration"], "orderby": [["ts_value", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["nm_equipment", "ts_value", "ts_end", "reason", "status_label", "desc_subcategory", "duration"], "order_by_cols": ["[\"ts_value\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 51723d7d-4579-4070-a695-f4299c65d43d
 version: 1.0.0

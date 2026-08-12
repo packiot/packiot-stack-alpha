@@ -126,7 +126,8 @@ CREATE TABLE equipment_events (
     ts_event timestamptz, ts_end timestamptz, duration numeric,
     cd_category text, cd_subcategory text,
     desc_category text, desc_subcategory text,
-    planned_downtime boolean, change_over boolean
+    planned_downtime boolean, change_over boolean,
+    status int  -- 6=Running, 10=Stopped; bi.downtimes filters out Running(6)
 );
 -- GAP-view base tables (W3). Only the columns the bi.* gap views read.
 -- equipment_values is a COMPRESSED hypertable on the live DB; here it is a plain
@@ -190,8 +191,8 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
             (eq,),
         )
         cur.execute(
-            "INSERT INTO equipment_events (id_equipment_event,id_equipment,id_enterprise,ts_event,ts_end,duration,cd_category,cd_subcategory,desc_category,desc_subcategory,planned_downtime,change_over)"
-            " VALUES (%s,%s,%s,now()-interval '1h',now(),3600,'MECH','JAM','Mechanical','Jam',false,false)",
+            "INSERT INTO equipment_events (id_equipment_event,id_equipment,id_enterprise,ts_event,ts_end,duration,cd_category,cd_subcategory,desc_category,desc_subcategory,planned_downtime,change_over,status)"
+            " VALUES (%s,%s,%s,now()-interval '1h',now(),3600,'MECH','JAM','Mechanical','Jam',false,false,10)",
             (base_dt + eq, eq, ent),
         )
         # equipment_values: two rows per equipment (recent so live_status's 6h window
