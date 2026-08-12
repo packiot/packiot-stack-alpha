@@ -5,20 +5,20 @@ description: bi.oee_shift SUM(net) by cd_shift. Which shift produced most.
 certified_by: null
 certification_details: null
 viz_type: dist_bar
-params: |
-  {
-    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
-    "viz_type": "dist_bar",
-    "metrics": ["sum_net"],
-    "groupby": ["cd_shift"],
-    "columns": [],
-    "adhoc_filters": [],
-    "row_limit": 25,
-    "order_desc": true,
-    "y_axis_format": ".3~s",
-    "show_legend": false,
-    "time_range": "last week"
-  }
+params:
+  datasource: 1546df03-4e11-40b8-94d7-aa149b12c58a__table
+  viz_type: dist_bar
+  metrics:
+  - sum_net
+  groupby:
+  - cd_shift
+  columns: []
+  adhoc_filters: []
+  row_limit: 25
+  order_desc: true
+  y_axis_format: .3~s
+  show_legend: false
+  time_range: last week
 query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "cd_shift", "label": "cd_shift", "expressionType": "SQL"}], "metrics": ["sum_net"], "orderby": [["sum_net", false]], "annotation_layers": [], "row_limit": 25, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["cd_shift"], "columns": [], "aggregates": {"sum_net": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table", "viz_type": "dist_bar", "metrics": ["sum_net"], "groupby": ["cd_shift"], "columns": [], "adhoc_filters": [], "row_limit": 25, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 1325db42-5d62-43eb-b673-0751c7879652

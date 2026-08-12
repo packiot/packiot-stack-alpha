@@ -5,18 +5,21 @@ description: bi.oee_shift AVG(oee) + SUM(net/gross) by cd_shift + nm_equipment.
 certified_by: null
 certification_details: null
 viz_type: table
-params: |
-  {
-    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
-    "viz_type": "table",
-    "query_mode": "aggregate",
-    "groupby": ["cd_shift", "nm_equipment"],
-    "metrics": ["avg_oee", "sum_net", "sum_gross"],
-    "adhoc_filters": [],
-    "row_limit": 100,
-    "order_by_cols": [],
-    "time_range": "last week"
-  }
+params:
+  datasource: 1546df03-4e11-40b8-94d7-aa149b12c58a__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - cd_shift
+  - nm_equipment
+  metrics:
+  - avg_oee
+  - sum_net
+  - sum_gross
+  adhoc_filters: []
+  row_limit: 100
+  order_by_cols: []
+  time_range: last week
 query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"time_range": "last week", "filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["cd_shift", "nm_equipment"], "metrics": ["avg_oee", "sum_net", "sum_gross"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table", "viz_type": "table", "query_mode": "aggregate", "groupby": ["cd_shift", "nm_equipment"], "metrics": ["avg_oee", "sum_net", "sum_gross"], "adhoc_filters": [], "row_limit": 100, "order_by_cols": [], "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 4172c9db-ce2b-4ff3-a1fb-45f5b2110cb6

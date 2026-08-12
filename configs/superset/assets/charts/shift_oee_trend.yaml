@@ -5,20 +5,22 @@ description: bi.oee_shift AVG(oee/oee_a/oee_p/oee_q) by day. OEE watched over ti
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
-params: |
-  {
-    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
-    "viz_type": "echarts_timeseries_line",
-    "x_axis": "ts_value",
-    "time_grain_sqla": "P1D",
-    "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q"],
-    "groupby": [],
-    "adhoc_filters": [],
-    "y_axis_format": ".0%",
-    "x_axis_time_format": "smart_date",
-    "show_legend": true,
-    "time_range": "last week"
-  }
+params:
+  datasource: 1546df03-4e11-40b8-94d7-aa149b12c58a__table
+  viz_type: echarts_timeseries_line
+  x_axis: ts_value
+  time_grain_sqla: P1D
+  metrics:
+  - avg_oee
+  - avg_oee_a
+  - avg_oee_p
+  - avg_oee_q
+  groupby: []
+  adhoc_filters: []
+  y_axis_format: .0%
+  x_axis_time_format: smart_date
+  show_legend: true
+  time_range: last week
 query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"time_range": "last week", "filters": [], "extras": {"time_grain_sqla": "P1D", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "P1D", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}], "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 10000, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["ts_value"], "columns": [], "aggregates": {"avg_oee": {"operator": "mean"}, "avg_oee_a": {"operator": "mean"}, "avg_oee_p": {"operator": "mean"}, "avg_oee_q": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table", "viz_type": "echarts_timeseries_line", "x_axis": "ts_value", "time_grain_sqla": "P1D", "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q"], "groupby": [], "adhoc_filters": [], "y_axis_format": ".0%", "x_axis_time_format": "smart_date", "show_legend": true, "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 42ef9c82-8279-441d-b265-37206578fe22

@@ -4,17 +4,15 @@ description: bi.equipment_speed MAX(speed). Highest instantaneous machine speed.
 certified_by: null
 certification_details: null
 viz_type: big_number_total
-params: |
-  {
-    "datasource": "1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table",
-    "viz_type": "big_number_total",
-    "metric": "max_speed",
-    "adhoc_filters": [],
-    "header_font_size": 0.4,
-    "subheader_font_size": 0.15,
-    "y_axis_format": ".3~s",
-    "subtitle": "Peak speed"
-  }
+params:
+  datasource: 1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table
+  viz_type: big_number_total
+  metric: max_speed
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .3~s
+  subtitle: Peak speed
 query_context: '{"datasource":{"id":0,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":[],"metrics":["max_speed"],"annotation_layers":[],"series_limit":0,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"adhoc_filters":[],"annotation_layers":[],"datasource":"1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table","header_font_size":0.4,"metric":"max_speed","subheader_font_size":0.15,"subtitle":"Peak speed","viz_type":"big_number_total","y_axis_format":".3~s","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: c66cd1ec-bafc-4332-8b10-f212ad813b34

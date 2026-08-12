@@ -4,17 +4,15 @@ description: bi.oee_shift SUM(net). Good production total.
 certified_by: null
 certification_details: null
 viz_type: big_number_total
-params: |
-  {
-    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
-    "viz_type": "big_number_total",
-    "metric": "sum_net",
-    "adhoc_filters": [],
-    "header_font_size": 0.4,
-    "subheader_font_size": 0.15,
-    "y_axis_format": ".3~s",
-    "subtitle": "Total net production"
-  }
+params:
+  datasource: 1546df03-4e11-40b8-94d7-aa149b12c58a__table
+  viz_type: big_number_total
+  metric: sum_net
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .3~s
+  subtitle: Total net production
 query_context: '{"datasource":{"id":0,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":[],"metrics":["sum_net"],"annotation_layers":[],"series_limit":0,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"adhoc_filters":[],"annotation_layers":[],"datasource":"1546df03-4e11-40b8-94d7-aa149b12c58a__table","header_font_size":0.4,"metric":"sum_net","subheader_font_size":0.15,"subtitle":"Total net production","viz_type":"big_number_total","y_axis_format":".3~s","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: e8c72f94-39b7-4888-bcf9-6c46ef3d5f8c

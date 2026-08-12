@@ -4,17 +4,15 @@ description: bi.oee_shift SUM(gross - net). Derived scrap total.
 certified_by: null
 certification_details: null
 viz_type: big_number_total
-params: |
-  {
-    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
-    "viz_type": "big_number_total",
-    "metric": "sum_scrap",
-    "adhoc_filters": [],
-    "header_font_size": 0.4,
-    "subheader_font_size": 0.15,
-    "y_axis_format": ".3~s",
-    "subtitle": "Total scrap"
-  }
+params:
+  datasource: 1546df03-4e11-40b8-94d7-aa149b12c58a__table
+  viz_type: big_number_total
+  metric: sum_scrap
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .3~s
+  subtitle: Total scrap
 query_context: '{"datasource":{"id":0,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":[],"metrics":["sum_scrap"],"annotation_layers":[],"series_limit":0,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"adhoc_filters":[],"annotation_layers":[],"datasource":"1546df03-4e11-40b8-94d7-aa149b12c58a__table","header_font_size":0.4,"metric":"sum_scrap","subheader_font_size":0.15,"subtitle":"Total scrap","viz_type":"big_number_total","y_axis_format":".3~s","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: 9576cf82-9b19-4b36-a76e-bcdc63a3f0d1

@@ -4,17 +4,15 @@ description: bi.production_orders COUNT(*). Total orders in range.
 certified_by: null
 certification_details: null
 viz_type: big_number_total
-params: |
-  {
-    "datasource": "35e34b8f-a476-4495-a981-4878b10556c2__table",
-    "viz_type": "big_number_total",
-    "metric": "count",
-    "adhoc_filters": [],
-    "header_font_size": 0.4,
-    "subheader_font_size": 0.15,
-    "y_axis_format": "SMART_NUMBER",
-    "subtitle": "Production orders"
-  }
+params:
+  datasource: 35e34b8f-a476-4495-a981-4878b10556c2__table
+  viz_type: big_number_total
+  metric: count
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: SMART_NUMBER
+  subtitle: Production orders
 query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [], "metrics": ["count"], "annotation_layers": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}}], "form_data": {"datasource": "35e34b8f-a476-4495-a981-4878b10556c2__table", "viz_type": "big_number_total", "metric": "count", "adhoc_filters": [], "header_font_size": 0.4, "subheader_font_size": 0.15, "y_axis_format": "SMART_NUMBER", "subtitle": "Production orders", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
 cache_timeout: null
 uuid: 0d2c6df9-d9cd-476b-bd68-fdab536269ca
