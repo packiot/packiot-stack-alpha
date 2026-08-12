@@ -1,0 +1,94 @@
+# DATA STATUS: EMPTY until the PO/downtime data migration lands (CPACK ent3 has
+# equipment_events=0 / production_orders=0). Renders an empty state, not an error.
+#
+# Downtime Analysis (v2) — pareto + composition + daily trend + raw event log over
+# bi.downtimes. The `position` tree mirrors oee_overview.yaml; Superset normalizes it
+# on import. chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: Downtime Analysis
+description: Downtime pareto, sub-category share, daily trend, and raw event log over bi.downtimes.
+css: ''
+slug: downtime-analysis-cpack
+certified_by: null
+certification_details: null
+published: true
+uuid: b204ce5c-deec-4a06-9508-e29fc665c80e
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-pareto
+    - ROW-trend
+    - ROW-table
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Downtime Analysis
+  ROW-pareto:
+    type: ROW
+    id: ROW-pareto
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-dt-pareto
+    - CHART-dt-pie
+  CHART-dt-pareto:
+    type: CHART
+    id: CHART-dt-pareto
+    parents: [ROOT_ID, GRID_ID, ROW-pareto]
+    meta: {uuid: 40da5b2a-5031-4a6c-b096-4f9ab393b23f, width: 6, height: 50, chartId: 1, sliceName: Downtime pareto (by reason)}
+    children: []
+  CHART-dt-pie:
+    type: CHART
+    id: CHART-dt-pie
+    parents: [ROOT_ID, GRID_ID, ROW-pareto]
+    meta: {uuid: 6dd71c2f-5551-45a3-9328-03bd4360ba90, width: 6, height: 50, chartId: 2, sliceName: Downtime by sub-category}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-dt-by-day
+  CHART-dt-by-day:
+    type: CHART
+    id: CHART-dt-by-day
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: 4e275dcf-16a2-4de0-b940-761e35ebab9b, width: 12, height: 50, chartId: 3, sliceName: Downtime by day}
+    children: []
+  ROW-table:
+    type: ROW
+    id: ROW-table
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-dt-events
+  CHART-dt-events:
+    type: CHART
+    id: CHART-dt-events
+    parents: [ROOT_ID, GRID_ID, ROW-table]
+    meta: {uuid: 51723d7d-4579-4070-a695-f4299c65d43d, width: 12, height: 50, chartId: 4, sliceName: Downtime events}
+    children: []

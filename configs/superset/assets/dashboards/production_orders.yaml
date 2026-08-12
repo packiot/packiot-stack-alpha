@@ -1,0 +1,94 @@
+# DATA STATUS: EMPTY until the PO/downtime data migration lands (CPACK ent3 has
+# equipment_events=0 / production_orders=0). Renders an empty state, not an error.
+#
+# Production Orders — PO log + count KPI + OEE-by-order + per-PO runtime OEE over
+# bi.production_orders and bi.production_order_runtime. The `position` tree mirrors
+# oee_overview.yaml; charts bind by meta.uuid (chartId integers are placeholders).
+dashboard_title: Production Orders
+description: PO log, order count, OEE by order, and per-PO runtime OEE over the bi.* PO views.
+css: ''
+slug: production-orders-cpack
+certified_by: null
+certification_details: null
+published: true
+uuid: d6688568-5db5-4d54-b20c-cde63c3d42c6
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-table
+    - ROW-runtime
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Production Orders
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-po-count
+    - CHART-po-oee-bar
+  CHART-po-count:
+    type: CHART
+    id: CHART-po-count
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 0d2c6df9-d9cd-476b-bd68-fdab536269ca, width: 4, height: 50, chartId: 1, sliceName: Production orders (count)}
+    children: []
+  CHART-po-oee-bar:
+    type: CHART
+    id: CHART-po-oee-bar
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: dc739f02-6dd0-4c14-a721-e162af0720e9, width: 8, height: 50, chartId: 2, sliceName: OEE by production order}
+    children: []
+  ROW-table:
+    type: ROW
+    id: ROW-table
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-po-table
+  CHART-po-table:
+    type: CHART
+    id: CHART-po-table
+    parents: [ROOT_ID, GRID_ID, ROW-table]
+    meta: {uuid: bfe4698f-48a4-4582-b987-d5d4611dee2d, width: 12, height: 50, chartId: 3, sliceName: Production orders}
+    children: []
+  ROW-runtime:
+    type: ROW
+    id: ROW-runtime
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-po-runtime
+  CHART-po-runtime:
+    type: CHART
+    id: CHART-po-runtime
+    parents: [ROOT_ID, GRID_ID, ROW-runtime]
+    meta: {uuid: 26640f38-a138-4969-bb7e-4745d5298c08, width: 12, height: 50, chartId: 4, sliceName: PO runtime OEE}
+    children: []

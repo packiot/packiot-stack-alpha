@@ -1,0 +1,23 @@
+# Production orders table — raw PO rows, newest first.
+# bi.production_orders. front4 Production Orders / PowerBI Work Orders.
+slice_name: Production orders
+description: bi.production_orders raw rows — order, machine, status, ordered vs net, OEE, window.
+certified_by: null
+certification_details: null
+viz_type: table
+params: |
+  {
+    "datasource": "35e34b8f-a476-4495-a981-4878b10556c2__table",
+    "viz_type": "table",
+    "query_mode": "raw",
+    "all_columns": ["nm_production_order", "nm_equipment", "status", "production_ordered", "net_production", "oee", "ts_start", "ts_end"],
+    "order_by_cols": ["[\"ts_start\", false]"],
+    "adhoc_filters": [],
+    "row_limit": 100,
+    "table_timestamp_format": "smart_date"
+  }
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["nm_production_order", "nm_equipment", "status", "production_ordered", "net_production", "oee", "ts_start", "ts_end"], "orderby": [["ts_start", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "35e34b8f-a476-4495-a981-4878b10556c2__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["nm_production_order", "nm_equipment", "status", "production_ordered", "net_production", "oee", "ts_start", "ts_end"], "order_by_cols": ["[\"ts_start\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: bfe4698f-48a4-4582-b987-d5d4611dee2d
+version: 1.0.0
+dataset_uuid: 35e34b8f-a476-4495-a981-4878b10556c2

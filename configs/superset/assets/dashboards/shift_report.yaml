@@ -1,0 +1,92 @@
+# Shift Report — OEE by shift/equipment, net-by-shift, OEE trend, and a shift
+# breakdown table over bi.oee_shift. DATA-READY (oee_shift is populated). The
+# `position` tree mirrors oee_overview.yaml; charts bind by meta.uuid (chartId
+# integers are placeholders).
+dashboard_title: Shift Report
+description: Shift-grain OEE — pivot, net by shift, OEE trend, and breakdown table over bi.oee_shift.
+css: ''
+slug: shift-report
+certified_by: null
+certification_details: null
+published: true
+uuid: 42a405c5-f5b3-4baf-acc3-c116541f6f5c
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-top
+    - ROW-trend
+    - ROW-table
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Shift Report
+  ROW-top:
+    type: ROW
+    id: ROW-top
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-shift-pivot
+    - CHART-shift-net
+  CHART-shift-pivot:
+    type: CHART
+    id: CHART-shift-pivot
+    parents: [ROOT_ID, GRID_ID, ROW-top]
+    meta: {uuid: ca4f8f20-4ed1-4cba-acfd-bb88f3c45249, width: 6, height: 50, chartId: 1, sliceName: Shift OEE pivot}
+    children: []
+  CHART-shift-net:
+    type: CHART
+    id: CHART-shift-net
+    parents: [ROOT_ID, GRID_ID, ROW-top]
+    meta: {uuid: 1325db42-5d62-43eb-b673-0751c7879652, width: 6, height: 50, chartId: 2, sliceName: Net production by shift}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-shift-trend
+  CHART-shift-trend:
+    type: CHART
+    id: CHART-shift-trend
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: 42ef9c82-8279-441d-b265-37206578fe22, width: 12, height: 50, chartId: 3, sliceName: Shift OEE trend}
+    children: []
+  ROW-table:
+    type: ROW
+    id: ROW-table
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-shift-breakdown
+  CHART-shift-breakdown:
+    type: CHART
+    id: CHART-shift-breakdown
+    parents: [ROOT_ID, GRID_ID, ROW-table]
+    meta: {uuid: 4172c9db-ce2b-4ff3-a1fb-45f5b2110cb6, width: 12, height: 50, chartId: 4, sliceName: Shift breakdown}
+    children: []

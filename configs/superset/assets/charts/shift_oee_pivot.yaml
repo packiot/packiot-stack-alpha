@@ -1,0 +1,25 @@
+# Shift OEE pivot — AVG(oee) with equipment on rows, shift on columns.
+# bi.oee_shift. DATA-READY.
+slice_name: Shift OEE pivot
+description: bi.oee_shift AVG(oee) — equipment (rows) x cd_shift (columns).
+certified_by: null
+certification_details: null
+viz_type: pivot_table_v2
+params: |
+  {
+    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
+    "viz_type": "pivot_table_v2",
+    "groupbyRows": ["nm_equipment"],
+    "groupbyColumns": ["cd_shift"],
+    "metrics": ["avg_oee"],
+    "adhoc_filters": [],
+    "row_limit": 100,
+    "aggregateFunction": "Average",
+    "valueFormat": ".1%",
+    "time_range": "last week"
+  }
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"time_range": "last week", "filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["cd_shift", "nm_equipment"], "metrics": ["avg_oee"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table", "viz_type": "pivot_table_v2", "groupbyRows": ["nm_equipment"], "groupbyColumns": ["cd_shift"], "metrics": ["avg_oee"], "adhoc_filters": [], "row_limit": 100, "aggregateFunction": "Average", "valueFormat": ".1%", "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: ca4f8f20-4ed1-4cba-acfd-bb88f3c45249
+version: 1.0.0
+dataset_uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a

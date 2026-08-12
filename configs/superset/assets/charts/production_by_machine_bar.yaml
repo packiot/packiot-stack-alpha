@@ -1,0 +1,25 @@
+# Net vs gross production per machine. Categorical bar over bi.oee_shift.
+slice_name: Production by machine
+description: bi.oee_shift SUM(net) + SUM(gross) by nm_equipment.
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params: |
+  {
+    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
+    "viz_type": "dist_bar",
+    "metrics": ["sum_net", "sum_gross"],
+    "groupby": ["nm_equipment"],
+    "columns": [],
+    "adhoc_filters": [],
+    "row_limit": 50,
+    "order_desc": true,
+    "y_axis_format": ".3~s",
+    "show_legend": true,
+    "time_range": "last week"
+  }
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "nm_equipment", "label": "nm_equipment", "expressionType": "SQL"}], "metrics": ["sum_net", "sum_gross"], "orderby": [["sum_net", false]], "annotation_layers": [], "row_limit": 50, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["nm_equipment"], "columns": [], "aggregates": {"sum_net": {"operator": "mean"}, "sum_gross": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table", "viz_type": "echarts_timeseries_bar", "metrics": ["sum_net", "sum_gross"], "groupby": [], "adhoc_filters": [], "row_limit": 50, "order_desc": true, "y_axis_format": ".3~s", "show_legend": true, "annotation_layers": [], "contributionMode": null, "zoomable": false, "markerEnabled": false, "truncateYAxis": true, "comparison_type": "values", "x_axis": "nm_equipment", "stack": null, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 20612c3a-c982-41f0-98ce-832cd48a81f0
+version: 1.0.0
+dataset_uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a

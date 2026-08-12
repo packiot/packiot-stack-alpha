@@ -1,0 +1,159 @@
+# bi.production_orders — PO metadata + summary OEE (source: production_orders ⋈
+# equipments). EMPTY on CPACK until the PO data migration lands (production_orders=0
+# for ent3). Native id_enterprise (direct RLS policy). Replaces PowerBI Work-Orders /
+# v_13_pos_* pages; front4 Operations "Production Orders".
+table_name: production_orders
+main_dttm_col: ts_start
+description: Production-order metadata + OEE. front4 Production Orders / PowerBI Work Orders. EMPTY until PO migration.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 35e34b8f-a476-4495-a981-4878b10556c2
+metrics:
+- metric_name: count
+  verbose_name: Orders
+  metric_type: count
+  expression: COUNT(*)
+  extra: null
+- metric_name: avg_oee
+  verbose_name: OEE
+  expression: AVG(oee)
+  d3format: .1%
+  extra: null
+- metric_name: sum_net
+  verbose_name: Net production
+  expression: SUM(net_production)
+  d3format: .3~s
+  extra: null
+- metric_name: sum_gross
+  verbose_name: Gross production
+  expression: SUM(gross_production)
+  d3format: .3~s
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: Tenant key (RLS). Never charted; used by the RLS filter.
+- column_name: id_production_order
+  type: BIGINT
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_equipment
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_product
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_client
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: status
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: production_programmed
+  type: BIGINT
+  is_dttm: false
+  is_active: true
+- column_name: production_ordered
+  type: BIGINT
+  is_dttm: false
+  is_active: true
+- column_name: production_real
+  type: BIGINT
+  is_dttm: false
+  is_active: true
+- column_name: net_production
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: gross_production
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee_availability
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee_performance
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: oee_quality
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: running_time
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: available_time
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: stopped_time
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: ts_start
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+  groupby: false
+  filterable: true
+  python_date_format: null
+- column_name: ts_end
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+- column_name: nm_production_order
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_order_text
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

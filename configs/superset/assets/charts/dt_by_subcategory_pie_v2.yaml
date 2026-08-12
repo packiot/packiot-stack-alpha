@@ -1,0 +1,24 @@
+# Downtime share by sub-category — pie of SUM(duration) over desc_subcategory.
+# bi.downtimes. Composition view of the pareto's finer grain.
+slice_name: Downtime by sub-category
+description: bi.downtimes SUM(duration) share by desc_subcategory. Pie.
+certified_by: null
+certification_details: null
+viz_type: pie
+params: |
+  {
+    "datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table",
+    "viz_type": "pie",
+    "metric": "total_duration",
+    "groupby": ["desc_subcategory"],
+    "adhoc_filters": [],
+    "row_limit": 25,
+    "number_format": ".3~s",
+    "show_legend": true,
+    "time_range": "last week"
+  }
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["desc_subcategory"], "metrics": ["total_duration"], "orderby": [["total_duration", false]], "annotation_layers": [], "row_limit": 25, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table", "viz_type": "pie", "metric": "total_duration", "groupby": ["desc_subcategory"], "adhoc_filters": [], "row_limit": 25, "number_format": ".3~s", "show_legend": true, "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 6dd71c2f-5551-45a3-9328-03bd4360ba90
+version: 1.0.0
+dataset_uuid: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05
