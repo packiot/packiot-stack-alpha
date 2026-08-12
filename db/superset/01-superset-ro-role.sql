@@ -348,7 +348,11 @@ SELECT DISTINCT ON (s.id_equipment)
     s.nm_equipment || CASE s.tp_equipment
              WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label,
-    COALESCE(NULLIF(s.id_order, ''), 'No production order') AS id_order_label
+    COALESCE(NULLIF(s.id_order, ''), 'No production order') AS id_order_label,
+    -- Track A: state enum 6=Running, 10=Stopped (NULL/other = no fresh signal).
+    -- Gives the live-status card a legible status instead of a bare int/blank.
+    CASE s.state WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
+         ELSE 'Idle / no signal' END AS state_label
 FROM (
     SELECT
         eq.id_enterprise,
