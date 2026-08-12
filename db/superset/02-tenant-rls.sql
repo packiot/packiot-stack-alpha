@@ -51,7 +51,17 @@
 
 -- current_tenant(): the GUC as int, or NULL when unset/blank. `true` = missing_ok
 -- so an unset GUC yields NULL (→ policy denies) instead of erroring.
-CREATE OR REPLACE FUNCTION current_tenant() RETURNS int
+--
+-- SEARCH-PATH SAFETY (load-bearing — see is_all_tenant below): these helpers live
+-- in `public`, but Superset runs every bi.* query with `search_path = <schema>`
+-- (its Postgres engine-spec appends `-csearch_path=bi` per dataset schema), so
+-- `public` is NOT on the caller's path. Function bodies of inlinable SQL functions
+-- are re-resolved against the CALLER'S search_path at plan/inline time — an
+-- UNQUALIFIED cross-function call therefore fails with "function ... does not
+-- exist". current_tenant()'s body only touches built-ins (current_setting, NULLIF,
+-- int4) which are always resolvable, so it is safe unqualified; is_all_tenant()
+-- calls current_tenant() and MUST qualify it (public.current_tenant()).
+CREATE OR REPLACE FUNCTION public.current_tenant() RETURNS int
 LANGUAGE sql STABLE AS $$
   SELECT NULLIF(current_setting('app.tenant_id', true), '')::int
 $$;
@@ -71,9 +81,19 @@ $$;
 --     per-tenant predicate bites exactly as before (strict per-tenant isolation).
 --   * GUC unset/blank → current_tenant() NULL, is_all_tenant() FALSE, per-tenant
 --     match NULL → deny-all (fail-closed) — unchanged.
-CREATE OR REPLACE FUNCTION is_all_tenant() RETURNS boolean
+--
+-- The `public.` qualifier on current_tenant() is REQUIRED, not cosmetic: when the
+-- planner inlines this STABLE SQL function into an RLS policy, its body is parsed
+-- under the caller's search_path (`bi` for Superset chart queries — see
+-- current_tenant above). Without the qualifier the inlined `current_tenant()` is
+-- unresolvable → `UndefinedFunction: function current_tenant() does not exist`,
+-- failing EVERY bi.* chart. The policies themselves call is_all_tenant()/
+-- current_tenant() unqualified safely because policy expressions are OID-pinned at
+-- CREATE POLICY time (resolved with `public` on the applying role's path); only the
+-- nested body call re-resolves at run time, so only it must be qualified.
+CREATE OR REPLACE FUNCTION public.is_all_tenant() RETURNS boolean
 LANGUAGE sql STABLE AS $$
-  SELECT current_tenant() = -1
+  SELECT public.current_tenant() = -1
 $$;
 
 -- ── Native-id tables (id_enterprise is a real column) — cheap policy ─────────
