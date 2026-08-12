@@ -108,5 +108,33 @@ columns:
   is_active: true
   groupby: true
   filterable: true
+- column_name: status
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: 6=Running, 10=Stopped (integer enum).
+- column_name: status_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: 6->Running, 10->Stopped.
+- column_name: reason
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: desc_category, else Planned/Changeover/Unjustified — legible label for still-unjustified stops.
+- column_name: equipment_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: nm_equipment + (line)/(machine)/(sector) — disambiguates line/machine name-pairs.
 version: 1.0.0
 database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

@@ -1,0 +1,25 @@
+# Net production per team. Categorical bar over bi.production_by_team.
+slice_name: Production by team
+description: bi.production_by_team SUM(net) by id_team. PowerBI Prod_Teams.
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params:
+  datasource: 8c433a6b-1a94-4c96-a7b0-2d04dc1da868__table
+  viz_type: dist_bar
+  metrics:
+  - sum_net
+  groupby:
+  - id_team
+  columns: []
+  adhoc_filters: []
+  row_limit: 50
+  order_desc: true
+  y_axis_format: .3~s
+  show_legend: false
+  time_range: last week
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "id_team", "label": "id_team", "expressionType": "SQL"}], "metrics": ["sum_net"], "orderby": [["sum_net", false]], "annotation_layers": [], "row_limit": 50, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["id_team"], "columns": [], "aggregates": {"sum_net": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "8c433a6b-1a94-4c96-a7b0-2d04dc1da868__table", "viz_type": "echarts_timeseries_bar", "metrics": ["sum_net"], "groupby": [], "adhoc_filters": [], "row_limit": 50, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "annotation_layers": [], "contributionMode": null, "zoomable": false, "markerEnabled": false, "truncateYAxis": true, "comparison_type": "values", "x_axis": "id_team", "stack": null, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 1ce65528-f070-47b2-8d52-d0c566fb66f5
+version: 1.0.0
+dataset_uuid: 8c433a6b-1a94-4c96-a7b0-2d04dc1da868

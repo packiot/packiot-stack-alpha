@@ -78,13 +78,20 @@ CREATE SCHEMA IF NOT EXISTS bi AUTHORIZATION bi_owner;
 GRANT USAGE ON SCHEMA public TO bi_owner;
 -- NOTE (schema reconciliation, 2026-08): the F3 analytics schema has NO `downtimes`
 -- table — the real downtime source is `equipment_events` (which carries id_enterprise
--- natively). The five base tables the bi.* views read on F3 are:
+-- natively). The base tables the bi.* views read on F3 are:
+--   * the 5 OEE-core tables (below) that the original OEE-Overview bundle needs, plus
+--   * the 3 GAP tables the W3 dashboards need: equipment_values (speed/live-status/
+--     team production — a COMPRESSED hypertable, isolated transitively via equipments),
+--     production_orders (PO metadata), production_targets (reference lines).
 GRANT SELECT ON
     equipments,
     equipment_runtime_shift,
     equipment_runtime_1hour,
     production_orders_runtime,
-    equipment_events
+    equipment_events,
+    equipment_values,
+    production_orders,
+    production_targets
   TO bi_owner;
 
 -- superset_ro may enter the bi schema and read its views — nothing else.
@@ -126,7 +133,10 @@ SELECT
     rs.oee_q,
     rs.gross,
     rs.net,
-    rs.running_time
+    rs.running_time,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_runtime_shift rs
 JOIN equipments eq ON eq.id_equipment = rs.id_equipment  -- id_enterprise source
 WHERE rs.ts_value <= now()      -- F3: never expose future calendar buckets
@@ -146,7 +156,10 @@ SELECT
     rh.oee_q,
     rh.gross,
     rh.net,
-    rh.running_time
+    rh.running_time,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_runtime_1hour rh
 JOIN equipments eq ON eq.id_equipment = rh.id_equipment
 WHERE rh.ts_value <= now()      -- F3: never expose future calendar buckets
@@ -181,6 +194,13 @@ JOIN equipments eq ON eq.id_equipment = por.id_equipment;  -- id_enterprise sour
 -- the RLS-protected equipments table is what co-enforces isolation on this view
 -- (02-tenant-rls.sql explains the transitive path). Every joined row belongs to the
 -- session tenant's equipment, so no cross-tenant event can surface.
+-- PRESENTATION (Track A): equipment_events.status is an enum — 6 = Running,
+-- 10 = Stopped (a "microstop" is just a short Stopped period, told apart by
+-- duration, not a distinct code). A *Downtimes* view must be actual downtimes, so
+-- we EXCLUDE Running(6): only non-running events (Stopped + planned) remain. `reason`
+-- gives every stop a legible label even before the operator is live to justify it
+-- on new-prod (desc_category is NULL until then) — NULL → 'Unjustified' (or 'Planned'
+-- / 'Changeover' from the flags). status_label and equipment_label are display aids.
 CREATE OR REPLACE VIEW bi.downtimes AS
 SELECT
     eq.id_enterprise,               -- tenant key from the RLS-protected dimension
@@ -195,9 +215,20 @@ SELECT
     ev.ts_end,
     ev.duration,
     ev.planned_downtime,
-    ev.change_over
+    ev.change_over,
+    ev.status,
+    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
+         ELSE ev.status::text END AS status_label,
+    COALESCE(ev.desc_category,
+             CASE WHEN ev.planned_downtime THEN 'Planned'
+                  WHEN ev.change_over      THEN 'Changeover'
+                  ELSE 'Unjustified' END) AS reason,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_events ev
-JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
+JOIN equipments eq ON eq.id_equipment = ev.id_equipment
+WHERE ev.status <> 6;               -- Downtimes = non-running events (exclude Running=6)
 
 -- Equipment dimension (for joins/filters in the authoring UI). Active only.
 CREATE OR REPLACE VIEW bi.equipments AS
@@ -207,9 +238,222 @@ SELECT
     nm_equipment,
     tp_equipment,
     id_area,
-    lead_machine
+    lead_machine,
+    -- Track A: same name can be a tp=3 line AND a tp=1 machine (BREYER1, CER400,…) —
+    -- distinct topics, not duplicates. equipment_label disambiguates them on charts.
+    nm_equipment || CASE tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipments
 WHERE active;
+
+-- ── 3b. GAP views (W3 PowerBI→Superset migration) ────────────────────────────
+-- Added for the additional CPACK dashboards (Machine Speed, Live Status, Total
+-- Production/Team, Production Orders). Same contract as above: every row carries
+-- id_enterprise (the RLS key), and every base table gets an RLS policy in 02.
+--
+-- DATA-READINESS on new-prod / CPACK (ent 3): equipment_values is the raw stream
+-- and IS populated → equipment_speed / live_status / production_by_team render with
+-- data NOW. production_orders + production_targets are EMPTY for CPACK until the
+-- PO/target data migration lands → those views return 0 rows and their dashboards
+-- degrade gracefully (empty state, not error).
+--
+-- (Two gap views from the plan — bi.setup_events and bi.production_scans — are
+-- INTENTIONALLY ABSENT: the F3 analytics schema has no `setups`/`scanned_boxes`
+-- base table, so there is no source to build them over. bi.downtime_events is
+-- already served at raw event grain by bi.downtimes above — no separate view.)
+
+-- Machine speed — 5-min/raw speed per equipment (PowerBI `Speed`/`report_speed_*`;
+-- front4 Operations "Machine Speed"). equipment_values is a COMPRESSED TimescaleDB
+-- hypertable, so — exactly like bi.downtimes over equipment_events — the tenant key
+-- is taken from the RLS-protected `equipments` JOIN (eq.id_enterprise), not from the
+-- hypertable column: the join to the tenant-filtered equipments dimension is what
+-- co-enforces isolation even though 02 skips the direct RLS policy on a compressed
+-- hypertable. (On the CI fixture equipment_values is a plain table → 02 DOES enable
+-- the native policy, so the "every base table has a rule" guard holds.)
+-- SPEED MODEL (two sources of ACTUAL speed + a per-equipment IDEAL/target):
+--   * ACTUAL speed has two possible sources, per the CPACK PLC contract:
+--       (a) a direct PLC tag (MachSpeed / CurMachSpeed) → equipment_values.speed;
+--       (b) for machines whose PLC does NOT emit a speed tag, INFERRED from counter
+--           throughput = increment / minutes-since-the-previous-sample (units/min).
+--     So the exposed `speed` is COALESCE(plc_speed, inferred_rate): every machine
+--     shows a real current speed instead of blank/zero for the sensorless ones.
+--     Rate uses the machine-cycle count (gross, incl. scrap) when present, else net;
+--     the LAG over the equipment's own series gives the sample interval. Idle rows
+--     (no PLC speed AND no throughput) resolve to NULL — not 0 — so AVG()/MAX() in
+--     the charts exclude downtime and report the producing average / peak.
+--   * IDEAL/target speed is the CSAdmin-set rated speed on equipments.production_speed
+--     (per equipment), NOT equipment_values.ideal_production_speed — that PLC column
+--     is 0/unset for CPACK, which is why the target line was previously missing. We
+--     surface it AS ideal_production_speed so the Machine-Speed charts draw an
+--     actual-vs-ideal reference line (matches how front4 overlays the target).
+-- The 1-min-cagg-vs-raw choice: the OEE engine averages speed over the 1-min cagg,
+-- but that cagg is a continuous aggregate (RLS cannot be enabled on it) — reading it
+-- here would break the isolation model, so we infer over the raw stream instead and
+-- get numerically equivalent producing averages. Chunk exclusion on ts_value keeps
+-- the LAG window cheap (the chart's time filter pushes below the WindowAgg).
+CREATE OR REPLACE VIEW bi.equipment_speed AS
+SELECT
+    eq.id_enterprise,                 -- tenant key from the RLS-protected dimension
+    ev.id_equipment,
+    eq.nm_equipment,
+    ev.ts_value,
+    NULLIF(
+      COALESCE(
+        NULLIF(ev.speed, 0),          -- (a) PLC MachSpeed tag when present
+        CASE WHEN COALESCE(ev.gross_production_incr, ev.net_production_incr, 0) > 0
+             THEN COALESCE(NULLIF(ev.gross_production_incr, 0), ev.net_production_incr)
+                  / NULLIF(EXTRACT(EPOCH FROM (ev.ts_value
+                       - LAG(ev.ts_value) OVER (PARTITION BY ev.id_equipment
+                                                ORDER BY ev.ts_value))) / 60.0, 0)
+        END                           -- (b) inferred units/min from throughput
+      ), 0) AS speed,
+    ev.speed AS plc_speed,            -- raw PLC tag (NULL/0 = sensorless machine)
+    eq.production_speed AS ideal_production_speed,  -- CSAdmin rated/target — the reference line
+    ev.id_shift,
+    ev.id_production_order,
+    ev.state,
+    ev.mode,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
+FROM equipment_values ev
+JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
+
+-- Live machine status — the latest reading per equipment (PowerBI RealTimeData /
+-- `13_OBD_MOBILE_direct_query`; front4 machineStatusCard). DISTINCT ON picks the
+-- most recent equipment_values row per machine; bounded to a recent window so the
+-- scan stays cheap on the hypertable. Isolated transitively via the equipments join.
+-- `speed` here uses the SAME two-source model as bi.equipment_speed (PLC tag, else
+-- inferred from throughput over the bounded 6h window) so the live cards show a real
+-- current speed for sensorless machines too; ideal_production_speed (CSAdmin rated)
+-- rides along so a card can show current-vs-target. The inference is computed in the
+-- inner query (needs LAG over the recent series), then DISTINCT ON picks the latest.
+CREATE OR REPLACE VIEW bi.live_status AS
+SELECT DISTINCT ON (s.id_equipment)
+    s.id_enterprise,                  -- tenant key from the RLS-protected dimension
+    s.id_equipment,
+    s.nm_equipment,
+    s.ts_value         AS last_update,
+    NULLIF(COALESCE(NULLIF(s.speed, 0), s.inferred_speed), 0) AS speed,
+    s.speed            AS plc_speed,
+    s.ideal_production_speed,
+    s.state,
+    s.mode,
+    s.id_production_order,
+    s.id_order,
+    s.net_production_val,
+    s.gross_production_val,
+    s.scrap_val,
+    s.nm_equipment || CASE s.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label,
+    COALESCE(NULLIF(s.id_order, ''), 'No production order') AS id_order_label
+FROM (
+    SELECT
+        eq.id_enterprise,
+        ev.id_equipment,
+        eq.nm_equipment,
+        eq.tp_equipment,
+        ev.ts_value,
+        ev.speed,
+        eq.production_speed AS ideal_production_speed,
+        CASE WHEN COALESCE(ev.gross_production_incr, ev.net_production_incr, 0) > 0
+             THEN COALESCE(NULLIF(ev.gross_production_incr, 0), ev.net_production_incr)
+                  / NULLIF(EXTRACT(EPOCH FROM (ev.ts_value
+                       - LAG(ev.ts_value) OVER (PARTITION BY ev.id_equipment
+                                                ORDER BY ev.ts_value))) / 60.0, 0)
+        END AS inferred_speed,
+        ev.state,
+        ev.mode,
+        ev.id_production_order,
+        ev.id_order,
+        ev.net_production_val,
+        ev.gross_production_val,
+        ev.scrap_val
+    FROM equipment_values ev
+    JOIN equipments eq ON eq.id_equipment = ev.id_equipment
+    WHERE ev.ts_value > now() - interval '6 hours'
+) s
+ORDER BY s.id_equipment, s.ts_value DESC;
+
+-- Production by team — per-team production increments (PowerBI `Prod_Teams` /
+-- `13_Production_per_Team`). Also the raw-scan-ish surface. Transitive isolation.
+CREATE OR REPLACE VIEW bi.production_by_team AS
+SELECT
+    eq.id_enterprise,                 -- tenant key from the RLS-protected dimension
+    ev.id_equipment,
+    eq.nm_equipment,
+    ev.id_team,
+    ev.id_shift,
+    ev.ts_value,
+    ev.net_production_incr,
+    ev.gross_production_incr,
+    ev.scrap_incr,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
+FROM equipment_values ev
+JOIN equipments eq ON eq.id_equipment = ev.id_equipment;
+
+-- Production-order metadata + summary OEE (PowerBI `v_13_pos_*`, Work-Orders pages;
+-- front4 Operations "Production Orders" + orderRow). production_orders carries
+-- id_enterprise NATIVELY (unlike production_orders_runtime), so 02 puts a direct
+-- native-id policy on it. Join equipments for nm_equipment. EMPTY for CPACK until
+-- the PO migration.
+CREATE OR REPLACE VIEW bi.production_orders AS
+SELECT
+    po.id_enterprise,                 -- native tenant key (direct RLS policy in 02)
+    po.id_production_order,
+    po.id_equipment,
+    eq.nm_equipment,
+    po.id_product,
+    po.id_client,
+    po.status,
+    po.production_programmed,
+    po.production_ordered,
+    po.production_real,
+    po.net_production,
+    po.gross_production,
+    po.oee,
+    po.oee_availability,
+    po.oee_performance,
+    po.oee_quality,
+    po.running_time,
+    po.available_time,
+    po.stopped_time,
+    po.ts_start,
+    po.ts_end,
+    po.nm_production_order,
+    po.id_order_text,
+    -- Track A: nm_production_order is NULL on all 19.8k migrated CPACK POs (the human
+    -- order number rides with the operator cutover). Fall back to id_order_text, then
+    -- the numeric PK, so the order column is a legible identifier, never blank.
+    COALESCE(NULLIF(po.nm_production_order, ''), NULLIF(po.id_order_text, ''),
+             'PO #' || po.id_production_order) AS po_label,
+    eq.nm_equipment || CASE eq.tp_equipment
+             WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
+             WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
+FROM production_orders po
+JOIN equipments eq ON eq.id_equipment = po.id_equipment;
+
+-- Production targets — per-equipment target values for chart reference lines
+-- (front4 productionChart target line; production_targets.vl_*). Native id_enterprise
+-- → direct RLS policy in 02. EMPTY for CPACK until targets are configured.
+CREATE OR REPLACE VIEW bi.production_targets AS
+SELECT
+    pt.id_enterprise,                 -- native tenant key (direct RLS policy in 02)
+    pt.id_equipment,
+    eq.nm_equipment,
+    pt.id_area,
+    pt.id_site,
+    pt.vl_hour,
+    pt.vl_shift,
+    pt.vl_day,
+    pt.vl_week,
+    pt.vl_month
+FROM production_targets pt
+JOIN equipments eq ON eq.id_equipment = pt.id_equipment;
 
 -- ── 4. Own + grant ───────────────────────────────────────────────────────────
 -- Make bi_owner the OWNER of every bi.* view. This is what makes them run their

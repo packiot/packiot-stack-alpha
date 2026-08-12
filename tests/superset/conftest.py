@@ -94,6 +94,7 @@ CREATE TABLE equipments (
     tp_equipment  int  NOT NULL DEFAULT 1,
     id_area       int,
     lead_machine  int,
+    production_speed int,   -- CSAdmin rated/ideal speed; bi.equipment_speed surfaces it
     active        boolean NOT NULL DEFAULT true
 );
 CREATE TABLE equipment_runtime_shift (
@@ -125,7 +126,39 @@ CREATE TABLE equipment_events (
     ts_event timestamptz, ts_end timestamptz, duration numeric,
     cd_category text, cd_subcategory text,
     desc_category text, desc_subcategory text,
-    planned_downtime boolean, change_over boolean
+    planned_downtime boolean, change_over boolean,
+    status int  -- 6=Running, 10=Stopped; bi.downtimes filters out Running(6)
+);
+-- GAP-view base tables (W3). Only the columns the bi.* gap views read.
+-- equipment_values is a COMPRESSED hypertable on the live DB; here it is a plain
+-- table so 02's conditional block enables a native RLS policy (guard holds).
+CREATE TABLE equipment_values (
+    id_equipment int NOT NULL,
+    ts_value     timestamptz NOT NULL,
+    id_enterprise int,
+    speed real, ideal_production_speed int,
+    id_shift int, id_team int, id_production_order int,
+    id_order text, state int, mode int,
+    net_production_val real, gross_production_val real, scrap_val real,
+    net_production_incr real, gross_production_incr real, scrap_incr real
+);
+CREATE TABLE production_orders (
+    id_production_order bigint NOT NULL,
+    id_enterprise int NOT NULL,
+    id_equipment  int NOT NULL,
+    id_product int, id_client int, status int,
+    production_programmed bigint, production_ordered bigint, production_real bigint,
+    net_production double precision, gross_production double precision,
+    oee real, oee_availability double precision, oee_performance double precision,
+    oee_quality double precision, running_time double precision,
+    available_time double precision, stopped_time int,
+    ts_start timestamptz, ts_end timestamptz,
+    nm_production_order varchar, id_order_text varchar
+);
+CREATE TABLE production_targets (
+    id_enterprise int, id_equipment int NOT NULL,
+    id_area int, id_site int,
+    vl_hour int, vl_shift int, vl_day int, vl_week int, vl_month int
 );
 """
 
@@ -143,8 +176,8 @@ def _drop_roles(cur):
 def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int):
     for eq in equip_ids:
         cur.execute(
-            "INSERT INTO equipments (id_enterprise,id_equipment,nm_equipment,tp_equipment,id_area,lead_machine,active)"
-            " VALUES (%s,%s,%s,1,%s,%s,true)",
+            "INSERT INTO equipments (id_enterprise,id_equipment,nm_equipment,tp_equipment,id_area,lead_machine,production_speed,active)"
+            " VALUES (%s,%s,%s,1,%s,%s,360,true)",
             (ent, eq, f"EQ-{eq}", ent, eq),
         )
         cur.execute(
@@ -158,14 +191,34 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
             (eq,),
         )
         cur.execute(
-            "INSERT INTO equipment_events (id_equipment_event,id_equipment,id_enterprise,ts_event,ts_end,duration,cd_category,cd_subcategory,desc_category,desc_subcategory,planned_downtime,change_over)"
-            " VALUES (%s,%s,%s,now()-interval '1h',now(),3600,'MECH','JAM','Mechanical','Jam',false,false)",
+            "INSERT INTO equipment_events (id_equipment_event,id_equipment,id_enterprise,ts_event,ts_end,duration,cd_category,cd_subcategory,desc_category,desc_subcategory,planned_downtime,change_over,status)"
+            " VALUES (%s,%s,%s,now()-interval '1h',now(),3600,'MECH','JAM','Mechanical','Jam',false,false,10)",
             (base_dt + eq, eq, ent),
+        )
+        # equipment_values: two rows per equipment (recent so live_status's 6h window
+        # keeps the latest one) — feeds equipment_speed / live_status / production_by_team.
+        cur.execute(
+            "INSERT INTO equipment_values (id_equipment,ts_value,id_enterprise,speed,ideal_production_speed,id_shift,id_team,id_production_order,id_order,state,mode,net_production_val,gross_production_val,scrap_val,net_production_incr,gross_production_incr,scrap_incr)"
+            " VALUES (%s,now()-interval '30min',%s,300,360,1,1,%s,'ORD-1',2,1,500,540,40,20,22,2),"
+            "        (%s,now()-interval '5min', %s,320,360,1,1,%s,'ORD-1',2,1,520,560,42,20,20,2)",
+            (eq, ent, base_po, eq, ent, base_po),
+        )
+        # production_targets: one target row per equipment (native id_enterprise).
+        cur.execute(
+            "INSERT INTO production_targets (id_enterprise,id_equipment,id_area,id_site,vl_hour,vl_shift,vl_day,vl_week,vl_month)"
+            " VALUES (%s,%s,%s,1,100,800,2400,16800,72000)",
+            (ent, eq, ent),
         )
     cur.execute(
         "INSERT INTO production_orders_runtime (id_production_order,id_equipment,oee,oee_a,oee_p,oee_q,gross_production,net_production,running_time,runtime_timerange)"
         " VALUES (%s,%s,0.8,0.9,0.95,0.93,540,500,7.2,tstzrange(now()-interval '8h', now()))",
         (base_po, equip_ids[0]),
+    )
+    # production_orders: one PO per tenant (native id_enterprise).
+    cur.execute(
+        "INSERT INTO production_orders (id_production_order,id_enterprise,id_equipment,id_product,id_client,status,production_programmed,production_ordered,production_real,net_production,gross_production,oee,oee_availability,oee_performance,oee_quality,running_time,available_time,stopped_time,ts_start,ts_end,nm_production_order,id_order_text)"
+        " VALUES (%s,%s,%s,7,3,3,1000,1000,540,500,540,0.8,0.9,0.95,0.93,7.2,8,0.8,now()-interval '8h',now(),'PO-1','ORD-1')",
+        (base_po, ent, equip_ids[0]),
     )
 
 
@@ -220,7 +273,8 @@ def applied_db(superuser_dsn):
         cur.execute("DROP SCHEMA IF EXISTS bi CASCADE;")
         _drop_roles(cur)
         for tbl in ("equipments", "equipment_runtime_shift", "equipment_runtime_1hour",
-                    "production_orders_runtime", "equipment_events"):
+                    "production_orders_runtime", "equipment_events",
+                    "equipment_values", "production_orders", "production_targets"):
             cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE;")
 
         # Base schema + two tenants' data (as superuser → bypasses RLS for seeding).

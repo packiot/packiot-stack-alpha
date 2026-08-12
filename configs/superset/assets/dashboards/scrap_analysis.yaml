@@ -1,0 +1,77 @@
+# Scrap Analysis — total scrap, hourly trend, per-machine over bi.oee_shift / bi.oee_hourly.
+# Tenant isolation via Superset RLS (id_enterprise), not encoded here.
+# chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: Scrap Analysis
+description: Total scrap, hourly scrap trend, and per-machine scrap breakdown.
+css: ''
+slug: scrap-analysis
+certified_by: null
+certification_details: null
+published: true
+uuid: 30644875-6129-42e5-a10e-298f9645df10
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-trend
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Scrap Analysis
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-scrap-total
+    - CHART-scrap-by-machine
+  CHART-scrap-total:
+    type: CHART
+    id: CHART-scrap-total
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 9576cf82-9b19-4b36-a76e-bcdc63a3f0d1, width: 4, height: 50, chartId: 1, sliceName: Total scrap}
+    children: []
+  CHART-scrap-by-machine:
+    type: CHART
+    id: CHART-scrap-by-machine
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 063b8918-6066-42cc-93a4-13a8a27482ea, width: 8, height: 50, chartId: 2, sliceName: Scrap by machine}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-scrap-trend
+  CHART-scrap-trend:
+    type: CHART
+    id: CHART-scrap-trend
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: 496ec368-d96a-48dd-8941-85e0caf25725, width: 12, height: 50, chartId: 3, sliceName: Scrap trend (hourly)}
+    children: []
