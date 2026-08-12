@@ -132,5 +132,12 @@ columns:
   groupby: true
   filterable: true
   description: id_order, else 'No production order'.
+- column_name: state_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: 6->Running, 10->Stopped, else 'Idle / no signal'.
 version: 1.0.0
 database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a
