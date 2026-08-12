@@ -102,7 +102,7 @@ resource "aws_iam_instance_profile" "runner" {
 # ── Egress-only SG (no inbound; managed via SSM) ─────────────────────────────
 resource "aws_security_group" "runner" {
   name        = "packiot-production-github-runner"
-  description = "Self-hosted CI runner — egress only (GitHub, package mirrors, AWS)."
+  description = "Self-hosted CI runner - egress only (GitHub, package mirrors, AWS)."
   vpc_id      = aws_vpc.production.id
 
   egress {
