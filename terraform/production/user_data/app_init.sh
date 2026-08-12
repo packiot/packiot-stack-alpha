@@ -152,6 +152,12 @@ SUPERSET_ORIGIN_VERIFY=$(get_secret "packiot/production/bi-origin-verify" | jq -
 # until B3). REFDATA_QUERY_API_KEYS lives in its own secret (per-tenant map).
 OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
 OPERATOR_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_refdata_api_key // ""')
+# edge-api operator-session signing secret (runbook: floor-operator /session login).
+# The login.service.ts port REQUIRES JWT_SECRET (503 if absent) — the legacy
+# Node-RED original fell back to the literal 'packiot'. Distinct from Hasura's and
+# Superset's JWT secrets. // "" → a box booted before this key existed still comes
+# up; operator LOGIN just 503s until populated (PO write path is unaffected).
+JWT_SECRET=$(echo "$APP_SECRET" | jq -r '.edge_api_jwt_secret // ""')
 REFDATA_QUERY_API_KEYS=$(get_secret "packiot/production/refdata-query-keys" 2>/dev/null | jq -r '.api_keys // ""' || echo "")
 
 # DB URL (via pgbouncer): app services connect to the `pgbouncer` compose
@@ -259,6 +265,7 @@ ID_ENTERPRISE=
 # in REFDATA_QUERY_API_KEYS below, mapped to enterprise 3).
 OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
 OPERATOR_REFDATA_API_KEY=$OPERATOR_REFDATA_API_KEY
+JWT_SECRET=$JWT_SECRET
 
 # refdata-api per-tenant read-key map: "<key>:<enterprise_id>,<key2>:<id2>".
 # refdata derives customer_id SERVER-SIDE from the presented key (never client-
