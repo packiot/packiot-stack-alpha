@@ -35,6 +35,45 @@ USER = os.environ.get("SUPERSET_ADMIN_USER")
 PASSWORD = os.environ.get("SUPERSET_ADMIN_PASSWORD")
 
 
+def _build_query(fd):
+    """Build a query_context `queries[0]` from a chart's form_data, robust across
+    viz types (big_number_total uses singular `metric`; raw tables use `all_columns`;
+    aggregate uses `groupby`/pivot rows+cols; time-series prepend an x_axis BASE_AXIS).
+    Trusting the asset's stored queries is unsafe — it can be empty -> 'Empty query?'."""
+    metrics = list(fd.get("metrics") or [])
+    if not metrics and fd.get("metric"):
+        metrics = [fd["metric"]]
+    q = {
+        "filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {},
+        "annotation_layers": [], "row_limit": fd.get("row_limit", 10000),
+        "series_limit": fd.get("series_limit", 0), "order_desc": fd.get("order_desc", True),
+        "url_params": {}, "custom_params": {}, "custom_form_data": {},
+    }
+    tr = fd.get("time_range")
+    if tr:
+        q["time_range"] = tr
+    x_axis = fd.get("x_axis")
+    is_raw = fd.get("query_mode") == "raw" or (fd.get("all_columns") and not metrics)
+    if is_raw:  # raw table: emit columns, no metrics
+        q["columns"] = list(fd.get("all_columns") or [])
+        q["orderby"] = []
+    else:
+        cols = []
+        if x_axis:
+            tg = fd.get("time_grain_sqla")
+            q["extras"]["time_grain_sqla"] = tg
+            cols.append({"timeGrain": tg, "columnType": "BASE_AXIS",
+                         "sqlExpression": x_axis, "label": x_axis, "expressionType": "SQL"})
+        cols += list(fd.get("groupby") or [])
+        cols += list(fd.get("groupbyRows") or [])
+        cols += list(fd.get("groupbyColumns") or [])
+        if not cols:
+            cols += list(fd.get("columns") or [])
+        q["columns"] = cols
+        q["metrics"] = metrics
+    return q
+
+
 def _req(method, path, token=None, csrf=None, cookie=None, body=None):
     url = f"{BASE}{path}"
     data = json.dumps(body).encode() if body is not None else None
@@ -94,6 +133,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--chart-uuids", default="", help="comma-separated allowlist")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="re-materialize even charts whose qc already has a real id")
+    ap.add_argument("--min-id", type=int, default=0,
+                    help="only touch charts with id >= this (excludes lower-id OEE Overview charts)")
     args = ap.parse_args()
     allow = {u.strip() for u in args.chart_uuids.split(",") if u.strip()}
 
@@ -112,6 +155,8 @@ def main():
         for ch in rows:
             cid, cuuid = ch["id"], str(ch.get("uuid"))
             if allow and cuuid not in allow:
+                continue
+            if args.min_id and cid < args.min_id:
                 continue
             # Read full chart to get params + query_context.
             st, full, _ = _req("GET", f"/api/v1/chart/{cid}", token=token)
@@ -135,11 +180,13 @@ def main():
                 num_id = res.get("datasource_id")
             # Decide whether to touch: only null / placeholder(id 0/None) unless allowlisted.
             needs = False
-            if qc_raw:
+            if args.force or allow:
+                needs = True
+            elif qc_raw:
                 try:
                     qc = json.loads(qc_raw)
                     dsid = (qc.get("datasource") or {}).get("id")
-                    needs = dsid in (0, None) or allow
+                    needs = dsid in (0, None)
                 except Exception:
                     needs = True
             else:
@@ -149,17 +196,20 @@ def main():
             if not num_id:
                 print(f"  SKIP chart {cid} ({cuuid}): could not resolve dataset id")
                 continue
-            # Rewrite params + query_context datasource to numeric.
+            # Rewrite params + REBUILD query_context from form_data (the asset's
+            # stored queries can be empty for big_number_total/raw-table → "Empty query?").
             numeric_ds = f"{num_id}__table"
             params["datasource"] = numeric_ds
             fd = dict(params)
             fd.update({"result_format": "json", "result_type": "full"})
-            qc = json.loads(qc_raw) if qc_raw else {"queries": [{"metrics": params.get("metrics", [])}]}
-            qc["datasource"] = {"id": num_id, "type": "table"}
-            qc.setdefault("result_format", "json")
-            qc.setdefault("result_type", "full")
-            qc.setdefault("force", False)
-            qc["form_data"] = fd
+            qc = {
+                "datasource": {"id": num_id, "type": "table"},
+                "force": False,
+                "queries": [_build_query(fd)],
+                "form_data": fd,
+                "result_format": "json",
+                "result_type": "full",
+            }
             # Also (re)bind the chart's datasource FK — import can leave it unset
             # even when it rewrote params.datasource to the numeric id.
             payload = {
