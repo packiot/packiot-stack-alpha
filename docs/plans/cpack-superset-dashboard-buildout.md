@@ -12,23 +12,29 @@ Builds on: `docs/plans/superset-oee-dashboard-spec.md` (front4 tile → bi.* map
 
 ---
 
-## 0. The data-readiness reality (drives prioritization)
+## 0. The data-readiness reality (LIVE-VERIFIED 2026-08-12)
 
-new-prod is **single-tenant CPACK (ent 3)**. Per the go-live data review
-(`docs/audits/superset-dashboard-data-review.md`), CPACK today has data ONLY in the
-OEE rollups + the raw `equipment_values` stream:
+new-prod is **single-tenant CPACK (ent 3)**. Row counts measured live as `superset_ro`
+under the all-tenant sentinel (`SET app.tenant_id='-1'`) against the `packiot` analytics
+DB — this SUPERSEDES the earlier stale note that claimed downtime/PO were empty:
 
-| F3 source | CPACK ent3 state | Dashboards it feeds |
-|---|---|---|
-| `equipment_runtime_shift` / `_1hour` (→ `bi.oee_shift`/`oee_hourly`) | **POPULATED** | OEE, Total Production, Scrap, Shift Report |
-| `equipment_values` (→ `bi.equipment_speed`/`live_status`/`production_by_team`) | **POPULATED** (raw stream) | Machine Speed, Live Status, Production-by-Team |
-| `equipment_events` (→ `bi.downtimes`) | **EMPTY (0 rows)** | Downtime Analysis |
-| `production_orders` / `_runtime` (→ `bi.production_orders`/`production_order_runtime`) | **EMPTY (0 rows)** | Production Orders |
-| `production_targets` (→ `bi.production_targets`) | **EMPTY** (not configured) | target reference lines |
+| F3 source → bi.* view | Live rows (CPACK) | Dashboards it feeds | Data? |
+|---|---|---|---|
+| `equipment_runtime_shift` → `bi.oee_shift` | **122** | OEE, Total Production, Scrap, Shift Report | Y |
+| `equipment_runtime_1hour` → `bi.oee_hourly` | **712** | Total Production, Scrap | Y |
+| `equipment_values` → `bi.equipment_speed` | **280,329** | Machine Speed | Y |
+| `equipment_values` → `bi.live_status` | **18** | Live Status | Y |
+| `equipment_values` → `bi.production_by_team` | **280,340** | Total Production (team) | Y |
+| `equipment_events` → `bi.downtimes` | **1,484,545** | Downtime Analysis | Y |
+| `production_orders` → `bi.production_orders` | **19,788** | Production Orders | Y |
+| `production_orders_runtime` → `bi.production_order_runtime` | **0** | Production Orders (runtime-OEE table only) | N |
+| `production_targets` → `bi.production_targets` | **0** | target reference lines | N |
+| `equipments` → `bi.equipments` | 62 | (join dimension) | Y |
 
-So the **data-ready** dashboards (OEE, Production, Speed, Scrap, Shift, Live Status)
-populate immediately; the **downtime + PO** dashboards are built but render an empty
-state (NOT an error) until the downtime/PO data migration lands.
+So 7 of the 8 dashboards populate immediately. **Production Orders** is mostly populated
+(PO table / count / OEE-by-order have 19.8k rows) EXCEPT its one runtime-OEE-table chart
+(`production_orders_runtime`=0). Only `production_targets` (reference lines) is fully empty.
+Isolation verified live: tenant 3 → its rows, tenant 1 → 0, GUC unset → 0 (fail-closed).
 
 ---
 
@@ -69,18 +75,23 @@ N per-tenant PowerBI reports):
 
 ## 2. Dashboards built this pass (→ data? y/n)
 
-| # | Superset dashboard (slug) | bi.* dataset(s) | Populated for CPACK now? |
-|---|---|---|---|
-| 1 | OEE Overview (`oee-overview`) — EXISTING, untouched | oee_shift, oee_hourly, downtimes, po_runtime | **Y** (OEE) |
-| 2 | Machine Speed (`machine-speed`) | equipment_speed | **Y** |
-| 3 | Total Production (`total-production`) | oee_shift, oee_hourly, production_by_team | **Y** |
-| 4 | Scrap Analysis (`scrap-analysis`) | oee_shift, oee_hourly | **Y** |
-| 5 | Live Status (`live-status`) | live_status | **Y** |
-| 6 | Shift Report (`shift-report`) | oee_shift | **Y** |
-| 7 | Downtime Analysis (`downtime-analysis-cpack`) | downtimes | **N — empty until downtime migration** |
-| 8 | Production Orders (`production-orders-cpack`) | production_orders, production_order_runtime | **N — empty until PO migration** |
+All 8 are LIVE on bi.prod (imported 2026-08-12, ids 1-8) and every chart returns HTTP
+200 on the chart-data endpoint (embed guard clean — no 403/500):
 
-All 8 render without errors; the empty ones show Superset's native "No results" state.
+| # | Superset dashboard (slug, id) | bi.* dataset(s) | Populated for CPACK? |
+|---|---|---|---|
+| 1 | OEE Overview (`oee-overview`, id 1) — EXISTING, untouched | oee_shift, oee_hourly, downtimes, po_runtime | **Y** |
+| 2 | Machine Speed (`machine-speed`, id 6) | equipment_speed (280k) | **Y** |
+| 3 | Total Production (`total-production`, id 2) | oee_shift, oee_hourly, production_by_team | **Y** |
+| 4 | Scrap Analysis (`scrap-analysis`, id 4) | oee_shift, oee_hourly | **Y** |
+| 5 | Live Status (`live-status`, id 7) | live_status (18) | **Y** |
+| 6 | Shift Report (`shift-report`, id 3) | oee_shift (122) | **Y** |
+| 7 | Downtime Analysis (`downtime-analysis-cpack`, id 8) | downtimes (1.48M) | **Y** |
+| 8 | Production Orders (`production-orders-cpack`, id 5) | production_orders (19.8k) + production_order_runtime (0) | **Y** (3/4 charts; runtime-OEE table empty) |
+
+All 8 render for dev@ (native Admin → all-tenant sentinel); the only empty surfaces are
+the PO-runtime-OEE table (`production_orders_runtime`=0) and any target reference line
+(`production_targets`=0). Isolation intact (guest per-tenant, admin all-tenant).
 
 ---
 

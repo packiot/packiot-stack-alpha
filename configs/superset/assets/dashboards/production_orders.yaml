@@ -1,5 +1,6 @@
-# DATA STATUS: EMPTY until the PO/downtime data migration lands (CPACK ent3 has
-# equipment_events=0 / production_orders=0). Renders an empty state, not an error.
+# DATA STATUS: POPULATED for CPACK ent3 — bi.production_orders has ~19.8k rows live
+# (PO table / count / OEE-by-order render). Only the runtime-OEE table is empty
+# (production_orders_runtime=0 — PO-run OEE not yet computed). Empty state, not error.
 #
 # Production Orders — PO log + count KPI + OEE-by-order + per-PO runtime OEE over
 # bi.production_orders and bi.production_order_runtime. The `position` tree mirrors

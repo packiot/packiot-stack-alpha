@@ -1,5 +1,5 @@
-# DATA STATUS: EMPTY until the PO/downtime data migration lands (CPACK ent3 has
-# equipment_events=0 / production_orders=0). Renders an empty state, not an error.
+# DATA STATUS: POPULATED for CPACK ent3 — bi.downtimes has ~1.48M rows live
+# (equipment_events is NOT empty on new-prod). Renders full downtime analytics.
 #
 # Downtime Analysis (v2) — pareto + composition + daily trend + raw event log over
 # bi.downtimes. The `position` tree mirrors oee_overview.yaml; Superset normalizes it
