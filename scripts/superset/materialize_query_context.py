@@ -48,7 +48,12 @@ def _req(method, path, token=None, csrf=None, cookie=None, body=None):
         req.add_header("Cookie", cookie)
     try:
         resp = urllib.request.urlopen(req)
-        return resp.status, json.loads(resp.read().decode()), resp.headers
+        raw = resp.read().decode() or "{}"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {"_raw": raw}
+        return resp.status, parsed, resp.headers
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(), e.headers
 
@@ -59,11 +64,11 @@ def login():
     st, body, _ = _req("POST", "/api/v1/security/login",
                        body={"username": USER, "password": PASSWORD,
                              "provider": "db", "refresh": True})
-    if st != 200:
+    if st != 200 or not isinstance(body, dict) or "access_token" not in body:
         sys.exit(f"login failed: {st} {body}")
     token = body["access_token"]
     st, cbody, hdr = _req("GET", "/api/v1/security/csrf_token/", token=token)
-    csrf = cbody.get("result") if st == 200 else None
+    csrf = cbody.get("result") if (st == 200 and isinstance(cbody, dict)) else None
     cookie = hdr.get("Set-Cookie", "").split(";")[0] if hdr.get("Set-Cookie") else None
     return token, csrf, cookie
 
@@ -74,7 +79,7 @@ def dataset_id_by_uuid(token):
     while True:
         q = json.dumps({"columns": ["id", "uuid"], "page": page, "page_size": 100})
         st, body, _ = _req("GET", f"/api/v1/dataset/?q={urllib.parse.quote(q)}", token=token)
-        if st != 200:
+        if st != 200 or not isinstance(body, dict):
             sys.exit(f"dataset list failed: {st} {body}")
         rows = body.get("result", [])
         if not rows:
@@ -99,7 +104,7 @@ def main():
     while True:
         q = json.dumps({"page": page, "page_size": 100})
         st, body, _ = _req("GET", f"/api/v1/chart/?q={urllib.parse.quote(q)}", token=token)
-        if st != 200:
+        if st != 200 or not isinstance(body, dict):
             sys.exit(f"chart list failed: {st} {body}")
         rows = body.get("result", [])
         if not rows:
@@ -110,7 +115,7 @@ def main():
                 continue
             # Read full chart to get params + query_context.
             st, full, _ = _req("GET", f"/api/v1/chart/{cid}", token=token)
-            if st != 200:
+            if st != 200 or not isinstance(full, dict) or "result" not in full:
                 continue
             res = full["result"]
             qc_raw = res.get("query_context")
