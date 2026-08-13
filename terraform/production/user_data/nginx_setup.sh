@@ -253,24 +253,19 @@ server {
     ssl_ciphers         HIGH:!aNULL:!MD5;
     include snippets/origin-verify.conf;
 
-    # Cognito forward-auth (oauth2-proxy) — replaces Authentik. operator serves
-    # client factory users, so it gates on ANY authenticated pool user (not
-    # cs-admin). Client logins are provisioned via CS Admin.
-    include snippets/oauth2-proxy.conf;
-
+    # B4 (2026-08-12): Cognito oauth2 outer gate REMOVED. operator is a factory
+    # kiosk with its OWN /session login (operator_pw_hash + JWT_SECRET — see
+    # edge-api login.service.ts). That local auth is the sole gate; CloudFront +
+    # WAF + origin-verify (above) remain the edge protection. Floor operators are
+    # provisioned as operator-DB users (operator_pw_hash) via CS Admin, NOT in the
+    # Cognito pool — so the outer Cognito gate would 302 them to a login they have
+    # no account for (the "blue Cognito page" go-live blocker).
     location / {
-        auth_request /oauth2/auth;
-        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
-        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
-        error_page 401 = @oauth2_signin;
-
         proxy_pass         http://127.0.0.1:8083;
         proxy_set_header   Host                 \$host;
         proxy_set_header   X-Real-IP            \$remote_addr;
         proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto    https;
-        proxy_set_header   X-Auth-Request-User  \$auth_user;
-        proxy_set_header   X-Auth-Request-Email \$auth_email;
         proxy_read_timeout 300s;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           \$http_upgrade;
