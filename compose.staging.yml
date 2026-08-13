@@ -1167,6 +1167,14 @@ services:
   mirror-worker-go:
     build: ./services/mirror-worker-go
     container_name: mirror-worker-go
+    # RETIRED (2026-08-13): legacy-prod(ent 1)→staging(ent 3) mirror + F1/F3
+    # fidelity watchdog. It's a migration-era tool — obsolete once CPACK cuts
+    # over to the new stack (its comparator has nothing to compare once legacy
+    # prod is retired), and the ADR-0045 sandbox now supplies staging test data.
+    # It was also the #1 log-noise source (~413 "already mapped" warns/3min).
+    # Profile-gated OFF so the deploy no longer starts it; re-enable for the
+    # comparator until cutover with `COMPOSE_PROFILES=legacy-comparator`.
+    profiles: ["legacy-comparator"]
     restart: unless-stopped
     environment:
       LOG_LEVEL: info
@@ -1296,6 +1304,12 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
+      # F2 comparator retired: the shadow_go_port schema was DROPPED when F3
+      # became the single flow, so leaving the background rollup/backfill/uns
+      # jobs pointed at it made every tick error 42P01 (~180×/5min). false =
+      # target `public` instead (flows.StandardFiltered, ADR-0045 G3). The F1
+      # pg_cron rollup (oee-refresh-runtime) is inactive, so no double-write.
+      SHADOW_GO_PORT_ENABLED: "false"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
