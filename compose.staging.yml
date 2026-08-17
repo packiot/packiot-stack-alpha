@@ -553,6 +553,15 @@ services:
 
   # ── Edge Node-RED ──────────────────────────────────────────────────────────────
   edge-nodered:
+    # RETIRED (2026-08-16): dead legacy Node-RED. oeecloud-nodered is already gone;
+    # the new stack ingests via edge-transformer and serves the operator via
+    # edge-api (/session, /api/*) + refdata-api (/v1/*). The deployed operator SPA
+    # makes ZERO calls here (the operator nginx regex to :1880 is vestigial). Its
+    # only remaining consumer was the (also-gated) `simulator`. csadmin generates
+    # the per-client EDGE Node-RED (ADR-0045) — that is unrelated to this cloud
+    # container. Gated behind the `legacy-sim` profile so it no longer starts by
+    # default; enable with COMPOSE_PROFILES=legacy-sim if ever needed.
+    profiles: ["legacy-sim"]
     build:
       context: ./edge-node-red
     restart: unless-stopped
@@ -976,6 +985,13 @@ services:
   # against edge-api. Requires the Simulator Corp enterprise + packml_register
   # entries to be seeded (see edge-node-red/db/03-operator-simulator.sql).
   simulator:
+    # RETIRED (2026-08-16): posts to edge-nodered's legacy /plc-data HTTP ingest,
+    # which pack-queue double-encodes → oeecloud-worker's poison-storm guard drops
+    # 100% of it (Simulator Corp ent 1/2 data never landed; ~576 dropped/5min of
+    # log noise). The new-stack test tenant is the sandbox (ent 2000003), which
+    # flows the real path: sparkplug-agent-sbx → edge-transformer → oeecloud-worker.
+    # Gated behind `legacy-sim` (together with its only dependency, edge-nodered).
+    profiles: ["legacy-sim"]
     build:
       context: ./simulator
     restart: unless-stopped
@@ -2153,9 +2169,13 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.19
     depends_on:
-      edge-nodered:
-        # Wait for edge-nodered's healthcheck — without it, the SPA's
-        # initial API calls 5xx until the Node-RED flows are loaded.
+      # Repointed off the retired edge-nodered (2026-08-16). The deployed operator
+      # SPA calls ONLY edge-api (/session, /api/*) and refdata-api (/v1/*) — verified
+      # from the built bundle; it makes zero calls to edge-nodered. Wait on its real
+      # backends instead so early SPA requests don't 5xx.
+      edge-api:
+        condition: service_started
+      refdata-api:
         condition: service_healthy
     mem_limit: 128m
     cpus: 0.25
