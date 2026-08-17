@@ -163,9 +163,9 @@ resource "aws_iam_policy" "app_custom" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ReadStagingSecrets"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Sid    = "ReadStagingSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
         Resource = [
           "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*",
           # databaseCredentials holds the prod SELECT-only awslambda user creds,
@@ -214,10 +214,33 @@ resource "aws_iam_policy" "app_custom" {
         # EC2 already has AmazonSSMManagedInstanceCore + S3 access for its
         # bootstrap script. Disk-fill alarm at 75% lives in Terraform separately
         # (aws_cloudwatch_metric_alarm.app_disk_used_percent).
-        Sid    = "PublishCloudWatchMetrics"
-        Effect = "Allow"
-        Action = ["cloudwatch:PutMetricData"]
+        Sid      = "PublishCloudWatchMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
         Resource = "*"
+      },
+      {
+        # CS-Admin cognito-users page (edge-api, running on this app EC2 under
+        # the instance role) manages Cognito users/groups for onboarding. The
+        # ListUsers-backed page 502'd because the role lacked cognito-idp read
+        # access. Scoped to the single staging user pool ARN — no wildcard —
+        # so the app can only touch the pool it authenticates against. Codifies
+        # the inline policy added live (put-role-policy csadmin-cognito-user-mgmt).
+        Sid    = "CsAdminCognitoUserMgmt"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:ListUsers",
+          "cognito-idp:AdminGetUser",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminListGroupsForUser",
+          "cognito-idp:ListGroups",
+          "cognito-idp:AdminDisableUser",
+          "cognito-idp:AdminEnableUser",
+        ]
+        Resource = "arn:aws:cognito-idp:${var.aws_region}:${data.aws_caller_identity.current.account_id}:userpool/us-east-1_0T9t1sTwt"
       }
     ]
   })

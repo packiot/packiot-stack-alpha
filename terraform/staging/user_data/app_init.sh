@@ -97,6 +97,18 @@ GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""
 # call the edge-transformer onboard server (:9105). Durable so a fresh instance
 # does not lose it (it was hand-added to .env once; codified 2026-08-05).
 ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
+# Operator enterprise api_key (ADR-0018 wave 4) — nginx injects this on the
+# operator SPA's proxied /api/* writes; edge-api authenticates it as the client
+# enterprise's enterprises.api_key. The staging operator SPA is single-tenant
+# CPACK (enterprise 3), so this MUST be CPACK's key — an earlier live .env
+# wrongly carried Incoplast's (enterprise 4) key, 502'ing operator writes.
+# Sourced from the packiot/staging/app secret (key `operator_edge_api_key`,
+# value = CPACK's fe1681ba-… enterprises.api_key) so a full re-init re-creates
+# it in .env instead of the operator hand-appending it (drops on rebuild).
+# NOTE: keeping the literal secret OUT of git — populate the secret out-of-band
+# (see ADR-0020 / production-recut-runbook). Empty default keeps the box booting
+# if the secret key is absent; operator writes stay 401 until it is populated.
+OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 # oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
@@ -211,6 +223,9 @@ EDGE_API_KEY=$API_KEY
 GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
 # Onboard-generate bearer: edge-api → edge-transformer:9105 (ADR-0045 §generate)
 ONBOARD_API_KEY=$ONBOARD_API_KEY
+# Operator SPA enterprise api_key (CPACK / enterprise 3) — nginx injects it on
+# proxied /api/* writes; consumed by the operator + operator-adapter services.
+OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 # NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward
