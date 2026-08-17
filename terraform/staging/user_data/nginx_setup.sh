@@ -436,14 +436,17 @@ server {
         if (\$request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin  \$cors_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type" always;
+            # x-packiot-agent + x-user are sent by front4 on every refdata call;
+            # omitting them from Allow-Headers makes the browser block the request
+            # (preflight fails) and front4 becomes unusable. Codifies the live fix.
+            add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user" always;
             add_header Access-Control-Max-Age      86400 always;
             add_header Content-Length 0;
             add_header Content-Type "text/plain";
             return 204;
         }
         add_header Access-Control-Allow-Origin  \$cors_origin always;
-        add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type" always;
+        add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user" always;
 
         # refdata-api: internal container, no host publish. nginx (host) reaches
         # it by its compose-pinned bridge IP (ipv4_address: 172.18.0.26:9104).
