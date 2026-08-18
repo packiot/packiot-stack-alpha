@@ -212,54 +212,54 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L3/BREYER
       id_equipment: 58
       tags:
-        - { metric: /Admin/ProdProcessedCount/76/Unit, db: 1, offset: 0, type: dint }
+        - { metric: /Admin/ProdProcessedCount/76/Unit, db: 1, offset: 0, type: dint, counter_derive: infeed_only }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/POLYTYPE
       id_equipment: 62
       tags:
-        - { metric: /Admin/ProdConsumedCount/82/Unit, db: 1, offset: 20, type: dint }
+        - { metric: /Admin/ProdConsumedCount/82/Unit, db: 1, offset: 20, type: dint, counter_derive: outfeed_only }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/PTH
       id_equipment: 61
       tags:
         - { metric: /Admin/ProdConsumedCount/81/Unit, db: 1, offset: 4, type: dint }
-        - { metric: /Admin/ProdProcessedCount/81/Unit, db: 1, offset: 32, type: int }
+        - { metric: /Admin/ProdProcessedCount/81/Unit, db: 1, offset: 32, type: int, counter_derive: scrap_derived }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/RMH
       id_equipment: 59
       tags:
-        - { metric: /Admin/ProdConsumedCount/79/Unit, db: 1, offset: 24, type: dint }
+        - { metric: /Admin/ProdConsumedCount/79/Unit, db: 1, offset: 24, type: dint, counter_derive: outfeed_only }
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/TEXA
       id_equipment: 60
       tags:
-        - { metric: /Admin/ProdConsumedCount/80/Unit, db: 1, offset: 28, type: dint }
+        - { metric: /Admin/ProdConsumedCount/80/Unit, db: 1, offset: 28, type: dint, counter_derive: outfeed_only }
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/BREYER
       id_equipment: 66
       tags:
-        - { metric: /Admin/ProdConsumedCount/6/Unit, db: 1, offset: 0, type: dint }
+        - { metric: /Admin/ProdConsumedCount/6/Unit, db: 1, offset: 0, type: dint, counter_derive: outfeed_only }
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/POLYTYPE
       id_equipment: 67
       tags:
-        - { metric: /Admin/ProdConsumedCount/7/Unit, db: 1, offset: 20, type: dint }
+        - { metric: /Admin/ProdConsumedCount/7/Unit, db: 1, offset: 20, type: dint, counter_derive: outfeed_only }
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/PTH
       id_equipment: 64
       tags:
         - { metric: /Admin/ProdConsumedCount/8/Unit, db: 1, offset: 4, type: dint }
-        - { metric: /Admin/ProdProcessedCount/8/Unit, db: 1, offset: 32, type: int }
+        - { metric: /Admin/ProdProcessedCount/8/Unit, db: 1, offset: 32, type: int, counter_derive: scrap_derived }
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/RMH
       id_equipment: 65
       tags:
-        - { metric: /Admin/ProdConsumedCount/9/Unit, db: 1, offset: 24, type: dint }
+        - { metric: /Admin/ProdConsumedCount/9/Unit, db: 1, offset: 24, type: dint, counter_derive: outfeed_only }
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/TEXA
       id_equipment: 63
       tags:
-        - { metric: /Admin/ProdConsumedCount/10/Unit, db: 1, offset: 28, type: dint }
+        - { metric: /Admin/ProdConsumedCount/10/Unit, db: 1, offset: 28, type: dint, counter_derive: outfeed_only }
     - endpoint: S7 115
       packml_topic: CPACK/SC/CELULA1/CER400/CER400
       id_equipment: 88
@@ -330,22 +330,22 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L10/DXL
       id_equipment: 77
       tags:
-        - { metric: /Admin/ProdProcessedCount/564/Unit, db: 1, offset: 0, type: dint }
+        - { metric: /Admin/ProdProcessedCount/564/Unit, db: 1, offset: 0, type: dint, counter_derive: infeed_only }
     - endpoint: S7 L10
       packml_topic: CPACK/SC/LINHAS/L10/PTH
       id_equipment: 78
       tags:
-        - { metric: /Admin/ProdConsumedCount/565/Unit, db: 1, offset: 32, type: int }
+        - { metric: /Admin/ProdConsumedCount/565/Unit, db: 1, offset: 32, type: int, counter_derive: outfeed_only }
     - endpoint: S7 L10
       packml_topic: CPACK/SC/LINHAS/L10/TCX
       id_equipment: 79
       tags:
-        - { metric: /Admin/ProdProcessedCount/566/Unit, db: 1, offset: 16, type: dint }
+        - { metric: /Admin/ProdProcessedCount/566/Unit, db: 1, offset: 16, type: dint, counter_derive: infeed_only }
     - endpoint: S7 L10
       packml_topic: CPACK/SC/LINHAS/L10/TEXA
       id_equipment: 80
       tags:
-        - { metric: /Admin/ProdProcessedCount/567/Unit, db: 1, offset: 20, type: dint }
+        - { metric: /Admin/ProdProcessedCount/567/Unit, db: 1, offset: 20, type: dint, counter_derive: infeed_only }
     - endpoint: S7 L5
       packml_topic: CPACK/SC/LINHAS/L5/BREYER
       id_equipment: 53
@@ -377,38 +377,39 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L8/DXL
       id_equipment: 73
       tags:
-        - { metric: /Admin/ProdProcessedCount/219/Unit, db: 1, offset: 0, type: dint }
+        - { metric: /Admin/ProdProcessedCount/219/Unit, db: 1, offset: 0, type: dint, counter_derive: infeed_only }
     - endpoint: S7 S8
       packml_topic: CPACK/SC/LINHAS/L8/PTH
       id_equipment: 74
       tags:
-        - { metric: /Admin/ProdConsumedCount/220/Unit, db: 1, offset: 32, type: int }
+        - { metric: /Admin/ProdConsumedCount/220/Unit, db: 1, offset: 32, type: int, counter_derive: outfeed_only }
     - endpoint: S7 S8
       packml_topic: CPACK/SC/LINHAS/L8/TCX
       id_equipment: 75
       tags:
-        - { metric: /Admin/ProdProcessedCount/221/Unit, db: 1, offset: 16, type: dint }
+        - { metric: /Admin/ProdProcessedCount/221/Unit, db: 1, offset: 16, type: dint, counter_derive: infeed_only }
     - endpoint: S7 S8
       packml_topic: CPACK/SC/LINHAS/L8/TEXA
       id_equipment: 76
       tags:
-        - { metric: /Admin/ProdProcessedCount/222/Unit, db: 1, offset: 20, type: dint }
+        - { metric: /Admin/ProdProcessedCount/222/Unit, db: 1, offset: 20, type: dint, counter_derive: infeed_only }
     - endpoint: SLEEVES
       packml_topic: CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1
       id_equipment: 107
       tags:
-        - { metric: /Admin/ProdProcessedCount/763/Unit, db: 1, offset: 0, type: dint }
+        - { metric: /Admin/ProdProcessedCount/763/Unit, db: 1, offset: 0, type: dint, counter_derive: infeed_only }
     - endpoint: SLEEVES
       packml_topic: CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2
       id_equipment: 108
       tags:
-        - { metric: /Admin/ProdProcessedCount/823/Unit, db: 1, offset: 4, type: dint }
+        - { metric: /Admin/ProdProcessedCount/823/Unit, db: 1, offset: 4, type: dint, counter_derive: infeed_only }
   opcua_tag_map:
     - endpoint: OPC UA L9 FLEXO
       packml_topic: CPACK/SC/CELULA9/FLEXO/FLEXO
       id_equipment: 104
       tags:
         - metric: /Admin/ProdConsumedCount/557/Unit
+          counter_derive: outfeed_only
           node_id: ns=6;s=::OPCUAData:totalMeterCounter
           type: float
         - metric: /Status/MachSpeed
@@ -441,6 +442,7 @@ plc:
       id_equipment: 68
       tags:
         - metric: /Admin/ProdConsumedCount/91/Unit    # counter  regs 60,61
+          counter_derive: outfeed_only
           kind: holding
           address: 60
           type: uint32
@@ -450,6 +452,7 @@ plc:
       id_equipment: 70
       tags:
         - metric: /Admin/ProdConsumedCount/93/Unit    # counter3 regs 10,11
+          counter_derive: outfeed_only
           kind: holding
           address: 10
           type: uint32
@@ -464,6 +467,7 @@ plc:
           type: uint32
           word_swap: true
         - metric: /Admin/ProdProcessedCount/95/Unit   # counter4 regs 50,51
+          counter_derive: scrap_derived
           kind: holding
           address: 50
           type: uint32
@@ -478,6 +482,7 @@ plc:
           type: uint32
           word_swap: true
         - metric: /Admin/ProdProcessedCount/94/Unit   # counter2 regs 0,1
+          counter_derive: scrap_derived
           kind: holding
           address: 0
           type: uint32
@@ -492,6 +497,7 @@ plc:
           type: uint32
           word_swap: true
         - metric: /Admin/ProdProcessedCount/92/Unit   # counter2 regs 0,1 (gross==net on same register — flow oddity, faithful)
+          counter_derive: scrap_derived
           kind: holding
           address: 0
           type: uint32
