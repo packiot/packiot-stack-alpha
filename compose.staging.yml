@@ -1697,6 +1697,12 @@ services:
       # calc_evaluations_total / calc_state_mutations_total / calc_errors_total
       # scraped via /metrics. Default remains false in code (P0-safe).
       USE_GO_PORT: "true"
+      # ADR-0045 P2b: register-driven Parameter30700 seed + Phase-9 line
+      # aggregation un-suppress. ON here because mirror-worker-go (the old
+      # synthetic line-count writer) is RETIRED on staging — Phase-9 is now
+      # the sole line-count source, no double-count. Keep OFF where a
+      # competing line writer may still run.
+      PHASE9_LINE_AGG_ENABLED: "true"
       # Onboard-generate server (POST /v1/onboard/generate :9105) — turns a stored
       # descriptor into the reader/agent bundle. Fails closed without the key.
       ONBOARD_API_ENABLED: "true"
