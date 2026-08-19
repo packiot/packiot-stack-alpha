@@ -306,6 +306,11 @@ jobs:
           cp -r "$ED/mosquitto"      bundle/
           cp "$ED/README-reader.md"  bundle/
           cp "$ED/gen-mtls-certs.sh" bundle/
+          # The PLC-capable Node-RED Dockerfile ships too, so a client with npm
+          # egress can `docker compose --profile nodered build` if the image was
+          # NOT embedded (bundle_image=false). context `.` = the bundle root, so
+          # the compose `build:` stanza resolves against this copy.
+          cp "$ED/Dockerfile.nodered-reader" bundle/
 
           # Pick the env template: the client-specific reader env if committed,
           # else the generic template.
@@ -354,6 +359,13 @@ jobs:
             # Point the compose `nodered` seed mount at the generated reader-flow so
             # `docker compose --profile nodered up` boots it as /data/flows.json.
             set_kv NODERED_READER_FLOW "./$CLIENT/$CLIENT-reader-flow.json"
+            # Pin the PLC-CAPABLE Node-RED image (Dockerfile.nodered-reader: base +
+            # baked s7/modbus/opcua palettes) so the seeded reader-flow's fieldbus
+            # nodes resolve on a FRESH box with NO first-boot npm install (CPACK F1).
+            # When bundle_image=true this exact tag is `docker save`d into the bundle
+            # below and `docker load`ed by the client; when false, the compose
+            # `build:` stanza produces this same tag via `docker compose build`.
+            set_kv NODERED_IMAGE "packiot/nodered-reader:4.0"
           else
             set_kv COMPOSE_PROFILES reader
           fi
@@ -468,16 +480,61 @@ jobs:
           echo "::endgroup::"
           mkdir -p bundle/images
           docker save "$IMG" | gzip > bundle/images/edge-transformer.tar.gz
-          # A tiny loader so the deploy is one command on the client box.
-          cat > bundle/load-image.sh <<LOAD
+          # A tiny loader so the deploy is one command on the client box. It loads
+          # EVERY images/*.tar.gz — the edge-transformer image here plus, for the
+          # nodered edge model, the PLC-capable Node-RED image saved in the next
+          # step — so one `./load-image.sh` covers the whole bundle regardless of
+          # which images were embedded.
+          cat > bundle/load-image.sh <<'LOAD'
           #!/bin/sh
-          # Load the embedded edge image — run once before 'docker compose up'.
+          # Load every embedded image — run once before 'docker compose up'.
           set -e
-          gunzip -c images/edge-transformer.tar.gz | docker load
-          echo "loaded: $IMG"
+          for tar in images/*.tar.gz; do
+            [ -e "$tar" ] || continue
+            echo "loading $tar ..."
+            gunzip -c "$tar" | docker load
+          done
           LOAD
           chmod +x bundle/load-image.sh
           ls -lh bundle/images/edge-transformer.tar.gz
+
+      # For the nodered edge model, BUILD the PLC-capable Node-RED image on the
+      # runner (which HAS npm-registry egress) and `docker save` it into the
+      # bundle, so the factory box gets the s7/modbus/opcua palettes with NO npm
+      # install and NO registry auth — the CPACK F1 durable fix. Only runs when
+      # the client deploys Node-RED (edge_model=nodered) AND images are embedded
+      # (bundle_image); a bundle_image=false client `docker compose build`s it
+      # instead from the shipped Dockerfile.nodered-reader. --platform linux/amd64
+      # matches the factory boxes (same caveat as the agent image above).
+      - name: Build & embed Node-RED reader image (docker save)
+        if: ${{ inputs.bundle_image && inputs.edge_model == 'nodered' }}
+        run: |
+          set -euo pipefail
+          NR_IMG="packiot/nodered-reader:4.0"   # MUST match set_kv NODERED_IMAGE
+          echo "::group::docker build $NR_IMG (bakes s7/modbus/opcua palettes)"
+          docker build --platform linux/amd64 \
+            -f "$ED/Dockerfile.nodered-reader" \
+            -t "$NR_IMG" "$ED"
+          echo "::endgroup::"
+          mkdir -p bundle/images
+          docker save "$NR_IMG" | gzip > bundle/images/nodered-reader.tar.gz
+          # load-image.sh (written by the edge-image step) already loops over
+          # images/*.tar.gz, so this tar is picked up with no edit. But that step
+          # is gated on bundle_image only — if it somehow did not run, synthesize a
+          # minimal loader so the bundle still deploys.
+          if [ ! -f bundle/load-image.sh ]; then
+            cat > bundle/load-image.sh <<'LOAD'
+          #!/bin/sh
+          set -e
+          for tar in images/*.tar.gz; do
+            [ -e "$tar" ] || continue
+            echo "loading $tar ..."
+            gunzip -c "$tar" | docker load
+          done
+          LOAD
+            chmod +x bundle/load-image.sh
+          fi
+          ls -lh bundle/images/nodered-reader.tar.gz
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
@@ -519,13 +576,15 @@ jobs:
             echo "| \`$CLIENT/$CLIENT-client.yaml\` | Go-reader config — generated: **$HAS_CLIENT_YAML** (needs a \`plc:\` block in the descriptor) |"
             echo "| \`$CLIENT/$CLIENT-reader-flow.json\` | Node-RED reader flow — generated: **$HAS_READER_FLOW**; autoloaded as active flows when \`edge_model=nodered\` |"
             echo "| \`certs/uplink-{cert,key,ca}.pem\` | client cert CN=\`$CLIENT\`, signed against \`packiot/$TARGET/edge-uplink-ca\` (CA key shredded) |"
-            echo "| \`compose.edge.yml\`, \`mosquitto/\`, \`README-reader.md\`, \`gen-mtls-certs.sh\` | static deploy assets |"
+            echo "| \`compose.edge.yml\`, \`mosquitto/\`, \`README-reader.md\`, \`gen-mtls-certs.sh\`, \`Dockerfile.nodered-reader\` | static deploy assets |"
             echo "| \`.env.example\` | prefilled from the reader template (tenant + artifact paths normalized to \`$CLIENT\`) |"
             echo
             echo "> Tier-1 model: **\`$PROFILE\`**. The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. \`AGENT_IMAGE\` is **pre-pinned** to \`${{ inputs.agent_image }}\` (agent + all readers) and, when \`bundle_image\` is set, **embedded** as \`images/edge-transformer.tar.gz\` — no ECR auth needed on the client box."
             if [ "$PROFILE" = "nodered" ]; then
               echo
               echo "> \`edge_model=nodered\`: the \`nodered\` service SEEDS \`$CLIENT/$CLIENT-reader-flow.json\` as Node-RED's active flows on FIRST boot (\`NODERED_READER_FLOW\` is prefilled) — no manual import. Add per-client integrations on the **\`$CLIENT customizations\`** tab; they persist in the \`nodered-data\` volume. Fill the per-PLC \`PLC_HOST_<NAME>\` secrets in \`.env\`."
+              echo
+              echo "> The Node-RED image is the PLC-capable \`packiot/nodered-reader:4.0\` (\`Dockerfile.nodered-reader\`: vanilla base + baked \`node-red-contrib-{s7,modbus,opcua}\`), pinned via \`NODERED_IMAGE\`. When \`bundle_image\` is set it is **embedded** as \`images/nodered-reader.tar.gz\` (\`./load-image.sh\` loads it) so the seeded reader-flow's fieldbus nodes resolve on a FRESH box with NO first-boot \`npm install\` — the CPACK F1 durable fix. Otherwise run \`docker compose --profile nodered build\` from the shipped Dockerfile."
             fi
             echo
             echo "### Deploy on the client box"
