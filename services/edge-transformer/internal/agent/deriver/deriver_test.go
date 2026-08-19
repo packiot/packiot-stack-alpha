@@ -67,10 +67,12 @@ func TestIntegralConstantSpeed(t *testing.T) {
 	// 600 units/min * (1/60) = 10 units/s.
 	d := New(integralProfile(src, 1.0/60.0, 0, 0, emit))
 
-	// Seed sample (t=0s): establishes t0, emits nothing.
+	// Seed sample (t=0s): establishes t0 and emits an EXPLICIT absolute 0 baseline
+	// (ADR-0045 P1 handshake — the cloud Calc seeds its first-observation baseline
+	// to this 0 so the first real window is not dropped as a spike).
 	synth, _ := d.Process([]rawtag.RawTag{speed(src, 600, 0)})
-	if len(synth) != 0 {
-		t.Fatalf("seed sample must emit nothing, got %d", len(synth))
+	if v, ok := findEmit(synth, emit); !ok || v != 0 {
+		t.Fatalf("seed sample must emit absolute 0, got %v ok=%v", v, ok)
 	}
 	// After 10s at 10 u/s → 100 units.
 	synth, _ = d.Process([]rawtag.RawTag{speed(src, 600, 10_000)})
@@ -151,24 +153,37 @@ func TestIntegralRestartNoDoubleCount(t *testing.T) {
 	const src = "/L5/FLEXO/Status/CurMachSpeed"
 	const emit = "/CPACK/SC/L5/FLEXO/Admin/ProdConsumedCount/61/Unit"
 
-	// Build the pre-restart series: 10 u/s for 30s → totalizer reaches 300.
+	// captureSeries drives one deriver from its seed tick onward, appending every
+	// emitted absolute-totalizer value (INCLUDING the seed's explicit 0 baseline)
+	// to series — exactly what the SparkPlug session publishes to the cloud.
+	capture := func(d *Deriver, samples ...rawtag.RawTag) []int64 {
+		var out []int64
+		for _, s := range samples {
+			synth, _ := d.Process([]rawtag.RawTag{s})
+			if v, ok := findEmit(synth, emit); ok {
+				out = append(out, int64(v))
+			}
+		}
+		return out
+	}
+
+	// Build the pre-restart series: seed emits 0, then 10 u/s for 30s → 100,200,300.
 	d1 := New(integralProfile(src, 1.0, 0, 0, emit))
-	d1.Process([]rawtag.RawTag{speed(src, 10, 0)}) // seed
-	var series []int64
-	for ts := int64(10_000); ts <= 30_000; ts += 10_000 {
-		synth, _ := d1.Process([]rawtag.RawTag{speed(src, 10, ts)})
-		v, _ := findEmit(synth, emit)
-		series = append(series, int64(v)) // 100, 200, 300
-	}
-	// Restart: fresh deriver, accum back to 0. Same rate for 15s → 50, 150.
+	series := capture(d1,
+		speed(src, 10, 0),      // seed → 0 (absolute baseline handshake)
+		speed(src, 10, 10_000), // 100
+		speed(src, 10, 20_000), // 200
+		speed(src, 10, 30_000), // 300
+	)
+	// Restart: fresh deriver, accum back to 0. Seed emits 0 again, then 50, 150.
 	d2 := New(integralProfile(src, 1.0, 0, 0, emit))
-	d2.Process([]rawtag.RawTag{speed(src, 10, 100_000)}) // seed
-	for ts := int64(110_000); ts <= 115_000; ts += 5_000 {
-		synth, _ := d2.Process([]rawtag.RawTag{speed(src, 10, ts)})
-		v, _ := findEmit(synth, emit)
-		series = append(series, int64(v)) // 50, 150
-	}
-	// series = [100, 200, 300, 50, 150]. Real production = 300 + 150 = 450.
+	series = append(series, capture(d2,
+		speed(src, 10, 100_000), // seed → 0 (re-boot baseline handshake)
+		speed(src, 10, 110_000), // 50
+		speed(src, 10, 115_000), // 150
+	)...)
+	// series = [0, 100, 200, 300, 0, 50, 150]. Real production = 300 + 150 = 450;
+	// each leading 0 is the seed baseline Calc absorbs (first-obs seed, then reset).
 
 	// Drive the absolute-totalizer series through Calc as a Consumed counter.
 	// CountersOnly mode with a high rated speed sidesteps the speed glitch guard
