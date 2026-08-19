@@ -238,6 +238,19 @@ type Config struct {
 	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
+	// TenantAllowlist — declarative environment scoping for tenant discovery.
+	// tenants.DiscoverActive() reads the MAIN packiot DB's packml_register,
+	// but on staging every prod→staging re-cut drags in foreign-tenant
+	// register rows, so the worker would declare a queue-triple per tenant
+	// (~39 queues for 13 tenants) when staging only owns cpack + sbxcpack.
+	// When non-empty, discovered tenants are intersected with this list so
+	// "staging = these tenants only" is a config invariant that survives the
+	// next re-cut. EMPTY/UNSET = allow ALL — the production default, no
+	// behavior change. Sourced from WORKER_TENANT_ALLOWLIST (comma-separated;
+	// each entry lowercased + trimmed, mirroring the group_id normalization
+	// in tenants.DiscoverActive).
+	TenantAllowlist []string
+
 	// POControlEnabled — ADR-0010 10.3 slice 1 (30800-30803 lifecycle).
 	// OFF until synthetic-inject verification (staging has no live
 	// 30800 traffic; see the port design doc).
@@ -402,6 +415,7 @@ func Load() (*Config, error) {
 		BakeEnterpriseIDs:                getenv("BAKE_ENTERPRISE_IDS", "3"),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
 		RollupMachineLevelEnterprises:    getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
+		TenantAllowlist:                  csvLower(getenv("WORKER_TENANT_ALLOWLIST", "")),
 		Sync06ReportEnabled:              getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:            getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Sync06EnterpriseID:               getenvInt("SYNC06_ENTERPRISE_ID", 6),
@@ -460,6 +474,22 @@ func getenvInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// csvLower parses "A, b ,C" into ["a","b","c"] — comma-separated, each
+// entry trimmed + lowercased, blanks dropped. Empty/blank input → nil (an
+// empty allowlist means "allow ALL", so a nil slice is the correct
+// no-scoping default; see Config.TenantAllowlist).
+func csvLower(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // CSVInts parses "1,2,3" into []int; empty string → empty slice (ANY
