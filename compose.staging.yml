@@ -1747,6 +1747,11 @@ services:
       # redeploy — the else-branch legacy BuildEnvelope path is retained, no DB
       # change needed to roll back.
       CALC_CUTOVER_REFACTORED: "true"
+      # LINE_TRACE_TENANTS: comma-sep lowercase GroupIDs to trace at INFO (no
+      # debug recreate). Uncomment + redeploy edge-transformer normally to pin
+      # which lines' counters reach the F3 write and which Calc drops (and why).
+      # Default (commented) = zero extra logs. e.g. LINE_TRACE_TENANTS: cpack
+      # LINE_TRACE_TENANTS: cpack
       # ── Counters-only OEE mode (PR #591) — CPACK L6 go-live (ADR-0042 P1) ──
       # L6 is a Modbus counters-only line: the live tee confirmed SPEED:NO, so
       # NO MachSpeed metric ever seeds Calc State. Calc's Phase-8 glitch guard
