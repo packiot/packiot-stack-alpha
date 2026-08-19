@@ -10,9 +10,9 @@
     { "user": "__ADMIN__", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*" },
     {
       "user": "oeecloud-worker", "vhost": "/",
-      "configure": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*)$",
-      "write": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*)$",
-      "read": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*)$"
+      "configure": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*|oeecloud-fanout.*)$",
+      "write": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*|oeecloud-fanout.*)$",
+      "read": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*|oeecloud-fanout.*)$"
     },
     {
       "user": "edge-transformer", "vhost": "/",
