@@ -29,6 +29,7 @@ package clientdescriptor
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -171,9 +172,9 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 			}
 			nodes = append(nodes, map[string]any{
 				"id": tickID, "type": "inject", "z": tabID,
-				"name":   "poll " + ep.Name,
-				"props":  []any{map[string]any{"p": "payload"}},
-				"repeat": strconv.Itoa(pollSeconds(pollMS(ep.PollingInterval, defaultOpcuaPollMS))),
+				"name":    "poll " + ep.Name,
+				"props":   []any{map[string]any{"p": "payload"}},
+				"repeat":  strconv.Itoa(pollSeconds(pollMS(ep.PollingInterval, defaultOpcuaPollMS))),
 				"crontab": "", "once": true, "onceDelay": "1",
 				"topic": "", "payload": "", "payloadType": "date",
 				"x": xSource, "y": yCursor, "wires": []any{itemIDs},
@@ -214,7 +215,10 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 					readID := fmt.Sprintf("%s_mb_%d_read_%d", p, i, k)
 					qty := t.Quantity
 					if qty <= 0 {
-						qty = 1
+						// Derive from type (field doc: "0 = derive from type"). A 32-bit
+						// totalizer read as a single 16-bit register yields the low word
+						// only → wrong/wrapping counts. Mirrors the Go reader's width.
+						qty = modbusRegisterSpan(t.Type)
 					}
 					nodes = append(nodes, map[string]any{
 						"id": readID, "type": "modbus-read", "z": tabID,
@@ -235,13 +239,27 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 		}
 	}
 
+	// 32-bit Modbus tags whose two-register value is low-word-first (word_swap) —
+	// the normalize fn must recombine them (reg[1]*65536 + reg[0]); a plain p[0]
+	// would drop the high word. Keyed by full canonical topic (the read node's topic).
+	mbWS := map[string]bool{}
+	if d.PLC != nil {
+		for _, m := range d.PLC.ModbusTagMap {
+			for _, t := range m.Tags {
+				if t.WordSwap && modbusRegisterSpan(t.Type) >= 2 {
+					mbWS[m.PackMLTopic+t.Metric] = true
+				}
+			}
+		}
+	}
+
 	// Shared normalize function + POST chain, to the right of the sources.
 	midY := 100 + (len(nodes)*yStep)/6
 	nodes = append(nodes,
 		map[string]any{
 			"id": fnID, "type": "function", "z": tabID,
 			"name":    d.Tenant + " normalize → raw tags",
-			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv, "AGENT_INGEST_API_KEY", d.Canonical.Prefix),
+			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv, "AGENT_INGEST_API_KEY", d.Canonical.Prefix, mbWS),
 			"outputs": 1, "noerr": 0, "initialize": "", "finalize": "", "libs": []any{},
 			"x": 900, "y": midY, "wires": []any{[]any{httpID}},
 		},
@@ -384,7 +402,21 @@ func modbusClientNode(id string, ep DescriptorPLCEndpoint, hostVar string, unit 
 //   - S7 "all" mode → msg.payload is an OBJECT { canonicalTopic: value, … }.
 //   - Modbus read → register ARRAY with msg.topic = the canonical topic.
 //   - OPC-UA read → scalar; identity on msg.topic / msg.name.
-func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string) string {
+func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string, mbWS map[string]bool) string {
+	// Deterministic JS object {full topic → 1} for low-word-first 32-bit Modbus tags.
+	wsKeys := make([]string, 0, len(mbWS))
+	for t, ws := range mbWS {
+		if ws {
+			wsKeys = append(wsKeys, t)
+		}
+	}
+	sort.Strings(wsKeys)
+	mbWSDecl := "const MB_WS = {"
+	for _, t := range wsKeys {
+		mbWSDecl += fmt.Sprintf("%q:1,", t)
+	}
+	mbWSDecl += "};\n"
+
 	return "// " + tenant + " PLC reader → sparkplug-agent — generated from the descriptor plc: block.\n" +
 		"// DUMB producer: emits raw tags (metric = canonical suffix); the agent maps them.\n" +
 		"// Override the agent ingest URL with env " + urlEnv + " (default " + defaultAgentURL + ").\n" +
@@ -403,6 +435,7 @@ func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string) string {
 		"function suffix(n) { return (n && n.indexOf(PREFIX) === 0) ? n.slice(PREFIX.length) : n; }\n" +
 		"const ts = Date.now();\n" +
 		"const tags = [];\n" +
+		mbWSDecl +
 		"const p = msg.payload;\n" +
 		"if (p && typeof p === \"object\" && !Array.isArray(p)) {\n" +
 		"    // S7 \"all\" mode: { canonicalTopic: value, … } — one tag per numeric entry.\n" +
@@ -411,8 +444,12 @@ func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string) string {
 		"        if (typeof v === \"number\" && isFinite(v)) tags.push({ metric: suffix(k), value: v, ts: ts });\n" +
 		"    }\n" +
 		"} else if (Array.isArray(p) && msg.topic) {\n" +
-		"    // Modbus read: register array + canonical topic on msg.topic → first register.\n" +
-		"    const v = Number(p[0]);\n" +
+		"    // Modbus read: 1 register = 16-bit; 2 registers = 32-bit totalizer.\n" +
+		"    // word_swap (MB_WS) ⇒ low word first (CDAB); else high word first (ABCD).\n" +
+		"    // Use *65536 (not <<16) to stay in float and avoid 32-bit sign overflow.\n" +
+		"    let v;\n" +
+		"    if (p.length >= 2) { v = MB_WS[msg.topic] ? (p[1]*65536 + p[0]) : (p[0]*65536 + p[1]); }\n" +
+		"    else { v = Number(p[0]); }\n" +
 		"    if (isFinite(v)) tags.push({ metric: suffix(msg.topic), value: v, ts: ts });\n" +
 		"} else if (typeof p === \"number\" && isFinite(p)) {\n" +
 		"    // OPC-UA (or any scalar) read: identity on msg.topic / msg.name.\n" +
@@ -460,6 +497,18 @@ func opcuaDatatype(typ string) string {
 
 // modbusDataType maps a descriptor Modbus tag kind (holding|input|coil|discrete) to
 // the node-red-contrib-modbus modbus-read dataType token.
+// modbusRegisterSpan returns how many 16-bit registers a Modbus value type spans:
+// 32-bit types (uint32/int32/float32) need 2, everything else 1. Keeps the Node-RED
+// reader's read-width in lockstep with the Go reader (clientconfig type derivation).
+func modbusRegisterSpan(typ string) int {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "uint32", "int32", "float32":
+		return 2
+	default:
+		return 1
+	}
+}
+
 func modbusDataType(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "input":

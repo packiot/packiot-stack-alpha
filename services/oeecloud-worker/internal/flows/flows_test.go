@@ -41,14 +41,17 @@ func TestStandardFiltered_ShadowGoPortEnabled(t *testing.T) {
 		}
 	})
 
-	t.Run("flag ON, with shadow pool → shadow_go_port + packiot_shadow", func(t *testing.T) {
+	// With a dedicated F3 shadow pool (staging), the build is F3-ONLY regardless
+	// of the flag — the main-pool dest is a dead comparator artifact (F2 retired,
+	// bake off) and rolling it up only errors against its incomplete schema.
+	t.Run("with shadow pool, flag ON → F3-only (main dest omitted)", func(t *testing.T) {
 		shadow := nonNilPool()
 		dests := StandardFiltered(pool, shadow, true)
-		if len(dests) != 2 {
-			t.Fatalf("want 2 dests, got %d: %+v", len(dests), dests)
+		if len(dests) != 1 {
+			t.Fatalf("want 1 dest (packiot_shadow only), got %d: %+v", len(dests), dests)
 		}
-		if _, ok := destByName(dests, "shadow_go_port"); !ok {
-			t.Fatalf("shadow_go_port dest missing: %+v", dests)
+		if _, ok := destByName(dests, "shadow_go_port"); ok {
+			t.Fatalf("shadow_go_port main dest must be omitted when a shadow pool exists: %+v", dests)
 		}
 		ps, ok := destByName(dests, "packiot_shadow")
 		if !ok {
@@ -78,17 +81,20 @@ func TestStandardFiltered_ShadowGoPortEnabled(t *testing.T) {
 		}
 	})
 
-	t.Run("flag OFF, with shadow pool → shadow_go_port EXCLUDED, packiot_shadow retained", func(t *testing.T) {
+	t.Run("with shadow pool, flag OFF → F3-only (public main dest also omitted)", func(t *testing.T) {
 		shadow := nonNilPool()
 		dests := StandardFiltered(pool, shadow, false)
-		if _, ok := destByName(dests, "shadow_go_port"); ok {
-			t.Fatalf("shadow_go_port must be excluded when flag OFF: %+v", dests)
+		if len(dests) != 1 {
+			t.Fatalf("want 1 dest (packiot_shadow only), got %d: %+v", len(dests), dests)
 		}
-		if _, ok := destByName(dests, "public"); !ok {
-			t.Fatalf("public main-pool dest missing: %+v", dests)
+		if _, ok := destByName(dests, "shadow_go_port"); ok {
+			t.Fatalf("shadow_go_port must be omitted: %+v", dests)
+		}
+		if _, ok := destByName(dests, "public"); ok {
+			t.Fatalf("legacy public main dest must be omitted when a shadow pool exists (F3 is the live flow): %+v", dests)
 		}
 		if _, ok := destByName(dests, "packiot_shadow"); !ok {
-			t.Fatalf("packiot_shadow dest must be retained (independent of flag): %+v", dests)
+			t.Fatalf("packiot_shadow dest must be present: %+v", dests)
 		}
 	})
 }

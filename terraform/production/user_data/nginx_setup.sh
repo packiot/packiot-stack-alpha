@@ -14,7 +14,9 @@
 #   - PRODUCTION_DOMAIN (vs STAGING_DOMAIN)
 #   - NO AMQPS stream proxy (production doesn't expose 5671 — no factory
 #     broker here per security_groups.tf)
-#   - NO deliberately-open staging-only vhosts (mq / refdata / cpack-ingest)
+#   - refdata IS exposed (front4/operator read plane) but PROTECTED: origin-verify
+#     (CloudFront-only) + refdata's own JWT/tenant-isolation + scoped CORS — NOT open
+#   - NO deliberately-open staging-only vhosts (mq / cpack-ingest)
 #   - NO node-red editor vhosts (edge-nodered / oeecloud-nodered are staging-only)
 set -euo pipefail
 exec > >(tee /var/log/packiot-nginx-setup.log | logger -t packiot-nginx-setup) 2>&1
@@ -301,6 +303,114 @@ server {
         proxy_read_timeout 300s;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
+# ── refdata vhost (refdata-api F3 read plane — front4/operator SPAs) ───────────
+# refdata.$PRODUCTION_DOMAIN. origin-verify (CloudFront-only) + refdata's OWN JWT +
+# tenant-isolation (#57/#68). NO oauth2 (Bearer, not cookie). CORS scoped to the
+# front/operator SPA origins. Proxies refdata-api's static compose IP 172.18.0.26:9104
+# (tidier-consistency option: publish a 127.0.0.1 host port like api/csadmin).
+cat > /etc/nginx/conf.d/refdata.conf <<NGINX
+map \$http_origin \$refdata_cors {
+    default "";
+    "~^https://(front|operator)\.$PRODUCTION_DOMAIN\$" \$http_origin;
+}
+server {
+    listen 80;
+    server_name refdata.$PRODUCTION_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name refdata.$PRODUCTION_DOMAIN;
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+    location / {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin  \$refdata_cors always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Vary Origin always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin  \$refdata_cors always;
+        add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+        add_header Vary Origin always;
+        proxy_pass         http://172.18.0.26:9104;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+    }
+}
+NGINX
+
+# ── superset vhost (W2 self-service BI — embedded in front4) ───────────────────
+# bi.$PRODUCTION_DOMAIN. Modeled on the refdata block: origin-verify (CloudFront-
+# only) + scoped CORS. DIFFERENCES vs refdata (both load-bearing for embedding):
+#   * Superset has its OWN auth — short-lived guest tokens for embedded VIEWING
+#     (minted by edge-api) and a Cognito-OIDC session for AUTHORING — so it does
+#     NOT sit behind oauth2-proxy (a cookie forward-auth would break the iframe
+#     handshake AND the OIDC redirect). No auth_request here.
+#   * It MUST be iframe-embeddable: Superset's Talisman emits
+#     `Content-Security-Policy: frame-ancestors https://front.$PRODUCTION_DOMAIN`
+#     (superset_config.py). We MUST NOT add X-Frame-Options (no per-origin allow;
+#     it would blank the iframe).
+#   * WebSocket upgrade is wired for Superset's async-query progress channel.
+# The wildcard cert (*.$PRODUCTION_DOMAIN) already covers bi.$PRODUCTION_DOMAIN.
+# Go-live still needs the Route53 record + CloudFront alias/origin-verify behavior
+# (docs/plans/w2-embedded-superset.md §1.4/§6). DNS is NOT applied here; the vhost
+# is inert until superset (:8088) is up.
+cat > /etc/nginx/conf.d/superset.conf <<NGINX
+map \$http_origin \$superset_cors {
+    default "";
+    "~^https://front\.$PRODUCTION_DOMAIN\$" \$http_origin;
+}
+server {
+    listen 80;
+    server_name bi.$PRODUCTION_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name bi.$PRODUCTION_DOMAIN;
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+    client_max_body_size 20m;            # SQL Lab / CSV upload headroom
+    location / {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin      \$superset_cors always;
+            add_header Access-Control-Allow-Methods     "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers     "Authorization, Content-Type, X-CSRFToken" always;
+            add_header Access-Control-Allow-Credentials "true" always;
+            add_header Access-Control-Max-Age           86400 always;
+            add_header Vary Origin always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin      \$superset_cors always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Vary Origin always;
+        # NOTE: NO X-Frame-Options here — Superset's Talisman CSP owns embeddability.
+        proxy_pass         http://127.0.0.1:8088;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;    # async-query websocket
         proxy_set_header   Connection        \$ws_connection;
     }
 }

@@ -65,3 +65,19 @@ VALUES
     (3, 106, 'CPACK/SC/SLEEVE/SLEEVE2', true, NULL, 'CPACK-SC-SLEEVE-SLEEVE2'),
     (3, 108, 'CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2', true, 108, 'CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2')
 ON CONFLICT (packml_topic) DO NOTHING;
+
+-- ── Line meters (id_infeedcounter = gross source, id_outfeedcounter = net source) ──
+-- Authoritative per-line meters, cross-checked against the legacy packiot40 oracle
+-- (matching each legacy LINE total to the member machine with the identical total):
+-- net = the OUTFEED (TEXA) on every line; gross = the physical INFEED, which varies
+-- (BREYER L3/L4/L5, RMH L6, DXL L8/L10). Values are the WIRE count-indices.
+-- The edge-transformer Parameter30700 seeder reads these as [infeed, outfeed] so
+-- Phase-9 aggregates the line from the correct machines (see line_param30700_seed.go).
+-- NOT ordered by count-index (L6 gross=94 > net=92) — that is why explicit meters
+-- beat the ascending-CSV fallback. See docs/clients/cpack-legacy-oracle-line-meters.md.
+UPDATE packml_register SET id_infeedcounter = 76,  id_outfeedcounter = 80  WHERE packml_topic = 'CPACK/SC/LINHAS/L3';
+UPDATE packml_register SET id_infeedcounter = 6,   id_outfeedcounter = 10  WHERE packml_topic = 'CPACK/SC/LINHAS/L4';
+UPDATE packml_register SET id_infeedcounter = 61,  id_outfeedcounter = 65  WHERE packml_topic = 'CPACK/SC/LINHAS/L5';
+UPDATE packml_register SET id_infeedcounter = 94,  id_outfeedcounter = 92  WHERE packml_topic = 'CPACK/SC/LINHAS/L6';
+UPDATE packml_register SET id_infeedcounter = 219, id_outfeedcounter = 222 WHERE packml_topic = 'CPACK/SC/LINHAS/L8';
+UPDATE packml_register SET id_infeedcounter = 564, id_outfeedcounter = 567 WHERE packml_topic = 'CPACK/SC/LINHAS/L10';

@@ -1068,6 +1068,35 @@ type dsWindow struct {
 	To   time.Time `json:"to"`
 }
 
+// UnmarshalJSON parses the window bounds against the same tolerant layout
+// allowlist as scalar date filters (flexibleTimeLayouts). Go's default
+// time.Time unmarshal accepts ONLY RFC3339, so a front4 window like
+// {"from":"2026-08-01 00:00"} (space-separated, minute precision) failed the
+// whole-body unmarshal → 400 "bad request body" before compileDataset ever ran.
+// Fields stay time.Time so compileDataset's IsZero/After/Sub checks and the
+// positional pgx binding are unchanged — only the accepted input widens.
+func (w *dsWindow) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	var err error
+	if raw.From != "" {
+		if w.From, err = parseFlexibleTime(raw.From); err != nil {
+			return fmt.Errorf("window.from: %w", err)
+		}
+	}
+	if raw.To != "" {
+		if w.To, err = parseFlexibleTime(raw.To); err != nil {
+			return fmt.Errorf("window.to: %w", err)
+		}
+	}
+	return nil
+}
+
 type datasetReq struct {
 	Dataset string                     `json:"dataset"`
 	Window  *dsWindow                  `json:"window"`
@@ -1201,12 +1230,31 @@ func compileDataset(q datasetReq, customerID int, role callerRole) (string, []an
 // and the datetime bucket (report-downtimes). A value outside the allowlist is
 // rejected — the filter can never carry arbitrary SQL text.
 func parseDateFilter(s string) (time.Time, error) {
-	for _, layout := range []string{"2006-01-02", "2006-01-02 15:04:05", time.RFC3339} {
+	return parseFlexibleTime(s)
+}
+
+// flexibleTimeLayouts is the accepted-input allowlist shared by scalar date
+// filters (parseDateFilter) and window bounds (dsWindow.UnmarshalJSON). Order
+// matters only for speed; time.Parse is exact per layout. "2006-01-02 15:04"
+// (minute precision, no seconds) is included because front4 sends window bounds
+// in that form — omitting it 400s every windowed dataset request.
+var flexibleTimeLayouts = []string{
+	"2006-01-02",
+	"2006-01-02 15:04",
+	"2006-01-02 15:04:05",
+	time.RFC3339,
+}
+
+// parseFlexibleTime parses s against flexibleTimeLayouts. A value outside the
+// allowlist is rejected — the bound is always a real time.Time, never arbitrary
+// SQL text (it is bound positionally downstream).
+func parseFlexibleTime(s string) (time.Time, error) {
+	for _, layout := range flexibleTimeLayouts {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("must be YYYY-MM-DD, 'YYYY-MM-DD HH:MM:SS', or RFC3339")
+	return time.Time{}, fmt.Errorf("must be YYYY-MM-DD, 'YYYY-MM-DD HH:MM[:SS]', or RFC3339")
 }
 
 func intList(filters map[string]json.RawMessage, name string) ([]int, error) {
