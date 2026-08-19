@@ -319,6 +319,16 @@ func main() {
 		logger.Info("calc_production_counters port ENABLED (shadow mode)",
 			slog.String("adr", "ADR-0010 Phase 3"),
 		)
+		// ADR-0045 P2b: seed Parameter30700 (per-line machine count-index CSV)
+		// from packml_register so Phase-9 line aggregation fires for line-metered
+		// tenants whose PLC never publishes it (CPACK) — the config-as-data
+		// replacement for the retired mirror-worker-go synthetic line writes.
+		// The same flag lifts the LineAggregated suppression below.
+		if phase9LineAgg {
+			runLineParam30700Seeder(context.Background(), calcState, logger)
+			logger.Info("phase9 line-agg ENABLED (register-driven Parameter30700 + suppression lifted)",
+				slog.String("adr", "ADR-0045 P2b"))
+		}
 	} else {
 		logger.Info("calc_production_counters port disabled (USE_GO_PORT=false)")
 	}
@@ -1139,7 +1149,12 @@ func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved
 		// passes through and is differenced like a tp=1 machine; only the
 		// double-counting Phase-9 aggregate is dropped. Machine (Unit) counters
 		// and Phase-10 status were never line-level, so they are unaffected.
-		if em.LineAggregated {
+		// ADR-0045 P2b: the Phase-9 member→line aggregate is suppressed to avoid
+		// double-counting against a competing line writer (own-stream line count
+		// / the retired mirror-worker-go synthetic writes). When PHASE9_LINE_AGG
+		// is enabled (no competing writer — mirror-worker-go retired), let it
+		// through so line-metered tenants get their line counts from Phase-9.
+		if em.LineAggregated && !phase9LineAgg {
 			continue
 		}
 		counter := float64(em.Counter)

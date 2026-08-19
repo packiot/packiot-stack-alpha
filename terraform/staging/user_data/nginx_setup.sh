@@ -436,14 +436,17 @@ server {
         if (\$request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin  \$cors_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type" always;
+            # x-packiot-agent + x-user are sent by front4 on every refdata call;
+            # omitting them from Allow-Headers makes the browser block the request
+            # (preflight fails) and front4 becomes unusable. Codifies the live fix.
+            add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user" always;
             add_header Access-Control-Max-Age      86400 always;
             add_header Content-Length 0;
             add_header Content-Type "text/plain";
             return 204;
         }
         add_header Access-Control-Allow-Origin  \$cors_origin always;
-        add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type" always;
+        add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user" always;
 
         # refdata-api: internal container, no host publish. nginx (host) reaches
         # it by its compose-pinned bridge IP (ipv4_address: 172.18.0.26:9104).
@@ -459,6 +462,69 @@ NGINX
 
 nginx -t && nginx -s reload
 echo "refdata read-plane vhost configured at https://refdata.$STAGING_DOMAIN"
+
+# ── superset vhost (W2 self-service BI — embedded in front4) ───────────────────
+# bi.$STAGING_DOMAIN. Mirrors the prod block (terraform/production/user_data/
+# nginx_setup.sh) + the refdata pattern: origin-verify (CloudFront-only) + scoped
+# CORS to the front4 SPA origin. DIFFERENCES (both load-bearing for embedding):
+#   * Superset has its OWN auth — short-lived guest tokens for embedded VIEWING
+#     (minted by edge-api) and a Cognito-OIDC session for AUTHORING — so it does
+#     NOT sit behind oauth2-proxy (a cookie forward-auth would break the iframe
+#     handshake AND the OIDC redirect). No auth_request here.
+#   * It MUST be iframe-embeddable: Superset's Talisman emits
+#     `Content-Security-Policy: frame-ancestors https://front.$STAGING_DOMAIN`
+#     (superset_config.py). We MUST NOT add X-Frame-Options — it would blank the
+#     iframe. WebSocket upgrade is wired for the async-query progress channel.
+# The wildcard cert (*.$STAGING_DOMAIN) already covers bi.$STAGING_DOMAIN. INERT
+# until superset (:8088) is up + the profile is enabled (superset-golive-runbook).
+cat > /etc/nginx/conf.d/superset.conf <<NGINX
+map \$http_origin \$superset_cors {
+    default "";
+    "~^https://front\.$STAGING_DOMAIN\$" \$http_origin;
+}
+server {
+    listen 80;
+    server_name bi.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name bi.$STAGING_DOMAIN;
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+    client_max_body_size 20m;            # SQL Lab / CSV upload headroom
+    location / {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin      \$superset_cors always;
+            add_header Access-Control-Allow-Methods     "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers     "Authorization, Content-Type, X-CSRFToken" always;
+            add_header Access-Control-Allow-Credentials "true" always;
+            add_header Access-Control-Max-Age           86400 always;
+            add_header Vary Origin always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin      \$superset_cors always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Vary Origin always;
+        # NOTE: NO X-Frame-Options here — Superset's Talisman CSP owns embeddability.
+        proxy_pass         http://127.0.0.1:8088;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;    # async-query websocket
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "superset BI vhost configured at https://bi.$STAGING_DOMAIN (inert until :8088 up)"
 
 # ── oauth2-proxy vhost (auth.<domain>) ────────────────────────────────────────
 # NO origin-verify + NO auth_request — this IS the authentication endpoint.

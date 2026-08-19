@@ -553,6 +553,15 @@ services:
 
   # ── Edge Node-RED ──────────────────────────────────────────────────────────────
   edge-nodered:
+    # RETIRED (2026-08-16): dead legacy Node-RED. oeecloud-nodered is already gone;
+    # the new stack ingests via edge-transformer and serves the operator via
+    # edge-api (/session, /api/*) + refdata-api (/v1/*). The deployed operator SPA
+    # makes ZERO calls here (the operator nginx regex to :1880 is vestigial). Its
+    # only remaining consumer was the (also-gated) `simulator`. csadmin generates
+    # the per-client EDGE Node-RED (ADR-0045) — that is unrelated to this cloud
+    # container. Gated behind the `legacy-sim` profile so it no longer starts by
+    # default; enable with COMPOSE_PROFILES=legacy-sim if ever needed.
+    profiles: ["legacy-sim"]
     build:
       context: ./edge-node-red
     restart: unless-stopped
@@ -976,6 +985,13 @@ services:
   # against edge-api. Requires the Simulator Corp enterprise + packml_register
   # entries to be seeded (see edge-node-red/db/03-operator-simulator.sql).
   simulator:
+    # RETIRED (2026-08-16): posts to edge-nodered's legacy /plc-data HTTP ingest,
+    # which pack-queue double-encodes → oeecloud-worker's poison-storm guard drops
+    # 100% of it (Simulator Corp ent 1/2 data never landed; ~576 dropped/5min of
+    # log noise). The new-stack test tenant is the sandbox (ent 2000003), which
+    # flows the real path: sparkplug-agent-sbx → edge-transformer → oeecloud-worker.
+    # Gated behind `legacy-sim` (together with its only dependency, edge-nodered).
+    profiles: ["legacy-sim"]
     build:
       context: ./simulator
     restart: unless-stopped
@@ -1167,6 +1183,14 @@ services:
   mirror-worker-go:
     build: ./services/mirror-worker-go
     container_name: mirror-worker-go
+    # RETIRED (2026-08-13): legacy-prod(ent 1)→staging(ent 3) mirror + F1/F3
+    # fidelity watchdog. It's a migration-era tool — obsolete once CPACK cuts
+    # over to the new stack (its comparator has nothing to compare once legacy
+    # prod is retired), and the ADR-0045 sandbox now supplies staging test data.
+    # It was also the #1 log-noise source (~413 "already mapped" warns/3min).
+    # Profile-gated OFF so the deploy no longer starts it; re-enable for the
+    # comparator until cutover with `COMPOSE_PROFILES=legacy-comparator`.
+    profiles: ["legacy-comparator"]
     restart: unless-stopped
     environment:
       LOG_LEVEL: info
@@ -1296,6 +1320,12 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
+      # F2 comparator retired: the shadow_go_port schema was DROPPED when F3
+      # became the single flow, so leaving the background rollup/backfill/uns
+      # jobs pointed at it made every tick error 42P01 (~180×/5min). false =
+      # target `public` instead (flows.StandardFiltered, ADR-0045 G3). The F1
+      # pg_cron rollup (oee-refresh-runtime) is inactive, so no double-write.
+      SHADOW_GO_PORT_ENABLED: "false"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
@@ -1443,7 +1473,12 @@ services:
       # so flags-off output is byte-identical. Reversible: set ENABLED=false +
       # redeploy. Idle timeout 300s = grace after last count before "stopped".
       COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
-      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "50,68,69,70,71,72"
+      # CPACK lines (47-52) + members, CELULA/SLEEVE standalone lines (81-96,103,105,106),
+      # L6 members (68-72), and the SANDBOX-CPACK twin (2000xxx). Counters-only availability
+      # = productive minutes (gross_production_incr>0). Codified from the live staging worker
+      # (was "50,68,69,70,71,72" — a re-provision would have shrunk it, dropping availability
+      # for every other CPACK line). See docs/clients/cpack-legacy-oracle-line-meters.md.
+      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "47,48,49,50,51,52,81,82,83,84,85,91,92,93,94,95,96,103,105,106,2000047,2000048,2000049,2000050,2000051,2000052,2000081,2000082,2000083,2000084,2000085,2000091,2000092,2000093,2000094,2000095,2000096,2000103,2000105,2000106,68,69,70,71,72"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
       # ADR-0037 Silver invariant — per-equipment production-increment SANITY
       # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
@@ -1599,6 +1634,11 @@ services:
     environment:
       LOG_LEVEL: info
       EDGE_TRANSFORMER_MODE: factory
+      # ADR-0045 Phase-9 line aggregation (mirror-worker-go retired, no competing line
+      # writer on staging). Seeds Parameter30700 from packml_register (infeed/outfeed
+      # meters, ascending-CSV fallback) + lifts the LineAggregated suppression. Enable
+      # ONLY where no competing line writer exists. See line_param30700_seed.go.
+      PHASE9_LINE_AGG_ENABLED: "true"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # MQTT-receive span is the data-plane trace root; its context rides the
       # outbox (envelope traceparent) and the AMQP publish so PLC→worker→DB is
@@ -2139,9 +2179,13 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.19
     depends_on:
-      edge-nodered:
-        # Wait for edge-nodered's healthcheck — without it, the SPA's
-        # initial API calls 5xx until the Node-RED flows are loaded.
+      # Repointed off the retired edge-nodered (2026-08-16). The deployed operator
+      # SPA calls ONLY edge-api (/session, /api/*) and refdata-api (/v1/*) — verified
+      # from the built bundle; it makes zero calls to edge-nodered. Wait on its real
+      # backends instead so early SPA requests don't 5xx.
+      edge-api:
+        condition: service_started
+      refdata-api:
         condition: service_healthy
     mem_limit: 128m
     cpus: 0.25

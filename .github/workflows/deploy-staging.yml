@@ -78,15 +78,24 @@ jobs:
           echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
 
       - name: Build images
-        run: docker compose -f compose.staging.yml -p stack build
+        # compose.superset.yml (W2 embedded BI) is a profile-gated overlay: every
+        # service carries `profiles: ["superset"]`, so it is INERT unless
+        # COMPOSE_PROFILES (in /opt/packiot/.env) includes `superset`. Including
+        # the -f here keeps the superset services KNOWN to the `stack` project so
+        # the Deploy step's --remove-orphans never reaps a running Superset — the
+        # whole overlay stays dark until the profile is deliberately enabled per
+        # docs/superset-golive-runbook.md.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
         # decommissions it. Without this, `up -d` only warns "Found orphan
         # containers" and leaves them running, silently leaving zombie
         # services behind. Safe here because this compose file owns the
-        # whole project — no other stack co-tenants on the host.
-        run: docker compose -f compose.staging.yml -p stack up -d --remove-orphans
+        # whole project — no other stack co-tenants on the host. The superset
+        # overlay is profile-gated (see Build step) so this starts nothing extra
+        # until COMPOSE_PROFILES=superset.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
 
       - name: Prune old images
         run: docker image prune -f
@@ -225,7 +234,12 @@ jobs:
           python3 - <<'PYEOF'
           import json, subprocess, sys, time
 
-          COMPOSE = ["docker", "compose", "-f", "compose.staging.yml", "-p", "stack"]
+          # Include the profile-gated superset overlay so `config`/`ps` render the
+          # same composition as Build/Deploy. With COMPOSE_PROFILES unset the
+          # superset services are omitted from `config`, so this health probe only
+          # asserts them once the profile is deliberately enabled (runbook).
+          COMPOSE = ["docker", "compose", "-f", "compose.staging.yml",
+                     "-f", "compose.superset.yml", "-p", "stack"]
 
           def sh(args):
               return subprocess.run(COMPOSE + args, capture_output=True, text=True)

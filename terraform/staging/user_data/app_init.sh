@@ -97,6 +97,18 @@ GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""
 # call the edge-transformer onboard server (:9105). Durable so a fresh instance
 # does not lose it (it was hand-added to .env once; codified 2026-08-05).
 ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
+# Operator enterprise api_key (ADR-0018 wave 4) — nginx injects this on the
+# operator SPA's proxied /api/* writes; edge-api authenticates it as the client
+# enterprise's enterprises.api_key. The staging operator SPA is single-tenant
+# CPACK (enterprise 3), so this MUST be CPACK's key — an earlier live .env
+# wrongly carried Incoplast's (enterprise 4) key, 502'ing operator writes.
+# Sourced from the packiot/staging/app secret (key `operator_edge_api_key`,
+# value = CPACK's fe1681ba-… enterprises.api_key) so a full re-init re-creates
+# it in .env instead of the operator hand-appending it (drops on rebuild).
+# NOTE: keeping the literal secret OUT of git — populate the secret out-of-band
+# (see ADR-0020 / production-recut-runbook). Empty default keeps the box booting
+# if the secret key is absent; operator writes stay 401 until it is populated.
+OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 # oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
@@ -105,6 +117,25 @@ NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 # only these two are secrets.
 OAUTH2_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_client_secret // ""')
 OAUTH2_COOKIE_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_cookie_secret // ""')
+
+# Superset W2 (embedded self-service BI) secrets — durable so a fresh instance
+# re-materializes them into .env (they were provisioned into packiot/staging/app
+# on 2026-08-09). All default to "" so the block is harmless until the `superset`
+# compose profile is enabled (COMPOSE_PROFILES). The Cognito/dashboard values are
+# NOT generatable secrets — they are filled at their go-live step (see
+# docs/superset-golive-runbook.md): SUPERSET_COGNITO_* come from registering the
+# OIDC app client; SUPERSET_OEE_DASHBOARD_UUID from enabling embed on the curated
+# dashboard.
+SUPERSET_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.superset_secret_key // ""')
+SUPERSET_GUEST_TOKEN_JWT_SECRET=$(echo "$APP_SECRET" | jq -r '.superset_guest_token_jwt_secret // ""')
+SUPERSET_DB_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_db_password // ""')
+SUPERSET_DB_RO_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_db_ro_password // ""')
+SUPERSET_GUESTTOKEN_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_user // ""')
+SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_password // ""')
+SUPERSET_COGNITO_ISSUER=$(echo "$APP_SECRET" | jq -r '.superset_cognito_issuer // ""')
+SUPERSET_COGNITO_CLIENT_ID=$(echo "$APP_SECRET" | jq -r '.superset_cognito_client_id // ""')
+SUPERSET_COGNITO_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.superset_cognito_client_secret // ""')
+SUPERSET_OEE_DASHBOARD_UUID=$(echo "$APP_SECRET" | jq -r '.superset_oee_dashboard_uuid // ""')
 
 # CPACK sparkplug-agent ingest key (ADR-0042 P1) — OPTIONAL / populate-manually.
 # Absent until the CPACK tee is provisioned (secret packiot/staging/agent-ingest),
@@ -138,6 +169,25 @@ mkdir -p /opt/packiot
 #     echo "EDGE_API_COGNITO_AUTH_ENABLED=true"
 #   } >> /opt/packiot/.env
 # then: cd /opt/packiot/stack && docker compose -f compose.staging.yml up -d oauth2-proxy edge-api
+#
+# ⚠ Superset W2 (same guard): a box booted under an earlier .env will NOT gain the
+# SUPERSET_*/POSTGRES_HOST_UPSTREAM keys. To patch a RUNNING box (per the go-live
+# runbook), append from Secrets Manager without a full re-init:
+#   SEC=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app \
+#         --region us-east-1 --query SecretString --output text)
+#   {
+#     echo "POSTGRES_HOST_UPSTREAM=$(grep -E '^POSTGRES_HOST=' /opt/packiot/.env | cut -d= -f2)"
+#     for k in superset_secret_key superset_guest_token_jwt_secret superset_db_password \
+#              superset_db_ro_password superset_guesttoken_admin_user \
+#              superset_guesttoken_admin_password superset_cognito_issuer \
+#              superset_cognito_client_id superset_cognito_client_secret \
+#              superset_oee_dashboard_uuid; do
+#       echo "$(echo "$k" | tr a-z A-Z)=$(echo "$SEC" | jq -r ".$k // \"\"")"
+#     done
+#     echo "SUPERSET_FRAME_ANCESTOR=https://front.${staging_domain}"
+#     echo "SUPERSET_BASE_URL=http://172.18.0.42:8088"
+#   } >> /opt/packiot/.env
+# then set COMPOSE_PROFILES=superset and bring up the profile — see the runbook.
 if [ -f /opt/packiot/.env ]; then
   echo ".env already exists — skipping generation to preserve NODE_RED_CREDENTIAL_SECRET"
 else
@@ -150,6 +200,11 @@ else
 # Postgres (DB EC2, private subnet)
 POSTGRES_URL=$DB_URL
 POSTGRES_HOST=${db_private_ip}
+# DIRECT r7g host (bypasses pgbouncer) for one-shot superuser DDL — Superset's
+# metadata role+DB bootstrap (compose.superset.yml superset-db-init) needs a
+# direct superuser connection, not the pooler. Same address as POSTGRES_HOST on
+# staging; named distinctly so the intent (upstream/direct) is explicit.
+POSTGRES_HOST_UPSTREAM=${db_private_ip}
 POSTGRES_PORT=5432
 POSTGRES_USER=${db_user}
 POSTGRES_DB=${db_name}
@@ -168,6 +223,9 @@ EDGE_API_KEY=$API_KEY
 GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
 # Onboard-generate bearer: edge-api → edge-transformer:9105 (ADR-0045 §generate)
 ONBOARD_API_KEY=$ONBOARD_API_KEY
+# Operator SPA enterprise api_key (CPACK / enterprise 3) — nginx injects it on
+# proxied /api/* writes; consumed by the operator + operator-adapter services.
+OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 # NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward
@@ -203,6 +261,29 @@ OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET
 COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt
 COGNITO_CS_ADMIN_GROUP=cs-admin
 EDGE_API_COGNITO_AUTH_ENABLED=true
+
+# Superset W2 (embedded self-service BI) — INERT until COMPOSE_PROFILES includes
+# `superset`. compose.superset.yml reads these; edge-api's superset-embed slice
+# reads SUPERSET_BASE_URL + the guest-token admin creds + the dashboard UUID.
+# SECRET_KEY and GUEST_TOKEN_JWT_SECRET MUST stay identical across web/worker/init
+# (a mismatch invalidates sessions + in-flight guest tokens). Design:
+# docs/plans/w2-embedded-superset.md; go-live: docs/superset-golive-runbook.md.
+SUPERSET_SECRET_KEY=$SUPERSET_SECRET_KEY
+SUPERSET_GUEST_TOKEN_JWT_SECRET=$SUPERSET_GUEST_TOKEN_JWT_SECRET
+SUPERSET_DB_PASSWORD=$SUPERSET_DB_PASSWORD
+SUPERSET_DB_RO_PASSWORD=$SUPERSET_DB_RO_PASSWORD
+SUPERSET_GUESTTOKEN_ADMIN_USER=$SUPERSET_GUESTTOKEN_ADMIN_USER
+SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$SUPERSET_GUESTTOKEN_ADMIN_PASSWORD
+SUPERSET_COGNITO_ISSUER=$SUPERSET_COGNITO_ISSUER
+SUPERSET_COGNITO_CLIENT_ID=$SUPERSET_COGNITO_CLIENT_ID
+SUPERSET_COGNITO_CLIENT_SECRET=$SUPERSET_COGNITO_CLIENT_SECRET
+SUPERSET_FRAME_ANCESTOR=https://front.$STAGING_DOMAIN
+# edge-api superset-embed slice: in-network base URL + curated dashboard embed UUID.
+SUPERSET_BASE_URL=http://172.18.0.42:8088
+SUPERSET_OEE_DASHBOARD_UUID=$SUPERSET_OEE_DASHBOARD_UUID
+# Activate the profile by setting COMPOSE_PROFILES=superset (do it deliberately,
+# per the runbook — leaving it unset keeps the whole overlay dark).
+# COMPOSE_PROFILES=superset
 ENV
 fi
 
