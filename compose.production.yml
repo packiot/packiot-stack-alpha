@@ -817,6 +817,23 @@ services:
       COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
       COUNTERS_ONLY_AVAILABILITY_ENABLED: "false"
+      # ── Strategy D — shared worker pool + dynamic tenant discovery ─────────
+      # Onboard a new client (packml_register active=true) with NO worker
+      # restart — the worker picks it up within this interval. 0 = boot-only.
+      TENANT_DISCOVERY_INTERVAL_SECONDS: "60"
+      # x-single-active-consumer on per-tenant MAIN queues so a pool of
+      # replicas is order-safe. DEFAULT false → byte-identical single instance.
+      # Enabling it is a one-time queue migration (queue args are immutable):
+      # services/oeecloud-worker/scripts/migrate-tenant-queues-sac.sh. Flip on
+      # ONLY with OEECLOUD_WORKER_REPLICAS>1. Docs: strategy-d-shared-pool-sac.md.
+      WORKER_POOL_SAC_ENABLED: "false"
+    # Horizontal scale: default 1 (byte-identical). To run a pool of N, set
+    # OEECLOUD_WORKER_REPLICAS=N + WORKER_POOL_SAC_ENABLED=true (post-migration)
+    # and COMMENT OUT container_name (line ~753) + the static ipv4_address below
+    # — both require uniqueness under N>1. No host port is published, so no
+    # host-port collision. See docs/strategy-d-shared-pool-sac.md.
+    deploy:
+      replicas: ${OEECLOUD_WORKER_REPLICAS:-1}
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
