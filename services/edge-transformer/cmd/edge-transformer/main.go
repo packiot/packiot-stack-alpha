@@ -462,6 +462,19 @@ func main() {
 			}
 		}
 
+		// LINE_TRACE_TENANTS (comma-separated, lowercase GroupIDs, e.g.
+		// "cpack") turns on INFO-level per-counter drop tracing for the listed
+		// tenants ONLY. Empty (default) → zero extra logs. Purpose: pin a
+		// line-count regression (which lines' counters reach the F3 write and
+		// which get dropped by Calc) at the deployed LOG_LEVEL=info, without a
+		// debug container recreate that would drop SparkPlug births + stall decode.
+		traceTenants := parseTraceTenants(os.Getenv("LINE_TRACE_TENANTS"))
+		if len(traceTenants) > 0 {
+			logger.Info("line-count trace ENABLED (INFO-level per-counter drop trace)",
+				slog.String("tenants", os.Getenv("LINE_TRACE_TENANTS")),
+			)
+		}
+
 		calcHooks := calcHooks{
 			state:          calcState,
 			evals:          calcEvals,
@@ -471,6 +484,7 @@ func main() {
 			stateSeeds:     calcStateSeeds,
 			countersOnly:   countersOnly,
 			idealRates:     idealRates,
+			traceTenants:   traceTenants,
 		}
 		if countersOnly {
 			logger.Info("counters-only OEE mode ENABLED",
@@ -785,10 +799,31 @@ type calcHooks struct {
 	// shadow path is unchanged. A nil map indexes safely (returns 0 → opt-out).
 	countersOnly bool
 	idealRates   map[string]float64
+
+	// traceTenants is the set of lowercased tenant/GroupIDs (from
+	// LINE_TRACE_TENANTS) for which per-counter INFO-level drop tracing is
+	// on. Empty (default) → traced() is always false → ZERO extra logs, so
+	// this is safe to leave baked in prod and flip on for one tenant to pin
+	// a line-count regression WITHOUT a LOG_LEVEL=debug container recreate
+	// (recreating drops the SparkPlug birth/alias table so decode stalls and
+	// you can't observe steady state). See the 2026-08-13 line-count regression.
+	traceTenants map[string]bool
 }
 
 // enabled reports whether shadow-mode Calc is on. All hooks are nil when off.
 func (h calcHooks) enabled() bool { return h.state != nil }
+
+// traced reports whether LINE_TRACE_TENANTS includes this tenant. Tenant is
+// compared case-insensitively (SparkPlug GroupIDs are upper-cased, e.g.
+// "CPACK", while the env flag is lowercase "cpack"). Returns false fast when
+// the flag is unset so the default path pays a single len() check and emits
+// nothing.
+func (h calcHooks) traced(tenant string) bool {
+	if len(h.traceTenants) == 0 {
+		return false
+	}
+	return h.traceTenants[strings.ToLower(tenant)]
+}
 
 // isCounterMetricName returns the CounterKind if this Sparkplug metric name
 // is a Calc-relevant counter, or CounterKindUnknown otherwise. Substring
@@ -1118,6 +1153,33 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		slog.Int("emitted_metrics", len(dec.Metrics)),
 		slog.Int("state_mutations", len(dec.StateUpdates)),
 	)
+	// LINE_TRACE_TENANTS: the SAME decision surfaced at INFO for traced
+	// tenants so the 2026-08-13 regression is visible at the deployed
+	// LOG_LEVEL=info. skipped_reason distinguishes the drop causes:
+	//   - "first_observation_seed" + state_mutations=1 EVERY sample → the
+	//     ADR-0045 P1 seed never persists in this write path (baseline lost
+	//     between samples), so the stream is re-seeded and zeroed forever.
+	//   - "unit_mode_setup" / "no_cmd_trigger" → dropped upstream of counting.
+	//   - outcome=send but the line is absent in F3 → the writer drops it
+	//     (look at the F3-cutover-envelope trace, not Calc).
+	if h.traced(tenant) {
+		skipped, _ := dec.EnrichedMsg["skipped_reason"].(string)
+		attrs := []any{
+			slog.String("tenant", tenant),
+			slog.String("line", lineTagOf(metric.Name)),
+			slog.String("metric", metric.Name),
+			slog.String("kind", kind.String()),
+			slog.String("outcome", outcome),
+			slog.String("skipped_reason", skipped),
+			slog.Int64("payload", payload),
+			slog.Int("emitted_metrics", len(dec.Metrics)),
+			slog.Int("state_mutations", len(dec.StateUpdates)),
+		}
+		if sb, ok := dec.EnrichedMsg["seeded_baseline"]; ok {
+			attrs = append(attrs, slog.Any("seeded_baseline", sb))
+		}
+		logger.Info("line-trace: calc counter decision", attrs...)
+	}
 	_ = ctx // reserved for future context-aware state backends (Redis)
 	// Return the emitted metrics so the caller can build the F3 cutover
 	// envelope. Empty when Calc chose to drop (SendDownstream=false).
@@ -1543,10 +1605,27 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 				// behavior change until the flag is flipped for F3 only.
 				var env shadowpub.Envelope
 				if st == "refactored" && cutoverRefactored && calc.enabled() {
+					cutMetrics := buildCutoverMetrics(calcMetrics, resolved.Metrics)
 					env = shadowpub.BuildEnvelopeFromMetrics(
-						"outbox", st, int64(resolved.Timestamp),
-						buildCutoverMetrics(calcMetrics, resolved.Metrics),
+						"outbox", st, int64(resolved.Timestamp), cutMetrics,
 					)
+					// LINE_TRACE_TENANTS: the exact metric set that enters the
+					// F3 (packiot_shadow) write for this payload. If a line's
+					// counter shows outcome=send in the calc trace but its name
+					// is ABSENT here, the drop is in buildCutoverMetrics /
+					// suppression — not in Calc. If it IS here but still never
+					// lands in F3, the drop is downstream of the transformer.
+					if calc.traced(topic.GroupID) {
+						names := make([]string, 0, len(cutMetrics))
+						for _, mm := range cutMetrics {
+							names = append(names, mm.Name)
+						}
+						logger.Info("line-trace: F3 cutover envelope metrics",
+							slog.String("tenant", tenant),
+							slog.Int("metric_count", len(names)),
+							slog.Any("metrics", names),
+						)
+					}
 				} else {
 					env = shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
 						Tenant:          tenant,
@@ -1629,6 +1708,20 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			slog.Int("metric_count", len(resolved.Metrics)),
 			slog.String("first_metric", firstMetricName(resolved.Metrics)),
 		)
+		// LINE_TRACE_TENANTS: the default decode log only shows the FIRST
+		// metric name, so a line that is (or isn't) present in the payload is
+		// invisible. For traced tenants, list every decoded metric name — this
+		// is the "is L8 even in the decoded payload?" check that separates a
+		// never-decoded line (upstream/agent gap) from a decoded-but-dropped
+		// line (a Calc drop, see the calc-counter-decision trace above).
+		if calc.traced(topic.GroupID) {
+			logger.Info("line-trace: decoded payload metrics",
+				slog.String("tenant", strings.ToLower(topic.GroupID)),
+				slog.Uint64("seq", resolved.Seq),
+				slog.Int("metric_count", len(resolved.Metrics)),
+				slog.Any("metrics", resolvedMetricNames(resolved.Metrics)),
+			)
+		}
 		return nil
 	}
 }
@@ -1638,6 +1731,44 @@ func firstMetricName(metrics []sparkplug.ResolvedMetric) string {
 		return ""
 	}
 	return metrics[0].Name
+}
+
+// parseTraceTenants parses the LINE_TRACE_TENANTS comma list into a set of
+// lowercased tenant/GroupIDs. Empty / whitespace-only entries are dropped, so
+// an unset or "" env yields an empty (nil-safe) map and traced() short-circuits.
+func parseTraceTenants(raw string) map[string]bool {
+	set := map[string]bool{}
+	for _, p := range strings.Split(raw, ",") {
+		if t := strings.ToLower(strings.TrimSpace(p)); t != "" {
+			set[t] = true
+		}
+	}
+	return set
+}
+
+// lineTagOf extracts a compact "<sector>/<line>" tag from a full SparkPlug
+// metric topic for trace logging, e.g.
+//
+//	CPACK/SC/LINHAS/L8/BREYER/Admin/ProdConsumedCount/61/Unit → "LINHAS/L8"
+//	CPACK/SC/LINHAS/L8/Admin/ProdConsumedCount                → "LINHAS/L8"
+//
+// so a reader can group the trace by line at a glance. Falls back to the whole
+// name when the topic has too few segments to locate the line.
+func lineTagOf(name string) string {
+	parts := strings.Split(name, "/")
+	if len(parts) >= 4 {
+		return parts[2] + "/" + parts[3]
+	}
+	return name
+}
+
+// resolvedMetricNames collects metric names for trace logging.
+func resolvedMetricNames(metrics []sparkplug.ResolvedMetric) []string {
+	names := make([]string, 0, len(metrics))
+	for _, m := range metrics {
+		names = append(names, m.Name)
+	}
+	return names
 }
 
 // runHealthcheck does an HTTP GET against the in-process /healthz endpoint
