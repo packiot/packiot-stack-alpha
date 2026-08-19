@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -32,12 +33,25 @@ type Consumer struct {
 	dispatcher *handlers.Dispatcher
 	logger     *slog.Logger
 
-	// tenants is the snapshot of active group_ids resolved at startup
-	// (via tenants.DiscoverActive on packml_register). Used by
-	// DeclareTopology to declare per-tenant queues + bindings on each
-	// reconnect — same list reused; new tenants require a worker restart
-	// (Strategy C v1 behaviour, see strategy-c-per-tenant-queues.md §6).
-	tenants []string
+	// tenants is the CURRENT set of active group_ids (via
+	// tenants.DiscoverActive on packml_register). Seeded at boot and, under
+	// Strategy D, grown/shrunk live by the dynamic-discovery loop. Used by
+	// DeclareTopology on every (re)connect so dynamically-onboarded tenants
+	// survive a broker reconnect. Guarded by tenantsMu.
+	tenantsMu sync.Mutex
+	tenants   []string
+
+	// discover, when non-nil, is the periodic tenant re-discovery source
+	// (main wires it to tenants.DiscoverActive over the pgx pool). nil =
+	// boot-only discovery (dynamic loop is inert). Set via SetDiscoverer.
+	discover func(context.Context) ([]string, error)
+
+	// tenantHandler is the routing-key handler registered for a NEWLY
+	// discovered tenant's `sparkplug.data.<tenant>` key (same handler main
+	// registers for boot tenants). nil = new tenants fall through to the
+	// LogOnly fallback (acked but unwritten) — so main MUST set this when it
+	// wires a discoverer. Set via SetTenantHandler.
+	tenantHandler handlers.Handler
 
 	// Optional callback letting writers contribute to /health JSON
 	// without forcing Consumer to import the writers package. main wires
@@ -78,6 +92,50 @@ func NewConsumer(cfg *config.Config, amqpURL string, d *handlers.Dispatcher, ten
 // SetWriterStats registers a callback that returns any JSON-marshalable
 // value to embed under the "writers" key of /health. Call before Run.
 func (c *Consumer) SetWriterStats(fn func() any) { c.writerStats = fn }
+
+// SetDiscoverer wires the periodic tenant re-discovery source (Strategy D).
+// Call before Run. nil (the default) keeps boot-only discovery.
+func (c *Consumer) SetDiscoverer(fn func(context.Context) ([]string, error)) { c.discover = fn }
+
+// SetTenantHandler sets the handler registered for a dynamically-discovered
+// tenant's routing key. MUST be set alongside SetDiscoverer, otherwise a newly
+// onboarded tenant's messages hit the LogOnly fallback (acked, never written).
+// Call before Run.
+func (c *Consumer) SetTenantHandler(h handlers.Handler) { c.tenantHandler = h }
+
+// tenantSnapshot returns a copy of the current tenant set under lock.
+func (c *Consumer) tenantSnapshot() []string {
+	c.tenantsMu.Lock()
+	defer c.tenantsMu.Unlock()
+	out := make([]string, len(c.tenants))
+	copy(out, c.tenants)
+	return out
+}
+
+// addTenant / removeTenant keep the authoritative set in sync with the live
+// consumer topology so a reconnect re-declares exactly what we consume.
+func (c *Consumer) addTenant(t string) {
+	c.tenantsMu.Lock()
+	defer c.tenantsMu.Unlock()
+	for _, x := range c.tenants {
+		if x == t {
+			return
+		}
+	}
+	c.tenants = append(c.tenants, t)
+}
+
+func (c *Consumer) removeTenant(t string) {
+	c.tenantsMu.Lock()
+	defer c.tenantsMu.Unlock()
+	out := c.tenants[:0]
+	for _, x := range c.tenants {
+		if x != t {
+			out = append(out, x)
+		}
+	}
+	c.tenants = out
+}
 
 // SetMetrics wires Prometheus recording callbacks. Both args may be nil.
 // Call before Run.
@@ -149,15 +207,22 @@ func backoff(attempt int) time.Duration {
 // Returns when ANY consumer goroutine drops (nil for clean close, error
 // otherwise). The outer Run() loop then reconnects with backoff.
 //
-// Strategy C Phase 2a: declares topology on a dedicated channel, then
-// spawns one consumer goroutine per queue. Each goroutine owns its own
-// AMQP Channel — no cross-tenant lock contention. Channel writes
-// (ack/nack/publish) are single-goroutine per Channel so no chanMu
-// needed yet (Strategy A adds it when N goroutines share one Channel).
+// Strategy C Phase 2a: declares topology, then spawns one consumer goroutine
+// per queue. Each goroutine owns its own AMQP Channel — no cross-tenant lock
+// contention.
 //
-// Shutdown: errgroup.WithContext means when ANY goroutine returns an
-// error, egctx cancels and the others wind down. eg.Wait returns the
-// first error. Conn.Close (defer) closes all Channels.
+// Strategy D (shared pool + dynamic discovery): each per-tenant consumer runs
+// under its OWN cancelable context so the discovery loop can (a) start a NEW
+// tenant mid-connection without a restart and (b) stop a deactivated tenant
+// without tearing down the connection. Under WORKER_POOL_SAC_ENABLED every
+// replica consumes every tenant queue; RabbitMQ's single-active-consumer keeps
+// exactly one active per queue and load-balances different tenants' active
+// consumership across replicas.
+//
+// Shutdown: errgroup.WithContext means when ANY goroutine returns an error,
+// egctx cancels and the others wind down. eg.Wait returns the first error.
+// Conn.Close (defer) closes all Channels. A per-tenant cancellation
+// (deactivated tenant) is swallowed so it does NOT trip the errgroup.
 func (c *Consumer) connectAndConsume(ctx context.Context) error {
 	conn, err := amqp.Dial(c.amqpURL)
 	if err != nil {
@@ -165,41 +230,156 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// Topology declaration uses its own short-lived channel. Once declared
-	// we close it; each consumer opens its own.
-	declCh, err := conn.Channel()
-	if err != nil {
-		return fmt.Errorf("decl channel: %w", err)
-	}
-	if err := DeclareTopology(ctx, declCh, c.cfg, c.tenants, c.logger); err != nil {
-		declCh.Close()
+	// Declare the full topology for the CURRENT tenant set (may have grown
+	// since boot via the discovery loop). DeclareTopology opens its own
+	// channels internally (one per tenant triple).
+	snapshot := c.tenantSnapshot()
+	if err := DeclareTopology(ctx, conn, c.cfg, snapshot, c.logger); err != nil {
 		return fmt.Errorf("topology: %w", err)
 	}
-	declCh.Close()
-
-	// Build the queue list: legacy first (still receives all current
-	// traffic via the `#` binding), then one per tenant (currently empty
-	// — receives traffic only after edge-nodered's Phase 2b cutover).
-	queues := append([]string{c.cfg.WorkerQueue}, c.perTenantQueueNames()...)
 
 	c.mu.Lock()
 	c.healthy = true
 	c.lastErr = ""
 	c.mu.Unlock()
 	c.logger.Info("consuming",
-		slog.Any("queues", queues),
+		slog.String("legacy_queue", c.cfg.WorkerQueue),
+		slog.Int("initial_tenants", len(snapshot)),
 		slog.Int("prefetch", c.cfg.Prefetch),
 		slog.Int("lanes_per_queue", max(c.cfg.ConsumeLanes, 1)),
+		slog.Bool("single_active_consumer", c.cfg.WorkerPoolSACEnabled),
 	)
 
 	eg, egctx := errgroup.WithContext(ctx)
-	for _, q := range queues {
-		queue := q // capture for closure
+
+	// consumed tracks the tenants we currently consume on THIS connection,
+	// keyed by tenant → its per-tenant cancel func. Only the boot loop below
+	// and the (single) discovery goroutine mutate it; consumedMu guards it.
+	consumed := make(map[string]context.CancelFunc)
+	var consumedMu sync.Mutex
+
+	// startTenant registers the tenant's routing-key handler and spawns a
+	// cancelable consumer for its main queue in the errgroup. Idempotent.
+	// Caller holds consumedMu.
+	startTenant := func(t string) {
+		if _, ok := consumed[t]; ok {
+			return
+		}
+		if c.tenantHandler != nil {
+			c.dispatcher.Register(fmt.Sprintf("sparkplug.data.%s", t), c.tenantHandler)
+		}
+		tctx, tcancel := context.WithCancel(egctx)
+		consumed[t] = tcancel
+		queue := fmt.Sprintf("%s-%s", c.cfg.WorkerQueue, t)
 		eg.Go(func() error {
-			return c.consumeOne(egctx, conn, queue)
+			err := c.consumeOne(tctx, conn, queue)
+			// Intentional per-tenant stop: tctx cancelled while the shared
+			// egctx is still live → a deactivation, not a failure. Swallow it
+			// so the connection (and every other tenant) keeps running.
+			if errors.Is(err, context.Canceled) && egctx.Err() == nil {
+				return nil
+			}
+			return err
 		})
 	}
+
+	// Legacy queue — consumed for the whole connection lifetime (bound to the
+	// bare `sparkplug.data` key). Never per-tenant-cancelable.
+	eg.Go(func() error { return c.consumeOne(egctx, conn, c.cfg.WorkerQueue) })
+
+	// Initial per-tenant consumers.
+	consumedMu.Lock()
+	for _, t := range snapshot {
+		startTenant(t)
+	}
+	consumedMu.Unlock()
+
+	// Dynamic re-discovery loop (Strategy D). Inert if no discoverer wired or
+	// interval <= 0. It is a member of the errgroup, so it holds Wait open and
+	// can safely eg.Go new tenant consumers mid-flight.
+	eg.Go(func() error { return c.discoveryLoop(egctx, conn, startTenant, consumed, &consumedMu) })
+
 	return eg.Wait()
+}
+
+// discoveryLoop periodically re-runs the tenant discoverer and reconciles the
+// live consumer set: new active tenants are declared + consumed with no
+// restart; deactivated tenants stop being consumed (their queues are left on
+// the broker — see strategy-c §12.7). Idempotent and safe to run concurrently
+// across replicas: DeclareTenant is idempotent and RabbitMQ arbitrates the
+// single active consumer.
+func (c *Consumer) discoveryLoop(ctx context.Context, conn *amqp.Connection, startTenant func(string), consumed map[string]context.CancelFunc, consumedMu *sync.Mutex) error {
+	if c.discover == nil || c.cfg.TenantDiscoveryIntervalSeconds <= 0 {
+		c.logger.Info("dynamic tenant discovery disabled (boot-only)",
+			slog.Bool("discoverer_wired", c.discover != nil),
+			slog.Int("interval_seconds", c.cfg.TenantDiscoveryIntervalSeconds))
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	interval := time.Duration(c.cfg.TenantDiscoveryIntervalSeconds) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	c.logger.Info("dynamic tenant discovery active", slog.Duration("interval", interval))
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			c.reconcileTenants(ctx, conn, startTenant, consumed, consumedMu)
+		}
+	}
+}
+
+// reconcileTenants diffs the freshly-discovered active set against what we
+// currently consume, declaring+starting additions and stopping removals. A
+// discovery error is non-fatal (keep the current set, retry next tick) — a
+// transient DB blip must never silently drain a live tenant.
+func (c *Consumer) reconcileTenants(ctx context.Context, conn *amqp.Connection, startTenant func(string), consumed map[string]context.CancelFunc, consumedMu *sync.Mutex) {
+	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	latest, err := c.discover(dctx)
+	cancel()
+	if err != nil {
+		c.logger.Warn("tenant re-discovery failed; keeping current set", slog.String("err", err.Error()))
+		return
+	}
+	latestSet := make(map[string]struct{}, len(latest))
+	for _, t := range latest {
+		latestSet[t] = struct{}{}
+	}
+
+	consumedMu.Lock()
+	defer consumedMu.Unlock()
+
+	// Additions — declare the queue-triple + binding, then start consuming.
+	// DeclareTenant is a network call held under consumedMu; the only other
+	// writer is the boot loop (already finished before the first tick) so
+	// contention is nil.
+	for _, t := range latest {
+		if _, ok := consumed[t]; ok {
+			continue
+		}
+		if err := DeclareTenant(conn, c.cfg, t, c.logger); err != nil {
+			// Left out of `consumed` → retried next tick. On an SAC 406 this
+			// logs the migration remediation every tick until fixed.
+			c.logger.Error("declare newly-discovered tenant failed; will retry",
+				slog.String("tenant", t), slog.String("err", err.Error()))
+			continue
+		}
+		c.addTenant(t)
+		startTenant(t)
+		c.logger.Info("dynamically onboarded tenant — no restart", slog.String("tenant", t))
+	}
+
+	// Removals — stop consuming tenants no longer active. Queue is retained.
+	for t, cancelFn := range consumed {
+		if _, ok := latestSet[t]; ok {
+			continue
+		}
+		cancelFn()
+		delete(consumed, t)
+		c.removeTenant(t)
+		c.logger.Info("tenant deactivated — stopped consuming (queue retained)", slog.String("tenant", t))
+	}
 }
 
 // consumeOne owns one AMQP Channel + ch.Consume on one queue. Returns
@@ -318,16 +498,6 @@ func sourceTypeOf(body []byte) string {
 		return string(rest[:j])
 	}
 	return ""
-}
-
-// perTenantQueueNames builds "<prefix>-<tenant>" for every active tenant.
-// Matches the queue names declared in DeclareTopology.
-func (c *Consumer) perTenantQueueNames() []string {
-	out := make([]string, 0, len(c.tenants))
-	for _, t := range c.tenants {
-		out = append(out, fmt.Sprintf("%s-%s", c.cfg.WorkerQueue, t))
-	}
-	return out
 }
 
 // handleDelivery is the per-message decision tree:

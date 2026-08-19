@@ -13,6 +13,14 @@ flow through `oeecloud-worker`.
 > change), the worker restart step becomes a hard precondition for the
 > tenant's data to reach the DB.
 
+> **UPDATE (Strategy D)**: the worker now **re-discovers tenants
+> periodically** (every `TENANT_DISCOVERY_INTERVAL_SECONDS`, default 60) —
+> not only at boot. A new `packml_register` client is picked up, its queues
+> declared, and consumption started **with no restart** and no disruption to
+> tenants already flowing. Step 2 below (restart) is therefore **optional** —
+> use it only to pick a tenant up immediately instead of waiting one interval.
+> See [[strategy-d-shared-pool-sac|Strategy D — shared pool + SAC]].
+
 ---
 
 ## TL;DR
@@ -178,9 +186,19 @@ This destroys and re-creates the container, picking up the current file content.
 
 **Symptom**: CS Admin added `packml_register` rows for `acme` (active=true), but `oeecloud-worker-q-acme` doesn't exist on the broker.
 
-**Root cause**: tenant discovery happens at worker **startup** only (Phase 1 design — dynamic re-discovery is deferred). New `packml_register` rows are invisible until the worker restarts.
+**Root cause**: under Strategy D, tenant discovery re-runs every
+`TENANT_DISCOVERY_INTERVAL_SECONDS` (default 60), so a new tenant should appear
+within ~1 minute. If it doesn't: (a) the interval is set to `0` (boot-only mode)
+— restart the worker or raise the interval; (b) `LEGACY_INGEST_ENABLED=false`
+leaves the discoverer unwired (per-tenant consumption disabled); or (c) the
+`packml_register` rows aren't `active=true` / the `packml_topic` group_id
+segment is malformed.
 
-**Fix**: restart the worker (Step 2 above). Confirm via `docker logs oeecloud-worker | grep "tenants discovered"` that the new tenant is in the list.
+**Fix**: confirm the tick is running via
+`docker logs oeecloud-worker | grep -E "dynamic tenant discovery|dynamically onboarded"`.
+You should see `dynamic tenant discovery active` at connect and
+`dynamically onboarded tenant` when your tenant is picked up. A restart still
+works as an immediate pickup.
 
 ---
 

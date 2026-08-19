@@ -435,6 +435,21 @@ func main() {
 	}
 
 	consumer := amqp.NewConsumer(cfg, amqpCreds.URL(), dispatcher, activeTenants, logger)
+
+	// Strategy D — dynamic tenant discovery. Wire the periodic re-discovery
+	// source + the handler to register for a newly-onboarded tenant's routing
+	// key, so a client added to packml_register mid-run starts flowing within
+	// TENANT_DISCOVERY_INTERVAL_SECONDS with NO worker restart (and no
+	// disruption to the tenants already flowing). Gated on LegacyIngestEnabled
+	// — the same condition under which per-tenant queues are consumed — so the
+	// 10.9 legacy-disabled path stays byte-identical (discoverer left nil →
+	// the discovery loop is inert).
+	if cfg.LegacyIngestEnabled {
+		consumer.SetTenantHandler(sparkplugHandler.Handle)
+		consumer.SetDiscoverer(func(dctx context.Context) ([]string, error) {
+			return tenants.DiscoverActive(dctx, pool)
+		})
+	}
 	// Surface PO Parameter skipped-id counters on /health so #32 (port
 	// 30700 / 30800-30899) can be measured-then-decided instead of guessed.
 	consumer.SetWriterStats(func() any {
