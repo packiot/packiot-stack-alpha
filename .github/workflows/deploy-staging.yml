@@ -265,6 +265,17 @@ jobs:
               n for n, s in svcs.items()
               if s.get("healthcheck") and not s["healthcheck"].get("disable")
           }
+          # Also classify run-once init jobs that NOTHING waits on via
+          # service_completed_successfully — the edge-based heuristic above only
+          # catches one-shots something DEPENDS on (db-migrate). A terminal init
+          # like hasura-init (applies metadata, exits 0) has no such in-edge, so
+          # without this it is treated as long-running and fails on its correct
+          # exited(0). A `restart: "no"` policy is the canonical compose signal for
+          # "run once"; requiring "no healthcheck" too means a long-running service
+          # (which always carries one) can never be wrongly excused if mis-set.
+          for n, s in svcs.items():
+              if n not in has_hc and str(s.get("restart") or "").lower() in ("no", "none"):
+                  oneshot.add(n)
           expected = set(svcs.keys())
           print("Gate expects %d services (%d one-shot, %d healthchecked):"
                 % (len(expected), len(oneshot), len(has_hc)))
