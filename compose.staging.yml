@@ -1348,6 +1348,14 @@ services:
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: oee
       WORKER_QUEUE: oeecloud-worker-q
+      # Declarative tenant allowlist. tenants.DiscoverActive() reads the SHARED
+      # main packiot DB's packml_register, and every prod→staging re-cut drags in
+      # foreign-tenant register rows — without this the worker declares a
+      # queue-triple per tenant (~39 queues for 13 tenants) when staging owns only
+      # cpack + sbxcpack. Filtering discovery through this list makes "staging =
+      # these tenants only" survive the next re-cut. STAGING ONLY: prod leaves
+      # WORKER_TENANT_ALLOWLIST unset → empty = allow ALL (no behavior change).
+      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack}"
       RETRY_EXCHANGE: oee-retry
       RETRY_QUEUE: oeecloud-worker-q-retry-30s
       FAILED_EXCHANGE: oee-failed

@@ -200,6 +200,25 @@ func main() {
 		slog.Int("count", len(activeTenants)),
 		slog.Any("tenants", activeTenants))
 
+	// Declarative environment scoping (WORKER_TENANT_ALLOWLIST). packml_register
+	// lives on the SHARED main DB, and staging's prod→staging re-cuts drag in
+	// foreign-tenant rows — without this filter the worker would declare a
+	// queue-triple per tenant (~39 queues for 13 tenants) when staging owns only
+	// cpack + sbxcpack. Empty allowlist = passthrough (the prod default, no
+	// change). Composes with the LegacyIngest disable above: when legacy ingest
+	// is off, activeTenants is already nil and there is nothing to filter, so we
+	// only run the intersection when there ARE tenants in hand.
+	if len(cfg.TenantAllowlist) > 0 && len(activeTenants) > 0 {
+		discovered := activeTenants
+		activeTenants = tenants.FilterAllowlist(discovered, cfg.TenantAllowlist)
+		dropped := droppedTenants(discovered, activeTenants)
+		logger.Info("tenant allowlist applied",
+			slog.Any("allowlist", cfg.TenantAllowlist),
+			slog.Any("discovered", discovered),
+			slog.Any("allowed", activeTenants),
+			slog.Any("dropped", dropped))
+	}
+
 	// Per-table writers. Writers no longer hold the pool — they Build()
 	// *writers.Query objects that the handler collects into a pgx.Batch
 	// and sends as ONE round-trip per AMQP delivery.
@@ -506,6 +525,24 @@ func main() {
 	_ = healthSrv.Shutdown(shutdownCtx)
 
 	logger.Info("oeecloud-worker stopped")
+}
+
+// droppedTenants returns the members of discovered that did NOT survive
+// filtering — i.e. discovered minus kept. Log-only: it makes the allowlist's
+// effect legible (which foreign tenants got scoped out) without changing any
+// routing. O(n·m) is fine for the handful of tenants involved.
+func droppedTenants(discovered, kept []string) []string {
+	keptSet := make(map[string]struct{}, len(kept))
+	for _, k := range kept {
+		keptSet[k] = struct{}{}
+	}
+	var dropped []string
+	for _, d := range discovered {
+		if _, ok := keptSet[d]; !ok {
+			dropped = append(dropped, d)
+		}
+	}
+	return dropped
 }
 
 // runHealthcheck does an HTTP GET against the in-process /health endpoint
