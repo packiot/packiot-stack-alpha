@@ -67,9 +67,30 @@ const lineParam30700Query = `
 	FROM mach
 	GROUP BY 1`
 
-// seedLineParam30700 loads each line's count-index CSV from packml_register and
-// writes it into the Calc State as Parameter30700, keyed by <lineTopic>/Status/
-// Parameter30700 (exactly the key line_aggregation.go builds from topicArray).
+// lineParam30700MeterQuery returns the explicit [infeed, outfeed] count-indices
+// for each LINE (tp_equipment=3) register row that has them set. This is the
+// AUTHORITATIVE meter designation, cross-checked against the legacy packiot40
+// oracle: the line's gross tracks the INFEED machine and its net the OUTFEED
+// (TEXA). Those two are NOT ordered by count-index (e.g. CPACK L6 gross=RMH/94 >
+// net=TEXA/92), so the ascending-CSV fallback would swap first/last and meter the
+// wrong machines. When these columns are set they win over the member-index CSV.
+const lineParam30700MeterQuery = `
+	SELECT pr.packml_topic AS line_topic,
+	       pr.id_infeedcounter::text  AS inf,
+	       pr.id_outfeedcounter::text AS outf
+	FROM packml_register pr
+	JOIN equipments e ON e.id_equipment = pr.id_equipment AND e.tp_equipment = 3
+	WHERE pr.active
+	  AND pr.id_infeedcounter  IS NOT NULL
+	  AND pr.id_outfeedcounter IS NOT NULL`
+
+// seedLineParam30700 loads each line's Parameter30700 into Calc State, keyed by
+// <lineTopic>/Status/Parameter30700 (the key line_aggregation.go builds from
+// topicArray). Preference order:
+//  1. explicit [infeed, outfeed] meters on the LINE register row (authoritative);
+//  2. ascending member count-index CSV (fallback for lines without meters set).
+// Phase-9 only reads csv[0] (gross source) and csv[last] (net source), so the
+// two-element [infeed, outfeed] form is sufficient and unambiguous.
 // Returns the number of lines seeded.
 func seedLineParam30700(ctx context.Context, state calc.State) (int, error) {
 	dsn := os.Getenv("POSTGRES_URL")
@@ -83,16 +104,47 @@ func seedLineParam30700(ctx context.Context, state calc.State) (int, error) {
 		return 0, err
 	}
 	defer pool.Close()
-	rows, err := pool.Query(cctx, lineParam30700Query)
+
+	n := 0
+	covered := map[string]bool{}
+
+	// (1) explicit meters win.
+	meterRows, err := pool.Query(cctx, lineParam30700MeterQuery)
 	if err != nil {
 		return 0, err
 	}
+	for meterRows.Next() {
+		var lineTopic, inf, outf string
+		if err := meterRows.Scan(&lineTopic, &inf, &outf); err != nil {
+			meterRows.Close()
+			return n, err
+		}
+		parts := []string{strings.TrimSpace(inf), strings.TrimSpace(outf)}
+		if err := state.SetStrings(lineTopic+"/Status/Parameter30700", parts); err != nil {
+			meterRows.Close()
+			return n, err
+		}
+		covered[lineTopic] = true
+		n++
+	}
+	meterRows.Close()
+	if err := meterRows.Err(); err != nil {
+		return n, err
+	}
+
+	// (2) ascending member-index CSV for lines without explicit meters.
+	rows, err := pool.Query(cctx, lineParam30700Query)
+	if err != nil {
+		return n, err
+	}
 	defer rows.Close()
-	n := 0
 	for rows.Next() {
 		var lineTopic, csv string
 		if err := rows.Scan(&lineTopic, &csv); err != nil {
 			return n, err
+		}
+		if covered[lineTopic] {
+			continue
 		}
 		parts := strings.Split(csv, ",")
 		for i := range parts {
