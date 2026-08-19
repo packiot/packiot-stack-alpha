@@ -215,5 +215,80 @@ raw_tag_map:
   - {metric_suffix: /L8/Status/StateCurrent, type: long}
   - {metric_suffix: /L8/Status/Parameter,    type: string} # not Calc-recognized yet
   # NB: L8 members are DXL/PTH/TCX/TEXA (prod 219/220/221/222 → stg 73/74/75/76),
-  # NOT the BREYER/TEXA family the sim assumed. Their count topics are
-  # unregistered (indices unknown) — deferred to the follow-up live-tee capture.
+  # NOT the BREYER/TEXA family the sim assumed. Their member count entries are
+  # ADDED in the EXTENSION block below (2026-08-19 live-mirror capture).
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # ═══ EXTENSION (2026-08-19) — full member coverage from LIVE mirror capture ══
+  # ══════════════════════════════════════════════════════════════════════════
+  # The prior revision (62 entries) mapped only L5/L6 members + a WRONG-index
+  # L4/TEXA guess, so ~42% of the mirror's POSTed tags were dropped as `unmapped`
+  # (sparkplug_agent_raw_dropped_total{reason="unmapped"}), and staging F3 (ent 3)
+  # only carried L5/L6.
+  #
+  # GROUND TRUTH — a tcpdump of the shadow-mirror → agent :9104 /v1/tags POSTs
+  # (envelope {"group":"CPACK","endpoint":"cpack-edge","scan_ts":…,
+  # "tags":[{"metric":"<suffix>","value":…}]}) showed the mirror feeds MEMBER-level
+  # ProdConsumedCount/ProdProcessedCount ONLY (no line-level counts, no Status/
+  # speed) — lines populate in F3 by cloud member-aggregation, exactly as L6's
+  # line row does today from its already-mapped members.
+  #
+  # COUNT-INDEX = the member's PROD id (verified per member in the capture):
+  #   L3/POLYTYPE 82 · L4 BREYER 88/POLYTYPE 89/RMH 87/TEXA 84 ·
+  #   L5 POLYTYPE 62/PTH 63/RMH 64 · L8 DXL 219/PTH 220/TCX 221/TEXA 222 ·
+  #   L10 DXL 564/PTH 565/TCX 566/TEXA 567.
+  # The cloud resolver (parse.go TopicForRegister) STRIPS everything from the
+  # member segment onward and matches the base 5-seg unit topic in packml_register
+  # (all of these members are registered active for ent 3), so the index only has
+  # to match what the mirror actually SENDS — which is the prod id above, NOT the
+  # /6,/7,/8,/9 that packml_register happens to store for L4 (confirmed harmless).
+  # This is why the old /L4/TEXA/.../10/Unit guess dropped: the mirror sends /84.
+  # Both Consumed+Processed are mapped for every member (gross+net) even where the
+  # short capture only observed one — a totalizer for the other ticks eventually,
+  # and an unfed suffix is a harmless allowlist entry (null-birthed under
+  # AGENT_BIRTH_ALL_MAPPED). Existing 62 entries are UNTOUCHED (strict superset);
+  # the stale /L4/TEXA/.../10/Unit pair above is left in place (superseded, unfed).
+
+  # ── L3/POLYTYPE member (prod 82 → stg 62, count idx 82 — mirror-confirmed) ──
+  - {metric_suffix: /L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit,  type: double}
+  - {metric_suffix: /L3/POLYTYPE/Admin/ProdProcessedCount/82/Unit, type: double}
+
+  # ── L4 members (prod→stg: BREYER 88→66, POLYTYPE 89→67, RMH 87→65, TEXA 84→63) ─
+  - {metric_suffix: /L4/BREYER/Admin/ProdConsumedCount/88/Unit,    type: double}
+  - {metric_suffix: /L4/BREYER/Admin/ProdProcessedCount/88/Unit,   type: double}
+  - {metric_suffix: /L4/POLYTYPE/Admin/ProdConsumedCount/89/Unit,  type: double}
+  - {metric_suffix: /L4/POLYTYPE/Admin/ProdProcessedCount/89/Unit, type: double}
+  - {metric_suffix: /L4/RMH/Admin/ProdConsumedCount/87/Unit,       type: double}
+  - {metric_suffix: /L4/RMH/Admin/ProdProcessedCount/87/Unit,      type: double}
+  - {metric_suffix: /L4/TEXA/Admin/ProdConsumedCount/84/Unit,      type: double}
+  - {metric_suffix: /L4/TEXA/Admin/ProdProcessedCount/84/Unit,     type: double}
+
+  # ── L5 members (prod→stg: POLYTYPE 62→54, PTH 63→55, RMH 64→56) ──────────────
+  #    (BREYER 61→53, TEXA 65→57 already mapped above)
+  - {metric_suffix: /L5/POLYTYPE/Admin/ProdConsumedCount/62/Unit,  type: double}
+  - {metric_suffix: /L5/POLYTYPE/Admin/ProdProcessedCount/62/Unit, type: double}
+  - {metric_suffix: /L5/PTH/Admin/ProdConsumedCount/63/Unit,       type: double}
+  - {metric_suffix: /L5/PTH/Admin/ProdProcessedCount/63/Unit,      type: double}
+  - {metric_suffix: /L5/RMH/Admin/ProdConsumedCount/64/Unit,       type: double}
+  - {metric_suffix: /L5/RMH/Admin/ProdProcessedCount/64/Unit,      type: double}
+
+  # ── L8 members (prod→stg: DXL 219→73, PTH 220→74, TCX 221→75, TEXA 222→76) ────
+  - {metric_suffix: /L8/DXL/Admin/ProdConsumedCount/219/Unit,      type: double}
+  - {metric_suffix: /L8/DXL/Admin/ProdProcessedCount/219/Unit,     type: double}
+  - {metric_suffix: /L8/PTH/Admin/ProdConsumedCount/220/Unit,      type: double}
+  - {metric_suffix: /L8/PTH/Admin/ProdProcessedCount/220/Unit,     type: double}
+  - {metric_suffix: /L8/TCX/Admin/ProdConsumedCount/221/Unit,      type: double}
+  - {metric_suffix: /L8/TCX/Admin/ProdProcessedCount/221/Unit,     type: double}
+  - {metric_suffix: /L8/TEXA/Admin/ProdConsumedCount/222/Unit,     type: double}
+  - {metric_suffix: /L8/TEXA/Admin/ProdProcessedCount/222/Unit,    type: double}
+
+  # ── L10 line (prod 563 → stg 52) members (DXL 564→77, PTH 565→78, TCX 566→79,
+  #    TEXA 567→80) — line 52 was ENTIRELY unmapped before this ─────────────────
+  - {metric_suffix: /L10/DXL/Admin/ProdConsumedCount/564/Unit,     type: double}
+  - {metric_suffix: /L10/DXL/Admin/ProdProcessedCount/564/Unit,    type: double}
+  - {metric_suffix: /L10/PTH/Admin/ProdConsumedCount/565/Unit,     type: double}
+  - {metric_suffix: /L10/PTH/Admin/ProdProcessedCount/565/Unit,    type: double}
+  - {metric_suffix: /L10/TCX/Admin/ProdConsumedCount/566/Unit,     type: double}
+  - {metric_suffix: /L10/TCX/Admin/ProdProcessedCount/566/Unit,    type: double}
+  - {metric_suffix: /L10/TEXA/Admin/ProdConsumedCount/567/Unit,    type: double}
+  - {metric_suffix: /L10/TEXA/Admin/ProdProcessedCount/567/Unit,   type: double}
