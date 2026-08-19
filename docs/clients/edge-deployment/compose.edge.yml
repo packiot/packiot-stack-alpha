@@ -361,6 +361,18 @@ services:
       # client edge. The reader `.env` example sets it false EXPLICITLY.
       AGENT_TAGMAP_FROM_REGISTER: "${AGENT_TAGMAP_FROM_REGISTER:-false}"
       AGENT_PARAM_DECOMPOSITION: "${AGENT_PARAM_DECOMPOSITION:-false}"
+
+      # ── Birth-completeness (CPACK 2026-08-13 line-count regression fix) ──────
+      # Default OFF = byte-unchanged NBIRTH (a no-op deploy). ON makes NBIRTH
+      # cover the FULL raw_tag_map: every mapped line/machine metric is birthed
+      # with a stable alias — never-seen ones as SparkPlug nulls — so a line that
+      # was IDLE at connect is already aliased at the cloud the instant it first
+      # reports. Fixes sparse CPACK lines (L3/L4/L8/L10/CELULA) whose NDATA was
+      # undecodable because they never got an alias in the seen-only birth. This
+      # is the RIGHT box for the flag: the SparkPlug session lives HERE, on the
+      # client edge (edge-cpack-agent), not in the cloud edge-transformer.
+      # Safe on a real edge (no DB dependency, unlike AGENT_TAGMAP_FROM_REGISTER).
+      AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-false}"
     volumes:
       # Generated per-tenant artifacts (onboard-gen output) — read-only.
       - ${AGENT_CONFIG_FILE:-./bispharma/bispharma-agent.yaml}:/etc/packiot/agent.yaml:ro
