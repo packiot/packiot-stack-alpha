@@ -111,9 +111,18 @@ func TestWiring_IntegralSynthPublished_SourcePassesThrough(t *testing.T) {
 	resolver := mapResolver{allow: map[string]bool{emit: true}}
 	store := tagstore.New()
 
+	// Seed tick emits (and thus publishes) an EXPLICIT absolute 0 baseline — the
+	// ADR-0045 P1 handshake so the cloud Calc seeds its first-observation baseline
+	// to 0 and the first real window is not dropped as a spike. So the seed now
+	// stores exactly the one 0-valued synthesized count.
 	runIngest(d, resolver, store, []rawtag.RawTag{{Metric: src, Value: 10.0, TsMillis: 0, Quality: true}}) // seed
-	if store.Len() != 0 {
-		t.Fatalf("seed sample must store nothing, got %d", store.Len())
+	if store.Len() != 1 {
+		t.Fatalf("seed sample must store the absolute-0 baseline, got Len %d", store.Len())
+	}
+	if dirty := store.DrainDirty(); len(dirty) != 1 || dirty[0].Metric != emit {
+		t.Fatalf("seed published tag: got %+v, want single %q", dirty, emit)
+	} else if v, _ := dirty[0].Value.(float64); v != 0 {
+		t.Fatalf("seed baseline value: got %v, want 0", dirty[0].Value)
 	}
 	runIngest(d, resolver, store, []rawtag.RawTag{{Metric: src, Value: 10.0, TsMillis: 1000, Quality: true}})
 	if store.Len() != 1 {
