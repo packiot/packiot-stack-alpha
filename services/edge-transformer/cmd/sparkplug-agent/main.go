@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -217,6 +218,7 @@ func main() {
 		"tag_source", tagSource,
 		"tag_source_reason", tagSrc.Reason,
 		"emit_definitive_birth", getenvBool("EMIT_DEFINITIVE_BIRTH", false),
+		"birth_all_mapped", getenvBool("AGENT_BIRTH_ALL_MAPPED", false),
 		"tags", len(cfg.RawTagMap))
 
 	// ── pipeline construction ────────────────────────────────────────────
@@ -225,6 +227,13 @@ func main() {
 	// ON ⇒ each NBIRTH counter metric additionally carries its role-typed
 	// properties (counter_role/source_ref/device_key), the definitive birth.
 	emitDefinitiveBirth := getenvBool("EMIT_DEFINITIVE_BIRTH", false)
+	// ── birth-completeness (CPACK 2026-08-13 line-count regression fix) ───────
+	// Default OFF = byte-unchanged births (a no-op deploy). ON makes NBIRTH cover
+	// the FULL raw_tag_map — every line/machine metric gets a stable alias even if
+	// it was idle at connect — so a sparse line's later NDATA is decodable at the
+	// cloud immediately, independent of rebirth timing. Set on the CLIENT-box agent
+	// (edge-cpack-agent), where the SparkPlug session lives.
+	birthAllMapped := getenvBool("AGENT_BIRTH_ALL_MAPPED", false)
 	resolver := newResolver(cfg)
 	aliases := aliasmap.New()
 	// ADR-0046 task #18: the DECLARED device_key per full metric name, sourced from
@@ -232,7 +241,12 @@ func main() {
 	// birth emits the declared identity; absent entries fall back to the derivation.
 	pub := session.New(resolver, aliases,
 		session.WithDefinitiveBirth(emitDefinitiveBirth),
-		session.WithDeviceKeys(deviceKeysFromTagMap(cfg)))
+		session.WithDeviceKeys(deviceKeysFromTagMap(cfg)),
+		session.WithBirthAllMapped(birthAllMapped))
+	if birthAllMapped {
+		logger.Info("birth-all-mapped ENABLED — NBIRTH covers the full raw_tag_map",
+			"mapped_metrics", len(cfg.RawTagMap))
+	}
 	store := tagstore.New()
 
 	ob, err := outbox.Open(outbox.Config{Path: getenv("OUTBOX_PATH", "/var/lib/edge-transformer/agent-outbox.db")})
@@ -886,6 +900,20 @@ func (r *resolver) Resolve(suffix string) (string, sparkplug.DataType, bool) {
 		return "", 0, false
 	}
 	return e.name, e.dt, true
+}
+
+// AllMapped implements session.AllResolver: the COMPLETE mapped set the agent can
+// emit, in a stable suffix-sorted order. Powers birth-completeness
+// (AGENT_BIRTH_ALL_MAPPED) — BuildNBIRTH births every one of these with a stable
+// alias, so a line idle at connect is still aliased at the cloud the instant it
+// first reports (CPACK 2026-08-13 line-count regression fix).
+func (r *resolver) AllMapped() []session.MappedMetric {
+	out := make([]session.MappedMetric, 0, len(r.byName))
+	for suffix, e := range r.byName {
+		out = append(out, session.MappedMetric{Suffix: suffix, Name: e.name, Datatype: e.dt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Suffix < out[j].Suffix })
+	return out
 }
 
 // datatypeOf maps a config type token to a SparkPlug datatype. Config is

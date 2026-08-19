@@ -30,6 +30,30 @@ type Resolver interface {
 	Resolve(suffix string) (name string, dt sparkplug.DataType, ok bool)
 }
 
+// MappedMetric is one entry of a Resolver's COMPLETE mapped set: the raw-tag
+// suffix, its resolved full SparkPlug name, and its datatype. Emitted by
+// AllResolver.AllMapped in a stable (suffix-sorted) order.
+type MappedMetric struct {
+	Suffix   string
+	Name     string
+	Datatype sparkplug.DataType
+}
+
+// AllResolver is an OPTIONAL capability a Resolver may implement to expose its
+// full mapped metric set — every metric the agent can ever emit, not just the
+// ones seen so far — in a stable, suffix-sorted order. When the birth-all-mapped
+// posture is on (WithBirthAllMapped) and the Resolver implements this, BuildNBIRTH
+// births EVERY mapped metric with a stable alias (unseen ones as SparkPlug nulls),
+// so a sparse line that was idle at connect is already aliased at the cloud the
+// instant it first reports — no dependency on rebirth timing. Resolvers that do
+// not implement it fall back to the legacy seen-only birth.
+type AllResolver interface {
+	// AllMapped returns the full mapped set in a deterministic suffix-sorted
+	// order (the same discipline tagstore.Snapshot uses), so alias allocation
+	// over it is reproducible across process restarts.
+	AllMapped() []MappedMetric
+}
+
 // Publisher is the SparkPlug B session state machine for one edge node.
 // Concurrency: Build* + NewConnection are mutex-guarded; the agent calls them
 // from the tick loop + the connect handler.
@@ -49,6 +73,15 @@ type Publisher struct {
 	// DECLARED identity; absent, birth falls back to the topic derivation. nil/empty
 	// ⇒ pure derivation (the pre-#18 behaviour), so this is fully additive.
 	deviceKeys map[string]string
+
+	// birthAllMapped gates birth-completeness (CPACK line-count regression fix,
+	// 2026-08-13). When set AND the resolver implements AllResolver, BuildNBIRTH
+	// births EVERY mapped metric — including ones never yet seen — with a stable
+	// alias (unseen as a SparkPlug null), so a sparse line's NDATA is decodable at
+	// the cloud the instant it first reports. Default (false) = the legacy
+	// seen-only birth, byte-unchanged. Set once at construction from
+	// AGENT_BIRTH_ALL_MAPPED.
+	birthAllMapped bool
 
 	mu      sync.Mutex
 	seq     uint64 // rolling NDATA sequence (mod 256); NBIRTH resets to 0
@@ -72,6 +105,16 @@ func WithDefinitiveBirth(on bool) Option {
 // falls back to the topic-derived key. nil/empty ⇒ pure derivation (additive).
 func WithDeviceKeys(m map[string]string) Option {
 	return func(p *Publisher) { p.deviceKeys = m }
+}
+
+// WithBirthAllMapped turns on birth-completeness: every mapped metric is birthed
+// with a stable alias (unseen ones as SparkPlug nulls), closing the sparse-line
+// alias gap (CPACK 2026-08-13 regression). Requires the Resolver to implement
+// AllResolver; otherwise BuildNBIRTH falls back to the legacy seen-only birth.
+// Absent (the default) = byte-unchanged behaviour, a no-op deploy. Wired from
+// AGENT_BIRTH_ALL_MAPPED in cmd/sparkplug-agent.
+func WithBirthAllMapped(on bool) Option {
+	return func(p *Publisher) { p.birthAllMapped = on }
 }
 
 // New constructs a Publisher. The alias allocator is owned here so BIRTH and
@@ -124,6 +167,53 @@ func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, e
 	p.seq = 0
 	ts := maxTS(snapshot)
 	pl := &sparkplug.Payload{Timestamp: u64(ts), Seq: u64(p.seq)}
+
+	// Birth-completeness (CPACK 2026-08-13 line-count regression fix): when the
+	// posture is on AND the resolver can enumerate its full map, birth EVERY
+	// mapped metric — seen ones with their real value, never-seen ones as a
+	// SparkPlug null (is_null=true, no value oneof). The cloud StateStore's
+	// applyBirth registers an alias from name+datatype ALONE (it never reads the
+	// value), so a null birth freezes the alias with zero phantom-value risk; the
+	// sparse line's later NDATA then resolves immediately. Aliases are allocated
+	// in the resolver's stable suffix-sorted order, so the name↔alias table is
+	// reproducible across restarts regardless of arrival order.
+	if all, ok := p.allMapped(); ok {
+		seen := make(map[string]rawtag.RawTag, len(snapshot))
+		for _, t := range snapshot {
+			seen[t.Metric] = t
+		}
+		for _, mm := range all {
+			alias, _ := p.aliases.Alias(mm.Name)
+			m := &sparkplug.Metric{
+				Name:      strp(mm.Name),
+				Alias:     u64(alias),
+				Timestamp: u64(ts),
+				Datatype:  u32(uint32(mm.Datatype.Number())),
+			}
+			if t, wasSeen := seen[mm.Suffix]; wasSeen {
+				m.Timestamp = u64(tagTS(t, ts))
+				if err := setValue(m, mm.Datatype, t.Value); err != nil {
+					return nil, fmt.Errorf("session: NBIRTH metric %q: %w", mm.Name, err)
+				}
+			} else {
+				// Never-seen mapped metric: an explicit SparkPlug null. No value
+				// oneof is set — the alias is established, no production value implied.
+				m.IsNull = boolp(true)
+			}
+			// ADR-0046 step 2 definitive-birth props apply identically here: a
+			// counter metric's role/lineage/device_key derive from the NAME, so a
+			// null (unseen) counter still declares its identity.
+			if p.definitive {
+				if ps, ok := birth.CounterMetricPropsWithDeviceKey(mm.Name, p.deviceKeys[mm.Name]); ok {
+					m.Properties = ps
+				}
+			}
+			pl.Metrics = append(pl.Metrics, m)
+		}
+		pl.Metrics = append(pl.Metrics, bdSeqMetric(p.bdSeq, ts))
+		return pl, nil
+	}
+
 	for _, t := range snapshot {
 		name, dt, ok := p.resolver.Resolve(t.Metric)
 		if !ok {
@@ -198,6 +288,21 @@ func (p *Publisher) BuildNDEATH() (*sparkplug.Payload, error) {
 	defer p.mu.Unlock()
 	pl := &sparkplug.Payload{Metrics: []*sparkplug.Metric{bdSeqMetric(p.bdSeq, 0)}}
 	return pl, nil
+}
+
+// allMapped returns the resolver's full mapped set (suffix-sorted) when the
+// birth-all-mapped posture is on AND the resolver implements AllResolver. ok=false
+// ⇒ the legacy seen-only birth (flag off, or a resolver that can't enumerate).
+// Called under p.mu (BuildNBIRTH holds it).
+func (p *Publisher) allMapped() ([]MappedMetric, bool) {
+	if !p.birthAllMapped {
+		return nil, false
+	}
+	ar, ok := p.resolver.(AllResolver)
+	if !ok {
+		return nil, false
+	}
+	return ar.AllMapped(), true
 }
 
 // NeedsRebirth reports whether any tag in the set resolves to a name the alias
@@ -317,3 +422,4 @@ func tagTS(t rawtag.RawTag, fallback uint64) uint64 {
 func u64(v uint64) *uint64  { return &v }
 func u32(v uint32) *uint32  { return &v }
 func strp(s string) *string { return &s }
+func boolp(b bool) *bool    { return &b }
