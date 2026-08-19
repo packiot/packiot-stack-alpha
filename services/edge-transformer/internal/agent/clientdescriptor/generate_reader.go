@@ -105,10 +105,13 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 			"label":    d.Tenant + " customizations",
 			"disabled": false,
 			"info": "Per-client customization surface — the reason the edge deployable is Node-RED, not " +
-				"just a Go reader. Add integration function nodes, extra http-request calls to edge-api " +
-				"(PO control / downtimes), bespoke transforms, dashboards, etc. HERE. This tab is NEVER " +
-				"touched by regeneration: onboard-gen only rewrites the '" + d.Tenant + " PLC reader' tab, " +
-				"so anything on this tab survives a descriptor edit + regenerate. Start it empty.",
+				"just a Go reader. Integration function nodes, extra http-request calls to edge-api " +
+				"(PO control / downtimes), bespoke transforms, dashboards, etc. live HERE. This tab is " +
+				"DESCRIPTOR-SOURCED (ADR-0045 §G3): its nodes come from the descriptor's `customizations` " +
+				"block (authored in CS-Admin), so they are versioned and re-emitted on every regeneration " +
+				"— NOT hand-added on the box (which the nodered-data volume would lose on redeploy). To add " +
+				"an integration: build + Export it in Node-RED, paste the exported nodes into the CS-Admin " +
+				"customizations editor, and regenerate. Empty when the descriptor declares no customizations.",
 		},
 	}
 
@@ -295,6 +298,42 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 			"x": 1520, "y": midY + 40, "wires": []any{},
 		},
 	)
+
+	// Render the per-client customizations onto the customizations tab. Each entry
+	// is a raw Node-RED node (a CS engineer's "Export" from Node-RED). This is what
+	// makes the customization surface DESCRIPTOR-SOURCED + versioned (ADR-0045 G3):
+	// the tab is no longer emitted empty with integrations hand-added on the box
+	// (invisible to CS-Admin, clobbered on redeploy) — they ride the descriptor and
+	// re-emit on every regeneration.
+	//
+	//   - A FLOW node (one carrying a "z" tab reference) is re-homed onto the
+	//     customizations tab so it lands there regardless of which tab it was
+	//     exported from; a CONFIG node (no "z", tab-less) passes through untouched.
+	//   - A customization id colliding with a GENERATED reader node id is a
+	//     fail-closed error: Node-RED silently breaks a flow with duplicate ids.
+	reserved := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if id, ok := n["id"].(string); ok {
+			reserved[id] = true
+		}
+	}
+	for i, cn := range d.Customizations {
+		// Shallow-copy so re-homing "z" never mutates the descriptor's own map.
+		node := make(map[string]any, len(cn))
+		for k, v := range cn {
+			node[k] = v
+		}
+		id, _ := node["id"].(string)
+		if reserved[id] {
+			return nil, fmt.Errorf("customizations[%d]: node id %q collides with a generated reader node id "+
+				"— rename it (the '%s PLC reader' tab owns that id)", i, id, d.Tenant)
+		}
+		reserved[id] = true
+		if _, isFlowNode := node["z"]; isFlowNode {
+			node["z"] = custTabID
+		}
+		nodes = append(nodes, node)
+	}
 
 	out, err := json.MarshalIndent(nodes, "", "  ")
 	if err != nil {
