@@ -419,6 +419,12 @@ services:
 
   hasura-init:
     image: curlimages/curl:latest
+    # One-shot init job: applies Hasura metadata then exits 0. Explicit
+    # restart:"no" documents that AND lets the post-deploy service-state gate
+    # classify it as a one-shot — nothing depends on hasura-init via
+    # service_completed_successfully, so the gate's structural heuristic alone
+    # misclassified it as long-running and failed on its (correct) exited(0).
+    restart: "no"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.15
