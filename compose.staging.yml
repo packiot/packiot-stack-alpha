@@ -57,6 +57,7 @@ volumes:
 # .29 ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug; publishes :8444, metrics :9105)
 # .35 app-redis (ADR-0035 application cache for refdata-api cache-aside; SEPARATE from authentik-redis .14)
 # .37 redis-exporter (white-box Redis metrics on :9121; scrapes authentik-redis today, ADR-0035 app-redis later)
+# .41 oeecloud-fanout (task #17 re-tenant twin fan-out CPACK→SBXCPACK; flag-gated, STAGING ONLY, health :9102)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -1561,6 +1562,68 @@ services:
       start_period: 30s
     mem_limit: 256m
     cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── oeecloud-fanout (task #17 — re-tenant twin fan-out CPACK → SBXCPACK) ────────
+  # Makes the sandbox tenant SBXCPACK (ent 2000003) a faithful ALL-LINES twin of
+  # the real CPACK tenant (ent 3): it binds an EXTRA queue to the `oee` exchange
+  # on CPACK's routing key, re-tenants each decoded envelope (CPACK/… → SBXCPACK/…,
+  # clearing inherited equipment ids), and republishes it on
+  # `sparkplug.data.sbxcpack` so oeecloud-worker-q-sbxcpack writes ent-2000003 F3
+  # rows. STAGING ONLY — never add this to compose.production.yml.
+  #
+  # DOUBLE-COUNT SAFE: the clone goes ONLY to the sbxcpack key, a different
+  # tenant/queue/enterprise, so CPACK's own worker queue (ent 3) is untouched and
+  # never double-written — the cross-tenant analog of the retired same-tenant
+  # mirror-worker-go. NO LOOP: the sbxcpack key matches neither source binding.
+  #
+  # FLAG-GATED: does nothing unless FANOUT_CPACK_TO_SBXCPACK_ENABLED=true in .env.
+  # Default off → the container serves /health (healthy) and idles, binding no
+  # queue. Reuses the least-privilege `oeecloud-worker` AMQP creds secret.
+  oeecloud-fanout:
+    build: ./services/oeecloud-fanout
+    container_name: oeecloud-fanout
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      # Master gate — STAGING ONLY. Flip to "true" in .env to enable.
+      FANOUT_CPACK_TO_SBXCPACK_ENABLED: "${FANOUT_CPACK_TO_SBXCPACK_ENABLED:-false}"
+      AWS_REGION: us-east-1
+      # Reuse the worker's least-privilege AMQP user (declare own topology,
+      # consume own queue, publish to `oee`). No new broker principal needed.
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-oeecloud-creds
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: oee
+      FANOUT_QUEUE: oeecloud-fanout-cpack-to-sbxcpack
+      FANOUT_SOURCE_GROUP: CPACK
+      FANOUT_TARGET_GROUP: SBXCPACK
+      # Live key is 2-segment `sparkplug.data` (edge-transformer emits it; no
+      # F3_PER_TENANT_ROUTING flag exists). The 3-segment key is bound too so the
+      # fan-out survives a future per-tenant-routing flip; the in-code group
+      # filter keeps non-CPACK traffic on the shared key from leaking to SBXCPACK.
+      FANOUT_SOURCE_ROUTING_KEYS: "sparkplug.data,sparkplug.data.cpack"
+      FANOUT_TARGET_ROUTING_KEY: "sparkplug.data.sbxcpack"
+      PREFETCH: "50"
+      PUBLISH_CONFIRM_TIMEOUT_MS: "5000"
+      HEALTH_PORT: "9102"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.41
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/oeecloud-fanout", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 128m
+    cpus: 0.25
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
