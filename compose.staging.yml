@@ -244,6 +244,13 @@ services:
       # unset). Value lives in /opt/packiot/.env; hand it to the CPACK Node-RED
       # tee as the X-Ingest-Key header. # FILL AT DEPLOY
       AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:-}
+      # ── Birth-completeness (CPACK 2026-08-13 line-count regression fix) ─────
+      # Default OFF = byte-unchanged NBIRTH. ON makes NBIRTH cover the FULL
+      # raw_tag_map so a line idle at connect is still aliased at the cloud the
+      # instant it first reports (sparse-line NDATA was hitting ErrUnknownAlias).
+      # This is the staging twin of the client-box edge-cpack-agent flag; flip it
+      # here to reproduce/verify before enabling on the real factory agent.
+      AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-false}"
     volumes:
       # agentcfg descriptor (topic prefix + raw_tag_map) — read-only.
       - ./docs/clients/cpack-agent.yaml:/etc/packiot/agent.yaml:ro
@@ -1500,8 +1507,38 @@ services:
       # future double-source / reordered-sample phantoms. K=4, Δt floored 60s.
       # Reversible: set ENABLED=false + redeploy → byte-identical prior writes.
       INCREMENT_SANITY_CLAMP_ENABLED: "true"
+      # ── Strategy D — shared worker pool + dynamic tenant discovery ─────────
+      # Periodic re-discovery of active tenants from packml_register. A client
+      # added mid-run starts flowing within this interval with NO worker
+      # restart (and no disruption to tenants already flowing). 0 = boot-only
+      # discovery (pre-Strategy-D behavior). Default 60.
+      TENANT_DISCOVERY_INTERVAL_SECONDS: "60"
+      # Declare per-tenant MAIN queues with x-single-active-consumer so many
+      # worker replicas can all subscribe while RabbitMQ keeps exactly ONE
+      # active consumer per tenant queue (order-preserving) and spreads
+      # different tenants' active consumership across replicas, with automatic
+      # failover. DEFAULT false → queues declare byte-identically. Queue args
+      # are IMMUTABLE: flipping this on requires the one-time queue migration
+      # (services/oeecloud-worker/scripts/migrate-tenant-queues-sac.sh). Turn on
+      # ONLY together with OEECLOUD_WORKER_REPLICAS>1. See
+      # services/oeecloud-worker/docs/strategy-d-shared-pool-sac.md.
+      WORKER_POOL_SAC_ENABLED: "false"
+    # ── Horizontal scale (Strategy D) ──────────────────────────────────────
+    # `docker compose up` (v2) honors deploy.replicas. Default 1 → nothing
+    # changes. To run a pool of N: set OEECLOUD_WORKER_REPLICAS=N in .env AND
+    # WORKER_POOL_SAC_ENABLED=true (after running the queue migration), then
+    # COMMENT OUT the two single-instance affordances below — `container_name`
+    # and the static `ipv4_address` both require uniqueness and error under
+    # N>1. The worker binds no host port (health :9101 is in-container only), so
+    # there is no host-port collision. Prefer running the pool on separate app
+    # hosts in real deployments; multiple replicas on ONE host share its CPU
+    # budget and give failover + tenant spread but not more total CPU.
+    deploy:
+      replicas: ${OEECLOUD_WORKER_REPLICAS:-1}
     networks:
       packiot-net:
+        # NOTE (scale): remove this static IP + container_name above when
+        # OEECLOUD_WORKER_REPLICAS>1 (a fixed IP/name can't be shared by N).
         ipv4_address: 172.18.0.20
     depends_on:
       rabbitmq:
@@ -1755,6 +1792,11 @@ services:
       # redeploy — the else-branch legacy BuildEnvelope path is retained, no DB
       # change needed to roll back.
       CALC_CUTOVER_REFACTORED: "true"
+      # LINE_TRACE_TENANTS: comma-sep lowercase GroupIDs to trace at INFO (no
+      # debug recreate). Uncomment + redeploy edge-transformer normally to pin
+      # which lines' counters reach the F3 write and which Calc drops (and why).
+      # Default (commented) = zero extra logs. e.g. LINE_TRACE_TENANTS: cpack
+      # LINE_TRACE_TENANTS: cpack
       # ── Counters-only OEE mode (PR #591) — CPACK L6 go-live (ADR-0042 P1) ──
       # L6 is a Modbus counters-only line: the live tee confirmed SPEED:NO, so
       # NO MachSpeed metric ever seeds Calc State. Calc's Phase-8 glitch guard

@@ -135,6 +135,23 @@ type Descriptor struct {
 	// behaves EXACTLY as before — the four-artifact set is unchanged — so every
 	// descriptor authored before this field keeps generating byte-identically.
 	PLC *DescriptorPLC `yaml:"plc,omitempty"`
+
+	// Customizations is the OPTIONAL per-client Node-RED node set the generator
+	// renders onto the "<Tenant> customizations" tab of the reader flow (artifact
+	// 6). Each entry is one RAW Node-RED node object — exactly what a CS engineer
+	// gets from Node-RED's "Export" (a flow node carries a "z" tab reference; a
+	// config node has none). It makes the customization surface DESCRIPTOR-SOURCED
+	// and VERSIONED: before this field the customizations tab was emitted empty and
+	// integrations were hand-added on the box (living only in the nodered-data
+	// volume, clobbered on any redeploy / invisible to CS-Admin). Now they ride the
+	// descriptor, so regeneration re-emits them and CS-Admin can author + review
+	// them. Rendered ONLY when a plc block is present (the reader flow — and thus
+	// its customizations tab — exists only then); a tee-only tenant has no
+	// generated flow to host them. Absent/empty ⇒ the tab stays empty, byte-
+	// identical to the historical output. Flow nodes are re-homed onto the
+	// customizations tab (their "z" is rewritten) so an exported node lands there
+	// regardless of the tab id it was exported from.
+	Customizations []map[string]any `yaml:"customizations,omitempty"`
 }
 
 // DescriptorPLC is the descriptor's PLC-connectivity + tag-map section. It maps
@@ -545,6 +562,38 @@ func (d *Descriptor) Validate() error {
 		if _, err := d.GenerateClientYAML(); err != nil {
 			return err
 		}
+	}
+	// customizations: light structural check only — each node must carry the two
+	// fields Node-RED requires (a non-empty string id + type) and ids must be
+	// unique among themselves, so a malformed paste fails at descriptor-validate
+	// time instead of silently breaking the deployed flow. The node BODY is opaque
+	// (arbitrary Node-RED config) and deliberately not schema-validated here.
+	if err := validateCustomizations(d.Customizations); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateCustomizations enforces the minimum every Node-RED node needs to load
+// (id + type strings) and rejects duplicate ids within the set. It does NOT reach
+// into the node body — the whole point of the surface is arbitrary integration
+// nodes. Collisions with the GENERATED reader node ids are caught later, at render
+// time (GeneratePlcReaderFlow), where the reserved id set is known.
+func validateCustomizations(nodes []map[string]any) error {
+	seen := map[string]bool{}
+	for i, n := range nodes {
+		id, _ := n["id"].(string)
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("customizations[%d]: node id is required (a non-empty string — paste a Node-RED export)", i)
+		}
+		typ, _ := n["type"].(string)
+		if strings.TrimSpace(typ) == "" {
+			return fmt.Errorf("customizations[%d] (id %q): node type is required (a non-empty string)", i, id)
+		}
+		if seen[id] {
+			return fmt.Errorf("customizations[%d]: duplicate node id %q (every Node-RED node id must be unique)", i, id)
+		}
+		seen[id] = true
 	}
 	return nil
 }

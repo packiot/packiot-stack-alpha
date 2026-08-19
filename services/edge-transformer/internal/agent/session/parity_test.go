@@ -11,6 +11,7 @@
 package session_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/packiot/packiot-stack-alpha/services/edge-transformer/internal/agent/aliasmap"
@@ -55,6 +56,17 @@ func (r *mapResolver) Resolve(suffix string) (string, sparkplug.DataType, bool) 
 		return "", 0, false
 	}
 	return e.name, e.dt, true
+}
+
+// AllMapped implements session.AllResolver — the same capability cmd's resolver
+// exposes — so birth-all-mapped tests exercise the real code path.
+func (r *mapResolver) AllMapped() []session.MappedMetric {
+	out := make([]session.MappedMetric, 0, len(r.m))
+	for suffix, e := range r.m {
+		out = append(out, session.MappedMetric{Suffix: suffix, Name: e.name, Datatype: e.dt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Suffix < out[j].Suffix })
+	return out
 }
 
 func TestParity_RawJSONToCloudResolve(t *testing.T) {

@@ -51,6 +51,37 @@ type Config struct {
 	// change is inert until CONSUME_LANES is raised. See consumer.go.
 	ConsumeLanes int // 1
 
+	// ── Shared-pool / dynamic-discovery knobs (Strategy D) ───────────────
+	//
+	// TenantDiscoveryIntervalSeconds — cadence of the in-process re-discovery
+	// loop that re-runs tenants.DiscoverActive against packml_register and,
+	// for any NEW active tenant, declares its queue-triple + binding and
+	// starts consuming it WITHOUT a worker restart. Removed tenants stop
+	// being consumed (queues are left intact on the broker). 0 disables the
+	// loop entirely (boot-only discovery — the pre-Strategy-D behavior).
+	// Default 60. Cheap: one SELECT DISTINCT per tick.
+	TenantDiscoveryIntervalSeconds int // 60
+
+	// WorkerPoolSACEnabled — declare each per-tenant MAIN queue with the
+	// RabbitMQ `x-single-active-consumer: true` argument. This lets MANY
+	// worker replicas all subscribe to every tenant queue while RabbitMQ
+	// keeps exactly ONE active consumer per queue (the rest are hot
+	// standbys) — preserving per-tenant delivery order (required by the
+	// process-local counter baseline) while spreading DIFFERENT tenants'
+	// active consumership across replicas, with automatic failover if a
+	// replica dies.
+	//
+	// DEFAULT FALSE → the arg is never set, so existing queues (declared
+	// without it) declare byte-identically and a single instance behaves
+	// exactly as before. Queue arguments are IMMUTABLE in RabbitMQ: you
+	// CANNOT flip this on against pre-existing tenant queues — RabbitMQ
+	// answers a 406 PRECONDITION_FAILED and closes the channel. Enabling it
+	// is a one-time migration that deletes+recreates the tenant queues (see
+	// scripts/migrate-tenant-queues-sac.sh and docs/strategy-d-shared-pool-sac.md).
+	// When on, DeclareTenant detects the 406 mismatch and fails LOUDLY with
+	// remediation text rather than silently degrading or breaking the queue.
+	WorkerPoolSACEnabled bool // false
+
 	// HTTP
 	HealthPort int
 
@@ -361,6 +392,8 @@ func Load() (*Config, error) {
 		MaxRetries:                       getenvInt("MAX_RETRIES", 5),
 		Prefetch:                         getenvInt("PREFETCH", 50),
 		ConsumeLanes:                     getenvInt("CONSUME_LANES", 1),
+		TenantDiscoveryIntervalSeconds:   getenvInt("TENANT_DISCOVERY_INTERVAL_SECONDS", 60),
+		WorkerPoolSACEnabled:             getenv("WORKER_POOL_SAC_ENABLED", "false") == "true",
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
 		PGShadowDBName:                   getenv("POSTGRES_SHADOW_DB_NAME", ""),

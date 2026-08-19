@@ -26,6 +26,7 @@ package handlers
 import (
 	"context"
 	"log/slog"
+	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -34,7 +35,13 @@ import (
 type Handler func(ctx context.Context, d *amqp.Delivery) error
 
 type Dispatcher struct {
-	logger   *slog.Logger
+	logger *slog.Logger
+	// mu guards handlers: under Strategy D the dynamic tenant-discovery loop
+	// calls Register for a NEW tenant's routing key WHILE consumer goroutines
+	// are calling Handle. The map was previously read-only-after-init; the
+	// RWMutex makes concurrent Register/Handle safe. Registrations are rare
+	// (once per new tenant); Handle is the hot path (read lock).
+	mu       sync.RWMutex
 	handlers map[string]Handler
 	fallback Handler
 }
@@ -48,14 +55,19 @@ func NewDispatcher(logger *slog.Logger) *Dispatcher {
 }
 
 func (d *Dispatcher) Register(routingKey string, h Handler) {
+	d.mu.Lock()
 	d.handlers[routingKey] = h
+	d.mu.Unlock()
 }
 
 // Handle dispatches by routing key. Unknown routing keys go to the
 // fallback (LogOnly) so the cursor still advances + we observe what's
 // arriving rather than nacking everything to retry.
 func (d *Dispatcher) Handle(ctx context.Context, msg *amqp.Delivery) error {
-	if h, ok := d.handlers[msg.RoutingKey]; ok {
+	d.mu.RLock()
+	h, ok := d.handlers[msg.RoutingKey]
+	d.mu.RUnlock()
+	if ok {
 		return h(ctx, msg)
 	}
 	return d.fallback(ctx, msg)
