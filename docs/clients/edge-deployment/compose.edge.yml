@@ -123,7 +123,19 @@ services:
   # service falls back to the legacy manual-import workflow via the /data/flows-import
   # mount below, exactly as before. Hand-flow + tee clients are unaffected.
   nodered:
-    image: ${NODERED_IMAGE:-nodered/node-red:4.0}
+    # The PLC-CAPABLE edge Node-RED (Dockerfile.nodered-reader): the vanilla
+    # nodered/node-red:4.0 base + baked s7/modbus/opcua palettes, so a generated
+    # reader-flow's fieldbus nodes resolve on a FRESH box with NO first-boot npm
+    # install (the CPACK F1 durable fix). Parameterized exactly like the agent
+    # image below: the bundle workflow `docker save`s the built image into the
+    # bundle and pins NODERED_IMAGE to the loaded tag; a client with egress can
+    # instead `docker compose --profile nodered build` from the `build:` stanza
+    # (context `.` = this dir, so it works both in-repo AND unpacked in a bundle).
+    # The default local tag matches what `docker compose build` produces.
+    image: ${NODERED_IMAGE:-packiot/nodered-reader:4.0}
+    build:
+      context: .
+      dockerfile: Dockerfile.nodered-reader
     container_name: edge-${TENANT_SLUG}-nodered
     profiles: ["nodered"]
     restart: unless-stopped
@@ -143,18 +155,24 @@ services:
         else
           echo "[edge-seed] already seeded or no seed mounted — leaving active flows as-is"
         fi
-        # The vanilla nodered/node-red image ships NO PLC palettes, so the seeded reader
-        # flow's s7/modbus/opcua nodes are "missing types" and the flow never starts.
-        # Install the 3 contrib packs into /data (the userDir, a named volume) on FIRST
-        # boot only — idempotent (skip if already present) so restarts stay fast and
-        # offline. ALTERNATIVE: bake them into a prebuilt NODERED_IMAGE and skip this.
-        if [ ! -d /data/node_modules/node-red-contrib-s7 ]; then
-          echo "[edge-seed] installing PLC palettes (s7/modbus/opcua) into /data — first boot"
+        # PLC PALETTES (s7/modbus/opcua) — the seeded reader flow's fieldbus nodes are
+        # "missing types" and the flow never starts without them (CPACK F1).
+        # PREFERRED: they are BAKED into the default NODERED_IMAGE
+        # (Dockerfile.nodered-reader) at /usr/src/node-red/node_modules, so this block
+        # is a fast no-op on a fresh box — works OFFLINE, no npm egress needed.
+        # FALLBACK: if NODERED_IMAGE is overridden to the VANILLA nodered/node-red image
+        # (no baked palettes), install the 3 contrib packs into /data (the userDir, a
+        # named volume) on FIRST boot only. The guard checks BOTH the baked image dir
+        # AND /data, so the baked path skips and only a truly vanilla image installs —
+        # and that only when the box has npm-registry egress on first boot.
+        if [ ! -d /usr/src/node-red/node_modules/node-red-contrib-s7 ] \
+           && [ ! -d /data/node_modules/node-red-contrib-s7 ]; then
+          echo "[edge-seed] vanilla base detected — installing PLC palettes (s7/modbus/opcua) into /data (needs npm egress)"
           cd /data && npm install --no-audit --no-fund \
-            node-red-contrib-s7 node-red-contrib-modbus node-red-contrib-opcua \
-            || echo "[edge-seed] WARNING: PLC palette install failed — reader nodes may be missing"
+            node-red-contrib-s7@3.1.3 node-red-contrib-modbus@5.45.0 node-red-contrib-opcua@0.2.354 \
+            || echo "[edge-seed] WARNING: PLC palette install failed — reader nodes may be missing (bake NODERED_IMAGE via Dockerfile.nodered-reader instead)"
         else
-          echo "[edge-seed] PLC palettes already installed — skipping"
+          echo "[edge-seed] PLC palettes present (baked in image or already installed) — skipping"
         fi
         cd /usr/src/node-red
         exec ./entrypoint.sh
