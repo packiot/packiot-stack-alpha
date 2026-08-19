@@ -259,6 +259,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.38   # next free in the /24 ledger (2–37, .200 taken)
+        aliases: ["edge-agent-cpack"]  # rename alias-first (S0)
     depends_on:
       mosquitto:
         condition: service_healthy
@@ -1541,6 +1542,7 @@ services:
         # NOTE (scale): remove this static IP + container_name above when
         # OEECLOUD_WORKER_REPLICAS>1 (a fixed IP/name can't be shared by N).
         ipv4_address: 172.18.0.20
+        aliases: ["oee-engine"]  # rename alias-first (S0)
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -1911,6 +1913,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.23
+        aliases: ["sparkplug-decoder"]  # rename alias-first (S0)
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -2057,6 +2060,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.26
+        aliases: ["read-api"]  # rename alias-first (S0)
     depends_on:
       # Soft dependency: refdata fails open, so we only wait for the container to
       # start (not a healthcheck) — a slow/unhealthy cache must never block the
@@ -2178,6 +2182,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.30
+        aliases: ["operator-gateway"]  # rename alias-first (S0)
     depends_on:
       edge-api:
         condition: service_started
@@ -2232,6 +2237,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.25
+        aliases: ["analytics-sync"]  # rename alias-first (S0)
     # No depends_on — service is idle by default (SHADOW_MIRROR_ENABLED=false)
     # so it can start regardless of other services.
     healthcheck:
