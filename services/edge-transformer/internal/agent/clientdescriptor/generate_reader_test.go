@@ -274,6 +274,117 @@ func TestGeneratePlcReaderFlowNoPLC(t *testing.T) {
 	}
 }
 
+// customizationsYAML is a two-node customizations block: one FLOW node (carrying a
+// "z" that points at a DIFFERENT tab — as a real Node-RED export would) and one
+// CONFIG node (no "z"). Appended to readerDescriptorYAML it exercises the ADR-0045
+// G3 descriptor-sourced customizations surface.
+const customizationsYAML = `
+customizations:
+  - id: cpack_cust_po_hook
+    type: function
+    z: some_exported_tab_id
+    name: PO hook
+    func: "return msg;"
+    wires: [[]]
+  - id: cpack_cust_broker
+    type: mqtt-broker
+    name: extra broker
+    broker: 127.0.0.1
+    port: 1883
+`
+
+// TestGeneratePlcReaderFlowCustomizations proves the descriptor's `customizations`
+// block is rendered onto the customizations tab: a FLOW node is re-homed onto that
+// tab (its "z" rewritten to the generated cust-tab id, regardless of the tab it was
+// exported from), while a CONFIG node (no "z") passes through untouched. This is the
+// mechanism that makes the customization surface descriptor-sourced + versioned
+// instead of hand-added on the box.
+func TestGeneratePlcReaderFlowCustomizations(t *testing.T) {
+	d, err := Parse([]byte(readerDescriptorYAML + customizationsYAML))
+	if err != nil {
+		t.Fatalf("Parse (with customizations): %v", err)
+	}
+	out, err := d.GeneratePlcReaderFlow()
+	if err != nil {
+		t.Fatalf("GeneratePlcReaderFlow: %v", err)
+	}
+	var nodes []map[string]any
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		t.Fatalf("generated flow is not a JSON array: %v", err)
+	}
+	byID := map[string]map[string]any{}
+	tabs := 0
+	for _, n := range nodes {
+		if id, _ := n["id"].(string); id != "" {
+			byID[id] = n
+		}
+		if n["type"] == "tab" {
+			tabs++
+		}
+	}
+	// Still exactly two tabs — customizations render ONTO the existing cust tab, they
+	// do not add tabs of their own.
+	if tabs != 2 {
+		t.Errorf("tab count = %d, want 2 (customizations must not add tabs)", tabs)
+	}
+	// The flow node is present and re-homed onto the customizations tab (cpack_cust_tab).
+	fn := byID["cpack_cust_po_hook"]
+	if fn == nil {
+		t.Fatal("customization flow node cpack_cust_po_hook missing from generated flow")
+	}
+	if fn["z"] != "cpack_cust_tab" {
+		t.Errorf("customization flow node z = %v, want cpack_cust_tab (re-homed onto the cust tab)", fn["z"])
+	}
+	if fn["type"] != "function" || fn["name"] != "PO hook" {
+		t.Errorf("customization flow node body not preserved: %v", fn)
+	}
+	// The config node is present and UNTOUCHED (no "z" added — config nodes are tab-less).
+	cfg := byID["cpack_cust_broker"]
+	if cfg == nil {
+		t.Fatal("customization config node cpack_cust_broker missing from generated flow")
+	}
+	if _, hasZ := cfg["z"]; hasZ {
+		t.Errorf("config node must not gain a z (it is tab-less): %v", cfg)
+	}
+}
+
+// TestGeneratePlcReaderFlowCustomizationIDCollision proves a customization node whose
+// id collides with a GENERATED reader node id fails closed — Node-RED silently breaks
+// a flow with duplicate ids, so the generator refuses rather than emit it.
+func TestGeneratePlcReaderFlowCustomizationIDCollision(t *testing.T) {
+	// cpack_reader_norm is the generated normalize function id (p + "_reader_norm").
+	collide := `
+customizations:
+  - id: cpack_reader_norm
+    type: function
+    z: t
+    func: "return msg;"
+`
+	d, err := Parse([]byte(readerDescriptorYAML + collide))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if _, err := d.GeneratePlcReaderFlow(); err == nil {
+		t.Fatal("expected a collision error for a customization id that duplicates a reader node id, got nil")
+	}
+}
+
+// TestDescriptorCustomizationValidation proves the descriptor-time structural check:
+// a customization node missing the required id/type strings, or duplicating an id, is
+// rejected by Validate (via Parse) — a malformed paste fails at author time.
+func TestDescriptorCustomizationValidation(t *testing.T) {
+	cases := map[string]string{
+		"missing type": "\ncustomizations:\n  - id: only_id\n    name: no type\n",
+		"missing id":   "\ncustomizations:\n  - type: function\n    name: no id\n",
+		"dup id":       "\ncustomizations:\n  - {id: dup, type: function}\n  - {id: dup, type: comment}\n",
+	}
+	for name, block := range cases {
+		if _, err := Parse([]byte(readerDescriptorYAML + block)); err == nil {
+			t.Errorf("%s: expected Parse to reject the customization, got nil", name)
+		}
+	}
+}
+
 // TestDescriptorLiteralHostRefAccepted proves the F9 relaxation on the DESCRIPTOR
 // surface (onboard-gen): a literal PLC host_ref / endpoint_url_ref passes Parse
 // (which runs Validate → validatePLC), so a DB descriptor can carry literal hosts
