@@ -23,7 +23,10 @@
 // Restart safety: the integral accumulator lives in memory and RESETS to zero on
 // an agent restart. That is SAFE — the emitted series is an absolute totalizer,
 // and the cloud Calc treats prev>cur as a counter reset (incr=cur), never a
-// double-count (calc_production_counters/calc.go:276-280).
+// double-count (calc_production_counters/calc.go:309+). The seed tick emits an
+// EXPLICIT absolute 0 (see Process) so the cloud's ADR-0045-P1 first-observation
+// guard seeds its baseline to 0 and the first real window is differenced (cur−0),
+// not dropped as a spike — no first-window count loss across (re)boots.
 package deriver
 
 import (
@@ -185,7 +188,26 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 			if !st.seeded {
 				st.lastTs = t.TsMillis
 				st.seeded = true
-				continue // seed sample: establish t0, emit nothing
+				// Seed tick: the virtual integral counter genuinely starts at 0 on
+				// every (re)boot (the accumulator is in-memory and resets). Emit an
+				// EXPLICIT absolute 0 baseline here (rather than nothing) so the cloud
+				// Calc's ADR-0045-P1 first-observation guard seeds ITS per-topic
+				// baseline to 0. The first REAL sample then differences (cur−0) into a
+				// correct increment, instead of being swallowed as a first-boot spike —
+				// which would silently lose the entire first post-(re)boot window
+				// (calc_production_counters/calc.go:266-307). A real PLC totalizer
+				// never emits this synthetic 0, so its genuine first-boot spike-kill is
+				// unaffected: only the deriver's virtual, truly-zero-at-t0 stream sends
+				// the 0-baseline handshake.
+				for _, leaf := range st.emit {
+					synth = append(synth, rawtag.RawTag{
+						Metric:   leaf,
+						Value:    float64(0),
+						TsMillis: t.TsMillis,
+						Quality:  true,
+					})
+				}
+				continue
 			}
 			dt := float64(t.TsMillis-st.lastTs) / 1000.0
 			if dt < 0 {
