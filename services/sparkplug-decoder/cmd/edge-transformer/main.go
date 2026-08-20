@@ -52,6 +52,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/counterroles"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/health"
@@ -433,33 +434,53 @@ func main() {
 			mqttCfg.StaleThreshold = time.Duration(cfg.MQTTStaleThresholdSeconds) * time.Second
 		}
 
-		// Counters-only OEE rated speeds. Start from the env map, then — when
-		// COUNTERS_ONLY_FROM_DB is on (ADR-0045 G4/G5 config-as-data) — merge in
-		// the DB-derived unit-topic→production_speed map for every counters-only
-		// tenant (env entries WIN). Fail-open: a DB error here logs a warning and
-		// keeps the env map, so the decoder never regresses on a DB hiccup.
-		countersOnly := cfg.CountersOnlyEnabled
-		idealRates := cfg.CountersOnlyIdealRates
+		// Counters-only OEE rated speeds (ADR-0047 P0 #2). Start from the env
+		// map; when COUNTERS_ONLY_FROM_DB is on (ADR-0045 G4/G5 config-as-data),
+		// a Watcher owns a periodically-reloaded (COUNTERS_ONLY_REFRESH_SECONDS,
+		// default 5m) unit-topic→production_speed map merged from every
+		// counters-only tenant (env entries still WIN on a key collision — same
+		// contract as before). The periodic reload is the P0 #2 fix: the
+		// original boot-once LoadDBRates call left a CS Admin edit to
+		// equipments.production_speed stuck until the next redeploy. Fail-open:
+		// a DB error on any reload (including the first) logs a warning and
+		// Watcher keeps serving its previous snapshot, so the decoder never
+		// regresses on a DB hiccup.
+		var idealRatesWatcher *countersrate.Watcher
+		countersOnlyEnabled := cfg.CountersOnlyEnabled
+		countersOnlyAutoFromDB := cfg.CountersOnlyFromDB
+		idealRates := func() map[string]float64 { return cfg.CountersOnlyIdealRates }
 		if cfg.CountersOnlyFromDB {
-			res, dberr := countersrate.LoadDBRates(ctx, logger)
-			if dberr != nil {
-				logger.Warn("counters-only OEE rates: DB load failed — falling back to the env map",
-					slog.String("err", dberr.Error()),
-					slog.Int("env_rate_entries", len(cfg.CountersOnlyIdealRates)),
-				)
-			} else {
-				merged := countersrate.Merge(res.Rates, cfg.CountersOnlyIdealRates)
-				idealRates = merged
-				if len(merged) > 0 {
-					countersOnly = true
-				}
-				logger.Info("counters-only OEE rates loaded from DB (config-as-data)",
-					slog.Int("tenants", res.Tenants),
-					slog.Int("db_rate_entries", len(res.Rates)),
-					slog.Int("env_rate_entries", len(cfg.CountersOnlyIdealRates)),
-					slog.Int("merged_rate_entries", len(merged)),
-				)
-			}
+			idealRatesWatcher = countersrate.NewWatcher(
+				cfg.CountersOnlyIdealRates,
+				time.Duration(cfg.CountersOnlyRefreshSeconds)*time.Second,
+				logger,
+			)
+			idealRatesWatcher.Start(ctx)
+			idealRates = idealRatesWatcher.Rates
+			logger.Info("counters-only OEE rates: DB watcher started (config-as-data)",
+				slog.Int("refresh_seconds", cfg.CountersOnlyRefreshSeconds),
+				slog.Int("tenants", idealRatesWatcher.Tenants()),
+				slog.Int("merged_rate_entries", len(idealRatesWatcher.Rates())),
+			)
+		}
+
+		// ADR-0047 P0 #1: counter-role resolver (packml_register.id_
+		// {infeed,outfeed,reject}counter → gross/net/scrap). Off by default
+		// (COUNTER_ROLES_FROM_DB); when on, a periodically-reloaded (
+		// COUNTER_ROLES_REFRESH_SECONDS, default 5m) resolver is consulted by
+		// calcHooks BEFORE the Prod*Count substring convention. An empty
+		// snapshot (no tenant has populated the columns — everyone today) makes
+		// every Resolve() call a miss, so this is a pure no-op until CS Admin
+		// starts filling the columns in. See internal/counterroles's package
+		// doc for the full design + the two real-client gaps it closes.
+		var roleResolver *counterroles.Resolver
+		if cfg.CounterRolesFromDB {
+			roleResolver = counterroles.New(logger, time.Duration(cfg.CounterRolesRefreshSeconds)*time.Second)
+			roleResolver.Start(ctx)
+			logger.Info("counter-role resolver started (ADR-0047 P0 #1, config-as-data)",
+				slog.Int("refresh_seconds", cfg.CounterRolesRefreshSeconds),
+				slog.Int("bindings", roleResolver.Len()),
+			)
 		}
 
 		// LINE_TRACE_TENANTS (comma-separated, lowercase GroupIDs, e.g.
@@ -476,19 +497,23 @@ func main() {
 		}
 
 		calcHooks := calcHooks{
-			state:          calcState,
-			evals:          calcEvals,
-			mutations:      calcMutations,
-			errors:         calcErrors,
-			metricsEmitted: calcMetricsEmitted,
-			stateSeeds:     calcStateSeeds,
-			countersOnly:   countersOnly,
-			idealRates:     idealRates,
-			traceTenants:   traceTenants,
+			state:                  calcState,
+			evals:                  calcEvals,
+			mutations:              calcMutations,
+			errors:                 calcErrors,
+			metricsEmitted:         calcMetricsEmitted,
+			stateSeeds:             calcStateSeeds,
+			countersOnlyEnabled:    countersOnlyEnabled,
+			countersOnlyAutoFromDB: countersOnlyAutoFromDB,
+			idealRates:             idealRates,
+			roleResolver:           roleResolver,
+			traceTenants:           traceTenants,
 		}
-		if countersOnly {
-			logger.Info("counters-only OEE mode ENABLED",
-				slog.Int("opted_in_equipment", len(idealRates)),
+		if countersOnlyEnabled || countersOnlyAutoFromDB {
+			logger.Info("counters-only OEE mode configured",
+				slog.Bool("static_enabled", countersOnlyEnabled),
+				slog.Bool("auto_from_db", countersOnlyAutoFromDB),
+				slog.Int("opted_in_equipment", len(idealRates())),
 			)
 		}
 
@@ -790,15 +815,32 @@ type calcHooks struct {
 	// stateSeeds counts non-counter metrics recognized by seedFromMetric.
 	stateSeeds *prometheus.CounterVec
 
-	// countersOnly / idealRates — the counters-only OEE seam. When
-	// countersOnly is true, a counter metric whose unit topic is present in
-	// idealRates (unit topic → configured rated speed, parts/min) is
-	// evaluated in counters-only mode: the Calc Phase-8 glitch guard uses the
-	// configured rated speed instead of the absent MachSpeed. Both are the
-	// zero value (false / nil) when COUNTERS_ONLY_OEE_ENABLED is off, so the
-	// shadow path is unchanged. A nil map indexes safely (returns 0 → opt-out).
-	countersOnly bool
-	idealRates   map[string]float64
+	// countersOnlyEnabled / countersOnlyAutoFromDB / idealRates — the
+	// counters-only OEE seam (ADR-0047 P0 #2). A counter metric whose unit
+	// topic is present in idealRates() (unit topic → configured rated speed,
+	// parts/min) is evaluated in counters-only mode when EITHER
+	// countersOnlyEnabled (the static COUNTERS_ONLY_OEE_ENABLED flag) is true,
+	// OR countersOnlyAutoFromDB is true AND idealRates() currently has any
+	// entries (data-driven — re-checked per message, not frozen at boot).
+	// idealRates is a live ACCESSOR, not a captured map: when
+	// COUNTERS_ONLY_FROM_DB is on it reads countersrate.Watcher.Rates(),
+	// which a background ticker keeps fresh, so a CS Admin edit to
+	// equipments.production_speed is visible on the next message after the
+	// next refresh — no edge redeploy. All fields are their zero value
+	// (false / false / a closure over the static env map) when
+	// COUNTERS_ONLY_OEE_ENABLED and COUNTERS_ONLY_FROM_DB are both off, so
+	// the shadow path is unchanged. idealRates is never nil (main.go always
+	// sets it, even to a closure returning the static env map).
+	countersOnlyEnabled    bool
+	countersOnlyAutoFromDB bool
+	idealRates             func() map[string]float64
+
+	// roleResolver — ADR-0047 P0 #1 counter-role override
+	// (packml_register.id_{infeed,outfeed,reject}counter). nil when
+	// COUNTER_ROLES_FROM_DB is off (the default): classifyKind then behaves
+	// exactly like a bare isCounterMetricName call. See
+	// internal/counterroles's package doc for the full design.
+	roleResolver *counterroles.Resolver
 
 	// traceTenants is the set of lowercased tenant/GroupIDs (from
 	// LINE_TRACE_TENANTS) for which per-counter INFO-level drop tracing is
@@ -823,6 +865,39 @@ func (h calcHooks) traced(tenant string) bool {
 		return false
 	}
 	return h.traceTenants[strings.ToLower(tenant)]
+}
+
+// classifyKind returns the CounterKind for a metric name, consulting the
+// DB-backed counter-role resolver (ADR-0047 P0 #1) BEFORE falling back to
+// the built-in Prod*Count substring convention (isCounterMetricName). When
+// roleResolver is nil (COUNTER_ROLES_FROM_DB off) or has no binding for this
+// metric's canonical unit topic — the overwhelming common case, since
+// packml_register.id_{infeed,outfeed,reject}counter is NULL for virtually
+// every tenant today — this is byte-identical to isCounterMetricName(name).
+//
+// fromRole=true tells the caller to populate Message.RoleKind/RoleUnitTopic
+// (see calc.go's doc) instead of letting Calc re-derive the kind from the
+// topic — this is what makes a non-standard-named counter (no Prod*Count
+// substring at all) participate in Calc instead of being silently dropped.
+func (h calcHooks) classifyKind(name string) (kind calc_production_counters.CounterKind, roleUnitTopic string, fromRole bool) {
+	if h.roleResolver != nil {
+		if srcUnit, ok := calc_production_counters.DeriveUnitTopic(name); ok {
+			if rk, lineUnit, ok := h.roleResolver.Resolve(srcUnit); ok {
+				return rk, lineUnit, true
+			}
+		}
+	}
+	return isCounterMetricName(name), "", false
+}
+
+// isCounter reports whether name is Calc-relevant (role-mapped OR matches
+// the Prod*Count substring convention). Used by buildCutoverMetrics' raw-vs-
+// delta filter — a role-mapped non-standard counter must ALSO be excluded
+// from the raw passthrough (Calc's delta metric already replaces it), not
+// only the substring-named ones.
+func (h calcHooks) isCounter(name string) bool {
+	kind, _, _ := h.classifyKind(name)
+	return kind != calc_production_counters.CounterKindUnknown
 }
 
 // isCounterMetricName returns the CounterKind if this Sparkplug metric name
@@ -1042,7 +1117,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	if h.seedFromMetric(tenant, metric) {
 		return nil
 	}
-	kind := isCounterMetricName(metric.Name)
+	kind, roleUnitTopic, fromRole := h.classifyKind(metric.Name)
 	if kind == calc_production_counters.CounterKindUnknown {
 		return nil
 	}
@@ -1089,18 +1164,34 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		Tenant:     tenant,
 		CmdTrigger: true,
 	}
-	// Counters-only opt-in: if the feature is on and this equipment's unit
-	// topic has a configured rated speed, tell Calc to use the rated-speed
-	// glitch guard instead of the absent MachSpeed guard. Auto-selection
-	// (machSpeed==0) still happens inside Calc, so a machine that DOES report
-	// speed is unaffected even when opted in.
-	if h.countersOnly {
+	if fromRole {
+		// ADR-0047 P0 #1: DB-configured role override — see Message.RoleKind
+		// doc. Bypasses Calc's own topic-substring derivation entirely.
+		msg.RoleKind = kind
+		msg.RoleUnitTopic = roleUnitTopic
+	}
+	// Counters-only opt-in (ADR-0047 P0 #2): evaluated per-message (not
+	// frozen at boot) so a countersOnlyAutoFromDB tenant picks up a
+	// freshly-populated equipments.production_speed on the Watcher's next
+	// periodic reload without a redeploy. If EITHER the static flag is on,
+	// or auto-from-DB is on AND the DB currently has any rate entries, and
+	// this equipment's unit topic has a configured rated speed, tell Calc to
+	// use the rated-speed glitch guard instead of the absent MachSpeed
+	// guard. Auto-selection (machSpeed==0) still happens inside Calc, so a
+	// machine that DOES report speed is unaffected even when opted in.
+	rates := h.idealRates()
+	countersOnly := h.countersOnlyEnabled || (h.countersOnlyAutoFromDB && len(rates) > 0)
+	if countersOnly {
 		// ParseTopic requires the "***"-delimited counter topic shape; the
 		// bare metric.Name has no "***" so it would ALWAYS error, leaving the
 		// opt-in inert. msg.Topic (metric.Name + "***TRIG", built just above)
 		// is the form ParseTopic expects and yields the 5-seg unit topic key.
+		// A role-override message's Topic has no matching Prod*Count
+		// substring, so ParseTopic errors for it too — counters-only mode
+		// doesn't apply to role-mapped counters (that guard exists for the
+		// ABSENT MachSpeed sensor case, orthogonal to role mapping).
 		if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
-			if rate, ok := h.idealRates[unitTopic]; ok && rate > 0 {
+			if rate, ok := rates[unitTopic]; ok && rate > 0 {
 				msg.CountersOnly = true
 				msg.IdealRate = rate
 			}
@@ -1193,7 +1284,13 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 // Parameter*, …), which Calc reads as state but never re-emits. The raw
 // cumulative counter metrics are dropped — the Calc deltas replace them; that
 // replacement IS the #276 fix (cagg was SUMming cumulatives into billions).
-func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric) []analyticspub.Metric {
+//
+// isCounter classifies a raw resolved metric name for that drop (normally
+// calcHooks.isCounter — ADR-0047 P0 #1 aware, so a DB-role-mapped
+// non-standard counter is ALSO dropped in favor of its Calc delta, not just
+// the Prod*Count-substring-named ones). Passed in rather than called as a
+// package function so this stays a pure, independently-testable fold.
+func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric, isCounter func(name string) bool) []analyticspub.Metric {
 	out := make([]analyticspub.Metric, 0, len(calcMetrics)+len(resolved))
 	for _, em := range calcMetrics {
 		// #276 / ADR-0037(A): suppress ONLY Phase-9 member→line AGGREGATION
@@ -1236,7 +1333,7 @@ func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved
 	}
 	for _, m := range resolved {
 		// Skip raw counters — the Calc deltas above are their replacement.
-		if isCounterMetricName(m.Name) != calc_production_counters.CounterKindUnknown {
+		if isCounter(m.Name) {
 			continue
 		}
 		out = append(out, analyticspub.Metric{
@@ -1605,7 +1702,7 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 				// behavior change until the flag is flipped for F3 only.
 				var env analyticspub.Envelope
 				if st == "refactored" && cutoverRefactored && calc.enabled() {
-					cutMetrics := buildCutoverMetrics(calcMetrics, resolved.Metrics)
+					cutMetrics := buildCutoverMetrics(calcMetrics, resolved.Metrics, calc.isCounter)
 					env = analyticspub.BuildEnvelopeFromMetrics(
 						"outbox", st, int64(resolved.Timestamp), cutMetrics,
 					)

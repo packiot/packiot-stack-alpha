@@ -163,6 +163,28 @@ type Config struct {
 	// DB creds reuse the POSTGRES_* env the sibling decode services use;
 	// COUNTERS_ONLY_DSN overrides with a full URL.
 	CountersOnlyFromDB bool
+	// CountersOnlyRefreshSeconds is the periodic-reload interval for the
+	// counters-only rated-speed map once CountersOnlyFromDB is on. The
+	// original G4/G5 seam only loaded once at boot — a CS Admin edit to
+	// equipments.production_speed then sat inert until the next redeploy,
+	// which defeats ADR-0047 P0 #2's whole point ("CS Admin config actually
+	// changes OEE math without an edge redeploy"). Default 300s (5 minutes)
+	// matches oeecloud-worker's shift resolver cache window.
+	CountersOnlyRefreshSeconds int
+
+	// ── Counter-role override (ADR-0047 P0 #1) ─────────────────────────────
+	// packml_register.id_infeedcounter / id_outfeedcounter / id_rejectcounter
+	// already exist as columns but are unread by the calc engine — every
+	// counter's gross/net/scrap role is inferred purely from a Prod*Count
+	// substring in the topic. See internal/counterroles's package doc for the
+	// full design. CounterRolesFromDB gates the whole feature; default false
+	// → the resolver is never constructed, zero behavior change (mirrors
+	// CountersOnlyFromDB's opt-in discipline for a new DB-touching seam).
+	CounterRolesFromDB bool
+	// CounterRolesRefreshSeconds is the periodic-reload interval for the
+	// role map. Default 300s (5 minutes), same reasoning as
+	// CountersOnlyRefreshSeconds.
+	CounterRolesRefreshSeconds int
 
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
 	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
@@ -313,9 +335,13 @@ func Load() (*Config, error) {
 		UseGoPort: getenvBool("USE_GO_PORT", false),
 
 		// Counters-only OEE mode (default OFF — no behavior change)
-		CountersOnlyEnabled:    getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
-		CountersOnlyIdealRates: getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
-		CountersOnlyFromDB:     getenvBool("COUNTERS_ONLY_FROM_DB", false),
+		CountersOnlyEnabled:        getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
+		CountersOnlyIdealRates:     getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
+		CountersOnlyFromDB:         getenvBool("COUNTERS_ONLY_FROM_DB", false),
+		CountersOnlyRefreshSeconds: getenvInt("COUNTERS_ONLY_REFRESH_SECONDS", 300),
+
+		CounterRolesFromDB:         getenvBool("COUNTER_ROLES_FROM_DB", false),
+		CounterRolesRefreshSeconds: getenvInt("COUNTER_ROLES_REFRESH_SECONDS", 300),
 
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),
