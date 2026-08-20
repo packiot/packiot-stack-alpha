@@ -6,7 +6,7 @@
 // forever with a stale value, diverging F2/F3 from F1 on the bake's 24h/3d
 // comparison windows. These accumulate after any burst that flags old rows: the
 // 2026-07-10 incident + poison purge left ~9k stranded hour rows in
-// packiot_shadow.
+// packiot_analytics.
 //
 // This is NOT a second copy of the OEE math. It reuses the EXACT hour passes
 // (hourValuesSQL/hourSpeedSQL/hourEventsSQL/hourTargetsSQL/cascades). Those are

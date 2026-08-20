@@ -14,7 +14,7 @@
 // The F3 single-flow collapse DROPPED the F2 (shadow_go_port) plane, so GATE 1/3
 // (which compare F2 to F3) no longer have a second plane and were retired. GATE 2
 // was never a comparison — it is a per-plane invariant — so it SURVIVES, now run
-// on F3 (`public` in packiot_shadow) only. That is this file.
+// on F3 (`public` in packiot_analytics) only. That is this file.
 //
 // The overflow class also has a DB-layer backstop now: the `*_oee_bounds` CHECK
 // constraints (BETWEEN 0 AND 1, #663) reject an overflow-driven oee blow-up at the
@@ -142,7 +142,7 @@ func fetchOverflow(ctx context.Context, pool *pgxpool.Pool, sql, schema string, 
 }
 
 // RunSentinel executes the F3 int-overflow gate against the F3 pool (→ public in
-// packiot_shadow) across the given enterprises. It NEVER returns an error for a
+// packiot_analytics) across the given enterprises. It NEVER returns an error for a
 // data violation — a violation is a report FAIL. A returned error means the check
 // itself could not run (query failed), which the caller must treat as gate-fail
 // (fail-closed: a sentinel that cannot run must not silently pass a deploy).

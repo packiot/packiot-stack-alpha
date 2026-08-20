@@ -20,7 +20,7 @@ type Metrics interface {
 
 // Loop is the polling driver: fetch a batch, dispatch, advance cursor,
 // sleep. Runs until ctx is cancelled.
-func Loop(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, dispatcher *Dispatcher, m Metrics, pollInterval time.Duration, batchSize int, logger *slog.Logger) error {
+func Loop(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, dispatcher *Dispatcher, m Metrics, pollInterval time.Duration, batchSize int, logger *slog.Logger) error {
 	cursor, err := EnsureCursor(ctx, mainPool)
 	if err != nil {
 		return err
@@ -52,7 +52,7 @@ func Loop(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, dispatcher *D
 
 		for i := range batch {
 			u := &batch[i]
-			skipped, err := dispatcher.Dispatch(ctx, mainPool, shadowPool, u)
+			skipped, err := dispatcher.Dispatch(ctx, mainPool, analyticsPool, u)
 			switch {
 			case err != nil:
 				m.IncFailed(u.Category)

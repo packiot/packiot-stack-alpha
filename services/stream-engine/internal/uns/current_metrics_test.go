@@ -71,7 +71,7 @@ func TestLineLeadMachineInheritance(t *testing.T) {
 func TestCurrentMetricsSQLBuilds(t *testing.T) {
 	for _, schemas := range [][2]string{
 		{"shadow_go_port", "public"}, // F2
-		{"public", "public"},         // F3 (packiot_shadow) / F1 shape
+		{"public", "public"},         // F3 (packiot_analytics) / F1 shape
 	} {
 		out := fmt.Sprintf(currentMetricsSQL, schemas[0], schemas[1])
 		if strings.Contains(out, "%!") || strings.Contains(out, "%[") {

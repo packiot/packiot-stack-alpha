@@ -1,11 +1,11 @@
-// Package refsync keeps F3's master/reference tables (packiot_shadow.public) in
+// Package refsync keeps F3's master/reference tables (packiot_analytics.public) in
 // step with the main DB (packiot.public), so F3's rollups compute against the
 // SAME inputs as F2 and the F2/F3 identity check can pass.
 //
 // Why this exists: F2 and F3 run the same Go engine, but they read their
 // reference plane from two DIFFERENT physical databases (flows.go: F2 uses the
 // main pool, F3 the shadow pool, both RefSchema="public"). shadow-mirror replays
-// operational PO/event changes to F3 but NOT master data, so packiot_shadow was
+// operational PO/event changes to F3 but NOT master data, so packiot_analytics was
 // seeded once and drifted: production_targets 24→0 (zeroes every F3 target),
 // packml_register 162→137, equipments 72→74, products/clients missing, etc.
 // (audit 2026-07-11). The entity hierarchy (enterprises/sites/areas/shifts/
@@ -36,7 +36,7 @@ import (
 
 // referenceTables is the drifting master set this job can reconcile with a
 // plain PK upsert, in FK-safe order (parents first). Verified live: these were
-// empty-or-id-aligned in packiot_shadow, so upsert brings them to parity cleanly
+// empty-or-id-aligned in packiot_analytics, so upsert brings them to parity cleanly
 // (production_targets 0→24 was the biggest identity driver).
 //
 // Deliberately EXCLUDED and why:
@@ -179,7 +179,7 @@ func SyncOnce(ctx context.Context, main, shadow *pgxpool.Pool, logger *slog.Logg
 // Loop runs SyncOnce on a schedule. Reference data changes rarely (CS Admin
 // onboarding), so a few-minute cadence is ample.
 func Loop(ctx context.Context, main, shadow *pgxpool.Pool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
-	logger.Info("refsync started — mirrors master tables main→packiot_shadow",
+	logger.Info("refsync started — mirrors master tables main→packiot_analytics",
 		slog.Any("tables", referenceTables), slog.Duration("every", every))
 	jobs.Loop(ctx, jobs.Job{Name: "refsync", Every: every, Run: func(ctx context.Context) error {
 		return SyncOnce(ctx, main, shadow, logger)

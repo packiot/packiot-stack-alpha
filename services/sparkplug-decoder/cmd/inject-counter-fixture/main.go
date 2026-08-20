@@ -6,7 +6,7 @@
 // a canned CPACK topic. The NDATA references alias=1 with an incremented
 // value. edge-transformer's MQTT subscriber resolves alias→name via its
 // StateStore, runs the Calc port (USE_GO_PORT=true), publishes to the
-// shadowpub exchange, and the /metrics endpoint should show non-zero
+// analyticspub exchange, and the /metrics endpoint should show non-zero
 // calc_evaluations_total counters afterward.
 //
 // Usage:

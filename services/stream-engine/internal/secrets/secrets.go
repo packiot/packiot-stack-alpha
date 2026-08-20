@@ -210,7 +210,7 @@ func (c *DBCreds) URL(appName string) string {
 }
 
 // URLForDatabase is URL() with the database name overridden. Used to
-// connect the same creds against a sibling DB (e.g. packiot_shadow for
+// connect the same creds against a sibling DB (e.g. packiot_analytics for
 // the ADR-0012 refactor POC — same host, same user, same password,
 // different Path).
 func (c *DBCreds) URLForDatabase(appName, dbName string) string {

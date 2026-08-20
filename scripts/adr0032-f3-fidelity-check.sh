@@ -3,7 +3,7 @@
 # ADR-0032 F1→F3 collapse. READ-ONLY. Runs the three acceptance-criteria probes
 # (A data fidelity, B operator fidelity, C render-surface readiness) against the
 # live staging DB EC2 and prints a per-criterion freshness/row-count/OEE/lag
-# matrix for F1 (packiot.public) vs F3 (packiot_shadow).
+# matrix for F1 (packiot.public) vs F3 (packiot_analytics).
 #
 # It is the reusable companion to the one-off QA verification in the ADR-0032
 # Step-1 report: run it before the flip to capture the F1 golden baseline, and
@@ -37,7 +37,7 @@ INSTANCE="${INSTANCE:-i-064bb36d1c454d861}"
 REGION="${REGION:-us-east-1}"
 ENTS="${ENTERPRISES:-3,4}"
 F1_DB="${F1_DB:-packiot}"
-F3_DB="${F3_DB:-packiot_shadow}"
+F3_DB="${F3_DB:-packiot_analytics}"
 
 # run_sql <db> <sql> — execute SELECT-only SQL in the timescaledb container via the
 # start-session transport. The SQL is base64'd and wrapped in BEGIN READ ONLY; a

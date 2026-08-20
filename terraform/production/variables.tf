@@ -137,7 +137,7 @@ variable "db_user" {
 # EC2 in the reserved 10.20.10.0/24 private subnet; W6.2 right-sizes it onto a
 # MEMORY-family instance (not t4g). This is the greenfield single-flow F3-native
 # DB (ADR-0032): ONE database whose `public` schema *is* the F3 schema — no
-# packiot_shadow, no F1/F2 legs, no comparator schemas.
+# packiot_analytics, no F1/F2 legs, no comparator schemas.
 #
 # NOTE: config/plan-only. Standing this up + rewiring the compose DATABASE_URL
 # from the local container to this instance is the W1 compose-parity follow-up.

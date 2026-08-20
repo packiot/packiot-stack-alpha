@@ -1,11 +1,11 @@
 -- 15-f3-read-api-composite-type-fixes.sql — fixes 9 read-api /v1/query datasets
--- that 500 on packiot_shadow (F3): oee-score-teams, oee-progress, oee-score-full,
+-- that 500 on packiot_analytics (F3): oee-score-teams, oee-progress, oee-score-full,
 -- machine-speed, production-flow, single-period, single-period-legacy, targets,
 -- mission-control-timeline. See docs/audits/front4-operator-endpoint-health.md
 -- and services/read-api/cmd/refdata-api/datasets.go (flow.go's sqlF3 seam).
 --
 -- ── Bug #1 (8 datasets) — composite return-type column drift ───────────────
--- 00-packiot_shadow-schema.sql (a pg_dump of live packiot_shadow, best-effort)
+-- 00-packiot_analytics-schema.sql (a pg_dump of live packiot_analytics, best-effort)
 -- baked in a porting bug: 8 of the h_piot_*/h_* "row-shape" tables that back a
 -- `RETURNS SETOF <table>` PL/pgSQL function declare their jsonb-aggregate
 -- column as `text[]`, while packiot (F1) — and every function body, unchanged
@@ -51,7 +51,7 @@ ALTER TABLE public.h_single_period_equipment_chart_table_4
 -- h_piot_get_mission_control_timeline reads `agg_equipment_values_1min_t`. In
 -- packiot (F1) that name is the wide 30-column per-equipment 1-minute cagg the
 -- function needs (id_enterprise, id_site, id_area, id_equipment, ts_value,
--- speed, tp_equipment, …). In packiot_shadow (F3) that exact name is already
+-- speed, tp_equipment, …). In packiot_analytics (F3) that exact name is already
 -- owned by an UNRELATED, differently-shaped view (3 columns: ts_value,
 -- id_equipment, val — some other F3-native per-metric aggregate), so every
 -- call 500s:

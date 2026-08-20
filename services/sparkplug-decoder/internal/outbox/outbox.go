@@ -38,7 +38,7 @@
 //     check — but for now the schema is stable.
 //
 // Not yet wired into main.go — this is the package scaffold. A follow-up
-// PR wires MQTT Handler → outbox.Enqueue and shadowpub.Publish ← outbox
+// PR wires MQTT Handler → outbox.Enqueue and analyticspub.Publish ← outbox
 // drain goroutine.
 package outbox
 

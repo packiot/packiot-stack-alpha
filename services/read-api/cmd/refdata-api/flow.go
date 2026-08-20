@@ -4,7 +4,7 @@
 // ───────────────
 // ADR-0032 collapses the staging three-flow parallel-run to the refactored
 // flow (F3). Its load-bearing prerequisite (§5.1) is re-pointing THIS read
-// plane from F1 (`packiot.public`) to F3 (`packiot_shadow.public`) — but F3's
+// plane from F1 (`packiot.public`) to F3 (`packiot_analytics.public`) — but F3's
 // schema is intentionally divergent (ADR-0014), so it is NOT a connection-string
 // swap. This switch makes the re-point:
 //
@@ -17,7 +17,7 @@
 // TWO THINGS THE SWITCH CONTROLS (per ADR-0032 §6 Step 1):
 //
 //  1. THE DB TARGET. f1 → dbname `packiot` (F1) via pgbouncer's `packiot` pool;
-//     f3 → dbname `packiot_shadow` (F3) via pgbouncer's NEW `packiot_shadow`
+//     f3 → dbname `packiot_analytics` (F3) via pgbouncer's NEW `packiot_analytics`
 //     pool (added by the sibling devops change on
 //     feat/adr0032-step1-pgbouncer-grafana). main.go builds its DSN from
 //     activeFlow.dbName instead of a hardcoded DB_NAME.
@@ -29,14 +29,14 @@
 //     names the new object while F1 SQL stays byte-identical.
 //
 //     GROUND-TRUTH NOTE (live census, 2026-07-20 — see the parity harness
-//     scripts/refdata-f3-parity-check.sh): today packiot_shadow's divergence
+//     scripts/refdata-f3-parity-check.sh): today packiot_analytics's divergence
 //     from packiot is ABSENCE, not RENAME. Every object that EXISTS in F3 keeps
 //     its F1 name (h_piot_*, v_operator_*, agg_equipment_values_*), so NO
 //     dataset currently needs a textual sqlF3 override — they are byte-identical
 //     across flows. The gap is that ~31 of 33 analytics functions and several
 //     config/report relations DO NOT EXIST in F3 yet (they are the
 //     telemetry-compute DB, not the analytics DB). Those datasets are BLOCKED on
-//     F3 until packiot_shadow's read layer is built out; sqlF3 cannot conjure a
+//     F3 until packiot_analytics's read layer is built out; sqlF3 cannot conjure a
 //     missing object, so it stays empty for them (documented as blockers, not
 //     invented). The field is the mechanism that will carry the ports when they
 //     land — pre-wired so the eventual adaptation is a data change, not a
@@ -48,7 +48,7 @@ type flow string
 
 const (
 	flowF1 flow = "f1" // packiot.public — the operational DB (default, unchanged)
-	flowF3 flow = "f3" // packiot_shadow.public — the refactored end-state DB
+	flowF3 flow = "f3" // packiot_analytics.public — the refactored end-state DB
 )
 
 // activeFlow is the process-global read target, resolved ONCE from REFDATA_FLOW
@@ -70,10 +70,10 @@ func resolveFlow(raw string) flow {
 // dbNameForFlow returns the database name the DSN targets for a flow. The names
 // are env-overridable (DB_NAME for F1, DB_NAME_F3 for F3) so a non-standard
 // staging bring-up can re-point either without a rebuild, but the defaults are
-// the canonical pool names pgbouncer maps: `packiot` and `packiot_shadow`.
+// the canonical pool names pgbouncer maps: `packiot` and `packiot_analytics`.
 func dbNameForFlow(f flow) string {
 	if f == flowF3 {
-		return getenv("DB_NAME_F3", "packiot_shadow")
+		return getenv("DB_NAME_F3", "packiot_analytics")
 	}
 	return getenv("DB_NAME", "packiot")
 }

@@ -11,7 +11,7 @@ import (
 )
 
 // Shadow-path production_orders rows carry locally generated surrogate
-// ids (IDENTITY on packiot_shadow, shared sequence on shadow_go_port),
+// ids (IDENTITY on packiot_analytics, shared sequence on shadow_go_port),
 // so Flow 1's id_production_order can never match a shadow row (bug 248).
 // Every lifecycle UPDATE must instead target the natural key
 // (id_enterprise, id_order), resolved from the Flow 1 source-of-truth

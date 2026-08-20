@@ -130,7 +130,7 @@ pg_table_size_top:
     LIMIT 25
   metrics:
     # datname disambiguates otherwise-identical (schema, table) label sets across
-    # auto-discovered DBs (public.equipment_values exists in packiot, packiot_shadow,
+    # auto-discovered DBs (public.equipment_values exists in packiot, packiot_analytics,
     # shadow_go_port, ...). Without it Prometheus rejects the scrape with
     # "collected before with the same name and label values" → HTTP 500 → up=0.
     - datname: { usage: LABEL, description: "Database" }
@@ -159,7 +159,7 @@ pg_timescaledb_hypertables:
   metrics:
     # datname disambiguates otherwise-identical (schema, hypertable) label sets
     # across auto-discovered DBs (public.equipment_values is a hypertable in
-    # packiot, packiot_shadow, shadow_go_port). Without it the scrape 500s → up=0.
+    # packiot, packiot_analytics, shadow_go_port). Without it the scrape 500s → up=0.
     - datname: { usage: LABEL, description: "Database" }
     - schema: { usage: LABEL, description: "Hypertable schema" }
     - hypertable: { usage: LABEL, description: "Hypertable name" }
@@ -170,7 +170,7 @@ pg_timescaledb_hypertables:
 # ─────────────────────────────────────────────────────────────────────────────
 # DBM ("Datadog-style") extension — 6 catalog/TimescaleDB views for the deep
 # Database board (16-database-dbm). Every query below was verified read-only
-# (BEGIN READ ONLY; ...; ROLLBACK) against packiot_shadow on staging before
+# (BEGIN READ ONLY; ...; ROLLBACK) against packiot_analytics on staging before
 # commit. Per-DB queries carry a `datname = current_database()` disambiguator so
 # auto-discovery (PG_EXPORTER_AUTO_DISCOVER_DATABASES=true) never emits the same
 # metric name+labels from two DBs (that path 500s the scrape → up=0). Internal

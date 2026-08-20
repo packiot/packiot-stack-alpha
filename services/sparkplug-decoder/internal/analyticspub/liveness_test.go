@@ -1,4 +1,4 @@
-package shadowpub
+package analyticspub
 
 import (
 	"testing"

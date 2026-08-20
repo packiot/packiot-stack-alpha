@@ -2,7 +2,7 @@
 
 **The single highest-care correctness item for the bispharma prod go-live.**
 Greenfield production runs ONE database whose `public` schema **is** the F3
-(refactored single-flow) schema — the same schema staging's `packiot_shadow`
+(refactored single-flow) schema — the same schema staging's `packiot_analytics`
 carries, but born directly instead of reached through the ADR-0012/0032
 migration. **If `public` is not F3-shaped, the compute chain
 (edge-transformer Go Calc → oeecloud-worker rollups → caggs → `uns_*`) runs and
@@ -12,17 +12,17 @@ This directory is the DB-init path + the correctness gate that stops that.
 
 | File | What |
 |---|---|
-| `MANIFEST.f3-target` | The authoritative F3 **target manifest** captured SELECT-only from live `packiot_shadow` (665 objects). The parity gate diffs against this. |
+| `MANIFEST.f3-target` | The authoritative F3 **target manifest** captured SELECT-only from live `packiot_analytics` (665 objects). The parity gate diffs against this. |
 | `snapshot/` | Where the AUTHORITATIVE F3 schema-only DDL lives (see §4). **Gated / not yet populated.** `compose.production.yml`'s `db-schema-f3` one-shot applies `snapshot/*.sql`. |
 | `assemble.sh` | The reviewable **fragment scaffold** — concatenates the canonical F3 source fragments in dependency order. Used to *author/understand* the schema. **Does NOT reach parity by itself** (see §3). |
 | `../../scripts/prod-f3-schema-parity-check.sh` | The **gate**: diffs any candidate DB's `public` against `MANIFEST.f3-target`. |
-| `../../scripts/capture-f3-snapshot.sh` | The **gated** producer of `snapshot/` — a curated schema-only dump of `packiot_shadow`. |
+| `../../scripts/capture-f3-snapshot.sh` | The **gated** producer of `snapshot/` — a curated schema-only dump of `packiot_analytics`. |
 
 ---
 
 ## 1. The target manifest (verified live, SELECT-only)
 
-Captured from staging `packiot_shadow` (DB EC2 `i-064bb36d1c454d861`, `BEGIN READ ONLY`):
+Captured from staging `packiot_analytics` (DB EC2 `i-064bb36d1c454d861`, `BEGIN READ ONLY`):
 
 | Class | Count | Notes |
 |---|---|---|
@@ -39,7 +39,7 @@ Captured from staging `packiot_shadow` (DB EC2 `i-064bb36d1c454d861`, `BEGIN REA
 and OEE anomaly-free (no `oee>1`, no `oee<0`).
 
 > **The gate compares USER objects only** (extension-owned excluded — §7) and
-> against the **curated** canonical F3, not raw live `packiot_shadow`. Live has
+> against the **curated** canonical F3, not raw live `packiot_analytics`. Live has
 > accreted staging debris greenfield prod must NOT inherit
 > (`ops_shadow_zombie_preimage_*`, `report_*_enterprsie_*`, `hasura_test`,
 > `*_po_func_ret`, `c33_/c35_*`, lab leftovers) — the full pattern list is in
@@ -52,7 +52,7 @@ and OEE anomaly-free (no `oee>1`, no `oee<0`).
 
 The roadmap §3.1 says F3 is "assembled from `edge-node-red/db/*.sql` plus the
 oeecloud-worker rollup DDL." **That is incomplete and partly wrong** — verified
-against the code and live `packiot_shadow`:
+against the code and live `packiot_analytics`:
 
 - **`edge-node-red/db/00-schema.sql` is a NON-RUNNABLE dump** — a captured psql
   introspection report (`TABLE: name | col type` lines), never executed. It is
@@ -111,7 +111,7 @@ F3_MISSING = 344   EXTRA = 377   → FAIL
 The candidate is **neither a subset nor a superset** of F3 — 79 F3 tables
 missing while 160 extra, caggs 8/15, hypertables 3/5, and many same-named tables
 with **different column fingerprints**. Root cause: the fragments were authored
-against an *already-complete, already-populated* `packiot_shadow` (they reference
+against an *already-complete, already-populated* `packiot_analytics` (they reference
 `production_orders_runtime`, `equipment_events_man`, `equipments.downtime_reasons`,
 etc. that the incomplete dev base never creates), so concatenation cascade-fails.
 **This is precisely the "silently wrong OEE" risk — and the gate catches it.**
@@ -120,7 +120,7 @@ Conclusion: **do not hand-assemble F3-as-public from fragments.** Use §4.
 
 ---
 
-## 4. The AUTHORITATIVE method — curated schema-only snapshot of `packiot_shadow`
+## 4. The AUTHORITATIVE method — curated schema-only snapshot of `packiot_analytics`
 
 The only method that guarantees `prod public == staging F3` is to snapshot the
 live F3 schema structurally and curate out the debris:
@@ -134,7 +134,7 @@ live F3 schema structurally and curate out the debris:
 It runs, inside the staging `timescaledb` container:
 
 ```sh
-pg_dump -U postgres -d packiot_shadow \
+pg_dump -U postgres -d packiot_analytics \
   --schema-only --no-owner --no-privileges --schema=public \
   --exclude-table='ops_shadow_zombie_preimage_*' \
   --exclude-table='report_*_enterprsie_*' \
@@ -154,9 +154,9 @@ debris). The snapshot is then THREE ordered files `db-schema-f3` applies:
 
 | File | Applied | What |
 |---|---|---|
-| `snapshot/00-packiot_shadow-schema.sql` | best-effort | curated pg_dump base — **all 152 tables, 129 functions, 10 views** (byte-parity) |
+| `snapshot/00-packiot_analytics-schema.sql` | best-effort | curated pg_dump base — **all 152 tables, 129 functions, 10 views** (byte-parity) |
 | `snapshot/05-f3-cagg-agg.sql` | strict | `= 0012-f3-cagg-layer.sql` — `equipment_values` hypertable + the 9 `agg_*` caggs |
-| `snapshot/10-f3-timescale-supplement.sql` | strict | the 3 remaining raw hypertables + the 5 `ca_*` caggs (defs introspected SELECT-only from `packiot_shadow`) |
+| `snapshot/10-f3-timescale-supplement.sql` | strict | the 3 remaining raw hypertables + the 5 `ca_*` caggs (defs introspected SELECT-only from `packiot_analytics`) |
 
 **Why the split:** a plain pg_dump **cannot** restore TimescaleDB continuous
 aggregates (it dumps them as views over `_timescaledb_internal._materialized_
@@ -191,7 +191,7 @@ EXTRA=0**.
 
 | Item | Status |
 |---|---|
-| Target manifest captured from live `packiot_shadow` (SELECT-only) | ✅ validated |
+| Target manifest captured from live `packiot_analytics` (SELECT-only) | ✅ validated |
 | Snapshot produced (curated schema-only dump + `05`/`10` timescale layer) | ✅ **done** (`snapshot/` populated) |
 | Full assembly → **F3_MISSING=0, EXTRA=0** on fresh `timescaledb:2.25.2-pg16` | ✅ **validated end-to-end** |
 | Gate correctly FAILs empty DB (562) + fragment assembly (344/377) | ✅ validated locally |
@@ -203,7 +203,7 @@ EXTRA=0**.
 
 ## 7. Version delta — a conscious decision for USER
 
-The snapshot was dumped from staging `packiot_shadow` = **PostgreSQL 15.17** (older
+The snapshot was dumped from staging `packiot_analytics` = **PostgreSQL 15.17** (older
 TimescaleDB, no `finalized` cagg column). The prod image (W1 PR #627) is
 **`timescale/timescaledb:2.25.2-pg16`**. The parity gate deliberately compares
 **user objects only** (extension-owned objects excluded via `pg_depend deptype='e'`)

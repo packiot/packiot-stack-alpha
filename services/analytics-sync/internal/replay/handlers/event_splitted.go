@@ -42,7 +42,7 @@ type EventSplittedPayload struct {
 // id_equipment_event per row (resolved by ts_event PK lookup — see
 // resolveEventID) so later edits-by-id resolve on the shadow paths.
 func EventSplitted(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p EventSplittedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -53,9 +53,9 @@ func EventSplitted(logger *slog.Logger) replay.Handler {
 		if err := insertSplitEvents(ctx, mainPool, mainPool, "shadow_go_port", &p, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := insertSplitEvents(ctx, mainPool, shadowPool, "public", &p, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := insertSplitEvents(ctx, mainPool, analyticsPool, "public", &p, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil

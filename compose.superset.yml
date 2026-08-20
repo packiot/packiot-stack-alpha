@@ -43,7 +43,7 @@ x-superset-env: &superset-env
   SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
   SUPERSET_GUEST_TOKEN_JWT_SECRET: ${SUPERSET_GUEST_TOKEN_JWT_SECRET}
   SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD}
-  # Metadata-DB host. pgbouncer only routes packiot/packiot_shadow (no `superset`
+  # Metadata-DB host. pgbouncer only routes packiot/packiot_analytics (no `superset`
   # route), so the low-traffic Superset metadata DB connects UPSTREAM-DIRECT to the
   # r7g (same host superset-db-init uses). See superset_config.py for the rationale.
   POSTGRES_HOST_UPSTREAM: ${POSTGRES_HOST_UPSTREAM}

@@ -26,7 +26,7 @@ func New(ctx context.Context, creds *secrets.DBCreds, maxConns int, logger *slog
 
 // NewForDatabase returns a pool against the same host/user/password as
 // creds but overriding the target database name. Used for the ADR-0012
-// shadow DB (packiot_shadow) sitting alongside the main packiot DB.
+// shadow DB (packiot_analytics) sitting alongside the main packiot DB.
 // appName is set on the connection so pg_stat_activity shows which
 // consumer opened it (helpful during the refactor rollout).
 func NewForDatabase(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, maxConns int, logger *slog.Logger) (*pgxpool.Pool, error) {
@@ -72,7 +72,7 @@ func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName 
 
 	// Shadow (direct) pool: clear the server's default statement_timeout on every
 	// connection so the rollup/refresh/uns jobs run under their Go tick timeout
-	// (5 min) instead of being killed mid-backfill by packiot_shadow's 120s
+	// (5 min) instead of being killed mid-backfill by packiot_analytics's 120s
 	// global default — the same reason provision.go SETs it to 0 (a slow but
 	// legitimate rollup/backfill must be allowed to finish; the tick context is
 	// the real guard). A killed query never clears recalc_needed, so it retries

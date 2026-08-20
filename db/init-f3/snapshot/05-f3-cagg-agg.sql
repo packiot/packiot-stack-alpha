@@ -1,4 +1,4 @@
--- F3 (packiot_shadow) aggregate layer — same prod CAgg defs as Flow 1,
+-- F3 (packiot_analytics) aggregate layer — same prod CAgg defs as Flow 1,
 -- staging-tuned policies (see staging-parity-cagg-adoption.sql).
 -- ca_* tier DEFERRED: it aggregates the function-fed legacy
 -- agg_equipment_values_1min_t, which the refactor does not carry —

@@ -95,7 +95,7 @@ services:
       QUERY_TIMEOUT: "60"
       # Reclaim idle server connections after 120s (default 600s).
       SERVER_IDLE_TIMEOUT: "120"
-    # ── ADR-0032 Step 1: ADDITIVE packiot_shadow (F3) pool ─────────────────────
+    # ── ADR-0032 Step 1: ADDITIVE packiot_analytics (F3) pool ─────────────────────
     # The edoburu entrypoint (/entrypoint.sh) generates userlist.txt + a
     # pgbouncer.ini from the env vars above, then `exec "$@"` (this command).
     # We let that generation run UNTOUCHED — the `packiot` (F1) pool line and
@@ -112,7 +112,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - 'sed -i "s|^\[databases\]|[databases]\npackiot_shadow = host=$$DB_HOST port=$$DB_PORT dbname=packiot_shadow auth_user=$$DB_USER|" /etc/pgbouncer/pgbouncer.ini && exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini'
+      - 'sed -i "s|^\[databases\]|[databases]\npackiot_analytics = host=$$DB_HOST port=$$DB_PORT dbname=packiot_analytics auth_user=$$DB_USER|" /etc/pgbouncer/pgbouncer.ini && exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini'
     networks:
       packiot-net:
         ipv4_address: 172.18.0.10
@@ -810,7 +810,7 @@ services:
   # telemetry" gap from the full-stack audit; G-track/ADR-0017 §3) ──────────────
   # postgres-exporter: white-box DB metrics (connections, locks, per-DB stats,
   # replication/WAL). Points at the DB EC2 directly (same host the workers'
-  # shadow pool uses); auto-discovers packiot + packiot_shadow so the flip
+  # shadow pool uses); auto-discovers packiot + packiot_analytics so the flip
   # needs no exporter change. Unblocks the CAgg-invalidation/disk alert
   # backlog named in monitoring/README.
   postgres-exporter:
@@ -1215,7 +1215,7 @@ services:
       STAGING_API_URL: http://edge-api:8080
       HEALTH_PORT: "9102"
       # ADR-0012 3-flow parity: fan every equipment_values delta out to
-      # shadow_go_port (Flow 2, same DB) + packiot_shadow.public (Flow 3)
+      # shadow_go_port (Flow 2, same DB) + packiot_analytics.public (Flow 3)
       # so the shadow flows receive the same prod-anchored CPACK counters
       # as Flow 1. One Go-side timestamp keeps (ts_value, id_equipment)
       # — the parity join key — identical across flows. Loss-with-alert:
@@ -1226,14 +1226,14 @@ services:
       # leg. The flip (#652) is live — reads are on F3 (REFDATA_FLOW=f3),
       # SHADOW_EMIT_PRODUCTION=false, the comparator is off (parity was drift=0),
       # so shadow_go_port is dead scaffolding. false ⇒ the mirror fans ONLY F3
-      # (packiot_shadow), so shadow_go_port stops receiving writes and can be
+      # (packiot_analytics), so shadow_go_port stops receiving writes and can be
       # frozen + dropped. Reversible: unset (default true) + redeploy → F2
       # fan-out resumes. Pairs with the complete-gate code fix (FanoutEventRow +
       # comparator legs now also honor this).
       SHADOW_FANOUT_F2: "false"
-      POSTGRES_SHADOW_DB_NAME: packiot_shadow
+      POSTGRES_ANALYTICS_DB_NAME: packiot_analytics
       # Direct to postgres — pgbouncer's static database list doesn't
-      # include packiot_shadow (same bypass shadow-mirror uses).
+      # include packiot_analytics (same bypass shadow-mirror uses).
       SHADOW_DB_HOST: 10.10.10.89
       # ADR-0025 / #48: prod-authoritative reconcile FINISHER. Closes mirror-
       # managed CPACK (ent 1) status=2 POs that dropped off prod-active — the
@@ -1388,12 +1388,12 @@ services:
       SHIFT_FILL_FOLDED: "true"
       HEALTH_PORT: "9101"
       # ADR-0012 Phase 3: route source_type="refactored" envelopes to the
-      # packiot_shadow DB (same host/user/password, different database).
-      # Empty = disabled (production default). packiot_shadow was
+      # packiot_analytics DB (same host/user/password, different database).
+      # Empty = disabled (production default). packiot_analytics was
       # provisioned via scripts/reprovision-refactor-sandbox.sh --db-name
-      # packiot_shadow and holds the refactored end-state schema
+      # packiot_analytics and holds the refactored end-state schema
       # (customer_dashboards pool, canonical CAggs, renames applied).
-      POSTGRES_SHADOW_DB_NAME: "packiot_shadow"
+      POSTGRES_ANALYTICS_DB_NAME: "packiot_analytics"
       # ADR-0014 Phase 2: Go port of piot_set_shift_on_equipment_values().
       # Fills id_shift/id_shift_hour/ts_value_production on SHADOW-path
       # writes (source_type go/refactored) as a companion UPDATE in the
@@ -1675,7 +1675,7 @@ services:
       # Publisher creds — the edge-transformer user has publish perms on
       # `oee` (oeecloud-worker's user is a consumer, no publish). A dedicated
       # publish-only ingest-shim RabbitMQ user is the production hardening.
-      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-edge-transformer-creds
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-sparkplug-decoder-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       # Publish target — the existing exchange + routing key oeecloud-worker
@@ -1741,7 +1741,7 @@ services:
   # of Calc_Counters family) is what flips this from shadow to authoritative.
   #
   # Prerequisites (ALL MET as of 2026-06-30):
-  #   ✓ Secret packiot/staging/rabbitmq-edge-transformer-creds exists
+  #   ✓ Secret packiot/staging/rabbitmq-sparkplug-decoder-creds exists
   #   ✓ RabbitMQ user `edge-transformer` provisioned via app_init.sh
   #     (configure/write/read scoped per ADR-0009 runbook §2.B)
   #   ✓ Topology declared: edge.plc-normalized + dlx.edge.plc-normalized
@@ -1778,7 +1778,7 @@ services:
       # low-volume and worth keeping whole.
       OTEL_TRACES_SAMPLER_ARG: "0.1"
       AWS_REGION: us-east-1
-      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-edge-transformer-creds
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-sparkplug-decoder-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: edge.plc-normalized
@@ -1849,8 +1849,8 @@ services:
       # ADR-0012 Phase 3 dual-emit: for each inbound MQTT event, publish
       # BOTH source_type="go" (routes to shadow_go_port on packiot,
       # existing ADR-0010 validation) AND source_type="refactored"
-      # (routes to packiot_shadow public via oeecloud-worker's shadow
-      # pool). Requires POSTGRES_SHADOW_DB_NAME set on oeecloud-worker.
+      # (routes to packiot_analytics public via oeecloud-worker's shadow
+      # pool). Requires POSTGRES_ANALYTICS_DB_NAME set on oeecloud-worker.
       SHADOW_EMIT_REFACTORED: "true"
       # ADR-0032 F3-collapse Step 3 knob: the F2 source_type="go" leg
       # (shadow_go_port comparison shadow) was hardcoded-always-on. Now gated —
@@ -1950,7 +1950,7 @@ services:
   # ── analytics-sync (was shadow-mirror; ADR-0013 — control-plane parity for 3-flow POC) ──
   # Polls staging.public.user_logs and replays operator actions onto
   # the two shadow paths (shadow_go_port schema on packiot + public
-  # schema on packiot_shadow), closing the gap left by the data-plane
+  # schema on packiot_analytics), closing the gap left by the data-plane
   # source_type routing (which only covers equipment_values, not PO
   # lifecycle / downtimes / operator-edited events).
   #
@@ -1965,7 +1965,7 @@ services:
   # Flow 1 (edge-node-red) keeps the minimal Hasura as the stable
   # alpha; new/refactored consumers point here instead. Internal-only —
   # no public route. v1 reads the main DB via pgbouncer; flow-routing
-  # to packiot_shadow arrives with ADR-0012 Phase 4 reference data.
+  # to packiot_analytics arrives with ADR-0012 Phase 4 reference data.
   # ── app-redis (ADR-0035) ─────────────────────────────────────────────────
   # Dedicated APPLICATION cache / shared-state Redis — SEPARATE from
   # authentik-redis (.14), which is authentik's private session/task store and
@@ -2028,12 +2028,12 @@ services:
       # ── ADR-0032 Step 1: F3 read-plane plumbing (ADDITIVE, DEFAULT F1) ────────
       # REFDATA_FLOW selects which flow's DB refdata reads through pgbouncer:
       #   f1 → DB_NAME (packiot / F1, packiot.public)  ← DEFAULT, unchanged today
-      #   f3 → DB_NAME_F3 (packiot_shadow / F3)         ← via the new pgbouncer
-      #                                                    packiot_shadow pool
+      #   f3 → DB_NAME_F3 (packiot_analytics / F3)         ← via the new pgbouncer
+      #                                                    packiot_analytics pool
       # Kept f1 so this PR is a zero-behavior-change enablement: the F3 target is
       # plumbed-but-inactive. The sibling refdata-api code change consumes
       # REFDATA_FLOW to pick DB_NAME vs DB_NAME_F3 and to re-map each Surface-1
-      # dataset's SQL to packiot_shadow objects. Flip to f3 only after that lands
+      # dataset's SQL to packiot_analytics objects. Flip to f3 only after that lands
       # and the per-dataset F3 parity gate (ADR-0032 §6 Step 1) is green.
       REFDATA_FLOW: f3
       # ADR-0046 #19a: the internal device_key→id_equipment resolver endpoint
@@ -2041,7 +2041,7 @@ services:
       # REFDATA_INTERNAL_KEY. Empty ⇒ endpoint fail-closed/inert (401) — set
       # INTERNAL_API_KEY in /opt/packiot/.env before the birth-bound flip.
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
-      DB_NAME_F3: packiot_shadow
+      DB_NAME_F3: packiot_analytics
       HEALTH_PORT: "9104"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; a /v1 read
       # becomes one trace with its DB query time as a child span (otelpgx).
@@ -2098,10 +2098,10 @@ services:
   # can never gap or double under concurrent scanners / client replays
   # (idempotent by the client-generated scan_uuid UNIQUE). GET
   # /v1/scans/stream is an in-memory SSE fan-out of accepted scans, scoped
-  # per PO AND per tenant. Writes F3 (packiot_shadow) via pgbouncer's
-  # packiot_shadow pool — the go-forward plane. The Bronze schema is
+  # per PO AND per tenant. Writes F3 (packiot_analytics) via pgbouncer's
+  # packiot_analytics pool — the go-forward plane. The Bronze schema is
   # edge-node-red/db/36-box-scans.sql (box_scans append-only + po_box_counter
-  # + v_po_box_totals), applied to packiot_shadow. Internal-only for Phase 0;
+  # + v_po_box_totals), applied to packiot_analytics. Internal-only for Phase 0;
   # a Node-RED tee posts scans here in a later phase. See
   # services/barcode-service/README.md.
   barcode-service:
@@ -2114,9 +2114,9 @@ services:
       DB_PORT: "5432"
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-      # Writes the go-forward plane (F3) via pgbouncer's packiot_shadow pool —
+      # Writes the go-forward plane (F3) via pgbouncer's packiot_analytics pool —
       # the same pool refdata-api reads through under REFDATA_FLOW=f3.
-      DB_NAME: packiot_shadow
+      DB_NAME: packiot_analytics
       HTTP_PORT: "8446"
       # ── Issuer-agnostic dual JWT verifier (tenant from JWT only) ──────────────
       # id_enterprise is derived SERVER-SIDE from a verified token and fails
@@ -2153,7 +2153,7 @@ services:
   # shadow-mirror can't replay them to F3. A tee node in Incoplast's
   # Node-RED posts each operator action here over HTTPS; the adapter maps
   # it to the matching edge-api call (which writes user_logs in F1), so
-  # shadow-mirror replays it to packiot_shadow (F3) — making both flows
+  # shadow-mirror replays it to packiot_analytics (F3) — making both flows
   # comparable for enterprise 4. Internal + Incoplast-Node-RED only; not a
   # public route. See services/operator-gateway/README.md.
   operator-gateway:
@@ -2227,7 +2227,7 @@ services:
       # ADR-0013 shadow-mirror now ACTIVE:
       # - shadow_go_port.equipment_events_man + production_orders exist
       #   (migration 20260702000001_shadow_go_port_operator_tables.ts)
-      # - packiot_shadow.public.* exists (Phase 3 writer-tables SQL)
+      # - packiot_analytics.public.* exists (Phase 3 writer-tables SQL)
       # - 10 handlers registered covering ~90% of daily operator volume
       SHADOW_MIRROR_ENABLED: "true"
       AWS_REGION: us-east-1
@@ -2236,7 +2236,7 @@ services:
       # Secrets Manager in Phase 2 (matches mirror-worker-go and
       # oeecloud-worker patterns). Connects DIRECTLY to postgres
       # (not pgbouncer) because pgbouncer's static database list
-      # doesn't include packiot_shadow — bypassing keeps the skeleton
+      # doesn't include packiot_analytics — bypassing keeps the skeleton
       # PR from having to touch pgbouncer config too.
       DB_HOST: 10.10.10.89   # staging DB EC2 direct
       DB_PORT: "5432"
@@ -2245,7 +2245,7 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       PG_DB_NAME: packiot
-      PG_SHADOW_DB_NAME: packiot_shadow
+      PG_ANALYTICS_DB_NAME: packiot_analytics
       POLL_INTERVAL_MS: "2000"
       BATCH_SIZE: "100"
       MAX_RETRIES: "5"

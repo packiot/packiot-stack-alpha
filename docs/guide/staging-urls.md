@@ -34,12 +34,12 @@ proceed. Treat edits to board 09 as production changes.
 ### Ground truth — direct SQL (Adminer)
 
 Browse the staging DBs at [`adminer.staging.packiot.app`](https://adminer.staging.packiot.app).
-Run the same query against **`packiot`** (F1) and **`packiot_shadow`** (F3) — the
+Run the same query against **`packiot`** (F1) and **`packiot_analytics`** (F3) — the
 counts should track. Incoplast = `id_enterprise 4`; set it to CPACK's id for the
 other tenant (confirm CPACK's enterprise id in Adminer first).
 
 ```sql
--- Incoplast (ent 4) ingest landing this hour — run in packiot (F1), then packiot_shadow (F3)
+-- Incoplast (ent 4) ingest landing this hour — run in packiot (F1), then packiot_analytics (F3)
 SELECT count(*) AS rows_last_hour
 FROM equipment_values ev
 JOIN equipments e ON e.id_equipment = ev.id_equipment
@@ -83,7 +83,7 @@ Base: `https://grafana.staging.packiot.app/d/<uid>`
 | Tool | URL | Use for |
 |------|-----|---------|
 | Operator SPA | [operator.staging.packiot.app](https://operator.staging.packiot.app) | Fire a PO / downtime / split; then watch board 05 + the comparator |
-| Adminer | [adminer.staging.packiot.app](https://adminer.staging.packiot.app) | Direct DB — switch between `packiot` (F1) and `packiot_shadow` (F3) |
+| Adminer | [adminer.staging.packiot.app](https://adminer.staging.packiot.app) | Direct DB — switch between `packiot` (F1) and `packiot_analytics` (F3) |
 | RabbitMQ mgmt | [rabbitmq.staging.packiot.com](https://rabbitmq.staging.packiot.com) | Queue depth, DLQ, per-tenant command queues (also `amqp.staging.packiot.app`) |
 | Hasura console | [hasura.staging.packiot.com](https://hasura.staging.packiot.com) | GraphQL over the DB (retires at flip — read-path moving to refdata) |
 | Node-RED editor | [nodered.staging.packiot.com](https://nodered.staging.packiot.com) | Operator endpoints + sim flows (sim retires at flip) |
@@ -99,6 +99,6 @@ Base: `https://grafana.staging.packiot.app/d/<uid>`
   the canonical test tenant (label `cpack`) — confirm its enterprise id in
   Adminer before running the per-tenant SQL for it.
 - **Flows**: F1 `packiot`·public (legacy compute) · F2 `packiot`·shadow_go_port ·
-  F3 `packiot_shadow`·public (refactored). The bake compares F1 vs F3.
+  F3 `packiot_analytics`·public (refactored). The bake compares F1 vs F3.
 - **Prod DB is SELECT-only, always.** This console watches **staging**; prod is
   untouched.

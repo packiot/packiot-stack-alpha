@@ -121,7 +121,7 @@ type Config struct {
 	// calc_production_counters Go port runs in SHADOW mode: it evaluates
 	// every counter-topic Sparkplug metric against its own State store,
 	// logs the Decision + emits Prometheus counters, but does NOT change
-	// the shadowpub output. This lets ops compare Go-port state to Node-
+	// the analyticspub output. This lets ops compare Go-port state to Node-
 	// RED's state via metrics BEFORE the actual cutover (Phase 4).
 	//
 	// Default false — port is opt-in until the 30-day comparator soak
@@ -226,10 +226,10 @@ type Config struct {
 	OutboxPath    string // filesystem path to the SQLite DB
 	OutboxCap     int    // max rows before FIFO drop-oldest kicks in
 
-	// EmitLivenessTimeoutSeconds is the #91 shadowpub emit-liveness window: if
+	// EmitLivenessTimeoutSeconds is the #91 analyticspub emit-liveness window: if
 	// the publisher is actively attempting but has had zero broker confirms for
 	// this long, /healthz goes 503 so orchestration recycles the silently-stalled
-	// service (the #89 gap). 0 disables the check. See shadowpub.DefaultLivenessTimeout.
+	// service (the #89 gap). 0 disables the check. See analyticspub.DefaultLivenessTimeout.
 	EmitLivenessTimeoutSeconds int
 
 	// ── Edge command channel (ADR-0019 C1 / task G4) ──────────────────────
