@@ -648,12 +648,17 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-07-15-mount-dashboards-v2"
+      - "provisioning_rev=2026-08-20-drop-dead-v1-dashboard-mount"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      # Was /var/lib/grafana/dashboards/01-oee-pipeline.json — that whole v1
+      # folder (grafana/dashboards/) was deleted when v2 was blessed (2026-07),
+      # so this had pointed at a file that no longer exists since then (Grafana
+      # silently falls back to its own default home, so it was a dead setting
+      # rather than a boot failure — still worth pointing at a real board).
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards-v2/00-overview.json
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     ports:
@@ -664,11 +669,10 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-      # v2 boards — the provisioning `packiot-v2` provider points here, but the
-      # mount was missing → Grafana logged "dashboards-v2: no such file or
-      # directory" every 10s and NONE of the 16 v2 boards (00-15, incl. the PO
-      # gate + database boards) were visible. Mount the dir so the v2 suite loads.
+      # v1's ./grafana/dashboards mount was removed here (2026-08-20) — the v1
+      # folder was deleted from the repo in July when v2 was blessed, so this
+      # had been bind-mounting a nonexistent host path (Docker silently creates
+      # an empty dir for a missing bind-mount source) for a month.
       - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]

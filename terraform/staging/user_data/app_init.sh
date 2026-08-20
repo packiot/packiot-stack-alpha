@@ -90,6 +90,12 @@ API_KEY=$(echo "$APP_SECRET"   | jq -r '.edge_api_key')
 MQ_USER=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_user')
 MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
+# dev@packiot.com Grafana Org Admin — previously hand-created directly in the
+# running Grafana's sqlite store (never codified, lost on any volume wipe).
+# Bootstrapped idempotently near the bottom of this script, same pattern as
+# the RabbitMQ client user. Empty-safe default so a secret predating this key
+# doesn't fail jq — see the merge instructions in terraform/staging/secrets.tf.
+GRAFANA_DEV_USER_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_dev_user_pass // ""')
 # CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
 # POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
 GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
@@ -244,6 +250,9 @@ RABBITMQ_URL=amqp://$MQ_USER:$MQ_PASS@rabbitmq:5672
 # Grafana
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
 GF_SERVER_ROOT_URL=https://grafana.$STAGING_DOMAIN
+# Consumed only by this script's dev@packiot.com bootstrap block below (NOT by
+# the grafana container itself — no GF_* equivalent exists for a second user).
+GRAFANA_DEV_USER_PASSWORD=$GRAFANA_DEV_USER_PASS
 
 # CPACK sparkplug-agent ingest (ADR-0042 P1) — empty until the agent-ingest
 # secret is populated; the sparkplug-agent-cpack service (profile cpack-tee)
@@ -482,6 +491,60 @@ docker compose -f compose.staging.yml up -d --build
 echo "Docker Compose stack started"
 echo "NOTE: set ID_ENTERPRISE in /opt/packiot/.env after enterprise onboarding, then:"
 echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud-worker"
+
+# ── Grafana: bootstrap dev@packiot.com (Org Admin) ────────────────────────────
+# Codifies a user that used to exist ONLY as a hand-created row in the running
+# Grafana's sqlite store — a `docker volume rm grafana-data` (or any fresh
+# instance) silently drops it with no error, no warning, and no re-provisioning
+# path (Grafana OSS has no declarative user-provisioning YAML the way it has
+# datasources/dashboards — GF_SECURITY_ADMIN_* only bootstraps the ONE built-in
+# admin account). This block re-creates it via the Admin HTTP API instead,
+# same idempotent-PUT idiom as the RabbitMQ client user below: skip cleanly if
+# the secret key is absent, safe to re-run via SSM once it's populated.
+if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
+  echo "Waiting for Grafana API..."
+  for i in $(seq 1 24); do
+    if curl -sf "http://127.0.0.1:3000/api/health" > /dev/null; then
+      echo "Grafana ready"
+      break
+    fi
+    sleep 5
+  done
+
+  DEV_USER_ID=$(curl -sf -u "admin:$GRAFANA_PASS" \
+    "http://127.0.0.1:3000/api/users/lookup?loginOrEmail=dev@packiot.com" \
+    | jq -r '.id // empty')
+
+  if [ -z "$DEV_USER_ID" ]; then
+    # POST /api/admin/users creates the user + adds them to the default org
+    # (id 1) at whatever role auto_assign_org_role defaults to; the PATCH
+    # below normalizes that to Admin regardless.
+    DEV_USER_ID=$(curl -sf -u "admin:$GRAFANA_PASS" -X POST \
+      "http://127.0.0.1:3000/api/admin/users" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":\"dev\",\"email\":\"dev@packiot.com\",\"login\":\"dev@packiot.com\",\"password\":\"$GRAFANA_DEV_USER_PASS\"}" \
+      | jq -r '.id // empty')
+    echo "Grafana user dev@packiot.com created (id=$DEV_USER_ID)"
+  else
+    # Already exists (e.g. re-running this script on a live box) — re-sync the
+    # password to whatever Secrets Manager currently holds.
+    curl -sf -u "admin:$GRAFANA_PASS" -X PUT \
+      "http://127.0.0.1:3000/api/admin/users/$DEV_USER_ID/password" \
+      -H "Content-Type: application/json" \
+      -d "{\"password\":\"$GRAFANA_DEV_USER_PASS\"}" > /dev/null
+    echo "Grafana user dev@packiot.com already exists (id=$DEV_USER_ID) — password re-synced"
+  fi
+
+  if [ -n "$DEV_USER_ID" ]; then
+    curl -sf -u "admin:$GRAFANA_PASS" -X PATCH \
+      "http://127.0.0.1:3000/api/org/users/$DEV_USER_ID" \
+      -H "Content-Type: application/json" \
+      -d '{"role":"Admin"}' > /dev/null
+    echo "Grafana user dev@packiot.com set to Org Admin"
+  fi
+else
+  echo "SKIP: grafana_dev_user_pass not in packiot/staging/app secret — add it (see terraform/staging/secrets.tf merge instructions) then re-run this block via SSM"
+fi
 
 # ── RabbitMQ: dedicated client user for external factory edges ────────────────
 # Requires the secret packiot/staging/rabbitmq-client-creds to exist:

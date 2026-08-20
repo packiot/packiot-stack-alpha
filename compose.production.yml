@@ -539,12 +539,17 @@ services:
     restart: unless-stopped
     env_file: [.env]
     labels:
-      - "provisioning_rev=2026-07-27-production-f3native"
+      - "provisioning_rev=2026-08-20-drop-dead-v1-dashboard-mount"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      # Was /var/lib/grafana/dashboards/01-oee-pipeline.json, a v1-board path.
+      # v1 (grafana/dashboards/) was deleted from the repo when v2 was blessed
+      # (2026-07) — see compose.staging.yml for the same fix + the dashboards-v2
+      # mount this environment was ALSO missing (below), meaning production
+      # Grafana was provisioning ZERO of the 18 v2 boards until this fix.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards-v2/00-overview.json
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     ports:
@@ -555,7 +560,10 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # v1's ./grafana/dashboards mount removed (dead: source dir deleted from
+      # repo in July) — replaced with the v2 mount, which this environment
+      # never had (compose.staging.yml got it 2026-07-15; production didn't).
+      - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s

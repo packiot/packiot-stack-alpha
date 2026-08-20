@@ -168,7 +168,7 @@ pg_timescaledb_hypertables:
     - compression_enabled: { usage: GAUGE, description: "1 if compression policy enabled" }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DBM ("Datadog-style") extension — 6 catalog/TimescaleDB views for the deep
+# DBM ("Datadog-style") extension — catalog/TimescaleDB views for the deep
 # Database board (16-database-dbm). Every query below was verified read-only
 # (BEGIN READ ONLY; ...; ROLLBACK) against packiot_analytics on staging before
 # commit. Per-DB queries carry a `datname = current_database()` disambiguator so
@@ -177,61 +177,26 @@ pg_timescaledb_hypertables:
 # TimescaleDB chunk schemas are excluded from the table/index scans: per-chunk
 # relnames rotate as chunks age, so including them would churn stale series
 # forever — the parent hypertable + user tables carry the signal we want.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Per-table access + bloat (seq-scan-heavy tables, dead tuples, vacuum age).
-# LIMIT 50 by seq_tup_read bounds the series count; the heaviest sequential
-# scanners (a missing-index smell) sort to the top. Runs per auto-discovered DB. ──
-pg_stat_user_tables:
-  query: |
-    SELECT current_database() AS datname,
-           schemaname AS schema,
-           relname    AS table,
-           seq_scan,
-           seq_tup_read,
-           coalesce(idx_scan, 0) AS idx_scan,
-           n_live_tup,
-           n_dead_tup,
-           CASE WHEN last_autovacuum IS NOT NULL
-                THEN extract(epoch FROM now() - last_autovacuum)
-                ELSE -1 END AS last_autovacuum_age_seconds
-    FROM pg_stat_user_tables
-    WHERE schemaname NOT LIKE '\_timescaledb%'
-    ORDER BY seq_tup_read DESC
-    LIMIT 50
-  metrics:
-    - datname: { usage: LABEL, description: "Database" }
-    - schema: { usage: LABEL, description: "Schema" }
-    - table: { usage: LABEL, description: "Table" }
-    - seq_scan: { usage: COUNTER, description: "Sequential scans initiated" }
-    - seq_tup_read: { usage: COUNTER, description: "Live rows fetched by sequential scans (index-absence smell)" }
-    - idx_scan: { usage: COUNTER, description: "Index scans initiated" }
-    - n_live_tup: { usage: GAUGE, description: "Estimated live rows" }
-    - n_dead_tup: { usage: GAUGE, description: "Estimated dead rows (bloat / vacuum lag)" }
-    - last_autovacuum_age_seconds: { usage: GAUGE, description: "Seconds since last autovacuum (-1 = never)" }
-
-# ── Per-index usage (idx_scan) + on-disk size. Sorted unused-and-large first so
-# idx_scan=0 candidates for DROP surface at the top. LIMIT 50 bounds cardinality;
-# internal chunk indexes excluded (their names churn per chunk). Runs per DB. ──
-pg_stat_user_indexes:
-  query: |
-    SELECT current_database() AS datname,
-           schemaname   AS schema,
-           relname      AS table,
-           indexrelname AS index,
-           coalesce(idx_scan, 0)         AS idx_scan,
-           pg_relation_size(indexrelid)  AS size_bytes
-    FROM pg_stat_user_indexes
-    WHERE schemaname NOT LIKE '\_timescaledb%'
-    ORDER BY coalesce(idx_scan, 0) ASC, pg_relation_size(indexrelid) DESC
-    LIMIT 50
-  metrics:
-    - datname: { usage: LABEL, description: "Database" }
-    - schema: { usage: LABEL, description: "Schema" }
-    - table: { usage: LABEL, description: "Table the index belongs to" }
-    - index: { usage: LABEL, description: "Index name" }
-    - idx_scan: { usage: GAUGE, description: "Scans of this index (0 sustained = unused → drop candidate)" }
-    - size_bytes: { usage: GAUGE, description: "Index size on disk" }
+#
+# NOTE: the per-table/per-index bloat + usage view (originally custom-query keys
+# `pg_stat_user_tables` / `pg_stat_user_indexes` here) was REMOVED 2026-08-20.
+# Naming a custom query after the exact catalog view postgres_exporter already
+# ships a built-in collector for makes the client_golang registry see two
+# collectors emitting the SAME metric name (`pg_stat_user_tables_seq_scan`, …)
+# with DIFFERENT HELP text. The Prometheus client aborts the ENTIRE /metrics
+# response on that HELP-text mismatch (HTTP 500) — which reads to Prometheus
+# as the whole exporter being down (`up{job="postgres-exporter"}=0`), silently
+# killing every OTHER metric in this file too (pg_cache_hit, pg_db_activity,
+# pg_table_size_top, pg_timescaledb_*, pg_activity_by_state, pg_longest_query,
+# plus the exporter's own built-in pg_stat_database_numbackends used by the
+# Infra board). Confirmed live on staging 2026-08-20: postgres-exporter was
+# crash-scraping (target down) since this block was added, dark-ing the entire
+# 11-database board + the Prometheus half of 16-database-dbm + the DB panel on
+# 10-infra. The equivalent per-table/per-index data is ALREADY served without
+# this collision by 16-database-dbm.json's native-SQL panels (queries directly
+# against packiot-postgres-shadow), so this was pure duplication — never worth
+# re-adding under the same key name. If it's ever wanted as a Prometheus metric
+# again, give it a non-colliding key, e.g. `pg_custom_table_stats`.
 
 # ── TimescaleDB background jobs — health of the automation plane (cagg refresh,
 # retention, compression, telemetry). last_run_success flags a failed last run;
