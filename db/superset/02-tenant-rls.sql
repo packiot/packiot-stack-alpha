@@ -51,9 +51,49 @@
 
 -- current_tenant(): the GUC as int, or NULL when unset/blank. `true` = missing_ok
 -- so an unset GUC yields NULL (→ policy denies) instead of erroring.
-CREATE OR REPLACE FUNCTION current_tenant() RETURNS int
+--
+-- SEARCH-PATH SAFETY (load-bearing — see is_all_tenant below): these helpers live
+-- in `public`, but Superset runs every bi.* query with `search_path = <schema>`
+-- (its Postgres engine-spec appends `-csearch_path=bi` per dataset schema), so
+-- `public` is NOT on the caller's path. Function bodies of inlinable SQL functions
+-- are re-resolved against the CALLER'S search_path at plan/inline time — an
+-- UNQUALIFIED cross-function call therefore fails with "function ... does not
+-- exist". current_tenant()'s body only touches built-ins (current_setting, NULLIF,
+-- int4) which are always resolvable, so it is safe unqualified; is_all_tenant()
+-- calls current_tenant() and MUST qualify it (public.current_tenant()).
+CREATE OR REPLACE FUNCTION public.current_tenant() RETURNS int
 LANGUAGE sql STABLE AS $$
   SELECT NULLIF(current_setting('app.tenant_id', true), '')::int
+$$;
+
+-- is_all_tenant(): TRUE when the session carries the super-admin ALL-TENANT
+-- sentinel (app.tenant_id = -1). This sentinel is stamped ONLY by the Superset
+-- DB_CONNECTION_MUTATOR for a native **Admin** (internal super-admin) UI session
+-- (superset_config.py::_admin_all_tenant_stamp) — never for a guest token or a
+-- per-tenant authoring role. It is UNFORGEABLE from the token path: the mutator
+-- derives per-tenant ids by a `\d+` regex, which can only yield a NON-NEGATIVE
+-- integer, so a negative value can come ONLY from the trusted admin branch.
+--
+-- Every tenant_isolation policy below is `is_all_tenant() OR <per-tenant match>`:
+--   * super-admin session (GUC = -1) → is_all_tenant() short-circuits TRUE →
+--     the policy returns EVERY tenant's rows (the internal super-admin sees all).
+--   * any tenant/guest session (GUC = <real id>) → is_all_tenant() FALSE → the
+--     per-tenant predicate bites exactly as before (strict per-tenant isolation).
+--   * GUC unset/blank → current_tenant() NULL, is_all_tenant() FALSE, per-tenant
+--     match NULL → deny-all (fail-closed) — unchanged.
+--
+-- The `public.` qualifier on current_tenant() is REQUIRED, not cosmetic: when the
+-- planner inlines this STABLE SQL function into an RLS policy, its body is parsed
+-- under the caller's search_path (`bi` for Superset chart queries — see
+-- current_tenant above). Without the qualifier the inlined `current_tenant()` is
+-- unresolvable → `UndefinedFunction: function current_tenant() does not exist`,
+-- failing EVERY bi.* chart. The policies themselves call is_all_tenant()/
+-- current_tenant() unqualified safely because policy expressions are OID-pinned at
+-- CREATE POLICY time (resolved with `public` on the applying role's path); only the
+-- nested body call re-resolves at run time, so only it must be qualified.
+CREATE OR REPLACE FUNCTION public.is_all_tenant() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT public.current_tenant() = -1
 $$;
 
 -- ── Native-id tables (id_enterprise is a real column) — cheap policy ─────────
@@ -63,7 +103,7 @@ ALTER TABLE equipments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipments FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipments;
 CREATE POLICY tenant_isolation ON equipments
-    USING (id_enterprise = current_tenant());
+    USING (is_all_tenant() OR id_enterprise = current_tenant());
 
 -- equipment_events (the F3 downtime source — there is NO `downtimes` table) carries
 -- id_enterprise natively, BUT on the live analytics DB it is a COMPRESSED TimescaleDB
@@ -95,7 +135,7 @@ BEGIN
     EXECUTE 'ALTER TABLE equipment_events ENABLE ROW LEVEL SECURITY';
     EXECUTE 'ALTER TABLE equipment_events FORCE ROW LEVEL SECURITY';
     EXECUTE 'DROP POLICY IF EXISTS tenant_isolation ON equipment_events';
-    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING (id_enterprise = current_tenant())';
+    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING (is_all_tenant() OR id_enterprise = current_tenant())';
   END IF;
 END$$;
 
@@ -106,7 +146,7 @@ ALTER TABLE production_orders_runtime ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_orders_runtime FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON production_orders_runtime;
 CREATE POLICY tenant_isolation ON production_orders_runtime
-    USING (EXISTS (
+    USING (is_all_tenant() OR EXISTS (
         SELECT 1 FROM equipments e
         WHERE e.id_equipment = production_orders_runtime.id_equipment
           AND e.id_enterprise = current_tenant()));
@@ -116,7 +156,7 @@ ALTER TABLE equipment_runtime_shift ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_shift FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_shift;
 CREATE POLICY tenant_isolation ON equipment_runtime_shift
-    USING (EXISTS (
+    USING (is_all_tenant() OR EXISTS (
         SELECT 1 FROM equipments e
         WHERE e.id_equipment = equipment_runtime_shift.id_equipment
           AND e.id_enterprise = current_tenant()));
@@ -126,10 +166,53 @@ ALTER TABLE equipment_runtime_1hour ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_1hour FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_1hour;
 CREATE POLICY tenant_isolation ON equipment_runtime_1hour
-    USING (EXISTS (
+    USING (is_all_tenant() OR EXISTS (
         SELECT 1 FROM equipments e
         WHERE e.id_equipment = equipment_runtime_1hour.id_equipment
           AND e.id_enterprise = current_tenant()));
+
+-- ── GAP-view base tables (W3 dashboards) ─────────────────────────────────────
+-- equipment_values (source for bi.equipment_speed / bi.live_status /
+-- bi.production_by_team) carries id_enterprise natively, but — exactly like
+-- equipment_events — it is a COMPRESSED TimescaleDB hypertable on the live DB and
+-- rejects `ENABLE ROW LEVEL SECURITY`. Same conditional shape: SKIP on a compressed
+-- hypertable (those views isolate TRANSITIVELY via the equipments join, which is why
+-- they select eq.id_enterprise, not ev.id_enterprise), enable the native policy on a
+-- plain table (the CI fixture) so the "every base table has a rule" guard holds.
+DO $$
+DECLARE is_columnstore boolean := false;
+BEGIN
+  IF to_regclass('timescaledb_information.hypertables') IS NOT NULL THEN
+    SELECT COALESCE(bool_or(compression_enabled), false) INTO is_columnstore
+    FROM timescaledb_information.hypertables
+    WHERE hypertable_name = 'equipment_values';
+  END IF;
+  IF is_columnstore THEN
+    RAISE NOTICE 'equipment_values is a compressed hypertable — RLS skipped; bi.equipment_speed/live_status/production_by_team isolate transitively via the equipments join';
+  ELSE
+    EXECUTE 'ALTER TABLE equipment_values ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE equipment_values FORCE ROW LEVEL SECURITY';
+    EXECUTE 'DROP POLICY IF EXISTS tenant_isolation ON equipment_values';
+    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_values USING (public.is_all_tenant() OR id_enterprise = public.current_tenant())';
+  END IF;
+END$$;
+
+-- production_orders (source for bi.production_orders) carries id_enterprise NATIVELY
+-- (unlike production_orders_runtime) → cheap direct policy. Plain table (not a
+-- hypertable), so the ENABLE is unconditional.
+ALTER TABLE production_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE production_orders FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON production_orders;
+CREATE POLICY tenant_isolation ON production_orders
+    USING (public.is_all_tenant() OR id_enterprise = public.current_tenant());
+
+-- production_targets (source for bi.production_targets) carries id_enterprise
+-- natively → cheap direct policy.
+ALTER TABLE production_targets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE production_targets FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON production_targets;
+CREATE POLICY tenant_isolation ON production_targets
+    USING (public.is_all_tenant() OR id_enterprise = public.current_tenant());
 
 -- (The F3 downtime source equipment_events is handled above with a native-id
 -- policy — there is no `downtimes` table to protect.)

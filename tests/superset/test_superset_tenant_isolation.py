@@ -178,3 +178,57 @@ def test_tenant_rowsets_are_disjoint_and_partition(applied_db, su, views):
         assert (a | b) == universe, (
             f"bi.{v}: stamped A∪B ({a | b}) != all tenants ({universe}) — a tenant is unreachable"
         )
+
+
+# ── 3. SUPER-ADMIN ALL-TENANT SENTINEL (dev@packiot.com) ─────────────────────
+# The Superset DB_CONNECTION_MUTATOR stamps app.tenant_id = -1 for a native Admin
+# (internal super-admin) UI session. The RLS policies honor that sentinel via
+# is_all_tenant() → the super-admin sees EVERY tenant on the shared dashboards,
+# while every per-tenant / guest / unset path stays exactly as strict as above.
+
+SUPER_ADMIN_SENTINEL = -1
+
+
+def test_super_admin_sentinel_sees_all_tenants(applied_db, su, views):
+    """GUC = -1 (super-admin) returns the UNION of every tenant's rows."""
+    with su.cursor() as cur:
+        cur.execute("SELECT DISTINCT id_enterprise FROM equipments")
+        universe = {r[0] for r in cur.fetchall()}
+    for v in views:
+        allrows = set(_ro_rows(applied_db, v, SUPER_ADMIN_SENTINEL))
+        assert allrows == universe, (
+            f"bi.{v}: super-admin sentinel saw {allrows}, expected all tenants {universe}"
+        )
+        # It must strictly SUPERSET what any single tenant sees (both A and B present).
+        assert {TENANT_A, TENANT_B} <= allrows, (
+            f"bi.{v}: super-admin sentinel missing a tenant: {allrows}"
+        )
+
+
+def test_is_all_tenant_flag_matches_guc(su):
+    """is_all_tenant() is TRUE only for the sentinel, FALSE for real tenants/unset."""
+    with su.cursor() as cur:
+        cur.execute("SET app.tenant_id = %s", (str(SUPER_ADMIN_SENTINEL),))
+        cur.execute("SELECT is_all_tenant()")
+        assert cur.fetchone()[0] is True, "is_all_tenant() should be TRUE at the sentinel"
+        cur.execute("SET app.tenant_id = %s", (str(TENANT_A),))
+        cur.execute("SELECT is_all_tenant()")
+        assert cur.fetchone()[0] is False, "is_all_tenant() must be FALSE for a real tenant"
+        cur.execute("RESET app.tenant_id")
+        cur.execute("SELECT is_all_tenant()")
+        # Unset GUC → current_tenant() is NULL → NULL = -1 is SQL NULL (three-valued
+        # logic). NULL is NOT TRUE, so a `USING (is_all_tenant() OR ...)` policy still
+        # denies — the fail-closed guarantee holds. Assert it is never TRUE.
+        assert cur.fetchone()[0] is not True, "is_all_tenant() must not be TRUE when the GUC is unset"
+
+
+def test_guest_clause_cannot_reach_sentinel(applied_db, views):
+    """A guest-token session (stamped to a REAL tenant) with a crafted
+    id_enterprise=-1 filter must NOT see the all-tenant set — the sentinel is a
+    property of the Admin session role, never of a client-supplied clause."""
+    for v in views:
+        # Session stamped for tenant A; a WHERE that names the sentinel returns
+        # nothing (there is no id_enterprise = -1 data, and RLS already scoped to A).
+        rows = _ro_rows(applied_db, v, tenant=TENANT_A,
+                        where=f"WHERE id_enterprise = {SUPER_ADMIN_SENTINEL}")
+        assert rows == [], f"bi.{v}: tenant-A session + id_enterprise=-1 clause leaked rows {set(rows)}"
