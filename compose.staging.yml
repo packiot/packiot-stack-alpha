@@ -2411,7 +2411,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
-    mem_limit: 256m
+    mem_limit: 512m          # metadata store cap — keep the superset profile off the box's RAM ceiling
+    mem_reservation: 256m
     cpus: 0.5
     logging:
       driver: json-file
@@ -2458,6 +2459,9 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.44
     restart: "no"
+    mem_limit: 512m          # one-shot migrate+import; cap so it can't spike the box during deploy
+    mem_reservation: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
@@ -2499,7 +2503,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
-    mem_limit: 1500m
+    mem_limit: 1g            # gunicorn web (2 workers×20 threads); hard cap to protect the 4.6 GB box
+    mem_reservation: 768m
     cpus: 1.5
     logging:
       driver: json-file
@@ -2538,7 +2543,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
-    mem_limit: 768m
+    mem_limit: 640m          # single Celery worker (thumbnails/CSV); async+alerts off so this is ample
+    mem_reservation: 384m
     cpus: 1.0
     logging:
       driver: json-file

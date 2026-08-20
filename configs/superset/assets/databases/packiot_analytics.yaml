@@ -21,24 +21,18 @@
 # Superset connection carry its own correctly-stamped GUC. Do not re-route this
 # through pgbouncer without re-verifying the mutator's per-connection semantics.
 #
-# STAGING PORT NOTE (2026-08-20): production points dbname at `packiot`
+# STAGING NOTE (2026-08-20): production points dbname at `packiot`
 # (F3 assembled as its own `public` schema, ADR "W1.4") on host 10.20.10.89.
-# Staging has NOT done that swap — F3 lives in a SEPARATE physical database,
-# `packiot_shadow`, on staging's DB box (`packiot-staging-db`,
-# `POSTGRES_HOST=10.10.10.89` in `/opt/packiot/.env`, confirmed live). So on
-# staging: host `10.10.10.89`, dbname `packiot_shadow`, DIRECT (mirrors prod's
+# Staging has NOT done that swap — F3 lives in a SEPARATE physical database on
+# staging's DB box (`packiot-staging-db`, `POSTGRES_HOST=10.10.10.89` in
+# `/opt/packiot/.env`, confirmed live). That database was renamed
+# `packiot_shadow` -> `packiot_analytics` (2026-08-20). So on staging: host
+# `10.10.10.89`, dbname `packiot_analytics`, DIRECT (mirrors prod's
 # bypass-pgbouncer pattern above). `db/superset/01-superset-ro-role.sql` (the
 # `bi.*` views + superset_ro role) must be applied against THAT database for
 # these datasets to resolve.
-#
-# PENDING RENAME (branch `rename/db-packiot-analytics`, in flight as of
-# 2026-08-20): `packiot_shadow` is being renamed to `packiot_analytics`
-# end-to-end (DB name + pgbouncer route). When that lands, flip the dbname
-# below from `packiot_shadow` to `packiot_analytics` — nothing else in this
-# bundle changes (the Superset-side `database_name:` display label is already
-# `packiot_analytics`, chosen ahead of time to match).
 database_name: packiot_analytics
-sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@10.10.10.89:5432/packiot_shadow
+sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@10.10.10.89:5432/packiot_analytics
 cache_timeout: null
 expose_in_sqllab: true
 allow_run_async: true

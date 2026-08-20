@@ -22,7 +22,7 @@ has not been started — see that doc).
   placeholder** — inject from Secrets Manager at import. Connects DIRECT to the DB
   box (not pgbouncer — see the note inside the file for why: pgbouncer's
   transaction pooling can defeat the per-request tenant GUC stamp). On staging
-  that's `10.10.10.89/packiot_shadow`; production is `10.20.10.89/packiot` (F3
+  that's `10.10.10.89/packiot_analytics`; production is `10.20.10.89/packiot` (F3
   already reassembled as prod's `public` schema).
 - `datasets/packiot_analytics/*.yaml` — 10 datasets over the curated views:
   `bi.oee_shift`, `bi.oee_hourly`, `bi.production_order_runtime`, `bi.downtimes`,
@@ -63,7 +63,7 @@ curl -s -X POST "$SUPERSET/api/v1/dashboard/import/" \
    compose.superset.yml --profile superset up -d` (after confirming the secrets are
    current in Secrets Manager).
 2. **Apply `db/superset/01-superset-ro-role.sql` + `02-tenant-rls.sql`** against
-   staging's `packiot_shadow` database (creates the `bi` schema, the 10 views, the
+   staging's `packiot_analytics` database (creates the `bi` schema, the 10 views, the
    `superset_ro` role, and the base-table RLS policies) — these are NOT run
    automatically by the compose overlay.
 3. **`superset_ro` password** — from Secrets Manager (`superset_db_ro_password`);
@@ -82,6 +82,6 @@ curl -s -X POST "$SUPERSET/api/v1/dashboard/import/" \
    production; verified live 2026-08-20). See `db/superset/02-tenant-rls.sql`.
 7. **Run `tests/superset/`** (2-tenant isolation gate) before exposing any nav item
    pointed at staging Superset.
-8. **`rename/db-packiot-analytics`** (in flight) will rename `packiot_shadow` →
-   `packiot_analytics` — repoint `databases/packiot_analytics.yaml`'s `dbname` when
-   that lands.
+8. **DB rename LANDED (2026-08-20)** — staging's analytics DB was renamed
+   `packiot_shadow` → `packiot_analytics`; `databases/packiot_analytics.yaml`'s
+   `dbname` already points at `packiot_analytics`.
