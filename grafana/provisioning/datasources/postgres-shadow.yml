@@ -1,9 +1,10 @@
 apiVersion: 1
 
-# F3 — the refactored database (packiot_shadow on the same DB host).
-# Becomes THE database at the ADR-0016 §6 flip.
+# F3 — the refactored database (packiot_analytics on the same DB host).
+# Post-flip: this is THE live analytics/OEE database (renamed from
+# packiot_shadow); the legacy packiot DB is frozen.
 datasources:
-  - name: Packiot Shadow (F3)
+  - name: Packiot Analytics (F3)
     type: postgres
     uid: packiot-postgres-shadow
     url: $POSTGRES_HOST:$POSTGRES_PORT
@@ -11,7 +12,7 @@ datasources:
     secureJsonData:
       password: $POSTGRES_PASSWORD
     jsonData:
-      database: packiot_shadow
+      database: packiot_analytics
       sslmode: disable
       maxOpenConns: 10
       maxIdleConns: 5

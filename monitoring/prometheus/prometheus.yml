@@ -23,7 +23,9 @@ scrape_configs:
 
   - job_name: oeecloud-worker
     static_configs:
-      - targets: ['oeecloud-worker:9101']
+      # Service renamed oeecloud-worker → stream-engine (keeps the old network
+      # alias + Prometheus metric prefixes; scrape via the canonical new name).
+      - targets: ['stream-engine:9101']
     # Strategy C tenant extraction — derive a `tenant` label from the
     # AMQP routing_key. Two rules, mutually exclusive by anchored regex:
     #   sparkplug.data.<X>  → tenant=<X>          (Phase 2+ traffic)
@@ -54,8 +56,10 @@ scrape_configs:
     # Exposes calc_*, outbox_*, shadowpub_*, mqtt_subscriber_* series.
     # Consumed by grafana/dashboards/10-edge-transformer.json (the
     # renumbered board; old 09-edge-transformer-shadow-mode is gone).
+    # Service renamed edge-transformer → sparkplug-decoder (keeps the old
+    # network alias + metric prefixes; scrape via the canonical new name).
     static_configs:
-      - targets: ['edge-transformer:9102']
+      - targets: ['sparkplug-decoder:9102']
 
   # shadow-mirror — operator-action replay (ADR-0013). Exposes
   # shadow_mirror_{dispatched,failed,skipped,update_noop}_total +

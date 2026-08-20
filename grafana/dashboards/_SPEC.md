@@ -80,7 +80,6 @@ opposite; see "Bug classes" below.
 | `03-oee-business.json` | `v2-oee` | 01 | OEE per equipment (SQL, $enterprise chain) |
 | `04-engine.json` | `v2-engine` | 08 | oeecloud-worker: AMQP→jobs→writes per flow/tenant |
 | `05-ingest.json` | `v2-ingest` | 10 | edge-transformer: MQTT→calc→emit→outbox |
-| `06-mirrors.json` | `v2-mirrors` | 07+12 | replay lag + comparator + DLQ + fan-out |
 | `07-operator.json` | `v2-operator` | 05 | operator actions (user_logs SQL) + adapter/shim metrics |
 | `08-logs.json` | `v2-logs` | 04+06+11 | unified templated Loki |
 | `09-equipment.json` | `v2-equipment` | 02 | reference data (hierarchy, packml, POs, shifts) |

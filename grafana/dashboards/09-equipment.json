@@ -11,9 +11,9 @@
     "list": [
       {
         "current": {
-          "selected": false,
-          "text": "Packiot PostgreSQL",
-          "value": "packiot-postgres"
+          "selected": true,
+          "text": "Packiot Analytics (F3)",
+          "value": "packiot-postgres-shadow"
         },
         "hide": 0,
         "includeAll": false,

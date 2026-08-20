@@ -18,7 +18,7 @@
         "refresh": 2,
         "includeAll": true,
         "multi": true,
-        "current": { "text": "packiot_shadow", "value": "packiot_shadow" }
+        "current": { "text": "packiot_analytics", "value": "packiot_analytics" }
       }
     ]
   },
