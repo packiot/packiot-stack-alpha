@@ -1039,9 +1039,9 @@ services:
   # this reads the F3 `public` objects correctly. ⚠ Verify against the assembled
   # F3 schema at W1.4 (any R5-dimension datasets with a divergent sqlF3 must have
   # their backing objects present in prod `public`).
-  refdata-api:
-    build: ./services/refdata-api
-    container_name: refdata-api
+  read-api:
+    build: ./services/read-api
+    container_name: read-api
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -1082,13 +1082,14 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.26
+        aliases: ["refdata-api"]  # S2 flip: old name kept resolvable during rollout (prod had no S0 alias — added here)
     depends_on:
       # Soft dependency: refdata fails open, so only wait for the container to
       # start — a slow cache must never block the read plane from booting.
       app-redis:
         condition: service_started
     healthcheck:
-      test: ["CMD", "/usr/local/bin/refdata-api", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/read-api", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
