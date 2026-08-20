@@ -74,7 +74,12 @@ func Load() *Config {
 	sourceGroup := getenv("FANOUT_SOURCE_GROUP", "CPACK")
 	targetGroup := getenv("FANOUT_TARGET_GROUP", "SBXCPACK")
 	return &Config{
-		Enabled:                 getenv("FANOUT_CPACK_TO_SBXCPACK_ENABLED", "false") == "true",
+		// Master gate. Generic name for any twin (task #22 — one compose service
+		// per twin, each reading its OWN env block, so nothing here needs to be
+		// per-pair-named). FANOUT_CPACK_TO_SBXCPACK_ENABLED is kept as a fallback
+		// so the already-deployed CPACK→SBXCPACK instance's .env keeps working
+		// unchanged — new twins should set FANOUT_ENABLED instead.
+		Enabled:                 getenv("FANOUT_ENABLED", getenv("FANOUT_CPACK_TO_SBXCPACK_ENABLED", "false")) == "true",
 		AWSRegion:               getenv("AWS_REGION", "us-east-1"),
 		RabbitMQSecretID:        getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-oeecloud-creds"),
 		AMQPHost:                getenv("RABBITMQ_HOST", "rabbitmq"),
