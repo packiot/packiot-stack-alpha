@@ -649,7 +649,7 @@ services:
     # files are read at container boot, so without this marker Grafana would
     # silently ignore new datasources/dashboards on `docker compose up -d`.
     labels:
-      - "provisioning_rev=2026-08-20-drop-dead-v1-dashboard-mount"
+      - "provisioning_rev=2026-08-20-v2-collapse-07-operator-f3"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -659,7 +659,7 @@ services:
       # so this had pointed at a file that no longer exists since then (Grafana
       # silently falls back to its own default home, so it was a dead setting
       # rather than a boot failure — still worth pointing at a real board).
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards-v2/00-overview.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/00-overview.json
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     ports:
@@ -674,7 +674,7 @@ services:
       # folder was deleted from the repo in July when v2 was blessed, so this
       # had been bind-mounting a nonexistent host path (Docker silently creates
       # an empty dir for a missing bind-mount source) for a month.
-      - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s
