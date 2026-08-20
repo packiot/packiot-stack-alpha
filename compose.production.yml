@@ -1097,7 +1097,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
-  # ── operator-adapter (bespoke-operator-UI PO tee) ─────────────────────────────
+  # ── operator-gateway (was operator-adapter; bespoke-operator-UI PO tee) ───────
   # Operator twin of the ingest-shim: a client whose bespoke operator UI
   # justifies downtimes / starts POs WITHOUT calling edge-api tees each action
   # here over HTTPS; the adapter maps it to the matching edge-api call (which
@@ -1139,9 +1139,9 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
-  operator-adapter:
-    build: ./services/operator-adapter
-    container_name: operator-adapter
+  operator-gateway:
+    build: ./services/operator-gateway
+    container_name: operator-gateway
     profiles: ["client-ingest"]  # GATED: needs OPERATOR_API_KEY + a bespoke-operator client — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
     env_file: [.env]
@@ -1169,13 +1169,14 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.31
+        aliases: ["operator-adapter"]  # S2 flip: old name kept resolvable during rollout (prod had no S0 alias — added here)
     depends_on:
       edge-api:
         condition: service_started
       pgbouncer:
         condition: service_started
     healthcheck:
-      test: ["CMD", "/usr/local/bin/operator-adapter", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/operator-gateway", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

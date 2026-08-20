@@ -5,9 +5,9 @@ COPY go.mod go.sum* ./
 RUN go mod download 2>/dev/null || true
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
-    -o /out/operator-adapter ./cmd/operator-adapter
+    -o /out/operator-gateway ./cmd/operator-adapter
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/operator-adapter /usr/local/bin/operator-adapter
+COPY --from=build /out/operator-gateway /usr/local/bin/operator-gateway
 EXPOSE 8443
-ENTRYPOINT ["/usr/local/bin/operator-adapter"]
+ENTRYPOINT ["/usr/local/bin/operator-gateway"]
