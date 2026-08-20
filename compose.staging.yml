@@ -1781,7 +1781,7 @@ services:
       # — the resolver is only consulted on the birth-bound path. Safe no-op today.
       # resolve-by-device_key (globally unique) → no BIRTH_BOUND_ENTERPRISE_ID.
       BIRTH_BOUND_RESOLVER: refdata
-      REFDATA_URL: http://refdata-api:9104
+      REFDATA_URL: http://read-api:9104
       REFDATA_INTERNAL_KEY: ${INTERNAL_API_KEY:-}
       # THE FLIP (per-tenant, after INTERNAL_API_KEY is set + resolver smoke-tested):
       #   plc-sim EMIT_DEFINITIVE_BIRTH=true  +  edge-transformer BIRTH_BOUND_ROUTING=true
@@ -1998,9 +1998,9 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
-  refdata-api:
-    build: ./services/refdata-api
-    container_name: refdata-api
+  read-api:
+    build: ./services/read-api
+    container_name: read-api
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -2060,7 +2060,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.26
-        aliases: ["read-api"]  # rename alias-first (S0)
+        aliases: ["refdata-api"]  # S2 flip: old name kept resolvable during rollout
     depends_on:
       # Soft dependency: refdata fails open, so we only wait for the container to
       # start (not a healthcheck) — a slow/unhealthy cache must never block the
@@ -2068,7 +2068,7 @@ services:
       app-redis:
         condition: service_started
     healthcheck:
-      test: ["CMD", "/usr/local/bin/refdata-api", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/read-api", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -2304,7 +2304,7 @@ services:
       # backends instead so early SPA requests don't 5xx.
       edge-api:
         condition: service_started
-      refdata-api:
+      read-api:
         condition: service_healthy
     mem_limit: 128m
     cpus: 0.25

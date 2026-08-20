@@ -37,9 +37,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/cache"
-	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/httpmetrics"
-	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/tracing"
+	"github.com/packiot/packiot-stack-alpha/services/read-api/internal/cache"
+	"github.com/packiot/packiot-stack-alpha/services/read-api/internal/httpmetrics"
+	"github.com/packiot/packiot-stack-alpha/services/read-api/internal/tracing"
 )
 
 type endpoint struct {
@@ -161,7 +161,7 @@ var (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(slog.String("service", "refdata-api"))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(slog.String("service", "read-api"))
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		os.Exit(runHealthcheck())
 	}
@@ -179,7 +179,7 @@ func main() {
 
 	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
 	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.
-	shutdownTracing, terr := tracing.Init(context.Background(), "refdata-api")
+	shutdownTracing, terr := tracing.Init(context.Background(), "read-api")
 	if terr != nil {
 		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
 	}
@@ -271,7 +271,7 @@ func main() {
 	})
 
 	port := getenv("HEALTH_PORT", "9104")
-	logger.Info("refdata-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
+	logger.Info("read-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
 	// ADR-0027 Surface-1: the single tenant-injection authority, applied as
 	// middleware in front of the WHOLE mux so no route can skip it. It
 	// resolves a credential → customer_id (fail-closed: no/invalid credential →
@@ -325,7 +325,7 @@ func main() {
 	// /metrics already serves. httpmetrics wraps the auth middleware so 401s
 	// are counted too; otelhttp is the outermost server span (the trace root,
 	// continuing any inbound traceparent).
-	handler := otelhttp.NewHandler(httpmetrics.New(prometheus.DefaultRegisterer)(authed), "refdata-api")
+	handler := otelhttp.NewHandler(httpmetrics.New(prometheus.DefaultRegisterer)(authed), "read-api")
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		logger.Error("http", slog.String("err", err.Error()))
 		os.Exit(1)

@@ -67,12 +67,12 @@ scrape_configs:
     static_configs:
       - targets: ['shadow-mirror:9103']
 
-  # refdata-api / query-api — the read side (ADR-0015). Full RED on :9104:
+  # read-api (formerly refdata-api) / query-api — the read side (ADR-0015). Full RED on :9104:
   # http_request_duration_seconds{method,route,status} (rate=_count, errors=by
   # status, duration=histogram) plus Go runtime + process metrics.
-  - job_name: refdata-api
+  - job_name: read-api
     static_configs:
-      - targets: ['refdata-api:9104']
+      - targets: ['read-api:9104']
 
   # ── Exporters (2026-07-07 audit: bus+DB+host had ZERO white-box
   # telemetry). Unblocks the disk/CAgg-invalidation alert backlog. ──
@@ -148,7 +148,7 @@ scrape_configs:
           - https://operator.staging.packiot.app
           - https://grafana.staging.packiot.app
           - http://edge-api:8080/health
-          - http://refdata-api:9104/healthz
+          - http://read-api:9104/healthz
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

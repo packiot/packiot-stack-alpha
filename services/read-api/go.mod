@@ -1,4 +1,4 @@
-module github.com/packiot/packiot-stack-alpha/services/refdata-api
+module github.com/packiot/packiot-stack-alpha/services/read-api
 
 go 1.25.0
 
