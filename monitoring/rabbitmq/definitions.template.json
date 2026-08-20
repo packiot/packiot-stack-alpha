@@ -2,17 +2,17 @@
   "rabbit_version": "3.13.7",
   "users": [
     { "name": "__ADMIN__", "password": "__ADMIN_PASS__", "tags": ["administrator"] },
-    { "name": "oeecloud-worker", "password": "__OEE_PASS__", "tags": [] },
+    { "name": "stream-engine", "password": "__OEE_PASS__", "tags": [] },
     { "name": "edge-transformer", "password": "__ET_PASS__", "tags": [] }
   ],
   "vhosts": [{ "name": "/" }],
   "permissions": [
     { "user": "__ADMIN__", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*" },
     {
-      "user": "oeecloud-worker", "vhost": "/",
-      "configure": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*|oeecloud-fanout.*)$",
-      "write": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*|oeecloud-fanout.*)$",
-      "read": "^(oee|oee-retry|oee-failed|oeecloud-worker-q.*|oeecloud-fanout.*)$"
+      "user": "stream-engine", "vhost": "/",
+      "configure": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$",
+      "write": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$",
+      "read": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$"
     },
     {
       "user": "edge-transformer", "vhost": "/",

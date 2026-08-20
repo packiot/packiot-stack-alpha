@@ -339,9 +339,9 @@ services:
   # SparkPlug topics → equipment via packml_register, writes raw data
   # to equipment_values/equipment_events/uns_metrics. Locally this lets
   # `make up` close the PLC → DB loop end-to-end without Node-RED.
-  oeecloud-worker:
-    build: ./services/oeecloud-worker
-    container_name: oeecloud-worker
+  stream-engine:
+    build: ./services/stream-engine
+    container_name: stream-engine
     restart: unless-stopped
     environment:
       LOG_LEVEL: info
@@ -364,11 +364,11 @@ services:
       # `oee` exchange is shared across envs in name but lives on a
       # different broker).
       SOURCE_EXCHANGE: oee
-      WORKER_QUEUE: oeecloud-worker-q-dev
+      WORKER_QUEUE: stream-engine-q-dev
       RETRY_EXCHANGE: oee-retry-dev
-      RETRY_QUEUE: oeecloud-worker-q-dev-retry-30s
+      RETRY_QUEUE: stream-engine-q-dev-retry-30s
       FAILED_EXCHANGE: oee-failed-dev
-      FAILED_QUEUE: oeecloud-worker-q-dev-failed
+      FAILED_QUEUE: stream-engine-q-dev-failed
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
@@ -380,7 +380,7 @@ services:
         condition: service_started
     networks: [packiot-net]
     healthcheck:
-      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/stream-engine", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5

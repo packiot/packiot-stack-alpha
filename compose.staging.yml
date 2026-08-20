@@ -1322,9 +1322,9 @@ services:
   #
   # See services/oeecloud-worker/internal/amqp/topology.go for the
   # exchange/queue/binding graph (with ASCII diagram).
-  oeecloud-worker:
-    build: ./services/oeecloud-worker
-    container_name: oeecloud-worker
+  stream-engine:
+    build: ./services/stream-engine
+    container_name: stream-engine
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -1345,11 +1345,16 @@ services:
       # access to oeecloud-q). EC2 IAM role grants packiot/staging/*.
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
-      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-oeecloud-creds
+      # MANUAL PRE-REQ (rename S1+S2, oeecloud-worker -> stream-engine): this
+      # secret does not exist yet under the new name. A human must create
+      # packiot/staging/rabbitmq-stream-engine-creds (username "stream-engine",
+      # SAME password as the current packiot/staging/rabbitmq-oeecloud-creds)
+      # in Secrets Manager BEFORE this deploys, else the worker can't auth.
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-stream-engine-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: oee
-      WORKER_QUEUE: oeecloud-worker-q
+      WORKER_QUEUE: stream-engine-q
       # Declarative tenant allowlist. tenants.DiscoverActive() reads the SHARED
       # main packiot DB's packml_register, and every prod→staging re-cut drags in
       # foreign-tenant register rows — without this the worker declares a
@@ -1359,9 +1364,9 @@ services:
       # WORKER_TENANT_ALLOWLIST unset → empty = allow ALL (no behavior change).
       WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack}"
       RETRY_EXCHANGE: oee-retry
-      RETRY_QUEUE: oeecloud-worker-q-retry-30s
+      RETRY_QUEUE: stream-engine-q-retry-30s
       FAILED_EXCHANGE: oee-failed
-      FAILED_QUEUE: oeecloud-worker-q-failed
+      FAILED_QUEUE: stream-engine-q-failed
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
@@ -1542,7 +1547,11 @@ services:
         # NOTE (scale): remove this static IP + container_name above when
         # OEECLOUD_WORKER_REPLICAS>1 (a fixed IP/name can't be shared by N).
         ipv4_address: 172.18.0.20
-        aliases: ["oee-engine"]  # rename alias-first (S0)
+        aliases: ["oeecloud-worker"]  # S2 flip: old name kept resolvable during rollout
+        # (S0/#826 added a forward alias "oee-engine" here — that was the
+        # PLANNING name from the base rename doc; the CONFIRMED final name is
+        # stream-engine, so the S0 alias is superseded/dropped in favor of the
+        # standard S2 old-name-reversal alias above.)
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -1557,7 +1566,7 @@ services:
     # has no shell/wget/curl, so the binary handles HTTP probe of its own
     # in-process /health server). Exit 0 = healthy, non-zero = not.
     healthcheck:
-      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/stream-engine", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -1596,7 +1605,14 @@ services:
       AWS_REGION: us-east-1
       # Reuse the worker's least-privilege AMQP user (declare own topology,
       # consume own queue, publish to `oee`). No new broker principal needed.
-      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-oeecloud-creds
+      # Repointed at the renamed secret (rename S1+S2, oeecloud-worker ->
+      # stream-engine): oeecloud-fanout authenticates as the SAME broker user
+      # as the worker, and that user is being renamed to `stream-engine` in
+      # this PR (monitoring/rabbitmq/definitions.template.json) — leaving this
+      # on the old secret/username would 403 the fanout the instant that
+      # user's name changes. The fanout's OWN rename (-> analytics-fanout) is
+      # a separate later PR; only the shared-credential pointer moves here.
+      RABBITMQ_SECRET_ID: packiot/staging/rabbitmq-stream-engine-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: oee
