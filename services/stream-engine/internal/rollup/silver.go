@@ -43,7 +43,7 @@
 //     re-selected — and a clean tick writes ZERO rows (a true no-op).
 //
 // COMPARATOR SAFETY (verified): RunSilverClamp runs for BOTH F2 (shadow_go_port)
-// and F3 (packiot_shadow) — the identical dest loop in LoopGrains — so any clamp
+// and F3 (packiot_analytics) — the identical dest loop in LoopGrains — so any clamp
 // applies to both flows identically. The bake F2↔F3 identity fingerprints only
 // count / sum(gross) / sum(running_time); this pass never lowers gross/net and
 // only touches running_time on already-negative data, and clamps both flows the

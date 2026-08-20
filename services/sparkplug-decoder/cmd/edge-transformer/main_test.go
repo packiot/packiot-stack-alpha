@@ -17,7 +17,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/shadowpub"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/analyticspub"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/transforms/calc_production_counters"
 	"github.com/prometheus/client_golang/prometheus"
@@ -320,7 +320,7 @@ func TestBuildCutoverMetricsSuppressesLineCounters(t *testing.T) {
 
 	out := buildCutoverMetrics(calcMetrics, nil)
 
-	got := map[string]*shadowpub.Metric{}
+	got := map[string]*analyticspub.Metric{}
 	for i := range out {
 		got[out[i].Name] = &out[i]
 	}

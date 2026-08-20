@@ -34,14 +34,14 @@ type UserLog struct {
 
 // Handler processes a single user_log entry. Handlers are expected to
 // write to BOTH shadow paths (shadow_go_port schema on mainPool AND
-// public schema on shadowPool). If shadowPool is nil, handlers should
+// public schema on analyticsPool). If analyticsPool is nil, handlers should
 // skip that half and log a warn.
 //
 // A returned error is retried up to MaxRetries per the dispatcher's
 // retry policy. Use ErrSkip when the payload is not applicable
 // (e.g. subcategory this handler doesn't cover) — those advance the
 // cursor without a DLQ write.
-type Handler func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *UserLog) error
+type Handler func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *UserLog) error
 
 // ErrSkip signals "this entry is well-formed but not applicable to any
 // shadow write" — advance cursor, don't DLQ, don't retry.
@@ -68,13 +68,13 @@ func (d *Dispatcher) Register(category string, h Handler) {
 // Dispatch returns (skipped, err). skipped=true means no handler was
 // registered for this category — the caller should advance the cursor
 // but not treat it as failure.
-func (d *Dispatcher) Dispatch(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *UserLog) (skipped bool, err error) {
+func (d *Dispatcher) Dispatch(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *UserLog) (skipped bool, err error) {
 	h, ok := d.handlers[u.Category]
 	if !ok {
 		// Unknown category — advance cursor without DLQ.
 		return true, nil
 	}
-	err = h(ctx, mainPool, shadowPool, u)
+	err = h(ctx, mainPool, analyticsPool, u)
 	if errors.Is(err, ErrSkip) {
 		return true, nil
 	}

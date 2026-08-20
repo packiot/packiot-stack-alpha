@@ -90,7 +90,7 @@ worker fans each message to three destinations:
 |------|---------------|-------------|----------------|
 | **F1** | `""` (empty) | `packiot.public` — the legacy schema | the baseline; what production does today |
 | **F2** | `"go"` | `packiot.shadow_go_port` — a shadow schema | the Go pipeline produces the same raw writes as F1 |
-| **F3** | `"refactored"` | `packiot_shadow` — a separate database | the *refactored* schema (pooled tenancy, clean names) still produces the same results |
+| **F3** | `"refactored"` | `packiot_analytics` — a separate database | the *refactored* schema (pooled tenancy, clean names) still produces the same results |
 
 A comparator continuously diffs the three. F1-vs-F2 proves the *code* port is
 faithful; F2-vs-F3 proves the *schema* refactor is faithful. The migration

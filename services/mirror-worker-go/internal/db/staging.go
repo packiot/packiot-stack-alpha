@@ -20,8 +20,8 @@ type Staging struct {
 	logger *slog.Logger
 
 	// ADR-0012 3-flow parity fan-out (see InsertEquipmentValueDelta).
-	valueFanout bool
-	shadowPool  *pgxpool.Pool // packiot_shadow (Flow 3); nil = not attached
+	valueFanout   bool
+	analyticsPool *pgxpool.Pool // packiot_analytics (Flow 3); nil = not attached
 	// ADR-0032 F3-collapse: gate the F2 (shadow_go_port) fan-out leg so it can be
 	// retired without a code change (the SHADOW_EMIT_GO analog for the mirror).
 	// Zero value (false) ⇒ F2 fanned as before; set true (SHADOW_FANOUT_F2=false)
@@ -56,34 +56,34 @@ func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger
 
 func (s *Staging) Close() {
 	s.pool.Close()
-	if s.shadowPool != nil {
-		s.shadowPool.Close()
+	if s.analyticsPool != nil {
+		s.analyticsPool.Close()
 	}
 }
 
 // EnableValueFanout turns on ADR-0012 3-flow fan-out: every
 // InsertEquipmentValueDelta row is also written to packiot.shadow_go_port
-// (same pool) and, when AttachShadowPool succeeded, packiot_shadow.public.
+// (same pool) and, when AttachAnalyticsPool succeeded, packiot_analytics.public.
 func (s *Staging) EnableValueFanout() { s.valueFanout = true }
 
 // SetF2Fanout controls whether the mirror fans the F2 (shadow_go_port) leg.
 // enabled=true keeps the ADR-0012 behavior; enabled=false (SHADOW_FANOUT_F2=false)
-// makes the mirror fan ONLY F3 (packiot_shadow) — the ADR-0032 collapse step that
+// makes the mirror fan ONLY F3 (packiot_analytics) — the ADR-0032 collapse step that
 // stops shadow_go_port receiving mirror writes so it can be frozen + dropped.
 func (s *Staging) SetF2Fanout(enabled bool) { s.f2Disabled = !enabled }
 
-// AttachShadowPool connects the ADR-0012 shadow DB (packiot_shadow) so
+// AttachAnalyticsPool connects the ADR-0012 shadow DB (packiot_analytics) so
 // value fan-out reaches Flow 3. Separate pool because pgbouncer's static
-// database list doesn't include packiot_shadow — callers pass a
+// database list doesn't include packiot_analytics — callers pass a
 // direct-to-postgres host via SHADOW_DB_HOST (same bypass shadow-mirror
 // uses).
-func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
+func (s *Staging) AttachAnalyticsPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
 	sc := *creds
 	sc.Database = dbName
 	if host != "" {
 		sc.Host = host
 	}
-	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-shadow"))
+	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-analytics"))
 	if err != nil {
 		return fmt.Errorf("parse shadow url: %w", err)
 	}
@@ -100,7 +100,7 @@ func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, 
 		p.Close()
 		return fmt.Errorf("shadow ping: %w", err)
 	}
-	s.shadowPool = p
+	s.analyticsPool = p
 	s.logger.Info("shadow pool ready", slog.String("db", dbName))
 	return nil
 }
@@ -580,11 +580,11 @@ func (s *Staging) CloseProdTerminalOrphanPO(ctx context.Context, stagingPOID int
 //
 // FinishOrphanPO above closes ONLY Flow 1 (public schema, by the F1 surrogate
 // id_production_order). The shadow flows (F2 = shadow_go_port schema on the
-// main pool; F3 = packiot_shadow.public on the shadow pool) carry their OWN
+// main pool; F3 = packiot_analytics.public on the shadow pool) carry their OWN
 // surrogate id_production_order per row (bug 248), so the same close must be
 // re-expressed against each flow by the NATURAL KEY (id_enterprise, id_order)
 // — exactly what shadow-mirror's lifecycle handlers do. These helpers reuse
-// the ADR-0012 fan-out plumbing (s.pool + s.shadowPool) the value delta
+// the ADR-0012 fan-out plumbing (s.pool + s.analyticsPool) the value delta
 // already writes through, so the finisher reaches all three flows with no new
 // connection wiring.
 
@@ -592,7 +592,7 @@ func (s *Staging) CloseProdTerminalOrphanPO(ctx context.Context, stagingPOID int
 // ShadowFlows and passed back into the per-flow finisher helpers. Keeping
 // the pool/schema unexported keeps pgx out of the reconcile package.
 type ShadowFlow struct {
-	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_shadow" (F3)
+	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_analytics" (F3)
 	pool   *pgxpool.Pool
 	schema string
 }
@@ -602,7 +602,7 @@ type ShadowFlow struct {
 //   - nil when EnableValueFanout was never called (fan-out disabled) — the
 //     finisher then behaves exactly like #480 (F1 only);
 //   - {shadow_go_port} when only Flow 2 is attached;
-//   - {shadow_go_port, packiot_shadow} once AttachShadowPool succeeded.
+//   - {shadow_go_port, packiot_analytics} once AttachAnalyticsPool succeeded.
 //
 // One flag (RECONCILE_FINISHER_ENABLED) governs whether the finisher runs at
 // all; this method governs which flows it can reach given what's wired.
@@ -614,8 +614,8 @@ func (s *Staging) ShadowFlows() []ShadowFlow {
 	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
 		flows = append(flows, ShadowFlow{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"})
 	}
-	if s.shadowPool != nil {
-		flows = append(flows, ShadowFlow{Name: "packiot_shadow", pool: s.shadowPool, schema: "public"})
+	if s.analyticsPool != nil {
+		flows = append(flows, ShadowFlow{Name: "packiot_analytics", pool: s.analyticsPool, schema: "public"})
 	}
 	return flows
 }
@@ -909,7 +909,7 @@ func (s *Staging) FetchMappedActiveCPACKPOs(ctx context.Context, source string, 
 //
 // ADR-0012 3-flow fan-out: when EnableValueFanout was called, the same
 // row also goes to packiot.shadow_go_port (Flow 2) and — if
-// AttachShadowPool succeeded — packiot_shadow.public (Flow 3). The
+// AttachAnalyticsPool succeeded — packiot_analytics.public (Flow 3). The
 // timestamp is computed ONCE in Go: (ts_value, id_equipment) is the
 // parity join key across flows, and a per-statement now() would give
 // each flow a different key. Shadow failures never fail the Flow 1
@@ -935,8 +935,8 @@ func (s *Staging) InsertEquipmentValueDelta(
 		s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
 			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	}
-	if s.shadowPool != nil {
-		s.fanoutValueDelta(ctx, s.shadowPool, "public", "packiot_shadow",
+	if s.analyticsPool != nil {
+		s.fanoutValueDelta(ctx, s.analyticsPool, "public", "packiot_analytics",
 			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	}
 	return nil
@@ -994,8 +994,8 @@ func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID,
 		s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
 			fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
 	}
-	if s.shadowPool != nil {
-		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-state",
+	if s.analyticsPool != nil {
+		s.execFanout(ctx, s.analyticsPool, "packiot_analytics", "-state",
 			fmt.Sprintf(sqlInsertStateRow, "public"), stagingEqID, ts, enterpriseID, status)
 	}
 }
@@ -1015,8 +1015,8 @@ func (s *Staging) FanoutEventRow(ctx context.Context, stagingEqID, enterpriseID 
 		s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
 			fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	}
-	if s.shadowPool != nil {
-		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-event",
+	if s.analyticsPool != nil {
+		s.execFanout(ctx, s.analyticsPool, "packiot_analytics", "-event",
 			fmt.Sprintf(sqlInsertShadowEvent, "public"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	}
 }
@@ -1085,7 +1085,7 @@ func dedupKey(c ShadowEventCandidate) shadowCandDedup {
 // FetchShadowEventCloseCandidates returns the DISTINCT set of shadow
 // equipment_events rows that are close-sweep candidates, UNIONed across
 // BOTH shadow planes (F2 = shadow_go_port on the staging pool, F3 = public
-// on the packiot_shadow pool). A row qualifies if it is either:
+// on the packiot_analytics pool). A row qualifies if it is either:
 //
 //	(a) still OPEN (ts_end IS NULL) at ANY age            — RISK-1 open-strand
 //	(b) has ts_event >= now()-recentHours                 — RISK-2 close-drift
@@ -1197,7 +1197,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 			return nil, err
 		}
 	}
-	if err := collect(s.shadowPool, "public"); err != nil {
+	if err := collect(s.analyticsPool, "public"); err != nil {
 		return nil, err
 	}
 
@@ -1206,7 +1206,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 
 // CountShadowOpenStrands counts shadow equipment_events rows still OPEN
 // (ts_end IS NULL) whose ts_event is older than olderThanHours, per plane
-// ("f2" = shadow_go_port, "f3" = public/packiot_shadow). Pure COUNT on the
+// ("f2" = shadow_go_port, "f3" = public/packiot_analytics). Pure COUNT on the
 // (id_enterprise) WHERE ts_end IS NULL partial index — the comparator's
 // close-field parity signal. A plane whose pool is nil is omitted from the
 // map (F3 not attached). Both planes should read EQUAL (F2==F3); inequality
@@ -1240,7 +1240,7 @@ func (s *Staging) CountShadowOpenStrands(ctx context.Context, enterpriseID, olde
 			return nil, err
 		}
 	}
-	if err := count(s.shadowPool, "f3", "public"); err != nil {
+	if err := count(s.analyticsPool, "f3", "public"); err != nil {
 		return nil, err
 	}
 	return out, nil

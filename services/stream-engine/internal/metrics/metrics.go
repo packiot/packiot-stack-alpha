@@ -56,7 +56,7 @@ func New() *Metrics {
 	}, []string{"job", "outcome"})
 	m.BatchWrites = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "oeecloud_worker_batch_writes_total",
-		Help: "Batch statements executed by destination flow + tenant. dest=f1_public|f2_shadow_go_port|f3_packiot_shadow; tenant=group_id (one per onboarded client).",
+		Help: "Batch statements executed by destination flow + tenant. dest=f1_public|f2_shadow_go_port|f3_packiot_analytics; tenant=group_id (one per onboarded client).",
 	}, []string{"dest", "tenant", "result"})
 	reg.MustRegister(m.Deliveries, m.Duration, m.JobTicks, m.BatchWrites)
 	return m

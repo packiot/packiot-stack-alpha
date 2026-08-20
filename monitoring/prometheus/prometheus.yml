@@ -102,7 +102,7 @@ scrape_configs:
 
   # ── Exporters (2026-07-07 audit: bus+DB+host had ZERO white-box
   # telemetry). Unblocks the disk/CAgg-invalidation alert backlog. ──
-  # White-box DB metrics for BOTH packiot + packiot_shadow
+  # White-box DB metrics for BOTH packiot + packiot_analytics
   # (auto-discover — flip needs no scrape change).
   - job_name: postgres-exporter
     static_configs:

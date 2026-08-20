@@ -58,7 +58,7 @@ type ManualEventCreatedPayload struct {
 // provisioned equipment_events_man in the shadow schemas. Once the
 // tables exist, the handler starts inserting on the next event.
 func ManualEventCreated(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p ManualEventCreatedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			logger.Warn("manual-event-created: payload unmarshal failed — skipping",
@@ -107,9 +107,9 @@ func ManualEventCreated(logger *slog.Logger) replay.Handler {
 		}
 
 		// Path 2: public on shadow pool (may be nil = disabled)
-		if shadowPool != nil {
-			if err := insertManualEvent(ctx, shadowPool, "public", &p, flow1ID, tsEvent, tsEnd, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow write: %w", err)
+		if analyticsPool != nil {
+			if err := insertManualEvent(ctx, analyticsPool, "public", &p, flow1ID, tsEvent, tsEnd, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics write: %w", err)
 			}
 		}
 		return nil

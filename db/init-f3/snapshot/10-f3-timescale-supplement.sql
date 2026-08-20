@@ -1,10 +1,10 @@
 -- 10-f3-timescale-supplement.sql — the TimescaleDB objects a plain pg_dump of
--- packiot_shadow CANNOT restore (caggs dump as views over
+-- packiot_analytics CANNOT restore (caggs dump as views over
 -- _timescaledb_internal._materialized_hypertable_NN, absent on a fresh DB).
 -- Applied AFTER 00-*-schema.sql (base tables) and 05-f3-cagg-agg.sql (agg_* tier
 -- + equipment_values hypertable, from 0012-f3-cagg-layer.sql). Adds the remaining
 -- raw hypertables + the ca_* cagg tier. Defs introspected SELECT-only from live
--- packiot_shadow (2026-07-27). materialized_only=false = realtime cagg (prod).
+-- packiot_analytics (2026-07-27). materialized_only=false = realtime cagg (prod).
 SET statement_timeout = 0;
 
 -- ── remaining raw hypertables (equipment_values done by 05) ───────────────────
@@ -166,7 +166,7 @@ CREATE TRIGGER trg_equipment_events_raw_no_mutate
     BEFORE UPDATE OR DELETE ON public.equipment_events_raw
     FOR EACH ROW EXECUTE FUNCTION public.bronze_raw_no_mutate();
 
--- Columnstore (matches live packiot_shadow: 7-day warm window, orderby carries
+-- Columnstore (matches live packiot_analytics: 7-day warm window, orderby carries
 -- source_seq DESC after the ts key) + 2-year drop horizon (== B0). if_not_exists
 -- makes both a no-op where already configured.
 ALTER TABLE public.equipment_values_raw SET (

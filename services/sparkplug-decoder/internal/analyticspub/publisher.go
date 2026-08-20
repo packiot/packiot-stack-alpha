@@ -1,4 +1,4 @@
-// Package shadowpub publishes ResolvedPayload → the edge.plc-normalized
+// Package analyticspub publishes ResolvedPayload → the edge.plc-normalized
 // exchange, mirroring the envelope shape that Phase 2.5b's Node-RED publisher
 // tab produces. This enables ADR-0008-style comparator validation: both
 // pipelines write to the SAME exchange with the SAME shape, and the
@@ -30,7 +30,7 @@
 //   - In-process retry loop with bounded exponential backoff on nack (P1)
 //   - Per-tenant credentials via AWS Secrets Manager (Phase 2 follow-up)
 //   - Prometheus metrics wired directly (currently counter-getters only)
-package shadowpub
+package analyticspub
 
 import (
 	"context"
@@ -104,12 +104,12 @@ var (
 	// ErrPublishNacked is returned when RabbitMQ actively refused the message
 	// via basic.nack. Retries may not help — inspect the broker + resource
 	// alarms (memory/disk) before re-publishing.
-	ErrPublishNacked = errors.New("shadowpub: RabbitMQ nacked publish")
+	ErrPublishNacked = errors.New("analyticspub: RabbitMQ nacked publish")
 
 	// ErrConfirmTimeout is returned when RabbitMQ didn't confirm within
 	// the configured deadline. Common causes: broker slow-write under load,
 	// network wobble, broker restart in progress.
-	ErrConfirmTimeout = errors.New("shadowpub: RabbitMQ confirm timeout")
+	ErrConfirmTimeout = errors.New("analyticspub: RabbitMQ confirm timeout")
 )
 
 // Publisher owns an AMQP Channel (single-writer) for shadow publishes.
@@ -188,12 +188,12 @@ type Publisher struct {
 func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 	conn, err := amqp.Dial(amqpURL)
 	if err != nil {
-		return nil, fmt.Errorf("shadowpub: dial: %w", err)
+		return nil, fmt.Errorf("analyticspub: dial: %w", err)
 	}
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("shadowpub: channel: %w", err)
+		return nil, fmt.Errorf("analyticspub: channel: %w", err)
 	}
 	// ADR-0011 rule 1 — enable AMQP confirm-select mode. Without this,
 	// PublishWithContext returns nil the moment the message leaves our TCP
@@ -201,7 +201,7 @@ func New(amqpURL, exchange string, logger *slog.Logger) (*Publisher, error) {
 	if err := ch.Confirm(false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, fmt.Errorf("shadowpub: enable confirm mode: %w", err)
+		return nil, fmt.Errorf("analyticspub: enable confirm mode: %w", err)
 	}
 	// Buffer of 64 is well above our sequential publish rate but small
 	// enough to serve as a bounded queue if the broker's ack stream stalls.
@@ -260,7 +260,7 @@ func (p *Publisher) connectionMonitor(ctx context.Context, logger *slog.Logger) 
 			}
 			if err := p.reconnect(logger); err != nil {
 				if logger != nil {
-					logger.Warn("shadowpub: reconnect attempt failed — will retry",
+					logger.Warn("analyticspub: reconnect attempt failed — will retry",
 						slog.String("err", err.Error()),
 						slog.Duration("next_backoff", backoff))
 				}
@@ -279,7 +279,7 @@ func (p *Publisher) connectionMonitor(ctx context.Context, logger *slog.Logger) 
 			return
 		case err := <-notifyClose:
 			if err != nil && logger != nil {
-				logger.Warn("shadowpub: connection closed — will reconnect",
+				logger.Warn("analyticspub: connection closed — will reconnect",
 					slog.String("err", err.Error()))
 			}
 			// Nil out conn so next iteration triggers a reconnect — but ONLY if
@@ -328,24 +328,24 @@ func (p *Publisher) reconnect(logger *slog.Logger) error {
 
 	conn, err := amqp.Dial(p.amqpURL)
 	if err != nil {
-		return fmt.Errorf("shadowpub reconnect: dial: %w", err)
+		return fmt.Errorf("analyticspub reconnect: dial: %w", err)
 	}
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("shadowpub reconnect: channel: %w", err)
+		return fmt.Errorf("analyticspub reconnect: channel: %w", err)
 	}
 	if err := ch.Confirm(false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return fmt.Errorf("shadowpub reconnect: enable confirm mode: %w", err)
+		return fmt.Errorf("analyticspub reconnect: enable confirm mode: %w", err)
 	}
 	p.conn = conn
 	p.ch = ch
 	p.confirms = ch.NotifyPublish(make(chan amqp.Confirmation, 64))
 	p.reconnects.Add(1)
 	if logger != nil {
-		logger.Info("shadowpub: reconnected to RMQ")
+		logger.Info("analyticspub: reconnected to RMQ")
 	}
 	return nil
 }
@@ -411,7 +411,7 @@ const BacklogDegradedThreshold = 100
 // ── ADR-0011 P0-4: ComponentSnapshotter for /healthz ─────────────────────────
 
 // Component satisfies health.ComponentSnapshotter.
-func (p *Publisher) Component() string { return "shadow_publisher" }
+func (p *Publisher) Component() string { return "analytics_publisher" }
 
 // SnapshotDetail returns the per-component JSON body.
 func (p *Publisher) SnapshotDetail() any {
@@ -534,7 +534,7 @@ func (p *Publisher) Publish(ctx context.Context, resolved *sparkplug.ResolvedPay
 	body, err := json.Marshal(env)
 	if err != nil {
 		p.failed.Add(1)
-		return fmt.Errorf("shadowpub: marshal envelope: %w", err)
+		return fmt.Errorf("analyticspub: marshal envelope: %w", err)
 	}
 
 	msgID := newMessageID()
@@ -557,7 +557,7 @@ func (p *Publisher) PublishBytes(ctx context.Context, routingKey, messageID stri
 	if err := p.publishBytesOnce(ctx, routingKey, messageID, body); err != nil {
 		if isConnectionError(err) {
 			if p.logger != nil {
-				p.logger.Warn("shadowpub: connection-level publish failure — reconnecting",
+				p.logger.Warn("analyticspub: connection-level publish failure — reconnecting",
 					slog.String("err", err.Error()))
 			}
 			if recErr := p.reconnect(p.logger); recErr != nil {
@@ -579,7 +579,7 @@ func (p *Publisher) PublishBytes(ctx context.Context, routingKey, messageID stri
 // Holds the WLock across BOTH publish AND wait-confirm. This closes a
 // race where reconnect() runs between the publish (on the old channel)
 // and the confirm-read (on the new, empty confirms). Symptom in chaos
-// tests: `shadowpub: confirms channel closed` after a successful
+// tests: `analyticspub: confirms channel closed` after a successful
 // reconnect. Cost: reconnect blocks up to ConfirmTimeout (5s) waiting
 // for the in-flight publish to complete. Acceptable — publishes are
 // sequential from the drain goroutine.
@@ -595,7 +595,7 @@ func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ch == nil {
-		return fmt.Errorf("shadowpub: no channel")
+		return fmt.Errorf("analyticspub: no channel")
 	}
 	err := p.ch.PublishWithContext(ctx, p.exchange, routingKey, false, false,
 		amqp.Publishing{
@@ -610,7 +610,7 @@ func (p *Publisher) publishBytesOnce(ctx context.Context, routingKey, messageID 
 		})
 	if err != nil {
 		p.failed.Add(1)
-		return fmt.Errorf("shadowpub: publish %s: %w", routingKey, err)
+		return fmt.Errorf("analyticspub: publish %s: %w", routingKey, err)
 	}
 	p.published.Add(1)
 	// Read confirms via the CURRENT channel — same generation as the
@@ -628,7 +628,7 @@ func (p *Publisher) waitConfirmLocked(ctx context.Context, timeout time.Duration
 	case c, ok := <-p.confirms:
 		if !ok {
 			p.failed.Add(1)
-			return fmt.Errorf("shadowpub: confirms channel closed")
+			return fmt.Errorf("analyticspub: confirms channel closed")
 		}
 		if !c.Ack {
 			p.nacked.Add(1)
@@ -645,7 +645,7 @@ func (p *Publisher) waitConfirmLocked(ctx context.Context, timeout time.Duration
 	}
 }
 
-// ReconnectCount is the number of times shadowpub has re-dialed the
+// ReconnectCount is the number of times analyticspub has re-dialed the
 // AMQP connection. Non-zero = ops signal that RMQ has flapped or been
 // restarted; investigate if it grows unexpectedly.
 func (p *Publisher) ReconnectCount() uint64 { return p.reconnects.Load() }
@@ -666,7 +666,7 @@ func (p *Publisher) waitConfirm(ctx context.Context, timeout time.Duration) erro
 		if !ok {
 			// Channel closed — most likely the channel/connection died.
 			p.failed.Add(1)
-			return fmt.Errorf("shadowpub: confirms channel closed")
+			return fmt.Errorf("analyticspub: confirms channel closed")
 		}
 		if !c.Ack {
 			p.nacked.Add(1)
@@ -705,7 +705,7 @@ type EnvelopeInput struct {
 // SourceType default is "go" — oeecloud-worker dispatches writes into
 // shadow_go_port.* (ADR-0010 Phase 3 shadow-mode DB comparison). Callers
 // override via EnvelopeInput.SourceType, e.g. "refactored" routes writes
-// into packiot_shadow public.* for the ADR-0012 refactor POC.
+// into packiot_analytics public.* for the ADR-0012 refactor POC.
 func BuildEnvelope(in EnvelopeInput) Envelope {
 	// NO defaulting: source_type "" is a first-class value post-10.9 —
 	// it IS the F1 production route. The old ""→"go" coercion here made
@@ -742,7 +742,7 @@ func BuildEnvelope(in EnvelopeInput) Envelope {
 // pass-through metrics, then hands the finished slice here.
 //
 // Deliberately dumb — no field derivation, no source-type defaulting. The
-// mapping from calc.Metric → shadowpub.Metric lives in the caller (main.go)
+// mapping from calc.Metric → analyticspub.Metric lives in the caller (main.go)
 // so this publishing package stays free of any transform-package import.
 func BuildEnvelopeFromMetrics(instance, sourceType string, sourceTimestamp int64, metrics []Metric) Envelope {
 	return Envelope{

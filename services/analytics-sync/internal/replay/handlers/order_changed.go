@@ -53,7 +53,7 @@ type OrderChangedPayload struct {
 // OrderChanged closes the old PO and (optionally) inserts a new one.
 // Both operations replay against each shadow path.
 func OrderChanged(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderChangedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -78,9 +78,9 @@ func OrderChanged(logger *slog.Logger) replay.Handler {
 		if err := orderChangedOnSchema(ctx, mainPool, "shadow_go_port", &p, oldKey, ts, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := orderChangedOnSchema(ctx, shadowPool, "public", &p, oldKey, ts, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := orderChangedOnSchema(ctx, analyticsPool, "public", &p, oldKey, ts, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil

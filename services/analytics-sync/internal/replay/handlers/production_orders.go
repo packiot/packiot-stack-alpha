@@ -38,7 +38,7 @@ type OrderCreatedStartedPayload struct {
 // unique index, silently dropping every insert behind a stuck running
 // PO. Any other constraint violation must surface as a dispatch failure.
 func OrderCreatedStarted(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderCreatedStartedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			logger.Warn("order-created-started: unmarshal failed", slog.Int64("id_user_log", u.ID), slog.String("err", err.Error()))
@@ -60,15 +60,15 @@ func OrderCreatedStarted(logger *slog.Logger) replay.Handler {
 		if err := openRuntimeWindow(ctx, mainPool, "shadow_go_port", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port window: %w", err)
 		}
-		if shadowPool != nil {
-			if err := openRuntimeWindow(ctx, shadowPool, "public", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow supersede: %w", err)
+		if analyticsPool != nil {
+			if err := openRuntimeWindow(ctx, analyticsPool, "public", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics supersede: %w", err)
 			}
-			if err := insertProdOrder(ctx, shadowPool, "public", &p, tsStart, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow write: %w", err)
+			if err := insertProdOrder(ctx, analyticsPool, "public", &p, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics write: %w", err)
 			}
-			if err := openRuntimeWindow(ctx, shadowPool, "public", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow window: %w", err)
+			if err := openRuntimeWindow(ctx, analyticsPool, "public", p.IDEnterprise, p.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics window: %w", err)
 			}
 		}
 		return nil
@@ -112,7 +112,7 @@ type OrderStoppedPayload struct {
 // — the payload's id_production_order lives in Flow 1's id space only
 // (bug 248).
 func OrderStopped(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderStoppedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -144,12 +144,12 @@ func OrderStopped(logger *slog.Logger) replay.Handler {
 		if err := updateProdOrderStop(ctx, mainPool, "shadow_go_port", k, &p, tsEnd, status, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port write: %w", err)
 		}
-		if shadowPool != nil {
-			if err := closeRuntimeWindow(ctx, shadowPool, "public", k.IDEnterprise, k.IDOrder, tsEnd, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow window close: %w", err)
+		if analyticsPool != nil {
+			if err := closeRuntimeWindow(ctx, analyticsPool, "public", k.IDEnterprise, k.IDOrder, tsEnd, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics window close: %w", err)
 			}
-			if err := updateProdOrderStop(ctx, shadowPool, "public", k, &p, tsEnd, status, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow write: %w", err)
+			if err := updateProdOrderStop(ctx, analyticsPool, "public", k, &p, tsEnd, status, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics write: %w", err)
 			}
 		}
 		return nil

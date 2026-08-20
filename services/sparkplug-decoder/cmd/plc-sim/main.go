@@ -46,7 +46,7 @@ type line struct {
 }
 
 // The staging CPACK topology — VERIFIED against packml_register (staging
-// packiot_shadow: L8=51, L5=47, L3=48, L4=49; members below).
+// packiot_analytics: L8=51, L5=47, L3=48, L4=49; members below).
 //
 // #16 LINE-FEED FIDELITY: each line now publishes its OWN line-scoped
 // Sparkplug stream (Unit=="") — a bare-topic counter + StateCurrent that
@@ -120,7 +120,7 @@ var lines = []line{
 	// PREREQUISITE before dropping a teed line from plc-sim: the agent must issue a
 	// SparkPlug rebirth on edge-transformer restart (or ET must send a Rebirth NCMD
 	// on a sequence gap). See ADR-0042 / session-88. Until then, keep this entry so
-	// the migration-target DB (packiot_shadow) has no dark equipment across deploys.
+	// the migration-target DB (packiot_analytics) has no dark equipment across deploys.
 	{"L5", "TEXA", 65, 100},
 	{"L3", "PTH", 81, 90},
 	{"L4", "TEXA", 63, 95},

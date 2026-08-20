@@ -18,7 +18,7 @@
         "refresh": 2,
         "includeAll": true,
         "multi": true,
-        "current": { "text": "packiot_shadow", "value": "packiot_shadow" }
+        "current": { "text": "packiot_analytics", "value": "packiot_analytics" }
       }
     ]
   },
@@ -28,7 +28,7 @@
       "type": "text",
       "title": "",
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
-      "options": { "mode": "markdown", "content": "### Database — Postgres + TimescaleDB (packiot F1/F2 · packiot_shadow F3)\nWhite-box metrics from postgres-exporter's custom `queries.yaml` (connections by state, cache hit, locks, long queries, tuple/deadlock rates, table + hypertable sizes). Custom metric names follow `{query}_{column}`. Health-zeros (0 deadlocks, 0 waiting locks) are the target." }
+      "options": { "mode": "markdown", "content": "### Database — Postgres + TimescaleDB (packiot F1/F2 · packiot_analytics F3)\nWhite-box metrics from postgres-exporter's custom `queries.yaml` (connections by state, cache hit, locks, long queries, tuple/deadlock rates, table + hypertable sizes). Custom metric names follow `{query}_{column}`. Health-zeros (0 deadlocks, 0 waiting locks) are the target." }
     },
     {
       "id": 2,
@@ -139,7 +139,7 @@
       "id": 11,
       "type": "table",
       "title": "Top tables by total size",
-      "description": "pg_table_size_top_total_bytes — biggest relations (heap + indexes + TOAST), with dead-tuple bloat. Scoped to the $datname variable (defaults to the F3 plane packiot_shadow; legacy packiot selectable). The exporter emits a per-DB datname label.",
+      "description": "pg_table_size_top_total_bytes — biggest relations (heap + indexes + TOAST), with dead-tuple bloat. Scoped to the $datname variable (defaults to the F3 plane packiot_analytics; legacy packiot selectable). The exporter emits a per-DB datname label.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "bytes" }, "overrides": [ { "matcher": { "id": "byName", "options": "dead_tuples" }, "properties": [ { "id": "unit", "value": "short" } ] }, { "matcher": { "id": "byName", "options": "live_tuples" }, "properties": [ { "id": "unit", "value": "short" } ] } ] },
@@ -151,7 +151,7 @@
       "id": 12,
       "type": "table",
       "title": "TimescaleDB hypertables (size + chunks + compression)",
-      "description": "pg_timescaledb_hypertables_* — hypertable total size, chunk count, and whether compression is enabled. Scoped to $datname (default F3 packiot_shadow), public schema — the join key is the hypertable name, so scoping to one DB + schema avoids cross-DB/cross-schema name clashes (keep $datname single-valued for the join). Empty on plain-Postgres DBs (guarded query).",
+      "description": "pg_timescaledb_hypertables_* — hypertable total size, chunk count, and whether compression is enabled. Scoped to $datname (default F3 packiot_analytics), public schema — the join key is the hypertable name, so scoping to one DB + schema avoids cross-DB/cross-schema name clashes (keep $datname single-valued for the join). Empty on plain-Postgres DBs (guarded query).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [] },

@@ -60,7 +60,7 @@ incidents), see [`BUSINESS-RULES.md`](../BUSINESS-RULES.md).
 | **the three flows (F1/F2/F3)** | The same message written three ways in parallel: legacy schema, shadow-port schema, refactored database — to prove the new equals the old. |
 | **`source_type`** | The stamp on each message that routes it to F1 (`""`), F2 (`"go"`), or F3 (`"refactored"`). |
 | **the bake** | Running the three flows on identical traffic long enough to prove they agree (a *clock* gate — it cannot be rushed). |
-| **the flip** | Promoting the refactored database (`packiot_shadow`) to be *the* database and retiring the parallel machinery. See [Ch. 9](09-the-endgame.md). |
+| **the flip** | Promoting the refactored database (`packiot_analytics`) to be *the* database and retiring the parallel machinery. See [Ch. 9](09-the-endgame.md). |
 | **comparator / differential** | The service that continuously diffs the flows and reports per-surface mismatch counts to the parity board. |
 | **Equivalence Argument** | The header on every ported file arguing, phase by phase, that the Go SQL reproduces the original procedure. See [Ch. 4](04-the-engine.md#the-math-how-go-reproduces-a-stored-procedure-exactly). |
 | **golden fixture** | A test that seeds a known scenario in an ephemeral PostgreSQL and asserts the ported code's exact output. |

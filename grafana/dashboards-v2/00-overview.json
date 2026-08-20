@@ -46,7 +46,7 @@
       "id": 3,
       "type": "stat",
       "title": "Postgres up",
-      "description": "pg_up across both databases (packiot + packiot_shadow).",
+      "description": "pg_up across both databases (packiot + packiot_analytics).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 5, "w": 4, "x": 4, "y": 7 },
       "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },

@@ -531,10 +531,16 @@ else
   echo "SKIP: packiot/staging/rabbitmq-client-creds not found — create it in Secrets Manager then re-run this block via SSM"
 fi
 
-# ── edge-transformer user + Phase 2 topology (ADR-0009) ──────────────────────
+# ── sparkplug-decoder user + Phase 2 topology (ADR-0009) ─────────────────────
 # Provisions:
-#   1. RMQ user `edge-transformer` with least-priv perms scoped to
-#      ^(edge-transformer\..*|outbox\..*|edge\.plc-normalized)$
+#   1. RMQ user `sparkplug-decoder` (formerly `edge-transformer`, renamed
+#      alongside the service — see
+#      docs/plans/rename-shadow-rabbitmq-addendum.md §A) with least-priv
+#      perms scoped to ^(edge-transformer\..*|outbox\..*|edge\.plc-normalized)$
+#      — the regex itself is UNCHANGED: it matches QUEUE-NAME prefixes
+#      (edge-transformer-q, edge-transformer-q-retry-30s, ...), which were
+#      NOT renamed by this pass (that's the separate, not-yet-done RabbitMQ
+#      queue/topic rename tracked in the addendum §B).
 #   2. Topic exchange `edge.plc-normalized` for normalized PLC payloads
 #      from Node-RED publishers (per docs/clients/_normalized-payload-schema.yaml).
 #   3. Topic exchange `dlx.edge.plc-normalized` for failed-after-retry messages.
@@ -546,34 +552,35 @@ fi
 # When the secret is missing, skip cleanly (matches the pattern above). For
 # the live secret created 2026-06-30, this block runs end-to-end on next deploy.
 if aws secretsmanager describe-secret \
-    --secret-id packiot/staging/rabbitmq-edge-transformer-creds \
+    --secret-id packiot/staging/rabbitmq-sparkplug-decoder-creds \
     --region "$AWS_REGION" > /dev/null 2>&1; then
 
-  ET_CREDS=$(get_secret "packiot/staging/rabbitmq-edge-transformer-creds")
-  ET_USER=$(echo "$ET_CREDS" | jq -r '.username')
-  ET_PASS=$(echo "$ET_CREDS" | jq -r '.password')
+  SD_CREDS=$(get_secret "packiot/staging/rabbitmq-sparkplug-decoder-creds")
+  SD_USER=$(echo "$SD_CREDS" | jq -r '.username')
+  SD_PASS=$(echo "$SD_CREDS" | jq -r '.password')
 
   # Idempotent user create. Tag "management" is needed if the service ever
   # uses the HTTP API (the AMQP consumer pattern doesn't, but it's harmless).
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
-    "http://127.0.0.1:15672/api/users/$ET_USER" \
+    "http://127.0.0.1:15672/api/users/$SD_USER" \
     -H "Content-Type: application/json" \
-    -d "{\"password\":\"$ET_PASS\",\"tags\":\"\"}"
+    -d "{\"password\":\"$SD_PASS\",\"tags\":\"\"}"
 
   # Least-priv perms — see docs/guides/edge-transformer-phase-2-runbook.md §2.B.
-  # The regex restricts edge-transformer to its own queues + the shared
+  # The regex restricts sparkplug-decoder to its own queues + the shared
   # publish exchange. Cannot touch other tenants' queues, management API,
   # or other exchanges. Bounded blast radius.
   #
   # Naming convention: hyphen-separated (matches oeecloud-worker's
   # `oeecloud-worker-q-retry-30s` style). The `.` in the regex is a
   # wildcard (any char) — matches `edge-transformer-q`, `edge-transformer-q-retry-30s`, etc.
+  # (queue names themselves unrenamed — see note above).
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
-    "http://127.0.0.1:15672/api/permissions/%2F/$ET_USER" \
+    "http://127.0.0.1:15672/api/permissions/%2F/$SD_USER" \
     -H "Content-Type: application/json" \
     -d '{"configure":"^(edge-transformer.*|outbox.*)$","write":"^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$","read":"^(edge\\.plc-normalized|dlx\\.edge\\.plc-normalized|edge-transformer.*|outbox.*|oee)$"}'
 
-  echo "RabbitMQ user '$ET_USER' created with edge-transformer least-priv perms"
+  echo "RabbitMQ user '$SD_USER' created with sparkplug-decoder least-priv perms"
 
   # Declare the Phase 2 topology — exchange + DLX. Topic-type, durable.
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
@@ -588,7 +595,7 @@ if aws secretsmanager describe-secret \
 
   echo "RabbitMQ topology declared: edge.plc-normalized + dlx.edge.plc-normalized (topic, durable)"
 else
-  echo "SKIP: packiot/staging/rabbitmq-edge-transformer-creds not found — create it in Secrets Manager then re-run this block via SSM"
+  echo "SKIP: packiot/staging/rabbitmq-sparkplug-decoder-creds not found — create it in Secrets Manager then re-run this block via SSM"
 fi
 
 echo "=== App init complete $(date -u) ==="

@@ -16,7 +16,7 @@ because the two schemas are allowed to diverge.
   `internal/replay/handlers/` (order-created/-started/-stopped/…,
   manual-event-created/-edited, event-splitted) — each re-applies the
   equivalent SQL to BOTH shadow paths: `shadow_go_port.*` (main pool)
-  and `packiot_shadow.public.*` (second pool).
+  and `packiot_analytics.public.*` (second pool).
 - **Idempotent by unique keys**: `production_orders`
   (id_enterprise,id_order) + one-running-PO partial index;
   `equipment_events_man` on ts_event. Re-polls are safe.
@@ -26,7 +26,7 @@ because the two schemas are allowed to diverge.
 ## Config
 
 `PG_DB_NAME` (source, `packiot`) · `PG_SHADOW_DB_NAME`
-(`packiot_shadow`; empty = degrade to shadow_go_port only) ·
+(`packiot_analytics`; empty = degrade to shadow_go_port only) ·
 `POLL_INTERVAL_MS` · `BATCH_SIZE` · `MAX_RETRIES` · `HEALTH_PORT`.
 DB host is the staging DB EC2 directly (pgbouncer's static DB list
 excludes the shadow DB). Creds via `.env` (SM fetch is a TODO).

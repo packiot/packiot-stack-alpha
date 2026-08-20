@@ -18,7 +18,7 @@
         "refresh": 2,
         "includeAll": false,
         "multi": false,
-        "current": { "text": "packiot_shadow", "value": "packiot_shadow" }
+        "current": { "text": "packiot_analytics", "value": "packiot_analytics" }
       }
     ]
   },
@@ -28,7 +28,7 @@
       "type": "text",
       "title": "",
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
-      "options": { "mode": "markdown", "content": "### Database DBM — deep (\"Datadog-style\") monitoring · targets the **F3 plane** (`$datname`, default `packiot_shadow`)\nWhite-box Postgres + TimescaleDB internals: session saturation, throughput/efficiency, table & index health, the TimescaleDB automation plane (jobs / cagg lag / compression), and per-tenant load. Prometheus panels read postgres-exporter custom metrics; panels over catalog views not yet scraped read **native SQL against `packiot_shadow`** for immediate value (their exporter query is already in `queries.yaml`, so they migrate to Prometheus once it reloads). Switch `$datname` to `packiot` to inspect the legacy plane." }
+      "options": { "mode": "markdown", "content": "### Database DBM — deep (\"Datadog-style\") monitoring · targets the **F3 plane** (`$datname`, default `packiot_analytics`)\nWhite-box Postgres + TimescaleDB internals: session saturation, throughput/efficiency, table & index health, the TimescaleDB automation plane (jobs / cagg lag / compression), and per-tenant load. Prometheus panels read postgres-exporter custom metrics; panels over catalog views not yet scraped read **native SQL against `packiot_analytics`** for immediate value (their exporter query is already in `queries.yaml`, so they migrate to Prometheus once it reloads). Switch `$datname` to `packiot` to inspect the legacy plane." }
     },
 
     { "id": 2, "type": "text", "title": "", "gridPos": { "h": 2, "w": 24, "x": 0, "y": 3 }, "options": { "mode": "markdown", "content": "#### Sessions / connections" } },
@@ -149,7 +149,7 @@
       ]
     },
 
-    { "id": 15, "type": "text", "title": "", "gridPos": { "h": 2, "w": 24, "x": 0, "y": 45 }, "options": { "mode": "markdown", "content": "#### Table / index health  ·  _native-SQL panels read `packiot_shadow` directly (F3); the matching exporter queries are in `queries.yaml` for later Prometheus migration_" } },
+    { "id": 15, "type": "text", "title": "", "gridPos": { "h": 2, "w": 24, "x": 0, "y": 45 }, "options": { "mode": "markdown", "content": "#### Table / index health  ·  _native-SQL panels read `packiot_analytics` directly (F3); the matching exporter queries are in `queries.yaml` for later Prometheus migration_" } },
     {
       "id": 16, "type": "table", "title": "Top 25 tables by total size",
       "description": "topk(25, pg_table_size_top_total_bytes{datname=~\"$datname\"}) — biggest relations (heap + indexes + TOAST).",
@@ -172,7 +172,7 @@
     },
     {
       "id": 18, "type": "table", "title": "Sequential-scan-heavy tables (native · F3)",
-      "description": "pg_stat_user_tables — rows read by sequential scans (missing-index smell). Native SQL over packiot_shadow now; exporter metric pg_stat_user_tables_seq_tup_read once Prometheus reloads.",
+      "description": "pg_stat_user_tables — rows read by sequential scans (missing-index smell). Native SQL over packiot_analytics now; exporter metric pg_stat_user_tables_seq_tup_read once Prometheus reloads.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 56 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [] },
@@ -181,7 +181,7 @@
     },
     {
       "id": 19, "type": "table", "title": "Unused / oversized indexes (native · F3)",
-      "description": "pg_stat_user_indexes — idx_scan=0 candidates for DROP, biggest first. Native SQL over packiot_shadow; exporter metric pg_stat_user_indexes_idx_scan later.",
+      "description": "pg_stat_user_indexes — idx_scan=0 candidates for DROP, biggest first. Native SQL over packiot_analytics; exporter metric pg_stat_user_indexes_idx_scan later.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 56 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [ { "matcher": { "id": "byName", "options": "size_bytes" }, "properties": [ { "id": "unit", "value": "bytes" } ] } ] },
@@ -219,7 +219,7 @@
     },
     {
       "id": 23, "type": "table", "title": "Continuous-aggregate refresh lag (native · F3)",
-      "description": "Seconds since each cagg's last successful refresh — the freshness of the OEE rollup plane. Native SQL over packiot_shadow; exporter metric pg_timescaledb_cagg_seconds_since_last_success later. -1 = no successful refresh on record.",
+      "description": "Seconds since each cagg's last successful refresh — the freshness of the OEE rollup plane. Native SQL over packiot_analytics; exporter metric pg_timescaledb_cagg_seconds_since_last_success later. -1 = no successful refresh on record.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 84 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "s" }, "overrides": [] },
@@ -228,7 +228,7 @@
     },
     {
       "id": 24, "type": "table", "title": "Background jobs status (native · F3)",
-      "description": "timescaledb_information.jobs + job_stats — last-run status, next start, cumulative failures. Native SQL over packiot_shadow; exporter metric pg_timescaledb_jobs_* later.",
+      "description": "timescaledb_information.jobs + job_stats — last-run status, next start, cumulative failures. Native SQL over packiot_analytics; exporter metric pg_timescaledb_jobs_* later.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
       "gridPos": { "h": 9, "w": 12, "x": 12, "y": 84 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "short" }, "overrides": [ { "matcher": { "id": "byName", "options": "seconds_to_next_start" }, "properties": [ { "id": "unit", "value": "s" } ] }, { "matcher": { "id": "byName", "options": "total_failures" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } ] } ] },
@@ -237,7 +237,7 @@
     },
     {
       "id": 25, "type": "table", "title": "Compression effectiveness (native · F3)",
-      "description": "hypertable_compression_stats — before/after bytes, bytes saved, ratio (higher = better) per compressed hypertable. Native SQL over packiot_shadow; exporter metric pg_timescaledb_compression_* later.",
+      "description": "hypertable_compression_stats — before/after bytes, bytes saved, ratio (higher = better) per compressed hypertable. Native SQL over packiot_analytics; exporter metric pg_timescaledb_compression_* later.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 93 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" }, "unit": "bytes" }, "overrides": [ { "matcher": { "id": "byName", "options": "ratio" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "decimals", "value": 1 } ] } ] },
@@ -245,17 +245,17 @@
       "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "rawSql": "SELECT h.hypertable_name AS hypertable, coalesce(cs.before_compression_total_bytes,0) AS before_bytes, coalesce(cs.after_compression_total_bytes,0) AS after_bytes, coalesce(cs.before_compression_total_bytes,0)-coalesce(cs.after_compression_total_bytes,0) AS saved_bytes, CASE WHEN coalesce(cs.after_compression_total_bytes,0)>0 THEN round((cs.before_compression_total_bytes::numeric/cs.after_compression_total_bytes),1) ELSE 0 END AS ratio FROM timescaledb_information.hypertables h LEFT JOIN LATERAL (SELECT * FROM hypertable_compression_stats(format('%I.%I',h.hypertable_schema,h.hypertable_name))) cs ON true WHERE cs.after_compression_total_bytes IS NOT NULL ORDER BY saved_bytes DESC", "format": "table", "refId": "A" } ]
     },
 
-    { "id": 26, "type": "text", "title": "", "gridPos": { "h": 8, "w": 24, "x": 0, "y": 101 }, "options": { "mode": "markdown", "content": "#### Top / slow queries — ⏳ PENDING `pg_stat_statements`\nThis section lights up once the `pg_stat_statements` extension is enabled. **Prereqs (out of scope for this dashboard PR — separate scheduled task):**\n1. Add `pg_stat_statements` to `shared_preload_libraries` in the TimescaleDB config.\n2. **Restart the database** (required — `shared_preload_libraries` is not runtime-settable).\n3. `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;` in each monitored DB.\n4. Add a `pg_stat_statements` block to `monitoring/postgres-exporter/queries.yaml` (or a native-SQL panel over `packiot-postgres-shadow`).\n\n**Intended queries once available** (native SQL over `packiot_shadow`):\n```sql\n-- Top 25 by total execution time\nSELECT queryid, calls, round(total_exec_time) AS total_ms,\n       round(mean_exec_time, 2) AS mean_ms, rows,\n       round(100.0 * shared_blks_hit /\n             nullif(shared_blks_hit + shared_blks_read, 0), 1) AS hit_pct,\n       left(query, 120) AS query\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 25;\n\n-- Top 25 by mean latency (slowest per call, calls > 10)\nSELECT queryid, calls, round(mean_exec_time, 2) AS mean_ms,\n       round(stddev_exec_time, 2) AS stddev_ms, left(query, 120) AS query\nFROM pg_stat_statements\nWHERE calls > 10\nORDER BY mean_exec_time DESC\nLIMIT 25;\n\n-- Top 25 by temp-block spill (work_mem pressure)\nSELECT queryid, calls, temp_blks_written, temp_blks_read,\n       left(query, 120) AS query\nFROM pg_stat_statements\nWHERE temp_blks_written > 0\nORDER BY temp_blks_written DESC\nLIMIT 25;\n```" } },
+    { "id": 26, "type": "text", "title": "", "gridPos": { "h": 8, "w": 24, "x": 0, "y": 101 }, "options": { "mode": "markdown", "content": "#### Top / slow queries — ⏳ PENDING `pg_stat_statements`\nThis section lights up once the `pg_stat_statements` extension is enabled. **Prereqs (out of scope for this dashboard PR — separate scheduled task):**\n1. Add `pg_stat_statements` to `shared_preload_libraries` in the TimescaleDB config.\n2. **Restart the database** (required — `shared_preload_libraries` is not runtime-settable).\n3. `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;` in each monitored DB.\n4. Add a `pg_stat_statements` block to `monitoring/postgres-exporter/queries.yaml` (or a native-SQL panel over `packiot-postgres-shadow`).\n\n**Intended queries once available** (native SQL over `packiot_analytics`):\n```sql\n-- Top 25 by total execution time\nSELECT queryid, calls, round(total_exec_time) AS total_ms,\n       round(mean_exec_time, 2) AS mean_ms, rows,\n       round(100.0 * shared_blks_hit /\n             nullif(shared_blks_hit + shared_blks_read, 0), 1) AS hit_pct,\n       left(query, 120) AS query\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 25;\n\n-- Top 25 by mean latency (slowest per call, calls > 10)\nSELECT queryid, calls, round(mean_exec_time, 2) AS mean_ms,\n       round(stddev_exec_time, 2) AS stddev_ms, left(query, 120) AS query\nFROM pg_stat_statements\nWHERE calls > 10\nORDER BY mean_exec_time DESC\nLIMIT 25;\n\n-- Top 25 by temp-block spill (work_mem pressure)\nSELECT queryid, calls, temp_blks_written, temp_blks_read,\n       left(query, 120) AS query\nFROM pg_stat_statements\nWHERE temp_blks_written > 0\nORDER BY temp_blks_written DESC\nLIMIT 25;\n```" } },
 
     { "id": 27, "type": "text", "title": "", "gridPos": { "h": 2, "w": 24, "x": 0, "y": 109 }, "options": { "mode": "markdown", "content": "#### Per-tenant load" } },
     {
       "id": 28, "type": "timeseries", "title": "Worker batch writes by tenant (F3)",
-      "description": "rate(oeecloud_worker_batch_writes_total{dest=\"f3_packiot_shadow\", result=\"ok\"}[5m]) by tenant — write pressure the F3 plane carries per tenant.",
+      "description": "rate(oeecloud_worker_batch_writes_total{dest=\"f3_packiot_analytics\", result=\"ok\"}[5m]) by tenant — write pressure the F3 plane carries per tenant.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 111 },
       "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "stacking": { "mode": "normal" } } }, "overrides": [] },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant) (rate(oeecloud_worker_batch_writes_total{dest=\"f3_packiot_shadow\", result=\"ok\"}[5m]))", "legendFormat": "{{tenant}}", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant) (rate(oeecloud_worker_batch_writes_total{dest=\"f3_packiot_analytics\", result=\"ok\"}[5m]))", "legendFormat": "{{tenant}}", "refId": "A" } ]
     },
     {
       "id": 29, "type": "timeseries", "title": "HTTP request rate by service (job)",

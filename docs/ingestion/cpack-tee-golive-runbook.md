@@ -3,7 +3,7 @@
 **One-step coordinated cutover** to swap staging's synthetic `plc-sim` CPACK
 feed (ent 3) for CPACK's **real** factory Node-RED tags, running through the
 `sparkplug-agent-cpack` service → internal mosquitto → the full prod
-edge-transformer Calc → **F3 (`packiot_shadow`)**.
+edge-transformer Calc → **F3 (`packiot_analytics`)**.
 
 **Scope: STAGING only.** No prod writes. This closes the standing "CPACK real
 data bypasses the Calc" gap (today ent 3 is `plc-sim` synthetic).
@@ -157,11 +157,11 @@ Expect `spBv1.0/CPACK/NBIRTH/cpack-tee` then `spBv1.0/CPACK/NDATA/cpack-tee`.
 (First-ever tags emit an **NBIRTH** whose snapshot carries the values, then
 NDATA on subsequent changes — per ADR-0042 §2.2.)
 
-**3.3 ent-3 `equipment_values` advancing in F3 (`packiot_shadow`)** — the 8
+**3.3 ent-3 `equipment_values` advancing in F3 (`packiot_analytics`)** — the 8
 covered equipment `{47,48,49,51,53,57,61,63}`, `source_type='refactored'`. On
 the DB host (`i-064bb36d1c454d861`, `timescaledb` container), **SELECT-only**:
 ```sql
--- packiot_shadow
+-- packiot_analytics
 SELECT id_equipment, count(*), max(ts_value) AS latest
 FROM equipment_values
 WHERE id_equipment IN (47,48,49,51,53,57,61,63)
@@ -178,7 +178,7 @@ lag/backlog spikes on `oeecloud-worker`.
 
 **3.5 Tempo trace agent → edge-transformer → F3.** Grafana → Explore → Tempo:
 find a trace spanning the agent publish → edge-transformer decode/Calc → the
-`packiot_shadow` batch write, confirming the full path end-to-end.
+`packiot_analytics` batch write, confirming the full path end-to-end.
 
 **3.6 Parity sanity.** OEE for L8/L5/L3/L4 should track the same band `plc-sim`
 produced (L8 within ~5% of prod — the `raw_tag_map` is EXACTLY plc-sim's proven

@@ -417,7 +417,7 @@ func TestShadowFanoutPlan_F2EqualsF3(t *testing.T) {
 	prod := db.ProdPOFinishInfo{Status: 4, LastActivity: stop, HasActivity: true}
 
 	f2Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 2 (shadow_go_port)
-	f3Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 3 (packiot_shadow)
+	f3Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 3 (packiot_analytics)
 
 	if f2Plan.action != shadowSeal || f3Plan.action != shadowSeal {
 		t.Fatalf("expected both flows to seal, got F2=%d F3=%d", f2Plan.action, f3Plan.action)

@@ -161,7 +161,7 @@ var (
 
 	// ReconcilerShadowFanoutTotal — per-(flow,outcome) results of the
 	// ADR-0025 shadow fan-out that reproduces the F1 finisher's PO close
-	// into the shadow flows (F2 shadow_go_port, F3 packiot_shadow). flow =
+	// into the shadow flows (F2 shadow_go_port, F3 packiot_analytics). flow =
 	// the destination schema/DB; outcome:
 	//   sealed  — an open shadow segment was sealed at F1's ts_end + header
 	//             flipped to F1's status (paused/finished parity);
@@ -186,7 +186,7 @@ var (
 	}, []string{"flow", "outcome"})
 
 	// ValueFanoutTotal — ADR-0012 3-flow parity: each delta INSERT is
-	// fanned out to shadow_go_port (same DB) + packiot_shadow (Flow 3).
+	// fanned out to shadow_go_port (same DB) + packiot_analytics (Flow 3).
 	// Shadow failures never fail the Flow 1 write (a retry would
 	// double-count the delta) — they land here as outcome=failed or
 	// outcome=missing_table instead. Silent loss is a bug (ADR-0011);
@@ -343,7 +343,7 @@ var (
 	})
 
 	// ComparatorEventOpenStrands — close-field parity gauge (task #63).
-	// Per shadow plane (f2 = shadow_go_port, f3 = packiot_shadow), the count
+	// Per shadow plane (f2 = shadow_go_port, f3 = packiot_analytics), the count
 	// of equipment_events rows still OPEN (ts_end IS NULL) whose ts_event is
 	// older than the strand threshold. This is the signal that turns "COUNT
 	// parity PASS" into "COUNT + close-field parity PASS": count parity can

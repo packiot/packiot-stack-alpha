@@ -28,12 +28,12 @@ opposite; see "Bug classes" below.
 | Prometheus | `packiot-prometheus` | httpMethod POST |
 | Loki | `packiot-loki` | |
 | Postgres F1+F2 | `packiot-postgres` | **default**; DB `packiot`, schemas `public`(F1) + `shadow_go_port`(F2) |
-| Postgres F3 | `packiot-postgres-shadow` | DB `packiot_shadow` (flip target) |
+| Postgres F3 | `packiot-postgres-shadow` | DB `packiot_analytics` (flip target) |
 
 ## Template variables (consistent across boards)
 
 - `$tenant` — Prometheus label values of `oeecloud_worker_batch_writes_total` `tenant` (values: cpack, incoplast, simcorp, staging). edge-transformer carries `tenant` natively; oeecloud synthesizes it via relabel.
-- `$flow` / `dest` — `f1_public` | `f2_shadow_go_port` | `f3_packiot_shadow`.
+- `$flow` / `dest` — `f1_public` | `f2_shadow_go_port` | `f3_packiot_analytics`.
 - `$service` — Loki label values of `service` (NOT a hardcoded list — use `label_values(service)`).
 - `$level` — info|warn|error|debug. `$search` — free-text line filter.
 - `$enterprise/$site/$area/$equipment` — SQL-driven chain on the OEE board.

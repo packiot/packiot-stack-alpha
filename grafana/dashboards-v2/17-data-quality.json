@@ -38,7 +38,7 @@
       "type": "text",
       "title": "",
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
-      "options": { "mode": "markdown", "content": "### Data Quality — OEE invariant violations (F3 · packiot_shadow · `public.data_quality_event`)\nThe oeecloud-worker DQ substrate (ADR-0037) side-writes one `data_quality_event` per computed grain row that breaks a physical invariant — **it never clamps or alters a served value**, it makes the silent corruption visible. `OEE_GT_1` = efficiency > 100% (the oee=8142 outliers). `NET_GT_GROSS` = quality > 1. `NEGATIVE_METRIC` = a count/duration below zero. This board is also the read-source for the P11 andon alerts." }
+      "options": { "mode": "markdown", "content": "### Data Quality — OEE invariant violations (F3 · packiot_analytics · `public.data_quality_event`)\nThe oeecloud-worker DQ substrate (ADR-0037) side-writes one `data_quality_event` per computed grain row that breaks a physical invariant — **it never clamps or alters a served value**, it makes the silent corruption visible. `OEE_GT_1` = efficiency > 100% (the oee=8142 outliers). `NET_GT_GROSS` = quality > 1. `NEGATIVE_METRIC` = a count/duration below zero. This board is also the read-source for the P11 andon alerts." }
     },
     {
       "id": 2,

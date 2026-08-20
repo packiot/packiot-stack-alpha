@@ -46,21 +46,21 @@ func TestSyncTable_upsert(t *testing.T) {
 		t.Fatalf("main connect: %v", err)
 	}
 	defer mainPool.Close()
-	shadowPool, err := pgxpool.New(ctx, urlFor("rs_shadow"))
+	analyticsPool, err := pgxpool.New(ctx, urlFor("rs_shadow"))
 	if err != nil {
 		t.Fatalf("shadow connect: %v", err)
 	}
-	defer shadowPool.Close()
+	defer analyticsPool.Close()
 
-	for _, p := range []*pgxpool.Pool{mainPool, shadowPool} {
+	for _, p := range []*pgxpool.Pool{mainPool, analyticsPool} {
 		if _, err := p.Exec(ctx, `CREATE TABLE public.foo (id int PRIMARY KEY, val text, n int)`); err != nil {
 			t.Fatalf("create table: %v", err)
 		}
 	}
 	mainPool.Exec(ctx, `INSERT INTO public.foo VALUES (1,'a',10),(2,'b',20)`)
-	shadowPool.Exec(ctx, `INSERT INTO public.foo VALUES (1,'STALE',99),(3,'shadow-only',30)`)
+	analyticsPool.Exec(ctx, `INSERT INTO public.foo VALUES (1,'STALE',99),(3,'shadow-only',30)`)
 
-	n, err := syncTable(ctx, mainPool, shadowPool, "public", "foo")
+	n, err := syncTable(ctx, mainPool, analyticsPool, "public", "foo")
 	if err != nil {
 		t.Fatalf("syncTable: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSyncTable_upsert(t *testing.T) {
 	}
 
 	got := map[int]string{}
-	rows, _ := shadowPool.Query(ctx, `SELECT id, val||':'||n FROM public.foo`)
+	rows, _ := analyticsPool.Query(ctx, `SELECT id, val||':'||n FROM public.foo`)
 	for rows.Next() {
 		var id int
 		var v string

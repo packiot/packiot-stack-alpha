@@ -44,7 +44,7 @@ ingress on `edge-transformer`), also specified below.
 | Entry service | `ingest-shim` (`:8444`) | `mqtt-ingress` broker → internal `mosquitto` |
 | Decode / alias resolve | **none** — republished verbatim | `edge-transformer` `sparkplug.Decode` + `StateStore` |
 | **Go Calc runs?** | **NO** — lands on worker's legacy JSON decode | **YES** — `USE_GO_PORT` + `CALC_CUTOVER_REFACTORED` |
-| RabbitMQ target | `oee` / `sparkplug.data.<tenant>` (direct) | `oee` via `edge-transformer`'s `shadowpub`/outbox |
+| RabbitMQ target | `oee` / `sparkplug.data.<tenant>` (direct) | `oee` via `sparkplug-decoder`'s `analyticspub`/outbox |
 | Faithful `MachSpeed`/`P30700`/delta-counter shape | **NO** | **YES** |
 
 Source evidence:
@@ -120,7 +120,7 @@ direct SG:8883 can — and NLB TCP-passthrough keeps TLS/mTLS end-to-end to the 
    decode(protobuf) → StateStore(alias) → Calc(USE_GO_PORT, CALC_CUTOVER_REFACTORED)
    → triple-emit (ADR-0032: refactored-only)
    ▼
- RabbitMQ `oee` → oeecloud-worker → packiot_shadow (F3)
+ RabbitMQ `oee` → oeecloud-worker → packiot_analytics (F3)
 ```
 
 ### Prod-evolution note
