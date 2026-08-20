@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -213,4 +214,110 @@ func getenv(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// DefaultRefreshInterval is used when the caller passes interval<=0 to
+// NewWatcher — 5 minutes, matching oeecloud-worker's shift resolver cache
+// window (ADR-0047 P0 #2's own stated reference point for "a CS Admin edit
+// takes effect without an edge redeploy").
+const DefaultRefreshInterval = 5 * time.Minute
+
+// Watcher periodically reloads the DB rate map so a CS Admin edit to
+// equipments.production_speed takes effect without an edge redeploy. The
+// original G4/G5 seam (LoadDBRates called once at boot — see main.go) left a
+// live edit stuck until the next deploy, which defeats the "CS Admin config
+// actually changes OEE math" goal (ADR-0047 P0 #2). This is a bulk reload on
+// a ticker rather than a per-key TTL (like internal/refdataresolver) because
+// the whole rate table is small and one query is cheap — same reasoning
+// LoadDBRates's own doc comment already gives for doing one query per boot.
+//
+// Fail-open: a reload error logs a warning and keeps serving the previous
+// snapshot (the boot snapshot on the very first failure) — a DB hiccup must
+// never blank out a live rate map that decode already depends on.
+type Watcher struct {
+	logger   *slog.Logger
+	envRates map[string]float64
+	interval time.Duration
+
+	mu      sync.RWMutex
+	rates   map[string]float64
+	tenants int
+}
+
+// NewWatcher builds a Watcher. envRates is merged on top of every DB reload
+// (env entries WIN on a key collision — Merge's existing contract, preserved
+// so a manual COUNTERS_ONLY_IDEAL_RATES override keeps working exactly as it
+// does today). interval<=0 uses DefaultRefreshInterval.
+func NewWatcher(envRates map[string]float64, interval time.Duration, logger *slog.Logger) *Watcher {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if interval <= 0 {
+		interval = DefaultRefreshInterval
+	}
+	return &Watcher{
+		logger:   logger,
+		envRates: envRates,
+		interval: interval,
+		rates:    map[string]float64{},
+	}
+}
+
+// Start performs the initial load synchronously — so the caller's first
+// message already sees a warm map when the DB is reachable at boot — then
+// launches a background ticker that reloads every interval until ctx is
+// done.
+func (w *Watcher) Start(ctx context.Context) {
+	w.reload(ctx)
+	go func() {
+		ticker := time.NewTicker(w.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				w.reload(ctx)
+			}
+		}
+	}()
+}
+
+// Rates returns the current merged (DB ∪ env, env wins) rate map. Safe to
+// call from any goroutine; the returned map must be treated as read-only —
+// reload() always builds a fresh map via Merge and swaps the field, it never
+// mutates a previously-returned map in place, so a caller holding an old
+// reference never observes a torn read.
+func (w *Watcher) Rates() map[string]float64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.rates
+}
+
+// Tenants reports the distinct counters-only tenant count from the most
+// recent successful reload — for boot/health logging, not routing decisions.
+func (w *Watcher) Tenants() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.tenants
+}
+
+func (w *Watcher) reload(ctx context.Context) {
+	res, err := LoadDBRates(ctx, w.logger)
+	if err != nil {
+		w.logger.Warn("counters-only OEE rates: periodic DB reload failed — keeping previous snapshot",
+			slog.String("err", err.Error()))
+		return
+	}
+	merged := Merge(res.Rates, w.envRates)
+	w.mu.Lock()
+	w.rates = merged
+	w.tenants = res.Tenants
+	w.mu.Unlock()
+	w.logger.Info("counters-only OEE rates reloaded from DB",
+		slog.Int("tenants", res.Tenants),
+		slog.Int("db_rate_entries", len(res.Rates)),
+		slog.Int("env_rate_entries", len(w.envRates)),
+		slog.Int("merged_rate_entries", len(merged)),
+	)
 }

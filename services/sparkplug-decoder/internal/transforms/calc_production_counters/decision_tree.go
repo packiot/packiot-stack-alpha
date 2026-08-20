@@ -128,3 +128,85 @@ func ParseTopic(topic string) (unitTopic string, kind CounterKind, err error) {
 	u, k, _, e := parseTopicFull(topic)
 	return u, k, e
 }
+
+// DeriveUnitTopic returns the calc unit-topic key for a raw topic/metric name
+// — the SAME rule parseTopicFull applies (parts[:5], or parts[:4] when
+// segment 4 is a PackML process keyword), but WITHOUT requiring a
+// ProdProcessedCount/ProdConsumedCount/ProdDefectiveCount substring or a
+// "***" trigger suffix to be present. Exported for DB-backed role resolvers
+// (internal/counterroles, ADR-0047 P0 #1) that need to build lookup keys
+// against bare Sparkplug metric names, which never carry a "***" suffix and
+// may not follow the Prod*Count naming convention at all — that's exactly
+// the split-brain the resolver exists to route around.
+//
+// A resolver key that silently diverges from parseTopicFull's own rule turns
+// every one of its entries into a dead lookup (the "key drift" lesson from
+// ADR-0045 G4/G5 — see internal/countersrate's deriveUnitTopic, which solves
+// the identical problem for the ideal-speed seam; this function generalizes
+// that same, already-tested contract for reuse). DeriveUnitTopic is
+// deliberately a NEW standalone function rather than a refactor of
+// parseTopicFull's inline logic — parseTopicFull is comparator-proven
+// production code; duplicating its ~6 lines here is lower risk than editing
+// it, and TestDeriveUnitTopicMatchesParseTopicFull pins the two in lockstep
+// for every input parseTopicFull itself accepts.
+//
+// Unlike parseTopicFull (which requires ≥5 segments and a Prod*Count
+// substring, erroring otherwise), a topic with FEWER than 5 segments is
+// treated as "already canonical" and returned unchanged — matching
+// countersrate.deriveUnitTopic's contract, needed because this function is
+// also called on values straight out of packml_register.packml_topic, which
+// for a LINE is very often already a short (4-segment, or shorter) canonical
+// topic with no per-metric leaf to strip. ok=false only for an empty input
+// (nothing to derive a key from).
+func DeriveUnitTopic(topic string) (unitTopic string, ok bool) {
+	body := topic
+	if idx := strings.Index(topic, "***"); idx >= 0 {
+		body = topic[:idx]
+	}
+	if body == "" {
+		return "", false
+	}
+	parts := strings.Split(body, "/")
+	if len(parts) < 5 {
+		return strings.Join(parts, "/"), true // already canonical — nothing to strip
+	}
+	switch strings.ToLower(parts[4]) {
+	case "admin", "status", "command":
+		return strings.Join(parts[:4], "/"), true // line own-stream — no Unit segment
+	default:
+		return strings.Join(parts[:5], "/"), true // Enterprise/Site/Area/Line/Unit
+	}
+}
+
+// parseTriggerFlags extracts the ***TRIG* suffix flags from a topic's suffix
+// substring (everything after "***"). Split out of parseTopicFull so the
+// counter-role override path in Calc (Message.RoleKind) can still honor an
+// explicit trigger suffix on a DB-role-mapped topic without re-deriving unit
+// + kind from the topic body. Mirrors parseTopicFull's suffix block verbatim;
+// TestParseTriggerFlagsMatchesParseTopicFull pins the two in lockstep.
+func parseTriggerFlags(suffix string) TriggerFlags {
+	var flags TriggerFlags
+	sfx := strings.ToUpper(suffix)
+	if strings.Contains(sfx, "STATESPEED_THIS") {
+		flags.StateSpeedThis = true
+	}
+	if strings.Contains(sfx, "TRIG_C=I") {
+		flags.TrigCEqualsI = true
+	}
+	if strings.Contains(sfx, "TRIG_C=O") {
+		flags.TrigCEqualsO = true
+	}
+	if strings.Contains(sfx, "TRIG_CS") {
+		flags.TrigCS = true
+	}
+	if strings.Contains(sfx, "TRIG_CI") {
+		flags.TrigCI = true
+	}
+	if strings.Contains(sfx, "TRIG_CO") && !flags.TrigCEqualsO {
+		flags.TrigCO = true
+	}
+	if strings.HasPrefix(sfx, "TRIG") {
+		flags.TrigBase = true
+	}
+	return flags
+}
