@@ -1,6 +1,6 @@
-// shadow-mirror — polls staging user_logs and replays operator actions
-// to shadow paths so Flows 2 + 3 of the ADR-0012 POC receive the same
-// control-plane data as Flow 1.
+// analytics-sync (formerly shadow-mirror) — polls staging user_logs and
+// replays operator actions to shadow paths so Flows 2 + 3 of the ADR-0012
+// POC receive the same control-plane data as Flow 1.
 //
 // Phase 1 skeleton: config, dual DB pool, cursor loop, dispatcher with
 // one placeholder handler (manual-event-created — logs, no writes yet).
@@ -20,13 +20,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/config"
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/db"
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/health"
-	logp "github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/log"
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/metrics"
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay"
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay/handlers"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/config"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/health"
+	logp "github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/log"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/replay"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/replay/handlers"
 )
 
 func main() {
@@ -64,7 +64,7 @@ func main() {
 	}
 
 	// Main pool: staging packiot DB. Reads user_logs, writes to shadow_go_port schema.
-	mainPool, err := db.NewPool(ctx, creds, cfg.PGDBName, "shadow-mirror-main", logger)
+	mainPool, err := db.NewPool(ctx, creds, cfg.PGDBName, "analytics-sync-main", logger)
 	if err != nil {
 		logger.Error("main pool init failed", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -75,7 +75,7 @@ func main() {
 	// if PG_SHADOW_DB_NAME unset (partial degradation, per ADR-0013).
 	var shadowPool *pgxpool.Pool
 	if cfg.PGShadowDBName != "" {
-		shadowPool, err = db.NewPool(ctx, creds, cfg.PGShadowDBName, "shadow-mirror-shadow", logger)
+		shadowPool, err = db.NewPool(ctx, creds, cfg.PGShadowDBName, "analytics-sync-shadow", logger)
 		if err != nil {
 			logger.Error("shadow pool init failed — running degraded (shadow_go_port only)",
 				slog.String("err", err.Error()))

@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/packiot/packiot-stack-alpha/services/shadow-mirror/internal/replay"
+	"github.com/packiot/packiot-stack-alpha/services/analytics-sync/internal/replay"
 )
 
 // ManualEventCreatedPayload is the JSON shape emitted by staging

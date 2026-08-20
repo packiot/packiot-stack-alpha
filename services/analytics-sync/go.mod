@@ -1,4 +1,4 @@
-module github.com/packiot/packiot-stack-alpha/services/shadow-mirror
+module github.com/packiot/packiot-stack-alpha/services/analytics-sync
 
 go 1.25
 

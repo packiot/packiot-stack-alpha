@@ -12,7 +12,7 @@ func Handler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"service": "shadow-mirror",
+			"service": "analytics-sync",
 			"healthy": true,
 		})
 	}

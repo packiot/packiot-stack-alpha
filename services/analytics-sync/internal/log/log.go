@@ -20,5 +20,5 @@ func Setup(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
-	return slog.New(h).With(slog.String("service", "shadow-mirror"))
+	return slog.New(h).With(slog.String("service", "analytics-sync"))
 }

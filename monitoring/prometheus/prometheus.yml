@@ -57,15 +57,17 @@ scrape_configs:
     static_configs:
       - targets: ['edge-transformer:9102']
 
-  # shadow-mirror — operator-action replay (ADR-0013). Exposes
-  # shadow_mirror_{dispatched,failed,skipped,update_noop}_total +
-  # shadow_mirror_cursor on :9103. NEVER SCRAPED until 2026-07-06 —
-  # the 12-replay-and-fanout board's shadow-mirror tiles were empty
-  # since birth (found by the executed-query audit; the board predates
-  # the audit discipline). Retires at flip R1.
-  - job_name: shadow-mirror
+  # analytics-sync (was shadow-mirror) — operator-action replay (ADR-0013).
+  # Exposes shadow_mirror_{dispatched,failed,skipped,update_noop}_total +
+  # shadow_mirror_cursor on :9103 — metric NAMES kept as-is (app-defined,
+  # out of scope for this rename; see the operator-gateway PR for the same
+  # call). NEVER SCRAPED until 2026-07-06 — the 12-replay-and-fanout
+  # board's shadow-mirror tiles were empty since birth (found by the
+  # executed-query audit; the board predates the audit discipline).
+  # Retires at flip R1.
+  - job_name: analytics-sync
     static_configs:
-      - targets: ['shadow-mirror:9103']
+      - targets: ['analytics-sync:9103']
 
   # refdata-api / query-api — the read side (ADR-0015). Full RED on :9104:
   # http_request_duration_seconds{method,route,status} (rate=_count, errors=by
