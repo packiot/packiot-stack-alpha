@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v go >/dev/null 2>&1 || { echo "::error::go is not on PATH on this runner"; exit 1; }
-          cd services/edge-transformer
+          cd services/sparkplug-decoder
           go build -o /tmp/onboard-gen ./cmd/onboard-gen
           echo "built /tmp/onboard-gen"
 
