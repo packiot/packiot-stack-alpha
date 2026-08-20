@@ -1931,7 +1931,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
-  # ── shadow-mirror (ADR-0013 — control-plane parity for 3-flow POC) ────────────
+  # ── analytics-sync (was shadow-mirror; ADR-0013 — control-plane parity for 3-flow POC) ──
   # Polls staging.public.user_logs and replays operator actions onto
   # the two shadow paths (shadow_go_port schema on packiot + public
   # schema on packiot_shadow), closing the gap left by the data-plane
@@ -2200,9 +2200,9 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  shadow-mirror:
-    build: ./services/shadow-mirror
-    container_name: shadow-mirror
+  analytics-sync:
+    build: ./services/analytics-sync
+    container_name: analytics-sync
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -2237,11 +2237,11 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.25
-        aliases: ["analytics-sync"]  # rename alias-first (S0)
+        aliases: ["shadow-mirror"]  # S2 flip: old name kept resolvable during rollout
     # No depends_on — service is idle by default (SHADOW_MIRROR_ENABLED=false)
     # so it can start regardless of other services.
     healthcheck:
-      test: ["CMD", "/usr/local/bin/shadow-mirror", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/analytics-sync", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5

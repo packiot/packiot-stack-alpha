@@ -25,7 +25,7 @@ func Loop(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, dispatcher *D
 	if err != nil {
 		return err
 	}
-	logger.Info("shadow-mirror loop started",
+	logger.Info("analytics-sync loop started",
 		slog.Int64("cursor", cursor),
 		slog.Duration("poll_interval", pollInterval),
 		slog.Int("batch_size", batchSize),

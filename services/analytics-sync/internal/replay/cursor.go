@@ -7,11 +7,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// cursorSource is the persisted `mirror_replay_cursor.source` key.
+// DELIBERATELY KEPT as the pre-rename literal "shadow-mirror" — this value
+// is durable state (rename-map.md gotcha class: like an RMQ queue prefix or
+// username, not a pure code-identity label). Changing it would make
+// EnsureCursor miss the existing row on next deploy, seed a *new* row at
+// the then-current MAX(id_user_logs), and silently skip whatever the old
+// cursor hadn't caught up to yet — a data gap, not just a cosmetic rename.
+// Revisit only as a deliberate, coordinated migration (update the row's
+// `source` column in the same deploy that flips this constant).
 const cursorSource = "shadow-mirror"
 
 // EnsureCursor returns the current cursor value, seeding a row if none
 // exists. Reuses the mirror_replay_cursor table via a distinct source
-// key so shadow-mirror and mirror-worker don't collide.
+// key so analytics-sync and mirror-worker don't collide.
 //
 // First-run behavior: seeds cursor at the CURRENT MAX(id_user_logs) so
 // we don't try to replay years of history on cold start. Better a fresh

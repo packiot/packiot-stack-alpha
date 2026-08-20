@@ -1,12 +1,14 @@
-// Package replay drives the shadow-mirror poll → decode → dispatch → replay loop.
+// Package replay drives the analytics-sync (formerly shadow-mirror) poll →
+// decode → dispatch → replay loop.
 //
 // Cursor lives in the same `mirror_replay_cursor` table used by mirror-worker,
-// but under a distinct `source` key ("shadow-mirror") so the two services'
+// but under a distinct `source` key ("shadow-mirror" — kept as the PERSISTED
+// literal across this service rename; see cursor.go) so the two services'
 // cursors don't collide.
 //
 // Handlers are keyed by user_logs.category. Missing categories are
 // silently skipped + counted — new categories emitted by edge-api require
-// an accompanying handler PR, but shadow-mirror never crashes on unknown
+// an accompanying handler PR, but analytics-sync never crashes on unknown
 // input (see ADR-0013).
 package replay
 
@@ -43,7 +45,7 @@ type Handler func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *Us
 
 // ErrSkip signals "this entry is well-formed but not applicable to any
 // shadow write" — advance cursor, don't DLQ, don't retry.
-var ErrSkip = errors.New("shadow-mirror: skip (not applicable)")
+var ErrSkip = errors.New("analytics-sync: skip (not applicable)")
 
 // Dispatcher registers handlers per user_logs.category and routes each
 // row through the right one.

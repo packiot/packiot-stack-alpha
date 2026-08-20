@@ -1,4 +1,4 @@
-# shadow-mirror
+# analytics-sync (formerly shadow-mirror)
 
 **Control-plane replayer — temporary by design (retires at the flip,
 R1).** Operator actions land in the main DB via edge-api; this service
