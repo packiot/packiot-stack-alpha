@@ -3,13 +3,13 @@
 // Incoplast runs a bespoke operator UI (mui_* + Hasura) that performs operator
 // actions — chiefly downtime justification, plus PO start — WITHOUT going
 // through our edge-api. Those actions therefore never land in staging
-// `user_logs`, so the shadow-mirror can't replay them to the packiot_shadow
+// `user_logs`, so the shadow-mirror can't replay them to the packiot_analytics
 // (F3) flow, and the two flows can't be compared for enterprise 4.
 //
 // This adapter closes that gap. A tee node in Incoplast's Node-RED posts each
 // operator action here over HTTPS; the adapter maps it to the matching
 // edge-api call, which writes `user_logs` in F1 (packiot). shadow-mirror then
-// replays that to F3 (packiot_shadow), making both flows comparable.
+// replays that to F3 (packiot_analytics), making both flows comparable.
 //
 // It is intentionally thin: authenticate the tee node, scope-check the tenant,
 // map Incoplast field names → edge-api DTO field names, inject the

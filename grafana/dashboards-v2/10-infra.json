@@ -115,7 +115,7 @@
       "id": 10,
       "type": "stat",
       "title": "Postgres up (per DB)",
-      "description": "pg_up per postgres-exporter target. 1 = the exporter reached that database. Covers packiot (F1+F2) and packiot_shadow (F3).",
+      "description": "pg_up per postgres-exporter target. 1 = the exporter reached that database. Covers packiot (F1+F2) and packiot_analytics (F3).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
       "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },

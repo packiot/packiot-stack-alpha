@@ -48,17 +48,17 @@ func TestStandardFiltered_ShadowGoPortEnabled(t *testing.T) {
 		shadow := nonNilPool()
 		dests := StandardFiltered(pool, shadow, true)
 		if len(dests) != 1 {
-			t.Fatalf("want 1 dest (packiot_shadow only), got %d: %+v", len(dests), dests)
+			t.Fatalf("want 1 dest (packiot_analytics only), got %d: %+v", len(dests), dests)
 		}
 		if _, ok := destByName(dests, "shadow_go_port"); ok {
 			t.Fatalf("shadow_go_port main dest must be omitted when a shadow pool exists: %+v", dests)
 		}
-		ps, ok := destByName(dests, "packiot_shadow")
+		ps, ok := destByName(dests, "packiot_analytics")
 		if !ok {
-			t.Fatalf("packiot_shadow dest missing: %+v", dests)
+			t.Fatalf("packiot_analytics dest missing: %+v", dests)
 		}
 		if ps.Pool != shadow || ps.EvSchema != "public" || ps.RefSchema != "public" {
-			t.Fatalf("packiot_shadow dest wrong: %+v", ps)
+			t.Fatalf("packiot_analytics dest wrong: %+v", ps)
 		}
 	})
 
@@ -85,7 +85,7 @@ func TestStandardFiltered_ShadowGoPortEnabled(t *testing.T) {
 		shadow := nonNilPool()
 		dests := StandardFiltered(pool, shadow, false)
 		if len(dests) != 1 {
-			t.Fatalf("want 1 dest (packiot_shadow only), got %d: %+v", len(dests), dests)
+			t.Fatalf("want 1 dest (packiot_analytics only), got %d: %+v", len(dests), dests)
 		}
 		if _, ok := destByName(dests, "shadow_go_port"); ok {
 			t.Fatalf("shadow_go_port must be omitted: %+v", dests)
@@ -93,8 +93,8 @@ func TestStandardFiltered_ShadowGoPortEnabled(t *testing.T) {
 		if _, ok := destByName(dests, "public"); ok {
 			t.Fatalf("legacy public main dest must be omitted when a shadow pool exists (F3 is the live flow): %+v", dests)
 		}
-		if _, ok := destByName(dests, "packiot_shadow"); !ok {
-			t.Fatalf("packiot_shadow dest must be present: %+v", dests)
+		if _, ok := destByName(dests, "packiot_analytics"); !ok {
+			t.Fatalf("packiot_analytics dest must be present: %+v", dests)
 		}
 	})
 }

@@ -55,7 +55,7 @@ type endpoint struct {
 	// f3 (REFDATA_FLOW=f3). Empty ⇒ the same sql serves both flows — the common
 	// case, because F3 keeps F1's object names where the object exists (flow.go).
 	// It is only populated when a backing object is genuinely RENAMED in
-	// packiot_shadow, so the F1 read stays byte-identical. Declared LAST so the
+	// packiot_analytics, so the F1 read stays byte-identical. Declared LAST so the
 	// positional endpoint literals above stay valid.
 	sqlF3 string
 }
@@ -187,8 +187,8 @@ func main() {
 
 	// ADR-0032 Step 1: resolve the read-plane flow ONCE, before the DSN and the
 	// handlers are built. f1 (default) → dbname `packiot` (F1) via pgbouncer's
-	// `packiot` pool; f3 → dbname `packiot_shadow` (F3) via the new
-	// `packiot_shadow` pool. Same host (pgbouncer) either way — only the target
+	// `packiot` pool; f3 → dbname `packiot_analytics` (F3) via the new
+	// `packiot_analytics` pool. Same host (pgbouncer) either way — only the target
 	// database changes. Defaulting to f1 keeps merging this a zero-behavior-change
 	// (flow.go).
 	activeFlow = resolveFlow(os.Getenv("REFDATA_FLOW"))

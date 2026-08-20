@@ -125,26 +125,26 @@ func main() {
 	defer pool.Close()
 
 	// ADR-0012 shadow DB (schema-refactor live POC). Only initialized
-	// when POSTGRES_SHADOW_DB_NAME is set — production deploys leave it
+	// when POSTGRES_ANALYTICS_DB_NAME is set — production deploys leave it
 	// unset and the handler routes source_type="refactored" back to the
 	// main pool (with a warn log). This keeps the code path additive:
 	// no live behavior change unless you opt-in via env.
-	var shadowPool *pgxpool.Pool
-	if cfg.PGShadowDBName != "" {
-		shadowPool, err = db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "oeecloud-worker-shadow", cfg.PGShadowMaxConns, logger)
+	var analyticsPool *pgxpool.Pool
+	if cfg.PGAnalyticsDBName != "" {
+		analyticsPool, err = db.NewForDatabase(ctx, dbCreds, cfg.PGAnalyticsDBName, "oeecloud-worker-analytics", cfg.PGAnalyticsMaxConns, logger)
 		if err != nil {
 			logger.Error("shadow postgres pool init failed",
 				slog.String("err", err.Error()),
-				slog.String("shadow_db", cfg.PGShadowDBName))
+				slog.String("analytics_db", cfg.PGAnalyticsDBName))
 			os.Exit(1)
 		}
-		defer shadowPool.Close()
+		defer analyticsPool.Close()
 		logger.Info("shadow pool ready — source_type=refactored envelopes route here",
-			slog.String("shadow_db", cfg.PGShadowDBName))
+			slog.String("analytics_db", cfg.PGAnalyticsDBName))
 
 		// Ensure the shadow DB's TimescaleDB background-worker scheduler is
 		// running. The launcher does NOT reliably auto-start it for
-		// packiot_shadow (it skipped it — a scheduler was running for the stale
+		// packiot_analytics (it skipped it — a scheduler was running for the stale
 		// 61 MB `packiot_refactor` leftover but not the live 676 MB shadow DB),
 		// leaving the 15 continuous-aggregate refresh policies DORMANT. That is
 		// the true root of the F3 rollup timeouts: unrefreshed caggs sit days
@@ -153,11 +153,11 @@ func main() {
 		// This call is idempotent and safe if the scheduler is already up, so
 		// running it on every worker start self-heals the scheduler after any
 		// DB restart. Best-effort: a failure here must not stop the worker.
-		if _, err := shadowPool.Exec(ctx, `SELECT _timescaledb_functions.start_background_workers()`); err != nil {
+		if _, err := analyticsPool.Exec(ctx, `SELECT _timescaledb_functions.start_background_workers()`); err != nil {
 			logger.Warn("could not start shadow TimescaleDB background workers — cagg refresh may lag",
 				slog.String("err", err.Error()))
 		} else {
-			logger.Info("ensured packiot_shadow TimescaleDB background workers are running (cagg refresh policies)")
+			logger.Info("ensured packiot_analytics TimescaleDB background workers are running (cagg refresh policies)")
 		}
 	}
 
@@ -167,7 +167,7 @@ func main() {
 	// SHADOW_GO_PORT_ENABLED=false so the jobs target `public` (the collapsed
 	// F3-native flow) instead — otherwise every tick errors 42P01 on the absent
 	// shadow_go_port schema and nothing writes to `public` (ADR-0045 G3).
-	bgDests := flows.StandardFiltered(pool, shadowPool, cfg.ShadowGoPortEnabled)
+	bgDests := flows.StandardFiltered(pool, analyticsPool, cfg.ShadowGoPortEnabled)
 	logger.Info("background-job destinations resolved",
 		slog.Bool("shadow_go_port_enabled", cfg.ShadowGoPortEnabled),
 		slog.Int("dest_count", len(bgDests)))
@@ -303,7 +303,7 @@ func main() {
 	// ADR-0016 — side-by-side bake comparator (legacy F1 vs Go F2).
 	if cfg.BakeComparatorEnabled {
 		bake.Register(mx.Registry)
-		go bake.Loop(ctx, pool, shadowPool, 10*time.Minute, config.CSVInts(cfg.BakeEnterpriseIDs), logger, jobObs)
+		go bake.Loop(ctx, pool, analyticsPool, 10*time.Minute, config.CSVInts(cfg.BakeEnterpriseIDs), logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
@@ -331,10 +331,10 @@ func main() {
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
 	}
 
-	// F3 reference-plane sync — mirror master tables main→packiot_shadow so F3
+	// F3 reference-plane sync — mirror master tables main→packiot_analytics so F3
 	// rollups read the same reference plane as F2 (F2/F3 identity requirement).
-	if shadowPool != nil && cfg.RefSyncEnabled {
-		go refsync.Loop(ctx, pool, shadowPool,
+	if analyticsPool != nil && cfg.RefSyncEnabled {
+		go refsync.Loop(ctx, pool, analyticsPool,
 			time.Duration(cfg.RefSyncIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
@@ -416,7 +416,7 @@ func main() {
 	// Parses the AMQP payload, builds one Query per metric via the right
 	// writer, and sends them as a single pgx.Batch.
 	sparkplugHandler := handlers.NewSparkplugHandler(
-		pool, shadowPool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
+		pool, analyticsPool, equipmentValuesWriter, unsMetricsWriter, poParameterWriter, logger,
 	)
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
@@ -605,10 +605,10 @@ func runIdentitySentinel() int {
 	}
 	logger := logp.Setup(cfg.LogLevel)
 
-	if cfg.PGShadowDBName == "" {
+	if cfg.PGAnalyticsDBName == "" {
 		// No F3 plane configured → nothing to gate. Not a failure: on a plain
 		// prod-shaped deploy without the shadow DB the sentinel is a no-op.
-		logger.Warn("identity-sentinel: POSTGRES_SHADOW_DB_NAME unset — no F3 plane to check; skipping (exit 0)")
+		logger.Warn("identity-sentinel: POSTGRES_ANALYTICS_DB_NAME unset — no F3 plane to check; skipping (exit 0)")
 		return 0
 	}
 
@@ -621,9 +621,9 @@ func runIdentitySentinel() int {
 		return 1
 	}
 	// ADR-0032 Step 5: the F2 (shadow_go_port) plane is gone. Only the F3 plane
-	// (public in packiot_shadow) is opened; the sentinel is now the per-plane
+	// (public in packiot_analytics) is opened; the sentinel is now the per-plane
 	// int-overflow gate on F3 (GATE 2 survived; the F2==F3 identity gates 1/3 did not).
-	f3, err := db.NewForDatabase(ctx, dbCreds, cfg.PGShadowDBName, "identity-sentinel-shadow", 2, logger)
+	f3, err := db.NewForDatabase(ctx, dbCreds, cfg.PGAnalyticsDBName, "identity-sentinel-analytics", 2, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: F3 pool: %v\n", err)
 		return 1
@@ -632,7 +632,7 @@ func runIdentitySentinel() int {
 
 	enterprises := config.CSVInts(cfg.BakeEnterpriseIDs)
 	logger.Info("identity-sentinel running", slog.Any("enterprises", enterprises),
-		slog.String("f3_db", cfg.PGShadowDBName))
+		slog.String("f3_db", cfg.PGAnalyticsDBName))
 
 	rep, err := bake.RunSentinel(ctx, f3, enterprises)
 	if err != nil {

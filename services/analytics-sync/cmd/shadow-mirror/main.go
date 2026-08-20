@@ -71,17 +71,17 @@ func main() {
 	}
 	defer mainPool.Close()
 
-	// Shadow pool: packiot_shadow DB. Writes public schema. May be nil
-	// if PG_SHADOW_DB_NAME unset (partial degradation, per ADR-0013).
-	var shadowPool *pgxpool.Pool
-	if cfg.PGShadowDBName != "" {
-		shadowPool, err = db.NewPool(ctx, creds, cfg.PGShadowDBName, "analytics-sync-shadow", logger)
+	// Analytics pool: packiot_analytics DB. Writes public schema. May be nil
+	// if PG_ANALYTICS_DB_NAME unset (partial degradation, per ADR-0013).
+	var analyticsPool *pgxpool.Pool
+	if cfg.PGAnalyticsDBName != "" {
+		analyticsPool, err = db.NewPool(ctx, creds, cfg.PGAnalyticsDBName, "analytics-sync-analytics", logger)
 		if err != nil {
-			logger.Error("shadow pool init failed — running degraded (shadow_go_port only)",
+			logger.Error("analytics pool init failed — running degraded (shadow_go_port only)",
 				slog.String("err", err.Error()))
-			// Non-fatal: proceed with shadowPool=nil, handlers will detect.
+			// Non-fatal: proceed with analyticsPool=nil, handlers will detect.
 		} else {
-			defer shadowPool.Close()
+			defer analyticsPool.Close()
 		}
 	}
 
@@ -129,7 +129,7 @@ func main() {
 	}()
 
 	pollInterval := time.Duration(cfg.PollIntervalMs) * time.Millisecond
-	if err := replay.Loop(ctx, mainPool, shadowPool, dispatcher, m, pollInterval, cfg.BatchSize, logger); err != nil {
+	if err := replay.Loop(ctx, mainPool, analyticsPool, dispatcher, m, pollInterval, cfg.BatchSize, logger); err != nil {
 		if ctx.Err() != nil {
 			logger.Info("shutting down (ctx cancelled)")
 			return

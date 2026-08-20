@@ -3,7 +3,7 @@
   "users": [
     { "name": "__ADMIN__", "password": "__ADMIN_PASS__", "tags": ["administrator"] },
     { "name": "stream-engine", "password": "__OEE_PASS__", "tags": [] },
-    { "name": "edge-transformer", "password": "__ET_PASS__", "tags": [] }
+    { "name": "sparkplug-decoder", "password": "__SD_PASS__", "tags": [] }
   ],
   "vhosts": [{ "name": "/" }],
   "permissions": [
@@ -15,7 +15,7 @@
       "read": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$"
     },
     {
-      "user": "edge-transformer", "vhost": "/",
+      "user": "sparkplug-decoder", "vhost": "/",
       "configure": "^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|dlx\\.edge\\.plc-normalized.*)$",
       "write": "^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$",
       "read": "^(edge\\.plc-normalized.*|dlx\\.edge\\.plc-normalized.*|edge-transformer.*|outbox.*|oee)$"

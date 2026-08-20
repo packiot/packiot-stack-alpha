@@ -4,7 +4,7 @@ import "testing"
 
 // TestResolveFlow — the switch is fail-safe: only an explicit "f3" selects the
 // shadow DB; everything else (unset, typo, empty, mixed-case) stays on f1 so a
-// misconfig can never silently re-point reads at packiot_shadow.
+// misconfig can never silently re-point reads at packiot_analytics.
 func TestResolveFlow(t *testing.T) {
 	cases := map[string]flow{
 		"":     flowF1,
@@ -21,7 +21,7 @@ func TestResolveFlow(t *testing.T) {
 	}
 }
 
-// TestDBNameForFlow — f1 targets packiot, f3 targets packiot_shadow. Defaults
+// TestDBNameForFlow — f1 targets packiot, f3 targets packiot_analytics. Defaults
 // are the canonical pgbouncer pool names; the env overrides exist for a
 // non-standard bring-up but must default correctly (a wrong default here would
 // point the whole read plane at the wrong DB).
@@ -31,8 +31,8 @@ func TestDBNameForFlow(t *testing.T) {
 	if got := dbNameForFlow(flowF1); got != "packiot" {
 		t.Errorf("dbNameForFlow(f1) = %q, want packiot", got)
 	}
-	if got := dbNameForFlow(flowF3); got != "packiot_shadow" {
-		t.Errorf("dbNameForFlow(f3) = %q, want packiot_shadow", got)
+	if got := dbNameForFlow(flowF3); got != "packiot_analytics" {
+		t.Errorf("dbNameForFlow(f3) = %q, want packiot_analytics", got)
 	}
 }
 

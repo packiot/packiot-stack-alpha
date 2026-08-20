@@ -36,9 +36,9 @@ GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens
 # "database", never here.
 #
 # CONNECTS UPSTREAM-DIRECT to the r7g (POSTGRES_HOST_UPSTREAM), NOT via pgbouncer.
-# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_shadow` (the
+# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_analytics` (the
 # entrypoint generates a route from DB_NAME=packiot and the compose command sed-adds
-# `packiot_shadow`; there is no wildcard and no `superset` route). Adding one would
+# `packiot_analytics`; there is no wildcard and no `superset` route). Adding one would
 # mean editing the base `pgbouncer` service `command:` in compose.staging.yml /
 # compose.production.yml — a change to the shared DB path every stack service
 # depends on, well outside this profile-gated overlay. The metadata DB is

@@ -15,11 +15,11 @@ type Dest struct {
 }
 
 // Standard returns the worker's shadow destinations. When a shadow pool is
-// configured (staging), it's F3-only (packiot_shadow) — the main-pool dest is
+// configured (staging), it's F3-only (packiot_analytics) — the main-pool dest is
 // a dead comparator artifact (see StandardFiltered). Equivalent to
-// StandardFiltered(..., true), which now ignores the flag when shadowPool!=nil.
-func Standard(pool, shadowPool *pgxpool.Pool) []Dest {
-	return StandardFiltered(pool, shadowPool, true)
+// StandardFiltered(..., true), which now ignores the flag when analyticsPool!=nil.
+func Standard(pool, analyticsPool *pgxpool.Pool) []Dest {
+	return StandardFiltered(pool, analyticsPool, true)
 }
 
 // StandardFiltered returns the worker's background-job destinations,
@@ -37,21 +37,21 @@ func Standard(pool, shadowPool *pgxpool.Pool) []Dest {
 //     target `public` instead — otherwise the single flow has no rollup
 //     engine at all.
 //
-// The F3 comparator dest (packiot_shadow, a separate database) is appended
+// The F3 comparator dest (packiot_analytics, a separate database) is appended
 // whenever a shadow pool is configured, independent of the flag.
-func StandardFiltered(pool, shadowPool *pgxpool.Pool, shadowGoPortEnabled bool) []Dest {
+func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled bool) []Dest {
 	// When a dedicated F3 shadow pool is configured (the staging comparator
-	// setup), packiot_shadow IS the live flow — roll up ONLY that. The main-pool
+	// setup), packiot_analytics IS the live flow — roll up ONLY that. The main-pool
 	// dest is a dead comparator artifact now that F2 is retired (shadow_go_port
 	// DROPped) and the bake is off (BAKE_COMPARATOR_ENABLED=false): rolling up
 	// shadow_go_port errors 42P01 (schema gone), and rolling up legacy `public`
 	// (F1, unread — dashboards read F3) just errors against its incompletely
 	// provisioned schema (missing grain/cagg/shadow tables). shadowGoPortEnabled
 	// is therefore moot here. See ADR-0045 G3 + the 2026-08-13 residuals sweep.
-	if shadowPool != nil {
-		return []Dest{{Name: "packiot_shadow", Pool: shadowPool, EvSchema: "public", RefSchema: "public"}}
+	if analyticsPool != nil {
+		return []Dest{{Name: "packiot_analytics", Pool: analyticsPool, EvSchema: "public", RefSchema: "public"}}
 	}
-	// Single-flow deployment (new-prod, shadowPool==nil): the three flows have
+	// Single-flow deployment (new-prod, analyticsPool==nil): the three flows have
 	// collapsed to one that lives in `public` on the main pool (F3-native), so
 	// the main-pool dest IS the live flow. shadow_go_port only if F2 is alive.
 	main := Dest{Name: "public", Pool: pool, EvSchema: "public", RefSchema: "public"}

@@ -101,7 +101,7 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 GRANT USAGE ON SCHEMA cron TO "${db_user}";
 -- pg_stat_statements: per-query execution stats for the DB observability
 -- dashboard. Requires pg_stat_statements in shared_preload_libraries (above).
--- The shadow DB (packiot_shadow) needs the same CREATE EXTENSION run in it
+-- The shadow DB (packiot_analytics) needs the same CREATE EXTENSION run in it
 -- wherever it is provisioned; the preload is cluster-wide so one flag covers
 -- both databases.
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;

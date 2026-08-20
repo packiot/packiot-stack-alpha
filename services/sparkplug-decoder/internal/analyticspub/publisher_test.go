@@ -1,7 +1,7 @@
 // Unit tests for the shadow publisher's pure-function seams (the envelope
 // builder) + the isConnectionError predicate.
 
-package shadowpub
+package analyticspub
 
 import (
 	"encoding/json"
@@ -158,7 +158,7 @@ func TestBuildEnvelopeEmptyMetrics(t *testing.T) {
 }
 
 // TestIsConnectionError covers the whitelist of error substrings that
-// trigger the shadowpub reconnect path.
+// trigger the analyticspub reconnect path.
 func TestIsConnectionError(t *testing.T) {
 	cases := []struct {
 		name string

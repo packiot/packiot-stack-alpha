@@ -313,12 +313,12 @@ func RunTick(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, enter
 
 // Loop schedules the comparator (F1-vs-F2 fidelity + F2-vs-F3 identity),
 // running the surface pass per configured enterprise.
-func Loop(ctx context.Context, pool *pgxpool.Pool, shadowPool *pgxpool.Pool, every time.Duration, enterprises []int, logger *slog.Logger, obs jobs.Observer) {
+func Loop(ctx context.Context, pool *pgxpool.Pool, analyticsPool *pgxpool.Pool, every time.Duration, enterprises []int, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("bake comparator started (F1-vs-F2 fidelity + F2-vs-F3 identity)",
 		slog.Any("enterprises", enterprises))
 	jobs.Loop(ctx, jobs.Job{Name: "bake-comparator", Every: every, Run: func(ctx context.Context) error {
 		err := RunTick(ctx, pool, logger, enterprises)
-		if ierr := RunIdentityTick(ctx, pool, shadowPool, logger); ierr != nil && err == nil {
+		if ierr := RunIdentityTick(ctx, pool, analyticsPool, logger); ierr != nil && err == nil {
 			err = ierr
 		}
 		return err
@@ -326,7 +326,7 @@ func Loop(ctx context.Context, pool *pgxpool.Pool, shadowPool *pgxpool.Pool, eve
 }
 
 // ── F2-vs-F3 IDENTITY surfaces ────────────────────────────────────
-// F2 (shadow_go_port) and F3 (packiot_shadow) run the SAME Go engine
+// F2 (shadow_go_port) and F3 (packiot_analytics) run the SAME Go engine
 // on the SAME fan-out inputs — their outputs must be IDENTICAL, not
 // merely tolerant. Cross-database, so each side computes an aggregate
 // fingerprint and Go compares. Any drift = a real divergence in the
@@ -383,7 +383,7 @@ var identitySurfaces = []struct {
 // fingerprint. Field 0 (count) must ALWAYS match exactly — a row-count
 // difference is structural. The remaining aggregate sums (gross / net /
 // running_time / gross_production) get a small band because F2 (shadow_go_port)
-// and F3 (packiot_shadow) are two INDEPENDENTLY-fed flows: the most-recent
+// and F3 (packiot_analytics) are two INDEPENDENTLY-fed flows: the most-recent
 // bucket carries a tiny in-flight raw-value difference that ages out to zero as
 // the window rolls. Measured 2026-07-11 at full convergence: the ONLY residual
 // was eq51 gross 0.35% (1.756M/505M), concentrated in the current day, traced to

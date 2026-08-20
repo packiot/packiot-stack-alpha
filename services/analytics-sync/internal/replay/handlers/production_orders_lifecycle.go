@@ -29,7 +29,7 @@ type OrderCreatedPayload struct {
 // OrderCreated inserts a PO row with status=1 (available). Idempotent
 // via ON CONFLICT DO NOTHING.
 func OrderCreated(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderCreatedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -40,9 +40,9 @@ func OrderCreated(logger *slog.Logger) replay.Handler {
 		if err := insertPOAvailable(ctx, mainPool, "shadow_go_port", &p, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := insertPOAvailable(ctx, shadowPool, "public", &p, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := insertPOAvailable(ctx, analyticsPool, "public", &p, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil
@@ -79,7 +79,7 @@ type OrderStartedPayload struct {
 }
 
 func OrderStarted(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderStartedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -107,12 +107,12 @@ func OrderStarted(logger *slog.Logger) replay.Handler {
 		if err := openRuntimeWindow(ctx, mainPool, "shadow_go_port", k.IDEnterprise, k.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port window: %w", err)
 		}
-		if shadowPool != nil {
-			if err := updatePOStart(ctx, shadowPool, "public", k, tsStart, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := updatePOStart(ctx, analyticsPool, "public", k, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
-			if err := openRuntimeWindow(ctx, shadowPool, "public", k.IDEnterprise, k.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow window: %w", err)
+			if err := openRuntimeWindow(ctx, analyticsPool, "public", k.IDEnterprise, k.IDOrder, p.IDEquipment, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics window: %w", err)
 			}
 		}
 		return nil
@@ -139,7 +139,7 @@ type OrderTimeChangedPayload struct {
 }
 
 func OrderTimeChanged(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderTimeChangedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -164,9 +164,9 @@ func OrderTimeChanged(logger *slog.Logger) replay.Handler {
 		if err := updatePOTsStart(ctx, mainPool, "shadow_go_port", k, tsStart, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := updatePOTsStart(ctx, shadowPool, "public", k, tsStart, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := updatePOTsStart(ctx, analyticsPool, "public", k, tsStart, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil
@@ -193,7 +193,7 @@ type OrderReplacedPayload struct {
 }
 
 func OrderReplaced(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderReplacedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -214,9 +214,9 @@ func OrderReplaced(logger *slog.Logger) replay.Handler {
 		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", k, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := updatePORecalc(ctx, shadowPool, "public", k, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := updatePORecalc(ctx, analyticsPool, "public", k, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil
@@ -231,7 +231,7 @@ type OrderStatusChangedPayload struct {
 }
 
 func OrderStatusChanged(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p OrderStatusChangedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -252,9 +252,9 @@ func OrderStatusChanged(logger *slog.Logger) replay.Handler {
 		if err := updatePORecalc(ctx, mainPool, "shadow_go_port", k, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := updatePORecalc(ctx, shadowPool, "public", k, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := updatePORecalc(ctx, analyticsPool, "public", k, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil
@@ -287,7 +287,7 @@ type ManualEventEditedPayload struct {
 }
 
 func ManualEventEdited(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p ManualEventEditedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return replay.ErrSkip
@@ -305,9 +305,9 @@ func ManualEventEdited(logger *slog.Logger) replay.Handler {
 		if err := updateManualEvent(ctx, mainPool, "shadow_go_port", &p, tsStart, tsEnd, u.ID, logger); err != nil {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
-		if shadowPool != nil {
-			if err := updateManualEvent(ctx, shadowPool, "public", &p, tsStart, tsEnd, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := updateManualEvent(ctx, analyticsPool, "public", &p, tsStart, tsEnd, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil

@@ -95,7 +95,7 @@ type Config struct {
 	// are routed there instead of the main pool. Preserves the
 	// existing shadow_go_port routing (source_type="go" → schema
 	// swap on main pool) untouched.
-	PGShadowDBName string
+	PGAnalyticsDBName string
 
 	// ShadowGoPortEnabled — ADR-0045 G3. Selects the MAIN-POOL background-job
 	// flow (see flows.StandardFiltered). DEFAULT TRUE = the F2 comparator
@@ -116,8 +116,8 @@ type Config struct {
 	// starving the equipment_values shadow writes → they time out and fail-open
 	// → F3 trickles (2026-07-09). The shadow pool connects DIRECT to the DB EC2
 	// (not pgbouncer), so give it headroom; the main pool goes via pgbouncer.
-	PGMaxConns       int // main pool (via pgbouncer)
-	PGShadowMaxConns int // shadow pool (direct) — needs headroom for rollups + writes
+	PGMaxConns          int // main pool (via pgbouncer)
+	PGAnalyticsMaxConns int // shadow pool (direct) — needs headroom for rollups + writes
 
 	// ShiftResolverEnabled — ADR-0014 Phase 2. When true, the Go port of
 	// piot_set_shift_on_equipment_values() fills id_shift/id_shift_hour/
@@ -252,7 +252,7 @@ type Config struct {
 	// the main-pool 120s timeout can't bite. On by default with the live rollup.
 	RollupBackfillEnabled bool
 	// RefSync mirrors master/reference tables (equipments, packml_register,
-	// production_targets, products, clients, …) main→packiot_shadow so F3 rollups
+	// production_targets, products, clients, …) main→packiot_analytics so F3 rollups
 	// read the same reference plane as F2 (the F2/F3 identity requirement). Runs
 	// only when the shadow DB is configured.
 	RefSyncEnabled                bool
@@ -371,7 +371,7 @@ type Config struct {
 	// unchanged — Bronze is a pure side-append. Default OFF → the raw INSERT is
 	// never queued, so behavior is byte-identical (the F2↔F3 identity comparator
 	// holds). Enable only where the *_raw hypertables exist in the target
-	// schema/DB (currently packiot_shadow.public) — a separate gated step.
+	// schema/DB (currently packiot_analytics.public) — a separate gated step.
 	BronzeRawAppend bool
 }
 
@@ -396,10 +396,10 @@ func Load() (*Config, error) {
 		WorkerPoolSACEnabled:             getenv("WORKER_POOL_SAC_ENABLED", "false") == "true",
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
-		PGShadowDBName:                   getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		PGAnalyticsDBName:                getenv("POSTGRES_ANALYTICS_DB_NAME", ""),
 		ShadowGoPortEnabled:              getenv("SHADOW_GO_PORT_ENABLED", "true") == "true",
 		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
-		PGShadowMaxConns:                 getenvInt("POSTGRES_SHADOW_MAX_CONNS", 15),
+		PGAnalyticsMaxConns:              getenvInt("POSTGRES_ANALYTICS_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		ShiftFillFolded:                  getenv("SHIFT_FILL_FOLDED", "false") == "true",
 		Speed33ReportEnabled:             getenv("SPEED33_REPORT_ENABLED", "false") == "true",

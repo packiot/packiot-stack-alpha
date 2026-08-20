@@ -100,7 +100,7 @@ func (c *shadowCollector) Collect(ch chan<- prometheus.Metric) {
 //
 // These collectors follow the same "snapshot function passed as closure"
 // pattern above so the metrics package stays decoupled from the
-// mqtt/shadowpub/sparkplug packages (no cycles).
+// mqtt/analyticspub/sparkplug packages (no cycles).
 
 // MQTTSubscriberSnapshot is what the subscriber must produce for scrape.
 // Fields map 1:1 to the atomic counters + connected flag on mqtt.Subscriber.
@@ -156,7 +156,7 @@ func (c *mqttSubscriberCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.connected, prometheus.GaugeValue, connected)
 }
 
-// ShadowPublisherSnapshot is the ADR-0011 P0-1 shadowpub view for scrape.
+// ShadowPublisherSnapshot is the ADR-0011 P0-1 analyticspub view for scrape.
 type ShadowPublisherSnapshot struct {
 	Published       uint64
 	Confirmed       uint64

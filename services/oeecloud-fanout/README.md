@@ -23,8 +23,8 @@ edge-transformer ──sparkplug.data──▶  oee (topic exchange)
 
 ## Envelope shape (what it rewrites)
 
-The edge-transformer publishes the oeecloud-compatible envelope
-(`shadowpub.Envelope`):
+The sparkplug-decoder publishes the oeecloud-compatible envelope
+(`analyticspub.Envelope`):
 
 ```json
 { "timestamp": 1782161858551, "gateway": "edge-transformer:outbox",

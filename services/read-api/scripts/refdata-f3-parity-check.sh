@@ -4,7 +4,7 @@
 # WHAT IT DOES
 # ────────────
 # ADR-0032 re-points refdata-api's read plane from F1 (`packiot.public`) to F3
-# (`packiot_shadow.public`). F3's schema is intentionally divergent (ADR-0014),
+# (`packiot_analytics.public`). F3's schema is intentionally divergent (ADR-0014),
 # so a connection swap is NOT enough — every Surface-1 dataset's backing objects
 # must actually EXIST and RETURN the same shape+values from F3 before the flip.
 # This script is that gate. It must be CLEAN (or every divergence explicitly
@@ -13,7 +13,7 @@
 # Sibling of scripts/refdata-contract-drift-check.sh: same contract source (the
 # in-binary registry via `refdata-api --dump-contract`), same SELECT-only
 # BEGIN READ ONLY discipline. The drift gate diffs the binary vs PROD-F1; THIS
-# gate diffs STAGING-F1 (`packiot`) vs STAGING-F3 (`packiot_shadow`), the two
+# gate diffs STAGING-F1 (`packiot`) vs STAGING-F3 (`packiot_analytics`), the two
 # databases the collapse moves reads between.
 #
 # TWO PHASES
@@ -23,7 +23,7 @@
 #     does it EXIST in F1?  in F3?  Verdict per object:
 #       SERVABLE_BOTH   present in both → the dataset can be served from F3.
 #       F3_MISSING      present in F1, absent in F3 → dataset BLOCKED on F3 until
-#                       packiot_shadow's read layer grows the object. THE BLOCKER.
+#                       packiot_analytics's read layer grows the object. THE BLOCKER.
 #       F1_MISSING      present in F3 only (unexpected; flagged for review).
 #     External-shim objects (source=external, the prod-only SAP/Montebello views)
 #     are EXCLUDED — they are a prod-only surface (ADR-0032 §5.1), empty on staging.
@@ -61,7 +61,7 @@
 #     suzano-analogs             equipment_values                                 SERVABLE (value: live, excluded)
 #     site-by-equipment          sites + equipments                              SERVABLE_BOTH
 #     equipment-downtime-reasons equipments                                       SERVABLE_BOTH
-#   Datasets (/v1/query) — F3_MISSING (BLOCKERS, backing h_piot_* analytics fn absent in packiot_shadow):
+#   Datasets (/v1/query) — F3_MISSING (BLOCKERS, backing h_piot_* analytics fn absent in packiot_analytics):
 #     oee-score-teams, oee-score-full, oee-progress, mission-control(-area,-timeline),
 #     overview-* (job-info, events, events-legacy, production-chart, production-chart-legacy,
 #       production-health, downtimes-by-category), downtimes-summary, downtimes-per-category,
@@ -94,7 +94,7 @@
 #   PSQL='psql -h 10.10.10.89 -U postgres' PGPASSWORD=... \
 #     bash services/refdata-api/scripts/refdata-f3-parity-check.sh
 #
-#   ENV: F1_DB (default packiot), F3_DB (default packiot_shadow),
+#   ENV: F1_DB (default packiot), F3_DB (default packiot_analytics),
 #        PSQL (default 'docker exec -i timescaledb psql -U postgres'),
 #        ENTERPRISES (default '3 4'),
 #        CONTRACT_JSON (skip the go build — a pre-dumped `--dump-contract` file).
@@ -106,7 +106,7 @@
 set -euo pipefail
 
 F1_DB="${F1_DB:-packiot}"
-F3_DB="${F3_DB:-packiot_shadow}"
+F3_DB="${F3_DB:-packiot_analytics}"
 PSQL="${PSQL:-docker exec -i timescaledb psql -U postgres}"
 ENTERPRISES="${ENTERPRISES:-3 4}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"   # services/refdata-api
@@ -281,7 +281,7 @@ else
   echo "❌ PARITY NOT CLEAN — F3 cannot yet serve the full Surface-1 read plane."
   echo "   Phase A F3_MISSING objects are BLOCKERS: the backing h_piot_* analytics"
   echo "   functions / config relations do not exist in $F3_DB. They must be PORTED"
-  echo "   into packiot_shadow before REFDATA_FLOW=f3 can serve those datasets."
+  echo "   into packiot_analytics before REFDATA_FLOW=f3 can serve those datasets."
   echo "   (The switch defaults to f1, so this does NOT affect the current deploy.)"
 fi
 exit "$RC"

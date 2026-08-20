@@ -73,7 +73,7 @@ const topoZeroMembers = `
 
 // refSchema: packml_register is REFERENCE-plane — it lives in public
 // on both DBs (shadow_go_port shares the main DB's reference tables;
-// packiot_shadow syncs its own copy into public). Same split as the
+// packiot_analytics syncs its own copy into public). Same split as the
 // events deriver's Dest{EvSchema, RefSchema}.
 const refSchema = "public"
 
