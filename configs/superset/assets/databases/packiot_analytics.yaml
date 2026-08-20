@@ -1,0 +1,55 @@
+# Superset "database" = the SELECT-only analytics connection Superset registers.
+# Connects as superset_ro to the curated `bi` schema ONLY (db/superset/01-superset-ro-role.sql).
+# The raw ~300-table F3 schema stays dark (superset_ro has NO base-table grant).
+#
+# LIVE-FILL REQUIRED: the sqlalchemy_uri password is a PLACEHOLDER. On import,
+# Superset prompts for the DB password (or pass it via the import API's
+# `passwords` map). The real superset_ro password comes from Secrets Manager
+# (packiot/<env>/app key `superset_db_ro_password`) — NEVER commit it here.
+#
+# HOST: DIRECT to the DB box, NOT pgbouncer — verified against the LIVE
+# production registration (2026-08-20, via `superset shell` on i-0a5c5dadd9ea5e93e):
+# `postgresql+psycopg2://superset_ro:***@10.20.10.89:5432/packiot`, bypassing
+# pgbouncer entirely (this file used to say pgbouncer:6432/postgres — that was
+# STALE/drifted from what's actually deployed; corrected here). This is not
+# incidental: `superset_config.py`'s `DB_CONNECTION_MUTATOR` stamps the tenant as
+# a libpq startup option (`-c app.tenant_id=<id>`) on EVERY query — under
+# pgbouncer's transaction-pooling mode that option is set once per physical
+# server connection, not necessarily once per Superset request, so a pooled
+# connection could silently serve a DIFFERENT tenant's stamp than the caller's
+# (tenant-isolation-breaking). Connecting directly to the DB host makes every
+# Superset connection carry its own correctly-stamped GUC. Do not re-route this
+# through pgbouncer without re-verifying the mutator's per-connection semantics.
+#
+# STAGING PORT NOTE (2026-08-20): production points dbname at `packiot`
+# (F3 assembled as its own `public` schema, ADR "W1.4") on host 10.20.10.89.
+# Staging has NOT done that swap — F3 lives in a SEPARATE physical database,
+# `packiot_shadow`, on staging's DB box (`packiot-staging-db`,
+# `POSTGRES_HOST=10.10.10.89` in `/opt/packiot/.env`, confirmed live). So on
+# staging: host `10.10.10.89`, dbname `packiot_shadow`, DIRECT (mirrors prod's
+# bypass-pgbouncer pattern above). `db/superset/01-superset-ro-role.sql` (the
+# `bi.*` views + superset_ro role) must be applied against THAT database for
+# these datasets to resolve.
+#
+# PENDING RENAME (branch `rename/db-packiot-analytics`, in flight as of
+# 2026-08-20): `packiot_shadow` is being renamed to `packiot_analytics`
+# end-to-end (DB name + pgbouncer route). When that lands, flip the dbname
+# below from `packiot_shadow` to `packiot_analytics` — nothing else in this
+# bundle changes (the Superset-side `database_name:` display label is already
+# `packiot_analytics`, chosen ahead of time to match).
+database_name: packiot_analytics
+sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@10.10.10.89:5432/packiot_shadow
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: true
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+extra:
+  allows_virtual_table_explore: true
+  metadata_params: {}
+  engine_params: {}
+  schemas_allowed_for_file_upload: []
+uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a
+version: 1.0.0

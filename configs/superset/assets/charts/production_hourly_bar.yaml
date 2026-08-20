@@ -1,0 +1,28 @@
+# front4 productionChart "Last 12h" — gross vs net (scrap = gross - net) per hour.
+# Time-series bar. GAP vs front4: the target reference line + running-average line
+# have NO bi.* source (production_targets not exposed) — bars only here.
+slice_name: Production by hour
+description: bi.oee_hourly SUM(net) + SUM(scrap) by hour. front4 productionChart (last 12h) minus target line.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params: |
+  {
+    "datasource": "8b1d0810-a0d1-4012-86a9-45c64c2e9154__table",
+    "viz_type": "echarts_timeseries_bar",
+    "x_axis": "ts_value",
+    "time_grain_sqla": "PT1H",
+    "metrics": ["sum_net", "sum_scrap"],
+    "groupby": [],
+    "adhoc_filters": [],
+    "stack": true,
+    "y_axis_format": ".3~s",
+    "x_axis_time_format": "%H:%M",
+    "show_legend": true,
+    "time_range": "last day"
+  }
+query_context: '{"datasource": {"id": 3, "type": "table"}, "force": false, "queries": [{"time_range": "last day", "filters": [], "extras": {"time_grain_sqla": "PT1H", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "PT1H", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}], "metrics": ["sum_net", "sum_scrap"], "orderby": [["sum_net", false]], "annotation_layers": [], "row_limit": 10000, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["ts_value"], "columns": [], "aggregates": {"sum_net": {"operator": "mean"}, "sum_scrap": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "3__table", "viz_type": "echarts_timeseries_bar", "x_axis": "ts_value", "time_grain_sqla": "PT1H", "metrics": ["sum_net", "sum_scrap"], "groupby": [], "adhoc_filters": [], "stack": true, "y_axis_format": ".3~s", "x_axis_time_format": "%H:%M", "show_legend": true, "time_range": "last day", "annotation_layers": [], "slice_id": 9, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 09c153c2-0be1-43fa-9cfe-99a6514030e0
+version: 1.0.0
+dataset_uuid: 8b1d0810-a0d1-4012-86a9-45c64c2e9154

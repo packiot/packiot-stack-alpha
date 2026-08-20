@@ -1,0 +1,70 @@
+# bi.equipments — equipment dimension (active only). Join/filter target for the
+# authoring UI (line/area pickers). tp_equipment: 1=machine, 2=sector, 3=line.
+table_name: equipments
+main_dttm_col: null
+description: Equipment dimension (active). Line/sector/machine names + hierarchy.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 9ab0d8c0-2a2c-4a61-9ec0-6079a3b6eceb
+metrics:
+- metric_name: equipment_count
+  verbose_name: Equipment count
+  expression: COUNT(*)
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_equipment
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: tp_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_area
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: lead_machine
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: equipment_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: nm_equipment + (line)/(machine)/(sector) — disambiguates line/machine name-pairs.
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

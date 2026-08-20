@@ -1,0 +1,25 @@
+# Speed breakdown table — avg/peak/ideal speed per machine over bi.equipment_speed.
+slice_name: Speed table
+description: bi.equipment_speed grouped by nm_equipment. Avg/peak/ideal speed per machine.
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - equipment_label
+  metrics:
+  - avg_speed
+  - max_speed
+  - avg_ideal_speed
+  adhoc_filters: []
+  row_limit: 100
+  order_by_cols: []
+  time_range: last week
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"time_range": "last week", "filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["equipment_label"], "metrics": ["avg_speed", "max_speed", "avg_ideal_speed"], "orderby": [["avg_speed", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table", "viz_type": "table", "query_mode": "aggregate", "groupby": ["equipment_label"], "metrics": ["avg_speed", "max_speed", "avg_ideal_speed"], "adhoc_filters": [], "row_limit": 100, "order_by_cols": [], "time_range": "last week", "annotation_layers": [], "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 91511d31-1720-41e7-98fd-7823befe98f6
+version: 1.0.0
+dataset_uuid: 1c9dab1f-bf7f-4106-a0f4-d52302d256c7

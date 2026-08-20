@@ -73,6 +73,22 @@ resource "aws_route53_record" "auth" {
   records = [aws_eip.app.public_ip]
 }
 
+# Superset BI vhost — bi.staging.packiot.app. NOT in var.services because it uses a
+# bespoke nginx block (superset.conf: origin-verify + scoped CORS, NO oauth2 gate —
+# a cookie forward-auth would break the iframe embed + Cognito OIDC redirect), not
+# the generic csadmin-tier vhost loop. Mirrors the services record's edge_cutover
+# flip: A→App EIP while direct; goes dormant (count 0) when the parallel
+# ALIAS→CloudFront copy `bi_edge` (edge.tf) takes over. `bi` already matches the
+# distribution's `*.staging.packiot.app` alias, so no cert/alias change is needed.
+resource "aws_route53_record" "bi" {
+  count   = var.edge_cutover ? 0 : 1
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "bi.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
 # CPACK agent ingest front-door (ADR-0042 P1) — cpack-ingest.staging.packiot.app.
 # Not in var.services because it's a dedicated port-8447 TLS reverse-proxy for
 # the sparkplug-agent /v1/tags endpoint (not a standard 443 HTTP vhost). Nginx

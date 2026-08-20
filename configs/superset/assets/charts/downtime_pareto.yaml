@@ -1,0 +1,14 @@
+# front4 v3 availabilityGraph "Disponibilidade" — downtime duration by category,
+# top categories descending (a pareto). Categorical bar over desc_category.
+slice_name: Downtime by reason
+description: bi.downtimes SUM(duration) by desc_category, desc. front4 v3 availabilityGraph pareto.
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params: |-
+  {"datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table", "viz_type": "dist_bar", "metrics": ["total_duration"], "groupby": ["reason"], "columns": [], "adhoc_filters": [], "row_limit": 6, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "time_range": "last week"}
+query_context: '{"datasource": {"id": 1, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "reason", "label": "reason", "expressionType": "SQL"}], "metrics": ["total_duration"], "orderby": [["total_duration", false]], "annotation_layers": [], "row_limit": 6, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["reason"], "columns": [], "aggregates": {"total_duration": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1__table", "viz_type": "echarts_timeseries_bar", "metrics": ["total_duration"], "groupby": [], "adhoc_filters": [], "row_limit": 6, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "annotation_layers": [], "contributionMode": null, "zoomable": false, "markerEnabled": false, "truncateYAxis": true, "comparison_type": "values", "x_axis": "reason", "stack": null, "slice_id": 3, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 7e15ed8e-3d2f-45bd-a996-14c48db7d881
+version: 1.0.0
+dataset_uuid: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05

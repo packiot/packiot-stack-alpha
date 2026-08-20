@@ -1,0 +1,22 @@
+# front4 shiftOee Quality leg (oee_q). Big Number, % format.
+slice_name: Quality
+description: bi.oee_shift AVG(oee_q). front4 OeeScore Quality column.
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params: |
+  {
+    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
+    "viz_type": "big_number_total",
+    "metric": "avg_oee_q",
+    "adhoc_filters": [],
+    "header_font_size": 0.4,
+    "subheader_font_size": 0.15,
+    "y_axis_format": ".1%",
+    "subtitle": "Quality"
+  }
+query_context: '{"datasource": {"id": 4, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [], "metrics": ["avg_oee_q"], "annotation_layers": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}}], "form_data": {"datasource": "4__table", "viz_type": "big_number_total", "metric": "avg_oee_q", "adhoc_filters": [], "header_font_size": 0.4, "subheader_font_size": 0.15, "y_axis_format": ".1%", "subtitle": "Quality", "annotation_layers": [], "slice_id": 10, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: c7c4ebe1-5659-4283-baaf-636d61185684
+version: 1.0.0
+dataset_uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a
