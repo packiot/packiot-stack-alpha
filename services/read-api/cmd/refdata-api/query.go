@@ -33,7 +33,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/packiot/packiot-stack-alpha/services/refdata-api/internal/cache"
+	"github.com/packiot/packiot-stack-alpha/services/read-api/internal/cache"
 )
 
 // ── Catalog (P1) ─────────────────────────────────────────────────────
