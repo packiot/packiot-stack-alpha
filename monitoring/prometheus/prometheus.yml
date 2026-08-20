@@ -105,17 +105,18 @@ scrape_configs:
     static_configs:
       - targets: ['ingest-shim:9105']
 
-  # operator-adapter: Incoplast operator-action bridge → edge-api. It serves
-  # /metrics on its TLS API mux (:8443, self-signed internal cert), so scrape
-  # over HTTPS with verification skipped (internal-only, same trust boundary as
-  # the other packiot-net services). Exposes
-  # operator_adapter_requests_total{action,outcome}.
-  - job_name: operator-adapter
+  # operator-gateway (was operator-adapter): Incoplast operator-action bridge →
+  # edge-api. It serves /metrics on its TLS API mux (:8443, self-signed internal
+  # cert), so scrape over HTTPS with verification skipped (internal-only, same
+  # trust boundary as the other packiot-net services). Exposes
+  # operator_adapter_requests_total{action,outcome} — metric name kept as-is
+  # (out of scope for this rename; would require a Grafana dashboard update).
+  - job_name: operator-gateway
     scheme: https
     tls_config:
       insecure_skip_verify: true
     static_configs:
-      - targets: ['operator-adapter:8443']
+      - targets: ['operator-gateway:8443']
   # edge-api (NestJS control-plane): /metrics on the main app port :8080 (not
   # under /api, so AuthMiddleware doesn't gate it). RED http_request_duration_
   # seconds + Node runtime. Added with the edge-api Prometheus instrumentation.

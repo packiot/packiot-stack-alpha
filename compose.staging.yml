@@ -2130,7 +2130,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── operator-adapter ─────────────────────────────────────────────────
+  # ── operator-gateway (was operator-adapter) ────────────────────────────
   # Operator twin of the ingest-shim. Incoplast's bespoke operator UI
   # (mui_* + Hasura) justifies downtimes and starts POs WITHOUT calling
   # edge-api, so those actions never reach staging user_logs and the
@@ -2139,10 +2139,10 @@ services:
   # it to the matching edge-api call (which writes user_logs in F1), so
   # shadow-mirror replays it to packiot_shadow (F3) — making both flows
   # comparable for enterprise 4. Internal + Incoplast-Node-RED only; not a
-  # public route. See services/operator-adapter/README.md.
-  operator-adapter:
-    build: ./services/operator-adapter
-    container_name: operator-adapter
+  # public route. See services/operator-gateway/README.md.
+  operator-gateway:
+    build: ./services/operator-gateway
+    container_name: operator-gateway
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -2182,7 +2182,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.30
-        aliases: ["operator-gateway"]  # rename alias-first (S0)
+        aliases: ["operator-adapter"]  # S2 flip: old name kept resolvable during rollout
     depends_on:
       edge-api:
         condition: service_started
@@ -2191,7 +2191,7 @@ services:
         condition: service_started
     healthcheck:
       # Now also verifies the read-only DB pool is up (topic resolution needs it).
-      test: ["CMD", "/usr/local/bin/operator-adapter", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/operator-gateway", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

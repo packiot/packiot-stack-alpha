@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/operator-gateway/internal/secrets"
 )
 
 // New returns a connected pgx pool sized for the adapter's occasional resolver

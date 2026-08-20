@@ -1,4 +1,4 @@
-module github.com/packiot/packiot-stack-alpha/services/operator-adapter
+module github.com/packiot/packiot-stack-alpha/services/operator-gateway
 
 go 1.25.0
 
