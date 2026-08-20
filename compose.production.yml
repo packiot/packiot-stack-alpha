@@ -863,9 +863,9 @@ services:
   #
   # Secrets: AMQP via packiot/production/rabbitmq-edge-transformer-creds
   # (publish-perm on `oee`). Idle until a client agent publishes to mosquitto.
-  edge-transformer:
-    build: ./services/edge-transformer
-    container_name: edge-transformer
+  sparkplug-decoder:
+    build: ./services/sparkplug-decoder
+    container_name: sparkplug-decoder
     profiles: ["client-ingest"]  # GATED: needs a tenant client.yaml (tenant_id) — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
     env_file: [.env]
@@ -947,13 +947,14 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.23
+        aliases: ["edge-transformer"]  # S2 flip: old name kept resolvable during rollout (prod had no S0 alias — added here)
     depends_on:
       rabbitmq:
         condition: service_healthy
       mosquitto:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/usr/local/bin/edge-transformer", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/sparkplug-decoder", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -1073,7 +1074,7 @@ services:
       COGNITO_CS_ADMIN_GROUP: cs-admin
       EDGE_API_COGNITO_AUTH_ENABLED: "true"
       EDGE_API_ONBOARDING_ENABLED: "true"
-      ONBOARD_GENERATE_URL: http://edge-transformer:9105/v1/onboard/generate
+      ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
       ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       # ADR-0035 cache-aside over app-redis (fail-open). Point REDIS_URL at
       # managed ElastiCache instead once provisioned (see app-redis note).

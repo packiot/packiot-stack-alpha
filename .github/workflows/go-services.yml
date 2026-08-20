@@ -25,7 +25,7 @@ on:
       - 'services/oeecloud-worker/**'
       - 'services/ingest-shim/**'
       - 'services/operator-gateway/**'
-      - 'services/edge-transformer/**'
+      - 'services/sparkplug-decoder/**'
       - 'services/read-api/**'
       - 'services/analytics-sync/**'
       - '.github/workflows/go-services.yml'
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [mirror-worker-go, oeecloud-worker, ingest-shim, operator-gateway, edge-transformer, read-api, analytics-sync]
+        service: [mirror-worker-go, oeecloud-worker, ingest-shim, operator-gateway, sparkplug-decoder, read-api, analytics-sync]
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
