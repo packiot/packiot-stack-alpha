@@ -12,12 +12,12 @@
       {
         "current": {
           "selected": false,
-          "text": "Packiot PostgreSQL",
+          "text": "Packiot Analytics (F3)",
           "value": "packiot-postgres-shadow"
         },
         "hide": 0,
         "includeAll": false,
-        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "label": "Datasource (F3 default \u2014 equipment_values only lands fresh here post-flip; switch to F1 for pre-flip history)",
         "multi": false,
         "name": "datasource",
         "options": [],

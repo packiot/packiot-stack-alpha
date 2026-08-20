@@ -13,11 +13,11 @@
         "current": {
           "selected": false,
           "text": "Packiot PostgreSQL",
-          "value": "packiot-postgres-shadow"
+          "value": "packiot-postgres"
         },
         "hide": 0,
         "includeAll": false,
-        "label": "Datasource (F1 default \u00b7 switch to F3)",
+        "label": "Datasource (F1 default \u2014 user_logs only ever lands on F1, never F3; fixed 2026-08-20, was defaulting to F3 and rendering the user_logs panels permanently empty)",
         "multi": false,
         "name": "datasource",
         "options": [],

@@ -142,14 +142,18 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: packiot
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      # Was /var/lib/grafana/dashboards/01-oee-pipeline.json, a v1-board path —
+      # v1 (grafana/dashboards/) was deleted from the repo when v2 was blessed
+      # (2026-07); this env also never had the v2 mount (below), so it was
+      # provisioning zero dashboards too.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards-v2/00-overview.json
       GF_SERVER_ROOT_URL: http://localhost:3000
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s

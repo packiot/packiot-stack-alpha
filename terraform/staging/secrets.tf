@@ -34,6 +34,16 @@ resource "random_password" "grafana_admin" {
   special = false
 }
 
+# Grafana "dev@packiot.com" Org Admin user — previously hand-created directly
+# in the running Grafana's sqlite store (never codified), so it silently
+# vanishes on any Grafana volume wipe/re-init. app_init.sh bootstraps it via
+# the Grafana HTTP API the same way it bootstraps the RabbitMQ client user
+# below — idempotent PUT-shaped calls gated on Grafana being healthy.
+resource "random_password" "grafana_dev_user" {
+  length  = 24
+  special = false
+}
+
 # ── DB credentials ────────────────────────────────────────────────────────────
 
 resource "aws_secretsmanager_secret" "db" {
@@ -82,11 +92,21 @@ resource "aws_secretsmanager_secret" "app" {
 resource "aws_secretsmanager_secret_version" "app" {
   secret_id = aws_secretsmanager_secret.app.id
   secret_string = jsonencode({
-    edge_api_key       = random_password.edge_api_key.result
-    rabbitmq_user      = "packiot"
-    rabbitmq_password  = random_password.rabbitmq.result
-    grafana_admin_pass = random_password.grafana_admin.result
+    edge_api_key          = random_password.edge_api_key.result
+    rabbitmq_user         = "packiot"
+    rabbitmq_password     = random_password.rabbitmq.result
+    grafana_admin_pass    = random_password.grafana_admin.result
+    grafana_dev_user_pass = random_password.grafana_dev_user.result
   })
+  # NOTE: this resource has ignore_changes on the whole secret_string, so a
+  # `terraform apply` on an EXISTING live secret will NOT retroactively add
+  # grafana_dev_user_pass to it (same caveat that already applies to every
+  # other key here — see the comment at the top of this file). On a box where
+  # the secret predates this change, merge the new key in once:
+  #   aws secretsmanager get-secret-value --secret-id packiot/staging/app \
+  #     --query SecretString --output text | jq '. + {grafana_dev_user_pass:"<random>"}' \
+  #   | aws secretsmanager put-secret-value --secret-id packiot/staging/app --secret-string file:///dev/stdin
+  # A brand-new `terraform apply` (fresh secret) picks it up automatically.
   lifecycle { ignore_changes = [secret_string] }
 }
 

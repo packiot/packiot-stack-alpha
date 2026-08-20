@@ -53,14 +53,18 @@ scrape_configs:
         target_label: tenant
         replacement: 'legacy'
 
-  - job_name: mirror-worker-go
-    # Single-instance Go worker — no tenant concept (replays a single
-    # source: cpack-prod-go). Metrics carry an `event_type` label
-    # (user_logs.category) which is naturally bounded by the 10
-    # handled categories + "unknown" for unmapped rows — no relabel
-    # rules needed.
-    static_configs:
-      - targets: ['mirror-worker-go:9102']
+  # mirror-worker-go is profile-gated OFF in compose.staging.yml since
+  # 2026-08-13 (`profiles: ["legacy-comparator"]` — retired migration-era F1/F3
+  # fidelity watchdog, see the service block for the full rationale). With no
+  # container listening on :9102 by default, this job scrapes a permanently-down
+  # target — confirmed live 2026-08-20 (`up{job="mirror-worker-go"}=0`, and has
+  # been since the profile was disabled). The v2-mirrors Grafana board that read
+  # this job's metrics was removed in the same pass (dashboards-v2/README.md
+  # "Retired boards"). Re-enable both together if `COMPOSE_PROFILES=legacy-comparator`
+  # is ever turned back on.
+  # - job_name: mirror-worker-go
+  #   static_configs:
+  #     - targets: ['mirror-worker-go:9102']
 
   - job_name: edge-transformer
     # ADR-0010 Phase 3 shadow-mode port + ADR-0011 P2 outbox.
