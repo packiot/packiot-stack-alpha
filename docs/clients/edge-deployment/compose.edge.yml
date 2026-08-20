@@ -53,7 +53,7 @@ volumes:
 x-reader-base: &reader-base
   image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
   build:
-    context: ../../../services/edge-transformer
+    context: ../../../services/sparkplug-decoder
     dockerfile: Dockerfile
   restart: on-failure
   env_file:
@@ -244,7 +244,7 @@ services:
   # `env_file` (required:false) passes the .env through so the per-endpoint
   # PLC_HOST_* vars — whose names compose cannot enumerate — reach the container.
   #
-  # The image is the MAIN edge-transformer Dockerfile (NOT Dockerfile.agent) — it
+  # The image is the MAIN sparkplug-decoder Dockerfile (NOT Dockerfile.agent) — it
   # ships /usr/local/bin/{s7,modbus,opcua}-reader.
   #
   # NOTE: reader-only vars stay `${VAR:-}` (soft) — compose interpolates the WHOLE
@@ -337,7 +337,7 @@ services:
   sparkplug-agent:
     image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
     build:
-      context: ../../../services/edge-transformer
+      context: ../../../services/sparkplug-decoder
       dockerfile: Dockerfile.agent
     container_name: edge-${TENANT_SLUG}-agent
     restart: unless-stopped
@@ -388,7 +388,7 @@ services:
       # reports. Fixes sparse CPACK lines (L3/L4/L8/L10/CELULA) whose NDATA was
       # undecodable because they never got an alias in the seen-only birth. This
       # is the RIGHT box for the flag: the SparkPlug session lives HERE, on the
-      # client edge (edge-cpack-agent), not in the cloud edge-transformer.
+      # client edge (edge-cpack-agent), not in the cloud sparkplug-decoder.
       # Safe on a real edge (no DB dependency, unlike AGENT_TAGMAP_FROM_REGISTER).
       AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-false}"
     volumes:

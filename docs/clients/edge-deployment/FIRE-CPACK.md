@@ -11,7 +11,7 @@ Node-RED — nothing legacy is touched.
   Node-RED ──reads──▶ PLCs                                mosquitto :8883 (mTLS)
      │  tee: POST http://localhost:9104/v1/tags               │  (CN=cpack verified)
      ▼                                                        ▼
-  sparkplug-agent ── builds SparkPlug B, buffers (outbox) ──▶ │──▶ edge-transformer ──▶ F3
+  sparkplug-agent ── builds SparkPlug B, buffers (outbox) ──▶ │──▶ sparkplug-decoder ──▶ F3
      └──────────── real SparkPlug B over mTLS ───────────────▶│    (already subscribed)
 ```
 
