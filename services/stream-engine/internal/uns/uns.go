@@ -1,0 +1,397 @@
+// Package uns — ADR-0014 P3c: the UNS current-family provisioner +
+// the unblocked equipment refreshers (week, month), ported from
+// piot_uns_upsert_features / piot_uns_equipment_refresh_current_week
+// (+month). Design: docs/adr/reference/designs/0014-p3c-uns-refresher-design.md.
+//
+// SLICE HONESTY: hour/day/shift(/jobs) refreshers read the RUNTIME
+// family and are sequenced AFTER P3b; this package ships the
+// CAgg-sourced grains only. The refreshers are UPDATE-only (prod
+// semantics) — Provision creates the rows, exactly like prod's
+// upsert_features (12-table matrix: equipment×7 + area×5; prod has
+// NO site provisioning — faithful).
+//
+// Exclusion lists are the SAME disabled-customer config the events
+// deriver uses (shared, not duplicated). Source mapping: prod reads
+// ca_agg_equipment_values_1hour; the flows' adopted CAgg of the same
+// bucket/columns is agg_equipment_values_1hour.
+package uns
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
+)
+
+// provisionMatrix mirrors piot_uns_upsert_features verbatim.
+var provisionMatrix = []struct {
+	unsTable, entityTable, idCol string
+}{
+	{"uns_equipment_current_day", "equipments", "id_equipment"},
+	{"uns_equipment_current_hour", "equipments", "id_equipment"},
+	{"uns_equipment_current_job", "equipments", "id_equipment"},
+	{"uns_equipment_current_month", "equipments", "id_equipment"},
+	{"uns_equipment_current_shift", "equipments", "id_equipment"},
+	{"uns_equipment_current_week", "equipments", "id_equipment"},
+	{"uns_area_current_day", "areas", "id_area"},
+	{"uns_area_current_hour", "areas", "id_area"},
+	{"uns_area_current_month", "areas", "id_area"},
+	{"uns_area_current_shift", "areas", "id_area"},
+	{"uns_area_current_week", "areas", "id_area"},
+}
+
+const provisionSQL = `INSERT INTO %[1]s.%[3]s (SELECT %[4]s FROM %[2]s.%[5]s) ON CONFLICT DO NOTHING`
+
+// The metrics table gets the name-enriched upsert (verbatim).
+const provisionMetricsSQL = `
+	INSERT INTO %[1]s.uns_equipment_current_metrics
+	       (id_equipment, id_area, id_site, id_enterprise, nm_equipment, nm_area, nm_site)
+	SELECT e.id_equipment, e.id_area, e.id_site, e.id_enterprise, e.nm_equipment, a.nm_area, s.nm_site
+	  FROM %[2]s.equipments e
+	  JOIN %[2]s.areas a ON e.id_area = a.id_area
+	  JOIN %[2]s.sites s ON e.id_site = s.id_site
+	ON CONFLICT (id_equipment) DO UPDATE SET
+	       id_area = EXCLUDED.id_area, id_site = EXCLUDED.id_site,
+	       id_enterprise = EXCLUDED.id_enterprise, nm_equipment = EXCLUDED.nm_equipment,
+	       nm_area = EXCLUDED.nm_area, nm_site = EXCLUDED.nm_site`
+
+// Provision ports upsert_features for one destination.
+func Provision(ctx context.Context, d flows.Dest) error {
+	for _, m := range provisionMatrix {
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionSQL,
+			d.EvSchema, d.RefSchema, m.unsTable, m.idCol, m.entityTable)); err != nil {
+			return fmt.Errorf("provision %s: %w", m.unsTable, err)
+		}
+	}
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionMetricsSQL, d.EvSchema, d.RefSchema)); err != nil {
+		return fmt.Errorf("provision metrics: %w", err)
+	}
+	return nil
+}
+
+// equipmentGrains — the CAgg-sourced slice. date_trunc units and
+// intervals are STATIC matrix entries (never user input).
+var equipmentGrains = []struct {
+	grain, unsTable, span string
+}{
+	{"week", "uns_equipment_current_week", "1 week"},
+	{"month", "uns_equipment_current_month", "1 month"},
+}
+
+// Verbatim generalization of piot_uns_equipment_refresh_current_week:
+// aggregate the 1hour CAgg since date_trunc(grain), UPDATE the current
+// table. Exclusions ($1 areas, $2 enterprises) shared with the deriver.
+const refreshEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, date_trunc('%[3]s', ts_value)::date AS ts_value,
+	           sum(net_production_incr)   AS net_production_incr,
+	           sum(gross_production_incr) AS gross_production_incr,
+	           sum(scrap_incr)            AS scrap_incr,
+	           avg(speed)                 AS speed
+	      FROM %[1]s.agg_equipment_values_1hour v
+	     WHERE ts_value >= date_trunc('%[3]s', now())::date
+	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	            WHERE tp_equipment > 1
+	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	     GROUP BY id_equipment, date_trunc('%[3]s', ts_value)::date
+	)
+	UPDATE %[1]s.%[4]s u
+	   SET gross_production = p.gross_production_incr,
+	       net_production   = p.net_production_incr,
+	       scrap            = p.scrap_incr,
+	       speed            = p.speed,
+	       begin_time       = p.ts_value,
+	       end_time         = p.ts_value + interval '%[5]s'
+	  FROM prod p
+	 WHERE u.id_equipment = p.id_equipment`
+
+// RefreshEquipment runs the CAgg-sourced grains for one destination.
+func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
+	for _, g := range equipmentGrains {
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshEquipmentSQL,
+			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span),
+			exclAreas, exclEnterprises); err != nil {
+			return fmt.Errorf("refresh %s: %w", g.grain, err)
+		}
+	}
+	return nil
+}
+
+// Loop schedules the refreshers; Provision runs on the FIRST tick and
+// then hourly — running 12 ON CONFLICT probes every 5 minutes is pure
+// index churn (the write-amplification cost the aggregates taxonomy
+// warns about, eaten at home).
+func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	logger.Info("uns refresher started (P3c: provisioner + equipment hour/week/month + shift/day)")
+	provisionEvery := int(time.Hour / every)
+	if provisionEvery < 1 {
+		provisionEvery = 1
+	}
+	tick := 0
+	jobs.Loop(ctx, jobs.Job{Name: "uns-refresh", Every: every, Run: func(ctx context.Context) error {
+		defer func() { tick++ }()
+		var firstErr error
+		for _, d := range dests {
+			if tick%provisionEvery == 0 {
+				if err := Provision(ctx, d); err != nil {
+					logger.Warn("uns provision failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+			}
+			if err := RefreshCurrentHour(ctx, d, exclAreas, exclEnterprises); err != nil {
+				logger.Warn("uns current-hour refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if err := RefreshCurrentRest(ctx, d); err != nil {
+				logger.Warn("uns current-rest refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if err := RefreshEquipment(ctx, d, exclAreas, exclEnterprises); err != nil {
+				logger.Warn("uns refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if err := RefreshCurrentEquipmentShiftDay(ctx, d, exclAreas, exclEnterprises); err != nil {
+				logger.Warn("uns equipment shift/day refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		return firstErr
+	}}, logger, obs)
+}
+
+// ── P3c slice 2: the CURRENT-HOUR refreshers (dispatcher-verified:
+// prod's piot_refresh_uns runs hour + week + month for equipment;
+// DAY AND SHIFT ARE COMMENTED OUT ON PROD — dead, not ported. The
+// areas sub-dispatcher runs the area tier; sites analogous.)
+// Shape (verbatim): current-hour runtime row → UPDATE uns current
+// table (metrics + OEE family + times + begin/end) + last_24_hours
+// json_agg trail. Equipment carries the exclusion lists; area/site
+// don't (verbatim). Sources are the NOW-FILLED runtime grain tables.
+
+const refreshHourEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
+	           oee, oee_p, oee_a, oee_q, available_time, running_time,
+	           stopped_time, planned_downtime, ideal_production,
+	           idle_time, idle_starved, idle_blocked, target,
+	           changeover_time, proportional_target
+	      FROM %[1]s.equipment_runtime_1hour v
+	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
+	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	            WHERE tp_equipment > 1
+	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	)
+	UPDATE %[1]s.uns_equipment_current_hour u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       speed = p.speed, begin_time = p.ts_value,
+	       end_time = p.ts_value + interval '1 hour',
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, proportional_target = p.proportional_target
+	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+
+const refreshHourTrailEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, json_agg(json_build_object(
+	           'ts_value', ts_value, 'net_production', net,
+	           'gross_production', gross, 'scrap', scrap, 'speed', speed)) AS data
+	      FROM (SELECT id_equipment, ts_value, net, gross, scrap, speed
+	              FROM %[1]s.equipment_runtime_1hour
+	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
+	               AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	                    WHERE tp_equipment > 1
+	                      AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	             ORDER BY id_equipment, ts_value) t
+	     GROUP BY id_equipment
+	)
+	UPDATE %[1]s.uns_equipment_current_hour u SET last_24_hours = p.data
+	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+
+// entityHourSQL parameterizes the area/site hour refreshers (verbatim:
+// no exclusion lists on these; area carries the full OEE family, site
+// identical). %[3]s = entity key, %[4]s = runtime table, %[5]s = uns table.
+const refreshHourEntitySQL = `
+	WITH prod AS (
+	    SELECT %[3]s, ts_value, net, gross, scrap,
+	           oee, oee_p, oee_a, oee_q, available_time, running_time,
+	           stopped_time, planned_downtime, ideal_production,
+	           idle_time, idle_starved, idle_blocked, target, proportional_target
+	      FROM %[1]s.%[4]s v
+	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
+	)
+	UPDATE %[1]s.%[5]s u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       begin_time = p.ts_value, end_time = p.ts_value + interval '1 hour',
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, proportional_target = p.proportional_target
+	  FROM prod p WHERE u.%[3]s = p.%[3]s`
+
+const refreshHourTrailEntitySQL = `
+	WITH prod AS (
+	    SELECT %[3]s, json_agg(json_build_object(
+	           'ts_value', ts_value, 'net_production', net,
+	           'gross_production', gross, 'scrap', scrap)) AS data
+	      FROM (SELECT %[3]s, ts_value, net, gross, scrap
+	              FROM %[1]s.%[4]s
+	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
+	             ORDER BY %[3]s, ts_value) t
+	     GROUP BY %[3]s
+	)
+	UPDATE %[1]s.%[5]s u SET last_24_hours = p.data
+	  FROM prod p WHERE u.%[3]s = p.%[3]s`
+
+// RefreshCurrentHour runs the three live hour refreshers.
+func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns hour equipment: %w", err)
+	}
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns hour equipment trail: %w", err)
+	}
+	for _, e := range []struct{ key, rt, uns string }{
+		{"id_area", "area_runtime_1hour", "uns_area_current_hour"},
+		{"id_site", "site_runtime_1hour", "uns_site_current_hour"},
+	} {
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
+			return fmt.Errorf("uns hour %s: %w", e.uns, err)
+		}
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
+			return fmt.Errorf("uns hour trail %s: %w", e.uns, err)
+		}
+	}
+	return nil
+}
+
+// ── EQUIPMENT current-SHIFT + current-DAY refreshers (the grey-tile
+// unfreeze). BACKGROUND: prod's piot_refresh_uns runs hour+week+month
+// for the equipment grain but leaves DAY and SHIFT commented out
+// (dead) — so uns_equipment_current_shift/_day never advanced past
+// their Provision seed (INSERT … ON CONFLICT DO NOTHING). On the new
+// stack that froze the mission-control shift/day equipment tiles.
+// These two refreshers close that gap the SAME way the area/site
+// shift/day refreshers (current_rest.go) do — an UPDATE-from-join off
+// the now-filled RUNTIME grain (equipment_runtime_1day for day,
+// equipment_runtime_shift for shift), scoped to the SAME equipment
+// population as the working hour/week/month refreshers
+// (tp_equipment > 1 + the shared exclusion lists). They additionally
+// stamp last_updated = now() so the freshness signal on the tile
+// visibly advances every tick (the area refreshers omit it; the seed
+// leaves it NOT NULL at Provision time, which read as "frozen").
+
+// Equipment current-day: the single current-day runtime row → the UNS
+// day tile. Mirrors refreshHourEquipmentSQL at day grain (source
+// equipment_runtime_1day, keyed on ts_value = today's date).
+const refreshDayEquipmentSQL = `
+	WITH prod AS (
+	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
+	           oee, oee_p, oee_a, oee_q, available_time, running_time,
+	           stopped_time, planned_downtime, ideal_production,
+	           idle_time, idle_starved, idle_blocked, target, proportional_target
+	      FROM %[1]s.equipment_runtime_1day v
+	     WHERE ts_value = date_trunc('day', now())::date
+	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	            WHERE tp_equipment > 1
+	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	)
+	UPDATE %[1]s.uns_equipment_current_day u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       speed = p.speed, begin_time = p.ts_value,
+	       end_time = (p.ts_value + interval '1 day')::date,
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, proportional_target = p.proportional_target,
+	       elapsed_time = extract(epoch FROM (now() - date_trunc('day', now())))::int,
+	       last_updated = now()
+	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+
+// Equipment current-shift: the CURRENT shift row (via
+// piot_get_shift_hour_begin_by_equipment — the equipment-grain analog
+// of the area shift refresher's piot_get_shift_hour_begin_by_area) +
+// the PREVIOUS shift block (prev1_*, one shift-duration earlier).
+// prod1 is LEFT-joined so the current tile still advances for an
+// equipment that has no prior shift row yet (prev1_* stay NULL) —
+// the area variant INNER-joins, which would keep such a row frozen.
+const refreshShiftEquipmentSQL = `
+	WITH ts AS (
+	    SELECT id_equipment, ts_value FROM (
+	        SELECT e.id_equipment,
+	               (SELECT ts_begin FROM piot_get_shift_hour_begin_by_equipment(e.id_equipment, now())) AS ts_value
+	          FROM %[2]s.equipments e
+	          JOIN %[2]s.enterprises et ON e.id_enterprise = et.id_enterprise AND et.active
+	         WHERE e.tp_equipment > 1
+	           AND NOT (e.id_area = ANY($1)) AND NOT (e.id_enterprise = ANY($2))) s1
+	     WHERE ts_value IS NOT NULL
+	), prod AS (
+	    SELECT v.id_equipment, v.ts_value, v.net, v.gross, v.scrap, v.speed,
+	           v.oee, v.oee_p, v.oee_a, v.oee_q, v.available_time, v.running_time,
+	           v.stopped_time, v.planned_downtime, v.ideal_production,
+	           v.idle_time, v.idle_starved, v.idle_blocked, v.target,
+	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration, v.proportional_target
+	      FROM %[1]s.equipment_runtime_shift v
+	      JOIN ts ON v.id_equipment = ts.id_equipment AND v.ts_value = ts.ts_value
+	), prod1 AS (
+	    SELECT v.id_equipment, v.ts_value, v.net, v.gross, v.scrap,
+	           v.oee, v.oee_a, v.oee_p, v.oee_q, v.target,
+	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration
+	      FROM %[1]s.equipment_runtime_shift v
+	      JOIN ts ON v.id_equipment = ts.id_equipment
+	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
+	)
+	UPDATE %[1]s.uns_equipment_current_shift u SET
+	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
+	       speed = p.speed,
+	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
+	       available_time = p.available_time, running_time = p.running_time,
+	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
+	       ideal_production = p.ideal_production, idle_time = p.idle_time,
+	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
+	       target = p.target, id_shift = p.id_shift, id_shift_hour = p.id_shift_hour,
+	       begin_time = p.ts_value, end_time = p.ts_end, duration = p.duration,
+	       proportional_target = p.proportional_target,
+	       prev1_oee = p1.oee, prev1_oee_a = p1.oee_a, prev1_oee_p = p1.oee_p,
+	       prev1_oee_q = p1.oee_q, prev1_gross_production = p1.gross,
+	       prev1_net_production = p1.net, prev1_scrap = p1.scrap,
+	       prev1_target = p1.target, prev1_begin_time = p1.ts_value,
+	       prev1_end_time = p1.ts_end, prev1_id_shift = p1.id_shift,
+	       prev1_id_shift_hour = p1.id_shift_hour, prev1_duration = p1.duration,
+	       elapsed_time = extract(epoch FROM (now() - p.ts_value))::int,
+	       last_updated = now()
+	  FROM prod p LEFT JOIN prod1 p1 ON p.id_equipment = p1.id_equipment
+	 WHERE u.id_equipment = p.id_equipment`
+
+// RefreshCurrentEquipmentShiftDay runs the equipment shift + day
+// refreshers (the grey-tile unfreeze). Same exclusion lists as the
+// hour/week/month equipment refreshers.
+func RefreshCurrentEquipmentShiftDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns day equipment: %w", err)
+	}
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("uns shift equipment: %w", err)
+	}
+	return nil
+}

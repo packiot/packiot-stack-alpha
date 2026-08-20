@@ -748,24 +748,34 @@ services:
   #
   # Secrets: PG via packiot/production/db; AMQP via
   # packiot/production/rabbitmq-oeecloud-creds (least-privilege consumer).
-  oeecloud-worker:
-    build: ./services/oeecloud-worker
-    container_name: oeecloud-worker
+  stream-engine:
+    build: ./services/stream-engine
+    container_name: stream-engine
     restart: unless-stopped
     env_file: [.env]
     environment:
       LOG_LEVEL: info
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/production/db
-      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-oeecloud-creds
+      # MANUAL PRE-REQ (rename S1+S2, oeecloud-worker -> stream-engine): this
+      # secret does not exist yet under the new name. A human must create
+      # packiot/production/rabbitmq-stream-engine-creds (username
+      # "stream-engine", SAME password as the current
+      # packiot/production/rabbitmq-oeecloud-creds) in Secrets Manager BEFORE
+      # this deploys, else the worker can't auth. terraform/production/secrets.tf
+      # still declares the OLD secret resource (rabbitmq_oeecloud_creds) —
+      # deliberately NOT touched here (renaming its `name` attribute forces
+      # AWS to replace the resource; out of scope, and instructions say not to
+      # create/modify AWS secrets from this PR).
+      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-stream-engine-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: oee
-      WORKER_QUEUE: oeecloud-worker-q
+      WORKER_QUEUE: stream-engine-q
       RETRY_EXCHANGE: oee-retry
-      RETRY_QUEUE: oeecloud-worker-q-retry-30s
+      RETRY_QUEUE: stream-engine-q-retry-30s
       FAILED_EXCHANGE: oee-failed
-      FAILED_QUEUE: oeecloud-worker-q-failed
+      FAILED_QUEUE: stream-engine-q-failed
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
@@ -837,6 +847,7 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
+        aliases: ["oeecloud-worker"]  # S2 flip: old name kept resolvable during rollout (prod had no S0 alias — added here)
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -845,7 +856,7 @@ services:
       db-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/stream-engine", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5

@@ -22,6 +22,19 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   - job_name: oeecloud-worker
+    # NOT renamed (rename S1+S2, oeecloud-worker -> stream-engine): job_name
+    # becomes the `job` label on every scraped series. Flipping it would
+    # break `job="oeecloud-worker"` PromQL selectors in 6 live dashboards
+    # (04-engine.json, 00-overview.json, 16-database-dbm.json,
+    # 17-data-quality.json, 18-query-traces.json, plus the oeecloud_worker_*
+    # metric-NAME prefix itself in internal/metrics + internal/collectors,
+    # also left as-is) the instant this deploys. Target hostname left as
+    # `oeecloud-worker:9101` too — the S0/S2 compose alias keeps that name
+    # resolving to the renamed container either way, so there is no
+    # functional reason to touch it. Relabeling the job (and the matching
+    # dashboard queries + metric names) is a separate, deliberate monitoring
+    # PR, not part of this reversible service rename — same call PR1
+    # (edge-transformer -> sparkplug-decoder) made for its job_name.
     static_configs:
       - targets: ['oeecloud-worker:9101']
     # Strategy C tenant extraction — derive a `tenant` label from the

@@ -42,7 +42,7 @@ jobs:
         #   edge-api, edge-nodered, operator (frontend, built since the
         #   operator.staging.packiot.app SPA went live). oeecloud-node-red
         #   was removed in the 2026-06-24 decommission (replaced by the Go
-        #   worker baked into services/oeecloud-worker).
+        #   worker baked into services/stream-engine).
         run: |
           git submodule sync edge-api edge-node-red operator csadmin
           git submodule update --init edge-api edge-node-red operator csadmin
@@ -64,13 +64,17 @@ jobs:
           set -euo pipefail
           AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
           AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
-          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-oeecloud-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          # rename S1+S2 (oeecloud-worker -> stream-engine): MANUAL PRE-REQ —
+          # packiot/staging/rabbitmq-stream-engine-creds must exist (username
+          # "stream-engine", same password as the old rabbitmq-oeecloud-creds)
+          # before this step can succeed.
+          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-stream-engine-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
           EP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-edge-transformer-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
           test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$EP"
           jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg ep "$EP" '
             .users |= map(
               if .name=="__ADMIN__" then .name=$au | .password=$ap
-              elif .name=="oeecloud-worker" then .password=$op
+              elif .name=="stream-engine" then .password=$op
               elif .name=="edge-transformer" then .password=$ep
               else . end) |
             .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
@@ -585,19 +589,19 @@ jobs:
           IDENTITY_SENTINEL_ENFORCE: "false"
         run: |
           set +e
-          echo "=== waiting for oeecloud-worker to report healthy before sentinel ==="
+          echo "=== waiting for stream-engine to report healthy before sentinel ==="
           for i in $(seq 1 30); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' oeecloud-worker 2>/dev/null || echo missing)
-            if [ "$status" = "healthy" ]; then echo "  oeecloud-worker healthy after ${i}s"; break; fi
+            status=$(docker inspect -f '{{.State.Health.Status}}' stream-engine 2>/dev/null || echo missing)
+            if [ "$status" = "healthy" ]; then echo "  stream-engine healthy after ${i}s"; break; fi
             sleep 2
           done
-          if ! docker ps --format '{{.Names}}' | grep -qx oeecloud-worker; then
-            echo "::warning title=f3-overflow-sentinel skipped::oeecloud-worker container not running — cannot run F3 overflow gate"
+          if ! docker ps --format '{{.Names}}' | grep -qx stream-engine; then
+            echo "::warning title=f3-overflow-sentinel skipped::stream-engine container not running — cannot run F3 overflow gate"
             exit 0
           fi
 
           echo "=== running F3 int-overflow sentinel (SELECT-only, F3 plane) ==="
-          docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
+          docker exec stream-engine /usr/local/bin/stream-engine --identity-sentinel
           RC=$?
           echo "sentinel exit code: $RC"
 
