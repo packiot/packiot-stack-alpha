@@ -31,15 +31,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/adapter"
-	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/db"
-	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/httpmetrics"
-	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/secrets"
-	"github.com/packiot/packiot-stack-alpha/services/operator-adapter/internal/tracing"
+	"github.com/packiot/packiot-stack-alpha/services/operator-gateway/internal/adapter"
+	"github.com/packiot/packiot-stack-alpha/services/operator-gateway/internal/db"
+	"github.com/packiot/packiot-stack-alpha/services/operator-gateway/internal/httpmetrics"
+	"github.com/packiot/packiot-stack-alpha/services/operator-gateway/internal/secrets"
+	"github.com/packiot/packiot-stack-alpha/services/operator-gateway/internal/tracing"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(slog.String("service", "operator-adapter"))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(slog.String("service", "operator-gateway"))
 
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		os.Exit(runHealthcheck())
@@ -47,7 +47,7 @@ func main() {
 
 	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
 	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.
-	shutdownTracing, terr := tracing.Init(context.Background(), "operator-adapter")
+	shutdownTracing, terr := tracing.Init(context.Background(), "operator-gateway")
 	if terr != nil {
 		logger.Warn("tracing init failed; continuing untraced", slog.String("err", terr.Error()))
 	}
@@ -94,10 +94,10 @@ func main() {
 			slog.String("secret_id", pgSecretID))
 		os.Exit(1)
 	}
-	logger.Info("db secret fetched", slog.String("db", dbCreds.Redacted("operator-adapter")))
+	logger.Info("db secret fetched", slog.String("db", dbCreds.Redacted("operator-gateway")))
 
 	poolCtx, poolCancel := context.WithTimeout(ctx, 10*time.Second)
-	pool, err := db.New(poolCtx, dbCreds, "operator-adapter", logger)
+	pool, err := db.New(poolCtx, dbCreds, "operator-gateway", logger)
 	poolCancel()
 	if err != nil {
 		logger.Error("postgres pool init failed", slog.String("err", err.Error()))
@@ -137,7 +137,7 @@ func main() {
 		// otelhttp: a server span per request (the trace root); httpmetrics
 		// inside it records the RED histogram. Ordering — trace outermost so the
 		// span wraps the whole handler including the metric observation.
-		Handler:           otelhttp.NewHandler(httpmetrics.New(reg)(mux), "operator-adapter"),
+		Handler:           otelhttp.NewHandler(httpmetrics.New(reg)(mux), "operator-gateway"),
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}

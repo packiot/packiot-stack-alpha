@@ -24,10 +24,9 @@ on:
       - 'services/mirror-worker-go/**'
       - 'services/oeecloud-worker/**'
       - 'services/ingest-shim/**'
-      - 'services/operator-adapter/**'
+      - 'services/operator-gateway/**'
       - 'services/edge-transformer/**'
-      - 'services/refdata-api/**'
-      - 'services/analytics-sync/**'
+        service: [mirror-worker-go, oeecloud-worker, ingest-shim, operator-gateway, edge-transformer, read-api, analytics-sync]
       - '.github/workflows/go-services.yml'
   workflow_dispatch:
 
@@ -39,7 +38,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+<<<<<<< HEAD
         service: [mirror-worker-go, oeecloud-worker, ingest-shim, operator-adapter, edge-transformer, refdata-api, analytics-sync]
+=======
+        service: [mirror-worker-go, oeecloud-worker, ingest-shim, operator-gateway, edge-transformer, read-api, shadow-mirror]
+>>>>>>> origin/staging
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
