@@ -506,6 +506,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: pgbouncer
+      # ── plc-status live telemetry → F3 analytics DB (edge-api #193) ───────────
+      # edge-api writes/reads config on the F1 `packiot` DB (via pgbouncer). But
+      # equipment_values/uns_equipment_current_metrics froze in `packiot` once
+      # telemetry moved to packiot_analytics (F3) — so plc-status showed every
+      # machine offline. AnalyticsPostgresAdapter uses this URL for ONLY the
+      # plc-status telemetry query; everything else stays on the primary pool.
+      # Routes via the existing pgbouncer packiot_analytics pool (ADR-0032 Step 1).
+      # Unset/empty => adapter falls back to the primary connection (safe no-op).
+      POSTGRES_ANALYTICS_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:5432/packiot_analytics"
       # ── ADR-0035: app-redis reachability (PLUMBED, NOT YET CONSUMED) ──────────
       # edge-api does NOT cache anything today. This just makes the shared app
       # cache reachable so a future enhancement can land without a compose change:
