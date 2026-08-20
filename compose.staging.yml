@@ -1779,6 +1779,15 @@ services:
       # meters, ascending-CSV fallback) + lifts the LineAggregated suppression. Enable
       # ONLY where no competing line writer exists. See line_param30700_seed.go.
       PHASE9_LINE_AGG_ENABLED: "true"
+      # ── ADR-0047 P0 #1: DB-backed counter-role resolver (config-as-data) ──
+      # Resolves gross/net/scrap counter source from packml_register.id_{infeed,
+      # outfeed,reject}counter (5-min TTL reload) BEFORE the Prod*Count name-suffix
+      # convention — so a CS Admin edit to those columns reconfigures OEE counter
+      # roles WITHOUT an edge redeploy. Fail-open: a NULL role or query error falls
+      # back to the existing suffix convention (byte-identical when no rows carry a
+      # role). Safe to enable with 0 rows populated (current staging state). See
+      # services/sparkplug-decoder/internal/counterroles.
+      COUNTER_ROLES_FROM_DB: "true"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # MQTT-receive span is the data-plane trace root; its context rides the
       # outbox (envelope traceparent) and the AMQP publish so PLC→worker→DB is
