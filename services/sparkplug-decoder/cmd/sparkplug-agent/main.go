@@ -218,7 +218,7 @@ func main() {
 		"tag_source", tagSource,
 		"tag_source_reason", tagSrc.Reason,
 		"emit_definitive_birth", getenvBool("EMIT_DEFINITIVE_BIRTH", false),
-		"birth_all_mapped", getenvBool("AGENT_BIRTH_ALL_MAPPED", false),
+		"birth_all_mapped", getenvBool("AGENT_BIRTH_ALL_MAPPED", true),
 		"tags", len(cfg.RawTagMap))
 
 	// ── pipeline construction ────────────────────────────────────────────
@@ -228,12 +228,17 @@ func main() {
 	// properties (counter_role/source_ref/device_key), the definitive birth.
 	emitDefinitiveBirth := getenvBool("EMIT_DEFINITIVE_BIRTH", false)
 	// ── birth-completeness (CPACK 2026-08-13 line-count regression fix) ───────
-	// Default OFF = byte-unchanged births (a no-op deploy). ON makes NBIRTH cover
-	// the FULL raw_tag_map — every line/machine metric gets a stable alias even if
-	// it was idle at connect — so a sparse line's later NDATA is decodable at the
-	// cloud immediately, independent of rebirth timing. Set on the CLIENT-box agent
+	// Default ON (red-team fix, 2026-08-20): the 08-13 CPACK outage happened
+	// because this defaulted OFF for every client except CPACK (which had it
+	// hand-flipped after the incident) — every OTHER client's edge was silently
+	// exposed to the exact same sparse-line data loss. ON makes NBIRTH cover the
+	// FULL raw_tag_map — every line/machine metric gets a stable alias even if it
+	// was idle at connect — so a sparse line's later NDATA is decodable at the
+	// cloud immediately, independent of rebirth timing. Safe on a real edge (no DB
+	// dependency, unlike AGENT_TAGMAP_FROM_REGISTER) — set AGENT_BIRTH_ALL_MAPPED=
+	// false explicitly to opt back out. Set on the CLIENT-box agent
 	// (edge-cpack-agent), where the SparkPlug session lives.
-	birthAllMapped := getenvBool("AGENT_BIRTH_ALL_MAPPED", false)
+	birthAllMapped := getenvBool("AGENT_BIRTH_ALL_MAPPED", true)
 	resolver := newResolver(cfg)
 	aliases := aliasmap.New()
 	// ADR-0046 task #18: the DECLARED device_key per full metric name, sourced from
