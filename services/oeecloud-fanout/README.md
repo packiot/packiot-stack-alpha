@@ -90,7 +90,8 @@ then restart the `oeecloud-fanout` service. While disabled it serves `/health`
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `FANOUT_CPACK_TO_SBXCPACK_ENABLED` | `false` | Master gate |
+| `FANOUT_ENABLED` | `false` | Master gate (generic name — set this for any NEW twin) |
+| `FANOUT_CPACK_TO_SBXCPACK_ENABLED` | `false` | Legacy alias for `FANOUT_ENABLED`, kept as a fallback so this instance's already-deployed `.env` flag keeps working unchanged |
 | `FANOUT_SOURCE_GROUP` | `CPACK` | Source SparkPlug GroupID |
 | `FANOUT_TARGET_GROUP` | `SBXCPACK` | Target GroupID |
 | `FANOUT_QUEUE` | `oeecloud-fanout-cpack-to-sbxcpack` | Durable queue |
@@ -102,8 +103,24 @@ then restart the `oeecloud-fanout` service. While disabled it serves `/health`
 | `HEALTH_PORT` | `9102` | /health port |
 | `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-oeecloud-creds` | AMQP creds (reuses the worker's least-priv user) |
 
-## Templatable per twin (#22)
+## Templatable per twin (#22) — DONE
 
-Source/target groups, queue, and routing keys are all env-driven, so the
-config-as-data onboarding RabbitMQ provisioning can generate one fan-out per twin
-(source tenant → target tenant) from the same image.
+Source/target groups, queue, routing keys, and now the master-gate name are all
+env-driven, so a single image serves any (source tenant → target tenant) pair —
+nothing in this service is CPACK/SBXCPACK-specific.
+
+The generator that emits a new twin's compose-service block + `.env` flag now
+exists: `scripts/emit-fanout-config.sh SOURCE_GROUP TARGET_GROUP [HEALTH_PORT]
+[IP_LAST_OCTET]`. `scripts/provision-sandbox-tenant.sh` (the twin's DB-side
+clone) calls it automatically on `--create`/`--reset`, writing
+`configs/fanout/<target_group_lower>.yml`. Both are idempotent (pure template,
+deterministic overwrite) — re-provisioning a twin re-emits the same fan-out
+config, and provisioning a brand-new twin (different `SOURCE_GROUP`/
+`TARGET_GROUP` env vars) emits its own file with no code change.
+
+What's still manual: splicing the emitted `services:` block into
+`compose.staging.yml` (or loading it via a second `-f`), picking an unused
+`packiot-net` IP/health-port for a brand-new pair, and flipping the emitted
+`.env` flag — see the generated file's header comment. There is no CSAdmin UI
+trigger for this yet; today it is a CS/eng step run alongside twin
+provisioning, not a button in CSAdmin's onboarding wizard.
