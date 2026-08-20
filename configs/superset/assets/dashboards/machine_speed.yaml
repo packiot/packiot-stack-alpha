@@ -1,0 +1,91 @@
+# Machine Speed — speed trend + per-machine breakdown over bi.equipment_speed.
+# Tenant isolation via Superset RLS (id_enterprise), not encoded here.
+# chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: Machine Speed
+description: Machine speed trend, per-machine bars, peak, and table over bi.equipment_speed.
+css: ''
+slug: machine-speed
+certified_by: null
+certification_details: null
+published: true
+uuid: 50b1b1bc-1d4a-4e38-a5e5-9519afff7ab3
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-trend
+    - ROW-table
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Machine Speed
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-peak-speed
+    - CHART-speed-by-machine
+  CHART-peak-speed:
+    type: CHART
+    id: CHART-peak-speed
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: c66cd1ec-bafc-4332-8b10-f212ad813b34, width: 4, height: 50, chartId: 1, sliceName: Peak speed}
+    children: []
+  CHART-speed-by-machine:
+    type: CHART
+    id: CHART-speed-by-machine
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 242fc46c-c869-46f7-afbd-46df3de3b5e0, width: 8, height: 50, chartId: 2, sliceName: Speed by machine}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-speed-trend
+  CHART-speed-trend:
+    type: CHART
+    id: CHART-speed-trend
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: 263cdd4c-5e11-45f2-a2c2-b01d00201931, width: 12, height: 50, chartId: 3, sliceName: Machine speed trend}
+    children: []
+  ROW-table:
+    type: ROW
+    id: ROW-table
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-speed-table
+  CHART-speed-table:
+    type: CHART
+    id: CHART-speed-table
+    parents: [ROOT_ID, GRID_ID, ROW-table]
+    meta: {uuid: 91511d31-1720-41e7-98fd-7823befe98f6, width: 12, height: 50, chartId: 4, sliceName: Speed table}
+    children: []

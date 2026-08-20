@@ -40,6 +40,11 @@ REQUIRED_PERMS = [
     ("can_explore", "Superset"),
     ("can_explore_json", "Superset"),
     ("can_read", "EmbeddedDashboard"),
+    # Datasource access so the embedded guest can reach the bi.* datasets. Safe
+    # because the ONLY registered DB is the RLS-protected bi analytics connection
+    # and every guest query is tenant-filtered by its token RLS clause + the
+    # DB_CONNECTION_MUTATOR (app.tenant_id) — see superset_config.py.
+    ("all_datasource_access", "all_datasource_access"),
 ]
 
 
