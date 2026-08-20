@@ -1,7 +1,7 @@
 name: Go Services CI
 
 # Runs vet/test/build/security/lint on the two Go services that live in
-# services/ (mirror-worker-go and oeecloud-worker). Previously these had
+# services/ (mirror-worker-go and stream-engine). Previously these had
 # zero CI — tests only ran when someone manually invoked `go test ./...`.
 #
 # Path filter: only fires on changes under services/ and this workflow
@@ -25,7 +25,7 @@ on:
       - 'services/stream-engine/**'
       - 'services/ingest-shim/**'
       - 'services/operator-gateway/**'
-      - 'services/edge-transformer/**'
+      - 'services/sparkplug-decoder/**'
       - 'services/read-api/**'
       - 'services/analytics-sync/**'
       - '.github/workflows/go-services.yml'
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [mirror-worker-go, stream-engine, ingest-shim, operator-gateway, edge-transformer, read-api, analytics-sync]
+        service: [mirror-worker-go, stream-engine, ingest-shim, operator-gateway, sparkplug-decoder, read-api, analytics-sync]
     defaults:
       run:
         working-directory: services/${{ matrix.service }}

@@ -354,7 +354,7 @@ jobs:
         run: |
           set -x
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" \
+            -v "$PWD/services/sparkplug-decoder:/src" \
             -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
             golang:1.25-alpine \
@@ -362,38 +362,38 @@ jobs:
 
           docker run --rm \
             --network stack_packiot-net \
-            -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+            -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject:ro" \
             alpine:3.20 \
             /app/inject --broker tcp://mosquitto:1883 --value 100
 
-          rm -f services/edge-transformer/inject-counter-fixture
-          echo "Waiting 3s for edge-transformer to process..."
+          rm -f services/sparkplug-decoder/inject-counter-fixture
+          echo "Waiting 3s for sparkplug-decoder to process..."
           sleep 3
 
-      - name: Inspect edge-transformer post-deploy
+      - name: Inspect sparkplug-decoder post-deploy
         # Diagnostic step — verifies env vars, log tail, healthcheck exit,
         # and Prometheus metrics scoped to Calc port + MQTT subscriber. Runs
-        # after smoke test so we know edge-transformer is up before probing.
+        # after smoke test so we know sparkplug-decoder is up before probing.
         # Failures here don't fail the deploy (the container may be healthy
         # even if the diagnostic tooling itself has a hiccup).
         continue-on-error: true
         run: |
           echo "=== env (USE_GO_PORT / MQTT_ / LOG_LEVEL) ==="
-          docker inspect edge-transformer \
+          docker inspect sparkplug-decoder \
             --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -iE 'USE_GO_PORT|MQTT_|LOG_LEVEL' || echo "(no matching env vars)"
 
           echo ""
           echo "=== last 60 log lines ==="
-          docker logs --tail 60 edge-transformer 2>&1 || true
+          docker logs --tail 60 sparkplug-decoder 2>&1 || true
 
           echo ""
           echo "=== healthcheck exit code ==="
-          docker exec edge-transformer /usr/local/bin/edge-transformer --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
+          docker exec sparkplug-decoder /usr/local/bin/sparkplug-decoder --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
 
           echo ""
           echo "=== /metrics (calc_ + mqtt_ + shadowpub_ + outbox_ scoped) ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(calc_|mqtt_|shadowpub_|outbox_)' \
             | head -80 || echo "(no matching metrics)"
@@ -634,14 +634,14 @@ jobs:
           echo "=== Chaos test: outbox durability under RMQ outage ==="
 
           get_outbox_depth() {
-            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
               -s http://localhost:9102/metrics 2>/dev/null \
               | awk '/^outbox_depth /{print $2}' \
               | head -1
           }
 
           get_shadowpub_confirmed() {
-            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
               -s http://localhost:9102/metrics 2>/dev/null \
               | awk '/^shadowpub_confirmed_total /{print $2}' \
               | head -1
@@ -659,7 +659,7 @@ jobs:
 
           # Build the inject binary once so we can run it multiple times.
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" -w /src \
+            -v "$PWD/services/sparkplug-decoder:/src" -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
             golang:1.25-alpine \
             go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
@@ -667,7 +667,7 @@ jobs:
           inject() {
             docker run --rm \
               --network stack_packiot-net \
-              -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+              -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject:ro" \
               alpine:3.20 /app/inject --broker tcp://mosquitto:1883 --value "$1" 2>&1 | tail -3
           }
 
@@ -732,13 +732,13 @@ jobs:
 
           echo ""
           echo "=== Reconnect activity (proves NotifyClose monitor fired) ==="
-          docker logs --since 3m edge-transformer 2>&1 \
+          docker logs --since 3m sparkplug-decoder 2>&1 \
             | grep -iE 'shadowpub: connection|shadowpub: reconnect|outbox: publish' \
             | tail -30 || echo "  (no reconnect activity in logs — investigate)"
 
           echo ""
           echo "=== Final /metrics for outbox + shadowpub counters ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(outbox_|shadowpub_reconnects|shadowpub_confirmed|shadowpub_published)' \
             | head -20 || true

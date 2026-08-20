@@ -176,7 +176,7 @@ services:
     # same 8 equipment {47,48,49,51,53,57,61,63}), so they must NEVER both run.
     profiles: ["plc-sim"]
     build:
-      context: ./services/edge-transformer
+      context: ./services/sparkplug-decoder
     entrypoint: ["/usr/local/bin/plc-sim"]
     environment:
       MQTT_BROKER_URL: "tcp://mosquitto:1883"
@@ -224,7 +224,7 @@ services:
   sparkplug-agent-cpack:
     profiles: ["cpack-tee"]
     build:
-      context: ./services/edge-transformer
+      context: ./services/sparkplug-decoder
     container_name: sparkplug-agent-cpack
     entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
     restart: unless-stopped
@@ -293,7 +293,7 @@ services:
   s7-softplc:
     profiles: ["s7"]
     build:
-      context: ./services/edge-transformer
+      context: ./services/sparkplug-decoder
     entrypoint: ["/usr/local/bin/s7-softplc"]
     environment:
       LISTEN_ADDR: ":102"      # S7 ISO-on-TCP port
@@ -314,7 +314,7 @@ services:
   s7-reader:
     profiles: ["s7"]
     build:
-      context: ./services/edge-transformer
+      context: ./services/sparkplug-decoder
     entrypoint: ["/usr/local/bin/s7-reader"]
     environment:
       MQTT_BROKER_URL: "tcp://mosquitto:1883"
@@ -542,7 +542,7 @@ services:
       # Onboarding generate path: edge-api proxies the stored descriptor to
       # edge-transformer's onboard server (POST /v1/onboard/generate). Config here,
       # the shared key from .env/Secrets.
-      ONBOARD_GENERATE_URL: http://edge-transformer:9105/v1/onboard/generate
+      ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
       ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       FIREBASE_ISSUER: https://securetoken.google.com/fbpackiot
       FIREBASE_AUDIENCE: fbpackiot
@@ -1752,9 +1752,9 @@ services:
   # oeecloud-worker's service entry — same Secrets Manager pattern, same env
   # var shape, same depends_on RabbitMQ healthcheck. Only port + queue names
   # differ.
-  edge-transformer:
-    build: ./services/edge-transformer
-    container_name: edge-transformer
+  sparkplug-decoder:
+    build: ./services/sparkplug-decoder
+    container_name: sparkplug-decoder
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -1929,14 +1929,14 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.23
-        aliases: ["sparkplug-decoder"]  # rename alias-first (S0)
+        aliases: ["edge-transformer"]  # S2 flip: old name kept resolvable during rollout
     depends_on:
       rabbitmq:
         condition: service_healthy
       mosquitto:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/usr/local/bin/edge-transformer", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/sparkplug-decoder", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5

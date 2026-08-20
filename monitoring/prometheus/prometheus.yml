@@ -67,6 +67,17 @@ scrape_configs:
     # Exposes calc_*, outbox_*, shadowpub_*, mqtt_subscriber_* series.
     # Consumed by grafana/dashboards/10-edge-transformer.json (the
     # renumbered board; old 09-edge-transformer-shadow-mode is gone).
+    #
+    # NOT renamed (rename S1+S2, edge-transformer -> sparkplug-decoder):
+    # job_name becomes the `job` label on every scraped series. Flipping it
+    # would break `job="edge-transformer"` PromQL selectors in 5 live
+    # dashboards (10-edge-transformer.json, 08-logs.json, 04-engine.json,
+    # 00-overview.json, 05-ingest.json) the instant this deploys. Target
+    # hostname also left as `edge-transformer:9102` — the S0/S2 compose
+    # alias keeps that name resolving to the renamed container either way,
+    # so there is no functional reason to touch it. Relabeling the job (and
+    # the matching dashboard queries) is a separate, deliberate monitoring
+    # PR, not part of this reversible service rename.
     static_configs:
       - targets: ['edge-transformer:9102']
 
