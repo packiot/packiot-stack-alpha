@@ -1,0 +1,26 @@
+# OEE + A/P/Q trend over time (hourly). Time-series line. No exact single front4
+# tile, but the natural Superset replica of the OEE score watched over the day.
+slice_name: OEE trend (hourly)
+description: bi.oee_hourly AVG(oee/oee_a/oee_p/oee_q) by hour. OEE watched over time.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params: |
+  {
+    "datasource": "8b1d0810-a0d1-4012-86a9-45c64c2e9154__table",
+    "viz_type": "echarts_timeseries_line",
+    "x_axis": "ts_value",
+    "time_grain_sqla": "PT1H",
+    "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q"],
+    "groupby": [],
+    "adhoc_filters": [],
+    "y_axis_format": ".0%",
+    "x_axis_time_format": "smart_date",
+    "show_legend": true,
+    "time_range": "last week"
+  }
+query_context: '{"datasource": {"id": 3, "type": "table"}, "force": false, "queries": [{"time_range": "last week", "filters": [], "extras": {"time_grain_sqla": "PT1H", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "PT1H", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}], "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q"], "orderby": [["avg_oee", false]], "annotation_layers": [], "row_limit": 10000, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["ts_value"], "columns": [], "aggregates": {"avg_oee": {"operator": "mean"}, "avg_oee_a": {"operator": "mean"}, "avg_oee_p": {"operator": "mean"}, "avg_oee_q": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "3__table", "viz_type": "echarts_timeseries_line", "x_axis": "ts_value", "time_grain_sqla": "PT1H", "metrics": ["avg_oee", "avg_oee_a", "avg_oee_p", "avg_oee_q"], "groupby": [], "adhoc_filters": [], "y_axis_format": ".0%", "x_axis_time_format": "smart_date", "show_legend": true, "time_range": "last week", "annotation_layers": [], "slice_id": 6, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 6ec8f55b-f906-4c8a-9bbe-d80e9d40395d
+version: 1.0.0
+dataset_uuid: 8b1d0810-a0d1-4012-86a9-45c64c2e9154

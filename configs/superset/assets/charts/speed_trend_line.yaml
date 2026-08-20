@@ -1,0 +1,33 @@
+# EXEMPLAR — Machine Speed trend. Time-series line of avg speed vs ideal speed per
+# machine over bi.equipment_speed. front4 Operations "Machine Speed" / PowerBI Speed.
+#
+# query_context is MATERIALIZED (non-null) — the embedded chart-data endpoint
+# (@protect guest path) 403s a chart whose query_context is null (the P1 embed-guard
+# fix). datasource is referenced UUID-form ("<dataset_uuid>__table"); the post-import
+# finalizer scripts/superset/materialize_query_context.py rewrites the numeric ids
+# from the live dataset once imported (matches how the OEE Overview set was done).
+slice_name: Machine speed trend
+description: Avg vs ideal speed per machine over time. bi.equipment_speed.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table
+  viz_type: echarts_timeseries_line
+  x_axis: ts_value
+  time_grain_sqla: PT1H
+  metrics:
+  - avg_speed
+  - avg_ideal_speed
+  groupby:
+  - equipment_label
+  adhoc_filters: []
+  row_limit: 10000
+  y_axis_format: .3~s
+  time_range: last week
+  show_legend: true
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"time_grain_sqla": "PT1H", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "PT1H", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}, "equipment_label"], "metrics": ["avg_speed", "avg_ideal_speed"], "orderby": [], "annotation_layers": [], "row_limit": 10000, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}}], "form_data": {"datasource": "1c9dab1f-bf7f-4106-a0f4-d52302d256c7__table", "viz_type": "echarts_timeseries_line", "x_axis": "ts_value", "time_grain_sqla": "PT1H", "metrics": ["avg_speed", "avg_ideal_speed"], "groupby": ["equipment_label"], "adhoc_filters": [], "row_limit": 10000, "y_axis_format": ".3~s", "time_range": "last week", "show_legend": true, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 263cdd4c-5e11-45f2-a2c2-b01d00201931
+version: 1.0.0
+dataset_uuid: 1c9dab1f-bf7f-4106-a0f4-d52302d256c7

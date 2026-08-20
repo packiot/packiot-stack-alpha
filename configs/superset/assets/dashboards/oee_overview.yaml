@@ -1,0 +1,169 @@
+# OEE Overview — the curated, embeddable replica of front4's Overview dashboards
+# over the bi.* views. This is the dashboard edge-api mints a guest token FOR
+# (SUPERSET_OEE_DASHBOARD_UUID). Tenant isolation is NOT in this file: the
+# id_enterprise filter is applied at view/author time by Superset RLS (guest-token
+# clause for embed, role-bound filter for authoring) — see w2-embedded-superset.md.
+#
+# The `position` tree below is a best-effort layout; Superset normalizes it on
+# import. chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: OEE Overview
+description: Curated OEE view replicating front4 Overview tiles over the bi.* curated views.
+css: ''
+slug: oee-overview
+certified_by: null
+certification_details: null
+published: true
+uuid: 6c4fa4a1-ddd2-4b4e-b5cb-4eb56bb30937
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-trend
+    - ROW-prod
+    - ROW-tables
+    - ROW-po
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: OEE Overview
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    children:
+    - CHART-oee-gauge
+    - CHART-availability
+    - CHART-performance
+    - CHART-quality
+    - CHART-shift-net
+  CHART-oee-gauge:
+    type: CHART
+    id: CHART-oee-gauge
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: e12a6e1c-538a-48d6-84fe-ccb5453ff431, width: 4, height: 50, chartId: 1, sliceName: OEE (current shift)}
+    children: []
+  CHART-availability:
+    type: CHART
+    id: CHART-availability
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 9232e211-3d11-42bb-bcf4-3a8f394cc7f0, width: 2, height: 50, chartId: 2, sliceName: Availability}
+    children: []
+  CHART-performance:
+    type: CHART
+    id: CHART-performance
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: b6f6e3fd-cc9b-4131-8d7a-4ea89968f2f8, width: 2, height: 50, chartId: 3, sliceName: Performance}
+    children: []
+  CHART-quality:
+    type: CHART
+    id: CHART-quality
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: c7c4ebe1-5659-4283-baaf-636d61185684, width: 2, height: 50, chartId: 4, sliceName: Quality}
+    children: []
+  CHART-shift-net:
+    type: CHART
+    id: CHART-shift-net
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: e51140c4-b5da-4be7-970b-aa8ef7c742b4, width: 2, height: 50, chartId: 5, sliceName: Shift production}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-daily-net
+    - CHART-oee-trend
+  CHART-daily-net:
+    type: CHART
+    id: CHART-daily-net
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: c06d7d16-8712-425d-9b5b-85186bf5eda3, width: 4, height: 50, chartId: 6, sliceName: Daily production (trend)}
+    children: []
+  CHART-oee-trend:
+    type: CHART
+    id: CHART-oee-trend
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: 6ec8f55b-f906-4c8a-9bbe-d80e9d40395d, width: 8, height: 50, chartId: 7, sliceName: OEE trend (hourly)}
+    children: []
+  ROW-prod:
+    type: ROW
+    id: ROW-prod
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-prod-bar
+    - CHART-downtime-pareto
+  CHART-prod-bar:
+    type: CHART
+    id: CHART-prod-bar
+    parents: [ROOT_ID, GRID_ID, ROW-prod]
+    meta: {uuid: 09c153c2-0be1-43fa-9cfe-99a6514030e0, width: 6, height: 50, chartId: 8, sliceName: Production by hour}
+    children: []
+  CHART-downtime-pareto:
+    type: CHART
+    id: CHART-downtime-pareto
+    parents: [ROOT_ID, GRID_ID, ROW-prod]
+    meta: {uuid: 7e15ed8e-3d2f-45bd-a996-14c48db7d881, width: 6, height: 50, chartId: 9, sliceName: Downtime by reason}
+    children: []
+  ROW-tables:
+    type: ROW
+    id: ROW-tables
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-events
+    - CHART-shift-breakdown
+  CHART-events:
+    type: CHART
+    id: CHART-events
+    parents: [ROOT_ID, GRID_ID, ROW-tables]
+    meta: {uuid: 18a6435f-64d3-440c-937e-053ebaad8d4a, width: 6, height: 50, chartId: 10, sliceName: Last events}
+    children: []
+  CHART-shift-breakdown:
+    type: CHART
+    id: CHART-shift-breakdown
+    parents: [ROOT_ID, GRID_ID, ROW-tables]
+    meta: {uuid: 3b95c7b5-a542-4e39-9cf6-37264ac1f62b, width: 6, height: 50, chartId: 11, sliceName: Shift breakdown}
+    children: []
+  ROW-po:
+    type: ROW
+    id: ROW-po
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-po-oee
+  CHART-po-oee:
+    type: CHART
+    id: CHART-po-oee
+    parents: [ROOT_ID, GRID_ID, ROW-po]
+    meta: {uuid: bbc7f4b9-ce5a-45a4-86a3-66c2e51101df, width: 12, height: 50, chartId: 12, sliceName: Production orders OEE}
+    children: []

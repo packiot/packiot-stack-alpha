@@ -45,6 +45,7 @@ volumes:
   mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:  # ADR-0011 P2: SQLite outbox survives container restart
   edge_transformer_agent_outbox:  # ADR-0042 P1: sparkplug-agent-cpack store-and-forward outbox
+  superset-db-data:  # W2 BI: dedicated Superset metadata DB (container-in-stack; NOT the shared r7g)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
@@ -58,8 +59,43 @@ volumes:
 # .35 app-redis (ADR-0035 application cache for refdata-api cache-aside; SEPARATE from authentik-redis .14)
 # .37 redis-exporter (white-box Redis metrics on :9121; scrapes authentik-redis today, ADR-0035 app-redis later)
 # .41 oeecloud-fanout (task #17 re-tenant twin fan-out CPACK→SBXCPACK; flag-gated, STAGING ONLY, health :9102)
+# .42 superset (W2 BI web; matches SUPERSET_BASE_URL in .env)  .43 superset-worker  .44 superset-init (one-shot)  .45 superset-db (metadata, container-in-stack)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
+
+# ── Superset (W2 embedded self-service BI) shared anchors ────────────────────────
+# CONTAINER-IN-STACK model (staging): unlike the prod dedicated-EC2 overlay
+# (terraform/production/superset.tf + compose.superset.yml), staging runs Superset
+# as profile-gated services INSIDE this stack. Differences from the prod overlay,
+# both deliberate: (1) metadata DB is a dedicated `superset-db` CONTAINER (named
+# volume, resettable) — NOT the shared r7g, so no superuser DDL / DB-SG ingress is
+# needed; (2) cache/broker reuse the existing `app-redis` instead of a dedicated
+# superset-redis. Async SQL Lab + alerts stay OFF (superset_config.py:
+# GLOBAL_ASYNC_QUERIES=False), so the Celery broker is not on the critical path —
+# app-redis's allkeys-lru eviction (which would drop broker messages under memory
+# pressure) is acceptable here; if async/alerts are ever enabled on staging, add a
+# dedicated noeviction redis like the prod overlay. Derived image (adds the pg
+# driver + flask-cors/Authlib/flask-talisman the bare upstream lacks) is built once
+# from docker/superset/Dockerfile and reused by web/worker/init.
+# All services carry profiles: ["superset"] → INERT unless COMPOSE_PROFILES=superset.
+x-superset-image: &superset-image packiot/superset:4.1.1-w2
+x-superset-build: &superset-build
+  context: .
+  dockerfile: docker/superset/Dockerfile
+x-superset-env: &superset-env
+  # Container-topology overrides; every other SUPERSET_* value (SECRET_KEY,
+  # GUEST_TOKEN_JWT_SECRET, DB passwords, admin creds, FRAME_ANCESTOR) comes from
+  # env_file: [.env]. `environment` wins over env_file, so these two pin the
+  # container topology regardless of what .env carries for the prod overlay.
+  SUPERSET_METADATA_DB_HOST: superset-db   # dedicated metadata container (NOT r7g)
+  SUPERSET_REDIS_HOST: app-redis           # reuse the stack cache (see note above)
+  PYTHONPATH: /app/pythonpath
+x-superset-mounts: &superset-mounts
+  - ./configs/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+  - ./configs/superset/custom_sso_security_manager.py:/app/pythonpath/custom_sso_security_manager.py:ro
+  - ./configs/superset/bootstrap_guest_role.py:/app/pythonpath/bootstrap_guest_role.py:ro
+  - ./configs/superset/import_bundle.py:/app/pythonpath/import_bundle.py:ro
+  - ./configs/superset/assets:/app/pythonpath/assets:ro
 
 services:
   # ── PgBouncer (PostgreSQL connection pooler) ───────────────────────────────────
@@ -2350,3 +2386,175 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # Superset (W2 embedded self-service BI) — CONTAINER-IN-STACK, profile-gated.
+  # Bring up with:  COMPOSE_PROFILES=superset docker compose -f compose.staging.yml up -d
+  # (do NOT also pass -f compose.superset.yml — that is the prod dedicated-EC2
+  # overlay with r7g metadata; on staging these in-stack services replace it).
+  # Nginx vhost bi.staging.packiot.app → 127.0.0.1:8088 is already scaffolded in
+  # terraform/staging/user_data/nginx_setup.sh. See the x-superset-* anchors above.
+  # ══════════════════════════════════════════════════════════════════════════════
+
+  # ── superset-db — dedicated metadata store (NOT the analytics DB, NOT the r7g) ─
+  # Superset's own state (users, dashboards, RLS filters, embed configs) lives here
+  # on a named volume. `superset` role/db are auto-created by the postgres image
+  # from POSTGRES_* on first boot; superset_config.py connects as superset/superset.
+  superset-db:
+    image: postgres:16-alpine
+    container_name: superset-db
+    profiles: ["superset"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: ${SUPERSET_DB_PASSWORD}
+      POSTGRES_DB: superset
+    volumes:
+      - superset-db-data:/var/lib/postgresql/data
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.45
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superset -d superset"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    mem_limit: 512m          # metadata store cap — keep the superset profile off the box's RAM ceiling
+    mem_reservation: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── superset-init — one-shot: metadata migrate + admin + roles + asset import ──
+  # Runs AFTER superset-db is healthy. `db upgrade` migrates the metadata schema;
+  # `init` syncs Admin/Alpha/Gamma/Public roles + perms; create-admin bootstraps
+  # the login/guest-minter account (SUPERSET_GUESTTOKEN_ADMIN_* from .env); the
+  # guest-role bootstrap grants the embed chart-data perms; then import the
+  # dashboard/chart/dataset/database bundle. import_bundle.py injects the
+  # superset_ro password into the DB asset placeholder before importing;
+  # ImportDashboardsCommand runs overwrite=True → idempotent (safe every deploy).
+  superset-init:
+    build: *superset-build
+    image: *superset-image
+    container_name: superset-init
+    profiles: ["superset"]
+    env_file: [.env]
+    environment: *superset-env
+    volumes: *superset-mounts
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "== superset-init: migrate + admin + roles + asset import =="
+        superset db upgrade
+        superset init
+        superset fab create-admin \
+          --username "$${SUPERSET_GUESTTOKEN_ADMIN_USER}" \
+          --firstname packiot --lastname admin \
+          --email "$${SUPERSET_GUESTTOKEN_ADMIN_USER}@packiot.app" \
+          --password "$${SUPERSET_GUESTTOKEN_ADMIN_PASSWORD}" || true
+        python /app/pythonpath/bootstrap_guest_role.py || true
+        python /app/pythonpath/import_bundle.py
+        superset import_dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
+        echo "superset-init complete."
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      app-redis:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.44
+    restart: "no"
+    mem_limit: 512m          # one-shot migrate+import; cap so it can't spike the box during deploy
+    mem_reservation: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── superset — the web app (gunicorn) ───────────────────────────────────────
+  # 2 gunicorn workers (staging footprint; prod overlay uses 4). Bound host-local;
+  # the bi.staging nginx vhost fronts it. Depends on superset-init completing so
+  # the metadata schema + bundle are in place before serving.
+  superset:
+    build: *superset-build
+    image: *superset-image
+    container_name: superset
+    profiles: ["superset"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment: *superset-env
+    volumes: *superset-mounts
+    command:
+      - gunicorn
+      - --bind=0.0.0.0:8088
+      - --workers=2
+      - --worker-class=gthread
+      - --threads=20
+      - --timeout=120
+      - "superset.app:create_app()"
+    ports:
+      - "127.0.0.1:8088:8088"   # host-local; nginx bi.staging vhost proxies this
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.42   # matches SUPERSET_BASE_URL in .env
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+      app-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    mem_limit: 1g            # gunicorn web (2 workers×20 threads); hard cap to protect the 4.6 GB box
+    mem_reservation: 768m
+    cpus: 1.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── superset-worker — Celery (thumbnails/CSV export; async+alerts OFF) ───────
+  # Single worker, concurrency 1 — staging footprint. With GLOBAL_ASYNC_QUERIES
+  # off and no beat, the broker is idle-safe on app-redis (see the anchor note).
+  superset-worker:
+    build: *superset-build
+    image: *superset-image
+    container_name: superset-worker
+    profiles: ["superset"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment: *superset-env
+    volumes: *superset-mounts
+    command:
+      - celery
+      - --app=superset.tasks.celery_app:app
+      - worker
+      - --pool=prefork
+      - --concurrency=1
+      - -Ofair
+    depends_on:
+      superset:
+        condition: service_healthy
+      app-redis:
+        condition: service_healthy
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.43
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app=superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: 640m          # single Celery worker (thumbnails/CSV); async+alerts off so this is ample
+    mem_reservation: 384m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}

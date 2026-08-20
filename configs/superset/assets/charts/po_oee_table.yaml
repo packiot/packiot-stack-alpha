@@ -1,0 +1,24 @@
+# Per-production-order OEE table. Replaces the front4 order rows' OEE angle with a
+# real per-PO OEE breakdown. GAP vs front4 order rows: client/product/order-size
+# metadata (nm_client, nm_product, production_ordered) is NOT in bi.* → not shown.
+slice_name: Production orders OEE — awaiting operator cutover (no data yet)
+description: bi.production_order_runtime per PO — OEE/A/P/Q + net/gross.
+certified_by: null
+certification_details: null
+viz_type: table
+params: |
+  {
+    "datasource": "2011d388-fea1-4cdc-8f9d-6e839833bd27__table",
+    "viz_type": "table",
+    "query_mode": "raw",
+    "all_columns": ["id_production_order", "id_equipment", "ts_start", "ts_end", "oee", "oee_a", "oee_p", "oee_q", "net_production", "gross_production"],
+    "order_by_cols": ["[\"ts_start\", false]"],
+    "adhoc_filters": [],
+    "row_limit": 100,
+    "table_timestamp_format": "smart_date"
+  }
+query_context: '{"datasource": {"id": 5, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": ["id_production_order", "id_equipment", "ts_start", "ts_end", "oee", "oee_a", "oee_p", "oee_q", "net_production", "gross_production"], "orderby": [["ts_start", false]], "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [], "time_offsets": []}], "form_data": {"datasource": "5__table", "viz_type": "table", "query_mode": "raw", "all_columns": ["id_production_order", "id_equipment", "ts_start", "ts_end", "oee", "oee_a", "oee_p", "oee_q", "net_production", "gross_production"], "order_by_cols": ["[\"ts_start\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format": "smart_date", "annotation_layers": [], "slice_id": 8, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: bbc7f4b9-ce5a-45a4-86a3-66c2e51101df
+version: 1.0.0
+dataset_uuid: 2011d388-fea1-4cdc-8f9d-6e839833bd27

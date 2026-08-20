@@ -48,7 +48,17 @@ GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens
 # state under pgbouncer's transaction-pooling mode (the same reason hasura is kept
 # pgbouncer-direct in the base stack). superset-db-init already targets this same
 # upstream host to CREATE the role+DB, so the metadata DB lives there anyway.
-SUPERSET_METADATA_DB_HOST = os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
+#
+# STAGING CONTAINER-IN-STACK OVERRIDE: on staging the metadata DB is NOT the shared
+# r7g but a dedicated `superset-db` postgres CONTAINER inside the stack (named
+# volume, resettable, no r7g superuser DDL / SG ingress needed). compose.staging.yml
+# sets SUPERSET_METADATA_DB_HOST=superset-db to point here. When that env is UNSET
+# (the prod compose.superset.yml overlay), we fall back to POSTGRES_HOST_UPSTREAM
+# exactly as before — this override is backward-compatible with the prod EC2 model.
+SUPERSET_METADATA_DB_HOST = (
+    os.environ.get("SUPERSET_METADATA_DB_HOST")
+    or os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
+)
 SQLALCHEMY_DATABASE_URI = (
     "postgresql+psycopg2://superset:%s@%s:5432/superset"
     % (os.environ["SUPERSET_DB_PASSWORD"], SUPERSET_METADATA_DB_HOST)
