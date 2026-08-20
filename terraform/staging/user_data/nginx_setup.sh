@@ -170,6 +170,16 @@ server {
         error_page 401 = @oauth2_signin;
 
         proxy_pass         http://127.0.0.1:${port};
+%{ if svc == "rabbitmq" ~}
+        # RabbitMQ management's Cowboy backend enforces a 4KB total-header
+        # limit. The Cognito oauth2-proxy session cookie (split across
+        # several _oauth2_proxy_N cookies, ADR-0034 §C) blows past that and
+        # Cowboy answers 431 Request Header Fields Too Large. The browser's
+        # cookie isn't needed downstream — the auth_request gate above has
+        # already authorized the request, and RabbitMQ's own user/password
+        # auth takes it from there — so strip it before proxying.
+        proxy_set_header   Cookie "";
+%{ endif ~}
         proxy_set_header   Host                 \$host;
         proxy_set_header   X-Real-IP            \$remote_addr;
         proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
