@@ -1904,6 +1904,18 @@ services:
       # redeploy — the else-branch legacy BuildEnvelope path is retained, no DB
       # change needed to roll back.
       CALC_CUTOVER_REFACTORED: "true"
+      # No-speed glitch-guard fallback (PR #866, ADR-0049). GENERALIZES the L6
+      # COUNTERS_ONLY_IDEAL_RATES fix below: CPACK machines emit no MachSpeed, so
+      # Calc's Phase-8 guard `prodSpeed < 3*machSpeed` collapses to `< 0` and
+      # drops EVERY count for any topic NOT in the ideal-rates map (L8/L10/FLEXO/
+      # SLEEVE/CELULA were all silently dropped since mirror-worker-go retired
+      # 2026-08-13). With this on, a no-MachSpeed + no-ideal-rate machine disables
+      # only that mid-range guard (upstream first-obs seed + reset-heal and
+      # downstream INCREMENT_SANITY_CLAMP still catch spikes); counters-only's
+      # 3×ideal bound still wins where configured, and speed-reporting machines
+      # keep their real bound. Reversible: unset + redeploy. Superseded later by
+      # COUNTERS_ONLY_FROM_DB (real 3×production_speed per machine).
+      CALC_NO_SPEED_GUARD_FALLBACK: "true"
       # LINE_TRACE_TENANTS: comma-sep lowercase GroupIDs to trace at INFO (no
       # debug recreate). Uncomment + redeploy edge-transformer normally to pin
       # which lines' counters reach the F3 write and which Calc drops (and why).

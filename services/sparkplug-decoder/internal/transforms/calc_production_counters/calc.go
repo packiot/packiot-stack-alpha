@@ -16,6 +16,7 @@
 package calc_production_counters
 
 import (
+	"math"
 	"strings"
 	"time"
 )
@@ -114,6 +115,34 @@ type Message struct {
 	// bound; it should carry that same configured rated speed for consistency.
 	CountersOnly bool
 	IdealRate    float64
+
+	// ── No-speed guard fallback (ADR-0049, count-loss guard) ───────────────
+	// Phase 8's glitch guard is `prodSpeed < 3*machSpeed`. For a machine that
+	// reports NO MachSpeed sensor stream, machSpeed is 0, so the bound is 0 and
+	// EVERY counter is rejected (prodSpeed<0 is false for any non-negative
+	// rate) — the machine emits nothing and its OEE is zero. CountersOnly
+	// rescues this by swapping the bound to 3*IdealRate, but ONLY for a machine
+	// whose unit topic carries a configured rated speed (COUNTERS_ONLY_IDEAL_RATES
+	// or the COUNTERS_ONLY_FROM_DB rate map). A no-speed machine that is ALSO
+	// absent from that rate map (e.g. CPACK L8/L10/FLEXO/SLEEVE/CELULA, which
+	// only ever flowed because the now-retired mirror-worker-go synthesized
+	// their equipment_values) falls through with bound 0 and freezes.
+	//
+	// When true AND machSpeed==0 AND counters-only mode did NOT already supply a
+	// rated-speed bound (IdealRate absent), the rate guard is DISABLED
+	// (glitchBound = +Inf) so the counts are not dropped for lack of any speed
+	// reference to sanity-check against. This does NOT reintroduce the first-boot
+	// totalizer spike (ADR-0045 P1's first-observation seed + ADR-0048 reset-heal
+	// zero the delta-from-zero and post-reset spikes BEFORE the guard) and leaves
+	// mid-stream glitch protection to the downstream Silver INCREMENT_SANITY_CLAMP
+	// (ADR-0037) + the absurd-value guard in the writer. It is the strictly-better
+	// choice than dropping 100% of a producing machine's counts.
+	//
+	// Default false → byte-identical: the else-branch is never taken, glitchBound
+	// stays 3*machSpeed exactly as before. A machine that DOES report MachSpeed,
+	// or one already covered by counters-only, is unaffected even with the flag
+	// on (both keep their real bound). Caller flips it via CALC_NO_SPEED_GUARD_FALLBACK.
+	NoSpeedGuardFallback bool
 
 	// ── Reset/rebirth heal (count-spike guard, ADR-0048) ───────────────────
 	// The counter increment is a DELTA differenced from the per-topic baseline
@@ -562,6 +591,15 @@ func Calc(msg Message, state State) (Decision, error) {
 		glitchBound = countersOnlyGuardK * msg.IdealRate
 		dec.EnrichedMsg["counters_only_mode"] = true
 		dec.EnrichedMsg["ideal_rate"] = msg.IdealRate
+	} else if msg.NoSpeedGuardFallback && machSpeed == 0 {
+		// ADR-0049: no MachSpeed sensor AND no configured ideal rate → the
+		// 3*machSpeed bound is 0 and rejects every count (the 08-13 L8/L10
+		// freeze after mirror-worker-go retired). With no speed reference to
+		// bound against, DISABLE the rate guard rather than drop production.
+		// Spike protection is upstream (first-obs seed / reset-heal) and
+		// downstream (Silver INCREMENT_SANITY_CLAMP + absurd-value guard).
+		glitchBound = math.MaxFloat64
+		dec.EnrichedMsg["no_speed_guard_fallback"] = true
 	}
 
 	// ── Phase 8: emit unit metrics ─────────────────────────────────────────
