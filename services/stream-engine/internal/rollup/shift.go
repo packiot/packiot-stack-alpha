@@ -188,7 +188,7 @@ const shiftEventsUpdateSQL = `
 	       -- Availability = running / planned-production-time ; Quality = net /
 	       -- gross ; Performance back-solved by shiftOeePSQL so oee = a·p·q
 	       -- (same shape as grains.go / legacy pg engine). Was: A/P/Q all 0.
-	       oee_a = COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0), 1), 0), -- ADR-0037 clamp [0,1]: line over-mint of planned_downtime makes ts_total-ts_planned<0 -> negative A -> oee_bounds CHECK abort
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value

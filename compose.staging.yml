@@ -2355,7 +2355,7 @@ services:
     env_file: [.env]
     environment:
       LOG_LEVEL: info
-      REPLICATE_ENABLED: "false"
+      REPLICATE_ENABLED: "true"
       # SOURCE — legacy prod DB (SELECT-only). LEGACY_DB_PASSWORD must be
       # populated in .env from AWS Secrets Manager secret `databaseCredentials`
       # (key DB_PASSWORD, user awslambda). Never written.
@@ -2386,7 +2386,6 @@ services:
       HEALTH_PORT: "9104"
     networks:
       packiot-net:
-        ipv4_address: 172.18.0.42
     healthcheck:
       test: ["CMD", "/usr/local/bin/legacy-replicator", "--healthcheck"]
       interval: 30s

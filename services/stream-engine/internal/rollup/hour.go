@@ -186,7 +186,7 @@ const hourEventsSQL = `
 	       -- directly (running / planned-production-time ; net / gross); the
 	       -- companion hourOeePSQL back-solves Performance so oee = a·p·q holds,
 	       -- matching the week/month grain (grains.go) and the legacy pg engine.
-	       oee_a = COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0), 1), 0), -- ADR-0037 clamp [0,1]: line over-mint of planned_downtime makes ts_total-ts_planned<0 -> negative A -> oee_bounds CHECK abort
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
