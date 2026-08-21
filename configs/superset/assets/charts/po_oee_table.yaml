@@ -6,7 +6,7 @@ description: bi.production_order_runtime per PO — OEE/A/P/Q + net/gross.
 certified_by: null
 certification_details: null
 viz_type: table
-params: |
+params:
   {
     "datasource": "2011d388-fea1-4cdc-8f9d-6e839833bd27__table",
     "viz_type": "table",

@@ -5,7 +5,7 @@ description: Overall OEE gauge — front4 shiftOee total. bi.oee_shift AVG(oee).
 certified_by: null
 certification_details: null
 viz_type: gauge_chart
-params: |
+params:
   {
     "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
     "viz_type": "gauge_chart",
