@@ -115,6 +115,29 @@ type Message struct {
 	CountersOnly bool
 	IdealRate    float64
 
+	// ── Reset/rebirth heal (count-spike guard, ADR-0048) ───────────────────
+	// The counter increment is a DELTA differenced from the per-topic baseline
+	// in State. A genuine totalizer RESET (cur < prev, and not a 16-bit wrap)
+	// means the prior baseline no longer describes this stream — a PLC restart,
+	// an agent rebirth, or a publisher/source switch to a different totalizer
+	// origin. Legacy handleCounterDrop then reseats prev to 0, so the increment
+	// becomes cur − 0 = the WHOLE new absolute totalizer: the reset-spike (the
+	// same delta-from-zero pathology the first-observation seed already kills,
+	// but on a baseline that was PRESENT rather than absent). A source switch to
+	// an ~830k totalizer mints an ~830k phantom in one bucket, clamping OEE to a
+	// fake 1.0.
+	//
+	// When true, a genuine reset is HEALED exactly like a first observation:
+	// SEED the baseline to cur and emit NOTHING for this sample (increment 0),
+	// so the NEXT sample differences correctly. Idempotent, no magic constant —
+	// the guard is structural ("no valid baseline ⇒ reseed, never difference
+	// from zero"), not a threshold. It drops at most one sample's worth of
+	// post-reset counts (negligible; the pre-reset tail was already lost to the
+	// reset itself). Default false → byte-identical legacy decode (emit cur),
+	// so the golden comparator and existing reset tests are untouched; the
+	// caller flips it via CALC_RESET_HEAL_ENABLED.
+	ResetHeal bool
+
 	// ── Counter-role override (ADR-0047 P0 #1) ─────────────────────────────
 	// packml_register.id_{infeed,outfeed,reject}counter already exist as
 	// columns but are unread by Calc — every counter's role (gross/net/scrap)
@@ -377,6 +400,7 @@ func Calc(msg Message, state State) (Decision, error) {
 
 	sendMsg := false
 	resetLineScrap := false
+	activeReset := false // did THIS message's own counter genuinely reset?
 
 	switch kind {
 	case CounterKindProcessed:
@@ -388,6 +412,7 @@ func Calc(msg Message, state State) (Decision, error) {
 			var isReset bool
 			prevProcessed, isReset = handleCounterDrop(prevProcessed, curProcessed)
 			resetLineScrap = isReset
+			activeReset = isReset
 			sendMsg = true
 		}
 	case CounterKindConsumed:
@@ -399,6 +424,7 @@ func Calc(msg Message, state State) (Decision, error) {
 			var isReset bool
 			prevConsumed, isReset = handleCounterDrop(prevConsumed, curConsumed)
 			resetLineScrap = isReset
+			activeReset = isReset
 			sendMsg = true
 		}
 	case CounterKindDefective:
@@ -409,11 +435,36 @@ func Calc(msg Message, state State) (Decision, error) {
 		if prevDefective > curDefective {
 			// JS: Defective reset does NOT set reset_line_scrap_counter
 			// (only Processed + Consumed do). Preserve.
-			prevDefective, _ = handleCounterDrop(prevDefective, curDefective)
+			var isReset bool
+			prevDefective, isReset = handleCounterDrop(prevDefective, curDefective)
+			activeReset = isReset
 			sendMsg = true
 		}
 	default:
 		// Unknown kind — drop silently.
+		return dec, nil
+	}
+
+	// ── ADR-0048: reset/rebirth heal (count-spike guard) ────────────────────
+	// A genuine reset (not a 16-bit wrap) leaves prev reseated to 0 above, so
+	// the increment below would be cur−0 = the whole new absolute totalizer —
+	// the reset-spike. Treat it exactly like a first observation: re-seed the
+	// baseline to cur and emit nothing, so the NEXT sample differences against a
+	// valid baseline. firstObsKey already holds this kind's baseline topic.
+	// Structural, idempotent, no magic constant. See Message.ResetHeal.
+	if msg.ResetHeal && activeReset {
+		seedVal := msg.Payload
+		if seedVal < 0 {
+			seedVal = 0
+		}
+		keyCopy, valCopy := firstObsKey, seedVal
+		dec.StateUpdates = append(dec.StateUpdates, StateMutation{
+			Kind: "counter.reset_seed_baseline", Key: keyCopy, IntValue: valCopy,
+			Setter: func(s State) error { return s.SetInt(keyCopy, valCopy) },
+		})
+		dec.EnrichedMsg["skipped_reason"] = "counter_reset_seed"
+		dec.EnrichedMsg["seeded_baseline"] = seedVal
+		// SendDownstream stays false: no delta-from-zero reset spike is emitted.
 		return dec, nil
 	}
 

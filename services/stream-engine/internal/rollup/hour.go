@@ -280,8 +280,19 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		steps = append(steps, rollupStep{"line-lead",
 			fmt.Sprintf(hourLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
 	}
+	// ADR-0048 §Fault-2: availability count-floor (see shift.go). Inert when off.
+	if ca.engagedFloor() {
+		steps = append(steps, rollupStep{"avail-floor",
+			fmt.Sprintf(hourAvailFloorSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	// ADR-0048 §Fault-3: canonical A·P·Q reconcile replaces the legacy residual
+	// when engaged; otherwise the legacy oee-p runs (byte-identical).
+	if ca.engagedCanonical() {
+		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(hourOeeReconcileSQL, d.EvSchema)})
+	} else {
+		steps = append(steps, rollupStep{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)})
+	}
 	steps = append(steps,
-		rollupStep{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)},
 		rollupStep{"targets", fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema)},
 		rollupStep{"stamp", fmt.Sprintf(hourStampSQL, d.EvSchema)},
 		rollupStep{"reflag", fmt.Sprintf(hourReflagSQL, d.EvSchema)},

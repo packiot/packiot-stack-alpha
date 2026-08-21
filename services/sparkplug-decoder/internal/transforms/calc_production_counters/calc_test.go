@@ -601,6 +601,92 @@ func TestCalcLargeDropIsResetNotRollover(t *testing.T) {
 	}
 }
 
+// ── ADR-0048: reset/rebirth heal (count-spike guard) ──────────────────────
+// With ResetHeal on, a genuine reset (source switch / rebirth) to a LARGE
+// absolute must NOT emit the whole-totalizer delta-from-zero spike; it must
+// re-seed the baseline to cur and drop the sample, so the NEXT sample
+// differences correctly (no 830k phantom in one bucket).
+func TestCalcResetHealDropsSpikeAndReseeds(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	key := base + "/Admin/ProdConsumedCount/61/Unit"
+	s.SetInt(key, 830000)     // prior source's totalizer
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	// Publisher/source switch: new totalizer 200000 < 830000 → genuine reset.
+	dec, err := Calc(Message{
+		Topic: key + "***TRIG", Payload: 200000, CmdTrigger: true,
+		Timestamp: time.UnixMilli(1700000000000), ResetHeal: true,
+	}, s)
+	if err != nil {
+		t.Fatalf("Calc: %v", err)
+	}
+	// No metric — especially not a 200000 reset spike.
+	for _, m := range dec.Metrics {
+		if m.Name == key {
+			t.Fatalf("reset-heal emitted a spike: value=%d (want no metric)", m.Value)
+		}
+	}
+	if dec.SendDownstream {
+		t.Errorf("reset-heal must drop (seed only), got SendDownstream=true")
+	}
+	if got := dec.EnrichedMsg["skipped_reason"]; got != "counter_reset_seed" {
+		t.Errorf("skipped_reason: got %v, want counter_reset_seed", got)
+	}
+	// Baseline must be re-seeded to the new absolute so the NEXT sample differs.
+	if !hasCounterUpdate(dec.StateUpdates, key, 200000) {
+		t.Fatalf("reset-heal must re-seed baseline=200000, got: %+v", dec.StateUpdates)
+	}
+	for _, up := range dec.StateUpdates {
+		if err := up.Setter(s); err != nil {
+			t.Fatalf("apply seed: %v", err)
+		}
+	}
+	// Second sample: a correct small delta off the re-seeded baseline.
+	dec2, _ := Calc(Message{
+		Topic: key + "***TRIG", Payload: 200007, CmdTrigger: true,
+		Timestamp: time.UnixMilli(1700000005000), ResetHeal: true,
+	}, s)
+	var consumed *Metric
+	for i := range dec2.Metrics {
+		if dec2.Metrics[i].Name == key {
+			consumed = &dec2.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil {
+		t.Fatalf("post-reset-seed second sample must emit a metric")
+	}
+	if consumed.Value != 7 {
+		t.Errorf("post-reset-seed delta: got %d, want 7 (200007-200000)", consumed.Value)
+	}
+}
+
+// With ResetHeal OFF (default), the legacy emit-cur behavior is preserved —
+// the golden comparator and existing reset tests must stay valid.
+func TestCalcResetHealOffKeepsLegacyEmitCur(t *testing.T) {
+	s := NewMemState()
+	base := "CPACK/SC/LINHAS/L5/BREYER"
+	key := base + "/Admin/ProdConsumedCount/61/Unit"
+	s.SetInt(key, 500000)
+	s.SetFloat(base+"/Status/MachSpeed", 100.0)
+
+	dec, _ := Calc(Message{
+		Topic: key + "***TRIG", Payload: 10, CmdTrigger: true,
+		Timestamp: time.UnixMilli(1700000000000), // ResetHeal defaults false
+	}, s)
+	var consumed *Metric
+	for i := range dec.Metrics {
+		if dec.Metrics[i].Name == key {
+			consumed = &dec.Metrics[i]
+			break
+		}
+	}
+	if consumed == nil || consumed.Value != 10 {
+		t.Fatalf("ResetHeal off must keep legacy emit-cur=10, got %+v", consumed)
+	}
+}
+
 // ── Auxiliary ─────────────────────────────────────────────────────────────
 
 func hasCounterUpdate(mutations []StateMutation, key string, want int64) bool {

@@ -139,6 +139,14 @@ type Config struct {
 	// CountersOnlyEnabled gates the whole feature. Default false → zero
 	// behavior change (the per-equipment map is never consulted).
 	CountersOnlyEnabled bool
+
+	// ResetHealEnabled (ADR-0048 count-spike guard) heals genuine totalizer
+	// resets/rebirths: on a reset the decoder re-seeds the per-topic baseline to
+	// the current absolute and emits increment 0 instead of differencing cur−0
+	// (the whole-totalizer reset-spike). Default true — the reset-spike is a
+	// confirmed OEE-correctness fault; set CALC_RESET_HEAL_ENABLED=false to
+	// restore the legacy emit-cur behavior. See calc.go Message.ResetHeal.
+	ResetHealEnabled bool
 	// CountersOnlyIdealRates maps a Sparkplug UNIT topic (5-segment
 	// Enterprise/Site/Area/Line/Unit) to that equipment's configured ideal /
 	// rated speed in parts-per-minute — the SAME value CS Admin sets as
@@ -333,6 +341,9 @@ func Load() (*Config, error) {
 
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),
+
+		// Reset/rebirth heal (ADR-0048 count-spike guard) — default ON.
+		ResetHealEnabled: getenvBool("CALC_RESET_HEAL_ENABLED", true),
 
 		// Counters-only OEE mode (default OFF — no behavior change)
 		CountersOnlyEnabled:        getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),

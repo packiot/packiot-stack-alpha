@@ -508,6 +508,7 @@ func main() {
 			idealRates:             idealRates,
 			roleResolver:           roleResolver,
 			traceTenants:           traceTenants,
+			resetHeal:              cfg.ResetHealEnabled,
 		}
 		if countersOnlyEnabled || countersOnlyAutoFromDB {
 			logger.Info("counters-only OEE mode configured",
@@ -834,6 +835,12 @@ type calcHooks struct {
 	countersOnlyEnabled    bool
 	countersOnlyAutoFromDB bool
 	idealRates             func() map[string]float64
+
+	// resetHeal (ADR-0048 count-spike guard) — when true, Calc re-seeds a
+	// genuine totalizer reset instead of emitting the whole-totalizer
+	// delta-from-zero reset spike. Sourced from CALC_RESET_HEAL_ENABLED
+	// (default true). See calc_production_counters.Message.ResetHeal.
+	resetHeal bool
 
 	// roleResolver — ADR-0047 P0 #1 counter-role override
 	// (packml_register.id_{infeed,outfeed,reject}counter). nil when
@@ -1197,6 +1204,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 			}
 		}
 	}
+	msg.ResetHeal = h.resetHeal
 	dec, err := calc_production_counters.Calc(msg, h.state)
 	if err != nil {
 		h.errors.WithLabelValues(tenant, "calc_error").Inc()
