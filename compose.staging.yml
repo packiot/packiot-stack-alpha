@@ -1349,6 +1349,14 @@ services:
       # target `public` instead (flows.StandardFiltered, ADR-0045 G3). The F1
       # pg_cron rollup (oee-refresh-runtime) is inactive, so no double-write.
       SHADOW_GO_PORT_ENABLED: "false"
+      # ── ADR-0049 OEE correctness activation (see docs/adr/0049-oee-correctness.md) ──
+      # Reset-heal (spike guard) defaults ON in the decoder. These two default OFF;
+      # enabled here to sequence them on staging. Availability floor engages for
+      # COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS (covers CPACK L-lines+members), raising
+      # oee_a to count-derived running (GREATEST, capped); canonical then makes
+      # oee == A*P*Q using the corrected availability.
+      OEE_AVAIL_FLOOR_ENABLED: "true"
+      OEE_CANONICAL_APQ_ENABLED: "true"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
