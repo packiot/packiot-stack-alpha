@@ -279,15 +279,26 @@ pg_timescaledb_compression:
     - saved_bytes: { usage: GAUGE, description: "Bytes saved by compression (before - after)" }
     - ratio: { usage: GAUGE, description: "Compression ratio (before/after; 0 = not compressed)" }
 
-# ── Cluster-wide connection + worker ceilings. master:true → single emission on
-# the primary connection (these GUCs are cluster-global, identical on every DB),
-# so it never collides under auto-discovery. Drives the connection-saturation
-# panel: sum(connections) / scalar(pg_settings_max_connections) — never hardcode 50. ──
-pg_settings:
+# ── TimescaleDB background-worker ceiling. master:true → single emission on the
+# primary connection (this GUC is cluster-global, identical on every DB), so it
+# never collides under auto-discovery.
+#
+# DO NOT name this key `pg_settings`: the exporter ships a BUILT-IN `settings`
+# collector that already emits pg_settings_max_connections (with HELP "Server
+# Parameter: max_connections"). A custom query keyed `pg_settings` re-emitting the
+# same metric name with different HELP makes the client_golang registry abort the
+# ENTIRE /metrics response ("has help ... but should have ...") → HTTP 500 →
+# up{job="postgres-exporter"}=0, dark-ing every OTHER metric in this file too.
+# Confirmed live on staging 2026-08-21. So max_connections is left to the built-in
+# collector, and only the timescaledb worker ceiling (which the built-in does not
+# surface) is exported here, under a non-colliding key.
+#
+# Connection-saturation panel: sum(connections) / scalar(pg_settings_max_connections)
+# — the built-in pg_settings_max_connections; never hardcode 50. ──
+pg_cluster_limits:
   master: true
   query: |
-    SELECT current_setting('max_connections')::float                  AS max_connections,
-           current_setting('timescaledb.max_background_workers')::float AS max_background_workers
+    SELECT coalesce(current_setting('timescaledb.max_background_workers', true), '0')::float
+             AS max_background_workers
   metrics:
-    - max_connections: { usage: GAUGE, description: "Cluster max_connections ceiling" }
     - max_background_workers: { usage: GAUGE, description: "TimescaleDB max_background_workers ceiling" }
