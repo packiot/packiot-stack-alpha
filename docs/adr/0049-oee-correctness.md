@@ -1,4 +1,4 @@
-# ADR-0048 — OEE Correctness: count-spike guard, availability floor, A×P×Q reconciliation
+# ADR-0049 — OEE Correctness: count-spike guard, availability floor, A×P×Q reconciliation
 
 **Status:** Proposed (code SHIPPED behind flags — safe defaults) · **Date:** 2026-08-21
 · **Scope:** the Go OEE compute — `services/stream-engine` (rollup) + `services/sparkplug-decoder` (Calc). Does NOT touch the `uns_*` snapshot refreshers.

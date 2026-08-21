@@ -317,7 +317,7 @@ type Config struct {
 	CountersOnlyLineLeadEnabled     bool
 	CountersOnlyLineLeadEnterprises string // CSV of id_enterprise
 
-	// ── ADR-0048 OEE correctness ──────────────────────────────────────────
+	// ── ADR-0049 OEE correctness ──────────────────────────────────────────
 	// AvailFloorEnabled (§Fault-2): for opted-in CountersOnlyAvailEquipments,
 	// raise running_time to the count-derived active time where the state
 	// stream had gaps (production proves the machine ran). Reuses the equipment
@@ -472,7 +472,7 @@ func Load() (*Config, error) {
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
-		// ADR-0048 OEE correctness (default OFF — no behavior change)
+		// ADR-0049 OEE correctness (default OFF — no behavior change)
 		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
 		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
