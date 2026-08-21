@@ -2325,6 +2325,80 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── legacy-replicator (cross-instance twin replicator) ────────────────────────
+  # Makes STAGING a faithful TWIN of CPACK production: replays CPACK operator
+  # actions from the LEGACY prod DB (packiot40, enterprise 1 "C-PACK") into this
+  # staging analytics plane (packiot_analytics, enterprise 3). The tee carries
+  # only telemetry (and only some lines since 2026-08-13) — operators' PO /
+  # downtime / justify actions live in the legacy control plane and were NOT
+  # reaching the twin. Sibling of analytics-sync: same poll/cursor/idempotent
+  # natural-key philosophy, plus an id-mapping layer (ent 1->3, equipment by
+  # packml base-topic, PO by (id_enterprise,id_order)). Source is SELECT-only;
+  # every write + the cursor land in staging.
+  #
+  # DEFAULT OFF (REPLICATE_ENABLED=false). Cold start backfills the last
+  # BACKFILL_SINCE_DAYS of history (so dashboards aren't blank) then continues
+  # live. Idempotent on re-run (proven: re-processing the same window changes no
+  # counts). Widen BACKFILL_SINCE_DAYS (or set BACKFILL_SINCE=YYYY-MM-DD) for a
+  # deeper backfill.
+  #
+  # NOTE: this SUPERSEDES the F1-sourced analytics-sync for CPACK — that service
+  # read staging's OWN (now-retired) F1 packiot user_logs and froze ~08-18.
+  # Leave analytics-sync at SHADOW_MIRROR_ENABLED=false (already default); the
+  # authoritative operator-action source is legacy packiot40, not staging F1.
+  legacy-replicator:
+    build:
+      context: ./services/analytics-sync
+      dockerfile: Dockerfile.replicator
+    container_name: legacy-replicator
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      REPLICATE_ENABLED: "false"
+      # SOURCE — legacy prod DB (SELECT-only). LEGACY_DB_PASSWORD must be
+      # populated in .env from AWS Secrets Manager secret `databaseCredentials`
+      # (key DB_PASSWORD, user awslambda). Never written.
+      LEGACY_DB_HOST: 18.220.223.110
+      LEGACY_DB_PORT: "5432"
+      LEGACY_DB_USER: awslambda
+      LEGACY_DB_PASSWORD: ${LEGACY_DB_PASSWORD}
+      LEGACY_DB_NAME: packiot40
+      # DEST — staging analytics plane (direct to the DB EC2; pgbouncer's static
+      # db list excludes packiot_analytics, same bypass analytics-sync uses).
+      DEST_DB_HOST: 10.10.10.89
+      DEST_DB_PORT: "5432"
+      DEST_DB_USER: ${POSTGRES_USER}
+      DEST_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DEST_DB_NAME: packiot_analytics
+      # Enterprise id-map — CPACK 1 -> 3. Configurable per future tenant.
+      SRC_ENTERPRISE: "1"
+      DST_ENTERPRISE: "3"
+      # Backfill depth for cold start (history so dashboards aren't blank).
+      BACKFILL_SINCE_DAYS: "60"
+      # Replay raw PLC downtime events into equipment_events (the tee does NOT
+      # carry every CPACK line). ON CONFLICT never clobbers a tee-produced row.
+      REPLICATE_BASE_EVENTS: "true"
+      # Distinct cursor from analytics-sync ("shadow-mirror") — no collision.
+      CURSOR_SOURCE: legacy-cpack
+      POLL_INTERVAL_MS: "3000"
+      BATCH_SIZE: "200"
+      HEALTH_PORT: "9104"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.42
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/legacy-replicator", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
   # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
   # over the docker network so the browser sees a single origin (no CORS).
