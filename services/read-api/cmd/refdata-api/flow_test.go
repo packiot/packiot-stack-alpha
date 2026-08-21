@@ -12,7 +12,7 @@ func TestResolveFlow(t *testing.T) {
 		"F3":   flowF1, // case-sensitive on purpose — only lowercase "f3" flips
 		"f3 ":  flowF1, // no trimming — an exact match is required
 		"prod": flowF1,
-		"f3":   flowF3,
+		"f3":   flowAnalytics,
 	}
 	for in, want := range cases {
 		if got := resolveFlow(in); got != want {
@@ -31,13 +31,13 @@ func TestDBNameForFlow(t *testing.T) {
 	if got := dbNameForFlow(flowF1); got != "packiot" {
 		t.Errorf("dbNameForFlow(f1) = %q, want packiot", got)
 	}
-	if got := dbNameForFlow(flowF3); got != "packiot_analytics" {
+	if got := dbNameForFlow(flowAnalytics); got != "packiot_analytics" {
 		t.Errorf("dbNameForFlow(f3) = %q, want packiot_analytics", got)
 	}
 }
 
-// TestActiveSQL_Dataset — a dataset with no sqlF3 serves its F1 sql on BOTH
-// flows (the common case: F3 keeps F1's names). When an sqlF3 IS set, it is used
+// TestActiveSQL_Dataset — a dataset with no sqlAnalytics serves its F1 sql on BOTH
+// flows (the common case: F3 keeps F1's names). When an sqlAnalytics IS set, it is used
 // ONLY under f3; f1 is byte-unchanged. This is the guarantee that merging the
 // switch with default f1 changes nothing.
 func TestActiveSQL_Dataset(t *testing.T) {
@@ -45,48 +45,48 @@ func TestActiveSQL_Dataset(t *testing.T) {
 	if got := noOverride.activeSQL(flowF1); got != "SELECT 1" {
 		t.Errorf("f1 no-override = %q", got)
 	}
-	if got := noOverride.activeSQL(flowF3); got != "SELECT 1" {
+	if got := noOverride.activeSQL(flowAnalytics); got != "SELECT 1" {
 		t.Errorf("f3 no-override must fall back to f1 sql, got %q", got)
 	}
-	withOverride := dataset{sql: "SELECT f1", sqlF3: "SELECT f3"}
+	withOverride := dataset{sql: "SELECT f1", sqlAnalytics: "SELECT f3"}
 	if got := withOverride.activeSQL(flowF1); got != "SELECT f1" {
 		t.Errorf("f1 with-override must stay F1, got %q", got)
 	}
-	if got := withOverride.activeSQL(flowF3); got != "SELECT f3" {
+	if got := withOverride.activeSQL(flowAnalytics); got != "SELECT f3" {
 		t.Errorf("f3 with-override must use F3, got %q", got)
 	}
 }
 
 // TestActiveSQL_Endpoint — same contract for the fixed /v1/* endpoints.
 func TestActiveSQL_Endpoint(t *testing.T) {
-	ep := endpoint{sql: "SELECT f1", sqlF3: "SELECT f3"}
+	ep := endpoint{sql: "SELECT f1", sqlAnalytics: "SELECT f3"}
 	if got := ep.activeSQL(flowF1); got != "SELECT f1" {
 		t.Errorf("endpoint f1 = %q", got)
 	}
-	if got := ep.activeSQL(flowF3); got != "SELECT f3" {
+	if got := ep.activeSQL(flowAnalytics); got != "SELECT f3" {
 		t.Errorf("endpoint f3 = %q", got)
 	}
 	plain := endpoint{sql: "SELECT only"}
-	if got := plain.activeSQL(flowF3); got != "SELECT only" {
+	if got := plain.activeSQL(flowAnalytics); got != "SELECT only" {
 		t.Errorf("endpoint f3 no-override must fall back, got %q", got)
 	}
 }
 
 // TestNoDatasetHasF3Override documents the live-census ground truth (2026-07-20):
 // F3's divergence from F1 is ABSENCE, not RENAME, so no dataset needs a textual
-// sqlF3 today. If a future rename lands one, this test is the tripwire that makes
+// sqlAnalytics today. If a future rename lands one, this test is the tripwire that makes
 // that a DELIBERATE, reviewed change (update the count + the flow.go note) rather
 // than an accidental divergence.
 func TestNoDatasetHasF3Override(t *testing.T) {
 	for name, ds := range datasets {
-		if ds.sqlF3 != "" {
-			t.Errorf("dataset %q has an sqlF3 override — intended? update flow.go's "+
+		if ds.sqlAnalytics != "" {
+			t.Errorf("dataset %q has an sqlAnalytics override — intended? update flow.go's "+
 				"absence-not-rename note and the parity harness inventory if so", name)
 		}
 	}
 	for _, ep := range endpoints {
-		if ep.sqlF3 != "" {
-			t.Errorf("endpoint %q has an sqlF3 override — see above", ep.path)
+		if ep.sqlAnalytics != "" {
+			t.Errorf("endpoint %q has an sqlAnalytics override — see above", ep.path)
 		}
 	}
 }

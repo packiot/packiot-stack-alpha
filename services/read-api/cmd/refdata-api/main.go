@@ -51,21 +51,21 @@ type endpoint struct {
 	// so a client arg returned here binds $2, $3, … . nil = no client args
 	// (customer_id-only for scoped routes; zero args for global ones).
 	args func(r *http.Request) ([]any, error)
-	// sqlF3 (ADR-0032 Step 1, optional) overrides sql when the process flow is
+	// sqlAnalytics (ADR-0032 Step 1, optional) overrides sql when the process flow is
 	// f3 (REFDATA_FLOW=f3). Empty ⇒ the same sql serves both flows — the common
 	// case, because F3 keeps F1's object names where the object exists (flow.go).
 	// It is only populated when a backing object is genuinely RENAMED in
 	// packiot_analytics, so the F1 read stays byte-identical. Declared LAST so the
 	// positional endpoint literals above stay valid.
-	sqlF3 string
+	sqlAnalytics string
 }
 
 // activeSQL returns the SQL this endpoint runs under the process flow: the f3
 // override when flow==f3 and one is set, else the F1 sql. Centralising the
 // choice keeps the flow-branch out of the handler hot path.
 func (e endpoint) activeSQL(f flow) string {
-	if f == flowF3 && e.sqlF3 != "" {
-		return e.sqlF3
+	if f == flowAnalytics && e.sqlAnalytics != "" {
+		return e.sqlAnalytics
 	}
 	return e.sql
 }

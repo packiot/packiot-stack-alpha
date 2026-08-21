@@ -22,7 +22,7 @@
 //     feat/adr0032-step1-pgbouncer-grafana). main.go builds its DSN from
 //     activeFlow.dbName instead of a hardcoded DB_NAME.
 //
-//  2. THE PER-DATASET SQL VARIANT. Each dataset/endpoint MAY carry an `sqlF3`
+//  2. THE PER-DATASET SQL VARIANT. Each dataset/endpoint MAY carry an `sqlAnalytics`
 //     that overrides its F1 `sql` when the flow is f3 (activeSQL below). This is
 //     the seam for schema divergence: if a backing object is RENAMED in F3
 //     (e.g. the rename-map's future `ca_*`→`cagg_*` unification), the f3 SQL
@@ -32,23 +32,27 @@
 //     scripts/refdata-f3-parity-check.sh): today packiot_analytics's divergence
 //     from packiot is ABSENCE, not RENAME. Every object that EXISTS in F3 keeps
 //     its F1 name (h_piot_*, v_operator_*, agg_equipment_values_*), so NO
-//     dataset currently needs a textual sqlF3 override — they are byte-identical
+//     dataset currently needs a textual sqlAnalytics override — they are byte-identical
 //     across flows. The gap is that ~31 of 33 analytics functions and several
 //     config/report relations DO NOT EXIST in F3 yet (they are the
 //     telemetry-compute DB, not the analytics DB). Those datasets are BLOCKED on
-//     F3 until packiot_analytics's read layer is built out; sqlF3 cannot conjure a
+//     F3 until packiot_analytics's read layer is built out; sqlAnalytics cannot conjure a
 //     missing object, so it stays empty for them (documented as blockers, not
 //     invented). The field is the mechanism that will carry the ports when they
 //     land — pre-wired so the eventual adaptation is a data change, not a
 //     structural one.
 package main
 
-// flow is the read-plane target: F1 (operational DB) or F3 (refactored shadow).
+// flow is the read-plane target: the legacy operational DB (F1, historical) or
+// the analytics plane (packiot_analytics — the go-forward end-state DB).
 type flow string
 
 const (
-	flowF1 flow = "f1" // packiot.public — the operational DB (default, unchanged)
-	flowF3 flow = "f3" // packiot_analytics.public — the refactored end-state DB
+	flowF1 flow = "f1" // packiot.public — the legacy operational DB (default, unchanged)
+	// flowAnalytics — packiot_analytics.public, the go-forward analytics plane.
+	// The wire value stays "f3" (the REFDATA_FLOW env value): renaming that KEY is
+	// a coordinated .env/compose cutover — see docs/adr/0050-rename-f3-plane-to-analytics.md.
+	flowAnalytics flow = "f3"
 )
 
 // activeFlow is the process-global read target, resolved ONCE from REFDATA_FLOW
@@ -62,7 +66,7 @@ var activeFlow = flowF1
 // to f1 — fail-safe: a typo can never silently point reads at the shadow DB.
 func resolveFlow(raw string) flow {
 	if raw == "f3" {
-		return flowF3
+		return flowAnalytics
 	}
 	return flowF1
 }
@@ -72,7 +76,7 @@ func resolveFlow(raw string) flow {
 // staging bring-up can re-point either without a rebuild, but the defaults are
 // the canonical pool names pgbouncer maps: `packiot` and `packiot_analytics`.
 func dbNameForFlow(f flow) string {
-	if f == flowF3 {
+	if f == flowAnalytics {
 		return getenv("DB_NAME_F3", "packiot_analytics")
 	}
 	return getenv("DB_NAME", "packiot")

@@ -33,7 +33,7 @@ RabbitMQ  ── `oee` topic exchange ──►  oeecloud-worker-q  (routing key
                                      └────────────┬────────────┘
                                                   │  raw + derived rows
                                                   ▼
-                                     TimescaleDB (F3 / packiot_analytics)
+                                     TimescaleDB (analytics plane / packiot_analytics)
                                        equipment_values, equipment_events
                                                   │
                                   continuous aggregates (ca_*_1min, ca_discrete_changes_1s)
@@ -89,7 +89,7 @@ on every startup so broker restarts and fresh deploys converge.
 | `shiftresolver` | Go port of the shift-fill trigger (ADR-0014 P2) |
 | `uns` | UNS current-state provisioner + week/month refresh matrix |
 | `reports` | per-customer writers: speed33, shift06, sap13, sync06, boxes (+ bridge) |
-| `refsync` | mirrors master tables main→`packiot_analytics` so F3 rollups read F2's reference plane |
+| `refsync` | mirrors master tables main→`packiot_analytics` so analytics rollups read the legacy reference plane |
 | `bake` | side-by-side F1↔F3 comparator + int-overflow sentinel (ADR-0016) |
 | `flows`, `tenants`, `jobs` | dual-destination fan-out, tenant discovery, the scheduler primitive |
 | `config`, `secrets`, `db`, `metrics`, `health`, `tracing`, `log` | plumbing (creds from AWS Secrets Manager, Prometheus, OTLP→Tempo) |
@@ -187,7 +187,7 @@ The image is a multi-stage distroless build (`Dockerfile`): static CGO-free
 binary → `gcr.io/distroless/static-debian12:nonroot`. No shell, so the docker
 healthcheck self-probes: the binary re-execs itself as
 `oeecloud-worker --healthcheck` and GETs its own `/health` (exit 0 = healthy).
-A second one-shot mode, `--identity-sentinel`, is the SELECT-only F3
+A second one-shot mode, `--identity-sentinel`, is the SELECT-only analytics
 int-overflow deploy gate run in CI.
 
 ## Config
@@ -207,8 +207,8 @@ set `CREDS_SOURCE=env` locally to read them straight from compose env vars
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `rabbitmq` / `5672` | broker address |
 | `DB_HOST/PORT/USER/PASSWORD/NAME` | `postgres`/`5432`/—/—/`packiot` | direct DB creds (only under `CREDS_SOURCE=env`) |
 | `POSTGRES_MAX_CONNS` | `5` | main (F1) pool size |
-| `POSTGRES_ANALYTICS_DB_NAME` | *(unset)* | F3 shadow DB name; unset ⇒ `source_type=refactored` routes back to main |
-| `POSTGRES_ANALYTICS_MAX_CONNS` | `15` | shadow (F3) pool size |
+| `POSTGRES_ANALYTICS_DB_NAME` | *(unset)* | analytics DB name; unset ⇒ `source_type=refactored` routes back to main |
+| `POSTGRES_ANALYTICS_MAX_CONNS` | `15` | analytics pool size |
 | `LOG_LEVEL` / `HEALTH_PORT` | `info` / `9101` | logging + `/health` + `/metrics` port |
 
 **AMQP topology / consumer**
@@ -242,8 +242,8 @@ set `CREDS_SOURCE=env` locally to read them straight from compose env vars
 | `EVENTS_EXCLUDED_AREAS` / `EVENTS_EXCLUDED_ENTERPRISES` | `""` | disabled-customer toggles (config, not algorithm) |
 
 > `source_type` routing: `""` → main pool (F1); `"refactored"` → the shadow
-> pool (F3, `packiot_analytics`). The legacy `"go"` / `shadow_go_port` (F2) plane
-> was dropped in ADR-0032 Step 5 — only F1 and F3 remain.
+> pool (analytics plane, `packiot_analytics`). The legacy `"go"` / `shadow_go_port` (F2) plane
+> was dropped in ADR-0032 Step 5 — only F1 and the analytics plane remain.
 
 ## Invariants (read before changing a port)
 

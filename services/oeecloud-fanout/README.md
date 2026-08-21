@@ -4,7 +4,7 @@ Roadmap **P1 / task #17**. Makes the STAGING sandbox tenant **SBXCPACK**
 (enterprise 2000003) a faithful ALL-LINES twin of the real **CPACK** tenant
 (enterprise 3) by fanning out staging's live CPACK decoded SparkPlug stream,
 re-tenanting it, and republishing it so the sandbox's `oeecloud-worker` queue
-writes SBXCPACK F3 rows.
+writes SBXCPACK analytics rows.
 
 ```
 edge-transformer ──sparkplug.data──▶  oee (topic exchange)
@@ -18,7 +18,7 @@ edge-transformer ──sparkplug.data──▶  oee (topic exchange)
                                         ▼  publish sparkplug.data.sbxcpack
                                      oee (topic exchange)
                                         ▼
-                             oeecloud-worker-q-sbxcpack  → SBXCPACK F3 (ent 2000003)
+                             oeecloud-worker-q-sbxcpack  → SBXCPACK analytics (ent 2000003)
 ```
 
 ## Envelope shape (what it rewrites)
@@ -60,7 +60,7 @@ Because `sparkplug.data` carries **every** tenant, the transform gates on
 - **No double-count:** the clone is published ONLY to `sparkplug.data.sbxcpack`.
   CPACK's own worker queue is a separate queue that receives its own COPY from
   the exchange and keeps writing ent-3 rows exactly once. Source (ent 3) and
-  target (ent 2000003) have disjoint equipment ids and F3 rows. This is why a
+  target (ent 2000003) have disjoint equipment ids and analytics rows. This is why a
   CROSS-tenant fan-out is safe where the retired SAME-tenant `mirror-worker-go`
   had to be the sole writer.
 - **No self-feedback:** the target key `sparkplug.data.sbxcpack` matches neither
