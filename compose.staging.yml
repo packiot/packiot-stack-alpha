@@ -466,7 +466,7 @@ services:
     environment:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_DB: packiot_analytics
     networks:
       packiot-net:
         ipv4_address: 172.18.0.16
@@ -504,7 +504,7 @@ services:
       OTEL_SERVICE_NAME: edge-api
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_DB: packiot_analytics
       POSTGRES_HOST: pgbouncer
       # ── plc-status live telemetry → F3 analytics DB (edge-api #193) ───────────
       # edge-api writes/reads config on the F1 `packiot` DB (via pgbouncer). But
@@ -1367,6 +1367,12 @@ services:
       # access to oeecloud-q). EC2 IAM role grants packiot/staging/*.
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
+      CREDS_SOURCE: env
+      DB_HOST: "10.10.10.89"
+      DB_PORT: "5432"
+      DB_USER: "${POSTGRES_USER}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD}"
+      DB_NAME: packiot_analytics
       # MANUAL PRE-REQ (rename S1+S2, oeecloud-worker -> stream-engine): this
       # secret does not exist yet under the new name. A human must create
       # packiot/staging/rabbitmq-stream-engine-creds (username "stream-engine",
@@ -1916,6 +1922,8 @@ services:
       # keep their real bound. Reversible: unset + redeploy. Superseded later by
       # COUNTERS_ONLY_FROM_DB (real 3×production_speed per machine).
       CALC_NO_SPEED_GUARD_FALLBACK: "true"
+      POSTGRES_DB: packiot_analytics
+      POSTGRES_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@10.10.10.89:5432/packiot_analytics"
       # LINE_TRACE_TENANTS: comma-sep lowercase GroupIDs to trace at INFO (no
       # debug recreate). Uncomment + redeploy edge-transformer normally to pin
       # which lines' counters reach the F3 write and which Calc drops (and why).
@@ -2222,6 +2230,12 @@ services:
       # packiot-net (via pgbouncer, per the secret's host).
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
+      CREDS_SOURCE: env
+      DB_HOST: "10.10.10.89"
+      DB_PORT: "5432"
+      DB_USER: "${POSTGRES_USER}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD}"
+      DB_NAME: packiot_analytics
       # FILL AT DEPLOY (secrets — keep out of git):
       #   OPERATOR_API_KEY : shared secret the Incoplast tee node presents
       #                      as X-Ingest-Key.
@@ -2272,7 +2286,7 @@ services:
       #   (migration 20260702000001_shadow_go_port_operator_tables.ts)
       # - packiot_analytics.public.* exists (Phase 3 writer-tables SQL)
       # - 10 handlers registered covering ~90% of daily operator volume
-      SHADOW_MIRROR_ENABLED: "true"
+      SHADOW_MIRROR_ENABLED: "false"
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
       # DB creds come from the .env for skeleton; migrate to AWS
