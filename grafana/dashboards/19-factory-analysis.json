@@ -1,6 +1,6 @@
 {
   "uid": "v2-factory-analysis",
-  "title": "v2 · Factory / OEE analysis (business)",
+  "title": "v2 \u00b7 Factory / OEE analysis (business)",
   "tags": [
     "packiot-v2",
     "oee",
@@ -220,13 +220,13 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Factory / OEE analysis — the plant-manager & tee-validation lens\nExploratory business view over the **F3 shadow Gold tables** (`packiot_analytics`: `equipment_runtime_shift/_1hour/_1day`, `area_/site_runtime_*`, `production_orders_runtime`, `equipment_events`, `data_quality_event`). OEE / A / P / Q are stored **0–1** and rendered ×100 as %. Scope with the **$enterprise → $site → $area → $line → $shift** chain; `$grain` switches the trend panels between shift / hour / day rollups.\n\n**Reading blanks (v2 contract):** with plc-sim + Incoplast data some loss buckets read 0 by design — downtime *reason categories*, `changeover_time`, `idle_starved/idle_blocked` are emitted by real client PLCs; they light up when **CPACK real data lands via the tee**. The **Data-quality strip** (bottom) tells you which numbers the engine clamped/flagged in the window — read it before trusting a KPI."
+        "content": "### Factory / OEE analysis \u2014 the plant-manager & tee-validation lens\nExploratory business view over the **F3 shadow Gold tables** (`packiot_analytics`: `equipment_runtime_shift/_1hour/_1day`, `area_/site_runtime_*`, `production_orders_runtime`, `equipment_events`, `data_quality_event`). OEE / A / P / Q are stored **0\u20131** and rendered \u00d7100 as %. Scope with the **$enterprise \u2192 $site \u2192 $area \u2192 $line \u2192 $shift** chain; `$grain` switches the trend panels between shift / hour / day rollups.\n\n**Reading blanks (v2 contract):** with plc-sim + Incoplast data some loss buckets read 0 by design \u2014 downtime *reason categories*, `changeover_time`, `idle_starved/idle_blocked` are emitted by real client PLCs; they light up when **CPACK real data lands via the tee**. The **Data-quality strip** (bottom) tells you which numbers the engine clamped/flagged in the window \u2014 read it before trusting a KPI."
       }
     },
     {
       "id": 2,
       "type": "row",
-      "title": "OEE — A × P × Q decomposition (window aggregate)",
+      "title": "OEE \u2014 A \u00d7 P \u00d7 Q decomposition (window aggregate)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -239,7 +239,7 @@
       "id": 3,
       "type": "stat",
       "title": "OEE %",
-      "description": "Mean OEE over the scoped window (equipment_runtime_shift.oee ×100). World-class ≥ 85%. This is the engine's authoritative rollup, not a raw-tick re-derivation.",
+      "description": "Mean OEE over the scoped window (equipment_runtime_shift.oee \u00d7100). World-class \u2265 85%. This is the engine's authoritative rollup, not a raw-tick re-derivation.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -293,7 +293,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -303,7 +303,7 @@
       "id": 4,
       "type": "stat",
       "title": "Availability %",
-      "description": "Mean oee_a ×100 = uptime / planned time. Availability losses = breakdowns + setup. Target ≥ 90%.",
+      "description": "Mean oee_a \u00d7100 = uptime / planned time. Availability losses = breakdowns + setup. Target \u2265 90%.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -357,7 +357,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -367,7 +367,7 @@
       "id": 5,
       "type": "stat",
       "title": "Performance %",
-      "description": "Mean oee_p ×100 = actual vs ideal rate. Performance losses = minor stops + reduced speed. Target ≥ 95%.",
+      "description": "Mean oee_p \u00d7100 = actual vs ideal rate. Performance losses = minor stops + reduced speed. Target \u2265 95%.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -421,7 +421,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -431,7 +431,7 @@
       "id": 6,
       "type": "stat",
       "title": "Quality %",
-      "description": "Mean oee_q ×100 = good / total. Quality losses = scrap + startup yield. Target ≥ 98%.",
+      "description": "Mean oee_q \u00d7100 = good / total. Quality losses = scrap + startup yield. Target \u2265 98%.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -485,7 +485,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -494,8 +494,8 @@
     {
       "id": 7,
       "type": "bargauge",
-      "title": "OEE = Availability × Performance × Quality (waterfall)",
-      "description": "The multiplicative decomposition on one axis: each factor is a % ≤ 100, and OEE is their product. The gap of each bar below 100% is that factor's loss share. If OEE looks low, the shortest A/P/Q bar names the dominant loss family.",
+      "title": "OEE = Availability \u00d7 Performance \u00d7 Quality (waterfall)",
+      "description": "The multiplicative decomposition on one axis: each factor is a % \u2264 100, and OEE is their product. The gap of each bar below 100% is that factor's loss share. If OEE looks low, the shortest A/P/Q bar names the dominant loss family.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -552,7 +552,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\", ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\", ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\", ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\", ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\", ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\", ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -683,7 +683,7 @@
       "id": 10,
       "type": "stat",
       "title": "Downtime (window)",
-      "description": "SUM(downtime) seconds over the window → the total Availability time loss.",
+      "description": "SUM(downtime) seconds over the window \u2192 the total Availability time loss.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -739,7 +739,7 @@
     {
       "id": 11,
       "type": "row",
-      "title": "Losses — downtime Pareto & the six big losses",
+      "title": "Losses \u2014 downtime Pareto & the six big losses",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -751,8 +751,8 @@
     {
       "id": 12,
       "type": "barchart",
-      "title": "Downtime Pareto — by reason category",
-      "description": "Total stopped seconds per downtime reason (equipment_events, coalescing desc_category→cd_category). In plc-sim data reasons are uncategorized → one '(uncategorized)' bar; real client PLCs send category/subcategory codes (downtime_reason mapping) so this ranks true root causes when CPACK data lands.",
+      "title": "Downtime Pareto \u2014 by reason category",
+      "description": "Total stopped seconds per downtime reason (equipment_events, coalescing desc_category\u2192cd_category). In plc-sim data reasons are uncategorized \u2192 one '(uncategorized)' bar; real client PLCs send category/subcategory codes (downtime_reason mapping) so this ranks true root causes when CPACK data lands.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -807,8 +807,8 @@
     {
       "id": 13,
       "type": "barchart",
-      "title": "Downtime Pareto — by machine",
-      "description": "Total stopped seconds per machine (equipment_events.duration). Populated today from plc-sim — the honest 'which machine bleeds the most time' view even before reason codes arrive.",
+      "title": "Downtime Pareto \u2014 by machine",
+      "description": "Total stopped seconds per machine (equipment_events.duration). Populated today from plc-sim \u2014 the honest 'which machine bleeds the most time' view even before reason codes arrive.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -864,7 +864,7 @@
       "id": 14,
       "type": "table",
       "title": "Downtime Pareto detail (cumulative %)",
-      "description": "Reason × count × total duration with the running cumulative % of downtime — the classic 80/20 read: the reasons above the 80% line are where to focus.",
+      "description": "Reason \u00d7 count \u00d7 total duration with the running cumulative % of downtime \u2014 the classic 80/20 read: the reasons above the 80% line are where to focus.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -957,7 +957,7 @@
       "id": 15,
       "type": "barchart",
       "title": "Six big losses (time-equivalent)",
-      "description": "Classic OEE loss taxonomy in seconds, derived from the shift rollup: Availability = breakdowns + setup/changeover; Performance = minor stops + reduced speed (running_time×(1-oee_p)); Quality = scrap (running_time×(1-oee_q)). changeover_time / idle_starved / idle_blocked read 0 in plc-sim — they populate from real PLC event streams. (#6 Startup/yield loss is not separately tracked; it folds into Quality.)",
+      "description": "Classic OEE loss taxonomy in seconds, derived from the shift rollup: Availability = breakdowns + setup/changeover; Performance = minor stops + reduced speed (running_time\u00d7(1-oee_p)); Quality = scrap (running_time\u00d7(1-oee_q)). changeover_time / idle_starved / idle_blocked read 0 in plc-sim \u2014 they populate from real PLC event streams. (#6 Startup/yield loss is not separately tracked; it folds into Quality.)",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1025,7 +1025,7 @@
     {
       "id": 16,
       "type": "row",
-      "title": "Trends — production vs target & OEE over time ($grain)",
+      "title": "Trends \u2014 production vs target & OEE over time ($grain)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1038,7 +1038,7 @@
       "id": 17,
       "type": "timeseries",
       "title": "Production vs proportional target",
-      "description": "Net (good) + gross production against the engine's proportional_target per $grain bucket. Targets read ~0 in sim (production_targets not seeded) → the target line lifts off the axis with real onboarding config.",
+      "description": "Net (good) + gross production against the engine's proportional_target per $grain bucket. Targets read ~0 in sim (production_targets not seeded) \u2192 the target line lifts off the axis with real onboarding config.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1137,7 +1137,7 @@
       "id": 18,
       "type": "timeseries",
       "title": "OEE / A / P / Q trend",
-      "description": "Mean OEE and its A/P/Q factors (×100) per $grain bucket — watch which factor drives an OEE dip.",
+      "description": "Mean OEE and its A/P/Q factors (\u00d7100) per $grain bucket \u2014 watch which factor drives an OEE dip.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1214,7 +1214,7 @@
     {
       "id": 19,
       "type": "row",
-      "title": "Comparisons — line × shift × day × area",
+      "title": "Comparisons \u2014 line \u00d7 shift \u00d7 day \u00d7 area",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1226,8 +1226,8 @@
     {
       "id": 20,
       "type": "table",
-      "title": "OEE by line × shift (heatmap)",
-      "description": "Mean OEE % per machine (rows) × shift 1/2/3 (columns) over the window — a pivot heatmap. Green cells = healthy, red = problem shift. Spots a machine that only underperforms on nights.",
+      "title": "OEE by line \u00d7 shift (heatmap)",
+      "description": "Mean OEE % per machine (rows) \u00d7 shift 1/2/3 (columns) over the window \u2014 a pivot heatmap. Green cells = healthy, red = problem shift. Spots a machine that only underperforms on nights.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1321,7 +1321,7 @@
       "id": 21,
       "type": "barchart",
       "title": "OEE by machine",
-      "description": "Mean OEE % per machine over the window — rank the fleet.",
+      "description": "Mean OEE % per machine over the window \u2014 rank the fleet.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1377,7 +1377,7 @@
       "id": 22,
       "type": "barchart",
       "title": "OEE by shift",
-      "description": "Mean OEE % per shift (cd_shift) over the window — is one shift systematically worse?",
+      "description": "Mean OEE % per shift (cd_shift) over the window \u2014 is one shift systematically worse?",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1433,7 +1433,7 @@
       "id": 23,
       "type": "timeseries",
       "title": "OEE by day",
-      "description": "Mean OEE % per calendar day (equipment_runtime_1day) — the day-over-day trend for the scoped hierarchy.",
+      "description": "Mean OEE % per calendar day (equipment_runtime_1day) \u2014 the day-over-day trend for the scoped hierarchy.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1491,7 +1491,7 @@
       "id": 24,
       "type": "barchart",
       "title": "OEE by area (area_runtime_shift)",
-      "description": "Mean OEE % per area straight from the area-level Gold rollup — exercises area_runtime_shift, the aggregate the site/plant view reads.",
+      "description": "Mean OEE % per area straight from the area-level Gold rollup \u2014 exercises area_runtime_shift, the aggregate the site/plant view reads.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1558,8 +1558,8 @@
     {
       "id": 26,
       "type": "table",
-      "title": "Production orders — runtime detail",
-      "description": "One row per PO run segment (production_orders_runtime) with OEE/A/P/Q (×100), net/gross/scrap and time buckets. Sorted newest first. Click a row's link column to jump to the Data-quality board for the same window. Cross-check against board 09 (v2-equipment) PO runtimes.",
+      "title": "Production orders \u2014 runtime detail",
+      "description": "One row per PO run segment (production_orders_runtime) with OEE/A/P/Q (\u00d7100), net/gross/scrap and time buckets. Sorted newest first. Click a row's link column to jump to the Data-quality board for the same window. Cross-check against board 09 (v2-equipment) PO runtimes.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1785,7 +1785,7 @@
     {
       "id": 27,
       "type": "row",
-      "title": "Data-quality context — which numbers were clamped / flagged",
+      "title": "Data-quality context \u2014 which numbers were clamped / flagged",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1798,7 +1798,7 @@
       "id": 28,
       "type": "stat",
       "title": "DQ events (window)",
-      "description": "Total data_quality_event rows in the window for the scoped enterprise — how many computed values tripped an invariant. 0 = clean.",
+      "description": "Total data_quality_event rows in the window for the scoped enterprise \u2014 how many computed values tripped an invariant. 0 = clean.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1862,7 +1862,7 @@
       "id": 29,
       "type": "stat",
       "title": "Errors (severity=error)",
-      "description": "data_quality_event rows with severity='error' — hard invariant breaches (NET_GT_GROSS, NEGATIVE_METRIC, OEE_GT_1) before clamping.",
+      "description": "data_quality_event rows with severity='error' \u2014 hard invariant breaches (NET_GT_GROSS, NEGATIVE_METRIC, OEE_GT_1) before clamping.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1922,7 +1922,7 @@
       "id": 30,
       "type": "stat",
       "title": "Worst OEE observed",
-      "description": "MAX(observed_value) for rule OEE_GT_1 — the highest pre-clamp OEE the engine saw (should be ≤1.0; >1 means an upstream count/time inconsistency was clamped).",
+      "description": "MAX(observed_value) for rule OEE_GT_1 \u2014 the highest pre-clamp OEE the engine saw (should be \u22641.0; >1 means an upstream count/time inconsistency was clamped).",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1986,7 +1986,7 @@
       "id": 31,
       "type": "stat",
       "title": "Equipment affected",
-      "description": "Distinct id_equipment with at least one DQ event in the window — how widespread the flagging is.",
+      "description": "Distinct id_equipment with at least one DQ event in the window \u2014 how widespread the flagging is.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -2098,8 +2098,8 @@
     {
       "id": 33,
       "type": "table",
-      "title": "Data-quality detail — rule × equipment",
-      "description": "Per rule × grain × equipment: event count, worst observed value, last seen. The audit trail behind every clamped/flagged number in the window.",
+      "title": "Data-quality detail \u2014 rule \u00d7 equipment",
+      "description": "Per rule \u00d7 grain \u00d7 equipment: event count, worst observed value, last seen. The audit trail behind every clamped/flagged number in the window.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
