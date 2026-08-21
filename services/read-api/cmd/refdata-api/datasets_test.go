@@ -357,7 +357,7 @@ func TestSoftDeletedEntitiesAreFiltered(t *testing.T) {
 			t.Errorf("%s: not in the dataset registry (renamed/removed?)", name)
 			continue
 		}
-		for _, f := range []flow{flowF1, flowF3} {
+		for _, f := range []flow{flowF1, flowAnalytics} {
 			sql := ds.activeSQL(f)
 			// accept either `.active` (NOT NULL tables) or `active IS NOT FALSE`
 			// (the nullable enterprises/users columns — NULL means legacy/visible).

@@ -129,14 +129,14 @@ type dataset struct {
 	windowed  bool
 	maxWindow time.Duration
 	params    []dsParam
-	// sqlF3 (ADR-0032 Step 1, optional) overrides sql when the process read-plane
+	// sqlAnalytics (ADR-0032 Step 1, optional) overrides sql when the process read-plane
 	// flow is f3 (REFDATA_FLOW=f3). Empty ⇒ the same sql serves both flows, which
 	// is EVERY dataset today: packiot_analytics keeps packiot's object names where
 	// the object exists, so no dataset needs a textual rewrite (flow.go). The
 	// field is the pre-wired seam for a genuine F3 rename; the parameter order and
 	// row-cap append are identical for both variants (compileDataset uses
-	// activeSQL), so an sqlF3 must bind the SAME $N positions as sql.
-	sqlF3 string
+	// activeSQL), so an sqlAnalytics must bind the SAME $N positions as sql.
+	sqlAnalytics string
 	// cacheTTL (ADR-0035, optional) is the cache-aside TTL for this dataset. It
 	// trades freshness for DB-load relief: a client re-polling within the window
 	// is served from Redis instead of re-hitting the SQL. A per-dataset override
@@ -153,8 +153,8 @@ type dataset struct {
 // flow==f3 and one is set, else the F1 sql. The row cap is appended by the
 // caller (compileDataset) AFTER this choice, so both variants share it.
 func (d dataset) activeSQL(f flow) string {
-	if f == flowF3 && d.sqlF3 != "" {
-		return d.sqlF3
+	if f == flowAnalytics && d.sqlAnalytics != "" {
+		return d.sqlAnalytics
 	}
 	return d.sql
 }

@@ -2,7 +2,7 @@
 
 The **operator twin of `ingest-shim`**. It bridges Incoplast's bespoke operator
 UI (mui_* + Hasura) into staging `user_logs` so the shadow-mirror can replay
-operator actions to the `packiot_analytics` (F3) flow and the two flows become
+operator actions to the `packiot_analytics` flow and the two flows become
 comparable for enterprise 4.
 
 ## Why it exists
@@ -10,7 +10,7 @@ comparable for enterprise 4.
 Incoplast's operators justify downtimes and start POs through a custom Node-RED
 + Hasura app that talks **directly to the DB / SparkPlug** — it never calls our
 `edge-api`. Those actions therefore never write staging `user_logs`, so
-`shadow-mirror` has nothing to replay to F3.
+`shadow-mirror` has nothing to replay to the analytics plane.
 
 ```
 Incoplast Node-RED (operator action)
@@ -20,7 +20,7 @@ operator-adapter  ── resolve packml_topic → staging ids (packml_register) 
                   ── map Incoplast shape → edge-api DTO ──►  edge-api (F1)   │
                                                                 │ writes user_logs
                                                                 ▼            │
-                                                        shadow-mirror ─► packiot_analytics (F3)
+                                                        shadow-mirror ─► packiot_analytics
                   read-only Postgres pool (F1 `packiot`) ◄──────────────────┘
 ```
 
@@ -349,4 +349,4 @@ gofmt -l .   # empty = clean
 5. Add the tee nodes in Incoplast Node-RED (spec above); set `OPERATOR_API_KEY`
    in that Node-RED's env.
 6. Fire one test downtime + PO; confirm a new `user_logs` row in F1 and its twin
-   in `packiot_analytics` (F3).
+   in `packiot_analytics`.

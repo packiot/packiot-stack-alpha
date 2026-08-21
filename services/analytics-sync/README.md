@@ -2,7 +2,7 @@
 
 **Control-plane replayer — temporary by design (retires at the flip,
 R1).** Operator actions land in the main DB via edge-api; this service
-replays them onto the shadow flow so F3 sees the same POs, manual
+replays them onto the shadow flow so the analytics plane sees the same POs, manual
 events, and edits as F1 during the migration bake. ADR-0013 chose this
 app-level poller over trigger+dblink and logical replication precisely
 because the two schemas are allowed to diverge.
