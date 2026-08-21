@@ -27,7 +27,18 @@ curl -s -X POST http://localhost:1880/flows \
 ```
 Immediately after the reload, the reader processed **all** lines again (L8/L10/CELULA/Sleeves back), zero S7 timeouts. (`equipment_values` then repopulates as each machine actually produces — an idle/off-shift line stays 0 until it runs.)
 
-## Self-recovery (deployed)
+## Self-recovery — two forms
+
+### (A) Deploy-wired sidecar (reaches ALL clients) — the primary mechanism
+`docs/clients/edge-deployment/compose.edge.yml` now ships an **`s7-watchdog`** service,
+profile-gated `nodered`, templated `edge-${TENANT_SLUG}-s7-watchdog`. It mounts the
+docker socket **read-only** (autoheal pattern), greps the reader's logs for the wedge
+signature, and POSTs the flows reload to `http://nodered:1880` over `edge-net`, rate-limited
+(`WINDOW=6m`, `COOLDOWN=720s`). Because it lives in the edge bundle, **every new client
+deployed with the `nodered` profile gets it automatically** — no per-box step. Enable with
+the reader: `docker compose --profile nodered -f compose.edge.yml up -d`.
+
+### (B) Host-cron fallback (existing boxes without the sidecar, e.g. CPACK MODE-1)
 `scripts/edge/s7-nodered-watchdog.sh` — runs as user `packiot` (docker group, no root) via a 2-min user cron:
 ```
 */2 * * * * /home/packiot/bin/s7-nodered-watchdog.sh >/dev/null 2>&1
@@ -42,6 +53,8 @@ install -m755 scripts/edge/s7-nodered-watchdog.sh ~/bin/s7-nodered-watchdog.sh
 ```
 
 ## Follow-ups
-- **Productize:** move the watchdog into the edge docker bundle as a sidecar (needs docker-socket read or node-red admin polling) so it ships with every client deploy instead of a per-box cron.
-- **Upstream:** the real defect is the `node-red-contrib-s7` reconnect not self-healing a wedged transport — worth an issue/patch or a per-endpoint auto-recycle in-flow.
+- **Productize:** ✅ DONE — the watchdog now ships as the `s7-watchdog` sidecar in `compose.edge.yml`, so it reaches every new client via the deploy (was: per-box cron only).
+- **Backfill existing boxes:** CPACK currently runs the host-cron form (B); on its next bundle refresh it picks up the sidecar (A) — either is sufficient, don't run both (harmless but redundant).
+- **Upstream:** the real defect is `node-red-contrib-s7` not self-healing a wedged transport — worth an issue/patch or a per-endpoint auto-recycle in-flow.
 - **Alerting:** page when the watchdog fires (a wedge is a real incident, not just auto-healed noise).
+- **docker CLI compat:** the sidecar uses `docker:27-cli`; on very old edge hosts (CPACK = Ubuntu 18.04) the host cron form (B) is the safer path (uses the host's own docker CLI). Override `DOCKER_CLI_IMAGE` if needed.

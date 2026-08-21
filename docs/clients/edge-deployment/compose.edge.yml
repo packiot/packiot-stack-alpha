@@ -426,3 +426,55 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+
+  # ── s7-watchdog — self-heal wedged Node-RED S7 endpoint connections ──────────
+  # 2026-08-13 CPACK incident: a `node-red-contrib-s7` endpoint sticks on
+  # "Timeout connecting to the transport" and never self-recovers, silently
+  # dropping whole production lines (L8/L10/CELULA) for days. TCP:102 stays
+  # reachable (PLC Ethernet answers) but no S7 session is established, so the
+  # reader emits nothing for those lines. A full Node-RED flows RELOAD
+  # re-establishes the sessions (proven fix). This sidecar detects that exact
+  # signature in the reader's logs and triggers the reload, rate-limited.
+  # Profile-gated `nodered` (only meaningful when the reader is deployed).
+  # Reads the reader container's logs via a READ-ONLY docker socket (autoheal
+  # pattern) and POSTs the reload to the reader's admin over edge-net.
+  # See docs/clients/cpack-08-13-s7-wedge-incident.md + scripts/edge/s7-nodered-watchdog.sh
+  s7-watchdog:
+    image: ${DOCKER_CLI_IMAGE:-docker:27-cli}
+    container_name: edge-${TENANT_SLUG}-s7-watchdog
+    profiles: ["nodered"]
+    restart: unless-stopped
+    networks: [edge-net]
+    depends_on:
+      - nodered
+    environment:
+      NODERED_CONTAINER: edge-${TENANT_SLUG}-nodered   # for `docker logs`
+      NODERED_URL: http://nodered:1880                 # admin, over edge-net
+      WINDOW: 6m       # error must be present within this recent window
+      COOLDOWN: "720"  # min seconds between reloads (12 min) — no reload loops
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache curl >/dev/null 2>&1 || true
+        echo "[s7-watchdog] started; watching $$NODERED_CONTAINER (window=$$WINDOW cooldown=$${COOLDOWN}s)"
+        while true; do
+          if docker logs --since "$$WINDOW" "$$NODERED_CONTAINER" 2>&1 \
+             | grep -qiE '\[s7 endpoint:[^]]*\].*(Timeout connecting to the transport|Request timeout)'; then
+            now=$$(date +%s); last=$$(cat /tmp/last 2>/dev/null || echo 0)
+            if [ $$(( now - last )) -ge "$$COOLDOWN" ]; then
+              code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST "$$NODERED_URL/flows" \
+                -H 'Node-RED-Deployment-Type: reload' -H 'Content-Type: application/json' --data '{}' || echo 000)
+              echo "[s7-watchdog] $$(date -u +%FT%TZ) persistent S7 transport-timeout -> flows reload HTTP $$code"
+              echo "$$now" > /tmp/last
+            fi
+          fi
+          sleep 120
+        done
+    mem_limit: 48m
+    cpus: 0.05
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
