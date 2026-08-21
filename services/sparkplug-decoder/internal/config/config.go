@@ -147,6 +147,17 @@ type Config struct {
 	// confirmed OEE-correctness fault; set CALC_RESET_HEAL_ENABLED=false to
 	// restore the legacy emit-cur behavior. See calc.go Message.ResetHeal.
 	ResetHealEnabled bool
+	// NoSpeedGuardFallbackEnabled (ADR-0049 count-loss guard) rescues a machine
+	// that reports NO MachSpeed sensor AND is absent from the counters-only
+	// rated-speed map: Phase 8's `prodSpeed < 3*machSpeed` bound collapses to 0
+	// and drops EVERY count (the 2026-08-13 CPACK L8/L10/FLEXO/SLEEVE/CELULA
+	// freeze after mirror-worker-go retired). When true, such a machine's rate
+	// guard is disabled (counts flow) rather than rejecting 100% of production.
+	// Default false → byte-identical to the legacy 3*machSpeed guard. Machines
+	// that report MachSpeed, or that counters-only already covers, are
+	// unaffected. Sourced from CALC_NO_SPEED_GUARD_FALLBACK. See calc.go
+	// Message.NoSpeedGuardFallback.
+	NoSpeedGuardFallbackEnabled bool
 	// CountersOnlyIdealRates maps a Sparkplug UNIT topic (5-segment
 	// Enterprise/Site/Area/Line/Unit) to that equipment's configured ideal /
 	// rated speed in parts-per-minute — the SAME value CS Admin sets as
@@ -343,7 +354,8 @@ func Load() (*Config, error) {
 		UseGoPort: getenvBool("USE_GO_PORT", false),
 
 		// Reset/rebirth heal (ADR-0048 count-spike guard) — default ON.
-		ResetHealEnabled: getenvBool("CALC_RESET_HEAL_ENABLED", true),
+		ResetHealEnabled:            getenvBool("CALC_RESET_HEAL_ENABLED", true),
+		NoSpeedGuardFallbackEnabled: getenvBool("CALC_NO_SPEED_GUARD_FALLBACK", false),
 
 		// Counters-only OEE mode (default OFF — no behavior change)
 		CountersOnlyEnabled:        getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),

@@ -509,6 +509,10 @@ func main() {
 			roleResolver:           roleResolver,
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
+			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
+		}
+		if cfg.NoSpeedGuardFallbackEnabled {
+			logger.Info("no-speed guard fallback ENABLED (CALC_NO_SPEED_GUARD_FALLBACK) — no-MachSpeed, no-ideal-rate machines emit counts instead of being dropped")
 		}
 		if countersOnlyEnabled || countersOnlyAutoFromDB {
 			logger.Info("counters-only OEE mode configured",
@@ -841,6 +845,13 @@ type calcHooks struct {
 	// delta-from-zero reset spike. Sourced from CALC_RESET_HEAL_ENABLED
 	// (default true). See calc_production_counters.Message.ResetHeal.
 	resetHeal bool
+
+	// noSpeedGuardFallback (ADR-0049 count-loss guard) — when true, a counter
+	// on a machine that reports no MachSpeed AND has no counters-only rated
+	// speed is emitted instead of being dropped by the 3*machSpeed=0 glitch
+	// guard. Sourced from CALC_NO_SPEED_GUARD_FALLBACK (default false → the
+	// legacy guard). See calc_production_counters.Message.NoSpeedGuardFallback.
+	noSpeedGuardFallback bool
 
 	// roleResolver — ADR-0047 P0 #1 counter-role override
 	// (packml_register.id_{infeed,outfeed,reject}counter). nil when
@@ -1205,6 +1216,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		}
 	}
 	msg.ResetHeal = h.resetHeal
+	msg.NoSpeedGuardFallback = h.noSpeedGuardFallback
 	dec, err := calc_production_counters.Calc(msg, h.state)
 	if err != nil {
 		h.errors.WithLabelValues(tenant, "calc_error").Inc()
