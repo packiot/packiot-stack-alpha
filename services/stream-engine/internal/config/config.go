@@ -317,6 +317,18 @@ type Config struct {
 	CountersOnlyLineLeadEnabled     bool
 	CountersOnlyLineLeadEnterprises string // CSV of id_enterprise
 
+	// ── ADR-0048 OEE correctness ──────────────────────────────────────────
+	// AvailFloorEnabled (§Fault-2): for opted-in CountersOnlyAvailEquipments,
+	// raise running_time to the count-derived active time where the state
+	// stream had gaps (production proves the machine ran). Reuses the equipment
+	// list + idle timeout above. Default OFF → byte-identical rollup.
+	OeeAvailFloorEnabled bool
+	// OeeCanonicalAPQEnabled (§Fault-3): store oee = oee_a·oee_p·oee_q with
+	// Performance computed directly, so the headline equals the product by
+	// construction (identity holds). Default OFF → legacy top-down oee. Flip
+	// AFTER the availability floor, since it makes oee_a load-bearing.
+	OeeCanonicalAPQEnabled bool
+
 	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
 	// When enabled, the equipment_values writer rejects any production
 	// increment (Processed/Consumed/Defective delta) that exceeds
@@ -460,6 +472,9 @@ func Load() (*Config, error) {
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
+		// ADR-0048 OEE correctness (default OFF — no behavior change)
+		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
+		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),

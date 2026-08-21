@@ -318,6 +318,8 @@ func main() {
 				IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
 				LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
 				LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
+				AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
+				OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
 			},
 			time.Minute, logger, jobObs)
 	}

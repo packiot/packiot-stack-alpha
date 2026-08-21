@@ -214,24 +214,24 @@ const shiftOeePSQL = `
 // exactly like the legacy base machine fn post-#80
 // (20-oee-engine-parity.sql: target · (least(now(),ts_end)−ts_value)/shift_size).
 //
-//   proportional_target = vl_day · (ev.ts_total − ev.ts_planned) / 86400
+//	proportional_target = vl_day · (ev.ts_total − ev.ts_planned) / 86400
 //
-//   - ev.ts_total = extract(epoch (least(ts_end, now()) − ts_value)) —
-//     wall-clock elapsed, CAPPED at the shift end. For a COMPLETED (past)
-//     shift ts_total = ts_end − ts_value = shift_size, so the row settles
-//     at the full/final target (elapsed == full). Only the LIVE shift
-//     prorates; past shifts keep their final target. No tp branch.
-//   - (ts_total − ts_planned) is the shift's ELAPSED scheduled-productive
-//     time (identical expression to available_time above). Denominator
-//     convention: SCHEDULED-PRODUCTIVE — already-consumed planned
-//     downtime is subtracted in the numerator basis exactly as the
-//     full-shift form subtracted it (vl_day is a per-DAY rate over 86400s),
-//     so a scheduled break pauses target growth instead of overstating it.
-//   - SINGLE writer (one UPDATE of this column per row) — do NOT add a
-//     post-pass overwrite; that is the #456 two-writer double-count class.
-//   - The LATERAL shift-hour lookup is RETAINED purely as the "shift-hour
-//     found" guard (legacy's `if found`): its shift_size is intentionally
-//     no longer referenced now that proration is elapsed-based.
+//	- ev.ts_total = extract(epoch (least(ts_end, now()) − ts_value)) —
+//	  wall-clock elapsed, CAPPED at the shift end. For a COMPLETED (past)
+//	  shift ts_total = ts_end − ts_value = shift_size, so the row settles
+//	  at the full/final target (elapsed == full). Only the LIVE shift
+//	  prorates; past shifts keep their final target. No tp branch.
+//	- (ts_total − ts_planned) is the shift's ELAPSED scheduled-productive
+//	  time (identical expression to available_time above). Denominator
+//	  convention: SCHEDULED-PRODUCTIVE — already-consumed planned
+//	  downtime is subtracted in the numerator basis exactly as the
+//	  full-shift form subtracted it (vl_day is a per-DAY rate over 86400s),
+//	  so a scheduled break pauses target growth instead of overstating it.
+//	- SINGLE writer (one UPDATE of this column per row) — do NOT add a
+//	  post-pass overwrite; that is the #456 two-writer double-count class.
+//	- The LATERAL shift-hour lookup is RETAINED purely as the "shift-hour
+//	  found" guard (legacy's `if found`): its shift_size is intentionally
+//	  no longer referenced now that proration is elapsed-based.
 const shiftTargetsSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET
 	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
@@ -323,8 +323,23 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		steps = append(steps, rollupStep{"line-lead",
 			fmt.Sprintf(shiftLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
 	}
+	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
+	// count-active time for opted-in equipment where the state stream had gaps.
+	// After every state/counter running writer, before the oee finalize so the
+	// reconcile/oee-p reads the healed running. Inert when not engaged.
+	if ca.engagedFloor() {
+		steps = append(steps, rollupStep{"avail-floor",
+			fmt.Sprintf(shiftAvailFloorSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	// ADR-0048 §Fault-3: canonical A·P·Q reconcile (whole batch) REPLACES the
+	// legacy event-row-scoped oee-p residual when engaged; otherwise the legacy
+	// residual runs (byte-identical). Either way targets + stamp follow.
+	if ca.engagedCanonical() {
+		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(shiftOeeReconcileSQL, d.EvSchema)})
+	} else {
+		steps = append(steps, rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)})
+	}
 	steps = append(steps,
-		rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
 		rollupStep{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
 		rollupStep{"stamp", fmt.Sprintf(shiftStampSQL, d.EvSchema)},
 	)
