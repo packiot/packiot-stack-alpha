@@ -79,6 +79,25 @@ func TestEquipmentShiftDayShape(t *testing.T) {
 	}
 }
 
+// TestEquipmentFreshnessStamp guards the hour/week/month/job unfreeze:
+// each equipment-grain refresher must ADVANCE last_updated so the
+// mission-control tile's freshness signal moves off the Provision seed
+// time (the frozen-tile recurrence — same class as the shift/day gap).
+func TestEquipmentFreshnessStamp(t *testing.T) {
+	cases := []struct {
+		name, sql string
+	}{
+		{"hour", refreshHourEquipmentSQL},
+		{"week/month", refreshEquipmentSQL},
+		{"job", refreshJobsSQL},
+	}
+	for _, c := range cases {
+		if !strings.Contains(c.sql, "last_updated") || !strings.Contains(c.sql, "now()") {
+			t.Errorf("%s refresher must stamp last_updated = now() (frozen-tile guard)", c.name)
+		}
+	}
+}
+
 // TestEquipmentShiftDaySQLBuilds ensures both statements schema-qualify
 // cleanly with no leftover Sprintf verbs for both flow layouts.
 func TestEquipmentShiftDaySQLBuilds(t *testing.T) {
