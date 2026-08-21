@@ -323,7 +323,7 @@ const sqlJobReport = `
           id_area,
           ts_value  as tz_value,
           gross_production_incr
-          from agg_equipment_values_1min_t
+          from agg_equipment_values_1min
           where id_equipment in (select id_equipment from equipments where id_enterprise = $1 and tp_equipment = 3)
           and ts_value >= now() - interval '48 hour'
           and ts_value >=  (select min(tz_value) from turnos)

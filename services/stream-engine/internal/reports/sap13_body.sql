@@ -97,7 +97,7 @@ order by cd_equipment
 	ts_value as tz_value,
 	gross_production_incr,
 	net_production_incr 
-	from agg_equipment_values_1min_t, start_counting_day scd
+	from agg_equipment_values_1min, start_counting_day scd
 	where id_equipment in (select id_equipment from equipments where id_enterprise = 13 and id_site = 13 and tp_equipment = 3)
 	and ts_value >= now()- interval '8 day'
 	and ts_value >= start_day
