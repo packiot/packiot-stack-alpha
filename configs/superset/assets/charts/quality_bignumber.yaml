@@ -4,7 +4,7 @@ description: bi.oee_shift AVG(oee_q). front4 OeeScore Quality column.
 certified_by: null
 certification_details: null
 viz_type: big_number_total
-params: |
+params:
   {
     "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
     "viz_type": "big_number_total",

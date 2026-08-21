@@ -6,7 +6,7 @@ description: bi.oee_hourly SUM(net) + SUM(scrap) by hour. front4 productionChart
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_bar
-params: |
+params:
   {
     "datasource": "8b1d0810-a0d1-4012-86a9-45c64c2e9154__table",
     "viz_type": "echarts_timeseries_bar",

@@ -60,6 +60,12 @@ x-superset-config-mounts: &superset-config-mounts
   # Guest/embed-role permission bootstrap. Inert on web/worker (only
   # superset_config.py is auto-imported); superset-init runs it explicitly.
   - ./configs/superset/bootstrap_guest_role.py:/app/pythonpath/bootstrap_guest_role.py:ro
+  # Dashboards-as-code asset bundle + its importer. Also inert on web/worker
+  # (only superset-init imports); mounted read-only on all three (same pattern as
+  # bootstrap_guest_role.py above). import_bundle.py injects SUPERSET_DB_RO_PASSWORD
+  # into the packiot_analytics connection at import time (git keeps a placeholder).
+  - ./configs/superset/assets:/app/pythonpath/assets:ro
+  - ./configs/superset/import_bundle.py:/app/pythonpath/import_bundle.py:ro
 
 x-superset-logging: &superset-logging
   driver: json-file
@@ -165,6 +171,15 @@ services:
         # request before RLS runs. Idempotent; runs after `superset init` creates the
         # role. See configs/superset/bootstrap_guest_role.py.
         python /app/pythonpath/bootstrap_guest_role.py
+        # Import the dashboards-as-code bundle (configs/superset/assets/**). IDEMPOTENT:
+        # import_bundle.py stages the assets and injects SUPERSET_DB_RO_PASSWORD (from
+        # .env, Secrets Manager) into the packiot_analytics connection URI — the git
+        # copy carries only a placeholder, no secret. `import-dashboards` runs the
+        # ImportDashboardsCommand with overwrite=True (hardcoded in the CLI), so every
+        # boot re-applies the bundle onto the same stable UUIDs in place — no dupes,
+        # no drift. Without this the metadata DB is an empty shell (0 dashboards).
+        python /app/pythonpath/import_bundle.py
+        superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
     depends_on:
       superset-db-init:
         condition: service_completed_successfully
