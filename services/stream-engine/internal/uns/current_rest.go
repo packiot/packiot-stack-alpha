@@ -146,6 +146,9 @@ const refreshShiftAreaSQL = `
 	 WHERE u.id_area = p.id_area`
 
 // The LIVE jobs refresher (dispatcher: _without_equipment_value gen).
+// Stamps last_updated = now() (the equipment-grain freshness signal —
+// see the hour/week/month note in uns.go); without it the current_job
+// tile reads frozen at Provision-seed time even as its numbers advance.
 const refreshJobsSQL = `
 	WITH po AS (
 	    SELECT po.id_production_order, po.id_order, po.net_production, po.gross_production,
@@ -169,7 +172,8 @@ const refreshJobsSQL = `
 	       begin_time = p.ts_start, production_programmed = p.production_programmed,
 	       production_ordered = p.production_programmed,
 	       setup_speed = p.ideal_production_speed,
-	       current_expected_time = (p.production_programmed - p.net_production) / p.ideal_production_speed * 60
+	       current_expected_time = (p.production_programmed - p.net_production) / p.ideal_production_speed * 60,
+	       last_updated = now()
 	  FROM po p WHERE u.id_equipment = p.id_equipment`
 
 const refreshJobsElapsedSQL = `
