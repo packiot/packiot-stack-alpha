@@ -94,7 +94,7 @@
     "ref": "/integration/job_report/:id_enterprise",
     "source": "external",
     "kind": "relation",
-    "name": "agg_equipment_values_1min_t"
+    "name": "agg_equipment_values_1min"
   },
   {
     "ref": "/integration/job_report/:id_enterprise",

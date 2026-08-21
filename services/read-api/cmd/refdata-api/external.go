@@ -664,7 +664,7 @@ var externalShims = []externalShim{
 		ownerEnv:       "EXTERNAL_INCOPLAST_CUSTOMER_ID",
 		run:            runJobReport,
 		auth:           integrationEnterpriseAuth("id_enterprise is required!"),
-		guardRelations: []string{"equipment_runtime_shift", "agg_equipment_values_1min_t", "production_orders_runtime", "production_orders", "equipments", "sites", "areas", "packml_register"},
+		guardRelations: []string{"equipment_runtime_shift", "agg_equipment_values_1min", "production_orders_runtime", "production_orders", "equipments", "sites", "areas", "packml_register"},
 	},
 }
 
