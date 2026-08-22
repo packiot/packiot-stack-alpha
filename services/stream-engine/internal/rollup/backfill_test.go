@@ -46,6 +46,24 @@ func TestWidenHourWindows_valuesPass65Min(t *testing.T) {
 	}
 }
 
+// The backfill must FINALIZE the OEE decomposition like the live path, else a
+// drained hour keeps a stale oee_p and oee != oee_a·oee_p·oee_q. Both the
+// canonical reconcile and the legacy residual must be widened to the 10-day
+// horizon (their live `now()-6h` guard would otherwise block every backfilled row).
+func TestBackfillOeeFinalize_widened(t *testing.T) {
+	rec := widenHourWindows(fmt.Sprintf(hourOeeReconcileSQL, "public"))
+	if strings.Contains(rec, "interval '6 hour'") {
+		t.Error("canonical reconcile 6h guard not widened — backfilled rows would be skipped")
+	}
+	if !strings.Contains(rec, "oee_a") || !strings.Contains(rec, "oee_p") {
+		t.Error("reconcile finalize must write the A·P·Q waterfall")
+	}
+	oeeP := widenHourWindows(fmt.Sprintf(hourOeePSQL, "public"))
+	if strings.Contains(oeeP, "interval '6 hour'") {
+		t.Error("legacy oee_p 6h guard not widened — backfilled rows would be skipped")
+	}
+}
+
 // The backfill eligibility must select OLD rows only (RunHour owns recent) and
 // stay inside event retention, bounded and oldest-first.
 func TestHourBackfillEligible_shape(t *testing.T) {
