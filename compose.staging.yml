@@ -1305,6 +1305,12 @@ services:
       # oee == A*P*Q using the corrected availability.
       OEE_AVAIL_FLOOR_ENABLED: "true"
       OEE_CANONICAL_APQ_ENABLED: "true"
+      # Drain the stranded recalc_needed backlog: the live rollup only reaches hour
+      # rows in its 65-min window, so rows flagged outside it sit stale forever. The
+      # backfill (RunHourBackfill) reuses the exact hour passes with widened windows
+      # and cascades up the grain tree. Enabled now that the grain reconcile is
+      # canonical, so drained rows land with oee == A·P·Q at every grain.
+      ROLLUP_BACKFILL_ENABLED: "true"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
