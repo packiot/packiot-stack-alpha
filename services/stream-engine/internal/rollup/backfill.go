@@ -81,7 +81,7 @@ func widenHourWindows(sql string) string {
 // The cascade-day step flags the affected day rows, which the live day rollup
 // (1-month window — never stranded) then recomputes, so the whole grain tree
 // converges. No re-flag step: the backfill must never re-flag rows or it loops.
-func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, limit int) (int64, error) {
+func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail) (int64, error) {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -129,6 +129,21 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},
 		{"clear", fmt.Sprintf(hourBackfillClearSQL, d.EvSchema)},
 	}
+	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q
+	// with a last pass (canonical A·P·Q reconcile when engaged, else the legacy oee_p
+	// residual); the backfill previously OMITTED it, so a stranded hour it drained got
+	// oee / oee_a / oee_q recomputed by the events pass while oee_p kept its stale
+	// value → the identity broke on every backfilled row (measured live: CPACK tp=3
+	// line hours with oee ≠ oee_a·oee_p·oee_q). Run the SAME finalize the live path
+	// runs, widened to the backfill's 10-day horizon and AFTER the clear so the legacy
+	// residual's `NOT recalc_needed` guard matches (the reconcile is guard-free).
+	if ca.engagedCanonical() {
+		steps = append(steps, struct{ name, sql string }{"oee-reconcile",
+			widenHourWindows(fmt.Sprintf(hourOeeReconcileSQL, d.EvSchema))})
+	} else {
+		steps = append(steps, struct{ name, sql string }{"oee-p",
+			widenHourWindows(fmt.Sprintf(hourOeePSQL, d.EvSchema))})
+	}
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
 			return 0, fmt.Errorf("hour-backfill %s: %w", s.name, err)
@@ -144,13 +159,13 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 // is empty, then keeps ticking cheaply (each tick is a single indexed count once
 // drained). Runs alongside LoopGrains; the shared advisory lock keeps them from
 // racing on grain rows.
-func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("runtime-rollup-hour-backfill started (drains stranded recalc hours)",
 		slog.Int("limit_per_tick", limit), slog.Duration("every", every))
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup-hour-backfill", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			n, err := RunHourBackfill(ctx, d, exclAreas, exclEnterprises, limit)
+			n, err := RunHourBackfill(ctx, d, exclAreas, exclEnterprises, limit, ca)
 			if err != nil {
 				logger.Warn("hour-backfill failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {

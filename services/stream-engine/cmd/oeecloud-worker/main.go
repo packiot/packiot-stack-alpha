@@ -306,30 +306,35 @@ func main() {
 		go bake.Loop(ctx, pool, analyticsPool, 10*time.Minute, config.CSVInts(cfg.BakeEnterpriseIDs), logger, jobObs)
 	}
 
+	// Shared OEE-fallback config — the live rollup AND the stranded-hour backfill
+	// must run the identical decomposition finalize (canonical A·P·Q reconcile vs
+	// legacy oee_p residual), so build it once and pass it to both.
+	countersAvail := rollup.CountersAvail{
+		Enabled:             cfg.CountersOnlyAvailEnabled,
+		Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
+		IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
+		LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
+		LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
+		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
+		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
+	}
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
 			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
-			rollup.CountersAvail{
-				Enabled:             cfg.CountersOnlyAvailEnabled,
-				Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
-				IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
-				LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
-				LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
-				AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
-				OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
-			},
+			countersAvail,
 			time.Minute, logger, jobObs)
 	}
 	// Drain recalc_needed hour rows the live rollup can't reach (stranded outside
 	// its 65-min window). OFF by default — see RollupBackfillEnabled: needs query
-	// work before it's safe to run against F2/F3.
+	// work before it's safe to run against F2/F3. Passes countersAvail so its OEE
+	// finalize matches the live path (previously it ran NO finalize → identity break).
 	if cfg.RuntimeRollupEnabled && cfg.RollupBackfillEnabled {
 		go rollup.LoopHourBackfill(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
-			cfg.RollupBackfillLimit,
+			cfg.RollupBackfillLimit, countersAvail,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
 	}
 
