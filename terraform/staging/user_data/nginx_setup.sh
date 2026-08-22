@@ -373,39 +373,20 @@ fi
 nginx -t && nginx -s reload
 echo "AMQPS stream proxy configured on port 5671"
 
-# ── RabbitMQ management API HTTPS proxy (deliberately open) ───────────────────
-# Exposed as mq.$STAGING_DOMAIN → 127.0.0.1:15672. No origin-verify + no oauth2:
-# RabbitMQ's management plugin authenticates with its own user/password, and the
-# edge-client user (tags: management) POSTs to the publish API from factory edges
-# that don't have amqplib. Rewritten every run (idempotent by overwrite).
-cat > /etc/nginx/conf.d/mq.conf <<NGINX
-server {
-    listen 80;
-    server_name mq.$STAGING_DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-server {
-    listen 443 ssl;
-    server_name mq.$STAGING_DOMAIN;
-
-    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    location / {
-        proxy_pass         http://127.0.0.1:15672;
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_read_timeout 300s;
-    }
-}
-NGINX
-
+# ── RabbitMQ management API — REMOVED (audit 2026-08-21, finding M3) ───────────
+# The old mq.$STAGING_DOMAIN vhost proxied straight to 127.0.0.1:15672 with NO
+# origin-verify and NO oauth2 gate — its DNS record resolves direct-to-EIP
+# (bypassing CloudFront/WAF), so the RabbitMQ management UI + HTTP API were
+# exposed to the whole internet behind only RabbitMQ's own basic auth. The
+# claimed use case (factory edges POSTing to the publish API over HTTP) was never
+# exercised on staging (0 hits in the access logs); edges publish over AMQPS on
+# :5671 (stream proxy above) instead. The management console is now served ONLY
+# by the gated rabbitmq.$STAGING_DOMAIN vhost (CloudFront + origin-verify +
+# oauth2 cs-admin forward-auth), emitted by the staff-tier loop above.
+# Remove any legacy mq.conf left over from a previous boot (idempotent).
+rm -f /etc/nginx/conf.d/mq.conf
 nginx -t && nginx -s reload
-echo "RabbitMQ management API proxy configured at https://mq.$STAGING_DOMAIN"
+echo "Legacy ungated mq.$STAGING_DOMAIN vhost removed (use gated rabbitmq.$STAGING_DOMAIN)"
 
 # ── refdata vhost (refdata-api read plane — deliberately open, own auth) ───────
 cat > /etc/nginx/conf.d/refdata.conf <<NGINX
