@@ -333,3 +333,99 @@ func TestGoldenGrains(t *testing.T) {
 		t.Errorf("day2 CUSTOMIZED TARGET regression: %v (operator's 777 must survive)", dtarget)
 	}
 }
+
+// TestGoldenGrainOeeReconcile proves the canonical A·P·Q identity on the
+// week/month grain against real Postgres: every produced row must satisfy
+// oee == oee_a·oee_p·oee_q (last step, by construction), each factor ∈ [0,1],
+// and Performance derived from the summed ideal_production (the grain has no
+// ideal_speed column). It also proves the amber-bug fix: the reconcile writes to
+// equipment_runtime_1week, never 1month.
+func TestGoldenGrainOeeReconcile(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	// Minimal standalone schema: just the grain table shape the reconcile touches.
+	schema := `
+		CREATE SCHEMA IF NOT EXISTS greconcile;
+		SET search_path TO greconcile, public;
+		-- Column types MIRROR prod F3 (measured 2026-08-22): running_time/available_time
+		-- are BIGINT (not float) — this is what makes running_time/available_time an
+		-- INTEGER division that the ::float cast must defeat. gross/net/oee* are real,
+		-- ideal_production double precision. A regression to a cast-less oee_a would
+		-- make eq 1 read oee_a=0 (3600/7200 → 0 in bigint) and fail below.
+		CREATE TABLE greconcile.equipment_runtime_1week (
+		    id_equipment int, ts_value timestamptz,
+		    gross real, net real,
+		    available_time bigint, running_time bigint,
+		    ideal_production double precision,
+		    oee real, oee_a real, oee_p real, oee_q real,
+		    recalc_needed boolean DEFAULT false
+		);
+		-- A: clean producing row (all factors < 1). running 3600 / avail 7200 = A=0.5;
+		--    net 90 / gross 100 = Q=0.9; P = gross·avail/(ideal·running)
+		--                                   = 100·7200/(200·3600) = 1.0 → oee=0.45.
+		INSERT INTO greconcile.equipment_runtime_1week VALUES
+		    (1, now(), 100, 90, 7200, 3600, 200, 0,0,0,0, false),
+		-- B: performance SPIKE (gross beyond ideal) → P clamps to 1, so oee<top-down.
+		    (2, now(), 300, 280, 3600, 3600, 100, 0,0,0,0, false),
+		-- C: zero gross (Q=0 → oee=0); no div-by-zero.
+		    (3, now(), 0, 0, 3600, 1800, 120, 0,0,0,0, false),
+		-- D: zero running (A=0, P div-by-zero guarded → oee=0).
+		    (4, now(), 50, 40, 3600, 0, 120, 0,0,0,0, false);`
+	if _, err := pool.Exec(ctx, schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	defer pool.Exec(context.Background(), `DROP SCHEMA greconcile CASCADE`)
+
+	if _, err := pool.Exec(ctx, GrainOeeReconcileSQLForParity("greconcile", "equipment_runtime_1week")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `SELECT id_equipment, oee, oee_a, oee_p, oee_q
+	    FROM greconcile.equipment_runtime_1week ORDER BY id_equipment`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var id int
+		var oee, a, p, q float64
+		if err := rows.Scan(&id, &oee, &a, &p, &q); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
+			if v < 0 || v > 1 {
+				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			}
+		}
+		// THE IDENTITY: oee is the product of the three factors (last step). Tolerance
+		// 1e-4 accommodates the real (float32) column storage — well inside the 0.01
+		// the served identity cares about.
+		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 {
+			t.Errorf("eq %d: identity broken oee=%v a·p·q=%v (diff %g)", id, oee, a*p*q, diff)
+		}
+	}
+	if seen != 4 {
+		t.Fatalf("expected 4 reconciled rows, got %d", seen)
+	}
+	// eq 1: expected factors A=0.5 (3600/7200 — the ::float cast on the BIGINT
+	// columns; a cast-less regression reads 0 here), P=1.0, Q=0.9, oee=0.45.
+	var a1, p1, q1, oee1 float64
+	if err := pool.QueryRow(ctx, `SELECT oee_a, oee_p, oee_q, oee FROM greconcile.equipment_runtime_1week WHERE id_equipment=1`).Scan(&a1, &p1, &q1, &oee1); err != nil {
+		t.Fatal(err)
+	}
+	near := func(got, want float64) bool { return got > want-1e-4 && got < want+1e-4 }
+	if !near(a1, 0.5) || !near(p1, 1.0) || !near(q1, 0.9) || !near(oee1, 0.45) {
+		t.Errorf("eq 1 factors: A=%v P=%v Q=%v oee=%v (want 0.5/1.0/0.9/0.45)", a1, p1, q1, oee1)
+	}
+}
