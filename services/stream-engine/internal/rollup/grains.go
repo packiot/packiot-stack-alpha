@@ -234,7 +234,7 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 					firstErr = err
 				}
 			}
-			if err := RunDay(ctx, d, exclAreas, exclEnterprises, logger); err != nil {
+			if err := RunDay(ctx, d, exclAreas, exclEnterprises, ca, logger); err != nil {
 				logger.Warn("runtime-rollup-day failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err

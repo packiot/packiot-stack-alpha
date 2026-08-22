@@ -367,12 +367,19 @@ const hourAvailFloorSQL = `
 // mirroring rollup/oee.go CanonicalOEE exactly: Performance is computed DIRECTLY
 // (gross/(ideal_speed·running/60)), so oee == oee_a·oee_p·oee_q by construction.
 // Replaces the legacy oee-p residual pass when engagedCanonical().
+//
+// ::float on Availability: running_time/available_time are INTEGER columns, so a
+// cast-less running_time/available_time would be integer division (e.g. 1800/3600
+// → 0). Today this is masked — the events pass writes a float oee_a from
+// extract(epoch…) before this reconcile runs, and on the rows this touches the
+// cast reproduces that same value (a_new == a_old, verified live) — but the cast
+// removes the integer-division trap for any future refactor (matches day/week/month).
 const shiftOeeReconcileSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET
-	       oee_a = GREATEST(LEAST(COALESCE(e.running_time / NULLIF(e.available_time, 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
-	       oee   = GREATEST(LEAST(COALESCE(e.running_time / NULLIF(e.available_time, 0), 0), 1), 0)
+	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
 	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
 	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM shift_elig el
@@ -381,10 +388,10 @@ const shiftOeeReconcileSQL = `
 
 const hourOeeReconcileSQL = `
 	UPDATE %[1]s.equipment_runtime_1hour e SET
-	       oee_a = GREATEST(LEAST(COALESCE(e.running_time / NULLIF(e.available_time, 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
-	       oee   = GREATEST(LEAST(COALESCE(e.running_time / NULLIF(e.available_time, 0), 0), 1), 0)
+	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
 	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
 	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM hour_elig el

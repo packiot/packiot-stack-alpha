@@ -429,3 +429,86 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 		t.Errorf("eq 1 factors: A=%v P=%v Q=%v oee=%v (want 0.5/1.0/0.9/0.45)", a1, p1, q1, oee1)
 	}
 }
+
+// TestGoldenDayOeeReconcile proves the canonical A·P·Q identity on the DAY grain
+// (the durable forward fix). Column types mirror prod F3 (measured 2026-08-22):
+// running_time/available_time are INTEGER (not bigint like week/month, not float),
+// so a cast-less oee_a would integer-divide to 0 — the ::float defeats it. Also
+// proves net=0 → oee=0 (the spurious-oee=1.0 empty-day class the #885 cutover
+// found), and that oee is the product (not the deployed back-solve).
+func TestGoldenDayOeeReconcile(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	schema := `
+		CREATE SCHEMA IF NOT EXISTS dreconcile;
+		SET search_path TO dreconcile, public;
+		CREATE TABLE dreconcile.equipment_runtime_1day (
+		    id_equipment int, ts_value timestamptz,
+		    gross real, net real,
+		    available_time integer, running_time integer,
+		    ideal_production double precision,
+		    oee real, oee_a real, oee_p real, oee_q real,
+		    recalc_needed boolean DEFAULT false
+		);
+		-- day_elig stub carrying the batch keys the reconcile joins on.
+		CREATE TABLE dreconcile.day_elig (id_equipment int, ts_value timestamptz);
+		-- A: clean producing day. A=running/avail=43200/86400=0.5; Q=net/gross=0.9;
+		--    P=gross·avail/(ideal·run)=1000·86400/(2000·43200)=1.0 → oee=0.45.
+		INSERT INTO dreconcile.equipment_runtime_1day VALUES
+		    (1, now(), 1000, 900, 86400, 43200, 2000, 0,0,0,0, false),
+		-- B: net=0 empty-output day with a spurious pre-existing oee=1.0/oee_q=1.0
+		--    (the old 0/0→1 bug). Must be driven to oee=0.
+		    (2, now(), 0, 0, 86400, 0, 2000, 1,0,0,1, false),
+		-- C: performance spike (gross beyond ideal) → P clamps to 1; oee=A·1·Q.
+		    (3, now(), 5000, 4800, 86400, 43200, 2000, 0,0,0,0, false);
+		INSERT INTO dreconcile.day_elig VALUES (1, now()), (2, now()), (3, now());`
+	if _, err := pool.Exec(ctx, schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	defer pool.Exec(context.Background(), `DROP SCHEMA dreconcile CASCADE`)
+
+	if _, err := pool.Exec(ctx, DayOeeReconcileSQLForParity("dreconcile")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	rows, err := pool.Query(ctx, `SELECT id_equipment, oee, oee_a, oee_p, oee_q
+	    FROM dreconcile.equipment_runtime_1day ORDER BY id_equipment`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[int][4]float64{}
+	for rows.Next() {
+		var id int
+		var oee, a, p, q float64
+		if err := rows.Scan(&id, &oee, &a, &p, &q); err != nil {
+			t.Fatal(err)
+		}
+		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
+			if v < 0 || v > 1 {
+				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			}
+		}
+		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 { // identity (last step)
+			t.Errorf("eq %d: identity broken oee=%v a·p·q=%v (diff %g)", id, oee, a*p*q, diff)
+		}
+		got[id] = [4]float64{oee, a, p, q}
+	}
+	near := func(x, want float64) bool { return x > want-1e-4 && x < want+1e-4 }
+	// eq 1: A=0.5 (::float on integer cols; cast-less → 0), P=1.0, Q=0.9, oee=0.45.
+	if g := got[1]; !near(g[1], 0.5) || !near(g[2], 1.0) || !near(g[3], 0.9) || !near(g[0], 0.45) {
+		t.Errorf("eq 1: oee=%v A=%v P=%v Q=%v (want 0.45/0.5/1.0/0.9)", g[0], g[1], g[2], g[3])
+	}
+	// eq 2: net=0 empty day — spurious oee=1.0/oee_q=1.0 must be driven to all-zero.
+	if g := got[2]; !near(g[0], 0) || !near(g[3], 0) {
+		t.Errorf("eq 2 (net=0): oee=%v oee_q=%v (want 0/0 — no spurious 1.0)", g[0], g[3])
+	}
+}
