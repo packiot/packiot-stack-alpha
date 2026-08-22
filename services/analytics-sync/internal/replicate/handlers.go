@@ -226,7 +226,7 @@ const sqlInsertManualEvent = `INSERT INTO public.equipment_events_man (
 		change_over, planned_downtime, txt_downtime_notes,
 		forced_creation_system, last_update)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,now())
-	ON CONFLICT (ts_event) DO NOTHING`
+	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
 const sqlUpdateManualEvent = `UPDATE public.equipment_events_man
 	   SET ts_event = COALESCE($1, ts_event), ts_end = COALESCE($2, ts_end),

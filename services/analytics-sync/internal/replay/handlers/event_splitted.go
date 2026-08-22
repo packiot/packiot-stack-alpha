@@ -71,7 +71,7 @@ const sqlInsertSplitEvent = `INSERT INTO %s.equipment_events_man (
 		txt_downtime_notes,
 		forced_creation_system, last_update
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,now())
-	ON CONFLICT (ts_event) DO NOTHING`
+	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
 func insertSplitEvents(ctx context.Context, mainPool, pool *pgxpool.Pool, schema string, p *EventSplittedPayload, userLogID int64, logger *slog.Logger) error {
 	sql := fmt.Sprintf(sqlInsertSplitEvent, schema)

@@ -56,8 +56,8 @@ func TestEventInsertsPreserveIDAndQualifyConflict(t *testing.T) {
 		if !strings.Contains(sql, "id_equipment_event") {
 			t.Errorf("%s: must insert Flow 1's id_equipment_event (id preservation):\n%s", name, sql)
 		}
-		if !strings.Contains(sql, "ON CONFLICT (ts_event) DO NOTHING") {
-			t.Errorf("%s: ON CONFLICT must be qualified with (ts_event):\n%s", name, sql)
+		if !strings.Contains(sql, "ON CONFLICT (id_equipment, ts_event) DO NOTHING") {
+			t.Errorf("%s: ON CONFLICT must be qualified with (id_equipment, ts_event):\n%s", name, sql)
 		}
 	}
 }
