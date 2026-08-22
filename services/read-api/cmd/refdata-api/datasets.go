@@ -122,6 +122,15 @@ const (
 	eventWindow     = 90 * 24 * time.Hour
 )
 
+// dataQualityWindowDays bounds the data-quality-events andon feed to a rolling
+// recent window (see the "data-quality-events" dataset). It is a string because
+// it is spliced into the SQL as a Postgres `interval` literal — it is a
+// compile-time CONSTANT (never request-derived), so there is no injection
+// surface. 14 days keeps the busiest current tenant (staging ent-3, ~336
+// violations/day) well under the 10000-row compile cap while retaining useful
+// recent history.
+const dataQualityWindowDays = "14"
+
 type dataset struct {
 	group     string // front4-census dataset group (coverage table key)
 	doc       string
@@ -307,15 +316,22 @@ var datasets = map[string]dataset{
 	// the read plane. Tenant-fenced DIRECTLY on id_enterprise (the table carries it
 	// natively, like production_targets / oee_targets — no equipments JOIN, so no
 	// `active` predicate applies), most-recent-first. Explicit projection (ADR-0027
-	// rule #2). Not windowed — the compile row cap (LIMIT 10000) bounds it and the
-	// andon panel wants the freshest violations. The backing table is a NEW staging
+	// rule #2). ROLLING WINDOW: bounded to the last dataQualityWindowDays days so the
+	// andon panel ships a small, bounded payload of the freshest violations instead of
+	// silently truncating at the compile row cap. Before this bound a busy tenant
+	// (staging ent-3: ~10.5k rows, ~336/day) hit LIMIT 10000 and shipped ~2.3 MB per
+	// call while dropping its OLDEST rows with no signal anything was cut; the window
+	// makes the cutoff explicit and time-based (LIMIT 10000 stays as a burst backstop).
+	// The backing table is a NEW staging
 	// object (edge-node-red migration 34, applied to BOTH packiot + packiot_analytics);
 	// the pre-flip drift gate will CORRECTLY flag it MISSING on prod until that
 	// migration rolls forward there as part of the P11 rollout.
 	"data-quality-events": {
-		group: "data-quality", doc: "Data-quality alarm feed — recorded OEE/runtime violations, most-recent-first (data_quality_event)",
+		group: "data-quality", doc: "Data-quality alarm feed — recorded OEE/runtime violations from the last " + dataQualityWindowDays + " days, most-recent-first (data_quality_event)",
 		sql: `SELECT id, id_enterprise, id_equipment, grain, bucket_ts, rule, observed_value, severity, detected_at
-			FROM data_quality_event WHERE id_enterprise = $1 ORDER BY detected_at DESC`,
+			FROM data_quality_event
+			WHERE id_enterprise = $1 AND detected_at >= now() - interval '` + dataQualityWindowDays + ` days'
+			ORDER BY detected_at DESC`,
 		params: []dsParam{pEnt},
 	},
 
