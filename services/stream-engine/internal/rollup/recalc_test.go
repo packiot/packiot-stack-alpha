@@ -138,6 +138,48 @@ func TestGrainMatrix(t *testing.T) {
 	}
 }
 
+// Day canonical A·P·Q reconcile (ADR-0048 §Fault-3) — the durable forward fix so
+// NEW day rows satisfy oee = oee_a·oee_p·oee_q, not the back-solve that re-breaks
+// on clamp. Mirrors grains.go (ideal_production-based Performance; day has no
+// ideal_speed) and carries the ::float cast (integer columns).
+func TestDayCanonicalReconcile(t *testing.T) {
+	for _, m := range []string{
+		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)", // A ∈ [0,1], ::float
+		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                          // Q ∈ [0,1]; net=0/gross=0 → 0 (never 1)
+		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                      // P from ideal_production (no ideal_speed on day)
+	} {
+		if !strings.Contains(dayOeeReconcileSQL, m) {
+			t.Errorf("day canonical reconcile lost %q", m)
+		}
+	}
+	// ::float guard — integer columns → integer division would zero oee_a.
+	if !strings.Contains(dayOeeReconcileSQL, "e.running_time::float / NULLIF(e.available_time, 0)") {
+		t.Error("day reconcile Availability must cast ::float (integer columns → integer division → oee_a=0)")
+	}
+	// oee must be the PRODUCT of exactly the three clamped factors (not back-solved).
+	oeeAssign := dayOeeReconcileSQL[strings.Index(dayOeeReconcileSQL, "oee   ="):]
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
+		t.Errorf("day canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	}
+	if strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "oee /") || strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "e.oee /") {
+		t.Error("day canonical oee must be a·p·q, not back-solved from oee")
+	}
+}
+
+// The hour/shift reconcile Availability must carry the ::float cast (integer
+// columns) — latent-trap hardening (#883). No-op live (events-pass float oee_a),
+// but removes integer-division risk for future refactors.
+func TestHourShiftReconcileFloatCast(t *testing.T) {
+	for name, sql := range map[string]string{"hour": hourOeeReconcileSQL, "shift": shiftOeeReconcileSQL} {
+		if !strings.Contains(sql, "e.running_time::float / NULLIF(e.available_time, 0)") {
+			t.Errorf("%s reconcile Availability must cast ::float (integer columns)", name)
+		}
+		if strings.Contains(sql, "COALESCE(e.running_time / NULLIF(e.available_time, 0)") {
+			t.Errorf("%s reconcile still has cast-less integer division on Availability", name)
+		}
+	}
+}
+
 // Day2 (the LIVE generation) fidelity guards.
 func TestDayShape(t *testing.T) {
 	for _, m := range []string{
