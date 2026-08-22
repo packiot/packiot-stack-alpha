@@ -41,7 +41,7 @@ func TestManualInsertOmitsSerialAndIsIdempotent(t *testing.T) {
 	if strings.Contains(sqlInsertManualEvent, "id_equipment_event") {
 		t.Errorf("sqlInsertManualEvent must not set id_equipment_event (staging serial):\n%s", sqlInsertManualEvent)
 	}
-	if !strings.Contains(sqlInsertManualEvent, "ON CONFLICT (ts_event) DO NOTHING") {
+	if !strings.Contains(sqlInsertManualEvent, "ON CONFLICT (id_equipment, ts_event) DO NOTHING") {
 		t.Errorf("sqlInsertManualEvent must be idempotent on ts_event:\n%s", sqlInsertManualEvent)
 	}
 }
