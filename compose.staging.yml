@@ -384,80 +384,25 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
 
-  # ── Hasura GraphQL ─────────────────────────────────────────────────────────────
-  hasura:
-    image: hasura/graphql-engine:v2.44.0
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
-      HASURA_GRAPHQL_DEV_MODE: "false"
-      # query-log added 2026-07-02 (task #86 / docs/audits/hasura-review-2026.md):
-      # logs every GraphQL operation so a 30-day window can confirm the
-      # 7-named-query enumeration before any retirement decision. Logs
-      # ship to Loki via promtail; enumerate with
-      #   {container="stack-hasura-1"} |= "query-log"
-      # NOTE: this covers STAGING only — prod is Hasura Cloud
-      # (strong-cicada-30); enable query logging there via the cloud
-      # console to observe the endpoint customers actually hit.
-      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup,http-log,webhook-log,websocket-log,query-log
-      # Cap pool: Hasura defaults to 50 connections which alone saturates
-      # TimescaleDB's max_connections=50. Keep Hasura direct (no PgBouncer)
-      # because it uses prepared statements incompatible with transaction pooling.
-      HASURA_GRAPHQL_PG_CONNECTIONS: "5"
-    ports:
-      - "127.0.0.1:8081:8080"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.2
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 15s
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "5"}
-
-  hasura-init:
-    image: curlimages/curl:latest
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.15
-    env_file: [.env]
-    depends_on:
-      hasura:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-    volumes:
-      - ./edge-node-red/hasura/metadata.json:/metadata.json:ro
-    entrypoint:
-      - sh
-      - -c
-      - |
-        METADATA=$$(sed '1s/{/{\"allow_inconsistent_metadata\":true,/' /metadata.json)
-        printf '%s' "{\"type\":\"replace_metadata\",\"version\":2,\"args\":$${METADATA}}" > /tmp/payload.json
-        for i in 1 2 3 4 5; do
-          curl -sf -X POST http://hasura:8080/v1/metadata \
-            -H 'Content-Type: application/json' \
-            -H "X-Hasura-Admin-Secret: $${HASURA_GRAPHQL_ADMIN_SECRET}" \
-            -d @/tmp/payload.json && echo "Hasura metadata applied" && \
-          curl -sf -X POST http://hasura:8080/v1/metadata \
-            -H 'Content-Type: application/json' \
-            -H "X-Hasura-Admin-Secret: $${HASURA_GRAPHQL_ADMIN_SECRET}" \
-            -d '{"type":"reload_metadata","args":{}}' && echo "Hasura metadata reloaded" && exit 0
-          echo "Attempt $$i failed — retrying in 3s..."
-          sleep 3
-        done
-        echo "Hasura metadata apply FAILED after 5 attempts" && exit 1
-    restart: "no"
+  # ── Hasura GraphQL — RETIRED (audit 2026-08-21, finding M7) ────────────────────
+  # The staging Hasura engine + its one-shot metadata applier (hasura-init) were
+  # removed. Evidence for retirement:
+  #   * front4 moved off Hasura (W1 Cognito cutover → refdata-api reads +
+  #     edge-api Bearer writes); edge-api's "Hasura" code paths are all comments
+  #     documenting the mutations it now serves natively (0 runtime HASURA_URL use).
+  #   * edge-nodered (the only in-compose service that depended on hasura-init)
+  #     is profile-gated ("legacy-sim") and retired.
+  #   * Live observation: 0 /v1/graphql operations in the query-log; all traffic
+  #     was /healthz + boot-time /v1/metadata.
+  # It also still pointed HASURA_GRAPHQL_DATABASE_URL at the retired F1 `packiot`
+  # database and burned up to 5 of the analytics DB's 50 connections. Removing it
+  # reclaims that headroom (finding L5). The gated GraphQL surface, if ever needed
+  # again, is refdata-api (read plane) + edge-api (write plane).
 
   # ── DB Migrations (one-shot) ──────────────────────────────────────────────────
   # Applies all pending Knex migrations against the external Postgres DB.
   # Uses the development Docker target so knex + ts-node (devDeps) are available.
-  # edge-api and hasura-init both wait for this to succeed before starting.
+  # edge-api waits for this to succeed before starting.
   db-migrate:
     build:
       context: ./edge-api
@@ -627,8 +572,8 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      hasura-init:
-        condition: service_completed_successfully
+      # hasura-init dependency removed with the Hasura retirement (audit 2026-08-21).
+      # edge-nodered is itself retired (profile "legacy-sim", off by default).
     networks:
       packiot-net:
         ipv4_address: 172.18.0.4
@@ -1133,6 +1078,9 @@ services:
     env_file: [.env]
     environment:
       ADMINER_DEFAULT_SERVER: ${POSTGRES_HOST}
+      # Pre-fill the live single plane (F3), not the retired F1 `packiot`
+      # (POSTGRES_DB is still =packiot for legacy consumers). Audit 2026-08-21 M7.
+      ADMINER_DEFAULT_DB: packiot_analytics
     ports:
       - "127.0.0.1:8082:8080"
     networks:

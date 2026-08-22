@@ -69,15 +69,20 @@ variable "services" {
   description = "Nginx virtual-host names; each maps to a local Docker port"
   type        = map(number)
   default = {
-    api              = 8080
-    hasura           = 8081
-    grafana          = 3000
-    edge-nodered     = 1880
-    oeecloud-nodered = 1881  # OEECloud Node-RED (mapped to host port 1881, container port 1880)
-    rabbitmq         = 15672 # RabbitMQ management UI
-    adminer          = 8082  # PostgreSQL web UI (Adminer)
-    operator         = 8083  # Dev operator SPA (Vite + nginx, container port 80)
-    csadmin          = 8084  # CS-Admin SPA (staging tier; same image as prod)
+    api      = 8080
+    grafana  = 3000
+    rabbitmq = 15672 # RabbitMQ management UI
+    adminer  = 8082  # PostgreSQL web UI (Adminer)
+    operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
+    csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
+    # RETIRED vhosts (audit 2026-08-21):
+    #   hasura (8081)           — GraphQL engine retired: front4/edge-api moved off
+    #                             it (0 /v1/graphql ops observed); service removed
+    #                             from compose.staging.yml.
+    #   edge-nodered (1880)     — Node-RED retired (compose profile "legacy-sim",
+    #                             off by default); vhost 502'd for staff.
+    #   oeecloud-nodered (1881) — decommissioned 2026-06-23 (replaced by
+    #                             oeecloud-worker); no container ever ran here.
   }
 }
 
@@ -96,15 +101,13 @@ variable "service_auth" {
   description = "oauth2-proxy auth tier per nginx vhost (csadmin|any|api|none-originverify)"
   type        = map(string)
   default = {
-    api              = "api"
-    hasura           = "csadmin"
-    grafana          = "csadmin"
-    edge-nodered     = "csadmin"
-    oeecloud-nodered = "csadmin"
-    rabbitmq         = "csadmin"
-    adminer          = "csadmin"
-    operator         = "any"
-    csadmin          = "none-originverify"
+    api      = "api"
+    grafana  = "csadmin"
+    rabbitmq = "csadmin"
+    adminer  = "csadmin"
+    operator = "any"
+    csadmin  = "none-originverify"
+    # hasura / edge-nodered / oeecloud-nodered retired — see `services` above.
   }
 }
 
