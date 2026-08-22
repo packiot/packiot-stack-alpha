@@ -135,28 +135,52 @@ const hourSpeedSQL = `
 // Phase E: CONDITIONAL; the ONLY flag clear. ideal_speed read from
 // the row (just written by the speed pass — prod reads r_speed).
 const hourEventsSQL = `
-	WITH ev AS (
+	WITH ee_bounded AS (
+	    -- EVENT EFFECTIVE-END (line-availability root-cause fix). equipment_events
+	    -- are open-ended state-transition markers: in this stack ts_end is NEVER
+	    -- populated, so an event's real end is the START of the NEXT event for the
+	    -- same equipment. The former COALESCE(ee.ts_end, now()) extended EVERY past
+	    -- open event to now(), so a line's stale planned_downtime events all
+	    -- overlapped every later bucket and their per-event-clipped durations
+	    -- SUMMED (measured 8x on L5 / 11x on L6) → ts_planned >> ts_total →
+	    -- ts_total - ts_planned < 0 → negative Availability, floored to 0 by the
+	    -- [0,1] clamp. Bounding each event by lead(ts_event) yields NON-overlapping
+	    -- intervals whose sum is physical (≤ bucket), so ts_planned is the line's
+	    -- ACTUAL planned downtime. ts_end still wins when present, so this is
+	    -- byte-identical on ts_end-populated (legacy/prod) data — parity preserved.
+	    SELECT ee.id_equipment, ee.ts_event,
+	           COALESCE(ee.ts_end,
+	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
+	                    now()) AS ts_eff_end,
+	           ee.planned_downtime, ee.change_over, ee.status
+	      FROM %[1]s.equipment_events ee
+	     WHERE ee.id_equipment IN (SELECT id_equipment FROM hour_elig)
+	       AND ee.ts_event >= now() - interval '10 days' AND ee.ts_event < now()
+	), ev AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           extract(epoch FROM (least(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total,
 	           COALESCE(sum(CASE WHEN ee.planned_downtime = true THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
+	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
 	           COALESCE(sum(CASE WHEN ee.change_over = true THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
+	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
 	           COALESCE(sum(CASE WHEN ee.status = 6 THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_running,
+	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_running,
 	           COALESCE(sum(CASE WHEN ee.status <> 6 THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_downtime,
+	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_downtime,
 	           COALESCE(sum(CASE WHEN ee.status IN (5, 10, 11) THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_stopped
+	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_stopped
 	      FROM hour_elig el
-	      JOIN %[1]s.equipment_events ee
+	      JOIN ee_bounded ee
 	        ON ee.id_equipment = el.id_equipment
-	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && tstzrange(el.ts_value, el.ts_value + interval '1 hour')
-	       AND ee.ts_event >= now() - interval '10 days' AND ee.ts_event < now()
+	       AND tstzrange(ee.ts_event, ee.ts_eff_end) && tstzrange(el.ts_value, el.ts_value + interval '1 hour')
 	     GROUP BY el.id_equipment, el.ts_value
 	)
 	UPDATE %[1]s.equipment_runtime_1hour e SET
-	       available_time   = COALESCE(ev.ts_total - ev.ts_planned, 0),
+	       -- Denominator degrades gracefully: planned-production-time can never
+	       -- exceed the bucket, so subtract LEAST(ts_planned, ts_total). With the
+	       -- ee_bounded fix ts_planned is already ≤ ts_total (inert here), but this
+	       -- keeps available_time / oee_a ≥ 0 even under any residual event drift.
+	       available_time   = COALESCE(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0),
 	       -- Physical invariant: time-in-state within an hour bucket cannot
 	       -- exceed the bucket's own elapsed wall-clock (ev.ts_total). The
 	       -- event sums above are per-event clipped to the hour, but OVERLAPPING
@@ -171,7 +195,7 @@ const hourEventsSQL = `
 	       running_time     = LEAST(COALESCE(ev.ts_running, 0),    ev.ts_total),
 	       stopped_time     = LEAST(COALESCE(ev.ts_stopped, 0),    ev.ts_total),
 	       planned_downtime = LEAST(ev.ts_planned,                 ev.ts_total),
-	       ideal_production = COALESCE(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0),
+	       ideal_production = COALESCE(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
 	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
@@ -180,13 +204,13 @@ const hourEventsSQL = `
 	       -- the already-fixed unclosed-event class) + net>gross would otherwise
 	       -- surface as oee=13918 / oee_q>1 at this grain. Clamp only the derived
 	       -- oee* ratios; raw net/gross/running columns stay as the lineage truth.
-	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0),
+	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0),
 	       -- ADR-0037 C: the OEE waterfall (A×P×Q) was never written at this
 	       -- grain — only the composite oee. Populate Availability + Quality
 	       -- directly (running / planned-production-time ; net / gross); the
 	       -- companion hourOeePSQL back-solves Performance so oee = a·p·q holds,
 	       -- matching the week/month grain (grains.go) and the legacy pg engine.
-	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0), 1), 0), -- ADR-0037 clamp [0,1]: line over-mint of planned_downtime makes ts_total-ts_planned<0 -> negative A -> oee_bounds CHECK abort
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0), 0), 1), 0), -- ADR-0037 clamp [0,1] (now INERT: ee_bounded makes ts_planned physical, so A lands in (0,1] not floored to 0); LEAST() denom degrades gracefully
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
