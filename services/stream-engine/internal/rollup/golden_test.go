@@ -219,7 +219,31 @@ const grainGoldenFixture = `
 	VALUES (21, date_trunc('hour', now()), 6, 40, NULL);
 	INSERT INTO golden.equipment_values VALUES (21, now() - interval '3 hours', 120);
 	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
-	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);`
+	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);
+	-- THE TRAILING-OPEN-EVENT CASE (CPACK status_type=0, ADR trailing-event fix).
+	-- eq 22 is an idle line whose telemetry stopped 2h ago (its last 1-hour cagg
+	-- bucket is at now()-2h) but still carries a TRAILING open RUNNING event
+	-- (status=6, ts_end NULL, no successor) from 3h ago, PLUS a closed planned
+	-- downtime that reaches into the current hour. WITHOUT the fix the trailing
+	-- running event falls through to now(), so it overlaps the current hour and
+	-- credits the full elapsed hour as running — while the planned event has
+	-- reduced available_time — yielding running_time > available_time (the exact
+	-- masked-by-clamp class). WITH the fix the trailing event is bounded to the
+	-- last observed data (now()-2h + 1h grace = now()-1h < this hour), so it
+	-- contributes ZERO running to the current hour: running_time == 0 ≤ available.
+	INSERT INTO golden.equipments VALUES (22,1,1,35,3,100);
+	INSERT INTO golden.equipment_runtime_1hour (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (22, date_trunc('hour', now()), date_trunc('day', now()), true);
+	INSERT INTO golden.ca_agg_equipment_values_1hour
+	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
+	VALUES (22, date_trunc('hour', now()) - interval '2 hours', date_trunc('day', now()), 6, 40, 45, 50);
+	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
+	VALUES
+	    -- closed planned downtime reaching into the current hour (its ts_end wins,
+	    -- unaffected by the fix) → sets up a reduced available_time for the hour.
+	    (22, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) + interval '20 minutes', 5, true, false),
+	    -- the trailing open RUNNING event (last event, ts_end NULL, no successor).
+	    (22, date_trunc('hour', now()) - interval '3 hours', NULL, 6, false, false);`
 
 func TestGoldenGrains(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
@@ -301,6 +325,25 @@ func TestGoldenGrains(t *testing.T) {
 	}
 	if oee21 <= 0 {
 		t.Errorf("line oee: %v (must be > 0 — net 45 against LOCF'd ideal)", oee21)
+	}
+
+	// THE TRAILING-OPEN-EVENT SEMANTIC (eq 22): the idle line's last telemetry was
+	// 2h ago, so its trailing open RUNNING event must NOT credit running to the
+	// current hour. running_time must be 0 (bounded to last-data + 1h = now()-1h,
+	// which is before this hour) and never exceed available_time. Pre-fix the
+	// trailing event fell to now(), crediting the whole elapsed hour as running
+	// while the closed planned event shrank available_time → running > available
+	// (the ~100% / running>available Availability defect this fix removes).
+	var run22, avail22 float64
+	if err := pool.QueryRow(ctx, `SELECT running_time, available_time FROM golden.equipment_runtime_1hour
+	    WHERE id_equipment=22 AND ts_value=date_trunc('hour', now())`).Scan(&run22, &avail22); err != nil {
+		t.Fatal(err)
+	}
+	if run22 != 0 {
+		t.Errorf("trailing-open-event: eq22 running_time=%v, want 0 (trailing running event must be bounded to last data, not now())", run22)
+	}
+	if run22 > avail22 {
+		t.Errorf("trailing-open-event: running_time=%v > available_time=%v (the masked-by-clamp defect — fix failed)", run22, avail22)
 	}
 
 	// day2 pass: sums the two hour rows; target_customized=true must PRESERVE 777.

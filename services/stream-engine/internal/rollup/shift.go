@@ -147,7 +147,16 @@ const shiftCascadeAreaSQL = `
 // Phase E: conditional; banks hits + ts_planned for the targets pass.
 const shiftEventsSQL = `
 	CREATE TEMP TABLE shift_ev ON COMMIT DROP AS
-	WITH ee_bounded AS (
+	WITH last_seen AS (
+	    -- LAST OBSERVED DATA per equipment (see hour.go) — the physical bound for a
+	    -- TRAILING open event. max(ts_value) of the 1-hour cagg = start of the last
+	    -- data-bearing hour; +1h grace covers through its end.
+	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
+	      FROM %[1]s.ca_agg_equipment_values_1hour m
+	     WHERE m.id_equipment IN (SELECT id_equipment FROM shift_elig)
+	       AND m.ts_value >= now() - interval '90 days'
+	     GROUP BY m.id_equipment
+	), ee_bounded AS (
 	    -- EVENT EFFECTIVE-END (line-availability root-cause fix; see hour.go).
 	    -- equipment_events are open-ended state markers (ts_end never populated in
 	    -- this stack), so an event ends at the NEXT event for the equipment. The
@@ -156,12 +165,24 @@ const shiftEventsSQL = `
 	    -- ts_total → negative Availability floored to 0. lead(ts_event) yields
 	    -- non-overlapping physical intervals; ts_end still wins when present, so
 	    -- parity on ts_end-populated (legacy/prod) data is byte-identical.
+	    --
+	    -- TRAILING open event (ts_end NULL, no successor): the lead() fix left it
+	    -- falling to now(), so an idle line's last open status=6 event stretched to
+	    -- now() → phantom running / fabricated Availability (and running > available
+	    -- where later mirror-arrived events overlap). CPACK is status_type=0 →
+	    -- outside the events deriver → events never closed; do NOT rely on a
+	    -- separate close-sweep. Bound the trailing event to the last observed data
+	    -- (ls.ts_last + 1h), capped at now() and never before its own start; a
+	    -- trailing event minted after telemetry stopped collapses to zero length.
+	    -- NULL ls.ts_last (no telemetry) degrades to now() — prior behavior. Inert
+	    -- on ts_end-populated data (ts_end wins first) → parity preserved.
 	    SELECT ee.id_equipment, ee.ts_event,
 	           COALESCE(ee.ts_end,
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
-	                    now()) AS ts_eff_end,
+	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
 	      FROM %[1]s.equipment_events ee
+	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
 	     WHERE ee.id_equipment IN (SELECT id_equipment FROM shift_elig)
 	       AND ee.ts_event >= now() - interval '25 days' AND ee.ts_event < now()
 	)
