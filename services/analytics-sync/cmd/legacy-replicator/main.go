@@ -92,8 +92,13 @@ func main() {
 	d.Register("order-status-changed", replicate.OrderRecalc(logger))
 	d.Register("order-changed", replicate.OrderChanged(logger))
 
+	// Heartbeat-backed healthcheck: the loop beats after every successful poll;
+	// /healthz flips to 503 once the last beat is older than HEALTHCHECK_MAX_AGE_SEC
+	// so the docker healthcheck can catch a wedged loop (a plain 200 cannot).
+	checker := health.NewChecker("legacy-replicator", time.Duration(cfg.HealthMaxAgeSec)*time.Second)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", health.Handler())
+	mux.HandleFunc("/healthz", checker.Handler())
 	mux.Handle("/metrics", m.Handler())
 	go func() {
 		addr := fmt.Sprintf(":%d", cfg.HealthPort)
@@ -103,7 +108,7 @@ func main() {
 		}
 	}()
 
-	if err := replicate.Loop(ctx, legacyPool, destPool, resolver, d, m, cfg, logger); err != nil {
+	if err := replicate.Loop(ctx, legacyPool, destPool, resolver, d, m, cfg, checker.Beat, logger); err != nil {
 		if ctx.Err() != nil {
 			logger.Info("shutting down (ctx cancelled)")
 			return

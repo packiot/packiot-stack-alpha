@@ -52,7 +52,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, legacyPool, destPool *pgxpool
 }
 
 // Loop drives poll -> dispatch -> advance-cursor. Runs until ctx cancelled.
-func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, d *Dispatcher, m Metrics, cfg *Config, logger *slog.Logger) error {
+//
+// beat is called after every SUCCESSFUL poll of the source — including quiet
+// polls that fetch 0 rows — so it tracks loop liveness (not factory activity)
+// and feeds the /healthz staleness check (see internal/health.Checker). A nil
+// beat is tolerated (no-op) so tests and callers that don't wire a healthcheck
+// stay simple.
+func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, d *Dispatcher, m Metrics, cfg *Config, beat func(), logger *slog.Logger) error {
+	if beat == nil {
+		beat = func() {}
+	}
 	cursor, err := EnsureCursor(ctx, destPool, legacyPool, cfg.CursorSource, cfg.SrcEnterprise, cfg.SinceStart(time.Now()))
 	if err != nil {
 		return err
@@ -73,10 +82,14 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 		}
 		batch, err := FetchBatch(ctx, legacyPool, cfg.SrcEnterprise, cursor, cfg.BatchSize)
 		if err != nil {
+			// Source unreachable/errored: do NOT beat — a sustained source
+			// outage is itself something the healthcheck should surface.
 			logger.Warn("fetch batch failed", slog.String("err", err.Error()))
 			sleepCtx(ctx, pollInterval)
 			continue
 		}
+		// Successful poll (even 0 rows) = the loop is alive and reaching source.
+		beat()
 		if len(batch) == 0 {
 			sleepCtx(ctx, pollInterval)
 			continue

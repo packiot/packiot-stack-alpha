@@ -1692,8 +1692,13 @@ services:
       # Host path holds the TLS server cert + key for :8444. # FILL AT DEPLOY
       - /opt/packiot/ingest-shim/certs:/certs:ro
     ports:
-      # Public HTTPS ingress. Nginx/SG terminates external access on 8444.
-      - "8444:8444"
+      # Bind to loopback only — external ingest reaches the sparkplug-agent via
+      # the cpack-ingest.staging.packiot.app:8447 nginx vhost (SG-scoped to the
+      # CPACK /32) and edges publish over AMQPS:5671; nothing external dials
+      # :8444 directly. The 0.0.0.0 docker-proxy publish was pure defense-in-depth
+      # debt (only the SG blocked it). 127.0.0.1 matches the file convention
+      # (see header) and keeps host-local reach for nginx/debugging.
+      - "127.0.0.1:8444:8444"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.29
@@ -2205,7 +2210,11 @@ services:
       # FILL AT DEPLOY: place tls.crt + tls.key on the host here.
       - /opt/packiot/operator-adapter/certs:/opt/packiot/operator-adapter/certs:ro
     ports:
-      - "8445:8443"
+      # Bind to loopback only. operator-gateway is reached container-to-container
+      # over packiot-net (alias "operator-adapter"), never via this host publish;
+      # no external client dials :8445 (SG has no ingress for it). Removes the
+      # 0.0.0.0 docker-proxy exposure while keeping host-local reach.
+      - "127.0.0.1:8445:8443"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.30
@@ -2338,6 +2347,18 @@ services:
       POLL_INTERVAL_MS: "3000"
       BATCH_SIZE: "200"
       HEALTH_PORT: "9104"
+      # Liveness staleness bound for /healthz (see internal/health.Checker).
+      # The loop stamps a heartbeat after every SUCCESSFUL poll of the legacy
+      # source — including quiet polls that return 0 rows — so this measures
+      # LOOP liveness, not factory activity. A wedged/deadlocked loop (or a
+      # source outage) stops the heartbeat and /healthz flips to 503 within
+      # ~10 min. Because a quiet weekend still polls-and-heartbeats every 3s,
+      # this does NOT false-alarm on CPACK's Mon-Fri idle nights/weekends.
+      # 600s = 200 poll cycles of slack, absorbing transient legacy-DB latency.
+      # (Was HEALTHCHECK_MAX_AGE_SEC=999999 in /opt/packiot/.env — vestigial:
+      # the pre-Checker health.Handler was a plain 200 and read no max-age, so
+      # it could never flag a wedge regardless of the value.)
+      HEALTHCHECK_MAX_AGE_SEC: "600"
     networks:
       packiot-net:
     healthcheck:
