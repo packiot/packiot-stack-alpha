@@ -91,6 +91,28 @@ $$;
 -- current_tenant() unqualified safely because policy expressions are OID-pinned at
 -- CREATE POLICY time (resolved with `public` on the applying role's path); only the
 -- nested body call re-resolves at run time, so only it must be qualified.
+--
+-- RESIDUAL-RISK NOTE (2026-08-23 BI-hardening review): "gate the -1 sentinel to a
+-- dedicated admin role/connection, not any superset_ro session" was considered and
+-- deliberately NOT implemented, because:
+--   (a) It is not cleanly feasible under the current model — EVERY Superset session
+--       (guest embeds, per-tenant, and the internal super-admin all-tenant session)
+--       connects with the SAME DB login role `superset_ro`; the ONLY differentiator
+--       is the GUC value the DB_CONNECTION_MUTATOR stamps. A `pg_has_role(current_user,
+--       'superset_admin_ro', ...)` gate here would therefore either deny the admin's
+--       own all-tenant view (superset_ro is not that role) or require a SECOND
+--       physical connection/credential + a mutator URI rewrite — a cross-layer change
+--       with real breakage surface, for near-zero gain (see b).
+--   (b) The sentinel is UNREACHABLE from the token/embed path already (the mutator
+--       only stamps -1 for a native Admin UI session; guest/anon never reach it —
+--       superset_config.py::_admin_all_tenant_stamp). The only actor who could set
+--       app.tenant_id = -1 directly is a holder of the superset_ro PASSWORD — who can
+--       equally `SET app.tenant_id = <any real id>` in a loop and read every tenant
+--       regardless of this sentinel. So the real control is superset_ro credential
+--       secrecy (Secrets Manager), not the sentinel value.
+-- If a dedicated all-tenant DB role is ever introduced, gate it here with
+-- `AND pg_has_role(current_user, 'superset_admin_ro', 'MEMBER')` and route the admin
+-- session through that role in DB_CONNECTION_MUTATOR.
 CREATE OR REPLACE FUNCTION public.is_all_tenant() RETURNS boolean
 LANGUAGE sql STABLE AS $$
   SELECT public.current_tenant() = -1
