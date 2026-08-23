@@ -151,6 +151,18 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "shadow-mirror replay failures — operator-action parity hole on the shadow flows (board 12)"
+      # legacy-replicator is the AUTHORITATIVE CPACK operator-action source
+      # (F1 retired). A zero-row UPDATE = a "silent skip": a legacy action that
+      # resolved to nothing in staging — a replay gap (bugs 247/248 class:
+      # topology drift / id-map miss / unresolved equipment). The loop fail-opens
+      # past these so they never wedge it, which is exactly why they need an
+      # alert to be legible. `for: 30m` rides out incidental single noops.
+      - alert: ReplicatorReplayGaps
+        expr: sum by (table) (increase(shadow_mirror_update_noop_total{job="legacy-replicator"}[30m])) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "legacy-replicator: zero-row UPDATEs on {{ $labels.table }} for 30m — CPACK operator-action replay gap (topology drift / unresolved id-map; see 2026-08-23 twin-drop finding)"
 
   # Host + DB rules (need the 2026-07-07 exporters; extend as the
   # CAgg-invalidation/queue-depth backlog items land).
