@@ -1341,11 +1341,35 @@ services:
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
       CREDS_SOURCE: env
+      # DIRECT to the DB EC2 (NOT via the `pgbouncer` service) — deliberate.
+      # The analytics/rollup pool (db.NewForDatabase → `oeecloud-worker-analytics`,
+      # POSTGRES_ANALYTICS_MAX_CONNS) is the heavy consumer and it REQUIRES a
+      # direct connection: the background rollup/provision path holds a
+      # SESSION-scoped `pg_advisory_lock` across ~17 autonomous provision-fn
+      # calls (serializes provision vs rollup — "unserialized they deadlock
+      # hourly"), plus a per-connection `SET statement_timeout = 0` and a
+      # cross-statement `SET search_path` (see internal/rollup/provision.go +
+      # internal/db/pool.go). pgbouncer runs pool_mode=transaction, where each
+      # autonomous statement can land on a DIFFERENT backend — that would (a)
+      # break the session lock's serialization, (b) leave the fn calls with the
+      # default search_path, and (c) leak `statement_timeout=0` onto other pooled
+      # clients. So this pool cannot use transaction pooling. DB_HOST is shared
+      # by both pools, so the main pool goes direct too. Protection instead comes
+      # from the worker's OWN caps below (main 5 + analytics 15 = ≤20 direct
+      # conns ≈ pgbouncer default_pool_size), so it is self-bounded without the
+      # proxy. Reversible: to move a future session-safe pool behind the proxy,
+      # set DB_HOST: pgbouncer.
       DB_HOST: "10.10.10.89"
       DB_PORT: "5432"
       DB_USER: "${POSTGRES_USER}"
       DB_PASSWORD: "${POSTGRES_PASSWORD}"
       DB_NAME: packiot_analytics
+      # Explicit worker-side connection caps (were relying on code defaults 5/15).
+      # Making them a visible contract so a future default change can't silently
+      # uncap the heaviest DB consumer. Values == current live defaults, so this
+      # is byte-identical to today. Total direct conns bounded at 20.
+      POSTGRES_MAX_CONNS: "5"            # main pool (AMQP ingest writes)
+      POSTGRES_ANALYTICS_MAX_CONNS: "15" # analytics/rollup pool (direct, session-scoped)
       # MANUAL PRE-REQ (rename S1+S2, oeecloud-worker -> stream-engine): this
       # secret does not exist yet under the new name. A human must create
       # packiot/staging/rabbitmq-stream-engine-creds (username "stream-engine",
@@ -1901,17 +1925,22 @@ services:
       # keep their real bound. Reversible: unset + redeploy. Superseded later by
       # COUNTERS_ONLY_FROM_DB (real 3×production_speed per machine).
       CALC_NO_SPEED_GUARD_FALLBACK: "true"
-      # fix2 — per-tenant routing flip. Default OFF = publish the 2-segment
-      # `sparkplug.data` firehose (exact-bound stream-engine-q consumes it;
-      # tenant rides in-envelope), byte-identical to today. Flip to "true"
-      # (via .env: F3_PER_TENANT_ROUTING=true) to publish `sparkplug.data.<tenant>`
-      # so the `oee` topic exchange shards each tenant into its OWN
-      # stream-engine-q-<tenant> — which stream-engine already declares +
-      # consumes + registers a per-tenant dispatcher handler for (scoped by
+      # fix2 — per-tenant routing. NOW ON by default on staging (flipped +
+      # verified live 2026-08-24): publishes `sparkplug.data.<tenant>` so the
+      # `oee` topic exchange shards each tenant into its OWN stream-engine-q-
+      # <tenant> queue — which stream-engine already declares + consumes +
+      # registers a per-tenant dispatcher handler for (scoped by
       # WORKER_TENANT_ALLOWLIST). oeecloud-fanout binds BOTH sparkplug.data and
       # sparkplug.data.cpack (+ CPACK group guard) so the SBXCPACK twin is
-      # unaffected. Reversible: unset + restart → back to the plain key.
-      F3_PER_TENANT_ROUTING: "${F3_PER_TENANT_ROUTING:-false}"
+      # unaffected. Verified after the flip: cpack routed to stream-engine-q-cpack
+      # (deliver_get climbing), the plain stream-engine-q went idle, sbxcpack kept
+      # flowing, redeliver=0 / no DLQ. OBSERVABILITY GAP: the `oee` exchange has
+      # NO alternate-exchange, so a non-allowlisted / unbound tenant's messages
+      # are now silently discarded as unroutable (no DLQ, no log, no metric)
+      # rather than reaching the worker. cpack + sbxcpack are allowlisted + bound,
+      # so unaffected. Reversible: set "false" here (or F3_PER_TENANT_ROUTING=false
+      # in .env pre-merge) + recreate sparkplug-decoder → back to the plain key.
+      F3_PER_TENANT_ROUTING: "true"
       POSTGRES_DB: packiot_analytics
       POSTGRES_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@10.10.10.89:5432/packiot_analytics"
       # LINE_TRACE_TENANTS: comma-sep lowercase GroupIDs to trace at INFO (no
