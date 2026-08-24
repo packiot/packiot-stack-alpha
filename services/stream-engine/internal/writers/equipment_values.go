@@ -304,6 +304,40 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 		}
 	}
 
+	// ── Derived-speed sanity void (couples to the increment clamp) ──────────
+	// equipment_values.speed rides the counter metrics as m.CurSpeed, the
+	// decode Phase-6 derived rate (incr·60000/Δt). It is NOT the count, so the
+	// increment clamp above never touched it — yet the two derive from the SAME
+	// delta, and the ADR-0049 no-speed-guard fallback deliberately disables the
+	// decode rate guard for no-MachSpeed machines, delegating spike protection
+	// to THIS Silver clamp (calc.go:599-600). Left unbounded, a glitch/tiny-Δt
+	// delta lands speeds thousands of times over rated (id 55 L5-PTH: up to
+	// 3.7M/min vs a 147/min rating). Void the speed when the coupled count was
+	// clamped OR when the speed itself exceeds K·rate, so the UPSERT's
+	// COALESCE(EXCLUDED.speed, existing) carries the prior good speed forward.
+	// w.clamp nil (flag off) ⇒ curspeed passes through untouched — flag parity.
+	curspeed := (*float64)(m.CurSpeed)
+	if w.clamp != nil && curspeed != nil &&
+		(kind == sparkplug.KindProdProcessedCount || kind == sparkplug.KindProdConsumedCount) {
+		var rate float64
+		if info.ProductionSpeed != nil {
+			rate = float64(*info.ProductionSpeed)
+		}
+		if reject, bound := w.clamp.evalSpeed(clampEv != nil, rate, *curspeed); reject {
+			if w.logger != nil {
+				w.logger.Warn("increment sanity clamp VOIDED implausible derived speed",
+					slog.Int("id_equipment", info.IDEquipment),
+					slog.String("kind", kind.String()),
+					slog.Float64("speed", *curspeed),
+					slog.Float64("bound", bound),
+					slog.Bool("count_clamped", clampEv != nil),
+					slog.Float64("rate_per_min", rate),
+				)
+			}
+			curspeed = nil
+		}
+	}
+
 	tpEquipment := 1
 	if m.IsLineTopic() {
 		tpEquipment = 3
@@ -336,9 +370,9 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 
 	switch kind {
 	case sparkplug.KindProdProcessedCount:
-		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
+		return buildProcessed(ts, info, tpEquipment, value, (*float64)(m.Counter), curspeed, faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
 	case sparkplug.KindProdConsumedCount:
-		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), (*float64)(m.CurSpeed), faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
+		return buildConsumed(ts, info, tpEquipment, value, (*float64)(m.Counter), curspeed, faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
 	case sparkplug.KindProdDefectiveCount:
 		return buildDefective(ts, info, tpEquipment, value, (*float64)(m.Counter), faults, checkNumber, schema, withShift, idShift, idShiftHour), clampEv, nil
 	case sparkplug.KindStateCurrent:

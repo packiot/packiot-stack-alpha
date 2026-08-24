@@ -141,6 +141,17 @@ func (r *Resolver) query(ctx context.Context, topic string) (*EquipmentInfo, err
 	return &info, nil
 }
 
+// SeedForTest pre-populates the resolver cache with a long-lived entry so
+// writer-level tests can drive Build() (which calls Resolve) without a
+// database. Test-only affordance — never invoked on a production code path;
+// the pool stays nil in those tests because Resolve short-circuits on a cache
+// hit before it would ever touch the pool.
+func (r *Resolver) SeedForTest(topic string, info *EquipmentInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache[topic] = cacheEntry{info: info, expires: time.Now().Add(24 * time.Hour)}
+}
+
 // Stats returns cache size — for /health observability later.
 func (r *Resolver) Size() int {
 	r.mu.RLock()
