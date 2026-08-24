@@ -135,7 +135,18 @@ const hourSpeedSQL = `
 // Phase E: CONDITIONAL; the ONLY flag clear. ideal_speed read from
 // the row (just written by the speed pass — prod reads r_speed).
 const hourEventsSQL = `
-	WITH ee_bounded AS (
+	WITH last_seen AS (
+	    -- LAST OBSERVED DATA per equipment — the physical bound for a TRAILING open
+	    -- event (see ee_bounded). The 1-hour cagg carries a bucket for every hour
+	    -- telemetry arrived, so max(ts_value) is the start of the last data-bearing
+	    -- hour; +1h (below) covers through its end. Scanned over a generous horizon
+	    -- so a line idle for a while is still bounded to its true last data, not now().
+	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
+	      FROM %[1]s.ca_agg_equipment_values_1hour m
+	     WHERE m.id_equipment IN (SELECT id_equipment FROM hour_elig)
+	       AND m.ts_value >= now() - interval '90 days'
+	     GROUP BY m.id_equipment
+	), ee_bounded AS (
 	    -- EVENT EFFECTIVE-END (line-availability root-cause fix). equipment_events
 	    -- are open-ended state-transition markers: in this stack ts_end is NEVER
 	    -- populated, so an event's real end is the START of the NEXT event for the
@@ -148,12 +159,28 @@ const hourEventsSQL = `
 	    -- intervals whose sum is physical (≤ bucket), so ts_planned is the line's
 	    -- ACTUAL planned downtime. ts_end still wins when present, so this is
 	    -- byte-identical on ts_end-populated (legacy/prod) data — parity preserved.
+	    --
+	    -- TRAILING open event (ts_end NULL, no successor): the lead() fix leaves it
+	    -- falling through to now(), so an idle/disconnected line's last open
+	    -- status=6 (running) event stretched for DAYS → phantom running credited to
+	    -- every bucket up to now() → fabricated ~full Availability (and, overlapping
+	    -- later mirror-arrived planned events, running_time > available_time). CPACK
+	    -- is status_type=0 → excluded from the events deriver → its events are NEVER
+	    -- closed (ts_end stays NULL) and the mirror close-sweep isn't guaranteed up,
+	    -- so this class cannot depend on a separate closer. Bound the trailing event
+	    -- to the last observed data (ls.ts_last + 1h grace), capped at now() and
+	    -- never before its own start: GREATEST() guards against an inverted range,
+	    -- and a trailing event minted AFTER telemetry stopped collapses to zero
+	    -- length and contributes nothing. When ls.ts_last is NULL (no telemetry in
+	    -- horizon) LEAST/GREATEST drop it and this degrades to now() — the prior
+	    -- behavior. Inert on ts_end-populated data (ts_end wins first) → parity kept.
 	    SELECT ee.id_equipment, ee.ts_event,
 	           COALESCE(ee.ts_end,
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
-	                    now()) AS ts_eff_end,
+	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
 	      FROM %[1]s.equipment_events ee
+	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
 	     WHERE ee.id_equipment IN (SELECT id_equipment FROM hour_elig)
 	       AND ee.ts_event >= now() - interval '10 days' AND ee.ts_event < now()
 	), ev AS (
