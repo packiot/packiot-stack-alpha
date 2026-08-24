@@ -44,7 +44,7 @@ and OEE anomaly-free (no `oee>1`, no `oee<0`).
 > (`ops_shadow_zombie_preimage_*`, `report_*_enterprsie_*`, `hasura_test`,
 > `*_po_func_ret`, `c33_/c35_*`, lab leftovers) — the full pattern list is in
 > `DEBRIS.exclude`. After curation the canonical F3 baseline in
-> `MANIFEST.f3-target` = **309 user objects** (152 T, 130 F, 14 C, 4 H, 10 V).
+> `MANIFEST.f3-target` = **307 user objects** (152 T, 127 F, 14 C, 4 H, 10 V).
 
 ---
 
