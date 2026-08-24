@@ -1369,6 +1369,14 @@ services:
       # and cascades up the grain tree. Enabled now that the grain reconcile is
       # canonical, so drained rows land with oee == A·P·Q at every grain.
       ROLLUP_BACKFILL_ENABLED: "true"
+      # Close stale mirror-fanned CPACK open status=6 events (ts_end NULL). CPACK is
+      # status_type=0 so the deriver skips it and the cpac shadow-deriver is dark, so
+      # nothing closes them → a stale open stretches to now() and fabricates ~100%
+      # availability on idle hours (proven: 5972 opens → dead lines read a=1.0). The
+      # events-close-stale job (60s) bounds non-latest opens by lead(ts_event) and the
+      # trailing open by count-silence after grace; skips operator-justified rows.
+      EVENTS_CLOSE_STALE_ENABLED: "true"
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
