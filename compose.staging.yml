@@ -2126,7 +2126,7 @@ services:
       # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
       # keys only; production keys move to Secrets Manager at P3
       # hardening. customer_id is NEVER client-supplied.
-      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4"
+      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4,stg-sbxcpack-key:2000003"
       # ── ADR-0034: dual-accept IdP cutover (Firebase OR Cognito) ───────────────
       # refdata is now a relying party for the staging Cognito user pool
       # ALONGSIDE Firebase — a front4 session carrying EITHER token resolves its
@@ -2541,12 +2541,14 @@ services:
       # Sandbox reads reuse the CPACK staging read key for now (refdata maps it to
       # a tenant); override via OPERATOR_SBX_REFDATA_API_KEY once a sandbox read
       # key is provisioned in refdata's QUERY_API_KEYS.
-      REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:-stg-cpack-key}
+      REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:-stg-sbxcpack-key}
     ports:
       - "127.0.0.1:8085:80"
     networks:
-      packiot-net:
-        ipv4_address: 172.18.0.42
+      # No static ipv4_address: nginx proxies to 127.0.0.1:8085 (host port), not the
+      # container IP, so a pin is unneeded — and static IPs on this bridge collide
+      # (172.18.0.42 = superset, .39 = oauth2-proxy). Let Docker auto-assign.
+      - packiot-net
     depends_on:
       edge-api:
         condition: service_started
