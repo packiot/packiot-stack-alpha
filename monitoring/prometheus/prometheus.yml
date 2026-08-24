@@ -97,6 +97,19 @@ scrape_configs:
     static_configs:
       - targets: ['analytics-sync:9103']
 
+  # legacy-replicator (cross-instance twin replicator, ADR-0013 sibling) — the
+  # AUTHORITATIVE CPACK operator-action source since F1 retirement. Was NEVER
+  # scraped (infra audit 2026-08-23): its shadow_mirror_{failed,update_noop}_total
+  # + shadow_mirror_cursor on :9104 were invisible, so replay gaps ("silent
+  # skips": a legacy row that resolves to a zero-row UPDATE = a bug-247/248-class
+  # gap) and failures went unalerted. Scraping it makes ScrapeTargetDown +
+  # ShadowMirrorFailures cover it for free, and feeds ReplicatorReplayGaps below.
+  # (A WEDGED loop is caught at the docker layer by the /healthz staleness check;
+  # `up` stays 1 while the loop hangs, so Prometheus alone can't see a wedge.)
+  - job_name: legacy-replicator
+    static_configs:
+      - targets: ['legacy-replicator:9104']
+
   # read-api (formerly refdata-api) / query-api — the read side (ADR-0015). Full RED on :9104:
   # http_request_duration_seconds{method,route,status} (rate=_count, errors=by
   # status, duration=histogram) plus Go runtime + process metrics.

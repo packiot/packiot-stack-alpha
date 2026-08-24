@@ -73,6 +73,12 @@ type Config struct {
 	Enabled    bool
 	HealthPort int
 	LogLevel   string
+
+	// HealthMaxAgeSec bounds /healthz liveness: if the loop has not completed a
+	// successful poll within this many seconds, /healthz returns 503 so the
+	// docker healthcheck can flag a wedged loop. 0 (default) disables the check
+	// — /healthz stays a plain 200. See internal/health.Checker.
+	HealthMaxAgeSec int
 }
 
 func Load() *Config {
@@ -102,9 +108,10 @@ func Load() *Config {
 		PollIntervalMs: getenvInt("POLL_INTERVAL_MS", 3000),
 		BatchSize:      getenvInt("BATCH_SIZE", 200),
 
-		Enabled:    getenv("REPLICATE_ENABLED", "false") == "true",
-		HealthPort: getenvInt("HEALTH_PORT", 9104),
-		LogLevel:   getenv("LOG_LEVEL", "info"),
+		Enabled:         getenv("REPLICATE_ENABLED", "false") == "true",
+		HealthPort:      getenvInt("HEALTH_PORT", 9104),
+		LogLevel:        getenv("LOG_LEVEL", "info"),
+		HealthMaxAgeSec: getenvInt("HEALTHCHECK_MAX_AGE_SEC", 0),
 	}
 }
 

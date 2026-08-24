@@ -51,17 +51,13 @@ resource "aws_route53_record" "amqp" {
   records = [aws_eip.app.public_ip]
 }
 
-# RabbitMQ management HTTP API — exposed via Nginx HTTPS proxy (port 443).
-# Used by factory edges that lack amqplib: they POST to this endpoint to publish
-# SparkPlug messages. No nginx basic auth — RabbitMQ handles its own auth.
-# Client user must have the 'management' tag to access this endpoint.
-resource "aws_route53_record" "mq" {
-  zone_id = aws_route53_zone.staging.zone_id
-  name    = "mq.${var.staging_domain}"
-  type    = "A"
-  ttl     = 60
-  records = [aws_eip.app.public_ip]
-}
+# RETIRED (infra audit 2026-08-23): mq.staging.packiot.app — the RabbitMQ
+# management HTTP proxy vhost. The ungated console was closed in PR #876 and the
+# nginx server block for `mq.staging` was removed (only rabbitmq.staging remains,
+# oauth2-gated). The A record served no live nginx vhost (edges publish over
+# AMQPS:5671 / cpack-ingest:8447), so the dangling record + its exposed hostname
+# were deleted from Route53 and this resource removed. Do NOT reintroduce an
+# ungated management vhost — go through rabbitmq.staging (cs-admin oauth2 gate).
 
 # Authentik SSO login page — browser entry point for all staging SSO flows.
 # No Nginx auth_request on this vhost (it IS the authentication endpoint).
