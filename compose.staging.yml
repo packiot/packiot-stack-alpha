@@ -45,6 +45,7 @@ volumes:
   mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:  # ADR-0011 P2: SQLite outbox survives container restart
   edge_transformer_agent_outbox:  # ADR-0042 P1: sparkplug-agent-cpack store-and-forward outbox
+  edge-api-db-data:  # staging psql jump-box (loopback :1234; NOT the app DB — that's the external EC2)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
@@ -57,6 +58,7 @@ volumes:
 # .29 ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug; publishes :8444, metrics :9105)
 # .35 app-redis (ADR-0035 application cache for refdata-api cache-aside; SEPARATE from authentik-redis .14)
 # .37 redis-exporter (white-box Redis metrics on :9121; scrapes authentik-redis today, ADR-0035 app-redis later)
+# .39 edge-api-db (staging psql jump-box; loopback host:1234 only — NOT the app DB)
 # .41 oeecloud-fanout (task #17 re-tenant twin fan-out CPACK→SBXCPACK; flag-gated, STAGING ONLY, health :9102)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
@@ -116,6 +118,62 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.10
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── edge-api-db (staging psql jump-box) ─────────────────────────────────────────
+  # Small standalone Postgres used ONLY as an on-box psql jump-box on staging.
+  # It is NOT the application database — the whole stack talks to the external
+  # TimescaleDB EC2 (${POSTGRES_HOST}=10.10.10.89) via pgbouncer above; this
+  # container holds no application data.
+  #
+  # Why it lives here now (defense-in-depth fix): this container used to run as
+  # an UNMANAGED ORPHAN — brought up long ago by `docker compose` inside the
+  # edge-api submodule's dev-only docker-compose.yml (the retired
+  # /opt/packiot/stack/edge-api/ layout), so the staging pipeline
+  # (`docker compose -f compose.staging.yml -p stack up`) never managed it.
+  # As an orphan it published 0.0.0.0:1234 (every interface, VPC-reachable —
+  # only the EC2 SG kept it off the public internet). edge-api PR #201 rebound
+  # the DEV compose to loopback, but that file is never deployed on staging, so
+  # the running orphan was never recreated and stayed on 0.0.0.0. Defining it
+  # here — under the deployed `stack` project — is what actually applies the
+  # loopback bind, and closes the 2026-07-15 architecture-review anomaly
+  # ("edge-api-db container not in compose.staging.yml", P2).
+  #
+  # Bind to loopback ONLY. Remote psql access is via SSM Session Manager port
+  # forwarding, which tunnels to 127.0.0.1 on the box — so loopback fully
+  # preserves jump-box access while removing the 0.0.0.0 docker-proxy publish.
+  # Nothing container-to-container uses host:1234 (services reach Postgres via
+  # pgbouncer / the external EC2, never this port), so loopback is safe.
+  #
+  # One-time deploy note: the pre-existing orphan (compose project `edge-api`)
+  # still holds the `edge-api-db` name + host:1234. Free them once before the
+  # first stack deploy that includes this service:
+  #     docker compose -p edge-api down    # removes the stray dev-only project
+  # After that the `stack` project owns edge-api-db and keeps it on loopback.
+  edge-api-db:
+    image: postgres:15-alpine
+    container_name: edge-api-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: packiot
+    ports:
+      # host:container — loopback only (was 0.0.0.0:1234 as an orphan).
+      - "127.0.0.1:1234:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d packiot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - edge-api-db-data:/var/lib/postgresql/data
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.39
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
