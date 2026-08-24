@@ -47,11 +47,11 @@ SBXCPACK `packml_register` rows.
 
 ## Routing-key assumption
 
-The staging edge-transformer publishes the **2-segment `sparkplug.data`** key
-(tenant inside the envelope — verified in `services/edge-transformer/cmd/
-edge-transformer/main.go`; there is **no `F3_PER_TENANT_ROUTING` flag** anywhere
-in the tree). The fan-out queue binds BOTH `sparkplug.data` and
-`sparkplug.data.cpack` so it keeps working if per-tenant routing is ever added.
+The staging sparkplug-decoder publishes the **2-segment `sparkplug.data`** key
+by default (tenant inside the envelope — see `services/sparkplug-decoder/cmd/
+edge-transformer/main.go`). Setting the decoder's **`F3_PER_TENANT_ROUTING=true`**
+flag switches it to `sparkplug.data.<tenant>`. The fan-out queue binds BOTH
+`sparkplug.data` and `sparkplug.data.cpack`, so it keeps working across that flip.
 Because `sparkplug.data` carries **every** tenant, the transform gates on
 `group == CPACK` and acks non-CPACK messages without republishing.
 

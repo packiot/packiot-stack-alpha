@@ -1601,10 +1601,11 @@ services:
       FANOUT_QUEUE: oeecloud-fanout-cpack-to-sbxcpack
       FANOUT_SOURCE_GROUP: CPACK
       FANOUT_TARGET_GROUP: SBXCPACK
-      # Live key is 2-segment `sparkplug.data` (edge-transformer emits it; no
-      # F3_PER_TENANT_ROUTING flag exists). The 3-segment key is bound too so the
-      # fan-out survives a future per-tenant-routing flip; the in-code group
-      # filter keeps non-CPACK traffic on the shared key from leaking to SBXCPACK.
+      # Default live key is 2-segment `sparkplug.data` (decoder emits it unless
+      # F3_PER_TENANT_ROUTING=true, which switches it to sparkplug.data.<tenant>).
+      # The 3-segment key is bound too so the fan-out survives that per-tenant
+      # routing flip; the in-code group filter keeps non-CPACK traffic on the
+      # shared key from leaking to SBXCPACK.
       FANOUT_SOURCE_ROUTING_KEYS: "sparkplug.data,sparkplug.data.cpack"
       FANOUT_TARGET_ROUTING_KEY: "sparkplug.data.sbxcpack"
       PREFETCH: "50"
@@ -1881,6 +1882,17 @@ services:
       # keep their real bound. Reversible: unset + redeploy. Superseded later by
       # COUNTERS_ONLY_FROM_DB (real 3×production_speed per machine).
       CALC_NO_SPEED_GUARD_FALLBACK: "true"
+      # fix2 — per-tenant routing flip. Default OFF = publish the 2-segment
+      # `sparkplug.data` firehose (exact-bound stream-engine-q consumes it;
+      # tenant rides in-envelope), byte-identical to today. Flip to "true"
+      # (via .env: F3_PER_TENANT_ROUTING=true) to publish `sparkplug.data.<tenant>`
+      # so the `oee` topic exchange shards each tenant into its OWN
+      # stream-engine-q-<tenant> — which stream-engine already declares +
+      # consumes + registers a per-tenant dispatcher handler for (scoped by
+      # WORKER_TENANT_ALLOWLIST). oeecloud-fanout binds BOTH sparkplug.data and
+      # sparkplug.data.cpack (+ CPACK group guard) so the SBXCPACK twin is
+      # unaffected. Reversible: unset + restart → back to the plain key.
+      F3_PER_TENANT_ROUTING: "${F3_PER_TENANT_ROUTING:-false}"
       POSTGRES_DB: packiot_analytics
       POSTGRES_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@10.10.10.89:5432/packiot_analytics"
       # LINE_TRACE_TENANTS: comma-sep lowercase GroupIDs to trace at INFO (no

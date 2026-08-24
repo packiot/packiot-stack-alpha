@@ -589,7 +589,27 @@ func main() {
 			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
 				slog.Bool("use_go_port", cfg.UseGoPort))
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
+		// F3_PER_TENANT_ROUTING (fix2 — activate the per-tenant queue fabric).
+		// Default false = publish the 2-segment `sparkplug.data` (the legacy
+		// firehose the exact-bound `stream-engine-q` consumes; tenant rides
+		// inside the envelope). When true, publish `sparkplug.data.<tenant>`
+		// so the exchange routes each tenant to its OWN per-tenant queue
+		// (`stream-engine-q-<tenant>`, already declared + consumed by the
+		// worker, gated by WORKER_TENANT_ALLOWLIST). This retires the shared
+		// default queue as the per-tenant shard for every producing tenant.
+		//
+		// SAFETY: the flip is inert until the flag is set. Downstream is
+		// already prepared — the worker consumes `stream-engine-q-<tenant>`
+		// and registers a `sparkplug.data.<tenant>` handler for each active
+		// (allowlisted) tenant, and oeecloud-fanout binds BOTH `sparkplug.data`
+		// and `sparkplug.data.cpack` (+ an in-code CPACK group guard), so the
+		// SBXCPACK twin keeps working across the flip. Reversible: unset +
+		// restart → back to the plain key, byte-identical.
+		perTenantRouting := os.Getenv("F3_PER_TENANT_ROUTING") == "true"
+		if perTenantRouting {
+			logger.Info("F3_PER_TENANT_ROUTING=true: publishing analytics envelopes to per-tenant routing key sparkplug.data.<tenant> (stream-engine per-tenant queues)")
+		}
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -1570,7 +1590,20 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *analyti
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+// analyticsRoutingKey selects the `oee`-exchange routing key for a decoded
+// analytics envelope. perTenant=false → the 2-segment legacy firehose key
+// "sparkplug.data" (exact-bound stream-engine-q; tenant rides in-envelope).
+// perTenant=true → "sparkplug.data.<tenant>", so the topic exchange shards
+// each tenant into its own stream-engine-q-<tenant>. tenant is already
+// lowercased by the caller (strings.ToLower(topic.GroupID)).
+func analyticsRoutingKey(perTenant bool, tenant string) string {
+	if perTenant && tenant != "" {
+		return "sparkplug.data." + tenant
+	}
+	return "sparkplug.data"
+}
+
+func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1691,14 +1724,23 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 			//   - "refactored" → public.* on packiot_analytics DB (opt-in via
 			//                    SHADOW_EMIT_REFACTORED=true env)
 			tenant := strings.ToLower(topic.GroupID)
-			// 10.9 POST-CUTOVER FIX: the worker consumes the EXACT key
-			// "sparkplug.data" (per-tenant queues retired with legacy
-			// ingest). The tenant-suffixed key published the entire
-			// post-cutover stream into an unconsumed queue — 17k
-			// messages, found because a NEW dashboard metric stayed
-			// empty while every row-count check passed (the fan-out
-			// was feeding the tables). Tenant rides inside the envelope.
-			routingKey := "sparkplug.data"
+			// Routing key selection (fix2 — per-tenant queue fabric):
+			//
+			//   perTenantRouting=false (default): publish the 2-segment
+			//   "sparkplug.data". The worker's exact-bound legacy queue
+			//   (stream-engine-q) consumes it; tenant rides inside the
+			//   envelope. This was the 10.9 POST-CUTOVER state — at the
+			//   time the tenant-suffixed key published the whole stream
+			//   into an UNCONSUMED queue (17k stranded messages) because
+			//   the worker did not yet consume the per-tenant queues.
+			//
+			//   perTenantRouting=true: publish "sparkplug.data.<tenant>".
+			//   The exchange now routes each tenant to its dedicated
+			//   stream-engine-q-<tenant> — which the worker DOES declare +
+			//   consume today (and registers a sparkplug.data.<tenant>
+			//   dispatcher handler for), so the 10.9 stranding cannot recur.
+			//   Retires the shared default queue as the per-tenant shard.
+			routingKey := analyticsRoutingKey(perTenantRouting, tenant)
 
 			sourceTypes := emittedSourceTypes(emitGo, emitRefactored, emitProduction)
 			for _, st := range sourceTypes {
