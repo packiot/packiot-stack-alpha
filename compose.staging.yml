@@ -1322,6 +1322,13 @@ services:
       # and cascades up the grain tree. Enabled now that the grain reconcile is
       # canonical, so drained rows land with oee == A·P·Q at every grain.
       ROLLUP_BACKFILL_ENABLED: "true"
+      # Tick cadence. Kept coprime to the ~30s live-availability lock cycle: the
+      # backfill's advisory try-lock otherwise phase-aliases against that ~30s
+      # cycle and skips ~every tick. The durable fix is the backfill's dedicated
+      # advisory key (services/stream-engine/internal/rollup/backfill.go, same PR);
+      # with that key 7s just makes drains more responsive. Safe to reset to "30"
+      # once the dedicated-key build is confirmed draining.
+      ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
       # Close stale mirror-fanned CPACK open status=6 events (ts_end NULL). CPACK is
       # status_type=0 so the deriver skips it and the cpac shadow-deriver is dark, so
       # nothing closes them → a stale open stretches to now() and fabricates ~100%

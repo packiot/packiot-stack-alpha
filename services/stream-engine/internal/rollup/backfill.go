@@ -19,8 +19,31 @@
 //
 // Bounded + oldest-first so a tick drains a fixed slice of the backlog without a
 // load spike (which would re-create the very statement-timeout pressure we just
-// fixed). Shares the per-dest runtime advisory lock with the live rollup, so the
-// two never write the same grain rows concurrently.
+// fixed).
+//
+// ── DEDICATED ADVISORY-LOCK KEY (starvation fix, 2026-08-24) ─────────────────
+// This USED to share the live rollup's per-dest "<dest>:runtime" advisory key so
+// the two never wrote the same grain rows concurrently. Measured on staging F3,
+// that shared key STARVED the backfill: the live hour/shift rollup's availability
+// pass (rollup/availability.go "WITH bounds …") holds "<dest>:runtime" for ~28s
+// and re-runs back-to-back (<2s gaps), a ~96% duty cycle. With a fixed 30s tick
+// the backfill's pg_try_advisory_xact_lock aliased against the ~30s availability
+// cycle and sampled the held window on essentially every tick → gotLock=false,
+// silent skip, NO drain. hourReflagSQL re-flags the trailing ~3h band every 60s,
+// so rows in [now-65min, now-3h) that only the backfill can recompute piled up
+// (14k+ stranded, growing) — stale grain rows on the CPACK twin.
+//
+// The shared key is NOT needed for correctness: every hour pass (values, cascades,
+// speed, events, oee) is driven by the hour_elig temp table and gated to
+// `e.ts_value = el.ts_value`. The live eligible set is `ts_value >= now()-65min`;
+// this backfill's is `ts_value < now()-65min AND >= now()-10d` — DISJOINT by the
+// 65-minute boundary. So the live rollup and the backfill never UPDATE the same
+// equipment_runtime_1hour / area_runtime_1hour row; the only cross-writer is the
+// idempotent `recalc_needed = true` flag on equipment_runtime_1day (both may set
+// it TRUE — safe under concurrency). Given that, the backfill takes its OWN key
+// ("<dest>:runtime-backfill") so it no longer serializes behind the live rollup
+// and gets its lock every tick — the backlog drains at the tick rate instead of
+// once per lucky lock-gap.
 package rollup
 
 import (
@@ -87,17 +110,17 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		return 0, fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	// Same lock the live rollup + provision take — serializes grain writes. But
-	// TRY (non-blocking): the backfill is best-effort background work, so if the
-	// live rollup holds the lock we skip this tick rather than block. Blocking
-	// here on the main pool (pgbouncer, 120s statement_timeout) was what timed
-	// out the F2 backfill; a skip-and-retry-next-tick can never do that.
+	// DEDICATED backfill key (see header): serializes the backfill against ITSELF
+	// (single goroutine, so effectively a no-op guard) but NOT against the live
+	// rollup — the two write disjoint grain rows (65-min boundary). Still TRY
+	// (non-blocking) so a tick can never wedge on the main pool's 120s
+	// statement_timeout; with the dedicated key the try now succeeds every tick.
 	var gotLock bool
-	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime").Scan(&gotLock); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))`, d.Name+":runtime-backfill").Scan(&gotLock); err != nil {
 		return 0, fmt.Errorf("advisory try-lock: %w", err)
 	}
 	if !gotLock {
-		return 0, tx.Commit(ctx) // live rollup holds it — retry next tick
+		return 0, tx.Commit(ctx) // another backfill tick holds it — retry next tick
 	}
 	tag, err := tx.Exec(ctx, fmt.Sprintf(hourBackfillEligibleSQL, d.EvSchema, d.RefSchema, limit), exclAreas, exclEnterprises)
 	if err != nil {
