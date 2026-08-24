@@ -68,16 +68,30 @@ ON CONFLICT (packml_topic) DO NOTHING;
 
 -- ── Line meters (id_infeedcounter = gross source, id_outfeedcounter = net source) ──
 -- Authoritative per-line meters, cross-checked against the legacy packiot40 oracle
--- (matching each legacy LINE total to the member machine with the identical total):
--- net = the OUTFEED (TEXA) on every line; gross = the physical INFEED, which varies
--- (BREYER L3/L4/L5, RMH L6, DXL L8/L10). Values are the WIRE count-indices.
--- The edge-transformer Parameter30700 seeder reads these as [infeed, outfeed] so
--- Phase-9 aggregates the line from the correct machines (see line_param30700_seed.go).
--- NOT ordered by count-index (L6 gross=94 > net=92) — that is why explicit meters
--- beat the ascending-CSV fallback. See docs/clients/cpack-legacy-oracle-line-meters.md.
+-- (matching each legacy LINE own-stream total to the member machine with the identical
+-- total, over 2.5k–4.3k rows/shift — not coincidence). Values are the WIRE count-index
+-- the agent publishes as topicArray[7] (see docs/clients/cpack-agent.yaml), which is the
+-- index line_aggregation.go compares against. The seeder reads these as [infeed, outfeed]
+-- so Phase-9 aggregates the line from the correct machines (see line_param30700_seed.go).
+--
+-- 2026-08-24 re-reconciliation on F3 (packiot_analytics, ent-3) against a LIVE oracle:
+--   * net  = the OUTFEED (TEXA) on every line  — stable across all windows.
+--   * gross = the physical INFEED = BREYER (L3/L4/L5/L6) or DXL (L8/L10).
+--   * L6 CORRECTED 94 (RMH) -> 91 (BREYER): the legacy L6 own-stream gross exact-matched
+--     RMH(94) on Aug 17-18 but BREYER(91) on Aug 20-24 (a factory infeed change); with
+--     RMH the line net(TEXA)=53013 > gross(RMH)=42379 gave an impossible Q=1.25 (capped
+--     to 1.0 in equipment_runtime_shift = inflated OEE). BREYER gross(73027) > net(53013)
+--     => Q~0.73, matching the oracle's 0.68 (residual is the outfeed net inflation, a
+--     separate reader defect). Verified live 2026-08-24.
+--   * L4 meter is a KNOWN FAITHFUL GAP, deliberately left at 6/10 (matches nothing =>
+--     line absent). The oracle-correct meter is 88 (BREYER gross) / 84 (TEXA net), but on
+--     our wire L4/TEXA emits ProdConsumedCount ONLY (net=0 across 1289 rows/24h), so
+--     enabling 88/84 would materialise a gross-only line at Q=0 (a misleading "100% scrap"
+--     mirage, worse than absent). Enable 88/84 ONLY after the generated reader emits
+--     L4/TEXA ProdProcessedCount. See docs/clients/cpack-legacy-oracle-line-meters.md.
 UPDATE packml_register SET id_infeedcounter = 76,  id_outfeedcounter = 80  WHERE packml_topic = 'CPACK/SC/LINHAS/L3';
-UPDATE packml_register SET id_infeedcounter = 6,   id_outfeedcounter = 10  WHERE packml_topic = 'CPACK/SC/LINHAS/L4';
+UPDATE packml_register SET id_infeedcounter = 6,   id_outfeedcounter = 10  WHERE packml_topic = 'CPACK/SC/LINHAS/L4';  -- FAITHFUL GAP (see note); oracle-correct = 88/84, held pending reader ProdProcessedCount
 UPDATE packml_register SET id_infeedcounter = 61,  id_outfeedcounter = 65  WHERE packml_topic = 'CPACK/SC/LINHAS/L5';
-UPDATE packml_register SET id_infeedcounter = 94,  id_outfeedcounter = 92  WHERE packml_topic = 'CPACK/SC/LINHAS/L6';
+UPDATE packml_register SET id_infeedcounter = 91,  id_outfeedcounter = 92  WHERE packml_topic = 'CPACK/SC/LINHAS/L6';  -- infeed BREYER (was 94/RMH; oracle-corrected 2026-08-24)
 UPDATE packml_register SET id_infeedcounter = 219, id_outfeedcounter = 222 WHERE packml_topic = 'CPACK/SC/LINHAS/L8';
 UPDATE packml_register SET id_infeedcounter = 564, id_outfeedcounter = 567 WHERE packml_topic = 'CPACK/SC/LINHAS/L10';

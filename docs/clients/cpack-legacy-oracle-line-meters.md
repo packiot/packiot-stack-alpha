@@ -119,3 +119,67 @@ Alt: source line net from the line's own-stream ProdProcessedCount if the tee ca
 ## Access note
 Oracle read via the `packiotdb` DBeaver connection (user `epodesta`), read-only SELECTs
 from this workstation (packiot40 reachable). No writes to legacy.
+
+## 2026-08-24 — FULL re-reconciliation on F3 (packiot_analytics, ent-3, live oracle)
+
+Re-ran the meter derivation on **F3** (the F1→F3 retirement moved the data plane; the
+old F1 backfill values had been carried into F3 verbatim). Method unchanged: match each
+legacy LINE own-stream 24h total to the member whose 24h total is identical.
+
+**Index space proven.** `line_aggregation.go` compares `topicArray[7]` (the index the
+agent embeds in the published count topic, e.g. `.../L6/BREYER/Admin/ProdConsumedCount/91/Unit`
+→ 7 = `91`) against `Parameter30700` csv[0] (infeed→line ProdConsumedCount/gross) and
+csv[last] (outfeed→line ProdProcessedCount/net). The seeder emits the register
+`[id_infeedcounter, id_outfeedcounter]` verbatim, so the meter values MUST be published
+indices. Confirmed live: decoder `first_metric` logs and the agent map agree per member.
+
+**Oracle 24h (2026-08-24), infeed=member matching line gross, outfeed=member matching line net:**
+| Line | line gross | infeed(idx) | line net | outfeed(idx) | oracle Q |
+|------|-----------|-------------|----------|--------------|----------|
+| L3(75)  | 105926 | BREYER(76)  | 92290 | TEXA(80)  | 0.87 |
+| L4(83)  | 92062  | BREYER(88)  | 97634 | TEXA(84)  | ~1 (legacy net>gross quirk) |
+| L5(60)  | 87656  | BREYER(61)  | 79834 | TEXA(65)  | 0.91 |
+| L6(90)  | 71930  | **BREYER(91)** | 48740 | TEXA(92) | 0.68 |
+| L8(218) | 815 (idle) | DXL(219) | 0 | TEXA(222) | idle |
+| L10(563)| 81100  | DXL(564)    | 70496 | TEXA(567) | 0.87 |
+
+net = OUTFEED (TEXA) on every line (stable). gross = physical INFEED = BREYER (L3/L4/L5/L6),
+DXL (L8/L10).
+
+### L6 meter CORRECTED: 94 (RMH) → 91 (BREYER)  [APPLIED + VERIFIED live]
+The 2026-08-18 doc designated L6 gross=RMH(94). A 7-day daily breakdown shows the legacy L6
+own-stream gross exact-matched **RMH(94) on Aug 17-18** but **BREYER(91) on Aug 20-24** — the
+physical infeed changed ~Aug 19. With the stale RMH meter our L6 line net(TEXA,53013) >
+gross(RMH,42379) → Q=1.25, capped to 1.0 in equipment_runtime_shift = **inflated OEE**
+(shifts showed Q=1.0). Corrected to BREYER(91): gross(73027) > net(53013) → Q≈0.73.
+**Verified live:** after the register UPDATE + 5-min reseed, over an identical wall-clock
+window our L6 line gross = **615 = oracle 615 EXACT**; net 567 vs oracle 513 (~10% high =
+the separate outfeed net-inflation reader defect below, not the meter). Applied to CPACK +
+SBXCPACK. Reversible: `SET id_infeedcounter = 94 WHERE packml_topic IN
+('CPACK/SC/LINHAS/L6','SBXCPACK/SC/LINHAS/L6')`. (Current shift is partially contaminated by
+pre-change RMH rows; all subsequent shifts are clean — recalc cannot repair the already-written
+line rows.)
+
+### Lines NOT changed — per-line disposition (all left as-is, evidence below)
+- **L3(48)** meter 76/80 = oracle-correct. FAITHFUL GAP on **gross**: on our wire L3/BREYER
+  emits `ProdProcessedCount/76` ONLY (decoder log, 16×; F3 BREYER id58 gross=0/net=3589) —
+  the reader inverted Consumed/Processed → line ProdConsumedCount(first=76) never fires →
+  line gross=0 → line OEE=0. A meter change cannot fix a missing/inverted leaf.
+- **L4(49)** left at 6/10 (matches nothing → line absent). Oracle-correct = **88/84** but
+  our wire L4/TEXA emits `ProdConsumedCount/84` ONLY (net=0 across 1289 rows/24h) → 88/84
+  would materialise a gross-only line at **Q=0** (a "100% scrap" mirage, worse than absent).
+  Enable 88/84 ONLY after the generated reader emits L4/TEXA ProdProcessedCount.
+- **L5(47)** meter 61/65 = oracle-correct machines, but F3 L5-BREYER(53) gross=3,062,217 and
+  L5-PTH(55) gross=9,970,435 are **totalizer garbage** (wrap/spike) → line gross poisoned →
+  shift Q=0.017 (vs oracle 0.91). A MEMBER data-quality/spike-guard defect, not a meter
+  problem. Out of scope for meter reconcile — flagged for the reader/spike-guard follow-up.
+- **L8(51)** meter 219/222 = correct indices (DXL=219, TEXA=222 per agent map). Config-correct
+  but IDLE (members ~0 rows; oracle L8 also idle at gross 815). Produces 0 until L8 runs.
+- **L10(52)** meter 564/567 = oracle-correct indices. FAITHFUL GAP: on our wire L10/DXL emits
+  `ProdProcessedCount/564` ONLY (F3 id77 gross=0/net=80598 — inverted like L3) and L10/TEXA(567)
+  is not teed (0 rows) → line gross=0 AND net=0 → line absent. Reader/tee defect, not a meter.
+
+**Summary:** of 6 lines, only **L6** had a meter that a value change fixes (RMH→BREYER,
+correcting an inflated Q). L4/L3/L10 are reader-defect faithful gaps (correct meter identified,
+held); L5 is a member-totalizer defect; L8 is config-correct-but-idle. All gaps trace to the
+generated reader's per-machine Consumed/Processed mapping — the open reader-fix follow-up.
