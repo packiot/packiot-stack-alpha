@@ -306,6 +306,62 @@ server {
 }
 NGINX
 
+# ── operator-sbx vhost (SANDBOX operator — SBXCPACK / enterprise 2000003) ──────
+# Twin of the operator vhost above, but proxies to the operator-sbx container on
+# :8085 (compose.staging.yml), which injects the SANDBOX enterprise api-key. Same
+# oauth2-proxy shell gate + API-route bypass; the tenant separation is entirely in
+# the injected api-key, so this host drives the resettable sandbox tenant and can
+# never write to real CPACK. Sandbox operator login: packiot-sbx / sbxdrive.
+cat > /etc/nginx/conf.d/operator-sbx.conf <<NGINX
+server {
+    listen 80;
+    server_name operator-sbx.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name operator-sbx.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    include snippets/oauth2-proxy.conf;
+
+    # API routes — bypass the SSO gate (the operator SPA carries its own /session
+    # JWT). Kept in sync with the operator vhost route list.
+    location ~ ^/(session|machines|edit-manual-event|add-manual-event|split-events|set-event|change-po|start-po|replace-po|create-start|language-pack|downtime-reasons|health|logo|recommended-change-times|available-production-orders|pending-events|production|solved-events|set-api-key)(/|\$) {
+        proxy_pass         http://127.0.0.1:8085;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        auth_request /oauth2/auth;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        proxy_pass         http://127.0.0.1:8085;
+        proxy_set_header   Host                 \$host;
+        proxy_set_header   X-Real-IP            \$remote_addr;
+        proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto    https;
+        proxy_set_header   X-Auth-Request-User  \$auth_user;
+        proxy_set_header   X-Auth-Request-Email \$auth_email;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
 # ── csadmin vhost (CS-Admin SPA — origin-verify only) ─────────────────────────
 cat > /etc/nginx/conf.d/csadmin.conf <<NGINX
 server {

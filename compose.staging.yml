@@ -2499,3 +2499,61 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
+
+  # ── Operator (SANDBOX instance — SBXCPACK / enterprise 2000003) ────────────────
+  # A SECOND operator SPA, byte-identical image to `operator` above, that drives
+  # the resettable sandbox tenant (SANDBOX-CPACK, id_enterprise 2000003) instead
+  # of real CPACK (enterprise 3). The ONLY difference is runtime env: nginx
+  # injects the SANDBOX enterprise api-key on /api/* writes, so every action this
+  # SPA performs lands in the sandbox's F3 rows — never in real CPACK. Proven
+  # end-to-end 2026-08-24: POST /session as packiot-sbx → 200; POST
+  # /api/downtimes/create-manual-event → equipment_events_man row with
+  # id_enterprise=2000003 (a body-asserted idEnterprise:3 was overwritten to
+  # 2000003 by the api-key fence — the key governs the tenant, not the body).
+  #
+  # Reuses the SAME build stanza as `operator` (context+dockerfile+args identical),
+  # so Docker builds ONE image and both services share it — no rebuild divergence,
+  # no operator-repo change required. Distinct container_name / host port / static
+  # IP / vhost so it never disturbs the CPACK operator container.
+  #
+  # LOGIN: the baked staging auto-login (packiot/packiot) is CPACK-only and 401s
+  # here, so operator-sbx drops to the login form — log in as the sandbox operator
+  # user  packiot-sbx / sbxdrive  (users.id_user=2000002, id_enterprise=2000003).
+  # OPTIONAL turnkey follow-up (operator repo): teach Dockerfile.staging to accept
+  # ARG VITE_STAGING_AUTO_LOGIN_USER / _PASS (the SPA already reads them, see
+  # src/Pages/Login/index.jsx) and pass them here to auto-login as packiot-sbx.
+  #
+  # nginx vhost operator-sbx.$STAGING_DOMAIN → 127.0.0.1:8085 is emitted by
+  # terraform/staging/user_data/nginx_setup.sh (mirrors the operator vhost).
+  operator-sbx:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_PO_WRITE_QUEUE_ENABLED: "true"
+    container_name: operator-sbx
+    restart: unless-stopped
+    environment:
+      # SANDBOX enterprise api-key (enterprises.api_key WHERE id_enterprise=2000003).
+      # Lives in /opt/packiot/.env as OPERATOR_SBX_EDGE_API_KEY — NEVER the real
+      # CPACK key (fe1681…). Empty default = fail-closed (edge-api 401s) if unset.
+      EDGE_API_KEY: ${OPERATOR_SBX_EDGE_API_KEY:-}
+      # Sandbox reads reuse the CPACK staging read key for now (refdata maps it to
+      # a tenant); override via OPERATOR_SBX_REFDATA_API_KEY once a sandbox read
+      # key is provisioned in refdata's QUERY_API_KEYS.
+      REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:-stg-cpack-key}
+    ports:
+      - "127.0.0.1:8085:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.42
+    depends_on:
+      edge-api:
+        condition: service_started
+      read-api:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
