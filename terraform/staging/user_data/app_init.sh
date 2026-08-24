@@ -138,6 +138,11 @@ SUPERSET_DB_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_db_password // ""')
 SUPERSET_DB_RO_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_db_ro_password // ""')
 SUPERSET_GUESTTOKEN_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_user // ""')
 SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_password // ""')
+# Durable human super-admin, SEPARATE from the guest-token minter service account,
+# so bootstrap_guest_role.py can scope the minter down to a non-Admin role without
+# leaving the instance admin-less. Default "" -> minter keeps Admin (lockout guard).
+SUPERSET_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_admin_user // ""')
+SUPERSET_ADMIN_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_admin_password // ""')
 SUPERSET_COGNITO_ISSUER=$(echo "$APP_SECRET" | jq -r '.superset_cognito_issuer // ""')
 SUPERSET_COGNITO_CLIENT_ID=$(echo "$APP_SECRET" | jq -r '.superset_cognito_client_id // ""')
 SUPERSET_COGNITO_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.superset_cognito_client_secret // ""')
@@ -283,6 +288,8 @@ SUPERSET_DB_PASSWORD=$SUPERSET_DB_PASSWORD
 SUPERSET_DB_RO_PASSWORD=$SUPERSET_DB_RO_PASSWORD
 SUPERSET_GUESTTOKEN_ADMIN_USER=$SUPERSET_GUESTTOKEN_ADMIN_USER
 SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$SUPERSET_GUESTTOKEN_ADMIN_PASSWORD
+SUPERSET_ADMIN_USER=$SUPERSET_ADMIN_USER
+SUPERSET_ADMIN_PASSWORD=$SUPERSET_ADMIN_PASSWORD
 SUPERSET_COGNITO_ISSUER=$SUPERSET_COGNITO_ISSUER
 SUPERSET_COGNITO_CLIENT_ID=$SUPERSET_COGNITO_CLIENT_ID
 SUPERSET_COGNITO_CLIENT_SECRET=$SUPERSET_COGNITO_CLIENT_SECRET

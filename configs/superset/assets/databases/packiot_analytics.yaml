@@ -34,7 +34,11 @@
 database_name: packiot_analytics
 sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@10.10.10.89:5432/packiot_analytics
 cache_timeout: null
-expose_in_sqllab: true
+# HARDENING: authors get NO native SQL against the analytics DB. RLS rewrites
+# DATASET queries only; a SQL-Lab user could SELECT straight off a base table and
+# bypass dataset-scoped RLS. Keep this false (superset_config.py documents the same
+# posture) so the analytics connection never appears in SQL Lab.
+expose_in_sqllab: false
 allow_run_async: true
 allow_ctas: false
 allow_cvas: false

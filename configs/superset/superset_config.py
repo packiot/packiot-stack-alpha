@@ -27,7 +27,12 @@ SECRET_KEY = os.environ["SUPERSET_SECRET_KEY"]
 # it asks Superset to MINT the guest token over the API; only Superset signs it.
 GUEST_TOKEN_JWT_SECRET = os.environ["SUPERSET_GUEST_TOKEN_JWT_SECRET"]
 GUEST_TOKEN_JWT_EXP_SECONDS = 300          # 5 min; front4 re-mints on expiry
-GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens assume
+# DEDICATED guest role — MUST NOT be "Public". In Flask-AppBuilder "Public" is the
+# role every UNAUTHENTICATED request assumes, so pointing guest tokens at Public
+# leaks the guest read/explore/datasource perms to the whole internet (the anon
+# `GET /api/v1/dashboard/` 200 metadata leak). "GuestViewer" is created + granted the
+# minimal embed perms by bootstrap_guest_role.py; Public is stripped to zero perms.
+GUEST_ROLE_NAME = "GuestViewer"            # dedicated, locked-down role guest tokens assume
 
 # ── Metadata DB (Superset's own state — SEPARATE from the analytics DB) ───────
 # The dedicated `superset` role+DB on the r7g, created by superset-db-init (mirrors
