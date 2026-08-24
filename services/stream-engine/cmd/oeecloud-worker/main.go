@@ -419,6 +419,21 @@ func main() {
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}
 
+	// Stale-open events closer — bounds/closes never-closed CPACK (status_type=0)
+	// open equipment_events on the LIVE table (mirror fan-out mints them but never
+	// closes them; the CPAC deriver that would bound them is still shadow-only).
+	// DEFAULT OFF; a stale open status=6 otherwise reads running_time to now() and
+	// fabricates ~100% availability on idle lines. Idempotent + parity-safe.
+	if cfg.EventsCloseStaleEnabled {
+		go events.LoopClose(ctx, bgDests,
+			events.CloserConfig{
+				Enterprises:     config.CSVInts(cfg.EventsCloseStaleEnterprises),
+				ThresholdDefSec: cfg.EventsCloseStaleThresholdSec,
+				HorizonHours:    cfg.EventsCloseStaleHorizonHours,
+			},
+			time.Duration(cfg.EventsCloseStaleIntervalSec)*time.Second, logger, jobObs)
+	}
+
 	// Sparkplug handler — top-level for routing-key "sparkplug.data".
 	// Parses the AMQP payload, builds one Query per metric via the right
 	// writer, and sends them as a single pgx.Batch.

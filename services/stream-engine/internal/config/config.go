@@ -199,6 +199,17 @@ type Config struct {
 	// so the comparator is a clean two-table diff and flag-off parity is total.
 	CPACEventTargetTable string
 
+	// Stale-open events closer — bounds/closes never-closed CPACK (status_type=0)
+	// open equipment_events on the LIVE table by next-event (lead) / count-silence
+	// so a stale open status=6 stops reading running_time to now() (the fabricated
+	// ~100% availability bug). DEFAULT OFF; scoped to EventsCloseStaleEnterprises;
+	// idempotent + parity-safe (only ts_end IS NULL rows, never human-touched).
+	EventsCloseStaleEnabled       bool
+	EventsCloseStaleIntervalSec   int
+	EventsCloseStaleEnterprises   string // csv status_type=0 enterprise ids (CPACK=3); empty ⇒ inert
+	EventsCloseStaleThresholdSec  int    // trailing-close grace when stop_threshold_time IS NULL/0
+	EventsCloseStaleHorizonHours  int    // only reconcile opens with ts_event >= now()-horizon
+
 	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
 	// sync (verbatim-embedded state machine).
 	Sync06ReportEnabled   bool
@@ -434,6 +445,11 @@ func Load() (*Config, error) {
 		CPACEventEnterprises:             getenv("CPAC_EVENT_ENTERPRISES", ""),
 		CPACStopThresholdDefaultSec:      getenvInt("CPAC_STOP_THRESHOLD_DEFAULT_SEC", 300),
 		CPACEventTargetTable:             getenv("CPAC_EVENT_TARGET_TABLE", "equipment_events_cpac_shadow"),
+		EventsCloseStaleEnabled:          getenv("EVENTS_CLOSE_STALE_ENABLED", "false") == "true",
+		EventsCloseStaleIntervalSec:      getenvInt("EVENTS_CLOSE_STALE_INTERVAL_SEC", 60),
+		EventsCloseStaleEnterprises:      getenv("EVENTS_CLOSE_STALE_ENTERPRISES", ""),
+		EventsCloseStaleThresholdSec:     getenvInt("EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC", 300),
+		EventsCloseStaleHorizonHours:     getenvInt("EVENTS_CLOSE_STALE_HORIZON_HOURS", 72),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
