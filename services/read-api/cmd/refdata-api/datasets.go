@@ -896,14 +896,30 @@ var datasets = map[string]dataset{
 	// creating that view (DDL handed off with this change); the pre-prod-flip
 	// contract-drift GATE (scripts/refdata-contract-drift-check.sh) will BLOCK the
 	// flip — fail-closed — until the view exists in prod, so this never serves a
-	// missing object silently. The hardcoded 37 is gone: the tenant is $1, the hour
-	// bucket is bound via pDate ($2::timestamp). Not windowed (a single hour point).
+	// missing object silently. The hardcoded 37 is gone: the tenant is $1, the
+	// shift bucket is bound via pDate ($2::timestamp). Not windowed (a single shift).
+	//
+	// BUCKET SEMANTICS (fix): v_report_downtimes.ts_value is the SHIFT BEGIN
+	// timestamp (equipment_runtime_shift.ts_value), NOT an hour boundary. Shifts
+	// only start on the hour for tenants whose shift schedule happens to be hour-
+	// aligned — which was true for Suzano (ent 37), the ONLY tenant back4 ever
+	// served here (its query hardcoded id_enterprise = 37). back4 matched
+	// `ts_value = date_trunc('hour', $1)`, and for hour-aligned Suzano shifts the
+	// truncation is a no-op, so it worked by accident. Ported verbatim it silently
+	// broke on any tenant with off-the-hour shifts: CPACK (ent 3) shifts begin at
+	// 02:10 / 09:30 / 18:00, so date_trunc('hour', …) could only ever match the
+	// 18:00 shift — the 02:10 and 09:30 shifts returned ZERO rows even though the
+	// view held them (measured on staging F3: 09:30 → 0 served vs 61 in the view;
+	// 02:10 → 0 vs 95; 18:00 → 11 = 11, the accidental match). The bucket key is the
+	// shift begin, so the caller passes the exact shift ts_value and we match it
+	// exactly; hour-truncation is the Suzano artifact and is removed. This does not
+	// change the working 18:00 shift (18:00 == date_trunc('hour',18:00)).
 	"report-downtimes": {
-		group: "tenant-custom", doc: "Downtime report rows for one hour bucket (v_report_downtimes; dba-owned view, see report-downtimes note)",
+		group: "tenant-custom", doc: "Downtime report rows for one shift (v_report_downtimes, keyed by shift ts_value; dba-owned view, see report-downtimes note)",
 		sql: `SELECT op, linha, turno, inicio, fim, duracao, maquina,
 			codigo_categoria, codigo_subcategoria, descricao_categoria, descricao_subcategoria, anotacao
 			FROM v_report_downtimes
-			WHERE id_enterprise = $1 AND ts_value = date_trunc('hour', $2::timestamp)
+			WHERE id_enterprise = $1 AND ts_value = $2::timestamp
 			ORDER BY inicio DESC`,
 		params: []dsParam{pEnt, pDate("datetime")},
 	},
