@@ -1,96 +1,78 @@
-# CPACK twin re-point (legacy :1881 → new-stack :1880) — Phase-2 EXECUTION
+# CPACK twin re-point (legacy :1881 → new-stack :1880) — Phase-2 COMPLETE ✅
 
-**Date:** 2026-08-25 · **Outcome:** reader fix LIVE + cutover STAGED & PROVEN at the
-ingest layer, but the **final /v1 cut was reverted** (idle production window prevented
-per-line validation, and a stale cloud map needs a proper redeploy). Twin is back on
-legacy, healthy. This doc is the precise state + the exact remaining steps.
+**Date:** 2026-08-25 · **Outcome:** twin **cut over to :1880** and validated live during
+active production. Legacy `:1881` blackholed at the cloud edge. Twin OEE lines match the
+packiot40 oracle; previously-dark member tiles now flow; prod branch untouched.
 
-## What is LIVE now (kept)
+## Final live state
 
-- **Corrected reader (#907) deployed to `:1880`** (`edge-cpack-nodered`, factory
-  10.135.1.173). Replaces the old dup-node-id flow. **VERIFIED**: all 5 L6 members now
-  emit full 32-bit totalizers matching the packiot40 oracle (previously only L6/TEXA
-  polled — 7 of 8 modbus reads were shadowed by duplicate ids):
-  | member | emitted | oracle |
-  |---|---|---|
-  | BREYER/91 | 291,878,573 | 291,789,977 |
-  | POLYTYPE/93 | 283,618,366 | 283,532,648 |
-  | PTH/95 | 272,397,368 | 272,312,800 |
-  | RMH/94 | 104,199,546 | 104,162,623 |
-  | TEXA/92 | 266,125,490 | 266,042,525 |
-  This also **fixes prod's L6** (it was reading 32-bit counters as 16-bit → wrapping at
-  65535). Prod uplink to `ssl://ingest.prod:8883` verified intact after deploy.
+- **Reader `:1880`** runs the corrected #907 flow + a **staging-tee** 2nd branch that
+  POSTs the rawtag envelope to `https://cpack-ingest.staging.packiot.app:8447/v2/tags`
+  (cloud key `pk_cpack_af247745…`). Prod branch (→ local agent → `ssl://ingest.prod:8883`)
+  untouched. (`cpack-reader-flow.twin.json`)
+- **Cloud `sparkplug-agent-cpack`** runs `cpack-agent.twin.yaml` (330-entry map,
+  `packml_topic: CPACK/SC`, internal-mosquitto uplink). **Drops 0.**
+- **nginx** `cpack-ingest.staging:8447`: `/v1/tags → return 444` (legacy blackholed);
+  `/v2/tags → 172.18.0.38:9104/v1/tags`. (`cpack-ingest.cutover.conf`)
 
-## What was REVERTED (twin cutover machinery — all backed out)
+## Validation (live, during production)
 
-nginx `/v2`, the reader staging-tee, and a cloud-map patch were added, proven, then
-**fully reverted**. Final live state = pristine: nginx `/v1` proxy_pass restored (no
-`/v2`, no `return 444`), cloud agent on its original 102-entry map, twin fresh on legacy.
+| Line | Twin (:1880) gross/net | Oracle gross/net | |
+|---|---|---|---|
+| L5 (47/60) | 737,806 / 108,935 | 737,816 / 108,944 | ✓ exact |
+| L6 (50/90) | 291,920,192 / 266,162,960 | 291,920,229 / 266,162,982 | ✓ exact |
+| L3 (48/75) | idle | idle | ✓ both idle |
 
-## What we PROVED works (the cutover is viable)
+- **L5 net IMPROVED**: under legacy the twin showed net 246,774 vs oracle 106,128 (wrong);
+  under :1880 it's 108,935 vs oracle 108,944 (correct) — the twin-map topic resolution
+  fixed a net miscompute.
+- **Member gains** (previously dark on legacy, now flowing): **L8/DXL**, L4 members,
+  L10 members, and even **CELULA/CER400**. 26 distinct equipments writing; drops 0.
+- Prod uplink stayed connected throughout (outbox 0).
 
-1. **Reader staging-tee → cloud** works: a 2nd wire off the reader's `normalize` fn
-   re-POSTs the rawtag envelope to `https://cpack-ingest.staging.packiot.app:8447/v2/tags`
-   with `X-Ingest-Key: pk_cpack_af247745…` (the **cloud** agent key, distinct from the
-   factory's `4c867b6a…`). Confirmed **202** at nginx `/v2`.
-   - Gotcha: the tee's http-request node must send `msg.headers` (mirror the prod node);
-     and the tee function node MUST have an output wire (a missing wire = fn fires, no POST).
-2. **nginx `/v2`** = `location = /v2/tags { proxy_pass http://172.18.0.38:9104/v1/tags; …same block as /v1… }` — one reload, reversible.
+## Root cause of the two earlier failed cut attempts (the key lesson)
 
-## The BLOCKER that forced the revert: the deployed cloud map is STALE
+The agent builds each published SparkPlug topic as **`packml_topic` + the INCOMING metric
+suffix** (NOT the map's `metric_suffix`). The two readers emit different suffixes:
 
-The running `sparkplug-agent-cpack` mounts **`docs/clients/cpack-agent.yaml`** (old path,
-102 entries, `packml_topic: CPACK/SC/LINHAS`, L4 member indices **88/89/86/87/84**). But
-#907 codified the **correct** map at **`docs/clients/edge-deployment/cpack/cpack-agent.yaml`**
-(330 entries, `packml_topic: CPACK/SC`, `/LINHAS/…` suffixes, L4 indices **6/7/8/9/10**,
-+ full CELULA/SLEEVE/FLEXO coverage). Under the stale map, :1880's `/v2` stream dropped:
-- **5 LINHAS/L4 member counts** (reader emits idx 6/7/8/9; stale map expects 88/89/86/87)
-  → **would regress L4** (a live-patch of +5 L4 entries fixed this and L4 members flowed).
-- **~25 CELULA/SLEEVE/FLEXO count suffixes** — out of scope for the stale map; the twin
-  never had these via legacy, so dropping them is **not a regression** (but the #907 map
-  DOES cover them → a potential new win).
+| reader | emits | needs packml_topic | published topic |
+|---|---|---|---|
+| legacy :1881 | `/L5/…` | `CPACK/SC/LINHAS` | `CPACK/SC/LINHAS/L5/…` ✓ |
+| new :1880 | `/LINHAS/L5/…` | `CPACK/SC` | `CPACK/SC/LINHAS/L5/…` ✓ |
 
-**The stale map is NOT a wholesale swap**: the #907 map file carries a *factory* sparkplug
-config (`uplink_broker: ssl://ingest.prod:8883`, mTLS). The cloud twin agent must uplink to
-the **internal mosquitto** instead. The correct artifact is committed here as
-`cpack-agent.twin.yaml` (= #907 map + `uplink_broker: tcp://mosquitto:1883`, TLS refs
-blanked; `packml_topic: CPACK/SC` kept — the published topic `CPACK/SC/LINHAS/L6/…` is
-identical to the old map's `CPACK/SC/LINHAS`+`/L6/…`, so downstream id_equipment
-resolution is unchanged).
+The old map (`packml_topic: CPACK/SC/LINHAS`) turns :1880's `/LINHAS/L5/…` into
+`CPACK/SC/LINHAS/**LINHAS**/L5/…` (double LINHAS) → the decoder/packml_register can't
+resolve it → **agent 202-accepts but nothing reaches F3** (this is why the first two cuts
+looked like ":1880 accepted but no F3 writes", even during active production).
 
-## Second finding: idle-window RBE masked validation
+**Consequence for sequencing:** the twin map (`packml_topic: CPACK/SC`) is correct for
+:1880 but breaks legacy (legacy's `/L5/…` → `CPACK/SC/L5/…`, missing `/LINHAS`). The two
+maps are **mutually exclusive**, so the twin map must be deployed **together with the
+`/v1` cut** — NOT before it (a "deploy new map, then cut later" sequence regresses legacy
+during the overlap; observed + reverted). The winning sequence:
+1. nginx `/v2` add + reader tee on (both readers coexist, old map).
+2. **Atomically**: install `cpack-agent.twin.yaml` + restart agent + flip `/v1 → 444`.
+3. Verify :1880 → F3 (drops 0, lines match oracle).
 
-After cutting `/v1`, F3 ent-3 went ~11 min without writes. Root cause: the agent uses
-**RBE** (SparkPlug report-by-exception — publish only on value change); the **factory
-agent (prod) was ALSO nearly flat (+1 publish/15s)** → production was **idle** (~12:45
-BRT lunch). Legacy masks idle by writing frequently regardless. So the "staleness" was
-correct RBE behaviour, not a broken pipeline — but it means the cut can't be validated
-during idle. **The final cut must be done during ACTIVE production.**
+## Still open (SEPARATE from the cutover — downstream OEE config)
 
-## Third finding (separate, downstream): L4/L8/L10 LINES don't compute on the twin
+L4/L8/L10 **lines** (49/51/52) still don't compute their line-level rollup even though
+members flow — an ent-3 OEE line-config / count-index→id resolution gap (net values
+cross-wire vs oracle). This was 0/broken on legacy too, so it is **not a cutover
+regression** — it needs its own fix (lead_machine / infeed-outfeed linkage +
+packml_register count-index resolution for L4/L8/L10).
 
-Even with members flowing (both feeds), lines **49/L4, 51/L8, 52/L10** have no
-`equipment_values`, while the oracle has them — and net values cross-wire (oracle L10 net
-= twin L3 net; oracle L8 net = twin L3 gross). This is a **downstream OEE line-config /
-packml_register count-index resolution** issue for ent-3, **independent of the ingest
-cutover** — it will not be fixed by cutting `/v1`. Needs its own investigation
-(lead_machine / infeed-outfeed linkage + count-index → id resolution for L4/L8/L10).
+## Armed revert (still available on the box)
 
-## EXACT remaining steps to complete the cutover (during active production)
+- nginx: `/etc/nginx/conf.d/cpack-ingest.conf.bak.step1.*` (pre-cutover) — restore +
+  `nginx -s reload` puts the twin back on legacy in one reload.
+- cloud map: `…/docs/clients/cpack-agent.yaml.bak.pretwin.*` (old 102-entry legacy map).
+- reader flow: `~/flows.json.bak.1787667400` (original dup-id flow) on the factory box.
 
-1. **Deploy the cloud-twin map**: put `cpack-agent.twin.yaml` (this dir) at the cloud
-   agent's `/etc/packiot/agent.yaml` (repoint the compose mount, or replace the mounted
-   file), `docker restart sparkplug-agent-cpack`. Verify healthy + uplink
-   `tcp://mosquitto:1883`. Expected `/v2` drops → **0**.
-2. **Re-add** nginx `/v2` + the reader staging-tee (`cpack-staging-tee-node.json` here).
-3. **Verify** `/v2` 202s, agent `total_dropped` flat, and — **while machines produce** —
-   F3 ent-3 advances for all :1880-fed indices.
-4. **Cut** `/v1` → `return 444`, reload.
-5. **Per-line vs oracle** over a producing window; revert `/v1` on any regression.
-6. Separately, fix the **L4/L8/L10 line-computation** downstream gap.
+## Files in this PR
 
-## Instant revert (still armed on the box)
-
-- nginx: `/etc/nginx/conf.d/cpack-ingest.conf.bak.pre-v2.*` and `.bak.pre-cut.*`
-- reader flow: `~/flows.json.bak.1787667400` (original dup-id flow) on the factory box
-- cloud map: `…/docs/clients/cpack-agent.yaml.bak.pre-l4.*`
+- `cpack-agent.twin.yaml` — the deployed cloud-twin map (330 entries, `packml_topic:
+  CPACK/SC`, internal-mosquitto uplink).
+- `cpack-ingest.cutover.conf` — the applied nginx cutover config.
+- `cpack-reader-flow.twin.json` — the deployed reader flow (corrected #907 + staging-tee).
+- `cpack-staging-tee-node.json` — the tee node in isolation.
