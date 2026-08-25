@@ -1,0 +1,203 @@
+# cpack.plc.yaml — CPACK PLC connection block (human-readable REFERENCE).
+#
+# ⚠ NOT the generator input. The machine SSoT the onboard generator (cmd/onboard-gen)
+# consumes is docs/clients/edge-deployment/cpack/cpack.descriptor.yaml (its `plc:`
+# block, in the DescriptorPLC schema: endpoints + s7/modbus/opcua_tag_map). This file
+# is a flat, address-first mirror for humans; keep it consistent with the descriptor.
+#
+# The S7 115 / S7 116 / S7 L5 tag NAMES below were CANONICALISED from the descriptor's
+# s7_tag_map (matched by DB1,<TYPE><offset> address) — the stale numeric names
+# (514/17/19A/…) the agent's suffix-matcher could not map are now the canonical topics.
+# A handful of addresses still carry a numeric name flagged UNRESOLVED: the descriptor
+# has no s7_tag_map entry for them (need a live count-index capture to bind).
+
+tenant: CPACK
+enterprise_id: 3
+plc:
+  - protocol: s7
+    name: "S7 115"
+    endpoint: 10.135.16.115
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: "CPACK/SC/CELULA1/DUBUTI1/DUBUTI1/Admin/ProdConsumedCount/334/Unit", address: "DB1,DINT0" }
+      - { name: "CPACK/SC/CELULA1/DUBUTI1/DUBUTI1/Admin/ProdProcessedCount/334/Unit", address: "DB1,DINT4" }
+      - { name: "CPACK/SC/CELULA1/ISIMAT/ISIMAT/Admin/ProdProcessedCount/335/Unit", address: "DB1,DINT8" }
+      - { name: "CPACK/SC/CELULA1/ISIMAT/ISIMAT/Admin/ProdDefectiveCount/335/Unit", address: "DB1,DINT12" }
+      - { name: "CPACK/SC/CELULA1/DUBUTI2/DUBUTI2/Admin/ProdConsumedCount/97/Unit", address: "DB1,DINT16" }
+      - { name: "CPACK/SC/CELULA1/DUBUTI2/DUBUTI2/Admin/ProdProcessedCount/97/Unit", address: "DB1,DINT20" }
+      - { name: "CPACK/SC/CELULA1/HOTMADAG/HOTMADAG/Admin/ProdConsumedCount/99/Unit", address: "DB1,DINT24" }
+      - { name: "CPACK/SC/CELULA1/HOTMADAG/HOTMADAG/Admin/ProdProcessedCount/99/Unit", address: "DB1,DINT28" }
+      - { name: 606, address: "DB1,INT48" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,INT48
+      - { name: "CPACK/SC/CELULA1/CER400/CER400/Admin/ProdProcessedCount/107/Unit", address: "DB1,DINT32" }
+      - { name: "CPACK/SC/CELULA1/CER400/CER400/Admin/ProdDefectiveCount/107/Unit", address: "DB1,DINT36" }
+  - protocol: s7
+    name: "S7 116"
+    endpoint: 10.135.16.116
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: 583, address: "DB1,DINT8" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT8
+      - { name: 584, address: "DB1,DINT12" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT12
+      - { name: 585, address: "DB1,DINT16" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT16
+      - { name: 586, address: "DB1,DINT20" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT20
+      - { name: "CPACK/SC/CELULA2/PTH40-03/PTH40-03/Admin/ProdConsumedCount/339/Unit", address: "DB1,DINT24" }
+      - { name: "CPACK/SC/CELULA2/PTH40-03/PTH40-03/Admin/ProdProcessedCount/339/Unit", address: "DB1,DINT28" }
+      - { name: "CPACK/SC/CELULA2/BREYER1/BREYER1/Admin/ProdProcessedCount/26/Unit", address: "DB1,DINT32" }
+      - { name: "CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdConsumedCount/29/Unit", address: "DB1,DINT36" }
+      - { name: "CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdProcessedCount/29/Unit", address: "DB1,DINT40" }
+      - { name: "CPACK/SC/CELULA2/PTH80S/PTH80S/Admin/ProdConsumedCount/105/Unit", address: "DB1,DINT44" }
+      - { name: "CPACK/SC/CELULA2/PTH80S/PTH80S/Admin/ProdProcessedCount/105/Unit", address: "DB1,DINT48" }
+      - { name: "CPACK/SC/CELULA2/BREYER2/BREYER2/Admin/ProdProcessedCount/101/Unit", address: "DB1,DINT52" }
+      - { name: "CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdConsumedCount/110/Unit", address: "DB1,DINT56" }
+      - { name: "CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdProcessedCount/110/Unit", address: "DB1,DINT60" }
+  - protocol: s7
+    name: "S7 L5"
+    endpoint: 10.135.16.117
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit", address: "DB1,DINT0" }
+      - { name: "CPACK/SC/LINHAS/L5/POLYTYPE/Admin/ProdConsumedCount/62/Unit", address: "DB1,DINT4" }
+      - { name: 19A, address: "DB1,DINT8" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT8
+      - { name: 19B, address: "DB1,DINT12" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT12
+      - { name: "CPACK/SC/LINHAS/L5/RMH/Admin/ProdConsumedCount/64/Unit", address: "DB1,DINT20" }
+      - { name: "CPACK/SC/LINHAS/L5/TEXA/Admin/ProdProcessedCount/65/Unit", address: "DB1,DINT24" }
+      - { name: VERSION, address: "DB1,INT48" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,INT48
+      - { name: 19S, address: "DB1,X1024.7" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,X1024.7
+      - { name: 609, address: "DB1,DINT16" }  # UNRESOLVED: no descriptor s7_tag_map entry for DB1,DINT16
+  - protocol: s7
+    name: "S7 S8"
+    endpoint: 10.135.16.26
+    rack: 0
+    slot: 2
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L8/DXL/Admin/ProdProcessedCount/219/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT12" }
+      - { name: "C-PACK/SC/LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit***TRIG_C=O", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L8/TCX/Admin/ProdProcessedCount/221/Unit***TRIG_C=I", address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L8/TEXA/Admin/ProdProcessedCount/222/Unit***TRIG_C=I", address: "DB1,DINT20" }
+      - { name: VERSION, address: "DB1,INT48" }
+  - protocol: s7
+    name: "PLC Flexo"
+    endpoint: 10.135.16.123
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Status/CurMachSpeed", address: "DB1,INT50" }
+      - { name: FLEXO_PLC_STATUS, address: "DB1,INT50" }
+  - protocol: s7
+    name: "S7 L10"
+    endpoint: 10.135.16.124
+    rack: 0
+    slot: 1
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L10/DXL/Admin/ProdProcessedCount/564/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT12" }
+      - { name: "C-PACK/SC/LINHAS/L10/PTH/Admin/ProdConsumedCount/565/Unit***TRIG_C=O", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L10/TCX/Admin/ProdProcessedCount/566/Unit***TRIG_C=I", address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L10/TEXA/Admin/ProdProcessedCount/567/Unit***TRIG_C=I", address: "DB1,DINT20" }
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: TEST, address: "DB1,WORD1118" }
+  - protocol: s7
+    name: "PLC L4 10.135.1.126"
+    endpoint: 10.135.1.126
+    rack: 1
+    slot: 2
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L4/BREYER/Admin/ProdConsumedCount/88/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdConsumedCount/86/Unit", address: "DB1,DINT4" }
+      - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT12" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/86/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/89/Unit***TRIG_C=O", address: "DB1,DINT20" }
+      - { name: "C-PACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/87/Unit***TRIG_C=O", address: "DB1,DINT24" }
+      - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdConsumedCount/84/Unit***TRIG_C=O", address: "DB1,DINT28" }
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: I0, address: "DB1,X1024.0" }
+      - { name: I1, address: "DB1,X1024.1" }
+      - { name: I2, address: "DB1,X1024.2" }
+      - { name: I3, address: "DB1,X1024.3" }
+      - { name: I4, address: "DB1,X1024.4" }
+      - { name: AM1, address: "DB1,WORD1118" }
+      - { name: AM2, address: "DB1,WORD1120" }
+  - protocol: s7
+    name: "PLC L3 10.135.16.127"
+    endpoint: 10.135.16.127
+    rack: 0
+    slot: 2
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdConsumedCount/81/Unit", address: "DB1,DINT4" }
+      - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT12" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit***TRIG_C=O", address: "DB1,DINT20" }
+      - { name: "C-PACK/SC/LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit***TRIG_C=O", address: "DB1,DINT24" }
+      - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit***TRIG_C=O", address: "DB1,DINT28" }
+      - { name: VERSION, address: "DB1,INT48" }
+  - protocol: s7
+    name: SLEEVES
+    endpoint: 10.135.16.101
+    rack: 0
+    slot: 2
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdProcessedCount/763/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdProcessedCount/823/Unit***TRIG_C=I", address: "DB1,DINT4" }
+  - protocol: opcua
+    endpoint: "opc.tcp://10.135.6.169:4840"
+    tags:
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Admin/ProdConsumedCount/557/Unit***TRIG_C=O", address: "ns=6;s=::OPCUAData:totalMeterCounter" }
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Status/CurMachSpeed", address: "ns=6;s=::OPCUAData:actualSpeed" }
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Status/CurMachSpeed", address: "ns=6;s=::OPCUAData:actualSpeed" }
+  - protocol: modbus_tcp
+    name: PLC_L6
+    endpoint: "10.135.1.128:502"
+    unit: 1
+    # L6 register→topic+TRIG map RECOVERED from the legacy :1881 reader
+    # ("Prepare L6" + "PackML device config", 2026-08-18). Holding registers read
+    # as 32-bit pairs LOW-WORD-FIRST (legacy: value = reg[n+1]<<16 | reg[n]).
+    # Serial flow: PTH(in reg100)→RMH(in reg50)→TEXA(out reg0); scrap between
+    # stages is captured by ***TRIG_CS (defective = consumed − processed). The
+    # generated reader previously had NO tags here → defaulted to register 0 with
+    # no TRIG → net=gross → Quality inflated to ~1.0 (see cpack-legacy-oracle-line-meters.md).
+    # kind: holding (legacy read HoldingRegister block adr0 qty80); each count is a
+    # 32-bit pair (word_swap=true, low-word-first). Shared registers encode the serial
+    # flow (reg50 = PTH-out = RMH-in; reg0 = RMH-out = TEXA-in/out).
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L6/BREYER/Admin/ProdConsumedCount/91/Unit***TRIG_C=O",  address: 60,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/POLYTYPE/Admin/ProdConsumedCount/93/Unit***TRIG_C=O", address: 10,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/PTH/Admin/ProdConsumedCount/95/Unit",                 address: 100, kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/PTH/Admin/ProdProcessedCount/95/Unit***TRIG_CS",      address: 50,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/RMH/Admin/ProdConsumedCount/94/Unit",                 address: 50,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/RMH/Admin/ProdProcessedCount/94/Unit***TRIG_CS",      address: 0,   kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/TEXA/Admin/ProdConsumedCount/92/Unit",                address: 0,   kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/TEXA/Admin/ProdProcessedCount/92/Unit***TRIG_CS",     address: 0,   kind: holding, type: int32, word_swap: true }
+  - protocol: modbus_tcp
+    name: PLC_L3
+    endpoint: "10.135.1.127:502"
+    unit: 1
+  - protocol: modbus_tcp
+    name: PLC_L4
+    endpoint: "10.135.1.126:502"
+    unit: 1
+  - protocol: modbus_tcp
+    name: PLC_L5
+    endpoint: "10.135.1.125:502"
+    unit: 1

@@ -2,6 +2,8 @@ package clientdescriptor
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -271,6 +273,179 @@ func TestGeneratePlcReaderFlowNoPLC(t *testing.T) {
 	}
 	if _, err := d.GeneratePlcReaderFlow(); err == nil {
 		t.Fatal("expected an error for a descriptor with no plc block, got nil")
+	}
+}
+
+// multiMemberModbusYAML is a descriptor whose SINGLE Modbus endpoint (PLC_L6) is
+// referenced by FIVE modbus_tag_map entries — one per member — with 1–2 tags each,
+// exactly the CPACK L6 shape (BREYER/POLYTYPE 1 tag, PTH/RMH/TEXA 2 tags). It is the
+// regression fixture for the dup-id defect: before the fix the read node id was keyed
+// off the inner per-map tag index, so all 8 reads collapsed onto two ids
+// (`cpack_mb_0_read_0` ×5, `_read_1` ×3), Node-RED kept one node per id, and only the
+// two survivors (adr 0 = TEXA) polled — the twin re-point P0 block.
+const multiMemberModbusYAML = `
+tenant: CPACK
+enterprise_id: 3
+canonical:
+  prefix: CPACK/SC
+mapping:
+  count_index_default_mode: equipment_id
+metric_templates:
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+agent:
+  edge_node_id: cpack-edge
+  internal_broker: tcp://mosquitto:1883
+  uplink_broker: tcp://ingest:1883
+tee:
+  ingest_url: https://localhost:8444/v1/tags
+equipment:
+  - {topic: CPACK/SC/LINHAS/L6/BREYER,   id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH,      id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH,      id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA,     id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+plc:
+  endpoints:
+    - {name: PLC_L6, protocol: modbus_tcp, host_ref: "secret://packiot/staging/cpack/l6-host", unit_id: 1}
+  modbus_tag_map:
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/BREYER
+      id_equipment: 68
+      tags:
+        - {metric: /Admin/ProdConsumedCount/91/Unit, kind: holding, address: 60, type: uint32, word_swap: true}
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/POLYTYPE
+      id_equipment: 70
+      tags:
+        - {metric: /Admin/ProdConsumedCount/93/Unit, kind: holding, address: 10, type: uint32, word_swap: true}
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/PTH
+      id_equipment: 72
+      tags:
+        - {metric: /Admin/ProdConsumedCount/95/Unit,  kind: input,   address: 100, type: uint32, word_swap: true}
+        - {metric: /Admin/ProdProcessedCount/95/Unit, kind: holding, address: 50,  type: uint32, word_swap: true}
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/RMH
+      id_equipment: 71
+      tags:
+        - {metric: /Admin/ProdConsumedCount/94/Unit,  kind: holding, address: 50, type: uint32, word_swap: true}
+        - {metric: /Admin/ProdProcessedCount/94/Unit, kind: holding, address: 0,  type: uint32, word_swap: true}
+    - endpoint: PLC_L6
+      packml_topic: CPACK/SC/LINHAS/L6/TEXA
+      id_equipment: 69
+      tags:
+        - {metric: /Admin/ProdConsumedCount/92/Unit,  kind: holding, address: 0, type: uint32, word_swap: true}
+        - {metric: /Admin/ProdProcessedCount/92/Unit, kind: holding, address: 0, type: uint32, word_swap: true}
+`
+
+// TestGeneratePlcReaderFlowUniqueModbusIDs is the dup-id regression guard. It parses a
+// descriptor whose one Modbus endpoint is split across five member tag maps (the CPACK
+// L6 shape) and asserts EVERY generated node id is unique — specifically that all eight
+// modbus-read nodes get distinct ids (`_read_0..7`), one per polled register, so
+// Node-RED instantiates all of them and every L6 member is actually polled.
+func TestGeneratePlcReaderFlowUniqueModbusIDs(t *testing.T) {
+	d, err := Parse([]byte(multiMemberModbusYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	out, err := d.GeneratePlcReaderFlow()
+	if err != nil {
+		t.Fatalf("GeneratePlcReaderFlow: %v", err)
+	}
+	var nodes []map[string]any
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	seen := map[string]int{}
+	reads := 0
+	for _, n := range nodes {
+		id, _ := n["id"].(string)
+		seen[id]++
+		if n["type"] == "modbus-read" {
+			reads++
+		}
+	}
+	// Every node id must be globally unique — Node-RED silently keeps one node per id.
+	for id, c := range seen {
+		if c > 1 {
+			t.Errorf("duplicate node id %q appears %d times (Node-RED would drop all but one)", id, c)
+		}
+	}
+	// All 8 physical L6 registers must yield 8 distinct read nodes.
+	if reads != 8 {
+		t.Errorf("modbus-read count = %d, want 8 (all L6 members polled)", reads)
+	}
+	// The specific ids must be the running-counter form, not the recycled per-map form.
+	for i := 0; i < 8; i++ {
+		want := "cpack_mb_0_read_" + strconv.Itoa(i)
+		if seen[want] != 1 {
+			t.Errorf("missing unique modbus-read id %q (got %d)", want, seen[want])
+		}
+	}
+}
+
+// TestGeneratePlcReaderFlowStagingTee proves the parameterized staging tee: OFF by
+// default the flow is unchanged (function has one output, body ends `return msg;`, no
+// second http node); ON it adds a 2nd function output wired to a dedicated staging
+// http-request node, the body reads the staging URL + key from env (never baked), and
+// no secret leaks.
+func TestGeneratePlcReaderFlowStagingTee(t *testing.T) {
+	d, err := Parse([]byte(multiMemberModbusYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// OFF (default): historical single-output body.
+	off, err := d.GeneratePlcReaderFlow()
+	if err != nil {
+		t.Fatalf("GeneratePlcReaderFlow (off): %v", err)
+	}
+	if strings.Contains(string(off), "STAGING_TEE") || strings.Contains(string(off), "staging_http") {
+		t.Errorf("staging tee must be OFF by default, but the flow references it:\n%s", off)
+	}
+
+	// ON: second output + staging http node + env-driven staging target.
+	on, err := d.GeneratePlcReaderFlow(ReaderFlowOptions{StagingTee: true})
+	if err != nil {
+		t.Fatalf("GeneratePlcReaderFlow (on): %v", err)
+	}
+	var nodes []map[string]any
+	if err := json.Unmarshal(on, &nodes); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	var fn, stagingHTTP map[string]any
+	httpReqs := 0
+	for _, n := range nodes {
+		switch n["type"] {
+		case "function":
+			fn = n
+		case "http request":
+			httpReqs++
+			if id, _ := n["id"].(string); strings.HasSuffix(id, "_reader_staging_http") {
+				stagingHTTP = n
+			}
+		}
+	}
+	if fn == nil || fmt.Sprint(fn["outputs"]) != "2" {
+		t.Fatalf("staging tee: normalize function must have 2 outputs, got %v", fn["outputs"])
+	}
+	body, _ := fn["func"].(string)
+	if !containsAll(body, "CPACK_STAGING_TEE_URL", "CPACK_STAGING_TEE_KEY", "return [msg, stagingMsg]") {
+		t.Errorf("staging tee: function body missing env-driven staging branch:\n%s", body)
+	}
+	if stagingHTTP == nil {
+		t.Fatal("staging tee: no dedicated staging http-request node")
+	}
+	if stagingHTTP["url"] != "" {
+		t.Errorf("staging http url = %q, want empty (env-driven via msg.url)", stagingHTTP["url"])
+	}
+	if httpReqs != 2 {
+		t.Errorf("http request count = %d, want 2 (primary + staging)", httpReqs)
+	}
+	if strings.Contains(string(on), "secret://") {
+		t.Error("staging tee flow leaked a secret:// reference")
 	}
 }
 

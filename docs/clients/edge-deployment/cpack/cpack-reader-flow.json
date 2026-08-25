@@ -1,0 +1,1099 @@
+[
+  {
+    "disabled": false,
+    "id": "cpack_reader_tab",
+    "info": "Generated from the ADR-0045 descriptor plc: block — the SAME source of truth the Go reader's client.yaml is generated from. Reads the factory PLCs and POSTs raw tags (metric = canonical SUFFIX, tenant prefix stripped) in the rawtag { endpoint, scan_ts, tags[] } envelope with an X-Ingest-Key header to the local sparkplug-agent (default http://sparkplug-agent:9104/v1/tags, override with env CPACK_AGENT_URL). Each endpoint's HOST is read from a Node-RED env var PLC_HOST_\u003cENDPOINT\u003e (never a baked secret) — e.g. an endpoint \"S7 115\" reads ${PLC_HOST_S7_115}. This flow is a DUMB producer; the agent does the canonical mapping. Do not hand-edit — edit the descriptor + regenerate. Put per-client integrations on the 'CPACK customizations' tab instead.",
+    "label": "CPACK PLC reader",
+    "type": "tab"
+  },
+  {
+    "disabled": false,
+    "id": "cpack_cust_tab",
+    "info": "Per-client customization surface — the reason the edge deployable is Node-RED, not just a Go reader. Integration function nodes, extra http-request calls to edge-api (PO control / downtimes), bespoke transforms, dashboards, etc. live HERE. This tab is DESCRIPTOR-SOURCED (ADR-0045 §G3): its nodes come from the descriptor's `customizations` block (authored in CS-Admin), so they are versioned and re-emitted on every regeneration — NOT hand-added on the box (which the nodered-data volume would lose on redeploy). To add an integration: build + Export it in Node-RED, paste the exported nodes into the CS-Admin customizations editor, and regenerate. Empty when the descriptor declares no customizations.",
+    "label": "CPACK customizations",
+    "type": "tab"
+  },
+  {
+    "bufferCommands": true,
+    "clientTimeout": 1000,
+    "clienttype": "tcp",
+    "commandDelay": 1,
+    "id": "cpack_mb_0_client",
+    "name": "PLC_L6",
+    "parallelUnitIdsAllowed": false,
+    "queueLogEnabled": false,
+    "reconnectOnTimeout": true,
+    "reconnectTimeout": 30000,
+    "serialBaudrate": "9600",
+    "serialConnectionDelay": "100",
+    "serialDatabits": "8",
+    "serialParity": "none",
+    "serialPort": "/dev/ttyUSB",
+    "serialStopbits": "1",
+    "serialType": "RTU-BUFFERD",
+    "stateLogEnabled": false,
+    "tcpHost": "${PLC_HOST_PLC_L6}",
+    "tcpPort": "502",
+    "tcpType": "DEFAULT",
+    "type": "modbus-client",
+    "unit_id": 1
+  },
+  {
+    "adr": "60",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_0",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/BREYER/Admin/ProdConsumedCount/91/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 100,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "10",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_1",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/POLYTYPE/Admin/ProdConsumedCount/93/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 180,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "100",
+    "dataType": "InputRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_2",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/PTH/Admin/ProdConsumedCount/95/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 260,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "50",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_3",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/PTH/Admin/ProdProcessedCount/95/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 340,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "50",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_4",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/RMH/Admin/ProdConsumedCount/94/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 420,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "0",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_5",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/RMH/Admin/ProdProcessedCount/94/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 500,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "0",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_6",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/TEXA/Admin/ProdConsumedCount/92/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 580,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adr": "0",
+    "dataType": "HoldingRegister",
+    "delayOnStart": false,
+    "emptyMsgOnFail": false,
+    "id": "cpack_mb_0_read_7",
+    "ioFile": "",
+    "logIOActivities": false,
+    "name": "read PLC_L6",
+    "quantity": "2",
+    "rate": "15",
+    "rateUnit": "s",
+    "server": "cpack_mb_0_client",
+    "showErrors": false,
+    "showStatusActivities": false,
+    "showWarnings": true,
+    "startDelayTime": "",
+    "topic": "CPACK/SC/LINHAS/L6/TEXA/Admin/ProdProcessedCount/92/Unit",
+    "type": "modbus-read",
+    "unitid": "1",
+    "useIOFile": false,
+    "useIOForPayload": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ],
+      []
+    ],
+    "x": 200,
+    "y": 660,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_S7_115}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_1_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "S7 115",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT32",
+        "name": "CPACK/SC/CELULA1/CER400/CER400/Admin/ProdProcessedCount/107/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT36",
+        "name": "CPACK/SC/CELULA1/CER400/CER400/Admin/ProdDefectiveCount/107/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/CELULA1/DUBUTI1/DUBUTI1/Admin/ProdConsumedCount/334/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT4",
+        "name": "CPACK/SC/CELULA1/DUBUTI1/DUBUTI1/Admin/ProdProcessedCount/334/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT16",
+        "name": "CPACK/SC/CELULA1/DUBUTI2/DUBUTI2/Admin/ProdConsumedCount/97/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/CELULA1/DUBUTI2/DUBUTI2/Admin/ProdProcessedCount/97/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/CELULA1/HOTMADAG/HOTMADAG/Admin/ProdConsumedCount/99/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT28",
+        "name": "CPACK/SC/CELULA1/HOTMADAG/HOTMADAG/Admin/ProdProcessedCount/99/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT8",
+        "name": "CPACK/SC/CELULA1/ISIMAT/ISIMAT/Admin/ProdProcessedCount/335/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT12",
+        "name": "CPACK/SC/CELULA1/ISIMAT/ISIMAT/Admin/ProdDefectiveCount/335/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_1_ep",
+    "id": "cpack_s7_1_in",
+    "mode": "all",
+    "name": "read S7 115",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 740,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_S7_116}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_2_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "S7 116",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT32",
+        "name": "CPACK/SC/CELULA2/BREYER1/BREYER1/Admin/ProdConsumedCount/26/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT32",
+        "name": "CPACK/SC/CELULA2/BREYER1/BREYER1/Admin/ProdProcessedCount/26/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT52",
+        "name": "CPACK/SC/CELULA2/BREYER2/BREYER2/Admin/ProdConsumedCount/101/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT52",
+        "name": "CPACK/SC/CELULA2/BREYER2/BREYER2/Admin/ProdProcessedCount/101/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT56",
+        "name": "CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdConsumedCount/110/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT60",
+        "name": "CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1/Admin/ProdProcessedCount/110/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT36",
+        "name": "CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdConsumedCount/29/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT40",
+        "name": "CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2/Admin/ProdProcessedCount/29/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/CELULA2/PTH40-03/PTH40-03/Admin/ProdConsumedCount/339/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT28",
+        "name": "CPACK/SC/CELULA2/PTH40-03/PTH40-03/Admin/ProdProcessedCount/339/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT44",
+        "name": "CPACK/SC/CELULA2/PTH80S/PTH80S/Admin/ProdConsumedCount/105/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT48",
+        "name": "CPACK/SC/CELULA2/PTH80S/PTH80S/Admin/ProdProcessedCount/105/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_2_ep",
+    "id": "cpack_s7_2_in",
+    "mode": "all",
+    "name": "read S7 116",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 820,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_S7_L5}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_3_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "S7 L5",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT4",
+        "name": "CPACK/SC/LINHAS/L5/POLYTYPE/Admin/ProdConsumedCount/62/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/LINHAS/L5/PTH/Admin/ProdProcessedCount/63/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/LINHAS/L5/RMH/Admin/ProdConsumedCount/64/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/LINHAS/L5/RMH/Admin/ProdProcessedCount/64/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/LINHAS/L5/TEXA/Admin/ProdConsumedCount/65/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/LINHAS/L5/TEXA/Admin/ProdProcessedCount/65/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_3_ep",
+    "id": "cpack_s7_3_in",
+    "mode": "all",
+    "name": "read S7 L5",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 900,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_S7_S8}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_4_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "S7 S8",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/LINHAS/L8/DXL/Admin/ProdProcessedCount/219/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,INT32",
+        "name": "CPACK/SC/LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit",
+        "type": "INT"
+      },
+      {
+        "addr": "DB1,DINT16",
+        "name": "CPACK/SC/LINHAS/L8/TCX/Admin/ProdProcessedCount/221/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/LINHAS/L8/TEXA/Admin/ProdProcessedCount/222/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_4_ep",
+    "id": "cpack_s7_4_in",
+    "mode": "all",
+    "name": "read S7 S8",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 980,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_PLC_FLEXO}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_5_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "PLC Flexo",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,INT50",
+        "name": "CPACK/SC/CELULA9/FLEXO/FLEXO/Status/MachSpeed",
+        "type": "INT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_5_ep",
+    "id": "cpack_s7_5_in",
+    "mode": "all",
+    "name": "read PLC Flexo",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 1060,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_S7_L10}",
+    "busaddr": "1",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_6_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "S7 L10",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "1",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/LINHAS/L10/DXL/Admin/ProdProcessedCount/564/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,INT32",
+        "name": "CPACK/SC/LINHAS/L10/PTH/Admin/ProdConsumedCount/565/Unit",
+        "type": "INT"
+      },
+      {
+        "addr": "DB1,DINT16",
+        "name": "CPACK/SC/LINHAS/L10/TCX/Admin/ProdProcessedCount/566/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/LINHAS/L10/TEXA/Admin/ProdProcessedCount/567/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_6_ep",
+    "id": "cpack_s7_6_in",
+    "mode": "all",
+    "name": "read S7 L10",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 1140,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_PLC_L4}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_7_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "PLC L4",
+    "port": "102",
+    "rack": "1",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/LINHAS/L4/BREYER/Admin/ProdConsumedCount/6/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/7/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT4",
+        "name": "CPACK/SC/LINHAS/L4/PTH/Admin/ProdConsumedCount/8/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,INT32",
+        "name": "CPACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/8/Unit",
+        "type": "INT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/9/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT28",
+        "name": "CPACK/SC/LINHAS/L4/TEXA/Admin/ProdConsumedCount/10/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_7_ep",
+    "id": "cpack_s7_7_in",
+    "mode": "all",
+    "name": "read PLC L4",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 1220,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_PLC_L3}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_8_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "PLC L3",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT20",
+        "name": "CPACK/SC/LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT4",
+        "name": "CPACK/SC/LINHAS/L3/PTH/Admin/ProdConsumedCount/81/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,INT32",
+        "name": "CPACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit",
+        "type": "INT"
+      },
+      {
+        "addr": "DB1,DINT24",
+        "name": "CPACK/SC/LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT28",
+        "name": "CPACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_8_ep",
+    "id": "cpack_s7_8_in",
+    "mode": "all",
+    "name": "read PLC L3",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 1300,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "adapter": "",
+    "address": "${PLC_HOST_SLEEVES}",
+    "busaddr": "2",
+    "connmode": "rack-slot",
+    "cycletime": "15000",
+    "id": "cpack_s7_9_ep",
+    "localtsaphi": "01",
+    "localtsaplo": "00",
+    "name": "SLEEVES",
+    "port": "102",
+    "rack": "0",
+    "remotetsaphi": "02",
+    "remotetsaplo": "00",
+    "slot": "2",
+    "timeout": "1500",
+    "transport": "iso-on-tcp",
+    "type": "s7 endpoint",
+    "vartable": [
+      {
+        "addr": "DB1,DINT0",
+        "name": "CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdProcessedCount/763/Unit",
+        "type": "DINT"
+      },
+      {
+        "addr": "DB1,DINT4",
+        "name": "CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdProcessedCount/823/Unit",
+        "type": "DINT"
+      }
+    ]
+  },
+  {
+    "diff": false,
+    "endpoint": "cpack_s7_9_ep",
+    "id": "cpack_s7_9_in",
+    "mode": "all",
+    "name": "read SLEEVES",
+    "type": "s7 in",
+    "variable": "",
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 200,
+    "y": 1380,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "endpoint": "${PLC_HOST_OPC_UA_L9_FLEXO}",
+    "id": "cpack_opcua_10_ep",
+    "login": false,
+    "none": true,
+    "secmode": "None",
+    "secpol": "None",
+    "type": "OpcUa-Endpoint",
+    "usercert": false,
+    "usercertificate": "",
+    "userprivatekey": ""
+  },
+  {
+    "datatype": "Double",
+    "id": "cpack_opcua_10_item_0",
+    "item": "ns=6;s=::OPCUAData:totalMeterCounter",
+    "name": "CPACK/SC/CELULA9/FLEXO/FLEXO/Admin/ProdConsumedCount/557/Unit",
+    "type": "OpcUa-Item",
+    "value": "",
+    "wires": [
+      [
+        "cpack_opcua_10_client"
+      ]
+    ],
+    "x": 420,
+    "y": 1460,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "datatype": "Double",
+    "id": "cpack_opcua_10_item_1",
+    "item": "ns=6;s=::OPCUAData:actualSpeed",
+    "name": "CPACK/SC/CELULA9/FLEXO/FLEXO/Status/MachSpeed",
+    "type": "OpcUa-Item",
+    "value": "",
+    "wires": [
+      [
+        "cpack_opcua_10_client"
+      ]
+    ],
+    "x": 420,
+    "y": 1540,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "crontab": "",
+    "id": "cpack_opcua_10_tick",
+    "name": "poll OPC UA L9 FLEXO",
+    "once": true,
+    "onceDelay": "1",
+    "payload": "",
+    "payloadType": "date",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "10",
+    "topic": "",
+    "type": "inject",
+    "wires": [
+      [
+        "cpack_opcua_10_item_0",
+        "cpack_opcua_10_item_1"
+      ]
+    ],
+    "x": 200,
+    "y": 1460,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "action": "read",
+    "certificate": "n",
+    "deadbandtype": "a",
+    "deadbandvalue": 1,
+    "endpoint": "cpack_opcua_10_ep",
+    "folderName4PKI": "",
+    "id": "cpack_opcua_10_client",
+    "localfile": "",
+    "localkeyfile": "",
+    "maxChunkCount": "",
+    "maxMessageSize": "",
+    "name": "read OPC UA L9 FLEXO",
+    "receiveBufferSize": "",
+    "securitymode": "None",
+    "securitypolicy": "None",
+    "sendBufferSize": "",
+    "time": 10,
+    "timeUnit": "s",
+    "type": "OpcUa-Client",
+    "useTransport": false,
+    "wires": [
+      [
+        "cpack_reader_norm"
+      ]
+    ],
+    "x": 640,
+    "y": 1460,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "finalize": "",
+    "func": "// CPACK PLC reader → sparkplug-agent — generated from the descriptor plc: block.\n// DUMB producer: emits raw tags (metric = canonical suffix); the agent maps them.\n// Override the agent ingest URL with env CPACK_AGENT_URL (default http://sparkplug-agent:9104/v1/tags).\n// The ingest key is read from env AGENT_INGEST_API_KEY — NEVER hardcoded.\n\nconst url = env.get(\"CPACK_AGENT_URL\") || \"http://sparkplug-agent:9104/v1/tags\";\nconst key = env.get(\"AGENT_INGEST_API_KEY\");\nif (!key) {\n    node.error(\"AGENT_INGEST_API_KEY env var is not set — refusing to POST without an ingest key\", msg);\n    return null;\n}\n// The agent's raw_tag_map is keyed by the canonical SUFFIX (topic minus the\n// tenant prefix). Source-node names carry the FULL canonical topic, so strip\n// the prefix here to match the map — otherwise every tag is dropped unmapped.\nconst PREFIX = \"CPACK/SC\";\nfunction suffix(n) { return (n \u0026\u0026 n.indexOf(PREFIX) === 0) ? n.slice(PREFIX.length) : n; }\nconst ts = Date.now();\nconst tags = [];\nconst MB_WS = {\"CPACK/SC/LINHAS/L6/BREYER/Admin/ProdConsumedCount/91/Unit\":1,\"CPACK/SC/LINHAS/L6/POLYTYPE/Admin/ProdConsumedCount/93/Unit\":1,\"CPACK/SC/LINHAS/L6/PTH/Admin/ProdConsumedCount/95/Unit\":1,\"CPACK/SC/LINHAS/L6/PTH/Admin/ProdProcessedCount/95/Unit\":1,\"CPACK/SC/LINHAS/L6/RMH/Admin/ProdConsumedCount/94/Unit\":1,\"CPACK/SC/LINHAS/L6/RMH/Admin/ProdProcessedCount/94/Unit\":1,\"CPACK/SC/LINHAS/L6/TEXA/Admin/ProdConsumedCount/92/Unit\":1,\"CPACK/SC/LINHAS/L6/TEXA/Admin/ProdProcessedCount/92/Unit\":1,};\nconst p = msg.payload;\nif (p \u0026\u0026 typeof p === \"object\" \u0026\u0026 !Array.isArray(p)) {\n    // S7 \"all\" mode: { canonicalTopic: value, … } — one tag per numeric entry.\n    for (const k of Object.keys(p)) {\n        const v = p[k];\n        if (typeof v === \"number\" \u0026\u0026 isFinite(v)) tags.push({ metric: suffix(k), value: v, ts: ts });\n    }\n} else if (Array.isArray(p) \u0026\u0026 msg.topic) {\n    // Modbus read: 1 register = 16-bit; 2 registers = 32-bit totalizer.\n    // word_swap (MB_WS) ⇒ low word first (CDAB); else high word first (ABCD).\n    // Use *65536 (not \u003c\u003c16) to stay in float and avoid 32-bit sign overflow.\n    let v;\n    if (p.length \u003e= 2) { v = MB_WS[msg.topic] ? (p[1]*65536 + p[0]) : (p[0]*65536 + p[1]); }\n    else { v = Number(p[0]); }\n    if (isFinite(v)) tags.push({ metric: suffix(msg.topic), value: v, ts: ts });\n} else if (typeof p === \"number\" \u0026\u0026 isFinite(p)) {\n    // OPC-UA (or any scalar) read: identity on msg.topic / msg.name.\n    const name = msg.topic || msg.name;\n    if (name) tags.push({ metric: suffix(name), value: p, ts: ts });\n}\n\nif (tags.length === 0) {\n    node.warn(\"reader: no numeric tags in this message; skipping\");\n    return null;\n}\n\nmsg.url = url;\nmsg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\nmsg.payload = { endpoint: \"cpack-edge\", scan_ts: ts, tags: tags };\nreturn msg;\n",
+    "id": "cpack_reader_norm",
+    "initialize": "",
+    "libs": [],
+    "name": "CPACK normalize → raw tags",
+    "noerr": 0,
+    "outputs": 1,
+    "type": "function",
+    "wires": [
+      [
+        "cpack_reader_http"
+      ]
+    ],
+    "x": 900,
+    "y": 553,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "authType": "",
+    "headers": [],
+    "id": "cpack_reader_http",
+    "insecureHTTPParser": false,
+    "method": "POST",
+    "name": "POST → sparkplug-agent :9104",
+    "paytoqs": "ignore",
+    "persist": false,
+    "proxy": "",
+    "ret": "obj",
+    "senderr": true,
+    "tls": "",
+    "type": "http request",
+    "url": "",
+    "wires": [
+      [
+        "cpack_reader_route"
+      ]
+    ],
+    "x": 1120,
+    "y": 553,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "checkall": "false",
+    "id": "cpack_reader_route",
+    "name": "statusCode",
+    "outputs": 2,
+    "property": "statusCode",
+    "propertyType": "msg",
+    "repair": false,
+    "rules": [
+      {
+        "t": "lt",
+        "v": "300",
+        "vt": "num"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "type": "switch",
+    "wires": [
+      [
+        "cpack_reader_ok"
+      ],
+      [
+        "cpack_reader_err"
+      ]
+    ],
+    "x": 1320,
+    "y": 553,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "active": true,
+    "complete": "statusCode",
+    "console": false,
+    "id": "cpack_reader_ok",
+    "name": "2xx accepted",
+    "tosidebar": true,
+    "type": "debug",
+    "wires": [],
+    "x": 1520,
+    "y": 513,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "active": true,
+    "complete": "payload",
+    "console": true,
+    "id": "cpack_reader_err",
+    "name": "ingest error",
+    "tosidebar": true,
+    "type": "debug",
+    "wires": [],
+    "x": 1520,
+    "y": 593,
+    "z": "cpack_reader_tab"
+  }
+]
