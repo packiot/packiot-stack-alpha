@@ -65,6 +65,14 @@ type GenerateOptions struct {
 	// The default (false, i.e. draft/observe) emits everything so onboarding can
 	// proceed up to — but not through — the cutover step.
 	Cutover bool
+
+	// StagingTee, when true, makes the generated Node-RED reader flow (artifact 6)
+	// dual-publish: alongside its primary POST to the local sparkplug-agent it adds a
+	// second, parallel POST to a staging ingest front door. The staging URL + key are
+	// read from env at runtime (<TENANT>_STAGING_TEE_URL / _STAGING_TEE_KEY), so the
+	// branch is compiled in but INERT until configured (off by default). Only affects
+	// artifact 6; the other artifacts are unchanged.
+	StagingTee bool
 }
 
 // localSegment returns a topic with the canonical prefix stripped, e.g.
@@ -760,7 +768,7 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		}
 		clientYAML = []byte(s)
 
-		rf, err := d.GeneratePlcReaderFlow()
+		rf, err := d.GeneratePlcReaderFlow(ReaderFlowOptions{StagingTee: opts.StagingTee})
 		if err != nil {
 			return nil, fmt.Errorf("generate plc reader flow: %w", err)
 		}

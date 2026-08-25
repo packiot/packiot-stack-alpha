@@ -117,6 +117,7 @@ func run() error {
 		descriptorPath = flag.String("descriptor", "", "path to the client descriptor YAML (required)")
 		outDir         = flag.String("out", "", "output directory; if empty, print all artifacts to stdout")
 		cutover        = flag.Bool("cutover", false, "emit CUTOVER-ready config: refuse if any count index is still inferred")
+		stagingTee     = flag.Bool("staging-tee", false, "reader flow (artifact 6): add a 2nd POST branch to a staging ingest front door (reads <TENANT>_STAGING_TEE_URL/_KEY from env; inert until set)")
 	)
 	flag.Parse()
 
@@ -141,7 +142,7 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "onboard-gen: all count indices CONFIRMED — cutover-eligible.")
 	}
 
-	art, err := d.Generate(clientdescriptor.GenerateOptions{Cutover: *cutover})
+	art, err := d.Generate(clientdescriptor.GenerateOptions{Cutover: *cutover, StagingTee: *stagingTee})
 	if err != nil {
 		return err
 	}
