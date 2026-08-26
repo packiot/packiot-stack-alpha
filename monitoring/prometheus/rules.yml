@@ -122,6 +122,22 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "edge-transformer dropped MQTT events — decode failures or backpressure (board 10/11)"
+      # Per-tenant routing on the `oee` exchange binds a queue only for
+      # allowlisted tenants (sparkplug.data.<tenant> exact keys). Before this
+      # alert, a message for a NON-allowlisted tenant matched no binding and was
+      # dropped silently as UNROUTABLE — no queue, no metric, no trace. The `oee`
+      # exchange now has an alternate-exchange (oee-unroutable, set via the
+      # oee-ae policy in definitions.template.json) that catches those messages
+      # into oee-unroutable-q instead of dropping them. Any depth here means a
+      # producer is emitting an unrecognised routing key (new tenant not yet
+      # provisioned, or a routing-key typo/drift) — messages are RETAINED for
+      # inspection/replay, not lost. Requires the rabbitmq-detailed scrape job.
+      - alert: OeeUnroutableMessages
+        expr: rabbitmq_detailed_queue_messages{queue="oee-unroutable-q"} > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "oee-unroutable-q holds {{ $value }} msgs — a tenant's SparkPlug data is hitting no `oee` binding (unprovisioned tenant or routing-key drift); caught by the alternate-exchange, not dropped"
       # Some seq gaps are normal on reconnect; a stream of them means
       # the PLC/broker is losing messages (SparkPlug seq is per-session).
       - alert: SparkplugSeqGapStream
