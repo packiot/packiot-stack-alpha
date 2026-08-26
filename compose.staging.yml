@@ -1817,7 +1817,7 @@ services:
       # the same packml_register.id_{infeed,outfeed,reject}counter columns as wire
       # count-indices (the CPACK L5 net-phantom). A future DB-driven counter-role
       # override must use its own dedicated id_*_equipment columns; until then there
-      # is no such flag to set. See docs/adr/reference/adr-0047-config-surface-spec.md
+      # is no such flag to set. See docs/adr/reference/adr-0047-counterroles-removal-note.md
       # and docs/clients/cpack-counter-semantics-audit.md.
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # MQTT-receive span is the data-plane trace root; its context rides the
