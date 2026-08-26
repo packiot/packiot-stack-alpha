@@ -1812,20 +1812,13 @@ services:
       # role). Safe to enable with 0 rows populated (current staging state). See
       # services/sparkplug-decoder/internal/counterroles.
       #
-      # DISABLED 2026-08-26 — COLUMN-SEMANTICS COLLISION with Phase-9. On this
-      # (CPACK) stack every populated id_{infeed,outfeed}counter row is a Phase-9
-      # line-meter holding a WIRE COUNT-INDEX (topicArray[7], e.g. L5 = 61/65),
-      # consumed by line_param30700_seed.go as an *index*. counterroles.go reads the
-      # SAME columns as an *id_equipment*, so where a count-index happens to equal a
-      # real id_equipment (L5 65→L4-RMH / 61→L3-PTH; L6 91/92→BREYER2/PTH80S; L3
-      # 76/80→L8/L10-TEXA) it silently re-routes a FOREIGN machine's counter into the
-      # line — L5 net was fed by L4-RMH's ProcessedCount, producing a gross=net Q=1.0
-      # "phantom" while the oracle showed the line idle. No tenant on this stack uses
-      # the id_equipment semantics (bispharma isn't here), so the resolver only ever
-      # does harm. Keep OFF until the two features stop sharing columns (separate
-      # id_*_equipment columns, or a per-enterprise gate). See
-      # docs/clients/cpack-counter-semantics-audit.md.
-      COUNTER_ROLES_FROM_DB: "false"
+      # NOTE: the DB-backed counter-role resolver (COUNTER_ROLES_FROM_DB) was
+      # REMOVED from the decoder on 2026-08-26 — it collided with Phase-9's use of
+      # the same packml_register.id_{infeed,outfeed,reject}counter columns as wire
+      # count-indices (the CPACK L5 net-phantom). A future DB-driven counter-role
+      # override must use its own dedicated id_*_equipment columns; until then there
+      # is no such flag to set. See docs/adr/reference/adr-0047-counterroles-removal-note.md
+      # and docs/clients/cpack-counter-semantics-audit.md.
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # MQTT-receive span is the data-plane trace root; its context rides the
       # outbox (envelope traceparent) and the AMQP publish so PLC→worker→DB is

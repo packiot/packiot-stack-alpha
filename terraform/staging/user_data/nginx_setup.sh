@@ -614,11 +614,29 @@ echo "oauth2-proxy SSO vhost configured at https://auth.$STAGING_DOMAIN"
 
 # ── CPACK agent ingest front-door (ADR-0042 P1 — deliberately open) ────────────
 # Public HTTPS front-door for CPACK's Node-RED tee → sparkplug-agent-cpack. TLS
-# terminates on a dedicated port (8447) and reverse-proxies ONLY the exact path
-# /v1/tags to the agent's plaintext HTTP listener on packiot-net (compose static
-# IP 172.18.0.38:9104). Auth is the agent's own X-Ingest-Key header — the same
-# "no SSO" carve-out the /api/ vhost uses. Inbound 8447 is admitted for CPACK's
-# egress /32 ONLY (security_groups.tf). Reuses the wildcard cert.
+# terminates on a dedicated port (8447) and reverse-proxies ONLY the exact box-
+# scan/tag paths to the agent's plaintext HTTP listener on packiot-net (compose
+# static IP 172.18.0.38:9104). Auth is the agent's own X-Ingest-Key header — the
+# same "no SSO" carve-out the /api/ vhost uses. Inbound 8447 is admitted for
+# CPACK's egress /32 ONLY (security_groups.tf). Reuses the wildcard cert.
+#
+# TWIN CUTOVER (2026-08-25, #45 Phase-2 — folded here 2026-08-26 for durability).
+# The tee was moved off the legacy path onto a NEW path so the two never race:
+#   * /v1/tags → 444 — the LEGACY reader/agent endpoint is BLACKHOLED (connection
+#     closed, no response). The factory tee must POST to /v2/tags now; a stray
+#     /v1 producer is hard-failed instead of silently double-writing.
+#   * /v2/tags → the current sparkplug-agent-cpack (172.18.0.38:9104/v1/tags,
+#     the agent's own path is still /v1/tags internally).
+# Before this fold, user_data wrote the OLD single-location /v1/tags→agent conf,
+# so a re-provision would have SILENTLY REVERTED the live cutover (the exact
+# durability rot this codifies away). Generated conf now reproduces the live box.
+#
+# NOTE — a live `_sbx_tags_mirror` (fire-and-forget copy of /v2 to the SBXCPACK
+# sandbox agent) also exists on the box today, pointed at 172.18.0.4:9104. That
+# IP is the RETIRED edge-nodered slot (compose static .4) and currently runs no
+# agent, so the mirror is a live-transient/experimental artifact, NOT a durable
+# ingress. It is deliberately NOT baked in here — the sandbox-twin owner must
+# confirm the intended sandbox-agent IP/port before it is codified.
 cat > /etc/nginx/conf.d/cpack-ingest.conf <<NGINX
 server {
     listen 8447 ssl;
@@ -631,8 +649,13 @@ server {
 
     client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
 
-    location = /v1/tags {
-        proxy_pass         http://172.18.0.38:9104;   # sparkplug-agent-cpack
+    # Legacy path — BLACKHOLED by the twin cutover (#45 Phase-2). Any producer
+    # still POSTing here is hard-failed rather than silently double-writing.
+    location = /v1/tags { return 444; }
+
+    # Current ingest path → sparkplug-agent-cpack.
+    location = /v2/tags {
+        proxy_pass         http://172.18.0.38:9104/v1/tags;   # sparkplug-agent-cpack
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
@@ -643,7 +666,7 @@ server {
 NGINX
 
 nginx -t && nginx -s reload
-echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v1/tags"
+echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v2/tags (v1 blackholed)"
 
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.

@@ -191,20 +191,6 @@ type Config struct {
 	// matches oeecloud-worker's shift resolver cache window.
 	CountersOnlyRefreshSeconds int
 
-	// ── Counter-role override (ADR-0047 P0 #1) ─────────────────────────────
-	// packml_register.id_infeedcounter / id_outfeedcounter / id_rejectcounter
-	// already exist as columns but are unread by the calc engine — every
-	// counter's gross/net/scrap role is inferred purely from a Prod*Count
-	// substring in the topic. See internal/counterroles's package doc for the
-	// full design. CounterRolesFromDB gates the whole feature; default false
-	// → the resolver is never constructed, zero behavior change (mirrors
-	// CountersOnlyFromDB's opt-in discipline for a new DB-touching seam).
-	CounterRolesFromDB bool
-	// CounterRolesRefreshSeconds is the periodic-reload interval for the
-	// role map. Default 300s (5 minutes), same reasoning as
-	// CountersOnlyRefreshSeconds.
-	CounterRolesRefreshSeconds int
-
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
 	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
 	// — properties["counter_role"] + device_key → id_equipment via
@@ -362,9 +348,6 @@ func Load() (*Config, error) {
 		CountersOnlyIdealRates:     getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
 		CountersOnlyFromDB:         getenvBool("COUNTERS_ONLY_FROM_DB", false),
 		CountersOnlyRefreshSeconds: getenvInt("COUNTERS_ONLY_REFRESH_SECONDS", 300),
-
-		CounterRolesFromDB:         getenvBool("COUNTER_ROLES_FROM_DB", false),
-		CounterRolesRefreshSeconds: getenvInt("COUNTER_ROLES_REFRESH_SECONDS", 300),
 
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),

@@ -18,7 +18,6 @@ import (
 	"os"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/analyticspub"
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/counterroles"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/transforms/calc_production_counters"
 	"github.com/prometheus/client_golang/prometheus"
@@ -55,9 +54,8 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
-// isCounterByNameOnly is the pre-ADR-0047-P0-#1 substring-only classifier —
-// used by buildCutoverMetrics tests that don't exercise the DB counter-role
-// resolver, so they keep testing exactly the behavior they did before
+// isCounterByNameOnly is the substring-only classifier — used by
+// buildCutoverMetrics tests to test exactly the behavior they did before
 // calcHooks.isCounter existed.
 func isCounterByNameOnly(name string) bool {
 	return isCounterMetricName(name) != calc_production_counters.CounterKindUnknown
@@ -211,78 +209,6 @@ func TestRunShadowReturnsDeltaMetrics(t *testing.T) {
 	}
 	if consumed.Counter != 95 {
 		t.Errorf("consumed Counter (cumulative): got %d, want 95", consumed.Counter)
-	}
-}
-
-// TestRunShadowRoleOverrideNonStandardName is the ADR-0047 P0 #1 wiring
-// test at the main.go integration layer: a metric name with NO Prod*Count
-// substring at all (bispharma's "counter168" convention — see
-// docs/clients/bispharma-oee-mapping-fix.md) is silently dropped by
-// isCounterMetricName alone, but becomes a fully-processed, line-scoped
-// Consumed(gross) delta once a counterroles.Resolver binding exists for its
-// canonical unit topic.
-func TestRunShadowRoleOverrideNonStandardName(t *testing.T) {
-	hooks := newTestCalcHooks(t)
-	sourceUnit := "BISPHARMA/SP/LINHAS/L01/S1_INFEED"
-	lineUnit := "BISPHARMA/SP/LINHAS/L01"
-	hooks.roleResolver = counterroles.NewStatic(map[string]counterroles.Binding{
-		sourceUnit: {LineUnitTopic: lineUnit, Role: calc_production_counters.CounterKindConsumed},
-	})
-	_ = hooks.state.SetInt(lineUnit+"/Admin/ProdConsumedCount", 100)
-	_ = hooks.state.SetFloat(lineUnit+"/Status/MachSpeed", 1000.0)
-
-	m := sparkplug.ResolvedMetric{
-		Name:  sourceUnit + "/Admin/counter168/61/Unit",
-		Value: uint64(110), // +10 over the seeded 100
-	}
-	got := hooks.runShadow(context.Background(), "bispharma", m, time.Now(), testLogger())
-
-	var consumed *calc_production_counters.Metric
-	for i := range got {
-		if got[i].Name == lineUnit+"/Admin/ProdConsumedCount" {
-			consumed = &got[i]
-		}
-	}
-	if consumed == nil {
-		t.Fatalf("runShadow returned no line-scoped Consumed metric; got %+v", got)
-	}
-	if consumed.Value != 10 {
-		t.Errorf("consumed Value (delta): got %d, want 10", consumed.Value)
-	}
-	if consumed.Counter != 110 {
-		t.Errorf("consumed Counter (cumulative): got %d, want 110", consumed.Counter)
-	}
-
-	// isCounter must ALSO recognize the raw name (buildCutoverMetrics' raw-
-	// passthrough filter depends on this to avoid double-emitting the raw
-	// cumulative value alongside the Calc delta above).
-	if !hooks.isCounter(m.Name) {
-		t.Errorf("isCounter(%q) = false, want true (role-mapped)", m.Name)
-	}
-}
-
-// TestRunShadowRoleResolverMissFallsBackToSubstring proves a resolver with
-// NO binding for the given metric's unit topic is a complete no-op — the
-// overwhelming common case (packml_register's role columns NULL for
-// virtually every tenant). A standard Prod*Count-named metric with no
-// binding must classify + process exactly as if roleResolver were nil.
-func TestRunShadowRoleResolverMissFallsBackToSubstring(t *testing.T) {
-	hooks := newTestCalcHooks(t)
-	hooks.roleResolver = counterroles.NewStatic(nil) // empty — no bindings anywhere
-	base := "CPACK/SC/LINHAS/L5/BREYER"
-	_ = hooks.state.SetInt(base+"/Admin/ProdConsumedCount/61/Unit", 90)
-	_ = hooks.state.SetFloat(base+"/Status/MachSpeed", 100.0)
-
-	m := sparkplug.ResolvedMetric{
-		Name:  base + "/Admin/ProdConsumedCount/61/Unit",
-		Value: uint64(95),
-	}
-	got := hooks.runShadow(context.Background(), "cpack", m, time.Now(), testLogger())
-	if len(got) == 0 {
-		t.Fatalf("expected the standard substring path to still process this metric, got none")
-	}
-	if got[0].Value != 5 || got[0].Counter != 95 {
-		t.Errorf("got %+v, want delta=5 counter=95 (unchanged substring-path behavior)", got[0])
 	}
 }
 
