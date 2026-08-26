@@ -2185,9 +2185,14 @@ services:
   # per PO AND per tenant. Writes F3 (packiot_analytics) via pgbouncer's
   # packiot_analytics pool — the go-forward plane. The Bronze schema is
   # edge-node-red/db/36-box-scans.sql (box_scans append-only + po_box_counter
-  # + v_po_box_totals), applied to packiot_analytics. Internal-only for Phase 0;
-  # a Node-RED tee posts scans here in a later phase. See
-  # services/barcode-service/README.md.
+  # + v_po_box_totals), applied to packiot_analytics. Reached externally at
+  # https://scan.staging.packiot.app/v1/scans — a "deliberately open, own auth"
+  # nginx vhost (nginx_setup.sh scan.conf + dns.tf aws_route53_record.scan)
+  # that proxies the exact /v1/scans paths to this container's bridge IP
+  # (172.18.0.36:8446); barcode-service is the sole auth authority (Cognito-JWT,
+  # tenant from custom:id_enterprise). The intended producer is a Node-RED tee
+  # (server-to-server); the route also serves a browser scanner PWA (CORS
+  # allowlisted). See services/barcode-service/README.md.
   barcode-service:
     build: ./services/barcode-service
     container_name: barcode-service

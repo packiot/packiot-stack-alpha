@@ -510,6 +510,101 @@ NGINX
 nginx -t && nginx -s reload
 echo "refdata read-plane vhost configured at https://refdata.$STAGING_DOMAIN"
 
+# ── scan vhost (barcode-service box-scan ingest — deliberately open, own auth) ─
+cat > /etc/nginx/conf.d/scan.conf <<NGINX
+# scan.$STAGING_DOMAIN — barcode-service (Phase-0 durable box-scan ingest).
+#
+# barcode-service is a JWT-Bearer-authed WRITE API. It performs its OWN
+# fail-closed auth: it verifies a Cognito (or Firebase) ID token, derives the
+# tenant (id_enterprise) SERVER-SIDE from the signed custom:id_enterprise claim,
+# and fences every write by it (see services/barcode-service auth.go/scans.go).
+# The client never names a tenant.
+#
+# Same "deliberately open, own auth" exemption as refdata.conf above: a scanner
+# (the intended Node-RED tee, or a browser PWA) carrying a Bearer token cannot
+# follow an interactive SSO 302, so there is NO auth_request/oauth2 gate here —
+# nginx proxies straight to the container and barcode-service is the sole auth
+# authority. Only the exact box-scan paths are exposed (cpack-ingest's tight-path
+# discipline). 443 is already open to 0.0.0.0/0 in the App EC2 SG (like refdata);
+# the JWT is the gate, not the SG. Reuses the wildcard *.$STAGING_DOMAIN cert.
+#
+# CORS allowlist is for a future browser scanner PWA; a Node-RED tee is
+# server-to-server and needs none of it. Credentialed fetch forbids ACAO '*', so
+# nginx echoes the Origin back ONLY for known SPA origins (fail-closed otherwise).
+map \$http_origin \$scan_cors_allow_origin {
+    default                                     "";
+    "https://staging.packiot.com"               \$http_origin;
+    "https://front.$STAGING_DOMAIN"             \$http_origin;
+    "https://csadmin.$STAGING_DOMAIN"           \$http_origin;
+    "https://operator.$STAGING_DOMAIN"          \$http_origin;
+    "https://operator-sbx.$STAGING_DOMAIN"      \$http_origin;
+}
+
+server {
+    listen 80;
+    server_name scan.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name scan.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 128k;   # barcode-service caps the request body at 64k
+
+    # ── Durable gapless write (server-authoritative label_seq) ───────────────
+    location = /v1/scans {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+            add_header Access-Control-Allow-Methods "POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+            add_header Access-Control-Max-Age      86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain";
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+
+        # barcode-service: internal container, no host publish. nginx (host)
+        # reaches it by its compose-pinned bridge IP (ipv4_address 172.18.0.36:8446).
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+
+    # ── SSE fan-out of accepted scans (long-lived; buffering OFF) ─────────────
+    location = /v1/scans/stream {
+        add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;              # SSE: stream events as they arrive
+        proxy_read_timeout 3600s;
+    }
+
+    # ── Ops probe — exposes no tenant data, no auth ──────────────────────────
+    location = /healthz {
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "barcode box-scan ingest vhost configured at https://scan.$STAGING_DOMAIN/v1/scans"
+
 # ── superset vhost (W2 self-service BI — embedded in front4) ───────────────────
 # bi.$STAGING_DOMAIN. Mirrors the prod block (terraform/production/user_data/
 # nginx_setup.sh) + the refdata pattern: origin-verify (CloudFront-only) + scoped
