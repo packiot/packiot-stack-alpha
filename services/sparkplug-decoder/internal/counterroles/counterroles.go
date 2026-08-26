@@ -3,8 +3,24 @@
 // packml_register.id_infeedcounter / id_outfeedcounter / id_rejectcounter
 // columns already exist in schema but are unread by the calc engine today.
 //
-// The contract this package adopts (no prior consumer defines one — a grep
-// of edge-api + csadmin turns up zero reads of these three columns): on a
+// ⚠ COLUMN-SEMANTICS COLLISION (found 2026-08-26, CPACK L5 net-phantom). The
+// "no prior consumer" premise below is WRONG: a SIBLING file in THIS service,
+// cmd/edge-transformer/line_param30700_seed.go, already reads the very same
+// id_infeedcounter/id_outfeedcounter columns — but as a Phase-9 WIRE
+// COUNT-INDEX (topicArray[7], e.g. CPACK L5 = 61/65), not as an id_equipment.
+// The two interpretations are incompatible. Where a line's count-index happens
+// to equal a real id_equipment (CPACK L5 65→L4-RMH, 61→L3-PTH; L6 91/92→
+// BREYER2/PTH80S; L3 76/80→L8/L10-TEXA) this resolver silently binds a FOREIGN
+// machine's counter to the line, over-counting one role and driving net>gross
+// → the silver clamp lowers net to gross → a gross=net Q=1.0 "phantom" (L5
+// showed steady net while the packiot40 oracle showed the line idle). The two
+// features MUST NOT share columns: give this resolver its own id_*_equipment
+// columns, or gate it per-enterprise so it never fires for a Phase-9 line-meter
+// tenant. Until then keep COUNTER_ROLES_FROM_DB=false wherever the counter-role
+// columns carry Phase-9 count-indices (all CPACK). See
+// docs/clients/cpack-counter-semantics-audit.md.
+//
+// The contract this package adopts: on a
 // packml_register row belonging to equipment E (almost always a
 // tp_equipment=3 LINE), a populated id_infeedcounter/outfeedcounter/
 // rejectcounter names the id_equipment of ANOTHER machine whose SparkPlug
