@@ -92,14 +92,21 @@ ON CONFLICT (packml_topic) DO NOTHING;
 --     to 1.0 in equipment_runtime_shift = inflated OEE). BREYER gross(73027) > net(53013)
 --     => Q~0.73, matching the oracle's 0.68 (residual is the outfeed net inflation, a
 --     separate reader defect). Verified live 2026-08-24.
---   * L4 meter is a KNOWN FAITHFUL GAP, deliberately left at 6/10 (matches nothing =>
---     line absent). The oracle-correct meter is 88 (BREYER gross) / 84 (TEXA net), but on
---     our wire L4/TEXA emits ProdConsumedCount ONLY (net=0 across 1289 rows/24h), so
---     enabling 88/84 would materialise a gross-only line at Q=0 (a misleading "100% scrap"
---     mirage, worse than absent). Enable 88/84 ONLY after the generated reader emits
---     L4/TEXA ProdProcessedCount. See docs/clients/cpack-legacy-oracle-line-meters.md.
+--   * L4 uses a LOCAL count-index convention (6..10), NOT the legacy id_equipment.
+--     ⚠ CORRECTED 2026-08-26 (oracle byte-match, live F3): 6/10 is the ORACLE-CORRECT
+--     meter for L4 — 6=BREYER(infeed/gross), 10=TEXA(outfeed/net). The earlier note
+--     ("6/10 matches nothing → line absent; oracle-correct=88/84") was WRONG: it
+--     conflated the legacy id_equipment (88=BREYER,84=TEXA) with L4's WIRE count-index
+--     (packml_register topics literally carry .../ProdConsumedCount/6/Unit … /10/Unit).
+--     88/84 are the ids that "match nothing" on L4's wire; setting them would break L4
+--     (Phase-9 falls back to the ascending member CSV). L4/TEXA(10) now DOES emit
+--     ProdProcessedCount, so net flows: F3 line gross_val/net_val byte-match the oracle
+--     (419k/468k) at ratio 1.119. L4 net>gross (Q clamps to 1.0) is a REAL conversion
+--     quirk present in the oracle too (labels-per-sheet: outfeed count > infeed count;
+--     oracle official gross=33282/net=38853/scrap=-5571) — NOT a meter error, do NOT swap.
+--     NB: L3/L5/L6/L8/L10 happen to use legacy-id == wire count-index; L4 is the exception.
 UPDATE packml_register SET id_infeedcounter = 76,  id_outfeedcounter = 80  WHERE packml_topic = 'CPACK/SC/LINHAS/L3';
-UPDATE packml_register SET id_infeedcounter = 6,   id_outfeedcounter = 10  WHERE packml_topic = 'CPACK/SC/LINHAS/L4';  -- FAITHFUL GAP (see note); oracle-correct = 88/84, held pending reader ProdProcessedCount
+UPDATE packml_register SET id_infeedcounter = 6,   id_outfeedcounter = 10  WHERE packml_topic = 'CPACK/SC/LINHAS/L4';  -- 6=BREYER infeed, 10=TEXA outfeed (L4's LOCAL wire count-index); oracle-verified 2026-08-26
 UPDATE packml_register SET id_infeedcounter = 61,  id_outfeedcounter = 65  WHERE packml_topic = 'CPACK/SC/LINHAS/L5';
 UPDATE packml_register SET id_infeedcounter = 91,  id_outfeedcounter = 92  WHERE packml_topic = 'CPACK/SC/LINHAS/L6';  -- infeed BREYER (was 94/RMH; oracle-corrected 2026-08-24)
 UPDATE packml_register SET id_infeedcounter = 219, id_outfeedcounter = 222 WHERE packml_topic = 'CPACK/SC/LINHAS/L8';

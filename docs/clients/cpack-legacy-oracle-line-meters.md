@@ -183,3 +183,44 @@ line rows.)
 correcting an inflated Q). L4/L3/L10 are reader-defect faithful gaps (correct meter identified,
 held); L5 is a member-totalizer defect; L8 is config-correct-but-idle. All gaps trace to the
 generated reader's per-machine Consumed/Processed mapping — the open reader-fix follow-up.
+
+## 2026-08-26 — FULL re-verification (post counterroles-off / #918), all 6 lines byte-matched
+
+Context: after PR #918 disabled `COUNTER_ROLES_FROM_DB` (Phase-9 is the sole line mechanism)
+and #59 corrected L8/L10 outfeed (TEXA→TCX), a clean end-to-end re-verification of every
+CPACK line's infeed/outfeed count-index against the live oracle (packiot40).
+
+Method: the oracle LINE's own-stream `gross_production_val`/`net_production_val` totalizer was
+byte-matched to the member whose totalizer is identical (that member = infeed / outfeed); the
+result was cross-checked against each member's ACTUAL F3 wire count-index (the `.../<idx>/Unit`
+suffix in `packml_register`, which is what Phase-9's `line_param30700_seed.go` matches).
+
+| Line | oracle line gross = member | oracle line net = member | F3 wire meter | verdict |
+|------|---------------------------|--------------------------|---------------|---------|
+| L3 (48) | BREYER (76) | TEXA (80) | **76/80** | ✅ correct; line IDLE on oracle (479 rows, 0 gross/0 net) → NULL net is FAITHFUL, not stale |
+| L4 (49) | BREYER (88) | TEXA (84) | **6/10** | ✅ correct — L4's wire uses LOCAL indices 6..10 (BREYER=6, TEXA=10), NOT legacy ids 88/84 |
+| L5 (47) | BREYER (61) | TEXA (65) | **61/65** | ✅ correct (wire==legacy id); F3 line totalizer 803k/166k == oracle |
+| L6 (50) | BREYER (91) | TEXA (92) | **91/92** | ✅ correct; long-run totalizer ratio 266M/292M = **0.912** (net<gross) == oracle 0.884 |
+| L8 (51) | DXL (219) | TCX (221) | **219/221** | ✅ correct (TEXA(222)==TCX(221) totalizer; #59 fix validated) |
+| L10 (52) | DXL (564) | TCX (566) | **564/566** | ✅ correct (#59 fix validated) |
+
+**No meter value changes were warranted — all six were already oracle-correct.**
+
+Two prior-note corrections:
+- **L4 is NOT a "faithful gap."** The older disposition ("6/10 matches nothing → line absent;
+  enable 88/84 after TEXA emits ProcessedCount") was wrong on two points: (1) L4's WIRE
+  count-index is 6..10 — `packml_register` literally carries `.../ProdConsumedCount/6/Unit`
+  through `/10/Unit`, so 6/10 matches and 88/84 (legacy ids) match nothing; (2) L4/TEXA(10)
+  now emits ProdProcessedCount, so net flows (F3 line 419k/468k byte-matches the oracle).
+  L4 **net>gross (Q clamps to 1.0) is a REAL conversion quirk**, present in the oracle too
+  (official gross=33282/net=38853/scrap=−5571 — labels-per-sheet: outfeed pieces > infeed
+  sheets). Per the "don't apply an unproven swap" rule, 6/10 is kept (convention- and
+  oracle-designation-consistent); a 10/6 swap to force net<gross is a guess and is NOT applied.
+- **L6 is correct at 91/92** (the 2026-08-24 RMH→BREYER fix holds). The transient net>gross
+  some windows show is early-shift/reseed settling; the physical totalizer ratio is 0.912.
+
+Residual (reader/data-quality, NOT meter — out of scope, flag to #59):
+- **L3 gross divergence:** F3 L3/BREYER(idx76) emitted steady gross (~21k over the shift, no
+  spikes) while the oracle L3/BREYER is idle (0). Spurious F3 gross, then idle. Net faithful (0).
+- **L4/L6 net>gross** is a conversion/instrumentation reality (present in the oracle), clamped
+  to Q=1.0 by the equipment_runtime CHECK — an OEE-model limitation, not a count-index issue.
