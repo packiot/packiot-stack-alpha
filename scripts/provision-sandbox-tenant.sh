@@ -127,7 +127,6 @@ INSERT INTO packml_register SELECT (json_populate_record(NULL::packml_register,
    || jsonb_build_object('id_enterprise',$SENT)
    || jsonb_build_object('id_infeedcounter',p.id_infeedcounter+$OFF)
    || jsonb_build_object('id_outfeedcounter',p.id_outfeedcounter+$OFF)
-   || jsonb_build_object('id_rejectcounter',p.id_rejectcounter+$OFF)
    || jsonb_build_object('active',false))::json)).*  -- mirror-fed, not live-routed
 FROM packml_register p WHERE id_enterprise=$SRC_ENT;
 
