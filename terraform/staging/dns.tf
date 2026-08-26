@@ -98,3 +98,19 @@ resource "aws_route53_record" "cpack_ingest" {
   ttl     = 60
   records = [aws_eip.app.public_ip]
 }
+
+# barcode-service box-scan ingest — scan.staging.packiot.app.
+# Not in var.services because that map's vhosts get the oauth2-proxy SSO gate;
+# barcode-service does its OWN fail-closed Cognito-JWT auth (tenant from the
+# signed custom:id_enterprise claim), so it needs the "deliberately open, own
+# auth" vhost in nginx_setup.sh (scan.conf) — same posture as refdata. Direct
+# A-record to the App EC2 EIP; nginx terminates TLS on 443 and reverse-proxies
+# the exact /v1/scans paths to barcode-service (172.18.0.36:8446). 443 is already
+# open to 0.0.0.0/0 in the App EC2 SG (the JWT is the gate, not the SG).
+resource "aws_route53_record" "scan" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "scan.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
