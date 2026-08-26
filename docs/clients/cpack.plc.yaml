@@ -1,0 +1,245 @@
+# cpack.plc.yaml — CPACK PLC connection block (config-as-data, ADR-0045).
+# EXTRACTED read-only from the live CPACK Node-RED (localhost:1882, GET /admin/flows)
+# 2026-08-04. SSoT the CS-Admin onboarding 'generate' step consumes to emit the edge
+# bundle's OWN reader (S7/OPC-UA/Modbus -> raw tags -> tee -> agent :9104).
+# Var NAME = canonical topic (post C-PACK->CPACK fixup); ***TRIG_C=O/I = gross(out)/net(in).
+# Factory-LAN endpoints (10.135.x) -- the reader runs on the VPN/factory box.
+#
+# COUNTER-ROLE FIX (2026-08-25): 5 line-meter machines emitted the WRONG SparkPlug
+# counter type, so the decoder's hardcoded ProdConsumedCount->gross / ProdProcessedCount->net
+# mapping (+ Phase-9 line-aggregation keyed on infeed/outfeed count-index) produced dead/
+# inverted line OEE. The model: each line's INFEED machine must emit ProdConsumedCount
+# (-> line gross), the OUTFEED TEXA must emit ProdProcessedCount (-> line net). Fixed here:
+#   L3/BREYER Processed->Consumed, L3/TEXA Consumed->Processed (roles were inverted);
+#   L4/TEXA Consumed->Processed; L8/DXL Processed->Consumed; L10/DXL Processed->Consumed.
+# Verified live vs oracle packiot40: L4 line net now computes (Q=1.108, exact oracle match);
+# L8/L10 line gross now compute (=DXL, oracle match); L3 latent-correct (idle now); L5/L6
+# untouched + still oracle-matched. Deployed as a surgical hand-patch to the live :1880
+# reader flow (metric-name swap only — the live vars carry NO ***TRIG, unlike this file).
+#
+# WARNING: THIS FILE IS STALE vs the deployed :1880 reader and would NOT regenerate it
+# faithfully. Known divergences: L4/L5 count-indices (this file 84/86/88/89 & raw numeric
+# 17/18/... ; live uses 6/7/8/9/10 & full topics), empty modbus PLC_L3/L4/L5 blocks, and
+# the live reader drops the ***TRIG suffixes. Full reconciliation of this SSoT to the live
+# reader is a separate task.
+#
+# TEXA "STALE REGISTER" HYPOTHESIS — DISPROVEN (task #59, 2026-08-25). L8/L10 line net=0 is
+# NOT an address bug. The TRUE L8/L10 TEXA register = DB1,DINT20 on both PLCs, PROVEN against
+# the authoritative legacy :1881 oracle reader's OWN S7 vartable (10.135.16.26 slot2 = L8,
+# 10.135.16.124 slot1 = L10) — the reader that produces the correct oracle values
+# (L8-TEXA=8936, L10-TEXA=146493 net/24h). The deployed :1880 reader ALREADY reads DB1,DINT20
+# for both (below), byte-identical to the oracle. That address delivered 207/204 correct rows
+# to F3 until it went dark on EXACTLY 2026-08-13. A stale register would emit WRONG-VALUED
+# rows continuously; absent rows since 08-13 = the metric never DECODES → SparkPlug alias/BIRTH
+# regression (agent births only tags SEEN at restart), the same 08-13 bug that killed the other
+# sparse lines — NOT a register bug. Every config layer is symmetric to the ALIVE TCX neighbor
+# (same reader mode=all, same agent raw_tag_map entry, packml_register active). FIX locus =
+# sparkplug-agent birth-completeness (birth ALL raw_tag_map metrics, force rebirth), factory-
+# side, NOT this file. Do NOT change DB1,DINT20 — it is correct; a guessed address corrupts OEE.
+# See cpack-legacy-oracle-line-meters.md + feedback_bug_cpack_oee_zero_line_counts.
+
+tenant: CPACK
+enterprise_id: 3
+plc:
+  - protocol: s7
+    name: "S7 115"
+    endpoint: 10.135.16.115
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: 514, address: "DB1,DINT0" }
+      - { name: 515, address: "DB1,DINT4" }
+      - { name: 516, address: "DB1,DINT8" }
+      - { name: 517, address: "DB1,DINT12" }
+      - { name: 518, address: "DB1,DINT16" }
+      - { name: 519, address: "DB1,DINT20" }
+      - { name: 551, address: "DB1,DINT24" }
+      - { name: 552, address: "DB1,DINT28" }
+      - { name: 606, address: "DB1,INT48" }
+      - { name: 553, address: "DB1,DINT32" }
+      - { name: 556, address: "DB1,DINT36" }
+  - protocol: s7
+    name: "S7 116"
+    endpoint: 10.135.16.116
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: 583, address: "DB1,DINT8" }
+      - { name: 584, address: "DB1,DINT12" }
+      - { name: 585, address: "DB1,DINT16" }
+      - { name: 586, address: "DB1,DINT20" }
+      - { name: 587, address: "DB1,DINT24" }
+      - { name: 588, address: "DB1,DINT28" }
+      - { name: 589, address: "DB1,DINT32" }
+      - { name: 590, address: "DB1,DINT36" }
+      - { name: 591, address: "DB1,DINT40" }
+      - { name: 592, address: "DB1,DINT44" }
+      - { name: 593, address: "DB1,DINT48" }
+      - { name: 594, address: "DB1,DINT52" }
+      - { name: 595, address: "DB1,DINT56" }
+      - { name: 596, address: "DB1,DINT60" }
+  - protocol: s7
+    name: "S7 L5"
+    endpoint: 10.135.16.117
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: 17, address: "DB1,DINT0" }
+      - { name: 18, address: "DB1,DINT4" }
+      - { name: 19A, address: "DB1,DINT8" }
+      - { name: 19B, address: "DB1,DINT12" }
+      - { name: 20, address: "DB1,DINT20" }
+      - { name: 21, address: "DB1,DINT24" }
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: 19S, address: "DB1,X1024.7" }
+      - { name: 609, address: "DB1,DINT16" }
+  - protocol: s7
+    name: "S7 S8"
+    endpoint: 10.135.16.26
+    rack: 0
+    slot: 2
+    poll_ms: 30000
+    tags:
+      # COUNTER-ROLE FIX (2026-08-25): DXL is the L8 INFEED → must emit ProdConsumedCount
+      # (→ line gross). Was ProdProcessedCount (net) which killed L8 line gross. Oracle
+      # packiot40: L8 gross = DXL(219), net = TEXA(222). See cpack-legacy-oracle-line-meters.md.
+      - { name: "C-PACK/SC/LINHAS/L8/DXL/Admin/ProdConsumedCount/219/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT12" }
+      - { name: "C-PACK/SC/LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit***TRIG_C=O", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L8/TCX/Admin/ProdProcessedCount/221/Unit***TRIG_C=I", address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L8/TEXA/Admin/ProdProcessedCount/222/Unit***TRIG_C=I", address: "DB1,DINT20" }
+      - { name: VERSION, address: "DB1,INT48" }
+  - protocol: s7
+    name: "PLC Flexo"
+    endpoint: 10.135.16.123
+    rack: 0
+    slot: 2
+    poll_ms: 15000
+    tags:
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Status/CurMachSpeed", address: "DB1,INT50" }
+      - { name: FLEXO_PLC_STATUS, address: "DB1,INT50" }
+  - protocol: s7
+    name: "S7 L10"
+    endpoint: 10.135.16.124
+    rack: 0
+    slot: 1
+    poll_ms: 30000
+    tags:
+      # COUNTER-ROLE FIX (2026-08-25): DXL is the L10 INFEED → ProdConsumedCount (line gross).
+      # Was ProdProcessedCount (net) → L10 line was fully dead. Oracle: L10 gross=DXL(564),
+      # net=TEXA(567). L10/TEXA ProcessedCount below reads DB1,DINT20 — the CORRECT register,
+      # proven identical to the legacy :1881 oracle reader (task #59). Line net still 0 is NOT
+      # an address bug but the 2026-08-13 SparkPlug alias/birth regression (see header note).
+      - { name: "C-PACK/SC/LINHAS/L10/DXL/Admin/ProdConsumedCount/564/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT12" }
+      - { name: "C-PACK/SC/LINHAS/L10/PTH/Admin/ProdConsumedCount/565/Unit***TRIG_C=O", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L10/TCX/Admin/ProdProcessedCount/566/Unit***TRIG_C=I", address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L10/TEXA/Admin/ProdProcessedCount/567/Unit***TRIG_C=I", address: "DB1,DINT20" }
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: TEST, address: "DB1,WORD1118" }
+  - protocol: s7
+    name: "PLC L4 10.135.1.126"
+    endpoint: 10.135.1.126
+    rack: 1
+    slot: 2
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L4/BREYER/Admin/ProdConsumedCount/88/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdConsumedCount/86/Unit", address: "DB1,DINT4" }
+      - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT12" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/86/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/89/Unit***TRIG_C=O", address: "DB1,DINT20" }
+      - { name: "C-PACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/87/Unit***TRIG_C=O", address: "DB1,DINT24" }
+      # COUNTER-ROLE FIX (2026-08-25): TEXA is the L4 OUTFEED → must emit ProdProcessedCount
+      # (→ line net). Was ProdConsumedCount (gross) → L4 line net was dead. Oracle: L4 net=TEXA.
+      # NB: live reader uses count-index 10 for L4/TEXA (this file's /84 is STALE — reconcile).
+      - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdProcessedCount/84/Unit***TRIG_C=I", address: "DB1,DINT28" }
+      - { name: VERSION, address: "DB1,INT48" }
+      - { name: I0, address: "DB1,X1024.0" }
+      - { name: I1, address: "DB1,X1024.1" }
+      - { name: I2, address: "DB1,X1024.2" }
+      - { name: I3, address: "DB1,X1024.3" }
+      - { name: I4, address: "DB1,X1024.4" }
+      - { name: AM1, address: "DB1,WORD1118" }
+      - { name: AM2, address: "DB1,WORD1120" }
+  - protocol: s7
+    name: "PLC L3 10.135.16.127"
+    endpoint: 10.135.16.127
+    rack: 0
+    slot: 2
+    poll_ms: 30000
+    tags:
+      # COUNTER-ROLE FIX (2026-08-25): L3 roles were INVERTED. BREYER is the L3 INFEED →
+      # ProdConsumedCount (line gross); TEXA is the OUTFEED → ProdProcessedCount (line net).
+      # Was BREYER=Processed + TEXA=Consumed → Phase-9 could not fire → L3 line went dark.
+      # Oracle: L3 gross=BREYER(76) 165136, net=TEXA(80) 145963, Q=0.884.
+      - { name: "C-PACK/SC/LINHAS/L3/BREYER/Admin/ProdConsumedCount/76/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdConsumedCount/81/Unit", address: "DB1,DINT4" }
+      - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
+      - { name: PTH_COUNT_A, address: "DB1,DINT12" }
+      - { name: PTH_COUNT_B, address: "DB1,DINT16" }
+      - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit***TRIG_C=O", address: "DB1,DINT20" }
+      - { name: "C-PACK/SC/LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit***TRIG_C=O", address: "DB1,DINT24" }
+      - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdProcessedCount/80/Unit***TRIG_C=I", address: "DB1,DINT28" }
+      - { name: VERSION, address: "DB1,INT48" }
+  - protocol: s7
+    name: SLEEVES
+    endpoint: 10.135.16.101
+    rack: 0
+    slot: 2
+    poll_ms: 30000
+    tags:
+      - { name: "C-PACK/SC/SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdProcessedCount/763/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdProcessedCount/823/Unit***TRIG_C=I", address: "DB1,DINT4" }
+  - protocol: opcua
+    endpoint: "opc.tcp://10.135.6.169:4840"
+    tags:
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Admin/ProdConsumedCount/557/Unit***TRIG_C=O", address: "ns=6;s=::OPCUAData:totalMeterCounter" }
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Status/CurMachSpeed", address: "ns=6;s=::OPCUAData:actualSpeed" }
+      - { name: "C-PACK/SC/CELULA9/FLEXO/FLEXO/Status/CurMachSpeed", address: "ns=6;s=::OPCUAData:actualSpeed" }
+  - protocol: modbus_tcp
+    name: PLC_L6
+    endpoint: "10.135.1.128:502"
+    unit: 1
+    # L6 register→topic+TRIG map RECOVERED from the legacy :1881 reader
+    # ("Prepare L6" + "PackML device config", 2026-08-18). Holding registers read
+    # as 32-bit pairs LOW-WORD-FIRST (legacy: value = reg[n+1]<<16 | reg[n]).
+    # Serial flow: PTH(in reg100)→RMH(in reg50)→TEXA(out reg0); scrap between
+    # stages is captured by ***TRIG_CS (defective = consumed − processed). The
+    # generated reader previously had NO tags here → defaulted to register 0 with
+    # no TRIG → net=gross → Quality inflated to ~1.0 (see cpack-legacy-oracle-line-meters.md).
+    # kind: holding (legacy read HoldingRegister block adr0 qty80); each count is a
+    # 32-bit pair (word_swap=true, low-word-first). Shared registers encode the serial
+    # flow (reg50 = PTH-out = RMH-in; reg0 = RMH-out = TEXA-in/out).
+    tags:
+      - { name: "C-PACK/SC/LINHAS/L6/BREYER/Admin/ProdConsumedCount/91/Unit***TRIG_C=O",  address: 60,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/POLYTYPE/Admin/ProdConsumedCount/93/Unit***TRIG_C=O", address: 10,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/PTH/Admin/ProdConsumedCount/95/Unit",                 address: 100, kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/PTH/Admin/ProdProcessedCount/95/Unit***TRIG_CS",      address: 50,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/RMH/Admin/ProdConsumedCount/94/Unit",                 address: 50,  kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/RMH/Admin/ProdProcessedCount/94/Unit***TRIG_CS",      address: 0,   kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/TEXA/Admin/ProdConsumedCount/92/Unit",                address: 0,   kind: holding, type: int32, word_swap: true }
+      - { name: "C-PACK/SC/LINHAS/L6/TEXA/Admin/ProdProcessedCount/92/Unit***TRIG_CS",     address: 0,   kind: holding, type: int32, word_swap: true }
+  - protocol: modbus_tcp
+    name: PLC_L3
+    endpoint: "10.135.1.127:502"
+    unit: 1
+  - protocol: modbus_tcp
+    name: PLC_L4
+    endpoint: "10.135.1.126:502"
+    unit: 1
+  - protocol: modbus_tcp
+    name: PLC_L5
+    endpoint: "10.135.1.125:502"
+    unit: 1
