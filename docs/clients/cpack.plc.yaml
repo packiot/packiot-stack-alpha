@@ -1,8 +1,18 @@
 # cpack.plc.yaml — CPACK PLC connection block (human-readable REFERENCE).
-# COUNTER-ROLE FIX (2026-08-25): infeed machine must emit ProdConsumedCount (line gross),
-# outfeed TEXA must emit ProdProcessedCount (line net). Flipped L3/BREYER, L3/TEXA, L4/TEXA,
-# L8/DXL, L10/DXL (were inverted/dead). Verified vs oracle packiot40 (L4 Q=1.108 exact).
-# Also flip cpack.descriptor.yaml (generator SSoT) + cpack-reader-flow.json (seed) — done here.
+# COUNTER-ROLE FIX (2026-08-25, #909): infeed machine must emit ProdConsumedCount (line gross),
+# outfeed TEXA must emit ProdProcessedCount (line net). Flipped L4/TEXA, L8/DXL, L10/DXL — these
+# three are oracle-verified correct (L4/L8/L10 line gross+net byte-match packiot40 live).
+# L3/BREYER + L3/TEXA were ALSO flipped by #909 but that flip PHANTOMED the L3 line gross
+# (see below) and was REVERTED 2026-08-26 back to the legacy/oracle mapping.
+#
+# 2026-08-26 L3 REVERT: #909 relabelled L3/BREYER DB1,DINT0 as ProdConsumedCount/76 (= the
+# L3 line INFEED meter). That register is live-climbing, so it fabricated ~44k line gross on
+# a day the oracle L3 was fully idle (proven: oracle line 75 + all members 0 gross/0 net,
+# same UTC window, same PLCs). The legacy/oracle reader (:1881) maps DB1,DINT0 → BREYER
+# ProdProcessedCount/76 (net) and DB1,DINT28 → TEXA ProdConsumedCount/80 (gross); reverted to
+# match. L3 line gross is a KNOWN faithful gap (BREYER's real gross register is not mapped by
+# the generated reader) — do NOT re-flip to close it (that re-creates the phantom).
+# Verified vs oracle packiot40 (L4 Q=1.108 exact for the L4/L8/L10 flips that were kept).
 #
 # ⚠ NOT the generator input. The machine SSoT the onboard generator (cmd/onboard-gen)
 # consumes is docs/clients/edge-deployment/cpack/cpack.descriptor.yaml (its `plc:`
@@ -145,7 +155,7 @@ plc:
     slot: 2
     poll_ms: 30000
     tags:
-      - { name: "C-PACK/SC/LINHAS/L3/BREYER/Admin/ProdConsumedCount/76/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit***TRIG_C=I", address: "DB1,DINT0" }  # 2026-08-26 reverted #909 flip (was ProdConsumedCount/76 → phantomed L3 line gross)
       - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdConsumedCount/81/Unit", address: "DB1,DINT4" }
       - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
       - { name: PTH_COUNT_A, address: "DB1,DINT12" }
@@ -153,7 +163,7 @@ plc:
       - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit***TRIG_CS", address: "DB1,INT32" }
       - { name: "C-PACK/SC/LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit***TRIG_C=O", address: "DB1,DINT20" }
       - { name: "C-PACK/SC/LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit***TRIG_C=O", address: "DB1,DINT24" }
-      - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdProcessedCount/80/Unit***TRIG_C=I", address: "DB1,DINT28" }
+      - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit***TRIG_C=O", address: "DB1,DINT28" }  # 2026-08-26 reverted #909 flip (was ProdProcessedCount/80)
       - { name: VERSION, address: "DB1,INT48" }
   - protocol: s7
     name: SLEEVES
