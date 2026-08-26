@@ -175,6 +175,21 @@ scrape_configs:
     static_configs:
       - targets: ['rabbitmq:15692']
 
+  # rabbitmq per-queue depth. The aggregate /metrics endpoint above sums across
+  # queues (return_per_object_metrics=false, to keep cardinality low), so a
+  # single queue's depth is invisible there. The detailed endpoint exposes
+  # per-queue gauges scoped to ONE metric family (queue_coarse_metrics) →
+  # rabbitmq_detailed_queue_messages{queue="..."} without paying the global
+  # per-object cardinality cost. Needed for OeeUnroutableMessages: the `oee`
+  # exchange's alternate-exchange (oee-unroutable) queue catches messages a
+  # non-allowlisted tenant would otherwise drop silently as UNROUTABLE.
+  - job_name: rabbitmq-detailed
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics]
+    static_configs:
+      - targets: ['rabbitmq:15692']
+
   # cadvisor: per-container CPU/mem/net/fs (container_* metrics).
   - job_name: cadvisor
     static_configs:
