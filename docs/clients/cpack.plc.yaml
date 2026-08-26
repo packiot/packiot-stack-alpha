@@ -23,20 +23,36 @@
 # the live reader drops the ***TRIG suffixes. Full reconciliation of this SSoT to the live
 # reader is a separate task.
 #
-# TEXA "STALE REGISTER" HYPOTHESIS — DISPROVEN (task #59, 2026-08-25). L8/L10 line net=0 is
-# NOT an address bug. The TRUE L8/L10 TEXA register = DB1,DINT20 on both PLCs, PROVEN against
-# the authoritative legacy :1881 oracle reader's OWN S7 vartable (10.135.16.26 slot2 = L8,
-# 10.135.16.124 slot1 = L10) — the reader that produces the correct oracle values
-# (L8-TEXA=8936, L10-TEXA=146493 net/24h). The deployed :1880 reader ALREADY reads DB1,DINT20
-# for both (below), byte-identical to the oracle. That address delivered 207/204 correct rows
-# to F3 until it went dark on EXACTLY 2026-08-13. A stale register would emit WRONG-VALUED
-# rows continuously; absent rows since 08-13 = the metric never DECODES → SparkPlug alias/BIRTH
-# regression (agent births only tags SEEN at restart), the same 08-13 bug that killed the other
-# sparse lines — NOT a register bug. Every config layer is symmetric to the ALIVE TCX neighbor
-# (same reader mode=all, same agent raw_tag_map entry, packml_register active). FIX locus =
-# sparkplug-agent birth-completeness (birth ALL raw_tag_map metrics, force rebirth), factory-
-# side, NOT this file. Do NOT change DB1,DINT20 — it is correct; a guessed address corrupts OEE.
-# See cpack-legacy-oracle-line-meters.md + feedback_bug_cpack_oee_zero_line_counts.
+# L8/L10 LINE NET = 0 — ROOT CAUSE + FIX (task #59, 2026-08-25→26). TWO PRs:
+#
+# PR#910 (register hypothesis): the :1880 reader reads L8/L10 TEXA at DB1,DINT20, matching the
+# legacy :1881 REFERENCE reader's vartable — so a naive "guess a different S7 register" was
+# rightly refused. BUT that reference is itself STALE. Deeper probing (live tcpdump of the
+# reader payload at the cloud agent + oracle differential) DISPROVED "DINT20 is correct":
+#
+#   Our reader's DB1,DINT20 read  →  L8/TEXA = 626329 (an unrelated counter), L10/TEXA = 0 (empty).
+#   Oracle TEXA totalizer         →  L8 = 217796,  L10 = 254927.   ⇒ DINT20 ≠ the TEXA value.
+#   Oracle TEXA(222/567) ≡ oracle TCX(221/566) BYTE-FOR-BYTE over 24h (max val diff = 0; identical
+#     increment sums 19384 / 146732) — TEXA and TCX are the SAME physical outfeed count.
+#   Our reader's TCX read @ DB1,DINT16  →  L8 = 217502 ≈ oracle 217796,  L10 = 254543 ≈ oracle 254927,
+#     AND TCX (count-index 221/566, id 75/79) ALREADY flows to F3 matching the oracle line net.
+#
+#   ⇒ The TRUE L8/L10 outfeed/net count lives at DB1,DINT16 (what the reader already reads as TCX).
+#     DB1,DINT20 is STALE on the current PLC (PLC-program drift since the Jul-23 vartable) — it
+#     reads junk on L8 and an empty register on L10. NBIRTH/agent/decoder are all fine: the reader
+#     EMITS TEXA@DINT20, the agent births+publishes it, the decoder decodes it — the VALUE is just
+#     wrong (626329 / 0), so it contributes nothing. NOT an alias/birth bug.
+#
+# FIX (applied live, verified): repoint the L8/L10 LINE outfeed counter in packml_register from
+# TEXA(222/567) → TCX(221/566) — the machine whose register (DB1,DINT16) actually holds the
+# outfeed count and already matches the oracle. Phase-9 reseeds Parameter30700 from the LINE row
+# every 5 min, so line net populated within one cycle: L8 line net 0→917 vs oracle 910 (~1%),
+# L10 line net 0→1098 vs oracle 1191 (poll-cadence skew, same on gross → not a metering error).
+# See seed docs/clients/cpack-l8l10-outfeed-counter-fix.sql + cpack-legacy-oracle-line-meters.md.
+#
+# The reader's TEXA@DB1,DINT20 below stays a stale mapping (reads junk/0); the TEXA machine
+# (76/80) remains dark — cosmetic, the LINE now meters via TCX. Optional follow-up: repoint the
+# reader TEXA read to DB1,DINT16 (would duplicate TCX). Do NOT guess any other S7 register.
 
 tenant: CPACK
 enterprise_id: 3
@@ -132,10 +148,10 @@ plc:
     poll_ms: 30000
     tags:
       # COUNTER-ROLE FIX (2026-08-25): DXL is the L10 INFEED → ProdConsumedCount (line gross).
-      # Was ProdProcessedCount (net) → L10 line was fully dead. Oracle: L10 gross=DXL(564),
-      # net=TEXA(567). L10/TEXA ProcessedCount below reads DB1,DINT20 — the CORRECT register,
-      # proven identical to the legacy :1881 oracle reader (task #59). Line net still 0 is NOT
-      # an address bug but the 2026-08-13 SparkPlug alias/birth regression (see header note).
+      # Was ProdProcessedCount (net) → L10 line was fully dead. Oracle: L10 gross=DXL(564).
+      # NB (task #59): L10/TEXA below reads DB1,DINT20 = a STALE PLC register (reads 0 for us,
+      # oracle TEXA=254927). The real outfeed count is DB1,DINT16 (=TCX). Line net is metered
+      # via TCX(566) — see header note. This TEXA@DINT20 row is left as-is (reads empty).
       - { name: "C-PACK/SC/LINHAS/L10/DXL/Admin/ProdConsumedCount/564/Unit***TRIG_C=O", address: "DB1,DINT0" }
       - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
       - { name: PTH_COUNT_A, address: "DB1,DINT8" }
