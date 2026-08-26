@@ -166,42 +166,6 @@ type Message struct {
 	// so the golden comparator and existing reset tests are untouched; the
 	// caller flips it via CALC_RESET_HEAL_ENABLED.
 	ResetHeal bool
-
-	// ── Counter-role override (ADR-0047 P0 #1) ─────────────────────────────
-	// packml_register.id_{infeed,outfeed,reject}counter already exist as
-	// columns but are unread by Calc — every counter's role (gross/net/scrap)
-	// is inferred PURELY from a ProdProcessedCount/ProdConsumedCount/
-	// ProdDefectiveCount substring in the topic (parseTopicFull). A client
-	// whose PLC counter isn't named that way (e.g. bispharma's "counter168",
-	// a CPACK split-instrumentation machine whose gross feed lives on a
-	// DIFFERENT machine than its net feed — see docs/clients/
-	// bispharma-oee-mapping-fix.md, docs/clients/cpack-counter-semantics-
-	// audit.md) is silently dropped (ErrMalformedTopic) or mis-attributed.
-	//
-	// When RoleKind is not CounterKindUnknown AND RoleUnitTopic is set, Calc
-	// uses this pair INSTEAD OF parsing Topic for the unit + kind — the
-	// caller (main.go's internal/counterroles.Resolver, DB-backed, TTL-
-	// cached) has already resolved, from packml_register, which
-	// equipment/line this metric's counts belong to (RoleUnitTopic) and
-	// which role it plays (RoleKind: Consumed=infeed/gross,
-	// Processed=outfeed/net, Defective=reject/scrap). The per-role sibling
-	// state keys are then synthesized as RoleUnitTopic+"/Admin/Prod{Processed,
-	// Consumed,Defective}Count" (the same line-own-stream shape Phase 9 already
-	// emits — line_aggregation.go) rather than via topic string substitution,
-	// because an override topic has no Prod*Count substring to substitute.
-	// Phase 9 member→line CSV aggregation is skipped for an override message
-	// — DB-role mapping and Parameter30700-CSV-position mapping are
-	// alternative mechanisms for the same problem (per
-	// bispharma-oee-mapping-fix.md §"Why re-role instead of Phase-9
-	// aggregate?"), not layered ones.
-	//
-	// Zero value (CounterKindUnknown, "") ⇒ byte-identical to today's
-	// substring-parse path. Both fields default to zero unless the caller
-	// found a populated DB role for this equipment, so a tenant whose
-	// packml_register counter-role columns are all NULL (everyone today) is
-	// completely unaffected — the ADR-0047 backward-compatibility contract.
-	RoleUnitTopic string
-	RoleKind      CounterKind
 }
 
 // countersOnlyGuardK is the multiplier for the counters-only glitch guard:
@@ -306,29 +270,13 @@ func Calc(msg Message, state State) (Decision, error) {
 	// Strip the ***SUFFIX to get the base topic (used for all state keys).
 	baseTopic := stripTriggerSuffix(msg.Topic)
 
-	// ADR-0047 P0 #1: a populated DB counter-role override replaces the
-	// topic-substring derivation entirely. See Message.RoleKind doc.
-	roleOverride := msg.RoleKind != CounterKindUnknown && msg.RoleUnitTopic != ""
-
-	var unitTopic string
-	var kind CounterKind
-	var flags TriggerFlags
-	if roleOverride {
-		unitTopic = msg.RoleUnitTopic
-		kind = msg.RoleKind
-		if sepIdx := strings.Index(msg.Topic, "***"); sepIdx >= 0 {
-			flags = parseTriggerFlags(msg.Topic[sepIdx+3:])
-		}
-	} else {
-		var err error
-		unitTopic, kind, flags, err = parseTopicFull(msg.Topic)
-		if err != nil {
-			// Malformed topic — drop silently to match JS behavior (JS uses
-			// `topic.split("***")[0]` which never throws; a bad topic just
-			// produces empty derived vars and falls through to Phase 11 without
-			// emitting metrics).
-			return dec, nil
-		}
+	unitTopic, kind, flags, err := parseTopicFull(msg.Topic)
+	if err != nil {
+		// Malformed topic — drop silently to match JS behavior (JS uses
+		// `topic.split("***")[0]` which never throws; a bad topic just
+		// produces empty derived vars and falls through to Phase 11 without
+		// emitting metrics).
+		return dec, nil
 	}
 
 	// SETUP-mode short-circuit. The JS reads the "modes" global and only
@@ -349,20 +297,10 @@ func Calc(msg Message, state State) (Decision, error) {
 	}
 
 	// Derive the sibling topics for the other two counters (JS uses
-	// topic.replace() for this). A role-override topic has no Prod*Count
-	// substring for replaceCounterName to substitute, so its siblings are
-	// synthesized directly off the resolved unitTopic instead (see
-	// Message.RoleKind doc).
-	var topicProcessed, topicConsumed, topicDefective string
-	if roleOverride {
-		topicProcessed = unitTopic + "/Admin/" + CounterKindProcessed.String()
-		topicConsumed = unitTopic + "/Admin/" + CounterKindConsumed.String()
-		topicDefective = unitTopic + "/Admin/" + CounterKindDefective.String()
-	} else {
-		topicProcessed = replaceCounterName(baseTopic, kind, CounterKindProcessed)
-		topicConsumed = replaceCounterName(baseTopic, kind, CounterKindConsumed)
-		topicDefective = replaceCounterName(baseTopic, kind, CounterKindDefective)
-	}
+	// topic.replace() for this).
+	topicProcessed := replaceCounterName(baseTopic, kind, CounterKindProcessed)
+	topicConsumed := replaceCounterName(baseTopic, kind, CounterKindConsumed)
+	topicDefective := replaceCounterName(baseTopic, kind, CounterKindDefective)
 
 	// Read priors from state (JS: parseInt(global.get(topic)); missing→NaN).
 	// Missing key → 0 matches JS parseInt(undefined) → NaN, but we treat
@@ -700,22 +638,12 @@ func Calc(msg Message, state State) (Decision, error) {
 	// Also handles SECTOR::LINE units with a double pass.
 	//
 	// State-machine doc §1 Phase 9 + source.js lines 605-800.
-	//
-	// Skipped for a role-override message: DB-role mapping (RoleKind) and
-	// Parameter30700-CSV-position mapping are ALTERNATIVE mechanisms for
-	// attributing a member counter to its line, not layered ones (see
-	// Message.RoleKind doc). Running Phase 9 here would also re-split
-	// msg.Topic assuming the STANDARD 8+-segment per-metric shape
-	// (topicArray[7] as machine index), which a role-mapped topic's own
-	// naming (e.g. "counter168") has no reason to satisfy.
-	if !roleOverride {
-		runPhase9LineAggregation(
-			&dec, state, msg, unitTopic, timestampMs,
-			procIncr, consIncr, curProcessed, curConsumed,
-			prodConsumedSet, prodProcessedSet,
-			prodSpeed, flags.StateSpeedThis, resetLineScrap,
-		)
-	}
+	runPhase9LineAggregation(
+		&dec, state, msg, unitTopic, timestampMs,
+		procIncr, consIncr, curProcessed, curConsumed,
+		prodConsumedSet, prodProcessedSet,
+		prodSpeed, flags.StateSpeedThis, resetLineScrap,
+	)
 	if len(dec.Metrics) > 0 {
 		sendMsg = true
 	}

@@ -133,11 +133,10 @@ func ParseTopic(topic string) (unitTopic string, kind CounterKind, err error) {
 // — the SAME rule parseTopicFull applies (parts[:5], or parts[:4] when
 // segment 4 is a PackML process keyword), but WITHOUT requiring a
 // ProdProcessedCount/ProdConsumedCount/ProdDefectiveCount substring or a
-// "***" trigger suffix to be present. Exported for DB-backed role resolvers
-// (internal/counterroles, ADR-0047 P0 #1) that need to build lookup keys
-// against bare Sparkplug metric names, which never carry a "***" suffix and
-// may not follow the Prod*Count naming convention at all — that's exactly
-// the split-brain the resolver exists to route around.
+// "***" trigger suffix to be present. Exported so a caller can build a
+// canonical unit-topic lookup key from a bare Sparkplug metric name, which
+// never carries a "***" suffix and may not follow the Prod*Count naming
+// convention at all.
 //
 // A resolver key that silently diverges from parseTopicFull's own rule turns
 // every one of its entries into a dead lookup (the "key drift" lesson from
@@ -179,9 +178,8 @@ func DeriveUnitTopic(topic string) (unitTopic string, ok bool) {
 }
 
 // parseTriggerFlags extracts the ***TRIG* suffix flags from a topic's suffix
-// substring (everything after "***"). Split out of parseTopicFull so the
-// counter-role override path in Calc (Message.RoleKind) can still honor an
-// explicit trigger suffix on a DB-role-mapped topic without re-deriving unit
+// substring (everything after "***"). Split out of parseTopicFull so a caller
+// can parse trigger flags from a suffix in isolation without re-deriving unit
 // + kind from the topic body. Mirrors parseTopicFull's suffix block verbatim;
 // TestParseTriggerFlagsMatchesParseTopicFull pins the two in lockstep.
 func parseTriggerFlags(suffix string) TriggerFlags {

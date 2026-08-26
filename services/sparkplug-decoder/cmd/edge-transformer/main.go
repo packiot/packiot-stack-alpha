@@ -52,7 +52,6 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/counterroles"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/health"
@@ -464,25 +463,6 @@ func main() {
 			)
 		}
 
-		// ADR-0047 P0 #1: counter-role resolver (packml_register.id_
-		// {infeed,outfeed,reject}counter → gross/net/scrap). Off by default
-		// (COUNTER_ROLES_FROM_DB); when on, a periodically-reloaded (
-		// COUNTER_ROLES_REFRESH_SECONDS, default 5m) resolver is consulted by
-		// calcHooks BEFORE the Prod*Count substring convention. An empty
-		// snapshot (no tenant has populated the columns — everyone today) makes
-		// every Resolve() call a miss, so this is a pure no-op until CS Admin
-		// starts filling the columns in. See internal/counterroles's package
-		// doc for the full design + the two real-client gaps it closes.
-		var roleResolver *counterroles.Resolver
-		if cfg.CounterRolesFromDB {
-			roleResolver = counterroles.New(logger, time.Duration(cfg.CounterRolesRefreshSeconds)*time.Second)
-			roleResolver.Start(ctx)
-			logger.Info("counter-role resolver started (ADR-0047 P0 #1, config-as-data)",
-				slog.Int("refresh_seconds", cfg.CounterRolesRefreshSeconds),
-				slog.Int("bindings", roleResolver.Len()),
-			)
-		}
-
 		// LINE_TRACE_TENANTS (comma-separated, lowercase GroupIDs, e.g.
 		// "cpack") turns on INFO-level per-counter drop tracing for the listed
 		// tenants ONLY. Empty (default) → zero extra logs. Purpose: pin a
@@ -506,7 +486,6 @@ func main() {
 			countersOnlyEnabled:    countersOnlyEnabled,
 			countersOnlyAutoFromDB: countersOnlyAutoFromDB,
 			idealRates:             idealRates,
-			roleResolver:           roleResolver,
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
@@ -873,13 +852,6 @@ type calcHooks struct {
 	// legacy guard). See calc_production_counters.Message.NoSpeedGuardFallback.
 	noSpeedGuardFallback bool
 
-	// roleResolver — ADR-0047 P0 #1 counter-role override
-	// (packml_register.id_{infeed,outfeed,reject}counter). nil when
-	// COUNTER_ROLES_FROM_DB is off (the default): classifyKind then behaves
-	// exactly like a bare isCounterMetricName call. See
-	// internal/counterroles's package doc for the full design.
-	roleResolver *counterroles.Resolver
-
 	// traceTenants is the set of lowercased tenant/GroupIDs (from
 	// LINE_TRACE_TENANTS) for which per-counter INFO-level drop tracing is
 	// on. Empty (default) → traced() is always false → ZERO extra logs, so
@@ -905,26 +877,15 @@ func (h calcHooks) traced(tenant string) bool {
 	return h.traceTenants[strings.ToLower(tenant)]
 }
 
-// classifyKind returns the CounterKind for a metric name, consulting the
-// DB-backed counter-role resolver (ADR-0047 P0 #1) BEFORE falling back to
-// the built-in Prod*Count substring convention (isCounterMetricName). When
-// roleResolver is nil (COUNTER_ROLES_FROM_DB off) or has no binding for this
-// metric's canonical unit topic — the overwhelming common case, since
-// packml_register.id_{infeed,outfeed,reject}counter is NULL for virtually
-// every tenant today — this is byte-identical to isCounterMetricName(name).
-//
-// fromRole=true tells the caller to populate Message.RoleKind/RoleUnitTopic
-// (see calc.go's doc) instead of letting Calc re-derive the kind from the
-// topic — this is what makes a non-standard-named counter (no Prod*Count
-// substring at all) participate in Calc instead of being silently dropped.
-func (h calcHooks) classifyKind(name string) (kind calc_production_counters.CounterKind, roleUnitTopic string, fromRole bool) {
-	if h.roleResolver != nil {
-		if srcUnit, ok := calc_production_counters.DeriveUnitTopic(name); ok {
-			if rk, lineUnit, ok := h.roleResolver.Resolve(srcUnit); ok {
-				return rk, lineUnit, true
-			}
-		}
-	}
+// classifyKind returns the CounterKind for a metric name via the built-in
+// Prod*Count substring convention (isCounterMetricName). The two trailing
+// return values are always ("", false); they are retained only so the two
+// call sites keep their existing three-value destructuring shape. The
+// DB-backed counter-role override that once populated them was removed (see
+// docs/adr/reference/adr-0047-counterroles-removal-note.md) because it
+// collided with Phase-9's use of the same packml_register.id_*counter columns
+// as wire count-indices.
+func (h calcHooks) classifyKind(name string) (calc_production_counters.CounterKind, string, bool) {
 	return isCounterMetricName(name), "", false
 }
 
@@ -1155,7 +1116,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	if h.seedFromMetric(tenant, metric) {
 		return nil
 	}
-	kind, roleUnitTopic, fromRole := h.classifyKind(metric.Name)
+	kind, _, _ := h.classifyKind(metric.Name)
 	if kind == calc_production_counters.CounterKindUnknown {
 		return nil
 	}
@@ -1201,12 +1162,6 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		Timestamp:  ts,
 		Tenant:     tenant,
 		CmdTrigger: true,
-	}
-	if fromRole {
-		// ADR-0047 P0 #1: DB-configured role override — see Message.RoleKind
-		// doc. Bypasses Calc's own topic-substring derivation entirely.
-		msg.RoleKind = kind
-		msg.RoleUnitTopic = roleUnitTopic
 	}
 	// Counters-only opt-in (ADR-0047 P0 #2): evaluated per-message (not
 	// frozen at boot) so a countersOnlyAutoFromDB tenant picks up a
