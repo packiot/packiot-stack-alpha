@@ -23,7 +23,7 @@ GITHUB_REPO = packiot/packiot-stack-alpha
 AWS_ACCOUNT_ID  := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 TF_STATE_BUCKET := packiot-terraform-state-$(AWS_ACCOUNT_ID)
 
-INFRA_SVCS  = rabbitmq postgres hasura hasura-init
+INFRA_SVCS  = rabbitmq postgres
 WORKER_SVCS = oeecloud-worker mirror-worker-go
 
 # ── Default ───────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ help:
 	@echo "    build            Build all service images"
 	@echo ""
 	@echo "  Partial stacks (infra always included)"
-	@echo "    up-infra         RabbitMQ + TimescaleDB + Hasura only"
+	@echo "    up-infra         RabbitMQ + TimescaleDB only"
 	@echo "    up-edge          Infra + edge-nodered"
 	@echo "    up-api           Postgres + edge-api"
 	@echo "    up-operator      Infra + edge-api + edge-nodered + operator UI"
@@ -68,7 +68,7 @@ help:
 	@echo "    logs-postgres           Tail TimescaleDB"
 	@echo "    logs-rabbitmq           Tail RabbitMQ"
 	@echo "    logs-adminer            Tail Adminer"
-	@echo "    logs-infra              Tail rabbitmq + postgres + hasura"
+	@echo "    logs-infra              Tail rabbitmq + postgres"
 	@echo "    logs-simulator          Tail operator simulator"
 	@echo "    logs-oeecloud-worker    Tail oeecloud-worker (Go AMQP consumer)"
 	@echo "    logs-mirror-worker      Tail mirror-worker-go (user_logs replay)"
@@ -218,7 +218,7 @@ logs-api:
 	$(COMPOSE) logs -f edge-api
 
 logs-infra:
-	$(COMPOSE) logs -f rabbitmq postgres hasura
+	$(COMPOSE) logs -f rabbitmq postgres
 
 logs-postgres:
 	$(COMPOSE) logs -f postgres
@@ -262,8 +262,7 @@ PSQL = $(COMPOSE) exec -T postgres psql -U postgres -d packiot
 # ── Database rebuild ─────────────────────────────────────────────────────────
 # Wipes the pg-data volume and restarts only postgres so all initdb.d scripts
 # re-run in order (00-schema → ... → 22-production-triggers).  All other
-# services (RabbitMQ, Grafana, edge-api, etc.) stay running.  Hasura is
-# restarted at the end so it picks up the fresh schema.
+# services (RabbitMQ, Grafana, edge-api, etc.) stay running.
 db-rebuild:
 	@echo ""
 	@echo "  WARNING: this will wipe all database data and rebuild from schema scripts."
@@ -271,8 +270,8 @@ db-rebuild:
 	@echo "  Press Ctrl+C within 5s to abort."
 	@sleep 5
 	@echo ""
-	@echo "  Stopping postgres + hasura..."
-	$(COMPOSE) --env-file $(ENV_FILE) stop hasura hasura-init postgres
+	@echo "  Stopping postgres..."
+	$(COMPOSE) --env-file $(ENV_FILE) stop postgres
 	@echo "  Removing pg-data volume..."
 	docker volume rm packiot-stack-alpha_pg-data 2>/dev/null || true
 	@echo "  Starting postgres (init scripts will run)..."
@@ -281,9 +280,6 @@ db-rebuild:
 	@until $(COMPOSE) --env-file $(ENV_FILE) exec -T postgres pg_isready -U postgres -d packiot >/dev/null 2>&1; do \
 		printf '.'; sleep 2; \
 	done
-	@echo ""
-	@echo "  Restarting hasura..."
-	$(COMPOSE) --env-file $(ENV_FILE) up -d hasura hasura-init
 	@echo ""
 	@echo "  Done. DB rebuilt with full production parity schema (65 tables)."
 	@echo "  Run 'make db-count' to verify row counts."
@@ -321,8 +317,6 @@ apply-views:
 	@echo "Applying operator UI views to running postgres..."
 	@$(COMPOSE) exec -T postgres psql -U postgres -d packiot \
 		< edge-node-red/db/04-operator-views.sql
-	@echo "Reloading Hasura metadata..."
-	@$(COMPOSE) restart hasura-init
 
 db-count:
 	@$(PSQL) -c "\

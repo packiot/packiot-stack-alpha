@@ -85,7 +85,7 @@ Base: `https://grafana.staging.packiot.app/d/<uid>`
 | Operator SPA | [operator.staging.packiot.app](https://operator.staging.packiot.app) | Fire a PO / downtime / split; then watch board 05 + the comparator |
 | Adminer | [adminer.staging.packiot.app](https://adminer.staging.packiot.app) | Direct DB — switch between `packiot` (F1) and `packiot_analytics` (F3) |
 | RabbitMQ mgmt | [rabbitmq.staging.packiot.com](https://rabbitmq.staging.packiot.com) | Queue depth, DLQ, per-tenant command queues (also `amqp.staging.packiot.app`) |
-| Hasura console | [hasura.staging.packiot.com](https://hasura.staging.packiot.com) | GraphQL over the DB (retires at flip — read-path moving to refdata) |
+| ~~Hasura console~~ | _retired (audit 2026-08-21)_ | GraphQL engine removed — container/image/DNS gone; read-path served by refdata-api, front4/edge-api mutations moved native |
 | Node-RED editor | [nodered.staging.packiot.com](https://nodered.staging.packiot.com) | Operator endpoints + sim flows (sim retires at flip) |
 | Authentik | [auth.staging.packiot.app](https://auth.staging.packiot.app) | The SSO gate — re-auth here if a link 403s |
 
