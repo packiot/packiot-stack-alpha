@@ -212,7 +212,7 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L3/BREYER
       id_equipment: 58
       tags:
-        - { metric: /Admin/ProdConsumedCount/76/Unit, db: 1, offset: 0, type: dint, counter_derive: outfeed_only }   # counter-role fix 2026-08-25: L3/BREYER is the line INFEED (gross)
+        - { metric: /Admin/ProdProcessedCount/76/Unit, db: 1, offset: 0, type: dint, counter_derive: infeed_only }   # 2026-08-26 REVERT of #909 flip: DB1,DINT0 is BREYER's ProdProcessedCount per the legacy/oracle reader (:1881). #909 relabelled it ProdConsumedCount/76 = the L3 line INFEED meter → the live-climbing register phantomed the line gross (~44k on a day the oracle L3 was idle). L3 line gross remains a KNOWN faithful gap (BREYER's real gross register is not mapped by the generated reader) — do NOT re-flip. See cpack-legacy-oracle-line-meters.md §L3 phantom.
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/POLYTYPE
       id_equipment: 62
@@ -233,7 +233,7 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L3/TEXA
       id_equipment: 60
       tags:
-        - { metric: /Admin/ProdProcessedCount/80/Unit, db: 1, offset: 28, type: dint, counter_derive: infeed_only }   # counter-role fix 2026-08-25: L3/TEXA is the line OUTFEED (net)
+        - { metric: /Admin/ProdConsumedCount/80/Unit, db: 1, offset: 28, type: dint, counter_derive: outfeed_only }   # 2026-08-26 REVERT of #909 flip: DB1,DINT28 is TEXA's ProdConsumedCount per the legacy/oracle reader (:1881). Restores the pre-#909 mapping that matched the oracle (no L3 phantom).
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/BREYER
       id_equipment: 66

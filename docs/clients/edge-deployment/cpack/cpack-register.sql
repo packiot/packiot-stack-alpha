@@ -105,9 +105,9 @@ ON CONFLICT (packml_topic) DO NOTHING;
 --     quirk present in the oracle too (labels-per-sheet: outfeed count > infeed count;
 --     oracle official gross=33282/net=38853/scrap=-5571) — NOT a meter error, do NOT swap.
 --     NB: L3/L5/L6/L8/L10 happen to use legacy-id == wire count-index; L4 is the exception.
-UPDATE packml_register SET id_infeedcounter = 76,  id_outfeedcounter = 80  WHERE packml_topic = 'CPACK/SC/LINHAS/L3';
+UPDATE packml_register SET id_infeedcounter = 76,  id_outfeedcounter = 80  WHERE packml_topic = 'CPACK/SC/LINHAS/L3';   -- 76=BREYER infeed, 80=TEXA outfeed (oracle byte-match). NB: L3 line gross is a KNOWN faithful gap (the generated reader does not map BREYER's real gross register). Do NOT "fix" it by relabelling BREYER's reader tag ProdProcessedCount→ProdConsumedCount/76 — #909 did that and it phantomed ~44k line gross on a day the oracle L3 was idle (reverted 2026-08-26). See cpack-legacy-oracle-line-meters.md §L3 phantom.
 UPDATE packml_register SET id_infeedcounter = 6,   id_outfeedcounter = 10  WHERE packml_topic = 'CPACK/SC/LINHAS/L4';  -- 6=BREYER infeed, 10=TEXA outfeed (L4's LOCAL wire count-index); oracle-verified 2026-08-26
 UPDATE packml_register SET id_infeedcounter = 61,  id_outfeedcounter = 65  WHERE packml_topic = 'CPACK/SC/LINHAS/L5';
 UPDATE packml_register SET id_infeedcounter = 91,  id_outfeedcounter = 92  WHERE packml_topic = 'CPACK/SC/LINHAS/L6';  -- infeed BREYER (was 94/RMH; oracle-corrected 2026-08-24)
-UPDATE packml_register SET id_infeedcounter = 219, id_outfeedcounter = 222 WHERE packml_topic = 'CPACK/SC/LINHAS/L8';
-UPDATE packml_register SET id_infeedcounter = 564, id_outfeedcounter = 567 WHERE packml_topic = 'CPACK/SC/LINHAS/L10';
+UPDATE packml_register SET id_infeedcounter = 219, id_outfeedcounter = 221 WHERE packml_topic = 'CPACK/SC/LINHAS/L8';   -- outfeed=TCX(221), NOT TEXA(222): #59 repoint (TEXA reader reg DB1,DINT20 is STALE; oracle TEXA(222)≡TCX(221) byte-for-byte). Live F3 + SBXCPACK = 219/221. Was 222 in this seed (drift vs live) until 2026-08-26; fold of PR #916.
+UPDATE packml_register SET id_infeedcounter = 564, id_outfeedcounter = 566 WHERE packml_topic = 'CPACK/SC/LINHAS/L10';  -- outfeed=TCX(566), NOT TEXA(567): #59 repoint (same reason). Live F3 + SBXCPACK = 564/566. Was 567 in this seed until 2026-08-26; fold of PR #916.

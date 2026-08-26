@@ -801,7 +801,7 @@
     "vartable": [
       {
         "addr": "DB1,DINT0",
-        "name": "CPACK/SC/LINHAS/L3/BREYER/Admin/ProdConsumedCount/76/Unit",
+        "name": "CPACK/SC/LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit",
         "type": "DINT"
       },
       {
@@ -826,7 +826,7 @@
       },
       {
         "addr": "DB1,DINT28",
-        "name": "CPACK/SC/LINHAS/L3/TEXA/Admin/ProdProcessedCount/80/Unit",
+        "name": "CPACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit",
         "type": "DINT"
       }
     ]
