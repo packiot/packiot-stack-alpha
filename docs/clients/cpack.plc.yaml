@@ -1,4 +1,8 @@
 # cpack.plc.yaml — CPACK PLC connection block (human-readable REFERENCE).
+# COUNTER-ROLE FIX (2026-08-25): infeed machine must emit ProdConsumedCount (line gross),
+# outfeed TEXA must emit ProdProcessedCount (line net). Flipped L3/BREYER, L3/TEXA, L4/TEXA,
+# L8/DXL, L10/DXL (were inverted/dead). Verified vs oracle packiot40 (L4 Q=1.108 exact).
+# Also flip cpack.descriptor.yaml (generator SSoT) + cpack-reader-flow.json (seed) — done here.
 #
 # ⚠ NOT the generator input. The machine SSoT the onboard generator (cmd/onboard-gen)
 # consumes is docs/clients/edge-deployment/cpack/cpack.descriptor.yaml (its `plc:`
@@ -76,7 +80,7 @@ plc:
     slot: 2
     poll_ms: 30000
     tags:
-      - { name: "C-PACK/SC/LINHAS/L8/DXL/Admin/ProdProcessedCount/219/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L8/DXL/Admin/ProdConsumedCount/219/Unit***TRIG_C=O", address: "DB1,DINT0" }
       - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
       - { name: PTH_COUNT_A, address: "DB1,DINT8" }
       - { name: PTH_COUNT_B, address: "DB1,DINT12" }
@@ -101,7 +105,7 @@ plc:
     slot: 1
     poll_ms: 30000
     tags:
-      - { name: "C-PACK/SC/LINHAS/L10/DXL/Admin/ProdProcessedCount/564/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L10/DXL/Admin/ProdConsumedCount/564/Unit***TRIG_C=O", address: "DB1,DINT0" }
       - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
       - { name: PTH_COUNT_A, address: "DB1,DINT8" }
       - { name: PTH_COUNT_B, address: "DB1,DINT12" }
@@ -125,7 +129,7 @@ plc:
       - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/86/Unit***TRIG_CS", address: "DB1,INT32" }
       - { name: "C-PACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/89/Unit***TRIG_C=O", address: "DB1,DINT20" }
       - { name: "C-PACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/87/Unit***TRIG_C=O", address: "DB1,DINT24" }
-      - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdConsumedCount/84/Unit***TRIG_C=O", address: "DB1,DINT28" }
+      - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdProcessedCount/84/Unit***TRIG_C=I", address: "DB1,DINT28" }
       - { name: VERSION, address: "DB1,INT48" }
       - { name: I0, address: "DB1,X1024.0" }
       - { name: I1, address: "DB1,X1024.1" }
@@ -141,7 +145,7 @@ plc:
     slot: 2
     poll_ms: 30000
     tags:
-      - { name: "C-PACK/SC/LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit***TRIG_C=I", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L3/BREYER/Admin/ProdConsumedCount/76/Unit***TRIG_C=O", address: "DB1,DINT0" }
       - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdConsumedCount/81/Unit", address: "DB1,DINT4" }
       - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
       - { name: PTH_COUNT_A, address: "DB1,DINT12" }
@@ -149,7 +153,7 @@ plc:
       - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit***TRIG_CS", address: "DB1,INT32" }
       - { name: "C-PACK/SC/LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit***TRIG_C=O", address: "DB1,DINT20" }
       - { name: "C-PACK/SC/LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit***TRIG_C=O", address: "DB1,DINT24" }
-      - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit***TRIG_C=O", address: "DB1,DINT28" }
+      - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdProcessedCount/80/Unit***TRIG_C=I", address: "DB1,DINT28" }
       - { name: VERSION, address: "DB1,INT48" }
   - protocol: s7
     name: SLEEVES

@@ -574,7 +574,7 @@
     "vartable": [
       {
         "addr": "DB1,DINT0",
-        "name": "CPACK/SC/LINHAS/L8/DXL/Admin/ProdProcessedCount/219/Unit",
+        "name": "CPACK/SC/LINHAS/L8/DXL/Admin/ProdConsumedCount/219/Unit",
         "type": "DINT"
       },
       {
@@ -675,7 +675,7 @@
     "vartable": [
       {
         "addr": "DB1,DINT0",
-        "name": "CPACK/SC/LINHAS/L10/DXL/Admin/ProdProcessedCount/564/Unit",
+        "name": "CPACK/SC/LINHAS/L10/DXL/Admin/ProdConsumedCount/564/Unit",
         "type": "DINT"
       },
       {
@@ -758,7 +758,7 @@
       },
       {
         "addr": "DB1,DINT28",
-        "name": "CPACK/SC/LINHAS/L4/TEXA/Admin/ProdConsumedCount/10/Unit",
+        "name": "CPACK/SC/LINHAS/L4/TEXA/Admin/ProdProcessedCount/10/Unit",
         "type": "DINT"
       }
     ]
@@ -801,7 +801,7 @@
     "vartable": [
       {
         "addr": "DB1,DINT0",
-        "name": "CPACK/SC/LINHAS/L3/BREYER/Admin/ProdProcessedCount/76/Unit",
+        "name": "CPACK/SC/LINHAS/L3/BREYER/Admin/ProdConsumedCount/76/Unit",
         "type": "DINT"
       },
       {
@@ -826,7 +826,7 @@
       },
       {
         "addr": "DB1,DINT28",
-        "name": "CPACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit",
+        "name": "CPACK/SC/LINHAS/L3/TEXA/Admin/ProdProcessedCount/80/Unit",
         "type": "DINT"
       }
     ]
