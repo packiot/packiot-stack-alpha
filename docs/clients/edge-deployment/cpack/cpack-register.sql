@@ -67,6 +67,15 @@ VALUES
 ON CONFLICT (packml_topic) DO NOTHING;
 
 -- ── Line meters (id_infeedcounter = gross source, id_outfeedcounter = net source) ──
+-- ⚠ These values are WIRE COUNT-INDICES (topicArray[7]), read by Phase-9's
+-- line_param30700_seed.go. They are NOT id_equipment. The ADR-0047 counterroles.go
+-- resolver ALSO reads these columns but INTERPRETS THEM AS id_equipment — a
+-- semantic collision. When a count-index below equals a real id_equipment
+-- (L5 65→L4-RMH/61→L3-PTH, L6 91/92→BREYER2/PTH80S, L3 76/80→L8/L10-TEXA) the
+-- resolver mis-binds a foreign machine's counter into the line (the CPACK L5
+-- net-phantom, 2026-08-26). So COUNTER_ROLES_FROM_DB MUST stay "false" while these
+-- columns hold count-indices (set false in compose.staging.yml). Do not populate
+-- these columns with id_equipment to satisfy counterroles — that breaks Phase-9.
 -- Authoritative per-line meters, cross-checked against the legacy packiot40 oracle
 -- (matching each legacy LINE own-stream total to the member machine with the identical
 -- total, over 2.5k–4.3k rows/shift — not coincidence). Values are the WIRE count-index
