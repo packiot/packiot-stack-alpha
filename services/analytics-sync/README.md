@@ -86,3 +86,37 @@ legacy edge-api emits some numerics as quoted strings.
 
 The cursor cold-starts just below the first legacy row in the backfill window
 (history first, then live) and is idempotent on re-run.
+
+### legacy-replicator residual hardening (2026-08-27)
+
+Three replay-fidelity residuals closed (`internal/replicate`):
+
+1. **Event interval-overlap fallback** (`handlers.go`, `EventClassified` +
+   `EventSplitted`). `event-justified` / `-edited` now try an EXACT
+   `(id_equipment, ts_event)` classification UPDATE first, then fall back to the
+   interval-overlap matcher ported from `mirror-worker-go`
+   (`translate.EquipmentEvent`): the same-`(equipment,status)` twin event whose
+   `[ts_event, ts_end]` window overlaps the legacy event's by
+   `>= EVENT_MIN_OVERLAP_SEC` (default 30), staging `ts_event` no earlier than
+   `legacy_start - EVENT_MAX_START_DRIFT_SEC` (default 600). Exact-first is
+   deliberate and non-regressive — unlike mirror-worker-go, this replicator
+   inserts its own twin base rows at the exact legacy ts (`DowntimeEventCreated`),
+   so exact already matches ~96% live; overlap only recovers the tee-drifted
+   remainder. (The bulk of the historical noop is base events legacy never logged
+   to `user_logs` — a separate completeness gap the matcher cannot close.)
+
+2. **Replay DLQ** (`dlq.go`). The loop still advances the cursor on every row,
+   but a *failed* dispatch (e.g. the `production_orders_runtime` 23P01 window
+   race) is now captured into `mirror_replay_dlq` before advancing, and a bounded
+   exponential-backoff retrier (`DLQRetrier`, `DLQ_RETRY_*`) re-drives it through
+   the same handler set — deleting on success, retiring at the cap. Source-keyed,
+   additive, reversible. Metrics: `legacy_replicator_dlq_{retried_total,depth}`.
+
+3. **event-splitted table-target fix** (`handlers.go`, `EventSplitted`). Split
+   segments now land in `equipment_events` (auto, `forced_creation_system=true`)
+   matching legacy `downtimes-dao.ts::split`, NOT `equipment_events_man` — the
+   old handler polluted the twin's manual table (forced split rows vs a handful
+   of genuine legacy manual events). Segment 0 shrinks the matched twin base
+   event in place (located exact-then-overlap); segments 1..N-1 are inserted as
+   new forced auto events. Historical mis-inserted `_man` rows are NOT deleted
+   (a documented reversible cleanup is proposed separately).

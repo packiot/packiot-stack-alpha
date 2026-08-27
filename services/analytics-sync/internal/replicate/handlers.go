@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -33,6 +34,18 @@ func execExpectingRows(ctx context.Context, pool *pgxpool.Pool, table string, us
 		logger.Warn("update matched no rows", slog.Int64("id_user_log", userLogID), slog.String("table", table))
 	}
 	return nil
+}
+
+// execRows runs an UPDATE and returns rows-affected (fail-open on 42P01). Unlike
+// execExpectingRows it does NOT record a noop on zero rows — the caller decides
+// (used by the exact-then-overlap event classifier, where a zero-row exact match
+// is expected and triggers the overlap fallback rather than a warning).
+func execRows(ctx context.Context, pool *pgxpool.Pool, table string, userLogID int64, logger *slog.Logger, sql string, args ...any) (int64, error) {
+	ct, err := pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return 0, failOpenIfMissing(err, table, userLogID, logger)
+	}
+	return ct.RowsAffected(), nil
 }
 
 // failOpenIfMissing swallows 42P01 (missing table) so a partially
@@ -84,22 +97,100 @@ func resolveLegacyOrder(ctx context.Context, legacy *pgxpool.Pool, idProductionO
 	return idOrder, true, nil
 }
 
-// resolveLegacyEventTS maps a legacy id_equipment_event to its (legacy
-// id_equipment, ts_event). ts_event is deterministic from the PLC stream,
-// so it is the join key against staging's equipment_events.
-func resolveLegacyEventTS(ctx context.Context, legacy *pgxpool.Pool, idEquipmentEvent int64) (int, time.Time, bool, error) {
-	var idEq int
-	var ts time.Time
+// legacyEvent is the resolved (id_equipment, window, status) of a legacy
+// base equipment_events row — enough to match it against the twin either by
+// exact ts_event or by interval overlap. tsEnd is zero when the legacy event
+// is still open.
+type legacyEvent struct {
+	idEquipment int
+	tsEvent     time.Time
+	tsEnd       time.Time
+	tsEndValid  bool
+	status      int
+	statusValid bool
+}
+
+// resolveLegacyEvent maps a legacy id_equipment_event to its full base-row
+// window (id_equipment, ts_event, ts_end, status). ts_event is deterministic
+// from the PLC stream, so it is the primary join key against staging's
+// equipment_events; ts_end + status feed the interval-overlap fallback.
+func resolveLegacyEvent(ctx context.Context, legacy *pgxpool.Pool, idEquipmentEvent int64) (legacyEvent, bool, error) {
+	var e legacyEvent
+	var tsEnd pgtype.Timestamptz
+	var status pgtype.Int4
 	err := legacy.QueryRow(ctx,
-		`SELECT id_equipment, ts_event FROM equipment_events WHERE id_equipment_event = $1`,
-		idEquipmentEvent).Scan(&idEq, &ts)
+		`SELECT id_equipment, ts_event, ts_end, status FROM equipment_events WHERE id_equipment_event = $1`,
+		idEquipmentEvent).Scan(&e.idEquipment, &e.tsEvent, &tsEnd, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, time.Time{}, false, nil
+		return legacyEvent{}, false, nil
 	}
 	if err != nil {
-		return 0, time.Time{}, false, err
+		return legacyEvent{}, false, err
 	}
-	return idEq, ts, true, nil
+	if tsEnd.Valid {
+		e.tsEnd, e.tsEndValid = tsEnd.Time, true
+	}
+	if status.Valid {
+		e.status, e.statusValid = int(status.Int32), true
+	}
+	return e, true, nil
+}
+
+// findTwinEventByOverlap is the interval-overlap matcher ported from
+// mirror-worker-go's translate.EquipmentEvent. When an operator classifies /
+// splits a legacy base event, the exact (id_equipment, ts_event) row may be
+// absent on the twin because the twin's copy came from the SparkPlug tee at a
+// slightly different ts (CPAC 5-min smoothing on prod vs raw PLC transitions
+// on the twin). Instead of no-op'ing, we pick the same-(equipment,status) twin
+// event whose [ts_event, COALESCE(ts_end, now())] window overlaps the legacy
+// event's window by >= minOverlapSec, requiring the twin ts_event to be no
+// earlier than legacy_start - maxDriftSec so a stale still-open event from days
+// ago can't "overlap" every later event via COALESCE(ts_end, now()). Returns
+// the matched twin ts_event (the row's stable key) so the caller can UPDATE it.
+// sqlOverlapMatch is the interval-overlap lookup (kept as a const so the
+// shape test can assert against the real query). $1 staging equip, $2 dst
+// enterprise, $3 legacy start, $4 legacy end (or now), $5 status, $6 max drift.
+const sqlOverlapMatch = `SELECT ts_event,
+		        extract(epoch FROM (
+		          LEAST(COALESCE(ts_end, now()), $4::timestamptz)
+		          - GREATEST(ts_event, $3::timestamptz)
+		        ))::int AS overlap_seconds
+		   FROM public.equipment_events
+		  WHERE id_equipment = $1
+		    AND id_enterprise = $2
+		    AND status = $5
+		    AND ts_event < $4::timestamptz
+		    AND ts_event >= $3::timestamptz - ($6::int * interval '1 second')
+		    AND (ts_end IS NULL OR ts_end > $3::timestamptz)
+		  ORDER BY overlap_seconds DESC
+		  LIMIT 1`
+
+func findTwinEventByOverlap(ctx context.Context, dst *pgxpool.Pool, stagingEquip, dstEnterprise int, ev legacyEvent, minOverlapSec, maxDriftSec int) (time.Time, bool, error) {
+	if !ev.statusValid {
+		return time.Time{}, false, nil // no status to disambiguate — overlap unsafe
+	}
+	end := time.Now().UTC()
+	if ev.tsEndValid {
+		end = ev.tsEnd
+	}
+	var twinTS time.Time
+	var overlapSec int
+	err := dst.QueryRow(ctx, sqlOverlapMatch,
+		stagingEquip, dstEnterprise, ev.tsEvent, end, ev.status, maxDriftSec).Scan(&twinTS, &overlapSec)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, err
+	}
+	if overlapSec < minOverlapSec {
+		return time.Time{}, false, nil
+	}
+	return twinTS, true, nil
 }
 
 // resolveLegacyManualTS maps a legacy equipment_events_man surrogate id to
@@ -239,6 +330,38 @@ func genEventID(ts time.Time, stagingEquip int) int64 {
 	return ts.UnixMilli()*1000 + int64(stagingEquip%1000)
 }
 
+// ─── event-splitted SQL (equipment_events, matching legacy edge-api DAO) ───
+// A legacy split takes ONE base equipment_events (auto) row and rewrites it as
+// N contiguous segments: segment[0] shrinks the original row in place; segments
+// [1..N-1] are inserted as NEW equipment_events rows, all
+// forced_creation_system=true. Split segments are AUTO events (equipment_events),
+// NOT manual events (equipment_events_man) — see downtimes-dao.ts::split.
+
+// sqlSplitShrinkOriginal rewrites the matched twin base event as segment 0:
+// closes it at the segment-0 end and applies the operator's classification.
+// ts_event is left untouched (it is the PK and the overlap-match key); only the
+// end + classification move. Idempotent (a re-run sets the same values).
+const sqlSplitShrinkOriginal = `UPDATE public.equipment_events
+	   SET ts_end = $1,
+	       duration = GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - ts_event))::int),
+	       cd_machine = $2, cd_category = $3, cd_subcategory = $4,
+	       desc_category = $5, desc_subcategory = $6,
+	       change_over = $7, planned_downtime = $8, idle = $9,
+	       txt_downtime_notes = $10, forced_creation_system = true, last_update = now()
+	 WHERE id_equipment = $11 AND ts_event = $12`
+
+// sqlInsertSplitSegment inserts a non-first split segment as a new auto event.
+// status is inherited from the original base event (segments carry the same
+// machine state). id_equipment_event is synthesised (no unique meaning; the
+// natural key is (id_equipment, ts_event)). Idempotent on the PK.
+const sqlInsertSplitSegment = `INSERT INTO public.equipment_events (
+		id_equipment, ts_event, ts_end, status, id_equipment_event, id_enterprise,
+		duration, cd_machine, cd_category, cd_subcategory, desc_category, desc_subcategory,
+		change_over, planned_downtime, idle, txt_downtime_notes,
+		forced_creation_system, last_update)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,true,now())
+	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
+
 // ═══════════════════════════ handlers ═══════════════════════════
 
 type downtimeEventCreatedPayload struct {
@@ -305,7 +428,14 @@ type eventClassifiedPayload struct {
 // DowntimeEventCreated) with the operator's downtime classification,
 // re-keyed onto the flow-stable natural key (staging id_equipment,
 // ts_event) resolved from the LEGACY event.
-func EventClassified(logger *slog.Logger) Handler {
+//
+// It first tries an EXACT (staging id_equipment, legacy ts_event) match — the
+// common case, since DowntimeEventCreated inserts the twin base row at the
+// exact legacy ts. When that matches zero rows (the twin's only copy of this
+// event came from the SparkPlug tee at a drifted ts), it falls back to the
+// interval-overlap matcher rather than silently no-op'ing. Both paths are
+// idempotent UPDATEs of classification columns.
+func EventClassified(logger *slog.Logger, cfg *Config) Handler {
 	return func(ctx context.Context, legacy, dst *pgxpool.Pool, r *Resolver, u *UserLog) error {
 		var p eventClassifiedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
@@ -314,7 +444,7 @@ func EventClassified(logger *slog.Logger) Handler {
 		if p.IDEquipmentEvent == 0 {
 			return ErrSkip
 		}
-		legEq, ts, found, err := resolveLegacyEventTS(ctx, legacy, p.IDEquipmentEvent)
+		ev, found, err := resolveLegacyEvent(ctx, legacy, p.IDEquipmentEvent)
 		if err != nil {
 			return fmt.Errorf("resolve legacy event: %w", err)
 		}
@@ -322,16 +452,52 @@ func EventClassified(logger *slog.Logger) Handler {
 			logger.Warn("event-classified: legacy event gone", slog.Int64("id_user_log", u.ID), slog.Int64("id_equipment_event", p.IDEquipmentEvent))
 			return ErrSkip
 		}
-		eq, ok := r.ResolveEquipment(legEq)
+		eq, ok := r.ResolveEquipment(ev.idEquipment)
 		if !ok {
-			logger.Warn("event-classified: unresolved equipment", slog.Int64("id_user_log", u.ID), slog.Int("legacy_equipment", legEq))
+			logger.Warn("event-classified: unresolved equipment", slog.Int64("id_user_log", u.ID), slog.Int("legacy_equipment", ev.idEquipment))
 			return ErrSkip
 		}
-		return execExpectingRows(ctx, dst, "equipment_events", u.ID, logger, sqlUpdateEventClassification,
+		// 1) exact ts_event match (does not warn on zero rows).
+		n, err := execRows(ctx, dst, "equipment_events", u.ID, logger, sqlUpdateEventClassification,
 			p.CdCategory, p.DescCategory, p.CdMachine,
 			p.CdSubcategory, p.DescSubcategory, p.TxtDowntimeNotes,
 			p.ChangeOver, p.Idle, p.PlannedDowntime,
-			eq.IDEquipment, ts)
+			eq.IDEquipment, ev.tsEvent)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		// 2) interval-overlap fallback onto a tee-drifted twin event.
+		twinTS, ok, err := findTwinEventByOverlap(ctx, dst, eq.IDEquipment, eq.IDEnterprise, ev, cfg.EventMinOverlapSec, cfg.EventMaxStartDriftSec)
+		if err != nil {
+			return fmt.Errorf("event-classified overlap lookup: %w", err)
+		}
+		if ok {
+			m, err := execRows(ctx, dst, "equipment_events", u.ID, logger, sqlUpdateEventClassification,
+				p.CdCategory, p.DescCategory, p.CdMachine,
+				p.CdSubcategory, p.DescSubcategory, p.TxtDowntimeNotes,
+				p.ChangeOver, p.Idle, p.PlannedDowntime,
+				eq.IDEquipment, twinTS)
+			if err != nil {
+				return err
+			}
+			if m > 0 {
+				logger.Debug("event-classified matched via interval overlap",
+					slog.Int64("id_user_log", u.ID), slog.Int("staging_equipment", eq.IDEquipment),
+					slog.Time("legacy_ts", ev.tsEvent), slog.Time("twin_ts", twinTS))
+				return nil
+			}
+		}
+		// Neither exact nor overlap matched — the twin base event is absent
+		// entirely (a PLC-detected downtime legacy never logged to user_logs).
+		// Record the observable no-op and advance; nothing to update.
+		noopObserver("equipment_events")
+		logger.Warn("event-classified: no twin base event (exact + overlap miss)",
+			slog.Int64("id_user_log", u.ID), slog.Int("staging_equipment", eq.IDEquipment),
+			slog.Time("legacy_ts", ev.tsEvent))
+		return nil
 	}
 }
 
@@ -436,6 +602,7 @@ type eventSplittedPayload struct {
 	Events []struct {
 		Type            string `json:"type"`
 		Note            string `json:"note"`
+		Idle            string `json:"idle"`
 		StartTime       string `json:"startTime"`
 		EndTime         string `json:"endTime"`
 		MachineCode     string `json:"machineCode"`
@@ -446,46 +613,146 @@ type eventSplittedPayload struct {
 		ChangeOver      bool   `json:"changeOver"`
 		PlannedDowntime bool   `json:"plannedDowntime"`
 	} `json:"events"`
-	IDEquipment int `json:"idEquipment"`
+	IDEquipment      int   `json:"idEquipment"`
+	IDEquipmentEvent int64 `json:"idEquipmentEvent"`
 }
 
-// EventSplitted inserts each split downtime as its own manual event.
-func EventSplitted(logger *slog.Logger) Handler {
+// EventSplitted replays an operator splitting one base downtime into N
+// contiguous segments, matching legacy edge-api's downtimes-dao.ts::split
+// EXACTLY: split segments are AUTO events in equipment_events (forced), NOT
+// manual events in equipment_events_man (which the old twin handler wrongly
+// used — 92 forced twin manual rows vs ~20 genuine legacy manual events).
+//
+//   - events[0] shrinks the ORIGINAL base event in place (its startTime equals
+//     the original ts_event, enforced by split.service.ts). We locate the twin
+//     base row (exact ts_event, then interval-overlap) and close it at
+//     events[0].endTime with the operator's classification.
+//   - events[1..N-1] are INSERTed as new forced equipment_events rows.
+//
+// All writes are idempotent (UPDATE-in-place / ON CONFLICT DO NOTHING on the
+// (id_equipment, ts_event) PK).
+func EventSplitted(logger *slog.Logger, cfg *Config) Handler {
 	return func(ctx context.Context, legacy, dst *pgxpool.Pool, r *Resolver, u *UserLog) error {
 		var p eventSplittedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			return ErrSkip
 		}
-		if len(p.Events) == 0 || p.IDEquipment == 0 {
+		if len(p.Events) == 0 {
 			return ErrSkip
 		}
-		eq, ok := r.ResolveEquipment(p.IDEquipment)
+
+		// Resolve the original base event window (for equipment + status +
+		// twin-row matching). Fall back to the payload idEquipment if the
+		// legacy base row is already gone.
+		var (
+			ev       legacyEvent
+			haveOrig bool
+		)
+		if p.IDEquipmentEvent != 0 {
+			e, found, err := resolveLegacyEvent(ctx, legacy, p.IDEquipmentEvent)
+			if err != nil {
+				return fmt.Errorf("resolve legacy split original: %w", err)
+			}
+			ev, haveOrig = e, found
+		}
+		legEquip := p.IDEquipment
+		if haveOrig {
+			legEquip = ev.idEquipment
+		}
+		if legEquip == 0 {
+			return ErrSkip
+		}
+		eq, ok := r.ResolveEquipment(legEquip)
 		if !ok {
-			logger.Warn("event-splitted: unresolved equipment", slog.Int64("id_user_log", u.ID), slog.Int("legacy_equipment", p.IDEquipment))
+			logger.Warn("event-splitted: unresolved equipment", slog.Int64("id_user_log", u.ID), slog.Int("legacy_equipment", legEquip))
 			return ErrSkip
 		}
-		for _, ev := range p.Events {
-			if ev.Type != "downtime" {
+		status := 0
+		statusValid := false
+		if haveOrig && ev.statusValid {
+			status, statusValid = ev.status, true
+		}
+
+		for i, seg := range p.Events {
+			if seg.Type != "" && seg.Type != "downtime" {
 				continue
 			}
-			tsStart, ok := parseTS(ev.StartTime)
+			segStart, ok := parseTS(seg.StartTime)
 			if !ok {
 				continue
 			}
-			var tsEnd *time.Time
-			if t, ok := parseTS(ev.EndTime); ok {
-				tsEnd = &t
+			segEnd, okEnd := parseTS(seg.EndTime)
+
+			if i == 0 {
+				// Segment 0: shrink the original twin base event in place.
+				// Locate it by exact ts then interval overlap.
+				var mts time.Time
+				matched := false
+				if haveOrig {
+					mts, matched = locateTwinBase(ctx, dst, eq, ev, cfg, logger, u.ID)
+				}
+				if matched && okEnd {
+					if _, err := execRows(ctx, dst, "equipment_events", u.ID, logger, sqlSplitShrinkOriginal,
+						segEnd, seg.MachineCode, seg.CategoryCode, seg.SubcategoryCode,
+						seg.DescCategory, seg.DescSubcategory, seg.ChangeOver, seg.PlannedDowntime,
+						seg.Idle, seg.Note, eq.IDEquipment, mts); err != nil {
+						return err
+					}
+					continue
+				}
+				// No twin base row to shrink — insert segment 0 as a new forced
+				// event so the split isn't lost (idempotent on the PK).
+				if err := insertSplitSegment(ctx, dst, eq, segStart, segEnd, okEnd, status, statusValid, seg.MachineCode, seg.CategoryCode, seg.SubcategoryCode, seg.DescCategory, seg.DescSubcategory, seg.ChangeOver, seg.PlannedDowntime, seg.Idle, seg.Note, u.ID, logger); err != nil {
+					return err
+				}
+				continue
 			}
-			_, err := dst.Exec(ctx, sqlInsertManualEvent,
-				eq.IDEquipment, eq.IDEnterprise, tsStart, tsEnd, 0,
-				ev.MachineCode, ev.CategoryCode, ev.SubcategoryCode, ev.DescCategory, ev.DescSubcategory,
-				ev.ChangeOver, ev.PlannedDowntime, ev.Note)
-			if err := failOpenIfMissing(err, "equipment_events_man", u.ID, logger); err != nil {
+			// Segments 1..N-1: new forced auto events.
+			if err := insertSplitSegment(ctx, dst, eq, segStart, segEnd, okEnd, status, statusValid, seg.MachineCode, seg.CategoryCode, seg.SubcategoryCode, seg.DescCategory, seg.DescSubcategory, seg.ChangeOver, seg.PlannedDowntime, seg.Idle, seg.Note, u.ID, logger); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
+}
+
+// locateTwinBase finds the twin equipment_events row for a legacy base event:
+// exact ts_event first, then interval overlap. Returns the twin ts_event (the
+// row's stable key) and whether a row was found.
+func locateTwinBase(ctx context.Context, dst *pgxpool.Pool, eq StagingEquip, ev legacyEvent, cfg *Config, logger *slog.Logger, userLogID int64) (time.Time, bool) {
+	var exists bool
+	err := dst.QueryRow(ctx,
+		`SELECT true FROM public.equipment_events WHERE id_equipment = $1 AND ts_event = $2`,
+		eq.IDEquipment, ev.tsEvent).Scan(&exists)
+	if err == nil && exists {
+		return ev.tsEvent, true
+	}
+	twinTS, ok, oerr := findTwinEventByOverlap(ctx, dst, eq.IDEquipment, eq.IDEnterprise, ev, cfg.EventMinOverlapSec, cfg.EventMaxStartDriftSec)
+	if oerr != nil {
+		logger.Warn("event-splitted: overlap lookup failed", slog.Int64("id_user_log", userLogID), slog.String("err", oerr.Error()))
+		return time.Time{}, false
+	}
+	return twinTS, ok
+}
+
+// insertSplitSegment inserts one split segment as a forced auto event.
+func insertSplitSegment(ctx context.Context, dst *pgxpool.Pool, eq StagingEquip, start time.Time, end time.Time, endValid bool, status int, statusValid bool, machine, cat, subcat, descCat, descSub string, changeOver, planned bool, idle, note string, userLogID int64, logger *slog.Logger) error {
+	var tsEnd *time.Time
+	var duration int
+	if endValid {
+		tsEnd = &end
+		if d := int(end.Sub(start).Seconds()); d > 0 {
+			duration = d
+		}
+	}
+	var statusArg any
+	if statusValid {
+		statusArg = status
+	}
+	_, err := dst.Exec(ctx, sqlInsertSplitSegment,
+		eq.IDEquipment, start, tsEnd, statusArg, genEventID(start, eq.IDEquipment), eq.IDEnterprise,
+		duration, machine, cat, subcat, descCat, descSub, changeOver, planned, idle, note)
+	return failOpenIfMissing(err, "equipment_events", userLogID, logger)
 }
 
 // ─── production-order lifecycle ───
