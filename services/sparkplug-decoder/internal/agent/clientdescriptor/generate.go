@@ -37,6 +37,10 @@ type Artifacts struct {
 
 	RegisterSQL string
 
+	// PositionSQL backfills equipments.position (line flow order) — the
+	// persistent substrate for line attribution (ADR-0045 Bronze).
+	PositionSQL string
+
 	AgentConfig *agentcfg.Config
 	AgentYAML   []byte
 
@@ -307,6 +311,63 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 	}
 	b.WriteString("ON CONFLICT (packml_topic) DO NOTHING;\n")
 	return b.String()
+}
+
+// GenerateEquipmentPositionSQL builds the equipments.position backfill (artifact
+// 2b): one idempotent UPDATE per LINE MEMBER (tp_equipment=1) setting its 1-based
+// flow-order rank within its line. This is the persistent, queryable substrate
+// for line-level downtime/OEE attribution (ADR-0045 "Bronze" step).
+//
+// Why it is needed: Parameter30700 — the transient CSV the decoder reads for
+// counter aggregation — is never persisted to a column, and for own-stream
+// tenants like CPACK it is not published at all (packml_register.line_unit_seq
+// NULL on every row, verified against prod packiot40). So nothing else populates
+// the flow order; every member's equipments.position stays NULL. This artifact
+// closes that gap at onboarding time.
+//
+// Order source: the descriptor lists a line's members in physical infeed→outfeed
+// order (first listed = infeed = position 1, last = outfeed). A single-machine
+// cell's lone member is position 1. Members are grouped by their PARENT LINE
+// topic (the member topic minus its last segment), preserving descriptor order
+// within each group. Lines/sectors (tp_equipment != 1) get no position.
+//
+// Idempotent: keyed by the id_equipment surrogate (a global PK, so the UPDATE is
+// tenant-precise without an enterprise filter), safe to re-run after a descriptor
+// edit. The `tp_equipment = 1` guard is belt-and-braces so a line/member sharing
+// a name can never be mis-hit.
+func (d *Descriptor) GenerateEquipmentPositionSQL() string {
+	rankByLine := map[string]int{} // parent-line topic → next 1-based rank
+	type row struct{ id, pos int }
+	var rows []row
+	for _, e := range d.Equipment {
+		if e.TPEquipment != 1 {
+			continue // only machines (members) carry a within-line flow position
+		}
+		parent := parentLineTopic(e.Topic)
+		rankByLine[parent]++
+		rows = append(rows, row{id: e.IDEquipment, pos: rankByLine[parent]})
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "-- equipments.position (line flow order) for tenant %s (enterprise %d) —\n", d.Tenant, d.EnterpriseID)
+	fmt.Fprintf(&b, "-- generated from the client descriptor (ADR-0045 Bronze). A line's member\n")
+	fmt.Fprintf(&b, "-- list order IS the physical infeed→outfeed sequence: first listed = position\n")
+	fmt.Fprintf(&b, "-- 1 (infeed), last = outfeed; single-machine cell → position 1. Idempotent.\n")
+	fmt.Fprintf(&b, "-- DO NOT hand-edit; edit the descriptor + regenerate.\n")
+	for _, r := range rows {
+		fmt.Fprintf(&b, "UPDATE equipments SET position = %d WHERE id_equipment = %d AND tp_equipment = 1;\n", r.pos, r.id)
+	}
+	return b.String()
+}
+
+// parentLineTopic strips a member topic's final segment to yield its owning line
+// topic, e.g. "CPACK/SC/LINHAS/L3/BREYER" → "CPACK/SC/LINHAS/L3" and the
+// single-cell "CPACK/SC/CELULA1/CER400/CER400" → "CPACK/SC/CELULA1/CER400".
+func parentLineTopic(topic string) string {
+	if i := strings.LastIndex(topic, "/"); i >= 0 {
+		return topic[:i]
+	}
+	return topic
 }
 
 // sqlQuote wraps a string in single quotes, doubling any embedded quote. Topics
@@ -779,6 +840,7 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		Profile:     profile,
 		ProfileYAML: profileYAML,
 		RegisterSQL: d.GenerateRegisterSQL(),
+		PositionSQL: d.GenerateEquipmentPositionSQL(),
 		AgentConfig: agentCfg,
 		AgentYAML:   agentYAML,
 		TeeSnippet:  tee,
