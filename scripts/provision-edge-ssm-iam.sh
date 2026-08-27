@@ -39,6 +39,14 @@ USER_NAME="packiot-edge-ssm"
 POLICY_NAME="packiot-edge-ssm-control"
 POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
 HYBRID_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/packiot-edge-ssm-hybrid-role"
+# The identity edge-api ACTUALLY uses for SSM (and Cognito, and Secrets) is the
+# box instance role via IMDSv2 — see edge-ssm.config.ts ("NO explicit credentials
+# by design") + compose.staging.yml (no AWS_ACCESS_KEY_ID injected). So this
+# policy is attached to the instance role. The `packiot-edge-ssm` USER below is
+# legacy (a static-key experiment that hijacked edge-api's whole credential chain
+# and broke Cognito ListUsers on 2026-08-27); kept attach-only for now, safe to
+# delete once confirmed nothing references its keys.
+APP_INSTANCE_ROLE="packiot-staging-app"
 
 POLICY_DOC=$(cat <<JSON
 {
@@ -141,6 +149,12 @@ else
     --policy-document "${POLICY_DOC}" --set-as-default \
     --query 'PolicyVersion.VersionId' --output text
 fi
+
+# Attach to the box INSTANCE ROLE — the identity edge-api actually uses (IMDSv2).
+# Idempotent: attach-role-policy is a no-op if already attached.
+echo ">> Attaching ${POLICY_NAME} to instance role ${APP_INSTANCE_ROLE}."
+aws iam attach-role-policy --role-name "${APP_INSTANCE_ROLE}" \
+  --policy-arn "${POLICY_ARN}"
 
 echo ">> Done. Verify with:"
 echo "   aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::${ACCOUNT_ID}:user/${USER_NAME} \\"
