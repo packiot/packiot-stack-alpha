@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/sparkplug"
 )
@@ -62,10 +64,39 @@ type EquipmentValues struct {
 	// INSERT into the immutable Bronze *_raw hypertable. Set via
 	// SetBronzeRawAppend.
 	bronzeRaw bool
+
+	// unresolved — Prometheus counter for the "unroutable topic" silent drop
+	// (packml_unresolved_topic_total). Incremented once per metric whose
+	// packml_topic resolves to no active packml_register row, labelled by
+	// tenant. nil (default) ⇒ no-op, so unit tests that construct the writer
+	// without metrics keep the old behavior byte-for-byte. Set via
+	// SetUnresolvedMetric. Same nil-guarded direct-CounterVec idiom the
+	// handler uses for batchWrites.
+	unresolved *prometheus.CounterVec
 }
 
 func NewEquipmentValues(r *sparkplug.Resolver, logger *slog.Logger) *EquipmentValues {
 	return &EquipmentValues{resolver: r, logger: logger}
+}
+
+// SetUnresolvedMetric wires the packml_unresolved_topic_total counter so the
+// "topic not registered, skipping" branch — until now visible only in a 1/32
+// sampled log — emits a real, alertable signal. Passing nil leaves it a no-op.
+func (w *EquipmentValues) SetUnresolvedMetric(vec *prometheus.CounterVec) { w.unresolved = vec }
+
+// tenantFromTopic derives the tenant (group_id) label from a metric name:
+// the lowercased first '/'-separated segment. Mirrors handlers.tenantOf and
+// packml_register tenant discovery (lower(split_part(packml_topic,'/',1))),
+// keeping label cardinality bounded to one series per onboarded client
+// rather than one per (unbounded) full topic string.
+func tenantFromTopic(name string) string {
+	if idx := strings.IndexByte(name, '/'); idx > 0 {
+		return strings.ToLower(name[:idx])
+	}
+	if name != "" {
+		return strings.ToLower(name)
+	}
+	return "unknown"
 }
 
 // SetIncrementClamp enables the production-increment sanity clamp
@@ -235,6 +266,16 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 		return nil, nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
 	if info == nil {
+		// Make the silent unroutable-topic drop LOUD: a topic with no active
+		// packml_register row is acked-not-nacked (retry can't conjure the
+		// row), so without this counter a missing/inactive routing row
+		// produces ZERO equipment_values with green pipelines. Counter is
+		// tenant-labelled (bounded) and always fires; the full topic still
+		// rides the 1/32 sampled log below for debugging. nil-guarded so the
+		// metric is optional (unit tests, flag-off parity).
+		if w.unresolved != nil {
+			w.unresolved.WithLabelValues(tenantFromTopic(m.Name)).Inc()
+		}
 		// INFO 1-in-32 sample (was Debug = invisible): the f1
 		// empty_batch trickle (~3/min) is THESE — every skipped topic
 		// deserves a name in the logs (gap-closure 2026-07-07).

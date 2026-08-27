@@ -138,6 +138,21 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "oee-unroutable-q holds {{ $value }} msgs — a tenant's SparkPlug data is hitting no `oee` binding (unprovisioned tenant or routing-key drift); caught by the alternate-exchange, not dropped"
+      # Application-level twin of OeeUnroutableMessages above. That one catches
+      # a delivery hitting no BROKER binding; THIS one catches a delivery that
+      # DID reach the worker but whose packml_topic has no active
+      # packml_register row — the worker acks-and-skips it (retry can't conjure
+      # the row), so the drop is otherwise invisible: only a 1/32 sampled log,
+      # and the tenant's equipment_values stay silently EMPTY while every
+      # pipeline shows green. A topic that keeps arriving but never routes =
+      # a missing/inactive register row (onboarding gap, an apply-register that
+      # never ran, or an `active=false` flag). Bounded to one series/tenant.
+      - alert: PackmlUnroutableTopic
+        expr: sum by (tenant) (rate(packml_unresolved_topic_total[10m])) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is publishing a SparkPlug topic with no active packml_register row for 15m — its equipment_values are silently empty. Check onboarding / apply-register and the packml_register.active flag; the offending topic is in the stream-engine `topic not registered, skipping` log (sampled 1/32)."
       # Some seq gaps are normal on reconnect; a stream of them means
       # the PLC/broker is losing messages (SparkPlug seq is per-session).
       - alert: SparkplugSeqGapStream

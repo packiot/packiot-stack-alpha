@@ -266,6 +266,10 @@ func main() {
 	}
 
 	mx := metrics.New()
+	// Wire the unroutable-topic counter into the equipment_values writer so
+	// its "topic not registered, skipping" branch (previously visible only in
+	// a 1/32 sampled log) emits packml_unresolved_topic_total{tenant}.
+	equipmentValuesWriter.SetUnresolvedMetric(mx.UnresolvedTopic)
 	// One observer for every scheduled job → jobs_ticks_total{job,outcome}.
 	jobObs := func(job, outcome string) { mx.JobTicks.WithLabelValues(job, outcome).Inc() }
 

@@ -173,6 +173,24 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Unroutable topics by tenant (drops/s) — should be flat 0",
+      "description": "sum by(tenant) rate(packml_unresolved_topic_total[5m]) — equipment_values metrics SKIPPED because their packml_topic has no active packml_register row. Any sustained non-zero = a tenant is publishing a topic with no active register row (missing onboarding/apply-register or active=false) → its equipment_values are silently empty. Backs the PackmlUnroutableTopic alert.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.0001 }] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+          "expr": "sum by (tenant) (rate(packml_unresolved_topic_total{tenant=~\"$tenant\"}[5m]))",
+          "legendFormat": "{{tenant}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }
