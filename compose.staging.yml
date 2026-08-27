@@ -2447,7 +2447,7 @@ services:
       # against the twin by (id_enterprise,id_order) and backfills the missing
       # ones + finishes zombie status=2 twins. Ships INERT — flip to "true"
       # after review to keep the twin's PO set current going forward.
-      RECONCILE_PO_ENABLED: "false"
+      RECONCILE_PO_ENABLED: "true"
       RECONCILE_PO_INTERVAL_SEC: "300"
       RECONCILE_PO_WINDOW_DAYS: "14"
     networks:
