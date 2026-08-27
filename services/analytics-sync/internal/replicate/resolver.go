@@ -61,13 +61,40 @@ func isCountTopic(topic string) bool {
 		strings.HasSuffix(topic, "/Status")
 }
 
+// hasEmptySegment reports whether any `/`-delimited path segment is empty
+// (a `//`, a leading `/`, or a trailing `/`). Such a topic is never a valid
+// equipment base topic — it is a hierarchy-node artifact.
+//
+// Why this guard exists: the STAGING SANDBOX-CPACK twin (ent 2000003) has
+// historically accumulated INACTIVE junk rows like
+// `SANDBOX_CPACK/SC/LINHAS//` and `SBXCPACK_STAGING/SC/CELULA1//` — emitted
+// by an earlier packml-topic generator run with empty line/machine name
+// segments, under stale enterprise-name prefixes. Because such a topic is
+// SHORTER than the real base topic (`SBXCPACK/SC/LINHAS/L6/POLYTYPE`) and is
+// NOT an Admin/Status leaf, baseTopicByEquip's shortest-non-count pick chose
+// the junk, normalising the equipment to `SC/LINHAS//` instead of
+// `SC/LINHAS/L6/POLYTYPE`. That orphaned the real base-topic norm, so 7 CPACK
+// lead machines (CER400/HOTMADAG/POLYTYPE1/PTH40-03/FLEXO/L6-POLYTYPE/SLEEVE1)
+// resolved to nothing on the sandbox and their replayed operator downtimes
+// were dropped as "unresolved equipment". fetchEquipTopics already filters
+// id_equipment IS NOT NULL; this guard closes the same drift at the topic
+// level so the resolver is robust even if such rows are re-linked.
+func hasEmptySegment(topic string) bool {
+	for _, seg := range strings.Split(topic, "/") {
+		if strings.TrimSpace(seg) == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // baseTopicByEquip reduces a set of (id_equipment, packml_topic) rows to a
 // single normalised base topic per equipment: the shortest topic that is
 // not an Admin/Status leaf. Pure so it is unit-testable without a DB.
 func baseTopicByEquip(rows []equipTopic) map[int]string {
 	best := map[int]string{}    // id -> raw base topic (shortest non-leaf)
 	for _, r := range rows {
-		if isCountTopic(r.topic) {
+		if isCountTopic(r.topic) || hasEmptySegment(r.topic) {
 			continue
 		}
 		cur, ok := best[r.id]

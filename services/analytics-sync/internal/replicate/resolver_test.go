@@ -40,6 +40,24 @@ func TestBaseTopicByEquipPicksCleanBase(t *testing.T) {
 	}
 }
 
+// Regression: a malformed empty-segment junk row must NOT hijack the base
+// pick. The STAGING SANDBOX-CPACK twin carried inactive rows like
+// `SANDBOX_CPACK/SC/LINHAS//` (empty line+machine segments) alongside the
+// real `SBXCPACK/SC/LINHAS/L6/POLYTYPE`. The junk is SHORTER and not an
+// Admin/Status leaf, so the pre-fix shortest-non-count pick chose it and
+// normalised the equipment to `SC/LINHAS//`, orphaning the real base topic
+// and dropping the lead machine's replayed downtimes as "unresolved".
+func TestBaseTopicByEquipSkipsEmptySegmentJunk(t *testing.T) {
+	rows := []equipTopic{
+		{2000070, "SANDBOX_CPACK/SC/LINHAS//"},       // malformed junk (shorter)
+		{2000070, "SBXCPACK/SC/LINHAS/L6/POLYTYPE"},  // real base topic
+	}
+	got := baseTopicByEquip(rows)
+	if got[2000070] != "SC/LINHAS/L6/POLYTYPE" {
+		t.Errorf("id 2000070 base = %q, want SC/LINHAS/L6/POLYTYPE (empty-segment junk must be skipped)", got[2000070])
+	}
+}
+
 // End-to-end legacy->staging join proof (real ids from both DBs): equipment
 // names are NOT unique (BREYER repeats across L3/L4/L5/L6) so only the topic
 // path resolves correctly.
