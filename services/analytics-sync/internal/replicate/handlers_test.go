@@ -87,6 +87,65 @@ func TestOrderChangedDecodesLegacyPayload(t *testing.T) {
 	}
 }
 
+// Split segments are AUTO events: they must land in equipment_events (forced),
+// never equipment_events_man — matching legacy edge-api downtimes-dao.ts::split.
+// This is the residual-#3 divergence (92 forced twin manual rows vs ~20 genuine
+// legacy manual events) that this handler now closes.
+func TestSplitTargetsEquipmentEventsNotManual(t *testing.T) {
+	if !strings.Contains(sqlInsertSplitSegment, "INSERT INTO public.equipment_events (") {
+		t.Errorf("split segments must insert into equipment_events (auto), not _man:\n%s", sqlInsertSplitSegment)
+	}
+	if strings.Contains(sqlInsertSplitSegment, "equipment_events_man") {
+		t.Errorf("split segments must NOT touch equipment_events_man:\n%s", sqlInsertSplitSegment)
+	}
+	if !strings.Contains(sqlInsertSplitSegment, "ON CONFLICT (id_equipment, ts_event) DO NOTHING") {
+		t.Errorf("split segment insert must be idempotent on the PK:\n%s", sqlInsertSplitSegment)
+	}
+	if !strings.Contains(sqlInsertSplitSegment, "forced_creation_system, last_update)") {
+		t.Errorf("split segments must be forced auto events:\n%s", sqlInsertSplitSegment)
+	}
+	if !strings.Contains(sqlSplitShrinkOriginal, "UPDATE public.equipment_events") ||
+		!strings.Contains(sqlSplitShrinkOriginal, "id_equipment = $11 AND ts_event = $12") {
+		t.Errorf("segment-0 shrink must update equipment_events by (id_equipment, ts_event):\n%s", sqlSplitShrinkOriginal)
+	}
+}
+
+// The interval-overlap matcher must (a) require a status match, (b) bound the
+// staging start by maxDriftSec, (c) rank by overlap desc — the mirror-worker-go
+// shape that prevents a stale open event from "overlapping" everything.
+func TestOverlapMatcherSQLShape(t *testing.T) {
+	// Rebuild the literal used inside findTwinEventByOverlap to assert its shape.
+	// (Kept in sync by this test; the query is inline in the function.)
+	want := []string{"status = $5", "ORDER BY overlap_seconds DESC",
+		"ts_event >= $3::timestamptz - ($6::int * interval '1 second')",
+		"(ts_end IS NULL OR ts_end > $3::timestamptz)"}
+	src := sqlOverlapMatch
+	for _, w := range want {
+		if !strings.Contains(src, w) {
+			t.Errorf("overlap matcher SQL missing %q", w)
+		}
+	}
+}
+
+// The real legacy event-splitted payload carries idEquipmentEvent (the original
+// base event) + per-segment idle — both previously dropped by the twin handler.
+func TestEventSplittedDecodesOriginalAndIdle(t *testing.T) {
+	raw := `{"events":[
+	  {"idle":"no","note":"","type":"downtime","endTime":"2026-08-27T03:52:00.000Z","startTime":"2026-08-27T03:00:00.000Z","changeOver":false,"machineCode":"FLEXO","categoryCode":"SET-01","descCategory":"Setup","descSubcategory":"S02","plannedDowntime":false,"subcategoryCode":"S02"},
+	  {"idle":"no","note":"","type":"downtime","endTime":"2026-08-27T04:13:00.000Z","startTime":"2026-08-27T03:52:00.000Z","changeOver":false,"machineCode":"FLEXO","categoryCode":"SET-01","descCategory":"Setup","descSubcategory":"S02","plannedDowntime":false,"subcategoryCode":"S02"}],
+	  "eventType":"downtime","idEquipment":556,"idEquipmentEvent":2451583778}`
+	var p eventSplittedPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if p.IDEquipmentEvent != 2451583778 || p.IDEquipment != 556 || len(p.Events) != 2 {
+		t.Fatalf("decoded wrong: %+v", p)
+	}
+	if p.Events[0].Idle != "no" || p.Events[0].StartTime != "2026-08-27T03:00:00.000Z" {
+		t.Errorf("segment 0 decoded wrong: %+v", p.Events[0])
+	}
+}
+
 // downtime-event-created carries epoch-ms timestamps and legacy idEquipment.
 func TestDowntimeEventDecodesEpochMillis(t *testing.T) {
 	raw := `{"events":[{"topic":"C-PACK/SC/LINHAS/L5/TEXA/Status/StateCurrent","status":6,"timestamp":1787345520000,"idEquipment":65}]}`

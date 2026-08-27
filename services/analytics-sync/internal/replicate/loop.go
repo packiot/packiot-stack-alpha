@@ -66,6 +66,12 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 	if err != nil {
 		return err
 	}
+	if cfg.DLQCaptureEnabled {
+		if err := EnsureDLQ(ctx, destPool); err != nil {
+			// Non-fatal: capture degrades to log-only, replay continues.
+			logger.Warn("DLQ table ensure failed — failed rows will only be logged", slog.String("err", err.Error()))
+		}
+	}
 	logger.Info("replicate loop started",
 		slog.Int64("cursor", cursor),
 		slog.Int("src_enterprise", cfg.SrcEnterprise),
@@ -104,7 +110,12 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 					slog.Int64("id_user_log", u.ID),
 					slog.String("category", u.Category),
 					slog.String("err", err.Error()))
-				// Fail-open: advance past a poison row so the loop never wedges.
+				// Fail-open: advance past a poison row so the loop never wedges —
+				// but capture it in the DLQ first so a transient failure is
+				// retried, not silently dropped.
+				if cfg.DLQCaptureEnabled {
+					writeDLQ(ctx, destPool, cfg.CursorSource, u, err.Error(), logger)
+				}
 			case skipped:
 				m.IncSkipped(u.Category)
 			default:

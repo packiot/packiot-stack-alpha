@@ -90,6 +90,31 @@ type Config struct {
 	ReconcileEnabled     bool
 	ReconcileIntervalSec int
 	ReconcileWindowDays  int
+
+	// Event interval-overlap matcher (handlers.go). event-justified / -edited
+	// and event-splitted first try an EXACT (id_equipment, ts_event) match
+	// against the twin base event; if that misses (the twin event came from
+	// the tee at a drifted ts — CPAC 5-min smoothing vs raw PLC), they fall
+	// back to the same interval-overlap matcher mirror-worker-go uses: pick the
+	// same-(equipment,status) twin event whose [ts_event, ts_end] window
+	// overlaps the legacy event's window by >= EventMinOverlapSec, with the
+	// staging ts_event no earlier than legacy_start - EventMaxStartDriftSec
+	// (rejects a stale still-open event from days ago "overlapping" everything).
+	EventMinOverlapSec    int
+	EventMaxStartDriftSec int
+
+	// DLQ (dlq.go). The main loop advances the cursor on every row (so it never
+	// wedges), but a dispatch that FAILS used to be silently dropped. DLQCapture
+	// (default true) writes the failed row into mirror_replay_dlq before the
+	// cursor advances; DLQRetry (default true) runs a bounded exponential-backoff
+	// retry loop that re-dispatches captured rows and deletes them on success.
+	// Both are additive + reversible (a new table + a guarded retrier); set the
+	// envs to "false" to disable either half.
+	DLQCaptureEnabled   bool
+	DLQRetryEnabled     bool
+	DLQRetryIntervalSec int
+	DLQRetryMaxAttempts int
+	DLQRetryBatchSize   int
 }
 
 func Load() *Config {
@@ -127,6 +152,15 @@ func Load() *Config {
 		ReconcileEnabled:     getenv("RECONCILE_PO_ENABLED", "false") == "true",
 		ReconcileIntervalSec: getenvInt("RECONCILE_PO_INTERVAL_SEC", 300),
 		ReconcileWindowDays:  getenvInt("RECONCILE_PO_WINDOW_DAYS", 14),
+
+		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
+		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
+
+		DLQCaptureEnabled:   getenv("DLQ_CAPTURE_ENABLED", "true") == "true",
+		DLQRetryEnabled:     getenv("DLQ_RETRY_ENABLED", "true") == "true",
+		DLQRetryIntervalSec: getenvInt("DLQ_RETRY_INTERVAL_SEC", 120),
+		DLQRetryMaxAttempts: getenvInt("DLQ_RETRY_MAX_ATTEMPTS", 5),
+		DLQRetryBatchSize:   getenvInt("DLQ_RETRY_BATCH_SIZE", 100),
 	}
 }
 

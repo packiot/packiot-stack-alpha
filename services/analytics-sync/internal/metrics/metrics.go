@@ -21,6 +21,10 @@ type Metrics struct {
 	ReconcileInserted   prometheus.Counter // missing legacy POs backfilled into the twin
 	ReconcileFinished   prometheus.Counter // zombie status=2 twin POs closed to match legacy
 	ReconcileUnresolved prometheus.Counter // legacy POs whose equipment had no staging twin
+
+	// DLQ (dlq.go).
+	DLQRetried *prometheus.CounterVec // by outcome — DLQ rows re-driven by the retrier
+	DLQDepth   prometheus.Gauge       // current mirror_replay_dlq depth for this source
 }
 
 func New() *Metrics {
@@ -59,9 +63,18 @@ func New() *Metrics {
 			Name: "legacy_replicator_reconcile_unresolved_total",
 			Help: "legacy POs skipped by the reconciler — equipment had no staging twin",
 		}),
+		DLQRetried: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "legacy_replicator_dlq_retried_total",
+			Help: "DLQ rows re-driven by the retrier, by outcome (succeeded|failed|gone)",
+		}, []string{"outcome"}),
+		DLQDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "legacy_replicator_dlq_depth",
+			Help: "current mirror_replay_dlq row count for this replicator's source",
+		}),
 	}
 	reg.MustRegister(m.Dispatched, m.Skipped, m.Failed, m.UpdateNoop, m.Cursor,
-		m.ReconcileInserted, m.ReconcileFinished, m.ReconcileUnresolved)
+		m.ReconcileInserted, m.ReconcileFinished, m.ReconcileUnresolved,
+		m.DLQRetried, m.DLQDepth)
 	return m
 }
 
@@ -76,6 +89,9 @@ func (m *Metrics) SetCursor(id int64) { m.Cursor.Set(float64(id)) }
 func (m *Metrics) IncReconcileInserted()   { m.ReconcileInserted.Inc() }
 func (m *Metrics) IncReconcileFinished()   { m.ReconcileFinished.Inc() }
 func (m *Metrics) IncReconcileUnresolved() { m.ReconcileUnresolved.Inc() }
+
+func (m *Metrics) IncDLQRetried(outcome string) { m.DLQRetried.WithLabelValues(outcome).Inc() }
+func (m *Metrics) SetDLQDepth(n int64)          { m.DLQDepth.Set(float64(n)) }
 
 // Handler exposes /metrics.
 func (m *Metrics) Handler() http.Handler {

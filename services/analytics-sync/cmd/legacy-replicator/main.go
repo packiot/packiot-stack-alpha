@@ -78,11 +78,11 @@ func main() {
 
 	d := replicate.NewDispatcher(logger)
 	d.Register("downtime-event-created", replicate.DowntimeEventCreated(logger, cfg.ReplicateBaseEvents))
-	d.Register("event-justified", replicate.EventClassified(logger))
-	d.Register("event-edited", replicate.EventClassified(logger))
+	d.Register("event-justified", replicate.EventClassified(logger, cfg))
+	d.Register("event-edited", replicate.EventClassified(logger, cfg))
 	d.Register("manual-event-created", replicate.ManualEventCreated(logger))
 	d.Register("manual-event-edited", replicate.ManualEventEdited(logger))
-	d.Register("event-splitted", replicate.EventSplitted(logger))
+	d.Register("event-splitted", replicate.EventSplitted(logger, cfg))
 	d.Register("order-created", replicate.OrderCreated(logger))
 	d.Register("order-created-started", replicate.OrderCreatedStarted(logger))
 	d.Register("order-started", replicate.OrderStarted(logger))
@@ -116,6 +116,16 @@ func main() {
 	go func() {
 		if err := poRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("PO reconciler terminated with error", slog.String("err", err.Error()))
+		}
+	}()
+
+	// DLQ retrier — re-drives rows the main loop captured on dispatch failure
+	// (23P01 window races, transient prod hiccups) so they are retried, not
+	// silently dropped. Reuses the same dispatcher for an identical replay path.
+	dlqRetrier := replicate.NewDLQRetrier(legacyPool, destPool, resolver, d, cfg, m, logger)
+	go func() {
+		if err := dlqRetrier.RunForever(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("DLQ retrier terminated with error", slog.String("err", err.Error()))
 		}
 	}()
 
