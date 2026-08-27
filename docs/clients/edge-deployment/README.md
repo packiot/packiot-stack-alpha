@@ -174,6 +174,45 @@ docker compose -f compose.edge.yml --env-file .env up -d
 #    env, deploy the flow.
 ```
 
+### 5.5 Enroll the box for remote deploy + access (SSM — ADR-0049)
+
+So CS-Admin can push deploys (RunCommand) and reach this box (Session Manager)
+**without any inbound firewall hole** — outbound 443 only, the same property the
+`:8883` mTLS uplink already relies on — enroll it as an AWS SSM *managed
+instance* on first boot. This **supersedes the per-factory GitHub runner**
+(`register-runner.sh`, ADR-0005): the SSM Agent is a small Go binary that runs on
+CPACK's EOL Ubuntu 18.04 where the .NET-8 runner cannot, and carries only
+IAM-scoped, audited operations instead of arbitrary workflow code.
+
+```bash
+# 1. CS-Admin mints a Hybrid Activation for this client (edge-api):
+#      POST /api/edge-ssm/activation  { "clientSlug": "<tenant>" }
+#    → { activationId, activationCode, region }   # the CODE is shown ONCE.
+
+# 2. Bake the activation into the box via the SAME secure handoff as the mTLS
+#    key (never committed — edge-ssm.env is gitignored):
+cp edge-ssm.env.example edge-ssm.env && $EDITOR edge-ssm.env   # fill the 3 values
+sudo install -d /opt/packiot
+sudo install -m600 edge-ssm.env        /opt/packiot/edge-ssm.env
+sudo install -m755 ssm-register.sh     /opt/packiot/ssm-register.sh
+sudo install -m644 ssm-register.service /etc/systemd/system/ssm-register.service
+
+# 3. Enable the oneshot — installs amazon-ssm-agent (deb, snap fallback) and
+#    registers. Idempotent: skips if already registered.
+sudo systemctl daemon-reload
+sudo systemctl enable --now ssm-register.service
+```
+
+Verify from the control plane: `GET /api/edge-ssm/status?clientSlug=<tenant>` →
+`pingStatus: Online`. Thereafter CS-Admin's **Deploy** button
+(`POST /api/edge-ssm/deploy`) runs `docker compose -f compose.edge.yml up -d`
+here via RunCommand — no CS engineer trip, no runner. Revoke instantly with
+`POST /api/edge-ssm/deregister` (deregister + delete the activation).
+
+> The register step is **additive** — it does not touch the running edge data
+> path. SSM governs *reachability + updates* only; the agent + mTLS uplink keep
+> producing OEE with the SSM Agent stopped (ADR-0049 Rollback).
+
 ## 6. Health & verification
 
 | Check | Command | Expected |

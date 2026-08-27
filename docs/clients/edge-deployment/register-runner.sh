@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# ⚠️ SUPERSEDED (ADR-0049, 2026-08-27) — DO NOT USE FOR THE NEW-STACK EDGE.
+#   The per-factory GitHub self-hosted runner (ADR-0005) is replaced by AWS SSM
+#   RunCommand as the deploy substrate: the box enrolls via `ssm-register.sh`
+#   (a Hybrid Activation) and CS-Admin pushes deploys through edge-api
+#   (POST /api/edge-ssm/deploy → ssm:SendCommand). SSM clears the constraints
+#   this script cannot: it runs on EOL Ubuntu 18.04 where the .NET-8 runner
+#   cannot (ADR-0049 C1), and carries only IAM-scoped, audited operations
+#   instead of arbitrary workflow code in the plant network (C5).
+#   Kept (not deleted) as break-glass / historical reference per the
+#   clean-abandoned-path-trails rule — a permanent delete is a human decision.
+#   New edge boxes: use `ssm-register.sh` + `ssm-register.service` instead.
+#
 # register-runner.sh — one-time: register THIS factory box as the GitHub
 # self-hosted runner the "Client Edge Deploy" workflow targets (ADR-0005).
 #
