@@ -2438,6 +2438,18 @@ services:
       # the pre-Checker health.Handler was a plain 200 and read no max-age, so
       # it could never flag a wedge regardless of the value.)
       HEALTHCHECK_MAX_AGE_SEC: "600"
+      # PO reconciler — authoritative production_orders backfill/finish loop.
+      # The user_logs replay only mirrors POs that flowed through the operator
+      # audit trail; POs started via order-changed's shouldOpenNewPo=true +
+      # shouldCreatePo=false branch, and PLC-created POs, never do (measured
+      # 2026-08-27: twin held 81 of legacy's 123 distinct id_orders / 7d, ~34%
+      # missing, almost all finished). This loop diffs legacy production_orders
+      # against the twin by (id_enterprise,id_order) and backfills the missing
+      # ones + finishes zombie status=2 twins. Ships INERT — flip to "true"
+      # after review to keep the twin's PO set current going forward.
+      RECONCILE_PO_ENABLED: "false"
+      RECONCILE_PO_INTERVAL_SEC: "300"
+      RECONCILE_PO_WINDOW_DAYS: "14"
     networks:
       packiot-net:
     healthcheck:
