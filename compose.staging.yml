@@ -442,14 +442,17 @@ services:
       NODE_ENV: production
       NEW_RELIC_ENABLED: "false"
       NEW_RELIC_NO_CONFIG_FILE: "true"
-      # edge-ssm (ADR-0049): AWS creds for the SSM control endpoints, SCOPED TO
-      # edge-api ONLY. The values come from the distinct EDGE_SSM_* vars in .env
-      # (never bare AWS_ACCESS_KEY_ID in the shared .env — that would override the
-      # credential chain for every other AWS-using service, e.g. the RabbitMQ
-      # secret fetch in sparkplug-decoder/ingest-shim/oeecloud-fanout). Least-priv
-      # IAM user `packiot-edge-ssm`; region-only SSMClient otherwise fail-closed.
-      AWS_ACCESS_KEY_ID: ${EDGE_SSM_AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${EDGE_SSM_AWS_SECRET_ACCESS_KEY}
+      # edge-ssm (ADR-0049): the Box-Ops SSM control endpoints AND edge-api's
+      # Cognito user-management + Secrets access ALL use the AWS SDK's default
+      # credential chain → the box INSTANCE ROLE (packiot-staging-app) via IMDSv2,
+      # exactly as edge-ssm.config.ts documents ("NO explicit credentials by
+      # design"). The instance role carries csadmin-cognito-user-mgmt AND the
+      # packiot-edge-ssm-control policy (SSM SendCommand/StartSession, tag-scoped
+      # to managed-by=packiot-edge-api). We DELIBERATELY do NOT inject static
+      # AWS_ACCESS_KEY_ID here: doing so hijacks the WHOLE default chain — it once
+      # broke every service's Secrets fetch (bare key in shared .env) and then
+      # broke edge-api's own Cognito ListUsers (a scoped SSM-only key overriding
+      # the instance role). One identity, least-priv on the role, no static keys.
       AWS_REGION: "us-east-1"
       SSM_HYBRID_INSTANCE_ROLE: "packiot-edge-ssm-hybrid-role"
       # PO staleness/conflict gate (task #32). Master on + per-enterprise
