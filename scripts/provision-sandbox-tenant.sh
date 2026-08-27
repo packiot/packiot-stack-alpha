@@ -213,6 +213,30 @@ SELECT $SENT, 'SBXCPACK',
   version, 'generated', NULL, NULL, 'sandbox-mirror:ent'||$SRC_ENT, 'sandbox-mirror:ent'||$SRC_ENT
 FROM client_descriptors WHERE id_enterprise=$SRC_ENT;
 
+-- ── Neutralize malformed packml_register junk (lead-machine resolve fix) ──────
+-- staging analytics-sync's legacy-replicator resolves a replayed operator
+-- downtime to its SANDBOX lead machine by packml BASE topic: the shortest
+-- non-Admin/Status packml_topic per equipment, enterprise-prefix stripped.
+-- Earlier packml-topic generator runs (and the "Create packml topics" trigger
+-- firing on entity edits under stale enterprise-name prefixes SANDBOX_CPACK /
+-- SBXCPACK_STAGING) leave INACTIVE hierarchy-node rows with EMPTY path
+-- segments, e.g. 'SANDBOX_CPACK/SC/LINHAS//'. Those are SHORTER than the real
+-- base topic ('SBXCPACK/SC/LINHAS/L6/POLYTYPE') and are not Admin/Status
+-- leaves, so they HIJACK the base pick and orphan the real equipment norm.
+-- 7 CPACK lead machines (CER400 / HOTMADAG / POLYTYPE1 / PTH40-03 / FLEXO /
+-- L6-POLYTYPE / SLEEVE1) resolved to nothing on the sandbox and their replayed
+-- downtimes were dropped as "unresolved equipment".
+-- De-link (NOT delete — non-destructive, reversible) any such malformed rows
+-- from their equipment so the resolver, which reads only id_equipment IS NOT
+-- NULL, ignores them. Runs while triggers are still suppressed; scoped HARD to
+-- the sandbox enterprise + inactive rows, so it can never touch ent 3.
+UPDATE packml_register
+SET id_equipment = NULL
+WHERE id_enterprise = $SENT
+  AND active IS NOT TRUE
+  AND id_equipment IS NOT NULL
+  AND (packml_topic LIKE '%//%' OR packml_topic LIKE '%/' OR packml_topic LIKE '/%');
+
 SET session_replication_role = DEFAULT;
 
 SELECT 'SANDBOX-CPACK ready: ent '||$SENT AS status,
