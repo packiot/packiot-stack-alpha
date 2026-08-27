@@ -160,6 +160,19 @@ if aws secretsmanager describe-secret \
   AGENT_INGEST_API_KEY=$(get_secret "packiot/staging/agent-ingest" | jq -r '.api_key // ""')
 fi
 
+# Legacy DB password (SELECT-only `awslambda` role on prod packiot40) — used by
+# BOTH twin replicators: legacy-replicator (ent-3 faithful twin) and
+# legacy-replicator-sbx (sandbox fan-out → ent 2000003). Creds live in the
+# `databaseCredentials` secret, already granted to the app role via app_custom
+# IAM (ec2.tf). Without this, a fresh box brings up inert replicators and the
+# twins silently stop tracking the real client's operator actions.
+LEGACY_DB_PASSWORD=""
+if aws secretsmanager describe-secret \
+    --secret-id databaseCredentials \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+  LEGACY_DB_PASSWORD=$(get_secret "databaseCredentials" | jq -r '.DB_PASSWORD // ""')
+fi
+
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
@@ -263,6 +276,17 @@ GRAFANA_DEV_USER_PASSWORD=$GRAFANA_DEV_USER_PASS
 # secret is populated; the sparkplug-agent-cpack service (profile cpack-tee)
 # reads this to auth CPACK's Node-RED tee.
 AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
+
+# Twin operator-action replicators (legacy packiot40 → analytics plane).
+# LEGACY_DB_PASSWORD: SELECT-only awslambda creds shared by BOTH replicator
+#   instances (legacy-replicator for the ent-3 faithful twin; legacy-replicator-sbx
+#   for the sandbox fan-out). The main replicator hardcodes REPLICATE_ENABLED=true
+#   in compose; both read this password from .env.
+# REPLICATE_SBX_ENABLED: activates legacy-replicator-sbx (fan-out → ent 2000003).
+#   Kept as an explicit flag so the sandbox twin can be paused independently of
+#   the ent-3 replicator without editing compose.
+LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
+REPLICATE_SBX_ENABLED=true
 
 # Compose substitution helpers
 STAGING_DOMAIN=$STAGING_DOMAIN
