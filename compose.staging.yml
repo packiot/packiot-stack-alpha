@@ -2464,6 +2464,93 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── legacy-replicator-sbx (operator-action fan-out for the SANDBOX twin) ───────
+  # Makes the SANDBOX tenant SBXCPACK (ent 2000003) a full BEHAVIORAL twin of
+  # CPACK — not just a static config clone. The oeecloud-fanout service already
+  # re-tenants CPACK's live TELEMETRY (counters) into SBXCPACK on the RabbitMQ
+  # plane; but operator ACTIONS (PO lifecycle, downtimes, justifications, manual
+  # events) never ride the SparkPlug stream — they live in the legacy control
+  # plane. Without this, the sandbox held only the 13 static POs from its clone
+  # and received zero downtime/justify events (measured 2026-08-27: ent-3 had
+  # 303 POs / 10520 events / 163 manual over 7d; ent-2000003 had 13 / 0 / 0).
+  #
+  # MECHANISM: a SECOND INSTANCE of the exact legacy-replicator binary — zero
+  # code change. It reads the SAME legacy source (packiot40, ent 1, SELECT-only)
+  # as the ent-3 replicator above and writes to the SANDBOX enterprise (ent
+  # 2000003). Reading legacy directly (not ent-3) makes the sandbox an
+  # INDEPENDENT faithful twin of the source of truth rather than a copy-of-a-copy;
+  # it also reuses the user_logs cursor/dispatch pattern verbatim (ent-3 has no
+  # user_logs audit trail to replay from, so an ent-3->sandbox fan-out could not).
+  #
+  # +2,000,000 ID OFFSET is handled for free: the resolver maps legacy equipment
+  # -> sandbox equipment by packml BASE TOPIC (resolver.go), never by arithmetic,
+  # and the sandbox's packml_register carries the same base topics as ent-3 (all
+  # 62 of ent-3's norms verified present in ent-2000003). POs key by
+  # (id_enterprise, id_order) under DST_ENTERPRISE=2000003. Writes are idempotent
+  # natural-key upserts, so the sandbox stays resettable (a --reset re-clones the
+  # config plane with the same deterministic +2M ids; this cursor persists and
+  # the loop simply continues — no re-backfill needed).
+  #
+  # SAFE / REVERSIBLE: ships INERT — does nothing unless REPLICATE_SBX_ENABLED=true
+  # in .env. Distinct CURSOR_SOURCE (legacy-sbxcpack) so it never touches the
+  # ent-3 cursor (legacy-cpack). Legacy is read-only; every write lands in the
+  # isolated, throwaway sandbox tenant. Revert = set the flag false + docker rm.
+  legacy-replicator-sbx:
+    build:
+      context: ./services/analytics-sync
+      dockerfile: Dockerfile.replicator
+    container_name: legacy-replicator-sbx
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      # INERT by default — flip REPLICATE_SBX_ENABLED=true in .env to activate.
+      REPLICATE_ENABLED: "${REPLICATE_SBX_ENABLED:-false}"
+      # SOURCE — legacy prod DB (SELECT-only), same as the ent-3 replicator.
+      LEGACY_DB_HOST: 18.220.223.110
+      LEGACY_DB_PORT: "5432"
+      LEGACY_DB_USER: awslambda
+      LEGACY_DB_PASSWORD: ${LEGACY_DB_PASSWORD}
+      LEGACY_DB_NAME: packiot40
+      # DEST — staging analytics plane; writes land under the sandbox enterprise.
+      DEST_DB_HOST: 10.10.10.89
+      DEST_DB_PORT: "5432"
+      DEST_DB_USER: ${POSTGRES_USER}
+      DEST_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DEST_DB_NAME: packiot_analytics
+      # Enterprise id-map — CPACK 1 -> SANDBOX 2000003 (equipment resolved by
+      # packml base-topic, so the +2M sandbox ids need no arithmetic here).
+      SRC_ENTERPRISE: "1"
+      DST_ENTERPRISE: "2000003"
+      # Backfill depth for cold start (history so the sandbox isn't blank).
+      BACKFILL_SINCE_DAYS: "60"
+      REPLICATE_BASE_EVENTS: "true"
+      # DISTINCT cursor from the ent-3 replicator (legacy-cpack) — no collision.
+      CURSOR_SOURCE: legacy-sbxcpack
+      POLL_INTERVAL_MS: "3000"
+      BATCH_SIZE: "200"
+      # Own health port so both replicator instances can co-exist on the box.
+      HEALTH_PORT: "9114"
+      HEALTHCHECK_MAX_AGE_SEC: "600"
+      # PO reconciler — backfills/finishes POs the user_logs replay structurally
+      # misses, keeping the sandbox PO set current (matches the ent-3 replicator).
+      RECONCILE_PO_ENABLED: "true"
+      RECONCILE_PO_INTERVAL_SEC: "300"
+      RECONCILE_PO_WINDOW_DAYS: "14"
+    networks:
+      packiot-net:
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/legacy-replicator", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── Operator (dev-facing staging SPA) ─────────────────────────────────────────
   # Vite-built React SPA + nginx that reverse-proxies edge-nodered's HTTP API
   # over the docker network so the browser sees a single origin (no CORS).

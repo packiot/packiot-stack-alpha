@@ -208,3 +208,15 @@ if [ "$MODE" != "delete" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   "$SCRIPT_DIR/emit-fanout-config.sh" "$SOURCE_GROUP" "$TARGET_GROUP"
 fi
+
+# ── Operator-ACTION twin: nothing to emit here (codified in compose) ──────────
+# The fan-out above only re-tenants the live TELEMETRY (counters). Operator
+# ACTIONS (PO lifecycle / downtimes / justifications / manual events) reach the
+# sandbox via the committed compose service `legacy-replicator-sbx` — a second
+# instance of the legacy-replicator binary (SRC_ENTERPRISE=1 -> DST_ENTERPRISE=
+# 2000003, CURSOR_SOURCE=legacy-sbxcpack), gated by REPLICATE_SBX_ENABLED=true in
+# .env. It resolves the +2M sandbox equipment ids by packml base-topic (no id
+# arithmetic) and writes idempotent natural-key upserts, so it survives a
+# --reset with no action here: the cursor persists in mirror_replay_cursor and
+# the loop simply continues. To activate on a fresh box: set
+# REPLICATE_SBX_ENABLED=true and `docker compose up -d legacy-replicator-sbx`.
