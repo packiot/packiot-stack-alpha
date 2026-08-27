@@ -108,6 +108,17 @@ func main() {
 		}
 	}()
 
+	// PO reconciler — authoritative production_orders backfill/finish loop that
+	// closes the gap the user_logs replay structurally can't (POs started via
+	// order-changed's non-create branch + PLC-created POs never hit user_logs).
+	// Ships INERT (RECONCILE_PO_ENABLED=false); runs in its own goroutine.
+	poRecon := replicate.NewPOReconciler(legacyPool, destPool, resolver, cfg, m, logger)
+	go func() {
+		if err := poRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("PO reconciler terminated with error", slog.String("err", err.Error()))
+		}
+	}()
+
 	if err := replicate.Loop(ctx, legacyPool, destPool, resolver, d, m, cfg, checker.Beat, logger); err != nil {
 		if ctx.Err() != nil {
 			logger.Info("shutting down (ctx cancelled)")

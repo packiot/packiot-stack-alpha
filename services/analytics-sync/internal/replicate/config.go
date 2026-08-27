@@ -79,6 +79,17 @@ type Config struct {
 	// docker healthcheck can flag a wedged loop. 0 (default) disables the check
 	// — /healthz stays a plain 200. See internal/health.Checker.
 	HealthMaxAgeSec int
+
+	// PO reconciler (reconcile.go). The user_logs replay only mirrors POs that
+	// flowed through the operator audit trail; POs started via order-changed's
+	// shouldOpenNewPo=false-create branch, and PLC-created POs, never do. This
+	// loop diffs legacy production_orders against the twin by (id_enterprise,
+	// id_order) and backfills the missing ones + finishes zombie status=2 twins.
+	// Ships INERT (RECONCILE_PO_ENABLED=false) — enabled deliberately after
+	// review. Window is the legacy activity lookback (ts_start/ts_end).
+	ReconcileEnabled     bool
+	ReconcileIntervalSec int
+	ReconcileWindowDays  int
 }
 
 func Load() *Config {
@@ -112,6 +123,10 @@ func Load() *Config {
 		HealthPort:      getenvInt("HEALTH_PORT", 9104),
 		LogLevel:        getenv("LOG_LEVEL", "info"),
 		HealthMaxAgeSec: getenvInt("HEALTHCHECK_MAX_AGE_SEC", 0),
+
+		ReconcileEnabled:     getenv("RECONCILE_PO_ENABLED", "false") == "true",
+		ReconcileIntervalSec: getenvInt("RECONCILE_PO_INTERVAL_SEC", 300),
+		ReconcileWindowDays:  getenvInt("RECONCILE_PO_WINDOW_DAYS", 14),
 	}
 }
 

@@ -16,6 +16,11 @@ type Metrics struct {
 	Failed     *prometheus.CounterVec // by category — handler returned error
 	UpdateNoop *prometheus.CounterVec // by schema+table — UPDATEs that matched 0 rows
 	Cursor     prometheus.Gauge       // current cursor id_user_logs
+
+	// PO reconciler (reconcile.go) outcomes.
+	ReconcileInserted   prometheus.Counter // missing legacy POs backfilled into the twin
+	ReconcileFinished   prometheus.Counter // zombie status=2 twin POs closed to match legacy
+	ReconcileUnresolved prometheus.Counter // legacy POs whose equipment had no staging twin
 }
 
 func New() *Metrics {
@@ -42,8 +47,21 @@ func New() *Metrics {
 			Name: "shadow_mirror_cursor",
 			Help: "current mirror_replay_cursor value for source=shadow-mirror",
 		}),
+		ReconcileInserted: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "legacy_replicator_reconcile_inserted_total",
+			Help: "missing legacy POs backfilled into the twin by the PO reconciler",
+		}),
+		ReconcileFinished: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "legacy_replicator_reconcile_finished_total",
+			Help: "zombie status=2 twin POs closed to match legacy by the PO reconciler",
+		}),
+		ReconcileUnresolved: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "legacy_replicator_reconcile_unresolved_total",
+			Help: "legacy POs skipped by the reconciler — equipment had no staging twin",
+		}),
 	}
-	reg.MustRegister(m.Dispatched, m.Skipped, m.Failed, m.UpdateNoop, m.Cursor)
+	reg.MustRegister(m.Dispatched, m.Skipped, m.Failed, m.UpdateNoop, m.Cursor,
+		m.ReconcileInserted, m.ReconcileFinished, m.ReconcileUnresolved)
 	return m
 }
 
@@ -54,6 +72,10 @@ func (m *Metrics) IncUpdateNoop(schema, table string) {
 	m.UpdateNoop.WithLabelValues(schema, table).Inc()
 }
 func (m *Metrics) SetCursor(id int64) { m.Cursor.Set(float64(id)) }
+
+func (m *Metrics) IncReconcileInserted()   { m.ReconcileInserted.Inc() }
+func (m *Metrics) IncReconcileFinished()   { m.ReconcileFinished.Inc() }
+func (m *Metrics) IncReconcileUnresolved() { m.ReconcileUnresolved.Inc() }
 
 // Handler exposes /metrics.
 func (m *Metrics) Handler() http.Handler {
