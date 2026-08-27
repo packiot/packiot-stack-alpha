@@ -1,13 +1,14 @@
 // onboard-gen — the ADR-0045 P1 client-onboarding generator.
 //
-// It reads ONE client descriptor (the CS-Admin SSoT) and emits the four
-// downstream onboarding artifacts, so onboarding a factory is "fill a
-// descriptor + regenerate", not "hand-edit four files and keep them in sync":
+// It reads ONE client descriptor (the CS-Admin SSoT) and emits the downstream
+// onboarding artifacts, so onboarding a factory is "fill a descriptor +
+// regenerate", not "hand-edit files and keep them in sync":
 //
-//	1. <tenant>-profile.yaml    — the tenant conversion profile (tenantprofile)
-//	2. <tenant>-register.sql     — packml_register INSERT (topic ↔ id_equipment)
-//	3. <tenant>-agent.yaml       — the sparkplug-agent descriptor (agentcfg)
-//	4. <tenant>-tee-node.json    — the Node-RED Tier-1 raw-forwarder flow
+//  1. <tenant>-profile.yaml            — the tenant conversion profile (tenantprofile)
+//  2. <tenant>-register.sql            — packml_register INSERT (topic ↔ id_equipment)
+//     2b. <tenant>-equipment-position.sql — equipments.position line flow order (ADR-0045 Bronze)
+//  3. <tenant>-agent.yaml              — the sparkplug-agent descriptor (agentcfg)
+//  4. <tenant>-tee-node.json           — the Node-RED Tier-1 raw-forwarder flow
 //
 // Usage:
 //
@@ -78,6 +79,7 @@ func run() error {
 	}{
 		{tenant + "-profile.yaml", art.ProfileYAML},
 		{tenant + "-register.sql", []byte(art.RegisterSQL)},
+		{tenant + "-equipment-position.sql", []byte(art.PositionSQL)},
 		{tenant + "-agent.yaml", art.AgentYAML},
 		{tenant + "-tee-node.json", art.TeeSnippet},
 	}

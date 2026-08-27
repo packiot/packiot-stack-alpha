@@ -184,6 +184,45 @@ func TestGenerateRegisterSQL(t *testing.T) {
 	}
 }
 
+// TestGenerateEquipmentPositionSQL checks the flow-order backfill (artifact 2b):
+// members ranked 1-based within their line in descriptor (infeed→outfeed) order,
+// single cells → 1, lines/sectors skipped, and idempotent (tp_equipment guard).
+func TestGenerateEquipmentPositionSQL(t *testing.T) {
+	d := loadCPACK(t)
+	sql := d.GenerateEquipmentPositionSQL()
+
+	// L5 members BREYER..TEXA are positions 1..5 (descriptor list order = flow).
+	wants := []string{
+		"UPDATE equipments SET position = 1 WHERE id_equipment = 53 AND tp_equipment = 1;", // L5-BREYER infeed
+		"UPDATE equipments SET position = 2 WHERE id_equipment = 54 AND tp_equipment = 1;", // L5-POLYTYPE
+		"UPDATE equipments SET position = 3 WHERE id_equipment = 55 AND tp_equipment = 1;", // L5-PTH
+		"UPDATE equipments SET position = 4 WHERE id_equipment = 56 AND tp_equipment = 1;", // L5-RMH
+		"UPDATE equipments SET position = 5 WHERE id_equipment = 57 AND tp_equipment = 1;", // L5-TEXA outfeed
+		"UPDATE equipments SET position = 4 WHERE id_equipment = 80 AND tp_equipment = 1;", // L10-TEXA (4-member line)
+	}
+	for _, w := range wants {
+		if !strings.Contains(sql, w) {
+			t.Errorf("missing expected UPDATE:\n  %s\ngot:\n%s", w, sql)
+		}
+	}
+
+	// Single-machine cell member (CER400 member id 88) → position 1.
+	if !strings.Contains(sql, "UPDATE equipments SET position = 1 WHERE id_equipment = 88 AND tp_equipment = 1;") {
+		t.Errorf("single-cell CER400 member should be position 1; got:\n%s", sql)
+	}
+
+	// One UPDATE per tp=1 member; no line/sector rows.
+	var members int
+	for _, e := range d.Equipment {
+		if e.TPEquipment == 1 {
+			members++
+		}
+	}
+	if got := strings.Count(sql, "UPDATE equipments SET position ="); got != members {
+		t.Errorf("position UPDATEs=%d, want %d (one per tp=1 member)", got, members)
+	}
+}
+
 // TestGenerateTeeSnippet asserts the tee flow (artifact 4) is valid Node-RED JSON
 // carrying the descriptor's parameters — the ingest URL, the key-from-env
 // discipline (secret never in the file), the tenant group scope, and the
