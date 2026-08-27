@@ -173,6 +173,22 @@ if aws secretsmanager describe-secret \
   LEGACY_DB_PASSWORD=$(get_secret "databaseCredentials" | jq -r '.DB_PASSWORD // ""')
 fi
 
+# edge-ssm control creds (ADR-0049) for the CS-Admin Box-Ops endpoints. Written
+# to .env under DISTINCT names (EDGE_SSM_*) and mapped to AWS_* ONLY inside
+# edge-api's compose environment block — NEVER as bare AWS_ACCESS_KEY_ID here,
+# which would override the credential chain for every other AWS-using service
+# (the 2026-08-27 outage: sparkplug-decoder/ingest-shim/oeecloud-fanout lost
+# their Secrets-Manager access). Least-priv IAM user `packiot-edge-ssm`.
+EDGE_SSM_AWS_ACCESS_KEY_ID=""
+EDGE_SSM_AWS_SECRET_ACCESS_KEY=""
+if aws secretsmanager describe-secret \
+    --secret-id packiot/staging/edge-ssm \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+  EDGE_SSM_SECRET=$(get_secret "packiot/staging/edge-ssm")
+  EDGE_SSM_AWS_ACCESS_KEY_ID=$(echo "$EDGE_SSM_SECRET" | jq -r '.aws_access_key_id // ""')
+  EDGE_SSM_AWS_SECRET_ACCESS_KEY=$(echo "$EDGE_SSM_SECRET" | jq -r '.aws_secret_access_key // ""')
+fi
+
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
@@ -287,6 +303,12 @@ AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
 #   the ent-3 replicator without editing compose.
 LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
 REPLICATE_SBX_ENABLED=true
+
+# edge-ssm control creds (ADR-0049) — consumed ONLY by edge-api, via the AWS_*
+# mapping in its compose environment block. Distinct names so the shared
+# env_file does NOT set AWS_ACCESS_KEY_ID for other services.
+EDGE_SSM_AWS_ACCESS_KEY_ID=$EDGE_SSM_AWS_ACCESS_KEY_ID
+EDGE_SSM_AWS_SECRET_ACCESS_KEY=$EDGE_SSM_AWS_SECRET_ACCESS_KEY
 
 # Compose substitution helpers
 STAGING_DOMAIN=$STAGING_DOMAIN

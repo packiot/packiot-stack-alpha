@@ -442,6 +442,16 @@ services:
       NODE_ENV: production
       NEW_RELIC_ENABLED: "false"
       NEW_RELIC_NO_CONFIG_FILE: "true"
+      # edge-ssm (ADR-0049): AWS creds for the SSM control endpoints, SCOPED TO
+      # edge-api ONLY. The values come from the distinct EDGE_SSM_* vars in .env
+      # (never bare AWS_ACCESS_KEY_ID in the shared .env — that would override the
+      # credential chain for every other AWS-using service, e.g. the RabbitMQ
+      # secret fetch in sparkplug-decoder/ingest-shim/oeecloud-fanout). Least-priv
+      # IAM user `packiot-edge-ssm`; region-only SSMClient otherwise fail-closed.
+      AWS_ACCESS_KEY_ID: ${EDGE_SSM_AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${EDGE_SSM_AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: "us-east-1"
+      SSM_HYBRID_INSTANCE_ROLE: "packiot-edge-ssm-hybrid-role"
       # PO staleness/conflict gate (task #32). Master on + per-enterprise
       # allowlist (CSV of surrogate id_enterprise). "3,4" = CPACK-Staging(3) +
       # Incoplast-Staging(4) — both synthetic on staging, so global-ish signal
