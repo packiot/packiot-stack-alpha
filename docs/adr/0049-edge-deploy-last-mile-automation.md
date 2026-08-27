@@ -120,6 +120,14 @@ Net: **deploy = RunCommand (`AWS-RunShellScript`) invoked by edge-api from the C
 
 ---
 
+## IAM policy — canonical document + the SendCommand document-leg gotcha (2026-08-27)
+
+The edge-api control-plane policy is codified in **`scripts/provision-edge-ssm-iam.sh`** (idempotent; publishes the embedded document as the default version of `packiot-edge-ssm-control`, attached to the `packiot-edge-ssm` user). Treat that script as the source of truth — the substrate was first stood up imperatively, and this closes the codification gap.
+
+**The gotcha (Box-Ops "SendCommand not authorized" outage, fixed 2026-08-27):** `ssm:SendCommand` authorizes against **both** resources in the request — the *document* (`AWS-RunShellScript`) **and** the *target managed instance*. A single statement that scopes SendCommand with a `ssm:resourceTag/managed-by` `Condition` applies that Condition to the **AWS-owned document too**, which can never carry our tag → the document leg is denied and every Box-Ops command fails with *"not authorized to perform: ssm:SendCommand on resource …/document/AWS-RunShellScript."* The tenant-scoping intent is real, but it belongs on the **instance** leg only. Fix = **split** into an unconditional `SendCommandDocument` statement + a tag-gated `SendCommandToTaggedInstances` statement; the identical split applies to `ssm:StartSession` (Connect / `:1880` port-forward), whose session documents likewise cannot carry the tag. The tag gate on the instance legs (`managed-by=packiot-edge-api`, set at `CreateActivation`) is what actually enforces least privilege — edge-api can only target boxes it enrolled. Verified live via `simulate-principal-policy` **and** a real SendCommand as the `packiot-edge-ssm` user against the bispharma box.
+
+---
+
 ## Rollback
 
 - **Substrate is not in the data path.** SSM governs only *reachability + updates*; the running edge (agent, readers, mTLS uplink to `:8883`) keeps producing OEE with the SSM Agent stopped. Pulling SSM does not stop the factory data.
