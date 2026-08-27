@@ -10,10 +10,23 @@
 #
 # What it clones (the CS Admin control plane):
 #   enterprises, sites, areas, equipments, packml_register (kept INACTIVE — the
-#   sandbox is not live-SparkPlug-routed), shifts, shift_hours, user_roles, users.
+#   sandbox is not live-SparkPlug-routed), shifts, shift_hours, user_roles, users,
+#   client_descriptors (the ADR-0045 PLC tag-map / onboarding SSoT — cloned +
+#   remapped so csadmin sensor-config renders the tag map like the real client).
 #   language_packs are GLOBAL (no id_enterprise) so they need no clone.
 #   Time-series data (equipment_values / production_orders / …) is NOT cloned here
 #   — CS Admin is a config plane. Add a data mirror separately for OEE-dashboard tests.
+#
+# Fidelity notes (why a fresh reset is a FULL twin, not a bare shell):
+#   * equipments.id_parentequipment is offset (+$OFF) below so the sandbox line->
+#     member hierarchy survives the clone (each machine keeps pointing at its line);
+#     without it csadmin shows "0 members" per line.
+#   * client_descriptors is deep-remapped by pg_temp.sbx_remap(): every id_equipment
+#     /id_unit +$OFF, every CPACK string -> SBXCPACK (topics, device_keys, canonical
+#     prefix, agent/tee ids, secret refs); status set to 'generated' so the wizard
+#     renders as a provisioned tenant. The descriptor is a READ-ONLY MIRROR of the
+#     real client edge (updated_by='sandbox-mirror:ent3') — there is no schema-level
+#     read-only flag; treat edits as throwaway (a reset re-mirrors from ent 3).
 #
 # Idempotent-ish: use --reset to wipe + rebuild. Bare invocation fails if the
 # sandbox already exists (so you don't silently double-insert).
@@ -65,6 +78,7 @@ esac
 # the whole tenant at once).
 read -r -d '' SQL_DELETE <<SQL || true
 SET session_replication_role = replica;
+DELETE FROM client_descriptors WHERE id_enterprise = $SENT;
 DELETE FROM shift_hours     WHERE id_enterprise = $SENT;
 DELETE FROM shifts          WHERE id_enterprise = $SENT;
 DELETE FROM packml_register WHERE id_enterprise = $SENT;
@@ -108,7 +122,7 @@ INSERT INTO equipments SELECT (json_populate_record(NULL::equipments,
    || jsonb_build_object('id_area',e.id_area+$OFF)
    || jsonb_build_object('id_site',e.id_site+$OFF)
    || jsonb_build_object('id_enterprise',$SENT)
-   || jsonb_build_object('id_parentequipment',e.id_parentequipment+$OFF)
+   || jsonb_build_object('id_parentequipment',e.id_parentequipment+$OFF)  -- keeps line->member hierarchy (NULL stays NULL)
    || jsonb_build_object('lead_machine',e.lead_machine+$OFF)
    || jsonb_build_object('gross_machine',e.gross_machine+$OFF)
    || jsonb_build_object('scrap_machine',e.scrap_machine+$OFF)
@@ -160,11 +174,52 @@ INSERT INTO users SELECT (json_populate_record(NULL::users,
    || jsonb_build_object('id_user_cognito',NULL))::json)).*
 FROM users u WHERE id_enterprise=$SRC_ENT;
 
+-- client_descriptors: deep-remapped MIRROR of the real client edge (ADR-0045).
+-- A recursive jsonb walker offsets every id_equipment/id_unit by $OFF and rewrites
+-- every CPACK string -> SBXCPACK (topics, device_keys, canonical prefix, agent/tee
+-- ids, secret refs). enterprise_id + tenant are set explicitly. status='generated'
+-- so csadmin's onboarding wizard + sensor-config render it as a provisioned tenant
+-- (a bare draft renders an EMPTY tag map). artifacts/validation are left NULL — a
+-- derived cache; run the onboarding "generate" step for tenant-correct artifacts.
+CREATE OR REPLACE FUNCTION pg_temp.sbx_remap(j jsonb) RETURNS jsonb AS \$f\$
+DECLARE result jsonb; k text; v jsonb; elem jsonb; arr jsonb;
+BEGIN
+  IF jsonb_typeof(j)='object' THEN
+    result := '{}'::jsonb;
+    FOR k, v IN SELECT * FROM jsonb_each(j) LOOP
+      IF k IN ('id_equipment','id_unit') AND jsonb_typeof(v)='number' THEN
+        result := result || jsonb_build_object(k, (v::int + $OFF));
+      ELSE
+        result := result || jsonb_build_object(k, pg_temp.sbx_remap(v));
+      END IF;
+    END LOOP;
+    RETURN result;
+  ELSIF jsonb_typeof(j)='array' THEN
+    arr := '[]'::jsonb;
+    FOR elem IN SELECT * FROM jsonb_array_elements(j) LOOP
+      arr := arr || jsonb_build_array(pg_temp.sbx_remap(elem));
+    END LOOP;
+    RETURN arr;
+  ELSIF jsonb_typeof(j)='string' THEN
+    RETURN to_jsonb(replace(replace(j #>> '{}', 'CPACK','SBXCPACK'),'cpack','sbxcpack'));
+  ELSE RETURN j;
+  END IF;
+END \$f\$ LANGUAGE plpgsql;
+
+INSERT INTO client_descriptors
+  (id_enterprise, tenant_code, descriptor, version, status, artifacts, validation, created_by, updated_by)
+SELECT $SENT, 'SBXCPACK',
+  jsonb_set(jsonb_set(pg_temp.sbx_remap(descriptor),'{enterprise_id}',to_jsonb($SENT)),'{tenant}','"SBXCPACK"'),
+  version, 'generated', NULL, NULL, 'sandbox-mirror:ent'||$SRC_ENT, 'sandbox-mirror:ent'||$SRC_ENT
+FROM client_descriptors WHERE id_enterprise=$SRC_ENT;
+
 SET session_replication_role = DEFAULT;
 
 SELECT 'SANDBOX-CPACK ready: ent '||$SENT AS status,
   (SELECT count(*) FROM equipments WHERE id_enterprise=$SENT) AS equipments,
-  (SELECT count(*) FROM users WHERE id_enterprise=$SENT) AS users;
+  (SELECT count(*) FROM equipments WHERE id_enterprise=$SENT AND id_parentequipment IS NOT NULL) AS members_linked,
+  (SELECT count(*) FROM users WHERE id_enterprise=$SENT) AS users,
+  (SELECT (descriptor->'plc'->'s7_tag_map') IS NOT NULL FROM client_descriptors WHERE id_enterprise=$SENT) AS descriptor_has_plc;
 SQL
 
 # ── Assemble the run per mode ─────────────────────────────────────────────────
