@@ -315,6 +315,22 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sqlQuote(e.ResolvedDeviceKey()), sep)
 	}
 	b.WriteString("ON CONFLICT (packml_topic) WHERE active DO NOTHING;\n")
+	// Populate id_site/id_area from the equipment. The stream-engine registry
+	// requires them to place a row into equipment_values (id_site/id_area are
+	// columns there); a NULL site/area makes the topic read as "topic not
+	// registered" and the tenant's counts are SILENTLY DROPPED (verified on
+	// staging: bispharma ent 5 decoded fine but never wrote until this backfill).
+	// They are not in the descriptor (they are derivable — each equipment belongs
+	// to exactly one site/area), so derive them at apply time from equipments.
+	// id_equipment is a global PK so this is tenant-precise; idempotent + self-
+	// healing (re-running after an equipment moves area fixes the register).
+	fmt.Fprintf(&b, "UPDATE packml_register pr\n"+
+		"   SET id_site = e.id_site, id_area = e.id_area\n"+
+		"  FROM equipments e\n"+
+		" WHERE pr.id_equipment = e.id_equipment\n"+
+		"   AND pr.id_enterprise = %d\n"+
+		"   AND (pr.id_site IS DISTINCT FROM e.id_site OR pr.id_area IS DISTINCT FROM e.id_area);\n",
+		d.EnterpriseID)
 	return b.String()
 }
 

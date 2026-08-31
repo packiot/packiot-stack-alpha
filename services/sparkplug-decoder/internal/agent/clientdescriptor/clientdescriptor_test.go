@@ -170,6 +170,12 @@ func TestGenerateRegisterSQL(t *testing.T) {
 	if !strings.Contains(sql, "ON CONFLICT (packml_topic) WHERE active DO NOTHING;") {
 		t.Error("register SQL must target the partial active-unique index (packml_topic_active_un, WHERE active)")
 	}
+	// The register MUST backfill id_site/id_area from equipments — without them the
+	// stream-engine reads the topic as "not registered" and silently drops counts.
+	if !strings.Contains(sql, "SET id_site = e.id_site, id_area = e.id_area") ||
+		!strings.Contains(sql, "FROM equipments e") {
+		t.Errorf("register SQL must backfill id_site/id_area from equipments; got:\n%s", sql)
+	}
 	// The INSERT must carry the device_key column (ADR-0046 §2 declared identity).
 	if !strings.Contains(sql, "device_key)") {
 		t.Errorf("register INSERT must include the device_key column; got:\n%s", sql)
