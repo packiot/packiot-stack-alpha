@@ -460,10 +460,19 @@ echo "oauth2-proxy SSO vhost configured at https://auth.$PRODUCTION_DOMAIN"
 
 # ── dash vhost (static SPA on the packiot.app apex — hand-managed cert) ────────
 # dash.packiot.app is a static SPA served from /var/www/dash on a SEPARATE
-# certificate (HTTP-01 webroot, NOT the *.$PRODUCTION_DOMAIN wildcard). No auth,
-# no origin-verify — untouched by the oauth2 posture. Its cert is provisioned
-# out-of-band; write the vhost only if the cert already exists so a fresh boot
-# never fails `nginx -t` on a missing cert (chicken-and-egg with HTTP-01).
+# certificate (HTTP-01 webroot, NOT the *.$PRODUCTION_DOMAIN wildcard). Its cert
+# is provisioned out-of-band; write the vhost only if the cert already exists so a
+# fresh boot never fails `nginx -t` on a missing cert (chicken-and-egg HTTP-01).
+#
+# SECURITY (2026-08): dash is now oauth2-gated (cs-admin group) — same Cognito
+# forward-auth as the internal admin UIs. Previously it was UNGATED (open to
+# anyone who reached it via CloudFront). The auth_request runs before try_files,
+# so an unauthenticated hit gets 401 → @oauth2_signin → auth.$PRODUCTION_DOMAIN.
+# The acme-challenge + http→https redirect on :80 stay UNGATED so certbot renewal
+# never 302s to login.
+# ⚠ COOKIE DOMAIN: this gate only works if oauth2-proxy's OAUTH2_PROXY_COOKIE_DOMAINS
+# + OAUTH2_PROXY_WHITELIST_DOMAINS include `.packiot.app` (dash is on the apex, NOT
+# *.prod.packiot.app). See compose.production.yml — must land together with this.
 if [ -d /etc/letsencrypt/live/dash.packiot.app ]; then
 cat > /etc/nginx/conf.d/dash.conf <<NGINX
 server {
@@ -479,17 +488,79 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/dash.packiot.app/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Cognito forward-auth (oauth2-proxy) — staff-only, same gate as admin UIs.
+    include snippets/oauth2-proxy.conf;
+
     root /var/www/dash;
     index index.html;
-    location / { try_files \$uri \$uri/ /index.html; }
+    location / {
+        auth_request /oauth2/auth-csadmin;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        try_files \$uri \$uri/ /index.html;
+    }
 }
 NGINX
 nginx -t && nginx -s reload
-echo "dash static SPA vhost configured at https://dash.packiot.app"
+echo "dash static SPA vhost configured at https://dash.packiot.app (oauth2-gated)"
 else
 echo "SKIP: /etc/letsencrypt/live/dash.packiot.app absent — dash vhost not written" \
      "(hand-managed HTTP-01 cert; obtain it then re-run this script)"
 fi
+
+# ── wiki vhost (internal docs SPA on the packiot.app apex — oauth2-gated) ──────
+# wiki.packiot.app is an internal, staff-only static site served from /var/www/wiki.
+# It is reached ONLY via CloudFront (edge.tf: cert SAN + alias + wiki_edge ALIAS).
+# CloudFront dials the origin at origin.$PRODUCTION_DOMAIN, so the origin TLS
+# handshake SNI is origin.$PRODUCTION_DOMAIN — covered by the *.$PRODUCTION_DOMAIN
+# wildcard cert already obtained above. We therefore reuse that wildcard cert here
+# (NOT a separate wiki.packiot.app cert like dash), so the vhost serves as soon as
+# /var/www/wiki is populated — no extra out-of-band cert step. Host-header routing
+# (server_name wiki.packiot.app) selects this block after TLS terminates.
+#
+# Protection = the same posture as the internal *.prod service vhosts:
+#   * origin-verify (CloudFront-only; direct-to-EIP hits 403)
+#   * oauth2-proxy cs-admin forward-auth (Cognito, staff-only)
+# Content is owned by a separate markdown→HTML pipeline; this only creates the
+# vhost + gate so /var/www/wiki serves once populated.
+# ⚠ COOKIE DOMAIN: like dash, the gate only works if oauth2-proxy's
+# OAUTH2_PROXY_COOKIE_DOMAINS + OAUTH2_PROXY_WHITELIST_DOMAINS include `.packiot.app`
+# (wiki is on the apex, NOT *.prod.packiot.app) — see compose.production.yml.
+cat > /etc/nginx/conf.d/wiki.conf <<NGINX
+server {
+    listen 80;
+    server_name wiki.packiot.app;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name wiki.packiot.app;
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    # Cognito forward-auth (oauth2-proxy) — staff-only, same gate as admin UIs.
+    include snippets/oauth2-proxy.conf;
+
+    root /var/www/wiki;
+    index index.html;
+    location / {
+        auth_request /oauth2/auth-csadmin;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+NGINX
+nginx -t && nginx -s reload
+echo "wiki internal vhost configured at https://wiki.packiot.app (oauth2-gated)"
 
 # NOTE: Staging's AMQPS stream proxy (port 5671), RabbitMQ mgmt (mq.<domain>),
 # refdata + cpack-ingest carve-outs, and node-red editor vhosts are DELIBERATELY
