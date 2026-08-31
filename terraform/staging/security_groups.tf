@@ -85,6 +85,18 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["179.162.112.58/32"]
   }
 
+  # Shared multi-tenant ingest front-door (ingest.staging:8449) → sparkplug-agent-shared.
+  # NOT world-open: admits each onboarded client's box egress /32. As clients are
+  # added, append their /32 here (bispharma SP = 200.153.25.2). A key-only public
+  # variant is possible later, but keep the /32 defence-in-depth for now.
+  ingress {
+    description = "Shared multi-tenant agent v1 tags front-door (per-box egress /32 allowlist)"
+    from_port   = 8449
+    to_port     = 8449
+    protocol    = "tcp"
+    cidr_blocks = ["200.153.25.2/32"] # bispharma SP box
+  }
+
   egress {
     description = "All outbound - Docker Hub pulls, GitHub, AWS APIs, DB"
     from_port   = 0

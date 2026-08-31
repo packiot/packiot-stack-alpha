@@ -68,10 +68,26 @@ type ComponentSnapshotter interface {
 // each component's Component() name + a `degraded_components` array listing
 // the names + reasons of any degraded components (empty when healthy).
 //
-// ADR-0011 rule 4: when any component is degraded, HTTP status is 503,
+// ADR-0011 rule 4: when any CRITICAL component is degraded, HTTP status is 503,
 // AND the body identifies which one + why.
+//
+// LIVENESS vs READINESS (multi-tenant blast-radius control). Components register
+// in one of two tiers:
+//   - Add (CRITICAL / liveness): degradation flips the top-level `healthy`
+//     boolean → 503 → the container HEALTHCHECK fails → the process is killed
+//     and restarted. Use for anything whose loss means the WHOLE process is
+//     unfit to run (the raw subscriber, the single-file uplink).
+//   - AddReadiness (non-critical): degradation is surfaced in the response body
+//     (`degraded_components`) so ops/readiness probes see it, but it does NOT
+//     flip `healthy` — the container stays up. Use for per-tenant uplinks in a
+//     multi-tenant agent, so ONE tenant's broker blip cannot bounce the whole
+//     process and take every other tenant down with it.
+//
+// Single-file agents register their one uplink via Add (critical), so their
+// /healthz semantics are exactly as before this split existed.
 type MultiSnapshotter struct {
-	components []ComponentSnapshotter
+	components []ComponentSnapshotter // CRITICAL — degradation flips healthy (503 / container-kill)
+	readiness  []ComponentSnapshotter // non-critical — surfaced in body, never flips healthy
 	startedAt  time.Time
 }
 
@@ -81,10 +97,20 @@ func NewMulti() *MultiSnapshotter {
 	return &MultiSnapshotter{startedAt: time.Now()}
 }
 
-// Add registers a component. Order preserved in the JSON response for
-// deterministic dashboarding.
+// Add registers a CRITICAL (liveness) component: its degradation flips the
+// aggregate `healthy` to false → 503 → container restart. Order preserved in
+// the JSON response for deterministic dashboarding.
 func (m *MultiSnapshotter) Add(c ComponentSnapshotter) {
 	m.components = append(m.components, c)
+}
+
+// AddReadiness registers a non-critical (readiness) component: its degradation
+// is reported in the response body's `degraded_components` but does NOT flip the
+// aggregate `healthy` boolean, so it never triggers a container-kill. This is
+// how a multi-tenant agent isolates the blast radius of one tenant's uplink
+// degradation from every co-tenant sharing the same process.
+func (m *MultiSnapshotter) AddReadiness(c ComponentSnapshotter) {
+	m.readiness = append(m.readiness, c)
 }
 
 type degradedItem struct {
@@ -92,20 +118,30 @@ type degradedItem struct {
 	Reason    string `json:"reason"`
 }
 
-// Snapshot implements Snapshotter — aggregates each ComponentSnapshotter.
+// Snapshot implements Snapshotter — aggregates each ComponentSnapshotter. The
+// returned `healthy` boolean (which drives the HTTP status + the container
+// HEALTHCHECK) reflects ONLY the CRITICAL tier; readiness components that are
+// degraded still appear in `degraded_components` but keep `healthy` true.
 func (m *MultiSnapshotter) Snapshot() ([]byte, bool, error) {
-	components := make(map[string]any, len(m.components))
+	components := make(map[string]any, len(m.components)+len(m.readiness))
 	var degraded []degradedItem
+
+	// Critical tier — degradation here flips liveness (container-kill).
+	healthy := true
 	for _, c := range m.components {
 		components[c.Component()] = c.SnapshotDetail()
 		if reason := c.Degraded(); reason != "" {
-			degraded = append(degraded, degradedItem{
-				Component: c.Component(),
-				Reason:    reason,
-			})
+			degraded = append(degraded, degradedItem{Component: c.Component(), Reason: reason})
+			healthy = false
 		}
 	}
-	healthy := len(degraded) == 0
+	// Readiness tier — surfaced in the body, but never flips liveness.
+	for _, c := range m.readiness {
+		components[c.Component()] = c.SnapshotDetail()
+		if reason := c.Degraded(); reason != "" {
+			degraded = append(degraded, degradedItem{Component: c.Component(), Reason: reason})
+		}
+	}
 
 	body, err := json.MarshalIndent(map[string]any{
 		"healthy":             healthy,

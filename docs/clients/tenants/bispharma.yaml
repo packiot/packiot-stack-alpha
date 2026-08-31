@@ -1,0 +1,65 @@
+# bispharma.yaml — one tenant of the SHARED multi-tenant sparkplug-agent.
+#
+# The shared agent (compose.staging.yml: sparkplug-agent-shared, AGENT_TENANTS_DIR
+# = /etc/packiot/tenants) loads every *.yaml here as one isolated pipeline keyed by
+# sparkplug.group_id, and routes each incoming /v1/tags envelope by its group. A
+# new client is added by dropping a file like this one — NO new container, nginx,
+# DNS, or SG. This is the config-as-data self-service seam (see ADR-0047 + the
+# "Onboarding — Worked Example" wiki page).
+#
+# Tenant: BISPHARMA, SP site, enterprise 5 (Bispharma-Staging).
+#
+# ── Provenance of the L01 tag→machine→role map ───────────────────────────────
+# Harvested from the first-version legacy Node-RED flow ("PLC L01", an s7 endpoint
+# reading DB1 as a packed array of six 32-bit DINTs). The on-site box reads that
+# same DB1 over Modbus TCP (DB byte offset B → holding register B/2) and POSTs the
+# rawtag envelope to the shared front-door. The legacy `counters L01` function
+# decodes:
+#   DINT0  (HR[0:1])  = infeed total  → S1INFEED gross  (ProdConsumedCount)
+#   DINT4  (HR[2:3])  = (S2 station)  → scrap subtrahend ONLY (no equipment)
+#   DINT8  (HR[4:5])  = station count → S3       (ProdProcessedCount)
+#   DINT12 (HR[6:7])  = station count → S4       (ProdProcessedCount)
+#   DINT16 (HR[8:9])  = station count → S5       (ProdProcessedCount)
+#   DINT20 (HR[10:11])= output total  → S6OUTPUT net    (ProdProcessedCount)
+#   DINT0 − DINT4     = scrap         → SCRAP    (ProdDefectiveCount)
+# ⚠️  HR[4:5] is S3, NOT the output (output = DINT20/HR[10:11]). counters_only_oee:
+#     the PLC exposes no machine state/speed, so emit counts only.
+#
+# ── L01 equipment ids (staging packml_register, all active) ──────────────────
+#   L01 line 2000109 · S1INFEED 2000111 · S3 2000112 · S4 2000113
+#   S5 2000114 · S6OUTPUT 2000115 · SCRAP 2000116   (count-index = id_equipment)
+sparkplug:
+  group_id: BISPHARMASTAGING
+  edge_node_id: bispharma-tee            # MUST be unique across tenant files
+  packml_topic: BISPHARMASTAGING/SP/LINHAS
+
+  # Mode-A: subscribe raw tags from AND publish SparkPlug to the internal staging
+  # mosquitto (raw tags actually arrive over the HTTP front-door, :9104 /v1/tags).
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bispharma/#
+  uplink_broker: tcp://mosquitto:1883
+
+  # Mode-A shared broker — no per-tenant mTLS on staging (the WAN hop is
+  # authenticated by the nginx front-door + X-Ingest-Key).
+  uplink_tls_cert_ref: ""
+  uplink_tls_key_ref: ""
+  uplink_ca_ref: ""
+
+raw_tag_map:
+  # ═══ L01 line (id 2000109) ═══════════════════════════════════════════════════
+  - {metric_suffix: /L01/Admin/ProdConsumedCount,  type: double}   # gross = DINT0
+  - {metric_suffix: /L01/Admin/ProdProcessedCount, type: double}   # net   = DINT20
+  - {metric_suffix: /L01/Admin/ProdDefectiveCount, type: double}   # scrap = DINT0-DINT4
+
+  # ── L01 members (count-index = id_equipment) ────────────────────────────────
+  - {metric_suffix: /L01/S1INFEED/Admin/ProdProcessedCount/2000111/Unit, type: double}  # DINT0
+  - {metric_suffix: /L01/S3/Admin/ProdProcessedCount/2000112/Unit,       type: double}  # DINT8
+  - {metric_suffix: /L01/S4/Admin/ProdProcessedCount/2000113/Unit,       type: double}  # DINT12
+  - {metric_suffix: /L01/S5/Admin/ProdProcessedCount/2000114/Unit,       type: double}  # DINT16
+  - {metric_suffix: /L01/S6OUTPUT/Admin/ProdProcessedCount/2000115/Unit, type: double}  # DINT20
+  - {metric_suffix: /L01/SCRAP/Admin/ProdProcessedCount/2000116/Unit,    type: double}  # DINT0-DINT4
+
+  # ═══ L03..L20, L90 — added as each line is validated (all 7-var lines share the
+  #     identical DB1 layout; L18 adds DINT24/28; L90 is an 8-DINT array). Kept out
+  #     until reachability + count-index are confirmed per line so no expected
+  #     suffix silently drops. See the onboarding worked-example wiki page.
