@@ -59,6 +59,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -214,6 +215,16 @@ func main() {
 				"uplink_broker", p.cfg.Sparkplug.UplinkBroker,
 				"tags", len(p.cfg.RawTagMap))
 		}
+		// ── multi-tenant live-capture (ADR-0045 Phase-2b) ────────────────────
+		// Wire the observe-posture recorder into each tenant pipeline whose
+		// client_descriptors.status is 'captured'. DARK by default
+		// (AGENT_CAPTURE_ENABLED off ⇒ complete no-op, byte-identical). This is
+		// what lets an INFERRED-mode multi-tenant client accumulate the
+		// capture_observations evidence CS confirms cutover against — the single-
+		// file path already had it; multi mode did not until now. Fail-safe: any
+		// missing profile/DB is a logged skip, never a crash of the ingest plane.
+		wireMultiTenantCapture(ctx, pipelines, reg, logger)
+
 		// The MQTT raw path (rawmqtt) is single-tenant by construction: one
 		// broker + one topic filter → one sink. Mode-A staging is HTTP-only, so
 		// multi mode deliberately does NOT wire a global raw subscriber — that
@@ -659,6 +670,15 @@ type pipeline struct {
 	up       *uplink.Uplink
 	unmapped *unmapped.Reporter
 	ingest   func(tags []rawtag.RawTag) (accepted, total int)
+
+	// rec is the live-capture recorder the ingest closure feeds via Observe. It is
+	// an atomic pointer so the multi-tenant capture controller can flip a tenant's
+	// observe posture ON/OFF after boot (client_descriptors.status can change while
+	// the agent runs) without racing the ingest hot path. nil ⇒ not observing;
+	// (*capture.Recorder)(nil).Observe is a safe no-op, so a Load()→Observe on the
+	// hot path is nil-safe with no branch. In single-file mode it is Store()d once
+	// at boot from deps.recorder and never changes — behaviour is byte-identical.
+	rec atomic.Pointer[capture.Recorder]
 }
 
 // pipelineDeps carries the per-pipeline construction inputs. The metric vecs are
@@ -777,7 +797,11 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 	}
 
 	dec := deps.decomposer
-	rec := deps.recorder
+	// Seed the swappable recorder from deps (single-file sets it once at boot;
+	// multi-tenant leaves it nil here and the capture controller flips it later).
+	if deps.recorder != nil {
+		p.rec.Store(deps.recorder)
+	}
 	derive := deps.derive
 	// ingest is the pipeline's entry point: BOTH the HTTP front-door and (single-
 	// file only) the internal MQTT subscriber call it, so the two front-doors feed
@@ -815,8 +839,10 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 			// that the current map would drop as unmapped is still observed (that
 			// mismatch is exactly the DQ evidence CS confirms against). No-op when
 			// not observing (rec is nil; Observe is nil-safe) or the tag is not
-			// count-bearing. Uses the raw arriving suffix (never decomposed).
-			rec.Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
+			// count-bearing. Uses the raw arriving suffix (never decomposed). The
+			// recorder is read atomically so the multi-tenant capture controller can
+			// flip the posture ON/OFF post-boot without racing this hot path.
+			p.rec.Load().Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
 
 			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
 			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the
@@ -1068,6 +1094,265 @@ func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httping
 		}
 	}()
 	return srv
+}
+
+// ── multi-tenant live-capture (ADR-0045 Phase-2b) ────────────────────────────
+//
+// Single-file mode wires the observe-posture recorder from the tenant PROFILE
+// (AGENT_PROFILE_PATH → templates + enterprise_id) and the DB status. Multi mode
+// had NO recorder, so an INFERRED-mode multi-tenant client accumulated zero
+// capture_observations and its Capture step could never confirm a channel. This
+// block is the multi-mode analogue: it sources the SAME two facts single-file
+// needs — the count-leaf TEMPLATES and the enterprise SCOPE — from a per-tenant
+// profile in AGENT_TENANTS_PROFILE_DIR (the multi-mode analogue of
+// AGENT_PROFILE_PATH), reads the observe posture from client_descriptors.status
+// on ONE shared pool (registerDSN, the same env single-file uses), and flips each
+// tenant's pipeline recorder to match. Everything is DARK unless
+// AGENT_CAPTURE_ENABLED=true, and every failure is a logged skip (best-effort
+// evidence, never the data plane).
+
+// tenantCapture holds one tenant's capture wiring: the pipeline whose atomic
+// recorder the controller flips, the enterprise scope + count-leaf templates
+// (from the tenant profile), the shared PG sink, and the per-tenant observations
+// metric. recCancel tracks the live recorder so a posture flip enables/disables
+// it cleanly (per-tenant isolation — one tenant's posture never touches another).
+type tenantCapture struct {
+	pipeline     *pipeline
+	enterpriseID int
+	templates    []string
+	sink         capture.Sink
+	obsCounter   prometheus.Counter
+	logger       *slog.Logger
+
+	recCancel context.CancelFunc // non-nil while a recorder is running (observing)
+}
+
+// observing reports whether a recorder is currently live for this tenant.
+func (tc *tenantCapture) observing() bool { return tc.recCancel != nil }
+
+// enable builds a recorder + starts its flush loop and points the pipeline's
+// atomic recorder at it — the ingest hot path begins observing on the next tag.
+func (tc *tenantCapture) enable(ctx context.Context, flush time.Duration) {
+	cctx, cancel := context.WithCancel(ctx)
+	rec := capture.New(capture.Config{
+		EnterpriseID: tc.enterpriseID,
+		Templates:    tc.templates,
+		Sink:         tc.sink,
+		Logger:       tc.logger,
+		OnObserved:   tc.obsCounter.Inc,
+	})
+	go rec.Run(cctx, flush)
+	tc.pipeline.rec.Store(rec)
+	tc.recCancel = cancel
+	tc.logger.Info("multi-tenant live-capture ENABLED",
+		"group_id", tc.pipeline.cfg.Sparkplug.GroupID,
+		"enterprise_id", tc.enterpriseID,
+		"count_leaf_templates", len(tc.templates))
+}
+
+// disable stops observing: it clears the pipeline recorder (ingest no-ops on the
+// next tag) and cancels the recorder's flush loop, which does a final best-effort
+// drain of the last interval's evidence.
+func (tc *tenantCapture) disable() {
+	if tc.recCancel == nil {
+		return
+	}
+	tc.pipeline.rec.Store(nil)
+	tc.recCancel()
+	tc.recCancel = nil
+	tc.logger.Info("multi-tenant live-capture DISABLED",
+		"group_id", tc.pipeline.cfg.Sparkplug.GroupID,
+		"enterprise_id", tc.enterpriseID)
+}
+
+// statusFetcher reads a tenant's client_descriptors.status by enterprise id.
+// *agentcfg.DescriptorStatusFetcher satisfies it; a fake satisfies it in tests
+// (so the posture-flip logic is unit-testable without a DB).
+type statusFetcher interface {
+	FetchStatus(ctx context.Context, enterpriseID int) (string, error)
+}
+
+// refresh reads the tenant's current client_descriptors.status and flips the
+// recorder to match. A status READ ERROR is fail-safe: it keeps the CURRENT
+// posture unchanged (a broken read must never silently start — or stop — capture).
+func (tc *tenantCapture) refresh(ctx context.Context, fetcher statusFetcher, flush time.Duration) {
+	status, err := fetcher.FetchStatus(ctx, tc.enterpriseID)
+	if err != nil {
+		tc.logger.Warn("capture status read failed — keeping current posture",
+			"group_id", tc.pipeline.cfg.Sparkplug.GroupID, "enterprise_id", tc.enterpriseID, "err", err)
+		return
+	}
+	// captureEnabled is already true here (the controller only runs under the
+	// flag); ShouldObserve then reduces to status == 'captured'.
+	want := capture.ShouldObserve(true, status)
+	switch {
+	case want && !tc.observing():
+		tc.enable(ctx, flush)
+	case !want && tc.observing():
+		tc.disable()
+	}
+}
+
+// wireMultiTenantCapture wires the observe-posture recorder into EACH multi-tenant
+// pipeline whose tenant is in the 'captured' posture. DARK by default: with
+// AGENT_CAPTURE_ENABLED off — or no profile dir, or no DB — it is a complete
+// no-op and multi mode stays byte-identical. A background goroutine re-reads each
+// tenant's status on a ticker so a posture that flips to 'captured' AFTER boot
+// starts recording without a restart.
+func wireMultiTenantCapture(ctx context.Context, pipelines []*pipeline, reg *prometheus.Registry, logger *slog.Logger) {
+	if !getenvBool("AGENT_CAPTURE_ENABLED", false) {
+		return
+	}
+	profileDir := getenv("AGENT_TENANTS_PROFILE_DIR", "")
+	if profileDir == "" {
+		logger.Warn("AGENT_CAPTURE_ENABLED=true in multi-tenant mode but AGENT_TENANTS_PROFILE_DIR is unset — no per-tenant profiles to source count-leaf templates + enterprise scope from; capture stays OFF")
+		return
+	}
+	profiles := loadTenantProfiles(profileDir, logger)
+	if len(profiles) == 0 {
+		logger.Warn("AGENT_TENANTS_PROFILE_DIR held no usable tenant profiles — multi-tenant capture stays OFF", "dir", profileDir)
+		return
+	}
+
+	dsn, err := registerDSN()
+	if err != nil {
+		logger.Warn("no DB DSN for multi-tenant capture — staying OFF (capture is best-effort)", "err", err)
+		return
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		logger.Warn("could not open the DB pool for multi-tenant capture — staying OFF", "err", err)
+		return
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		logger.Warn("client_descriptors DB unreachable — multi-tenant capture stays OFF", "err", err)
+		return
+	}
+	fetcher := agentcfg.NewDescriptorStatusFetcher(pool)
+
+	// One shared observations metric (labeled by tenant), same name single-file
+	// uses — the two modes are mutually exclusive at runtime, so no collision.
+	obs := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_capture_observations_total",
+		Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
+	}, []string{"tenant"})
+	reg.MustRegister(obs)
+
+	tenants := buildTenantCaptures(pipelines, profiles, pool, obs, logger)
+	if len(tenants) == 0 {
+		pool.Close()
+		logger.Warn("multi-tenant capture enabled but no tenant qualified (profile/enterprise/templates) — capture OFF")
+		return
+	}
+
+	flush := time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30)) * time.Second
+	poll := time.Duration(getenvInt("AGENT_CAPTURE_STATUS_POLL_SEC", 300)) * time.Second
+
+	// Boot posture read + periodic re-check. ONE controller goroutine owns the
+	// shared pool: it closes the pool (after each tenant's final drain) only when
+	// ctx is cancelled, so recorder writes never race a closed pool.
+	go func() {
+		defer pool.Close()
+		for _, tc := range tenants {
+			tc.refresh(ctx, fetcher, flush)
+		}
+		t := time.NewTicker(poll)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				for _, tc := range tenants {
+					tc.disable() // final best-effort drain per observing tenant
+				}
+				return
+			case <-t.C:
+				for _, tc := range tenants {
+					tc.refresh(ctx, fetcher, flush)
+				}
+			}
+		}
+	}()
+
+	logger.Info("multi-tenant live-capture controller started",
+		"tenants", len(tenants), "flush_sec", int(flush.Seconds()), "status_poll_sec", int(poll.Seconds()))
+}
+
+// buildTenantCaptures pairs each pipeline with its tenant profile (by group_id =
+// profile.tenant) to produce the per-tenant capture units. A pipeline with no
+// matching profile, no enterprise_id, or no count-leaf templates is skipped (it
+// simply never records) — the strict-source discipline single-file uses, applied
+// per tenant.
+func buildTenantCaptures(pipelines []*pipeline, profiles map[string]*tenantprofile.Profile, pool *pgxpool.Pool, obs *prometheus.CounterVec, logger *slog.Logger) []*tenantCapture {
+	var out []*tenantCapture
+	for _, p := range pipelines {
+		group := p.cfg.Sparkplug.GroupID
+		prof, ok := profiles[strings.ToUpper(strings.TrimSpace(group))]
+		if !ok {
+			logger.Info("no matching tenant profile for capture — this tenant will not record", "group_id", group)
+			continue
+		}
+		if prof.EnterpriseID == 0 {
+			logger.Warn("tenant profile has no enterprise_id — cannot scope capture; skipping", "group_id", group)
+			continue
+		}
+		var leaves []string
+		for _, t := range prof.MetricTemplates.Member {
+			leaves = append(leaves, t.Leaf)
+		}
+		for _, t := range prof.MetricTemplates.Line {
+			leaves = append(leaves, t.Leaf)
+		}
+		templates := capture.CountLeafTemplates(leaves)
+		if len(templates) == 0 {
+			logger.Warn("tenant profile declares no count-metric leaves — nothing to capture; skipping",
+				"group_id", group, "enterprise_id", prof.EnterpriseID)
+			continue
+		}
+		out = append(out, &tenantCapture{
+			pipeline:     p,
+			enterpriseID: prof.EnterpriseID,
+			templates:    templates,
+			sink:         capture.NewPGSink(pool),
+			obsCounter:   obs.WithLabelValues(group),
+			logger:       logger,
+		})
+	}
+	return out
+}
+
+// loadTenantProfiles loads every *.yaml/*.yml tenant profile in dir, keyed by
+// upper(profile.tenant). A file that fails to parse is logged + skipped (capture
+// is best-effort — one bad profile must not stop the others); a profile with a
+// blank tenant is skipped (it cannot be matched to a pipeline group_id).
+func loadTenantProfiles(dir string, logger *slog.Logger) map[string]*tenantprofile.Profile {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		logger.Warn("read tenant profiles dir failed — multi-tenant capture will find no profiles", "dir", dir, "err", err)
+		return nil
+	}
+	out := map[string]*tenantprofile.Profile{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			continue
+		}
+		prof, err := tenantprofile.LoadProfile(filepath.Join(dir, name))
+		if err != nil {
+			logger.Warn("skip unparseable tenant profile", "file", name, "err", err)
+			continue
+		}
+		key := strings.ToUpper(strings.TrimSpace(prof.Tenant))
+		if key == "" {
+			logger.Warn("skip tenant profile with blank tenant (cannot match a pipeline group_id)", "file", name)
+			continue
+		}
+		out[key] = prof
+	}
+	return out
 }
 
 // resolveTagMap decides + installs the tenant's raw_tag_map for this boot and

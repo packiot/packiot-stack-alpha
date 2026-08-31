@@ -231,8 +231,10 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	// 3. Route to the tenant pipeline (multi mode) or apply the single-scope
 	//    guard (single mode). resolveSink centralises the two modes and emits
 	//    the 403 itself on a scope/route miss — so a rejected body never reaches
-	//    a decoder or a foreign tenant's pipeline.
-	sink, ok := s.resolveSink(w, body)
+	//    a decoder or a foreign tenant's pipeline. The X-Ingest-Group header is a
+	//    multi-mode fallback routing key for legacy tees that post no body group
+	//    (a per-tenant nginx front-door injects it); the body group still wins.
+	sink, ok := s.resolveSink(w, r.Header.Get("X-Ingest-Group"), body)
 	if !ok {
 		return
 	}
@@ -335,17 +337,28 @@ func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 // ok=false (the caller stops). A lenient probe reads the optional top-level
 // `group` (a superset of the rawtag envelope; rawtag ignores unknown fields).
 //
-//   - MULTI (routes != nil): the group is MANDATORY — an absent group, or a
-//     group with no matching route, is 403. There is no single fallback scope
-//     in multi mode, so an unrouteable envelope must be refused, not guessed.
+//   - MULTI (routes != nil): the group is MANDATORY. Precedence: the body group
+//     (if present) wins; else the `X-Ingest-Group` request header (a per-tenant
+//     nginx front-door injects it for a legacy tee that posts no body group);
+//     else 403. There is no single fallback scope in multi mode, so an
+//     unrouteable envelope must be refused, not guessed.
 //   - SINGLE (routes == nil): a declared group that isn't ours → 403; an absent
 //     group is accepted (the agent is physically single-tenant and the tag_map
-//     drops foreign metrics). This is the frozen original behavior.
-func (s *Server) resolveSink(w http.ResponseWriter, body []byte) (Sink, bool) {
+//     drops foreign metrics). This is the frozen original behavior — the header
+//     is IGNORED in single mode.
+func (s *Server) resolveSink(w http.ResponseWriter, headerGroup string, body []byte) (Sink, bool) {
 	if s.routes != nil {
 		g, present := probeGroup(body)
 		if !present {
-			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "missing group (multi-tenant mode requires it)", "", int64(len(body)))
+			// Body carried no group — fall back to the X-Ingest-Group header so a
+			// per-tenant front-door can route a legacy tee. Case/whitespace are
+			// normalized by the route lookup below, exactly like a body group.
+			if hg := strings.TrimSpace(headerGroup); hg != "" {
+				g, present = hg, true
+			}
+		}
+		if !present {
+			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "missing group (multi-tenant mode requires it in the body or the X-Ingest-Group header)", "", int64(len(body)))
 			return nil, false
 		}
 		sink, known := s.routes[strings.ToUpper(strings.TrimSpace(g))]
