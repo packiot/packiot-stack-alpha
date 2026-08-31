@@ -42,7 +42,7 @@ page** (read-only). Code **auto-derives from the name** (`cleanCode`) — you ne
 | Parent line/sector | 🔴 *(machine only)* | `id_parentequipment` | superRefine blocks Save until picked |
 | Overview version | 🔴 *(line only, pre-filled `v4`)* | `overview_version` (jsonb) | required for lines |
 | Mirrored machine | 🔴 *(sector only)* | `id_equipment_status_mirror` | |
-| Downtime threshold `60` · Production speed `0` · Min-perf `40` · Min-ideal-perf `35` · status_type `4` · id_counter_status · net_production_type | 🟡 | resp. columns | OEE-relevant; review per machine (see [Concepts](08-concepts.md)) |
+| Downtime threshold `60` · Production speed `0` · Min-perf `40` · Min-ideal-perf `35` · status_type (0=instant / 5=5-min avg) · net_production_type | 🟡 | resp. columns | OEE-relevant; review per machine (see [Concepts](08-concepts.md)) |
 | ideal_speed | ⚪ | `ideal_speed` | |
 
 ## Shift
@@ -70,12 +70,14 @@ the edge-api DTO are unchanged — this is pure UI.
   because the prefix-derivation reads it as a fallback. The blank inputs were removed.
 - **Removed as dead** (form-only; DB columns kept): `id_plc` (no PLC registry exists;
   PLC config lives in the descriptor `plc:` blocks), `use_label_net_production` (dead
-  duplicate of the live `net_production_type`), and the zero-reader legacy flags
-  `speed_calculated_by_packiot` / `event_generated_by_packiot`.
+  duplicate of the live `net_production_type`), the zero-reader legacy flags
+  `speed_calculated_by_packiot` / `event_generated_by_packiot`, and
+  `id_counter_status` (NULL on every equipment in both planes, no reader — a dead
+  column, verified against the legacy DB).
 - **Kept — verified live readers:** `net_production_type` (OEE quality branch),
   `overview_version` (F3 view expands it), `event_should_be_displayed`,
   `require_downtime_reason`, `ideal_speed`+`production_speed`.
-- **Deliberately untouched (collision-sensitive):** `id_counter_status`, packml
+- **Deliberately untouched (collision-sensitive):** packml
   `id_infeedcounter`/`id_outfeedcounter` — the counter-role columns from the Phase-9
   collision incident.
 

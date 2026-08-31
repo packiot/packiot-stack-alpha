@@ -43,7 +43,7 @@ enterprise (the cross-tenant guard).
 | 30701 | Ideal speed |
 | 30702 | Lead machine (`id_equipment` that generates line downtimes) |
 | 30750 / 30751 | Min speed threshold / min threshold time |
-| 30758 | Event trigger type: 0=instant, 4=5-min average (CPAC algorithm) |
+| 30758 | Event trigger type: 0=instant, **5**=5-min average (CPAC). *(Docs long said "4"; the value in real data is 5.)* |
 | 30800–30899 | Production order control (start/stop/setup) |
 
 ## Week-encoding (shifts)
@@ -69,9 +69,9 @@ Many columns store a bare integer. The meanings (verify option labels against
 |-------|-----------------|
 | **tp_equipment** | 1 = Machine · 2 = Sector · 3 = Line |
 | **production_orders.status** | 1 = available · 2 = running · 3 = finished · 4 = paused |
-| **status_type** (event trigger, PackML 30758) | 0 = instant · 4 = 5-min average (CPAC) *(and legacy 1/3 variants)* |
+| **status_type** (event trigger, PackML 30758) | 0 = instant · **5** = 5-min average (CPAC) · 1 = rare/unconfirmed. Real data uses **0 / 1 / 5** — the "4" older docs assumed is never used in any tenant. |
 | **net_production_type** | 0 = from sensors · 1 = from scanned boxes |
-| **id_counter_status** | 0 / 1 / 2 *(counter-source selector — see equipment form constant)* |
+| **id_counter_status** | **dead column** — NULL on every equipment in both DB planes, no reader anywhere; removed from the form (column kept). |
 | **scrap_calc_type** (enterprise) | 0 / 1 / 2 *(per-tenant scrap semantics)* |
 | **overview_events_type** | derived from type: line = 3 · sector = 2 · machine = 1 |
 | **client_descriptors.status** | draft → generated → captured → validated → cutover |
