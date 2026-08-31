@@ -118,6 +118,69 @@ func TestMultiSnapshotterMultipleDegraded(t *testing.T) {
 	}
 }
 
+// TestMultiSnapshotterReadinessDegradedStaysLive is the multi-tenant blast-
+// radius guard: a degraded READINESS component (e.g. one tenant's uplink) must
+// keep the aggregate `healthy` (liveness / container-kill) signal TRUE, while
+// still appearing in the response body's degraded_components so ops/readiness
+// probes see it. This is what stops one tenant's broker blip from bouncing the
+// whole process and taking every co-tenant down.
+func TestMultiSnapshotterReadinessDegradedStaysLive(t *testing.T) {
+	m := NewMulti()
+	// A healthy critical component (e.g. the ingest/router path) + several tenant
+	// uplinks as readiness, ONE of which is degraded.
+	m.Add(&fakeComponent{name: "router", detail: map[string]any{}})
+	m.AddReadiness(&fakeComponent{name: "uplink_cpack", detail: map[string]any{}})
+	m.AddReadiness(&fakeComponent{
+		name:           "uplink_incoplast",
+		detail:         map[string]any{},
+		degradedReason: "not connected to uplink broker",
+	})
+
+	body, healthy, err := m.Snapshot()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Liveness stays true — the container is NOT killed for a single tenant blip.
+	if !healthy {
+		t.Fatalf("a degraded readiness component must NOT flip liveness healthy; body=%s", body)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if got["healthy"] != true {
+		t.Errorf("body healthy should be true, got %v", got["healthy"])
+	}
+	// The degraded tenant is still surfaced in the body.
+	dc, ok := got["degraded_components"].([]any)
+	if !ok || len(dc) != 1 {
+		t.Fatalf("expected the degraded tenant surfaced in degraded_components, got %v", got["degraded_components"])
+	}
+	if entry := dc[0].(map[string]any); entry["component"] != "uplink_incoplast" {
+		t.Errorf("wrong degraded component surfaced: %v", entry["component"])
+	}
+	// And all components (critical + readiness) are present in the body.
+	comps := got["components"].(map[string]any)
+	for _, name := range []string{"router", "uplink_cpack", "uplink_incoplast"} {
+		if _, ok := comps[name]; !ok {
+			t.Errorf("component %q missing from body: %v", name, comps)
+		}
+	}
+}
+
+// TestMultiSnapshotterCriticalStillFlips confirms the split didn't weaken the
+// CRITICAL tier: a degraded Add-component still flips liveness (single-file
+// semantics — the one uplink is registered via Add, unchanged).
+func TestMultiSnapshotterCriticalStillFlips(t *testing.T) {
+	m := NewMulti()
+	m.Add(&fakeComponent{name: "uplink", degradedReason: "not connected to uplink broker"})
+	m.AddReadiness(&fakeComponent{name: "tenant_x", detail: map[string]any{}})
+	if _, healthy, _ := m.Snapshot(); healthy {
+		t.Fatal("a degraded CRITICAL component must flip liveness healthy=false")
+	}
+}
+
 // TestHealthzReturnsCorrectStatus checks the HTTP-layer wiring: healthy → 200,
 // degraded → 503. Silent-degrade (200 with healthy=false in body) is a bug
 // per ADR-0011 rule 4 — verify the status code and the body agree.

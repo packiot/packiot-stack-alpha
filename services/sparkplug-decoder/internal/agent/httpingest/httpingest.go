@@ -50,6 +50,11 @@ const DefaultMaxBodyBytes int64 = 1 << 20
 // the tagstore; the remainder were dropped-with-metric as unmapped by the sink
 // itself. main wires this to the SAME resolver→tagstore closure the internal
 // MQTT subscriber uses, so the HTTP and MQTT front-doors share one pipeline.
+//
+// In MULTI-TENANT mode (NewRouter) each tenant pipeline contributes exactly one
+// Sink, keyed by its upper-cased SparkPlug group. The handler routes each
+// envelope to the matching Sink — so the tenant-isolation seam lives at the
+// router and one tenant's tags can never reach another's resolver/tagstore.
 type Sink func(tags []rawtag.RawTag) (accepted, total int)
 
 // Config controls the front-door.
@@ -94,20 +99,33 @@ const (
 
 // Server is the HTTP front-door. It is an http.Handler; main mounts it on the
 // ingest listener (a separate port from /healthz).
+//
+// It runs in one of two mutually-exclusive modes, decided at construction:
+//   - SINGLE-tenant (New): one `sink`, an optional `scopeGroup` guard. This is
+//     the ORIGINAL behavior — an absent group is accepted, a mismatched group
+//     is 403. cpack runs this in prod today; the semantics are frozen. The
+//     numeric /v1/counters front-door is a single-tenant feature (a numeric
+//     tenant serves exactly one group).
+//   - MULTI-tenant (NewRouter): a `routes` map keyed by upper(group). The
+//     envelope MUST name its group and it MUST be a known tenant, else 403 —
+//     the router has no single scope to fall back to, so an unrouteable body is
+//     rejected rather than silently dropped by some default pipeline.
 type Server struct {
 	apiKey          []byte
-	scopeGroup      string
+	scopeGroup      string          // single mode: optional scope guard ("" disables)
+	routes          map[string]Sink // multi mode: upper(group) → tenant Sink; nil in single mode
 	maxBody         int64
-	sink            Sink
+	sink            Sink // single mode: the one pipeline sink; nil in multi mode
 	outcomes        *prometheus.CounterVec
 	numeric         *numeric.Translator
 	numericUnmapped prometheus.Counter
 	logger          *slog.Logger
 }
 
-// New builds the handler. outcomes is a CounterVec with a single "outcome"
-// label, registered by the caller (so the agent owns its registry); pass a
-// throwaway vec in tests. A blank APIKey panics — auth must never be optional.
+// New builds the SINGLE-tenant handler. outcomes is a CounterVec with a single
+// "outcome" label, registered by the caller (so the agent owns its registry);
+// pass a throwaway vec in tests. A blank APIKey panics — auth must never be
+// optional.
 func New(cfg Config, sink Sink, outcomes *prometheus.CounterVec, logger *slog.Logger) *Server {
 	if cfg.APIKey == "" {
 		panic("httpingest: APIKey is required (refusing to serve with auth disabled)")
@@ -115,19 +133,51 @@ func New(cfg Config, sink Sink, outcomes *prometheus.CounterVec, logger *slog.Lo
 	if sink == nil {
 		panic("httpingest: Sink is required")
 	}
+	s := newServer(cfg, outcomes, logger)
+	s.scopeGroup = strings.ToUpper(strings.TrimSpace(cfg.ScopeGroup))
+	s.sink = sink
+	s.numeric = cfg.Numeric
+	s.numericUnmapped = cfg.NumericUnmapped
+	return s
+}
+
+// NewRouter builds the MULTI-tenant handler. `routes` maps each tenant's
+// SparkPlug group (case-insensitive — normalized to upper here) to that
+// pipeline's Sink. The handler dispatches every envelope on its declared group:
+// a missing group, or a group not in `routes`, is refused 403
+// (OutcomeRejectedScope). cfg.ScopeGroup / cfg.Numeric are IGNORED in this mode
+// (the routes map is the scope; numeric /v1/counters is single-tenant). A blank
+// APIKey or empty routes panics — both are programming errors main guards
+// against before serving.
+func NewRouter(cfg Config, routes map[string]Sink, outcomes *prometheus.CounterVec, logger *slog.Logger) *Server {
+	if cfg.APIKey == "" {
+		panic("httpingest: APIKey is required (refusing to serve with auth disabled)")
+	}
+	if len(routes) == 0 {
+		panic("httpingest: NewRouter requires at least one tenant route")
+	}
+	norm := make(map[string]Sink, len(routes))
+	for g, sink := range routes {
+		if sink == nil {
+			panic("httpingest: nil Sink for group " + g)
+		}
+		norm[strings.ToUpper(strings.TrimSpace(g))] = sink
+	}
+	s := newServer(cfg, outcomes, logger)
+	s.routes = norm
+	return s
+}
+
+func newServer(cfg Config, outcomes *prometheus.CounterVec, logger *slog.Logger) *Server {
 	maxBody := cfg.MaxBodyBytes
 	if maxBody <= 0 {
 		maxBody = DefaultMaxBodyBytes
 	}
 	return &Server{
-		apiKey:          []byte(cfg.APIKey),
-		scopeGroup:      strings.ToUpper(strings.TrimSpace(cfg.ScopeGroup)),
-		maxBody:         maxBody,
-		sink:            sink,
-		outcomes:        outcomes,
-		numeric:         cfg.Numeric,
-		numericUnmapped: cfg.NumericUnmapped,
-		logger:          logger,
+		apiKey:   []byte(cfg.APIKey),
+		maxBody:  maxBody,
+		outcomes: outcomes,
+		logger:   logger,
 	}
 }
 
@@ -178,16 +228,13 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Scope guard — a lenient probe reads the optional top-level `group`
-	//    (a superset of the rawtag envelope; rawtag ignores unknown fields).
-	//    A declared group that isn't ours → 403. Absent group is accepted:
-	//    the agent is physically single-tenant and the tag_map drops foreign
-	//    metrics, but the tee SHOULD send group for defense-in-depth.
-	if s.scopeGroup != "" {
-		if g, ok := probeGroup(body); ok && !strings.EqualFold(g, s.scopeGroup) {
-			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "out-of-scope group", g, int64(len(body)))
-			return
-		}
+	// 3. Route to the tenant pipeline (multi mode) or apply the single-scope
+	//    guard (single mode). resolveSink centralises the two modes and emits
+	//    the 403 itself on a scope/route miss — so a rejected body never reaches
+	//    a decoder or a foreign tenant's pipeline.
+	sink, ok := s.resolveSink(w, body)
+	if !ok {
+		return
 	}
 
 	// 4. Decode the Tier-1 envelope.
@@ -197,10 +244,10 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Feed the shared pipeline. accepted<total means some tags were
+	// 5. Feed the routed pipeline. accepted<total means some tags were
 	//    unmapped (dropped-with-metric inside the sink) — not an error; a
 	//    connectivity plane may legitimately carry tags this agent ignores.
-	accepted, total := s.sink(tags)
+	accepted, total := sink(tags)
 	s.inc(OutcomeAccepted)
 	s.logger.Info("tags accepted",
 		slog.Int("accepted", accepted),
@@ -281,6 +328,40 @@ func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 			`,"translated":`+itoa(len(tags))+
 			`,"accepted":`+itoa(accepted)+
 			`,"unmapped_index":`+itoa(len(unmapped))+`}`)
+}
+
+// resolveSink selects the pipeline Sink for this body and applies the mode's
+// scope policy. On a scope/route violation it writes the 403 itself and returns
+// ok=false (the caller stops). A lenient probe reads the optional top-level
+// `group` (a superset of the rawtag envelope; rawtag ignores unknown fields).
+//
+//   - MULTI (routes != nil): the group is MANDATORY — an absent group, or a
+//     group with no matching route, is 403. There is no single fallback scope
+//     in multi mode, so an unrouteable envelope must be refused, not guessed.
+//   - SINGLE (routes == nil): a declared group that isn't ours → 403; an absent
+//     group is accepted (the agent is physically single-tenant and the tag_map
+//     drops foreign metrics). This is the frozen original behavior.
+func (s *Server) resolveSink(w http.ResponseWriter, body []byte) (Sink, bool) {
+	if s.routes != nil {
+		g, present := probeGroup(body)
+		if !present {
+			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "missing group (multi-tenant mode requires it)", "", int64(len(body)))
+			return nil, false
+		}
+		sink, known := s.routes[strings.ToUpper(strings.TrimSpace(g))]
+		if !known {
+			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "unknown group", g, int64(len(body)))
+			return nil, false
+		}
+		return sink, true
+	}
+	if s.scopeGroup != "" {
+		if g, present := probeGroup(body); present && !strings.EqualFold(g, s.scopeGroup) {
+			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "out-of-scope group", g, int64(len(body)))
+			return nil, false
+		}
+	}
+	return s.sink, true
 }
 
 // reject centralises the metric bump + structured log (never the key or tag
