@@ -64,7 +64,7 @@ VALUES
     (3, 107, 'CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1', true, 107, 'CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1'),
     (3, 106, 'CPACK/SC/SLEEVE/SLEEVE2', true, NULL, 'CPACK-SC-SLEEVE-SLEEVE2'),
     (3, 108, 'CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2', true, 108, 'CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2')
-ON CONFLICT (packml_topic) DO NOTHING;
+ON CONFLICT (packml_topic) WHERE active DO NOTHING;
 
 -- ── Line meters (id_infeedcounter = gross source, id_outfeedcounter = net source) ──
 -- ⚠ These values are WIRE COUNT-INDICES (topicArray[7]), read by Phase-9's
