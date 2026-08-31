@@ -109,6 +109,7 @@ nav:
       - Overview: wiki/README.md
       - Platform Overview: wiki/01-platform-overview.md
       - Onboarding a Client: wiki/02-onboarding.md
+      - Onboarding — Worked Example: wiki/09-onboarding-worked-example.md
       - CS-Admin Forms Reference: wiki/03-csadmin-forms.md
       - Edge & Data Ingestion: wiki/04-edge-and-ingestion.md
       - Cloud Services & OEE Compute: wiki/05-cloud-services-and-oee.md
