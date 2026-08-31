@@ -82,3 +82,9 @@ VALUES
     (4, 40190, 'BISPHARMA/SP/LINHAS/L90/S1_INFEED', true, 40190, 'BISPHARMA-SP-LINHAS-L90-S1_INFEED'),
     (4, 40191, 'BISPHARMA/SP/LINHAS/L90/S2_OUTPUT', true, 40191, 'BISPHARMA-SP-LINHAS-L90-S2_OUTPUT')
 ON CONFLICT (packml_topic) WHERE active DO NOTHING;
+UPDATE packml_register pr
+   SET id_site = e.id_site, id_area = e.id_area
+  FROM equipments e
+ WHERE pr.id_equipment = e.id_equipment
+   AND pr.id_enterprise = 4
+   AND (pr.id_site IS DISTINCT FROM e.id_site OR pr.id_area IS DISTINCT FROM e.id_area);
