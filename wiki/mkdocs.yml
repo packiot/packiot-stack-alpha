@@ -116,6 +116,7 @@ nav:
       - Database & Data Model: wiki/06-database.md
       - Frontends, Infra & Auth: wiki/07-frontends-infra-auth.md
       - Concepts & Glossary: wiki/08-concepts.md
+      - Onboarding — Worked Example: wiki/09-onboarding-worked-example.md
   - Guide:
       - What Packiot Is: guide/01-what-packiot-is.md
       - Architecture at a Glance: guide/02-architecture-at-a-glance.md

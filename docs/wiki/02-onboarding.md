@@ -60,10 +60,19 @@ connection lives (not the vestigial `id_plc` field).
 
 ### 3. Go live (dry run)
 **Build & deploy the edge** in one action: generate the bundle (`onboard-gen` → profile
-+ agent.yaml + register.sql + tee-node.json), auto-apply the register, then deploy to
-the client's box. Nothing is switched onto the new routing yet — this just gets data
++ agent.yaml + register.sql + tee-node.json), auto-apply the register, then get the box
+reader forwarding. Nothing is switched onto the new routing yet — this just gets data
 flowing so the next step can confirm counts. Artifact code panels + the runner/download
 fallback live in Advanced.
+
+The generated `<tenant>-agent.yaml` is the **tenant config file** for the **shared
+multi-tenant agent** — a new client is that file dropped into the shared agent's tenants
+dir, **not** a new container / front-door / DNS record / SG rule (ADR-0047). The box side is
+just a reader POSTing the rawtag envelope to the one shared front-door
+`ingest.<env>.packiot.app:8449/v1/tags` with an `X-Ingest-Key`. The generated
+`register.sql` also **backfills `id_site`/`id_area`** onto each `packml_register` row from
+`equipments` — those columns are required or the stream-engine reads the topic as
+"not registered" and the tenant's counts are silently dropped.
 
 ### 4. Confirm counts are real (Capture)
 For each machine, confirm its **channel number** (count-index) against a **live
@@ -101,5 +110,6 @@ New-stack tenants use a `+2,000,000` id offset on staging (e.g. site id `2000007
 
 ## Related
 
-- The descriptor / config-as-data model in depth → **[Edge & Ingestion](04-edge-and-ingestion.md)**
+- A real end-to-end walkthrough (Bispharma) → **[Onboarding — Worked Example](09-onboarding-worked-example.md)**
+- The descriptor / config-as-data + shared multi-tenant ingest model in depth → **[Edge & Ingestion](04-edge-and-ingestion.md)**
 - Why count-index ≠ id_equipment (the #601 bug) → **[Concepts](08-concepts.md)**
