@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# ⚠ DEPRECATED (2026-08-31) — superseded by scripts/provision-cpack-replica-sandbox.sh.
+# That script deploys a FULL-TOPOLOGY, REAL-IMAGE replica of the CPACK edge box
+# (sparkplug-agent + Node-RED + mosquitto) with the data path severed at four
+# layers + a namespace cut, so Box Ops behaves byte-for-byte like a real client
+# box (health honestly reports "up but no data"). This mock (alpine/redis/vanilla
+# -nodered) is kept only as the fallback for when the real agent image genuinely
+# can't be built/loaded onto a box. Prefer the replica. See
+# docs/clients/sandbox-edge/README-severance.md.
+#
 # provision-sandbox-edge-box.sh — stand up a safe, self-contained edge stack on a
 # hybrid SSM managed instance so CS engineers can exercise Box Ops (health · logs
 # · restart · deploy · connect/port-forward) end-to-end against a REAL box without
