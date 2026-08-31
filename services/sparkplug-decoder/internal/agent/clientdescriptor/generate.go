@@ -283,8 +283,13 @@ func (d *Descriptor) generateDerivedRules(p *tenantprofile.Profile) ([]tenantpro
 
 // GenerateRegisterSQL builds the packml_register INSERT (artifact 2): one row
 // per equipment binding packml_topic → id_equipment (+ id_unit, id_enterprise).
-// The statement is idempotent (ON CONFLICT on the packml_topic unique key) so a
-// re-run after a descriptor edit is safe, and rows are emitted in descriptor
+// The statement is idempotent. The conflict target carries the `WHERE active`
+// predicate to match the PARTIAL unique index the schema deliberately uses —
+// `packml_topic_active_un ON packml_register (packml_topic) WHERE active`
+// (edge-node-red/db/33-partial-unique-active.sql: only ACTIVE topics are unique,
+// so a soft-deleted topic can be re-created). A bare `ON CONFLICT (packml_topic)`
+// does NOT match a partial index and errors with "no unique or exclusion
+// constraint matching the ON CONFLICT specification". Rows are emitted in descriptor
 // order for a stable, reviewable diff. active=true because CS Admin authoring a
 // descriptor IS the act of activating the topic (CLAUDE.md: "CS Admin creates
 // entries (active=true); oeecloud does NOT auto-register").
@@ -309,7 +314,7 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s, %s)%s\n",
 			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sqlQuote(e.ResolvedDeviceKey()), sep)
 	}
-	b.WriteString("ON CONFLICT (packml_topic) DO NOTHING;\n")
+	b.WriteString("ON CONFLICT (packml_topic) WHERE active DO NOTHING;\n")
 	return b.String()
 }
 

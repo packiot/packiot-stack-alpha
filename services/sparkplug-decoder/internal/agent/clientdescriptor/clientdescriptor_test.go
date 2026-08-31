@@ -167,8 +167,8 @@ func TestGenerateRegisterSQL(t *testing.T) {
 	if !strings.Contains(sql, "INSERT INTO packml_register") {
 		t.Error("missing INSERT")
 	}
-	if !strings.Contains(sql, "ON CONFLICT (packml_topic) DO NOTHING;") {
-		t.Error("register SQL must be idempotent on the packml_topic unique key")
+	if !strings.Contains(sql, "ON CONFLICT (packml_topic) WHERE active DO NOTHING;") {
+		t.Error("register SQL must target the partial active-unique index (packml_topic_active_un, WHERE active)")
 	}
 	// The INSERT must carry the device_key column (ADR-0046 §2 declared identity).
 	if !strings.Contains(sql, "device_key)") {
