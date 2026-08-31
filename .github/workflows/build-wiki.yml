@@ -1,0 +1,108 @@
+name: build-wiki
+
+# Builds the merged Packiot docs site (Stack Wiki + Guide) into static HTML and
+# publishes it as a CI artifact. On push to the doc branches it ALSO syncs the
+# built site to S3 — the enrolled box pulls from there on a timer (pull model),
+# which is how the site reaches /var/www/wiki despite aws_instance.app having
+# ignore_changes=[user_data] (the box never rebuilds from user_data). See
+# docs/wiki-deploy.md for the one-time operator wiring.
+
+on:
+  push:
+    branches: [staging, production]
+    paths:
+      - 'docs/wiki/**'
+      - 'docs/guide/**'
+      - 'docs/adr/**'
+      - 'wiki/**'
+      - 'scripts/build-wiki.sh'
+      - '.github/workflows/build-wiki.yml'
+  pull_request:
+    paths:
+      - 'docs/wiki/**'
+      - 'docs/guide/**'
+      - 'docs/adr/**'
+      - 'wiki/**'
+      - 'scripts/build-wiki.sh'
+      - '.github/workflows/build-wiki.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build merged docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the build script can reach the Stack Wiki content on
+          # origin/staging when this branch doesn't carry docs/wiki itself.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install generator (pinned)
+        run: pip install -r wiki/requirements.txt
+
+      - name: Build site
+        # NO_VENV=1: mkdocs is already on PATH from the pip install above, so the
+        # script must not spin up its own venv. WIKI_REF points at the Stack Wiki
+        # source when it isn't in this branch's working tree.
+        env:
+          NO_VENV: '1'
+          WIKI_REF: origin/staging
+        run: scripts/build-wiki.sh
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiki-site
+          path: dist/wiki/
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    name: sync site to S3 (box pulls from there)
+    needs: build
+    # Only on push to the doc branches, never on PRs. No-ops cleanly until the
+    # operator sets the WIKI_S3_BUCKET var + AWS_ROLE_ARN secret (see docs/wiki-deploy.md).
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # for OIDC assume-role (no long-lived keys in CI)
+    steps:
+      - name: Guard — is deploy configured?
+        id: guard
+        run: |
+          if [ -n "${{ vars.WIKI_S3_BUCKET }}" ] && [ -n "${{ secrets.AWS_ROLE_ARN }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::WIKI_S3_BUCKET var and/or AWS_ROLE_ARN secret not set — skipping S3 sync. See docs/wiki-deploy.md."
+          fi
+
+      - name: Download site artifact
+        if: steps.guard.outputs.configured == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: wiki-site
+          path: dist/wiki
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.guard.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Sync to S3
+        if: steps.guard.outputs.configured == 'true'
+        run: |
+          aws s3 sync dist/wiki/ "s3://${{ vars.WIKI_S3_BUCKET }}/wiki/" \
+            --delete --cache-control "public, max-age=300"
+          echo "::notice::Synced to s3://${{ vars.WIKI_S3_BUCKET }}/wiki/ — box timer will pull within its interval."

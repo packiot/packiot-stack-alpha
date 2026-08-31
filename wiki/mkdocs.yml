@@ -1,0 +1,131 @@
+# Packiot stack wiki — static-site generator config.
+#
+# WHY mkdocs-material: it emits fully static, self-contained HTML with a
+# client-side search index built AT BUILD TIME (no server, no runtime backend),
+# bundles its own CSS/JS/icons into site_dir, and — with `theme.font: false` —
+# pulls NO external CDN assets at serve time. That makes it safe to serve behind
+# the oauth2 gate on wiki.packiot.app with a strict origin. One YAML file drives
+# nav + search + theme, which keeps CI trivial.
+#
+# docs_dir points at a build-staging tree that scripts/build-wiki.sh assembles
+# from TWO sources that live in different git trees:
+#   - docs/wiki/*   (the commissioned stack wiki, on origin/staging)
+#   - docs/guide/*  (the polished guide, on the mainline branch)
+# plus docs/adr/* (copied in so the guide's ../adr cross-refs resolve) and the
+# generated onboarding page. Paths below are relative to THIS file (wiki/).
+
+site_name: Packiot Stack Docs
+site_description: >-
+  Engineering + operations reference for the Packiot industrial-IoT / OEE platform —
+  the commissioned Stack Wiki and the human-facing Guide, merged into one searchable site.
+site_url: https://wiki.packiot.app/
+
+docs_dir: build/staging/docs
+site_dir: ../dist/wiki
+
+# Fully relative asset URLs so the site works when served from /var/www/wiki
+# behind any path prefix, and offline from file://.
+use_directory_urls: true
+
+theme:
+  name: material
+  # CRITICAL: disable the Google Fonts fetch — with `font: false` Material uses
+  # the system font stack and bundles everything else locally. No CDN at runtime.
+  font: false
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tabs.link
+
+plugins:
+  # Local lunr-style index built at build time and shipped as static JSON.
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+# The guide references a handful of files outside the two doc sets
+# (../README.md, ../BUSINESS-RULES.md, ../clients/_schema.yaml, ../audits/).
+# We intentionally do NOT vendor the whole docs tree, so warn (don't fail) on
+# those unresolved links. Internal links WITHIN the two sets + ADRs must resolve.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  nav:
+    omitted_files: info
+
+# ADRs are copied into the staging tree so the guide's ../adr cross-refs resolve
+# to real pages, but they are not primary nav content — keep them out of the nav
+# without triggering "page exists but not in nav" warnings.
+not_in_nav: |
+  /adr/**
+
+nav:
+  - Home: index.md
+  - Onboarding:
+      - First-Time Edge Box Setup: onboarding/first-time-box-setup.md
+  - Stack Wiki:
+      - Overview: wiki/README.md
+      - Platform Overview: wiki/01-platform-overview.md
+      - Onboarding a Client: wiki/02-onboarding.md
+      - CS-Admin Forms Reference: wiki/03-csadmin-forms.md
+      - Edge & Data Ingestion: wiki/04-edge-and-ingestion.md
+      - Cloud Services & OEE Compute: wiki/05-cloud-services-and-oee.md
+      - Database & Data Model: wiki/06-database.md
+      - Frontends, Infra & Auth: wiki/07-frontends-infra-auth.md
+      - Concepts & Glossary: wiki/08-concepts.md
+  - Guide:
+      - What Packiot Is: guide/01-what-packiot-is.md
+      - Architecture at a Glance: guide/02-architecture-at-a-glance.md
+      - The Edge: guide/03-the-edge.md
+      - The Engine: guide/04-the-engine.md
+      - The Database: guide/05-the-database.md
+      - APIs and the Operator: guide/06-apis-and-operator.md
+      - Customizations & Real Factories: guide/07-customizations-and-real-factories.md
+      - Observability: guide/08-observability.md
+      - The Endgame: guide/09-the-endgame.md
+      - Decision Log: guide/10-decision-log.md
+      - Service Catalog: guide/11-service-catalog.md
+      - Glossary: guide/glossary.md
+      - Staging URLs: guide/staging-urls.md
