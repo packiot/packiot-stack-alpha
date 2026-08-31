@@ -662,8 +662,18 @@ services:
       OAUTH2_PROXY_OIDC_GROUPS_CLAIM: "cognito:groups"
       OAUTH2_PROXY_SCOPE: openid email profile
       OAUTH2_PROXY_EMAIL_DOMAINS: "*"
-      OAUTH2_PROXY_COOKIE_DOMAINS: .prod.packiot.app
-      OAUTH2_PROXY_WHITELIST_DOMAINS: .prod.packiot.app
+      # Cookie + redirect scope BROADENED from .prod.packiot.app to .packiot.app
+      # (2026-08) so the oauth2 gate can cover dash.packiot.app + wiki.packiot.app,
+      # which live on the packiot.app APEX (siblings of prod.packiot.app), not under
+      # *.prod.packiot.app. A cookie scoped to .prod.packiot.app is NOT sent by the
+      # browser to dash/wiki, and .prod-only whitelist rejects the post-login rd=
+      # → the nginx auth_request gate on those hosts would infinite-loop. Setting a
+      # single broadest domain .packiot.app makes the callback (on auth.prod.…) set
+      # Domain=.packiot.app, readable by every packiot.app subdomain (existing *.prod
+      # admin SSO still works — they are subdomains of packiot.app too). MUST land
+      # together with the dash/wiki nginx vhost gates (nginx_setup.sh).
+      OAUTH2_PROXY_COOKIE_DOMAINS: .packiot.app
+      OAUTH2_PROXY_WHITELIST_DOMAINS: .packiot.app
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_SAMESITE: lax
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
