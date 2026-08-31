@@ -763,6 +763,40 @@ NGINX
 nginx -t && nginx -s reload
 echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v2/tags (v1 blackholed)"
 
+# ── shared multi-tenant agent ingest front-door (ingest.staging) ──────────────
+# ONE tenant-agnostic front-door for the shared sparkplug-agent-shared (multi-
+# tenant). Terminates TLS on 8449 and reverse-proxies /v1/tags to the shared
+# agent (compose static IP 172.18.0.44:9104), which routes by the envelope's
+# group_id. Every client's box POSTs here — a new client adds NO new vhost. Auth
+# is the agent's X-Ingest-Key; inbound 8449 is admitted per-box egress /32 in the
+# App EC2 SG (security_groups.tf). cpack keeps its dedicated 8447 door until it
+# migrates onto the shared agent.
+cat > /etc/nginx/conf.d/ingest.conf <<NGINX
+server {
+    listen 8449 ssl;
+    server_name ingest.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "Shared multi-tenant ingest front-door configured at https://ingest.$STAGING_DOMAIN:8449/v1/tags"
+
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.
 dnf install -y cronie

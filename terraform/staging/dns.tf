@@ -99,6 +99,18 @@ resource "aws_route53_record" "cpack_ingest" {
   records = [aws_eip.app.public_ip]
 }
 
+# Shared multi-tenant agent ingest front-door — ingest.staging.packiot.app.
+# One tenant-agnostic port-8449 TLS reverse-proxy for sparkplug-agent-shared
+# /v1/tags; the agent routes by the envelope group_id. Every client's box POSTs
+# here (no per-client DNS). App EC2 SG admits 8449 per-box egress /32.
+resource "aws_route53_record" "shared_ingest" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "ingest.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
 # barcode-service box-scan ingest — scan.staging.packiot.app.
 # Not in var.services because that map's vhosts get the oauth2-proxy SSO gate;
 # barcode-service does its OWN fail-closed Cognito-JWT auth (tenant from the
