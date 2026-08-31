@@ -1,0 +1,92 @@
+# bispharma-staging-agent.yaml — sparkplug-agent descriptor for BISPHARMA (SP site).
+#
+# Mirrors the CPACK Mode-A precedent (docs/clients/cpack-agent.yaml, ADR-0042):
+# ONE cloud-side sparkplug-agent process turns bispharma's raw PLC tags — POSTed
+# by the on-site box's Modbus reader/tee over the HTTPS front-door
+# (bispharma-ingest.staging.packiot.app:8448 → /v1/tags) — into SparkPlug B,
+# publishing to the INTERNAL staging mosquitto that the decoder already
+# subscribes to → Calc → analytics plane (equipment_values, ent 5).
+#
+# ── Tenant (live staging, confirmed) ─────────────────────────────────────────
+#   enterprise      : 5  (Bispharma-Staging)
+#   group_id        : BISPHARMASTAGING
+#   packml_topic    : BISPHARMASTAGING/SP/LINHAS   (full name = packml_topic + suffix)
+#   count-index mode: equipment_id  → member count metrics carry /<id_equipment>/Unit
+#
+# ── Provenance of the tag→machine→role map (L01) ─────────────────────────────
+# Harvested from the first-version legacy Node-RED flow (bispharma.json, "PLC L01"
+# reader on 192.168.5.3, s7 endpoint rack 0/slot 2). L01's PLC exposes DB1 as a
+# packed array of six 32-bit DINTs; the box reads them over Modbus TCP :502 (a
+# clean DB1 mirror: DB byte offset B → holding register B/2). The legacy
+# `counters L01` function decodes them:
+#
+#   DINT0  (HR[0:1])  = infeed total        → S1INFEED  gross  (ProdConsumedCount)
+#   DINT4  (HR[2:3])  = (S2 station)        → scrap subtrahend ONLY (no equipment)
+#   DINT8  (HR[4:5])  = station count       → S3        (ProdProcessedCount)
+#   DINT12 (HR[6:7])  = station count       → S4        (ProdProcessedCount)
+#   DINT16 (HR[8:9])  = station count       → S5        (ProdProcessedCount)
+#   DINT20 (HR[10:11])= output total        → S6OUTPUT  net    (ProdProcessedCount)
+#   DINT0 − DINT4     = scrap               → SCRAP     (ProdDefectiveCount)
+#
+# ⚠️  The second live counter HR[4:5] is S3, NOT the output — output is DINT20/
+#     HR[10:11]. Confirmed by the flow (never guess: on a serial line net can't
+#     out-run infeed, and HR[4:5] counts faster than HR[0:1]).
+#
+# counters_only_oee = true for this tenant: the legacy PLC exposes NO machine
+# state/speed (the lone B990 byte is declared-but-unused), so there is NO
+# StateCurrent / MachSpeed / Parameter here — OEE is derived from counts + the
+# shift schedule. Emit counts only.
+#
+# ── L01 equipment ids (staging packml_register, all active) ──────────────────
+#   L01 line   2000109        S1INFEED 2000111   S3 2000112   S4 2000113
+#   S5 2000114 S6OUTPUT 2000115  SCRAP 2000116
+#
+# NOTE: this file is the CLOUD agent's allowlist. The box reader must POST the
+# rawtag envelope {endpoint, scan_ts, tags:[{metric:<suffix>, value, ...}]} whose
+# `metric` equals a suffix below EXACTLY — unlisted suffixes are silently dropped.
+sparkplug:
+  group_id: BISPHARMASTAGING
+  edge_node_id: bispharma-tee
+  packml_topic: BISPHARMASTAGING/SP/LINHAS
+
+  # Mode-A: the agent subscribes raw tags from AND publishes SparkPlug to the
+  # internal staging mosquitto. Raw tags actually arrive over the HTTP front-door
+  # (:9104 /v1/tags), so the raw-tag MQTT subscriber sits idle by design.
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bispharma/#
+  uplink_broker: tcp://mosquitto:1883
+
+  # Mode-B mTLS material (secret refs, never values). Empty on the staging
+  # loopback — the WAN hop is authenticated by the nginx front-door + X-Ingest-Key.
+  uplink_tls_cert_ref: ""
+  uplink_tls_key_ref: ""
+  uplink_ca_ref: ""
+
+# ── raw_tag_map ──────────────────────────────────────────────────────────────
+# metric_suffix : EXACT suffix the box tee sends (full name = packml_topic + suffix).
+#                 Strict allowlist key.
+# type          : SparkPlug datatype. counts = double.
+#
+# Two granularities are emitted, matching the CPACK precedent:
+#   • LINE-level  /L01/Admin/Prod{Consumed,Processed,Defective}Count  (no idx) —
+#     drives the line's OEE (gross = infeed DINT0, net = output DINT20, scrap).
+#   • MEMBER-level /L01/<machine>/Admin/ProdProcessedCount/<id_equipment>/Unit —
+#     per-station visibility.
+raw_tag_map:
+  # ═══ L01 line (id 2000109) ═══════════════════════════════════════════════════
+  - {metric_suffix: /L01/Admin/ProdConsumedCount,  type: double}   # gross  = DINT0
+  - {metric_suffix: /L01/Admin/ProdProcessedCount, type: double}   # net    = DINT20
+  - {metric_suffix: /L01/Admin/ProdDefectiveCount, type: double}   # scrap  = DINT0-DINT4
+
+  # ── L01 members (count-index = id_equipment) ────────────────────────────────
+  - {metric_suffix: /L01/S1INFEED/Admin/ProdProcessedCount/2000111/Unit, type: double}  # DINT0
+  - {metric_suffix: /L01/S3/Admin/ProdProcessedCount/2000112/Unit,       type: double}  # DINT8
+  - {metric_suffix: /L01/S4/Admin/ProdProcessedCount/2000113/Unit,       type: double}  # DINT12
+  - {metric_suffix: /L01/S5/Admin/ProdProcessedCount/2000114/Unit,       type: double}  # DINT16
+  - {metric_suffix: /L01/S6OUTPUT/Admin/ProdProcessedCount/2000115/Unit, type: double}  # DINT20
+  - {metric_suffix: /L01/SCRAP/Admin/ProdProcessedCount/2000116/Unit,    type: double}  # DINT0-DINT4
+
+  # ═══ L03..L20, L90 — added as each line is validated (all 7-var lines share
+  #     the identical DB1 layout; L18 adds DINT24/28, L90 is an 8-DINT array).
+  #     Kept out until reachability + count-index are confirmed per line so no
+  #     unlisted-but-expected suffix silently drops. See wiki onboarding runbook.

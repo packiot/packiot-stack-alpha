@@ -763,6 +763,39 @@ NGINX
 nginx -t && nginx -s reload
 echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v2/tags (v1 blackholed)"
 
+# ── bispharma agent ingest front-door (Mode-A, BISPHARMA SP) ──────────────────
+# Mirror of cpack-ingest above, tenant-scoped to bispharma. Terminates TLS on a
+# dedicated port (8448) and reverse-proxies ONLY the exact path /v1/tags to
+# sparkplug-agent-bispharma (compose static IP 172.18.0.43:9104). Auth is the
+# agent's own X-Ingest-Key header. Inbound 8448 is admitted for the bispharma
+# box egress /32 ONLY (terraform/staging/security_groups.tf). No legacy path to
+# blackhole here (greenfield tenant), so /v1/tags is exposed directly.
+cat > /etc/nginx/conf.d/bispharma-ingest.conf <<NGINX
+server {
+    listen 8448 ssl;
+    server_name bispharma-ingest.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.43:9104/v1/tags;   # sparkplug-agent-bispharma
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "bispharma agent ingest front-door configured at https://bispharma-ingest.$STAGING_DOMAIN:8448/v1/tags"
+
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.
 dnf install -y cronie

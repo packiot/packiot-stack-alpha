@@ -288,6 +288,67 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── sparkplug-agent-bispharma (Mode-A BISPHARMA SP validation) ────────────────
+  # bispharma's cloud-side SparkPlug agent — the exact CPACK Mode-A pattern above,
+  # tenant-scoped to BISPHARMA (ent 5). The on-site box's Modbus reader POSTs raw
+  # tags to the nginx front-door (bispharma-ingest.staging:8448 → /v1/tags), which
+  # forwards to this agent's :9104; it runs a full SparkPlug B session publishing
+  # spBv1.0/BISPHARMASTAGING/... to the internal mosquitto → decoder → ent 5.
+  #
+  # OPT-IN — profile `bispharma-tee`, so it does NOT start on a default bring-up:
+  #     docker compose -f compose.staging.yml --profile bispharma-tee up -d sparkplug-agent-bispharma
+  # DISTINCT edge_node_id (bispharma-tee) + DISTINCT group (BISPHARMASTAGING) from
+  # cpack, so the two agents never cross-source. The 8448 SG open is for the
+  # bispharma box egress /32 only (see terraform/staging/security_groups.tf).
+  sparkplug-agent-bispharma:
+    profiles: ["bispharma-tee"]
+    build:
+      context: ./services/edge-transformer
+    container_name: sparkplug-agent-bispharma
+    entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      AGENT_CONFIG: /etc/packiot/agent.yaml
+      HEALTH_PORT: "9103"
+      # Loopback with no live raw-tag MQTT publisher (tags arrive via HTTP) is
+      # idle by design — track broker connectivity only, not raw-tag staleness.
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      OUTBOX_PATH: /var/lib/edge-transformer/agent-outbox.db
+      # ── HTTP raw-tag front-door (Mode-A direct-to-ingest) ─────────────────
+      AGENT_HTTP_INGEST_ENABLED: "true"
+      AGENT_INGEST_PORT: "9104"
+      # Ingest API key — REQUIRED, no default. Value in /opt/packiot/.env; the box
+      # Modbus reader sends it as the X-Ingest-Key header. Shared with cpack's key
+      # is fine (per-tenant scope is enforced by the agent group_id), but a
+      # distinct BISPHARMA_INGEST_KEY is cleaner. # FILL AT DEPLOY
+      AGENT_INGEST_API_KEY: ${BISPHARMA_INGEST_KEY:-${AGENT_INGEST_API_KEY:-}}
+      # Birth-completeness ON (matches cpack) — NBIRTH covers the full raw_tag_map
+      # so a line idle at connect is aliased the instant it first reports.
+      AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-true}"
+    volumes:
+      - ./docs/clients/bispharma-staging-agent.yaml:/etc/packiot/agent.yaml:ro
+      - edge_transformer_agent_outbox:/var/lib/edge-transformer
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.43   # next free in the /24 ledger (.38–.42 taken)
+        aliases: ["edge-agent-bispharma"]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── S7 end-to-end (profile: s7) — S1/#32 PR3 ──────────────────────────────────
   # Opt-in scaffolding to run the REAL S7 read path live in staging, where there
   # is no physical PLC. Neither service starts in the default bring-up; enable

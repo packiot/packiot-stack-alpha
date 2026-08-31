@@ -99,6 +99,18 @@ resource "aws_route53_record" "cpack_ingest" {
   records = [aws_eip.app.public_ip]
 }
 
+# bispharma agent ingest front-door — bispharma-ingest.staging.packiot.app.
+# Dedicated port-8448 TLS reverse-proxy for sparkplug-agent-bispharma /v1/tags
+# (mirror of cpack_ingest above). Nginx on the App EC2 terminates TLS; the App
+# EC2 SG admits 8448 from the bispharma box egress /32 only (security_groups.tf).
+resource "aws_route53_record" "bispharma_ingest" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "bispharma-ingest.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
 # barcode-service box-scan ingest — scan.staging.packiot.app.
 # Not in var.services because that map's vhosts get the oauth2-proxy SSO gate;
 # barcode-service does its OWN fail-closed Cognito-JWT auth (tenant from the

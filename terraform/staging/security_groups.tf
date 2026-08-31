@@ -85,6 +85,18 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["179.162.112.58/32"]
   }
 
+  # bispharma box Modbus reader → sparkplug-agent-bispharma /v1/tags front-door.
+  # Same NOT-world-open posture as cpack above: admits only the bispharma SP box
+  # egress /32 (200.153.25.2). Nginx terminates TLS on 8448 (nginx_setup.sh
+  # bispharma-ingest.conf) → sparkplug-agent-bispharma (172.18.0.43:9104).
+  ingress {
+    description = "BISPHARMA box Modbus reader to sparkplug-agent v1 tags (bispharma egress /32 only)"
+    from_port   = 8448
+    to_port     = 8448
+    protocol    = "tcp"
+    cidr_blocks = ["200.153.25.2/32"]
+  }
+
   egress {
     description = "All outbound - Docker Hub pulls, GitHub, AWS APIs, DB"
     from_port   = 0
