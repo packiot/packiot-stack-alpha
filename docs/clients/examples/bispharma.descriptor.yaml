@@ -1,0 +1,189 @@
+# BISPHARMA — PLC TYPE PROFILE example (ADR-0050).
+#
+# What this proves
+# ----------------
+# bispharma's site is 16 production lines, EVERY line driven by an IDENTICAL
+# Siemens S7 program: the same DB1 layout, the same rack/slot. Before ADR-0050 the
+# descriptor's plc.s7_tag_map had to be ~80 hand-copied entries (one 6-line layout
+# × 16), and the onboarding UI had no create-path for them — so a UI-authored
+# tenant produced an IDLE reader (empty tag map ⇒ nothing to poll).
+#
+# Here the layout is declared ONCE as plc.types.bispharma_s7 and every endpoint
+# just references it (`type: bispharma_s7`). The generator EXPANDS type × each
+# line's members into the s7_tag_map:
+#
+#   - the PHYSICAL half (db / offset / word) comes from the type: a member's
+#     SENSOR key (S1, S3, …, the leading S<n> of its topic's last segment) selects
+#     the register offset from sensor_offsets;
+#   - the CANONICAL half (the metric name) comes from the SAME member + count_index
+#     the agent raw_tag_map is synthesized from — /Admin/ProdProcessedCount/<idx>/Unit
+#     with idx = id_equipment (equipment_id mode).
+#
+# Because both the reader s7_tag_map AND the agent raw_tag_map derive that leaf from
+# the same members, the ADR-0045 §C consistency invariant holds BY CONSTRUCTION —
+# there is no hand-authored physical/canonical pair left to drift. Run through the
+# onboard generator this descriptor validates + emits a valid client.yaml.
+#
+# NOTE: bispharma's scrap is a cross-register derivation (DW0 − DW4) — that belongs
+# in the type's `derive:` block (ADR-0050 §4, not yet emitted), so SCRAP is NOT a
+# member here and no scrap tag is synthesized. Each member owns ONE count sensor →
+# its NET production leaf.
+#
+# ids / prefix are illustrative for the staging onboarding; nothing here is secret.
+
+tenant: BISPHARMA
+enterprise_id: 5
+canonical:
+  prefix: BISPHARMA/SP
+mapping:
+  # equipment_id: a member's count index IS its register id_equipment (no per-member
+  # capture needed — bispharma's channels are the surrogate ids).
+  count_index_default_mode: equipment_id
+metric_templates:
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+  line:
+    - {leaf: "/Status/StateCurrent", type: long}
+agent:
+  edge_node_id: bispharma-edge
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: bispharma/raw
+  uplink_broker: ssl://ingest.example.invalid:8883
+  mtls:
+    cert_ref: secret://packiot/staging/bispharma/uplink-cert
+    key_ref: secret://packiot/staging/bispharma/uplink-key
+    ca_ref: secret://packiot/staging/bispharma/uplink-ca
+tee:
+  ingest_url: https://localhost:8444/v1/tags
+  tls_insecure: true
+plc:
+  # ── ONE reusable PLC type — the whole point of ADR-0050 ──
+  types:
+    bispharma_s7:
+      protocol: s7
+      rack: 0
+      slot: 2
+      port: 102
+      db: 1
+      word: dint
+      # sensor key → DB1 byte offset. A member's key (S1, S3, …) picks its offset.
+      sensor_offsets: {S1: 0, S2: 4, S3: 8, S4: 12, S5: 16, S6: 20}
+      # RESERVED (ADR-0050 §4): scrap = infeed − a mid-line sensor. Declared once
+      # here; the generator does not yet emit a tag from it.
+      derive: {scrap: "S1 - S2"}
+  # ── 16 endpoints, each ONE line, each just references the type ──
+  endpoints:
+    - {name: L01, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.1}
+    - {name: L02, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.2}
+    - {name: L03, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.3}
+    - {name: L04, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.4}
+    - {name: L05, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.5}
+    - {name: L06, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.6}
+    - {name: L07, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.7}
+    - {name: L08, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.8}
+    - {name: L09, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.9}
+    - {name: L10, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.10}
+    - {name: L11, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.11}
+    - {name: L12, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.12}
+    - {name: L13, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.13}
+    - {name: L14, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.14}
+    - {name: L15, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.15}
+    - {name: L16, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.16}
+equipment:
+  - {topic: BISPHARMA/SP/LINHAS/L01, id_equipment: 100, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S1INFEED, id_equipment: 101, tp_equipment: 1, id_unit: 101}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S3, id_equipment: 103, tp_equipment: 1, id_unit: 103}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S4, id_equipment: 104, tp_equipment: 1, id_unit: 104}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S5, id_equipment: 105, tp_equipment: 1, id_unit: 105}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S6OUTPUT, id_equipment: 106, tp_equipment: 1, id_unit: 106}
+  - {topic: BISPHARMA/SP/LINHAS/L02, id_equipment: 200, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S1INFEED, id_equipment: 201, tp_equipment: 1, id_unit: 201}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S3, id_equipment: 203, tp_equipment: 1, id_unit: 203}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S4, id_equipment: 204, tp_equipment: 1, id_unit: 204}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S5, id_equipment: 205, tp_equipment: 1, id_unit: 205}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S6OUTPUT, id_equipment: 206, tp_equipment: 1, id_unit: 206}
+  - {topic: BISPHARMA/SP/LINHAS/L03, id_equipment: 300, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S1INFEED, id_equipment: 301, tp_equipment: 1, id_unit: 301}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S3, id_equipment: 303, tp_equipment: 1, id_unit: 303}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S4, id_equipment: 304, tp_equipment: 1, id_unit: 304}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S5, id_equipment: 305, tp_equipment: 1, id_unit: 305}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S6OUTPUT, id_equipment: 306, tp_equipment: 1, id_unit: 306}
+  - {topic: BISPHARMA/SP/LINHAS/L04, id_equipment: 400, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S1INFEED, id_equipment: 401, tp_equipment: 1, id_unit: 401}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S3, id_equipment: 403, tp_equipment: 1, id_unit: 403}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S4, id_equipment: 404, tp_equipment: 1, id_unit: 404}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S5, id_equipment: 405, tp_equipment: 1, id_unit: 405}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S6OUTPUT, id_equipment: 406, tp_equipment: 1, id_unit: 406}
+  - {topic: BISPHARMA/SP/LINHAS/L05, id_equipment: 500, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S1INFEED, id_equipment: 501, tp_equipment: 1, id_unit: 501}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S3, id_equipment: 503, tp_equipment: 1, id_unit: 503}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S4, id_equipment: 504, tp_equipment: 1, id_unit: 504}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S5, id_equipment: 505, tp_equipment: 1, id_unit: 505}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S6OUTPUT, id_equipment: 506, tp_equipment: 1, id_unit: 506}
+  - {topic: BISPHARMA/SP/LINHAS/L06, id_equipment: 600, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S1INFEED, id_equipment: 601, tp_equipment: 1, id_unit: 601}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S3, id_equipment: 603, tp_equipment: 1, id_unit: 603}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S4, id_equipment: 604, tp_equipment: 1, id_unit: 604}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S5, id_equipment: 605, tp_equipment: 1, id_unit: 605}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S6OUTPUT, id_equipment: 606, tp_equipment: 1, id_unit: 606}
+  - {topic: BISPHARMA/SP/LINHAS/L07, id_equipment: 700, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S1INFEED, id_equipment: 701, tp_equipment: 1, id_unit: 701}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S3, id_equipment: 703, tp_equipment: 1, id_unit: 703}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S4, id_equipment: 704, tp_equipment: 1, id_unit: 704}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S5, id_equipment: 705, tp_equipment: 1, id_unit: 705}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S6OUTPUT, id_equipment: 706, tp_equipment: 1, id_unit: 706}
+  - {topic: BISPHARMA/SP/LINHAS/L08, id_equipment: 800, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S1INFEED, id_equipment: 801, tp_equipment: 1, id_unit: 801}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S3, id_equipment: 803, tp_equipment: 1, id_unit: 803}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S4, id_equipment: 804, tp_equipment: 1, id_unit: 804}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S5, id_equipment: 805, tp_equipment: 1, id_unit: 805}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S6OUTPUT, id_equipment: 806, tp_equipment: 1, id_unit: 806}
+  - {topic: BISPHARMA/SP/LINHAS/L09, id_equipment: 900, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S1INFEED, id_equipment: 901, tp_equipment: 1, id_unit: 901}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S3, id_equipment: 903, tp_equipment: 1, id_unit: 903}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S4, id_equipment: 904, tp_equipment: 1, id_unit: 904}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S5, id_equipment: 905, tp_equipment: 1, id_unit: 905}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S6OUTPUT, id_equipment: 906, tp_equipment: 1, id_unit: 906}
+  - {topic: BISPHARMA/SP/LINHAS/L10, id_equipment: 1000, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S1INFEED, id_equipment: 1001, tp_equipment: 1, id_unit: 1001}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S3, id_equipment: 1003, tp_equipment: 1, id_unit: 1003}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S4, id_equipment: 1004, tp_equipment: 1, id_unit: 1004}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S5, id_equipment: 1005, tp_equipment: 1, id_unit: 1005}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S6OUTPUT, id_equipment: 1006, tp_equipment: 1, id_unit: 1006}
+  - {topic: BISPHARMA/SP/LINHAS/L11, id_equipment: 1100, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S1INFEED, id_equipment: 1101, tp_equipment: 1, id_unit: 1101}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S3, id_equipment: 1103, tp_equipment: 1, id_unit: 1103}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S4, id_equipment: 1104, tp_equipment: 1, id_unit: 1104}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S5, id_equipment: 1105, tp_equipment: 1, id_unit: 1105}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S6OUTPUT, id_equipment: 1106, tp_equipment: 1, id_unit: 1106}
+  - {topic: BISPHARMA/SP/LINHAS/L12, id_equipment: 1200, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S1INFEED, id_equipment: 1201, tp_equipment: 1, id_unit: 1201}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S3, id_equipment: 1203, tp_equipment: 1, id_unit: 1203}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S4, id_equipment: 1204, tp_equipment: 1, id_unit: 1204}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S5, id_equipment: 1205, tp_equipment: 1, id_unit: 1205}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S6OUTPUT, id_equipment: 1206, tp_equipment: 1, id_unit: 1206}
+  - {topic: BISPHARMA/SP/LINHAS/L13, id_equipment: 1300, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S1INFEED, id_equipment: 1301, tp_equipment: 1, id_unit: 1301}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S3, id_equipment: 1303, tp_equipment: 1, id_unit: 1303}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S4, id_equipment: 1304, tp_equipment: 1, id_unit: 1304}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S5, id_equipment: 1305, tp_equipment: 1, id_unit: 1305}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S6OUTPUT, id_equipment: 1306, tp_equipment: 1, id_unit: 1306}
+  - {topic: BISPHARMA/SP/LINHAS/L14, id_equipment: 1400, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S1INFEED, id_equipment: 1401, tp_equipment: 1, id_unit: 1401}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S3, id_equipment: 1403, tp_equipment: 1, id_unit: 1403}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S4, id_equipment: 1404, tp_equipment: 1, id_unit: 1404}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S5, id_equipment: 1405, tp_equipment: 1, id_unit: 1405}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S6OUTPUT, id_equipment: 1406, tp_equipment: 1, id_unit: 1406}
+  - {topic: BISPHARMA/SP/LINHAS/L15, id_equipment: 1500, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S1INFEED, id_equipment: 1501, tp_equipment: 1, id_unit: 1501}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S3, id_equipment: 1503, tp_equipment: 1, id_unit: 1503}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S4, id_equipment: 1504, tp_equipment: 1, id_unit: 1504}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S5, id_equipment: 1505, tp_equipment: 1, id_unit: 1505}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S6OUTPUT, id_equipment: 1506, tp_equipment: 1, id_unit: 1506}
+  - {topic: BISPHARMA/SP/LINHAS/L16, id_equipment: 1600, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S1INFEED, id_equipment: 1601, tp_equipment: 1, id_unit: 1601}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S3, id_equipment: 1603, tp_equipment: 1, id_unit: 1603}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S4, id_equipment: 1604, tp_equipment: 1, id_unit: 1604}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S5, id_equipment: 1605, tp_equipment: 1, id_unit: 1605}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S6OUTPUT, id_equipment: 1606, tp_equipment: 1, id_unit: 1606}

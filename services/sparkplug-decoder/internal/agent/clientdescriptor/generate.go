@@ -683,7 +683,10 @@ func (d *Descriptor) GenerateClientYAML() (string, error) {
 	if d.PLC == nil {
 		return "", fmt.Errorf("descriptor has no plc block — nothing to generate for client.yaml")
 	}
-	cfg := d.toClientConfig()
+	cfg, err := d.toClientConfig()
+	if err != nil {
+		return "", err
+	}
 	if err := cfg.Validate(); err != nil {
 		return "", fmt.Errorf("generated client.yaml invalid: %w", err)
 	}
@@ -705,7 +708,7 @@ func (d *Descriptor) GenerateClientYAML() (string, error) {
 // selects its endpoint by name). Environment is not modeled on the descriptor;
 // it is a deploy-time concern, so a safe "staging" default is emitted that keeps
 // the config loadable — the ops team's placed client.yaml supplies the real one.
-func (d *Descriptor) toClientConfig() *clientconfig.Config {
+func (d *Descriptor) toClientConfig() (*clientconfig.Config, error) {
 	cfg := &clientconfig.Config{
 		SchemaVersion: "1.1",
 		TenantID:      strings.ToLower(d.Tenant),
@@ -717,11 +720,12 @@ func (d *Descriptor) toClientConfig() *clientconfig.Config {
 		CanonicalPrefix: d.Canonical.Prefix,
 	}
 	if d.PLC == nil {
-		return cfg
+		return cfg, nil
 	}
 	eps := make([]clientconfig.PLCEndpoint, 0, len(d.PLC.Endpoints))
 	protos := map[string]bool{}
-	for _, ep := range d.PLC.Endpoints {
+	for _, raw := range d.PLC.Endpoints {
+		ep := d.resolvedEndpoint(raw) // inherit protocol/rack/slot from its plc type
 		protos[ep.Protocol] = true
 		eps = append(eps, clientconfig.PLCEndpoint{
 			Name:            ep.Name,
@@ -742,10 +746,166 @@ func (d *Descriptor) toClientConfig() *clientconfig.Config {
 		}
 	}
 	cfg.PLC = plc
-	cfg.S7TagMap = d.PLC.S7TagMap
+	// S7 tag map is the EXPLICIT entries plus the type-expanded ones (ADR-0050);
+	// modbus/opcua have no type expansion yet, so they are copied verbatim.
+	s7Map, err := d.effectiveS7TagMap()
+	if err != nil {
+		return nil, err
+	}
+	cfg.S7TagMap = s7Map
 	cfg.ModbusTagMap = d.PLC.ModbusTagMap
 	cfg.OPCUATagMap = d.PLC.OPCUATagMap
-	return cfg
+	return cfg, nil
+}
+
+// effectiveS7TagMap returns the S7 tag map the client.yaml, the reader flow, and
+// the §C check all consume: every EXPLICIT s7_tag_map entry, PLUS the type-expanded
+// entries for each endpoint that references an S7 plc type and has NO explicit entry
+// (ADR-0050 precedence: explicit > type > nothing). Explicit entries keep their
+// declared order and win intact — the escape hatch for an irregular PLC. Nil when
+// nothing is produced, so a descriptor without types/tags stays byte-identical.
+func (d *Descriptor) effectiveS7TagMap() ([]clientconfig.S7EndpointTags, error) {
+	if d.PLC == nil {
+		return nil, nil
+	}
+	out := make([]clientconfig.S7EndpointTags, 0, len(d.PLC.S7TagMap))
+	explicit := map[string]bool{} // endpoint name → has an explicit s7 entry (overrides its type)
+	for _, m := range d.PLC.S7TagMap {
+		out = append(out, m)
+		explicit[m.Endpoint] = true
+	}
+	var profile *tenantprofile.Profile // built lazily; only expansion needs it
+	for _, ep := range d.PLC.Endpoints {
+		if ep.Type == "" || explicit[ep.Name] {
+			continue
+		}
+		t, ok := d.plcType(ep.Type)
+		if !ok || t.Protocol != PLCProtocolS7 {
+			// A dangling ref is reported by validatePLC with context; a non-S7 type
+			// does not expand into the S7 map (modbus/opcua expansion is future work).
+			continue
+		}
+		if profile == nil {
+			p, err := d.GenerateProfile()
+			if err != nil {
+				return nil, err
+			}
+			profile = p
+		}
+		entries, err := d.expandS7TypeEndpoint(profile, ep, t)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entries...)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// expandS7TypeEndpoint joins one S7 endpoint's plc type with its line's members to
+// synthesize that line's s7_tag_map entries (ADR-0050 §2). For each member (tp=1)
+// on the endpoint's line it picks the register offset from the type's
+// sensor_offsets by the member's sensor key, and pairs it with the SAME canonical
+// count leaf SynthesizeEquipment builds for that member —
+// /Admin/ProdProcessedCount/<resolved count_index>/Unit. Because both this map and
+// the agent raw_tag_map derive that leaf from the same member + count_index +
+// metric_templates, they satisfy the §C invariant BY CONSTRUCTION (no hand-authored
+// physical/canonical pair to drift). A member whose sensor key is absent from the
+// type (e.g. a SCRAP member with no raw register) is skipped — a gap, not an error;
+// cross-register derivations live in the type's `derive` block (ADR-0050 §4, not yet
+// emitted). One S7EndpointTags per member (each member is its own equipment/topic).
+func (d *Descriptor) expandS7TypeEndpoint(profile *tenantprofile.Profile, ep DescriptorPLCEndpoint, t PLCType) ([]clientconfig.S7EndpointTags, error) {
+	members := d.membersOnEndpointLine(ep)
+	if len(members) == 0 {
+		return nil, fmt.Errorf(
+			"plc.endpoints %q: type %q expands to NO members — no tp=1 equipment on line %s "+
+				"(check the endpoint name matches a line's final topic segment, or set the endpoint's `line`)",
+			ep.Name, ep.Type, endpointLineLabel(ep))
+	}
+	// Guard an AMBIGUOUS name match: when the endpoint resolves its line by NAME
+	// (no explicit `line:`) and the matched members span more than one line — two
+	// lines that share a final segment, e.g. .../A/L01 and .../B/L01 — the expansion
+	// target is ambiguous. Fail loudly rather than silently pull a foreign line's
+	// members onto this endpoint. A pinned `line:` is exact, so it is exempt.
+	if ep.Line == "" {
+		lines := map[string]bool{}
+		for _, m := range members {
+			lines[parentLineTopic(m.Topic)] = true
+		}
+		if len(lines) > 1 {
+			names := make([]string, 0, len(lines))
+			for l := range lines {
+				names = append(names, l)
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf(
+				"plc.endpoints %q: name %q matches members on %d different lines (%s) — set the endpoint's `line:` to the intended line topic to disambiguate",
+				ep.Name, ep.Name, len(lines), strings.Join(names, ", "))
+		}
+	}
+	// The NET production leaf, resolved once from the shared role→leaf map so the
+	// generated metric can never diverge from the member template / worker classifier.
+	netLeaf := lineRoleLeaf[LineRoleProcessed] // "ProdProcessedCount"
+	var out []clientconfig.S7EndpointTags
+	for _, m := range members {
+		key := sensorKeyOf(lastSegment(m.Topic))
+		offset, ok := t.SensorOffsets[key]
+		if !ok {
+			continue // no register for this sensor key — a gap (e.g. SCRAP), see doc
+		}
+		seg := d.localSegment(m.Topic)
+		idx, err := profile.ResolveCountIndex(seg, m.IDEquipment)
+		if err != nil {
+			return nil, fmt.Errorf("plc.endpoints %q: member %s: %w", ep.Name, m.Topic, err)
+		}
+		out = append(out, clientconfig.S7EndpointTags{
+			Endpoint:    ep.Name,
+			PackMLTopic: m.Topic,
+			IDEquipment: m.IDEquipment,
+			Tags: []clientconfig.S7Tag{{
+				Metric: fmt.Sprintf("/Admin/%s/%d/Unit", netLeaf, idx),
+				DB:     t.DB,
+				Offset: offset,
+				Type:   t.Word,
+			}},
+		})
+	}
+	return out, nil
+}
+
+// membersOnEndpointLine returns the tp=1 members whose parent line matches the
+// endpoint's line. The line is ep.Line (a full line topic) when set, else the line
+// whose FINAL topic segment equals ep.Name (the ADR-0050 terse `name: L01` form).
+// Descriptor order is preserved so the expanded map has a stable, reviewable diff.
+func (d *Descriptor) membersOnEndpointLine(ep DescriptorPLCEndpoint) []Equipment {
+	var out []Equipment
+	for _, e := range d.Equipment {
+		if e.TPEquipment != 1 {
+			continue
+		}
+		parent := parentLineTopic(e.Topic)
+		if ep.Line != "" {
+			if parent == ep.Line {
+				out = append(out, e)
+			}
+			continue
+		}
+		if lastSegment(parent) == ep.Name {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// endpointLineLabel names the line an endpoint targets, for a precise expansion
+// error: the pinned ep.Line topic when set, else the name it matches on.
+func endpointLineLabel(ep DescriptorPLCEndpoint) string {
+	if ep.Line != "" {
+		return ep.Line
+	}
+	return "*/" + ep.Name
 }
 
 // checkClientAgentConsistency enforces the ADR-0045 §C invariant that keeps the
