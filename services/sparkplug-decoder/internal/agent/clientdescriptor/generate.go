@@ -182,6 +182,20 @@ func (d *Descriptor) GenerateProfile() (*tenantprofile.Profile, error) {
 	if len(overrides) == 0 {
 		overrides = nil
 	}
+	// Metric templates fallback: a descriptor authored purely through the CS-Admin
+	// wizard arrives with an EMPTY metric_templates (the wizard collects equipment +
+	// plc tag maps but not the canonical leaf set). With no templates
+	// SynthesizeEquipment emits ZERO suffixes, so the agent raw_tag_map allowlist is
+	// empty and the client⇄agent §C consistency check rejects EVERY reader tag as
+	// unmapped. Fall back to the shared scaffold default (the SAME standard PackML
+	// leaves greenfield Scaffold emits) so synthesis always produces the standard
+	// leaves. Done at the generation boundary — the stored descriptor is never
+	// mutated — and only when BOTH class sets are empty: a descriptor that authors any
+	// metric_templates is used verbatim, so a real authored set is never overridden.
+	templates := d.MetricTemplates
+	if len(templates.Line) == 0 && len(templates.Member) == 0 {
+		templates = DefaultMetricTemplates()
+	}
 	p := &tenantprofile.Profile{
 		Tenant:                 d.Tenant,
 		EnterpriseID:           d.EnterpriseID,
@@ -194,7 +208,7 @@ func (d *Descriptor) GenerateProfile() (*tenantprofile.Profile, error) {
 			Mode:      d.Mapping.CountIndexDefaultMode,
 			Overrides: overrides,
 		},
-		MetricTemplates: d.MetricTemplates,
+		MetricTemplates: templates,
 	}
 	// Resolve each equipment's Derived rules into segment-qualified, {idx}-filled
 	// profile rules — the form both SynthesizeEquipment (allowlist) and the runtime

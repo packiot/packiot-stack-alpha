@@ -91,6 +91,28 @@ func resolveProtocols(in []string) ([]string, error) {
 // zero value is meaningful, so "present and 0" must be distinguishable from absent.
 func ptr(i int) *int { return &i }
 
+// DefaultMetricTemplates is the standard PackML metric-leaf set: the member set
+// carries the two leaves the multi-source pattern composes (a speed leaf + one
+// {idx}-keyed count leaf); the line set carries a bare state leaf. It is the
+// single source of truth for both the greenfield Scaffold CLI (which emits it as
+// the starter descriptor's metric_templates) AND GenerateProfile's empty-templates
+// fallback — so a descriptor authored purely through the CS-Admin wizard, which
+// arrives with an EMPTY metric_templates, still synthesizes the SAME standard
+// leaves the scaffold would, instead of an empty allowlist that makes the client⇄
+// agent §C consistency check reject every reader tag. A fresh value is returned
+// each call (the slices are not shared) so a caller can never mutate the default.
+func DefaultMetricTemplates() tenantprofile.MetricTemplates {
+	return tenantprofile.MetricTemplates{
+		Line: []tenantprofile.TemplateEntry{
+			{Leaf: "/Status/StateCurrent", Type: "long"},
+		},
+		Member: []tenantprofile.TemplateEntry{
+			{Leaf: "/Status/MachSpeed", Type: "double"},
+			{Leaf: "/Admin/ProdProcessedCount/{idx}/Unit", Type: "double"},
+		},
+	}
+}
+
 // Scaffold builds a VALID starter Descriptor from the options. The returned
 // descriptor passes Validate (so it round-trips through Parse), carries N lines +
 // members with placeholder-but-positive ids, and one plc endpoint per requested
@@ -129,15 +151,7 @@ func Scaffold(opts ScaffoldOptions) (*Descriptor, error) {
 		// Minimal canonical leaves. The member set carries the two leaves the
 		// multi-source pattern composes (speed + count); the line set carries a
 		// bare state leaf. The engineer extends these to the client's real model.
-		MetricTemplates: tenantprofile.MetricTemplates{
-			Line: []tenantprofile.TemplateEntry{
-				{Leaf: "/Status/StateCurrent", Type: "long"},
-			},
-			Member: []tenantprofile.TemplateEntry{
-				{Leaf: "/Status/MachSpeed", Type: "double"},
-				{Leaf: "/Admin/ProdProcessedCount/{idx}/Unit", Type: "double"},
-			},
-		},
+		MetricTemplates: DefaultMetricTemplates(),
 		Agent: AgentWiring{
 			EdgeNodeID:     lower + "-edge",
 			InternalBroker: "tcp://mosquitto:1883",

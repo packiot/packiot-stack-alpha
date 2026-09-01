@@ -218,9 +218,11 @@ func TestGenerate_JSONBody(t *testing.T) {
 	if resp.Tenant != "TESTCO" {
 		t.Errorf("tenant = %q, want TESTCO", resp.Tenant)
 	}
-	// No metric_templates → this member synthesizes nothing → reported unmapped.
-	if len(resp.Validation.Unmapped) != 1 || resp.Validation.Unmapped[0] != "TESTCO/SP/LINHAS/L1/M1" {
-		t.Errorf("unmapped = %+v, want the one templateless member", resp.Validation.Unmapped)
+	// No metric_templates → the generator falls back to the scaffold-default
+	// metric_templates (clientdescriptor.DefaultMetricTemplates), so this member
+	// synthesizes the standard member leaves and is NOT reported unmapped.
+	if len(resp.Validation.Unmapped) != 0 {
+		t.Errorf("unmapped = %+v, want none (templateless member now uses the default templates)", resp.Validation.Unmapped)
 	}
 }
 
