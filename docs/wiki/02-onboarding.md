@@ -76,6 +76,14 @@ observation** from the tee. The PLC's count channel is arbitrary and not derivab
 must be captured, machine by machine. A `confirmed` capture gates cutover; `inferred`
 guesses do not.
 
+The channel-check table classifies each counter — **confirmed** (matches a live
+reading), **mismatch** (observed at a different channel), **unobserved** (a *sensed*
+channel that's silent — a real gap, check the sensor), **derived** (a counter with **no
+reader tag** — never measured, its value is synthesized, e.g. `scrap = infeed − outfeed`
+— expected, not a gap), and **extra** (a channel seen on the wire but not in the config).
+`derived` vs `unobserved` is keyed on **tag presence**, not the machine name — so a line
+with no reject meter shows scrap as *derived*, not a false alarm.
+
 ### 5. Flip it on (Cutover)
 The server-enforced cutover gate flips the tenant onto the register-driven tag map. Two
 gates are shown with distinct visual language: an **amber advisory** (ADR-0047 readiness,
@@ -91,13 +99,12 @@ The flip is explicit, confirmed, and reversible — never auto-advanced.
    register-driven one. The flip state is **data owned by edge-api**; the agent reads
    it, fail-safe to static on any error.
 
-## After cutover: making OEE actually compute (the three tenant gates)
+## After cutover: making OEE actually compute (the tenant gates)
 
 **A fully-onboarded, cutover tenant can still show ZERO OEE.** Cutover only flips the
-tag map — it does **not** wire the tenant into the analytics OEE pipeline. Three
-separate per-tenant gates must **all** include the new `id_enterprise`, or the numbers
-stay silently empty (raw counts flow, but no `equipment_runtime_shift` rows exist).
-Check them in this order:
+tag map — it does **not** wire the tenant into the analytics OEE pipeline. Several
+separate per-tenant gates must **all** be satisfied, or the numbers stay silently empty
+(raw counts flow, but no `equipment_runtime_shift` rows exist). Check them in this order:
 
 1. **Shifts** — onboarding step 5 of the hierarchy is *shifts*, and it is load-bearing:
    with no `shifts` / `shift_hours` there is no shift window, so **nothing** aggregates.
@@ -124,6 +131,27 @@ Check them in this order:
      CPACK): use `COUNTERS_ONLY_AVAILABILITY_*` instead. The two are **mutually
      exclusive per enterprise**.
 
+4. **Rated speed** — OEE **Performance = actual ÷ rated speed**, so any producing
+   equipment with no `production_speed`/`ideal_speed` breaks Performance and the
+   readiness gate **blocks cutover** (`missing_ideal_speed`). Set the real rated speed
+   per line in CS-Admin, or rely on the onboarding default: `apply-line-meters` fills
+   any producing equipment that has none with `ONBOARD_DEFAULT_PRODUCTION_SPEED`
+   (default 60) — a real per-line speed always wins. Only the **lead machine's** speed
+   drives a line's Performance (`line_lead` reads `lead_machine.production_speed`).
+
+### Cutover readiness gates (why the button won't flip)
+
+The **readiness** check (`/api/onboarding/readiness`) surfaces the completeness holes
+that make OEE *wrong-but-not-erroring*; CS-Admin blocks cutover on any error-severity
+issue:
+
+- **`missing_ideal_speed`** — a producing machine/line with no rated speed (see gate 4).
+- **`duplicate_equipment`** — two ACTIVE equipments sharing `(name, type)` **under the
+  same parent line**. The check is parent-scoped on purpose: the same station name
+  repeated across lines (`S3` on L01 *and* L03) is **not** a duplicate — a machine name
+  is relative to its line, not globally unique.
+- **shifts / topics** — no shifts, or a producing equipment with no active packml topic.
+
 ### Designating a line's infeed/outfeed meters
 For a line-metered tenant, tell each line which member is its infeed vs outfeed. In
 **CS-Admin → Line configuration**, click **"Auto-assign from sensors"** — it derives
@@ -136,7 +164,7 @@ descriptor-driven, so it survives a re-onboard.
 
 > **Verify OEE is computing:** `SELECT count(*) FROM equipment_runtime_shift r JOIN
 > equipments e ON e.id_equipment=r.id_equipment WHERE e.id_enterprise=<id>;` — zero rows
-> means one of the three gates above is unset (start with `BAKE_ENTERPRISE_IDS`).
+> means one of the gates above is unset (start with `BAKE_ENTERPRISE_IDS`, then shifts).
 
 ## Which plane / how to verify
 
