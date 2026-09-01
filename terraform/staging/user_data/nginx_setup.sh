@@ -748,9 +748,16 @@ server {
     # still POSTing here is hard-failed rather than silently double-writing.
     location = /v1/tags { return 444; }
 
-    # Current ingest path → sparkplug-agent-cpack.
+    # Current ingest path → sparkplug-agent-shared (ADR-0042 cutover 2026-09): the
+    # dedicated sparkplug-agent-cpack (172.18.0.38) was retired for the shared
+    # multi-tenant agent (172.18.0.44). The legacy factory tee posts no in-body
+    # SparkPlug group, so inject X-Ingest-Group: CPACK for the multi-tenant router
+    # (sparkplug-decoder #997); proxy_set_header overrides any client value, so it
+    # is a trusted per-route injection. X-Ingest-Key is forwarded unchanged.
     location = /v2/tags {
-        proxy_pass         http://172.18.0.38:9104/v1/tags;   # sparkplug-agent-cpack
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   X-Ingest-Group    CPACK;
+        proxy_set_header   X-Ingest-Key      \$http_x_ingest_key;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
