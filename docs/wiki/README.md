@@ -19,6 +19,7 @@ claim is a proposal or differs between branches, it's flagged rather than smooth
 | 06 | [Database & Data Model](06-database.md) | The schema: hierarchy, packml_register, the OEE aggregate cascade, shifts (seconds-from-week-start), the dual plane |
 | 07 | [Frontends, Infra & Auth](07-frontends-infra-auth.md) | front4 / operator / csadmin, the deploy pipeline, AWS infra, Cognito + oauth2-proxy + CloudFront |
 | 08 | [Concepts & Glossary](08-concepts.md) | count_index, tp_equipment, OEE = A×P×Q, PackML params, week-encoding, the descriptor — the vocabulary |
+| 10 | [Outage Resilience & Offline Operation](10-outage-resilience-and-offline.md) | What keeps working when a factory loses internet: the reader disk-spool for counts, the operator PWA offline queue for actions, and what stays online-only |
 
 ## The 30-second mental model
 
