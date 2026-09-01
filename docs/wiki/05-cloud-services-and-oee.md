@@ -73,6 +73,19 @@ oee_p = oee / NULLIF(oee_a * oee_q, 0)                         -- PERFORMANCE (r
   it; ADR-0037 flags this as a weakness, now bounded by the Silver clamp + DQ events).
 - **Counters-only availability fallback** (`availability.go`): for state-less Modbus
   machines, availability is reconstructed by idle-timeout sessionization over the 1-min cagg.
+- **Line-lead / split instrumentation** (`line_lead.go`): for a line whose infeed and
+  outfeed are **separate machines** (no single machine carries both meters), the tp=3 line
+  row names `gross_machine` (infeed), `lead_machine` (outfeed/net + availability) and
+  optional `scrap_machine`; the line's `gross`/`net` are read from those designated members
+  (never a sum of all net members) and **scrap = GREATEST(gross − net, 0)**. Flag-gated per
+  enterprise (`COUNTERS_ONLY_LINE_LEAD_ENTERPRISES`); mutually exclusive with the counters-only
+  availability path per tenant. Set the designation via CS-Admin → Line configuration ("Auto-assign
+  from sensors") — see [Onboarding](02-onboarding.md#designating-a-lines-infeedoutfeed-meters).
+
+> **Per-tenant gate:** none of these rollup passes produce anything for a tenant absent from
+> `BAKE_ENTERPRISE_IDS` — that env list drives the runtime-provision that *creates* the
+> `equipment_runtime_shift` skeleton rows the passes fill. A tenant missing from it computes
+> zero OEE regardless of shifts/meters. See [Onboarding → the three tenant gates](02-onboarding.md#after-cutover-making-oee-actually-compute-the-three-tenant-gates).
 
 ### The pipeline
 
