@@ -534,6 +534,17 @@ services:
       # self-hosted runner workspace — so the SSM recreate cd's to the right place.
       SSM_SHARED_AGENT_INSTANCE_ID: "i-06c9547a2c7091ab7"
       SSM_SHARED_AGENT_DIR: "/opt/actions-runner/_work/packiot-stack-alpha/packiot-stack-alpha"
+      # ── reader-bundle ingest target (edge-ssm deploy-bundle → client edge box) ──
+      # The onboarding Deploy step SSM-pushes a generated reader onto the client's
+      # edge box; the reader polls the PLCs and POSTs raw tags to this front-door
+      # with X-Ingest-Key. edge-ssm.config.ts DEFAULTS SSM_EDGE_INGEST_URL to the
+      # PROD front-door (ingest.prod…), so a STAGING-onboarded reader would post to
+      # prod unless overridden here. The key is the shared agent front-door's
+      # INGEST_API_KEY (exactly what nginx ingest.conf validates), sourced from the
+      # box .env so no secret is inlined in compose. Empty key => the deploy reports
+      # an ingest-key GAP and the reader ships a placeholder (never a baked secret).
+      SSM_EDGE_INGEST_URL: "https://ingest.staging.packiot.app:8449/v1/tags"
+      SSM_EDGE_INGEST_KEY: ${INGEST_API_KEY:-}
       # PO staleness/conflict gate (task #32). Master on + per-enterprise
       # allowlist (CSV of surrogate id_enterprise). "3,4" = CPACK-Staging(3) +
       # Incoplast-Staging(4) — both synthetic on staging, so global-ish signal
