@@ -56,7 +56,12 @@ lives in this step's Advanced drawer.
 
 ### 2. Connect the PLCs
 Author the PLC endpoint(s) — the host/protocol per PLC. This is where the actual PLC
-connection lives (not the vestigial `id_plc` field).
+connection lives (not the vestigial `id_plc` field). Three cards, in order: the endpoint
+host/IP (with a reachability **Test**), the per-machine **tag map** (endpoint + count-index
++ role), and **"Which sensors does each line have?"** — the per-line sensor situation
+(`counter_derive`: all measured / outfeed-only / scrap-derived-from-infeed−outfeed / …).
+Declaring the sensor situation here, rather than letting a default stand, is what avoids a
+line's scrap silently reading as unconfirmed later.
 
 ### 3. Go live (dry run)
 **Build & deploy the edge** in one action: generate the bundle (`onboard-gen` → profile
@@ -85,6 +90,53 @@ The flip is explicit, confirmed, and reversible — never auto-advanced.
    edge-api sets it to `'cutover'`, the agent switches from the static tag map to the
    register-driven one. The flip state is **data owned by edge-api**; the agent reads
    it, fail-safe to static on any error.
+
+## After cutover: making OEE actually compute (the three tenant gates)
+
+**A fully-onboarded, cutover tenant can still show ZERO OEE.** Cutover only flips the
+tag map — it does **not** wire the tenant into the analytics OEE pipeline. Three
+separate per-tenant gates must **all** include the new `id_enterprise`, or the numbers
+stay silently empty (raw counts flow, but no `equipment_runtime_shift` rows exist).
+Check them in this order:
+
+1. **Shifts** — onboarding step 5 of the hierarchy is *shifts*, and it is load-bearing:
+   with no `shifts` / `shift_hours` there is no shift window, so **nothing** aggregates.
+   Set them on the CS-Admin Shifts page (or `POST /api/shifts/create` + 7×
+   `/api/shift-hours/create`; `shift_hours.begin_time/end_time` are **seconds from
+   Monday 00:00**). A tenant reaching `validated` with 0 shifts is an incomplete
+   onboarding — the readiness gate should assert this.
+
+2. **`BAKE_ENTERPRISE_IDS`** (stream-engine env) — the runtime-provision
+   (`provision.go`, the `piot_create_*_runtime` fns) that **creates** each tenant's
+   `equipment_runtime_shift` skeleton rows only runs for enterprises in this CSV. The
+   base rollup then only fills rows flagged `recalc_needed`, so **with no skeletons,
+   nothing computes.** Add the new id here (e.g. `"3,4"` → `"3,4,5"`) and redeploy —
+   provision creates the skeletons on boot. **This is the master gate for the OEE
+   surface.**
+
+3. **The meter model** — how the line derives gross/net/scrap:
+   - **Line-metered** (separate infeed + outfeed machines, e.g. bispharma): set
+     `COUNTERS_ONLY_LINE_LEAD_ENABLED=true` + the id in `COUNTERS_ONLY_LINE_LEAD_ENTERPRISES`.
+     The tp=3 line row names `gross_machine` (infeed), `lead_machine` (outfeed/net) and
+     optional `scrap_machine`; stream-engine `line_lead` computes **Quality = net/gross =
+     outfeed/infeed** and **scrap = GREATEST(gross − net, 0)** — no reject meter needed.
+   - **Machine-metered** (both meters on one machine, or single-sensor machines, e.g.
+     CPACK): use `COUNTERS_ONLY_AVAILABILITY_*` instead. The two are **mutually
+     exclusive per enterprise**.
+
+### Designating a line's infeed/outfeed meters
+For a line-metered tenant, tell each line which member is its infeed vs outfeed. In
+**CS-Admin → Line configuration**, click **"Auto-assign from sensors"** — it derives
+the meters from each machine's **sensor role** (decoded from the SparkPlug metric name,
+`ProdConsumedCount`=gross/infeed, `ProdProcessedCount`=net/outfeed), **never the machine
+name** (client naming isn't portable). It nails the infeed reliably; where a line has
+several outfeed candidates the outfeed is a flagged **guess** you confirm in the same
+per-line dropdowns. Runs the `POST /api/onboarding/apply-line-meters` endpoint —
+descriptor-driven, so it survives a re-onboard.
+
+> **Verify OEE is computing:** `SELECT count(*) FROM equipment_runtime_shift r JOIN
+> equipments e ON e.id_equipment=r.id_equipment WHERE e.id_enterprise=<id>;` — zero rows
+> means one of the three gates above is unset (start with `BAKE_ENTERPRISE_IDS`).
 
 ## Which plane / how to verify
 
