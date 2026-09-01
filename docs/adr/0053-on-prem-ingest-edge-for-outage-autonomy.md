@@ -1,6 +1,6 @@
 # ADR-0053 — On-prem ingest edge (relocate the pre-RabbitMQ stack to the box)
 
-- **Status:** Proposed (design only — no build)
+- **Status:** Proposed — REDIRECTED by proof: mTLS/8883 uplink is firewall-blocked for HTTPS-only factories (bispharma); use the HTTPS path (raw-level reader spool already ships; decoded-level needs a new HTTPS ingress)
 - **Date:** 2026-09-01
 - **Relates:** ADR-0011 P2 (the SQLite outbox), ADR-0045 (thin-reader shared-ingest),
   ADR-0019 C3 (edge-operator SPA), ADR-0052 (edge autonomy — device side), the
@@ -41,6 +41,41 @@ after it stay in the cloud.
 **Notably, a partial version already runs in production:** Incoplast generates
 SparkPlug on-prem and POSTs to the shim. This ADR *generalizes* that — ship **our**
 agent+transformer+outbox on-prem instead of a client's bespoke Node-RED.
+
+
+## 2a. GATING CONSTRAINT (proven live) — factory egress is HTTPS-only
+
+Before building the mTLS uplink, I tested outbound egress **from the bispharma
+factory box** (`mi-0114`, LAN `192.168.5.91`):
+
+| Target | Result |
+|---|---|
+| `ingest.prod:8883`, `ingest.staging:8883`, `8.8.8.8:8883` (MQTT/TLS) | **BLOCKED** (all three, identically) |
+| `ingest.staging:8449` (reader HTTPS path) | OPEN |
+| `:443` | OPEN |
+
+**The factory firewall blocks outbound 8883.** Therefore the agent-on-box →
+`ssl://ingest:8883` MQTT uplink — the natural way to reuse the agent's outbox —
+**is not viable for bispharma** (nor any factory with the same egress policy;
+CPACK's firewall *does* allow 8883, which is why its edge works). Any on-prem edge
+here **must cross the internet over HTTPS.** This is a per-site network fact to
+verify FIRST for every candidate box — it decides the whole transport.
+
+**Consequence for this ADR:** the outbox's store-and-forward is still the right
+buffer, but its drain must be **HTTPS**, not AMQP/MQTT. Two HTTPS realizations:
+
+1. **Raw-tags level — ALREADY SHIPPED.** The reader spool (this session) buffers
+   raw-tag batches on the box and replays them over HTTPS (8449) to the cloud
+   shared-agent on reconnect. For an HTTPS-only factory this **already is** the
+   on-prem outage buffer — just at the pre-decode level.
+2. **Decoded level — needs a new cloud HTTPS ingress.** To buffer *decoded* data
+   on-box (agent+transformer+outbox on the box), the outbox must drain over HTTPS
+   to a cloud ingress that accepts the agent/transformer output. The existing
+   `ingest-shim` accepts SparkPlug-**JSON** → `oee` → worker (Incoplast's
+   pipeline), which is a *different* format than our agent's SparkPlug-B →
+   mosquitto → decoder. So this path needs either (a) an HTTPS→mosquitto ingress
+   for SparkPlug-B, or (b) the on-box transformer to emit the shim's JSON format.
+   Neither exists — it is a real sub-build, not a config.
 
 ## 3. Architecture
 
