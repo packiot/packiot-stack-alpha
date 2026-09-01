@@ -159,6 +159,16 @@ func main() {
 		Help: "Full NBIRTH re-publishes triggered by an inbound Rebirth NCMD (task #31).",
 	})
 	reg.MustRegister(rebirths)
+	// ADR-0042 blast-radius isolation: tenant *.yaml files skipped at boot because
+	// they failed to load/validate/build or collided on group_id/edge_node_id.
+	// Nonzero ⇒ a co-tenant was dropped but the agent kept serving the rest — the
+	// CS-Admin apply-agent-config path where one malformed wizard descriptor must
+	// NOT crash-loop the shared process and take cpack ingest down with it.
+	tenantLoadFailed := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_tenant_load_failed_total",
+		Help: "Tenant config files skipped at boot (bad load/validate/build or duplicate group_id/edge_node_id), by file + reason. Nonzero ⇒ a tenant was dropped while co-tenants (incl. cpack) kept serving.",
+	}, []string{"file", "reason"})
+	reg.MustRegister(tenantLoadFailed)
 
 	multi := health.NewMulti()
 
@@ -181,8 +191,14 @@ func main() {
 			decomposed:          decomposed,
 			derivedSynth:        derivedSynth,
 			counterDerivedSynth: counterDerivedSynth,
+			tenantLoadFailed:    tenantLoadFailed,
 		})
 		if err != nil {
+			// Reaching here now means an INFRASTRUCTURE failure (tenants dir
+			// unreadable, outbox uncreatable, or every single file was bad so there
+			// is nothing to serve) — NOT one malformed tenant among good ones, which
+			// buildTenantPipelines now skips-and-alarms. A genuinely empty/all-broken
+			// tenants dir is a deploy-level fault worth failing loudly on.
 			logger.Error("multi-tenant pipeline build", "err", err)
 			os.Exit(1)
 		}
@@ -973,13 +989,27 @@ type buildDeps struct {
 	decomposed          *prometheus.CounterVec
 	derivedSynth        prometheus.Counter
 	counterDerivedSynth prometheus.Counter
+	// tenantLoadFailed counts tenant *.yaml files SKIPPED at boot because they
+	// failed to load/validate/build or collided on group_id/edge_node_id. A
+	// nonzero value means a co-tenant was dropped but the agent kept serving the
+	// rest (blast-radius isolation, ADR-0042) — the CS-Admin apply-agent-config
+	// footgun where one malformed wizard descriptor must NOT crash-loop the whole
+	// shared process and take cpack ingest down with it. Labeled by file + reason.
+	tenantLoadFailed *prometheus.CounterVec
 }
 
 // buildTenantPipelines loads EVERY *.yaml/*.yml in dir as an agentcfg.Config
 // (reusing agentcfg.Load, which validates) and builds one isolated pipeline per
-// config, keyed by sparkplug.group_id (case-insensitive). Startup FAILS if two
-// configs share a group_id OR an edge_node_id (both ambiguous / flapping), if a
-// config fails to load / validate, or if the directory holds no tenant configs.
+// config, keyed by sparkplug.group_id (case-insensitive). A file that fails to
+// load/validate/build, or that COLLIDES on group_id/edge_node_id with an
+// already-admitted tenant (first-seen wins), is SKIPPED-AND-ALARMED (Error log +
+// sparkplug_agent_tenant_load_failed_total) — never fatal. This is deliberate
+// blast-radius isolation (ADR-0042): the CS-Admin apply-agent-config step pushes
+// an agent.yaml a non-engineer authored, so one bad/incomplete file is an
+// expected input that must not crash-loop the shared process and drop cpack's
+// ingest. Startup FAILS (returns error → main os.Exit) ONLY on an infrastructure
+// fault: the dir is unreadable, the outbox is uncreatable, or NO file loaded at
+// all (empty dir or every file bad) — a deploy-level problem worth failing loudly.
 //
 // Multi mode is Mode-A: a shared internal broker, NO per-tenant mTLS (tls=nil).
 // A config with an ssl:// uplink_broker is warned but connects server-auth-only
@@ -1010,25 +1040,39 @@ func buildTenantPipelines(dir string, deps buildDeps) ([]*pipeline, error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
+		// BLAST-RADIUS ISOLATION (ADR-0042): a single malformed / colliding tenant
+		// file must NEVER abort the whole agent. Before this, any bad file bubbled
+		// an error to main → os.Exit(1) → crash-loop → EVERY co-tenant (incl. cpack)
+		// lost ingest. The CS-Admin apply-agent-config step pushes an agent.yaml a
+		// non-engineer authored, so a bad/incomplete one is an EXPECTED input, not a
+		// deploy bug. We now skip-and-alarm (log + metric) and keep serving the rest;
+		// the empty/all-bad case is still caught by the len==0 guard below.
 		cfg, err := agentcfg.Load(path) // validates group_id/edge_node/brokers/tag_map
 		if err != nil {
-			return nil, fmt.Errorf("load tenant config %s: %w", path, err)
+			deps.logger.Error("skipping tenant config — failed to load/validate (co-tenants keep serving)",
+				"file", name, "err", err)
+			deps.tenantLoadFailed.WithLabelValues(name, "load").Inc()
+			continue
 		}
 		gkey := strings.ToUpper(strings.TrimSpace(cfg.Sparkplug.GroupID))
 		if prev, dup := seenGroup[gkey]; dup {
-			return nil, fmt.Errorf("duplicate group_id %q in %s and %s — group_id must be unique across the tenants dir", cfg.Sparkplug.GroupID, prev, name)
+			deps.logger.Error("skipping tenant config — duplicate group_id (first-seen wins)",
+				"file", name, "group_id", cfg.Sparkplug.GroupID, "kept", prev)
+			deps.tenantLoadFailed.WithLabelValues(name, "dup_group_id").Inc()
+			continue
 		}
-		seenGroup[gkey] = name
 		// edge_node_id must ALSO be unique: the uplink MQTT ClientID is derived
 		// from edge_node_id (+ the shared process pid), so two tenants sharing an
 		// edge_node_id would produce IDENTICAL ClientIDs → the broker evicts the
 		// older session on each connect → both tenants' uplinks flap forever. A
-		// silent-degrade we refuse to boot into.
+		// silent-degrade we refuse to admit — but we skip the DUP, not the agent.
 		nkey := strings.ToUpper(strings.TrimSpace(cfg.Sparkplug.EdgeNodeID))
 		if prev, dup := seenNode[nkey]; dup {
-			return nil, fmt.Errorf("duplicate edge_node_id %q in %s (group %q) and %s — edge_node_id must be unique across the tenants dir (it keys the uplink MQTT ClientID)", cfg.Sparkplug.EdgeNodeID, prev, cfg.Sparkplug.GroupID, name)
+			deps.logger.Error("skipping tenant config — duplicate edge_node_id (first-seen wins; it keys the uplink MQTT ClientID)",
+				"file", name, "edge_node_id", cfg.Sparkplug.EdgeNodeID, "group_id", cfg.Sparkplug.GroupID, "kept", prev)
+			deps.tenantLoadFailed.WithLabelValues(name, "dup_edge_node_id").Inc()
+			continue
 		}
-		seenNode[nkey] = name
 
 		if strings.HasPrefix(cfg.Sparkplug.UplinkBroker, "ssl://") {
 			deps.logger.Warn("tenant uplink_broker is ssl:// but multi-tenant mode wires no per-tenant client cert (Mode-A) — connecting server-auth-only",
@@ -1049,12 +1093,20 @@ func buildTenantPipelines(dir string, deps buildDeps) ([]*pipeline, error) {
 			counterDerivedSynth: deps.counterDerivedSynth,
 		})
 		if err != nil {
-			return nil, err
+			deps.logger.Error("skipping tenant config — pipeline build failed (co-tenants keep serving)",
+				"file", name, "group_id", cfg.Sparkplug.GroupID, "err", err)
+			deps.tenantLoadFailed.WithLabelValues(name, "build").Inc()
+			continue
 		}
+		// Only mark the group/node keys as claimed AFTER the pipeline is fully built,
+		// so a file that fails to build does not shadow a later valid file that
+		// legitimately reuses (recycles) the same group_id/edge_node_id.
+		seenGroup[gkey] = name
+		seenNode[nkey] = name
 		pipelines = append(pipelines, p)
 	}
 	if len(pipelines) == 0 {
-		return nil, fmt.Errorf("no *.yaml tenant configs found in %s", dir)
+		return nil, fmt.Errorf("no loadable *.yaml tenant configs in %s (dir empty or every file failed to load — see prior skip logs)", dir)
 	}
 	return pipelines, nil
 }
