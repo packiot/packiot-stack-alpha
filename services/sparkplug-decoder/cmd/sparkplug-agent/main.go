@@ -272,26 +272,50 @@ func main() {
 			tagSource = "packml_register"
 		}
 
-		// ── live-capture OBSERVE posture (ADR-0045 Phase-2b) ──────────────────
-		// Whether this boot records what count indices/topics actually arrive from
+		// ── live-capture OBSERVE posture (ADR-0045 Phase-2b, LIVE refresh) ────
+		// Whether this agent records what count indices/topics actually arrive from
 		// a live tee, so CS can promote descriptor entries inferred→confirmed. Two
 		// gates: the master flag AGENT_CAPTURE_ENABLED (dark by default) AND the
-		// per-tenant client_descriptors.status == "captured" (the observe posture,
-		// read at boot by resolveTagMap on the SAME pool). Off ⇒ zero hot-path cost.
-		// The recorder REUSES the register pool (kept alive past boot only when
-		// observing) — never a second pool. Fail-safe: any DB/parse error is a
-		// logged drop, never a block or crash of the ingest path.
+		// per-tenant client_descriptors.status == "captured" (the observe posture).
+		// Off ⇒ zero hot-path cost.
+		//
+		// Unlike Phase-2a's ONE-SHOT boot read, the posture is now driven by a
+		// controller goroutine (runCaptureController, below) that RE-READS the status
+		// every AGENT_CAPTURE_STATUS_POLL_SEC and atomically enables/disables the
+		// recorder on p.rec when the tenant crosses into/out of 'captured'. That is
+		// what makes an operator's "Start capture" click take effect on a RUNNING
+		// agent WITHOUT a restart (the onboarding churn this closes). The controller
+		// REUSES the register pool (never a second one) and OWNS closing it.
 		captureEnabled := getenvBool("AGENT_CAPTURE_ENABLED", false)
-		observing := boot != nil && capture.ShouldObserve(captureEnabled, boot.status)
-		// The register pool is boot-transient by default; keep it open ONLY when the
-		// recorder will write through it, else close it now (Phase-2a behaviour).
-		if boot != nil && boot.pool != nil {
-			if observing {
-				defer boot.pool.Close()
-			} else {
-				boot.pool.Close()
-				boot.pool = nil
+		// Count-leaf TEMPLATES for the recorder come from the tenant profile's
+		// metric_templates ({idx}-bearing leaves). With no profile there are no count
+		// families to recognize, so capture cannot run.
+		var captureTemplates []string
+		if captureEnabled && boot != nil && boot.profile != nil {
+			var leaves []string
+			for _, t := range boot.profile.MetricTemplates.Member {
+				leaves = append(leaves, t.Leaf)
 			}
+			for _, t := range boot.profile.MetricTemplates.Line {
+				leaves = append(leaves, t.Leaf)
+			}
+			captureTemplates = capture.CountLeafTemplates(leaves)
+		}
+		// The live-capture controller can run only with the master flag ON, an OPEN
+		// DB pool (to poll status + write observations), an enterprise scope, and at
+		// least one count-leaf template. Crucially the pool is kept open PAST boot
+		// even when the tenant is NOT 'captured' yet — the poller must be able to
+		// notice a flip INTO 'captured' on a running agent. If capture can't run,
+		// release the boot pool now (byte-identical no-capture path, Phase-2a).
+		captureCanRun := captureEnabled && boot != nil && boot.pool != nil &&
+			boot.enterpriseID != 0 && len(captureTemplates) > 0
+		if !captureCanRun && boot != nil && boot.pool != nil {
+			if captureEnabled {
+				logger.Warn("AGENT_CAPTURE_ENABLED=true but live-capture cannot run — capture OFF (needs a tenant profile with count-metric leaves + an enterprise_id + a reachable client_descriptors DB)",
+					"enterprise_id", boot.enterpriseID, "count_leaf_templates", len(captureTemplates))
+			}
+			boot.pool.Close()
+			boot.pool = nil
 		}
 
 		// ── parameter decomposition (task #54 follow-up, ADR-0042) ────────────
@@ -352,48 +376,12 @@ func main() {
 			}
 		}
 
-		// ── live-capture recorder (ADR-0045 Phase-2b) ─────────────────────────
-		// Built only in the observe posture. It records, per equipment topic, which
-		// count indices actually arrive — buffered in-memory and flushed on a ticker
-		// to capture_observations via the (reused) register pool. The count-leaf
-		// TEMPLATES come from the tenant profile's metric_templates ({idx}-bearing
-		// leaves); with no profile there are no count families to recognize, so the
-		// recorder stays nil and Observe is a no-op.
-		var recorder *capture.Recorder
-		if observing {
-			var leaves []string
-			if boot.profile != nil {
-				for _, t := range boot.profile.MetricTemplates.Member {
-					leaves = append(leaves, t.Leaf)
-				}
-				for _, t := range boot.profile.MetricTemplates.Line {
-					leaves = append(leaves, t.Leaf)
-				}
-			}
-			templates := capture.CountLeafTemplates(leaves)
-			if len(templates) == 0 {
-				logger.Warn("capture observe posture active but the tenant profile declares no count-metric leaves — nothing to capture",
-					"enterprise_id", boot.enterpriseID)
-			}
-			captureObs := prometheus.NewCounterVec(prometheus.CounterOpts{
-				Name: "sparkplug_agent_capture_observations_total",
-				Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
-			}, []string{"tenant"})
-			reg.MustRegister(captureObs)
-			obsCounter := captureObs.WithLabelValues(cfg.Sparkplug.GroupID)
-			recorder = capture.New(capture.Config{
-				EnterpriseID: boot.enterpriseID,
-				Templates:    templates,
-				Sink:         capture.NewPGSink(boot.pool),
-				Logger:       logger,
-				OnObserved:   obsCounter.Inc,
-			})
-			go recorder.Run(ctx, time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))*time.Second)
-			logger.Info("live-capture observe posture ENABLED",
-				"enterprise_id", boot.enterpriseID,
-				"count_leaf_templates", len(templates),
-				"flush_sec", getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))
-		}
+		// The live-capture recorder itself is no longer built here at boot: the
+		// controller wired AFTER the pipeline (runCaptureController) builds it on the
+		// first status read and re-builds/tears-down on every posture flip, so the
+		// recorder tracks client_descriptors.status live. The pipeline therefore boots
+		// with a nil recorder (Observe is nil-safe) and the controller Stores one into
+		// p.rec the moment the tenant is (or becomes) 'captured'.
 
 		// Mode-B mTLS material (ADR-0042 §6). The agentcfg descriptor holds the
 		// cert/key/CA as secret:// REFERENCES only; the deploy resolves them to
@@ -436,7 +424,7 @@ func main() {
 			outboxPath:          getenv("OUTBOX_PATH", "/var/lib/edge-transformer/agent-outbox.db"),
 			tls:                 tlsCfg,
 			decomposer:          decomposer,
-			recorder:            recorder,
+			recorder:            nil, // live-capture recorder is installed by the controller (below), not at boot
 			derive:              derive,
 			dropped:             dropped,
 			unmappedTags:        unmappedTags,
@@ -449,6 +437,42 @@ func main() {
 			os.Exit(1)
 		}
 		pipelines = []*pipeline{p}
+
+		// ── live-capture controller (ADR-0045 Phase-2b, LIVE refresh) ─────────
+		// Reuse the SAME per-tenant controller the multi-tenant path uses, over the
+		// single pipeline. It re-reads client_descriptors.status every
+		// AGENT_CAPTURE_STATUS_POLL_SEC and atomically enables/disables the recorder
+		// via p.rec when the tenant crosses into/out of 'captured' — so an operator's
+		// "Start capture" on a RUNNING agent takes effect without a restart. It also
+		// warns (once per transition) if the status becomes 'cutover' while the live
+		// map is still static, since the tag-map cutover stays a boot read (Option A,
+		// restart-to-apply). The controller OWNS boot.pool and closes it on ctx cancel
+		// after a final best-effort drain.
+		if captureCanRun {
+			captureObs := prometheus.NewCounterVec(prometheus.CounterOpts{
+				Name: "sparkplug_agent_capture_observations_total",
+				Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
+			}, []string{"tenant"})
+			reg.MustRegister(captureObs)
+			tc := &tenantCapture{
+				pipeline:           p,
+				enterpriseID:       boot.enterpriseID,
+				templates:          captureTemplates,
+				sink:               capture.NewPGSink(boot.pool),
+				obsCounter:         captureObs.WithLabelValues(cfg.Sparkplug.GroupID),
+				logger:             logger,
+				cutoverWarn:        true,
+				tagmapUsesRegister: tagSrc.UseRegister,
+			}
+			flush := time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30)) * time.Second
+			poll := time.Duration(getenvInt("AGENT_CAPTURE_STATUS_POLL_SEC", 300)) * time.Second
+			runCaptureController(ctx, []*tenantCapture{tc}, agentcfg.NewDescriptorStatusFetcher(boot.pool), boot.pool, flush, poll)
+			logger.Info("live-capture controller started (single-file)",
+				"enterprise_id", boot.enterpriseID,
+				"count_leaf_templates", len(captureTemplates),
+				"flush_sec", int(flush.Seconds()), "status_poll_sec", int(poll.Seconds()),
+				"boot_tag_source", tagSource)
+		}
 
 		// ADR-0045 P2a gauge: set once at boot from the resolved source (Option A
 		// — the flip is a boot read). 1 = register-driven, 0 = static YAML.
@@ -1125,6 +1149,22 @@ type tenantCapture struct {
 	logger       *slog.Logger
 
 	recCancel context.CancelFunc // non-nil while a recorder is running (observing)
+
+	// cutoverWarn turns on the "cutover recorded, restart to apply" observability
+	// (single-file only). The tag-map cutover is a BOOT read (Option A, cutover.go):
+	// a status that flips to 'cutover' on a RUNNING agent can't hot-swap the map, so
+	// the controller can only make the deferred restart OBSERVABLE, not actuate it.
+	// Multi mode is static-map-only and leaves this false — it never warns, because
+	// a restart wouldn't apply cutover there either (multi ignores the descriptor
+	// status for the tag map entirely).
+	cutoverWarn bool
+	// tagmapUsesRegister records whether THIS boot already resolved to the
+	// register-driven map (tagSrc.UseRegister). When true the tenant is already cut
+	// over, so the warn is suppressed.
+	tagmapUsesRegister bool
+	// cutoverWarned dedupes the warn to the TRANSITION into 'cutover' (a 300s poll
+	// would otherwise log it every tick). Reset when the status leaves 'cutover'.
+	cutoverWarned bool
 }
 
 // observing reports whether a recorder is currently live for this tenant.
@@ -1191,6 +1231,30 @@ func (tc *tenantCapture) refresh(ctx context.Context, fetcher statusFetcher, flu
 	case !want && tc.observing():
 		tc.disable()
 	}
+	tc.maybeWarnCutover(status)
+}
+
+// maybeWarnCutover logs — ONCE per transition into 'cutover' — when a running
+// static-map tenant's descriptor has been flipped to 'cutover'. The tag-map
+// cutover is a BOOT read (Option A, cutover.go), so this can NOT hot-swap the
+// live map; the WARN exists only to make the deferred restart-to-apply
+// observable instead of silent. No-op unless the single-file path enabled it
+// (cutoverWarn) and this boot is still on the static map (tagmapUsesRegister
+// false). Deduped via cutoverWarned so a 300s poll doesn't spam the log.
+func (tc *tenantCapture) maybeWarnCutover(status string) {
+	if !tc.cutoverWarn || tc.tagmapUsesRegister {
+		return
+	}
+	if status == agentcfg.StatusCutover {
+		if !tc.cutoverWarned {
+			tc.logger.Warn("cutover recorded in client_descriptors but the running agent is still on the static tag map — restart the agent to apply the register-driven map (cutover is a boot read, Option A)",
+				"group_id", tc.pipeline.cfg.Sparkplug.GroupID, "enterprise_id", tc.enterpriseID)
+			tc.cutoverWarned = true
+		}
+		return
+	}
+	// Left 'cutover' — re-arm so a later re-cutover warns again.
+	tc.cutoverWarned = false
 }
 
 // wireMultiTenantCapture wires the observe-posture recorder into EACH multi-tenant
@@ -1249,9 +1313,30 @@ func wireMultiTenantCapture(ctx context.Context, pipelines []*pipeline, reg *pro
 	flush := time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30)) * time.Second
 	poll := time.Duration(getenvInt("AGENT_CAPTURE_STATUS_POLL_SEC", 300)) * time.Second
 
-	// Boot posture read + periodic re-check. ONE controller goroutine owns the
-	// shared pool: it closes the pool (after each tenant's final drain) only when
-	// ctx is cancelled, so recorder writes never race a closed pool.
+	// Boot posture read + periodic re-check on ONE controller goroutine that owns
+	// the shared pool (closed after each tenant's final drain when ctx cancels).
+	runCaptureController(ctx, tenants, fetcher, pool, flush, poll)
+
+	logger.Info("multi-tenant live-capture controller started",
+		"tenants", len(tenants), "flush_sec", int(flush.Seconds()), "status_poll_sec", int(poll.Seconds()))
+}
+
+// runCaptureController starts the single background goroutine that owns a set of
+// per-tenant capture units: it does an initial status read, then re-reads every
+// `poll` on a ticker and flips each recorder to match (enable on cross INTO
+// 'captured', disable on cross OUT). It OWNS `pool` — closing it on ctx cancel,
+// AFTER each observing tenant's final drain, so a recorder write never races a
+// closed pool. Shared by the multi-tenant wiring and the single-file path so BOTH
+// react to a live client_descriptors.status change without an agent restart (the
+// onboarding churn this closes: an operator's "Start capture" on a RUNNING agent
+// used to take effect only on the next restart). A non-positive poll is clamped
+// to the 300s default so a mis-set AGENT_CAPTURE_STATUS_POLL_SEC can never make
+// time.NewTicker panic or busy-loop. (Callers own the "controller started" log
+// line — this only runs the loop.)
+func runCaptureController(ctx context.Context, tenants []*tenantCapture, fetcher statusFetcher, pool *pgxpool.Pool, flush, poll time.Duration) {
+	if poll <= 0 {
+		poll = 300 * time.Second
+	}
 	go func() {
 		defer pool.Close()
 		for _, tc := range tenants {
@@ -1273,9 +1358,6 @@ func wireMultiTenantCapture(ctx context.Context, pipelines []*pipeline, reg *pro
 			}
 		}
 	}()
-
-	logger.Info("multi-tenant live-capture controller started",
-		"tenants", len(tenants), "flush_sec", int(flush.Seconds()), "status_poll_sec", int(poll.Seconds()))
 }
 
 // buildTenantCaptures pairs each pipeline with its tenant profile (by group_id =
