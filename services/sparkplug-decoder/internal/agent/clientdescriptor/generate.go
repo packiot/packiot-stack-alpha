@@ -422,17 +422,23 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// P0-1: a CS-Admin wizard descriptor carries NO agent block (blankDescriptor
+	// omits it), so fill any empty field from DefaultAgentWiring — otherwise the
+	// generated agent.yaml is missing edge_node_id/internal_broker/uplink_broker,
+	// fails agentcfg.Validate, and the shared agent skips-and-alarms it on push
+	// (was: crash-looped, taking cpack ingest down). Explicit descriptor values win.
+	aw := mergedAgentWiring(d.Tenant, d.Agent)
 	cfg := &agentcfg.Config{
 		Sparkplug: agentcfg.SparkplugCfg{
 			GroupID:          d.Tenant,
-			EdgeNodeID:       d.Agent.EdgeNodeID,
+			EdgeNodeID:       aw.EdgeNodeID,
 			PackMLTopic:      d.Canonical.Prefix,
-			InternalBroker:   d.Agent.InternalBroker,
-			RawTopic:         d.Agent.RawTopic,
-			UplinkBroker:     d.Agent.UplinkBroker,
-			UplinkTLSCertRef: d.Agent.MTLS.CertRef,
-			UplinkTLSKeyRef:  d.Agent.MTLS.KeyRef,
-			UplinkCARef:      d.Agent.MTLS.CARef,
+			InternalBroker:   aw.InternalBroker,
+			RawTopic:         aw.RawTopic,
+			UplinkBroker:     aw.UplinkBroker,
+			UplinkTLSCertRef: aw.MTLS.CertRef,
+			UplinkTLSKeyRef:  aw.MTLS.KeyRef,
+			UplinkCARef:      aw.MTLS.CARef,
 		},
 	}
 	for _, e := range d.Equipment {
@@ -470,6 +476,14 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 	// NOT stamped, so a descriptor without counter_derive generates a byte-identical
 	// agent.yaml.
 	d.stampCounterDerive(cfg)
+	// P0-1 (validate at generate time): run the SAME check the runtime applies in
+	// agentcfg.Load, so a descriptor that would yield an unloadable agent.yaml
+	// fails HERE (generate → 400) instead of silently emitting a bad file that the
+	// shared agent then skips on push. With the defaults above this passes for any
+	// wizard descriptor that has at least one equipment (a non-empty raw_tag_map).
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("generated agent config is invalid (descriptor would produce an unloadable agent.yaml): %w", err)
+	}
 	return cfg, nil
 }
 

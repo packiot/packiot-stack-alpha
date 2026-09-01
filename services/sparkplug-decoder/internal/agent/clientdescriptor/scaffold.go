@@ -128,6 +128,60 @@ func DefaultMetricTemplates() tenantprofile.MetricTemplates {
 	}
 }
 
+// DefaultAgentWiring returns the fallback agent block for a tenant that did not
+// author one. A CS-Admin wizard descriptor has NO agent step (blankDescriptor
+// omits it), so GenerateAgentConfig must synthesize a VALID one — otherwise the
+// generated agent.yaml is missing edge_node_id/internal_broker/uplink_broker,
+// fails agentcfg.Validate, and (before ADR-0042 skip-and-alarm) crash-looped the
+// shared agent on push. Same values the Scaffold CLI uses; the uplink is a
+// REPLACE-me placeholder (a fresh tenant's real uplink is filled at Go-live), and
+// in the shared multi-tenant agent (Mode-A) the uplink connects server-auth-only
+// so the mtls refs are inert there. Mirrors DefaultMetricTemplates' role as the
+// generator's no-engineer-extension fallback.
+func DefaultAgentWiring(tenant string) AgentWiring {
+	lower := strings.ToLower(strings.TrimSpace(tenant))
+	return AgentWiring{
+		EdgeNodeID:     lower + "-edge",
+		InternalBroker: "tcp://mosquitto:1883",
+		RawTopic:       lower + "/raw",
+		UplinkBroker:   "ssl://REPLACE-INGEST-HOST:8883",
+		MTLS: MTLSRefs{
+			CertRef: secretRef(lower, "uplink-cert"),
+			KeyRef:  secretRef(lower, "uplink-key"),
+			CARef:   secretRef(lower, "uplink-ca"),
+		},
+	}
+}
+
+// mergedAgentWiring fills any empty REQUIRED field of the descriptor's agent
+// block from DefaultAgentWiring, so a partial (or absent) agent block still
+// yields a valid, loadable agent.yaml. Explicit descriptor values always win.
+//
+// mtls is DELIBERATELY not defaulted: agentcfg.validate accepts empty mtls refs
+// (the shared multi-tenant agent is Mode-A — it connects the uplink
+// server-auth-only, no per-tenant client cert), and a real Mode-A tenant like
+// bispharma intentionally ships EMPTY refs. Defaulting them to secret:// refs
+// that point at nonexistent secrets would be both unnecessary for validity and
+// wrong for the shared-agent path (it only matters on a dedicated box, where the
+// engineer authors real refs). So only the four fields whose ABSENCE fails
+// agentcfg.validate are defaulted here.
+func mergedAgentWiring(tenant string, a AgentWiring) AgentWiring {
+	def := DefaultAgentWiring(tenant)
+	if strings.TrimSpace(a.EdgeNodeID) == "" {
+		a.EdgeNodeID = def.EdgeNodeID
+	}
+	if strings.TrimSpace(a.InternalBroker) == "" {
+		a.InternalBroker = def.InternalBroker
+	}
+	if strings.TrimSpace(a.RawTopic) == "" {
+		a.RawTopic = def.RawTopic
+	}
+	if strings.TrimSpace(a.UplinkBroker) == "" {
+		a.UplinkBroker = def.UplinkBroker
+	}
+	return a
+}
+
 // Scaffold builds a VALID starter Descriptor from the options. The returned
 // descriptor passes Validate (so it round-trips through Parse), carries N lines +
 // members with placeholder-but-positive ids, and one plc endpoint per requested
@@ -179,17 +233,7 @@ func Scaffold(opts ScaffoldOptions) (*Descriptor, error) {
 				{Leaf: "/Admin/ProdProcessedCount/{idx}/Unit", Type: "double"},
 			},
 		},
-		Agent: AgentWiring{
-			EdgeNodeID:     lower + "-edge",
-			InternalBroker: "tcp://mosquitto:1883",
-			RawTopic:       lower + "/raw",
-			UplinkBroker:   "ssl://REPLACE-INGEST-HOST:8883",
-			MTLS: MTLSRefs{
-				CertRef: secretRef(lower, "uplink-cert"),
-				KeyRef:  secretRef(lower, "uplink-key"),
-				CARef:   secretRef(lower, "uplink-ca"),
-			},
-		},
+		Agent: DefaultAgentWiring(tenant),
 		Tee: TeeParams{
 			IngestURL:   "https://REPLACE-INGEST-HOST:8444/v1/tags",
 			TLSInsecure: true,
