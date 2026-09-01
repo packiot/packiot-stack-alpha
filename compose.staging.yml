@@ -517,6 +517,23 @@ services:
       # the instance role). One identity, least-priv on the role, no static keys.
       AWS_REGION: "us-east-1"
       SSM_HYBRID_INSTANCE_ROLE: "packiot-edge-ssm-hybrid-role"
+      # ── apply-agent-config target: the SHARED multi-tenant sparkplug-agent ────
+      # (edge-ssm #224). Unlike every other edge-ssm op — which resolves the
+      # per-enterprise FACTORY box by its `enterprise=<id>` managed-instance tag —
+      # apply-agent-config targets the ONE app box that runs
+      # sparkplug-agent-shared (compose profile shared-tee). That box is THIS EC2
+      # instance (i-…, not an mi- hybrid), so:
+      #   • the box is tagged managed-by=packiot-edge-api, and
+      #   • the packiot-edge-ssm-control IAM policy grants ssm:SendCommand to
+      #     instance/* under that tag (statement SendCommandToTaggedEC2).
+      # Empty => the op 503s ("Shared-agent target is not configured"), which is
+      # the SAFE failure (no push, no recreate) — never a fabricated target.
+      # NOTE (durability): this is the app box's own instance id; if the box is
+      # re-minted, update this (or inject from IMDS in app_init.sh). SHARED_AGENT_DIR
+      # is where compose.staging.yml + docs/clients/tenants live on the box — the
+      # self-hosted runner workspace — so the SSM recreate cd's to the right place.
+      SSM_SHARED_AGENT_INSTANCE_ID: "i-06c9547a2c7091ab7"
+      SSM_SHARED_AGENT_DIR: "/opt/actions-runner/_work/packiot-stack-alpha/packiot-stack-alpha"
       # PO staleness/conflict gate (task #32). Master on + per-enterprise
       # allowlist (CSV of surrogate id_enterprise). "3,4" = CPACK-Staging(3) +
       # Incoplast-Staging(4) — both synthetic on staging, so global-ish signal
