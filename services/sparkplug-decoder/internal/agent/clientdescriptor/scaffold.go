@@ -91,6 +91,43 @@ func resolveProtocols(in []string) ([]string, error) {
 // zero value is meaningful, so "present and 0" must be distinguishable from absent.
 func ptr(i int) *int { return &i }
 
+// DefaultMetricTemplates is the FULL standard PackML metric-leaf set the
+// generator falls back to when a descriptor authors NO metric_templates (the
+// CS-Admin wizard collects equipment + plc tag maps but not the canonical leaf
+// set). It mirrors CPACK ent-3's authored descriptor.metric_templates exactly, so
+// the fallback covers the three production counters (consumed=gross,
+// processed=net, defective=scrap) plus speed/state, and — for lines — the
+// Parameter30700 line-machines CSV. A NARROWER default (e.g. processed-only) would
+// reintroduce the same client⇄agent §C failure for any tenant whose plc tag map
+// references a consumed/defective counter, so the default is a superset: it only
+// ADDS raw_tag_map allowlist entries, and §C is reader→agent (extra agent suffixes
+// never reject a reader tag).
+//
+// This is DELIBERATELY the generator fallback's set, NOT the Scaffold CLI's:
+// Scaffold intentionally emits a MINIMAL starter the engineer extends (see its
+// inline literal + doc), whereas a wizard descriptor has no engineer-extension
+// step, so its fallback must be complete. A fresh value is returned each call (the
+// slices are not shared) so a caller can never mutate the default.
+func DefaultMetricTemplates() tenantprofile.MetricTemplates {
+	return tenantprofile.MetricTemplates{
+		Line: []tenantprofile.TemplateEntry{
+			{Leaf: "/Admin/ProdConsumedCount", Type: "double"},
+			{Leaf: "/Admin/ProdProcessedCount", Type: "double"},
+			{Leaf: "/Admin/ProdDefectiveCount", Type: "double"},
+			{Leaf: "/Status/MachSpeed", Type: "double"},
+			{Leaf: "/Status/StateCurrent", Type: "long"},
+			{Leaf: "/Status/Parameter30700", Type: "string"},
+		},
+		Member: []tenantprofile.TemplateEntry{
+			{Leaf: "/Admin/ProdConsumedCount/{idx}/Unit", Type: "double"},
+			{Leaf: "/Admin/ProdProcessedCount/{idx}/Unit", Type: "double"},
+			{Leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", Type: "double"},
+			{Leaf: "/Status/MachSpeed", Type: "double"},
+			{Leaf: "/Status/StateCurrent", Type: "long"},
+		},
+	}
+}
+
 // Scaffold builds a VALID starter Descriptor from the options. The returned
 // descriptor passes Validate (so it round-trips through Parse), carries N lines +
 // members with placeholder-but-positive ids, and one plc endpoint per requested
@@ -129,6 +166,10 @@ func Scaffold(opts ScaffoldOptions) (*Descriptor, error) {
 		// Minimal canonical leaves. The member set carries the two leaves the
 		// multi-source pattern composes (speed + count); the line set carries a
 		// bare state leaf. The engineer extends these to the client's real model.
+		// NOTE: intentionally MINIMAL and distinct from the generator's
+		// DefaultMetricTemplates() (the full PackML fallback for template-less wizard
+		// descriptors) — a scaffold is a starter the engineer fills in, so it stays
+		// lean on purpose.
 		MetricTemplates: tenantprofile.MetricTemplates{
 			Line: []tenantprofile.TemplateEntry{
 				{Leaf: "/Status/StateCurrent", Type: "long"},
