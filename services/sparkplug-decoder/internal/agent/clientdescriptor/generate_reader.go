@@ -153,14 +153,23 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 	)
 	yCursor := 100
 
-	for i, ep := range d.PLC.Endpoints {
+	// The S7 tag map the flow reads is the type-expanded one (ADR-0050), so a
+	// type-referencing endpoint gets a populated vartable exactly like an explicit
+	// one — computed once, before the loop, since it is endpoint-independent.
+	s7Map, err := d.effectiveS7TagMap()
+	if err != nil {
+		return nil, fmt.Errorf("generate plc reader flow: %w", err)
+	}
+
+	for i, raw := range d.PLC.Endpoints {
+		ep := d.resolvedEndpoint(raw) // inherit protocol/rack/slot from its plc type
 		hostVar := "${" + hostEnvVar(ep.Name) + "}"
 
 		switch ep.Protocol {
 		case PLCProtocolS7:
 			epID := fmt.Sprintf("%s_s7_%d_ep", p, i)
 			inID := fmt.Sprintf("%s_s7_%d_in", p, i)
-			vartable := s7Vartable(d.PLC.S7TagMap, ep.Name)
+			vartable := s7Vartable(s7Map, ep.Name)
 			nodes = append(nodes, s7EndpointNode(epID, ep, hostVar, vartable))
 			nodes = append(nodes, map[string]any{
 				"id": inID, "type": "s7 in", "z": tabID,
