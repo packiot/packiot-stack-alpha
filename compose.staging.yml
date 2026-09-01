@@ -1655,6 +1655,17 @@ services:
       # for every other CPACK line). See docs/clients/cpack-legacy-oracle-line-meters.md.
       COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "47,48,49,50,51,52,81,82,83,84,85,91,92,93,94,95,96,103,105,106,2000047,2000048,2000049,2000050,2000051,2000052,2000081,2000082,2000083,2000084,2000085,2000091,2000092,2000093,2000094,2000095,2000096,2000103,2000105,2000106,68,69,70,71,72"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
+      # LINE-LEAD (ADR-0045 split instrumentation) — bispharma (ent 5) is a
+      # line-metered tenant: separate infeed (gross_machine) + outfeed (lead_machine)
+      # machines per line, so the tp=3 line derives gross/net/scrap from those
+      # designated members (stream-engine line_lead.go) → Quality = outfeed/infeed,
+      # scrap = gross − net. Set on the line rows via the onboarding
+      # apply-line-meters endpoint (edge-api), NOT a manual write. Scoped to ent 5:
+      # CPACK (ent 3) stays on COUNTERS_ONLY_AVAILABILITY above (the two writers are
+      # mutually exclusive PER enterprise, so different ents never collide). Prod
+      # already runs line-lead for ent 3 (compose.production.yml).
+      COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "5"
       # ADR-0037 Silver invariant — per-equipment production-increment SANITY
       # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
       # K · equipments.production_speed · Δt (a physically-impossible count at
