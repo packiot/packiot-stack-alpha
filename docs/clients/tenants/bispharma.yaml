@@ -1,65 +1,974 @@
-# bispharma.yaml — one tenant of the SHARED multi-tenant sparkplug-agent.
-#
-# The shared agent (compose.staging.yml: sparkplug-agent-shared, AGENT_TENANTS_DIR
-# = /etc/packiot/tenants) loads every *.yaml here as one isolated pipeline keyed by
-# sparkplug.group_id, and routes each incoming /v1/tags envelope by its group. A
-# new client is added by dropping a file like this one — NO new container, nginx,
-# DNS, or SG. This is the config-as-data self-service seam (see ADR-0047 + the
-# "Onboarding — Worked Example" wiki page).
-#
-# Tenant: BISPHARMA, SP site, enterprise 5 (Bispharma-Staging).
-#
-# ── Provenance of the L01 tag→machine→role map ───────────────────────────────
-# Harvested from the first-version legacy Node-RED flow ("PLC L01", an s7 endpoint
-# reading DB1 as a packed array of six 32-bit DINTs). The on-site box reads that
-# same DB1 over Modbus TCP (DB byte offset B → holding register B/2) and POSTs the
-# rawtag envelope to the shared front-door. The legacy `counters L01` function
-# decodes:
-#   DINT0  (HR[0:1])  = infeed total  → S1INFEED gross  (ProdConsumedCount)
-#   DINT4  (HR[2:3])  = (S2 station)  → scrap subtrahend ONLY (no equipment)
-#   DINT8  (HR[4:5])  = station count → S3       (ProdProcessedCount)
-#   DINT12 (HR[6:7])  = station count → S4       (ProdProcessedCount)
-#   DINT16 (HR[8:9])  = station count → S5       (ProdProcessedCount)
-#   DINT20 (HR[10:11])= output total  → S6OUTPUT net    (ProdProcessedCount)
-#   DINT0 − DINT4     = scrap         → SCRAP    (ProdDefectiveCount)
-# ⚠️  HR[4:5] is S3, NOT the output (output = DINT20/HR[10:11]). counters_only_oee:
-#     the PLC exposes no machine state/speed, so emit counts only.
-#
-# ── L01 equipment ids (staging packml_register, all active) ──────────────────
-#   L01 line 2000109 · S1INFEED 2000111 · S3 2000112 · S4 2000113
-#   S5 2000114 · S6OUTPUT 2000115 · SCRAP 2000116   (count-index = id_equipment)
 sparkplug:
-  group_id: BISPHARMASTAGING
-  edge_node_id: bispharma-tee            # MUST be unique across tenant files
-  packml_topic: BISPHARMASTAGING/SP/LINHAS
-
-  # Mode-A: subscribe raw tags from AND publish SparkPlug to the internal staging
-  # mosquitto (raw tags actually arrive over the HTTP front-door, :9104 /v1/tags).
-  internal_broker: tcp://mosquitto:1883
-  raw_topic: edge/raw/bispharma/#
-  uplink_broker: tcp://mosquitto:1883
-
-  # Mode-A shared broker — no per-tenant mTLS on staging (the WAN hop is
-  # authenticated by the nginx front-door + X-Ingest-Key).
-  uplink_tls_cert_ref: ""
-  uplink_tls_key_ref: ""
-  uplink_ca_ref: ""
-
+    group_id: BISPHARMASTAGING
+    edge_node_id: bispharmastaging-tee
+    packml_topic: BISPHARMASTAGING/SP
+    internal_broker: tcp://mosquitto:1883
+    raw_topic: edge/raw/bispharmastaging/#
+    uplink_broker: tcp://mosquitto:1883
+    uplink_tls_cert_ref: ""
+    uplink_tls_key_ref: ""
+    uplink_ca_ref: ""
 raw_tag_map:
-  # ═══ L01 line (id 2000109) ═══════════════════════════════════════════════════
-  - {metric_suffix: /L01/Admin/ProdConsumedCount,  type: double}   # gross = DINT0
-  - {metric_suffix: /L01/Admin/ProdProcessedCount, type: double}   # net   = DINT20
-  - {metric_suffix: /L01/Admin/ProdDefectiveCount, type: double}   # scrap = DINT0-DINT4
-
-  # ── L01 members (count-index = id_equipment) ────────────────────────────────
-  - {metric_suffix: /L01/S1INFEED/Admin/ProdProcessedCount/2000111/Unit, type: double}  # DINT0
-  - {metric_suffix: /L01/S3/Admin/ProdProcessedCount/2000112/Unit,       type: double}  # DINT8
-  - {metric_suffix: /L01/S4/Admin/ProdProcessedCount/2000113/Unit,       type: double}  # DINT12
-  - {metric_suffix: /L01/S5/Admin/ProdProcessedCount/2000114/Unit,       type: double}  # DINT16
-  - {metric_suffix: /L01/S6OUTPUT/Admin/ProdProcessedCount/2000115/Unit, type: double}  # DINT20
-  - {metric_suffix: /L01/SCRAP/Admin/ProdProcessedCount/2000116/Unit,    type: double}  # DINT0-DINT4
-
-  # ═══ L03..L20, L90 — added as each line is validated (all 7-var lines share the
-  #     identical DB1 layout; L18 adds DINT24/28; L90 is an 8-DINT array). Kept out
-  #     until reachability + count-index are confirmed per line so no expected
-  #     suffix silently drops. See the onboarding worked-example wiki page.
+    - metric_suffix: /LINHAS/L01/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01
+    - metric_suffix: /LINHAS/L01/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01
+    - metric_suffix: /LINHAS/L01/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01
+    - metric_suffix: /LINHAS/L01/S3/Admin/ProdConsumedCount/164/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S3
+    - metric_suffix: /LINHAS/L01/S3/Admin/ProdProcessedCount/164/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S3
+    - metric_suffix: /LINHAS/L01/S3/Admin/ProdDefectiveCount/164/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S3
+    - metric_suffix: /LINHAS/L01/S4/Admin/ProdConsumedCount/165/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S4
+    - metric_suffix: /LINHAS/L01/S4/Admin/ProdProcessedCount/165/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S4
+    - metric_suffix: /LINHAS/L01/S4/Admin/ProdDefectiveCount/165/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S4
+    - metric_suffix: /LINHAS/L01/S5/Admin/ProdConsumedCount/166/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S5
+    - metric_suffix: /LINHAS/L01/S5/Admin/ProdProcessedCount/166/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S5
+    - metric_suffix: /LINHAS/L01/S5/Admin/ProdDefectiveCount/166/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S5
+    - metric_suffix: /LINHAS/L01/S6OUTPUT/Admin/ProdConsumedCount/167/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S6OUTPUT
+    - metric_suffix: /LINHAS/L01/S6OUTPUT/Admin/ProdProcessedCount/167/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S6OUTPUT
+    - metric_suffix: /LINHAS/L01/S6OUTPUT/Admin/ProdDefectiveCount/167/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S6OUTPUT
+    - metric_suffix: /LINHAS/L03/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03
+    - metric_suffix: /LINHAS/L03/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03
+    - metric_suffix: /LINHAS/L03/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03
+    - metric_suffix: /LINHAS/L03/S3/Admin/ProdConsumedCount/307/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S3
+    - metric_suffix: /LINHAS/L03/S3/Admin/ProdProcessedCount/307/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S3
+    - metric_suffix: /LINHAS/L03/S3/Admin/ProdDefectiveCount/307/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S3
+    - metric_suffix: /LINHAS/L03/S4/Admin/ProdConsumedCount/308/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S4
+    - metric_suffix: /LINHAS/L03/S4/Admin/ProdProcessedCount/308/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S4
+    - metric_suffix: /LINHAS/L03/S4/Admin/ProdDefectiveCount/308/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S4
+    - metric_suffix: /LINHAS/L03/S5/Admin/ProdConsumedCount/309/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S5
+    - metric_suffix: /LINHAS/L03/S5/Admin/ProdProcessedCount/309/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S5
+    - metric_suffix: /LINHAS/L03/S5/Admin/ProdDefectiveCount/309/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S5
+    - metric_suffix: /LINHAS/L03/S6OUTPUT/Admin/ProdConsumedCount/310/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S6OUTPUT
+    - metric_suffix: /LINHAS/L03/S6OUTPUT/Admin/ProdProcessedCount/310/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S6OUTPUT
+    - metric_suffix: /LINHAS/L03/S6OUTPUT/Admin/ProdDefectiveCount/310/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S6OUTPUT
+    - metric_suffix: /LINHAS/L04/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04
+    - metric_suffix: /LINHAS/L04/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04
+    - metric_suffix: /LINHAS/L04/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04
+    - metric_suffix: /LINHAS/L04/S3/Admin/ProdConsumedCount/314/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S3
+    - metric_suffix: /LINHAS/L04/S3/Admin/ProdProcessedCount/314/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S3
+    - metric_suffix: /LINHAS/L04/S3/Admin/ProdDefectiveCount/314/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S3
+    - metric_suffix: /LINHAS/L04/S4/Admin/ProdConsumedCount/315/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S4
+    - metric_suffix: /LINHAS/L04/S4/Admin/ProdProcessedCount/315/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S4
+    - metric_suffix: /LINHAS/L04/S4/Admin/ProdDefectiveCount/315/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S4
+    - metric_suffix: /LINHAS/L04/S5/Admin/ProdConsumedCount/316/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S5
+    - metric_suffix: /LINHAS/L04/S5/Admin/ProdProcessedCount/316/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S5
+    - metric_suffix: /LINHAS/L04/S5/Admin/ProdDefectiveCount/316/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S5
+    - metric_suffix: /LINHAS/L04/S6OUTPUT/Admin/ProdConsumedCount/317/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S6OUTPUT
+    - metric_suffix: /LINHAS/L04/S6OUTPUT/Admin/ProdProcessedCount/317/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S6OUTPUT
+    - metric_suffix: /LINHAS/L04/S6OUTPUT/Admin/ProdDefectiveCount/317/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S6OUTPUT
+    - metric_suffix: /LINHAS/L05/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05
+    - metric_suffix: /LINHAS/L05/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05
+    - metric_suffix: /LINHAS/L05/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05
+    - metric_suffix: /LINHAS/L05/S3/Admin/ProdConsumedCount/624/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S3
+    - metric_suffix: /LINHAS/L05/S3/Admin/ProdProcessedCount/624/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S3
+    - metric_suffix: /LINHAS/L05/S3/Admin/ProdDefectiveCount/624/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S3
+    - metric_suffix: /LINHAS/L05/S4/Admin/ProdConsumedCount/625/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S4
+    - metric_suffix: /LINHAS/L05/S4/Admin/ProdProcessedCount/625/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S4
+    - metric_suffix: /LINHAS/L05/S4/Admin/ProdDefectiveCount/625/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S4
+    - metric_suffix: /LINHAS/L05/S5/Admin/ProdConsumedCount/626/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S5
+    - metric_suffix: /LINHAS/L05/S5/Admin/ProdProcessedCount/626/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S5
+    - metric_suffix: /LINHAS/L05/S5/Admin/ProdDefectiveCount/626/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S5
+    - metric_suffix: /LINHAS/L05/S6OUTPUT/Admin/ProdConsumedCount/627/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S6OUTPUT
+    - metric_suffix: /LINHAS/L05/S6OUTPUT/Admin/ProdProcessedCount/627/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S6OUTPUT
+    - metric_suffix: /LINHAS/L05/S6OUTPUT/Admin/ProdDefectiveCount/627/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S6OUTPUT
+    - metric_suffix: /LINHAS/L06/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06
+    - metric_suffix: /LINHAS/L06/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06
+    - metric_suffix: /LINHAS/L06/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06
+    - metric_suffix: /LINHAS/L06/S3/Admin/ProdConsumedCount/257/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S3
+    - metric_suffix: /LINHAS/L06/S3/Admin/ProdProcessedCount/257/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S3
+    - metric_suffix: /LINHAS/L06/S3/Admin/ProdDefectiveCount/257/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S3
+    - metric_suffix: /LINHAS/L06/S4/Admin/ProdConsumedCount/258/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S4
+    - metric_suffix: /LINHAS/L06/S4/Admin/ProdProcessedCount/258/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S4
+    - metric_suffix: /LINHAS/L06/S4/Admin/ProdDefectiveCount/258/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S4
+    - metric_suffix: /LINHAS/L06/S5/Admin/ProdConsumedCount/259/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S5
+    - metric_suffix: /LINHAS/L06/S5/Admin/ProdProcessedCount/259/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S5
+    - metric_suffix: /LINHAS/L06/S5/Admin/ProdDefectiveCount/259/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S5
+    - metric_suffix: /LINHAS/L06/S6OUTPUT/Admin/ProdConsumedCount/260/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S6OUTPUT
+    - metric_suffix: /LINHAS/L06/S6OUTPUT/Admin/ProdProcessedCount/260/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S6OUTPUT
+    - metric_suffix: /LINHAS/L06/S6OUTPUT/Admin/ProdDefectiveCount/260/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S6OUTPUT
+    - metric_suffix: /LINHAS/L07/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07
+    - metric_suffix: /LINHAS/L07/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07
+    - metric_suffix: /LINHAS/L07/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07
+    - metric_suffix: /LINHAS/L07/S3/Admin/ProdConsumedCount/320/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S3
+    - metric_suffix: /LINHAS/L07/S3/Admin/ProdProcessedCount/320/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S3
+    - metric_suffix: /LINHAS/L07/S3/Admin/ProdDefectiveCount/320/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S3
+    - metric_suffix: /LINHAS/L07/S4/Admin/ProdConsumedCount/321/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S4
+    - metric_suffix: /LINHAS/L07/S4/Admin/ProdProcessedCount/321/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S4
+    - metric_suffix: /LINHAS/L07/S4/Admin/ProdDefectiveCount/321/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S4
+    - metric_suffix: /LINHAS/L07/S5/Admin/ProdConsumedCount/322/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S5
+    - metric_suffix: /LINHAS/L07/S5/Admin/ProdProcessedCount/322/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S5
+    - metric_suffix: /LINHAS/L07/S5/Admin/ProdDefectiveCount/322/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S5
+    - metric_suffix: /LINHAS/L07/S6OUTPUT/Admin/ProdConsumedCount/323/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S6OUTPUT
+    - metric_suffix: /LINHAS/L07/S6OUTPUT/Admin/ProdProcessedCount/323/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S6OUTPUT
+    - metric_suffix: /LINHAS/L07/S6OUTPUT/Admin/ProdDefectiveCount/323/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S6OUTPUT
+    - metric_suffix: /LINHAS/L09/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09
+    - metric_suffix: /LINHAS/L09/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09
+    - metric_suffix: /LINHAS/L09/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09
+    - metric_suffix: /LINHAS/L09/S3/Admin/ProdConsumedCount/124/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S3
+    - metric_suffix: /LINHAS/L09/S3/Admin/ProdProcessedCount/124/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S3
+    - metric_suffix: /LINHAS/L09/S3/Admin/ProdDefectiveCount/124/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S3
+    - metric_suffix: /LINHAS/L09/S4/Admin/ProdConsumedCount/125/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S4
+    - metric_suffix: /LINHAS/L09/S4/Admin/ProdProcessedCount/125/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S4
+    - metric_suffix: /LINHAS/L09/S4/Admin/ProdDefectiveCount/125/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S4
+    - metric_suffix: /LINHAS/L09/S5/Admin/ProdConsumedCount/126/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S5
+    - metric_suffix: /LINHAS/L09/S5/Admin/ProdProcessedCount/126/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S5
+    - metric_suffix: /LINHAS/L09/S5/Admin/ProdDefectiveCount/126/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S5
+    - metric_suffix: /LINHAS/L09/S6OUTPUT/Admin/ProdConsumedCount/127/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S6OUTPUT
+    - metric_suffix: /LINHAS/L09/S6OUTPUT/Admin/ProdProcessedCount/127/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S6OUTPUT
+    - metric_suffix: /LINHAS/L09/S6OUTPUT/Admin/ProdDefectiveCount/127/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S6OUTPUT
+    - metric_suffix: /LINHAS/L11/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11
+    - metric_suffix: /LINHAS/L11/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11
+    - metric_suffix: /LINHAS/L11/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11
+    - metric_suffix: /LINHAS/L11/S3/Admin/ProdConsumedCount/170/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S3
+    - metric_suffix: /LINHAS/L11/S3/Admin/ProdProcessedCount/170/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S3
+    - metric_suffix: /LINHAS/L11/S3/Admin/ProdDefectiveCount/170/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S3
+    - metric_suffix: /LINHAS/L11/S4/Admin/ProdConsumedCount/171/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S4
+    - metric_suffix: /LINHAS/L11/S4/Admin/ProdProcessedCount/171/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S4
+    - metric_suffix: /LINHAS/L11/S4/Admin/ProdDefectiveCount/171/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S4
+    - metric_suffix: /LINHAS/L11/S5/Admin/ProdConsumedCount/172/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S5
+    - metric_suffix: /LINHAS/L11/S5/Admin/ProdProcessedCount/172/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S5
+    - metric_suffix: /LINHAS/L11/S5/Admin/ProdDefectiveCount/172/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S5
+    - metric_suffix: /LINHAS/L11/S6OUTPUT/Admin/ProdConsumedCount/173/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S6OUTPUT
+    - metric_suffix: /LINHAS/L11/S6OUTPUT/Admin/ProdProcessedCount/173/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S6OUTPUT
+    - metric_suffix: /LINHAS/L11/S6OUTPUT/Admin/ProdDefectiveCount/173/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S6OUTPUT
+    - metric_suffix: /LINHAS/L12/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12
+    - metric_suffix: /LINHAS/L12/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12
+    - metric_suffix: /LINHAS/L12/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12
+    - metric_suffix: /LINHAS/L12/S3/Admin/ProdConsumedCount/176/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S3
+    - metric_suffix: /LINHAS/L12/S3/Admin/ProdProcessedCount/176/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S3
+    - metric_suffix: /LINHAS/L12/S3/Admin/ProdDefectiveCount/176/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S3
+    - metric_suffix: /LINHAS/L12/S4/Admin/ProdConsumedCount/177/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S4
+    - metric_suffix: /LINHAS/L12/S4/Admin/ProdProcessedCount/177/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S4
+    - metric_suffix: /LINHAS/L12/S4/Admin/ProdDefectiveCount/177/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S4
+    - metric_suffix: /LINHAS/L12/S5/Admin/ProdConsumedCount/178/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S5
+    - metric_suffix: /LINHAS/L12/S5/Admin/ProdProcessedCount/178/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S5
+    - metric_suffix: /LINHAS/L12/S5/Admin/ProdDefectiveCount/178/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S5
+    - metric_suffix: /LINHAS/L12/S6OUTPUT/Admin/ProdConsumedCount/179/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S6OUTPUT
+    - metric_suffix: /LINHAS/L12/S6OUTPUT/Admin/ProdProcessedCount/179/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S6OUTPUT
+    - metric_suffix: /LINHAS/L12/S6OUTPUT/Admin/ProdDefectiveCount/179/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S6OUTPUT
+    - metric_suffix: /LINHAS/L13/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13
+    - metric_suffix: /LINHAS/L13/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13
+    - metric_suffix: /LINHAS/L13/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13
+    - metric_suffix: /LINHAS/L13/S3/Admin/ProdConsumedCount/301/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S3
+    - metric_suffix: /LINHAS/L13/S3/Admin/ProdProcessedCount/301/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S3
+    - metric_suffix: /LINHAS/L13/S3/Admin/ProdDefectiveCount/301/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S3
+    - metric_suffix: /LINHAS/L13/S4/Admin/ProdConsumedCount/302/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S4
+    - metric_suffix: /LINHAS/L13/S4/Admin/ProdProcessedCount/302/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S4
+    - metric_suffix: /LINHAS/L13/S4/Admin/ProdDefectiveCount/302/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S4
+    - metric_suffix: /LINHAS/L13/S5/Admin/ProdConsumedCount/303/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S5
+    - metric_suffix: /LINHAS/L13/S5/Admin/ProdProcessedCount/303/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S5
+    - metric_suffix: /LINHAS/L13/S5/Admin/ProdDefectiveCount/303/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S5
+    - metric_suffix: /LINHAS/L13/S6OUTPUT/Admin/ProdConsumedCount/304/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S6OUTPUT
+    - metric_suffix: /LINHAS/L13/S6OUTPUT/Admin/ProdProcessedCount/304/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S6OUTPUT
+    - metric_suffix: /LINHAS/L13/S6OUTPUT/Admin/ProdDefectiveCount/304/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S6OUTPUT
+    - metric_suffix: /LINHAS/L14/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14
+    - metric_suffix: /LINHAS/L14/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14
+    - metric_suffix: /LINHAS/L14/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14
+    - metric_suffix: /LINHAS/L14/S3/Admin/ProdConsumedCount/332/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S3
+    - metric_suffix: /LINHAS/L14/S3/Admin/ProdProcessedCount/332/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S3
+    - metric_suffix: /LINHAS/L14/S3/Admin/ProdDefectiveCount/332/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S3
+    - metric_suffix: /LINHAS/L14/S4/Admin/ProdConsumedCount/333/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S4
+    - metric_suffix: /LINHAS/L14/S4/Admin/ProdProcessedCount/333/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S4
+    - metric_suffix: /LINHAS/L14/S4/Admin/ProdDefectiveCount/333/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S4
+    - metric_suffix: /LINHAS/L14/S5/Admin/ProdConsumedCount/334/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S5
+    - metric_suffix: /LINHAS/L14/S5/Admin/ProdProcessedCount/334/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S5
+    - metric_suffix: /LINHAS/L14/S5/Admin/ProdDefectiveCount/334/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S5
+    - metric_suffix: /LINHAS/L14/S6OUTPUT/Admin/ProdConsumedCount/335/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S6OUTPUT
+    - metric_suffix: /LINHAS/L14/S6OUTPUT/Admin/ProdProcessedCount/335/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S6OUTPUT
+    - metric_suffix: /LINHAS/L14/S6OUTPUT/Admin/ProdDefectiveCount/335/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S6OUTPUT
+    - metric_suffix: /LINHAS/L16/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16
+    - metric_suffix: /LINHAS/L16/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16
+    - metric_suffix: /LINHAS/L16/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16
+    - metric_suffix: /LINHAS/L16/S3/Admin/ProdConsumedCount/182/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S3
+    - metric_suffix: /LINHAS/L16/S3/Admin/ProdProcessedCount/182/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S3
+    - metric_suffix: /LINHAS/L16/S3/Admin/ProdDefectiveCount/182/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S3
+    - metric_suffix: /LINHAS/L16/S4/Admin/ProdConsumedCount/183/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S4
+    - metric_suffix: /LINHAS/L16/S4/Admin/ProdProcessedCount/183/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S4
+    - metric_suffix: /LINHAS/L16/S4/Admin/ProdDefectiveCount/183/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S4
+    - metric_suffix: /LINHAS/L16/S5/Admin/ProdConsumedCount/184/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S5
+    - metric_suffix: /LINHAS/L16/S5/Admin/ProdProcessedCount/184/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S5
+    - metric_suffix: /LINHAS/L16/S5/Admin/ProdDefectiveCount/184/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S5
+    - metric_suffix: /LINHAS/L16/S6OUTPUT/Admin/ProdConsumedCount/185/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S6OUTPUT
+    - metric_suffix: /LINHAS/L16/S6OUTPUT/Admin/ProdProcessedCount/185/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S6OUTPUT
+    - metric_suffix: /LINHAS/L16/S6OUTPUT/Admin/ProdDefectiveCount/185/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S6OUTPUT
+    - metric_suffix: /LINHAS/L18/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18
+    - metric_suffix: /LINHAS/L18/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18
+    - metric_suffix: /LINHAS/L18/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18
+    - metric_suffix: /LINHAS/L18/PRENSA/Admin/ProdConsumedCount/543/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-PRENSA
+    - metric_suffix: /LINHAS/L18/PRENSA/Admin/ProdProcessedCount/543/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-PRENSA
+    - metric_suffix: /LINHAS/L18/PRENSA/Admin/ProdDefectiveCount/543/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-PRENSA
+    - metric_suffix: /LINHAS/L18/TORNO/Admin/ProdConsumedCount/544/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-TORNO
+    - metric_suffix: /LINHAS/L18/TORNO/Admin/ProdProcessedCount/544/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-TORNO
+    - metric_suffix: /LINHAS/L18/TORNO/Admin/ProdDefectiveCount/544/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-TORNO
+    - metric_suffix: /LINHAS/L18/ACUMULADOR/Admin/ProdConsumedCount/546/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-ACUMULADOR
+    - metric_suffix: /LINHAS/L18/ACUMULADOR/Admin/ProdProcessedCount/546/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-ACUMULADOR
+    - metric_suffix: /LINHAS/L18/ACUMULADOR/Admin/ProdDefectiveCount/546/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-ACUMULADOR
+    - metric_suffix: /LINHAS/L18/IMPRESSAO/Admin/ProdConsumedCount/548/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-IMPRESSAO
+    - metric_suffix: /LINHAS/L18/IMPRESSAO/Admin/ProdProcessedCount/548/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-IMPRESSAO
+    - metric_suffix: /LINHAS/L18/IMPRESSAO/Admin/ProdDefectiveCount/548/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-IMPRESSAO
+    - metric_suffix: /LINHAS/L18/TAMPADEIRA/Admin/ProdConsumedCount/549/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-TAMPADEIRA
+    - metric_suffix: /LINHAS/L18/TAMPADEIRA/Admin/ProdProcessedCount/549/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-TAMPADEIRA
+    - metric_suffix: /LINHAS/L18/TAMPADEIRA/Admin/ProdDefectiveCount/549/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L18-TAMPADEIRA
+    - metric_suffix: /LINHAS/L19/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19
+    - metric_suffix: /LINHAS/L19/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19
+    - metric_suffix: /LINHAS/L19/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19
+    - metric_suffix: /LINHAS/L19/S3/Admin/ProdConsumedCount/643/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S3
+    - metric_suffix: /LINHAS/L19/S3/Admin/ProdProcessedCount/643/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S3
+    - metric_suffix: /LINHAS/L19/S3/Admin/ProdDefectiveCount/643/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S3
+    - metric_suffix: /LINHAS/L19/S4/Admin/ProdConsumedCount/644/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S4
+    - metric_suffix: /LINHAS/L19/S4/Admin/ProdProcessedCount/644/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S4
+    - metric_suffix: /LINHAS/L19/S4/Admin/ProdDefectiveCount/644/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S4
+    - metric_suffix: /LINHAS/L19/S5/Admin/ProdConsumedCount/645/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S5
+    - metric_suffix: /LINHAS/L19/S5/Admin/ProdProcessedCount/645/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S5
+    - metric_suffix: /LINHAS/L19/S5/Admin/ProdDefectiveCount/645/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S5
+    - metric_suffix: /LINHAS/L19/S6OUTPUT/Admin/ProdConsumedCount/646/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S6OUTPUT
+    - metric_suffix: /LINHAS/L19/S6OUTPUT/Admin/ProdProcessedCount/646/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S6OUTPUT
+    - metric_suffix: /LINHAS/L19/S6OUTPUT/Admin/ProdDefectiveCount/646/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S6OUTPUT
+    - metric_suffix: /LINHAS/L20/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20
+    - metric_suffix: /LINHAS/L20/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20
+    - metric_suffix: /LINHAS/L20/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20
+    - metric_suffix: /LINHAS/L20/S3/Admin/ProdConsumedCount/649/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S3
+    - metric_suffix: /LINHAS/L20/S3/Admin/ProdProcessedCount/649/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S3
+    - metric_suffix: /LINHAS/L20/S3/Admin/ProdDefectiveCount/649/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S3
+    - metric_suffix: /LINHAS/L20/S4/Admin/ProdConsumedCount/650/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S4
+    - metric_suffix: /LINHAS/L20/S4/Admin/ProdProcessedCount/650/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S4
+    - metric_suffix: /LINHAS/L20/S4/Admin/ProdDefectiveCount/650/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S4
+    - metric_suffix: /LINHAS/L20/S5/Admin/ProdConsumedCount/651/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S5
+    - metric_suffix: /LINHAS/L20/S5/Admin/ProdProcessedCount/651/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S5
+    - metric_suffix: /LINHAS/L20/S5/Admin/ProdDefectiveCount/651/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S5
+    - metric_suffix: /LINHAS/L20/S6OUTPUT/Admin/ProdConsumedCount/652/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S6OUTPUT
+    - metric_suffix: /LINHAS/L20/S6OUTPUT/Admin/ProdProcessedCount/652/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S6OUTPUT
+    - metric_suffix: /LINHAS/L20/S6OUTPUT/Admin/ProdDefectiveCount/652/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S6OUTPUT
+    - metric_suffix: /LINHAS/L90/Admin/ProdProcessedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90
+    - metric_suffix: /LINHAS/L90/Admin/ProdConsumedCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90
+    - metric_suffix: /LINHAS/L90/Admin/ProdDefectiveCount
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90
+    - metric_suffix: /LINHAS/L90/S1INFEED/Admin/ProdConsumedCount/684/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90-S1INFEED
+    - metric_suffix: /LINHAS/L90/S1INFEED/Admin/ProdProcessedCount/684/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90-S1INFEED
+    - metric_suffix: /LINHAS/L90/S1INFEED/Admin/ProdDefectiveCount/684/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90-S1INFEED
+    - metric_suffix: /LINHAS/L90/S2OUTPUT/Admin/ProdConsumedCount/685/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90-S2OUTPUT
+    - metric_suffix: /LINHAS/L90/S2OUTPUT/Admin/ProdProcessedCount/685/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90-S2OUTPUT
+    - metric_suffix: /LINHAS/L90/S2OUTPUT/Admin/ProdDefectiveCount/685/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L90-S2OUTPUT
+    - metric_suffix: /LINHAS/L01/S1INFEED/Admin/ProdConsumedCount/168/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S1INFEED
+    - metric_suffix: /LINHAS/L01/S1INFEED/Admin/ProdProcessedCount/168/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S1INFEED
+    - metric_suffix: /LINHAS/L01/S1INFEED/Admin/ProdDefectiveCount/168/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-S1INFEED
+    - metric_suffix: /LINHAS/L01/SCRAP/Admin/ProdConsumedCount/169/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-SCRAP
+    - metric_suffix: /LINHAS/L01/SCRAP/Admin/ProdProcessedCount/169/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-SCRAP
+    - metric_suffix: /LINHAS/L01/SCRAP/Admin/ProdDefectiveCount/169/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L01-SCRAP
+    - metric_suffix: /LINHAS/L03/S1INFEED/Admin/ProdConsumedCount/311/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S1INFEED
+    - metric_suffix: /LINHAS/L03/S1INFEED/Admin/ProdProcessedCount/311/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S1INFEED
+    - metric_suffix: /LINHAS/L03/S1INFEED/Admin/ProdDefectiveCount/311/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-S1INFEED
+    - metric_suffix: /LINHAS/L03/SCRAP/Admin/ProdConsumedCount/312/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-SCRAP
+    - metric_suffix: /LINHAS/L03/SCRAP/Admin/ProdProcessedCount/312/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-SCRAP
+    - metric_suffix: /LINHAS/L03/SCRAP/Admin/ProdDefectiveCount/312/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L03-SCRAP
+    - metric_suffix: /LINHAS/L04/S1INFEED/Admin/ProdConsumedCount/318/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S1INFEED
+    - metric_suffix: /LINHAS/L04/S1INFEED/Admin/ProdProcessedCount/318/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S1INFEED
+    - metric_suffix: /LINHAS/L04/S1INFEED/Admin/ProdDefectiveCount/318/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-S1INFEED
+    - metric_suffix: /LINHAS/L04/SCRAP/Admin/ProdConsumedCount/319/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-SCRAP
+    - metric_suffix: /LINHAS/L04/SCRAP/Admin/ProdProcessedCount/319/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-SCRAP
+    - metric_suffix: /LINHAS/L04/SCRAP/Admin/ProdDefectiveCount/319/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L04-SCRAP
+    - metric_suffix: /LINHAS/L05/S1INFEED/Admin/ProdConsumedCount/628/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S1INFEED
+    - metric_suffix: /LINHAS/L05/S1INFEED/Admin/ProdProcessedCount/628/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S1INFEED
+    - metric_suffix: /LINHAS/L05/S1INFEED/Admin/ProdDefectiveCount/628/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-S1INFEED
+    - metric_suffix: /LINHAS/L05/SCRAP/Admin/ProdConsumedCount/629/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-SCRAP
+    - metric_suffix: /LINHAS/L05/SCRAP/Admin/ProdProcessedCount/629/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-SCRAP
+    - metric_suffix: /LINHAS/L05/SCRAP/Admin/ProdDefectiveCount/629/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L05-SCRAP
+    - metric_suffix: /LINHAS/L06/S1INFEED/Admin/ProdConsumedCount/261/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S1INFEED
+    - metric_suffix: /LINHAS/L06/S1INFEED/Admin/ProdProcessedCount/261/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S1INFEED
+    - metric_suffix: /LINHAS/L06/S1INFEED/Admin/ProdDefectiveCount/261/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-S1INFEED
+    - metric_suffix: /LINHAS/L06/SCRAP/Admin/ProdConsumedCount/262/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-SCRAP
+    - metric_suffix: /LINHAS/L06/SCRAP/Admin/ProdProcessedCount/262/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-SCRAP
+    - metric_suffix: /LINHAS/L06/SCRAP/Admin/ProdDefectiveCount/262/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L06-SCRAP
+    - metric_suffix: /LINHAS/L07/S1INFEED/Admin/ProdConsumedCount/324/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S1INFEED
+    - metric_suffix: /LINHAS/L07/S1INFEED/Admin/ProdProcessedCount/324/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S1INFEED
+    - metric_suffix: /LINHAS/L07/S1INFEED/Admin/ProdDefectiveCount/324/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-S1INFEED
+    - metric_suffix: /LINHAS/L07/SCRAP/Admin/ProdConsumedCount/325/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-SCRAP
+    - metric_suffix: /LINHAS/L07/SCRAP/Admin/ProdProcessedCount/325/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-SCRAP
+    - metric_suffix: /LINHAS/L07/SCRAP/Admin/ProdDefectiveCount/325/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L07-SCRAP
+    - metric_suffix: /LINHAS/L09/S1INFEED/Admin/ProdConsumedCount/128/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S1INFEED
+    - metric_suffix: /LINHAS/L09/S1INFEED/Admin/ProdProcessedCount/128/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S1INFEED
+    - metric_suffix: /LINHAS/L09/S1INFEED/Admin/ProdDefectiveCount/128/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-S1INFEED
+    - metric_suffix: /LINHAS/L09/SCRAP/Admin/ProdConsumedCount/129/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-SCRAP
+    - metric_suffix: /LINHAS/L09/SCRAP/Admin/ProdProcessedCount/129/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-SCRAP
+    - metric_suffix: /LINHAS/L09/SCRAP/Admin/ProdDefectiveCount/129/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L09-SCRAP
+    - metric_suffix: /LINHAS/L11/S1INFEED/Admin/ProdConsumedCount/174/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S1INFEED
+    - metric_suffix: /LINHAS/L11/S1INFEED/Admin/ProdProcessedCount/174/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S1INFEED
+    - metric_suffix: /LINHAS/L11/S1INFEED/Admin/ProdDefectiveCount/174/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-S1INFEED
+    - metric_suffix: /LINHAS/L11/SCRAP/Admin/ProdConsumedCount/175/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-SCRAP
+    - metric_suffix: /LINHAS/L11/SCRAP/Admin/ProdProcessedCount/175/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-SCRAP
+    - metric_suffix: /LINHAS/L11/SCRAP/Admin/ProdDefectiveCount/175/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L11-SCRAP
+    - metric_suffix: /LINHAS/L12/S1INFEED/Admin/ProdConsumedCount/180/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S1INFEED
+    - metric_suffix: /LINHAS/L12/S1INFEED/Admin/ProdProcessedCount/180/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S1INFEED
+    - metric_suffix: /LINHAS/L12/S1INFEED/Admin/ProdDefectiveCount/180/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-S1INFEED
+    - metric_suffix: /LINHAS/L12/SCRAP/Admin/ProdConsumedCount/181/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-SCRAP
+    - metric_suffix: /LINHAS/L12/SCRAP/Admin/ProdProcessedCount/181/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-SCRAP
+    - metric_suffix: /LINHAS/L12/SCRAP/Admin/ProdDefectiveCount/181/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L12-SCRAP
+    - metric_suffix: /LINHAS/L13/S1INFEED/Admin/ProdConsumedCount/305/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S1INFEED
+    - metric_suffix: /LINHAS/L13/S1INFEED/Admin/ProdProcessedCount/305/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S1INFEED
+    - metric_suffix: /LINHAS/L13/S1INFEED/Admin/ProdDefectiveCount/305/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-S1INFEED
+    - metric_suffix: /LINHAS/L13/SCRAP/Admin/ProdConsumedCount/306/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-SCRAP
+    - metric_suffix: /LINHAS/L13/SCRAP/Admin/ProdProcessedCount/306/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-SCRAP
+    - metric_suffix: /LINHAS/L13/SCRAP/Admin/ProdDefectiveCount/306/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L13-SCRAP
+    - metric_suffix: /LINHAS/L14/S1INFEED/Admin/ProdConsumedCount/336/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S1INFEED
+    - metric_suffix: /LINHAS/L14/S1INFEED/Admin/ProdProcessedCount/336/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S1INFEED
+    - metric_suffix: /LINHAS/L14/S1INFEED/Admin/ProdDefectiveCount/336/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-S1INFEED
+    - metric_suffix: /LINHAS/L14/SCRAP/Admin/ProdConsumedCount/337/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-SCRAP
+    - metric_suffix: /LINHAS/L14/SCRAP/Admin/ProdProcessedCount/337/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-SCRAP
+    - metric_suffix: /LINHAS/L14/SCRAP/Admin/ProdDefectiveCount/337/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L14-SCRAP
+    - metric_suffix: /LINHAS/L16/S1INFEED/Admin/ProdConsumedCount/186/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S1INFEED
+    - metric_suffix: /LINHAS/L16/S1INFEED/Admin/ProdProcessedCount/186/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S1INFEED
+    - metric_suffix: /LINHAS/L16/S1INFEED/Admin/ProdDefectiveCount/186/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-S1INFEED
+    - metric_suffix: /LINHAS/L16/SCRAP/Admin/ProdConsumedCount/187/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-SCRAP
+    - metric_suffix: /LINHAS/L16/SCRAP/Admin/ProdProcessedCount/187/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-SCRAP
+    - metric_suffix: /LINHAS/L16/SCRAP/Admin/ProdDefectiveCount/187/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L16-SCRAP
+    - metric_suffix: /LINHAS/L19/S1INFEED/Admin/ProdConsumedCount/647/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S1INFEED
+    - metric_suffix: /LINHAS/L19/S1INFEED/Admin/ProdProcessedCount/647/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S1INFEED
+    - metric_suffix: /LINHAS/L19/S1INFEED/Admin/ProdDefectiveCount/647/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-S1INFEED
+    - metric_suffix: /LINHAS/L19/SCRAP/Admin/ProdConsumedCount/648/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-SCRAP
+    - metric_suffix: /LINHAS/L19/SCRAP/Admin/ProdProcessedCount/648/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-SCRAP
+    - metric_suffix: /LINHAS/L19/SCRAP/Admin/ProdDefectiveCount/648/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L19-SCRAP
+    - metric_suffix: /LINHAS/L20/S1INFEED/Admin/ProdConsumedCount/653/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S1INFEED
+    - metric_suffix: /LINHAS/L20/S1INFEED/Admin/ProdProcessedCount/653/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S1INFEED
+    - metric_suffix: /LINHAS/L20/S1INFEED/Admin/ProdDefectiveCount/653/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-S1INFEED
+    - metric_suffix: /LINHAS/L20/SCRAP/Admin/ProdConsumedCount/654/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-SCRAP
+    - metric_suffix: /LINHAS/L20/SCRAP/Admin/ProdProcessedCount/654/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-SCRAP
+    - metric_suffix: /LINHAS/L20/SCRAP/Admin/ProdDefectiveCount/654/Unit
+      type: double
+      device_key: BISPHARMASTAGING-SP-LINHAS-L20-SCRAP
