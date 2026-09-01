@@ -46,20 +46,75 @@ sparkplug:
   uplink_ca_ref: ""
 
 raw_tag_map:
-  # ═══ L01 line (id 2000109) ═══════════════════════════════════════════════════
-  - {metric_suffix: /L01/Admin/ProdConsumedCount,  type: double}   # gross = DINT0
-  - {metric_suffix: /L01/Admin/ProdProcessedCount, type: double}   # net   = DINT20
-  - {metric_suffix: /L01/Admin/ProdDefectiveCount, type: double}   # scrap = DINT0-DINT4
-
-  # ── L01 members (count-index = id_equipment) ────────────────────────────────
-  - {metric_suffix: /L01/S1INFEED/Admin/ProdProcessedCount/2000111/Unit, type: double}  # DINT0
-  - {metric_suffix: /L01/S3/Admin/ProdProcessedCount/2000112/Unit,       type: double}  # DINT8
-  - {metric_suffix: /L01/S4/Admin/ProdProcessedCount/2000113/Unit,       type: double}  # DINT12
-  - {metric_suffix: /L01/S5/Admin/ProdProcessedCount/2000114/Unit,       type: double}  # DINT16
-  - {metric_suffix: /L01/S6OUTPUT/Admin/ProdProcessedCount/2000115/Unit, type: double}  # DINT20
-  - {metric_suffix: /L01/SCRAP/Admin/ProdProcessedCount/2000116/Unit,    type: double}  # DINT0-DINT4
-
-  # ═══ L03..L20, L90 — added as each line is validated (all 7-var lines share the
-  #     identical DB1 layout; L18 adds DINT24/28; L90 is an 8-DINT array). Kept out
-  #     until reachability + count-index are confirmed per line so no expected
-  #     suffix silently drops. See the onboarding worked-example wiki page.
+  - {metric_suffix: /L01/S1INFEED/Admin/ProdProcessedCount/2000111/Unit, type: double}
+  - {metric_suffix: /L01/S3/Admin/ProdProcessedCount/2000112/Unit, type: double}
+  - {metric_suffix: /L01/S4/Admin/ProdProcessedCount/2000113/Unit, type: double}
+  - {metric_suffix: /L01/S5/Admin/ProdProcessedCount/2000114/Unit, type: double}
+  - {metric_suffix: /L01/S6OUTPUT/Admin/ProdProcessedCount/2000115/Unit, type: double}
+  - {metric_suffix: /L03/S1INFEED/Admin/ProdProcessedCount/2000118/Unit, type: double}
+  - {metric_suffix: /L03/S3/Admin/ProdProcessedCount/2000119/Unit, type: double}
+  - {metric_suffix: /L03/S4/Admin/ProdProcessedCount/2000120/Unit, type: double}
+  - {metric_suffix: /L03/S5/Admin/ProdProcessedCount/2000121/Unit, type: double}
+  - {metric_suffix: /L03/S6OUTPUT/Admin/ProdProcessedCount/2000122/Unit, type: double}
+  - {metric_suffix: /L04/S1INFEED/Admin/ProdProcessedCount/2000125/Unit, type: double}
+  - {metric_suffix: /L04/S3/Admin/ProdProcessedCount/2000126/Unit, type: double}
+  - {metric_suffix: /L04/S4/Admin/ProdProcessedCount/2000127/Unit, type: double}
+  - {metric_suffix: /L04/S5/Admin/ProdProcessedCount/2000128/Unit, type: double}
+  - {metric_suffix: /L04/S6OUTPUT/Admin/ProdProcessedCount/2000129/Unit, type: double}
+  - {metric_suffix: /L05/S1INFEED/Admin/ProdProcessedCount/2000132/Unit, type: double}
+  - {metric_suffix: /L05/S3/Admin/ProdProcessedCount/2000133/Unit, type: double}
+  - {metric_suffix: /L05/S4/Admin/ProdProcessedCount/2000134/Unit, type: double}
+  - {metric_suffix: /L05/S5/Admin/ProdProcessedCount/2000135/Unit, type: double}
+  - {metric_suffix: /L05/S6OUTPUT/Admin/ProdProcessedCount/2000136/Unit, type: double}
+  - {metric_suffix: /L06/S1INFEED/Admin/ProdProcessedCount/2000139/Unit, type: double}
+  - {metric_suffix: /L06/S3/Admin/ProdProcessedCount/2000140/Unit, type: double}
+  - {metric_suffix: /L06/S4/Admin/ProdProcessedCount/2000141/Unit, type: double}
+  - {metric_suffix: /L06/S5/Admin/ProdProcessedCount/2000142/Unit, type: double}
+  - {metric_suffix: /L06/S6OUTPUT/Admin/ProdProcessedCount/2000143/Unit, type: double}
+  - {metric_suffix: /L07/S1INFEED/Admin/ProdProcessedCount/2000146/Unit, type: double}
+  - {metric_suffix: /L07/S3/Admin/ProdProcessedCount/2000147/Unit, type: double}
+  - {metric_suffix: /L07/S4/Admin/ProdProcessedCount/2000148/Unit, type: double}
+  - {metric_suffix: /L07/S5/Admin/ProdProcessedCount/2000149/Unit, type: double}
+  - {metric_suffix: /L07/S6OUTPUT/Admin/ProdProcessedCount/2000150/Unit, type: double}
+  - {metric_suffix: /L09/S1INFEED/Admin/ProdProcessedCount/2000153/Unit, type: double}
+  - {metric_suffix: /L09/S3/Admin/ProdProcessedCount/2000154/Unit, type: double}
+  - {metric_suffix: /L09/S4/Admin/ProdProcessedCount/2000155/Unit, type: double}
+  - {metric_suffix: /L09/S5/Admin/ProdProcessedCount/2000156/Unit, type: double}
+  - {metric_suffix: /L09/S6OUTPUT/Admin/ProdProcessedCount/2000157/Unit, type: double}
+  - {metric_suffix: /L11/S1INFEED/Admin/ProdProcessedCount/2000160/Unit, type: double}
+  - {metric_suffix: /L11/S3/Admin/ProdProcessedCount/2000161/Unit, type: double}
+  - {metric_suffix: /L11/S4/Admin/ProdProcessedCount/2000162/Unit, type: double}
+  - {metric_suffix: /L11/S5/Admin/ProdProcessedCount/2000163/Unit, type: double}
+  - {metric_suffix: /L11/S6OUTPUT/Admin/ProdProcessedCount/2000164/Unit, type: double}
+  - {metric_suffix: /L12/S1INFEED/Admin/ProdProcessedCount/2000167/Unit, type: double}
+  - {metric_suffix: /L12/S3/Admin/ProdProcessedCount/2000168/Unit, type: double}
+  - {metric_suffix: /L12/S4/Admin/ProdProcessedCount/2000169/Unit, type: double}
+  - {metric_suffix: /L12/S5/Admin/ProdProcessedCount/2000170/Unit, type: double}
+  - {metric_suffix: /L12/S6OUTPUT/Admin/ProdProcessedCount/2000171/Unit, type: double}
+  - {metric_suffix: /L13/S1INFEED/Admin/ProdProcessedCount/2000174/Unit, type: double}
+  - {metric_suffix: /L13/S3/Admin/ProdProcessedCount/2000175/Unit, type: double}
+  - {metric_suffix: /L13/S4/Admin/ProdProcessedCount/2000176/Unit, type: double}
+  - {metric_suffix: /L13/S5/Admin/ProdProcessedCount/2000177/Unit, type: double}
+  - {metric_suffix: /L13/S6OUTPUT/Admin/ProdProcessedCount/2000178/Unit, type: double}
+  - {metric_suffix: /L14/S1INFEED/Admin/ProdProcessedCount/2000181/Unit, type: double}
+  - {metric_suffix: /L14/S3/Admin/ProdProcessedCount/2000182/Unit, type: double}
+  - {metric_suffix: /L14/S4/Admin/ProdProcessedCount/2000183/Unit, type: double}
+  - {metric_suffix: /L14/S5/Admin/ProdProcessedCount/2000184/Unit, type: double}
+  - {metric_suffix: /L14/S6OUTPUT/Admin/ProdProcessedCount/2000185/Unit, type: double}
+  - {metric_suffix: /L16/S1INFEED/Admin/ProdProcessedCount/2000188/Unit, type: double}
+  - {metric_suffix: /L16/S3/Admin/ProdProcessedCount/2000189/Unit, type: double}
+  - {metric_suffix: /L16/S4/Admin/ProdProcessedCount/2000190/Unit, type: double}
+  - {metric_suffix: /L16/S5/Admin/ProdProcessedCount/2000191/Unit, type: double}
+  - {metric_suffix: /L16/S6OUTPUT/Admin/ProdProcessedCount/2000192/Unit, type: double}
+  - {metric_suffix: /L19/S1INFEED/Admin/ProdProcessedCount/2000201/Unit, type: double}
+  - {metric_suffix: /L19/S3/Admin/ProdProcessedCount/2000202/Unit, type: double}
+  - {metric_suffix: /L19/S4/Admin/ProdProcessedCount/2000203/Unit, type: double}
+  - {metric_suffix: /L19/S5/Admin/ProdProcessedCount/2000204/Unit, type: double}
+  - {metric_suffix: /L19/S6OUTPUT/Admin/ProdProcessedCount/2000205/Unit, type: double}
+  - {metric_suffix: /L20/S1INFEED/Admin/ProdProcessedCount/2000208/Unit, type: double}
+  - {metric_suffix: /L20/S3/Admin/ProdProcessedCount/2000209/Unit, type: double}
+  - {metric_suffix: /L20/S4/Admin/ProdProcessedCount/2000210/Unit, type: double}
+  - {metric_suffix: /L20/S5/Admin/ProdProcessedCount/2000211/Unit, type: double}
+  - {metric_suffix: /L20/S6OUTPUT/Admin/ProdProcessedCount/2000212/Unit, type: double}
+  - {metric_suffix: /L90/S1INFEED/Admin/ProdProcessedCount/2000215/Unit, type: double}
+  - {metric_suffix: /L90/S2OUTPUT/Admin/ProdProcessedCount/2000216/Unit, type: double}
