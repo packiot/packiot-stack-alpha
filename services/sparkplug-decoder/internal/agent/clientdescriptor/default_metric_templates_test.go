@@ -12,12 +12,12 @@ import (
 // does not collect the canonical leaf set). Before the empty-templates fallback
 // this synthesized ZERO agent raw_tag_map suffixes, so the client⇄agent §C check
 // rejected every s7 tag ("N reader metrics have no matching raw_tag_map
-// metric_suffix"). The two s7 tags are authored to line up with the DEFAULT
-// member leaves (/Status/MachSpeed + /Admin/ProdProcessedCount/{idx}/Unit), so
-// once the fallback kicks in the §C invariant holds.
+// metric_suffix"). The two s7 tags reference a SUBSET of the DEFAULT member
+// leaves, so once the fallback kicks in the §C invariant holds (§C is reader→
+// agent — the default's extra suffixes never reject a reader tag).
 //
 //	member M1 (topic ACME/SP/LINE1/M1, count_index 5), prefix ACME/SP →
-//	  default member leaves synthesize suffixes
+//	  the s7 tags emit these two suffixes, both present in the default synthesis
 //	    /LINE1/M1/Status/MachSpeed
 //	    /LINE1/M1/Admin/ProdProcessedCount/5/Unit
 const wizardNoTemplatesYAML = `
@@ -84,20 +84,33 @@ func TestGenerateProfile_EmptyMetricTemplatesFallsBackToDefault(t *testing.T) {
 			profile.MetricTemplates, DefaultMetricTemplates())
 	}
 
-	// (2) synthesis now produces the default member leaves for the member, and the
-	// default line leaf for the line.
+	// (2) synthesis now produces the FULL default member leaves (three production
+	// counters + speed + state, count leaves keyed by {idx}=5) and the full default
+	// line leaves (bare counters + speed + state + Parameter30700).
 	memberSuffixes := synthSuffixes(t, profile, "/LINE1/M1", tenantprofile.ClassMember, 9001)
 	for _, want := range []string{
-		"/LINE1/M1/Status/MachSpeed",
+		"/LINE1/M1/Admin/ProdConsumedCount/5/Unit",
 		"/LINE1/M1/Admin/ProdProcessedCount/5/Unit",
+		"/LINE1/M1/Admin/ProdDefectiveCount/5/Unit",
+		"/LINE1/M1/Status/MachSpeed",
+		"/LINE1/M1/Status/StateCurrent",
 	} {
 		if !memberSuffixes[want] {
 			t.Errorf("member synthesis missing default leaf %q; got %v", want, suffixKeys(memberSuffixes))
 		}
 	}
 	lineSuffixes := synthSuffixes(t, profile, "/LINE1", tenantprofile.ClassLine, 9000)
-	if !lineSuffixes["/LINE1/Status/StateCurrent"] {
-		t.Errorf("line synthesis missing default leaf %q; got %v", "/LINE1/Status/StateCurrent", suffixKeys(lineSuffixes))
+	for _, want := range []string{
+		"/LINE1/Admin/ProdConsumedCount",
+		"/LINE1/Admin/ProdProcessedCount",
+		"/LINE1/Admin/ProdDefectiveCount",
+		"/LINE1/Status/MachSpeed",
+		"/LINE1/Status/StateCurrent",
+		"/LINE1/Status/Parameter30700",
+	} {
+		if !lineSuffixes[want] {
+			t.Errorf("line synthesis missing default leaf %q; got %v", want, suffixKeys(lineSuffixes))
+		}
 	}
 
 	// (3) the §C client⇄agent consistency check passes for the matching s7_tag_map
