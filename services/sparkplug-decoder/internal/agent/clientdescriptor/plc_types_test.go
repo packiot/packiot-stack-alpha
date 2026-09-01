@@ -166,12 +166,14 @@ func baseTypedDescriptor() *Descriptor {
 	}
 }
 
-// TestPLCType_ExplicitOverridesType proves ADR-0050 precedence: an EXPLICIT
-// s7_tag_map entry for an endpoint suppresses the type expansion for that endpoint
-// entirely (explicit > type), keeping the escape hatch for an irregular PLC.
+// TestPLCType_ExplicitOverridesType proves ADR-0050 PER-MEMBER precedence: an
+// EXPLICIT s7_tag_map entry overrides the type expansion for THAT member only
+// (kept verbatim), while the endpoint's OTHER members still expand from the type —
+// so overriding one irregular sensor never silently drops the rest of the line.
 func TestPLCType_ExplicitOverridesType(t *testing.T) {
 	d := baseTypedDescriptor()
-	// An explicit (deliberately non-default) entry on the SAME endpoint.
+	// An explicit (deliberately non-default) entry for ONE member (S1INFEED) of a
+	// two-member typed endpoint. S6OUTPUT must still expand from the type.
 	d.PLC.S7TagMap = []clientconfig.S7EndpointTags{{
 		Endpoint:    "L01",
 		PackMLTopic: "ACME/SP/LINHAS/L01/S1INFEED",
@@ -185,12 +187,67 @@ func TestPLCType_ExplicitOverridesType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("effectiveS7TagMap: %v", err)
 	}
-	// Only the explicit entry survives — the type did NOT expand this endpoint.
-	if len(s7) != 1 {
-		t.Fatalf("explicit entry must suppress type expansion for its endpoint; want 1 entry, got %d", len(s7))
+	// Both members present: the explicit S1INFEED (verbatim) + the expanded S6OUTPUT.
+	if len(s7) != 2 {
+		t.Fatalf("want 2 entries (explicit S1INFEED + expanded S6OUTPUT), got %d", len(s7))
 	}
-	if s7[0].Tags[0].DB != 9 || s7[0].Tags[0].Offset != 999 {
-		t.Errorf("explicit entry must be kept verbatim (db=9 off=999), got db=%d off=%d", s7[0].Tags[0].DB, s7[0].Tags[0].Offset)
+	byTopic := map[string]clientconfig.S7Tag{}
+	for _, m := range s7 {
+		byTopic[m.PackMLTopic] = m.Tags[0]
+	}
+	if got := byTopic["ACME/SP/LINHAS/L01/S1INFEED"]; got.DB != 9 || got.Offset != 999 {
+		t.Errorf("explicit member must be kept verbatim (db=9 off=999), got db=%d off=%d", got.DB, got.Offset)
+	}
+	if got := byTopic["ACME/SP/LINHAS/L01/S6OUTPUT"]; got.DB != 1 || got.Offset != 20 {
+		t.Errorf("non-overridden member must still expand from the type (db=1 off=20), got db=%d off=%d", got.DB, got.Offset)
+	}
+}
+
+// TestPLCType_SensorKeyWithNoOffsetErrors proves a member that LOOKS like a sensor
+// (leading S<n>) but has no offset in the type is an ERROR, not a silent drop —
+// catching a sensor_offsets typo before it zeroes a real counter.
+func TestPLCType_SensorKeyWithNoOffsetErrors(t *testing.T) {
+	d := baseTypedDescriptor()
+	iptr := func(i int) *int { return &i }
+	// S3 is a genuine sensor member, but the type only declares S1/S6.
+	d.Equipment = append(d.Equipment, Equipment{
+		Topic: "ACME/SP/LINHAS/L01/S3", IDEquipment: 103, TPEquipment: 1, IDUnit: iptr(103),
+	})
+	err := d.Validate()
+	if err == nil {
+		t.Fatal("want error for a sensor member with no offset, got nil")
+	}
+	if !strings.Contains(err.Error(), "no offset in type") {
+		t.Fatalf("error %q should flag the missing offset", err.Error())
+	}
+}
+
+// TestPLCType_DuplicateSensorKeyErrors proves two members that resolve to the SAME
+// sensor key (e.g. S1INFEED + S1RETURN → S1) are rejected — they would otherwise
+// bind the same register and one would silently mis-read the other's counter.
+func TestPLCType_DuplicateSensorKeyErrors(t *testing.T) {
+	d := baseTypedDescriptor()
+	iptr := func(i int) *int { return &i }
+	// A second S1-keyed member on the same line.
+	d.Equipment = append(d.Equipment, Equipment{
+		Topic: "ACME/SP/LINHAS/L01/S1RETURN", IDEquipment: 111, TPEquipment: 1, IDUnit: iptr(111),
+	})
+	err := d.Validate()
+	if err == nil {
+		t.Fatal("want error for a duplicate sensor key, got nil")
+	}
+	if !strings.Contains(err.Error(), "claimed by both") {
+		t.Fatalf("error %q should flag the sensor-key collision", err.Error())
+	}
+	// Giving one of them an explicit entry resolves it (per-member escape hatch).
+	d.PLC.S7TagMap = []clientconfig.S7EndpointTags{{
+		Endpoint:    "L01",
+		PackMLTopic: "ACME/SP/LINHAS/L01/S1RETURN",
+		IDEquipment: 111,
+		Tags:        []clientconfig.S7Tag{{Metric: "/Admin/ProdProcessedCount/111/Unit", DB: 1, Offset: 4, Type: "dint"}},
+	}}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("an explicit entry for one collider must resolve the clash, got %v", err)
 	}
 }
 

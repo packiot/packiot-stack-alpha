@@ -769,14 +769,21 @@ func (d *Descriptor) effectiveS7TagMap() ([]clientconfig.S7EndpointTags, error) 
 		return nil, nil
 	}
 	out := make([]clientconfig.S7EndpointTags, 0, len(d.PLC.S7TagMap))
-	explicit := map[string]bool{} // endpoint name → has an explicit s7 entry (overrides its type)
+	// explicitTopics[endpoint][packml_topic] = an explicit s7 entry already binds this
+	// member. Precedence is PER MEMBER (ADR-0050: "explicit tag entry > type"): an
+	// explicit entry overrides ONLY its own member's expansion, so overriding one
+	// irregular sensor never silently drops the rest of the line's counters.
+	explicitTopics := map[string]map[string]bool{}
 	for _, m := range d.PLC.S7TagMap {
 		out = append(out, m)
-		explicit[m.Endpoint] = true
+		if explicitTopics[m.Endpoint] == nil {
+			explicitTopics[m.Endpoint] = map[string]bool{}
+		}
+		explicitTopics[m.Endpoint][m.PackMLTopic] = true
 	}
 	var profile *tenantprofile.Profile // built lazily; only expansion needs it
 	for _, ep := range d.PLC.Endpoints {
-		if ep.Type == "" || explicit[ep.Name] {
+		if ep.Type == "" {
 			continue
 		}
 		t, ok := d.plcType(ep.Type)
@@ -792,7 +799,7 @@ func (d *Descriptor) effectiveS7TagMap() ([]clientconfig.S7EndpointTags, error) 
 			}
 			profile = p
 		}
-		entries, err := d.expandS7TypeEndpoint(profile, ep, t)
+		entries, err := d.expandS7TypeEndpoint(profile, ep, t, explicitTopics[ep.Name])
 		if err != nil {
 			return nil, err
 		}
@@ -812,11 +819,20 @@ func (d *Descriptor) effectiveS7TagMap() ([]clientconfig.S7EndpointTags, error) 
 // /Admin/ProdProcessedCount/<resolved count_index>/Unit. Because both this map and
 // the agent raw_tag_map derive that leaf from the same member + count_index +
 // metric_templates, they satisfy the §C invariant BY CONSTRUCTION (no hand-authored
-// physical/canonical pair to drift). A member whose sensor key is absent from the
-// type (e.g. a SCRAP member with no raw register) is skipped — a gap, not an error;
-// cross-register derivations live in the type's `derive` block (ADR-0050 §4, not yet
-// emitted). One S7EndpointTags per member (each member is its own equipment/topic).
-func (d *Descriptor) expandS7TypeEndpoint(profile *tenantprofile.Profile, ep DescriptorPLCEndpoint, t PLCType) ([]clientconfig.S7EndpointTags, error) {
+// physical/canonical pair to drift). One S7EndpointTags per member (each member is
+// its own equipment/topic).
+//
+// Skip vs error, per member:
+//   - a member with an EXPLICIT s7 entry (in explicitTopics) is skipped — that entry
+//     overrides the type for this member only (ADR-0050 per-member precedence);
+//   - a NON-sensor member (no leading S<n> token, e.g. SCRAP) is skipped — a gap by
+//     design; its cross-register scrap lives in the type's `derive` block (§4);
+//   - a member that DOES look like a sensor (S<n>) but has no matching offset is an
+//     ERROR (a typo / missing offset would otherwise SILENTLY drop a real counter —
+//     the §C check is reader→agent only and cannot catch a dropped reader tag);
+//   - two members resolving to the SAME sensor key is an ERROR (they would bind the
+//     same register — a silent mis-read).
+func (d *Descriptor) expandS7TypeEndpoint(profile *tenantprofile.Profile, ep DescriptorPLCEndpoint, t PLCType, explicitTopics map[string]bool) ([]clientconfig.S7EndpointTags, error) {
 	members := d.membersOnEndpointLine(ep)
 	if len(members) == 0 {
 		return nil, fmt.Errorf(
@@ -848,13 +864,31 @@ func (d *Descriptor) expandS7TypeEndpoint(profile *tenantprofile.Profile, ep Des
 	// The NET production leaf, resolved once from the shared role→leaf map so the
 	// generated metric can never diverge from the member template / worker classifier.
 	netLeaf := lineRoleLeaf[LineRoleProcessed] // "ProdProcessedCount"
+	seenKey := map[string]string{}             // sensor key → the member topic that claimed it
 	var out []clientconfig.S7EndpointTags
 	for _, m := range members {
+		if explicitTopics[m.Topic] {
+			continue // hand-authored — the explicit entry overrides the type for THIS member
+		}
 		key := sensorKeyOf(lastSegment(m.Topic))
+		if key == "" {
+			continue // non-sensor member (e.g. SCRAP) — a gap by design (derive block, §4)
+		}
 		offset, ok := t.SensorOffsets[key]
 		if !ok {
-			continue // no register for this sensor key — a gap (e.g. SCRAP), see doc
+			return nil, fmt.Errorf(
+				"plc.endpoints %q: member %s has sensor key %q with no offset in type %q sensor_offsets "+
+					"(a missing/typo'd offset would SILENTLY drop this counter) — add the offset, or move a "+
+					"derived/uncounted sensor to the type's derive block (ADR-0050 §4)",
+				ep.Name, m.Topic, key, ep.Type)
 		}
+		if prev, dup := seenKey[key]; dup {
+			return nil, fmt.Errorf(
+				"plc.endpoints %q: sensor key %q is claimed by both %s and %s — two members cannot share "+
+					"one register offset (rename one, or give it an explicit s7_tag_map entry)",
+				ep.Name, key, prev, m.Topic)
+		}
+		seenKey[key] = m.Topic
 		seg := d.localSegment(m.Topic)
 		idx, err := profile.ResolveCountIndex(seg, m.IDEquipment)
 		if err != nil {
