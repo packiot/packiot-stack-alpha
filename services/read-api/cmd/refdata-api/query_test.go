@@ -52,7 +52,7 @@ func TestQueryHandlerRoleDatasetViaXApiKeyIs403(t *testing.T) {
 	mux := http.NewServeMux()
 	registerQueryAPI(mux, nil, nil) // 403 path returns before any pool use (nil cache ⇒ bypass)
 	// Operator credential: a tenant, no Bearer path (nil resolver) → no user axis.
-	handler := authMiddleware(map[string]int{"op-key": 9}, infraExemptSet(), nil, mux)
+	handler := authMiddleware(map[string]int{"op-key": 9}, infraExemptSet(), nil, nil, mux)
 
 	for _, name := range []string{"entities-per-user-role", "menu-per-user-role"} {
 		req := httptest.NewRequest("POST", "/v1/query",

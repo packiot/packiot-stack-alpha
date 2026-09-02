@@ -626,6 +626,17 @@ services:
       COGNITO_CS_ADMIN_GROUP: cs-admin
       EDGE_API_COGNITO_AUTH_ENABLED: "true"
       EDGE_API_ONBOARDING_ENABLED: "true"
+      # ── Operator super-admin cross-tenant capability (was dark) ───────────────
+      # ONE flag governs the whole operator enterprise switcher, coherently
+      # (edge-api #242): the login super_user field (picker visibility), the
+      # /session/switch + /session/enterprises picker, AND the write escalation in
+      # auth.middleware. read-api honors the SAME flag for the /v1 read escalation
+      # (the read twin). Turned ON so dev@packiot.com — the exclusive allowlisted
+      # super_user — can switch, read, and write across tenants. Identity is still
+      # double-gated (live DB user_roles.super_user AND the email allowlist), so a
+      # stray super_user=true on any other account can never escalate. Flip back to
+      # "false" for instant, total rollback (picker + switch + writes all go dark).
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
       # Client Teardown (Remove client / Reset onboarding) — the SAFE INVERSE of
       # onboarding (ADR-0053). Dark-by-default on its OWN flag, deliberately
       # separate from onboarding. Enabled on staging so CS can reset/remove a
@@ -2292,6 +2303,18 @@ services:
       COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
       # COGNITO_JWKS_URL defaults to <issuer>/.well-known/jwks.json; override only
       # for a non-standard endpoint.
+      # ── Operator super-admin cross-tenant READ escalation (was dark) ──────────
+      # The READ twin of edge-api's write escalation, governed by the SAME flag so
+      # the whole switcher turns on coherently. When on, a /v1 read carrying a
+      # verified operator super-admin token + ?idEnterprise=<target> is re-scoped
+      # to that tenant (auth_operator_superadmin.go): JWT verified with JWT_SECRET
+      # (already provided via env_file .env, same 64-char value edge-api uses),
+      # then live DB user_roles.super_user + the exclusive email allowlist (default
+      # dev@packiot.com) + active-target — all server-side, fail-closed to the home
+      # key. This is a deliberate, gated exception to the ADR-0027 "client never
+      # names a tenant" invariant (the $1 fence still scopes every query). "false"
+      # → the escalation code is inert and /v1 behaves exactly as before.
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
       # ── ADR-0035: cache-aside over app-redis (ADDITIVE · FLAG-GATED · FAIL-OPEN) ──
       # REDIS_CACHE_ENABLED=true turns on the /v1/query dataset cache-aside; set
       # "false" to disable at runtime (a container env flip + restart) with zero

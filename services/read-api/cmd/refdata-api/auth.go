@@ -213,7 +213,7 @@ type bearerResolver func(ctx context.Context, token string) (resolvedIdentity, e
 //   - an empty keys map AND a nil bearer resolver → EVERY non-infra route 401s.
 //     A credential-source failure denies all access; it never falls through to
 //     "no tenant filter".
-func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerResolver, next http.Handler) http.Handler {
+func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerResolver, superAdmin *operatorSuperAdminAuth, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if exemptMatch(exempt, r.URL.Path) {
 			next.ServeHTTP(w, r)
@@ -225,6 +225,16 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 			if !ok {
 				unauthorized(w)
 				return
+			}
+			// Operator super-admin cross-tenant READ escalation (dark by default):
+			// a verified, allowlisted super-admin who switched the SPA onto another
+			// tenant may read it. Fail-closed — a missing/forged/unauthorized claim
+			// silently keeps the home cid, so a normal operator can never cross
+			// tenants. See auth_operator_superadmin.go.
+			if superAdmin != nil {
+				if target, ok := superAdmin.resolveTarget(r.Context(), r, cid); ok {
+					cid = target
+				}
 			}
 			next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
 			return

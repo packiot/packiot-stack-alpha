@@ -133,7 +133,7 @@ func TestIntegrationShimEndToEndThroughMiddleware(t *testing.T) {
 	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(muxPattern(sh.path), makeExternalHandler(sh, reader, mbKeys(), incoplastOwner, discardLogger()))
-	authed := authMiddleware(mbKeys(), authExemptSet(), nil, mux) // nil bearer: doesn't matter, route is exempt
+	authed := authMiddleware(mbKeys(), authExemptSet(), nil, nil, mux) // nil bearer: doesn't matter, route is exempt
 
 	owner := strconv.Itoa(incoplastOwner)
 
