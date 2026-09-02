@@ -57,7 +57,7 @@ columns `id_infeedcounter`/`id_outfeedcounter`/`id_rejectcounter` — **collisio
 ## The OEE aggregate cascade (data plane)
 
 ```
-equipment_values  (raw hypertable, PK(id_equipment, ts_value), 180-day retention)
+equipment_values  (raw hypertable, PK(id_equipment, ts_value), time-bounded — see "Retention & the historian cold store")
    │ time_bucket rollups → TimescaleDB continuous aggregates (prod) / plain views (staging)
    ▼
 agg_equipment_values_{1min,1hour,1day,1week,1month}
@@ -78,6 +78,42 @@ equipment_runtime_{shift,1hour}  [hypertables]   ·  _{1day,1week,1month}  [plai
 - **uns snapshot gotcha:** greyed dashboard tiles = `uns_equipment_current_metrics` went
   stale because a worker refresher wasn't running — a live-snapshot table, not a fresh
   aggregate.
+
+## Retention & the historian cold store
+
+Two layers bound how long data lives: a **hot** retention policy inside the
+analytics DB, and a **cold** Parquet historian on S3 for anything older.
+
+### Hot retention — inside `packiot_analytics` (staging)
+
+| Table | Bound | Mechanism |
+|---|---|---|
+| `equipment_values` (raw hypertable) | **90 days** | TimescaleDB `policy_retention` (`drop_after`) |
+| `equipment_events`, `*_raw` | 2 years | retention policy |
+| `lab_equipment_values` | 1 year | retention policy |
+| `equipment_runtime_1hour` / `_shift`, `equipment_events_cpac_shadow` (plain derived tables) | **90 days** | UDA job `purge_analytics_plain` (a daily `add_job` procedure — these are **not** hypertables, so `drop_chunks` can't reach them) |
+
+So staging analytics keeps **~3 months** of telemetry + derived rows. `production_orders`
+and `equipment_events_man` are deliberately **unbounded** — they're business-entity /
+manual-entry tables that grow with human activity, not sample rate. (This is why the
+OEE-cascade box above says "time-bounded — see here" rather than a single number: the
+bound is plane- and table-specific.)
+
+### Cold store — the S3 + Athena historian (`terraform/staging/historian.tf`)
+
+A daily job unloads `equipment_values` from the analytics DB to **ZSTD Parquet on S3**,
+queried via **Athena partition projection** (no Glue crawler → $0 catalog cost).
+
+- **Layout:** `s3://packiot-staging-historian-<acct>/equipment_values/enterprise=<id>/year=<Y>/month=<M>/data-<YYYY-MM-DD>.parquet`. Partitions **and** `ts_value` are **UTC** — query in UTC, not local BRT, or you drift by the offset.
+- **Append job:** `historian-staging-append.timer` (systemd, daily 02:30 UTC, `Persistent=true`) runs `scripts/historian-staging-run-append.sh` on the app box. DuckDB `postgres_query` (READ_ONLY) → a **56-column** projection matching the Glue table → `COPY TO` a **deterministic per-day S3 key**. Versioning is off, so a re-run **overwrites** (never duplicates); a 2-day trailing overlap window (`OVERLAP_DAYS`) re-heals late rows.
+- **Prune:** S3 lifecycle expires `equipment_values/` Parquet after **180 days** (staging is a *test* historian — 6-month prune) and `athena-results/` after 30 days.
+- **No-gap guarantee:** rows land in the cold store ~1 day after they occur; analytics doesn't drop a row until it's 90 days old — so every row is archived ~87–90 days *before* it would leave the hot DB. Watermark files (`_watermark/enterprise=<id>/last-append.json`) give observability; the DB→S3 row counts cross-check **exactly**.
+- **Total queryable age ≈ 6 months** — the 90-day hot window is a *subset* of the 180-day cold window, **not additive**.
+
+> **Prod differs:** `terraform/production/historian.tf` is a **keep-forever** design that
+> *tiers* to colder storage (365d/730d transitions) rather than pruning, and the prod
+> instance is currently a one-time legacy backfill pilot (ent-1 only), not an ongoing
+> append. Don't apply the staging 6-month prune to prod.
 
 ## Shifts — the seconds-from-week-start encoding
 

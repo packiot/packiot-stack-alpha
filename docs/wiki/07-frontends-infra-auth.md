@@ -95,9 +95,17 @@ CloudFront fronts all vhosts → X-Origin-Verify 403s non-CloudFront hits
   `node-exporter`, `cadvisor`, `blackbox`).
 - **Superset** (dedicated prod box, `bi.prod.packiot.app`): apache/superset 4.1.1;
   per-tenant FORCE-RLS; embedded in front4 via guest tokens.
-- **Historian** (`historian.tf`): legacy `equipment_values` (~2.19B rows) unloaded
-  SELECT-only into ZSTD Parquet on S3, queried via Athena with partition projection (no
-  Glue crawlers — cost-avoided). Off GCP for cost.
+- **Historian** (`historian.tf`): `equipment_values` unloaded SELECT-only into ZSTD
+  Parquet on S3, queried via Athena with partition projection (no Glue crawlers —
+  cost-avoided). Off GCP for cost. **Staging** (`terraform/staging/historian.tf`) is a
+  live ongoing cold store: a daily systemd timer appends yesterday's partitions from
+  `packiot_analytics`, with a **180-day (6-month) prune** — see
+  [Database → Retention & the historian cold store](06-database.md). **Prod**
+  (`terraform/production/historian.tf`) is the legacy `equipment_values` backfill pilot
+  (~2.19B rows) with a keep-forever/tiering design (no prune). _Drift note:_ the staging
+  bucket/Glue/IAM/lifecycle were first created via CLI to prove the pilot, then imported
+  into terraform state; the Athena workgroup + a couple of tags remain a pending
+  non-destructive `apply`._
 
 > Caveat: the CloudFront/WAF/oauth2-proxy/X-Origin-Verify edge is authoritative on
 > `origin/staging` / `origin/production`; some feature branches still reference Authentik

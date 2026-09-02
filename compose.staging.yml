@@ -325,9 +325,27 @@ services:
       # Birth-completeness ON per tenant (matches cpack) — NBIRTH covers each
       # tenant's full raw_tag_map so a line idle at connect is aliased on first report.
       AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-true}"
+      # ── live-capture OBSERVE posture (ADR-0045 Phase-2b, multi-tenant) ────
+      # Records which count indices actually arrive, per tenant, while that
+      # tenant's client_descriptors.status == 'captured' — the evidence the
+      # csadmin onboarding Capture step reads (capture_observations). The
+      # controller polls status live, so "Start capture" engages WITHOUT an agent
+      # restart. Best-effort: any missing profile/DB is a logged skip, never a
+      # crash of the ingest plane; a tenant not in 'captured' records nothing.
+      AGENT_CAPTURE_ENABLED: "${AGENT_CAPTURE_ENABLED:-true}"
+      # Per-tenant profiles (tenant==group_id + enterprise_id + count-leaf
+      # metric_templates) — the recorder's templates + enterprise scope come from
+      # here; a tenant with no matching profile simply does not record.
+      AGENT_TENANTS_PROFILE_DIR: /etc/packiot/tenant-profiles
+      # DSN for the client_descriptors status read (the analytics DB that holds
+      # client_descriptors). Value in /opt/packiot/.env. Absent ⇒ capture stays
+      # OFF (fail-safe), ingest unaffected. # FILL AT DEPLOY
+      AGENT_REGISTER_DSN: ${AGENT_REGISTER_DSN:-}
     volumes:
       # tenant configs (one *.yaml per client) — read-only.
       - ./docs/clients/tenants:/etc/packiot/tenants:ro
+      # per-tenant capture profiles (tenant/enterprise_id/metric_templates) — RO.
+      - ./docs/clients/tenant-profiles:/etc/packiot/tenant-profiles:ro
       - edge_transformer_agent_outbox:/var/lib/edge-transformer
     networks:
       packiot-net:
@@ -517,6 +535,34 @@ services:
       # the instance role). One identity, least-priv on the role, no static keys.
       AWS_REGION: "us-east-1"
       SSM_HYBRID_INSTANCE_ROLE: "packiot-edge-ssm-hybrid-role"
+      # ── apply-agent-config target: the SHARED multi-tenant sparkplug-agent ────
+      # (edge-ssm #224). Unlike every other edge-ssm op — which resolves the
+      # per-enterprise FACTORY box by its `enterprise=<id>` managed-instance tag —
+      # apply-agent-config targets the ONE app box that runs
+      # sparkplug-agent-shared (compose profile shared-tee). That box is THIS EC2
+      # instance (i-…, not an mi- hybrid), so:
+      #   • the box is tagged managed-by=packiot-edge-api, and
+      #   • the packiot-edge-ssm-control IAM policy grants ssm:SendCommand to
+      #     instance/* under that tag (statement SendCommandToTaggedEC2).
+      # Empty => the op 503s ("Shared-agent target is not configured"), which is
+      # the SAFE failure (no push, no recreate) — never a fabricated target.
+      # NOTE (durability): this is the app box's own instance id; if the box is
+      # re-minted, update this (or inject from IMDS in app_init.sh). SHARED_AGENT_DIR
+      # is where compose.staging.yml + docs/clients/tenants live on the box — the
+      # self-hosted runner workspace — so the SSM recreate cd's to the right place.
+      SSM_SHARED_AGENT_INSTANCE_ID: "i-06c9547a2c7091ab7"
+      SSM_SHARED_AGENT_DIR: "/opt/actions-runner/_work/packiot-stack-alpha/packiot-stack-alpha"
+      # ── reader-bundle ingest target (edge-ssm deploy-bundle → client edge box) ──
+      # The onboarding Deploy step SSM-pushes a generated reader onto the client's
+      # edge box; the reader polls the PLCs and POSTs raw tags to this front-door
+      # with X-Ingest-Key. edge-ssm.config.ts DEFAULTS SSM_EDGE_INGEST_URL to the
+      # PROD front-door (ingest.prod…), so a STAGING-onboarded reader would post to
+      # prod unless overridden here. The key is the shared agent front-door's
+      # INGEST_API_KEY (exactly what nginx ingest.conf validates), sourced from the
+      # box .env so no secret is inlined in compose. Empty key => the deploy reports
+      # an ingest-key GAP and the reader ships a placeholder (never a baked secret).
+      SSM_EDGE_INGEST_URL: "https://ingest.staging.packiot.app:8449/v1/tags"
+      SSM_EDGE_INGEST_KEY: ${INGEST_API_KEY:-}
       # PO staleness/conflict gate (task #32). Master on + per-enterprise
       # allowlist (CSV of surrogate id_enterprise). "3,4" = CPACK-Staging(3) +
       # Incoplast-Staging(4) — both synthetic on staging, so global-ish signal
@@ -580,6 +626,12 @@ services:
       COGNITO_CS_ADMIN_GROUP: cs-admin
       EDGE_API_COGNITO_AUTH_ENABLED: "true"
       EDGE_API_ONBOARDING_ENABLED: "true"
+      # Client Teardown (Remove client / Reset onboarding) — the SAFE INVERSE of
+      # onboarding (ADR-0053). Dark-by-default on its OWN flag, deliberately
+      # separate from onboarding. Enabled on staging so CS can reset/remove a
+      # tenant through the csadmin UI (per-stage confirmation walls; dry-run
+      # default; protected-tenant floor {3 CPACK, 2000003 SBXCPACK} always on).
+      EDGE_API_TEARDOWN_ENABLED: "true"
       # Onboarding generate path: edge-api proxies the stored descriptor to
       # edge-transformer's onboard server (POST /v1/onboard/generate). Config here,
       # the shared key from .env/Secrets.
@@ -1469,7 +1521,7 @@ services:
       # cpack + sbxcpack. Filtering discovery through this list makes "staging =
       # these tenants only" survive the next re-cut. STAGING ONLY: prod leaves
       # WORKER_TENANT_ALLOWLIST unset → empty = allow ALL (no behavior change).
-      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack}"
+      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging}"
       RETRY_EXCHANGE: oee-retry
       RETRY_QUEUE: stream-engine-q-retry-30s
       FAILED_EXCHANGE: oee-failed
@@ -1590,7 +1642,13 @@ services:
       # (verbatim SQL, byte-identical flip signal); additional ids run scoped.
       # Incoplast (enterprise 4) validated F1<->F3 on its own series without
       # diluting CPACK's (enterprise 3) readiness signal.
-      BAKE_ENTERPRISE_IDS: "3,4"
+      # ent 5 = bispharma: added so runtime-provision (provision.go, the 17
+      # piot_create_*_runtime fns) creates its shift/hour/day skeleton rows —
+      # WITHOUT this a fully-onboarded tenant with shifts + data still computes
+      # NO OEE (no equipment_runtime_shift rows exist for the rollup to fill).
+      # This is the tenant gate for the whole OEE surface; onboarding a client
+      # into the analytics plane requires adding its id_enterprise here.
+      BAKE_ENTERPRISE_IDS: "3,4,5"
       # PR #600 — counters-only AVAILABILITY fallback (idle-timeout sessionization).
       # L6's counters cut over (gross production flows) but its state events did
       # not, so the events phase never touches its equipment_runtime_* rows →
@@ -1609,6 +1667,17 @@ services:
       # for every other CPACK line). See docs/clients/cpack-legacy-oracle-line-meters.md.
       COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "47,48,49,50,51,52,81,82,83,84,85,91,92,93,94,95,96,103,105,106,2000047,2000048,2000049,2000050,2000051,2000052,2000081,2000082,2000083,2000084,2000085,2000091,2000092,2000093,2000094,2000095,2000096,2000103,2000105,2000106,68,69,70,71,72"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
+      # LINE-LEAD (ADR-0045 split instrumentation) — bispharma (ent 5) is a
+      # line-metered tenant: separate infeed (gross_machine) + outfeed (lead_machine)
+      # machines per line, so the tp=3 line derives gross/net/scrap from those
+      # designated members (stream-engine line_lead.go) → Quality = outfeed/infeed,
+      # scrap = gross − net. Set on the line rows via the onboarding
+      # apply-line-meters endpoint (edge-api), NOT a manual write. Scoped to ent 5:
+      # CPACK (ent 3) stays on COUNTERS_ONLY_AVAILABILITY above (the two writers are
+      # mutually exclusive PER enterprise, so different ents never collide). Prod
+      # already runs line-lead for ent 3 (compose.production.yml).
+      COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "5"
       # ADR-0037 Silver invariant — per-equipment production-increment SANITY
       # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
       # K · equipments.production_speed · Δt (a physically-impossible count at

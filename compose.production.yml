@@ -1079,10 +1079,14 @@ services:
       # (e.g. "prod-<client>-key:<enterprise_id>").
       QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:-}
       # Dual JWT verify. front4 sends a Firebase JWT (fbpackiot project — PUBLIC
-      # id, not a secret). Cognito is OFF until a prod pool is chosen (roadmap
-      # W3.2); flip COGNITO_AUTH_ENABLED=true + set the prod issuer/client-id.
+      # id, not a secret) OR a Cognito ID token. Cognito is now LIVE on prod
+      # (front4 W1 read-cutover: front4 reads the bootstrap + analytics via
+      # refdata under the shared Cognito pool). Default ON so a fresh re-provision
+      # keeps it (was ${..:-false} → refdata silently rejected Cognito → front4
+      # Cognito login white-paged; flipped live 2026-08-07, codified here).
+      # Override to false only for a deliberate Firebase-only rollback.
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
-      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-false}
+      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-true}
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
       # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}

@@ -52,6 +52,16 @@ One Go binary, two halves (`services/oeecloud-worker/`):
 > "stream-engine" is the **prod rename** of `oeecloud-worker` (Prometheus scrapes
 > `stream-engine:9101`; compose still builds `./services/oeecloud-worker`). Same binary.
 
+> **Where decode runs — cloud vs. on-prem.** By default the SparkPlug **decode**
+> (edge-transformer) is a *cloud* step: the box is a thin reader, and only the
+> cloud has the `packml_register` mapping that resolves a topic → `id_equipment`.
+> The opt-in **fat edge** ([On-Prem Offline Operation](11-on-prem-offline-operation.md))
+> runs the *same* transformer image **on the box** in `LOCAL_DECODE_ONLY` mode — it
+> decodes to a local current-state cache for an offline dashboard and **never
+> publishes to cloud RabbitMQ**. So on such a box decode happens in *both* places,
+> but only the cloud copy is authoritative and computes OEE; the on-box copy is a
+> read-cache. `id_equipment` resolution still only happens cloud-side.
+
 ## The OEE computation
 
 **OEE = Availability × Performance × Quality**, all in the Go worker
@@ -73,6 +83,19 @@ oee_p = oee / NULLIF(oee_a * oee_q, 0)                         -- PERFORMANCE (r
   it; ADR-0037 flags this as a weakness, now bounded by the Silver clamp + DQ events).
 - **Counters-only availability fallback** (`availability.go`): for state-less Modbus
   machines, availability is reconstructed by idle-timeout sessionization over the 1-min cagg.
+- **Line-lead / split instrumentation** (`line_lead.go`): for a line whose infeed and
+  outfeed are **separate machines** (no single machine carries both meters), the tp=3 line
+  row names `gross_machine` (infeed), `lead_machine` (outfeed/net + availability) and
+  optional `scrap_machine`; the line's `gross`/`net` are read from those designated members
+  (never a sum of all net members) and **scrap = GREATEST(gross − net, 0)**. Flag-gated per
+  enterprise (`COUNTERS_ONLY_LINE_LEAD_ENTERPRISES`); mutually exclusive with the counters-only
+  availability path per tenant. Set the designation via CS-Admin → Line configuration ("Auto-assign
+  from sensors") — see [Onboarding](02-onboarding.md#designating-a-lines-infeedoutfeed-meters).
+
+> **Per-tenant gate:** none of these rollup passes produce anything for a tenant absent from
+> `BAKE_ENTERPRISE_IDS` — that env list drives the runtime-provision that *creates* the
+> `equipment_runtime_shift` skeleton rows the passes fill. A tenant missing from it computes
+> zero OEE regardless of shifts/meters. See [Onboarding → the three tenant gates](02-onboarding.md#after-cutover-making-oee-actually-compute-the-three-tenant-gates).
 
 ### The pipeline
 

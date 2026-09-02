@@ -115,6 +115,9 @@ nav:
       - Cloud Services & OEE Compute: wiki/05-cloud-services-and-oee.md
       - Database & Data Model: wiki/06-database.md
       - Frontends, Infra & Auth: wiki/07-frontends-infra-auth.md
+      - Outage Resilience & Offline: wiki/10-outage-resilience-and-offline.md
+      - On-Prem Offline Operation: wiki/11-on-prem-offline-operation.md
+      - The Edge-Operator: wiki/12-edge-operator.md
       - Concepts & Glossary: wiki/08-concepts.md
       - Onboarding — Worked Example: wiki/09-onboarding-worked-example.md
   - Guide:

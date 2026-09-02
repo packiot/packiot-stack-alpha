@@ -115,6 +115,13 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Validate runs the same checks Load applies after parsing — exported so the
+// onboarding generator can reject a descriptor that would produce an unloadable
+// agent.yaml AT GENERATE TIME, instead of emitting a bad file that only fails
+// later when the shared agent tries to Load it (ADR-0042 — a bad tenant map must
+// never reach the runtime, and if one does it is skipped, never fatal).
+func (c *Config) Validate() error { return c.validate() }
+
 func (c *Config) validate() error {
 	s := c.Sparkplug
 	if strings.TrimSpace(s.GroupID) == "" {

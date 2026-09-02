@@ -59,6 +59,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -158,6 +159,16 @@ func main() {
 		Help: "Full NBIRTH re-publishes triggered by an inbound Rebirth NCMD (task #31).",
 	})
 	reg.MustRegister(rebirths)
+	// ADR-0042 blast-radius isolation: tenant *.yaml files skipped at boot because
+	// they failed to load/validate/build or collided on group_id/edge_node_id.
+	// Nonzero ⇒ a co-tenant was dropped but the agent kept serving the rest — the
+	// CS-Admin apply-agent-config path where one malformed wizard descriptor must
+	// NOT crash-loop the shared process and take cpack ingest down with it.
+	tenantLoadFailed := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_tenant_load_failed_total",
+		Help: "Tenant config files skipped at boot (bad load/validate/build or duplicate group_id/edge_node_id), by file + reason. Nonzero ⇒ a tenant was dropped while co-tenants (incl. cpack) kept serving.",
+	}, []string{"file", "reason"})
+	reg.MustRegister(tenantLoadFailed)
 
 	multi := health.NewMulti()
 
@@ -180,8 +191,14 @@ func main() {
 			decomposed:          decomposed,
 			derivedSynth:        derivedSynth,
 			counterDerivedSynth: counterDerivedSynth,
+			tenantLoadFailed:    tenantLoadFailed,
 		})
 		if err != nil {
+			// Reaching here now means an INFRASTRUCTURE failure (tenants dir
+			// unreadable, outbox uncreatable, or every single file was bad so there
+			// is nothing to serve) — NOT one malformed tenant among good ones, which
+			// buildTenantPipelines now skips-and-alarms. A genuinely empty/all-broken
+			// tenants dir is a deploy-level fault worth failing loudly on.
 			logger.Error("multi-tenant pipeline build", "err", err)
 			os.Exit(1)
 		}
@@ -214,6 +231,16 @@ func main() {
 				"uplink_broker", p.cfg.Sparkplug.UplinkBroker,
 				"tags", len(p.cfg.RawTagMap))
 		}
+		// ── multi-tenant live-capture (ADR-0045 Phase-2b) ────────────────────
+		// Wire the observe-posture recorder into each tenant pipeline whose
+		// client_descriptors.status is 'captured'. DARK by default
+		// (AGENT_CAPTURE_ENABLED off ⇒ complete no-op, byte-identical). This is
+		// what lets an INFERRED-mode multi-tenant client accumulate the
+		// capture_observations evidence CS confirms cutover against — the single-
+		// file path already had it; multi mode did not until now. Fail-safe: any
+		// missing profile/DB is a logged skip, never a crash of the ingest plane.
+		wireMultiTenantCapture(ctx, pipelines, reg, logger)
+
 		// The MQTT raw path (rawmqtt) is single-tenant by construction: one
 		// broker + one topic filter → one sink. Mode-A staging is HTTP-only, so
 		// multi mode deliberately does NOT wire a global raw subscriber — that
@@ -261,26 +288,50 @@ func main() {
 			tagSource = "packml_register"
 		}
 
-		// ── live-capture OBSERVE posture (ADR-0045 Phase-2b) ──────────────────
-		// Whether this boot records what count indices/topics actually arrive from
+		// ── live-capture OBSERVE posture (ADR-0045 Phase-2b, LIVE refresh) ────
+		// Whether this agent records what count indices/topics actually arrive from
 		// a live tee, so CS can promote descriptor entries inferred→confirmed. Two
 		// gates: the master flag AGENT_CAPTURE_ENABLED (dark by default) AND the
-		// per-tenant client_descriptors.status == "captured" (the observe posture,
-		// read at boot by resolveTagMap on the SAME pool). Off ⇒ zero hot-path cost.
-		// The recorder REUSES the register pool (kept alive past boot only when
-		// observing) — never a second pool. Fail-safe: any DB/parse error is a
-		// logged drop, never a block or crash of the ingest path.
+		// per-tenant client_descriptors.status == "captured" (the observe posture).
+		// Off ⇒ zero hot-path cost.
+		//
+		// Unlike Phase-2a's ONE-SHOT boot read, the posture is now driven by a
+		// controller goroutine (runCaptureController, below) that RE-READS the status
+		// every AGENT_CAPTURE_STATUS_POLL_SEC and atomically enables/disables the
+		// recorder on p.rec when the tenant crosses into/out of 'captured'. That is
+		// what makes an operator's "Start capture" click take effect on a RUNNING
+		// agent WITHOUT a restart (the onboarding churn this closes). The controller
+		// REUSES the register pool (never a second one) and OWNS closing it.
 		captureEnabled := getenvBool("AGENT_CAPTURE_ENABLED", false)
-		observing := boot != nil && capture.ShouldObserve(captureEnabled, boot.status)
-		// The register pool is boot-transient by default; keep it open ONLY when the
-		// recorder will write through it, else close it now (Phase-2a behaviour).
-		if boot != nil && boot.pool != nil {
-			if observing {
-				defer boot.pool.Close()
-			} else {
-				boot.pool.Close()
-				boot.pool = nil
+		// Count-leaf TEMPLATES for the recorder come from the tenant profile's
+		// metric_templates ({idx}-bearing leaves). With no profile there are no count
+		// families to recognize, so capture cannot run.
+		var captureTemplates []string
+		if captureEnabled && boot != nil && boot.profile != nil {
+			var leaves []string
+			for _, t := range boot.profile.MetricTemplates.Member {
+				leaves = append(leaves, t.Leaf)
 			}
+			for _, t := range boot.profile.MetricTemplates.Line {
+				leaves = append(leaves, t.Leaf)
+			}
+			captureTemplates = capture.CountLeafTemplates(leaves)
+		}
+		// The live-capture controller can run only with the master flag ON, an OPEN
+		// DB pool (to poll status + write observations), an enterprise scope, and at
+		// least one count-leaf template. Crucially the pool is kept open PAST boot
+		// even when the tenant is NOT 'captured' yet — the poller must be able to
+		// notice a flip INTO 'captured' on a running agent. If capture can't run,
+		// release the boot pool now (byte-identical no-capture path, Phase-2a).
+		captureCanRun := captureEnabled && boot != nil && boot.pool != nil &&
+			boot.enterpriseID != 0 && len(captureTemplates) > 0
+		if !captureCanRun && boot != nil && boot.pool != nil {
+			if captureEnabled {
+				logger.Warn("AGENT_CAPTURE_ENABLED=true but live-capture cannot run — capture OFF (needs a tenant profile with count-metric leaves + an enterprise_id + a reachable client_descriptors DB)",
+					"enterprise_id", boot.enterpriseID, "count_leaf_templates", len(captureTemplates))
+			}
+			boot.pool.Close()
+			boot.pool = nil
 		}
 
 		// ── parameter decomposition (task #54 follow-up, ADR-0042) ────────────
@@ -341,48 +392,12 @@ func main() {
 			}
 		}
 
-		// ── live-capture recorder (ADR-0045 Phase-2b) ─────────────────────────
-		// Built only in the observe posture. It records, per equipment topic, which
-		// count indices actually arrive — buffered in-memory and flushed on a ticker
-		// to capture_observations via the (reused) register pool. The count-leaf
-		// TEMPLATES come from the tenant profile's metric_templates ({idx}-bearing
-		// leaves); with no profile there are no count families to recognize, so the
-		// recorder stays nil and Observe is a no-op.
-		var recorder *capture.Recorder
-		if observing {
-			var leaves []string
-			if boot.profile != nil {
-				for _, t := range boot.profile.MetricTemplates.Member {
-					leaves = append(leaves, t.Leaf)
-				}
-				for _, t := range boot.profile.MetricTemplates.Line {
-					leaves = append(leaves, t.Leaf)
-				}
-			}
-			templates := capture.CountLeafTemplates(leaves)
-			if len(templates) == 0 {
-				logger.Warn("capture observe posture active but the tenant profile declares no count-metric leaves — nothing to capture",
-					"enterprise_id", boot.enterpriseID)
-			}
-			captureObs := prometheus.NewCounterVec(prometheus.CounterOpts{
-				Name: "sparkplug_agent_capture_observations_total",
-				Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
-			}, []string{"tenant"})
-			reg.MustRegister(captureObs)
-			obsCounter := captureObs.WithLabelValues(cfg.Sparkplug.GroupID)
-			recorder = capture.New(capture.Config{
-				EnterpriseID: boot.enterpriseID,
-				Templates:    templates,
-				Sink:         capture.NewPGSink(boot.pool),
-				Logger:       logger,
-				OnObserved:   obsCounter.Inc,
-			})
-			go recorder.Run(ctx, time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))*time.Second)
-			logger.Info("live-capture observe posture ENABLED",
-				"enterprise_id", boot.enterpriseID,
-				"count_leaf_templates", len(templates),
-				"flush_sec", getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30))
-		}
+		// The live-capture recorder itself is no longer built here at boot: the
+		// controller wired AFTER the pipeline (runCaptureController) builds it on the
+		// first status read and re-builds/tears-down on every posture flip, so the
+		// recorder tracks client_descriptors.status live. The pipeline therefore boots
+		// with a nil recorder (Observe is nil-safe) and the controller Stores one into
+		// p.rec the moment the tenant is (or becomes) 'captured'.
 
 		// Mode-B mTLS material (ADR-0042 §6). The agentcfg descriptor holds the
 		// cert/key/CA as secret:// REFERENCES only; the deploy resolves them to
@@ -425,7 +440,7 @@ func main() {
 			outboxPath:          getenv("OUTBOX_PATH", "/var/lib/edge-transformer/agent-outbox.db"),
 			tls:                 tlsCfg,
 			decomposer:          decomposer,
-			recorder:            recorder,
+			recorder:            nil, // live-capture recorder is installed by the controller (below), not at boot
 			derive:              derive,
 			dropped:             dropped,
 			unmappedTags:        unmappedTags,
@@ -438,6 +453,42 @@ func main() {
 			os.Exit(1)
 		}
 		pipelines = []*pipeline{p}
+
+		// ── live-capture controller (ADR-0045 Phase-2b, LIVE refresh) ─────────
+		// Reuse the SAME per-tenant controller the multi-tenant path uses, over the
+		// single pipeline. It re-reads client_descriptors.status every
+		// AGENT_CAPTURE_STATUS_POLL_SEC and atomically enables/disables the recorder
+		// via p.rec when the tenant crosses into/out of 'captured' — so an operator's
+		// "Start capture" on a RUNNING agent takes effect without a restart. It also
+		// warns (once per transition) if the status becomes 'cutover' while the live
+		// map is still static, since the tag-map cutover stays a boot read (Option A,
+		// restart-to-apply). The controller OWNS boot.pool and closes it on ctx cancel
+		// after a final best-effort drain.
+		if captureCanRun {
+			captureObs := prometheus.NewCounterVec(prometheus.CounterOpts{
+				Name: "sparkplug_agent_capture_observations_total",
+				Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
+			}, []string{"tenant"})
+			reg.MustRegister(captureObs)
+			tc := &tenantCapture{
+				pipeline:           p,
+				enterpriseID:       boot.enterpriseID,
+				templates:          captureTemplates,
+				sink:               capture.NewPGSink(boot.pool),
+				obsCounter:         captureObs.WithLabelValues(cfg.Sparkplug.GroupID),
+				logger:             logger,
+				cutoverWarn:        true,
+				tagmapUsesRegister: tagSrc.UseRegister,
+			}
+			flush := time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30)) * time.Second
+			poll := time.Duration(getenvInt("AGENT_CAPTURE_STATUS_POLL_SEC", 300)) * time.Second
+			runCaptureController(ctx, []*tenantCapture{tc}, agentcfg.NewDescriptorStatusFetcher(boot.pool), boot.pool, flush, poll)
+			logger.Info("live-capture controller started (single-file)",
+				"enterprise_id", boot.enterpriseID,
+				"count_leaf_templates", len(captureTemplates),
+				"flush_sec", int(flush.Seconds()), "status_poll_sec", int(poll.Seconds()),
+				"boot_tag_source", tagSource)
+		}
 
 		// ADR-0045 P2a gauge: set once at boot from the resolved source (Option A
 		// — the flip is a boot read). 1 = register-driven, 0 = static YAML.
@@ -659,6 +710,15 @@ type pipeline struct {
 	up       *uplink.Uplink
 	unmapped *unmapped.Reporter
 	ingest   func(tags []rawtag.RawTag) (accepted, total int)
+
+	// rec is the live-capture recorder the ingest closure feeds via Observe. It is
+	// an atomic pointer so the multi-tenant capture controller can flip a tenant's
+	// observe posture ON/OFF after boot (client_descriptors.status can change while
+	// the agent runs) without racing the ingest hot path. nil ⇒ not observing;
+	// (*capture.Recorder)(nil).Observe is a safe no-op, so a Load()→Observe on the
+	// hot path is nil-safe with no branch. In single-file mode it is Store()d once
+	// at boot from deps.recorder and never changes — behaviour is byte-identical.
+	rec atomic.Pointer[capture.Recorder]
 }
 
 // pipelineDeps carries the per-pipeline construction inputs. The metric vecs are
@@ -777,7 +837,11 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 	}
 
 	dec := deps.decomposer
-	rec := deps.recorder
+	// Seed the swappable recorder from deps (single-file sets it once at boot;
+	// multi-tenant leaves it nil here and the capture controller flips it later).
+	if deps.recorder != nil {
+		p.rec.Store(deps.recorder)
+	}
 	derive := deps.derive
 	// ingest is the pipeline's entry point: BOTH the HTTP front-door and (single-
 	// file only) the internal MQTT subscriber call it, so the two front-doors feed
@@ -815,8 +879,10 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 			// that the current map would drop as unmapped is still observed (that
 			// mismatch is exactly the DQ evidence CS confirms against). No-op when
 			// not observing (rec is nil; Observe is nil-safe) or the tag is not
-			// count-bearing. Uses the raw arriving suffix (never decomposed).
-			rec.Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
+			// count-bearing. Uses the raw arriving suffix (never decomposed). The
+			// recorder is read atomically so the multi-tenant capture controller can
+			// flip the posture ON/OFF post-boot without racing this hot path.
+			p.rec.Load().Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
 
 			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
 			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the
@@ -923,13 +989,27 @@ type buildDeps struct {
 	decomposed          *prometheus.CounterVec
 	derivedSynth        prometheus.Counter
 	counterDerivedSynth prometheus.Counter
+	// tenantLoadFailed counts tenant *.yaml files SKIPPED at boot because they
+	// failed to load/validate/build or collided on group_id/edge_node_id. A
+	// nonzero value means a co-tenant was dropped but the agent kept serving the
+	// rest (blast-radius isolation, ADR-0042) — the CS-Admin apply-agent-config
+	// footgun where one malformed wizard descriptor must NOT crash-loop the whole
+	// shared process and take cpack ingest down with it. Labeled by file + reason.
+	tenantLoadFailed *prometheus.CounterVec
 }
 
 // buildTenantPipelines loads EVERY *.yaml/*.yml in dir as an agentcfg.Config
 // (reusing agentcfg.Load, which validates) and builds one isolated pipeline per
-// config, keyed by sparkplug.group_id (case-insensitive). Startup FAILS if two
-// configs share a group_id OR an edge_node_id (both ambiguous / flapping), if a
-// config fails to load / validate, or if the directory holds no tenant configs.
+// config, keyed by sparkplug.group_id (case-insensitive). A file that fails to
+// load/validate/build, or that COLLIDES on group_id/edge_node_id with an
+// already-admitted tenant (first-seen wins), is SKIPPED-AND-ALARMED (Error log +
+// sparkplug_agent_tenant_load_failed_total) — never fatal. This is deliberate
+// blast-radius isolation (ADR-0042): the CS-Admin apply-agent-config step pushes
+// an agent.yaml a non-engineer authored, so one bad/incomplete file is an
+// expected input that must not crash-loop the shared process and drop cpack's
+// ingest. Startup FAILS (returns error → main os.Exit) ONLY on an infrastructure
+// fault: the dir is unreadable, the outbox is uncreatable, or NO file loaded at
+// all (empty dir or every file bad) — a deploy-level problem worth failing loudly.
 //
 // Multi mode is Mode-A: a shared internal broker, NO per-tenant mTLS (tls=nil).
 // A config with an ssl:// uplink_broker is warned but connects server-auth-only
@@ -960,25 +1040,39 @@ func buildTenantPipelines(dir string, deps buildDeps) ([]*pipeline, error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
+		// BLAST-RADIUS ISOLATION (ADR-0042): a single malformed / colliding tenant
+		// file must NEVER abort the whole agent. Before this, any bad file bubbled
+		// an error to main → os.Exit(1) → crash-loop → EVERY co-tenant (incl. cpack)
+		// lost ingest. The CS-Admin apply-agent-config step pushes an agent.yaml a
+		// non-engineer authored, so a bad/incomplete one is an EXPECTED input, not a
+		// deploy bug. We now skip-and-alarm (log + metric) and keep serving the rest;
+		// the empty/all-bad case is still caught by the len==0 guard below.
 		cfg, err := agentcfg.Load(path) // validates group_id/edge_node/brokers/tag_map
 		if err != nil {
-			return nil, fmt.Errorf("load tenant config %s: %w", path, err)
+			deps.logger.Error("skipping tenant config — failed to load/validate (co-tenants keep serving)",
+				"file", name, "err", err)
+			deps.tenantLoadFailed.WithLabelValues(name, "load").Inc()
+			continue
 		}
 		gkey := strings.ToUpper(strings.TrimSpace(cfg.Sparkplug.GroupID))
 		if prev, dup := seenGroup[gkey]; dup {
-			return nil, fmt.Errorf("duplicate group_id %q in %s and %s — group_id must be unique across the tenants dir", cfg.Sparkplug.GroupID, prev, name)
+			deps.logger.Error("skipping tenant config — duplicate group_id (first-seen wins)",
+				"file", name, "group_id", cfg.Sparkplug.GroupID, "kept", prev)
+			deps.tenantLoadFailed.WithLabelValues(name, "dup_group_id").Inc()
+			continue
 		}
-		seenGroup[gkey] = name
 		// edge_node_id must ALSO be unique: the uplink MQTT ClientID is derived
 		// from edge_node_id (+ the shared process pid), so two tenants sharing an
 		// edge_node_id would produce IDENTICAL ClientIDs → the broker evicts the
 		// older session on each connect → both tenants' uplinks flap forever. A
-		// silent-degrade we refuse to boot into.
+		// silent-degrade we refuse to admit — but we skip the DUP, not the agent.
 		nkey := strings.ToUpper(strings.TrimSpace(cfg.Sparkplug.EdgeNodeID))
 		if prev, dup := seenNode[nkey]; dup {
-			return nil, fmt.Errorf("duplicate edge_node_id %q in %s (group %q) and %s — edge_node_id must be unique across the tenants dir (it keys the uplink MQTT ClientID)", cfg.Sparkplug.EdgeNodeID, prev, cfg.Sparkplug.GroupID, name)
+			deps.logger.Error("skipping tenant config — duplicate edge_node_id (first-seen wins; it keys the uplink MQTT ClientID)",
+				"file", name, "edge_node_id", cfg.Sparkplug.EdgeNodeID, "group_id", cfg.Sparkplug.GroupID, "kept", prev)
+			deps.tenantLoadFailed.WithLabelValues(name, "dup_edge_node_id").Inc()
+			continue
 		}
-		seenNode[nkey] = name
 
 		if strings.HasPrefix(cfg.Sparkplug.UplinkBroker, "ssl://") {
 			deps.logger.Warn("tenant uplink_broker is ssl:// but multi-tenant mode wires no per-tenant client cert (Mode-A) — connecting server-auth-only",
@@ -999,12 +1093,20 @@ func buildTenantPipelines(dir string, deps buildDeps) ([]*pipeline, error) {
 			counterDerivedSynth: deps.counterDerivedSynth,
 		})
 		if err != nil {
-			return nil, err
+			deps.logger.Error("skipping tenant config — pipeline build failed (co-tenants keep serving)",
+				"file", name, "group_id", cfg.Sparkplug.GroupID, "err", err)
+			deps.tenantLoadFailed.WithLabelValues(name, "build").Inc()
+			continue
 		}
+		// Only mark the group/node keys as claimed AFTER the pipeline is fully built,
+		// so a file that fails to build does not shadow a later valid file that
+		// legitimately reuses (recycles) the same group_id/edge_node_id.
+		seenGroup[gkey] = name
+		seenNode[nkey] = name
 		pipelines = append(pipelines, p)
 	}
 	if len(pipelines) == 0 {
-		return nil, fmt.Errorf("no *.yaml tenant configs found in %s", dir)
+		return nil, fmt.Errorf("no loadable *.yaml tenant configs in %s (dir empty or every file failed to load — see prior skip logs)", dir)
 	}
 	return pipelines, nil
 }
@@ -1068,6 +1170,323 @@ func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httping
 		}
 	}()
 	return srv
+}
+
+// ── multi-tenant live-capture (ADR-0045 Phase-2b) ────────────────────────────
+//
+// Single-file mode wires the observe-posture recorder from the tenant PROFILE
+// (AGENT_PROFILE_PATH → templates + enterprise_id) and the DB status. Multi mode
+// had NO recorder, so an INFERRED-mode multi-tenant client accumulated zero
+// capture_observations and its Capture step could never confirm a channel. This
+// block is the multi-mode analogue: it sources the SAME two facts single-file
+// needs — the count-leaf TEMPLATES and the enterprise SCOPE — from a per-tenant
+// profile in AGENT_TENANTS_PROFILE_DIR (the multi-mode analogue of
+// AGENT_PROFILE_PATH), reads the observe posture from client_descriptors.status
+// on ONE shared pool (registerDSN, the same env single-file uses), and flips each
+// tenant's pipeline recorder to match. Everything is DARK unless
+// AGENT_CAPTURE_ENABLED=true, and every failure is a logged skip (best-effort
+// evidence, never the data plane).
+
+// tenantCapture holds one tenant's capture wiring: the pipeline whose atomic
+// recorder the controller flips, the enterprise scope + count-leaf templates
+// (from the tenant profile), the shared PG sink, and the per-tenant observations
+// metric. recCancel tracks the live recorder so a posture flip enables/disables
+// it cleanly (per-tenant isolation — one tenant's posture never touches another).
+type tenantCapture struct {
+	pipeline     *pipeline
+	enterpriseID int
+	templates    []string
+	sink         capture.Sink
+	obsCounter   prometheus.Counter
+	logger       *slog.Logger
+
+	recCancel context.CancelFunc // non-nil while a recorder is running (observing)
+
+	// cutoverWarn turns on the "cutover recorded, restart to apply" observability
+	// (single-file only). The tag-map cutover is a BOOT read (Option A, cutover.go):
+	// a status that flips to 'cutover' on a RUNNING agent can't hot-swap the map, so
+	// the controller can only make the deferred restart OBSERVABLE, not actuate it.
+	// Multi mode is static-map-only and leaves this false — it never warns, because
+	// a restart wouldn't apply cutover there either (multi ignores the descriptor
+	// status for the tag map entirely).
+	cutoverWarn bool
+	// tagmapUsesRegister records whether THIS boot already resolved to the
+	// register-driven map (tagSrc.UseRegister). When true the tenant is already cut
+	// over, so the warn is suppressed.
+	tagmapUsesRegister bool
+	// cutoverWarned dedupes the warn to the TRANSITION into 'cutover' (a 300s poll
+	// would otherwise log it every tick). Reset when the status leaves 'cutover'.
+	cutoverWarned bool
+}
+
+// observing reports whether a recorder is currently live for this tenant.
+func (tc *tenantCapture) observing() bool { return tc.recCancel != nil }
+
+// enable builds a recorder + starts its flush loop and points the pipeline's
+// atomic recorder at it — the ingest hot path begins observing on the next tag.
+func (tc *tenantCapture) enable(ctx context.Context, flush time.Duration) {
+	cctx, cancel := context.WithCancel(ctx)
+	rec := capture.New(capture.Config{
+		EnterpriseID: tc.enterpriseID,
+		Templates:    tc.templates,
+		Sink:         tc.sink,
+		Logger:       tc.logger,
+		OnObserved:   tc.obsCounter.Inc,
+	})
+	go rec.Run(cctx, flush)
+	tc.pipeline.rec.Store(rec)
+	tc.recCancel = cancel
+	tc.logger.Info("multi-tenant live-capture ENABLED",
+		"group_id", tc.pipeline.cfg.Sparkplug.GroupID,
+		"enterprise_id", tc.enterpriseID,
+		"count_leaf_templates", len(tc.templates))
+}
+
+// disable stops observing: it clears the pipeline recorder (ingest no-ops on the
+// next tag) and cancels the recorder's flush loop, which does a final best-effort
+// drain of the last interval's evidence.
+func (tc *tenantCapture) disable() {
+	if tc.recCancel == nil {
+		return
+	}
+	tc.pipeline.rec.Store(nil)
+	tc.recCancel()
+	tc.recCancel = nil
+	tc.logger.Info("multi-tenant live-capture DISABLED",
+		"group_id", tc.pipeline.cfg.Sparkplug.GroupID,
+		"enterprise_id", tc.enterpriseID)
+}
+
+// statusFetcher reads a tenant's client_descriptors.status by enterprise id.
+// *agentcfg.DescriptorStatusFetcher satisfies it; a fake satisfies it in tests
+// (so the posture-flip logic is unit-testable without a DB).
+type statusFetcher interface {
+	FetchStatus(ctx context.Context, enterpriseID int) (string, error)
+}
+
+// refresh reads the tenant's current client_descriptors.status and flips the
+// recorder to match. A status READ ERROR is fail-safe: it keeps the CURRENT
+// posture unchanged (a broken read must never silently start — or stop — capture).
+func (tc *tenantCapture) refresh(ctx context.Context, fetcher statusFetcher, flush time.Duration) {
+	status, err := fetcher.FetchStatus(ctx, tc.enterpriseID)
+	if err != nil {
+		tc.logger.Warn("capture status read failed — keeping current posture",
+			"group_id", tc.pipeline.cfg.Sparkplug.GroupID, "enterprise_id", tc.enterpriseID, "err", err)
+		return
+	}
+	// captureEnabled is already true here (the controller only runs under the
+	// flag); ShouldObserve then reduces to status == 'captured'.
+	want := capture.ShouldObserve(true, status)
+	switch {
+	case want && !tc.observing():
+		tc.enable(ctx, flush)
+	case !want && tc.observing():
+		tc.disable()
+	}
+	tc.maybeWarnCutover(status)
+}
+
+// maybeWarnCutover logs — ONCE per transition into 'cutover' — when a running
+// static-map tenant's descriptor has been flipped to 'cutover'. The tag-map
+// cutover is a BOOT read (Option A, cutover.go), so this can NOT hot-swap the
+// live map; the WARN exists only to make the deferred restart-to-apply
+// observable instead of silent. No-op unless the single-file path enabled it
+// (cutoverWarn) and this boot is still on the static map (tagmapUsesRegister
+// false). Deduped via cutoverWarned so a 300s poll doesn't spam the log.
+func (tc *tenantCapture) maybeWarnCutover(status string) {
+	if !tc.cutoverWarn || tc.tagmapUsesRegister {
+		return
+	}
+	if status == agentcfg.StatusCutover {
+		if !tc.cutoverWarned {
+			tc.logger.Warn("cutover recorded in client_descriptors but the running agent is still on the static tag map — restart the agent to apply the register-driven map (cutover is a boot read, Option A)",
+				"group_id", tc.pipeline.cfg.Sparkplug.GroupID, "enterprise_id", tc.enterpriseID)
+			tc.cutoverWarned = true
+		}
+		return
+	}
+	// Left 'cutover' — re-arm so a later re-cutover warns again.
+	tc.cutoverWarned = false
+}
+
+// wireMultiTenantCapture wires the observe-posture recorder into EACH multi-tenant
+// pipeline whose tenant is in the 'captured' posture. DARK by default: with
+// AGENT_CAPTURE_ENABLED off — or no profile dir, or no DB — it is a complete
+// no-op and multi mode stays byte-identical. A background goroutine re-reads each
+// tenant's status on a ticker so a posture that flips to 'captured' AFTER boot
+// starts recording without a restart.
+func wireMultiTenantCapture(ctx context.Context, pipelines []*pipeline, reg *prometheus.Registry, logger *slog.Logger) {
+	if !getenvBool("AGENT_CAPTURE_ENABLED", false) {
+		return
+	}
+	profileDir := getenv("AGENT_TENANTS_PROFILE_DIR", "")
+	if profileDir == "" {
+		logger.Warn("AGENT_CAPTURE_ENABLED=true in multi-tenant mode but AGENT_TENANTS_PROFILE_DIR is unset — no per-tenant profiles to source count-leaf templates + enterprise scope from; capture stays OFF")
+		return
+	}
+	profiles := loadTenantProfiles(profileDir, logger)
+	if len(profiles) == 0 {
+		logger.Warn("AGENT_TENANTS_PROFILE_DIR held no usable tenant profiles — multi-tenant capture stays OFF", "dir", profileDir)
+		return
+	}
+
+	dsn, err := registerDSN()
+	if err != nil {
+		logger.Warn("no DB DSN for multi-tenant capture — staying OFF (capture is best-effort)", "err", err)
+		return
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		logger.Warn("could not open the DB pool for multi-tenant capture — staying OFF", "err", err)
+		return
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		logger.Warn("client_descriptors DB unreachable — multi-tenant capture stays OFF", "err", err)
+		return
+	}
+	fetcher := agentcfg.NewDescriptorStatusFetcher(pool)
+
+	// One shared observations metric (labeled by tenant), same name single-file
+	// uses — the two modes are mutually exclusive at runtime, so no collision.
+	obs := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_capture_observations_total",
+		Help: "Count-bearing raw tags recorded in the ADR-0045 observe posture, by tenant (SparkPlug group_id).",
+	}, []string{"tenant"})
+	reg.MustRegister(obs)
+
+	tenants := buildTenantCaptures(pipelines, profiles, pool, obs, logger)
+	if len(tenants) == 0 {
+		pool.Close()
+		logger.Warn("multi-tenant capture enabled but no tenant qualified (profile/enterprise/templates) — capture OFF")
+		return
+	}
+
+	flush := time.Duration(getenvInt("AGENT_CAPTURE_FLUSH_SEC", 30)) * time.Second
+	poll := time.Duration(getenvInt("AGENT_CAPTURE_STATUS_POLL_SEC", 300)) * time.Second
+
+	// Boot posture read + periodic re-check on ONE controller goroutine that owns
+	// the shared pool (closed after each tenant's final drain when ctx cancels).
+	runCaptureController(ctx, tenants, fetcher, pool, flush, poll)
+
+	logger.Info("multi-tenant live-capture controller started",
+		"tenants", len(tenants), "flush_sec", int(flush.Seconds()), "status_poll_sec", int(poll.Seconds()))
+}
+
+// runCaptureController starts the single background goroutine that owns a set of
+// per-tenant capture units: it does an initial status read, then re-reads every
+// `poll` on a ticker and flips each recorder to match (enable on cross INTO
+// 'captured', disable on cross OUT). It OWNS `pool` — closing it on ctx cancel,
+// AFTER each observing tenant's final drain, so a recorder write never races a
+// closed pool. Shared by the multi-tenant wiring and the single-file path so BOTH
+// react to a live client_descriptors.status change without an agent restart (the
+// onboarding churn this closes: an operator's "Start capture" on a RUNNING agent
+// used to take effect only on the next restart). A non-positive poll is clamped
+// to the 300s default so a mis-set AGENT_CAPTURE_STATUS_POLL_SEC can never make
+// time.NewTicker panic or busy-loop. (Callers own the "controller started" log
+// line — this only runs the loop.)
+func runCaptureController(ctx context.Context, tenants []*tenantCapture, fetcher statusFetcher, pool *pgxpool.Pool, flush, poll time.Duration) {
+	if poll <= 0 {
+		poll = 300 * time.Second
+	}
+	go func() {
+		defer pool.Close()
+		for _, tc := range tenants {
+			tc.refresh(ctx, fetcher, flush)
+		}
+		t := time.NewTicker(poll)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				for _, tc := range tenants {
+					tc.disable() // final best-effort drain per observing tenant
+				}
+				return
+			case <-t.C:
+				for _, tc := range tenants {
+					tc.refresh(ctx, fetcher, flush)
+				}
+			}
+		}
+	}()
+}
+
+// buildTenantCaptures pairs each pipeline with its tenant profile (by group_id =
+// profile.tenant) to produce the per-tenant capture units. A pipeline with no
+// matching profile, no enterprise_id, or no count-leaf templates is skipped (it
+// simply never records) — the strict-source discipline single-file uses, applied
+// per tenant.
+func buildTenantCaptures(pipelines []*pipeline, profiles map[string]*tenantprofile.Profile, pool *pgxpool.Pool, obs *prometheus.CounterVec, logger *slog.Logger) []*tenantCapture {
+	var out []*tenantCapture
+	for _, p := range pipelines {
+		group := p.cfg.Sparkplug.GroupID
+		prof, ok := profiles[strings.ToUpper(strings.TrimSpace(group))]
+		if !ok {
+			logger.Info("no matching tenant profile for capture — this tenant will not record", "group_id", group)
+			continue
+		}
+		if prof.EnterpriseID == 0 {
+			logger.Warn("tenant profile has no enterprise_id — cannot scope capture; skipping", "group_id", group)
+			continue
+		}
+		var leaves []string
+		for _, t := range prof.MetricTemplates.Member {
+			leaves = append(leaves, t.Leaf)
+		}
+		for _, t := range prof.MetricTemplates.Line {
+			leaves = append(leaves, t.Leaf)
+		}
+		templates := capture.CountLeafTemplates(leaves)
+		if len(templates) == 0 {
+			logger.Warn("tenant profile declares no count-metric leaves — nothing to capture; skipping",
+				"group_id", group, "enterprise_id", prof.EnterpriseID)
+			continue
+		}
+		out = append(out, &tenantCapture{
+			pipeline:     p,
+			enterpriseID: prof.EnterpriseID,
+			templates:    templates,
+			sink:         capture.NewPGSink(pool),
+			obsCounter:   obs.WithLabelValues(group),
+			logger:       logger,
+		})
+	}
+	return out
+}
+
+// loadTenantProfiles loads every *.yaml/*.yml tenant profile in dir, keyed by
+// upper(profile.tenant). A file that fails to parse is logged + skipped (capture
+// is best-effort — one bad profile must not stop the others); a profile with a
+// blank tenant is skipped (it cannot be matched to a pipeline group_id).
+func loadTenantProfiles(dir string, logger *slog.Logger) map[string]*tenantprofile.Profile {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		logger.Warn("read tenant profiles dir failed — multi-tenant capture will find no profiles", "dir", dir, "err", err)
+		return nil
+	}
+	out := map[string]*tenantprofile.Profile{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			continue
+		}
+		prof, err := tenantprofile.LoadProfile(filepath.Join(dir, name))
+		if err != nil {
+			logger.Warn("skip unparseable tenant profile", "file", name, "err", err)
+			continue
+		}
+		key := strings.ToUpper(strings.TrimSpace(prof.Tenant))
+		if key == "" {
+			logger.Warn("skip tenant profile with blank tenant (cannot match a pipeline group_id)", "file", name)
+			continue
+		}
+		out[key] = prof
+	}
+	return out
 }
 
 // resolveTagMap decides + installs the tenant's raw_tag_map for this boot and

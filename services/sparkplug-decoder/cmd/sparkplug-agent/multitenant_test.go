@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawtag"
@@ -156,6 +156,29 @@ func TestPipelineIsolation_StrictAllowlistPerTenant(t *testing.T) {
 
 // TestBuildTenantPipelines_LoadsDirectory (requirement A): every *.yaml becomes
 // one pipeline keyed by group_id.
+// testBuildDeps builds a buildDeps with fresh (unregistered) metric vecs for a
+// buildTenantPipelines call. The counters are standalone, so several tests can
+// each own one without a registry collision; tests that assert on the skip
+// counter capture the returned deps and read deps.tenantLoadFailed.
+func testBuildDeps() buildDeps {
+	return buildDeps{
+		logger:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		dropped:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "td_dropped"}, []string{"reason"}),
+		unmappedTags:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "td_unmapped"}, []string{"group", "segment", "reason"}),
+		decomposed:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "td_decomposed"}, []string{"param_id"}),
+		derivedSynth:        prometheus.NewCounter(prometheus.CounterOpts{Name: "td_derived"}),
+		counterDerivedSynth: prometheus.NewCounter(prometheus.CounterOpts{Name: "td_counter_derived"}),
+		tenantLoadFailed:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "td_tenant_load_failed"}, []string{"file", "reason"}),
+	}
+}
+
+// skipCount reads the skip counter value. Each of these tests skips exactly one
+// file (one label set), so ToFloat64 is unambiguous.
+func skipCount(t *testing.T, deps buildDeps) float64 {
+	t.Helper()
+	return testutil.ToFloat64(deps.tenantLoadFailed)
+}
+
 func TestBuildTenantPipelines_LoadsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	writeCfg(t, dir, "alpha.yaml", "ALPHA", "/alpha")
@@ -163,14 +186,7 @@ func TestBuildTenantPipelines_LoadsDirectory(t *testing.T) {
 	writeCfg(t, dir, "notes.txt", "IGNORED", "/x") // non-yaml is ignored
 
 	t.Setenv("AGENT_OUTBOX_DIR", filepath.Join(dir, "outbox"))
-	ps, err := buildTenantPipelines(dir, buildDeps{
-		logger:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-		dropped:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t2_dropped"}, []string{"reason"}),
-		unmappedTags:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t2_unmapped"}, []string{"group", "segment", "reason"}),
-		decomposed:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t2_decomposed"}, []string{"param_id"}),
-		derivedSynth:        prometheus.NewCounter(prometheus.CounterOpts{Name: "t2_derived"}),
-		counterDerivedSynth: prometheus.NewCounter(prometheus.CounterOpts{Name: "t2_counter_derived"}),
-	})
+	ps, err := buildTenantPipelines(dir, testBuildDeps())
 	if err != nil {
 		t.Fatalf("buildTenantPipelines: %v", err)
 	}
@@ -197,88 +213,108 @@ func TestBuildTenantPipelines_LoadsDirectory(t *testing.T) {
 	}
 }
 
-// TestBuildTenantPipelines_DuplicateGroupFails (requirement A): two configs with
-// the same group_id (case-insensitively) is a fatal ambiguous route.
-func TestBuildTenantPipelines_DuplicateGroupFails(t *testing.T) {
+// TestBuildTenantPipelines_DuplicateGroupSkips (P0-1): a second config reusing an
+// already-admitted group_id (case-insensitively) is SKIPPED-AND-ALARMED, not
+// fatal — the first-seen tenant keeps serving, the duplicate is dropped + counted.
+// Before ADR-0042 blast-radius isolation this returned an error → os.Exit(1) →
+// the shared agent crash-looped and cpack lost ingest.
+func TestBuildTenantPipelines_DuplicateGroupSkips(t *testing.T) {
 	dir := t.TempDir()
 	writeCfg(t, dir, "one.yaml", "CPACK", "/one")
 	writeCfg(t, dir, "two.yaml", "cpack", "/two") // same group, different case
 	t.Setenv("AGENT_OUTBOX_DIR", filepath.Join(dir, "outbox"))
 
-	_, err := buildTenantPipelines(dir, buildDeps{
-		logger:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-		dropped:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t3_dropped"}, []string{"reason"}),
-		unmappedTags:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t3_unmapped"}, []string{"group", "segment", "reason"}),
-		decomposed:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t3_decomposed"}, []string{"param_id"}),
-		derivedSynth:        prometheus.NewCounter(prometheus.CounterOpts{Name: "t3_derived"}),
-		counterDerivedSynth: prometheus.NewCounter(prometheus.CounterOpts{Name: "t3_counter_derived"}),
-	})
-	if err == nil {
-		t.Fatal("expected duplicate group_id to fail startup, got nil")
+	deps := testBuildDeps()
+	ps, err := buildTenantPipelines(dir, deps)
+	if err != nil {
+		t.Fatalf("duplicate group_id must skip-and-alarm, not fail: %v", err)
+	}
+	defer func() {
+		for _, p := range ps {
+			p.ob.Close()
+		}
+	}()
+	if len(ps) != 1 {
+		t.Fatalf("got %d pipelines, want 1 (first-seen CPACK kept, dup skipped)", len(ps))
+	}
+	if ps[0].groupID != "CPACK" {
+		t.Fatalf("kept pipeline group = %q, want first-seen CPACK", ps[0].groupID)
+	}
+	if n := skipCount(t, deps); n != 1 {
+		t.Fatalf("tenant_load_failed = %v, want 1 (the skipped dup)", n)
 	}
 }
 
-// TestBuildTenantPipelines_DuplicateEdgeNodeFails (hardening): two configs with
-// distinct group_ids but the SAME edge_node_id must fail startup — a shared
-// edge_node_id yields identical uplink MQTT ClientIDs, so the broker would evict
-// one session per connect and both tenants would flap forever.
-func TestBuildTenantPipelines_DuplicateEdgeNodeFails(t *testing.T) {
+// TestBuildTenantPipelines_DuplicateEdgeNodeSkips (P0-1): two configs with
+// distinct group_ids but the SAME edge_node_id — a shared edge_node_id yields
+// identical uplink MQTT ClientIDs (broker evicts one session per connect). The
+// duplicate is SKIPPED-AND-ALARMED; the first-seen tenant keeps serving.
+func TestBuildTenantPipelines_DuplicateEdgeNodeSkips(t *testing.T) {
 	dir := t.TempDir()
 	writeCfgNode(t, dir, "a.yaml", "GROUPA", "/a", "shared-edge")
 	writeCfgNode(t, dir, "b.yaml", "GROUPB", "/b", "SHARED-EDGE") // same node, different case
 	t.Setenv("AGENT_OUTBOX_DIR", filepath.Join(dir, "outbox"))
 
-	_, err := buildTenantPipelines(dir, buildDeps{
-		logger:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-		dropped:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t6_dropped"}, []string{"reason"}),
-		unmappedTags:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t6_unmapped"}, []string{"group", "segment", "reason"}),
-		decomposed:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t6_decomposed"}, []string{"param_id"}),
-		derivedSynth:        prometheus.NewCounter(prometheus.CounterOpts{Name: "t6_derived"}),
-		counterDerivedSynth: prometheus.NewCounter(prometheus.CounterOpts{Name: "t6_counter_derived"}),
-	})
-	if err == nil {
-		t.Fatal("expected duplicate edge_node_id to fail startup, got nil")
+	deps := testBuildDeps()
+	ps, err := buildTenantPipelines(dir, deps)
+	if err != nil {
+		t.Fatalf("duplicate edge_node_id must skip-and-alarm, not fail: %v", err)
 	}
-	if !strings.Contains(err.Error(), "edge_node_id") {
-		t.Fatalf("error should name edge_node_id as the cause; got %v", err)
+	defer func() {
+		for _, p := range ps {
+			p.ob.Close()
+		}
+	}()
+	if len(ps) != 1 {
+		t.Fatalf("got %d pipelines, want 1 (first-seen kept, dup edge_node skipped)", len(ps))
+	}
+	if n := skipCount(t, deps); n != 1 {
+		t.Fatalf("tenant_load_failed = %v, want 1 (the skipped dup edge_node)", n)
 	}
 }
 
-// TestBuildTenantPipelines_InvalidConfigFails (requirement A): a config that
-// fails agentcfg validate() (missing group_id) fails startup.
-func TestBuildTenantPipelines_InvalidConfigFails(t *testing.T) {
+// TestBuildTenantPipelines_BadConfigSkippedGoodSurvives (P0-1, THE guarantee): a
+// malformed tenant file (missing group_id → agentcfg validate error, exactly the
+// wizard-authored-descriptor footgun) is skipped, and a VALID co-tenant (cpack)
+// in the same dir keeps serving. This is what makes apply-agent-config safe: one
+// bad map can never take cpack ingest down.
+func TestBuildTenantPipelines_BadConfigSkippedGoodSurvives(t *testing.T) {
 	dir := t.TempDir()
-	// Missing sparkplug.group_id → agentcfg.Load validate() error.
+	// Missing sparkplug.group_id → agentcfg.Load validate() error (mirrors a
+	// wizard descriptor with no agent block → invalid generated agent.yaml).
 	if err := os.WriteFile(filepath.Join(dir, "bad.yaml"),
 		[]byte("sparkplug:\n  edge_node_id: e\n  internal_broker: tcp://x:1883\n  uplink_broker: tcp://x:1883\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeCfg(t, dir, "cpack.yaml", "CPACK", "/cpack") // the protected co-tenant
 	t.Setenv("AGENT_OUTBOX_DIR", filepath.Join(dir, "outbox"))
-	if _, err := buildTenantPipelines(dir, buildDeps{
-		logger:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-		dropped:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t4_dropped"}, []string{"reason"}),
-		unmappedTags:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t4_unmapped"}, []string{"group", "segment", "reason"}),
-		decomposed:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t4_decomposed"}, []string{"param_id"}),
-		derivedSynth:        prometheus.NewCounter(prometheus.CounterOpts{Name: "t4_derived"}),
-		counterDerivedSynth: prometheus.NewCounter(prometheus.CounterOpts{Name: "t4_counter_derived"}),
-	}); err == nil {
-		t.Fatal("expected invalid config to fail startup, got nil")
+
+	deps := testBuildDeps()
+	ps, err := buildTenantPipelines(dir, deps)
+	if err != nil {
+		t.Fatalf("a bad file alongside a good one must NOT fail the agent: %v", err)
+	}
+	defer func() {
+		for _, p := range ps {
+			p.ob.Close()
+		}
+	}()
+	if len(ps) != 1 || ps[0].groupID != "CPACK" {
+		t.Fatalf("want exactly the CPACK pipeline surviving; got %d pipelines", len(ps))
+	}
+	if n := skipCount(t, deps); n != 1 {
+		t.Fatalf("tenant_load_failed = %v, want 1 (the skipped bad.yaml)", n)
 	}
 }
 
-// TestBuildTenantPipelines_EmptyDirFails (requirement A): a dir with no tenant
-// configs is a misconfig, not a silent no-op.
-func TestBuildTenantPipelines_EmptyDirFails(t *testing.T) {
-	dir := t.TempDir()
+// TestBuildTenantPipelines_AllBadOrEmptyFails: the infrastructure floor — a dir
+// with NO loadable config (empty, or every file bad) still returns an error so
+// main os.Exits loudly. This is a deploy-level fault, distinct from one bad file
+// among good ones (which is isolated above).
+func TestBuildTenantPipelines_AllBadOrEmptyFails(t *testing.T) {
+	dir := t.TempDir() // empty
 	t.Setenv("AGENT_OUTBOX_DIR", filepath.Join(dir, "outbox"))
-	if _, err := buildTenantPipelines(dir, buildDeps{
-		logger:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-		dropped:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t5_dropped"}, []string{"reason"}),
-		unmappedTags:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t5_unmapped"}, []string{"group", "segment", "reason"}),
-		decomposed:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "t5_decomposed"}, []string{"param_id"}),
-		derivedSynth:        prometheus.NewCounter(prometheus.CounterOpts{Name: "t5_derived"}),
-		counterDerivedSynth: prometheus.NewCounter(prometheus.CounterOpts{Name: "t5_counter_derived"}),
-	}); err == nil {
+	if _, err := buildTenantPipelines(dir, testBuildDeps()); err == nil {
 		t.Fatal("expected empty tenants dir to fail startup, got nil")
 	}
 }

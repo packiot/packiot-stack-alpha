@@ -53,6 +53,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/localstate"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/log"
@@ -337,6 +338,7 @@ func main() {
 	var mqttSub *mqtt.Subscriber
 	var analyticsPub *analyticspub.Publisher
 	var outboxStore *outbox.Store               // hoisted so shutdown block can close it
+	var localStateStore *localstate.Store       // ADR-0053 fat-edge on-prem current-state sink; hoisted for handler + shutdown
 	var rebirthRequester *mqtt.RebirthRequester // task #31 — hoisted for handler + shutdown
 	if cfg.MQTTEnabled {
 		sparkplugStore = sparkplug.NewStateStore()
@@ -397,12 +399,22 @@ func main() {
 		// Phase 2.5b's Node-RED publisher output (source.type="nodered") on
 		// the same exchange.
 		var shadowErr error
+		// ADR-0053 B-minimal on-prem decode: the factory box egresses HTTPS
+		// only (the firewall blocks AMQP/8883 — that is why the reader uses
+		// HTTPS), and the cloud already gets this tenant's data from the
+		// reader's PRIMARY tee (reader → cloud shared-agent, durable via the
+		// reader spool). So the on-box transformer must NOT try to publish to
+		// cloud RabbitMQ: it decodes purely to feed localstate → the on-prem
+		// dashboard. LOCAL_DECODE_ONLY skips the AMQP publisher (and, by
+		// extension via the analyticsPub!=nil guard below, the outbox + drain).
+		localDecodeOnly := os.Getenv("LOCAL_DECODE_ONLY") == "true"
 		// ADR-0010 Phase 3 shadow-mode DB comparison: publish to the same
 		// `oee` exchange oeecloud-node-red uses, with routing key
 		// `sparkplug.data.<tenant>`. The envelope's source_type="go" makes
 		// oeecloud-worker dispatch writes into shadow_go_port.* schema.
-		analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger)
-		if shadowErr != nil {
+		if localDecodeOnly {
+			logger.Info("LOCAL_DECODE_ONLY=true: on-prem decode→localstate only; no cloud AMQP publisher, no outbox (ADR-0053 B-minimal)")
+		} else if analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger); shadowErr != nil {
 			logger.Error("analyticspub: failed to open channel — MQTT disabled",
 				slog.String("err", shadowErr.Error()))
 			analyticsPub = nil
@@ -530,6 +542,29 @@ func main() {
 			logger.Warn("outbox: enabled but analyticspub failed to init — outbox disabled")
 		}
 
+		// ADR-0053 B-minimal: on-prem current-state sink. When LOCAL_STATE_DB
+		// is set (the fat-edge box deployment), the handler tees every decoded
+		// metric to a local SQLite current-state table that a local dashboard
+		// reads, so the shop floor keeps LIVE visibility during an internet
+		// outage. Independent of the outbox + analyticspub (this is a local-only
+		// write, meaningful even when the cloud uplink — and thus the whole
+		// publish path — is down; that is exactly the case it exists for).
+		// Absent (the cloud default) ⇒ nil ⇒ the handler skips it and behavior
+		// is byte-identical to today.
+		if p := os.Getenv("LOCAL_STATE_DB"); p != "" {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				logger.Error("localstate: mkdir failed — on-prem current-state sink disabled",
+					slog.String("path", p), slog.String("err", err.Error()))
+			} else if ls, lerr := localstate.Open(p); lerr != nil {
+				logger.Error("localstate: open failed — on-prem current-state sink disabled",
+					slog.String("path", p), slog.String("err", lerr.Error()))
+			} else {
+				localStateStore = ls
+				logger.Info("localstate ENABLED (on-prem current-state sink)",
+					slog.String("path", p), slog.String("adr", "ADR-0053 B-minimal"))
+			}
+		}
+
 		// ADR-0012 Phase 3 dual-emit: when SHADOW_EMIT_REFACTORED=true, for
 		// each inbound MQTT event we enqueue TWO envelopes to the outbox —
 		// one with source_type="go" (routes to shadow_go_port on packiot,
@@ -588,7 +623,7 @@ func main() {
 		if perTenantRouting {
 			logger.Info("F3_PER_TENANT_ROUTING=true: publishing analytics envelopes to per-tenant routing key sparkplug.data.<tenant> (stream-engine per-tenant queues)")
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, localStateStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -790,6 +825,9 @@ func main() {
 	}
 	if rebirthRequester != nil {
 		rebirthRequester.Close()
+	}
+	if localStateStore != nil {
+		_ = localStateStore.Close()
 	}
 	if outboxStore != nil {
 		_ = outboxStore.Close()
@@ -1558,7 +1596,7 @@ func analyticsRoutingKey(perTenant bool, tenant string) string {
 	return "sparkplug.data"
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1652,6 +1690,34 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 					ts = time.UnixMilli(int64(src))
 				}
 				calcMetrics = append(calcMetrics, calc.runShadow(ctx, topic.GroupID, m, ts, logger)...)
+			}
+		}
+
+		// ADR-0053 B-minimal: tee the decoded metrics to the on-prem
+		// current-state sink so a local dashboard shows live counts during an
+		// internet outage. nil on the cloud (skipped, zero cost). Best-effort:
+		// a sink write must NEVER block or fail the publish path — the cloud
+		// stays authoritative — so a failure is logged and swallowed. Keyed on
+		// the SparkPlug source identity because the box has no id_equipment
+		// (name→equipment is resolved cloud-side via packml_register); the
+		// dashboard maps source → a friendly machine name via the descriptor.
+		if localStateStore != nil {
+			tenant := strings.ToLower(topic.GroupID)
+			source := key.String()
+			samples := make([]localstate.Sample, 0, len(resolved.Metrics))
+			for _, m := range resolved.Metrics {
+				if m.Name == "" {
+					continue // alias-only metric (never in a resolved DATA row) — unkeyable
+				}
+				samples = append(samples, localstate.Sample{
+					Source:   source,
+					Metric:   m.Name,
+					Value:    fmt.Sprintf("%v", m.Value),
+					TsMillis: int64(m.Timestamp),
+				})
+			}
+			if err := localStateStore.Record(ctx, tenant, samples); err != nil {
+				logger.Warn("localstate: record failed (non-fatal)", slog.String("err", err.Error()))
 			}
 		}
 

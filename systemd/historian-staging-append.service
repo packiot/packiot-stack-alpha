@@ -1,0 +1,6 @@
+[Unit]
+Description=Staging historian daily append (F3 analytics -> S3 cold store)
+After=docker.service network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/packiot/historian/historian-staging-run-append.sh

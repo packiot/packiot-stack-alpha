@@ -4,12 +4,120 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawtag"
 )
+
+// postGroupHeader posts a body with an optional X-Ingest-Group header (empty ⇒
+// header omitted). Mirrors post() but exercises the FIX-3 header routing fallback.
+func postGroupHeader(t *testing.T, h http.Handler, key, headerGroup, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tags", strings.NewReader(body))
+	if key != "" {
+		req.Header.Set("X-Ingest-Key", key)
+	}
+	if headerGroup != "" {
+		req.Header.Set("X-Ingest-Group", headerGroup)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// noGroupBody is a well-formed envelope with NO top-level group — the legacy-tee
+// shape the X-Ingest-Group header exists to route.
+const noGroupBody = `{"scan_ts":1,"tags":[{"metric":"/Status/MachSpeed","value":118.4}]}`
+
+// TestRouter_HeaderGroupFallback: a body with no group but an X-Ingest-Group
+// header routes to that tenant (202) — the per-tenant nginx front-door injecting
+// the group for a legacy tee that sends none.
+func TestRouter_HeaderGroupFallback(t *testing.T) {
+	a, b := &captureSink{}, &captureSink{}
+	h := newRouterServer(t, map[string]Sink{"CPACK": a.fn, "INCOPLAST": b.fn})
+
+	if rec := postGroupHeader(t, h, testKey, "CPACK", noGroupBody); rec.Code != http.StatusAccepted {
+		t.Fatalf("header-routed: status got %d want 202 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if a.count() != 1 || b.count() != 0 {
+		t.Fatalf("header X-Ingest-Group must route to CPACK only: A=%d (want 1), B=%d (want 0)", a.count(), b.count())
+	}
+}
+
+// TestRouter_HeaderGroupCaseInsensitive: the header key is normalized (upper +
+// trim) exactly like a body group.
+func TestRouter_HeaderGroupCaseInsensitive(t *testing.T) {
+	a := &captureSink{}
+	h := newRouterServer(t, map[string]Sink{"CPACK": a.fn})
+	if rec := postGroupHeader(t, h, testKey, "  cpack ", noGroupBody); rec.Code != http.StatusAccepted {
+		t.Fatalf("status got %d want 202 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if a.count() != 1 {
+		t.Fatalf("case/whitespace-normalized header route: A=%d want 1", a.count())
+	}
+}
+
+// TestRouter_HeaderGroupUnknown403: a header naming an unknown tenant is still a
+// 403 (the header is only a routing KEY, not a bypass).
+func TestRouter_HeaderGroupUnknown403(t *testing.T) {
+	a := &captureSink{}
+	h := newRouterServer(t, map[string]Sink{"CPACK": a.fn})
+	rec := postGroupHeader(t, h, testKey, "NOTATENANT", noGroupBody)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status got %d want 403 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if a.count() != 0 {
+		t.Fatalf("unknown header group must not reach any sink; A=%d", a.count())
+	}
+}
+
+// TestRouter_NoGroupNoHeader403: neither a body group nor the header ⇒ 403,
+// unchanged (the header is a fallback, not a new way to skip routing).
+func TestRouter_NoGroupNoHeader403(t *testing.T) {
+	a := &captureSink{}
+	h := newRouterServer(t, map[string]Sink{"CPACK": a.fn})
+	rec := postGroupHeader(t, h, testKey, "", noGroupBody)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status got %d want 403 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if a.count() != 0 {
+		t.Fatalf("no group and no header must reach no sink; A=%d", a.count())
+	}
+}
+
+// TestRouter_BodyGroupWinsOverHeader: when BOTH are present the body group wins
+// and the header is ignored — the precedence contract (body > header > 403).
+func TestRouter_BodyGroupWinsOverHeader(t *testing.T) {
+	a, b := &captureSink{}, &captureSink{}
+	h := newRouterServer(t, map[string]Sink{"CPACK": a.fn, "INCOPLAST": b.fn})
+	// Body says CPACK, header says INCOPLAST → must land in CPACK.
+	if rec := postGroupHeader(t, h, testKey, "INCOPLAST", bodyForGroup("CPACK")); rec.Code != http.StatusAccepted {
+		t.Fatalf("status got %d want 202 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if a.count() != 2 || b.count() != 0 {
+		t.Fatalf("body group must win over header: CPACK=%d (want 2), INCOPLAST=%d (want 0)", a.count(), b.count())
+	}
+}
+
+// TestSingleMode_IgnoresHeaderGroup: in SINGLE mode the X-Ingest-Group header is
+// ignored — an absent body group is accepted regardless (frozen behavior), and a
+// header naming a foreign tenant does NOT cause a 403.
+func TestSingleMode_IgnoresHeaderGroup(t *testing.T) {
+	sink := &captureSink{}
+	h := newTestServer(t, "CPACK", sink.fn) // single mode, scope=CPACK
+	// Body has no group; header names a different tenant. Single mode ignores the
+	// header and accepts the absent-group body (the tag_map drops foreign metrics).
+	if rec := postGroupHeader(t, h, testKey, "INCOPLAST", noGroupBody); rec.Code != http.StatusAccepted {
+		t.Fatalf("single mode must ignore X-Ingest-Group and accept absent-group body: got %d want 202 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if sink.count() != 1 {
+		t.Fatalf("single-mode sink should see the tag: got %d want 1", sink.count())
+	}
+}
 
 // newRouterServer builds a multi-tenant router over the given per-group sinks.
 func newRouterServer(t *testing.T, routes map[string]Sink) http.Handler {
