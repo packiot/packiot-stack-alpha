@@ -168,6 +168,13 @@ floor gets a screen that is still **live** off the on-box cache instead of only 
 for the operator PWA, and [Outage Resilience](10-outage-resilience-and-offline.md)
 for the actions/counts buffers.
 
+> **Beyond visibility — the edge-operator.** This page keeps the floor *seeing*.
+> The next opt-in layer, **[The Edge-Operator](12-edge-operator.md)** (ADR-0054),
+> keeps the floor *operating*: it runs the operator SPA itself on the box with a
+> local `/v1` read-cache and a durable write-forwarder, so operators keep
+> starting/stopping POs and justifying downtime through the outage. It is the
+> **action half** to this page's **visibility half**, and rides the same box.
+
 ## Relation to ADR-0053
 
 ADR-0053 splits outage autonomy into two halves:
@@ -201,6 +208,6 @@ implementation).
 | Removing a client — is the box cleaned up? | Yes — `compose down -v` + bundle cleanup, nothing left behind. |
 
 See also: [Outage Resilience & Offline Operation](10-outage-resilience-and-offline.md) ·
-[Onboarding a Client](02-onboarding.md#2-connect-the-plcs) ·
+[Onboarding a Client](02-onboarding.md#3-connect-the-plcs) ·
 [Cloud Services & OEE](05-cloud-services-and-oee.md) ·
 [Edge & Data Ingestion](04-edge-and-ingestion.md).

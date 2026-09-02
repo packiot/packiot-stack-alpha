@@ -89,6 +89,12 @@ leave everything blank and continue; nothing here is required to advance.
   `descriptor.onprem_offline`; the reader tees raw tags to a local agent too). Does
   **not** change the cloud path. Full detail:
   **[On-Prem Offline Operation](11-on-prem-offline-operation.md)**.
+- **Edge-operator** — advisory opt-in (on top of on-prem offline) to also run the
+  *operator SPA* on the factory box, so the floor keeps **operating** — starting/stopping
+  POs, justifying downtime — through an outage (sets `descriptor.operator_edge`; reads
+  served from a local cache, writes buffered + forwarded to the cloud on reconnect). The
+  cloud stays the authoritative writer. Full detail:
+  **[The Edge-Operator](12-edge-operator.md)**.
 
 ### 4. Set up shifts (optional)
 A **shift** is the recurring working calendar OEE is measured against. **Optional to
