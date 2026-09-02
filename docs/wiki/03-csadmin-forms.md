@@ -50,8 +50,11 @@ page** (read-only). Code **auto-derives from the name** (`cleanCode`) — you ne
 |-------|-------|---------|-------|
 | Name/code | 🔴 | `shifts.cd_shift` | alphanumeric |
 | ≥ 1 day enabled | 🔴 | `shift_hours` rows | superRefine |
-| Sequence position `1` | 🟡 | `sequence_position` | |
+| Sequence position `1` | ⚪ | `sequence_position` | optional; defaults to 1 (ordering only) |
 | Site / Area scope | ⚪ | `id_site` / `id_area` | area-first, site fallback |
+
+Shifts are reachable both on the **Shifts** page and inline as **wizard step 4** (optional
+there — a tenant with no shift computes no OEE, so the step warns but never hard-blocks).
 
 ## Human-readable week fields
 
