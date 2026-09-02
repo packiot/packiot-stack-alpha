@@ -122,6 +122,15 @@ const (
 	eventWindow     = 90 * 24 * time.Hour
 )
 
+// dataQualityWindowDays bounds the data-quality-events andon feed to a rolling
+// recent window (see the "data-quality-events" dataset). It is a string because
+// it is spliced into the SQL as a Postgres `interval` literal — it is a
+// compile-time CONSTANT (never request-derived), so there is no injection
+// surface. 14 days keeps the busiest current tenant (staging ent-3, ~336
+// violations/day) well under the 10000-row compile cap while retaining useful
+// recent history.
+const dataQualityWindowDays = "14"
+
 type dataset struct {
 	group     string // front4-census dataset group (coverage table key)
 	doc       string
@@ -129,14 +138,14 @@ type dataset struct {
 	windowed  bool
 	maxWindow time.Duration
 	params    []dsParam
-	// sqlF3 (ADR-0032 Step 1, optional) overrides sql when the process read-plane
+	// sqlAnalytics (ADR-0032 Step 1, optional) overrides sql when the process read-plane
 	// flow is f3 (REFDATA_FLOW=f3). Empty ⇒ the same sql serves both flows, which
-	// is EVERY dataset today: packiot_shadow keeps packiot's object names where
+	// is EVERY dataset today: packiot_analytics keeps packiot's object names where
 	// the object exists, so no dataset needs a textual rewrite (flow.go). The
 	// field is the pre-wired seam for a genuine F3 rename; the parameter order and
 	// row-cap append are identical for both variants (compileDataset uses
-	// activeSQL), so an sqlF3 must bind the SAME $N positions as sql.
-	sqlF3 string
+	// activeSQL), so an sqlAnalytics must bind the SAME $N positions as sql.
+	sqlAnalytics string
 	// cacheTTL (ADR-0035, optional) is the cache-aside TTL for this dataset. It
 	// trades freshness for DB-load relief: a client re-polling within the window
 	// is served from Redis instead of re-hitting the SQL. A per-dataset override
@@ -153,8 +162,8 @@ type dataset struct {
 // flow==f3 and one is set, else the F1 sql. The row cap is appended by the
 // caller (compileDataset) AFTER this choice, so both variants share it.
 func (d dataset) activeSQL(f flow) string {
-	if f == flowF3 && d.sqlF3 != "" {
-		return d.sqlF3
+	if f == flowAnalytics && d.sqlAnalytics != "" {
+		return d.sqlAnalytics
 	}
 	return d.sql
 }
@@ -307,15 +316,22 @@ var datasets = map[string]dataset{
 	// the read plane. Tenant-fenced DIRECTLY on id_enterprise (the table carries it
 	// natively, like production_targets / oee_targets — no equipments JOIN, so no
 	// `active` predicate applies), most-recent-first. Explicit projection (ADR-0027
-	// rule #2). Not windowed — the compile row cap (LIMIT 10000) bounds it and the
-	// andon panel wants the freshest violations. The backing table is a NEW staging
-	// object (edge-node-red migration 34, applied to BOTH packiot + packiot_shadow);
+	// rule #2). ROLLING WINDOW: bounded to the last dataQualityWindowDays days so the
+	// andon panel ships a small, bounded payload of the freshest violations instead of
+	// silently truncating at the compile row cap. Before this bound a busy tenant
+	// (staging ent-3: ~10.5k rows, ~336/day) hit LIMIT 10000 and shipped ~2.3 MB per
+	// call while dropping its OLDEST rows with no signal anything was cut; the window
+	// makes the cutoff explicit and time-based (LIMIT 10000 stays as a burst backstop).
+	// The backing table is a NEW staging
+	// object (edge-node-red migration 34, applied to BOTH packiot + packiot_analytics);
 	// the pre-flip drift gate will CORRECTLY flag it MISSING on prod until that
 	// migration rolls forward there as part of the P11 rollout.
 	"data-quality-events": {
-		group: "data-quality", doc: "Data-quality alarm feed — recorded OEE/runtime violations, most-recent-first (data_quality_event)",
+		group: "data-quality", doc: "Data-quality alarm feed — recorded OEE/runtime violations from the last " + dataQualityWindowDays + " days, most-recent-first (data_quality_event)",
 		sql: `SELECT id, id_enterprise, id_equipment, grain, bucket_ts, rule, observed_value, severity, detected_at
-			FROM data_quality_event WHERE id_enterprise = $1 ORDER BY detected_at DESC`,
+			FROM data_quality_event
+			WHERE id_enterprise = $1 AND detected_at >= now() - interval '` + dataQualityWindowDays + ` days'
+			ORDER BY detected_at DESC`,
 		params: []dsParam{pEnt},
 	},
 
@@ -344,7 +360,7 @@ var datasets = map[string]dataset{
 	// neopacStats reads PLUS e.tp_equipment (the front4 adapter re-nests it under
 	// `equipment{tp_equipment}`, frozen-skin parity). All seven uns_equipment_current_shift
 	// columns AND equipments.tp_equipment are column-parity verified in BOTH packiot
-	// (F1) and packiot_shadow (F3) (2026-07-22 census) — both backing objects are
+	// (F1) and packiot_analytics (F3) (2026-07-22 census) — both backing objects are
 	// already SERVABLE_BOTH, so NO F3 migration is needed. Not windowed (a live
 	// snapshot). Distinct from live-equipment-shift by the +tp_equipment projection
 	// and the single-equipment ($2) axis (neopacStats fires one line id, matching its
@@ -392,7 +408,7 @@ var datasets = map[string]dataset{
 	// productionChart.js:38, Overview*/queries.js), NOT the _v6 / _i_ variants
 	// refdata already binds — so those two datasets are a version MISMATCH for
 	// the read front4 actually issues. Live census 2026-07-21 confirmed the bare
-	// fn EXISTS in BOTH packiot and packiot_shadow (idequipment integer) — file-19
+	// fn EXISTS in BOTH packiot and packiot_analytics (idequipment integer) — file-19
 	// replay materialized it in F3 — so this is a true version-match, not a new
 	// object. Same perEquipment ownership shape as its siblings.
 	"overview-production-chart-base": perEquipment("overview-detail",
@@ -518,7 +534,7 @@ var datasets = map[string]dataset{
 	// id_enterprise natively, so the tenant fence is a DIRECT `id_enterprise = $1`
 	// (no EXISTS wrapper needed — a foreign-tenant equipment id simply matches
 	// zero rows); id_equipment = $2 is the client filter. Backing tables verified
-	// present + column-parity in BOTH packiot and packiot_shadow (2026-07-21).
+	// present + column-parity in BOTH packiot and packiot_analytics (2026-07-21).
 	// Explicit projections (ADR-0027) covering exactly the vl_* columns front4
 	// reads (oee_targets has no vl_hour).
 	"production-targets-by-equipment": {
@@ -619,7 +635,7 @@ var datasets = map[string]dataset{
 	// like `site-by-equipment` flattens `equipment { nm_equipment }`, we LEFT JOIN
 	// products/clients and project the names as flat nm_product/nm_client columns
 	// (the adapter re-nests). All three relations verified present + column-parity
-	// in BOTH packiot and packiot_shadow (2026-07-21). CPACK ent 3 has PO data
+	// in BOTH packiot and packiot_analytics (2026-07-21). CPACK ent 3 has PO data
 	// (275 rows in F3); relevant to ent 3 (Incoplast ent 4 has no POs yet).
 	//
 	// EXTENDED (ADR-0032 §5.1 — front4 job-selector surfaces): the two front4 job
@@ -659,7 +675,7 @@ var datasets = map[string]dataset{
 	// `production_orders` columns (txt_production_order_description, id_order_text)
 	// and the two remaining `products` columns (cd_product, txt_product) off the
 	// existing LEFT JOIN products. All four are column-parity verified in BOTH
-	// packiot (F1) and packiot_shadow (F3) (2026-07-22 census) — no F3 migration.
+	// packiot (F1) and packiot_analytics (F3) (2026-07-22 census) — no F3 migration.
 	// The status=2 (running) predicate stays CLIENT-SIDE, exactly like GET_JOBS /
 	// GET_JOB_LIST above (the `status` column is already projected); the per-equipment
 	// fence + row cap are unchanged. Net: +4 projected columns, zero new filters.
@@ -765,7 +781,7 @@ var datasets = map[string]dataset{
 	// tree is stable without a client sort.
 	//
 	// PROD GATING: downtime_reason / equipment_downtime_reason exist on staging
-	// packiot_shadow only (R5 migration is prod-GATED). The manual live-drift gate
+	// packiot_analytics only (R5 migration is prod-GATED). The manual live-drift gate
 	// (refdata-contract-drift.yml, workflow_dispatch) will CORRECTLY flag these two
 	// relations as absent from prod until the R5 migration is prod-applied — that
 	// prod-apply is a prerequisite step in the contract plan, not a regression.
@@ -880,14 +896,30 @@ var datasets = map[string]dataset{
 	// creating that view (DDL handed off with this change); the pre-prod-flip
 	// contract-drift GATE (scripts/refdata-contract-drift-check.sh) will BLOCK the
 	// flip — fail-closed — until the view exists in prod, so this never serves a
-	// missing object silently. The hardcoded 37 is gone: the tenant is $1, the hour
-	// bucket is bound via pDate ($2::timestamp). Not windowed (a single hour point).
+	// missing object silently. The hardcoded 37 is gone: the tenant is $1, the
+	// shift bucket is bound via pDate ($2::timestamp). Not windowed (a single shift).
+	//
+	// BUCKET SEMANTICS (fix): v_report_downtimes.ts_value is the SHIFT BEGIN
+	// timestamp (equipment_runtime_shift.ts_value), NOT an hour boundary. Shifts
+	// only start on the hour for tenants whose shift schedule happens to be hour-
+	// aligned — which was true for Suzano (ent 37), the ONLY tenant back4 ever
+	// served here (its query hardcoded id_enterprise = 37). back4 matched
+	// `ts_value = date_trunc('hour', $1)`, and for hour-aligned Suzano shifts the
+	// truncation is a no-op, so it worked by accident. Ported verbatim it silently
+	// broke on any tenant with off-the-hour shifts: CPACK (ent 3) shifts begin at
+	// 02:10 / 09:30 / 18:00, so date_trunc('hour', …) could only ever match the
+	// 18:00 shift — the 02:10 and 09:30 shifts returned ZERO rows even though the
+	// view held them (measured on staging F3: 09:30 → 0 served vs 61 in the view;
+	// 02:10 → 0 vs 95; 18:00 → 11 = 11, the accidental match). The bucket key is the
+	// shift begin, so the caller passes the exact shift ts_value and we match it
+	// exactly; hour-truncation is the Suzano artifact and is removed. This does not
+	// change the working 18:00 shift (18:00 == date_trunc('hour',18:00)).
 	"report-downtimes": {
-		group: "tenant-custom", doc: "Downtime report rows for one hour bucket (v_report_downtimes; dba-owned view, see report-downtimes note)",
+		group: "tenant-custom", doc: "Downtime report rows for one shift (v_report_downtimes, keyed by shift ts_value; dba-owned view, see report-downtimes note)",
 		sql: `SELECT op, linha, turno, inicio, fim, duracao, maquina,
 			codigo_categoria, codigo_subcategoria, descricao_categoria, descricao_subcategoria, anotacao
 			FROM v_report_downtimes
-			WHERE id_enterprise = $1 AND ts_value = date_trunc('hour', $2::timestamp)
+			WHERE id_enterprise = $1 AND ts_value = $2::timestamp
 			ORDER BY inicio DESC`,
 		params: []dsParam{pEnt, pDate("datetime")},
 	},
@@ -900,7 +932,7 @@ var datasets = map[string]dataset{
 	// the injected customer_id) and bounded (per-equipment guard, id-list + window,
 	// or a single enterprise scan under the shared row cap). REFDATA_FLOW stays
 	// default f1; all backing objects were census-verified present + column-parity
-	// in BOTH packiot (F1) and packiot_shadow (F3) on 2026-07-21, except three
+	// in BOTH packiot (F1) and packiot_analytics (F3) on 2026-07-21, except three
 	// nullable production_orders columns absent in F3 that 31-f3-front4-cat-c-objects.sql
 	// adds (see production-orders-rich note).
 
@@ -912,7 +944,7 @@ var datasets = map[string]dataset{
 	// equipment id yields zero rows — same ownership shape as the perEquipment group,
 	// but over a VIEW instead of a set-returning function. ⚠️ These are ent-13-SPECIFIC
 	// views: on staging (tenants CPACK ent 3 + Incoplast ent 4) they return EMPTY, and
-	// in F3 (`packiot_shadow`) they are STUB TABLES (relkind r), not views — the object
+	// in F3 (`packiot_analytics`) they are STUB TABLES (relkind r), not views — the object
 	// EXISTS with column-parity, which is what the read needs (front4 needs a non-Hasura
 	// path even when the result is empty). Bind anyway.
 	"overview-takt": {
@@ -982,7 +1014,7 @@ var datasets = map[string]dataset{
 	// safe — front4 always passes the board's machine set), status = 1 literal, and the
 	// shared row cap. Not windowed (the board is a status snapshot, not a time range).
 	//
-	// F3 NOTE: production_orders in packiot_shadow (F3) lacks three of the projected
+	// F3 NOTE: production_orders in packiot_analytics (F3) lacks three of the projected
 	// columns present in F1 — ideal_production, ts_start_tz, ts_end_tz —
 	// so 31-f3-front4-cat-c-objects.sql ADDs them (nullable, IF NOT EXISTS) to keep
 	// F1↔F3 object parity at F3_MISSING=0. They are inert under the default f1 flow.

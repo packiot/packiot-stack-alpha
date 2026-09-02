@@ -48,7 +48,7 @@ type ManualEventCreatedPayload struct {
 // instead of natural-key rewrites — events have no other natural key
 // once ts_event itself is edited).
 //
-// Idempotency: ON CONFLICT (ts_event) DO NOTHING — ts_event is unique
+// Idempotency: ON CONFLICT (id_equipment, ts_event) DO NOTHING — ts_event is unique
 // in Flow 1 by PK, so a conflict only means cursor re-replay. The
 // target is qualified deliberately (bug 247): any other constraint
 // violation must fail loudly.
@@ -58,7 +58,7 @@ type ManualEventCreatedPayload struct {
 // provisioned equipment_events_man in the shadow schemas. Once the
 // tables exist, the handler starts inserting on the next event.
 func ManualEventCreated(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p ManualEventCreatedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			logger.Warn("manual-event-created: payload unmarshal failed — skipping",
@@ -107,9 +107,9 @@ func ManualEventCreated(logger *slog.Logger) replay.Handler {
 		}
 
 		// Path 2: public on shadow pool (may be nil = disabled)
-		if shadowPool != nil {
-			if err := insertManualEvent(ctx, shadowPool, "public", &p, flow1ID, tsEvent, tsEnd, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow write: %w", err)
+		if analyticsPool != nil {
+			if err := insertManualEvent(ctx, analyticsPool, "public", &p, flow1ID, tsEvent, tsEnd, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics write: %w", err)
 			}
 		}
 		return nil
@@ -124,7 +124,7 @@ const sqlInsertManualEvent = `INSERT INTO %s.equipment_events_man (
 	    txt_downtime_notes,
 	    forced_creation_system, last_update
 	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, now())
-	  ON CONFLICT (ts_event) DO NOTHING`
+	  ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
 // insertManualEvent is the shared INSERT builder for both shadow paths.
 // The row carries Flow 1's id_equipment_event so edits-by-id resolve.

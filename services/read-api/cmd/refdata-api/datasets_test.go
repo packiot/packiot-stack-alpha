@@ -327,7 +327,7 @@ func TestPgIntArray(t *testing.T) {
 // or as a tenancy/ownership JOIN — must fence the entity side on `active`, so a
 // soft-deleted equipment/site/enterprise/user never surfaces in front4's lists,
 // metadata, or counts. The predicate must hold on BOTH flows (F1 packiot and F3
-// packiot_shadow); `active` was verified live to exist on all five entity tables
+// packiot_analytics); `active` was verified live to exist on all five entity tables
 // in both DBs (2026-07-22). Fact tables (equipment_values/events, the
 // equipment_runtime_*/uns_* snapshots) have NO active column and must NOT be
 // filtered — those datasets fence only their JOINed equipments/sites alias.
@@ -357,7 +357,7 @@ func TestSoftDeletedEntitiesAreFiltered(t *testing.T) {
 			t.Errorf("%s: not in the dataset registry (renamed/removed?)", name)
 			continue
 		}
-		for _, f := range []flow{flowF1, flowF3} {
+		for _, f := range []flow{flowF1, flowAnalytics} {
 			sql := ds.activeSQL(f)
 			// accept either `.active` (NOT NULL tables) or `active IS NOT FALSE`
 			// (the nullable enterprises/users columns — NULL means legacy/visible).

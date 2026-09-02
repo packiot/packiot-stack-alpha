@@ -17,7 +17,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/shadowpub"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/analyticspub"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/transforms/calc_production_counters"
 	"github.com/prometheus/client_golang/prometheus"
@@ -43,11 +43,22 @@ func newTestCalcHooks(t *testing.T) calcHooks {
 		stateSeeds: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "test_calc_state_seeds_total",
 		}, []string{"tenant", "seed_kind"}),
+		// idealRates must never be nil (main.go's own invariant — see
+		// calcHooks.idealRates doc) — an empty closure keeps countersOnly
+		// resolution a no-op, matching the old zero-value map{} behavior.
+		idealRates: func() map[string]float64 { return map[string]float64{} },
 	}
 }
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, nil))
+}
+
+// isCounterByNameOnly is the substring-only classifier — used by
+// buildCutoverMetrics tests to test exactly the behavior they did before
+// calcHooks.isCounter existed.
+func isCounterByNameOnly(name string) bool {
+	return isCounterMetricName(name) != calc_production_counters.CounterKindUnknown
 }
 
 // TestIsCounterMetricName covers the substring detection.
@@ -201,6 +212,34 @@ func TestRunShadowReturnsDeltaMetrics(t *testing.T) {
 	}
 }
 
+// TestRunShadowCountersOnlyAutoFromDB proves the ADR-0047 P0 #2 gating: when
+// countersOnlyAutoFromDB is true and idealRates() currently reports a rate
+// for this equipment, the message is evaluated in counters-only mode EVEN
+// THOUGH countersOnlyEnabled (the static flag) is false — the DB-populated
+// case must not require the legacy global env flag too.
+func TestRunShadowCountersOnlyAutoFromDB(t *testing.T) {
+	hooks := newTestCalcHooks(t)
+	base := "CPACK/SC/LINHAS/L6/TEXA"
+	hooks.countersOnlyEnabled = false // deliberately OFF
+	hooks.countersOnlyAutoFromDB = true
+	hooks.idealRates = func() map[string]float64 {
+		return map[string]float64{base: 90} // DB-derived rated speed
+	}
+	// No MachSpeed seeded — a counters-only machine has no speed sensor.
+	// Without counters-only mode this would hit the glitch guard
+	// (prodSpeed < 3*0 = 0) and drop every emission.
+	_ = hooks.state.SetInt(base+"/Admin/ProdConsumedCount/61/Unit", 0)
+
+	m := sparkplug.ResolvedMetric{
+		Name:  base + "/Admin/ProdConsumedCount/61/Unit",
+		Value: uint64(50),
+	}
+	got := hooks.runShadow(context.Background(), "cpack", m, time.Now(), testLogger())
+	if len(got) == 0 {
+		t.Fatalf("expected counters-only auto-from-DB to unblock emission despite countersOnlyEnabled=false, got none")
+	}
+}
+
 // TestRunShadowNonCounterReturnsNil — seeding metrics (MachSpeed etc.) and
 // non-counter topics contribute nothing to the cutover envelope's Calc set;
 // they ride through as pass-through instead.
@@ -231,7 +270,7 @@ func TestBuildCutoverMetrics(t *testing.T) {
 		{Name: base + "/Status/UnitModeCurrent", Value: int64(3), Timestamp: 1000},
 	}
 
-	out := buildCutoverMetrics(calcMetrics, resolved)
+	out := buildCutoverMetrics(calcMetrics, resolved, isCounterByNameOnly)
 
 	if len(out) != 3 {
 		t.Fatalf("expected 3 metrics (1 calc + 2 passthrough), got %d: %+v", len(out), out)
@@ -318,9 +357,9 @@ func TestBuildCutoverMetricsSuppressesLineCounters(t *testing.T) {
 		{Name: ownConsumed, Value: 7, Counter: 700, Timestamp: 1000},                       // own-stream line → keep
 	}
 
-	out := buildCutoverMetrics(calcMetrics, nil)
+	out := buildCutoverMetrics(calcMetrics, nil, isCounterByNameOnly)
 
-	got := map[string]*shadowpub.Metric{}
+	got := map[string]*analyticspub.Metric{}
 	for i := range out {
 		got[out[i].Name] = &out[i]
 	}

@@ -91,3 +91,17 @@ func TestMergeEnvWins(t *testing.T) {
 		t.Errorf("Merge mutated the db input map")
 	}
 }
+
+// TestWatcherZeroValueBeforeStart proves a freshly-constructed Watcher (never
+// Start()-ed, e.g. because COUNTERS_ONLY_FROM_DB is off) reports an empty,
+// non-nil rate map rather than nil/panicking — a caller can safely call
+// Rates() unconditionally without checking whether Start() ran.
+func TestWatcherZeroValueBeforeStart(t *testing.T) {
+	w := NewWatcher(map[string]float64{"CPACK/SC/LINHAS/L4/PTH": 50}, 0, nil)
+	if got := w.Rates(); got == nil || len(got) != 0 {
+		t.Errorf("Rates() before Start() = %v, want empty non-nil map", got)
+	}
+	if got := w.Tenants(); got != 0 {
+		t.Errorf("Tenants() before Start() = %d, want 0", got)
+	}
+}

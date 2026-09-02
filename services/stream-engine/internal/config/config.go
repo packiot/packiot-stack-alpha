@@ -95,7 +95,7 @@ type Config struct {
 	// are routed there instead of the main pool. Preserves the
 	// existing shadow_go_port routing (source_type="go" → schema
 	// swap on main pool) untouched.
-	PGShadowDBName string
+	PGAnalyticsDBName string
 
 	// ShadowGoPortEnabled — ADR-0045 G3. Selects the MAIN-POOL background-job
 	// flow (see flows.StandardFiltered). DEFAULT TRUE = the F2 comparator
@@ -116,8 +116,8 @@ type Config struct {
 	// starving the equipment_values shadow writes → they time out and fail-open
 	// → F3 trickles (2026-07-09). The shadow pool connects DIRECT to the DB EC2
 	// (not pgbouncer), so give it headroom; the main pool goes via pgbouncer.
-	PGMaxConns       int // main pool (via pgbouncer)
-	PGShadowMaxConns int // shadow pool (direct) — needs headroom for rollups + writes
+	PGMaxConns          int // main pool (via pgbouncer)
+	PGAnalyticsMaxConns int // shadow pool (direct) — needs headroom for rollups + writes
 
 	// ShiftResolverEnabled — ADR-0014 Phase 2. When true, the Go port of
 	// piot_set_shift_on_equipment_values() fills id_shift/id_shift_hour/
@@ -199,6 +199,17 @@ type Config struct {
 	// so the comparator is a clean two-table diff and flag-off parity is total.
 	CPACEventTargetTable string
 
+	// Stale-open events closer — bounds/closes never-closed CPACK (status_type=0)
+	// open equipment_events on the LIVE table by next-event (lead) / count-silence
+	// so a stale open status=6 stops reading running_time to now() (the fabricated
+	// ~100% availability bug). DEFAULT OFF; scoped to EventsCloseStaleEnterprises;
+	// idempotent + parity-safe (only ts_end IS NULL rows, never human-touched).
+	EventsCloseStaleEnabled       bool
+	EventsCloseStaleIntervalSec   int
+	EventsCloseStaleEnterprises   string // csv status_type=0 enterprise ids (CPACK=3); empty ⇒ inert
+	EventsCloseStaleThresholdSec  int    // trailing-close grace when stop_threshold_time IS NULL/0
+	EventsCloseStaleHorizonHours  int    // only reconcile opens with ts_event >= now()-horizon
+
 	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
 	// sync (verbatim-embedded state machine).
 	Sync06ReportEnabled   bool
@@ -252,7 +263,7 @@ type Config struct {
 	// the main-pool 120s timeout can't bite. On by default with the live rollup.
 	RollupBackfillEnabled bool
 	// RefSync mirrors master/reference tables (equipments, packml_register,
-	// production_targets, products, clients, …) main→packiot_shadow so F3 rollups
+	// production_targets, products, clients, …) main→packiot_analytics so F3 rollups
 	// read the same reference plane as F2 (the F2/F3 identity requirement). Runs
 	// only when the shadow DB is configured.
 	RefSyncEnabled                bool
@@ -317,6 +328,18 @@ type Config struct {
 	CountersOnlyLineLeadEnabled     bool
 	CountersOnlyLineLeadEnterprises string // CSV of id_enterprise
 
+	// ── ADR-0049 OEE correctness ──────────────────────────────────────────
+	// AvailFloorEnabled (§Fault-2): for opted-in CountersOnlyAvailEquipments,
+	// raise running_time to the count-derived active time where the state
+	// stream had gaps (production proves the machine ran). Reuses the equipment
+	// list + idle timeout above. Default OFF → byte-identical rollup.
+	OeeAvailFloorEnabled bool
+	// OeeCanonicalAPQEnabled (§Fault-3): store oee = oee_a·oee_p·oee_q with
+	// Performance computed directly, so the headline equals the product by
+	// construction (identity holds). Default OFF → legacy top-down oee. Flip
+	// AFTER the availability floor, since it makes oee_a load-bearing.
+	OeeCanonicalAPQEnabled bool
+
 	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
 	// When enabled, the equipment_values writer rejects any production
 	// increment (Processed/Consumed/Defective delta) that exceeds
@@ -371,7 +394,7 @@ type Config struct {
 	// unchanged — Bronze is a pure side-append. Default OFF → the raw INSERT is
 	// never queued, so behavior is byte-identical (the F2↔F3 identity comparator
 	// holds). Enable only where the *_raw hypertables exist in the target
-	// schema/DB (currently packiot_shadow.public) — a separate gated step.
+	// schema/DB (currently packiot_analytics.public) — a separate gated step.
 	BronzeRawAppend bool
 }
 
@@ -396,10 +419,10 @@ func Load() (*Config, error) {
 		WorkerPoolSACEnabled:             getenv("WORKER_POOL_SAC_ENABLED", "false") == "true",
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
-		PGShadowDBName:                   getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		PGAnalyticsDBName:                getenv("POSTGRES_ANALYTICS_DB_NAME", ""),
 		ShadowGoPortEnabled:              getenv("SHADOW_GO_PORT_ENABLED", "true") == "true",
 		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
-		PGShadowMaxConns:                 getenvInt("POSTGRES_SHADOW_MAX_CONNS", 15),
+		PGAnalyticsMaxConns:              getenvInt("POSTGRES_ANALYTICS_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		ShiftFillFolded:                  getenv("SHIFT_FILL_FOLDED", "false") == "true",
 		Speed33ReportEnabled:             getenv("SPEED33_REPORT_ENABLED", "false") == "true",
@@ -422,6 +445,11 @@ func Load() (*Config, error) {
 		CPACEventEnterprises:             getenv("CPAC_EVENT_ENTERPRISES", ""),
 		CPACStopThresholdDefaultSec:      getenvInt("CPAC_STOP_THRESHOLD_DEFAULT_SEC", 300),
 		CPACEventTargetTable:             getenv("CPAC_EVENT_TARGET_TABLE", "equipment_events_cpac_shadow"),
+		EventsCloseStaleEnabled:          getenv("EVENTS_CLOSE_STALE_ENABLED", "false") == "true",
+		EventsCloseStaleIntervalSec:      getenvInt("EVENTS_CLOSE_STALE_INTERVAL_SEC", 60),
+		EventsCloseStaleEnterprises:      getenv("EVENTS_CLOSE_STALE_ENTERPRISES", ""),
+		EventsCloseStaleThresholdSec:     getenvInt("EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC", 300),
+		EventsCloseStaleHorizonHours:     getenvInt("EVENTS_CLOSE_STALE_HORIZON_HOURS", 72),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
@@ -460,6 +488,9 @@ func Load() (*Config, error) {
 		CountersOnlyAvailIdleTimeoutSec: getenvInt("COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS", 300),
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
+		// ADR-0049 OEE correctness (default OFF — no behavior change)
+		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
+		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),

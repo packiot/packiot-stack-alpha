@@ -1,4 +1,6 @@
 # NEVER commit resolved secrets or a filled env into the edge bundle.
 .env
+# ADR-0049: the SSM activation handoff (code/id) — secret, never committed.
+edge-ssm.env
 certs/
 !certs/.gitkeep

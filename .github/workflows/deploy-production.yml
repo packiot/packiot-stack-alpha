@@ -54,7 +54,8 @@ jobs:
         # oeecloud-node-red was decommissioned 2026-06-24.
         run: |
           git submodule sync edge-api operator csadmin
-          git submodule update --init edge-api operator csadmin
+          git submodule foreach --recursive 'git reset --hard || true' 2>/dev/null || true
+          git submodule update --init --force edge-api operator csadmin
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from

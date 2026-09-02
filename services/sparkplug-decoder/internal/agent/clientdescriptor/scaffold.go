@@ -91,6 +91,97 @@ func resolveProtocols(in []string) ([]string, error) {
 // zero value is meaningful, so "present and 0" must be distinguishable from absent.
 func ptr(i int) *int { return &i }
 
+// DefaultMetricTemplates is the FULL standard PackML metric-leaf set the
+// generator falls back to when a descriptor authors NO metric_templates (the
+// CS-Admin wizard collects equipment + plc tag maps but not the canonical leaf
+// set). It mirrors CPACK ent-3's authored descriptor.metric_templates exactly, so
+// the fallback covers the three production counters (consumed=gross,
+// processed=net, defective=scrap) plus speed/state, and — for lines — the
+// Parameter30700 line-machines CSV. A NARROWER default (e.g. processed-only) would
+// reintroduce the same client⇄agent §C failure for any tenant whose plc tag map
+// references a consumed/defective counter, so the default is a superset: it only
+// ADDS raw_tag_map allowlist entries, and §C is reader→agent (extra agent suffixes
+// never reject a reader tag).
+//
+// This is DELIBERATELY the generator fallback's set, NOT the Scaffold CLI's:
+// Scaffold intentionally emits a MINIMAL starter the engineer extends (see its
+// inline literal + doc), whereas a wizard descriptor has no engineer-extension
+// step, so its fallback must be complete. A fresh value is returned each call (the
+// slices are not shared) so a caller can never mutate the default.
+func DefaultMetricTemplates() tenantprofile.MetricTemplates {
+	return tenantprofile.MetricTemplates{
+		Line: []tenantprofile.TemplateEntry{
+			{Leaf: "/Admin/ProdConsumedCount", Type: "double"},
+			{Leaf: "/Admin/ProdProcessedCount", Type: "double"},
+			{Leaf: "/Admin/ProdDefectiveCount", Type: "double"},
+			{Leaf: "/Status/MachSpeed", Type: "double"},
+			{Leaf: "/Status/StateCurrent", Type: "long"},
+			{Leaf: "/Status/Parameter30700", Type: "string"},
+		},
+		Member: []tenantprofile.TemplateEntry{
+			{Leaf: "/Admin/ProdConsumedCount/{idx}/Unit", Type: "double"},
+			{Leaf: "/Admin/ProdProcessedCount/{idx}/Unit", Type: "double"},
+			{Leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", Type: "double"},
+			{Leaf: "/Status/MachSpeed", Type: "double"},
+			{Leaf: "/Status/StateCurrent", Type: "long"},
+		},
+	}
+}
+
+// DefaultAgentWiring returns the fallback agent block for a tenant that did not
+// author one. A CS-Admin wizard descriptor has NO agent step (blankDescriptor
+// omits it), so GenerateAgentConfig must synthesize a VALID one — otherwise the
+// generated agent.yaml is missing edge_node_id/internal_broker/uplink_broker,
+// fails agentcfg.Validate, and (before ADR-0042 skip-and-alarm) crash-looped the
+// shared agent on push. Same values the Scaffold CLI uses; the uplink is a
+// REPLACE-me placeholder (a fresh tenant's real uplink is filled at Go-live), and
+// in the shared multi-tenant agent (Mode-A) the uplink connects server-auth-only
+// so the mtls refs are inert there. Mirrors DefaultMetricTemplates' role as the
+// generator's no-engineer-extension fallback.
+func DefaultAgentWiring(tenant string) AgentWiring {
+	lower := strings.ToLower(strings.TrimSpace(tenant))
+	return AgentWiring{
+		EdgeNodeID:     lower + "-edge",
+		InternalBroker: "tcp://mosquitto:1883",
+		RawTopic:       lower + "/raw",
+		UplinkBroker:   "ssl://REPLACE-INGEST-HOST:8883",
+		MTLS: MTLSRefs{
+			CertRef: secretRef(lower, "uplink-cert"),
+			KeyRef:  secretRef(lower, "uplink-key"),
+			CARef:   secretRef(lower, "uplink-ca"),
+		},
+	}
+}
+
+// mergedAgentWiring fills any empty REQUIRED field of the descriptor's agent
+// block from DefaultAgentWiring, so a partial (or absent) agent block still
+// yields a valid, loadable agent.yaml. Explicit descriptor values always win.
+//
+// mtls is DELIBERATELY not defaulted: agentcfg.validate accepts empty mtls refs
+// (the shared multi-tenant agent is Mode-A — it connects the uplink
+// server-auth-only, no per-tenant client cert), and a real Mode-A tenant like
+// bispharma intentionally ships EMPTY refs. Defaulting them to secret:// refs
+// that point at nonexistent secrets would be both unnecessary for validity and
+// wrong for the shared-agent path (it only matters on a dedicated box, where the
+// engineer authors real refs). So only the four fields whose ABSENCE fails
+// agentcfg.validate are defaulted here.
+func mergedAgentWiring(tenant string, a AgentWiring) AgentWiring {
+	def := DefaultAgentWiring(tenant)
+	if strings.TrimSpace(a.EdgeNodeID) == "" {
+		a.EdgeNodeID = def.EdgeNodeID
+	}
+	if strings.TrimSpace(a.InternalBroker) == "" {
+		a.InternalBroker = def.InternalBroker
+	}
+	if strings.TrimSpace(a.RawTopic) == "" {
+		a.RawTopic = def.RawTopic
+	}
+	if strings.TrimSpace(a.UplinkBroker) == "" {
+		a.UplinkBroker = def.UplinkBroker
+	}
+	return a
+}
+
 // Scaffold builds a VALID starter Descriptor from the options. The returned
 // descriptor passes Validate (so it round-trips through Parse), carries N lines +
 // members with placeholder-but-positive ids, and one plc endpoint per requested
@@ -129,6 +220,10 @@ func Scaffold(opts ScaffoldOptions) (*Descriptor, error) {
 		// Minimal canonical leaves. The member set carries the two leaves the
 		// multi-source pattern composes (speed + count); the line set carries a
 		// bare state leaf. The engineer extends these to the client's real model.
+		// NOTE: intentionally MINIMAL and distinct from the generator's
+		// DefaultMetricTemplates() (the full PackML fallback for template-less wizard
+		// descriptors) — a scaffold is a starter the engineer fills in, so it stays
+		// lean on purpose.
 		MetricTemplates: tenantprofile.MetricTemplates{
 			Line: []tenantprofile.TemplateEntry{
 				{Leaf: "/Status/StateCurrent", Type: "long"},
@@ -138,17 +233,7 @@ func Scaffold(opts ScaffoldOptions) (*Descriptor, error) {
 				{Leaf: "/Admin/ProdProcessedCount/{idx}/Unit", Type: "double"},
 			},
 		},
-		Agent: AgentWiring{
-			EdgeNodeID:     lower + "-edge",
-			InternalBroker: "tcp://mosquitto:1883",
-			RawTopic:       lower + "/raw",
-			UplinkBroker:   "ssl://REPLACE-INGEST-HOST:8883",
-			MTLS: MTLSRefs{
-				CertRef: secretRef(lower, "uplink-cert"),
-				KeyRef:  secretRef(lower, "uplink-key"),
-				CARef:   secretRef(lower, "uplink-ca"),
-			},
-		},
+		Agent: DefaultAgentWiring(tenant),
 		Tee: TeeParams{
 			IngestURL:   "https://REPLACE-INGEST-HOST:8444/v1/tags",
 			TLSInsecure: true,

@@ -66,7 +66,7 @@ func EventEdited(logger *slog.Logger) replay.Handler    { return eventClassified
 // Idempotent: the UPDATE is a pure set-to-payload-values, so replaying the
 // same log entry converges to the same row state.
 func eventClassified(logger *slog.Logger) replay.Handler {
-	return func(ctx context.Context, mainPool, shadowPool *pgxpool.Pool, u *replay.UserLog) error {
+	return func(ctx context.Context, mainPool, analyticsPool *pgxpool.Pool, u *replay.UserLog) error {
 		var p EventClassifiedPayload
 		if err := json.Unmarshal(u.Payload, &p); err != nil {
 			logger.Warn("event-classified: payload unmarshal failed — skipping",
@@ -97,9 +97,9 @@ func eventClassified(logger *slog.Logger) replay.Handler {
 			return fmt.Errorf("shadow_go_port: %w", err)
 		}
 		// Path 2: public (F3) on shadow pool (may be nil = disabled).
-		if shadowPool != nil {
-			if err := updateEventClassification(ctx, shadowPool, "public", &p, key, u.ID, logger); err != nil {
-				return fmt.Errorf("packiot_shadow: %w", err)
+		if analyticsPool != nil {
+			if err := updateEventClassification(ctx, analyticsPool, "public", &p, key, u.ID, logger); err != nil {
+				return fmt.Errorf("packiot_analytics: %w", err)
 			}
 		}
 		return nil

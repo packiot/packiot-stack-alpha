@@ -51,6 +51,22 @@ const (
 	defaultModbusPort   = "502"
 )
 
+// ReaderFlowOptions parameterizes the generated reader flow. The zero value is the
+// historical behaviour (no staging tee), so every existing caller — and every
+// descriptor that predates this option — regenerates byte-identically.
+type ReaderFlowOptions struct {
+	// StagingTee adds a SECOND, parallel POST branch off the normalize function so
+	// the SAME reader can dual-publish: its primary POST to the local sparkplug-agent
+	// (the prod/edge path) AND an optional POST to a staging ingest front door (e.g.
+	// cpack-ingest.staging:8447/v2/tags). It is OFF by default; even when compiled in,
+	// the staging branch is INERT at runtime until BOTH its env vars are set
+	// (<TENANT>_STAGING_TEE_URL + <TENANT>_STAGING_TEE_KEY) — the staging URL and the
+	// CLOUD agent ingest key are read from env, never baked (same secret-free posture
+	// as the primary branch). This is the mechanism the twin re-point uses to fan a
+	// live factory reader onto the staging analytics plane without a second reader.
+	StagingTee bool
+}
+
 // GeneratePlcReaderFlow builds the Node-RED PLC-reader flow (the autonomous-edge
 // artifact) from the descriptor's `plc:` block. It is a PURE function of the
 // (already-validated) descriptor, and node ids are DETERMINISTIC (derived from
@@ -60,20 +76,29 @@ const (
 // It returns an error when the descriptor carries no plc block (d.PLC == nil): the
 // caller (Generate) gates on d.PLC before invoking, exactly like GenerateClientYAML.
 //
+// opts is variadic so the historical no-arg call site keeps working; only the first
+// element is read (a nil/empty opts ⇒ the zero ReaderFlowOptions ⇒ historical output).
+//
 // Two tabs are emitted:
 //   - "<Tenant> PLC reader" — the generated reader (sources → normalize → POST).
 //   - "<Tenant> customizations" — a first-class, intentionally EMPTY tab where a CS
 //     engineer adds per-client integrations. Node-RED is the customization surface,
 //     not just a reader; keeping customizations on their own tab means regenerating
 //     the reader tab never clobbers them.
-func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
+func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, error) {
 	if d.PLC == nil {
 		return nil, fmt.Errorf("descriptor has no plc block — nothing to generate for the reader flow")
+	}
+	var opt ReaderFlowOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
 
 	p := strings.ToLower(d.Tenant) // node-id prefix + default gateway/env stems
 	gateway := p + "-edge"
 	urlEnv := strings.ToUpper(d.Tenant) + "_AGENT_URL"
+	stagingURLEnv := strings.ToUpper(d.Tenant) + "_STAGING_TEE_URL"
+	stagingKeyEnv := strings.ToUpper(d.Tenant) + "_STAGING_TEE_KEY"
 
 	tabID := p + "_reader_tab"
 	custTabID := p + "_cust_tab"
@@ -82,6 +107,8 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 	switchID := p + "_reader_route"
 	okID := p + "_reader_ok"
 	errID := p + "_reader_err"
+	stagingHTTPID := p + "_reader_staging_http"
+	stagingOkID := p + "_reader_staging_ok"
 
 	nodes := []map[string]any{
 		{
@@ -126,14 +153,23 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 	)
 	yCursor := 100
 
-	for i, ep := range d.PLC.Endpoints {
+	// The S7 tag map the flow reads is the type-expanded one (ADR-0050), so a
+	// type-referencing endpoint gets a populated vartable exactly like an explicit
+	// one — computed once, before the loop, since it is endpoint-independent.
+	s7Map, err := d.effectiveS7TagMap()
+	if err != nil {
+		return nil, fmt.Errorf("generate plc reader flow: %w", err)
+	}
+
+	for i, raw := range d.PLC.Endpoints {
+		ep := d.resolvedEndpoint(raw) // inherit protocol/rack/slot from its plc type
 		hostVar := "${" + hostEnvVar(ep.Name) + "}"
 
 		switch ep.Protocol {
 		case PLCProtocolS7:
 			epID := fmt.Sprintf("%s_s7_%d_ep", p, i)
 			inID := fmt.Sprintf("%s_s7_%d_in", p, i)
-			vartable := s7Vartable(d.PLC.S7TagMap, ep.Name)
+			vartable := s7Vartable(s7Map, ep.Name)
 			nodes = append(nodes, s7EndpointNode(epID, ep, hostVar, vartable))
 			nodes = append(nodes, map[string]any{
 				"id": inID, "type": "s7 in", "z": tabID,
@@ -207,15 +243,30 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 			nodes = append(nodes, modbusClientNode(clientID, ep, hostVar, unit))
 			// One modbus-read per polled tag: the read's `topic` carries the full
 			// canonical topic so the normalize fn can name the register value.
+			//
+			// readIdx is a per-ENDPOINT running counter, NOT the per-map tag index.
+			// A single Modbus endpoint (e.g. CPACK's PLC_L6) is referenced by MANY
+			// modbus_tag_map entries — one per member (BREYER, POLYTYPE, PTH, RMH,
+			// TEXA), each with its own PackMLTopic + 1–2 Tags. Keying the node id off
+			// the inner `range m.Tags` index restarted at 0 for every member, so the
+			// 8 L6 reads collapsed onto just two ids (`_read_0` ×5, `_read_1` ×3).
+			// Node-RED requires globally-unique node ids and keeps only the LAST
+			// definition per id, so 6 of the 8 reads were silently dropped and only
+			// the two survivors (both resolving to adr 0 = TEXA) ever polled — the
+			// root cause of the twin re-point P0 block (only L6/TEXA reached Calc,
+			// BREYER/POLYTYPE/RMH/PTH went dark). Counting across ALL of this
+			// endpoint's maps makes every read id unique (`_read_{0..N}`).
+			readIdx := 0
 			for _, m := range d.PLC.ModbusTagMap {
 				if m.Endpoint != ep.Name {
 					continue
 				}
-				for k, t := range m.Tags {
+				for _, t := range m.Tags {
 					if t.Source != nil { // derived tag — no register to read
 						continue
 					}
-					readID := fmt.Sprintf("%s_mb_%d_read_%d", p, i, k)
+					readID := fmt.Sprintf("%s_mb_%d_read_%d", p, i, readIdx)
+					readIdx++
 					qty := t.Quantity
 					if qty <= 0 {
 						// Derive from type (field doc: "0 = derive from type"). A 32-bit
@@ -258,13 +309,23 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 
 	// Shared normalize function + POST chain, to the right of the sources.
 	midY := 100 + (len(nodes)*yStep)/6
+	// The normalize function has ONE output normally; with the staging tee it has a
+	// SECOND output carrying a clone of the rawtag POST addressed to the staging
+	// front door — wired to its own http-request node. When the tee is off the flow
+	// is byte-identical to the historical output.
+	fnOutputs := 1
+	fnWires := []any{[]any{httpID}}
+	if opt.StagingTee {
+		fnOutputs = 2
+		fnWires = []any{[]any{httpID}, []any{stagingHTTPID}}
+	}
 	nodes = append(nodes,
 		map[string]any{
 			"id": fnID, "type": "function", "z": tabID,
 			"name":    d.Tenant + " normalize → raw tags",
-			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv, "AGENT_INGEST_API_KEY", d.Canonical.Prefix, mbWS),
-			"outputs": 1, "noerr": 0, "initialize": "", "finalize": "", "libs": []any{},
-			"x": 900, "y": midY, "wires": []any{[]any{httpID}},
+			"func":    readerFunctionBody(d.Tenant, gateway, urlEnv, "AGENT_INGEST_API_KEY", d.Canonical.Prefix, mbWS, opt.StagingTee, stagingURLEnv, stagingKeyEnv),
+			"outputs": fnOutputs, "noerr": 0, "initialize": "", "finalize": "", "libs": []any{},
+			"x": 900, "y": midY, "wires": fnWires,
 		},
 		map[string]any{
 			"id": httpID, "type": "http request", "z": tabID,
@@ -298,6 +359,29 @@ func (d *Descriptor) GeneratePlcReaderFlow() ([]byte, error) {
 			"x": 1520, "y": midY + 40, "wires": []any{},
 		},
 	)
+
+	// Optional staging tee: a SECOND http-request node fed by the normalize
+	// function's 2nd output. It mirrors the primary POST config (url empty ⇒ the
+	// function's msg.url from env wins) so it stays secret-free; it fires only when
+	// the function actually emitted a staging message (both staging env vars set).
+	if opt.StagingTee {
+		nodes = append(nodes,
+			map[string]any{
+				"id": stagingHTTPID, "type": "http request", "z": tabID,
+				"name":   "POST → staging tee (:8447/v2/tags)",
+				"method": "POST", "ret": "obj", "paytoqs": "ignore",
+				"url": "", "tls": "", "persist": false, "proxy": "",
+				"insecureHTTPParser": false, "authType": "", "senderr": true,
+				"headers": []any{},
+				"x":       1120, "y": midY + 120, "wires": []any{[]any{stagingOkID}},
+			},
+			map[string]any{
+				"id": stagingOkID, "type": "debug", "z": tabID, "name": "staging tee result",
+				"active": true, "tosidebar": true, "console": false, "complete": "statusCode",
+				"x": 1360, "y": midY + 120, "wires": []any{},
+			},
+		)
+	}
 
 	// Render the per-client customizations onto the customizations tab. Each entry
 	// is a raw Node-RED node (a CS engineer's "Export" from Node-RED). This is what
@@ -441,7 +525,7 @@ func modbusClientNode(id string, ep DescriptorPLCEndpoint, hostVar string, unit 
 //   - S7 "all" mode → msg.payload is an OBJECT { canonicalTopic: value, … }.
 //   - Modbus read → register ARRAY with msg.topic = the canonical topic.
 //   - OPC-UA read → scalar; identity on msg.topic / msg.name.
-func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string, mbWS map[string]bool) string {
+func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string, mbWS map[string]bool, stagingTee bool, stagingURLEnv, stagingKeyEnv string) string {
 	// Deterministic JS object {full topic → 1} for low-word-first 32-bit Modbus tags.
 	wsKeys := make([]string, 0, len(mbWS))
 	for t, ws := range mbWS {
@@ -504,7 +588,36 @@ func readerFunctionBody(tenant, gateway, urlEnv, keyEnv, prefix string, mbWS map
 		"msg.url = url;\n" +
 		"msg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\n" +
 		"msg.payload = { endpoint: \"" + gateway + "\", scan_ts: ts, tags: tags };\n" +
-		"return msg;\n"
+		stagingTeeTail(stagingTee, stagingURLEnv, stagingKeyEnv)
+}
+
+// stagingTeeTail renders the normalize function's return statement. Without the
+// staging tee it is a plain `return msg;` (output 1 only) — byte-identical to the
+// historical body. With the tee it reads the OPTIONAL staging URL + CLOUD ingest key
+// from env and, only when BOTH are present, clones the rawtag POST onto a second
+// output addressed to the staging front door — so the branch is compiled in but
+// INERT until the env is set (parameterized, off by default). The staging key rides
+// its own X-Ingest-Key header; nothing is baked into the flow.
+func stagingTeeTail(stagingTee bool, stagingURLEnv, stagingKeyEnv string) string {
+	if !stagingTee {
+		return "return msg;\n"
+	}
+	return "\n" +
+		"// Optional staging tee (parameterized, OFF unless both env vars are set):\n" +
+		"// dual-publish the SAME rawtag envelope to a staging ingest front door on a\n" +
+		"// 2nd output. " + stagingURLEnv + " = e.g. https://cpack-ingest.staging.packiot.app:8447/v2/tags,\n" +
+		"// " + stagingKeyEnv + " = the CLOUD agent ingest key (distinct from the factory key).\n" +
+		"const sUrl = env.get(\"" + stagingURLEnv + "\");\n" +
+		"const sKey = env.get(\"" + stagingKeyEnv + "\");\n" +
+		"let stagingMsg = null;\n" +
+		"if (sUrl && sKey) {\n" +
+		"    stagingMsg = {\n" +
+		"        url: sUrl,\n" +
+		"        headers: { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": sKey },\n" +
+		"        payload: msg.payload,\n" +
+		"    };\n" +
+		"}\n" +
+		"return [msg, stagingMsg];\n"
 }
 
 // s7Address builds a node-red-contrib-s7 address from a tag's {db, offset, bit, type}.

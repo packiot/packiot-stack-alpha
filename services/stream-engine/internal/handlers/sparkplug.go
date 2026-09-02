@@ -55,7 +55,7 @@ type SparkplugHandler struct {
 	shadowAbsentSample   atomic.Uint64 // samples the swallowed shadow_go_port-absent log
 
 	pool            *pgxpool.Pool
-	shadowPool      *pgxpool.Pool // may be nil — set only if POSTGRES_SHADOW_DB_NAME configured
+	analyticsPool   *pgxpool.Pool // may be nil — set only if POSTGRES_ANALYTICS_DB_NAME configured
 	equipmentValues *writers.EquipmentValues
 	unsMetrics      *writers.UnsMetrics
 	poParameter     *writers.POParameter
@@ -65,7 +65,7 @@ type SparkplugHandler struct {
 
 func NewSparkplugHandler(
 	pool *pgxpool.Pool,
-	shadowPool *pgxpool.Pool,
+	analyticsPool *pgxpool.Pool,
 	ev *writers.EquipmentValues,
 	uns *writers.UnsMetrics,
 	po *writers.POParameter,
@@ -73,7 +73,7 @@ func NewSparkplugHandler(
 ) *SparkplugHandler {
 	return &SparkplugHandler{
 		pool:            pool,
-		shadowPool:      shadowPool,
+		analyticsPool:   analyticsPool,
 		equipmentValues: ev,
 		unsMetrics:      uns,
 		poParameter:     po,
@@ -94,7 +94,7 @@ func destForSource(sourceType string) string {
 	case "go":
 		return "f2_shadow_go_port"
 	case "refactored":
-		return "f3_packiot_shadow"
+		return "f3_packiot_analytics"
 	default:
 		return "f1_public"
 	}
@@ -238,7 +238,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		case h.equipmentValues.CanWrite(kind):
 			// ADR-0014 shift fill (flag-gated, SHIFT_FILL_FOLDED — DBA
 			// bake-safe 2026-07-13, zero live triggers on public +
-			// packiot_shadow). Two mutually-exclusive paths, selected by
+			// packiot_analytics). Two mutually-exclusive paths, selected by
 			// the writer's foldShift flag:
 			//   folded  → Build() writes the shift columns INSIDE the
 			//             UPSERT and BuildShiftFill returns nil, halving
@@ -471,11 +471,11 @@ func clampGrainSuffix(kind sparkplug.MetricKind) string {
 //
 // ADR-0010 Phase 3 introduced source_type="go" → shadow_go_port schema on
 // the main pool. ADR-0012 adds source_type="refactored" → shadow pool
-// (packiot_shadow DB) writing to public schema, so the entire refactored
+// (packiot_analytics DB) writing to public schema, so the entire refactored
 // schema can be exercised end-to-end from real live traffic without
 // touching the packiot production DB.
 //
-// If shadowPool is nil (POSTGRES_SHADOW_DB_NAME unset) and source_type
+// If analyticsPool is nil (POSTGRES_ANALYTICS_DB_NAME unset) and source_type
 // is "refactored", we silently fall back to (main pool, public) — logged
 // as a warning. Fail-safe: never route to nil.
 func (h *SparkplugHandler) routeForSource(sourceType string) (*pgxpool.Pool, string) {
@@ -483,8 +483,8 @@ func (h *SparkplugHandler) routeForSource(sourceType string) (*pgxpool.Pool, str
 	case "go":
 		return h.pool, "shadow_go_port"
 	case "refactored":
-		if h.shadowPool != nil {
-			return h.shadowPool, "public"
+		if h.analyticsPool != nil {
+			return h.analyticsPool, "public"
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))

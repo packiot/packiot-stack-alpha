@@ -121,7 +121,7 @@ type Config struct {
 	// calc_production_counters Go port runs in SHADOW mode: it evaluates
 	// every counter-topic Sparkplug metric against its own State store,
 	// logs the Decision + emits Prometheus counters, but does NOT change
-	// the shadowpub output. This lets ops compare Go-port state to Node-
+	// the analyticspub output. This lets ops compare Go-port state to Node-
 	// RED's state via metrics BEFORE the actual cutover (Phase 4).
 	//
 	// Default false — port is opt-in until the 30-day comparator soak
@@ -139,6 +139,25 @@ type Config struct {
 	// CountersOnlyEnabled gates the whole feature. Default false → zero
 	// behavior change (the per-equipment map is never consulted).
 	CountersOnlyEnabled bool
+
+	// ResetHealEnabled (ADR-0048 count-spike guard) heals genuine totalizer
+	// resets/rebirths: on a reset the decoder re-seeds the per-topic baseline to
+	// the current absolute and emits increment 0 instead of differencing cur−0
+	// (the whole-totalizer reset-spike). Default true — the reset-spike is a
+	// confirmed OEE-correctness fault; set CALC_RESET_HEAL_ENABLED=false to
+	// restore the legacy emit-cur behavior. See calc.go Message.ResetHeal.
+	ResetHealEnabled bool
+	// NoSpeedGuardFallbackEnabled (ADR-0049 count-loss guard) rescues a machine
+	// that reports NO MachSpeed sensor AND is absent from the counters-only
+	// rated-speed map: Phase 8's `prodSpeed < 3*machSpeed` bound collapses to 0
+	// and drops EVERY count (the 2026-08-13 CPACK L8/L10/FLEXO/SLEEVE/CELULA
+	// freeze after mirror-worker-go retired). When true, such a machine's rate
+	// guard is disabled (counts flow) rather than rejecting 100% of production.
+	// Default false → byte-identical to the legacy 3*machSpeed guard. Machines
+	// that report MachSpeed, or that counters-only already covers, are
+	// unaffected. Sourced from CALC_NO_SPEED_GUARD_FALLBACK. See calc.go
+	// Message.NoSpeedGuardFallback.
+	NoSpeedGuardFallbackEnabled bool
 	// CountersOnlyIdealRates maps a Sparkplug UNIT topic (5-segment
 	// Enterprise/Site/Area/Line/Unit) to that equipment's configured ideal /
 	// rated speed in parts-per-minute — the SAME value CS Admin sets as
@@ -163,6 +182,14 @@ type Config struct {
 	// DB creds reuse the POSTGRES_* env the sibling decode services use;
 	// COUNTERS_ONLY_DSN overrides with a full URL.
 	CountersOnlyFromDB bool
+	// CountersOnlyRefreshSeconds is the periodic-reload interval for the
+	// counters-only rated-speed map once CountersOnlyFromDB is on. The
+	// original G4/G5 seam only loaded once at boot — a CS Admin edit to
+	// equipments.production_speed then sat inert until the next redeploy,
+	// which defeats ADR-0047 P0 #2's whole point ("CS Admin config actually
+	// changes OEE math without an edge redeploy"). Default 300s (5 minutes)
+	// matches oeecloud-worker's shift resolver cache window.
+	CountersOnlyRefreshSeconds int
 
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
 	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
@@ -226,10 +253,10 @@ type Config struct {
 	OutboxPath    string // filesystem path to the SQLite DB
 	OutboxCap     int    // max rows before FIFO drop-oldest kicks in
 
-	// EmitLivenessTimeoutSeconds is the #91 shadowpub emit-liveness window: if
+	// EmitLivenessTimeoutSeconds is the #91 analyticspub emit-liveness window: if
 	// the publisher is actively attempting but has had zero broker confirms for
 	// this long, /healthz goes 503 so orchestration recycles the silently-stalled
-	// service (the #89 gap). 0 disables the check. See shadowpub.DefaultLivenessTimeout.
+	// service (the #89 gap). 0 disables the check. See analyticspub.DefaultLivenessTimeout.
 	EmitLivenessTimeoutSeconds int
 
 	// ── Edge command channel (ADR-0019 C1 / task G4) ──────────────────────
@@ -312,10 +339,15 @@ func Load() (*Config, error) {
 		// ADR-0010 Phase 3 port (shadow mode — no behavior change)
 		UseGoPort: getenvBool("USE_GO_PORT", false),
 
+		// Reset/rebirth heal (ADR-0048 count-spike guard) — default ON.
+		ResetHealEnabled:            getenvBool("CALC_RESET_HEAL_ENABLED", true),
+		NoSpeedGuardFallbackEnabled: getenvBool("CALC_NO_SPEED_GUARD_FALLBACK", false),
+
 		// Counters-only OEE mode (default OFF — no behavior change)
-		CountersOnlyEnabled:    getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
-		CountersOnlyIdealRates: getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
-		CountersOnlyFromDB:     getenvBool("COUNTERS_ONLY_FROM_DB", false),
+		CountersOnlyEnabled:        getenvBool("COUNTERS_ONLY_OEE_ENABLED", false),
+		CountersOnlyIdealRates:     getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
+		CountersOnlyFromDB:         getenvBool("COUNTERS_ONLY_FROM_DB", false),
+		CountersOnlyRefreshSeconds: getenvInt("COUNTERS_ONLY_REFRESH_SECONDS", 300),
 
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),

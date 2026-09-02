@@ -167,8 +167,14 @@ func TestGenerateRegisterSQL(t *testing.T) {
 	if !strings.Contains(sql, "INSERT INTO packml_register") {
 		t.Error("missing INSERT")
 	}
-	if !strings.Contains(sql, "ON CONFLICT (packml_topic) DO NOTHING;") {
-		t.Error("register SQL must be idempotent on the packml_topic unique key")
+	if !strings.Contains(sql, "ON CONFLICT (packml_topic) WHERE active DO NOTHING;") {
+		t.Error("register SQL must target the partial active-unique index (packml_topic_active_un, WHERE active)")
+	}
+	// The register MUST backfill id_site/id_area from equipments — without them the
+	// stream-engine reads the topic as "not registered" and silently drops counts.
+	if !strings.Contains(sql, "SET id_site = e.id_site, id_area = e.id_area") ||
+		!strings.Contains(sql, "FROM equipments e") {
+		t.Errorf("register SQL must backfill id_site/id_area from equipments; got:\n%s", sql)
 	}
 	// The INSERT must carry the device_key column (ADR-0046 §2 declared identity).
 	if !strings.Contains(sql, "device_key)") {
@@ -186,6 +192,45 @@ func TestGenerateRegisterSQL(t *testing.T) {
 	rows := strings.Count(sql, "true,")
 	if rows != len(d.Equipment) {
 		t.Errorf("register rows=%d, want %d (one per equipment)", rows, len(d.Equipment))
+	}
+}
+
+// TestGenerateEquipmentPositionSQL checks the flow-order backfill (artifact 2b):
+// members ranked 1-based within their line in descriptor (infeed→outfeed) order,
+// single cells → 1, lines/sectors skipped, and idempotent (tp_equipment guard).
+func TestGenerateEquipmentPositionSQL(t *testing.T) {
+	d := loadCPACK(t)
+	sql := d.GenerateEquipmentPositionSQL()
+
+	// L5 members BREYER..TEXA are positions 1..5 (descriptor list order = flow).
+	wants := []string{
+		"UPDATE equipments SET position = 1 WHERE id_equipment = 53 AND tp_equipment = 1;", // L5-BREYER infeed
+		"UPDATE equipments SET position = 2 WHERE id_equipment = 54 AND tp_equipment = 1;", // L5-POLYTYPE
+		"UPDATE equipments SET position = 3 WHERE id_equipment = 55 AND tp_equipment = 1;", // L5-PTH
+		"UPDATE equipments SET position = 4 WHERE id_equipment = 56 AND tp_equipment = 1;", // L5-RMH
+		"UPDATE equipments SET position = 5 WHERE id_equipment = 57 AND tp_equipment = 1;", // L5-TEXA outfeed
+		"UPDATE equipments SET position = 4 WHERE id_equipment = 80 AND tp_equipment = 1;", // L10-TEXA (4-member line)
+	}
+	for _, w := range wants {
+		if !strings.Contains(sql, w) {
+			t.Errorf("missing expected UPDATE:\n  %s\ngot:\n%s", w, sql)
+		}
+	}
+
+	// Single-machine cell member (CER400 member id 88) → position 1.
+	if !strings.Contains(sql, "UPDATE equipments SET position = 1 WHERE id_equipment = 88 AND tp_equipment = 1;") {
+		t.Errorf("single-cell CER400 member should be position 1; got:\n%s", sql)
+	}
+
+	// One UPDATE per tp=1 member; no line/sector rows.
+	var members int
+	for _, e := range d.Equipment {
+		if e.TPEquipment == 1 {
+			members++
+		}
+	}
+	if got := strings.Count(sql, "UPDATE equipments SET position ="); got != members {
+		t.Errorf("position UPDATEs=%d, want %d (one per tp=1 member)", got, members)
 	}
 }
 

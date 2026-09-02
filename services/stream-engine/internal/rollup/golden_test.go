@@ -219,7 +219,31 @@ const grainGoldenFixture = `
 	VALUES (21, date_trunc('hour', now()), 6, 40, NULL);
 	INSERT INTO golden.equipment_values VALUES (21, now() - interval '3 hours', 120);
 	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
-	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);`
+	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);
+	-- THE TRAILING-OPEN-EVENT CASE (CPACK status_type=0, ADR trailing-event fix).
+	-- eq 22 is an idle line whose telemetry stopped 2h ago (its last 1-hour cagg
+	-- bucket is at now()-2h) but still carries a TRAILING open RUNNING event
+	-- (status=6, ts_end NULL, no successor) from 3h ago, PLUS a closed planned
+	-- downtime that reaches into the current hour. WITHOUT the fix the trailing
+	-- running event falls through to now(), so it overlaps the current hour and
+	-- credits the full elapsed hour as running — while the planned event has
+	-- reduced available_time — yielding running_time > available_time (the exact
+	-- masked-by-clamp class). WITH the fix the trailing event is bounded to the
+	-- last observed data (now()-2h + 1h grace = now()-1h < this hour), so it
+	-- contributes ZERO running to the current hour: running_time == 0 ≤ available.
+	INSERT INTO golden.equipments VALUES (22,1,1,35,3,100);
+	INSERT INTO golden.equipment_runtime_1hour (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (22, date_trunc('hour', now()), date_trunc('day', now()), true);
+	INSERT INTO golden.ca_agg_equipment_values_1hour
+	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
+	VALUES (22, date_trunc('hour', now()) - interval '2 hours', date_trunc('day', now()), 6, 40, 45, 50);
+	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
+	VALUES
+	    -- closed planned downtime reaching into the current hour (its ts_end wins,
+	    -- unaffected by the fix) → sets up a reduced available_time for the hour.
+	    (22, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) + interval '20 minutes', 5, true, false),
+	    -- the trailing open RUNNING event (last event, ts_end NULL, no successor).
+	    (22, date_trunc('hour', now()) - interval '3 hours', NULL, 6, false, false);`
 
 func TestGoldenGrains(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
@@ -303,6 +327,25 @@ func TestGoldenGrains(t *testing.T) {
 		t.Errorf("line oee: %v (must be > 0 — net 45 against LOCF'd ideal)", oee21)
 	}
 
+	// THE TRAILING-OPEN-EVENT SEMANTIC (eq 22): the idle line's last telemetry was
+	// 2h ago, so its trailing open RUNNING event must NOT credit running to the
+	// current hour. running_time must be 0 (bounded to last-data + 1h = now()-1h,
+	// which is before this hour) and never exceed available_time. Pre-fix the
+	// trailing event fell to now(), crediting the whole elapsed hour as running
+	// while the closed planned event shrank available_time → running > available
+	// (the ~100% / running>available Availability defect this fix removes).
+	var run22, avail22 float64
+	if err := pool.QueryRow(ctx, `SELECT running_time, available_time FROM golden.equipment_runtime_1hour
+	    WHERE id_equipment=22 AND ts_value=date_trunc('hour', now())`).Scan(&run22, &avail22); err != nil {
+		t.Fatal(err)
+	}
+	if run22 != 0 {
+		t.Errorf("trailing-open-event: eq22 running_time=%v, want 0 (trailing running event must be bounded to last data, not now())", run22)
+	}
+	if run22 > avail22 {
+		t.Errorf("trailing-open-event: running_time=%v > available_time=%v (the masked-by-clamp defect — fix failed)", run22, avail22)
+	}
+
 	// day2 pass: sums the two hour rows; target_customized=true must PRESERVE 777.
 	tx2, err := pool.Begin(ctx)
 	if err != nil {
@@ -331,5 +374,184 @@ func TestGoldenGrains(t *testing.T) {
 	}
 	if dtarget != 777 {
 		t.Errorf("day2 CUSTOMIZED TARGET regression: %v (operator's 777 must survive)", dtarget)
+	}
+}
+
+// TestGoldenGrainOeeReconcile proves the canonical A·P·Q identity on the
+// week/month grain against real Postgres: every produced row must satisfy
+// oee == oee_a·oee_p·oee_q (last step, by construction), each factor ∈ [0,1],
+// and Performance derived from the summed ideal_production (the grain has no
+// ideal_speed column). It also proves the amber-bug fix: the reconcile writes to
+// equipment_runtime_1week, never 1month.
+func TestGoldenGrainOeeReconcile(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	// Minimal standalone schema: just the grain table shape the reconcile touches.
+	schema := `
+		CREATE SCHEMA IF NOT EXISTS greconcile;
+		SET search_path TO greconcile, public;
+		-- Column types MIRROR prod F3 (measured 2026-08-22): running_time/available_time
+		-- are BIGINT (not float) — this is what makes running_time/available_time an
+		-- INTEGER division that the ::float cast must defeat. gross/net/oee* are real,
+		-- ideal_production double precision. A regression to a cast-less oee_a would
+		-- make eq 1 read oee_a=0 (3600/7200 → 0 in bigint) and fail below.
+		CREATE TABLE greconcile.equipment_runtime_1week (
+		    id_equipment int, ts_value timestamptz,
+		    gross real, net real,
+		    available_time bigint, running_time bigint,
+		    ideal_production double precision,
+		    oee real, oee_a real, oee_p real, oee_q real,
+		    recalc_needed boolean DEFAULT false
+		);
+		-- A: clean producing row (all factors < 1). running 3600 / avail 7200 = A=0.5;
+		--    net 90 / gross 100 = Q=0.9; P = gross·avail/(ideal·running)
+		--                                   = 100·7200/(200·3600) = 1.0 → oee=0.45.
+		INSERT INTO greconcile.equipment_runtime_1week VALUES
+		    (1, now(), 100, 90, 7200, 3600, 200, 0,0,0,0, false),
+		-- B: performance SPIKE (gross beyond ideal) → P clamps to 1, so oee<top-down.
+		    (2, now(), 300, 280, 3600, 3600, 100, 0,0,0,0, false),
+		-- C: zero gross (Q=0 → oee=0); no div-by-zero.
+		    (3, now(), 0, 0, 3600, 1800, 120, 0,0,0,0, false),
+		-- D: zero running (A=0, P div-by-zero guarded → oee=0).
+		    (4, now(), 50, 40, 3600, 0, 120, 0,0,0,0, false);`
+	if _, err := pool.Exec(ctx, schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	defer pool.Exec(context.Background(), `DROP SCHEMA greconcile CASCADE`)
+
+	if _, err := pool.Exec(ctx, GrainOeeReconcileSQLForParity("greconcile", "equipment_runtime_1week")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `SELECT id_equipment, oee, oee_a, oee_p, oee_q
+	    FROM greconcile.equipment_runtime_1week ORDER BY id_equipment`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var id int
+		var oee, a, p, q float64
+		if err := rows.Scan(&id, &oee, &a, &p, &q); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
+			if v < 0 || v > 1 {
+				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			}
+		}
+		// THE IDENTITY: oee is the product of the three factors (last step). Tolerance
+		// 1e-4 accommodates the real (float32) column storage — well inside the 0.01
+		// the served identity cares about.
+		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 {
+			t.Errorf("eq %d: identity broken oee=%v a·p·q=%v (diff %g)", id, oee, a*p*q, diff)
+		}
+	}
+	if seen != 4 {
+		t.Fatalf("expected 4 reconciled rows, got %d", seen)
+	}
+	// eq 1: expected factors A=0.5 (3600/7200 — the ::float cast on the BIGINT
+	// columns; a cast-less regression reads 0 here), P=1.0, Q=0.9, oee=0.45.
+	var a1, p1, q1, oee1 float64
+	if err := pool.QueryRow(ctx, `SELECT oee_a, oee_p, oee_q, oee FROM greconcile.equipment_runtime_1week WHERE id_equipment=1`).Scan(&a1, &p1, &q1, &oee1); err != nil {
+		t.Fatal(err)
+	}
+	near := func(got, want float64) bool { return got > want-1e-4 && got < want+1e-4 }
+	if !near(a1, 0.5) || !near(p1, 1.0) || !near(q1, 0.9) || !near(oee1, 0.45) {
+		t.Errorf("eq 1 factors: A=%v P=%v Q=%v oee=%v (want 0.5/1.0/0.9/0.45)", a1, p1, q1, oee1)
+	}
+}
+
+// TestGoldenDayOeeReconcile proves the canonical A·P·Q identity on the DAY grain
+// (the durable forward fix). Column types mirror prod F3 (measured 2026-08-22):
+// running_time/available_time are INTEGER (not bigint like week/month, not float),
+// so a cast-less oee_a would integer-divide to 0 — the ::float defeats it. Also
+// proves net=0 → oee=0 (the spurious-oee=1.0 empty-day class the #885 cutover
+// found), and that oee is the product (not the deployed back-solve).
+func TestGoldenDayOeeReconcile(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	schema := `
+		CREATE SCHEMA IF NOT EXISTS dreconcile;
+		SET search_path TO dreconcile, public;
+		CREATE TABLE dreconcile.equipment_runtime_1day (
+		    id_equipment int, ts_value timestamptz,
+		    gross real, net real,
+		    available_time integer, running_time integer,
+		    ideal_production double precision,
+		    oee real, oee_a real, oee_p real, oee_q real,
+		    recalc_needed boolean DEFAULT false
+		);
+		-- day_elig stub carrying the batch keys the reconcile joins on.
+		CREATE TABLE dreconcile.day_elig (id_equipment int, ts_value timestamptz);
+		-- A: clean producing day. A=running/avail=43200/86400=0.5; Q=net/gross=0.9;
+		--    P=gross·avail/(ideal·run)=1000·86400/(2000·43200)=1.0 → oee=0.45.
+		INSERT INTO dreconcile.equipment_runtime_1day VALUES
+		    (1, now(), 1000, 900, 86400, 43200, 2000, 0,0,0,0, false),
+		-- B: net=0 empty-output day with a spurious pre-existing oee=1.0/oee_q=1.0
+		--    (the old 0/0→1 bug). Must be driven to oee=0.
+		    (2, now(), 0, 0, 86400, 0, 2000, 1,0,0,1, false),
+		-- C: performance spike (gross beyond ideal) → P clamps to 1; oee=A·1·Q.
+		    (3, now(), 5000, 4800, 86400, 43200, 2000, 0,0,0,0, false);
+		INSERT INTO dreconcile.day_elig VALUES (1, now()), (2, now()), (3, now());`
+	if _, err := pool.Exec(ctx, schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	defer pool.Exec(context.Background(), `DROP SCHEMA dreconcile CASCADE`)
+
+	if _, err := pool.Exec(ctx, DayOeeReconcileSQLForParity("dreconcile")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	rows, err := pool.Query(ctx, `SELECT id_equipment, oee, oee_a, oee_p, oee_q
+	    FROM dreconcile.equipment_runtime_1day ORDER BY id_equipment`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[int][4]float64{}
+	for rows.Next() {
+		var id int
+		var oee, a, p, q float64
+		if err := rows.Scan(&id, &oee, &a, &p, &q); err != nil {
+			t.Fatal(err)
+		}
+		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
+			if v < 0 || v > 1 {
+				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			}
+		}
+		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 { // identity (last step)
+			t.Errorf("eq %d: identity broken oee=%v a·p·q=%v (diff %g)", id, oee, a*p*q, diff)
+		}
+		got[id] = [4]float64{oee, a, p, q}
+	}
+	near := func(x, want float64) bool { return x > want-1e-4 && x < want+1e-4 }
+	// eq 1: A=0.5 (::float on integer cols; cast-less → 0), P=1.0, Q=0.9, oee=0.45.
+	if g := got[1]; !near(g[1], 0.5) || !near(g[2], 1.0) || !near(g[3], 0.9) || !near(g[0], 0.45) {
+		t.Errorf("eq 1: oee=%v A=%v P=%v Q=%v (want 0.45/0.5/1.0/0.9)", g[0], g[1], g[2], g[3])
+	}
+	// eq 2: net=0 empty day — spurious oee=1.0/oee_q=1.0 must be driven to all-zero.
+	if g := got[2]; !near(g[0], 0) || !near(g[3], 0) {
+		t.Errorf("eq 2 (net=0): oee=%v oee_q=%v (want 0/0 — no spurious 1.0)", g[0], g[3])
 	}
 }

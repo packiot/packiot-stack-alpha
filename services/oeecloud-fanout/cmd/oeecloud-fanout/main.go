@@ -7,9 +7,12 @@
 // on the twin's routing key so the sandbox's oeecloud-worker queue
 // (oeecloud-worker-q-sbxcpack) writes SBXCPACK F3 rows.
 //
-// Flag-gated: does nothing unless FANOUT_CPACK_TO_SBXCPACK_ENABLED=true. Wired
-// into compose.staging.yml ONLY — never prod. See the amqp + retenant packages
-// for the double-count / no-loop reasoning.
+// Flag-gated: does nothing unless FANOUT_ENABLED=true (or the legacy
+// FANOUT_CPACK_TO_SBXCPACK_ENABLED, kept for the deployed instance's .env).
+// Every twin gets its OWN compose service + env block (see
+// scripts/emit-fanout-config.sh, task #22), so the same binary/image serves
+// any source→target pair. Wired into compose.staging.yml ONLY — never prod.
+// See the amqp + retenant packages for the double-count / no-loop reasoning.
 package main
 
 import (
@@ -47,7 +50,7 @@ func main() {
 	// Disabled → serve /health (healthy) and idle. Enabling is a pure .env flip
 	// + restart; no queue is bound and nothing is consumed while off.
 	if !cfg.Enabled {
-		logger.Info("oeecloud-fanout DISABLED (FANOUT_CPACK_TO_SBXCPACK_ENABLED != true) — idling",
+		logger.Info("oeecloud-fanout DISABLED (FANOUT_ENABLED / FANOUT_CPACK_TO_SBXCPACK_ENABLED != true) — idling",
 			slog.Int("health_port", cfg.HealthPort))
 		hs := health.New(fmt.Sprintf(":%d", cfg.HealthPort), idleSnapshot{}, logger)
 		hs.Start()

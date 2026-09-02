@@ -48,10 +48,12 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/amqp"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/analyticspub"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/clientconfig"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/localstate"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/log"
@@ -59,7 +61,6 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/mqtt"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/outbox"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/secrets"
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/shadowpub"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/tracing"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/transforms/calc_production_counters"
@@ -211,7 +212,7 @@ func main() {
 
 	// Health server aggregates per-component /healthz JSON (ADR-0011 P0-4).
 	// Every runtime component that satisfies health.ComponentSnapshotter is
-	// registered — currently: consumer, plus subscriber + shadowpub when
+	// registered — currently: consumer, plus subscriber + analyticspub when
 	// MQTT_ENABLED. Each contributes its Degraded() reason to the response;
 	// overall healthy = every component healthy. Response is 503 with
 	// structured `degraded_components` when any component is degraded.
@@ -280,7 +281,7 @@ func main() {
 	// instance factory deployments; multi-instance needs Redis).
 	//
 	// Shadow mode: Decisions get logged + counted, but do NOT change the
-	// shadowpub output. This lets ops compare the Go port's behavior to
+	// analyticspub output. This lets ops compare the Go port's behavior to
 	// Node-RED's via metrics BEFORE the actual cutover (Phase 4).
 	//
 	// Prometheus counters exposed:
@@ -335,8 +336,9 @@ func main() {
 
 	var sparkplugStore *sparkplug.StateStore
 	var mqttSub *mqtt.Subscriber
-	var shadowPub *shadowpub.Publisher
+	var analyticsPub *analyticspub.Publisher
 	var outboxStore *outbox.Store               // hoisted so shutdown block can close it
+	var localStateStore *localstate.Store       // ADR-0053 fat-edge on-prem current-state sink; hoisted for handler + shutdown
 	var rebirthRequester *mqtt.RebirthRequester // task #31 — hoisted for handler + shutdown
 	if cfg.MQTTEnabled {
 		sparkplugStore = sparkplug.NewStateStore()
@@ -397,29 +399,39 @@ func main() {
 		// Phase 2.5b's Node-RED publisher output (source.type="nodered") on
 		// the same exchange.
 		var shadowErr error
+		// ADR-0053 B-minimal on-prem decode: the factory box egresses HTTPS
+		// only (the firewall blocks AMQP/8883 — that is why the reader uses
+		// HTTPS), and the cloud already gets this tenant's data from the
+		// reader's PRIMARY tee (reader → cloud shared-agent, durable via the
+		// reader spool). So the on-box transformer must NOT try to publish to
+		// cloud RabbitMQ: it decodes purely to feed localstate → the on-prem
+		// dashboard. LOCAL_DECODE_ONLY skips the AMQP publisher (and, by
+		// extension via the analyticsPub!=nil guard below, the outbox + drain).
+		localDecodeOnly := os.Getenv("LOCAL_DECODE_ONLY") == "true"
 		// ADR-0010 Phase 3 shadow-mode DB comparison: publish to the same
 		// `oee` exchange oeecloud-node-red uses, with routing key
 		// `sparkplug.data.<tenant>`. The envelope's source_type="go" makes
 		// oeecloud-worker dispatch writes into shadow_go_port.* schema.
-		shadowPub, shadowErr = shadowpub.New(amqpCreds.URL(), "oee", logger)
-		if shadowErr != nil {
-			logger.Error("shadowpub: failed to open channel — MQTT disabled",
+		if localDecodeOnly {
+			logger.Info("LOCAL_DECODE_ONLY=true: on-prem decode→localstate only; no cloud AMQP publisher, no outbox (ADR-0053 B-minimal)")
+		} else if analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger); shadowErr != nil {
+			logger.Error("analyticspub: failed to open channel — MQTT disabled",
 				slog.String("err", shadowErr.Error()))
-			shadowPub = nil
+			analyticsPub = nil
 		} else {
 			// #91 emit-liveness: fail /healthz if emit stalls (dead channel /
 			// failing reconnect) so orchestration recycles instead of a silent
-			// 27h gap. 0 disables. See shadowpub.emitStalled for the anti-flap
+			// 27h gap. 0 disables. See analyticspub.emitStalled for the anti-flap
 			// (recent-attempt) gate.
-			shadowPub.LivenessTimeout = time.Duration(cfg.EmitLivenessTimeoutSeconds) * time.Second
-			logger.Info("shadowpub emit-liveness configured",
+			analyticsPub.LivenessTimeout = time.Duration(cfg.EmitLivenessTimeoutSeconds) * time.Second
+			logger.Info("analyticspub emit-liveness configured",
 				slog.Int("timeout_seconds", cfg.EmitLivenessTimeoutSeconds))
 			// ADR-0011 P3 chaos-test fix: proactively watch NotifyClose and
 			// re-dial when RMQ goes down. Without this, the drain loop's
 			// PublishBytes returns ErrConfirmTimeout (not a connection error)
 			// and the reconnect never fires. Ships in ctx so it dies with
 			// the main errgroup on shutdown.
-			shadowPub.StartConnectionMonitor(ctx, logger)
+			analyticsPub.StartConnectionMonitor(ctx, logger)
 		}
 
 		mqttCfg := mqtt.DefaultConfig()
@@ -433,33 +445,34 @@ func main() {
 			mqttCfg.StaleThreshold = time.Duration(cfg.MQTTStaleThresholdSeconds) * time.Second
 		}
 
-		// Counters-only OEE rated speeds. Start from the env map, then — when
-		// COUNTERS_ONLY_FROM_DB is on (ADR-0045 G4/G5 config-as-data) — merge in
-		// the DB-derived unit-topic→production_speed map for every counters-only
-		// tenant (env entries WIN). Fail-open: a DB error here logs a warning and
-		// keeps the env map, so the decoder never regresses on a DB hiccup.
-		countersOnly := cfg.CountersOnlyEnabled
-		idealRates := cfg.CountersOnlyIdealRates
+		// Counters-only OEE rated speeds (ADR-0047 P0 #2). Start from the env
+		// map; when COUNTERS_ONLY_FROM_DB is on (ADR-0045 G4/G5 config-as-data),
+		// a Watcher owns a periodically-reloaded (COUNTERS_ONLY_REFRESH_SECONDS,
+		// default 5m) unit-topic→production_speed map merged from every
+		// counters-only tenant (env entries still WIN on a key collision — same
+		// contract as before). The periodic reload is the P0 #2 fix: the
+		// original boot-once LoadDBRates call left a CS Admin edit to
+		// equipments.production_speed stuck until the next redeploy. Fail-open:
+		// a DB error on any reload (including the first) logs a warning and
+		// Watcher keeps serving its previous snapshot, so the decoder never
+		// regresses on a DB hiccup.
+		var idealRatesWatcher *countersrate.Watcher
+		countersOnlyEnabled := cfg.CountersOnlyEnabled
+		countersOnlyAutoFromDB := cfg.CountersOnlyFromDB
+		idealRates := func() map[string]float64 { return cfg.CountersOnlyIdealRates }
 		if cfg.CountersOnlyFromDB {
-			res, dberr := countersrate.LoadDBRates(ctx, logger)
-			if dberr != nil {
-				logger.Warn("counters-only OEE rates: DB load failed — falling back to the env map",
-					slog.String("err", dberr.Error()),
-					slog.Int("env_rate_entries", len(cfg.CountersOnlyIdealRates)),
-				)
-			} else {
-				merged := countersrate.Merge(res.Rates, cfg.CountersOnlyIdealRates)
-				idealRates = merged
-				if len(merged) > 0 {
-					countersOnly = true
-				}
-				logger.Info("counters-only OEE rates loaded from DB (config-as-data)",
-					slog.Int("tenants", res.Tenants),
-					slog.Int("db_rate_entries", len(res.Rates)),
-					slog.Int("env_rate_entries", len(cfg.CountersOnlyIdealRates)),
-					slog.Int("merged_rate_entries", len(merged)),
-				)
-			}
+			idealRatesWatcher = countersrate.NewWatcher(
+				cfg.CountersOnlyIdealRates,
+				time.Duration(cfg.CountersOnlyRefreshSeconds)*time.Second,
+				logger,
+			)
+			idealRatesWatcher.Start(ctx)
+			idealRates = idealRatesWatcher.Rates
+			logger.Info("counters-only OEE rates: DB watcher started (config-as-data)",
+				slog.Int("refresh_seconds", cfg.CountersOnlyRefreshSeconds),
+				slog.Int("tenants", idealRatesWatcher.Tenants()),
+				slog.Int("merged_rate_entries", len(idealRatesWatcher.Rates())),
+			)
 		}
 
 		// LINE_TRACE_TENANTS (comma-separated, lowercase GroupIDs, e.g.
@@ -476,19 +489,27 @@ func main() {
 		}
 
 		calcHooks := calcHooks{
-			state:          calcState,
-			evals:          calcEvals,
-			mutations:      calcMutations,
-			errors:         calcErrors,
-			metricsEmitted: calcMetricsEmitted,
-			stateSeeds:     calcStateSeeds,
-			countersOnly:   countersOnly,
-			idealRates:     idealRates,
-			traceTenants:   traceTenants,
+			state:                  calcState,
+			evals:                  calcEvals,
+			mutations:              calcMutations,
+			errors:                 calcErrors,
+			metricsEmitted:         calcMetricsEmitted,
+			stateSeeds:             calcStateSeeds,
+			countersOnlyEnabled:    countersOnlyEnabled,
+			countersOnlyAutoFromDB: countersOnlyAutoFromDB,
+			idealRates:             idealRates,
+			traceTenants:           traceTenants,
+			resetHeal:              cfg.ResetHealEnabled,
+			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
 		}
-		if countersOnly {
-			logger.Info("counters-only OEE mode ENABLED",
-				slog.Int("opted_in_equipment", len(idealRates)),
+		if cfg.NoSpeedGuardFallbackEnabled {
+			logger.Info("no-speed guard fallback ENABLED (CALC_NO_SPEED_GUARD_FALLBACK) — no-MachSpeed, no-ideal-rate machines emit counts instead of being dropped")
+		}
+		if countersOnlyEnabled || countersOnlyAutoFromDB {
+			logger.Info("counters-only OEE mode configured",
+				slog.Bool("static_enabled", countersOnlyEnabled),
+				slog.Bool("auto_from_db", countersOnlyAutoFromDB),
+				slog.Int("opted_in_equipment", len(idealRates())),
 			)
 		}
 
@@ -497,7 +518,7 @@ func main() {
 		// publish; the drain goroutine below handles the RMQ publish + retry.
 		// The handler skips the direct publish path — all output flows
 		// through the outbox.
-		if cfg.OutboxEnabled && shadowPub != nil {
+		if cfg.OutboxEnabled && analyticsPub != nil {
 			if err := os.MkdirAll(filepath.Dir(cfg.OutboxPath), 0o755); err != nil {
 				logger.Error("outbox: mkdir failed — outbox disabled",
 					slog.String("path", cfg.OutboxPath),
@@ -518,14 +539,37 @@ func main() {
 				}
 			}
 		} else if cfg.OutboxEnabled {
-			logger.Warn("outbox: enabled but shadowpub failed to init — outbox disabled")
+			logger.Warn("outbox: enabled but analyticspub failed to init — outbox disabled")
+		}
+
+		// ADR-0053 B-minimal: on-prem current-state sink. When LOCAL_STATE_DB
+		// is set (the fat-edge box deployment), the handler tees every decoded
+		// metric to a local SQLite current-state table that a local dashboard
+		// reads, so the shop floor keeps LIVE visibility during an internet
+		// outage. Independent of the outbox + analyticspub (this is a local-only
+		// write, meaningful even when the cloud uplink — and thus the whole
+		// publish path — is down; that is exactly the case it exists for).
+		// Absent (the cloud default) ⇒ nil ⇒ the handler skips it and behavior
+		// is byte-identical to today.
+		if p := os.Getenv("LOCAL_STATE_DB"); p != "" {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				logger.Error("localstate: mkdir failed — on-prem current-state sink disabled",
+					slog.String("path", p), slog.String("err", err.Error()))
+			} else if ls, lerr := localstate.Open(p); lerr != nil {
+				logger.Error("localstate: open failed — on-prem current-state sink disabled",
+					slog.String("path", p), slog.String("err", lerr.Error()))
+			} else {
+				localStateStore = ls
+				logger.Info("localstate ENABLED (on-prem current-state sink)",
+					slog.String("path", p), slog.String("adr", "ADR-0053 B-minimal"))
+			}
 		}
 
 		// ADR-0012 Phase 3 dual-emit: when SHADOW_EMIT_REFACTORED=true, for
 		// each inbound MQTT event we enqueue TWO envelopes to the outbox —
 		// one with source_type="go" (routes to shadow_go_port on packiot,
 		// existing ADR-0010 validation preserved) and one with
-		// source_type="refactored" (routes to packiot_shadow public, new
+		// source_type="refactored" (routes to packiot_analytics public, new
 		// ADR-0012 refactor POC). Default false → single-emit unchanged.
 		emitRefactored := os.Getenv("SHADOW_EMIT_REFACTORED") == "true"
 		// 10.9 cutover: also emit source_type="" (production route → F1
@@ -559,7 +603,27 @@ func main() {
 			logger.Info("#276 CALC CUTOVER enabled for F3: source_type=refactored emits Calc delta+cumulative counters + non-counter pass-through (raw cumulative counters bypassed)",
 				slog.Bool("use_go_port", cfg.UseGoPort))
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, shadowPub, outboxStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, rebirthRequester, logger), logger)
+		// F3_PER_TENANT_ROUTING (fix2 — activate the per-tenant queue fabric).
+		// Default false = publish the 2-segment `sparkplug.data` (the legacy
+		// firehose the exact-bound `stream-engine-q` consumes; tenant rides
+		// inside the envelope). When true, publish `sparkplug.data.<tenant>`
+		// so the exchange routes each tenant to its OWN per-tenant queue
+		// (`stream-engine-q-<tenant>`, already declared + consumed by the
+		// worker, gated by WORKER_TENANT_ALLOWLIST). This retires the shared
+		// default queue as the per-tenant shard for every producing tenant.
+		//
+		// SAFETY: the flip is inert until the flag is set. Downstream is
+		// already prepared — the worker consumes `stream-engine-q-<tenant>`
+		// and registers a `sparkplug.data.<tenant>` handler for each active
+		// (allowlisted) tenant, and oeecloud-fanout binds BOTH `sparkplug.data`
+		// and `sparkplug.data.cpack` (+ an in-code CPACK group guard), so the
+		// SBXCPACK twin keeps working across the flip. Reversible: unset +
+		// restart → back to the plain key, byte-identical.
+		perTenantRouting := os.Getenv("F3_PER_TENANT_ROUTING") == "true"
+		if perTenantRouting {
+			logger.Info("F3_PER_TENANT_ROUTING=true: publishing analytics envelopes to per-tenant routing key sparkplug.data.<tenant> (stream-engine per-tenant queues)")
+		}
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, localStateStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -588,19 +652,19 @@ func main() {
 		// ADR-0011 P0-4: register subscriber + publisher with the health
 		// aggregator so /healthz surfaces their degraded state.
 		multi.Add(mqttSub)
-		if shadowPub != nil {
-			multi.Add(shadowPub)
+		if analyticsPub != nil {
+			multi.Add(analyticsPub)
 
 			// ADR-0011 P1: register shadow publisher's publisher-confirms
 			// counters so ops can alert on nack/timeout rate.
 			mx.RegisterShadowPublisherCollector(func() metrics.ShadowPublisherSnapshot {
 				return metrics.ShadowPublisherSnapshot{
-					Published:       shadowPub.PublishedCount(),
-					Confirmed:       shadowPub.ConfirmedCount(),
-					Nacked:          shadowPub.NackedCount(),
-					ConfirmTimeouts: shadowPub.ConfirmTimeoutCount(),
-					Failed:          shadowPub.FailedCount(),
-					InFlight:        shadowPub.InFlightBacklog(),
+					Published:       analyticsPub.PublishedCount(),
+					Confirmed:       analyticsPub.ConfirmedCount(),
+					Nacked:          analyticsPub.NackedCount(),
+					ConfirmTimeouts: analyticsPub.ConfirmTimeoutCount(),
+					Failed:          analyticsPub.FailedCount(),
+					InFlight:        analyticsPub.InFlightBacklog(),
 				}
 			})
 		}
@@ -639,7 +703,7 @@ func main() {
 		}
 
 		modeDesc := "shadow (log resolved metrics; no rmq publish)"
-		if shadowPub != nil {
+		if analyticsPub != nil {
 			modeDesc = "shadow (publish to edge.plc-normalized with source.type=go)"
 		}
 		logger.Info("mqtt subscriber wired",
@@ -728,9 +792,9 @@ func main() {
 			return nil
 		})
 	}
-	if outboxStore != nil && shadowPub != nil {
+	if outboxStore != nil && analyticsPub != nil {
 		g.Go(func() error {
-			if err := runOutboxDrain(gctx, outboxStore, shadowPub, logger); err != nil && !errors.Is(err, context.Canceled) {
+			if err := runOutboxDrain(gctx, outboxStore, analyticsPub, logger); err != nil && !errors.Is(err, context.Canceled) {
 				return fmt.Errorf("outbox drain: %w", err)
 			}
 			return nil
@@ -753,14 +817,17 @@ func main() {
 		logger.Error("worker group exited with error", slog.String("err", err.Error()))
 	}
 
-	if shadowPub != nil {
-		_ = shadowPub.Close()
+	if analyticsPub != nil {
+		_ = analyticsPub.Close()
 	}
 	if cmdDevice != nil {
 		cmdDevice.Close()
 	}
 	if rebirthRequester != nil {
 		rebirthRequester.Close()
+	}
+	if localStateStore != nil {
+		_ = localStateStore.Close()
 	}
 	if outboxStore != nil {
 		_ = outboxStore.Close()
@@ -790,15 +857,38 @@ type calcHooks struct {
 	// stateSeeds counts non-counter metrics recognized by seedFromMetric.
 	stateSeeds *prometheus.CounterVec
 
-	// countersOnly / idealRates — the counters-only OEE seam. When
-	// countersOnly is true, a counter metric whose unit topic is present in
-	// idealRates (unit topic → configured rated speed, parts/min) is
-	// evaluated in counters-only mode: the Calc Phase-8 glitch guard uses the
-	// configured rated speed instead of the absent MachSpeed. Both are the
-	// zero value (false / nil) when COUNTERS_ONLY_OEE_ENABLED is off, so the
-	// shadow path is unchanged. A nil map indexes safely (returns 0 → opt-out).
-	countersOnly bool
-	idealRates   map[string]float64
+	// countersOnlyEnabled / countersOnlyAutoFromDB / idealRates — the
+	// counters-only OEE seam (ADR-0047 P0 #2). A counter metric whose unit
+	// topic is present in idealRates() (unit topic → configured rated speed,
+	// parts/min) is evaluated in counters-only mode when EITHER
+	// countersOnlyEnabled (the static COUNTERS_ONLY_OEE_ENABLED flag) is true,
+	// OR countersOnlyAutoFromDB is true AND idealRates() currently has any
+	// entries (data-driven — re-checked per message, not frozen at boot).
+	// idealRates is a live ACCESSOR, not a captured map: when
+	// COUNTERS_ONLY_FROM_DB is on it reads countersrate.Watcher.Rates(),
+	// which a background ticker keeps fresh, so a CS Admin edit to
+	// equipments.production_speed is visible on the next message after the
+	// next refresh — no edge redeploy. All fields are their zero value
+	// (false / false / a closure over the static env map) when
+	// COUNTERS_ONLY_OEE_ENABLED and COUNTERS_ONLY_FROM_DB are both off, so
+	// the shadow path is unchanged. idealRates is never nil (main.go always
+	// sets it, even to a closure returning the static env map).
+	countersOnlyEnabled    bool
+	countersOnlyAutoFromDB bool
+	idealRates             func() map[string]float64
+
+	// resetHeal (ADR-0048 count-spike guard) — when true, Calc re-seeds a
+	// genuine totalizer reset instead of emitting the whole-totalizer
+	// delta-from-zero reset spike. Sourced from CALC_RESET_HEAL_ENABLED
+	// (default true). See calc_production_counters.Message.ResetHeal.
+	resetHeal bool
+
+	// noSpeedGuardFallback (ADR-0049 count-loss guard) — when true, a counter
+	// on a machine that reports no MachSpeed AND has no counters-only rated
+	// speed is emitted instead of being dropped by the 3*machSpeed=0 glitch
+	// guard. Sourced from CALC_NO_SPEED_GUARD_FALLBACK (default false → the
+	// legacy guard). See calc_production_counters.Message.NoSpeedGuardFallback.
+	noSpeedGuardFallback bool
 
 	// traceTenants is the set of lowercased tenant/GroupIDs (from
 	// LINE_TRACE_TENANTS) for which per-counter INFO-level drop tracing is
@@ -823,6 +913,28 @@ func (h calcHooks) traced(tenant string) bool {
 		return false
 	}
 	return h.traceTenants[strings.ToLower(tenant)]
+}
+
+// classifyKind returns the CounterKind for a metric name via the built-in
+// Prod*Count substring convention (isCounterMetricName). The two trailing
+// return values are always ("", false); they are retained only so the two
+// call sites keep their existing three-value destructuring shape. The
+// DB-backed counter-role override that once populated them was removed (see
+// docs/adr/reference/adr-0047-counterroles-removal-note.md) because it
+// collided with Phase-9's use of the same packml_register.id_*counter columns
+// as wire count-indices.
+func (h calcHooks) classifyKind(name string) (calc_production_counters.CounterKind, string, bool) {
+	return isCounterMetricName(name), "", false
+}
+
+// isCounter reports whether name is Calc-relevant (role-mapped OR matches
+// the Prod*Count substring convention). Used by buildCutoverMetrics' raw-vs-
+// delta filter — a role-mapped non-standard counter must ALSO be excluded
+// from the raw passthrough (Calc's delta metric already replaces it), not
+// only the substring-named ones.
+func (h calcHooks) isCounter(name string) bool {
+	kind, _, _ := h.classifyKind(name)
+	return kind != calc_production_counters.CounterKindUnknown
 }
 
 // isCounterMetricName returns the CounterKind if this Sparkplug metric name
@@ -1042,7 +1154,7 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	if h.seedFromMetric(tenant, metric) {
 		return nil
 	}
-	kind := isCounterMetricName(metric.Name)
+	kind, _, _ := h.classifyKind(metric.Name)
 	if kind == calc_production_counters.CounterKindUnknown {
 		return nil
 	}
@@ -1089,23 +1201,35 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 		Tenant:     tenant,
 		CmdTrigger: true,
 	}
-	// Counters-only opt-in: if the feature is on and this equipment's unit
-	// topic has a configured rated speed, tell Calc to use the rated-speed
-	// glitch guard instead of the absent MachSpeed guard. Auto-selection
-	// (machSpeed==0) still happens inside Calc, so a machine that DOES report
-	// speed is unaffected even when opted in.
-	if h.countersOnly {
+	// Counters-only opt-in (ADR-0047 P0 #2): evaluated per-message (not
+	// frozen at boot) so a countersOnlyAutoFromDB tenant picks up a
+	// freshly-populated equipments.production_speed on the Watcher's next
+	// periodic reload without a redeploy. If EITHER the static flag is on,
+	// or auto-from-DB is on AND the DB currently has any rate entries, and
+	// this equipment's unit topic has a configured rated speed, tell Calc to
+	// use the rated-speed glitch guard instead of the absent MachSpeed
+	// guard. Auto-selection (machSpeed==0) still happens inside Calc, so a
+	// machine that DOES report speed is unaffected even when opted in.
+	rates := h.idealRates()
+	countersOnly := h.countersOnlyEnabled || (h.countersOnlyAutoFromDB && len(rates) > 0)
+	if countersOnly {
 		// ParseTopic requires the "***"-delimited counter topic shape; the
 		// bare metric.Name has no "***" so it would ALWAYS error, leaving the
 		// opt-in inert. msg.Topic (metric.Name + "***TRIG", built just above)
 		// is the form ParseTopic expects and yields the 5-seg unit topic key.
+		// A role-override message's Topic has no matching Prod*Count
+		// substring, so ParseTopic errors for it too — counters-only mode
+		// doesn't apply to role-mapped counters (that guard exists for the
+		// ABSENT MachSpeed sensor case, orthogonal to role mapping).
 		if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
-			if rate, ok := h.idealRates[unitTopic]; ok && rate > 0 {
+			if rate, ok := rates[unitTopic]; ok && rate > 0 {
 				msg.CountersOnly = true
 				msg.IdealRate = rate
 			}
 		}
 	}
+	msg.ResetHeal = h.resetHeal
+	msg.NoSpeedGuardFallback = h.noSpeedGuardFallback
 	dec, err := calc_production_counters.Calc(msg, h.state)
 	if err != nil {
 		h.errors.WithLabelValues(tenant, "calc_error").Inc()
@@ -1193,8 +1317,14 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 // Parameter*, …), which Calc reads as state but never re-emits. The raw
 // cumulative counter metrics are dropped — the Calc deltas replace them; that
 // replacement IS the #276 fix (cagg was SUMming cumulatives into billions).
-func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric) []shadowpub.Metric {
-	out := make([]shadowpub.Metric, 0, len(calcMetrics)+len(resolved))
+//
+// isCounter classifies a raw resolved metric name for that drop (normally
+// calcHooks.isCounter — ADR-0047 P0 #1 aware, so a DB-role-mapped
+// non-standard counter is ALSO dropped in favor of its Calc delta, not just
+// the Prod*Count-substring-named ones). Passed in rather than called as a
+// package function so this stays a pure, independently-testable fold.
+func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved []sparkplug.ResolvedMetric, isCounter func(name string) bool) []analyticspub.Metric {
+	out := make([]analyticspub.Metric, 0, len(calcMetrics)+len(resolved))
 	for _, em := range calcMetrics {
 		// #276 / ADR-0037(A): suppress ONLY Phase-9 member→line AGGREGATION
 		// counters — NOT the line's own-stream Phase-8 counter. A Phase-9 line
@@ -1220,7 +1350,7 @@ func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved
 			continue
 		}
 		counter := float64(em.Counter)
-		m := shadowpub.Metric{
+		m := analyticspub.Metric{
 			Name:      em.Name,
 			Timestamp: em.Timestamp,
 			Value:     em.Value,
@@ -1236,10 +1366,10 @@ func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved
 	}
 	for _, m := range resolved {
 		// Skip raw counters — the Calc deltas above are their replacement.
-		if isCounterMetricName(m.Name) != calc_production_counters.CounterKindUnknown {
+		if isCounter(m.Name) {
 			continue
 		}
-		out = append(out, shadowpub.Metric{
+		out = append(out, analyticspub.Metric{
 			Name:      m.Name,
 			Timestamp: int64(m.Timestamp),
 			Value:     m.Value,
@@ -1258,7 +1388,7 @@ func buildCutoverMetrics(calcMetrics []calc_production_counters.Metric, resolved
 //     prod stack that has no shadow_go_port schema — otherwise
 //     its missing-relation (42P01) write nacks the whole
 //     message and aborts the production write in the same pass.
-//   - "refactored" → packiot_shadow public (ADR-0012), gated by SHADOW_EMIT_REFACTORED.
+//   - "refactored" → packiot_analytics public (ADR-0012), gated by SHADOW_EMIT_REFACTORED.
 //   - ""           → F1 production route (public), gated by SHADOW_EMIT_PRODUCTION.
 //
 // Back-compat: with SHADOW_EMIT_GO unset (emitGo=true) the output is byte
@@ -1287,7 +1417,7 @@ func emittedSourceTypes(emitGo, emitRefactored, emitProduction bool) []string {
 // ADR-0010 Phase 3 add-on: when calcHooks.enabled(), each ResolvedMetric
 // also runs through the Calc Production Counters Go port for shadow-mode
 // observability. State mutations are applied to the singleton state so
-// subsequent ticks see accumulated deltas; the shadowpub path is unchanged.
+// subsequent ticks see accumulated deltas; the analyticspub path is unchanged.
 // outboxHealth wraps outbox.Store as a health.ComponentSnapshotter so
 // /healthz shows depth + degraded state (backpressure).
 type outboxHealth struct {
@@ -1347,14 +1477,14 @@ type outboxEnvelope struct {
 }
 
 // runOutboxDrain is a long-running goroutine that peeks outbox rows,
-// publishes each to RMQ via shadowpub.PublishBytes, and deletes on
+// publishes each to RMQ via analyticspub.PublishBytes, and deletes on
 // confirmed ACK. On failure it MarkAttempt's the row with exponential
 // backoff so the next Peek skips it until the backoff window elapses.
 //
 // One drain goroutine per Store — the Store's internal mutex serializes
 // its own operations, so this is safe. Sequential drain matches
-// shadowpub's sequential confirm handling.
-func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowpub.Publisher, logger *slog.Logger) error {
+// analyticspub's sequential confirm handling.
+func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *analyticspub.Publisher, logger *slog.Logger) error {
 	const (
 		batchSize      = 10
 		idleSleep      = 200 * time.Millisecond
@@ -1453,7 +1583,20 @@ func runOutboxDrain(ctx context.Context, store *outbox.Store, publisher *shadowp
 	}
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publisher, outboxStore *outbox.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+// analyticsRoutingKey selects the `oee`-exchange routing key for a decoded
+// analytics envelope. perTenant=false → the 2-segment legacy firehose key
+// "sparkplug.data" (exact-bound stream-engine-q; tenant rides in-envelope).
+// perTenant=true → "sparkplug.data.<tenant>", so the topic exchange shards
+// each tenant into its own stream-engine-q-<tenant>. tenant is already
+// lowercased by the caller (strings.ToLower(topic.GroupID)).
+func analyticsRoutingKey(perTenant bool, tenant string) string {
+	if perTenant && tenant != "" {
+		return "sparkplug.data." + tenant
+	}
+	return "sparkplug.data"
+}
+
+func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1527,7 +1670,7 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			return nil
 		}
 		// ADR-0010 Phase 3 shadow-mode: run Calc port for every counter-topic
-		// metric BEFORE the shadowpub publish. Non-mutating with respect to
+		// metric BEFORE the analyticspub publish. Non-mutating with respect to
 		// the outgoing message — updates only the Calc State singleton +
 		// Prometheus counters.
 		//
@@ -1550,6 +1693,34 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			}
 		}
 
+		// ADR-0053 B-minimal: tee the decoded metrics to the on-prem
+		// current-state sink so a local dashboard shows live counts during an
+		// internet outage. nil on the cloud (skipped, zero cost). Best-effort:
+		// a sink write must NEVER block or fail the publish path — the cloud
+		// stays authoritative — so a failure is logged and swallowed. Keyed on
+		// the SparkPlug source identity because the box has no id_equipment
+		// (name→equipment is resolved cloud-side via packml_register); the
+		// dashboard maps source → a friendly machine name via the descriptor.
+		if localStateStore != nil {
+			tenant := strings.ToLower(topic.GroupID)
+			source := key.String()
+			samples := make([]localstate.Sample, 0, len(resolved.Metrics))
+			for _, m := range resolved.Metrics {
+				if m.Name == "" {
+					continue // alias-only metric (never in a resolved DATA row) — unkeyable
+				}
+				samples = append(samples, localstate.Sample{
+					Source:   source,
+					Metric:   m.Name,
+					Value:    fmt.Sprintf("%v", m.Value),
+					TsMillis: int64(m.Timestamp),
+				})
+			}
+			if err := localStateStore.Record(ctx, tenant, samples); err != nil {
+				logger.Warn("localstate: record failed (non-fatal)", slog.String("err", err.Error()))
+			}
+		}
+
 		// DATA — publish per-metric envelopes to edge.plc-normalized.<tenant>
 		// for ADR-0008 comparator validation. Two paths:
 		//
@@ -1562,7 +1733,7 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 		if outboxStore != nil {
 			// Outbox path: one envelope-per-payload marshaled + persisted.
 			// The new envelope shape is a single-message-many-metrics
-			// oeecloud-compatible payload (see shadowpub.BuildEnvelope).
+			// oeecloud-compatible payload (see analyticspub.BuildEnvelope).
 			// Routing key `sparkplug.data.<tenant>` on the `oee` exchange
 			// so oeecloud-worker's per-tenant queue picks it up.
 			//
@@ -1571,24 +1742,33 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			//                    comparison; emitted by default, gated by
 			//                    SHADOW_EMIT_GO — set false on single-flow
 			//                    prod where shadow_go_port does not exist)
-			//   - "refactored" → public.* on packiot_shadow DB (opt-in via
+			//   - "refactored" → public.* on packiot_analytics DB (opt-in via
 			//                    SHADOW_EMIT_REFACTORED=true env)
 			tenant := strings.ToLower(topic.GroupID)
-			// 10.9 POST-CUTOVER FIX: the worker consumes the EXACT key
-			// "sparkplug.data" (per-tenant queues retired with legacy
-			// ingest). The tenant-suffixed key published the entire
-			// post-cutover stream into an unconsumed queue — 17k
-			// messages, found because a NEW dashboard metric stayed
-			// empty while every row-count check passed (the fan-out
-			// was feeding the tables). Tenant rides inside the envelope.
-			routingKey := "sparkplug.data"
+			// Routing key selection (fix2 — per-tenant queue fabric):
+			//
+			//   perTenantRouting=false (default): publish the 2-segment
+			//   "sparkplug.data". The worker's exact-bound legacy queue
+			//   (stream-engine-q) consumes it; tenant rides inside the
+			//   envelope. This was the 10.9 POST-CUTOVER state — at the
+			//   time the tenant-suffixed key published the whole stream
+			//   into an UNCONSUMED queue (17k stranded messages) because
+			//   the worker did not yet consume the per-tenant queues.
+			//
+			//   perTenantRouting=true: publish "sparkplug.data.<tenant>".
+			//   The exchange now routes each tenant to its dedicated
+			//   stream-engine-q-<tenant> — which the worker DOES declare +
+			//   consume today (and registers a sparkplug.data.<tenant>
+			//   dispatcher handler for), so the 10.9 stranding cannot recur.
+			//   Retires the shared default queue as the per-tenant shard.
+			routingKey := analyticsRoutingKey(perTenantRouting, tenant)
 
 			sourceTypes := emittedSourceTypes(emitGo, emitRefactored, emitProduction)
 			for _, st := range sourceTypes {
 				flow := "f2_shadow_go_port"
 				switch st {
 				case "refactored":
-					flow = "f3_packiot_shadow"
+					flow = "f3_packiot_analytics"
 				case "":
 					flow = "f1_public"
 				}
@@ -1603,14 +1783,14 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 				// raw resolved metrics — F2 stays raw-and-blown-up on PURPOSE,
 				// as the validating divergence against tsp12. Default OFF = zero
 				// behavior change until the flag is flipped for F3 only.
-				var env shadowpub.Envelope
+				var env analyticspub.Envelope
 				if st == "refactored" && cutoverRefactored && calc.enabled() {
-					cutMetrics := buildCutoverMetrics(calcMetrics, resolved.Metrics)
-					env = shadowpub.BuildEnvelopeFromMetrics(
+					cutMetrics := buildCutoverMetrics(calcMetrics, resolved.Metrics, calc.isCounter)
+					env = analyticspub.BuildEnvelopeFromMetrics(
 						"outbox", st, int64(resolved.Timestamp), cutMetrics,
 					)
 					// LINE_TRACE_TENANTS: the exact metric set that enters the
-					// F3 (packiot_shadow) write for this payload. If a line's
+					// F3 (packiot_analytics) write for this payload. If a line's
 					// counter shows outcome=send in the calc trace but its name
 					// is ABSENT here, the drop is in buildCutoverMetrics /
 					// suppression — not in Calc. If it IS here but still never
@@ -1627,7 +1807,7 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 						)
 					}
 				} else {
-					env = shadowpub.BuildEnvelope(shadowpub.EnvelopeInput{
+					env = analyticspub.BuildEnvelope(analyticspub.EnvelopeInput{
 						Tenant:          tenant,
 						PublisherKey:    key.String(),
 						Instance:        "outbox",
@@ -1675,24 +1855,24 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *shadowpub.Publishe
 			// Direct-publish path (legacy — pre-outbox).
 			if err := publisher.Publish(ctx, resolved); err != nil {
 				switch {
-				case errors.Is(err, shadowpub.ErrPublishNacked):
+				case errors.Is(err, analyticspub.ErrPublishNacked):
 					// RabbitMQ actively refused — usually resource alarm
 					// (memory or disk). Ops should check RMQ status.
-					logger.Error("shadowpub: RabbitMQ NACKED message",
+					logger.Error("analyticspub: RabbitMQ NACKED message",
 						slog.String("publisher", key.String()),
 						slog.String("action", "check RabbitMQ resource alarms"),
 						slog.String("err", err.Error()))
-				case errors.Is(err, shadowpub.ErrConfirmTimeout):
+				case errors.Is(err, analyticspub.ErrConfirmTimeout):
 					// Broker didn't answer in time — likely slow-write under
 					// load or connection wobble. Broker may still commit;
 					// message state is ambiguous.
-					logger.Warn("shadowpub: RabbitMQ confirm timeout",
+					logger.Warn("analyticspub: RabbitMQ confirm timeout",
 						slog.String("publisher", key.String()),
 						slog.String("state", "ambiguous — RMQ may have committed"),
 						slog.String("err", err.Error()))
 				default:
 					// Other errors (marshal, channel-closed, ctx.Cancel, etc.)
-					logger.Warn("shadowpub: publish failed",
+					logger.Warn("analyticspub: publish failed",
 						slog.String("publisher", key.String()),
 						slog.String("err", err.Error()))
 				}

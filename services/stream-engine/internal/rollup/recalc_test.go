@@ -79,18 +79,55 @@ func TestOEEFormulaProperties(t *testing.T) {
 	}
 }
 
-// The cascade grains: formulas + THE AMBER BUG pinned.
+// The cascade grains: formulas + THE AMBER BUG fixed + canonical A·P·Q identity.
 func TestGrainMatrix(t *testing.T) {
-	if grainMatrix[0].Grain != "week" || grainMatrix[0].OeePTable != "equipment_runtime_1month" {
-		t.Error("AMBER BUG must be preserved: week's oee_p targets 1MONTH (prod copy-paste, shipped for years — fix only with consumer sign-off)")
+	// Grain → own table (the amber bug was week's oee_p landing in 1MONTH).
+	if grainMatrix[0].Grain != "week" || grainMatrix[0].Table != "equipment_runtime_1week" {
+		t.Error("week grain must target equipment_runtime_1week")
 	}
-	if grainMatrix[1].OeePTable != "equipment_runtime_1month" {
-		t.Error("month's oee_p correctly targets 1month")
+	if grainMatrix[1].Grain != "month" || grainMatrix[1].Table != "equipment_runtime_1month" {
+		t.Error("month grain must target equipment_runtime_1month")
+	}
+	// AMBER BUG FIXED: neither oee_p write path may hardcode a table — both are
+	// parameterized (%[2]s = the grain's OWN table), so week's oee_p can never
+	// again be written to 1month.
+	for _, sql := range []string{grainOeePSQL, grainOeeReconcileSQL} {
+		if strings.Contains(sql, "equipment_runtime_1month") || strings.Contains(sql, "equipment_runtime_1week") {
+			t.Error("amber-bug regression: oee_p write path hardcodes a grain table — must be parameterized to the grain's own table")
+		}
+	}
+	// CANONICAL IDENTITY (ADR-0048 §Fault-3): the reconcile sets oee = the product
+	// of the three bounded [0,1] factors as the LAST step, so oee == oee_a·oee_p·oee_q
+	// by construction — mirroring hour/shift. Performance is derived from the summed
+	// ideal_production (grain has no ideal_speed column).
+	for _, m := range []string{
+		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)",        // A ∈ [0,1], ::float or bigint div → 0
+		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                                // Q ∈ [0,1]
+		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                            // P derived from ideal_production
+	} {
+		if !strings.Contains(grainOeeReconcileSQL, m) {
+			t.Errorf("grain canonical reconcile lost %q", m)
+		}
+	}
+	// Integer-division guard (measured live 2026-08-22): running_time/available_time
+	// are BIGINT on the week/month grain, so the Availability factor MUST cast to
+	// float or oee_a collapses to 0 on every producing line.
+	if !strings.Contains(grainOeeReconcileSQL, "e.running_time::float / NULLIF(e.available_time, 0)") {
+		t.Error("grain reconcile Availability must cast ::float (bigint columns → integer division → oee_a=0)")
+	}
+	if !strings.Contains(grainRollupSQL, "s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0)") {
+		t.Error("grainRollupSQL oee_a must cast ::float (bigint columns → integer division → oee_a=0)")
+	}
+	// oee must be the PRODUCT of exactly the three clamped factors (two '*' joining
+	// three GREATEST(LEAST(...)) terms after the `oee =`).
+	oeeAssign := grainOeeReconcileSQL[strings.Index(grainOeeReconcileSQL, "oee   ="):]
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
+		t.Errorf("canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
 	}
 	for _, m := range []string{
-		"s.net / NULLIF(s.ideal_production, 0)",                         // oee (grain variant)
-		"s.running_time / NULLIF(s.total_time - s.planned_downtime, 0)", // oee_a
-		"date_trunc('%[4]s', ard.ts_value::date)::date",                 // bucket join
+		"s.net / NULLIF(s.ideal_production, 0)",                                // oee (grain variant, pre-reconcile top-down)
+		"s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0)", // oee_a (::float — bigint cols)
+		"date_trunc('%[4]s', ard.ts_value::date)::date",                        // bucket join
 	} {
 		if !strings.Contains(grainRollupSQL, m) {
 			t.Errorf("grain rollup lost %q", m)
@@ -98,6 +135,48 @@ func TestGrainMatrix(t *testing.T) {
 	}
 	if !strings.Contains(grainTargetsSQL, "target_customized IS NOT TRUE") {
 		t.Error("operator-customized targets must be respected")
+	}
+}
+
+// Day canonical A·P·Q reconcile (ADR-0048 §Fault-3) — the durable forward fix so
+// NEW day rows satisfy oee = oee_a·oee_p·oee_q, not the back-solve that re-breaks
+// on clamp. Mirrors grains.go (ideal_production-based Performance; day has no
+// ideal_speed) and carries the ::float cast (integer columns).
+func TestDayCanonicalReconcile(t *testing.T) {
+	for _, m := range []string{
+		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)", // A ∈ [0,1], ::float
+		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                          // Q ∈ [0,1]; net=0/gross=0 → 0 (never 1)
+		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                      // P from ideal_production (no ideal_speed on day)
+	} {
+		if !strings.Contains(dayOeeReconcileSQL, m) {
+			t.Errorf("day canonical reconcile lost %q", m)
+		}
+	}
+	// ::float guard — integer columns → integer division would zero oee_a.
+	if !strings.Contains(dayOeeReconcileSQL, "e.running_time::float / NULLIF(e.available_time, 0)") {
+		t.Error("day reconcile Availability must cast ::float (integer columns → integer division → oee_a=0)")
+	}
+	// oee must be the PRODUCT of exactly the three clamped factors (not back-solved).
+	oeeAssign := dayOeeReconcileSQL[strings.Index(dayOeeReconcileSQL, "oee   ="):]
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
+		t.Errorf("day canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	}
+	if strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "oee /") || strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "e.oee /") {
+		t.Error("day canonical oee must be a·p·q, not back-solved from oee")
+	}
+}
+
+// The hour/shift reconcile Availability must carry the ::float cast (integer
+// columns) — latent-trap hardening (#883). No-op live (events-pass float oee_a),
+// but removes integer-division risk for future refactors.
+func TestHourShiftReconcileFloatCast(t *testing.T) {
+	for name, sql := range map[string]string{"hour": hourOeeReconcileSQL, "shift": shiftOeeReconcileSQL} {
+		if !strings.Contains(sql, "e.running_time::float / NULLIF(e.available_time, 0)") {
+			t.Errorf("%s reconcile Availability must cast ::float (integer columns)", name)
+		}
+		if strings.Contains(sql, "COALESCE(e.running_time / NULLIF(e.available_time, 0)") {
+			t.Errorf("%s reconcile still has cast-less integer division on Availability", name)
+		}
 	}
 }
 

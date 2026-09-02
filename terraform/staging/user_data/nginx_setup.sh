@@ -170,6 +170,16 @@ server {
         error_page 401 = @oauth2_signin;
 
         proxy_pass         http://127.0.0.1:${port};
+%{ if svc == "rabbitmq" ~}
+        # RabbitMQ management's Cowboy backend enforces a 4KB total-header
+        # limit. The Cognito oauth2-proxy session cookie (split across
+        # several _oauth2_proxy_N cookies, ADR-0034 §C) blows past that and
+        # Cowboy answers 431 Request Header Fields Too Large. The browser's
+        # cookie isn't needed downstream — the auth_request gate above has
+        # already authorized the request, and RabbitMQ's own user/password
+        # auth takes it from there — so strip it before proxying.
+        proxy_set_header   Cookie "";
+%{ endif ~}
         proxy_set_header   Host                 \$host;
         proxy_set_header   X-Real-IP            \$remote_addr;
         proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
@@ -296,6 +306,62 @@ server {
 }
 NGINX
 
+# ── operator-sbx vhost (SANDBOX operator — SBXCPACK / enterprise 2000003) ──────
+# Twin of the operator vhost above, but proxies to the operator-sbx container on
+# :8085 (compose.staging.yml), which injects the SANDBOX enterprise api-key. Same
+# oauth2-proxy shell gate + API-route bypass; the tenant separation is entirely in
+# the injected api-key, so this host drives the resettable sandbox tenant and can
+# never write to real CPACK. Sandbox operator login: packiot-sbx / sbxdrive.
+cat > /etc/nginx/conf.d/operator-sbx.conf <<NGINX
+server {
+    listen 80;
+    server_name operator-sbx.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name operator-sbx.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    include snippets/oauth2-proxy.conf;
+
+    # API routes — bypass the SSO gate (the operator SPA carries its own /session
+    # JWT). Kept in sync with the operator vhost route list.
+    location ~ ^/(session|machines|edit-manual-event|add-manual-event|split-events|set-event|change-po|start-po|replace-po|create-start|language-pack|downtime-reasons|health|logo|recommended-change-times|available-production-orders|pending-events|production|solved-events|set-api-key)(/|\$) {
+        proxy_pass         http://127.0.0.1:8085;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        auth_request /oauth2/auth;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        proxy_pass         http://127.0.0.1:8085;
+        proxy_set_header   Host                 \$host;
+        proxy_set_header   X-Real-IP            \$remote_addr;
+        proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto    https;
+        proxy_set_header   X-Auth-Request-User  \$auth_user;
+        proxy_set_header   X-Auth-Request-Email \$auth_email;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
 # ── csadmin vhost (CS-Admin SPA — origin-verify only) ─────────────────────────
 cat > /etc/nginx/conf.d/csadmin.conf <<NGINX
 server {
@@ -363,39 +429,20 @@ fi
 nginx -t && nginx -s reload
 echo "AMQPS stream proxy configured on port 5671"
 
-# ── RabbitMQ management API HTTPS proxy (deliberately open) ───────────────────
-# Exposed as mq.$STAGING_DOMAIN → 127.0.0.1:15672. No origin-verify + no oauth2:
-# RabbitMQ's management plugin authenticates with its own user/password, and the
-# edge-client user (tags: management) POSTs to the publish API from factory edges
-# that don't have amqplib. Rewritten every run (idempotent by overwrite).
-cat > /etc/nginx/conf.d/mq.conf <<NGINX
-server {
-    listen 80;
-    server_name mq.$STAGING_DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-server {
-    listen 443 ssl;
-    server_name mq.$STAGING_DOMAIN;
-
-    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    location / {
-        proxy_pass         http://127.0.0.1:15672;
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_read_timeout 300s;
-    }
-}
-NGINX
-
+# ── RabbitMQ management API — REMOVED (audit 2026-08-21, finding M3) ───────────
+# The old mq.$STAGING_DOMAIN vhost proxied straight to 127.0.0.1:15672 with NO
+# origin-verify and NO oauth2 gate — its DNS record resolves direct-to-EIP
+# (bypassing CloudFront/WAF), so the RabbitMQ management UI + HTTP API were
+# exposed to the whole internet behind only RabbitMQ's own basic auth. The
+# claimed use case (factory edges POSTing to the publish API over HTTP) was never
+# exercised on staging (0 hits in the access logs); edges publish over AMQPS on
+# :5671 (stream proxy above) instead. The management console is now served ONLY
+# by the gated rabbitmq.$STAGING_DOMAIN vhost (CloudFront + origin-verify +
+# oauth2 cs-admin forward-auth), emitted by the staff-tier loop above.
+# Remove any legacy mq.conf left over from a previous boot (idempotent).
+rm -f /etc/nginx/conf.d/mq.conf
 nginx -t && nginx -s reload
-echo "RabbitMQ management API proxy configured at https://mq.$STAGING_DOMAIN"
+echo "Legacy ungated mq.$STAGING_DOMAIN vhost removed (use gated rabbitmq.$STAGING_DOMAIN)"
 
 # ── refdata vhost (refdata-api read plane — deliberately open, own auth) ───────
 cat > /etc/nginx/conf.d/refdata.conf <<NGINX
@@ -462,6 +509,101 @@ NGINX
 
 nginx -t && nginx -s reload
 echo "refdata read-plane vhost configured at https://refdata.$STAGING_DOMAIN"
+
+# ── scan vhost (barcode-service box-scan ingest — deliberately open, own auth) ─
+cat > /etc/nginx/conf.d/scan.conf <<NGINX
+# scan.$STAGING_DOMAIN — barcode-service (Phase-0 durable box-scan ingest).
+#
+# barcode-service is a JWT-Bearer-authed WRITE API. It performs its OWN
+# fail-closed auth: it verifies a Cognito (or Firebase) ID token, derives the
+# tenant (id_enterprise) SERVER-SIDE from the signed custom:id_enterprise claim,
+# and fences every write by it (see services/barcode-service auth.go/scans.go).
+# The client never names a tenant.
+#
+# Same "deliberately open, own auth" exemption as refdata.conf above: a scanner
+# (the intended Node-RED tee, or a browser PWA) carrying a Bearer token cannot
+# follow an interactive SSO 302, so there is NO auth_request/oauth2 gate here —
+# nginx proxies straight to the container and barcode-service is the sole auth
+# authority. Only the exact box-scan paths are exposed (cpack-ingest's tight-path
+# discipline). 443 is already open to 0.0.0.0/0 in the App EC2 SG (like refdata);
+# the JWT is the gate, not the SG. Reuses the wildcard *.$STAGING_DOMAIN cert.
+#
+# CORS allowlist is for a future browser scanner PWA; a Node-RED tee is
+# server-to-server and needs none of it. Credentialed fetch forbids ACAO '*', so
+# nginx echoes the Origin back ONLY for known SPA origins (fail-closed otherwise).
+map \$http_origin \$scan_cors_allow_origin {
+    default                                     "";
+    "https://staging.packiot.com"               \$http_origin;
+    "https://front.$STAGING_DOMAIN"             \$http_origin;
+    "https://csadmin.$STAGING_DOMAIN"           \$http_origin;
+    "https://operator.$STAGING_DOMAIN"          \$http_origin;
+    "https://operator-sbx.$STAGING_DOMAIN"      \$http_origin;
+}
+
+server {
+    listen 80;
+    server_name scan.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name scan.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 128k;   # barcode-service caps the request body at 64k
+
+    # ── Durable gapless write (server-authoritative label_seq) ───────────────
+    location = /v1/scans {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+            add_header Access-Control-Allow-Methods "POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+            add_header Access-Control-Max-Age      86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain";
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+
+        # barcode-service: internal container, no host publish. nginx (host)
+        # reaches it by its compose-pinned bridge IP (ipv4_address 172.18.0.36:8446).
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+
+    # ── SSE fan-out of accepted scans (long-lived; buffering OFF) ─────────────
+    location = /v1/scans/stream {
+        add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;              # SSE: stream events as they arrive
+        proxy_read_timeout 3600s;
+    }
+
+    # ── Ops probe — exposes no tenant data, no auth ──────────────────────────
+    location = /healthz {
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "barcode box-scan ingest vhost configured at https://scan.$STAGING_DOMAIN/v1/scans"
 
 # ── superset vhost (W2 self-service BI — embedded in front4) ───────────────────
 # bi.$STAGING_DOMAIN. Mirrors the prod block (terraform/production/user_data/
@@ -567,11 +709,29 @@ echo "oauth2-proxy SSO vhost configured at https://auth.$STAGING_DOMAIN"
 
 # ── CPACK agent ingest front-door (ADR-0042 P1 — deliberately open) ────────────
 # Public HTTPS front-door for CPACK's Node-RED tee → sparkplug-agent-cpack. TLS
-# terminates on a dedicated port (8447) and reverse-proxies ONLY the exact path
-# /v1/tags to the agent's plaintext HTTP listener on packiot-net (compose static
-# IP 172.18.0.38:9104). Auth is the agent's own X-Ingest-Key header — the same
-# "no SSO" carve-out the /api/ vhost uses. Inbound 8447 is admitted for CPACK's
-# egress /32 ONLY (security_groups.tf). Reuses the wildcard cert.
+# terminates on a dedicated port (8447) and reverse-proxies ONLY the exact box-
+# scan/tag paths to the agent's plaintext HTTP listener on packiot-net (compose
+# static IP 172.18.0.38:9104). Auth is the agent's own X-Ingest-Key header — the
+# same "no SSO" carve-out the /api/ vhost uses. Inbound 8447 is admitted for
+# CPACK's egress /32 ONLY (security_groups.tf). Reuses the wildcard cert.
+#
+# TWIN CUTOVER (2026-08-25, #45 Phase-2 — folded here 2026-08-26 for durability).
+# The tee was moved off the legacy path onto a NEW path so the two never race:
+#   * /v1/tags → 444 — the LEGACY reader/agent endpoint is BLACKHOLED (connection
+#     closed, no response). The factory tee must POST to /v2/tags now; a stray
+#     /v1 producer is hard-failed instead of silently double-writing.
+#   * /v2/tags → the current sparkplug-agent-cpack (172.18.0.38:9104/v1/tags,
+#     the agent's own path is still /v1/tags internally).
+# Before this fold, user_data wrote the OLD single-location /v1/tags→agent conf,
+# so a re-provision would have SILENTLY REVERTED the live cutover (the exact
+# durability rot this codifies away). Generated conf now reproduces the live box.
+#
+# NOTE — a live `_sbx_tags_mirror` (fire-and-forget copy of /v2 to the SBXCPACK
+# sandbox agent) also exists on the box today, pointed at 172.18.0.4:9104. That
+# IP is the RETIRED edge-nodered slot (compose static .4) and currently runs no
+# agent, so the mirror is a live-transient/experimental artifact, NOT a durable
+# ingress. It is deliberately NOT baked in here — the sandbox-twin owner must
+# confirm the intended sandbox-agent IP/port before it is codified.
 cat > /etc/nginx/conf.d/cpack-ingest.conf <<NGINX
 server {
     listen 8447 ssl;
@@ -584,8 +744,20 @@ server {
 
     client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
 
-    location = /v1/tags {
-        proxy_pass         http://172.18.0.38:9104;   # sparkplug-agent-cpack
+    # Legacy path — BLACKHOLED by the twin cutover (#45 Phase-2). Any producer
+    # still POSTing here is hard-failed rather than silently double-writing.
+    location = /v1/tags { return 444; }
+
+    # Current ingest path → sparkplug-agent-shared (ADR-0042 cutover 2026-09): the
+    # dedicated sparkplug-agent-cpack (172.18.0.38) was retired for the shared
+    # multi-tenant agent (172.18.0.44). The legacy factory tee posts no in-body
+    # SparkPlug group, so inject X-Ingest-Group: CPACK for the multi-tenant router
+    # (sparkplug-decoder #997); proxy_set_header overrides any client value, so it
+    # is a trusted per-route injection. X-Ingest-Key is forwarded unchanged.
+    location = /v2/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   X-Ingest-Group    CPACK;
+        proxy_set_header   X-Ingest-Key      \$http_x_ingest_key;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
@@ -596,7 +768,41 @@ server {
 NGINX
 
 nginx -t && nginx -s reload
-echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v1/tags"
+echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v2/tags (v1 blackholed)"
+
+# ── shared multi-tenant agent ingest front-door (ingest.staging) ──────────────
+# ONE tenant-agnostic front-door for the shared sparkplug-agent-shared (multi-
+# tenant). Terminates TLS on 8449 and reverse-proxies /v1/tags to the shared
+# agent (compose static IP 172.18.0.44:9104), which routes by the envelope's
+# group_id. Every client's box POSTs here — a new client adds NO new vhost. Auth
+# is the agent's X-Ingest-Key; inbound 8449 is admitted per-box egress /32 in the
+# App EC2 SG (security_groups.tf). cpack keeps its dedicated 8447 door until it
+# migrates onto the shared agent.
+cat > /etc/nginx/conf.d/ingest.conf <<NGINX
+server {
+    listen 8449 ssl;
+    server_name ingest.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "Shared multi-tenant ingest front-door configured at https://ingest.$STAGING_DOMAIN:8449/v1/tags"
 
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.

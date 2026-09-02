@@ -169,6 +169,41 @@ func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsM
 	}
 }
 
+// evalSpeed decides whether a DERIVED speed sample (equipment_values.speed,
+// the decode Phase-6 computeSpeed = incr·60000/Δt, units/min) must be voided
+// before it reaches the UPSERT. Two arms, both physically grounded in the same
+// K·rate invariant the count clamp uses:
+//
+//   - LOCKSTEP (countClamped): the speed was derived from the very increment
+//     the count clamp just rejected as a glitch/spike this sample — the same
+//     delta produced both, so a rejected count means an untrustworthy speed.
+//     Void it regardless of rate (this is the ONLY arm for rate-less streams,
+//     mirroring the count clamp's fail-open-without-a-rate posture).
+//   - RATE BOUND: even when the count was NOT clamped (e.g. the fail-open first
+//     sample after a worker restart, or the ADR-0049 no-speed-guard fallback
+//     letting a tiny-Δt division through), a speed above K·rate is not a
+//     physically possible machine speed — a machine rated ratePerMin parts/min
+//     cannot momentarily run thousands of times faster. Reuse the clamp's k so
+//     the speed bound tracks the count bound. A non-positive rate skips this
+//     arm (fail-open) — a rate·0 bound would wrongly reject every real speed.
+//
+// Returns reject=true (with the bound it exceeded, 0 for the lockstep arm) when
+// the speed must be dropped; the caller writes NULL so the UPSERT's
+// COALESCE(EXCLUDED.speed, existing) carries the prior good speed forward.
+func (c *incrementClamp) evalSpeed(countClamped bool, ratePerMin, speed float64) (reject bool, bound float64) {
+	if countClamped {
+		return true, 0
+	}
+	if ratePerMin <= 0 || speed <= 0 {
+		return false, 0
+	}
+	bound = c.k * ratePerMin
+	if speed > bound {
+		return true, bound
+	}
+	return false, 0
+}
+
 // observe records tsMs as the stream's latest sample time and returns the
 // PRIOR timestamp (and whether one existed). Monotone: an out-of-order (older)
 // sample never rewinds the clock.

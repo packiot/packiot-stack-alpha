@@ -253,6 +253,19 @@ raw_tag_map:
   - {metric_suffix: /L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit,  type: double}
   - {metric_suffix: /L3/POLYTYPE/Admin/ProdProcessedCount/82/Unit, type: double}
 
+  # ── L3 members BREYER/RMH/TEXA (prod→stg: BREYER 76→58, RMH 79→59, TEXA 80→60;
+  #    count idx = prod id 76/79/80 — CONFIRMED by live tee drops + packml_register).
+  #    The ONLY unmapped tags the tee still sends (segment L3, ~20.7k drops). The
+  #    2026-08-19 extension mapped L3/POLYTYPE+PTH but MISSED these three. Both
+  #    Consumed+Processed mapped per file convention (unfed leaf = harmless
+  #    null-birth under AGENT_BIRTH_ALL_MAPPED). ──
+  - {metric_suffix: /L3/BREYER/Admin/ProdConsumedCount/76/Unit,  type: double}
+  - {metric_suffix: /L3/BREYER/Admin/ProdProcessedCount/76/Unit, type: double}
+  - {metric_suffix: /L3/RMH/Admin/ProdConsumedCount/79/Unit,     type: double}
+  - {metric_suffix: /L3/RMH/Admin/ProdProcessedCount/79/Unit,    type: double}
+  - {metric_suffix: /L3/TEXA/Admin/ProdConsumedCount/80/Unit,    type: double}
+  - {metric_suffix: /L3/TEXA/Admin/ProdProcessedCount/80/Unit,   type: double}
+
   # ── L4 members (prod→stg: BREYER 88→66, POLYTYPE 89→67, RMH 87→65, TEXA 84→63) ─
   - {metric_suffix: /L4/BREYER/Admin/ProdConsumedCount/88/Unit,    type: double}
   - {metric_suffix: /L4/BREYER/Admin/ProdProcessedCount/88/Unit,   type: double}

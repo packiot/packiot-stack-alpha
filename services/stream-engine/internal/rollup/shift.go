@@ -147,28 +147,69 @@ const shiftCascadeAreaSQL = `
 // Phase E: conditional; banks hits + ts_planned for the targets pass.
 const shiftEventsSQL = `
 	CREATE TEMP TABLE shift_ev ON COMMIT DROP AS
+	WITH last_seen AS (
+	    -- LAST OBSERVED DATA per equipment (see hour.go) — the physical bound for a
+	    -- TRAILING open event. max(ts_value) of the 1-hour cagg = start of the last
+	    -- data-bearing hour; +1h grace covers through its end.
+	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
+	      FROM %[1]s.ca_agg_equipment_values_1hour m
+	     WHERE m.id_equipment IN (SELECT id_equipment FROM shift_elig)
+	       AND m.ts_value >= now() - interval '90 days'
+	     GROUP BY m.id_equipment
+	), ee_bounded AS (
+	    -- EVENT EFFECTIVE-END (line-availability root-cause fix; see hour.go).
+	    -- equipment_events are open-ended state markers (ts_end never populated in
+	    -- this stack), so an event ends at the NEXT event for the equipment. The
+	    -- former COALESCE(ee.ts_end, now()) extended every stale planned event to
+	    -- now(), so a line's overlapping member/stale planned events SUMMED past
+	    -- ts_total → negative Availability floored to 0. lead(ts_event) yields
+	    -- non-overlapping physical intervals; ts_end still wins when present, so
+	    -- parity on ts_end-populated (legacy/prod) data is byte-identical.
+	    --
+	    -- TRAILING open event (ts_end NULL, no successor): the lead() fix left it
+	    -- falling to now(), so an idle line's last open status=6 event stretched to
+	    -- now() → phantom running / fabricated Availability (and running > available
+	    -- where later mirror-arrived events overlap). CPACK is status_type=0 →
+	    -- outside the events deriver → events never closed; do NOT rely on a
+	    -- separate close-sweep. Bound the trailing event to the last observed data
+	    -- (ls.ts_last + 1h), capped at now() and never before its own start; a
+	    -- trailing event minted after telemetry stopped collapses to zero length.
+	    -- NULL ls.ts_last (no telemetry) degrades to now() — prior behavior. Inert
+	    -- on ts_end-populated data (ts_end wins first) → parity preserved.
+	    SELECT ee.id_equipment, ee.ts_event,
+	           COALESCE(ee.ts_end,
+	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
+	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
+	           ee.planned_downtime, ee.change_over, ee.status
+	      FROM %[1]s.equipment_events ee
+	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
+	     WHERE ee.id_equipment IN (SELECT id_equipment FROM shift_elig)
+	       AND ee.ts_event >= now() - interval '25 days' AND ee.ts_event < now()
+	)
 	SELECT el.id_equipment, el.ts_value, el.ts_end, el.target_customized,
 	       extract(epoch FROM (least(el.ts_end, now()) - el.ts_value)) AS ts_total,
 	       COALESCE(sum(CASE WHEN ee.planned_downtime = true THEN
-	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
+	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
 	       COALESCE(sum(CASE WHEN ee.change_over = true THEN
-	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
+	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
 	       COALESCE(sum(CASE WHEN ee.status = 6 THEN
-	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_running,
+	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_running,
 	       COALESCE(sum(CASE WHEN ee.status <> 6 THEN
-	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_downtime,
+	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_downtime,
 	       COALESCE(sum(CASE WHEN ee.status IN (5, 10, 11) THEN
-	           extract(epoch FROM (least(COALESCE(ee.ts_end, now()), COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_stopped
+	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_stopped
 	  FROM shift_elig el
-	  JOIN %[1]s.equipment_events ee
+	  JOIN ee_bounded ee
 	    ON ee.id_equipment = el.id_equipment
-	   AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && tstzrange(el.ts_value, el.ts_end)
-	   AND ee.ts_event >= now() - interval '25 days' AND ee.ts_event < now()
+	   AND tstzrange(ee.ts_event, ee.ts_eff_end) && tstzrange(el.ts_value, el.ts_end)
 	 GROUP BY el.id_equipment, el.ts_value, el.ts_end, el.target_customized`
 
 const shiftEventsUpdateSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET
-	       available_time   = COALESCE(ev.ts_total - ev.ts_planned, 0),
+	       -- Denominator degrades gracefully (see hour.go): subtract
+	       -- LEAST(ts_planned, ts_total) so available_time / oee_a stay ≥ 0. Inert
+	       -- now that ee_bounded makes ts_planned physical.
+	       available_time   = COALESCE(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0),
 	       -- Same physical invariant as the hour grain (see hour.go): time-in-state
 	       -- within a shift bucket cannot exceed the shift's own elapsed wall-clock
 	       -- (ev.ts_total). Overlapping events (a line minting one running event
@@ -179,16 +220,16 @@ const shiftEventsUpdateSQL = `
 	       running_time     = LEAST(COALESCE(ev.ts_running, 0),    ev.ts_total),
 	       stopped_time     = LEAST(COALESCE(ev.ts_stopped, 0),    ev.ts_total),
 	       planned_downtime = LEAST(COALESCE(ev.ts_planned, 0),    ev.ts_total),
-	       ideal_production = COALESCE(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0),
+	       ideal_production = COALESCE(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
 	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
-	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - ev.ts_planned) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp [0,1]
+	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp [0,1]
 	       -- ADR-0037 C: write the OEE waterfall (A×P×Q), not just composite oee.
 	       -- Availability = running / planned-production-time ; Quality = net /
 	       -- gross ; Performance back-solved by shiftOeePSQL so oee = a·p·q
 	       -- (same shape as grains.go / legacy pg engine). Was: A/P/Q all 0.
-	       oee_a = COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - ev.ts_planned, 0), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0), 0), 1), 0), -- ADR-0037 clamp [0,1] (now INERT: ee_bounded makes ts_planned physical, so A lands in (0,1] not floored to 0); LEAST() denom degrades gracefully
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
@@ -214,24 +255,24 @@ const shiftOeePSQL = `
 // exactly like the legacy base machine fn post-#80
 // (20-oee-engine-parity.sql: target · (least(now(),ts_end)−ts_value)/shift_size).
 //
-//   proportional_target = vl_day · (ev.ts_total − ev.ts_planned) / 86400
+//	proportional_target = vl_day · (ev.ts_total − ev.ts_planned) / 86400
 //
-//   - ev.ts_total = extract(epoch (least(ts_end, now()) − ts_value)) —
-//     wall-clock elapsed, CAPPED at the shift end. For a COMPLETED (past)
-//     shift ts_total = ts_end − ts_value = shift_size, so the row settles
-//     at the full/final target (elapsed == full). Only the LIVE shift
-//     prorates; past shifts keep their final target. No tp branch.
-//   - (ts_total − ts_planned) is the shift's ELAPSED scheduled-productive
-//     time (identical expression to available_time above). Denominator
-//     convention: SCHEDULED-PRODUCTIVE — already-consumed planned
-//     downtime is subtracted in the numerator basis exactly as the
-//     full-shift form subtracted it (vl_day is a per-DAY rate over 86400s),
-//     so a scheduled break pauses target growth instead of overstating it.
-//   - SINGLE writer (one UPDATE of this column per row) — do NOT add a
-//     post-pass overwrite; that is the #456 two-writer double-count class.
-//   - The LATERAL shift-hour lookup is RETAINED purely as the "shift-hour
-//     found" guard (legacy's `if found`): its shift_size is intentionally
-//     no longer referenced now that proration is elapsed-based.
+//	- ev.ts_total = extract(epoch (least(ts_end, now()) − ts_value)) —
+//	  wall-clock elapsed, CAPPED at the shift end. For a COMPLETED (past)
+//	  shift ts_total = ts_end − ts_value = shift_size, so the row settles
+//	  at the full/final target (elapsed == full). Only the LIVE shift
+//	  prorates; past shifts keep their final target. No tp branch.
+//	- (ts_total − ts_planned) is the shift's ELAPSED scheduled-productive
+//	  time (identical expression to available_time above). Denominator
+//	  convention: SCHEDULED-PRODUCTIVE — already-consumed planned
+//	  downtime is subtracted in the numerator basis exactly as the
+//	  full-shift form subtracted it (vl_day is a per-DAY rate over 86400s),
+//	  so a scheduled break pauses target growth instead of overstating it.
+//	- SINGLE writer (one UPDATE of this column per row) — do NOT add a
+//	  post-pass overwrite; that is the #456 two-writer double-count class.
+//	- The LATERAL shift-hour lookup is RETAINED purely as the "shift-hour
+//	  found" guard (legacy's `if found`): its shift_size is intentionally
+//	  no longer referenced now that proration is elapsed-based.
 const shiftTargetsSQL = `
 	UPDATE %[1]s.equipment_runtime_shift e SET
 	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
@@ -323,8 +364,23 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		steps = append(steps, rollupStep{"line-lead",
 			fmt.Sprintf(shiftLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
 	}
+	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
+	// count-active time for opted-in equipment where the state stream had gaps.
+	// After every state/counter running writer, before the oee finalize so the
+	// reconcile/oee-p reads the healed running. Inert when not engaged.
+	if ca.engagedFloor() {
+		steps = append(steps, rollupStep{"avail-floor",
+			fmt.Sprintf(shiftAvailFloorSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	// ADR-0048 §Fault-3: canonical A·P·Q reconcile (whole batch) REPLACES the
+	// legacy event-row-scoped oee-p residual when engaged; otherwise the legacy
+	// residual runs (byte-identical). Either way targets + stamp follow.
+	if ca.engagedCanonical() {
+		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(shiftOeeReconcileSQL, d.EvSchema)})
+	} else {
+		steps = append(steps, rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)})
+	}
 	steps = append(steps,
-		rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)},
 		rollupStep{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
 		rollupStep{"stamp", fmt.Sprintf(shiftStampSQL, d.EvSchema)},
 	)

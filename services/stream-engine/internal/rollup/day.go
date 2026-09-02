@@ -82,8 +82,11 @@ const dayRollupSQL = `
 	           -- ADR-0037 C: the OEE waterfall (A×P×Q), previously unwritten at
 	           -- the day grain (only composite oee). Availability = running /
 	           -- planned-production-time ; Quality = net / gross ; Performance
-	           -- back-solved in the UPDATE so oee = a·p·q — matching the
-	           -- week/month grain (grains.go) and legacy pg engine.
+	           -- back-solved in the UPDATE (LEGACY else-branch). When
+	           -- OEE_CANONICAL_APQ is engaged, dayOeeReconcileSQL runs next and
+	           -- OVERWRITES the four oee columns factors-first so oee =
+	           -- oee_a·oee_p·oee_q holds by construction — matching hour/shift/
+	           -- week/month. The back-solve below is kept un-gated for parity.
 	           -- ADR-0037 *_oee_bounds clamp (#663): counter-only line day-rollups
 	           -- can carry running > available-basis → oee_a > 1 violates the
 	           -- CHECK. Clamp to [0,1]; no-op on in-range state-based data.
@@ -151,6 +154,33 @@ const dayRollupSQL = `
 	  LEFT JOIN sums s ON s.id_equipment = el.id_equipment AND s.ts_value = el.ts_value
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
+// dayOeeReconcileSQL — ADR-0048 §Fault-3 canonical A·P·Q for the day grain,
+// mirroring grainOeeReconcileSQL (week/month) and hour/shift. Runs AFTER
+// dayRollupSQL (which wrote the raw time/count columns) and overwrites the four
+// oee columns factors-first: each factor is a genuine [0,1] value and oee is
+// their PRODUCT as the last step, so oee == oee_a·oee_p·oee_q by construction.
+// Scoped to the tick's batch (day_elig).
+//
+// The day grain has NO ideal_speed column (it sums 1hour, carrying only
+// ideal_production), so Performance is derived from the summed ideal_production
+// exactly like week/month: P = gross·available/(ideal_production·running), which
+// telescopes to net/ideal_production on unclamped data.
+//
+// ::float CAST: running_time/available_time are INTEGER on the day table, so the
+// Availability factor MUST cast or running_time/available_time is integer
+// division (e.g. 3060/3600 → 0), zeroing oee_a. net=0 → oee_q = net/NULLIF(gross,0)
+// → 0 (never 1), so zero-output days read oee=0, never a spurious 1.0.
+const dayOeeReconcileSQL = `
+	UPDATE %[1]s.equipment_runtime_1day e SET
+	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
+	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
+	       oee_p = GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0),
+	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
+	             * GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0)
+	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	  FROM day_elig el
+	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
+
 const dayCascadeMonthSQL = `
 	UPDATE %[1]s.equipment_runtime_1month m SET recalc_needed = true
 	  FROM day_elig el
@@ -184,7 +214,7 @@ const dayReflagSQL = `
 	          AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))`
 
 // RunDay executes one day2 pass for one destination — one tx.
-func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, logger *slog.Logger) error {
+func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, ca CountersAvail, logger *slog.Logger) error {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -202,12 +232,21 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("day eligible: %w", err)
 	}
-	steps := []struct{ name, sql string }{
+	steps := []rollupStep{
 		{"rollup", fmt.Sprintf(dayRollupSQL, d.EvSchema)},
-		{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.EvSchema)},
-		{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.EvSchema)},
-		{"stamp", fmt.Sprintf(dayStampSQL, d.EvSchema)},
 	}
+	// ADR-0048 §Fault-3 canonical A·P·Q reconcile — overwrites the four oee
+	// columns factors-first (oee = a·p·q) so the identity holds by construction,
+	// exactly as hour/shift/week/month do. Inert (legacy back-solve in dayRollupSQL
+	// stands) when not engaged. Runs right after rollup, before the cascades.
+	if ca.engagedCanonical() {
+		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(dayOeeReconcileSQL, d.EvSchema)})
+	}
+	steps = append(steps,
+		rollupStep{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.EvSchema)},
+		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.EvSchema)},
+		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.EvSchema)},
+	)
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
 			return fmt.Errorf("day %s: %w", s.name, err)
@@ -228,4 +267,11 @@ func DayStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL stri
 		{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, evSchema)},
 		{"reflag", fmt.Sprintf(dayReflagSQL, evSchema, refSchema)},
 	}
+}
+
+// DayOeeReconcileSQLForParity exposes the canonical A·P·Q reconcile for the day
+// grain to the golden test (proves oee == a·p·q + net=0 → oee=0). Deliberately
+// NOT in DayStatementsForParity — the prod comparator has no canonical reconcile.
+func DayOeeReconcileSQLForParity(evSchema string) string {
+	return fmt.Sprintf(dayOeeReconcileSQL, evSchema)
 }

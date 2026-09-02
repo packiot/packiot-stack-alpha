@@ -409,6 +409,25 @@ resource "aws_route53_record" "services_edge" {
   }
 }
 
+# RISKY (var.edge_cutover) — Superset BI ALIAS, the CloudFront counterpart of the
+# `aws_route53_record.bi` A→EIP record in dns.tf. `bi` is NOT in var.services (it
+# has a bespoke nginx block), so it needs its own edge record rather than riding the
+# services_edge for_each. The superset.conf vhost includes origin-verify, so the
+# bi hostname MUST enter via CloudFront (matched by the `*.${staging_domain}` alias)
+# once edge_cutover=true — a direct-to-EIP hit would 403.
+resource "aws_route53_record" "bi_edge" {
+  count   = var.edge_cutover ? 1 : 0
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "bi.${var.staging_domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.edge.domain_name
+    zone_id                = "Z2FDTNDATAQYW2"
+    evaluate_target_health = false
+  }
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Outputs
 # ══════════════════════════════════════════════════════════════════════════════

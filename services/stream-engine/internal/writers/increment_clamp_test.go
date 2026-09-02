@@ -203,3 +203,66 @@ func TestClamp_DeltaFromZeroSpikeRejectedWithRate(t *testing.T) {
 		t.Fatalf("first-sample delta-from-zero spike (with rate) must be rejected: got (%v,%v)", v, ev)
 	}
 }
+
+// ── Derived-speed void (evalSpeed) — the id-55 L5-PTH 3.5M/min bug ─────────
+
+// The observed staging glitch, exact numbers: L5-PTH is rated 147/min, yet a
+// tiny-Δt / no-speed-guard-fallback division landed 3,533,683/min in
+// equipment_values.speed. K·rate = 4·147 = 588, so the derived speed must be
+// voided (reject, prior speed carried forward), NOT written as 3.5M.
+func TestEvalSpeed_Id55GlitchVoided(t *testing.T) {
+	c := newTestClamp() // rated profile: k=4, rate is passed per-call
+	const rate = 147.0
+	reject, bound := c.evalSpeed(false /*count not clamped*/, rate, 3_533_683)
+	if !reject {
+		t.Fatalf("3.5M/min speed on a 147/min machine must be voided, got reject=false")
+	}
+	if bound != c.k*rate { // 588
+		t.Errorf("bound = %v, want %v (K·rate)", bound, c.k*rate)
+	}
+}
+
+// LOCKSTEP arm: when the coupled COUNT was clamped this sample, the speed —
+// derived from the very same rejected delta — is voided regardless of rate.
+// This is the dominant staging case (2333/2337 huge-speed rows had count=0).
+func TestEvalSpeed_LockstepWithClampedCount(t *testing.T) {
+	c := newTestClamp()
+	// countClamped=true → void even with NO rate (rate-less line-lead stream)
+	// and even for a speed BELOW the K·rate bound (the delta is untrusted).
+	if reject, _ := c.evalSpeed(true, 0, 120); !reject {
+		t.Fatalf("count-clamped sample must void its speed (lockstep), got reject=false")
+	}
+	if reject, _ := c.evalSpeed(true, 147, 100); !reject {
+		t.Fatalf("count-clamped sample must void its speed even below K·rate")
+	}
+}
+
+// A legit speed (a machine running at/near its rating, or a modest overshoot)
+// is BELOW K·rate and must pass untouched — the fix must not cap real speeds.
+func TestEvalSpeed_LegitSpeedPasses(t *testing.T) {
+	c := newTestClamp()
+	for _, sp := range []float64{50, 147, 200, 588} { // 588 == bound, not > bound
+		if reject, _ := c.evalSpeed(false, 147, sp); reject {
+			t.Errorf("legit speed %v (≤ 4·147=588) must pass, got voided", sp)
+		}
+	}
+	// Just over the bound is voided.
+	if reject, _ := c.evalSpeed(false, 147, 589); !reject {
+		t.Errorf("speed 589 (> 588) must be voided")
+	}
+}
+
+// Rate-less streams (no configured production_speed) have no K·rate bound, so
+// the rate arm fails OPEN — only the lockstep arm can void their speed. A huge
+// speed with no rate and an unclamped count passes (mirrors the count clamp's
+// fail-open-without-a-rate posture; the count spike-catch is the defense there).
+func TestEvalSpeed_RatelessFailsOpenOnBound(t *testing.T) {
+	c := newTestClamp()
+	if reject, _ := c.evalSpeed(false, 0, 3_533_683); reject {
+		t.Errorf("rate-less unclamped speed must fail open on the K·rate bound")
+	}
+	// Non-positive speed never rejects.
+	if reject, _ := c.evalSpeed(false, 147, 0); reject {
+		t.Errorf("zero speed must not be voided")
+	}
+}

@@ -4,7 +4,7 @@ description: bi.oee_hourly SUM(net) with sparkline trend. front4 dayKpi net_prod
 certified_by: null
 certification_details: null
 viz_type: big_number
-params: |
+params:
   {
     "datasource": "8b1d0810-a0d1-4012-86a9-45c64c2e9154__table",
     "viz_type": "big_number",

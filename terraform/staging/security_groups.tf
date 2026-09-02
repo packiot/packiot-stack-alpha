@@ -6,6 +6,18 @@ resource "aws_security_group" "app" {
   name   = "packiot-staging-app"
   vpc_id = aws_vpc.staging.id
 
+  # SSH is intentionally world-open as codified emergency access, and it is
+  # hardened at the sshd layer (password auth OFF, key-only). Kept as-is.
+  #
+  # RECOMMENDATION (infra audit 2026-08-23, not applied — behaviour change):
+  # if the team runs an ops bastion / VPN with a stable egress, tighten this to
+  # that CIDR (or an AWS-managed prefix list) instead of 0.0.0.0/0. Day-to-day
+  # box access already goes through SSM Session Manager (no inbound :22 needed),
+  # so restricting :22 to an ops CIDR loses nothing operationally while removing
+  # the internet-wide brute-force surface. Suggested shape (default preserves
+  # today's behaviour):
+  #   variable "ops_ssh_cidrs" { type = list(string)  default = ["0.0.0.0/0"] }
+  #   cidr_blocks = var.ops_ssh_cidrs
   ingress {
     description = "SSH - emergency/debug access"
     from_port   = 22
@@ -71,6 +83,18 @@ resource "aws_security_group" "app" {
     to_port     = 8447
     protocol    = "tcp"
     cidr_blocks = ["179.162.112.58/32"]
+  }
+
+  # Shared multi-tenant ingest front-door (ingest.staging:8449) → sparkplug-agent-shared.
+  # NOT world-open: admits each onboarded client's box egress /32. As clients are
+  # added, append their /32 here (bispharma SP = 200.153.25.2). A key-only public
+  # variant is possible later, but keep the /32 defence-in-depth for now.
+  ingress {
+    description = "Shared multi-tenant agent v1 tags front-door (per-box egress /32 allowlist)"
+    from_port   = 8449
+    to_port     = 8449
+    protocol    = "tcp"
+    cidr_blocks = ["200.153.25.2/32"] # bispharma SP box
   }
 
   egress {

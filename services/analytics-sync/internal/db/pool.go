@@ -1,6 +1,6 @@
 // Package db provides two pool constructors: one for the main packiot
 // DB (source of user_logs + target for shadow_go_port writes) and one
-// for the packiot_shadow DB (target for the refactored POC writes).
+// for the packiot_analytics DB (target for the refactored POC writes).
 package db
 
 import (

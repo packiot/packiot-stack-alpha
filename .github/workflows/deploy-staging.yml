@@ -44,8 +44,12 @@ jobs:
         #   was removed in the 2026-06-24 decommission (replaced by the Go
         #   worker baked into services/stream-engine).
         run: |
+          # Self-heal persistent-runner drift: a live edit to a submodule checkout
+          # on the box (e.g. operator) blocks submodule update with "local changes
+          # would be overwritten". Reset dirty tracked files first, then --force.
+          git submodule foreach --recursive 'git reset --hard || true' 2>/dev/null || true
           git submodule sync edge-api edge-node-red operator csadmin
-          git submodule update --init edge-api edge-node-red operator csadmin
+          git submodule update --init --force edge-api edge-node-red operator csadmin
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
@@ -68,14 +72,21 @@ jobs:
           # packiot/staging/rabbitmq-stream-engine-creds must exist (username
           # "stream-engine", same password as the old rabbitmq-oeecloud-creds)
           # before this step can succeed.
+          #
+          # rename (edge-transformer -> sparkplug-decoder, this PR): MANUAL
+          # PRE-REQ — packiot/staging/rabbitmq-sparkplug-decoder-creds must
+          # exist (username "sparkplug-decoder", same password as the old
+          # rabbitmq-edge-transformer-creds) + the RMQ user itself created,
+          # BEFORE this step can succeed. See
+          # docs/plans/rename-shadow-rabbitmq-addendum.md §A.
           OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-stream-engine-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
-          EP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-edge-transformer-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
-          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$EP"
-          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg ep "$EP" '
+          SDP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-sparkplug-decoder-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$SDP"
+          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg sdp "$SDP" '
             .users |= map(
               if .name=="__ADMIN__" then .name=$au | .password=$ap
               elif .name=="stream-engine" then .password=$op
-              elif .name=="edge-transformer" then .password=$ep
+              elif .name=="sparkplug-decoder" then .password=$sdp
               else . end) |
             .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
           ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
@@ -576,7 +587,7 @@ jobs:
         # GATE 2 (int-overflow) was never a comparison — it's a per-plane invariant
         # (no row's running_time may exceed its bucket wall-clock span × 1.05 — the
         # guard that caught the L8 P0 overflow, ~112,000,000 vs ~11,195) — so it
-        # SURVIVES, now run on F3 (public in packiot_shadow) ONLY. Same binary
+        # SURVIVES, now run on F3 (public in packiot_analytics) ONLY. Same binary
         # subcommand + soft-launch/enforce mechanics as before; internal/bake/
         # sentinel.go is now overflow-only. Backstop: the #663 *_oee_bounds CHECK
         # constraints reject an overflow-driven oee blow-up at the DB write.

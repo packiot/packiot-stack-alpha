@@ -152,8 +152,8 @@ func TestSuzanoAnalogsFencesEquipmentSetAndFrom(t *testing.T) {
 }
 
 // report-downtimes reads the dba-owned v_report_downtimes view, fenced to the
-// tenant $1 and bucketed by the datetime $2 (pDate). The hardcoded id_enterprise
-// = 37 is gone.
+// tenant $1 and bucketed by the shift-begin datetime $2 (pDate). The hardcoded
+// id_enterprise = 37 is gone.
 func TestReportDowntimesFencesTenantAndDatetime(t *testing.T) {
 	if _, _, err := compileDataset(datasetReq{Dataset: "report-downtimes"}, 42, callerRole{}); err == nil {
 		t.Error("report-downtimes compiled without the required `datetime` filter")
@@ -167,8 +167,15 @@ func TestReportDowntimesFencesTenantAndDatetime(t *testing.T) {
 		}
 		if !strings.Contains(sql, "FROM v_report_downtimes") ||
 			!strings.Contains(sql, "id_enterprise = $1") ||
-			!strings.Contains(sql, "date_trunc('hour', $2::timestamp)") {
+			!strings.Contains(sql, "ts_value = $2::timestamp") {
 			t.Errorf("report-downtimes SQL missing view/tenant/bucket bindings: %s", sql)
+		}
+		// Regression guard: the bucket key is the SHIFT BEGIN, which is NOT always
+		// hour-aligned (CPACK ent 3 shifts begin at 02:10 / 09:30). The old
+		// date_trunc('hour', $2) predicate silently dropped every off-the-hour
+		// shift — it must never come back.
+		if strings.Contains(sql, "date_trunc('hour'") {
+			t.Errorf("report-downtimes must NOT hour-truncate the shift bucket (drops off-the-hour shifts): %s", sql)
 		}
 		if len(args) != 2 || args[0] != 42 {
 			t.Fatalf("report-downtimes args = %v; want [42 <time>]", args)
@@ -176,6 +183,36 @@ func TestReportDowntimesFencesTenantAndDatetime(t *testing.T) {
 		if _, ok := args[1].(time.Time); !ok {
 			t.Errorf("report-downtimes datetime must bind as time.Time; got %T", args[1])
 		}
+	}
+}
+
+// TestReportDowntimesMatchesOffHourShiftBucket is the golden binding for the
+// off-the-hour shift bug: a :30 shift-begin datetime must be bound verbatim into
+// the bucket predicate (no truncation), so v_report_downtimes rows whose ts_value
+// is 09:30 are actually returned. Under the old date_trunc('hour', $2) code the
+// bound value would have been coerced to 09:00 in SQL and matched nothing (the
+// staging F3 09:30 CPACK shift held 61 rows but served 0). The Go layer binds the
+// exact instant; the equality against the shift's ts_value is what makes it match.
+func TestReportDowntimesMatchesOffHourShiftBucket(t *testing.T) {
+	sql, args, err := compileDataset(datasetReq{Dataset: "report-downtimes",
+		Filters: map[string]json.RawMessage{"datetime": json.RawMessage(`"2026-08-13 09:30:00"`)}}, 3, callerRole{})
+	if err != nil {
+		t.Fatalf("report-downtimes :30 shift: %v", err)
+	}
+	if !strings.Contains(sql, "ts_value = $2::timestamp") || strings.Contains(sql, "date_trunc") {
+		t.Errorf("off-hour shift must match ts_value exactly, not a truncated hour: %s", sql)
+	}
+	if len(args) != 2 || args[0] != 3 {
+		t.Fatalf("report-downtimes args = %v; want [3 <time>]", args)
+	}
+	dt, ok := args[1].(time.Time)
+	if !ok {
+		t.Fatalf("datetime must bind as time.Time; got %T", args[1])
+	}
+	// The bound value must preserve the :30 minute — hour-truncation happening in
+	// Go would be just as broken as doing it in SQL.
+	if dt.Minute() != 30 {
+		t.Errorf("bound datetime lost its off-the-hour minute: got %v (minute=%d), want minute=30", dt, dt.Minute())
 	}
 }
 

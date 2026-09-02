@@ -43,13 +43,19 @@ x-superset-env: &superset-env
   SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
   SUPERSET_GUEST_TOKEN_JWT_SECRET: ${SUPERSET_GUEST_TOKEN_JWT_SECRET}
   SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD}
-  # Metadata-DB host. pgbouncer only routes packiot/packiot_shadow (no `superset`
+  # Metadata-DB host. pgbouncer only routes packiot/packiot_analytics (no `superset`
   # route), so the low-traffic Superset metadata DB connects UPSTREAM-DIRECT to the
   # r7g (same host superset-db-init uses). See superset_config.py for the rationale.
   POSTGRES_HOST_UPSTREAM: ${POSTGRES_HOST_UPSTREAM}
   SUPERSET_COGNITO_ISSUER: ${SUPERSET_COGNITO_ISSUER}
   SUPERSET_COGNITO_CLIENT_ID: ${SUPERSET_COGNITO_CLIENT_ID}
   SUPERSET_COGNITO_CLIENT_SECRET: ${SUPERSET_COGNITO_CLIENT_SECRET}
+  # Durable human super-admin, SEPARATE from the guest-token minter service account
+  # so the minter can be scoped to a minimal role (bootstrap_guest_role.py). Sourced
+  # from Secrets Manager packiot/<env>/app (keys superset_admin_user/password) via
+  # app_init.sh. When UNSET the minter keeps Admin (lockout guard) — backward-safe.
+  SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-}
+  SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-}
   SUPERSET_FRAME_ANCESTOR: ${SUPERSET_FRAME_ANCESTOR:-https://front.prod.packiot.app}
   SUPERSET_REDIS_HOST: superset-redis
   PYTHONPATH: /app/pythonpath
@@ -60,6 +66,15 @@ x-superset-config-mounts: &superset-config-mounts
   # Guest/embed-role permission bootstrap. Inert on web/worker (only
   # superset_config.py is auto-imported); superset-init runs it explicitly.
   - ./configs/superset/bootstrap_guest_role.py:/app/pythonpath/bootstrap_guest_role.py:ro
+  # Post-import dashboard RBAC hardening (runs after import-dashboards). Inert on
+  # web/worker; superset-init runs it explicitly.
+  - ./configs/superset/harden_dashboard_roles.py:/app/pythonpath/harden_dashboard_roles.py:ro
+  # Dashboards-as-code asset bundle + its importer. Also inert on web/worker
+  # (only superset-init imports); mounted read-only on all three (same pattern as
+  # bootstrap_guest_role.py above). import_bundle.py injects SUPERSET_DB_RO_PASSWORD
+  # into the packiot_analytics connection at import time (git keeps a placeholder).
+  - ./configs/superset/assets:/app/pythonpath/assets:ro
+  - ./configs/superset/import_bundle.py:/app/pythonpath/import_bundle.py:ro
 
 x-superset-logging: &superset-logging
   driver: json-file
@@ -136,12 +151,14 @@ services:
     restart: "no"
     logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
 
-  # ── superset-init — one-shot: DB migrate + built-in roles + guest-token admin ─
+  # ── superset-init — one-shot: DB migrate + built-in roles + BI security bootstrap ─
   # Runs AFTER the metadata DB exists. `superset db upgrade` migrates the metadata
-  # schema; `superset init` syncs Admin/Alpha/Gamma/Public + perms; then create
-  # the service account edge-api authenticates as to MINT guest tokens. In the
-  # real go-live, narrow it to a custom role with ONLY can_grant_guest_token
-  # (least privilege) — see spec §2.2.
+  # schema; `superset init` syncs Admin/Alpha/Gamma/Public + perms; then a durable
+  # human super-admin + the guest-token minter service account are created, and
+  # bootstrap_guest_role.py scopes the minter to a role with ONLY
+  # can_grant_guest_token (least privilege), strips the anon Public role, and sets up
+  # the dedicated GuestViewer embed role. Dashboards get explicit RBAC roles after
+  # import (harden_dashboard_roles.py).
   superset-init:
     build: *superset-build
     image: *superset-image
@@ -156,15 +173,41 @@ services:
         set -e
         superset db upgrade
         superset init
+        # Durable human super-admin (SEPARATE from the minter service account) so the
+        # minter can be scoped to a non-Admin role below. Only when SUPERSET_ADMIN_*
+        # are provisioned (Secrets Manager -> app_init.sh -> .env); otherwise skipped
+        # and the minter keeps Admin (lockout guard in bootstrap_guest_role.py).
+        if [ -n "$${SUPERSET_ADMIN_USER}" ] && [ -n "$${SUPERSET_ADMIN_PASSWORD}" ]; then
+          superset fab create-admin \
+            --username "$${SUPERSET_ADMIN_USER}" \
+            --firstname packiot --lastname superadmin --email superadmin@packiot.app \
+            --password "$${SUPERSET_ADMIN_PASSWORD}" || true
+        fi
+        # The guest-token minter SERVICE ACCOUNT edge-api authenticates as. Created as
+        # Admin here, then SCOPED DOWN to the minimal GuestTokenMinter role by
+        # bootstrap_guest_role.py (lockout-safe — only if the human admin above exists).
         superset fab create-admin \
           --username "$${SUPERSET_GUESTTOKEN_ADMIN_USER}" \
           --firstname guest --lastname minter --email guesttoken@packiot.app \
           --password "$${SUPERSET_GUESTTOKEN_ADMIN_PASSWORD}" || true
-        # Grant the guest/embed role (GUEST_ROLE_NAME, default "Public") the minimal
-        # perms the embedded chart-data path needs — WITHOUT this, @protect() 403s the
-        # request before RLS runs. Idempotent; runs after `superset init` creates the
-        # role. See configs/superset/bootstrap_guest_role.py.
+        # BI security bootstrap: dedicated GuestViewer embed role + minimal
+        # GuestTokenMinter role, STRIP the anonymous Public role to zero perms (closes
+        # the anon /api/v1/dashboard/ metadata leak), and scope the minter service
+        # account off Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
         python /app/pythonpath/bootstrap_guest_role.py
+        # Import the dashboards-as-code bundle (configs/superset/assets/**). IDEMPOTENT:
+        # import_bundle.py stages the assets and injects SUPERSET_DB_RO_PASSWORD (from
+        # .env, Secrets Manager) into the packiot_analytics connection URI — the git
+        # copy carries only a placeholder, no secret. `import-dashboards` runs the
+        # ImportDashboardsCommand with overwrite=True (hardcoded in the CLI), so every
+        # boot re-applies the bundle onto the same stable UUIDs in place — no dupes,
+        # no drift. Without this the metadata DB is an empty shell (0 dashboards).
+        python /app/pythonpath/import_bundle.py
+        superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
+        # Pin explicit non-Public RBAC roles on the imported dashboards (defense in
+        # depth for the anon leak). Runs LAST — dashboards must exist first. See
+        # configs/superset/harden_dashboard_roles.py.
+        python /app/pythonpath/harden_dashboard_roles.py
     depends_on:
       superset-db-init:
         condition: service_completed_successfully

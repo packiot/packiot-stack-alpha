@@ -53,14 +53,18 @@ scrape_configs:
         target_label: tenant
         replacement: 'legacy'
 
-  - job_name: mirror-worker-go
-    # Single-instance Go worker — no tenant concept (replays a single
-    # source: cpack-prod-go). Metrics carry an `event_type` label
-    # (user_logs.category) which is naturally bounded by the 10
-    # handled categories + "unknown" for unmapped rows — no relabel
-    # rules needed.
-    static_configs:
-      - targets: ['mirror-worker-go:9102']
+  # mirror-worker-go is profile-gated OFF in compose.staging.yml since
+  # 2026-08-13 (`profiles: ["legacy-comparator"]` — retired migration-era F1/F3
+  # fidelity watchdog, see the service block for the full rationale). With no
+  # container listening on :9102 by default, this job scrapes a permanently-down
+  # target — confirmed live 2026-08-20 (`up{job="mirror-worker-go"}=0`, and has
+  # been since the profile was disabled). The v2-mirrors Grafana board that read
+  # this job's metrics was removed in the same pass (dashboards-v2/README.md
+  # "Retired boards"). Re-enable both together if `COMPOSE_PROFILES=legacy-comparator`
+  # is ever turned back on.
+  # - job_name: mirror-worker-go
+  #   static_configs:
+  #     - targets: ['mirror-worker-go:9102']
 
   - job_name: edge-transformer
     # ADR-0010 Phase 3 shadow-mode port + ADR-0011 P2 outbox.
@@ -93,6 +97,19 @@ scrape_configs:
     static_configs:
       - targets: ['analytics-sync:9103']
 
+  # legacy-replicator (cross-instance twin replicator, ADR-0013 sibling) — the
+  # AUTHORITATIVE CPACK operator-action source since F1 retirement. Was NEVER
+  # scraped (infra audit 2026-08-23): its shadow_mirror_{failed,update_noop}_total
+  # + shadow_mirror_cursor on :9104 were invisible, so replay gaps ("silent
+  # skips": a legacy row that resolves to a zero-row UPDATE = a bug-247/248-class
+  # gap) and failures went unalerted. Scraping it makes ScrapeTargetDown +
+  # ShadowMirrorFailures cover it for free, and feeds ReplicatorReplayGaps below.
+  # (A WEDGED loop is caught at the docker layer by the /healthz staleness check;
+  # `up` stays 1 while the loop hangs, so Prometheus alone can't see a wedge.)
+  - job_name: legacy-replicator
+    static_configs:
+      - targets: ['legacy-replicator:9104']
+
   # read-api (formerly refdata-api) / query-api — the read side (ADR-0015). Full RED on :9104:
   # http_request_duration_seconds{method,route,status} (rate=_count, errors=by
   # status, duration=histogram) plus Go runtime + process metrics.
@@ -102,7 +119,7 @@ scrape_configs:
 
   # ── Exporters (2026-07-07 audit: bus+DB+host had ZERO white-box
   # telemetry). Unblocks the disk/CAgg-invalidation alert backlog. ──
-  # White-box DB metrics for BOTH packiot + packiot_shadow
+  # White-box DB metrics for BOTH packiot + packiot_analytics
   # (auto-discover — flip needs no scrape change).
   - job_name: postgres-exporter
     static_configs:
@@ -155,6 +172,21 @@ scrape_configs:
   # enabled_plugins) exposes aggregated metrics on :15692 — queue depth, ready/
   # unacked, publish/deliver rates, connections, memory, the DLQ backlog.
   - job_name: rabbitmq
+    static_configs:
+      - targets: ['rabbitmq:15692']
+
+  # rabbitmq per-queue depth. The aggregate /metrics endpoint above sums across
+  # queues (return_per_object_metrics=false, to keep cardinality low), so a
+  # single queue's depth is invisible there. The detailed endpoint exposes
+  # per-queue gauges scoped to ONE metric family (queue_coarse_metrics) →
+  # rabbitmq_detailed_queue_messages{queue="..."} without paying the global
+  # per-object cardinality cost. Needed for OeeUnroutableMessages: the `oee`
+  # exchange's alternate-exchange (oee-unroutable) queue catches messages a
+  # non-allowlisted tenant would otherwise drop silently as UNROUTABLE.
+  - job_name: rabbitmq-detailed
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics]
     static_configs:
       - targets: ['rabbitmq:15692']
 

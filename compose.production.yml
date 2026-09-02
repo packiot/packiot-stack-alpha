@@ -7,11 +7,11 @@
 # │ Prod is a NEW environment with no legacy customer, so it skips staging's    │
 # │ painful F1→F3 migration entirely and is born at the end-state:              │
 # │   • ONE database. Its `public` schema IS the F3 schema — there is no         │
-# │     `packiot_shadow` DB/pool, no `shadow_go_port` schema.                    │
+# │     `packiot_analytics` DB/pool, no `shadow_go_port` schema.                    │
 # │   • NO triple-emit (SHADOW_EMIT_PRODUCTION/"go" legs), NO comparator,        │
 # │     NO shadow-mirror, NO mirror-worker-go, NO plc-sim.                       │
 # │   • edge-transformer emits `refactored` ONLY; oeecloud-worker runs the       │
-# │     refactored lane only and (with POSTGRES_SHADOW_DB_NAME unset) writes      │
+# │     refactored lane only and (with POSTGRES_ANALYTICS_DB_NAME unset) writes      │
 # │     `refactored` envelopes straight to the main pool / `public` = F3         │
 # │     (oeecloud-worker routeForSource nil-shadow fallback).                    │
 # └─────────────────────────────────────────────────────────────────────────────┘
@@ -107,11 +107,11 @@ services:
   #
   # ⚠ ROADMAP W1.4 (highest-care) — the F3 schema is NOT what edge-api's knex
   # migrations produce (those build the legacy F1 `public` shape). Prod's DB
-  # `public` MUST be the F3 schema staging's `packiot_shadow` carries, or the
+  # `public` MUST be the F3 schema staging's `packiot_analytics` carries, or the
   # compute chain silently produces wrong OEE. `db-schema-f3` assembles it BEFORE
   # knex/edge-api boot; the parity gate (scripts/prod-f3-schema-parity-check.sh)
-  # proves it == packiot_shadow. The AUTHORITATIVE source is a curated schema-only
-  # snapshot of live packiot_shadow → db/init-f3/snapshot/ (gated, README §4) —
+  # proves it == packiot_analytics. The AUTHORITATIVE source is a curated schema-only
+  # snapshot of live packiot_analytics → db/init-f3/snapshot/ (gated, README §4) —
   # a raw concatenation of edge-node-red/db fragments does NOT reach parity
   # (measured F3_MISSING=344 + EXTRA=377).
 
@@ -171,7 +171,7 @@ services:
       options: {max-size: "5m", max-file: "2"}
 
   # ── PgBouncer (PostgreSQL connection pooler → external r7g) ────────────────────
-  # SINGLE pool → the `packiot` DB (public = F3) on the r7g. No `packiot_shadow`
+  # SINGLE pool → the `packiot` DB (public = F3) on the r7g. No `packiot_analytics`
   # pool: staging's sed-injected second pool is dual-flow scaffolding that does
   # not exist in a single-flow prod. Upstream = ${POSTGRES_HOST_UPSTREAM} (the r7g
   # private IP from .env), NOT a local container.
@@ -344,7 +344,7 @@ services:
   # BEFORE knex/edge-api touch it. This is what makes greenfield prod "born F3".
   #
   # It applies db/init-f3/snapshot/*.sql (alphabetical) — the AUTHORITATIVE curated
-  # schema-only dump of staging's packiot_shadow (populated via the gated
+  # schema-only dump of staging's packiot_analytics (populated via the gated
   # `capture-f3-snapshot` step, db/init-f3/README.md §4). Data-free, DDL only.
   # Runs once against an empty DB; a re-run against a populated DB is a no-op guard
   # (each file is CREATE ... IF NOT EXISTS / idempotent per the dump curation).
@@ -539,12 +539,17 @@ services:
     restart: unless-stopped
     env_file: [.env]
     labels:
-      - "provisioning_rev=2026-07-27-production-f3native"
+      - "provisioning_rev=2026-08-20-drop-dead-v1-dashboard-mount"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      # Was /var/lib/grafana/dashboards/01-oee-pipeline.json, a v1-board path.
+      # v1 (grafana/dashboards/) was deleted from the repo when v2 was blessed
+      # (2026-07) — see compose.staging.yml for the same fix + the dashboards-v2
+      # mount this environment was ALSO missing (below), meaning production
+      # Grafana was provisioning ZERO of the 18 v2 boards until this fix.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards-v2/00-overview.json
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     ports:
@@ -555,7 +560,10 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # v1's ./grafana/dashboards mount removed (dead: source dir deleted from
+      # repo in July) — replaced with the v2 mount, which this environment
+      # never had (compose.staging.yml got it 2026-07-15; production didn't).
+      - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s
@@ -743,7 +751,7 @@ services:
   # AMQP consumer for OEE events. Idle-but-ready until a client tee is live
   # (roadmap W1 exit). All F1/F2/comparator/report-job/tenant-specific env is
   # STRIPPED — this runs the refactored lane only, writing to the main pool /
-  # `public` (= F3) because POSTGRES_SHADOW_DB_NAME is unset (routeForSource
+  # `public` (= F3) because POSTGRES_ANALYTICS_DB_NAME is unset (routeForSource
   # nil-shadow fallback → main pool, public).
   #
   # Secrets: PG via packiot/production/db; AMQP via
@@ -787,7 +795,7 @@ services:
       # equipment_values UPSERT). Keep on.
       SHIFT_FILL_FOLDED: "true"
       HEALTH_PORT: "9101"
-      # NO POSTGRES_SHADOW_DB_NAME → shadow pool nil → `refactored` envelopes
+      # NO POSTGRES_ANALYTICS_DB_NAME → shadow pool nil → `refactored` envelopes
       # write to (main pool, public) = F3. This IS the single-flow topology.
       # G3 (#747): single-flow prod has no `shadow_go_port` schema. Default flows
       # target it → background rollups error 42P01 AND never write OEE Gold to
@@ -813,7 +821,7 @@ services:
       # ALL equipment; good prod default.
       INCREMENT_SANITY_CLAMP_ENABLED: "true"
       # OMITTED (default OFF in code) — existing-customer / staging-only:
-      #   SHADOW_EMIT_* (edge-transformer's concern) · POSTGRES_SHADOW_DB_NAME ·
+      #   SHADOW_EMIT_* (edge-transformer's concern) · POSTGRES_ANALYTICS_DB_NAME ·
       #   BAKE_COMPARATOR_ENABLED/BAKE_ENTERPRISE_IDS (no comparator) ·
       #   SPEED33/SHIFT06/SAP13/BOXES13/SYNC06/BOXES_BRIDGE report jobs
       #   (customers 33/6/neopac) · EVENTS_WIDEROW_STATE_ENTERPRISES (ent4) ·
@@ -872,7 +880,7 @@ services:
   # emits `refactored` envelopes to `oee` → oeecloud-worker → F3. Single-flow:
   # emit `refactored` ONLY (no SHADOW_EMIT_PRODUCTION "" leg, no "go" leg).
   #
-  # Secrets: AMQP via packiot/production/rabbitmq-edge-transformer-creds
+  # Secrets: AMQP via packiot/production/rabbitmq-sparkplug-decoder-creds
   # (publish-perm on `oee`). Idle until a client agent publishes to mosquitto.
   sparkplug-decoder:
     build: ./services/sparkplug-decoder
@@ -884,7 +892,7 @@ services:
       LOG_LEVEL: info
       EDGE_TRANSFORMER_MODE: factory
       AWS_REGION: us-east-1
-      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-edge-transformer-creds
+      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-sparkplug-decoder-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: edge.plc-normalized
@@ -983,7 +991,7 @@ services:
   # internal; only the shim is exposed, and it never hands broker creds to the
   # client. Install ONE front-door per client (agent OR shim) — roadmap W2.
   #
-  # Secrets: AMQP via packiot/production/rabbitmq-edge-transformer-creds
+  # Secrets: AMQP via packiot/production/rabbitmq-sparkplug-decoder-creds
   # (publish-perm on `oee`). INGEST_API_KEY + TLS cert/key are deploy-filled.
   ingest-shim:
     build: ./services/ingest-shim
@@ -994,7 +1002,7 @@ services:
     environment:
       LOG_LEVEL: info
       AWS_REGION: us-east-1
-      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-edge-transformer-creds
+      RABBITMQ_SECRET_ID: packiot/production/rabbitmq-sparkplug-decoder-creds
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       EXCHANGE: oee
@@ -1044,9 +1052,9 @@ services:
   # front4 reach it via nginx which injects the per-tenant read key.
   #
   # SINGLE-FLOW NOTE: staging's f1/f3 switch selects between two DATABASES
-  # (packiot vs packiot_shadow). Greenfield prod has ONE DB (packiot, public=F3),
+  # (packiot vs packiot_analytics). Greenfield prod has ONE DB (packiot, public=F3),
   # so we run REFDATA_FLOW=f3 to pick the F3 dataset SQL variants but point
-  # DB_NAME_F3 at the single `packiot` pool — there is no separate packiot_shadow
+  # DB_NAME_F3 at the single `packiot` pool — there is no separate packiot_analytics
   # DB/pool. Every dataset's SQL is object-name-identical between the flows, so
   # this reads the F3 `public` objects correctly. ⚠ Verify against the assembled
   # F3 schema at W1.4 (any R5-dimension datasets with a divergent sqlF3 must have
@@ -1063,7 +1071,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       REFDATA_FLOW: f3
-      # Single DB: F3 target IS the main `packiot` pool (no packiot_shadow).
+      # Single DB: F3 target IS the main `packiot` pool (no packiot_analytics).
       DB_NAME_F3: ${POSTGRES_DB}
       HEALTH_PORT: "9104"
       # Per-tenant read keys → customer(enterprise) id, resolved SERVER-SIDE
@@ -1071,10 +1079,14 @@ services:
       # (e.g. "prod-<client>-key:<enterprise_id>").
       QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:-}
       # Dual JWT verify. front4 sends a Firebase JWT (fbpackiot project — PUBLIC
-      # id, not a secret). Cognito is OFF until a prod pool is chosen (roadmap
-      # W3.2); flip COGNITO_AUTH_ENABLED=true + set the prod issuer/client-id.
+      # id, not a secret) OR a Cognito ID token. Cognito is now LIVE on prod
+      # (front4 W1 read-cutover: front4 reads the bootstrap + analytics via
+      # refdata under the shared Cognito pool). Default ON so a fresh re-provision
+      # keeps it (was ${..:-false} → refdata silently rejected Cognito → front4
+      # Cognito login white-paged; flipped live 2026-08-07, codified here).
+      # Override to false only for a deliberate Firebase-only rollback.
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
-      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-false}
+      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-true}
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
       # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}

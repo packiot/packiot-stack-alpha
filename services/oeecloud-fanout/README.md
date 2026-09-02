@@ -4,7 +4,7 @@ Roadmap **P1 / task #17**. Makes the STAGING sandbox tenant **SBXCPACK**
 (enterprise 2000003) a faithful ALL-LINES twin of the real **CPACK** tenant
 (enterprise 3) by fanning out staging's live CPACK decoded SparkPlug stream,
 re-tenanting it, and republishing it so the sandbox's `oeecloud-worker` queue
-writes SBXCPACK F3 rows.
+writes SBXCPACK analytics rows.
 
 ```
 edge-transformer ──sparkplug.data──▶  oee (topic exchange)
@@ -18,13 +18,13 @@ edge-transformer ──sparkplug.data──▶  oee (topic exchange)
                                         ▼  publish sparkplug.data.sbxcpack
                                      oee (topic exchange)
                                         ▼
-                             oeecloud-worker-q-sbxcpack  → SBXCPACK F3 (ent 2000003)
+                             oeecloud-worker-q-sbxcpack  → SBXCPACK analytics (ent 2000003)
 ```
 
 ## Envelope shape (what it rewrites)
 
-The edge-transformer publishes the oeecloud-compatible envelope
-(`shadowpub.Envelope`):
+The sparkplug-decoder publishes the oeecloud-compatible envelope
+(`analyticspub.Envelope`):
 
 ```json
 { "timestamp": 1782161858551, "gateway": "edge-transformer:outbox",
@@ -47,11 +47,11 @@ SBXCPACK `packml_register` rows.
 
 ## Routing-key assumption
 
-The staging edge-transformer publishes the **2-segment `sparkplug.data`** key
-(tenant inside the envelope — verified in `services/edge-transformer/cmd/
-edge-transformer/main.go`; there is **no `F3_PER_TENANT_ROUTING` flag** anywhere
-in the tree). The fan-out queue binds BOTH `sparkplug.data` and
-`sparkplug.data.cpack` so it keeps working if per-tenant routing is ever added.
+The staging sparkplug-decoder publishes the **2-segment `sparkplug.data`** key
+by default (tenant inside the envelope — see `services/sparkplug-decoder/cmd/
+edge-transformer/main.go`). Setting the decoder's **`F3_PER_TENANT_ROUTING=true`**
+flag switches it to `sparkplug.data.<tenant>`. The fan-out queue binds BOTH
+`sparkplug.data` and `sparkplug.data.cpack`, so it keeps working across that flip.
 Because `sparkplug.data` carries **every** tenant, the transform gates on
 `group == CPACK` and acks non-CPACK messages without republishing.
 
@@ -60,7 +60,7 @@ Because `sparkplug.data` carries **every** tenant, the transform gates on
 - **No double-count:** the clone is published ONLY to `sparkplug.data.sbxcpack`.
   CPACK's own worker queue is a separate queue that receives its own COPY from
   the exchange and keeps writing ent-3 rows exactly once. Source (ent 3) and
-  target (ent 2000003) have disjoint equipment ids and F3 rows. This is why a
+  target (ent 2000003) have disjoint equipment ids and analytics rows. This is why a
   CROSS-tenant fan-out is safe where the retired SAME-tenant `mirror-worker-go`
   had to be the sole writer.
 - **No self-feedback:** the target key `sparkplug.data.sbxcpack` matches neither
@@ -90,7 +90,8 @@ then restart the `oeecloud-fanout` service. While disabled it serves `/health`
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `FANOUT_CPACK_TO_SBXCPACK_ENABLED` | `false` | Master gate |
+| `FANOUT_ENABLED` | `false` | Master gate (generic name — set this for any NEW twin) |
+| `FANOUT_CPACK_TO_SBXCPACK_ENABLED` | `false` | Legacy alias for `FANOUT_ENABLED`, kept as a fallback so this instance's already-deployed `.env` flag keeps working unchanged |
 | `FANOUT_SOURCE_GROUP` | `CPACK` | Source SparkPlug GroupID |
 | `FANOUT_TARGET_GROUP` | `SBXCPACK` | Target GroupID |
 | `FANOUT_QUEUE` | `oeecloud-fanout-cpack-to-sbxcpack` | Durable queue |
@@ -102,8 +103,24 @@ then restart the `oeecloud-fanout` service. While disabled it serves `/health`
 | `HEALTH_PORT` | `9102` | /health port |
 | `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-oeecloud-creds` | AMQP creds (reuses the worker's least-priv user) |
 
-## Templatable per twin (#22)
+## Templatable per twin (#22) — DONE
 
-Source/target groups, queue, and routing keys are all env-driven, so the
-config-as-data onboarding RabbitMQ provisioning can generate one fan-out per twin
-(source tenant → target tenant) from the same image.
+Source/target groups, queue, routing keys, and now the master-gate name are all
+env-driven, so a single image serves any (source tenant → target tenant) pair —
+nothing in this service is CPACK/SBXCPACK-specific.
+
+The generator that emits a new twin's compose-service block + `.env` flag now
+exists: `scripts/emit-fanout-config.sh SOURCE_GROUP TARGET_GROUP [HEALTH_PORT]
+[IP_LAST_OCTET]`. `scripts/provision-sandbox-tenant.sh` (the twin's DB-side
+clone) calls it automatically on `--create`/`--reset`, writing
+`configs/fanout/<target_group_lower>.yml`. Both are idempotent (pure template,
+deterministic overwrite) — re-provisioning a twin re-emits the same fan-out
+config, and provisioning a brand-new twin (different `SOURCE_GROUP`/
+`TARGET_GROUP` env vars) emits its own file with no code change.
+
+What's still manual: splicing the emitted `services:` block into
+`compose.staging.yml` (or loading it via a second `-f`), picking an unused
+`packiot-net` IP/health-port for a brand-new pair, and flipping the emitted
+`.env` flag — see the generated file's header comment. There is no CSAdmin UI
+trigger for this yet; today it is a CS/eng step run alongside twin
+provisioning, not a button in CSAdmin's onboarding wizard.

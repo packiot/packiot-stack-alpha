@@ -104,7 +104,8 @@ const refreshEquipmentSQL = `
 	       scrap            = p.scrap_incr,
 	       speed            = p.speed,
 	       begin_time       = p.ts_value,
-	       end_time         = p.ts_value + interval '%[5]s'
+	       end_time         = p.ts_value + interval '%[5]s',
+	       last_updated     = now()
 	  FROM prod p
 	 WHERE u.id_equipment = p.id_equipment`
 
@@ -181,6 +182,16 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 // table (metrics + OEE family + times + begin/end) + last_24_hours
 // json_agg trail. Equipment carries the exclusion lists; area/site
 // don't (verbatim). Sources are the NOW-FILLED runtime grain tables.
+//
+// FRESHNESS SIGNAL (equipment grain): the equipment hour/week/month
+// refreshers stamp last_updated = now() — same rationale as the
+// shift/day unfreeze (#781): they update the DATA every tick, but
+// mission-control reads last_updated to decide "is this tile stale?".
+// Without the stamp last_updated stays frozen at the Provision seed
+// time (INSERT … ON CONFLICT DO NOTHING never touches it), so the
+// tiles read as frozen even though begin_time/OEE advance. The
+// area/site variants omit last_updated (verbatim — those tiles don't
+// key off it).
 
 const refreshHourEquipmentSQL = `
 	WITH prod AS (
@@ -204,7 +215,8 @@ const refreshHourEquipmentSQL = `
 	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
 	       ideal_production = p.ideal_production, idle_time = p.idle_time,
 	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
-	       target = p.target, proportional_target = p.proportional_target
+	       target = p.target, proportional_target = p.proportional_target,
+	       last_updated = now()
 	  FROM prod p WHERE u.id_equipment = p.id_equipment`
 
 const refreshHourTrailEquipmentSQL = `

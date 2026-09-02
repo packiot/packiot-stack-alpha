@@ -36,11 +36,11 @@ type Config struct {
 
 	// SourceRoutingKeys are the routing keys the queue binds to. Default
 	// ["sparkplug.data", "sparkplug.data.<sourcetenant>"]. The staging
-	// edge-transformer publishes the 2-segment `sparkplug.data` (tenant rides
-	// inside the envelope — verified in edge-transformer main.go, no
-	// F3_PER_TENANT_ROUTING flag exists), so `sparkplug.data` is the live key;
-	// the 3-segment key is bound too so the fan-out keeps working if per-tenant
-	// routing is ever enabled. The in-code group filter (retenant.Retenant's
+	// edge-transformer publishes the 2-segment `sparkplug.data` by default
+	// (tenant rides inside the envelope), so `sparkplug.data` is the live key
+	// unless the decoder's F3_PER_TENANT_ROUTING flag is set — when it is, the
+	// decoder emits `sparkplug.data.<tenant>` and the 3-segment binding below
+	// keeps this fan-out working across that flip. The in-code group filter (retenant.Retenant's
 	// `ours`) guarantees only SOURCE-tenant envelopes are cloned regardless of
 	// which binding delivered them, so binding the shared key can't leak other
 	// tenants into the target.
@@ -74,7 +74,12 @@ func Load() *Config {
 	sourceGroup := getenv("FANOUT_SOURCE_GROUP", "CPACK")
 	targetGroup := getenv("FANOUT_TARGET_GROUP", "SBXCPACK")
 	return &Config{
-		Enabled:                 getenv("FANOUT_CPACK_TO_SBXCPACK_ENABLED", "false") == "true",
+		// Master gate. Generic name for any twin (task #22 — one compose service
+		// per twin, each reading its OWN env block, so nothing here needs to be
+		// per-pair-named). FANOUT_CPACK_TO_SBXCPACK_ENABLED is kept as a fallback
+		// so the already-deployed CPACK→SBXCPACK instance's .env keeps working
+		// unchanged — new twins should set FANOUT_ENABLED instead.
+		Enabled:                 getenv("FANOUT_ENABLED", getenv("FANOUT_CPACK_TO_SBXCPACK_ENABLED", "false")) == "true",
 		AWSRegion:               getenv("AWS_REGION", "us-east-1"),
 		RabbitMQSecretID:        getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-oeecloud-creds"),
 		AMQPHost:                getenv("RABBITMQ_HOST", "rabbitmq"),

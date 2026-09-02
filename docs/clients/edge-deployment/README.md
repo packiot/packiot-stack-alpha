@@ -35,7 +35,7 @@ container that the ADR-0045 onboarding flow's **generate** step produces and
 > `--profile nodered` (the low-code tee). Everything below the internal bus is identical.
 
 The agent image is built multi-arch (amd64 **and** arm64 — client hardware may be
-either) from `services/edge-transformer/Dockerfile.agent`.
+either) from `services/sparkplug-decoder/Dockerfile.agent`.
 
 ## 2. The three tiers (ADR-0042 §2.1)
 
@@ -61,7 +61,7 @@ the agent's tenant profile** (ADR-0045 §2.3 Option B), never in the low-code fl
 **At the CS workstation**
 - `docker` ≥ 24 with `buildx` (multi-arch), or access to a pinned `AGENT_IMAGE`.
 - The `onboard` / `onboard-gen` CLIs (`go build ./cmd/onboard-gen` in
-  `services/edge-transformer`) — the ADR-0045 generator.
+  `services/sparkplug-decoder`) — the ADR-0045 generator.
 - SELECT-only access to staging `packml_register` to read real equipment ids.
 
 **At the client factory (the edge box)**
@@ -84,7 +84,7 @@ stage to what you do with this bundle.
 
 ### ① DESCRIBE — author the client descriptor
 ```bash
-cd services/edge-transformer
+cd services/sparkplug-decoder
 go run ./cmd/onboard describe \
   --descriptor docs/clients/edge-deployment/<tenant>/<tenant>.descriptor.yaml \
   --init --tenant <TENANT> --enterprise <ENTERPRISE_ID> --prefix "<TENANT>/<SITE>"
@@ -160,8 +160,8 @@ cp .env.template .env && $EDITOR .env          # fill TENANT_*, image, key, cert
 
 # 2. Build (or pull) the agent image. Multi-arch build+push once, centrally:
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -f ../../../services/edge-transformer/Dockerfile.agent \
-  -t <registry>/sparkplug-agent:<semver> --push ../../../services/edge-transformer
+  -f ../../../services/sparkplug-decoder/Dockerfile.agent \
+  -t <registry>/sparkplug-agent:<semver> --push ../../../services/sparkplug-decoder
 #    …then set AGENT_IMAGE=<registry>/sparkplug-agent:<semver> in .env.
 #    (Or leave AGENT_IMAGE=…:local to `docker compose build` on the edge box.)
 
@@ -173,6 +173,45 @@ docker compose -f compose.edge.yml --env-file .env up -d
 #    <tenant>-tee-node.json onto the SparkPlug-assembly node, set the ingest key
 #    env, deploy the flow.
 ```
+
+### 5.5 Enroll the box for remote deploy + access (SSM — ADR-0049)
+
+So CS-Admin can push deploys (RunCommand) and reach this box (Session Manager)
+**without any inbound firewall hole** — outbound 443 only, the same property the
+`:8883` mTLS uplink already relies on — enroll it as an AWS SSM *managed
+instance* on first boot. This **supersedes the per-factory GitHub runner**
+(`register-runner.sh`, ADR-0005): the SSM Agent is a small Go binary that runs on
+CPACK's EOL Ubuntu 18.04 where the .NET-8 runner cannot, and carries only
+IAM-scoped, audited operations instead of arbitrary workflow code.
+
+```bash
+# 1. CS-Admin mints a Hybrid Activation for this client (edge-api):
+#      POST /api/edge-ssm/activation  { "clientSlug": "<tenant>" }
+#    → { activationId, activationCode, region }   # the CODE is shown ONCE.
+
+# 2. Bake the activation into the box via the SAME secure handoff as the mTLS
+#    key (never committed — edge-ssm.env is gitignored):
+cp edge-ssm.env.example edge-ssm.env && $EDITOR edge-ssm.env   # fill the 3 values
+sudo install -d /opt/packiot
+sudo install -m600 edge-ssm.env        /opt/packiot/edge-ssm.env
+sudo install -m755 ssm-register.sh     /opt/packiot/ssm-register.sh
+sudo install -m644 ssm-register.service /etc/systemd/system/ssm-register.service
+
+# 3. Enable the oneshot — installs amazon-ssm-agent (deb, snap fallback) and
+#    registers. Idempotent: skips if already registered.
+sudo systemctl daemon-reload
+sudo systemctl enable --now ssm-register.service
+```
+
+Verify from the control plane: `GET /api/edge-ssm/status?clientSlug=<tenant>` →
+`pingStatus: Online`. Thereafter CS-Admin's **Deploy** button
+(`POST /api/edge-ssm/deploy`) runs `docker compose -f compose.edge.yml up -d`
+here via RunCommand — no CS engineer trip, no runner. Revoke instantly with
+`POST /api/edge-ssm/deregister` (deregister + delete the activation).
+
+> The register step is **additive** — it does not touch the running edge data
+> path. SSM governs *reachability + updates* only; the agent + mTLS uplink keep
+> producing OEE with the SSM Agent stopped (ADR-0049 Rollback).
 
 ## 6. Health & verification
 
@@ -189,31 +228,30 @@ ADR-0042 §2.2) — verify the cloud registers the death→birth transition.
 
 ---
 
-## 7. DEPENDENCY on new-production readiness
+## 7. Cloud-side dependencies (RESOLVED — CPACK is proven live)
 
-Two cloud-side pieces this bundle targets **do not yet exist on new-prod** and are
-tracked as blockers (a parallel agent is assessing new-prod readiness):
+Historically this section tracked three blockers for Mode-B go-live. All three are
+now resolved, proven end-to-end by the CPACK factory edge (real PLC → this bundle's
+reader/agent → mTLS → cloud → F3, tag counts verified against the live factory box):
 
-1. **The SparkPlug ingest broker.** `compose.production.yml` today has **no
-   mosquitto and no edge-transformer** — there is no `ssl://…:8883` endpoint for
-   the agent to uplink to. Until new-prod runs an mTLS-terminating SparkPlug
-   ingest + the edge-transformer decode/Calc, Mode-B has no landing zone. (Mode-A
-   validation on staging is unaffected — it uses the internal staging mosquitto.)
-2. **Per-tenant cert provisioning.** The `CN=<tenant>` client cert + the CN-scoped
-   broker ACL (ADR-0042 §6) must be issued and installed cloud-side. The bundle
-   consumes the resolved cert files; **issuing** them is the cloud dependency.
+1. **The SparkPlug ingest broker.** `compose.production.yml` runs mosquitto
+   (mTLS `:8883`) + `sparkplug-decoder` (renamed from `edge-transformer`, PR
+   #830) — the agent has a real landing zone. The `generate-client-bundle.yml`
+   workflow (§4 below) signs each client's mTLS cert against the live
+   `packiot/production/edge-uplink-ca` automatically.
+2. **Per-tenant cert provisioning.** Also automated: the bundle-generation
+   workflow mints and embeds the `CN=<tenant>` client cert + CA chain in the
+   artifact — no manual cloud-side step per client.
+3. **Agent feature parity for cutover.** The register-driven cutover path
+   (`AGENT_TAGMAP_FROM_REGISTER` / `AGENT_PARAM_DECOMPOSITION` / `AGENT_PROFILE_PATH`,
+   ADR-0043/0044) is merged and live, gated per-tenant by `client_descriptors`
+   status (ADR-0045 P2a). It defaults to `false` in `compose.edge.yml` — a fresh
+   edge box has no DB access, so it runs the static tag map (this bundle's
+   `<tenant>-agent.yaml`) until CS-Admin flips the tenant to register-driven.
 
-3. **Agent feature parity for CUTOVER.** The base `sparkplug-agent` on `staging`
-   already serves the static tag map + the HTTP-ingest tee path + the mTLS uplink
-   (this PR), so **describe→generate→capture→validate all work today**. The final
-   register-driven cutover flags (`AGENT_TAGMAP_FROM_REGISTER` / `AGENT_PARAM_DECOMPOSITION`
-   / `AGENT_PROFILE_PATH`, ADR-0043/0044) activate only once those agent features
-   merge to staging (separate PRs) — until then the agent ignores them and runs
-   the static path, which is the correct pre-cutover posture.
-
-Until (1) and (2) land, deploy the bundle in **Mode-A posture** (point `uplink_broker`
-at the staging internal mosquitto over the tee, no client cert) to validate the edge
-end-to-end without the WAN crossing.
+Remaining go-live items are per-client operational steps (PLC connectivity details,
+count-index capture on a live tee, cutover confirmation per §4) — not cloud-platform
+blockers.
 
 ## 8. Security notes (ADR-0042 §6)
 

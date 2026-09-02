@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -68,11 +69,37 @@ const (
 	PLCProtocolOPCUA     = "opcua"
 )
 
+// s7Words is the closed set of S7 register widths a plc type's `word` may declare.
+// They are exactly the non-bool S7Tag.Type tokens clientconfig accepts, so a
+// type-expanded tag can never carry a width the client.yaml validator would reject.
+var s7Words = map[string]bool{"dint": true, "int": true, "real": true}
+
 // deviceKeyPattern constrains a DECLARED device_key to the same safe charset the
 // SparkPlug <device_id> / packml_register.device_key accept: alphanumerics plus
 // dot, underscore, hyphen. It deliberately excludes "/" — a device_key is the
 // FLAT identity string, not a topic path (the dash form of the topic, ADR-0046 §2).
 var deviceKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// sensorKeyPattern extracts a member's SENSOR key from its topic's last segment
+// for ADR-0050 type expansion: the leading S<n> token. S1INFEED→S1, S3→S3,
+// S6OUTPUT→S6. A segment with no such prefix (e.g. "SCRAP") yields "" and the
+// member is skipped by the expander.
+var sensorKeyPattern = regexp.MustCompile(`^S[0-9]+`)
+
+// sensorKeyOf returns the sensor key of a member topic's last segment, or "" when
+// the segment does not begin with an S<n> token.
+func sensorKeyOf(lastSegment string) string {
+	return sensorKeyPattern.FindString(lastSegment)
+}
+
+// lastSegment returns the final "/"-delimited segment of a topic, e.g.
+// "BISPHARMA/SP/LINHAS/L01/S1INFEED" → "S1INFEED".
+func lastSegment(topic string) string {
+	if i := strings.LastIndex(topic, "/"); i >= 0 {
+		return topic[i+1:]
+	}
+	return topic
+}
 
 // Confidence tags a captured count index. Only a confirmed index — observed on a
 // real tee payload — is cutover-eligible (ADR-0045 §2.4b).
@@ -162,6 +189,19 @@ type Descriptor struct {
 // (which clientconfig's PLCEndpoint does not carry) so the descriptor can validate
 // that an s7 tag map only references an s7 endpoint.
 type DescriptorPLC struct {
+	// Types are REUSABLE PLC type profiles (ADR-0050): a named layout describing
+	// how a CLASS of PLC exposes its counters, so a uniform client (e.g. bispharma:
+	// 16 identical S7 lines) declares the layout ONCE and references it from every
+	// endpoint instead of hand-copying ~96 s7_tag_map entries. Keyed by type name;
+	// an endpoint selects one via its `type` field. When an endpoint references a
+	// type AND carries no explicit tag-map entry, the generator EXPANDS
+	// type × the endpoint's line members into the s7_tag_map (see effectiveS7TagMap).
+	// The map derives db/offset/word (the PHYSICAL half) from the type and the
+	// metric name (the CANONICAL half) from the SAME members + count_index the agent
+	// raw_tag_map derives from — so the two are §C-consistent BY CONSTRUCTION.
+	// Absent ⇒ no expansion; the four/five-artifact behaviour is byte-identical.
+	Types map[string]PLCType `yaml:"types,omitempty"`
+
 	// Endpoints are the reachable PLCs. host_ref / endpoint_url_ref may be a
 	// secret:// reference OR a literal host (network config, not a secret).
 	Endpoints []DescriptorPLCEndpoint `yaml:"endpoints"`
@@ -169,9 +209,52 @@ type DescriptorPLC struct {
 	// S7TagMap / ModbusTagMap / OPCUATagMap are the per-protocol tag→PackML
 	// bindings, reused directly from clientconfig so the emitted client.yaml is a
 	// straight copy. Each entry's Endpoint references a DescriptorPLCEndpoint.Name.
+	// For an endpoint that references a `type`, an EXPLICIT entry here OVERRIDES the
+	// type expansion (the escape hatch for an irregular PLC — ADR-0050 §2:
+	// explicit > type > nothing).
 	S7TagMap     []clientconfig.S7EndpointTags     `yaml:"s7_tag_map,omitempty"`
 	ModbusTagMap []clientconfig.ModbusEndpointTags `yaml:"modbus_tag_map,omitempty"`
 	OPCUATagMap  []clientconfig.OPCUAEndpointTags  `yaml:"opcua_tag_map,omitempty"`
+}
+
+// PLCType is one reusable PLC type profile (ADR-0050). It carries BOTH halves of
+// what a tag-map entry binds, but expressed ONCE for a whole class of identical
+// PLCs: the connection params (protocol/rack/slot/port) the endpoint inherits, and
+// the register layout (db/word + sensor_offsets) the generator joins with each
+// line member to synthesize that member's s7_tag_map tag. sensor_offsets is the
+// crux — it maps a member's SENSOR key (S1, S3, …, derived from the member topic's
+// last segment) to the register byte offset, so "assign the type" replaces "enter N
+// rows". Only the S7 shape is expanded today (bispharma); the fields are protocol-
+// generic so a modbus_tcp type parses, but modbus expansion is not wired yet.
+type PLCType struct {
+	// Protocol ∈ {s7, modbus_tcp, opcua}: the reader class this type drives and the
+	// protocol an endpoint referencing it inherits when it sets none of its own.
+	Protocol string `yaml:"protocol"`
+	// Rack / Slot are the S7 CPU rack/slot an endpoint inherits (bispharma: 0/2).
+	Rack *int `yaml:"rack,omitempty"`
+	Slot *int `yaml:"slot,omitempty"`
+	// Port is the PLC's TCP port. For S7 the reader always uses ISO-on-TCP 102 (the
+	// standard, hardcoded in the s7 endpoint node), so it is declared here for
+	// completeness/documentation but not re-emitted per endpoint; it is the home for
+	// a non-standard port on a future non-S7 type.
+	Port *int `yaml:"port,omitempty"`
+	// DB is the S7 data block number every sensor offset is read from (bispharma: 1).
+	DB int `yaml:"db,omitempty"`
+	// Word is the S7 register width shared by every sensor: dint | int | real. It
+	// becomes each generated S7Tag.Type (clientconfig accepts int|dint|real|bool).
+	Word string `yaml:"word,omitempty"`
+	// SensorOffsets maps a member's SENSOR KEY (S1, S2, …) to its byte offset within
+	// DB. The member's key is the leading S<n> token of its topic's last segment
+	// (S1INFEED→S1, S3→S3, S6OUTPUT→S6). A member whose key is absent here is SKIPPED
+	// (a gap — e.g. a SCRAP member with no raw register), exactly like an endpoint
+	// with neither type nor explicit tags.
+	SensorOffsets map[string]int `yaml:"sensor_offsets,omitempty"`
+	// Derive holds cross-register derivations (role → expression, e.g.
+	// scrap: "S1 - S2") authored ONCE per type. RESERVED: the generator does not yet
+	// evaluate it — where such a derivation runs (agent counter-derive vs a reader
+	// computed tag) is ADR-0050 §4, an open decision. Parsed + shape-checked so a
+	// descriptor can declare it, but no tag is emitted from it (out of scope here).
+	Derive map[string]string `yaml:"derive,omitempty"`
 }
 
 // DescriptorPLCEndpoint is one reachable PLC. It mirrors clientconfig.PLCEndpoint
@@ -181,8 +264,20 @@ type DescriptorPLC struct {
 type DescriptorPLCEndpoint struct {
 	Name string `yaml:"name"`
 	// Protocol ∈ {s7, modbus_tcp, opcua}. Selects the reader + gates which tag
-	// map may reference this endpoint.
-	Protocol string `yaml:"protocol"`
+	// map may reference this endpoint. OPTIONAL when Type is set — an endpoint that
+	// references a plc type inherits the type's protocol (and rack/slot).
+	Protocol string `yaml:"protocol,omitempty"`
+	// Type references a plc.types[] entry by name (ADR-0050). When set, the endpoint
+	// inherits the type's protocol/rack/slot and — unless an explicit tag-map entry
+	// overrides it — the generator expands type × this endpoint's line members into
+	// the tag map. Empty ⇒ a fully hand-authored endpoint (the pre-ADR-0050 shape).
+	Type string `yaml:"type,omitempty"`
+	// Line optionally pins which line's members this endpoint reads, as the line's
+	// canonical topic (e.g. "BISPHARMA/SP/LINHAS/L01"). Empty ⇒ the line is resolved
+	// by matching this endpoint's Name against each line's FINAL topic segment (the
+	// ADR-0050 terse form: an endpoint named "L01" reads line ".../L01"). Only used
+	// during type expansion; a fully hand-authored endpoint ignores it.
+	Line string `yaml:"line,omitempty"`
 	// HostRef (S7/Modbus) is the PLC host: a secret:// reference OR a literal
 	// host[:port] (network config, not a secret — see requireHostRef).
 	HostRef string `yaml:"host_ref,omitempty"`
@@ -647,7 +742,10 @@ func (d *Descriptor) validatePLC() error {
 	if d.PLC == nil {
 		return nil
 	}
-	epProto := map[string]string{} // endpoint name → its protocol
+	if err := d.validatePLCTypes(); err != nil {
+		return err
+	}
+	epProto := map[string]string{} // endpoint name → its EFFECTIVE protocol (type-inherited)
 	for i, ep := range d.PLC.Endpoints {
 		if strings.TrimSpace(ep.Name) == "" {
 			return fmt.Errorf("plc.endpoints[%d]: name is required", i)
@@ -655,13 +753,26 @@ func (d *Descriptor) validatePLC() error {
 		if _, dup := epProto[ep.Name]; dup {
 			return fmt.Errorf("plc.endpoints[%d]: duplicate name %q", i, ep.Name)
 		}
-		switch ep.Protocol {
+		// A `type` reference must resolve, and if the endpoint ALSO states a protocol
+		// it must not contradict the type's (a silent override would hide a typo).
+		if ep.Type != "" {
+			t, ok := d.plcType(ep.Type)
+			if !ok {
+				return fmt.Errorf("plc.endpoints[%d] (%s): type=%q must reference a plc.types[] name", i, ep.Name, ep.Type)
+			}
+			if ep.Protocol != "" && ep.Protocol != t.Protocol {
+				return fmt.Errorf("plc.endpoints[%d] (%s): protocol=%q contradicts its type %q protocol %q",
+					i, ep.Name, ep.Protocol, ep.Type, t.Protocol)
+			}
+		}
+		proto := d.resolvedEndpoint(ep).Protocol // type-inherited when the endpoint sets none
+		switch proto {
 		case PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA:
 		default:
-			return fmt.Errorf("plc.endpoints[%d] (%s): protocol=%q must be %s|%s|%s",
-				i, ep.Name, ep.Protocol, PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA)
+			return fmt.Errorf("plc.endpoints[%d] (%s): protocol=%q must be %s|%s|%s (set it on the endpoint or its type)",
+				i, ep.Name, proto, PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA)
 		}
-		epProto[ep.Name] = ep.Protocol
+		epProto[ep.Name] = proto
 		if err := requireHostRef("plc.endpoints", i, ep.Name, "host_ref", ep.HostRef); err != nil {
 			return err
 		}
@@ -697,6 +808,83 @@ func (d *Descriptor) validatePLC() error {
 		}
 	}
 	return nil
+}
+
+// validatePLCTypes checks each declared plc type's shape (ADR-0050): a known
+// protocol token, and — for an S7 type — a valid `word` width and non-negative
+// sensor offsets. Iterated in sorted key order so an error is deterministic. The
+// EXPANDED tags are validated separately, at generate time, by GenerateClientYAML
+// (clientconfig.Validate + §C) — this only guards the type declaration itself.
+func (d *Descriptor) validatePLCTypes() error {
+	for _, name := range sortedTypeNames(d.PLC.Types) {
+		t := d.PLC.Types[name]
+		switch t.Protocol {
+		case PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA:
+		default:
+			return fmt.Errorf("plc.types[%q]: protocol=%q must be %s|%s|%s",
+				name, t.Protocol, PLCProtocolS7, PLCProtocolModbusTCP, PLCProtocolOPCUA)
+		}
+		if t.Protocol == PLCProtocolS7 {
+			if !s7Words[t.Word] {
+				return fmt.Errorf("plc.types[%q]: word=%q must be dint|int|real (the S7 register width every sensor shares)", name, t.Word)
+			}
+			if t.DB < 0 {
+				return fmt.Errorf("plc.types[%q]: db=%d must be non-negative", name, t.DB)
+			}
+			for key, off := range t.SensorOffsets {
+				if off < 0 {
+					return fmt.Errorf("plc.types[%q]: sensor_offsets[%q]=%d must be non-negative", name, key, off)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// sortedTypeNames returns the plc type names in deterministic order (Go map
+// iteration is randomized) so type validation + any diagnostics are stable.
+func sortedTypeNames(types map[string]PLCType) []string {
+	names := make([]string, 0, len(types))
+	for n := range types {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// plcType looks up a declared plc type by name.
+func (d *Descriptor) plcType(name string) (PLCType, bool) {
+	if d.PLC == nil {
+		return PLCType{}, false
+	}
+	t, ok := d.PLC.Types[name]
+	return t, ok
+}
+
+// resolvedEndpoint returns ep with the fields it leaves unset inherited from its
+// referenced plc type: protocol, rack, slot. An endpoint with no type (or a
+// dangling ref — validatePLC reports that) is returned unchanged. Port is NOT
+// folded in: for S7 the reader always uses ISO-on-TCP 102 (see PLCType.Port).
+// This is the single place the endpoint⇄type inheritance rule lives, so the
+// client.yaml assembly, the reader flow, and validation all resolve identically.
+func (d *Descriptor) resolvedEndpoint(ep DescriptorPLCEndpoint) DescriptorPLCEndpoint {
+	if ep.Type == "" {
+		return ep
+	}
+	t, ok := d.plcType(ep.Type)
+	if !ok {
+		return ep
+	}
+	if ep.Protocol == "" {
+		ep.Protocol = t.Protocol
+	}
+	if ep.Rack == nil {
+		ep.Rack = t.Rack
+	}
+	if ep.Slot == nil {
+		ep.Slot = t.Slot
+	}
+	return ep
 }
 
 // requireHostRef enforces host_ref is empty, a secret:// reference, OR a literal

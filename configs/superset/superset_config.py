@@ -27,7 +27,12 @@ SECRET_KEY = os.environ["SUPERSET_SECRET_KEY"]
 # it asks Superset to MINT the guest token over the API; only Superset signs it.
 GUEST_TOKEN_JWT_SECRET = os.environ["SUPERSET_GUEST_TOKEN_JWT_SECRET"]
 GUEST_TOKEN_JWT_EXP_SECONDS = 300          # 5 min; front4 re-mints on expiry
-GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens assume
+# DEDICATED guest role — MUST NOT be "Public". In Flask-AppBuilder "Public" is the
+# role every UNAUTHENTICATED request assumes, so pointing guest tokens at Public
+# leaks the guest read/explore/datasource perms to the whole internet (the anon
+# `GET /api/v1/dashboard/` 200 metadata leak). "GuestViewer" is created + granted the
+# minimal embed perms by bootstrap_guest_role.py; Public is stripped to zero perms.
+GUEST_ROLE_NAME = "GuestViewer"            # dedicated, locked-down role guest tokens assume
 
 # ── Metadata DB (Superset's own state — SEPARATE from the analytics DB) ───────
 # The dedicated `superset` role+DB on the r7g, created by superset-db-init (mirrors
@@ -36,9 +41,9 @@ GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens
 # "database", never here.
 #
 # CONNECTS UPSTREAM-DIRECT to the r7g (POSTGRES_HOST_UPSTREAM), NOT via pgbouncer.
-# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_shadow` (the
+# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_analytics` (the
 # entrypoint generates a route from DB_NAME=packiot and the compose command sed-adds
-# `packiot_shadow`; there is no wildcard and no `superset` route). Adding one would
+# `packiot_analytics`; there is no wildcard and no `superset` route). Adding one would
 # mean editing the base `pgbouncer` service `command:` in compose.staging.yml /
 # compose.production.yml — a change to the shared DB path every stack service
 # depends on, well outside this profile-gated overlay. The metadata DB is
@@ -48,7 +53,17 @@ GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens
 # state under pgbouncer's transaction-pooling mode (the same reason hasura is kept
 # pgbouncer-direct in the base stack). superset-db-init already targets this same
 # upstream host to CREATE the role+DB, so the metadata DB lives there anyway.
-SUPERSET_METADATA_DB_HOST = os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
+#
+# STAGING CONTAINER-IN-STACK OVERRIDE: on staging the metadata DB is NOT the shared
+# r7g but a dedicated `superset-db` postgres CONTAINER inside the stack (named
+# volume, resettable, no r7g superuser DDL / SG ingress needed). compose.staging.yml
+# sets SUPERSET_METADATA_DB_HOST=superset-db to point here. When that env is UNSET
+# (the prod compose.superset.yml overlay), we fall back to POSTGRES_HOST_UPSTREAM
+# exactly as before — this override is backward-compatible with the prod EC2 model.
+SUPERSET_METADATA_DB_HOST = (
+    os.environ.get("SUPERSET_METADATA_DB_HOST")
+    or os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
+)
 SQLALCHEMY_DATABASE_URI = (
     "postgresql+psycopg2://superset:%s@%s:5432/superset"
     % (os.environ["SUPERSET_DB_PASSWORD"], SUPERSET_METADATA_DB_HOST)

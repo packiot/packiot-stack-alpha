@@ -119,10 +119,13 @@ type GenerateResponse struct {
 	Validation Validation `json:"validation"`
 }
 
-// Artifacts holds the four generated onboarding artifacts as strings.
+// Artifacts holds the generated onboarding artifacts as strings.
 type Artifacts struct {
 	ProfileYAML string `json:"profile_yaml"`
 	RegisterSQL string `json:"register_sql"`
+	// PositionSQL backfills equipments.position (line flow order) — the
+	// persistent substrate for line attribution (ADR-0045 Bronze).
+	PositionSQL string `json:"position_sql"`
 	AgentYAML   string `json:"agent_yaml"`
 	TeeNodeJSON string `json:"tee_node_json"`
 }
@@ -229,6 +232,7 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		Artifacts: Artifacts{
 			ProfileYAML: string(art.ProfileYAML),
 			RegisterSQL: art.RegisterSQL,
+			PositionSQL: art.PositionSQL,
 			AgentYAML:   string(art.AgentYAML),
 			TeeNodeJSON: string(art.TeeSnippet),
 		},
