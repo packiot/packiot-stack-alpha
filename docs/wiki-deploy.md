@@ -51,7 +51,20 @@ build-wiki.yml (on push to staging/production)
 from any per-deploy orchestration, and CI needs only `s3:PutObject` on one prefix
 (no `ssm:SendCommand`, no instance targeting). It's the simpler thing to operate.
 
-### One-time operator wiring (NOT done here — no AWS resources were created)
+### One-time operator wiring — DONE (2026-09-02)
+
+The wiring below was executed. Live values (account `639178078294`, us-east-1):
+
+- **Bucket**: `packiot-wiki-dist-639178078294` (private; all four public-access-blocks on).
+- **CI → S3**: GitHub OIDC role `packiot-wiki-ci-deploy` (trusts `repo:packiot/packiot-stack-alpha:*`), inline policy `wiki-s3-put` (`s3:PutObject`/`DeleteObject` on `…/wiki/*` + `s3:ListBucket`). Repo Actions **variable** `WIKI_S3_BUCKET` + **secret** `AWS_ROLE_ARN` are set, so the `deploy` job no longer skips.
+- **Box → S3**: role `packiot-production-app` (the `i-02d255a1c21fb1da3` instance profile) got inline policy `wiki-s3-read` (`s3:GetObject` on `…/wiki/*` + `s3:ListBucket`). Puller installed at `/usr/local/bin/wiki-box-sync.sh` with the `*/5 * * * *` cron.
+
+Proven end-to-end: a push to `staging` syncs to S3 and the box pulls into `/var/www/wiki`.
+
+> These resources are **CLI-created, not yet in terraform** — a follow-up should
+> import bucket + IAM into IaC so they aren't orphaned.
+
+The original steps (kept for reference / re-provisioning):
 
 1. **Create the bucket/prefix** (private; the vhost is served from `/var/www/wiki`,
    not S3 — S3 is only the transport):
@@ -71,8 +84,11 @@ from any per-deploy orchestration, and CI needs only `s3:PutObject` on one prefi
    ```bash
    sudo install -m0755 scripts/wiki-box-sync.sh /usr/local/bin/wiki-box-sync.sh
    sudo tee /etc/default/wiki-box-sync >/dev/null <<'EOF'
-   WIKI_S3_BUCKET=packiot-wiki-dist
-   WIKI_WWW_ROOT=/var/www/wiki
+   # MUST use `export`: the cron below does `. /etc/default/wiki-box-sync &&
+   # wiki-box-sync.sh`, and a non-exported var is NOT inherited by the puller
+   # child process (it fails at `${WIKI_S3_BUCKET:?…}`).
+   export WIKI_S3_BUCKET=packiot-wiki-dist-639178078294
+   export WIKI_WWW_ROOT=/var/www/wiki
    EOF
    # cron (every 5 min):
    echo '*/5 * * * * root . /etc/default/wiki-box-sync && /usr/local/bin/wiki-box-sync.sh >>/var/log/wiki-sync.log 2>&1' \
