@@ -131,15 +131,18 @@ plc:
     slot: 2
     poll_ms: 30000
     tags:
-      - { name: "C-PACK/SC/LINHAS/L4/BREYER/Admin/ProdConsumedCount/88/Unit***TRIG_C=O", address: "DB1,DINT0" }
-      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdConsumedCount/86/Unit", address: "DB1,DINT4" }
+      # count indices reconciled 2026-08-25 to the L4 6/7/8/9/10 series that the
+      # descriptor s7_tag_map + deployed cpack-reader-flow.json actually emit (were
+      # the stale legacy 88/86/89/87/84 — off the confirmed L4 series, #601/#909).
+      - { name: "C-PACK/SC/LINHAS/L4/BREYER/Admin/ProdConsumedCount/6/Unit***TRIG_C=O", address: "DB1,DINT0" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdConsumedCount/8/Unit", address: "DB1,DINT4" }
       - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
       - { name: PTH_COUNT_A, address: "DB1,DINT12" }
       - { name: PTH_COUNT_B, address: "DB1,DINT16" }
-      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/86/Unit***TRIG_CS", address: "DB1,INT32" }
-      - { name: "C-PACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/89/Unit***TRIG_C=O", address: "DB1,DINT20" }
-      - { name: "C-PACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/87/Unit***TRIG_C=O", address: "DB1,DINT24" }
-      - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdProcessedCount/84/Unit***TRIG_C=I", address: "DB1,DINT28" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/8/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/7/Unit***TRIG_C=O", address: "DB1,DINT20" }
+      - { name: "C-PACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/9/Unit***TRIG_C=O", address: "DB1,DINT24" }
+      - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdProcessedCount/10/Unit***TRIG_C=I", address: "DB1,DINT28" }
       - { name: VERSION, address: "DB1,INT48" }
       - { name: I0, address: "DB1,X1024.0" }
       - { name: I1, address: "DB1,X1024.1" }
