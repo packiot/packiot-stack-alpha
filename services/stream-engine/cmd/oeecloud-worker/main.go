@@ -492,7 +492,18 @@ func main() {
 	if cfg.LegacyIngestEnabled {
 		consumer.SetTenantHandler(sparkplugHandler.Handle)
 		consumer.SetDiscoverer(func(dctx context.Context) ([]string, error) {
-			return tenants.DiscoverActive(dctx, pool)
+			discovered, err := tenants.DiscoverActive(dctx, pool)
+			if err != nil {
+				return nil, err
+			}
+			// Apply the SAME allowlist scoping as the initial discovery above
+			// (~line 211). Without this, the periodic re-discovery re-onboards
+			// every foreign prod→staging re-cut tenant the initial filter
+			// excluded — the allowlist was effectively dead for anything added
+			// to packml_register mid-run. Empty allowlist = passthrough
+			// (FilterAllowlist returns discovered unchanged), so the prod
+			// default and the LegacyIngest-disabled path stay byte-identical.
+			return tenants.FilterAllowlist(discovered, cfg.TenantAllowlist), nil
 		})
 	}
 	// Surface PO Parameter skipped-id counters on /health so #32 (port

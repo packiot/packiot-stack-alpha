@@ -1521,7 +1521,7 @@ services:
       # cpack + sbxcpack. Filtering discovery through this list makes "staging =
       # these tenants only" survive the next re-cut. STAGING ONLY: prod leaves
       # WORKER_TENANT_ALLOWLIST unset → empty = allow ALL (no behavior change).
-      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack}"
+      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging}"
       RETRY_EXCHANGE: oee-retry
       RETRY_QUEUE: stream-engine-q-retry-30s
       FAILED_EXCHANGE: oee-failed
