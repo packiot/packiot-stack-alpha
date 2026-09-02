@@ -14,13 +14,15 @@ claim is a proposal or differs between branches, it's flagged rather than smooth
 | 01 | [Platform Overview](01-platform-overview.md) | What Packiot is, the end-to-end data flow, the control-plane vs data-plane split, the two DB planes (`packiot` legacy vs `packiot_analytics` live) |
 | 02 | [Onboarding a Client](02-onboarding.md) | The CS-Admin onboarding process step by step: hierarchy build order → the compose-from-hierarchy wizard → generate → capture → cutover |
 | 03 | [CS-Admin Forms Reference](03-csadmin-forms.md) | Every onboarding form, field by field: required vs optional, the DB column it maps to, and the gotchas (phantom `code`, week-encoding, `status_type`) |
-| 04 | [Edge & Data Ingestion](04-edge-and-ingestion.md) | PLC → Node-RED/reader → sparkplug-agent → SparkPlug B/mTLS → cloud decode. The config-as-data descriptor model, edge deployment, count-index |
+| 04 | [Edge & Data Ingestion](04-edge-and-ingestion.md) | PLC → Node-RED/reader → **shared multi-tenant** sparkplug-agent (`ingest:8449`, routed by `group_id`) → SparkPlug B/mTLS → cloud decode. The config-as-data descriptor model, the rawtag envelope, edge deployment, count-index |
 | 05 | [Cloud Services & OEE Compute](05-cloud-services-and-oee.md) | edge-api (control plane), refdata-api (reads), oeecloud-worker / stream-engine (OEE math), RabbitMQ, auth posture |
 | 06 | [Database & Data Model](06-database.md) | The schema: hierarchy, packml_register, the OEE aggregate cascade, shifts (seconds-from-week-start), the dual plane |
 | 07 | [Frontends, Infra & Auth](07-frontends-infra-auth.md) | front4 / operator / csadmin, the deploy pipeline, AWS infra, Cognito + oauth2-proxy + CloudFront |
-| 08 | [Concepts & Glossary](08-concepts.md) | count_index, tp_equipment, OEE = A×P×Q, PackML params, week-encoding, the descriptor — the vocabulary |
+| 08 | [Concepts & Glossary](08-concepts.md) | count_index, tp_equipment, OEE = A×P×Q, PackML params, week-encoding, the descriptor, shared multi-tenant ingest — the vocabulary |
+| 09 | [Onboarding — Worked Example](09-onboarding-worked-example.md) | A real end-to-end onboarding (Bispharma): harvesting the PLC tag map from provenance, the mistakes that look right, how counts reach the shared ingest |
 | 10 | [Outage Resilience & Offline Operation](10-outage-resilience-and-offline.md) | What keeps working when a factory loses internet: the reader disk-spool for counts, the operator PWA offline queue for actions, and what stays online-only |
 | 11 | [On-Prem Offline Operation (the fat edge)](11-on-prem-offline-operation.md) | The opt-in on-box decode stack (ADR-0053 B-minimal): a local agent + `LOCAL_DECODE_ONLY` transformer + current-state cache + dashboard that keeps LIVE numbers on the floor during an outage — without adding a cloud write path |
+| 12 | [The Edge-Operator](12-edge-operator.md) | The opt-in on-box operator SPA (ADR-0054): a local `/v1` read-cache + durable write-forwarder so the floor keeps operating (start/stop POs, justify downtime) through an outage — cloud stays authoritative |
 
 ## The 30-second mental model
 

@@ -15,10 +15,11 @@ PLC (factory floor)
   │  S7 / Modbus TCP / OPC-UA / native SparkPlug
   ▼
 edge Node-RED / config-as-data reader   ── Tier 1: connectivity (per-client, messy)
-  │  raw suffix tags (plain JSON) → POST :9104   OR   native SparkPlug to MQTT
+  │  raw suffix tags (rawtag JSON) → POST ingest.<env>:8449/v1/tags   OR   native SparkPlug to MQTT
   ▼
-sparkplug-agent (Go)                    ── Tier 2: transmission (uniform, protocol-rigid)
-  │  SparkPlug B over mTLS, ssl://…:8883   (alias/BIRTH/seq/outbox)
+sparkplug-agent (Go, SHARED multi-tenant)  ── Tier 2: transmission (uniform, protocol-rigid)
+  │  one process, N tenants routed by SparkPlug group_id (one :8449 front-door for all)
+  │  SparkPlug B over mTLS, ssl://…:8883   (alias/BIRTH/seq/outbox, per-tenant)
   ▼
 cloud mosquitto ──▶ edge-transformer (Go)   ── decode + normalize + Calc
   │  publishes normalized envelope to RabbitMQ (exchange `oee`, key `sparkplug.data`)

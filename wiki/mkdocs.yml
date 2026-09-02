@@ -119,6 +119,7 @@ nav:
       - On-Prem Offline Operation: wiki/11-on-prem-offline-operation.md
       - The Edge-Operator: wiki/12-edge-operator.md
       - Concepts & Glossary: wiki/08-concepts.md
+      - Onboarding — Worked Example: wiki/09-onboarding-worked-example.md
   - Guide:
       - What Packiot Is: guide/01-what-packiot-is.md
       - Architecture at a Glance: guide/02-architecture-at-a-glance.md

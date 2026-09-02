@@ -53,12 +53,27 @@ not clock times (`21600` = 06:00). `week_begin` = **signed** offset from Monday 
 **can be negative** (CPACK `-3000` = the week starts Sunday 23:10). csadmin shows these as
 weekday+time pickers and converts; storage stays raw seconds.
 
+## Shared multi-tenant ingest (ADR-0047)
+
+The cloud `sparkplug-agent` is **multi-tenant**: **one process serves N tenants**, each an
+isolated pipeline (own alias space, own outbox, own uplink) keyed by the SparkPlug
+**`group_id`**. There is **one shared, tenant-agnostic front-door** —
+`ingest.<env>.packiot.app:8449` — that forwards every `POST /v1/tags` to the shared agent,
+which routes each envelope by its declared `group` (missing/unknown group → **403**). A
+`X-Ingest-Key` header authenticates; tenant isolation is the group-routing + per-box SG /32,
+not the key. **A new client is a generated tenant config file, not new infrastructure** —
+no new container, nginx block, DNS record, or SG rule. The agent also has a single-file mode
+(`AGENT_CONFIG`) for the legacy one-agent-per-client deployments; the register-cutover flip
+and live-capture posture are single-file-only. See [Edge & Ingestion](04-edge-and-ingestion.md).
+
 ## The descriptor (config-as-data, ADR-0045)
 
 One CS-Admin-authored YAML per tenant = the single source of truth. `onboard-gen`
 generates the profile, `packml_register` SQL, agent config, and Node-RED tee snippet from
 it. Raw→canonical quirks are absorbed stack-side (`prefix_fixups`, `metric_aliases`,
-`parameter_aliases`).
+`parameter_aliases`). The generated register SQL also backfills `id_site`/`id_area` onto each
+`packml_register` row from `equipments` — a NULL there makes the topic read as "not
+registered" and the tenant's counts are silently dropped.
 
 ## Coded field values (the enum reference)
 
