@@ -60,6 +60,18 @@ rm -rf /tmp/packiot-stack
 # ── Run TimescaleDB + pg_cron via Docker ───────────────────────────────────────
 # shared_preload_libraries and cron.database_name must be passed via -c args:
 # the timescale Alpine image reads only $PGDATA/postgresql.conf (no conf.d).
+#
+# IMPORTANT: because shared_preload_libraries is set here via `-c` (the
+# postmaster command line), it takes precedence over postgresql.conf AND
+# postgresql.auto.conf. `ALTER SYSTEM SET shared_preload_libraries` on the
+# running cluster is therefore IGNORED (pg_settings.source = 'command line').
+# To change the preloaded library set you MUST edit this line and recreate
+# the container (docker rm -f timescaledb && re-run this docker run) — a
+# plain `docker restart` reuses the baked-in Config.Cmd and changes nothing.
+#
+# timescaledb MUST stay first in the list (TimescaleDB requirement).
+# pg_stat_statements is preloaded for the DB observability dashboard
+# (top/slow-query panels); it is a lightweight in-memory query-stats collector.
 mkdir -p /var/lib/postgresql/data
 
 docker run -d \
@@ -73,7 +85,7 @@ docker run -d \
   -e TIMESCALEDB_TELEMETRY=off \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
   packiot-postgres:local \
-  -c "shared_preload_libraries=timescaledb,pg_cron" \
+  -c "shared_preload_libraries=timescaledb,pg_cron,pg_stat_statements" \
   -c "cron.database_name=${db_name}"
 
 echo "TimescaleDB container started, waiting for PostgreSQL to accept connections..."
@@ -87,8 +99,14 @@ docker exec timescaledb psql -U ${db_user} -d ${db_name} <<SQL
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 GRANT USAGE ON SCHEMA cron TO "${db_user}";
+-- pg_stat_statements: per-query execution stats for the DB observability
+-- dashboard. Requires pg_stat_statements in shared_preload_libraries (above).
+-- The shadow DB (packiot_analytics) needs the same CREATE EXTENSION run in it
+-- wherever it is provisioned; the preload is cluster-wide so one flag covers
+-- both databases.
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
-echo "Database '${db_name}' ready with TimescaleDB + pg_cron"
+echo "Database '${db_name}' ready with TimescaleDB + pg_cron + pg_stat_statements"
 
 # ── OEECloud tables ────────────────────────────────────────────────────────────
 # uns_equipment_current_metrics: one row per equipment, tracks latest UNS state.
@@ -196,67 +214,87 @@ echo "OEE function created + pg_cron job scheduled (every minute)"
 # Uses a function so pg_cron only needs one command string; plpgsql silently
 # no-ops if a table doesn't exist yet (fresh deploy before app schema loads).
 # cron.schedule() is idempotent: same job name replaces an existing entry.
+#
+# equipment_values / equipment_events are TimescaleDB hypertables, so retention is
+# drop_chunks() — O(chunks) metadata work that is instant and WAL-cheap. The old
+# row-by-row `DELETE ... WHERE ts_value IN (SELECT ts_value ... LIMIT 5000)` semi-
+# join hash-scanned the whole 12M-row hypertable EVERY batch (worse with the stale
+# planner stats left behind by the broken vacuum job below) and blew the 2-min
+# statement_timeout. uns_metrics is a plain table, so it uses a single index-driven
+# DELETE — NOT a batched loop: a batched loop inside a plpgsql FUNCTION cannot COMMIT
+# between batches (only a PROCEDURE can), so dead tuples from earlier batches are not
+# reclaimed until the one enclosing txn ends and each later batch re-skips them —
+# O(n²). One ranged DELETE on the ts_value index is linear.
+#
+# statement_timeout: the 2-min cap is armed against the TOP-LEVEL command when it
+# arrives, so a `SET LOCAL` in the function body is too late (the timer for the
+# enclosing `SELECT cleanup_old_staging_data()` is already ticking). Instead the cron
+# COMMAND prepends `SET statement_timeout = 0;` — pg_cron runs that as its own
+# statement first, so the following SELECT re-arms with the lifted value. (This trick
+# is safe for a function/SELECT but NOT for the bare VACUUM below: a multi-statement
+# string executes in one implicit txn, and VACUUM cannot run inside a txn.)
 docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
 CREATE OR REPLACE FUNCTION public.cleanup_old_staging_data()
 RETURNS void LANGUAGE plpgsql AS $BODY$
 DECLARE
-    deleted_count int;
     cutoff_ev   TIMESTAMPTZ := NOW() - INTERVAL '90 days';
     cutoff_uns  TIMESTAMPTZ := NOW() - INTERVAL '90 days';
 BEGIN
-    -- Batch-delete 5000 rows at a time to avoid long table locks on
-    -- equipment_values (which can have millions of rows).  A full-table DELETE
-    -- in a single transaction held a lock for ~56 minutes, breaking the
-    -- oeecloud DB pool.  Each 5000-row batch commits immediately and releases
-    -- the lock, keeping write latency under ~100 ms per chunk.
-    LOOP
-        BEGIN
-            DELETE FROM equipment_values WHERE ts_value IN (
-                SELECT ts_value FROM equipment_values WHERE ts_value < cutoff_ev LIMIT 5000
-            );
-            GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        EXCEPTION WHEN undefined_table THEN
-            EXIT;
-        END;
-        EXIT WHEN deleted_count = 0;
-        PERFORM pg_sleep(0.05);
-    END LOOP;
+    -- Hypertables: drop whole chunks older than the cutoff. undefined_table /
+    -- undefined_function no-op on a fresh deploy or plain Postgres; any other
+    -- error (e.g. table exists but is not a hypertable) falls back to a ranged
+    -- DELETE so retention still happens.
+    BEGIN
+        PERFORM drop_chunks('public.equipment_values', older_than => cutoff_ev);
+    EXCEPTION
+        WHEN undefined_table OR undefined_function THEN NULL;
+        WHEN OTHERS THEN
+            BEGIN DELETE FROM equipment_values WHERE ts_value < cutoff_ev;
+            EXCEPTION WHEN undefined_table THEN NULL; END;
+    END;
 
-    LOOP
-        BEGIN
-            DELETE FROM equipment_events WHERE ts_event IN (
-                SELECT ts_event FROM equipment_events WHERE ts_event < cutoff_ev LIMIT 5000
-            );
-            GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        EXCEPTION WHEN undefined_table THEN
-            EXIT;
-        END;
-        EXIT WHEN deleted_count = 0;
-        PERFORM pg_sleep(0.05);
-    END LOOP;
+    BEGIN
+        PERFORM drop_chunks('public.equipment_events', older_than => cutoff_ev);
+    EXCEPTION
+        WHEN undefined_table OR undefined_function THEN NULL;
+        WHEN OTHERS THEN
+            BEGIN DELETE FROM equipment_events WHERE ts_event < cutoff_ev;
+            EXCEPTION WHEN undefined_table THEN NULL; END;
+    END;
 
-    LOOP
-        BEGIN
-            DELETE FROM uns_metrics WHERE ts_value IN (
-                SELECT ts_value FROM uns_metrics WHERE ts_value < cutoff_uns LIMIT 5000
-            );
-            GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        EXCEPTION WHEN undefined_table THEN
-            EXIT;
-        END;
-        EXIT WHEN deleted_count = 0;
-        PERFORM pg_sleep(0.05);
-    END LOOP;
+    -- Plain table: single linear index-driven DELETE (timeout lifted by the cron
+    -- command prepend). Left dead tuples are reclaimed by the vacuum job below.
+    BEGIN
+        DELETE FROM uns_metrics WHERE ts_value < cutoff_uns;
+    EXCEPTION WHEN undefined_table THEN NULL;
+    END;
 END;
 $BODY$;
 
 SELECT cron.schedule(
     'cleanup-old-data',
     '0 3 * * *',
-    'SELECT public.cleanup_old_staging_data()'
+    'SET statement_timeout = 0; SELECT public.cleanup_old_staging_data()'
 );
 SQL
 echo "pg_cron daily cleanup registered (03:00 UTC, keeps last 90 days of equipment_values / equipment_events / uns_metrics)"
+
+# ── VACUUM (ANALYZE) after the cleanup, as a TOP-LEVEL command ─────────────
+# VACUUM cannot run inside a transaction block, and pg_cron wraps every job in a
+# txn — so it CANNOT be wrapped in a function/CALL/DO (that is exactly what the
+# earlier `SELECT vacuum_after_cleanup()` job did, and it failed every night with
+# "VACUUM cannot run inside a transaction block"). Scheduling a bare VACUUM string
+# lets pg_cron run it directly, outside a txn. Runs at 03:05, after cleanup (03:00),
+# to reclaim dead tuples and — critically — refresh planner stats so the cleanup
+# semi-scans and the OEE queries do not fall back to seq scans on stale statistics.
+docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
+SELECT cron.schedule(
+    'vacuum-after-cleanup',
+    '5 3 * * *',
+    'VACUUM (ANALYZE) public.equipment_values, public.equipment_events, public.uns_metrics'
+);
+SQL
+echo "pg_cron VACUUM (ANALYZE) registered (03:05 UTC, bare top-level VACUUM)"
 
 # ── OEE engine orchestrator via pg_cron ───────────────────────────────────
 # piot_proc_refresh_runtime (db/20-oee-engine-parity.sql) is prod's master OEE

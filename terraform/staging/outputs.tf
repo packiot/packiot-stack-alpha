@@ -78,7 +78,7 @@ output "estimated_monthly_cost" {
   description = "Approximate AWS bill for this staging environment"
   value = {
     db_ec2_on_demand  = "$24.00  (t4g.medium, 730h)"
-    app_ec2_on_demand = "~$24.00 (t4g.medium on-demand, 730h)"
+    app_ec2_on_demand = "~$48.00 (t4g.large on-demand, 730h)"
     fck_nat_ec2       = "$3.00   (t4g.nano, 730h)"
     ebs_total         = "$2.40   (20GB + 10GB gp3)"
     secrets_manager   = "$1.20   (4 secrets × $0.40/secret/mo)"

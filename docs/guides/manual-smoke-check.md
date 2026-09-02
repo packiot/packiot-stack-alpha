@@ -24,7 +24,7 @@ or `unhealthy` = stop here and read its logs.
 ## Layer 1 — ingest freshness, per flow (DB EC2)
 
 Run against **each** flow — `packiot` (F1), `shadow_go_port` schema on
-packiot (F2), `packiot_shadow` (F3):
+packiot (F2), `packiot_analytics` (F3):
 
 ```sql
 SELECT max(ts_value) AS newest,

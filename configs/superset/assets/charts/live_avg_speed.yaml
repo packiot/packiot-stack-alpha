@@ -1,0 +1,20 @@
+# Live average speed. Big Number over bi.live_status AVG(speed).
+slice_name: Live avg speed
+description: bi.live_status AVG(speed). Mean live machine speed.
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: d8b64344-0ce4-440d-bf8b-39fc0bf259d5__table
+  viz_type: big_number_total
+  metric: avg_speed
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .3~s
+  subtitle: Live avg speed
+query_context: '{"datasource":{"id":0,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":[],"metrics":["avg_speed"],"annotation_layers":[],"series_limit":0,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"adhoc_filters":[],"annotation_layers":[],"datasource":"d8b64344-0ce4-440d-bf8b-39fc0bf259d5__table","header_font_size":0.4,"metric":"avg_speed","subheader_font_size":0.15,"subtitle":"Live avg speed","viz_type":"big_number_total","y_axis_format":".3~s","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+cache_timeout: null
+uuid: 48b848bc-3180-48df-a9f7-1cace77223b6
+version: 1.0.0
+dataset_uuid: d8b64344-0ce4-440d-bf8b-39fc0bf259d5

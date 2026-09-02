@@ -1,0 +1,34 @@
+# Local Go build artifacts.
+/bin/
+/out/
+*.test
+*.out
+
+# `go build ./cmd/X` drops the binary (named after the dir) into the CWD, i.e.
+# the service root, instead of /bin. Ignore each cmd's default output so a stray
+# multi-MB ELF (e.g. a built sparkplug-agent) can never be committed. Build into
+# /bin (already ignored) to keep the root clean.
+/capture-fixtures
+/edge-transformer
+/inject-counter-fixture
+/modbus-reader
+/numeric-sim
+/onboard-gen
+/opcua-reader
+/plc-sim
+/s7-reader
+/s7-softplc
+/sparkplug-agent
+
+# Local dev scratch — keep client.yaml itself versioned in
+# packiot-stack-alpha/docs/clients/, but devs may want a local override.
+client.local.yaml
+
+# editor scratch
+.idea/
+.vscode/
+*.swp
+
+# Local-only Go tool binaries installed via `GOBIN=$(pwd)/.tools go install ...`
+# (e.g., protoc-gen-go for ADR-0010 spike codegen). Per-developer, not committed.
+.tools/

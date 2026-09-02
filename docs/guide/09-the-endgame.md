@@ -9,7 +9,7 @@ staging, days from its decisive moment. This chapter is the map from "here" to
 
 The migration is complete when all of the following are true:
 
-1. **One database.** The refactored schema (`packiot_shadow`) is promoted to be *the*
+1. **One database.** The refactored schema (`packiot_analytics`) is promoted to be *the*
    database; the legacy schema and the shadow-port schema retire.
 2. **Four clean services.** The ingest consumer, the engine, the report writers, and
    the read API each run independently, each least-privileged, each with its own
@@ -26,7 +26,7 @@ The migration is complete when all of the following are true:
 The route there is a sequence of phases, each with a clear entry and exit. In brief:
 
 - **The flip** — collapse the three flows into one. Once the differential bake has
-  been green for its full window, `packiot_shadow` is promoted and the parallel
+  been green for its full window, `packiot_analytics` is promoted and the parallel
   machinery (shadow schema, mirror replay, dual-emit) retires. This is a ~30-minute,
   env-reversible operation, and it is the pivot the whole staging effort has been
   building toward.

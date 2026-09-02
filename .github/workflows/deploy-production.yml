@@ -53,8 +53,9 @@ jobs:
         # docs/archive/production-out-of-scope.md + docs/adr/0005-*.md).
         # oeecloud-node-red was decommissioned 2026-06-24.
         run: |
-          git submodule sync edge-api operator
-          git submodule update --init edge-api operator
+          git submodule sync edge-api operator csadmin
+          git submodule foreach --recursive 'git reset --hard || true' 2>/dev/null || true
+          git submodule update --init --force edge-api operator csadmin
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from
@@ -64,15 +65,22 @@ jobs:
         run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
 
       - name: Build images
-        run: docker compose -f compose.production.yml -p packiot-prod build
+        # No `-p`: the compose file pins a top-level `name: stack`, so the
+        # project name is stable regardless of cwd (this workflow runs from the
+        # repo root; app_init.sh runs from /opt/packiot/stack). A mismatched
+        # project name created two container sets fighting for the same subnet.
+        run: docker compose -f compose.production.yml build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
         # decommissions its container on the next deploy.
-        # --wait blocks until all services pass healthcheck (or timeout),
-        # making a green run actually mean "everything's up", not just
-        # "compose accepted the spec."
-        run: docker compose -f compose.production.yml -p packiot-prod up -d --wait --remove-orphans
+        #
+        # NOTE: not using --wait. Compose's --wait treats any container in
+        # "exited" state as failure regardless of exit code, which breaks for
+        # one-shot services like hasura-init / db-init-bootstrap / db-migrate
+        # (restart: "no", exit 0). The Post-deploy diagnostic below gives us the
+        # visibility we'd want from --wait without the false-positive failure.
+        run: docker compose -f compose.production.yml up -d --remove-orphans
 
       - name: Post-deploy diagnostic
         # Quick visibility on what landed. Non-blocking — if the diagnostic
@@ -80,11 +88,11 @@ jobs:
         if: always()
         run: |
           echo "=== Container status ==="
-          docker compose -f compose.production.yml -p packiot-prod ps || true
+          docker compose -f compose.production.yml ps || true
           echo
           echo "=== Recent ERROR logs (last 60s, any service) ==="
-          for svc in $(docker compose -f compose.production.yml -p packiot-prod ps --services 2>/dev/null); do
-            count=$(docker compose -f compose.production.yml -p packiot-prod logs --since 60s "$svc" 2>&1 | grep -cE '"level":"ERROR"|^ERROR' || echo 0)
+          for svc in $(docker compose -f compose.production.yml ps --services 2>/dev/null); do
+            count=$(docker compose -f compose.production.yml logs --since 60s "$svc" 2>&1 | grep -cE '"level":"ERROR"|^ERROR' || echo 0)
             [ "$count" -gt 0 ] && echo "  $svc: $count ERROR lines" || true
           done
           echo "(empty above = no ERROR-level logs in any service)"

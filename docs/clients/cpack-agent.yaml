@@ -6,28 +6,88 @@
 # the HTTP front-door) into SparkPlug B, publishing to the INTERNAL mosquitto
 # that edge-transformer already subscribes to → the full prod Calc → F3.
 #
+# ══ REBUILT FROM REAL PROD TOPOLOGY (2026-07-23) ═════════════════════════════
+# The previous revision of this file was derived from
+# services/edge-transformer/cmd/plc-sim/main.go — and the sim was NOT faithful
+# to CPACK's real SparkPlug naming. The live-tee validation surfaced the drift:
+#   • real speed metric is  Status/CurMachSpeed   (sim/old-map: Status/MachSpeed)
+#   • real param  metric is  Status/Parameter     (sim/old-map: Status/Parameter30700)
+#   • real LINE counts have NO /idx/Unit suffix    (old-map: /<line-id>/Unit)
+#   • real MEMBER counts carry the PLC's own count index (NOT a fabricated id)
+# This revision is rebuilt from a SELECT-only read of BOTH packml_registers.
+#
 # ── Topology provenance ──────────────────────────────────────────────────────
-# Derived from services/edge-transformer/cmd/plc-sim/main.go (the synthetic
-# CPACK feed this tee REPLACES) and VERIFIED against the live staging
-# packml_register (enterprise 3, SELECT-only / BEGIN READ ONLY, 2026-07-23):
+# PROD packml_register (ent 1, instance i-06c9547a2c7091ab7, BEGIN READ ONLY,
+# 2026-07-23): SELECT id_equipment,id_unit,packml_topic WHERE packml_topic LIKE
+# 'C-PACK/SC/LINHAS/%' AND active.  STAGING packml_register (ent 3, instance
+# i-064bb36d1c454d861 / timescaledb `packiot`, same date): same query on the
+# CPACK/… (hyphen-normalized) prefix.
 #
-#   Lines (tp_equipment=3, id_unit NULL):  L8=51  L5=47  L3=48  L4=49
-#   Members (machines, id_unit=id):        L5/BREYER=53  L5/TEXA=57
-#                                          L3/PTH=61      L4/TEXA=63
+# The tee normalizes the enterprise prefix C-PACK → CPACK before POSTing, so the
+# agent's packml_topic is "CPACK/SC/LINHAS" and edge-transformer + the
+# oeecloud-worker resolver match against STAGING ent-3 (the F3 refdata plane).
 #
-# Scope = EXACTLY the 8 equipment plc-sim feeds today ({47,48,49,51,53,57,61,63}),
-# so the agent-fed F3 is an apples-to-apples swap for the sim-fed F3 in the
-# bake comparator. edge-transformer resolves each metric NAME to id_equipment
-# by longest-prefix match on packml_topic — the Calc's min-speed downtime
-# (MachSpeed/30750-30751) and line Phase-9 (Parameter30700) inputs are all
-# present. Extending to CPACK's full ~30-equipment topology (L6/L10, CELULA*,
-# SLEEVE, FLEXO) is a follow-up once the tee proves out.
+# LINE (tp=3) and MEMBER (tp=1) id reconciliation — prod id → staging id:
 #
-# ── Prefix / suffix discipline (ADR-0042 §2.3) ───────────────────────────────
-# packml_topic is the common tenant prefix; the tee sends metric SUFFIXES only
-# (the part AFTER "CPACK/SC/LINHAS"). full name = packml_topic + suffix, which
-# the tee builds by stripping the prefix from its existing PLC-read topic. All
-# 8 equipment share the "CPACK/SC/LINHAS" prefix, so it factors cleanly.
+#   Line   prod  stg     Members (name: prod→stg, PLC count-index)
+#   L3      75    48     BREYER 76→58 (idx76) · POLYTYPE 82→62 (idx82)
+#                        PTH 81→61 (idx81) · RMH 79→59 (idx79) · TEXA 80→60 (idx80)
+#   L4      83    49     BREYER 88→66 (idx6) · POLYTYPE 89→67 (idx7)
+#                        PTH 86→64 (idx8) · RMH 87→65 (idx9) · TEXA 84→63 (idx ?)
+#   L5      60    47     BREYER 61→53 (idx61) · POLYTYPE 62→54 (idx62)
+#                        PTH 63→55 (idx63) · RMH 64→56 (idx64) · TEXA 65→57 (idx65)
+#   L6      90    50     BREYER 91→68 · TEXA 92→69 · POLYTYPE 93→70
+#                        RMH 94→71 · PTH 95→72   (count-index = prod id, live-tee obs)
+#   L8     218    51     DXL 219→73 · PTH 220→74 · TCX 221→75 · TEXA 222→76
+#   L10    563    52     (follow-up — not fed yet)
+#
+# ⚠️ COUNT-INDEX PROVENANCE. The oeecloud-worker resolver (parse.go
+# TopicForRegister) strips everything from segment 4/5 onward and matches
+# packml_topic EXACTLY on the 5-seg unit topic (4-seg for lines) with active=
+# true, so the count index in a name does NOT affect id_equipment resolution —
+# it only has to match what the tee actually sends (the agent raw_tag_map is a
+# STRICT ALLOWLIST: session.Resolver returns ok=false for any suffix not listed
+# and the tag is silently dropped). Indices marked "(idx N)" above are
+# CONFIRMED — packml_register registers that exact count-metric topic. L4/TEXA
+# and every L6/L8 member count topic are NOT registered in either DB; their
+# indices below are INFERRED (L6 from the live-tee report = prod id) and MUST be
+# confirmed against a real tee payload before cutover, or those counts drop.
+#
+# ── Scope of THIS revision ───────────────────────────────────────────────────
+# Fixes the naming of the previously-mapped set (L3/L4/L5/L8 lines + members
+# L5/BREYER, L5/TEXA, L3/PTH, L4/TEXA) and ADDS L6 (line + 5 members). The
+# remaining members of L3/L4/L5 (POLYTYPE/RMH/…), all L8 members (DXL/PTH/TCX/
+# TEXA) and L10 are catalogued in the table above and are a documented follow-up
+# — the map is a curated subset, not yet the full ~30-equipment topology.
+#
+# ── Calc name-recognition (CRITICAL — see PR body) ───────────────────────────
+# The edge-transformer Calc keys its non-counter state seeds by EXACT suffix
+# (cmd/edge-transformer/main.go seedFromMetric + calc.go):
+#     glitch guard / speed  →  HasSuffix(name, "/Status/MachSpeed")
+#     line-machines CSV      →  HasSuffix(name, "/Status/Parameter30700")
+#     threshold/mode/flags   →  /Status/Parameter*30750*, Parameter30758, *30761*, *30710*
+# Real CPACK sends "/Status/CurMachSpeed" and a bare "/Status/Parameter", NEITHER
+# of which those HasSuffix checks match. Counts are matched by SUBSTRING
+# (ProdProcessedCount/ProdConsumedCount/ProdDefectiveCount) so they are
+# recognized as-is. The Phase-8 glitch guard is `prodSpeed < 3*machSpeed`; with
+# machSpeed unseeded (=0) and prodSpeed always ≥0, EVERY counter is rejected —
+# so counts ALONE do NOT produce OEE without a speed seed.
+#
+# Normalization is therefore REQUIRED, and the cleanest seam is HERE, at agent
+# ingest: TagMapEntry has an optional `name:` that FullName() returns verbatim
+# instead of prefix+suffix. So each entry keys the allowlist on the REAL tee
+# suffix (metric_suffix) but publishes the CANONICAL SparkPlug name the Calc
+# recognizes (name). CurMachSpeed → MachSpeed is done this way below.
+#   NB: CurMachSpeed is the INSTANTANEOUS speed; the Calc's machSpeed is a
+#   NOMINAL ceiling. Feeding instantaneous-as-nominal makes the glitch guard a
+#   near-passthrough (prodSpeed < 3·~prodSpeed) — enough to let production flow,
+#   but it is a SEMANTIC substitution that needs owner sign-off, and the true
+#   nominal source (does CPACK emit a separate MachSpeed / Parameter30701 ideal
+#   speed?) must be confirmed. The bare Parameter cannot be canonicalized here:
+#   one metric cannot stand in for Parameter30700(CSV)/30750/30758/30761/30710 —
+#   its decomposition is an OPEN follow-up (see PR body). Until resolved, Phase-9
+#   line aggregation (needs Parameter30700) will NOT fire; lines rely on their
+#   OWN bare-topic count stream instead.
 
 sparkplug:
   group_id: CPACK
@@ -53,69 +113,195 @@ sparkplug:
   uplink_ca_ref: ""
 
 # ── raw_tag_map ──────────────────────────────────────────────────────────────
-# suffix (what the tee sends) → SparkPlug type. full name = packml_topic+suffix.
-# Types match what plc-sim emits AND what the Calc expects:
-#   Prod{Consumed,Processed,Defective}Count → double (cumulative counters)
-#   MachSpeed                                → double (min-speed downtime input)
-#   StateCurrent                             → long   (PackML state, Phase-8/9)
-#   Parameter30700                           → string (line-machines CSV, lines only)
+# metric_suffix : the EXACT suffix the tee sends (full name = packml_topic +
+#                 suffix). This is the strict allowlist key.
+# name (opt.)   : the full canonical SparkPlug name to PUBLISH instead of
+#                 packml_topic+suffix — the normalization seam (agentcfg
+#                 FullName). Used to remap CurMachSpeed → MachSpeed.
+# type          : SparkPlug datatype. counts/speed = double, StateCurrent = long,
+#                 Parameter = string.
 raw_tag_map:
-  # ── L8 line (eq 51) ─────────────────────────────────────────────────────
-  - {metric_suffix: /L8/Admin/ProdConsumedCount/51/Unit,  type: double}
-  - {metric_suffix: /L8/Admin/ProdProcessedCount/51/Unit, type: double}
-  - {metric_suffix: /L8/Admin/ProdDefectiveCount/51/Unit, type: double}
-  - {metric_suffix: /L8/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L8/Status/StateCurrent,              type: long}
-  - {metric_suffix: /L8/Status/Parameter30700,            type: string}
+  # ═══ L3 line (prod 75 → stg 48) ══════════════════════════════════════════
+  - {metric_suffix: /L3/Admin/ProdConsumedCount,  type: double}
+  - {metric_suffix: /L3/Admin/ProdProcessedCount, type: double}
+  - {metric_suffix: /L3/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L3/Status/MachSpeed, type: double}
+  - {metric_suffix: /L3/Status/StateCurrent, type: long}
+  - {metric_suffix: /L3/Status/Parameter,    type: string} # not Calc-recognized yet (see header)
 
-  # ── L5 line (eq 47) ─────────────────────────────────────────────────────
-  - {metric_suffix: /L5/Admin/ProdConsumedCount/47/Unit,  type: double}
-  - {metric_suffix: /L5/Admin/ProdProcessedCount/47/Unit, type: double}
-  - {metric_suffix: /L5/Admin/ProdDefectiveCount/47/Unit, type: double}
-  - {metric_suffix: /L5/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L5/Status/StateCurrent,              type: long}
-  - {metric_suffix: /L5/Status/Parameter30700,            type: string}
+  # ── L3/PTH member (prod 81 → stg 61, count idx 81 CONFIRMED) ─────────────
+  - {metric_suffix: /L3/PTH/Admin/ProdConsumedCount/81/Unit,  type: double}
+  - {metric_suffix: /L3/PTH/Admin/ProdProcessedCount/81/Unit, type: double}
+  - {metric_suffix: /L3/PTH/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L3/PTH/Status/MachSpeed, type: double}
+  - {metric_suffix: /L3/PTH/Status/StateCurrent, type: long}
 
-  # ── L3 line (eq 48) ─────────────────────────────────────────────────────
-  - {metric_suffix: /L3/Admin/ProdConsumedCount/48/Unit,  type: double}
-  - {metric_suffix: /L3/Admin/ProdProcessedCount/48/Unit, type: double}
-  - {metric_suffix: /L3/Admin/ProdDefectiveCount/48/Unit, type: double}
-  - {metric_suffix: /L3/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L3/Status/StateCurrent,              type: long}
-  - {metric_suffix: /L3/Status/Parameter30700,            type: string}
+  # ═══ L4 line (prod 83 → stg 49) ══════════════════════════════════════════
+  - {metric_suffix: /L4/Admin/ProdConsumedCount,  type: double}
+  - {metric_suffix: /L4/Admin/ProdProcessedCount, type: double}
+  - {metric_suffix: /L4/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L4/Status/MachSpeed, type: double}
+  - {metric_suffix: /L4/Status/StateCurrent, type: long}
+  - {metric_suffix: /L4/Status/Parameter,    type: string} # not Calc-recognized yet
 
-  # ── L4 line (eq 49) ─────────────────────────────────────────────────────
-  - {metric_suffix: /L4/Admin/ProdConsumedCount/49/Unit,  type: double}
-  - {metric_suffix: /L4/Admin/ProdProcessedCount/49/Unit, type: double}
-  - {metric_suffix: /L4/Admin/ProdDefectiveCount/49/Unit, type: double}
-  - {metric_suffix: /L4/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L4/Status/StateCurrent,              type: long}
-  - {metric_suffix: /L4/Status/Parameter30700,            type: string}
+  # ── L4/TEXA member (prod 84 → stg 63) ────────────────────────────────────
+  # ⚠️ count index UNVERIFIED — L4/TEXA has NO registered count topic in either
+  # DB; siblings use idx 6/7/8/9 so TEXA is likely the next in that PLC series
+  # (NOT 63, the old-map guess). Confirm against a live tee payload before
+  # cutover — a wrong index here silently drops L4/TEXA counts.
+  - {metric_suffix: /L4/TEXA/Admin/ProdConsumedCount/10/Unit,  type: double} # idx UNVERIFIED
+  - {metric_suffix: /L4/TEXA/Admin/ProdProcessedCount/10/Unit, type: double} # idx UNVERIFIED
+  - {metric_suffix: /L4/TEXA/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L4/TEXA/Status/MachSpeed, type: double}
+  - {metric_suffix: /L4/TEXA/Status/StateCurrent, type: long}
 
-  # ── L5/BREYER member (eq 53, count idx 61) ──────────────────────────────
+  # ═══ L5 line (prod 60 → stg 47) ══════════════════════════════════════════
+  - {metric_suffix: /L5/Admin/ProdConsumedCount,  type: double}
+  - {metric_suffix: /L5/Admin/ProdProcessedCount, type: double}
+  - {metric_suffix: /L5/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L5/Status/MachSpeed, type: double}
+  - {metric_suffix: /L5/Status/StateCurrent, type: long}
+  - {metric_suffix: /L5/Status/Parameter,    type: string} # not Calc-recognized yet
+
+  # ── L5/BREYER member (prod 61 → stg 53, count idx 61 CONFIRMED) ──────────
   - {metric_suffix: /L5/BREYER/Admin/ProdConsumedCount/61/Unit,  type: double}
   - {metric_suffix: /L5/BREYER/Admin/ProdProcessedCount/61/Unit, type: double}
   - {metric_suffix: /L5/BREYER/Admin/ProdDefectiveCount/61/Unit, type: double}
-  - {metric_suffix: /L5/BREYER/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L5/BREYER/Status/StateCurrent,              type: long}
+  - {metric_suffix: /L5/BREYER/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L5/BREYER/Status/MachSpeed, type: double}
+  - {metric_suffix: /L5/BREYER/Status/StateCurrent, type: long}
 
-  # ── L5/TEXA member (eq 57, count idx 65) ────────────────────────────────
+  # ── L5/TEXA member (prod 65 → stg 57, count idx 65 CONFIRMED) ────────────
   - {metric_suffix: /L5/TEXA/Admin/ProdConsumedCount/65/Unit,  type: double}
   - {metric_suffix: /L5/TEXA/Admin/ProdProcessedCount/65/Unit, type: double}
-  - {metric_suffix: /L5/TEXA/Admin/ProdDefectiveCount/65/Unit, type: double}
-  - {metric_suffix: /L5/TEXA/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L5/TEXA/Status/StateCurrent,              type: long}
+  - {metric_suffix: /L5/TEXA/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L5/TEXA/Status/MachSpeed, type: double}
+  - {metric_suffix: /L5/TEXA/Status/StateCurrent, type: long}
 
-  # ── L3/PTH member (eq 61, count idx 81) ─────────────────────────────────
-  - {metric_suffix: /L3/PTH/Admin/ProdConsumedCount/81/Unit,  type: double}
-  - {metric_suffix: /L3/PTH/Admin/ProdProcessedCount/81/Unit, type: double}
-  - {metric_suffix: /L3/PTH/Admin/ProdDefectiveCount/81/Unit, type: double}
-  - {metric_suffix: /L3/PTH/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L3/PTH/Status/StateCurrent,              type: long}
+  # ═══ L6 line (prod 90 → stg 50) — NEW ════════════════════════════════════
+  - {metric_suffix: /L6/Admin/ProdConsumedCount,  type: double}
+  - {metric_suffix: /L6/Admin/ProdProcessedCount, type: double}
+  - {metric_suffix: /L6/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L6/Status/MachSpeed, type: double}
+  - {metric_suffix: /L6/Status/StateCurrent, type: long}
+  - {metric_suffix: /L6/Status/Parameter,    type: string} # not Calc-recognized yet
 
-  # ── L4/TEXA member (eq 63, count idx 63) ────────────────────────────────
-  - {metric_suffix: /L4/TEXA/Admin/ProdConsumedCount/63/Unit,  type: double}
-  - {metric_suffix: /L4/TEXA/Admin/ProdProcessedCount/63/Unit, type: double}
-  - {metric_suffix: /L4/TEXA/Admin/ProdDefectiveCount/63/Unit, type: double}
-  - {metric_suffix: /L4/TEXA/Status/MachSpeed,                 type: double}
-  - {metric_suffix: /L4/TEXA/Status/StateCurrent,              type: long}
+  # ── L6/BREYER member (prod 91 → stg 68, count idx 91 from live-tee obs) ───
+  - {metric_suffix: /L6/BREYER/Admin/ProdConsumedCount/91/Unit,  type: double}
+  - {metric_suffix: /L6/BREYER/Admin/ProdProcessedCount/91/Unit, type: double}
+  - {metric_suffix: /L6/BREYER/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L6/BREYER/Status/MachSpeed, type: double}
+  - {metric_suffix: /L6/BREYER/Status/StateCurrent, type: long}
+
+  # ── L6/TEXA member (prod 92 → stg 69, count idx 92 from live-tee obs) ─────
+  - {metric_suffix: /L6/TEXA/Admin/ProdConsumedCount/92/Unit,  type: double}
+  - {metric_suffix: /L6/TEXA/Admin/ProdProcessedCount/92/Unit, type: double}
+  - {metric_suffix: /L6/TEXA/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L6/TEXA/Status/MachSpeed, type: double}
+  - {metric_suffix: /L6/TEXA/Status/StateCurrent, type: long}
+
+  # ── L6/POLYTYPE member (prod 93 → stg 70, count idx 93 from live-tee obs) ─
+  - {metric_suffix: /L6/POLYTYPE/Admin/ProdConsumedCount/93/Unit,  type: double}
+  - {metric_suffix: /L6/POLYTYPE/Admin/ProdProcessedCount/93/Unit, type: double}
+  - {metric_suffix: /L6/POLYTYPE/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L6/POLYTYPE/Status/MachSpeed, type: double}
+  - {metric_suffix: /L6/POLYTYPE/Status/StateCurrent, type: long}
+
+  # ── L6/RMH member (prod 94 → stg 71, count idx 94 from live-tee obs) ──────
+  - {metric_suffix: /L6/RMH/Admin/ProdConsumedCount/94/Unit,  type: double}
+  - {metric_suffix: /L6/RMH/Admin/ProdProcessedCount/94/Unit, type: double}
+  - {metric_suffix: /L6/RMH/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L6/RMH/Status/MachSpeed, type: double}
+  - {metric_suffix: /L6/RMH/Status/StateCurrent, type: long}
+
+  # ── L6/PTH member (prod 95 → stg 72, count idx 95 from live-tee obs) ──────
+  - {metric_suffix: /L6/PTH/Admin/ProdConsumedCount/95/Unit,  type: double}
+  - {metric_suffix: /L6/PTH/Admin/ProdProcessedCount/95/Unit, type: double}
+  - {metric_suffix: /L6/PTH/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L6/PTH/Status/MachSpeed, type: double}
+  - {metric_suffix: /L6/PTH/Status/StateCurrent, type: long}
+
+  # ═══ L8 line (prod 218 → stg 51) ═════════════════════════════════════════
+  - {metric_suffix: /L8/Admin/ProdConsumedCount,  type: double}
+  - {metric_suffix: /L8/Admin/ProdProcessedCount, type: double}
+  - {metric_suffix: /L8/Status/CurMachSpeed, name: CPACK/SC/LINHAS/L8/Status/MachSpeed, type: double}
+  - {metric_suffix: /L8/Status/StateCurrent, type: long}
+  - {metric_suffix: /L8/Status/Parameter,    type: string} # not Calc-recognized yet
+  # NB: L8 members are DXL/PTH/TCX/TEXA (prod 219/220/221/222 → stg 73/74/75/76),
+  # NOT the BREYER/TEXA family the sim assumed. Their member count entries are
+  # ADDED in the EXTENSION block below (2026-08-19 live-mirror capture).
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # ═══ EXTENSION (2026-08-19) — full member coverage from LIVE mirror capture ══
+  # ══════════════════════════════════════════════════════════════════════════
+  # The prior revision (62 entries) mapped only L5/L6 members + a WRONG-index
+  # L4/TEXA guess, so ~42% of the mirror's POSTed tags were dropped as `unmapped`
+  # (sparkplug_agent_raw_dropped_total{reason="unmapped"}), and staging F3 (ent 3)
+  # only carried L5/L6.
+  #
+  # GROUND TRUTH — a tcpdump of the shadow-mirror → agent :9104 /v1/tags POSTs
+  # (envelope {"group":"CPACK","endpoint":"cpack-edge","scan_ts":…,
+  # "tags":[{"metric":"<suffix>","value":…}]}) showed the mirror feeds MEMBER-level
+  # ProdConsumedCount/ProdProcessedCount ONLY (no line-level counts, no Status/
+  # speed) — lines populate in F3 by cloud member-aggregation, exactly as L6's
+  # line row does today from its already-mapped members.
+  #
+  # COUNT-INDEX = the member's PROD id (verified per member in the capture):
+  #   L3/POLYTYPE 82 · L4 BREYER 88/POLYTYPE 89/RMH 87/TEXA 84 ·
+  #   L5 POLYTYPE 62/PTH 63/RMH 64 · L8 DXL 219/PTH 220/TCX 221/TEXA 222 ·
+  #   L10 DXL 564/PTH 565/TCX 566/TEXA 567.
+  # The cloud resolver (parse.go TopicForRegister) STRIPS everything from the
+  # member segment onward and matches the base 5-seg unit topic in packml_register
+  # (all of these members are registered active for ent 3), so the index only has
+  # to match what the mirror actually SENDS — which is the prod id above, NOT the
+  # /6,/7,/8,/9 that packml_register happens to store for L4 (confirmed harmless).
+  # This is why the old /L4/TEXA/.../10/Unit guess dropped: the mirror sends /84.
+  # Both Consumed+Processed are mapped for every member (gross+net) even where the
+  # short capture only observed one — a totalizer for the other ticks eventually,
+  # and an unfed suffix is a harmless allowlist entry (null-birthed under
+  # AGENT_BIRTH_ALL_MAPPED). Existing 62 entries are UNTOUCHED (strict superset);
+  # the stale /L4/TEXA/.../10/Unit pair above is left in place (superseded, unfed).
+
+  # ── L3/POLYTYPE member (prod 82 → stg 62, count idx 82 — mirror-confirmed) ──
+  - {metric_suffix: /L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit,  type: double}
+  - {metric_suffix: /L3/POLYTYPE/Admin/ProdProcessedCount/82/Unit, type: double}
+
+  # ── L3 members BREYER/RMH/TEXA (prod→stg: BREYER 76→58, RMH 79→59, TEXA 80→60;
+  #    count idx = prod id 76/79/80 — CONFIRMED by live tee drops + packml_register).
+  #    The ONLY unmapped tags the tee still sends (segment L3, ~20.7k drops). The
+  #    2026-08-19 extension mapped L3/POLYTYPE+PTH but MISSED these three. Both
+  #    Consumed+Processed mapped per file convention (unfed leaf = harmless
+  #    null-birth under AGENT_BIRTH_ALL_MAPPED). ──
+  - {metric_suffix: /L3/BREYER/Admin/ProdConsumedCount/76/Unit,  type: double}
+  - {metric_suffix: /L3/BREYER/Admin/ProdProcessedCount/76/Unit, type: double}
+  - {metric_suffix: /L3/RMH/Admin/ProdConsumedCount/79/Unit,     type: double}
+  - {metric_suffix: /L3/RMH/Admin/ProdProcessedCount/79/Unit,    type: double}
+  - {metric_suffix: /L3/TEXA/Admin/ProdConsumedCount/80/Unit,    type: double}
+  - {metric_suffix: /L3/TEXA/Admin/ProdProcessedCount/80/Unit,   type: double}
+
+  # ── L4 members (prod→stg: BREYER 88→66, POLYTYPE 89→67, RMH 87→65, TEXA 84→63) ─
+  - {metric_suffix: /L4/BREYER/Admin/ProdConsumedCount/88/Unit,    type: double}
+  - {metric_suffix: /L4/BREYER/Admin/ProdProcessedCount/88/Unit,   type: double}
+  - {metric_suffix: /L4/POLYTYPE/Admin/ProdConsumedCount/89/Unit,  type: double}
+  - {metric_suffix: /L4/POLYTYPE/Admin/ProdProcessedCount/89/Unit, type: double}
+  - {metric_suffix: /L4/RMH/Admin/ProdConsumedCount/87/Unit,       type: double}
+  - {metric_suffix: /L4/RMH/Admin/ProdProcessedCount/87/Unit,      type: double}
+  - {metric_suffix: /L4/TEXA/Admin/ProdConsumedCount/84/Unit,      type: double}
+  - {metric_suffix: /L4/TEXA/Admin/ProdProcessedCount/84/Unit,     type: double}
+
+  # ── L5 members (prod→stg: POLYTYPE 62→54, PTH 63→55, RMH 64→56) ──────────────
+  #    (BREYER 61→53, TEXA 65→57 already mapped above)
+  - {metric_suffix: /L5/POLYTYPE/Admin/ProdConsumedCount/62/Unit,  type: double}
+  - {metric_suffix: /L5/POLYTYPE/Admin/ProdProcessedCount/62/Unit, type: double}
+  - {metric_suffix: /L5/PTH/Admin/ProdConsumedCount/63/Unit,       type: double}
+  - {metric_suffix: /L5/PTH/Admin/ProdProcessedCount/63/Unit,      type: double}
+  - {metric_suffix: /L5/RMH/Admin/ProdConsumedCount/64/Unit,       type: double}
+  - {metric_suffix: /L5/RMH/Admin/ProdProcessedCount/64/Unit,      type: double}
+
+  # ── L8 members (prod→stg: DXL 219→73, PTH 220→74, TCX 221→75, TEXA 222→76) ────
+  - {metric_suffix: /L8/DXL/Admin/ProdConsumedCount/219/Unit,      type: double}
+  - {metric_suffix: /L8/DXL/Admin/ProdProcessedCount/219/Unit,     type: double}
+  - {metric_suffix: /L8/PTH/Admin/ProdConsumedCount/220/Unit,      type: double}
+  - {metric_suffix: /L8/PTH/Admin/ProdProcessedCount/220/Unit,     type: double}
+  - {metric_suffix: /L8/TCX/Admin/ProdConsumedCount/221/Unit,      type: double}
+  - {metric_suffix: /L8/TCX/Admin/ProdProcessedCount/221/Unit,     type: double}
+  - {metric_suffix: /L8/TEXA/Admin/ProdConsumedCount/222/Unit,     type: double}
+  - {metric_suffix: /L8/TEXA/Admin/ProdProcessedCount/222/Unit,    type: double}
+
+  # ── L10 line (prod 563 → stg 52) members (DXL 564→77, PTH 565→78, TCX 566→79,
+  #    TEXA 567→80) — line 52 was ENTIRELY unmapped before this ─────────────────
+  - {metric_suffix: /L10/DXL/Admin/ProdConsumedCount/564/Unit,     type: double}
+  - {metric_suffix: /L10/DXL/Admin/ProdProcessedCount/564/Unit,    type: double}
+  - {metric_suffix: /L10/PTH/Admin/ProdConsumedCount/565/Unit,     type: double}
+  - {metric_suffix: /L10/PTH/Admin/ProdProcessedCount/565/Unit,    type: double}
+  - {metric_suffix: /L10/TCX/Admin/ProdConsumedCount/566/Unit,     type: double}
+  - {metric_suffix: /L10/TCX/Admin/ProdProcessedCount/566/Unit,    type: double}
+  - {metric_suffix: /L10/TEXA/Admin/ProdConsumedCount/567/Unit,    type: double}
+  - {metric_suffix: /L10/TEXA/Admin/ProdProcessedCount/567/Unit,   type: double}

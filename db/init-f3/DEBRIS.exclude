@@ -1,0 +1,16 @@
+# Regex patterns (grep -E, matched against the whole TSV manifest line) for
+# staging debris that must NOT enter greenfield prod. The name is field 2, so
+# patterns anchor on a leading tab and a trailing tab-or-EOL: \t<name>(\t|$).
+# Mirrored by capture-f3-snapshot.sh's pg_dump --exclude-table.
+\tops_shadow_zombie_preimage_[0-9]+(\t|$)
+\thasura_test(\t|$)
+\th_piot_get_hasura_test\(
+\t[a-z0-9_]*_po_func_ret(\t|$)
+\tdt5min_po_function_returns(\t|$)
+\tpiot4_13_get_[a-z0-9_]+\(
+\tc33_dashboard_[a-z_0-9]+(\t|$)
+\tc35_dashboard_[a-z_0-9]+(\t|$)
+\treport_[a-z]+_enterprsie_[0-9]+(\t|$)
+\tequipment_boxes_cust_[0-9]+(\t|$)
+# lab leftovers (ADR-0012 d1: "lab leftovers, drop")
+\t[a-z_]*lab_equipment_values[a-z0-9_]*(\t|$)

@@ -1,0 +1,161 @@
+{
+  "uid": "v2-infra",
+  "title": "v2 · Infra — host / DB / runtime",
+  "tags": ["packiot-v2", "infra", "node-exporter", "postgres-exporter"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "### Host, database and Go-runtime health (Prometheus `packiot-prometheus`)\nThe layer nothing else watched. **Host** via node-exporter (disk / memory / CPU — the 2026-06-22 staging-disk-fill incident lives in this class), **DB** via postgres-exporter (`pg_up`, connection counts), **Go services** via each service's `/metrics` (`go_goroutines`, `process_resident_memory_bytes`). The `up`-by-job table is the 'is everything being scraped?' answer — and it now includes the freshly-added **ingest-shim** and **operator-adapter** jobs; a 0 there means a target isn't being scraped, which is why a metric elsewhere could read empty."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Max disk used (any mount)",
+      "description": "max over real filesystems of 100·(1 − avail/size). The disk-fill early-warning — tmpfs/overlay/squashfs excluded so this tracks real, persistent volumes.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(100 * (1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"}))", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Memory available",
+      "description": "min(node_memory_MemAvailable_bytes) across hosts — the kernel's estimate of allocatable memory. A low value on the smallest host is the OOM early-warning.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 268435456 }, { "color": "green", "value": 1073741824 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "min(node_memory_MemAvailable_bytes)", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Busiest host CPU",
+      "description": "max over hosts of 100·(1 − avg idle rate) — the busiest node's CPU utilisation over the last 5m.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))))", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Scrape targets DOWN",
+      "description": "count(up == 0). 0 = every configured target is being scraped. Non-zero names a blind spot — cross-check the up-by-job table below.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "count(up == 0) or vector(0)", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Scrape health — up by job",
+      "description": "up, instant. 1 = scraped, 0 = target down. Now includes ingest-shim + operator-adapter (added this PR). A 0 here explains why a downstream metric could read empty.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } }, "unit": "short" },
+        "overrides": [ { "matcher": { "id": "byName", "options": "up" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } }, { "id": "mappings", "value": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ] }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } ] } ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "up", "desc": false }] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "up", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["job", "instance", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "up" } } } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Disk %-used per mount",
+      "description": "100·(1 − node_filesystem_avail_bytes/node_filesystem_size_bytes) per instance × mount (real filesystems only). Watch for any line walking toward 90% — the 2026-06-22 incident was a mount filling silently.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 16, "x": 8, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 6, "showPoints": "never" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "100 * (1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"})", "legendFormat": "{{instance}} · {{mountpoint}}", "refId": "A" } ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Memory available per host",
+      "description": "node_memory_MemAvailable_bytes by instance. A downward trend that doesn't recover is a leak; a floor near 0 precedes the OOM killer.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "node_memory_MemAvailable_bytes", "legendFormat": "{{instance}}", "refId": "A" } ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "CPU busy % per host",
+      "description": "100·(1 − avg by(instance) rate(node_cpu_seconds_total{mode=\"idle\"}[5m])). Aggregate busy fraction across cores per host.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))", "legendFormat": "{{instance}}", "refId": "A" } ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Postgres up (per DB)",
+      "description": "pg_up per postgres-exporter target. 1 = the exporter reached that database. Covers packiot (F1+F2) and packiot_analytics (F3).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": true }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "orientation": "horizontal" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_up", "legendFormat": "{{server}}{{instance}}", "instant": true, "refId": "A" } ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Postgres connections per DB",
+      "description": "pg_stat_database_numbackends by datname (template DBs excluded). Rising toward max_connections is a connection-leak / pool-misconfig signal.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (datname) (pg_stat_database_numbackends{datname!~\"template.*|postgres|\"})", "legendFormat": "{{datname}}", "refId": "A" } ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Go goroutines by service",
+      "description": "go_goroutines, instant, by job. A monotonically climbing count for one service is a goroutine leak.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 34 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } }, "unit": "short" }, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "goroutines", "desc": true }] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (job) (go_goroutines)", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["job", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "goroutines" } } } ]
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Resident memory by service",
+      "description": "process_resident_memory_bytes, instant, by job. The RSS of each Go service — a steady climb that never GCs back is a memory leak.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 34 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } }, "unit": "bytes" }, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "resident", "desc": true }] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (job) (process_resident_memory_bytes)", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["job", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "resident" } } } ]
+    }
+  ]
+}

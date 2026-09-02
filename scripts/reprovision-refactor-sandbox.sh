@@ -41,12 +41,12 @@ Provision the ADR-0012 sandbox DB on staging DB EC2. Idempotent.
 
   --reset          DROP sandbox DB first if it exists, then rebuild.
   --db-name NAME   Which DB to provision (default: \$SANDBOX_DB=$SANDBOX_DB).
-                   Use packiot_refactor for the design sandbox, packiot_shadow
+                   Use packiot_refactor for the design sandbox, packiot_analytics
                    for the live-data proof-of-concept target.
   --skip-poc       Skip loading customer_dashboards POC.
   --skip-phase1    Skip Phase 1 renames + drops.
   --skip-phase2    Skip Phase 2 CAgg consolidation lab.
-  --skip-live-feed Skip the packiot_shadow → sandbox live feed (fdw + job).
+  --skip-live-feed Skip the packiot_analytics → sandbox live feed (fdw + job).
   --skip-sweep     Skip the h_*/v_* naming sweep (A + B).
   -h, --help       Show this help.
 
@@ -190,19 +190,19 @@ if ! $SKIP_PHASE2; then
     apply_sql_file "$PHASE2_SQL"
 fi
 
-# Phase 3 writer-target tables — only needed on packiot_shadow (the
+# Phase 3 writer-target tables — only needed on packiot_analytics (the
 # live-data POC target). The design sandbox packiot_refactor doesn't
 # receive live writes, so it doesn't need equipment_values as a real
 # table (the stub already has agg_equipment_values_1min which is enough
 # for façade + rename experiments).
-if [ "$SANDBOX_DB" = "packiot_shadow" ]; then
-    echo "[5d/5] apply Phase 3 writer-target tables (packiot_shadow only)..."
+if [ "$SANDBOX_DB" = "packiot_analytics" ]; then
+    echo "[5d/5] apply Phase 3 writer-target tables (packiot_analytics only)..."
     apply_sql_file "$PHASE3_WRITER_SQL"
 fi
 
 # Live feed + naming sweep are DESIGN-SANDBOX ONLY (packiot_refactor).
-# The feed pulls FROM packiot_shadow (self-feed would loop), and the
-# sweep must not disturb packiot_shadow's Phase-4 wave rehearsals.
+# The feed pulls FROM packiot_analytics (self-feed would loop), and the
+# sweep must not disturb packiot_analytics's Phase-4 wave rehearsals.
 if [ "$SANDBOX_DB" = "packiot_refactor" ]; then
     if ! $SKIP_LIVE_FEED; then
         echo "[5e/5] apply shadow live feed (fdw + refactor_sync job + ca_equipment_values_1min)..."

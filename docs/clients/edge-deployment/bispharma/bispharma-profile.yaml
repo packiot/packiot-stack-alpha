@@ -1,0 +1,42 @@
+tenant: BISPHARMA
+enterprise_id: 7
+tenant_prefix: BISPHARMA/SP
+prefix_fixups: []
+metric_aliases:
+    - from: Status/CurMachSpeed
+      to: Status/MachSpeed
+parameter_aliases:
+    - from: Status/Parameter
+      to: Status/Parameter30700
+      applies_to: line
+parameter_decomposition:
+    source_leaf: ""
+    params: []
+count_index:
+    mode: equipment_id
+    overrides:
+        /BLISTER1/UHLMANN: 0
+        /CARTONER1/MARCHESINI: 0
+metric_templates:
+    line:
+        - leaf: /Admin/ProdConsumedCount
+          type: double
+        - leaf: /Admin/ProdProcessedCount
+          type: double
+        - leaf: /Admin/ProdDefectiveCount
+          type: double
+        - leaf: /Status/MachSpeed
+          type: double
+        - leaf: /Status/StateCurrent
+          type: long
+        - leaf: /Status/Parameter30700
+          type: string
+    member:
+        - leaf: /Admin/ProdProcessedCount/{idx}/Unit
+          type: double
+        - leaf: /Admin/ProdDefectiveCount/{idx}/Unit
+          type: double
+        - leaf: /Status/MachSpeed
+          type: double
+        - leaf: /Status/StateCurrent
+          type: long

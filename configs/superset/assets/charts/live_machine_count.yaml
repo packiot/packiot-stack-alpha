@@ -1,0 +1,20 @@
+# Live machine count. Big Number over bi.live_status COUNT(*).
+slice_name: Live machine count
+description: bi.live_status COUNT(*). Machines reporting in the live window.
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: d8b64344-0ce4-440d-bf8b-39fc0bf259d5__table
+  viz_type: big_number_total
+  metric: count
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .3~s
+  subtitle: Live machines
+query_context: '{"datasource":{"id":0,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":[],"metrics":["count"],"annotation_layers":[],"series_limit":0,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{}}],"form_data":{"adhoc_filters":[],"annotation_layers":[],"datasource":"d8b64344-0ce4-440d-bf8b-39fc0bf259d5__table","header_font_size":0.4,"metric":"count","subheader_font_size":0.15,"subtitle":"Live machines","viz_type":"big_number_total","y_axis_format":".3~s","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+cache_timeout: null
+uuid: dd3c2358-ef77-4ce5-9fb9-5cc26be8c45d
+version: 1.0.0
+dataset_uuid: d8b64344-0ce4-440d-bf8b-39fc0bf259d5

@@ -1,0 +1,26 @@
+# Hourly net vs gross production. Time-series bar over bi.oee_hourly.
+slice_name: Production hourly (net vs gross)
+description: bi.oee_hourly SUM(net) + SUM(gross) by hour.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 8b1d0810-a0d1-4012-86a9-45c64c2e9154__table
+  viz_type: echarts_timeseries_bar
+  x_axis: ts_value
+  time_grain_sqla: PT1H
+  metrics:
+  - sum_net
+  - sum_gross
+  groupby: []
+  adhoc_filters: []
+  stack: false
+  y_axis_format: .3~s
+  x_axis_time_format: smart_date
+  show_legend: true
+  time_range: last day
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"time_range": "last day", "filters": [], "extras": {"time_grain_sqla": "PT1H", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "PT1H", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}], "metrics": ["sum_net", "sum_gross"], "orderby": [["sum_net", false]], "annotation_layers": [], "row_limit": 10000, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["ts_value"], "columns": [], "aggregates": {"sum_net": {"operator": "mean"}, "sum_gross": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "8b1d0810-a0d1-4012-86a9-45c64c2e9154__table", "viz_type": "echarts_timeseries_bar", "x_axis": "ts_value", "time_grain_sqla": "PT1H", "metrics": ["sum_net", "sum_gross"], "groupby": [], "adhoc_filters": [], "stack": false, "y_axis_format": ".3~s", "x_axis_time_format": "smart_date", "show_legend": true, "time_range": "last day", "annotation_layers": [], "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 1c40497d-56c9-4551-8101-abe04572b171
+version: 1.0.0
+dataset_uuid: 8b1d0810-a0d1-4012-86a9-45c64c2e9154
