@@ -1,6 +1,6 @@
 # ADR-0053 — On-prem ingest edge (relocate the pre-RabbitMQ stack to the box)
 
-- **Status:** Proposed — REDIRECTED by proof: mTLS/8883 uplink is firewall-blocked for HTTPS-only factories (bispharma); use the HTTPS path (raw-level reader spool already ships; decoded-level needs a new HTTPS ingress)
+- **Status:** Proposed (durability half) + **PARTIALLY IMPLEMENTED (visibility half, "B-minimal", 2026-09-01)** — the local-decode + current-state + dashboard "serve" layer §4 defers is now BUILT behind a flag; see §9. mTLS/8883 uplink is firewall-blocked for HTTPS-only factories (bispharma); the outbox→HTTPS-drain durability half remains proposed (raw-level reader spool already ships as the durability path).
 - **Date:** 2026-09-01
 - **Relates:** ADR-0011 P2 (the SQLite outbox), ADR-0045 (thin-reader shared-ingest),
   ADR-0019 C3 (edge-operator SPA), ADR-0052 (edge autonomy — device side), the
@@ -146,6 +146,61 @@ FACTORY BOX (on-prem, amd64 + Docker)          CLOUD
    in-process (drop a hop)? — a simplification worth prototyping.
 4. Security review of the shim as the per-box ingress (key rotation, per-box scope)
    — it's already the public surface for Incoplast; extend the model deliberately.
+
+## 9. B-minimal implementation — the VISIBILITY half (built 2026-09-01)
+
+§4 is explicit that the outbox-drain design "does NOT deliver offline reads by
+itself — local reads still need a local DB + refdata on the box, a separate
+build." That separate build is what shipped here, deliberately scoped to the
+**minimum that lets the shop floor keep SEEING live production during an
+outage** — not a full local OEE stack. User choice: "B-minimal — live-state +
+local dashboard."
+
+**The key design turn: this half does NOT drain to the cloud.** The durability
+half (outbox → HTTPS shim) is redundant with what already ships — the reader's
+primary tee (reader → cloud shared-agent over HTTPS) plus the reader spool
+already carry + buffer this tenant's data to the cloud (proven, task #133). So
+the on-box transformer runs **`LOCAL_DECODE_ONLY`**: it decodes purely to feed a
+local current-state store the dashboard reads, and never attempts a cloud AMQP
+publish (which the HTTPS-only firewall would block anyway). Cloud stays the
+system of record; the box gains *local visibility*, not a second write path.
+
+```
+PLC ─raw─> packiot-edge-reader ─┬─> cloud shared-agent (HTTPS)   [cloud: unchanged, authoritative]
+                                └─> local sparkplug-agent :9104  [the tee]
+                                         → mosquitto → edge-transformer (LOCAL_DECODE_ONLY)
+                                              → localstate (SQLite current-state, UPSERT)
+                                              → edge-dashboard :8080  ← the floor's browser
+```
+
+**Components (all additive; the reader's cloud path is untouched):**
+
+| Piece | What | Where |
+|---|---|---|
+| `internal/localstate` | store-and-**overwrite** current-state table (UPSERT keyed on `tenant,source,metric`; stale-reading guard). The opposite shape to the outbox (store-and-forward): the outbox answers "what's unsent?", localstate answers "what's the current count?". Pure-Go SQLite, WAL. 7 unit tests. | stack-alpha (Phase A) |
+| transformer tee | `sparkplugHandler` upserts each decoded metric to localstate when `LOCAL_STATE_DB` is set. nil-guarded + best-effort (a sink write can never block/fail the publish path); byte-identical cloud behavior when unset. Keyed on the SparkPlug **source identity** because the box has no `id_equipment` (name→equipment is resolved cloud-side via `packml_register`). | stack-alpha (Phase A-wire) |
+| `LOCAL_DECODE_ONLY` | transformer gate: skip the cloud AMQP publisher + outbox entirely. The publish path was already nil-safe. | stack-alpha |
+| `cmd/edge-dashboard` | dependency-light stdlib HTTP board on `:8080`; reads localstate, renders a per-machine LIVE/STALE view; fully self-contained (no external assets — there is no internet when it matters). `--healthcheck` self-probe for the distroless compose. | stack-alpha (Phase B) |
+| `compose.onprem-edge.yml` | the additive on-box stack: mosquitto + agent (local tee target) + transformer + dashboard, sharing a current-state volume. Built on the box from source (no registry/PAT — proven: `sparkplug-decoder:local` builds + runs on `mi-0114`). | stack-alpha (Phase C) |
+| onboarding toggle | `client_descriptors.descriptor.onprem_offline` flag; `GET/POST /api/onboarding/onprem-offline` (edge-api); a csadmin Box-Ops toggle. The reader **tee** (post raw tags to the local agent too) is gated on the same flag. | edge-api + csadmin |
+| operator warning | already shipped — the operator SPA's `OfflineBanner` + cloud-reachability probe warns "no internet" (task #135); this board is the *live-data* counterpart to that *warning*. | operator |
+
+**The on-box bundle mostly already exists.** A useful reuse: the generated
+`agent.yaml` ALREADY sets `uplink_broker: tcp://mosquitto:1883` — the cloud
+shared-agent publishes SparkPlug to *its* co-located mosquitto, so the config
+string is byte-identical to what the box needs (both publish to a local broker
+in their own compose network). So the on-box bundle is: the **existing**
+generated `agent.yaml` + the **existing** per-tenant `client.yaml` (PLC config) +
+the **static** `compose.onprem-edge.yml` + a trivial `.env.onprem`
+(`TENANT`/`DASHBOARD_PORT`/`AGENT_INGEST_API_KEY`). No agent.yaml variant, no
+generator rewrite.
+
+**Still open after B-minimal:** wire the box-deploy step to assemble that bundle
++ generate `.env.onprem` when `onprem_offline=true` (small addition to the
+existing Box-Ops deploy path, not the artifact generator); the box deploy +
+outage round-trip proof on bispharma; and the durability half (outbox → HTTPS
+drain) if a client's outage profile needs decoded-stream durability beyond the
+raw-tag reader spool.
 
 ## 8. Recommendation
 
