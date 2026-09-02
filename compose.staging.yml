@@ -626,6 +626,12 @@ services:
       COGNITO_CS_ADMIN_GROUP: cs-admin
       EDGE_API_COGNITO_AUTH_ENABLED: "true"
       EDGE_API_ONBOARDING_ENABLED: "true"
+      # Client Teardown (Remove client / Reset onboarding) — the SAFE INVERSE of
+      # onboarding (ADR-0053). Dark-by-default on its OWN flag, deliberately
+      # separate from onboarding. Enabled on staging so CS can reset/remove a
+      # tenant through the csadmin UI (per-stage confirmation walls; dry-run
+      # default; protected-tenant floor {3 CPACK, 2000003 SBXCPACK} always on).
+      EDGE_API_TEARDOWN_ENABLED: "true"
       # Onboarding generate path: edge-api proxies the stored descriptor to
       # edge-transformer's onboard server (POST /v1/onboard/generate). Config here,
       # the shared key from .env/Secrets.
