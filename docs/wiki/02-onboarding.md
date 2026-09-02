@@ -31,7 +31,7 @@ enterprise in the top-of-app selector is the scope):
 | 4 | **Lines** (`tp=3`) | Lines | one per production line. `overview_version` (v4) required for lines. |
 | 5 | **Machines** (`tp=1`) | Machines | each requires a **parent line**. Code auto-derives from the name. This is where `status_type` / counter-role calls matter (see [Concepts](08-concepts.md)). |
 | 6 | **Sectors** (`tp=2`) | Sectors | optional grouping layer; many tenants have none. |
-| 7 | **Shifts** | Shifts | `cd_shift` + ≥1 day enabled; sets the OEE time buckets. |
+| 7 | **Shifts** | Shifts | `cd_shift` + ≥1 day enabled; sets the OEE time buckets. Also reachable inline as **wizard step 4** — do it in either place. |
 
 > **Type is fixed by the page.** Creating from Lines makes a Line, from Machines a
 > Machine — the type is a read-only indicator, not a switcher.
@@ -43,41 +43,73 @@ enterprise in the top-of-app selector is the scope):
 
 Field-by-field detail for every form → **[CS-Admin Forms Reference](03-csadmin-forms.md)**.
 
-## The 5-step wizard (Onboarding page)
+## The 7-step wizard (Onboarding page)
 
-Once the hierarchy exists, the wizard walks five client-outcome steps:
+Once the hierarchy exists, the wizard walks seven client-outcome steps. The active step
+is URL-driven (`?step=`), every earlier step stays clickable for review, and forward
+steps unlock as their prerequisites land.
 
-### 1. Review the plant
-Read-only tree of the sites/areas/lines/machines you built, with each node's **derived
-canonical topic** shown as helper text. Confirm it looks right; on continue it
-**composes the descriptor** (`equipment[]` from the tree, `id_unit=id_equipment` for
-machines) and upserts it. The **prefix** is derived here; the **count-index toggle**
-lives in this step's Advanced drawer.
+### 1. Set up the client box
+Enroll the client's on-site computer as an AWS SSM managed instance so the cloud can
+reach the factory — there's no direct route into the plant LAN, so this box is the
+bridge. Confirm the prerequisites (reaches the PLC network + internet; Linux + Docker),
+**Mint activation**, run the one-time register command on the box, then **Check
+connection** (it also auto-polls). **Nothing here blocks:** if the box isn't Online yet,
+**Skip for now** and review the plant in parallel. The box must be Online before **Go
+live** can deploy (that step keeps its own guard). Produces the managed-instance id
+(`mi-…`) later steps target.
 
-### 2. Connect the PLCs
-Author the PLC endpoint(s) — the host/protocol per PLC. This is where the actual PLC
-connection lives (not the vestigial `id_plc` field). Three cards, in order: the endpoint
-host/IP (with a reachability **Test**), the per-machine **tag map** (endpoint + count-index
-+ role), and **"Which sensors does each line have?"** — the per-line sensor situation
-(`counter_derive`: all measured / outfeed-only / scrap-derived-from-infeed−outfeed / …).
-Declaring the sensor situation here, rather than letting a default stand, is what avoids a
-line's scrap silently reading as unconfirmed later.
+### 2. Review the plant
+Read-only tree of the sites/areas/lines/machines you built, each node showing its
+**derived canonical topic**. Confirm it; on continue it **composes the descriptor**
+(`equipment[]` from the tree, `id_unit=id_equipment` for machines) and upserts it. The
+**prefix** is derived here (override per site if needed). Everything under **Advanced**
+is optional with safe defaults: the *"Do you control PLC numbering?"* toggle (Yes =
+`equipment_id`, cutover-eligible now; No = inferred, verified at Capture), counter-only
+OEE, conversion aliases, Node-RED customizations, the **tenant code** (optional —
+defaults to the derived tenant), and a raw-JSON escape hatch. Only "equipment exists"
+blocks continue.
 
-> **Optional — "Enable on-prem offline operation."** For a client whose floor must
-> keep seeing *live* numbers through an internet outage, this step also carries an
-> opt-in toggle that stands up an additive on-box decode + dashboard stack (sets
-> `descriptor.onprem_offline`; the reader then tees raw tags to a local agent too).
-> It does **not** change the cloud path — cloud stays authoritative. Full detail:
-> **[On-Prem Offline Operation](11-on-prem-offline-operation.md)**.
+### 3. Connect the PLCs
+Four cards, all editing `descriptor.plc`. A pure Node-RED **tee tenant has no PLCs** —
+leave everything blank and continue; nothing here is required to advance.
+- **PLC connections** — one row per PLC: connection **name** + **host/IP** (required to
+  save a row, with a reachability **Test**), protocol, and optional S7 rack/slot/port/DB
+  (default 0/2/102/1). The host is stored as **`host_ref`**; a `secret://…` value is an
+  unset placeholder.
+- **Sensor tags (PLC tag map)** — per machine: the counter **role** (net/gross/scrap),
+  the **count-index** (the PLC channel — *not* the equipment id), and the S7 address
+  (DB defaults to 1 + byte offset). The metric leaf is derived from the role.
+- **Which sensors does each line have?** — the per-line sensor situation
+  (`counter_derive`: all measured / outfeed-only / scrap-derived-from-infeed−outfeed / …).
+  Declaring it here rather than leaving the default avoids a line's scrap silently reading
+  as unconfirmed later. **Advisory** — never blocks.
+- **On-prem offline** — advisory opt-in to stand up an additive on-box decode + dashboard
+  stack so the floor keeps *live* numbers through an internet outage (sets
+  `descriptor.onprem_offline`; the reader tees raw tags to a local agent too). Does
+  **not** change the cloud path. Full detail:
+  **[On-Prem Offline Operation](11-on-prem-offline-operation.md)**.
 
-### 3. Go live (dry run)
-**Build & deploy the edge** in one action: generate the bundle (`onboard-gen` → profile
-+ agent.yaml + register.sql + tee-node.json), auto-apply the register, then deploy to
-the client's box. Nothing is switched onto the new routing yet — this just gets data
-flowing so the next step can confirm counts. Artifact code panels + the runner/download
-fallback live in Advanced.
+### 4. Set up shifts (optional)
+A **shift** is the recurring working calendar OEE is measured against. **Optional to
+pass, but required for any OEE:** with no shift there is no window to bucket production
+into, so every dashboard stays blank. Enter a shift **name/code**, toggle the weekdays
+and set each day's clock times (≥1 day), and optionally scope it to a site/area (default
+= plant-wide). If the calendar isn't known yet, **Skip for now — OEE stays blank** (a
+warned choice); shifts can also be added later on the standalone Shifts page. *Gotcha:*
+you type clock times, but the backend stores seconds-from-operational-week-start
+(day 1 = Mon … 7 = Sun); the form converts both ways.
 
-### 4. Confirm counts are real (Capture)
+### 5. Go live (dry run)
+**Action-driven, not a form.** **Build** the edge config (`onboard-gen` → profile +
+agent.yaml + register.sql + tee-node.json), which auto-applies the register, then
+**Deploy** the bundle to the client's box over SSM (`deploy-bundle`, regenerated from the
+descriptor). A green health check advances `generated → deployed` and rolls forward to
+Capture. Nothing is switched onto the new routing yet — this just gets data flowing.
+Prereq: the box must be Online. Editable artifacts + the runner/download fallback live in
+Advanced.
+
+### 6. Confirm counts are real (Capture)
 For each machine, confirm its **channel number** (count-index) against a **live
 observation** from the tee. The PLC's count channel is arbitrary and not derivable — it
 must be captured, machine by machine. A `confirmed` capture gates cutover; `inferred`
@@ -89,13 +121,16 @@ channel that's silent — a real gap, check the sensor), **derived** (a counter 
 reader tag** — never measured, its value is synthesized, e.g. `scrap = infeed − outfeed`
 — expected, not a gap), and **extra** (a channel seen on the wire but not in the config).
 `derived` vs `unobserved` is keyed on **tag presence**, not the machine name — so a line
-with no reject meter shows scrap as *derived*, not a false alarm.
+with no reject meter shows scrap as *derived*, not a false alarm. You may continue with
+rows still `inferred` — the gate is re-enforced at cutover.
 
-### 5. Flip it on (Cutover)
+### 7. Flip it on (cutover)
 The server-enforced cutover gate flips the tenant onto the register-driven tag map. Two
-gates are shown with distinct visual language: an **amber advisory** (ADR-0047 readiness,
-"worth checking") and a **red hard-block** (any count-index still inferred → "required").
-The flip is explicit, confirmed, and reversible — never auto-advanced.
+gates with distinct visual language: an **amber advisory** (ADR-0047 config-health —
+"worth checking"; deep-links some issues to their fix, e.g. *Set up shifts* → Shifts,
+*Set ideal speed* → Machines) and a **red hard-block** (any count-index still inferred →
+"required"). The flip is explicit, confirmed, reversible (Reset → draft), and takes
+effect on the box's next agent cycle — never auto-advanced.
 
 ## What "cutover" actually means (two mechanisms)
 
