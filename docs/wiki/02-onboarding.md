@@ -63,6 +63,13 @@ host/IP (with a reachability **Test**), the per-machine **tag map** (endpoint + 
 Declaring the sensor situation here, rather than letting a default stand, is what avoids a
 line's scrap silently reading as unconfirmed later.
 
+> **Optional — "Enable on-prem offline operation."** For a client whose floor must
+> keep seeing *live* numbers through an internet outage, this step also carries an
+> opt-in toggle that stands up an additive on-box decode + dashboard stack (sets
+> `descriptor.onprem_offline`; the reader then tees raw tags to a local agent too).
+> It does **not** change the cloud path — cloud stays authoritative. Full detail:
+> **[On-Prem Offline Operation](11-on-prem-offline-operation.md)**.
+
 ### 3. Go live (dry run)
 **Build & deploy the edge** in one action: generate the bundle (`onboard-gen` → profile
 + agent.yaml + register.sql + tee-node.json), auto-apply the register, then deploy to
