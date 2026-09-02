@@ -1,0 +1,98 @@
+# Total Production — net/gross totals, per-machine, hourly, per-team.
+# Tenant isolation via Superset RLS (id_enterprise), not encoded here.
+# chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: Total Production
+description: Net/gross production totals, per-machine, hourly trend, and per-team breakdown.
+css: ''
+slug: total-production
+certified_by: null
+certification_details: null
+published: true
+uuid: a4a4e8b6-7670-4368-a375-dff714af643c
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 60
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-bars
+    - ROW-trend
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Total Production
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-total-net
+    - CHART-total-gross
+  CHART-total-net:
+    type: CHART
+    id: CHART-total-net
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: e8c72f94-39b7-4888-bcf9-6c46ef3d5f8c, width: 6, height: 50, chartId: 1, sliceName: Total net production}
+    children: []
+  CHART-total-gross:
+    type: CHART
+    id: CHART-total-gross
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 8fddf892-0cc4-4642-beb7-df5c762df94e, width: 6, height: 50, chartId: 2, sliceName: Total gross production}
+    children: []
+  ROW-bars:
+    type: ROW
+    id: ROW-bars
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-prod-by-machine
+    - CHART-prod-by-team
+  CHART-prod-by-machine:
+    type: CHART
+    id: CHART-prod-by-machine
+    parents: [ROOT_ID, GRID_ID, ROW-bars]
+    meta: {uuid: 20612c3a-c982-41f0-98ce-832cd48a81f0, width: 6, height: 50, chartId: 3, sliceName: Production by machine}
+    children: []
+  CHART-prod-by-team:
+    type: CHART
+    id: CHART-prod-by-team
+    parents: [ROOT_ID, GRID_ID, ROW-bars]
+    meta: {uuid: 1ce65528-f070-47b2-8d52-d0c566fb66f5, width: 6, height: 50, chartId: 4, sliceName: Production by team}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-prod-hourly
+  CHART-prod-hourly:
+    type: CHART
+    id: CHART-prod-hourly
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: 1c40497d-56c9-4551-8101-abe04572b171, width: 12, height: 50, chartId: 5, sliceName: Production hourly (net vs gross)}
+    children: []

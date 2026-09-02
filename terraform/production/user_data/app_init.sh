@@ -5,9 +5,12 @@
 # Production variant of the staging app_init.sh. Differences from staging:
 #   - Secrets under packiot/production/* (not packiot/staging/*)
 #   - No nodered-auth secret fetch (no Node-RED in compose.production.yml)
-#   - DB connection: local postgres container via `pgbouncer` hostname (not
-#     remote DB EC2's private IP). The packiot/production/db secret stores
-#     creds only — URL is constructed here.
+#   - DB connection: app services reach the DB via the `pgbouncer` compose
+#     service (POSTGRES_HOST=pgbouncer); pgbouncer's UPSTREAM is the dedicated
+#     r7g DB EC2 at its private IP (POSTGRES_HOST_UPSTREAM=${db_private_ip}).
+#     DDL/migration/authentik/adminer connect to that IP directly (pooling
+#     breaks advisory locks + prepared statements). The packiot/production/db
+#     secret stores creds only — URL is constructed here.
 #   - GitHub branch: production (not staging)
 #   - Submodule list: edge-api + operator only (no edge-node-red — runs
 #     per-factory, not in cloud stack)
@@ -37,6 +40,19 @@ systemctl start  amazon-ssm-agent
 # AL2023 ships with curl-minimal which conflicts with curl; --allowerasing lets dnf replace it.
 dnf update -y --allowerasing
 dnf install -y git curl unzip jq python3-pip --allowerasing
+
+# ── Go toolchain (self-hosted runner: generate-client-bundle.yml) ─────────────
+# The bundle workflow builds cmd/onboard-gen with `go build` and assumes go is on
+# PATH on the prod runner (alongside openssl/aws). Install the pinned toolchain to
+# /usr/local + symlink into /usr/local/bin (on the runner service's PATH). Idempotent.
+GO_VERSION=1.25.0
+if ! /usr/local/go/bin/go version 2>/dev/null | grep -q "go$${GO_VERSION} "; then
+  curl -sSfL -o /tmp/go.tgz "https://go.dev/dl/go$${GO_VERSION}.linux-arm64.tar.gz"
+  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+  ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  rm -f /tmp/go.tgz
+fi
 
 # ── Swap ──────────────────────────────────────────────────────────────────────
 # Same rationale as staging: t4g.medium has 3.7 GiB RAM. Multi-stage Docker
@@ -78,12 +94,11 @@ get_secret() {
 DB_SECRET=$(get_secret "packiot/production/db")
 APP_SECRET=$(get_secret "packiot/production/app")
 HASURA_SECRET=$(get_secret "packiot/production/hasura")
-AUTHENTIK_SECRET=$(get_secret "packiot/production/authentik")
 
-# Production DB secret does NOT carry a `url` field (per secrets.tf — we
-# construct the URL here because the host depends on the runtime topology:
-# in dry-run mode the host is the local `pgbouncer` compose service; in
-# phase 2 it'll be tsp12's endpoint via an updated secret).
+# Production DB secret does NOT carry a `url`/`host` field (per secrets.tf) — we
+# construct the URL here. App services connect via the `pgbouncer` compose
+# service; pgbouncer's upstream is the dedicated r7g DB EC2 at ${db_private_ip}
+# (emitted below as POSTGRES_HOST_UPSTREAM).
 DB_USER_FROM_SECRET=$(echo "$DB_SECRET" | jq -r '.user')
 DB_NAME_FROM_SECRET=$(echo "$DB_SECRET" | jq -r '.name')
 DB_PASS=$(echo "$DB_SECRET"   | jq -r '.password')
@@ -94,40 +109,93 @@ HASURA_JWT_JSON="{\"type\":\"HS256\",\"key\":\"$HASURA_JWT_KEY\"}"
 API_KEY=$(echo "$APP_SECRET"   | jq -r '.edge_api_key')
 MQ_USER=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_user')
 MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
+# ingest-shim requires INGEST_API_KEY (the shared secret the client HTTP tee
+# presents as X-Ingest-Key). Not part of any AWS secret — generate a stable
+# per-box value here; the .env guard below keeps it stable across re-runs.
+INGEST_API_KEY=$(openssl rand -hex 24)
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
-AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
-AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
-AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
-AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
+# CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
+# POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
+GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
+# Onboard-generate API key (ADR-0045 §generate) — bearer that edge-api uses to
+# call the edge-transformer onboard server (:9105). Durable so a fresh instance
+# does not lose it (it was hand-added to .env once; codified 2026-08-05).
+ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
+# oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
+# the packiot/production/app secret (keys populated out-of-band). client_id +
+# issuer + redirect/cookie domains are non-secret and stay in the compose service
+# block; only these two are secrets.
+OAUTH2_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_client_secret // ""')
+OAUTH2_COOKIE_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_cookie_secret // ""')
 
-# DRY-RUN DB URL: pgbouncer service in compose, port 5432 from compose-internal
-# perspective. When phase 2 lands (real prod DB), update packiot/production/db
-# to include host + port + url fields and modify this construction accordingly.
-POSTGRES_URL_DRYRUN="postgresql://$DB_USER_FROM_SECRET:$DB_PASS@pgbouncer:5432/$DB_NAME_FROM_SECRET"
+# DB URL (via pgbouncer): app services connect to the `pgbouncer` compose
+# service on :5432; pgbouncer proxies to the r7g upstream. The r7g private IP is
+# templated in from terraform (aws_instance.db.private_ip) and exported below as
+# POSTGRES_HOST_UPSTREAM — the value pgbouncer + the direct-connect DDL/authentik/
+# adminer services read.
+POSTGRES_HOST_UPSTREAM="${db_private_ip}"
+POSTGRES_URL_VIA_POOL="postgresql://$DB_USER_FROM_SECRET:$DB_PASS@pgbouncer:5432/$DB_NAME_FROM_SECRET"
+# DIRECT-to-r7g URL (bypasses pgbouncer) for consumers that use prepared
+# statements or advisory locks, which are incompatible with pgbouncer's
+# transaction-pooling mode. Hasura in particular fails every BEGIN with
+# 42P05 "prepared statement '0' already exists" when routed through pgbouncer.
+# This targets the r7g upstream ($${POSTGRES_HOST_UPSTREAM}) DIRECTLY — there is
+# NO local `postgres` container in the F3-native prod stack (W1 DB rewire).
+POSTGRES_URL_DIRECT="postgresql://$DB_USER_FROM_SECRET:$DB_PASS@$${POSTGRES_HOST_UPSTREAM}:5432/$DB_NAME_FROM_SECRET"
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
 mkdir -p /opt/packiot
 # Guard: skip .env regeneration if it already exists. Stable secrets across
 # re-runs are important for any service that derives state from env (e.g.
 # Hasura JWT key, Authentik secret_key).
+#
+# ⚠ DB-TIER REWIRE (W1) OPERATIONAL NOTE: this guard means a box booted under an
+# EARLIER .env (which lacked POSTGRES_HOST_UPSTREAM) will NOT pick up the r7g
+# upstream automatically — pgbouncer would still resolve `postgres` (now gone).
+# To cut a running box over to the r7g, on the box do ONE of:
+#   • rm /opt/packiot/.env && re-run this init (regenerates with the upstream), OR
+#   • targeted append/sed:
+#       echo "POSTGRES_HOST_UPSTREAM=<r7g-private-ip>" >> /opt/packiot/.env
+# then: cd /opt/packiot/stack && docker compose -f compose.production.yml up -d --wait
+# Verify: docker compose exec pgbouncer pg_isready -h <r7g-private-ip> -p 5432
+# ⚠ oauth2-proxy (ADR-0034 §C): the same guard means a box booted under an EARLIER
+# .env (Authentik-era) will NOT gain the OAUTH2_PROXY_*/COGNITO_* keys automatically.
+# To patch a RUNNING box without a full re-init, on the box:
+#   SEC=$(aws secretsmanager get-secret-value --secret-id packiot/production/app \
+#         --region us-east-1 --query SecretString --output text)
+#   {
+#     echo "OAUTH2_PROXY_CLIENT_SECRET=$(echo "$SEC" | jq -r '.oauth2_proxy_client_secret')"
+#     echo "OAUTH2_PROXY_COOKIE_SECRET=$(echo "$SEC" | jq -r '.oauth2_proxy_cookie_secret')"
+#     echo "COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt"
+#     echo "COGNITO_CS_ADMIN_GROUP=cs-admin"
+#     echo "EDGE_API_COGNITO_AUTH_ENABLED=true"
+#   } >> /opt/packiot/.env
+# then: cd /opt/packiot/stack && docker compose -f compose.production.yml up -d oauth2-proxy edge-api
 if [ -f /opt/packiot/.env ]; then
   echo ".env already exists — skipping generation"
+  echo "  NOTE (W1 DB rewire): ensure POSTGRES_HOST_UPSTREAM is present — see comment above."
+  echo "  NOTE (oauth2-proxy): ensure OAUTH2_PROXY_*/COGNITO_* are present — see comment above."
 else
   cat > /opt/packiot/.env <<ENV
 # Generated by app_init.sh (production) — do not edit manually.
 # Shared by all Docker Compose services via env_file + variable substitution.
 
-# Postgres — LOCAL container in dry-run phase (host=pgbouncer compose service).
-# Phase 2 will swap this to point at tsp12 by updating packiot/production/db.
-POSTGRES_URL=$POSTGRES_URL_DRYRUN
+# Postgres — DB lives on the dedicated r7g EC2. App services reach it via the
+# `pgbouncer` compose service (POSTGRES_HOST=pgbouncer); pgbouncer's upstream and
+# the direct-connect DDL/authentik/adminer services use POSTGRES_HOST_UPSTREAM.
+POSTGRES_URL=$POSTGRES_URL_VIA_POOL
 POSTGRES_HOST=pgbouncer
+POSTGRES_HOST_UPSTREAM=$POSTGRES_HOST_UPSTREAM
 POSTGRES_PORT=5432
 POSTGRES_USER=$DB_USER_FROM_SECRET
 POSTGRES_DB=$DB_NAME_FROM_SECRET
 POSTGRES_PASSWORD=$DB_PASS
 
-# Hasura
-HASURA_GRAPHQL_DATABASE_URL=$POSTGRES_URL_DRYRUN
+# Hasura — DIRECT to the r7g (POSTGRES_URL_DIRECT), NOT via pgbouncer. Hasura
+# uses prepared statements that collide under pgbouncer's transaction-pooling
+# mode (error 42P05 "prepared statement '0' already exists" on every BEGIN).
+# HASURA_GRAPHQL_PG_CONNECTIONS=5 (compose) caps the pool against the r7g.
+HASURA_GRAPHQL_DATABASE_URL=$POSTGRES_URL_DIRECT
 HASURA_GRAPHQL_ADMIN_SECRET=$HASURA_ADMIN
 HASURA_GRAPHQL_JWT_SECRET=$HASURA_JWT_JSON
 HASURA_GRAPHQL_ENABLE_CONSOLE=true
@@ -135,6 +203,10 @@ HASURA_GRAPHQL_DEV_MODE=false
 
 # Edge API
 EDGE_API_KEY=$API_KEY
+# CS-Admin edge-bundle dispatch (ADR-0045 P5)
+GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
+# Onboard-generate bearer: edge-api → edge-transformer:9105 (ADR-0045 §generate)
+ONBOARD_API_KEY=$ONBOARD_API_KEY
 EDGE_API_URL=https://api.$PRODUCTION_DOMAIN
 # Set after enterprise onboarding via edge-api:
 #   ID_ENTERPRISE=<id>
@@ -145,6 +217,9 @@ RABBITMQ_USER=$MQ_USER
 RABBITMQ_PASSWORD=$MQ_PASS
 RABBITMQ_URL=amqp://$MQ_USER:$MQ_PASS@rabbitmq:5672
 
+# ingest-shim — shared secret the client HTTP tee presents as X-Ingest-Key.
+INGEST_API_KEY=$INGEST_API_KEY
+
 # Grafana
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
 GF_SERVER_ROOT_URL=https://grafana.$PRODUCTION_DOMAIN
@@ -152,13 +227,14 @@ GF_SERVER_ROOT_URL=https://grafana.$PRODUCTION_DOMAIN
 # Compose substitution helpers
 PRODUCTION_DOMAIN=$PRODUCTION_DOMAIN
 
-# Authentik SSO
-AUTHENTIK_DB_PASSWORD=$AUTHENTIK_DB_PASS
-AUTHENTIK_SECRET_KEY=$AUTHENTIK_SK
-AUTHENTIK_WEB__WORKERS=1
-AUTHENTIK_BOOTSTRAP_EMAIL=admin@packiot.com
-AUTHENTIK_BOOTSTRAP_PASSWORD=$AUTHENTIK_BOOT_PASS
-AUTHENTIK_BOOTSTRAP_TOKEN=$AUTHENTIK_BOOT_TOK
+# oauth2-proxy (Cognito OIDC) — replaces Authentik (ADR-0034 §C). The oauth2-proxy
+# compose service reads these; nginx auth_request gates admin UIs on the cs-admin
+# group. edge-api validates Cognito JWTs when EDGE_API_COGNITO_AUTH_ENABLED=true.
+OAUTH2_PROXY_CLIENT_SECRET=$OAUTH2_CLIENT_SECRET
+OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET
+COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt
+COGNITO_CS_ADMIN_GROUP=cs-admin
+EDGE_API_COGNITO_AUTH_ENABLED=true
 ENV
 fi
 
@@ -171,6 +247,20 @@ GITHUB_PAT=$(get_secret "packiot/production/github-runner" | jq -r '.pat')
 
 # Rewrite packiot HTTPS URLs to embed the PAT. Longest-prefix matching ensures
 # this only applies to packiot org repos, not github.com at large.
+#
+# IDEMPOTENCY: `git config --global url.X.insteadOf Y` keys on the literal URL
+# string X (which includes the PAT). Re-running this script with a different
+# PAT — e.g. after rotation — would ADD a second section rather than replace
+# the first. Two competing insteadOf rules silently break git auth (older
+# stale rule may win). Strip every prior packiot-PAT section before re-adding.
+python3 -c "
+import re, os, sys
+path = '/root/.gitconfig'
+if not os.path.exists(path): sys.exit(0)
+with open(path) as f: c = f.read()
+c = re.sub(r'\[url \"https://x-access-token:[^\"]+@github\.com/packiot/\"\][^\[]*', '', c)
+with open(path, 'w') as f: f.write(c)
+"
 git config --global url."https://x-access-token:$${GITHUB_PAT}@github.com/packiot/".insteadOf "https://github.com/packiot/"
 
 echo "GitHub auth configured"
@@ -184,7 +274,10 @@ if [ -d "stack/.git" ]; then
   git fetch origin
   git checkout production
   git pull origin production
-  git submodule update --init -- edge-api operator \
+  # --force ensures git retries clones for submodules whose checkout dir
+  # exists but is empty/stale (left over from a previous auth failure) — a
+  # failed first clone otherwise leaves empty placeholder dirs that block retry.
+  git submodule update --init --force -- edge-api operator \
     || echo "WARNING: submodule update failed — continuing with existing state"
   cd /opt/packiot
 else

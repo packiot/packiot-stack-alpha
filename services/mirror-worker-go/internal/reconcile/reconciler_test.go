@@ -191,6 +191,81 @@ func TestFinisherDecision(t *testing.T) {
 	}
 }
 
+// TestTerminalCloserDecision pins the prod-terminal closer's safety ladder. Two
+// axes distinguish it from finisherDecision: (1) it closes ONLY status=3
+// (FINISHED) twins — a paused (status=4) twin is skipped_not_terminal where the
+// finisher would close it; (2) status=2 is still the load-bearing skip that
+// protects prod-active POs (894330/894668/894749). The close ts is unchanged
+// (prod last-activity), so grace/no-activity/unverified rungs mirror the finisher.
+func TestTerminalCloserDecision(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	grace := now.Add(-30 * time.Minute)
+
+	oldActivity := now.Add(-2 * time.Hour)      // safely before the grace cutoff
+	recentActivity := now.Add(-5 * time.Minute) // inside the grace window
+
+	cases := []struct {
+		name    string
+		info    db.ProdPOFinishInfo
+		present bool
+		want    finisherOutcome
+	}{
+		{
+			// The wedge PO 894561: prod FINISHED, past grace → closes.
+			name:    "prod-finished orphan closes at last-activity ts",
+			info:    db.ProdPOFinishInfo{Status: 3, LastActivity: oldActivity, HasActivity: true},
+			present: true,
+			want:    outcomeFinish,
+		},
+		{
+			// 894330/894668/894749: prod still running → MUST NOT close.
+			name:    "still active on prod is skipped (never close a running PO)",
+			info:    db.ProdPOFinishInfo{Status: 2, LastActivity: oldActivity, HasActivity: true},
+			present: true,
+			want:    outcomeSkipStillActive,
+		},
+		{
+			// Key divergence from finisherDecision: paused ≠ terminal → skip.
+			name:    "paused-on-prod (status=4) is skipped_not_terminal",
+			info:    db.ProdPOFinishInfo{Status: 4, LastActivity: oldActivity, HasActivity: true},
+			present: true,
+			want:    outcomeSkipNotTerminal,
+		},
+		{
+			name:    "available-on-prod (status=1) is skipped_not_terminal",
+			info:    db.ProdPOFinishInfo{Status: 1, LastActivity: oldActivity, HasActivity: true},
+			present: true,
+			want:    outcomeSkipNotTerminal,
+		},
+		{
+			name:    "finished but inside grace window is skipped",
+			info:    db.ProdPOFinishInfo{Status: 3, LastActivity: recentActivity, HasActivity: true},
+			present: true,
+			want:    outcomeSkipGrace,
+		},
+		{
+			name:    "finished but no last-activity ts is skipped",
+			info:    db.ProdPOFinishInfo{Status: 3, HasActivity: false},
+			present: true,
+			want:    outcomeSkipNoActivity,
+		},
+		{
+			name:    "prod has no row (unverifiable) is skipped",
+			info:    db.ProdPOFinishInfo{},
+			present: false,
+			want:    outcomeSkipUnverified,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := terminalCloserDecision(c.info, c.present, grace)
+			if got != c.want {
+				t.Errorf("terminalCloserDecision = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	cases := []struct {
 		name string
@@ -342,7 +417,7 @@ func TestShadowFanoutPlan_F2EqualsF3(t *testing.T) {
 	prod := db.ProdPOFinishInfo{Status: 4, LastActivity: stop, HasActivity: true}
 
 	f2Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 2 (shadow_go_port)
-	f3Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 3 (packiot_shadow)
+	f3Plan := shadowFanoutPlan(f1, prod, true, grace) // Flow 3 (packiot_analytics)
 
 	if f2Plan.action != shadowSeal || f3Plan.action != shadowSeal {
 		t.Fatalf("expected both flows to seal, got F2=%d F3=%d", f2Plan.action, f3Plan.action)

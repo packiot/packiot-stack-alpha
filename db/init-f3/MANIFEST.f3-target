@@ -1,0 +1,307 @@
+T	area_runtime_1day	975dc63093c037e44e854649efdebcc9
+T	area_runtime_1hour	91fa573a82ca27cf61c1f9da31783cfb
+T	area_runtime_1month	875fa7bcb472bc684db7a3aeca488e51
+T	area_runtime_1week	c710986f3d3e4ada1c2b72cb8cdf38aa
+T	area_runtime_shift	54035c5772a79e606ff52d6bc74b896e
+T	areas	6cd04dfc83552e233130583f569597d6
+T	areas_history	4b9bfe1b1dcaa61ddadebd4ea9bd1418
+T	box_production_bridges	5026a6848d951575ad55e16a6efcaef2
+T	box_scans	693cfcb1f4eefa7dbd8268086282cbdf
+T	clients	4ea0da3bf7786c291b46c43df5cc84b0
+T	dashboard_config	b59762e39b67830c0fe7e4a4c3469afb
+T	data_quality_event	6d3107c87ff6f2892336a1126e06e3ae
+T	downtime_reason	a1af077e2652a5b4be4ec2942d608b8c
+T	enterprises	818da91c121517ec3751d8ab882525e6
+T	enterprises_history	fc94e7c9b780db141c608a6f59a5164a
+T	equipment_downtime_reason	a266231cd6a30bff468d154c6a61e5d2
+T	equipment_events	806cea3cd38bfbb0f3f2bd8366fc903f
+T	equipment_events_low_speed	a468e09210c6069755d10b8939177e0c
+T	equipment_events_man	4a3436b1fef30a4800cb203a13336e37
+T	equipment_events_raw	21d16c1ad3aa0372ea452a9de7e6c97e
+T	equipment_runtime_1day	67e45173b15e701e5aa0e0c12d25426a
+T	equipment_runtime_1hour	087b2115653083a46d0878b525d2e76f
+T	equipment_runtime_1month	26ad69c359d856659c45844760c23875
+T	equipment_runtime_1week	26ad69c359d856659c45844760c23875
+T	equipment_runtime_shift	1ac64fa819ab919eec861bdc56747a4a
+T	equipment_scrap_reason	a266231cd6a30bff468d154c6a61e5d2
+T	equipment_values	2224a7e00a6149f465809da1da655a69
+T	equipment_values_1min	46e3d6914c04a8e7b2e0b24a64589c66
+T	equipment_values_raw	2224a7e00a6149f465809da1da655a69
+T	equipments	2ce91ea6f2307afdd355df7361ac3ce7
+T	equipments_history	9b7be72bbd97460b605a4cd6d472303d
+T	function_execution_log	07cebdc6eb46e61200b3b594a1636d31
+T	h_downtimes_duration_by_category	2e6db9db01516ddeb8f155bad0f49339
+T	h_downtimes_table	3808896dbf46793bcfac596c87ecd641
+T	h_downtimes_table_2	e19a2a12c3ed3c0a0670ab1eba3688b1
+T	h_downtimes_table_with_sector_2	28db936e385f695ea9178a84bd44637d
+T	h_downtimes_table_with_sector_3	627e69f4bd64b2d9f9e572cf2adb98af
+T	h_equipment_chart_data_1day	4b6771197931e8701954f05365218757
+T	h_events_equipment_timeline_2	91da1f9474951e697f3dcc647ff9baf4
+T	h_events_timeline	cd4aedf674fbf2bbf660b7b68bf634cf
+T	h_events_timeline2	4da13bd9285285e819a9e3198c85d65c
+T	h_events_timeline3	b0ad61cfe030efbb72ad0eb05eeeeaae
+T	h_events_timeline3_with_event_id	fa93389d35a5617007c50f2ca8a40f06
+T	h_events_timeline3_with_event_id_cpack	fa93389d35a5617007c50f2ca8a40f06
+T	h_events_timeline4	fe5791b8d0da00bcc91a830b7a755f78
+T	h_events_timeline5	aaaf2961055b4b7dd9e2600838d2e0ed
+T	h_events_timeline_full	9fc349e6187cc2515fa3332d46040932
+T	h_events_timeline_full2	203ceb9f133a54c8f133eef1a17f75d6
+T	h_machine_speed	5cb4f2cd6b39f43f4ac7eb361371756f
+T	h_overview_i_events	5f237b6d18dfce603d45fee9de7eb0cc
+T	h_overview_i_events_2	8b288c3457a7fb755d7b71172cab4d86
+T	h_overview_i_events_3	78e3e578bba1edffd7c658219862dd07
+T	h_overview_i_job_info	58300c728e4fcd11222ad384982edc22
+T	h_overview_i_production_chart	e9959498a058cb28d9878dc0e7ba37cc
+T	h_overview_i_production_chart_v6	e9959498a058cb28d9878dc0e7ba37cc
+T	h_overview_i_shift_production	1bfa0e6627c1a6fed90101aae7b4f87c
+T	h_pending_events	d55c6db4af535a02a54f5c80fffbe5f3
+T	h_pending_events_with_event_id	c20145fcfc9fa031aa7221e7aef3c835
+T	h_pending_events_with_event_id_cpack	c20145fcfc9fa031aa7221e7aef3c835
+T	h_piot_day_week_begin	b396099886f8e610c9e497e78551f7a3
+T	h_piot_edge_settings	8aa6a6b6e2cadde74a862a91254c21d5
+T	h_piot_edited_po	b015347b96095d2da11a24cac0cd3e6c
+T	h_piot_get_downtimes_per_category_equipment_level_new	aadbe220d782e1c1c900ab2513bc743f
+T	h_piot_get_downtimes_per_category_table	3bbe7508e8db122c39ac0fa02a190344
+T	h_piot_get_downtimes_resumo_table	61bdb20f3616689e6628e8140a4b9bad
+T	h_piot_home_table	0a948f5f6cc25968659abe34967d04cd
+T	h_piot_mission_control	186fd851e357197f848dc53c9f6b8c29
+T	h_piot_mission_control_area_new	a77a1cc6527de8ada5921d6ea4d0e075
+T	h_piot_mission_control_area_uns	cc6d100809590b4307ce045852472cf0
+T	h_piot_mission_control_area_uns_2	7efb25d745ee1cff3bef66d3a3f55dbb
+T	h_piot_mission_control_timeline	c707bc3be4657756d8fba303f62d08ec
+T	h_piot_mission_control_uns	0ff6a8f17eb9e42336c22c3db4ac39c6
+T	h_piot_mission_control_uns_3	cfdf8b91bf8c1918b9f16cbdd2a89561
+T	h_piot_oee_progress_chart_data	144d094ba66fadc3393ab30d81f061ec
+T	h_piot_oee_progress_data1	f24ed6eef7b075729877fa14b91a2cdb
+T	h_piot_oee_progress_with_teams	35148bc56f568c527d8de675c19467f0
+T	h_piot_oee_score_data	e68e16916a347bee8931e44dbe35f27c
+T	h_piot_oee_score_data_test1	d995760cf9f20edae37fedde37db4b2b
+T	h_piot_oee_score_full_table	c7638660fea09d12cc73cd0447b451d3
+T	h_piot_oee_score_teams_table	dbcad574812ba95cd5c4dfe24f18ce0f
+T	h_piot_production_flow_table	9ff63609cc1708d7b454f1a8c4e7b427
+T	h_piot_production_orders_merged_new_table	8676298fbb74fbc0161230b96afe44d2
+T	h_piot_production_orders_table	5b2d7c5081d077fbfea3d65e7e530a93
+T	h_piot_production_orders_with_runtimes_table	0f1915aa6cf1759d57b3bf0076d9f99d
+T	h_piot_production_orders_with_runtimes_table2	5e33095f292d1551199b2fbad93764b8
+T	h_piot_production_orders_with_runtimes_table6	9de388f20b1e5a633d7a0ba42ae5b826
+T	h_piot_production_orders_with_runtimes_table_4	ec9b8647a98b42ff3731056c42368715
+T	h_piot_production_orders_with_runtimes_table_5	56f538b7782cb40449aa6c6283afe211
+T	h_piot_production_targets	d11c3b804321d6c63dc63dbacbddd35a
+T	h_piot_split_downtime	db7b2a41a64894dcfc60383b86e5d6ca
+T	h_production_health	1ae2092394e73ccc435b9466e2ff29bf
+T	h_shift_hours_per_equipment	2ac8d7a2fbcf53f9a48ab05044003bd4
+T	h_shift_hours_per_equipment_packml_topic	259751c201a33c0068134db807fb055f
+T	h_single_period_equipment_chart_table_3	d0ff948c66aa2cb21dae0a0e0c52501e
+T	h_single_period_equipment_chart_table_4	d43d08754e5595035a9df9821248949c
+T	h_total_production_chart_data	3321b41f1958bee2eb0d179ce889e894
+T	h_total_production_chart_data_tz_fix	0325611bf26161e980f268bd3e0bbc4c
+T	h_total_production_chart_from_runtime	71a0153d539cfc2b88542cf781c82228
+T	hist_equipment_events	322bb75e4fdcd7d5292a1319b4557a88
+T	hist_equipment_values	5b2c9569e46c51908eec7a6f31aacbf1
+T	hist_production_orders	5200bf4493c4ea13b9cb658c42aa4293
+T	hist_production_orders_runtime	d423847f2806cf5cf26955b6d8206c2b
+T	hist_user_logs	c8444a40c6d1b4090e7af988a1494c08
+T	insights_logs	23e7f98e2f476b9ef5191ae5ed2c80fe
+T	label_formats	cbd7dffef3284b1ee6f6eb5c84fb0e71
+T	language_packs	664dba5d33e29fd31a8f309491dda652
+T	oee_targets	6988599205a8548a772a963c548e542a
+T	packml_register	d8ba636b715e8705f94a1019f36743a1
+T	pages	f50a5a3efe4fdc138b548cd2274d6786
+T	po_box_counter	b42ab02f99b48228ed5fb437db60922f
+T	product_families	7aefbc92559aa9929572590121585df9
+T	production_orders	97c41b8fb632311a3eab68939e0ed701
+T	production_orders_runtime	d423847f2806cf5cf26955b6d8206c2b
+T	production_targets	ce4352f3b76e494dffbc8a52aceb41bd
+T	products	639079c4f49227a46a4b2c91bac9afc7
+T	report_shift_enterprise_06	fea27d922c0cef0558bf05dc3131b537
+T	report_speed_enterprise_33	fea27d922c0cef0558bf05dc3131b537
+T	scrap_reason	29fa51117562d8013bcca68c5e6297b9
+T	scrap_targets	8da521b68ab6126b46f1ca81cea5daa3
+T	shift_hours	25e060ae54f7f6b28e0a0304af3c3f7d
+T	shifts	ca9e0d8c2259f66f9633474b1163b868
+T	shifts_exception_period	17a2531d1987b20f16f7c04732aab164
+T	site_runtime_1day	83986094c8777ddc00716073fc9845fb
+T	site_runtime_1hour	83986094c8777ddc00716073fc9845fb
+T	site_runtime_1month	47ed35db19d5e5957aece28c61005ca4
+T	site_runtime_1week	47ed35db19d5e5957aece28c61005ca4
+T	site_runtime_shift	57a471f974164c82e3efa52376129e5a
+T	sites	b53ab919fd27931ea3e942e4d803a806
+T	sites_history	94b72df91804a3fe0886e05b2e17c2fe
+T	teams	66d18e6682e34f8dda4ffe5cd9bbe4c3
+T	uns_area_current_day	19001395ca4e2fe051e0240468522fbd
+T	uns_area_current_hour	717425db9098e89aa5e52e5c666fd6f4
+T	uns_area_current_month	27e65ed8211f000ed81bfdd10762ebc0
+T	uns_area_current_shift	d5245a57dfba70564a3126f827df2927
+T	uns_area_current_week	27e65ed8211f000ed81bfdd10762ebc0
+T	uns_equipment_current_day	e4f0d14dddfffbd16f43ffede665613f
+T	uns_equipment_current_hour	da597c880e4cc67852c414284cbfffc6
+T	uns_equipment_current_job	f36ecddd45c54382fd0e747f2034c7eb
+T	uns_equipment_current_metrics	cc785350d2ab9bc2562c5ef558a7989e
+T	uns_equipment_current_month	6bf4d568067d0131bde1b03b7cec53c2
+T	uns_equipment_current_shift	0416569765e136579c5c500777d52124
+T	uns_equipment_current_week	6bf4d568067d0131bde1b03b7cec53c2
+T	uns_site_current_day	727425d87a7c0a959a05ca4e2272fcc6
+T	uns_site_current_hour	20415c18cf891d2febd768b8b7051a32
+T	uns_site_current_month	89ae2d127f23bb03f5eef9f06145d36e
+T	uns_site_current_week	89ae2d127f23bb03f5eef9f06145d36e
+T	user_logs	c8444a40c6d1b4090e7af988a1494c08
+T	user_roles	ec9247130e95379405f5c6b871406ac4
+T	user_screen_config	06609be938dcc20580e016f1255c87cb
+T	users	21cdef030b658292d6673c551c57fc15
+T	v_13_overview_partial_scrap_rate	07fe67ce85d7081fb8a2388a0457078a
+T	v_13_overview_takt	c72d50779cfdc8ec84b7807e08295a47
+V	agg_equipment_values_1min_t
+V	monitoramento_execucao_functions
+V	v_entities_per_user_role
+V	v_entities_per_user_role_operator
+V	v_menu_per_user_role
+V	v_operator_entities_2
+V	v_operator_po_details_3
+V	v_operator_po_list_setup_4
+V	v_po_box_totals
+V	v_report_downtimes
+F	box_scans_no_mutate()
+F	bronze_raw_no_mutate()
+F	h_piot_downtimes_duration_by_category(idequipment integer)
+F	h_piot_get_downtimes(_tsstart timestamp without time zone, _tsend timestamp without time zone)
+F	h_piot_get_downtimes_equipment_level(in_ids_sites text, in_ids_areas text, in_ids_equipments text, _tsstart timestamp without time zone, _tsend timestamp without time zone)
+F	h_piot_get_downtimes_events(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_sectors text, _tsstart timestamp without time zone, _tsend timestamp without time zone, microstops_view boolean)
+F	h_piot_get_downtimes_events_2(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_sectors text, _tsstart timestamp without time zone, _tsend timestamp without time zone, microstops_view boolean)
+F	h_piot_get_downtimes_events_3(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_sectors text, _tsstart timestamp without time zone, _tsend timestamp without time zone, microstops_view boolean)
+F	h_piot_get_downtimes_per_category(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_get_downtimes_per_category_equipment_level_new_4(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_get_downtimes_per_category_equipment_level_new_4_test(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_get_downtimes_resumo(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_get_downtimes_resumo_2(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_get_downtimes_sector_2(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_sectors text, _tsstart timestamp without time zone, _tsend timestamp without time zone, sector_view boolean)
+F	h_piot_get_downtimes_sector_microstops(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_sectors text, _tsstart timestamp without time zone, _tsend timestamp without time zone, sector_view boolean, microstops_view boolean)
+F	h_piot_get_equipment_pending_downtime(in_packml_topic character varying[])
+F	h_piot_get_equipment_pending_downtime_with_event_id(in_packml_topic character varying[])
+F	h_piot_get_equipment_pending_downtime_with_event_id_cpack(in_packml_topic character varying[])
+F	h_piot_get_events_timeline(in_packml_topic character varying[])
+F	h_piot_get_events_timeline2(in_packml_topic character varying[])
+F	h_piot_get_events_timeline3(in_packml_topic character varying[])
+F	h_piot_get_events_timeline3_with_event_id(in_packml_topic character varying[])
+F	h_piot_get_events_timeline3_with_event_id_cpack(in_packml_topic character varying[])
+F	h_piot_get_events_timeline4(in_packml_topic character varying[])
+F	h_piot_get_events_timeline5(in_packml_topic character varying[])
+F	h_piot_get_events_timeline_from_po(_id_production_order integer)
+F	h_piot_get_events_timeline_from_po_2(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, _id_production_order integer)
+F	h_piot_get_events_timeline_full(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, _id_production_order integer)
+F	h_piot_get_events_timeline_full_with_filter(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_event_types text, _id_production_order integer)
+F	h_piot_get_events_timeline_full_with_filter_2(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_event_types text, _id_production_order integer)
+F	h_piot_get_events_timeline_full_with_filter_3(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_event_types text, _id_production_order integer, _tsstart timestamp without time zone, _tsend timestamp without time zone)
+F	h_piot_get_mission_control_area_uns(in_id_enterprise integer, in_id_areas text, in_id_sites text)
+F	h_piot_get_mission_control_area_uns_2(in_id_enterprise integer, in_id_areas text, in_id_sites text)
+F	h_piot_get_mission_control_timeline(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text)
+F	h_piot_get_mission_control_uns(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text)
+F	h_piot_get_mission_control_uns_3(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text)
+F	h_piot_get_production_health(idequipment integer)
+F	h_piot_get_targets(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, group_by_element text)
+F	h_piot_home_uns(in_id_enterprise integer)
+F	h_piot_machine_speed(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, group_by_element text)
+F	h_piot_oee_progress_data(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_oee_progress_data_teste1(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_progress_new(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_ids_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean, is_team_filtered boolean)
+F	h_piot_oee_progress_new2(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_ids_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean, is_team_filtered boolean)
+F	h_piot_oee_score_fix1(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_fix1a(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_full(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_full_2(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_full_3(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_full_4(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_lines(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, begin_time timestamp with time zone, end_time timestamp with time zone, time_grain text)
+F	h_piot_oee_score_new(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_with_teams(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_ids_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_with_teams_2(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_ids_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_oee_score_with_teams_3(in_id_enterprise integer, in_id_equipments text, in_id_areas text, in_id_sites text, in_ids_shifts text, in_ids_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, nav_level text, is_shift_filtered boolean)
+F	h_piot_overview_i_get_events(idequipment integer)
+F	h_piot_overview_i_get_events_2(idequipment integer)
+F	h_piot_overview_i_get_events_3(idequipment integer)
+F	h_piot_overview_i_get_job_info(idequipment integer)
+F	h_piot_overview_i_production_chart(idequipment integer)
+F	h_piot_overview_i_shift_production(idequipment integer)
+F	h_piot_overview_production_chart(idequipment integer)
+F	h_piot_overview_production_chart_v6(idequipment integer)
+F	h_piot_production_flow(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_production_orders_merged_new_function(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_runtimes(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_with_runtimes(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_with_runtimes2(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_with_runtimes3(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_with_runtimes4(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_with_runtimes5(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_production_orders_with_runtimes6(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, _tsstart timestamp without time zone, _tsend timestamp without time zone, in_ids_teams text)
+F	h_piot_set_production_target(in_id_enterprise integer, in_id_equipment integer, proportional boolean, in_target_day integer, in_target_week integer, in_target_month integer, in_target_shift integer, in_target_hour integer)
+F	h_piot_set_scrap_target(in_id_enterprise integer, in_id_equipment integer, proportional boolean, in_target_day integer, in_target_week integer, in_target_month integer, in_target_shift integer, in_target_hour integer)
+F	h_piot_single_period_equipment_chart_3(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_single_period_with_teams(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_single_period_with_teams_2(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, group_by_element text)
+F	h_piot_single_period_with_teams_3(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, group_by_element text)
+F	h_piot_single_period_with_teams_4(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text, group_by_element text)
+F	h_piot_total_production_area_chart_day(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_shifts text, begin_time timestamp with time zone, end_time timestamp with time zone, time_grain text)
+F	h_piot_total_production_equipment_chart_day(in_id_enterprise integer, in_ids_sites text, in_ids_areas text, in_ids_equipments text, in_ids_shifts text, begin_time timestamp with time zone, end_time timestamp with time zone, time_grain text)
+F	h_piot_total_production_equipment_chart_day_test1(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_total_production_equipment_chart_day_test1_tz_fix(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_total_production_equipment_chart_day_test1_tz_fix2(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text)
+F	h_piot_total_production_equipment_from_runtime(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_begin_time timestamp without time zone, in_end_time timestamp without time zone, time_grain text)
+F	h_piot_total_production_equipment_from_runtime_test(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_begin_time timestamp without time zone, in_end_time timestamp without time zone, time_grain text)
+F	h_piot_total_production_sites_chart_day(in_id_enterprise integer, in_ids_sites text, in_ids_shifts text, begin_time timestamp with time zone, end_time timestamp with time zone, time_grain text)
+F	h_piot_total_production_teams(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp without time zone, in_end_time timestamp without time zone, partitionby text, time_grain text)
+F	h_piot_total_production_teams_2(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp without time zone, in_end_time timestamp without time zone, partitionby text, time_grain text)
+F	log_dimension_history()
+F	piot_create_area_runtime_1day()
+F	piot_create_area_runtime_1hour()
+F	piot_create_area_runtime_1month()
+F	piot_create_area_runtime_1week()
+F	piot_create_area_runtime_shift()
+F	piot_create_equipment_runtime_1day()
+F	piot_create_equipment_runtime_1hour()
+F	piot_create_equipment_runtime_1month()
+F	piot_create_equipment_runtime_1week()
+F	piot_create_equipment_runtime_shift()
+F	piot_create_equipment_runtime_shift_1month()
+F	piot_create_equipment_runtime_shift_1week()
+F	piot_create_site_runtime_1day()
+F	piot_create_site_runtime_1hour()
+F	piot_create_site_runtime_1month()
+F	piot_create_site_runtime_1week()
+F	piot_create_site_runtime_shift()
+F	piot_get_day_begin_by_area(in_id_area integer, in_ts_value timestamp with time zone)
+F	piot_get_day_begin_by_equipment(in_id_equipment integer, in_ts_value timestamp with time zone)
+F	piot_get_day_begin_by_site(in_id_site integer, in_ts_value timestamp with time zone)
+F	piot_get_day_begin_offset_by_equipment(in_id_equipment integer)
+F	piot_get_day_week_begin_by_packml_topic(in_topic character varying)
+F	piot_get_edge_setting()
+F	piot_get_equipment_chart_data(begin_time timestamp with time zone, end_time timestamp with time zone, grain character varying)
+F	piot_get_equipment_chart_data_1day(begin_time timestamp with time zone, end_time timestamp with time zone)
+F	piot_get_shift_hour_begin_by_area(in_id_area integer, ts_value timestamp with time zone)
+F	piot_get_shift_hour_begin_by_equipment(in_id_equipment integer, ts_value timestamp with time zone)
+F	piot_get_shift_hour_begin_by_site(in_id_site integer, ts_value timestamp with time zone)
+F	piot_get_shift_hour_list_by_equipment(in_id_enterprise integer, in_id_equip integer)
+F	piot_get_shift_hours_by_enterprise_packml_topic(in_topic text)
+F	piot_get_shift_hours_by_enterprise_packml_topic_2(in_topic character varying, in_enterprise integer)
+F	piot_get_shift_hours_by_equipment(in_id_enterprise integer, in_id_equip integer)
+F	piot_get_shift_hours_by_packml_topic(in_topic text)
+F	piot_get_shift_hours_by_packml_topic_2(in_topic character varying)
+F	piot_split_downtime(_id_equipment_event bigint, _begin_time timestamp with time zone, _notes character varying, _idle character varying, _cd_machine character varying, _cd_category character varying, _cd_subcategory character varying, _change_over boolean, _planned_downtime boolean)
+F	piot_switch_po_number(in_production_order_running integer, in_new_production_order integer)
+F	set_updated_at()
+C	agg_area_values_10min
+C	agg_area_values_1hour
+C	agg_area_values_1min
+C	agg_equipment_values_10min
+C	agg_equipment_values_1hour
+C	agg_equipment_values_1min
+C	agg_site_values_10min
+C	agg_site_values_1hour
+C	agg_site_values_1min
+C	ca_agg_equipment_values_1hour
+C	ca_agg_equipment_values_1min
+C	ca_discrete_changes_1s
+C	ca_equipment_boxes_1hour
+C	ca_equipment_boxes_1s
+H	equipment_events
+H	equipment_events_raw
+H	equipment_values
+H	equipment_values_raw

@@ -1,0 +1,77 @@
+# Live Status — latest reading per equipment over bi.live_status.
+# Tenant isolation via Superset RLS (id_enterprise), not encoded here.
+# chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: Live Status
+description: Live machine status table with live machine count and average speed KPIs.
+css: ''
+slug: live-status
+certified_by: null
+certification_details: null
+published: true
+uuid: e1e7b053-29ac-451b-b959-993168d550a0
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 30
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-table
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Live Status
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-live-count
+    - CHART-live-avg-speed
+  CHART-live-count:
+    type: CHART
+    id: CHART-live-count
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: dd3c2358-ef77-4ce5-9fb9-5cc26be8c45d, width: 6, height: 50, chartId: 1, sliceName: Live machine count}
+    children: []
+  CHART-live-avg-speed:
+    type: CHART
+    id: CHART-live-avg-speed
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: 48b848bc-3180-48df-a9f7-1cace77223b6, width: 6, height: 50, chartId: 2, sliceName: Live avg speed}
+    children: []
+  ROW-table:
+    type: ROW
+    id: ROW-table
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-live-table
+  CHART-live-table:
+    type: CHART
+    id: CHART-live-table
+    parents: [ROOT_ID, GRID_ID, ROW-table]
+    meta: {uuid: 42f1fede-693c-41dd-9d5f-50e24d6a91e3, width: 12, height: 50, chartId: 3, sliceName: Live status table}
+    children: []

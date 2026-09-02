@@ -28,6 +28,7 @@ resource "aws_s3_object" "nginx_setup" {
   content = templatefile("${path.module}/user_data/nginx_setup.sh", {
     staging_domain = var.staging_domain
     services       = var.services
+    service_auth   = var.service_auth
     aws_region     = var.aws_region
   })
 }
@@ -162,9 +163,9 @@ resource "aws_iam_policy" "app_custom" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ReadStagingSecrets"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Sid    = "ReadStagingSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
         Resource = [
           "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*",
           # databaseCredentials holds the prod SELECT-only awslambda user creds,
@@ -213,10 +214,62 @@ resource "aws_iam_policy" "app_custom" {
         # EC2 already has AmazonSSMManagedInstanceCore + S3 access for its
         # bootstrap script. Disk-fill alarm at 75% lives in Terraform separately
         # (aws_cloudwatch_metric_alarm.app_disk_used_percent).
-        Sid    = "PublishCloudWatchMetrics"
-        Effect = "Allow"
-        Action = ["cloudwatch:PutMetricData"]
+        Sid      = "PublishCloudWatchMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
         Resource = "*"
+      },
+      {
+        # CS-Admin cognito-users page (edge-api, running on this app EC2 under
+        # the instance role) manages Cognito users/groups for onboarding. The
+        # ListUsers-backed page 502'd because the role lacked cognito-idp read
+        # access. Scoped to the single staging user pool ARN — no wildcard —
+        # so the app can only touch the pool it authenticates against. Codifies
+        # the inline policy added live (put-role-policy csadmin-cognito-user-mgmt).
+        Sid    = "CsAdminCognitoUserMgmt"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:ListUsers",
+          "cognito-idp:AdminGetUser",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminListGroupsForUser",
+          "cognito-idp:ListGroups",
+          "cognito-idp:AdminDisableUser",
+          "cognito-idp:AdminEnableUser",
+        ]
+        Resource = "arn:aws:cognito-idp:${var.aws_region}:${data.aws_caller_identity.current.account_id}:userpool/us-east-1_0T9t1sTwt"
+      },
+      {
+        # apply-agent-config (edge-ssm #224) provisions a tenant's raw_tag_map
+        # into the shared multi-tenant sparkplug-agent-shared, which runs on THIS
+        # app box. edge-api (on this instance role) SSM-SendCommands the box to
+        # ITSELF to base64-write the tenant yaml + force-recreate the agent. The
+        # SendCommand needs BOTH the document AND the target instance authorized,
+        # and a Condition binds the whole statement — so, exactly like the external
+        # packiot-edge-ssm-control policy, they are split: the document carries no
+        # tag (unconditioned), the target is scoped by the managed-by tag.
+        Sid      = "SharedAgentSendCommandDocument"
+        Effect   = "Allow"
+        Action   = ["ssm:SendCommand"]
+        Resource = "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"
+      },
+      {
+        # Target scope: SendCommand only to an EC2 instance tagged
+        # managed-by=packiot-edge-api (the app box carries it — see
+        # aws_instance.app.tags). CRITICAL: an EC2 target uses the ec2:instance
+        # ARN, NOT ssm:instance (that namespace is hybrid mi- activations only) —
+        # the mismatch silently AccessDenies. Codifies the live
+        # packiot-edge-ssm-control v4 grant so seam2 is self-sufficient in-repo.
+        Sid      = "SharedAgentSendCommandTarget"
+        Effect   = "Allow"
+        Action   = ["ssm:SendCommand"]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          StringEquals = { "ssm:resourceTag/managed-by" = "packiot-edge-api" }
+        }
       }
     ]
   })
@@ -355,7 +408,15 @@ resource "aws_instance" "app" {
     aws_region   = var.aws_region
   }))
 
-  tags = { Name = "packiot-staging-app" }
+  # managed-by=packiot-edge-api: the ownership tag edge-api's SendCommand policy
+  # (SharedAgentSendCommandTarget above) scopes to. This box runs both edge-api
+  # AND the shared sparkplug-agent-shared, so apply-agent-config self-targets it.
+  # Must stay in sync with that policy Condition — dropping this tag AccessDenies
+  # every apply-agent-config. Codifies the live `ec2 create-tags` added 2026-09-01.
+  tags = {
+    Name         = "packiot-staging-app"
+    "managed-by" = "packiot-edge-api"
+  }
 
   # Both S3 objects must exist before the instance boots and app_init.sh runs.
   depends_on = [aws_s3_object.app_init, aws_s3_object.nginx_setup]

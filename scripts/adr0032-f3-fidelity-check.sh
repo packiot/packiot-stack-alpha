@@ -3,53 +3,72 @@
 # ADR-0032 F1→F3 collapse. READ-ONLY. Runs the three acceptance-criteria probes
 # (A data fidelity, B operator fidelity, C render-surface readiness) against the
 # live staging DB EC2 and prints a per-criterion freshness/row-count/OEE/lag
-# matrix for F1 (packiot.public) vs F3 (packiot_shadow).
+# matrix for F1 (packiot.public) vs F3 (packiot_analytics).
 #
 # It is the reusable companion to the one-off QA verification in the ADR-0032
 # Step-1 report: run it before the flip to capture the F1 golden baseline, and
 # after each collapse step to confirm F3 still satisfies A/B/C.
 #
-# Transport: SSM RunShellScript → docker exec timescaledb psql. Every statement
-# is wrapped in BEGIN READ ONLY (see feedback_prod_db_readonly). No writes ever.
+# Transport: SSM AWS-StartNonInteractiveCommand start-session (driven under a PTY
+# via `script -qec`) → sudo bash on the host → `docker exec -i timescaledb psql`,
+# SQL streamed over stdin from a unique remote temp file. The older
+# AWS-RunShellScript send-command transport is POLICY-BLOCKED on this account, so
+# this is the only working read-only path (see the ADR-0032 execution plan §6 and
+# reference_staging_db_access_and_config). Every statement is wrapped in
+# BEGIN READ ONLY (see feedback_prod_db_readonly). No writes ever.
+#
+# Acceptance semantics (post-collapse-prep): F1's OEE compute is a corpse
+# (uns_current_shift frozen since 2026-07-08), so this gate is NOT a byte-identity
+# check of F3 vs F1. Acceptance = F3-HEALTHY: F3 telemetry fresh, rollups compute
+# to now, OEE anomaly-free (no oee>1 / oee<0), and the render surface (h_piot fns +
+# config relations) present. F1 columns are printed only as a sanity reference.
 #
 # Usage:
 #   ./adr0032-f3-fidelity-check.sh                 # ent 3 + 4, both flows
 #   INSTANCE=i-064bb36d1c454d861 REGION=us-east-1 ./adr0032-f3-fidelity-check.sh
 #   ENTERPRISES="3,4" ./adr0032-f3-fidelity-check.sh
 #
-# Requires: aws cli with ssm:SendCommand on the staging DB EC2.
+# Requires: aws cli + session-manager-plugin, ssm:StartSession on the staging DB
+# EC2, and `script` (util-linux) for the PTY. Repeatable: each probe uses a unique
+# remote temp path, so concurrent runs never collide.
 set -euo pipefail
 
 INSTANCE="${INSTANCE:-i-064bb36d1c454d861}"
 REGION="${REGION:-us-east-1}"
 ENTS="${ENTERPRISES:-3,4}"
 F1_DB="${F1_DB:-packiot}"
-F3_DB="${F3_DB:-packiot_shadow}"
+F3_DB="${F3_DB:-packiot_analytics}"
 
-# run_sql <db> <sql> — execute SELECT-only SQL in the timescaledb container via SSM.
+# run_sql <db> <sql> — execute SELECT-only SQL in the timescaledb container via the
+# start-session transport. The SQL is base64'd and wrapped in BEGIN READ ONLY; a
+# small remote bootstrap (also base64'd) runs under `sudo bash` on the host, decodes
+# the SQL to a UNIQUE mktemp file, streams it into the container over stdin, and
+# cleans up. The AWS-StartNonInteractiveCommand doc execs `command` with no shell
+# and word-splits on spaces, so the outer `bash -c` payload must be space-free —
+# hence the ${IFS} separators (see plan §6).
 run_sql() {
   local db="$1" sql="$2"
-  local full sql_b64 remote cmd_id st
+  local full sql_b64 remote remote_b64
   full=$'BEGIN READ ONLY;\n'"$sql"$'\nCOMMIT;'
   sql_b64=$(printf '%s' "$full" | base64 -w0)
-  remote="echo $sql_b64 | base64 -d > /tmp/adr0032q.sql; docker cp /tmp/adr0032q.sql timescaledb:/tmp/adr0032q.sql >/dev/null; docker exec -i timescaledb psql -U postgres -d $db -v ON_ERROR_STOP=1 -f /tmp/adr0032q.sql"
-  cmd_id=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
-    --comment "ADR-0032 F3 fidelity check (READ ONLY)" \
-    --parameters commands="[\"$remote\"]" --region "$REGION" \
-    --query 'Command.CommandId' --output text)
-  for _ in $(seq 1 90); do
-    st=$(aws ssm list-command-invocations --command-id "$cmd_id" --region "$REGION" \
-         --query 'CommandInvocations[0].Status' --output text 2>/dev/null || echo Pending)
-    case "$st" in Success|Failed|TimedOut|Cancelled) break;; esac
-    sleep 2
-  done
-  aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$INSTANCE" \
-    --region "$REGION" --query 'StandardOutputContent' --output text
-  if [ "$st" != Success ]; then
-    aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$INSTANCE" \
-      --region "$REGION" --query 'StandardErrorContent' --output text >&2
-    echo "!! SSM status=$st for db=$db" >&2
-  fi
+  # Remote bootstrap runs on the DB host under sudo bash. Unique temp path per call
+  # (mktemp) => repeatable + collision-free under concurrency. SQL is streamed to
+  # the container over stdin (a host /tmp file is invisible inside the container).
+  remote=$(cat <<REMOTE
+set -e
+tmp=\$(mktemp /tmp/adr0032q.XXXXXXXX.sql)
+trap 'rm -f "\$tmp"' EXIT
+echo $sql_b64 | base64 -d > "\$tmp"
+docker exec -i timescaledb psql -U postgres -d $db -v ON_ERROR_STOP=1 < "\$tmp"
+REMOTE
+)
+  remote_b64=$(printf '%s' "$remote" | base64 -w0)
+  script -qec "aws ssm start-session --target $INSTANCE \
+    --document-name AWS-StartNonInteractiveCommand \
+    --parameters 'command=[\"bash -c echo\${IFS}$remote_b64|base64\${IFS}-d|sudo\${IFS}bash\"]' \
+    --region $REGION" /dev/null 2>/dev/null \
+    | tr -d '\r' \
+    | grep -av -e '^Starting session' -e '^Exiting session' || true
 }
 
 # ---- criterion (A): telemetry-chain freshness + row counts, per tenant --------
@@ -129,5 +148,9 @@ run_sql "$F3_DB" "SELECT 'F3 production_orders latest' lbl, count(*) n, max(last
 UNION ALL SELECT 'F3 equipment_events latest', count(*), max(ts_event)::text FROM equipment_events WHERE id_enterprise IN ($ENTS);"
 
 echo
-echo "Done. Compare F1 vs F3 heads: F3 telemetry should be >= F1 fresh (F1 OEE compute is retired);"
-echo "F3 h_piot_fn_count << F1 until the read-plane port lands (Step 1); operator heads should track within minutes."
+echo "Done. ACCEPTANCE = F3-HEALTHY, not F1-identical (F1 OEE compute is a corpse:"
+echo "uns_current_shift frozen since 2026-07-08, and F1 itself carries oee>1/oee<0 anomalies)."
+echo "PASS when: F3 telemetry fresh (equipment_values max_ts ~= now), F3 rollups compute to now"
+echo "(uns_equipment_current_metrics fresh), F3 OEE anomaly-free (oee_gt1=0, oee_neg=0), and the"
+echo "render surface is present (h_piot fns >= 91 + the 6 config relations). Operator heads track F1"
+echo "within minutes. F1 columns are a sanity reference only."

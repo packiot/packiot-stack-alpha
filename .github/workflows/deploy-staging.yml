@@ -42,10 +42,14 @@ jobs:
         #   edge-api, edge-nodered, operator (frontend, built since the
         #   operator.staging.packiot.app SPA went live). oeecloud-node-red
         #   was removed in the 2026-06-24 decommission (replaced by the Go
-        #   worker baked into services/oeecloud-worker).
+        #   worker baked into services/stream-engine).
         run: |
-          git submodule sync edge-api edge-node-red operator
-          git submodule update --init edge-api edge-node-red operator
+          # Self-heal persistent-runner drift: a live edit to a submodule checkout
+          # on the box (e.g. operator) blocks submodule update with "local changes
+          # would be overwritten". Reset dirty tracked files first, then --force.
+          git submodule foreach --recursive 'git reset --hard || true' 2>/dev/null || true
+          git submodule sync edge-api edge-node-red operator csadmin
+          git submodule update --init --force edge-api edge-node-red operator csadmin
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
@@ -64,29 +68,49 @@ jobs:
           set -euo pipefail
           AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
           AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
-          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-oeecloud-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
-          EP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-edge-transformer-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
-          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$EP"
-          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg ep "$EP" '
+          # rename S1+S2 (oeecloud-worker -> stream-engine): MANUAL PRE-REQ —
+          # packiot/staging/rabbitmq-stream-engine-creds must exist (username
+          # "stream-engine", same password as the old rabbitmq-oeecloud-creds)
+          # before this step can succeed.
+          #
+          # rename (edge-transformer -> sparkplug-decoder, this PR): MANUAL
+          # PRE-REQ — packiot/staging/rabbitmq-sparkplug-decoder-creds must
+          # exist (username "sparkplug-decoder", same password as the old
+          # rabbitmq-edge-transformer-creds) + the RMQ user itself created,
+          # BEFORE this step can succeed. See
+          # docs/plans/rename-shadow-rabbitmq-addendum.md §A.
+          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-stream-engine-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          SDP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-sparkplug-decoder-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$SDP"
+          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg sdp "$SDP" '
             .users |= map(
               if .name=="__ADMIN__" then .name=$au | .password=$ap
-              elif .name=="oeecloud-worker" then .password=$op
-              elif .name=="edge-transformer" then .password=$ep
+              elif .name=="stream-engine" then .password=$op
+              elif .name=="sparkplug-decoder" then .password=$sdp
               else . end) |
             .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
           ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
           echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
 
       - name: Build images
-        run: docker compose -f compose.staging.yml -p stack build
+        # compose.superset.yml (W2 embedded BI) is a profile-gated overlay: every
+        # service carries `profiles: ["superset"]`, so it is INERT unless
+        # COMPOSE_PROFILES (in /opt/packiot/.env) includes `superset`. Including
+        # the -f here keeps the superset services KNOWN to the `stack` project so
+        # the Deploy step's --remove-orphans never reaps a running Superset — the
+        # whole overlay stays dark until the profile is deliberately enabled per
+        # docs/superset-golive-runbook.md.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
         # decommissions it. Without this, `up -d` only warns "Found orphan
         # containers" and leaves them running, silently leaving zombie
         # services behind. Safe here because this compose file owns the
-        # whole project — no other stack co-tenants on the host.
-        run: docker compose -f compose.staging.yml -p stack up -d --remove-orphans
+        # whole project — no other stack co-tenants on the host. The superset
+        # overlay is profile-gated (see Build step) so this starts nothing extra
+        # until COMPOSE_PROFILES=superset.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
 
       - name: Prune old images
         run: docker image prune -f
@@ -225,7 +249,12 @@ jobs:
           python3 - <<'PYEOF'
           import json, subprocess, sys, time
 
-          COMPOSE = ["docker", "compose", "-f", "compose.staging.yml", "-p", "stack"]
+          # Include the profile-gated superset overlay so `config`/`ps` render the
+          # same composition as Build/Deploy. With COMPOSE_PROFILES unset the
+          # superset services are omitted from `config`, so this health probe only
+          # asserts them once the profile is deliberately enabled (runbook).
+          COMPOSE = ["docker", "compose", "-f", "compose.staging.yml",
+                     "-f", "compose.superset.yml", "-p", "stack"]
 
           def sh(args):
               return subprocess.run(COMPOSE + args, capture_output=True, text=True)
@@ -251,6 +280,17 @@ jobs:
               n for n, s in svcs.items()
               if s.get("healthcheck") and not s["healthcheck"].get("disable")
           }
+          # Also classify run-once init jobs that NOTHING waits on via
+          # service_completed_successfully — the edge-based heuristic above only
+          # catches one-shots something DEPENDS on (db-migrate). A terminal init
+          # like hasura-init (applies metadata, exits 0) has no such in-edge, so
+          # without this it is treated as long-running and fails on its correct
+          # exited(0). A `restart: "no"` policy is the canonical compose signal for
+          # "run once"; requiring "no healthcheck" too means a long-running service
+          # (which always carries one) can never be wrongly excused if mis-set.
+          for n, s in svcs.items():
+              if n not in has_hc and str(s.get("restart") or "").lower() in ("no", "none"):
+                  oneshot.add(n)
           expected = set(svcs.keys())
           print("Gate expects %d services (%d one-shot, %d healthchecked):"
                 % (len(expected), len(oneshot), len(has_hc)))
@@ -325,7 +365,7 @@ jobs:
         run: |
           set -x
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" \
+            -v "$PWD/services/sparkplug-decoder:/src" \
             -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
             golang:1.25-alpine \
@@ -333,38 +373,38 @@ jobs:
 
           docker run --rm \
             --network stack_packiot-net \
-            -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+            -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject:ro" \
             alpine:3.20 \
             /app/inject --broker tcp://mosquitto:1883 --value 100
 
-          rm -f services/edge-transformer/inject-counter-fixture
-          echo "Waiting 3s for edge-transformer to process..."
+          rm -f services/sparkplug-decoder/inject-counter-fixture
+          echo "Waiting 3s for sparkplug-decoder to process..."
           sleep 3
 
-      - name: Inspect edge-transformer post-deploy
+      - name: Inspect sparkplug-decoder post-deploy
         # Diagnostic step — verifies env vars, log tail, healthcheck exit,
         # and Prometheus metrics scoped to Calc port + MQTT subscriber. Runs
-        # after smoke test so we know edge-transformer is up before probing.
+        # after smoke test so we know sparkplug-decoder is up before probing.
         # Failures here don't fail the deploy (the container may be healthy
         # even if the diagnostic tooling itself has a hiccup).
         continue-on-error: true
         run: |
           echo "=== env (USE_GO_PORT / MQTT_ / LOG_LEVEL) ==="
-          docker inspect edge-transformer \
+          docker inspect sparkplug-decoder \
             --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -iE 'USE_GO_PORT|MQTT_|LOG_LEVEL' || echo "(no matching env vars)"
 
           echo ""
           echo "=== last 60 log lines ==="
-          docker logs --tail 60 edge-transformer 2>&1 || true
+          docker logs --tail 60 sparkplug-decoder 2>&1 || true
 
           echo ""
           echo "=== healthcheck exit code ==="
-          docker exec edge-transformer /usr/local/bin/edge-transformer --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
+          docker exec sparkplug-decoder /usr/local/bin/sparkplug-decoder --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
 
           echo ""
           echo "=== /metrics (calc_ + mqtt_ + shadowpub_ + outbox_ scoped) ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(calc_|mqtt_|shadowpub_|outbox_)' \
             | head -80 || echo "(no matching metrics)"
@@ -539,123 +579,52 @@ jobs:
           echo "=== Spot-check E: equipment_events_man — still populated? ==="
           $PSQL -c "SELECT relname, n_live_tup AS rows, n_tup_ins AS inserts_ever, n_tup_upd AS updates_ever, last_analyze::date, last_autovacuum::date FROM pg_stat_user_tables WHERE relname='equipment_events_man';"
 
-      - name: Shadow DB comparison — count shadow_go_port rows post-inject (ADR-0010 Phase 3)
-        # Runs BEFORE the chaos test. Verifies that the pre-chaos inject
-        # (from earlier step) landed row(s) in shadow_go_port.equipment_values
-        # via oeecloud-worker's source_type='go' dispatch. If this returns 0
-        # rows, the shadow DB comparison pipeline is broken — investigate
-        # oeecloud-worker logs.
-        continue-on-error: true
-        run: |
-          set +e
-          # Wait a beat for oeecloud-worker to process the inject.
-          sleep 2
-
-          # Read the DB password from the mounted .env (used by pgbouncer +
-          # db-migrate). Same file lives at /opt/packiot/.env on the app EC2.
-          POSTGRES_HOST=$(grep -E '^POSTGRES_HOST=' /opt/packiot/.env | cut -d= -f2)
-          POSTGRES_USER=$(grep -E '^POSTGRES_USER=' /opt/packiot/.env | cut -d= -f2)
-          POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
-          POSTGRES_DB=$(grep -E '^POSTGRES_DB=' /opt/packiot/.env | cut -d= -f2)
-
-          if [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_PASSWORD" ]; then
-            echo "(missing POSTGRES env in /opt/packiot/.env — skipping shadow-DB check)"
-            exit 0
-          fi
-
-          echo "=== shadow_go_port row counts (target host: $POSTGRES_HOST) ==="
-          docker run --rm \
-            --network stack_packiot-net \
-            -e PGPASSWORD="$POSTGRES_PASSWORD" \
-            postgres:15-alpine psql \
-              -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-              -c "SELECT 'shadow_go_port.equipment_values'::text AS tbl, COUNT(*)::text AS row_count FROM shadow_go_port.equipment_values UNION ALL SELECT 'shadow_go_port.uns_equipment_current_metrics', COUNT(*)::text FROM shadow_go_port.uns_equipment_current_metrics UNION ALL SELECT 'public.equipment_values (last 5 min)', COUNT(*)::text FROM public.equipment_values WHERE ts_value >= NOW() - INTERVAL '5 minutes';" \
-            2>&1 | head -20
-
-          echo ""
-          echo "=== 5 most recent shadow_go_port.equipment_values rows ==="
-          docker run --rm \
-            --network stack_packiot-net \
-            -e PGPASSWORD="$POSTGRES_PASSWORD" \
-            postgres:15-alpine psql \
-              -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-              -c "SELECT ts_value, id_equipment, net_production_incr, gross_production_incr, scrap_incr, speed, state, mode FROM shadow_go_port.equipment_values ORDER BY ts_value DESC LIMIT 5;" \
-            2>&1 | head -12
-
-      - name: F2/F3 identity + int-overflow sentinel (Task #21 — self-enforcing determinism gate)
-        # THE SAFETY NET that makes F2==F3 determinism self-enforcing instead of
-        # a manual comparator run. Post-deploy, this execs the SAME oeecloud-
-        # worker binary that just deployed with the `--identity-sentinel`
-        # subcommand (like `--healthcheck`): it opens both DB planes
-        # (F2=shadow_go_port in the main DB, F3=public in packiot_shadow) and,
-        # SELECT-only, over a SETTLED window (ts_end < now()-3h) PER NATURAL KEY
-        # (nm_equipment|tp_equipment, never surrogate id_equipment):
-        #   - GATE 1: F2==F3 BYTE-EXACT on the event-derived core
-        #     {count, running_time, duration} on every equipment (the primary
-        #     determinism assertion — see internal/bake/sentinel.go for why the
-        #     rollup-computed + counter columns are NOT gated post-#276 cutover);
-        #   - GATE 2: int-overflow bound (running_time ≤ bucket span × 1.05 — the
-        #     L8 P0 sentinel: running_time overflowed to ~112M vs ~11,195);
-        #   - GATE 3: raw equipment_values row COUNT, count-tolerant.
-        # Counter (gross/net) F2-vs-F3 divergences are REPORTED as INFO (they are
-        # divergent by design — F2 raw control vs F3 cutover) but do NOT gate;
-        # counter CORRECTNESS is the separate F3-vs-prod S2 readiness gate.
-        # Skips cleanly when a surface has no data (cold stack).
+      - name: F3 int-overflow sentinel (ADR-0032 Step 5 — re-homed GATE 2)
+        # ── HISTORY ────────────────────────────────────────────────────────
+        # This was the "F2/F3 identity + int-overflow sentinel". The single-flow
+        # collapse dropped the F2 (shadow_go_port) plane, so the two F2==F3
+        # EQUALITY gates (GATE 1 core byte-exact, GATE 3 raw count) were retired.
+        # GATE 2 (int-overflow) was never a comparison — it's a per-plane invariant
+        # (no row's running_time may exceed its bucket wall-clock span × 1.05 — the
+        # guard that caught the L8 P0 overflow, ~112,000,000 vs ~11,195) — so it
+        # SURVIVES, now run on F3 (public in packiot_analytics) ONLY. Same binary
+        # subcommand + soft-launch/enforce mechanics as before; internal/bake/
+        # sentinel.go is now overflow-only. Backstop: the #663 *_oee_bounds CHECK
+        # constraints reject an overflow-driven oee blow-up at the DB write.
         #
-        # ENFORCE MODE (IDENTITY_SENTINEL_ENFORCE):
-        #   "false" (default) — SOFT-LAUNCH bake-in: run + print the full report
-        #     + emit a ::warning:: on a non-zero exit, but DO NOT fail the deploy.
-        #     NOTE: after the #43 reframe the gated surface PASSES on live staging
-        #     (verified 2026-07-16: core byte-exact on all 62 ent-3 equipment incl.
-        #     L3/L4/L5/L6/L8/L10, 0 overflow — the old L8/L4 false-fails came from
-        #     gating the by-design-divergent counter surface, now demoted to INFO).
-        #     So there is NO known pre-existing violation on the GATED surface; it
-        #     is safe to flip to "true" after observing a few green deploys.
-        #   "true" — ENFORCING: a non-zero sentinel exit FAILS the deploy run
-        #     (red). Determinism becomes self-enforcing — a real running_time
-        #     drift / overflow / count divergence blocks the pipeline.
-        #
-        # NOTE: this step is NOT continue-on-error at the YAML level — the
-        # enforce/warn decision is made INSIDE the script from the binary's exit
-        # code, so warn-mode still surfaces a loud annotation while enforce-mode
-        # blocks. The binary itself always exits non-zero on any violation.
+        # ENFORCE MODE (IDENTITY_SENTINEL_ENFORCE): "false" = warn-only bake-in
+        # (run + ::warning:: on a non-zero exit, do NOT fail the deploy); "true" =
+        # a non-zero exit FAILS the deploy. The binary always exits non-zero on a
+        # violation OR if the check could not run (fail-closed).
         env:
           IDENTITY_SENTINEL_ENFORCE: "false"
         run: |
           set +e
-          echo "=== waiting for oeecloud-worker to report healthy before sentinel ==="
+          echo "=== waiting for stream-engine to report healthy before sentinel ==="
           for i in $(seq 1 30); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' oeecloud-worker 2>/dev/null || echo missing)
-            if [ "$status" = "healthy" ]; then echo "  oeecloud-worker healthy after ${i}s"; break; fi
+            status=$(docker inspect -f '{{.State.Health.Status}}' stream-engine 2>/dev/null || echo missing)
+            if [ "$status" = "healthy" ]; then echo "  stream-engine healthy after ${i}s"; break; fi
             sleep 2
           done
-          if ! docker ps --format '{{.Names}}' | grep -qx oeecloud-worker; then
-            echo "::warning title=identity-sentinel skipped::oeecloud-worker container not running — cannot run F2/F3 gate"
+          if ! docker ps --format '{{.Names}}' | grep -qx stream-engine; then
+            echo "::warning title=f3-overflow-sentinel skipped::stream-engine container not running — cannot run F3 overflow gate"
             exit 0
           fi
 
-          echo "=== running F2/F3 identity + int-overflow sentinel (SELECT-only) ==="
-          # Brief retry loop: a just-restarted worker may still be opening its
-          # DB pools. Retry the whole check a few times on a non-zero exit that
-          # is a transient connect error, not a data verdict — but since the
-          # binary prints its verdict and exits, we simply run it once and
-          # capture the code; the settled window is unaffected by the restart.
-          docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
+          echo "=== running F3 int-overflow sentinel (SELECT-only, F3 plane) ==="
+          docker exec stream-engine /usr/local/bin/stream-engine --identity-sentinel
           RC=$?
           echo "sentinel exit code: $RC"
 
           if [ "$RC" -eq 0 ]; then
-            echo "F2/F3 identity + overflow gate: PASS (or SKIP on empty window)"
+            echo "F3 int-overflow gate: PASS (or SKIP on empty window / no F3 db)"
             exit 0
           fi
-
-          # Non-zero: a determinism regression, an overflow violation, or the
-          # check could not run (fail-closed inside the binary).
           if [ "${IDENTITY_SENTINEL_ENFORCE}" = "true" ]; then
-            echo "::error title=F2/F3 identity gate FAILED::sentinel exit $RC — determinism regression or int-overflow (see report above). Failing the deploy (ENFORCE=true)."
+            echo "::error title=F3 overflow gate FAILED::sentinel exit $RC — running_time int-overflow on F3 (see report above). Failing the deploy (ENFORCE=true)."
             exit 1
           else
-            echo "::warning title=F2/F3 identity gate divergence (warn-only)::sentinel exit $RC — F2/F3 determinism divergence or overflow detected (see report above). NOT failing the deploy while IDENTITY_SENTINEL_ENFORCE=false. Triage then flip ENFORCE=true."
+            echo "::warning title=F3 overflow gate (warn-only)::sentinel exit $RC — running_time int-overflow on F3 detected (see report above). NOT failing the deploy while IDENTITY_SENTINEL_ENFORCE=false. Triage then flip ENFORCE=true."
             exit 0
           fi
 
@@ -676,14 +645,14 @@ jobs:
           echo "=== Chaos test: outbox durability under RMQ outage ==="
 
           get_outbox_depth() {
-            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
               -s http://localhost:9102/metrics 2>/dev/null \
               | awk '/^outbox_depth /{print $2}' \
               | head -1
           }
 
           get_shadowpub_confirmed() {
-            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
               -s http://localhost:9102/metrics 2>/dev/null \
               | awk '/^shadowpub_confirmed_total /{print $2}' \
               | head -1
@@ -701,7 +670,7 @@ jobs:
 
           # Build the inject binary once so we can run it multiple times.
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" -w /src \
+            -v "$PWD/services/sparkplug-decoder:/src" -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
             golang:1.25-alpine \
             go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
@@ -709,7 +678,7 @@ jobs:
           inject() {
             docker run --rm \
               --network stack_packiot-net \
-              -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+              -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject:ro" \
               alpine:3.20 /app/inject --broker tcp://mosquitto:1883 --value "$1" 2>&1 | tail -3
           }
 
@@ -774,13 +743,13 @@ jobs:
 
           echo ""
           echo "=== Reconnect activity (proves NotifyClose monitor fired) ==="
-          docker logs --since 3m edge-transformer 2>&1 \
+          docker logs --since 3m sparkplug-decoder 2>&1 \
             | grep -iE 'shadowpub: connection|shadowpub: reconnect|outbox: publish' \
             | tail -30 || echo "  (no reconnect activity in logs — investigate)"
 
           echo ""
           echo "=== Final /metrics for outbox + shadowpub counters ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(outbox_|shadowpub_reconnects|shadowpub_confirmed|shadowpub_published)' \
             | head -20 || true

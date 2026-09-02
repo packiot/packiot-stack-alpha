@@ -2,7 +2,7 @@
 
 **ADR-0032 "direct from the PLC" realization.** These are the ready-to-install
 artifacts that let CPACK's and Incoplast's REAL factory Node-RED send live PLC
-SparkPlug data into the staging stack, landing in **F3 (`packiot_shadow`)** via
+SparkPlug data into the staging stack, landing in **F3 (`packiot_analytics`)** via
 the same `oee`-exchange → `oeecloud-worker` pipe. **Scope: STAGING only.** No prod
 writes. We do **not** edit the customers' Node-RED — the USER installs the nodes
 below; everything here is copy-paste ready.
@@ -42,9 +42,9 @@ RabbitMQ `oee` exchange · routing key sparkplug.data.<tenant>
     ▼
 oeecloud-worker  →  per-tenant queue  →  legacy-ingest decode
     │  resolve topic→id_equipment via packml_register (already seeded)
-    │  write equipment_values / events, source_type "refactored" → packiot_shadow
+    │  write equipment_values / events, source_type "refactored" → packiot_analytics
     ▼
-F3 (packiot_shadow.public) → CAgg cascade → equipment_runtime_shift/_1hour → uns_*
+F3 (packiot_analytics.public) → CAgg cascade → equipment_runtime_shift/_1hour → uns_*
 ```
 
 The **envelope shape** the worker parses (send exactly this):
@@ -192,7 +192,7 @@ values (§6). Never have both live on ent 3 at once.
 
 ## 6. Validate a message landed in F3
 
-Run against **`packiot_shadow`** (F3) on the staging DB EC2 (`10.10.10.89`,
+Run against **`packiot_analytics`** (F3) on the staging DB EC2 (`10.10.10.89`,
 container `timescaledb`). **SELECT-only.** Fresh rows for the tenant = success.
 
 ```sql

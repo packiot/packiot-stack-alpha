@@ -142,14 +142,18 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: packiot
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/01-oee-pipeline.json
+      # Was /var/lib/grafana/dashboards/01-oee-pipeline.json, a v1-board path —
+      # v1 (grafana/dashboards/) was deleted from the repo when v2 was blessed
+      # (2026-07); this env also never had the v2 mount (below), so it was
+      # provisioning zero dashboards too.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards-v2/00-overview.json
       GF_SERVER_ROOT_URL: http://localhost:3000
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/dashboards-v2:/var/lib/grafana/dashboards-v2:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s
@@ -339,9 +343,9 @@ services:
   # SparkPlug topics → equipment via packml_register, writes raw data
   # to equipment_values/equipment_events/uns_metrics. Locally this lets
   # `make up` close the PLC → DB loop end-to-end without Node-RED.
-  oeecloud-worker:
-    build: ./services/oeecloud-worker
-    container_name: oeecloud-worker
+  stream-engine:
+    build: ./services/stream-engine
+    container_name: stream-engine
     restart: unless-stopped
     environment:
       LOG_LEVEL: info
@@ -364,11 +368,11 @@ services:
       # `oee` exchange is shared across envs in name but lives on a
       # different broker).
       SOURCE_EXCHANGE: oee
-      WORKER_QUEUE: oeecloud-worker-q-dev
+      WORKER_QUEUE: stream-engine-q-dev
       RETRY_EXCHANGE: oee-retry-dev
-      RETRY_QUEUE: oeecloud-worker-q-dev-retry-30s
+      RETRY_QUEUE: stream-engine-q-dev-retry-30s
       FAILED_EXCHANGE: oee-failed-dev
-      FAILED_QUEUE: oeecloud-worker-q-dev-failed
+      FAILED_QUEUE: stream-engine-q-dev-failed
       RETRY_TTL_MS: "30000"
       MAX_RETRIES: "5"
       PREFETCH: "50"
@@ -380,7 +384,7 @@ services:
         condition: service_started
     networks: [packiot-net]
     healthcheck:
-      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/stream-engine", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5

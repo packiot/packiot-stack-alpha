@@ -31,7 +31,7 @@ sampled window.**
 
 DB EC2 `i-064bb36d1c454d861`: timescaledb up 4 weeks, disk 42% used
 (38G free). Databases: `packiot` (F1 public + F2 shadow_go_port),
-`packiot_shadow` (F3 — the flip target).
+`packiot_analytics` (F3 — the flip target).
 
 ## 2. URLs (dev access)
 

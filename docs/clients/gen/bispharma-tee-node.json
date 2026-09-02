@@ -1,0 +1,123 @@
+[
+  {
+    "disabled": false,
+    "id": "bispharma_tab",
+    "info": "Generated from the ADR-0045 client descriptor. Wire your SparkPlug-assembly node's output into 'BISPHARMA tee'. Set env BISPHARMA_INGEST_KEY to the ingest key (never hardcode).",
+    "label": "BISPHARMA ingest tee",
+    "type": "tab"
+  },
+  {
+    "finalize": "",
+    "func": "// BISPHARMA → ingest tee — generated from the ADR-0045 client descriptor.\n// Place on a SECOND wire off your SparkPlug-assembly node (a tee, not a redirect).\n// The shim enforces the group scope (first topic segment) = \"BISPHARMA\" and routes\n// the tenant on lower(\"BISPHARMA\"). Key is read from env BISPHARMA_INGEST_KEY — NEVER hardcoded.\n\nconst key = env.get(\"BISPHARMA_INGEST_KEY\");\nif (!key) {\n    node.error(\"BISPHARMA_INGEST_KEY env var is not set — refusing to POST without an ingest key\", msg);\n    return null;\n}\n\nlet envelope = msg.payload;\nif (Array.isArray(envelope)) {\n    envelope = { timestamp: Date.now(), gateway: \"bispharma-edge\", metrics: envelope };\n} else if (envelope \u0026\u0026 !envelope.timestamp) {\n    envelope.timestamp = Date.now();\n}\nif (!envelope || !Array.isArray(envelope.metrics) || envelope.metrics.length === 0) {\n    node.warn(\"tee: payload has no metrics[]; skipping this message\");\n    return null;\n}\n\nmsg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\nmsg.payload = envelope;\nreturn msg;\n",
+    "id": "bispharma_fn",
+    "initialize": "",
+    "libs": [],
+    "name": "BISPHARMA tee (set headers + key)",
+    "noerr": 0,
+    "outputs": 1,
+    "type": "function",
+    "wires": [
+      [
+        "bispharma_http"
+      ]
+    ],
+    "x": 320,
+    "y": 120,
+    "z": "bispharma_tab"
+  },
+  {
+    "authType": "",
+    "headers": [],
+    "id": "bispharma_http",
+    "insecureHTTPParser": false,
+    "method": "POST",
+    "name": "POST https://TODO-staging-ingest-front-door:8446/ingest/sparkplug",
+    "paytoqs": "ignore",
+    "persist": false,
+    "proxy": "",
+    "ret": "obj",
+    "senderr": true,
+    "tls": "bispharma_tls",
+    "type": "http request",
+    "url": "https://TODO-staging-ingest-front-door:8446/ingest/sparkplug",
+    "wires": [
+      [
+        "bispharma_route"
+      ]
+    ],
+    "x": 620,
+    "y": 120,
+    "z": "bispharma_tab"
+  },
+  {
+    "checkall": "false",
+    "id": "bispharma_route",
+    "name": "statusCode",
+    "outputs": 2,
+    "property": "statusCode",
+    "propertyType": "msg",
+    "repair": false,
+    "rules": [
+      {
+        "t": "eq",
+        "v": "202",
+        "vt": "num"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "type": "switch",
+    "wires": [
+      [
+        "bispharma_ok"
+      ],
+      [
+        "bispharma_err"
+      ]
+    ],
+    "x": 840,
+    "y": 120,
+    "z": "bispharma_tab"
+  },
+  {
+    "active": true,
+    "complete": "statusCode",
+    "console": false,
+    "id": "bispharma_ok",
+    "name": "202 accepted",
+    "tosidebar": true,
+    "type": "debug",
+    "wires": [],
+    "x": 1030,
+    "y": 90,
+    "z": "bispharma_tab"
+  },
+  {
+    "active": true,
+    "complete": "payload",
+    "console": true,
+    "id": "bispharma_err",
+    "name": "NOT 202 (see README)",
+    "tosidebar": true,
+    "type": "debug",
+    "wires": [],
+    "x": 1050,
+    "y": 160,
+    "z": "bispharma_tab"
+  },
+  {
+    "alpnprotocol": "",
+    "ca": "",
+    "caname": "",
+    "cert": "",
+    "certname": "",
+    "id": "bispharma_tls",
+    "key": "",
+    "keyname": "",
+    "name": "BISPHARMA ingest (self-signed ok=true)",
+    "servername": "",
+    "type": "tls-config",
+    "verifyservercert": false
+  }
+]

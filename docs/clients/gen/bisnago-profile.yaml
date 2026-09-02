@@ -1,0 +1,33 @@
+tenant: BISNAGO
+enterprise_id: 119
+tenant_prefix: BISNAGO/SP
+prefix_fixups: []
+metric_aliases: []
+parameter_aliases: []
+parameter_decomposition:
+    source_leaf: ""
+    params: []
+count_index:
+    mode: equipment_id
+    overrides:
+        /LINHAS/L56/M676: 676
+        /LINHAS/L56/M677: 677
+        /LINHAS/L57/M678: 678
+        /LINHAS/L57/M679: 679
+        /LINHAS/L58/M680: 680
+        /LINHAS/L58/M681: 681
+        /LINHAS/L60/M682: 682
+        /LINHAS/L60/M683: 683
+        /LINHAS/L71/M670: 670
+        /LINHAS/L71/M671: 671
+        /LINHAS/L72/M672: 672
+        /LINHAS/L72/M673: 673
+        /LINHAS/L73/M674: 674
+        /LINHAS/L73/M675: 675
+metric_templates:
+    line:
+        - leaf: /Admin/ProdProcessedCount
+          type: double
+    member:
+        - leaf: /Admin/ProdProcessedCount/{idx}/Unit
+          type: double

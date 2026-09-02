@@ -1,0 +1,96 @@
+# bi.production_by_team — per-team production increments (source: equipment_values
+# ⋈ equipments). DATA-READY on CPACK (id_team may be sparse until teams configured).
+# Replaces PowerBI Prod_Teams / 13_Production_per_Team. Tenant key via equipments join.
+table_name: production_by_team
+main_dttm_col: ts_value
+description: Per-team production increments per equipment. PowerBI Prod_Teams.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 8c433a6b-1a94-4c96-a7b0-2d04dc1da868
+metrics:
+- metric_name: sum_net
+  verbose_name: Net production
+  expression: SUM(net_production_incr)
+  d3format: .3~s
+  extra: null
+- metric_name: sum_gross
+  verbose_name: Gross production
+  expression: SUM(gross_production_incr)
+  d3format: .3~s
+  extra: null
+- metric_name: sum_scrap
+  verbose_name: Scrap
+  expression: SUM(scrap_incr)
+  d3format: .3~s
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: Tenant key (RLS). Never charted; used by the RLS filter.
+- column_name: id_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_equipment
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_team
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_shift
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: ts_value
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+  groupby: false
+  filterable: true
+  python_date_format: null
+- column_name: net_production_incr
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: gross_production_incr
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: scrap_incr
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+- column_name: equipment_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: nm_equipment + (line)/(machine)/(sector) — disambiguates line/machine name-pairs.
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

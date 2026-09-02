@@ -1,0 +1,22 @@
+# front4 shiftOee Availability leg (oee_a). Big Number, % format.
+slice_name: Availability
+description: bi.oee_shift AVG(oee_a). front4 OeeScore Availability column.
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  {
+    "datasource": "1546df03-4e11-40b8-94d7-aa149b12c58a__table",
+    "viz_type": "big_number_total",
+    "metric": "avg_oee_a",
+    "adhoc_filters": [],
+    "header_font_size": 0.4,
+    "subheader_font_size": 0.15,
+    "y_axis_format": ".1%",
+    "subtitle": "Availability"
+  }
+query_context: '{"datasource": {"id": 4, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [], "metrics": ["avg_oee_a"], "annotation_layers": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}}], "form_data": {"datasource": "4__table", "viz_type": "big_number_total", "metric": "avg_oee_a", "adhoc_filters": [], "header_font_size": 0.4, "subheader_font_size": 0.15, "y_axis_format": ".1%", "subtitle": "Availability", "annotation_layers": [], "slice_id": 1, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 9232e211-3d11-42bb-bcf4-3a8f394cc7f0
+version: 1.0.0
+dataset_uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a

@@ -1,0 +1,45 @@
+# cpack-ready.descriptor.yaml — a fully-CONFIRMED CPACK descriptor (L6 only),
+# the VALIDATE-green / CUT OVER fixture for the ADR-0045 P3 orchestrator test.
+# Every member's count index is confidence: confirmed, so InferredMembers() is
+# empty, Generate(Cutover:true) succeeds, and the cutover checklist opens.
+
+tenant: CPACK
+enterprise_id: 3
+
+canonical:
+  prefix: CPACK/SC
+
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+equipment:
+  - {topic: CPACK/SC/LINHAS/L6, id_equipment: 50, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L6/BREYER, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+
+agent:
+  edge_node_id: cpack-tee
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/cpack/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+tee:
+  ingest_url: "https://localhost:8446/ingest/sparkplug"
+  ingest_key_env: CPACK_INGEST_KEY
+  gateway: cpack-edge
+  tls_insecure: true
