@@ -63,7 +63,11 @@ tracked follow-up.)
   fat edge now ships (opt-in): see
   **[On-Prem Offline Operation](11-on-prem-offline-operation.md)**, which puts a
   *separate*, self-contained dashboard on the box (`:8080`) serving live counts off
-  an on-box cache during an outage.
+  an on-box cache during an outage. A further opt-in — **[the Edge-Operator](12-edge-operator.md)**
+  (ADR-0054) — runs the *operator SPA itself* on the box, so the operator screen serves
+  reads from a local cache (stale-on-outage, not blank) and buffers writes in a shared
+  box-resident outbox that forwards to the cloud on reconnect — rather than each tablet
+  buffering on its own.
 - **Anything that needs a fresh server id** at the moment of the action (see above).
 
 ## Onboarding note — this is per box, automatic
