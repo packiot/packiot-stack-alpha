@@ -81,7 +81,7 @@ when C1 lands; until then A is strictly sufficient.
 | # | Increment | Delivers | Proof | Status |
 |---|-----------|----------|-------|--------|
 | 1 | Bake `VITE_PO_WRITE_QUEUE_ENABLED=true` into `Dockerfile.edge` | offline write buffer actually enabled in the edge image | existing `durableWrite`/`writeQueue` tests; grep built `dist` | **DONE — operator #115** |
-| 2 | Generator emits `compose.onprem-edge.yml` (proven fat-edge stack) + a flag-gated `operator-edge` service | closes the out-of-band violation; operator deployable via onboarding | `*.spec.ts`: default render byte-matches the box's proven compose; flag-on adds operator-edge with correct upstreams | planned |
+| 2 | Generator emits `compose.onprem-edge.yml` (proven fat-edge stack) + a flag-gated `operator-edge` service | closes the out-of-band violation; operator deployable via onboarding | `onprem-compose.spec.ts`: PyYAML-validates the render, default == proven fat-edge stack, flag-on adds operator-edge with correct upstreams; edge-ssm suite 121/121 | **DONE — edge-api #239** |
 | 3 | Local read layer on `:9104` (snapshot cache: pull reference + `uns_equipment_current_*` → local SQLite, serve `/v1`) | reads survive an outage | unit test cache-fallback (serve last snapshot when upstream down); rendered-compose wiring test | planned |
 | 4 | Factory-local edge-api forward-outbox (`/session` local + `/api` enqueue→forward) | durable offline writes that replay to cloud | replay test against a stubbed cloud edge-api (503→200) | planned |
 | 5 | Descriptor sub-flag `operator.mode:'edge'` (only if dashboard-only boxes must exclude the operator) | separates "run dashboard" from "run operator SPA" | DAO + gate unit tests | optional |
