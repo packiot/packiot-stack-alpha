@@ -501,6 +501,11 @@ func main() {
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
+			// ADR-0037 Silver rules — off unless the env flags are set.
+			calcCfg: calc_production_counters.Config{
+				MonotonicityGuard: cfg.CalcMonotonicityGuard,
+				CounterRollover:   cfg.CalcCounterRollover,
+			},
 		}
 		if cfg.NoSpeedGuardFallbackEnabled {
 			logger.Info("no-speed guard fallback ENABLED (CALC_NO_SPEED_GUARD_FALLBACK) — no-MachSpeed, no-ideal-rate machines emit counts instead of being dropped")
@@ -511,6 +516,11 @@ func main() {
 				slog.Bool("auto_from_db", countersOnlyAutoFromDB),
 				slog.Int("opted_in_equipment", len(idealRates())),
 			)
+		}
+		if cfg.CalcMonotonicityGuard || cfg.CalcCounterRollover {
+			logger.Info("ADR-0037 Silver cleaning rules ENABLED in Calc port",
+				slog.Bool("monotonicity_guard", cfg.CalcMonotonicityGuard),
+				slog.Bool("counter_rollover", cfg.CalcCounterRollover))
 		}
 
 		// ADR-0011 P2 outbox — store-and-forward between decode + publish.
@@ -856,6 +866,10 @@ type calcHooks struct {
 	metricsEmitted *prometheus.CounterVec
 	// stateSeeds counts non-counter metrics recognized by seedFromMetric.
 	stateSeeds *prometheus.CounterVec
+
+	// calcCfg carries the ADR-0037 Silver cleaning-rule flags into every
+	// Calc evaluation. Zero value = all rules off = byte-identical output.
+	calcCfg calc_production_counters.Config
 
 	// countersOnlyEnabled / countersOnlyAutoFromDB / idealRates — the
 	// counters-only OEE seam (ADR-0047 P0 #2). A counter metric whose unit
@@ -1230,7 +1244,8 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	}
 	msg.ResetHeal = h.resetHeal
 	msg.NoSpeedGuardFallback = h.noSpeedGuardFallback
-	dec, err := calc_production_counters.Calc(msg, h.state)
+	// ADR-0037 Silver rules threaded via h.calcCfg (zero Config = all off).
+	dec, err := calc_production_counters.CalcWithConfig(msg, h.state, h.calcCfg)
 	if err != nil {
 		h.errors.WithLabelValues(tenant, "calc_error").Inc()
 		logger.Warn("calc_production_counters: evaluation error",
