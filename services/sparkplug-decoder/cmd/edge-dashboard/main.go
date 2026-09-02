@@ -31,6 +31,13 @@ import (
 )
 
 func main() {
+	// --healthcheck: the compose healthcheck runs in a distroless image with no
+	// shell/curl, so the binary self-probes its own /healthz and maps the result
+	// to an exit code (0 healthy, 1 not). Same pattern as sparkplug-decoder.
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		os.Exit(healthcheck())
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	dbPath := os.Getenv("LOCAL_STATE_DB")
@@ -159,6 +166,24 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		s.logger.Warn("encode state failed", slog.String("err", err.Error()))
 	}
+}
+
+// healthcheck probes the local /healthz and returns a process exit code.
+func healthcheck() int {
+	port := os.Getenv("DASHBOARD_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {

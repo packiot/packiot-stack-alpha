@@ -399,12 +399,22 @@ func main() {
 		// Phase 2.5b's Node-RED publisher output (source.type="nodered") on
 		// the same exchange.
 		var shadowErr error
+		// ADR-0053 B-minimal on-prem decode: the factory box egresses HTTPS
+		// only (the firewall blocks AMQP/8883 — that is why the reader uses
+		// HTTPS), and the cloud already gets this tenant's data from the
+		// reader's PRIMARY tee (reader → cloud shared-agent, durable via the
+		// reader spool). So the on-box transformer must NOT try to publish to
+		// cloud RabbitMQ: it decodes purely to feed localstate → the on-prem
+		// dashboard. LOCAL_DECODE_ONLY skips the AMQP publisher (and, by
+		// extension via the analyticsPub!=nil guard below, the outbox + drain).
+		localDecodeOnly := os.Getenv("LOCAL_DECODE_ONLY") == "true"
 		// ADR-0010 Phase 3 shadow-mode DB comparison: publish to the same
 		// `oee` exchange oeecloud-node-red uses, with routing key
 		// `sparkplug.data.<tenant>`. The envelope's source_type="go" makes
 		// oeecloud-worker dispatch writes into shadow_go_port.* schema.
-		analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger)
-		if shadowErr != nil {
+		if localDecodeOnly {
+			logger.Info("LOCAL_DECODE_ONLY=true: on-prem decode→localstate only; no cloud AMQP publisher, no outbox (ADR-0053 B-minimal)")
+		} else if analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger); shadowErr != nil {
 			logger.Error("analyticspub: failed to open channel — MQTT disabled",
 				slog.String("err", shadowErr.Error()))
 			analyticsPub = nil
