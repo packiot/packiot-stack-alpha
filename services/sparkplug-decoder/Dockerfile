@@ -43,6 +43,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/s7-softplc ./cmd/s7-softplc
 # RBE, store-and-forward) to the cloud. Same-module reuse of
 # internal/{sparkplug,outbox}; net-new code in internal/agent/*.
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/sparkplug-agent ./cmd/sparkplug-agent
+# edge-dashboard: ADR-0053 B-minimal on-prem live board. Serves an HTTP view of
+# the local current-state SQLite (internal/localstate) on the factory box so the
+# shop floor keeps live production visibility during an internet outage. Pure
+# stdlib HTTP, CGo-free.
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/edge-dashboard ./cmd/edge-dashboard
 
 # Intermediate stage: create the outbox directory with nonroot ownership.
 # Docker's named-volume mount copies file+dir OWNERSHIP from the container
@@ -62,6 +67,7 @@ COPY --from=builder /out/modbus-reader /usr/local/bin/modbus-reader
 COPY --from=builder /out/opcua-reader /usr/local/bin/opcua-reader
 COPY --from=builder /out/s7-softplc /usr/local/bin/s7-softplc
 COPY --from=builder /out/sparkplug-agent /usr/local/bin/sparkplug-agent
+COPY --from=builder /out/edge-dashboard /usr/local/bin/edge-dashboard
 COPY --from=outbox-dir /out/var/lib /var/lib
 USER nonroot:nonroot
 
