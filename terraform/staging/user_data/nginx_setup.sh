@@ -2,9 +2,14 @@
 # Installs and configures Nginx + Certbot (Let's Encrypt wildcard cert via Route53 DNS-01).
 # Safe to run on a live EC2 — does NOT touch .env, Docker, or Node-RED. Idempotent.
 #
-# Access control: Authentik SSO via Nginx auth_request (forward auth).
-# The Authentik server embedded outpost handles /outpost.goauthentik.io/auth/nginx
-# subrequests. Unauthenticated browsers are redirected to auth.<domain>/...
+# Access control: oauth2-proxy (Cognito OIDC) via nginx auth_request forward-auth
+# (ADR-0034 §C). Authentik is RETIRED. Two internal subrequest endpoints live in
+# snippets/oauth2-proxy.conf (/oauth2/auth = any pool user; /oauth2/auth-csadmin =
+# cs-admin group only). CloudFront-fronted vhosts also include
+# snippets/origin-verify.conf, which 403s any request that did not enter via
+# CloudFront (X-Origin-Verify shared secret fetched from Secrets Manager at
+# runtime below — never hardcoded). Deliberately-open carve-outs (mq / refdata /
+# cpack-ingest / auth) omit both gates by design.
 set -euo pipefail
 exec > >(tee /var/log/packiot-nginx-setup.log | logger -t packiot-nginx-setup) 2>&1
 
@@ -13,11 +18,29 @@ echo "=== Nginx + Certbot setup starting $(date -u) ==="
 STAGING_DOMAIN="${staging_domain}"
 AWS_REGION="${aws_region}"
 
+# ── X-Origin-Verify shared secret (edge origin-lock) ──────────────────────────
+# Fetched at runtime from packiot/staging/app (key x_origin_verify) using the
+# instance IAM role — same get_secret pattern app_init.sh uses. Kept OUT of
+# terraform state and the rendered S3 object. MUST equal the custom header value
+# CloudFront injects on every origin request (terraform edge.tf). If the key is
+# absent/empty we log loudly but continue so nginx still boots; fix the secret
+# and re-run this script standalone to close the gate.
+get_secret() {
+  aws secretsmanager get-secret-value \
+    --secret-id "$1" \
+    --region "$AWS_REGION" \
+    --query SecretString \
+    --output text
+}
+X_ORIGIN_VERIFY=$(get_secret "packiot/staging/app" | jq -r '.x_origin_verify // ""')
+if [ -z "$X_ORIGIN_VERIFY" ] || [ "$X_ORIGIN_VERIFY" = "null" ]; then
+  echo "WARNING: packiot/staging/app.x_origin_verify is empty — origin-verify" \
+       "will 403 legitimate CloudFront traffic. Populate the secret + re-run."
+fi
+
 # ── Nginx ─────────────────────────────────────────────────────────────────────
 dnf install -y nginx
 systemctl enable nginx
-
-# (Basic auth removed — Authentik forward auth handles all service vhosts.)
 
 # ── WebSocket connection map ───────────────────────────────────────────────────
 # Sets $ws_connection = "upgrade" only when the client sends an Upgrade header.
@@ -51,8 +74,76 @@ if [ ! -d "/etc/letsencrypt/live/$STAGING_DOMAIN" ]; then
 fi
 echo "Certificate obtained: /etc/letsencrypt/live/$STAGING_DOMAIN"
 
-# ── Write vhosts: HTTP redirect + HTTPS with Authentik forward auth ───────────
+# ── Shared snippet: oauth2-proxy forward-auth ─────────────────────────────────
+cat > /etc/nginx/snippets/oauth2-proxy.conf <<NGINX
+# oauth2-proxy (Cognito) forward-auth — shared include (ADR-0034 §C).
+# /oauth2/ callback+start live on auth.<env>.packiot.app. nginx \`auth_request\`
+# no-ops with a query string, so group filters are baked into proxy_pass as two
+# internal endpoints. In each protected location add:
+#   auth_request /oauth2/auth;           # any authenticated pool user (operator)
+#   auth_request /oauth2/auth-csadmin;   # staff-only (admin UIs)
+# plus:  error_page 401 = @oauth2_signin;   (403 = wrong group, falls through)
+
+location = /oauth2/auth {
+    internal;
+    proxy_pass http://127.0.0.1:4180/oauth2/auth;
+    proxy_set_header Host              \$host;
+    proxy_set_header X-Real-IP         \$remote_addr;
+    proxy_set_header X-Forwarded-Uri   \$request_uri;
+    proxy_set_header X-Forwarded-Host  \$host;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_buffer_size       32k;
+    proxy_buffers           8 32k;
+    proxy_busy_buffers_size 32k;
+}
+location = /oauth2/auth-csadmin {
+    internal;
+    proxy_pass http://127.0.0.1:4180/oauth2/auth?allowed_groups=cs-admin;
+    proxy_set_header Host              \$host;
+    proxy_set_header X-Real-IP         \$remote_addr;
+    proxy_set_header X-Forwarded-Uri   \$request_uri;
+    proxy_set_header X-Forwarded-Host  \$host;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_buffer_size       32k;
+    proxy_buffers           8 32k;
+    proxy_busy_buffers_size 32k;
+}
+location @oauth2_signin {
+    return 302 https://auth.$STAGING_DOMAIN/oauth2/start?rd=\$scheme://\$http_host\$request_uri;
+}
+NGINX
+
+# ── Shared snippet: X-Origin-Verify origin-lock ───────────────────────────────
+cat > /etc/nginx/snippets/origin-verify.conf <<NGINX
+# ADR edge origin-lock (step c): reject anything that did not enter via CloudFront.
+# CloudFront stamps X-Origin-Verify on every origin request; a direct-to-EIP
+# caller lacks it and gets 403. Included ONLY in CloudFront-fronted vhosts (NOT
+# auth/mq/amqp/cpack-ingest, which stay direct-to-origin).
+if (\$http_x_origin_verify != "$X_ORIGIN_VERIFY") {
+    return 403;
+}
+NGINX
+
+# ── Buffer bump for large Cognito cookies ─────────────────────────────────────
+cat > /etc/nginx/conf.d/00-oauth2-buffers.conf <<NGINX
+# ADR-0034 §C — Cognito ID/access/refresh tokens make the oauth2-proxy session
+# cookie exceed 4kb, so it is split across several _oauth2_proxy_N cookies that
+# the browser then sends (domain-wide) on every *.$STAGING_DOMAIN request.
+# Raise the header buffer so nginx can parse those large request headers.
+large_client_header_buffers 8 32k;
+NGINX
+
+# ── Staff-tier vhosts (cs-admin group forward-auth) ───────────────────────────
+# Generated for every service whose auth tier is "csadmin". The bespoke tiers
+# (api / operator / csadmin-SPA) are emitted as explicit blocks below and are
+# deliberately skipped by this loop; the deliberately-open (mq / refdata /
+# cpack-ingest) + auth vhosts are handled separately too.
 %{ for svc, port in services ~}
+%{ if lookup(service_auth, svc, "csadmin") == "csadmin" ~}
 cat > /etc/nginx/conf.d/${svc}.conf <<NGINX
 server {
     listen 80;
@@ -67,65 +158,241 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
 
-    # Redirect unauthenticated requests to Authentik login
-    error_page 401 = @authentik_login;
-    location @authentik_login {
-        return 302 https://auth.$STAGING_DOMAIN/outpost.goauthentik.io/start?rd=\$scheme://\$http_host\$request_uri;
-    }
-
-    # Authentik embedded outpost — internal subrequest endpoint
-    location /outpost.goauthentik.io {
-        internal;
-        proxy_pass              http://127.0.0.1:9000/outpost.goauthentik.io;
-        proxy_pass_request_body off;
-        proxy_set_header        Content-Length    "";
-        proxy_set_header        X-Original-URL    \$scheme://\$http_host\$request_uri;
-        proxy_set_header        X-Real-IP         \$remote_addr;
-        proxy_set_header        X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header        X-Forwarded-Proto \$scheme;
-        proxy_set_header        X-Forwarded-Host  \$http_host;
-        proxy_set_header        Host              auth.$STAGING_DOMAIN;
-    }
-
-%{ if svc == "api" ~}
-    # edge-api's AuthMiddleware enforces ?token= API key auth on /api/*,
-    # so the Authentik gate is redundant here. Skipping auth_request lets
-    # external clients (prod nginx mirror, factory edges) reach /api/* directly,
-    # matching prod's behavior. Operator UI continues to use Authentik via /.
-    location ~ ^/api/ {
-        proxy_pass         http://127.0.0.1:${port};
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_read_timeout 300s;
-    }
-%{ endif ~}
+    # Cognito forward-auth (oauth2-proxy) — replaces Authentik. Staff-only.
+    include snippets/oauth2-proxy.conf;
 
     location / {
-        auth_request /outpost.goauthentik.io/auth/nginx;
-        auth_request_set \$authentik_set_cookie \$upstream_http_set_cookie;
-        add_header Set-Cookie \$authentik_set_cookie;
-        error_page 401 = @authentik_login;
+        auth_request /oauth2/auth-csadmin;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
 
         proxy_pass         http://127.0.0.1:${port};
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
+%{ if svc == "rabbitmq" ~}
+        # RabbitMQ management's Cowboy backend enforces a 4KB total-header
+        # limit. The Cognito oauth2-proxy session cookie (split across
+        # several _oauth2_proxy_N cookies, ADR-0034 §C) blows past that and
+        # Cowboy answers 431 Request Header Fields Too Large. The browser's
+        # cookie isn't needed downstream — the auth_request gate above has
+        # already authorized the request, and RabbitMQ's own user/password
+        # auth takes it from there — so strip it before proxying.
+        proxy_set_header   Cookie "";
+%{ endif ~}
+        proxy_set_header   Host                 \$host;
+        proxy_set_header   X-Real-IP            \$remote_addr;
+        proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto    https;
+        proxy_set_header   X-Auth-Request-User  \$auth_user;
+        proxy_set_header   X-Auth-Request-Email \$auth_email;
         proxy_read_timeout 300s;
-
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           \$http_upgrade;
         proxy_set_header   Connection        \$ws_connection;
     }
 }
 NGINX
+%{ endif ~}
 %{ endfor ~}
 
+# ── api vhost (edge-api) ──────────────────────────────────────────────────────
+# origin-verify + cs-admin gate on /, but /api/* bypasses the gate (edge-api's
+# AuthMiddleware enforces its own API-key auth there). Reconciled to the oauth2
+# form to match production (staging previously still emitted Authentik here).
+cat > /etc/nginx/conf.d/api.conf <<NGINX
+server {
+    listen 80;
+    server_name api.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name api.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    include snippets/oauth2-proxy.conf;
+
+    # edge-api's AuthMiddleware enforces x-api-key auth on /api/*, so the gateway
+    # gate is redundant here — bypass it. Lets external clients (prod nginx
+    # mirror, factory edges) reach /api/* directly.
+    location ~ ^/api/ {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        auth_request /oauth2/auth-csadmin;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
+# ── operator vhost (any authenticated pool user + API-route bypass) ───────────
+cat > /etc/nginx/conf.d/operator.conf <<NGINX
+server {
+    listen 80;
+    server_name operator.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name operator.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    # Cognito forward-auth (oauth2-proxy) — replaces Authentik. Operator is used
+    # by client factory-floor users, so the SPA shell gates on ANY authenticated
+    # pool user (not cs-admin). Client logins are provisioned via CS Admin.
+    include snippets/oauth2-proxy.conf;
+
+    # API routes — bypass the SSO gate. operator's SPA authenticates against
+    # edge-nodered via its own JWT (POST /session → Bearer), so re-checking the
+    # gateway on every XHR is redundant and breaks mid-session. The data is
+    # protected by that JWT (edge-nodered validates it), not by the shell gate.
+    # Keep in sync with edge-node-red/flows/API.json + operator's nginx.staging.conf.
+    location ~ ^/(session|machines|edit-manual-event|add-manual-event|split-events|set-event|change-po|start-po|replace-po|create-start|language-pack|downtime-reasons|health|logo|recommended-change-times|available-production-orders|pending-events|production|solved-events|set-api-key)(/|\$) {
+        proxy_pass         http://127.0.0.1:8083;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        auth_request /oauth2/auth;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        proxy_pass         http://127.0.0.1:8083;
+        proxy_set_header   Host                 \$host;
+        proxy_set_header   X-Real-IP            \$remote_addr;
+        proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto    https;
+        proxy_set_header   X-Auth-Request-User  \$auth_user;
+        proxy_set_header   X-Auth-Request-Email \$auth_email;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
+# ── operator-sbx vhost (SANDBOX operator — SBXCPACK / enterprise 2000003) ──────
+# Twin of the operator vhost above, but proxies to the operator-sbx container on
+# :8085 (compose.staging.yml), which injects the SANDBOX enterprise api-key. Same
+# oauth2-proxy shell gate + API-route bypass; the tenant separation is entirely in
+# the injected api-key, so this host drives the resettable sandbox tenant and can
+# never write to real CPACK. Sandbox operator login: packiot-sbx / sbxdrive.
+cat > /etc/nginx/conf.d/operator-sbx.conf <<NGINX
+server {
+    listen 80;
+    server_name operator-sbx.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name operator-sbx.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    include snippets/oauth2-proxy.conf;
+
+    # API routes — bypass the SSO gate (the operator SPA carries its own /session
+    # JWT). Kept in sync with the operator vhost route list.
+    location ~ ^/(session|machines|edit-manual-event|add-manual-event|split-events|set-event|change-po|start-po|replace-po|create-start|language-pack|downtime-reasons|health|logo|recommended-change-times|available-production-orders|pending-events|production|solved-events|set-api-key)(/|\$) {
+        proxy_pass         http://127.0.0.1:8085;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        auth_request /oauth2/auth;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        proxy_pass         http://127.0.0.1:8085;
+        proxy_set_header   Host                 \$host;
+        proxy_set_header   X-Real-IP            \$remote_addr;
+        proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto    https;
+        proxy_set_header   X-Auth-Request-User  \$auth_user;
+        proxy_set_header   X-Auth-Request-Email \$auth_email;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
+# ── csadmin vhost (CS-Admin SPA — origin-verify only) ─────────────────────────
+cat > /etc/nginx/conf.d/csadmin.conf <<NGINX
+server {
+    listen 80;
+    server_name csadmin.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name csadmin.$STAGING_DOMAIN;
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+    location / {
+        proxy_pass         http://127.0.0.1:8084;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
 nginx -t && nginx -s reload
-echo "HTTPS with Authentik forward auth configured for all services"
+echo "oauth2-proxy forward-auth + origin-verify configured for all services"
 
 # ── AMQPS TCP proxy (Nginx stream module) ────────────────────────────────────
 # The stream module provides a TCP/UDP proxy separate from the http {} block.
@@ -162,30 +429,75 @@ fi
 nginx -t && nginx -s reload
 echo "AMQPS stream proxy configured on port 5671"
 
-# ── RabbitMQ management API HTTPS proxy ──────────────────────────────────────
-# Exposed as mq.$STAGING_DOMAIN → 127.0.0.1:15672.
-# No nginx basic auth — RabbitMQ management plugin authenticates with its own
-# user/password. The edge-client user (tags: management) can call the HTTP
-# publish API from factory edges that don't have amqplib.
-# Idempotent: guard prevents duplicate vhost on re-runs.
-if ! grep -q "mq.$STAGING_DOMAIN" /etc/nginx/conf.d/mq.conf 2>/dev/null; then
-cat > /etc/nginx/conf.d/mq.conf <<NGINX
+# ── RabbitMQ management API — REMOVED (audit 2026-08-21, finding M3) ───────────
+# The old mq.$STAGING_DOMAIN vhost proxied straight to 127.0.0.1:15672 with NO
+# origin-verify and NO oauth2 gate — its DNS record resolves direct-to-EIP
+# (bypassing CloudFront/WAF), so the RabbitMQ management UI + HTTP API were
+# exposed to the whole internet behind only RabbitMQ's own basic auth. The
+# claimed use case (factory edges POSTing to the publish API over HTTP) was never
+# exercised on staging (0 hits in the access logs); edges publish over AMQPS on
+# :5671 (stream proxy above) instead. The management console is now served ONLY
+# by the gated rabbitmq.$STAGING_DOMAIN vhost (CloudFront + origin-verify +
+# oauth2 cs-admin forward-auth), emitted by the staff-tier loop above.
+# Remove any legacy mq.conf left over from a previous boot (idempotent).
+rm -f /etc/nginx/conf.d/mq.conf
+nginx -t && nginx -s reload
+echo "Legacy ungated mq.$STAGING_DOMAIN vhost removed (use gated rabbitmq.$STAGING_DOMAIN)"
+
+# ── refdata vhost (refdata-api read plane — deliberately open, own auth) ───────
+cat > /etc/nginx/conf.d/refdata.conf <<NGINX
+# refdata.$STAGING_DOMAIN — refdata-api (Hasura-replacement read API).
+#
+# refdata-api is a JWT/X-Api-Key-authed read API consumed cross-origin by the
+# front4 static SPA (https://staging.packiot.com) via fetch(). It performs its
+# OWN fail-closed auth (Firebase-JWT Bearer / X-Api-Key -> 401, no DB touch).
+#
+# It MUST NOT sit behind Authentik SSO: a browser cross-origin fetch carrying a
+# Bearer token cannot follow an interactive Authentik 302 login redirect. This
+# is the SAME exemption rationale as api.conf's /api/* block and operator.conf's
+# XHR routes (see their comments) — so there is NO auth_request here; nginx
+# proxies straight to the container and refdata-api is the sole auth authority.
 server {
     listen 80;
-    server_name mq.$STAGING_DOMAIN;
+    server_name refdata.$STAGING_DOMAIN;
     return 301 https://\$host\$request_uri;
 }
 server {
     listen 443 ssl;
-    server_name mq.$STAGING_DOMAIN;
+    server_name refdata.$STAGING_DOMAIN;
 
+    # Wildcard *.$STAGING_DOMAIN cert (Let's Encrypt, dns-route53) — same
+    # cert every other staging vhost uses; refdata is already a covered SAN.
     ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
     location / {
-        proxy_pass         http://127.0.0.1:15672;
+        # CORS for the front4 staging SPA. The preflight must NOT require auth,
+        # so nginx short-circuits OPTIONS with a 204 + CORS headers BEFORE the
+        # request can reach refdata-api's fail-closed auth middleware. 'always'
+        # ensures the ACAO header rides along on refdata's 401/4xx too, so the
+        # browser can read cross-origin error bodies.
+        set \$cors_origin "https://staging.packiot.com";
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin  \$cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS" always;
+            # x-packiot-agent + x-user are sent by front4 on every refdata call;
+            # omitting them from Allow-Headers makes the browser block the request
+            # (preflight fails) and front4 becomes unusable. Codifies the live fix.
+            add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user" always;
+            add_header Access-Control-Max-Age      86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain";
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin  \$cors_origin always;
+        add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user" always;
+
+        # refdata-api: internal container, no host publish. nginx (host) reaches
+        # it by its compose-pinned bridge IP (ipv4_address: 172.18.0.26:9104).
+        proxy_pass         http://172.18.0.26:9104;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
@@ -194,14 +506,171 @@ server {
     }
 }
 NGINX
-fi
 
 nginx -t && nginx -s reload
-echo "RabbitMQ management API proxy configured at https://mq.$STAGING_DOMAIN"
+echo "refdata read-plane vhost configured at https://refdata.$STAGING_DOMAIN"
 
-# ── Authentik login vhost ─────────────────────────────────────────────────────
-# No auth_request here — this IS the authentication endpoint. Plain HTTPS proxy.
-# Idempotent guard: rewrite on every run so config stays in sync with cert renewals.
+# ── scan vhost (barcode-service box-scan ingest — deliberately open, own auth) ─
+cat > /etc/nginx/conf.d/scan.conf <<NGINX
+# scan.$STAGING_DOMAIN — barcode-service (Phase-0 durable box-scan ingest).
+#
+# barcode-service is a JWT-Bearer-authed WRITE API. It performs its OWN
+# fail-closed auth: it verifies a Cognito (or Firebase) ID token, derives the
+# tenant (id_enterprise) SERVER-SIDE from the signed custom:id_enterprise claim,
+# and fences every write by it (see services/barcode-service auth.go/scans.go).
+# The client never names a tenant.
+#
+# Same "deliberately open, own auth" exemption as refdata.conf above: a scanner
+# (the intended Node-RED tee, or a browser PWA) carrying a Bearer token cannot
+# follow an interactive SSO 302, so there is NO auth_request/oauth2 gate here —
+# nginx proxies straight to the container and barcode-service is the sole auth
+# authority. Only the exact box-scan paths are exposed (cpack-ingest's tight-path
+# discipline). 443 is already open to 0.0.0.0/0 in the App EC2 SG (like refdata);
+# the JWT is the gate, not the SG. Reuses the wildcard *.$STAGING_DOMAIN cert.
+#
+# CORS allowlist is for a future browser scanner PWA; a Node-RED tee is
+# server-to-server and needs none of it. Credentialed fetch forbids ACAO '*', so
+# nginx echoes the Origin back ONLY for known SPA origins (fail-closed otherwise).
+map \$http_origin \$scan_cors_allow_origin {
+    default                                     "";
+    "https://staging.packiot.com"               \$http_origin;
+    "https://front.$STAGING_DOMAIN"             \$http_origin;
+    "https://csadmin.$STAGING_DOMAIN"           \$http_origin;
+    "https://operator.$STAGING_DOMAIN"          \$http_origin;
+    "https://operator-sbx.$STAGING_DOMAIN"      \$http_origin;
+}
+
+server {
+    listen 80;
+    server_name scan.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name scan.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 128k;   # barcode-service caps the request body at 64k
+
+    # ── Durable gapless write (server-authoritative label_seq) ───────────────
+    location = /v1/scans {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+            add_header Access-Control-Allow-Methods "POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+            add_header Access-Control-Max-Age      86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain";
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+
+        # barcode-service: internal container, no host publish. nginx (host)
+        # reaches it by its compose-pinned bridge IP (ipv4_address 172.18.0.36:8446).
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+
+    # ── SSE fan-out of accepted scans (long-lived; buffering OFF) ─────────────
+    location = /v1/scans/stream {
+        add_header Access-Control-Allow-Origin  \$scan_cors_allow_origin always;
+
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;              # SSE: stream events as they arrive
+        proxy_read_timeout 3600s;
+    }
+
+    # ── Ops probe — exposes no tenant data, no auth ──────────────────────────
+    location = /healthz {
+        proxy_pass         http://172.18.0.36:8446;
+        proxy_set_header   Host              \$host;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "barcode box-scan ingest vhost configured at https://scan.$STAGING_DOMAIN/v1/scans"
+
+# ── superset vhost (W2 self-service BI — embedded in front4) ───────────────────
+# bi.$STAGING_DOMAIN. Mirrors the prod block (terraform/production/user_data/
+# nginx_setup.sh) + the refdata pattern: origin-verify (CloudFront-only) + scoped
+# CORS to the front4 SPA origin. DIFFERENCES (both load-bearing for embedding):
+#   * Superset has its OWN auth — short-lived guest tokens for embedded VIEWING
+#     (minted by edge-api) and a Cognito-OIDC session for AUTHORING — so it does
+#     NOT sit behind oauth2-proxy (a cookie forward-auth would break the iframe
+#     handshake AND the OIDC redirect). No auth_request here.
+#   * It MUST be iframe-embeddable: Superset's Talisman emits
+#     `Content-Security-Policy: frame-ancestors https://front.$STAGING_DOMAIN`
+#     (superset_config.py). We MUST NOT add X-Frame-Options — it would blank the
+#     iframe. WebSocket upgrade is wired for the async-query progress channel.
+# The wildcard cert (*.$STAGING_DOMAIN) already covers bi.$STAGING_DOMAIN. INERT
+# until superset (:8088) is up + the profile is enabled (superset-golive-runbook).
+cat > /etc/nginx/conf.d/superset.conf <<NGINX
+map \$http_origin \$superset_cors {
+    default "";
+    "~^https://front\.$STAGING_DOMAIN\$" \$http_origin;
+}
+server {
+    listen 80;
+    server_name bi.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name bi.$STAGING_DOMAIN;
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+    client_max_body_size 20m;            # SQL Lab / CSV upload headroom
+    location / {
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin      \$superset_cors always;
+            add_header Access-Control-Allow-Methods     "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers     "Authorization, Content-Type, X-CSRFToken" always;
+            add_header Access-Control-Allow-Credentials "true" always;
+            add_header Access-Control-Max-Age           86400 always;
+            add_header Vary Origin always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin      \$superset_cors always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Vary Origin always;
+        # NOTE: NO X-Frame-Options here — Superset's Talisman CSP owns embeddability.
+        proxy_pass         http://127.0.0.1:8088;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;    # async-query websocket
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "superset BI vhost configured at https://bi.$STAGING_DOMAIN (inert until :8088 up)"
+
+# ── oauth2-proxy vhost (auth.<domain>) ────────────────────────────────────────
+# NO origin-verify + NO auth_request — this IS the authentication endpoint.
+# Serves ONLY the /oauth2/ callback+start+sign_out endpoints; everything else 404.
 cat > /etc/nginx/conf.d/auth.conf <<NGINX
 server {
     listen 80;
@@ -217,22 +686,123 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    location / {
-        proxy_pass         http://127.0.0.1:9000;
+    # oauth2-proxy (Cognito) — callback + start + sign_out (ADR-0034 §C).
+    # Authentik retired; this vhost now serves ONLY the oauth2 endpoints.
+    location /oauth2/ {
+        proxy_pass              http://127.0.0.1:4180;
+        proxy_set_header        Host              \$host;
+        proxy_set_header        X-Real-IP         \$remote_addr;
+        proxy_set_header        X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header        X-Forwarded-Proto \$scheme;
+        proxy_set_header        X-Forwarded-Host  \$host;
+        proxy_buffer_size       32k;
+        proxy_buffers           8 32k;
+        proxy_busy_buffers_size 32k;
+    }
+
+    location / { return 404; }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "oauth2-proxy SSO vhost configured at https://auth.$STAGING_DOMAIN"
+
+# ── CPACK agent ingest front-door (ADR-0042 P1 — deliberately open) ────────────
+# Public HTTPS front-door for CPACK's Node-RED tee → sparkplug-agent-cpack. TLS
+# terminates on a dedicated port (8447) and reverse-proxies ONLY the exact box-
+# scan/tag paths to the agent's plaintext HTTP listener on packiot-net (compose
+# static IP 172.18.0.38:9104). Auth is the agent's own X-Ingest-Key header — the
+# same "no SSO" carve-out the /api/ vhost uses. Inbound 8447 is admitted for
+# CPACK's egress /32 ONLY (security_groups.tf). Reuses the wildcard cert.
+#
+# TWIN CUTOVER (2026-08-25, #45 Phase-2 — folded here 2026-08-26 for durability).
+# The tee was moved off the legacy path onto a NEW path so the two never race:
+#   * /v1/tags → 444 — the LEGACY reader/agent endpoint is BLACKHOLED (connection
+#     closed, no response). The factory tee must POST to /v2/tags now; a stray
+#     /v1 producer is hard-failed instead of silently double-writing.
+#   * /v2/tags → the current sparkplug-agent-cpack (172.18.0.38:9104/v1/tags,
+#     the agent's own path is still /v1/tags internally).
+# Before this fold, user_data wrote the OLD single-location /v1/tags→agent conf,
+# so a re-provision would have SILENTLY REVERTED the live cutover (the exact
+# durability rot this codifies away). Generated conf now reproduces the live box.
+#
+# NOTE — a live `_sbx_tags_mirror` (fire-and-forget copy of /v2 to the SBXCPACK
+# sandbox agent) also exists on the box today, pointed at 172.18.0.4:9104. That
+# IP is the RETIRED edge-nodered slot (compose static .4) and currently runs no
+# agent, so the mirror is a live-transient/experimental artifact, NOT a durable
+# ingress. It is deliberately NOT baked in here — the sandbox-twin owner must
+# confirm the intended sandbox-agent IP/port before it is codified.
+cat > /etc/nginx/conf.d/cpack-ingest.conf <<NGINX
+server {
+    listen 8447 ssl;
+    server_name cpack-ingest.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    # Legacy path — BLACKHOLED by the twin cutover (#45 Phase-2). Any producer
+    # still POSTing here is hard-failed rather than silently double-writing.
+    location = /v1/tags { return 444; }
+
+    # Current ingest path → sparkplug-agent-shared (ADR-0042 cutover 2026-09): the
+    # dedicated sparkplug-agent-cpack (172.18.0.38) was retired for the shared
+    # multi-tenant agent (172.18.0.44). The legacy factory tee posts no in-body
+    # SparkPlug group, so inject X-Ingest-Group: CPACK for the multi-tenant router
+    # (sparkplug-decoder #997); proxy_set_header overrides any client value, so it
+    # is a trusted per-route injection. X-Ingest-Key is forwarded unchanged.
+    location = /v2/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   X-Ingest-Group    CPACK;
+        proxy_set_header   X-Ingest-Key      \$http_x_ingest_key;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
-        proxy_read_timeout 300s;
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade           \$http_upgrade;
-        proxy_set_header   Connection        \$ws_connection;
+        proxy_read_timeout 30s;
     }
 }
 NGINX
 
 nginx -t && nginx -s reload
-echo "Authentik SSO vhost configured at https://auth.$STAGING_DOMAIN"
+echo "CPACK agent ingest front-door configured at https://cpack-ingest.$STAGING_DOMAIN:8447/v2/tags (v1 blackholed)"
+
+# ── shared multi-tenant agent ingest front-door (ingest.staging) ──────────────
+# ONE tenant-agnostic front-door for the shared sparkplug-agent-shared (multi-
+# tenant). Terminates TLS on 8449 and reverse-proxies /v1/tags to the shared
+# agent (compose static IP 172.18.0.44:9104), which routes by the envelope's
+# group_id. Every client's box POSTs here — a new client adds NO new vhost. Auth
+# is the agent's X-Ingest-Key; inbound 8449 is admitted per-box egress /32 in the
+# App EC2 SG (security_groups.tf). cpack keeps its dedicated 8447 door until it
+# migrates onto the shared agent.
+cat > /etc/nginx/conf.d/ingest.conf <<NGINX
+server {
+    listen 8449 ssl;
+    server_name ingest.$STAGING_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+
+nginx -t && nginx -s reload
+echo "Shared multi-tenant ingest front-door configured at https://ingest.$STAGING_DOMAIN:8449/v1/tags"
 
 # ── Auto-renew ────────────────────────────────────────────────────────────────
 # AL2023 doesn't include cronie by default.

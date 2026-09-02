@@ -1,7 +1,7 @@
 name: Go Services CI
 
 # Runs vet/test/build/security/lint on the two Go services that live in
-# services/ (mirror-worker-go and oeecloud-worker). Previously these had
+# services/ (mirror-worker-go and stream-engine). Previously these had
 # zero CI — tests only ran when someone manually invoked `go test ./...`.
 #
 # Path filter: only fires on changes under services/ and this workflow
@@ -22,12 +22,12 @@ on:
     branches: [staging, development]
     paths:
       - 'services/mirror-worker-go/**'
-      - 'services/oeecloud-worker/**'
+      - 'services/stream-engine/**'
       - 'services/ingest-shim/**'
-      - 'services/operator-adapter/**'
-      - 'services/edge-transformer/**'
-      - 'services/refdata-api/**'
-      - 'services/shadow-mirror/**'
+      - 'services/operator-gateway/**'
+      - 'services/sparkplug-decoder/**'
+      - 'services/read-api/**'
+      - 'services/analytics-sync/**'
       - '.github/workflows/go-services.yml'
   workflow_dispatch:
 
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [mirror-worker-go, oeecloud-worker, ingest-shim, operator-adapter, edge-transformer, refdata-api, shadow-mirror]
+        service: [mirror-worker-go, stream-engine, ingest-shim, operator-gateway, sparkplug-decoder, read-api, analytics-sync]
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
@@ -75,7 +75,7 @@ jobs:
           working-directory: services/${{ matrix.service }}
 
   golden-fixtures:
-    name: oeecloud-worker — golden fixtures (verified SQL vs ephemeral PG)
+    name: stream-engine — golden fixtures (verified SQL vs ephemeral PG)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -89,13 +89,13 @@ jobs:
           --health-timeout 5s --health-retries 10
     defaults:
       run:
-        working-directory: services/oeecloud-worker
+        working-directory: services/stream-engine
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: services/oeecloud-worker/go.mod
-          cache-dependency-path: services/oeecloud-worker/go.sum
+          go-version-file: services/stream-engine/go.mod
+          cache-dependency-path: services/stream-engine/go.sum
       - name: golden fixture tests
         env:
           DATABASE_URL: postgres://postgres:golden@localhost:5432/golden?sslmode=disable

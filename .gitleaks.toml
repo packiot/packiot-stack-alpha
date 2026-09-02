@@ -54,6 +54,11 @@ regexes = [
     '''changeme-min-32-chars-long-secret''',
     '''^SG\.dev-placeholder-not-used-locally$''',
 
+    # Cognito app CLIENT IDs (OAUTH2_PROXY_CLIENT_ID) — public identifiers, not
+    # secrets; live in compose history. generic-api-key over-matches them.
+    '''^25i5je849qsd1hetcinrbm2t2c$''',
+    '''^4g5j94vsodtt8g8ima2hnf8ke7$''',
+
     # Env-var placeholders / shell interpolations — references, not values.
     '''\$\{[^}]*\}''',
     '''^(PG_PASSWORD|PGPASSWORD)$''',

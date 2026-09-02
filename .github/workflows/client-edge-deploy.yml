@@ -1,0 +1,240 @@
+name: Client Edge Deploy (controlled — any client → staging|production)
+
+# REUSABLE controlled client-edge deploy (ADR-0042 Mode-B, compose.edge.yml).
+# Stands up a NEW, PARALLEL Node-RED + sparkplug-agent AT a client site that co-tees
+# the PLCs (read-only) → the chosen environment's ingest. The client's LEGACY
+# Node-RED/stack is NOT touched. Use it to onboard a NEW client or migrate an existing
+# one, into STAGING (for a test) or PRODUCTION (for the real cutover).
+#
+# This is the NEW-stack model — NOT the legacy edge-node-red deploy-template.yml (PubSub).
+#
+# PER-CLIENT, ONE-TIME PREREQUISITES:
+#   • A GitHub self-hosted runner on the client's edge host, LABEL = the client slug
+#     (e.g. `cpack`) — this is what makes the deploy land AT that client.
+#   • docs/clients/edge-deployment/<client>/ bundle committed (onboard-gen output) +
+#     docs/clients/edge-deployment/<client>.env.example.
+#   • mTLS uplink certs (CN=<client>) at the edge host CERTS_DIR.
+#   • Target-env security group allows inbound :8446 from the client site egress IP.
+#
+# PER-ENV SECRETS (set once): STAGING_INGEST_API_KEY, PRODUCTION_INGEST_API_KEY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: 'Client slug (must match: the runner label, the bundle dir, and <client>.env.example)'
+        required: true
+        type: string
+      target:
+        description: 'Which environment ingest to feed'
+        required: true
+        type: choice
+        options: [staging, production]
+      edge_model:
+        description: 'Tier-1 connectivity model. nodered = the generated Node-RED reader-flow (autoloaded on first boot). reader = the config-as-data Go PLC readers.'
+        required: true
+        default: nodered
+        type: choice
+        options: [nodered, reader]
+      confirm:
+        description: 'Type the client slug again to confirm'
+        required: true
+        type: string
+
+# Per-client lock: two overlapping dispatches for the SAME client must not
+# interleave (a docker-compose `up` from run A racing a `.env` rewrite from run
+# B can land a Frankenstein mix of old/new config). Keyed on client+target so a
+# staging test and a production cutover for the same client can still run side
+# by side. cancel-in-progress stays FALSE (unlike MODE-1's bundle-artifact
+# workflow, which is safe to cancel) — this step actually mutates a live client
+# edge (docker compose up); yanking it mid-flight can leave the stack half
+# up/half down. A second dispatch queues instead and runs after the first
+# finishes.
+concurrency:
+  group: client-edge-deploy-${{ github.event.inputs.client }}-${{ github.event.inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.event.inputs.confirm == github.event.inputs.client }}
+    runs-on: [self-hosted, "${{ github.event.inputs.client }}"]   # the runner AT the client
+    defaults:
+      run:
+        working-directory: docs/clients/edge-deployment
+    env:
+      CLIENT: ${{ github.event.inputs.client }}
+      TARGET: ${{ github.event.inputs.target }}
+      EDGE_MODEL: ${{ github.event.inputs.edge_model }}
+      # per-env ingest key (only the matching one is consumed)
+      STAGING_INGEST_API_KEY: ${{ secrets.STAGING_INGEST_API_KEY }}
+      PRODUCTION_INGEST_API_KEY: ${{ secrets.PRODUCTION_INGEST_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target ingest host + key
+        id: tgt
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "production" ]; then
+            HOST="ec2-3-232-9-118.compute-1.amazonaws.com"        # new-prod app node public DNS
+            KEY="$PRODUCTION_INGEST_API_KEY"
+          else
+            HOST="ec2-100-28-20-195.compute-1.amazonaws.com"      # staging ingest host
+            KEY="$STAGING_INGEST_API_KEY"
+          fi
+          [ -n "$KEY" ] || { echo "::error::${TARGET^^}_INGEST_API_KEY secret not set"; exit 1; }
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "resolved target=$TARGET host=$HOST (client=$CLIENT)"
+
+      - name: Materialize <client>.env (inject env-specific host + key)
+        env:
+          INGEST_HOST: ${{ steps.tgt.outputs.host }}
+          INGEST_KEY: ${{ steps.tgt.outputs.key }}
+        run: |
+          set -euo pipefail
+          SRC="${CLIENT}.env.example"
+          [ -f "$SRC" ] || { echo "::error::$SRC not found — is the client bundle committed?"; exit 1; }
+          sed -e "s|^AGENT_INGEST_API_KEY=.*|AGENT_INGEST_API_KEY=${INGEST_KEY}|" \
+              -e "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" \
+              "$SRC" > .env
+          # Repoint any shim-style tee-node to the chosen env's ingest host. This
+          # is a no-op for a Mode-B (agent-mTLS) tee, whose http node targets
+          # http://localhost:9104 (the regex only matches an ec2-…amazonaws.com host).
+          if [ -f "${CLIENT}/${CLIENT}-tee-node.json" ]; then
+            sed -i "s|ec2-[0-9-]*\.compute-1\.amazonaws\.com|${INGEST_HOST}|g" "${CLIENT}/${CLIENT}-tee-node.json"
+          fi
+          echo "materialized .env for CLIENT=${CLIENT} (ingest host ${INGEST_HOST})"
+
+      - name: Guard — Mode-B mTLS certs present (fail closed)
+        # If the client's agent.yaml uplinks over ssl:// (Mode-B, ADR-0042 §6), the
+        # three cert files MUST be on the edge host at CERTS_DIR before we bring the
+        # stack up — an ssl:// broker with no certs silently downgrades to plaintext
+        # (uplink/tls.go warns + connects plaintext), which the mTLS broker refuses.
+        # A Mode-A (shim/tcp://) client skips this guard entirely.
+        run: |
+          set -euo pipefail
+          AGENT_YAML="${CLIENT}/${CLIENT}-agent.yaml"
+          if grep -qE '^\s*uplink_broker:\s*ssl://' "$AGENT_YAML" 2>/dev/null; then
+            CERTS_DIR="$(grep -E '^CERTS_DIR=' .env | cut -d= -f2)"; CERTS_DIR="${CERTS_DIR:-./certs}"
+            missing=0
+            for f in uplink-cert.pem uplink-key.pem uplink-ca.pem; do
+              [ -s "${CERTS_DIR}/${f}" ] || { echo "::error::Mode-B requires ${CERTS_DIR}/${f} — run gen-mtls-certs.sh + place the ${CLIENT} client cert/key + CA here (see FIRE-CPACK.md)"; missing=1; }
+            done
+            [ "$missing" = 0 ] || exit 1
+            echo "Mode-B mTLS certs present in ${CERTS_DIR}."
+          else
+            echo "Mode-A client (no ssl:// uplink) — skipping mTLS cert guard."
+          fi
+
+      - name: Bring up the parallel edge stack (Tier-1 reader + mosquitto + agent)
+        # --profile selects the Tier-1 model: `nodered` boots the generated Node-RED
+        # reader-flow (autoloaded as active flows on first boot — no manual import);
+        # `reader` boots the config-as-data Go PLC readers. The mosquitto + agent
+        # services carry no profile, so they come up under either. --wait blocks on
+        # every started service's healthcheck.
+        #
+        # --force-recreate: plain `up -d` diffs a service's CONFIG HASH, which for a
+        # bind mount is the mount STANZA (host path + options), never the bytes of
+        # the file it points at. A redeploy that only changed a generated artifact
+        # (AGENT_CONFIG_FILE / AGENT_PROFILE_FILE / CLIENT_CONFIG_FILE / the
+        # NODERED_*_FLOW seed — all bind-mounted read-only) is therefore invisible to
+        # compose's own change detection and silently no-ops: the OLD container keeps
+        # running the OLD config while the workflow reports success. Force-recreating
+        # every deploy trades a few seconds of container churn (all state that
+        # matters — mosquitto retained NBIRTHs, Node-RED flow store — lives in the
+        # named volumes below, which --force-recreate does not touch) for the
+        # guarantee that a config-only push actually lands.
+        run: docker compose --env-file .env -f compose.edge.yml --profile "${EDGE_MODEL:-nodered}" up -d --wait --force-recreate
+
+      - name: Verify health (agent /healthz — connectivity AND data continuity)
+        # Gate the deploy on this step: a bad push must go RED in Actions, not a
+        # green run with a `::warning::` buried in the log (the 08-13 class of bug —
+        # CPACK went dark for days while every deploy still reported success).
+        #
+        # "healthy":true alone is NOT enough. unmapped_tags.Degraded() always
+        # returns "" by design (internal/agent/unmapped/unmapped.go) — an unmapped/
+        # dropped-tag spike is a data-quality signal, not a component fault, so it
+        # never flips the top-level `healthy` flag. That is EXACTLY the shape the
+        # 08-13 outage took: containers up, `healthy:true`, yet sparse lines were
+        # silently losing every reading (birth/alias mismatch). A generic
+        # container-up check (docker compose ps / a bare curl -f) would have stayed
+        # green through that entire outage. So this step checks THREE things:
+        #   1. the agent answers /healthz at all (process alive)
+        #   2. components.uplink_publisher.connected == true (actually ingesting,
+        #      not just "container running")
+        #   3. components.unmapped_tags isn't ACTIVELY growing across a settle
+        #      window (live traffic still failing to map after the deploy landed)
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env -f compose.edge.yml ps
+
+          HEALTH_PORT="$(grep -E '^AGENT_HEALTH_PORT=' .env | cut -d= -f2 || true)"
+          URL="http://localhost:${HEALTH_PORT:-9103}/healthz"
+
+          # No jq dependency — not guaranteed present on an arbitrary client-box
+          # runner (unlike the controlled production/staging runners elsewhere in
+          # this repo). /healthz is pretty-printed (json.MarshalIndent), so a
+          # component's fields are the lines right after its `"<component>": {` key.
+          #
+          # "connected" is NOT a globally-unique field — raw_tag_subscriber (the
+          # agent's internal loopback MQTT) also reports one. Scope the lookup to a
+          # window starting at the named component's key so we read
+          # uplink_publisher's connected state, not whichever "connected" happens
+          # to sort first. total_dropped / distinct_suffixes_seen ARE globally
+          # unique (only unmapped_tags has them), so a plain extract is fine there.
+          extract() { printf '%s' "$1" | grep -o "\"$2\": *[a-zA-Z0-9]*" | head -1 | grep -o '[a-zA-Z0-9]*$'; }
+          extract_in() { printf '%s' "$1" | grep -A 20 "\"$2\":" | grep -o "\"$3\": *[a-zA-Z0-9]*" | head -1 | grep -o '[a-zA-Z0-9]*$'; }
+
+          # ── phase 1: connectivity — wait up to 90s for the agent to answer AND
+          # report its uplink broker connection as up.
+          body=""
+          connected=""
+          for i in $(seq 1 30); do
+            body="$(curl -fsS "$URL" 2>/dev/null || true)"
+            if [ -n "$body" ]; then
+              connected="$(extract_in "$body" uplink_publisher connected)"
+              [ "$connected" = "true" ] && break
+            fi
+            sleep 3
+          done
+
+          if [ -z "$body" ]; then
+            echo "::error::agent /healthz never responded in 90s at ${URL} — deploy is NOT healthy"
+            exit 1
+          fi
+          if [ "$connected" != "true" ]; then
+            echo "::error::agent is up but uplink_publisher.connected=${connected:-<missing>} after 90s — container-up != data-flowing. Check the uplink broker reachability / mTLS certs (see the Mode-B cert guard above)."
+            echo "$body"
+            exit 1
+          fi
+          echo "agent /healthz green: process up, uplink connected."
+
+          # ── phase 2: data-continuity — a container can be up and connected while
+          # STILL silently dropping the very lines the redeploy was meant to fix
+          # (birth/alias regressions don't show up as "unhealthy", only as growing
+          # unmapped/dropped counters). Sample twice across a settle window; if
+          # BOTH the distinct-suffix count and the drop count are still climbing
+          # once the deploy has had time to settle, real traffic is actively
+          # failing to map — fail closed instead of riding it green.
+          d0="$(extract "$body" total_dropped)"; d0="${d0:-0}"
+          s0="$(extract "$body" distinct_suffixes_seen)"; s0="${s0:-0}"
+
+          sleep "${HEALTH_CONTINUITY_WINDOW_SECONDS:-30}"
+
+          body2="$(curl -fsS "$URL" 2>/dev/null || true)"
+          if [ -z "$body2" ]; then
+            echo "::error::agent /healthz stopped responding during the ${HEALTH_CONTINUITY_WINDOW_SECONDS:-30}s continuity window — it came up healthy then died"
+            exit 1
+          fi
+          d1="$(extract "$body2" total_dropped)"; d1="${d1:-0}"
+          s1="$(extract "$body2" distinct_suffixes_seen)"; s1="${s1:-0}"
+
+          echo "data continuity: total_dropped ${d0} -> ${d1}, distinct_suffixes_seen ${s0} -> ${s1}"
+          if [ "$s1" -gt "$s0" ] && [ "$d1" -gt "$d0" ]; then
+            echo "::error::unmapped/dropped tags are STILL growing ${HEALTH_CONTINUITY_WINDOW_SECONDS:-30}s post-deploy (distinct suffixes ${s0}->${s1}, dropped ${d0}->${d1}) — live PLC data is failing to map right now. This is the 08-13 failure shape (container green, data dark); refusing to report success."
+            echo "$body2"
+            exit 1
+          fi
+          echo "data-continuity probe clean — no growing unmapped-tag backlog."

@@ -116,7 +116,7 @@ There is also a `customer_dashboards.*` pool for per-customer dashboard config.
 - **`hist_*`** — frozen history tables, so live tables stay lean and retention can
   differ by table class (raw 180d, grains ~2y, history frozen). Refactored direction
   (end-state map §3); *not present in the legacy `schema.sql` snapshot*.
-- **`shadow_go_port`** (schema) and **`packiot_shadow`** (separate database) — the F2
+- **`shadow_go_port`** (schema) and **`packiot_analytics`** (separate database) — the F2
   and F3 destinations of the three-flow migration. Referenced across the worker and
   mirror services (`services/oeecloud-worker/internal/flows/flows.go`,
   `services/shadow-mirror/internal/config/config.go`). → [Ch.2](02-architecture-at-a-glance.md#idea-2--the-three-flows).
@@ -152,7 +152,7 @@ PostgreSQL; its only output is a bus message. → [Ch.3](03-the-edge.md).
 | `transforms` | The counter calculation — `calc_production_counters` (raw counters → deltas/rates). |
 | `mqtt` | The MQTT subscription (the 10.9 direct-ingest path). |
 | `outbox` | The on-disk SQLite store-and-forward buffer — the durability boundary ([ADR-0011](../adr/0011-durability-boundary-and-store-and-forward.md)). |
-| `shadowpub` | The RabbitMQ publisher in confirm-select mode (`ErrPublishNacked`, `ErrConfirmTimeout`). |
+| `analyticspub` | The RabbitMQ publisher in confirm-select mode (`ErrPublishNacked`, `ErrConfirmTimeout`). |
 | `amqp` | AMQP connection/channel plumbing. |
 | `command` | Downlink commands: translates a cloud command into a SparkPlug **DCMD** and publishes it (`dcmd.go`, `consumer.go`, `executor.go`, `dedup.go`, `mqttpub.go`) — fail-safe: an ambiguous command is rejected, never partially applied. |
 | `erpconnector` | Driver-agnostic two-way ERP sync ([ADR-0019](../adr/0019-edge-customization-capabilities.md) C2): reads POs/scrap/users out of a customer DB, writes downtime/production back — replacing cleartext-credential Node-RED flows. Only active when `client.yaml` declares an integration. |
@@ -376,7 +376,7 @@ to replay onto. → [Ch.6](06-apis-and-operator.md#the-mirrors--how-staging-gets
 `replay` (with `handlers/` for each replayed action — `production_orders.go`,
 `order_changed.go`, `manual_event_created.go`, `event_splitted.go`, plus
 `natural_key.go` for identity matching), `db`, `config`, `health`, `metrics`, `log`.
-It targets the `shadow_go_port` schema / `packiot_shadow` database.
+It targets the `shadow_go_port` schema / `packiot_analytics` database.
 
 ---
 

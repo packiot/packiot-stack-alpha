@@ -1,0 +1,153 @@
+# bisnago.descriptor.yaml — BISNAGO CLIENT DESCRIPTOR (ADR-0045 P1).
+#
+# FINALIZED WITH SENSIBLE DEFAULTS (task #13). The client will NOT fill the gaps,
+# so every unknown is synthesized to a safe, clearly-marked, ADJUSTABLE default:
+# the descriptor VALIDATES and onboard-gen emits all four artifacts, so the
+# numeric-count-index translation layer can be proven end-to-end on staging. It
+# is DRAFT / OBSERVE-MODE — NOT cutover-ready (every count index is `inferred`;
+# the generator REFUSES --cutover until a live tee confirms them, ADR-0045 §2.4b).
+#
+# Reverse-engineered from the legacy bisnago Node-RED flow (bisnago.json — 70
+# nodes, Siemens S7 → numeric-counter → GCP PubSub `bispharma_bisnago_publisher`)
+# and the tsp12 mining (bispharma-bisnago-legacy-inventory.md). See
+# bisnago-profile.md + bispharma-bisnago-canonical-model.md for full provenance.
+#
+# ── WHAT IS CONFIRMED FROM THE FLOW ───────────────────────────────────────────
+#   • 7 ACTIVE production lines: L71 L72 L73 L56 L57 L58 L60 (of 19 S7 endpoints;
+#     the 12 dormant 192.168.5.x lines are EXCLUDED here — reversible, re-add on
+#     client confirmation). Line labels + PLC IP/rack/slot/cycle: CONFIRMED.
+#   • Counters are DINT (32-bit) ABSOLUTE TOTALIZERS; 2 counter ids per line
+#     (14 total, 670..683). Which DINT→id: CONFIRMED (see table below).
+#   • COUNTERS-ONLY: no MachSpeed sensor, no StateCurrent signal anywhere
+#     (0 speed/state/packml occurrences in the flow). CONFIRMED.
+#   • ZERO back4/HTTP customization calls (no anti-corruption shim needed). CONFIRMED.
+#
+# ── THE NEOPAC COLLISION — HOW THIS DESCRIPTOR AVOIDS IT (load-bearing) ────────
+# The legacy counter ids 670..683 COLLIDE with live NEOPAC (enterprise 13)
+# id_equipment surrogates in prod (legacy-inventory §3). The collision surface is
+# the DB SURROGATE id_equipment — NOT the count-index leaf, which is namespaced
+# under the BISNAGO enterprise/topic tree. This descriptor therefore:
+#   1. gives every equipment a FRESH id_equipment in a distinct 41xxx staging
+#      block (NEVER 670..683) — the real safety-critical fresh-id requirement;
+#   2. keeps count_index.value = the legacy counter id (670..683), because THAT
+#      is the routing key the dumb tee forwards in counterData[].id, and it is
+#      safely namespaced under BISNAGO — it never touches NEOPAC's surrogate space.
+# Result: the translation layer maps id 671 → BISNAGO/…/L71/M671/…/671/Unit with
+# ZERO possibility of writing to a NEOPAC row.  (If the client later wants the
+# canonical leaf idx to differ from the legacy id, add a count_index override.)
+#
+# ── SENSIBLE DEFAULTS (all ADJUSTABLE in tenant-prep) ─────────────────────────
+#   • enterprise_id: 119 placeholder (legacy prod). Staging assigns its own
+#     surrogate in tenant-prep (cf. CPACK prod 1 → staging 3).
+#   • canonical.prefix: BISNAGO/SP  — synthetic site short-code (no topic strings
+#     in the flow to derive it). Confirm real site code with client.
+#   • area: LINHAS — placeholder.
+#   • 2-ids-per-line meaning UNRESOLVED (2 machines? or processed+consumed?). The
+#     SAFE default registers BOTH ids as two MEMBERS per line (nothing dropped,
+#     fully visible during CAPTURE, reversible). Assign the real OEE role (which
+#     id is the line's good-output counter vs infeed/defective) once the client
+#     or a live tee confirms — until then treat both as ProdProcessedCount.
+#   • rated speed (equipments.production_speed, units/min) — REQUIRED for the
+#     counters-only Performance term, but NOT a descriptor field. Set it in the
+#     tenant-prep staging seed SQL; see bisnago-staging-validation.md for the
+#     placeholder default (marked ADJUSTABLE).
+
+tenant: BISNAGO
+
+enterprise_id: 119               # PLACEHOLDER (legacy prod = 119). Staging assigns its own
+                                 # surrogate in tenant-prep. MUST be > 0 (register cross-tenant guard).
+
+canonical:
+  prefix: BISNAGO/SP             # ADJUSTABLE — synthetic site code "SP" (flow carries no topic strings).
+
+# ── raw → canonical mapping ───────────────────────────────────────────────────
+# The dumb tee forwards numeric counterData[{id,value}] — NO topic strings — so
+# there are no prefix/metric/parameter string quirks to absorb. The whole raw→
+# canonical bridge is the count-index → synthesized-member map below; the STACK
+# (sparkplug-agent /v1/counters, internal/agent/numeric) applies it. Empty lists.
+mapping:
+  count_index_default_mode: equipment_id   # fallback; every member pins an explicit count_index below.
+  prefix_fixups: []
+  metric_aliases: []
+  parameter_aliases: []
+
+# ── metric templates — COUNTERS-ONLY (no speed, no state, no Parameter) ────────
+# Members carry ONE indexed ProdProcessedCount totalizer. Lines carry a bare
+# (Phase-9-aggregated) ProdProcessedCount — NO Parameter30700 (bisnago publishes
+# no member-CSV; canonical-model §1.2 "omit unless the line publishes one").
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+
+# ── equipment inventory — 7 lines (tp=3) + 14 members (tp=1) ───────────────────
+# id_equipment = FRESH 41xxx staging block (NEVER 670..683 — NEOPAC). Lines
+# 41001..41007; members 41101..41114. count_index.value = the LEGACY counter id
+# (the routing key the tee forwards), confidence: inferred (re-confirm via live
+# tee before cutover). Member topic M<legacy-id> is a placeholder name — rename
+# to the real machine once the 2-ids-per-line meaning is confirmed.
+#
+#   line   PLC IP          rack/slot  counter ids (DINT→id)     line id   member ids
+#   L71    192.168.7.5     0/2        DW8→670, DW0→671          41001     41101/41102
+#   L72    192.168.7.9     0/2        DW12→672, DW0→673         41002     41103/41104
+#   L73    192.168.7.13    0/2        DW4→674, DW0→675          41003     41105/41106
+#   L56    192.168.7.17    0/2        DW0→676, DW4→677          41004     41107/41108
+#   L57    192.168.7.21    0/2        DW0→678, DW4→679          41005     41109/41110
+#   L58    192.168.7.25    0/2        DW0→680, DW4→681          41006     41111/41112
+#   L60    192.168.7.29    0/2        DW0→682, DW4→683          41007     41113/41114
+equipment:
+  # ── L71 (PLC 192.168.7.5) ──
+  - {topic: BISNAGO/SP/LINHAS/L71, device_key: BISNAGO-SP-LINHAS-L71,       id_equipment: 41001, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L71/M670, device_key: BISNAGO-SP-LINHAS-L71-M670,  id_equipment: 41101, tp_equipment: 1, id_unit: 41101, count_index: {value: 670, confidence: inferred}}  # DW8
+  - {topic: BISNAGO/SP/LINHAS/L71/M671, device_key: BISNAGO-SP-LINHAS-L71-M671,  id_equipment: 41102, tp_equipment: 1, id_unit: 41102, count_index: {value: 671, confidence: inferred}}  # DW0
+  # ── L72 (PLC 192.168.7.9) ──
+  - {topic: BISNAGO/SP/LINHAS/L72, device_key: BISNAGO-SP-LINHAS-L72,       id_equipment: 41002, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L72/M672, device_key: BISNAGO-SP-LINHAS-L72-M672,  id_equipment: 41103, tp_equipment: 1, id_unit: 41103, count_index: {value: 672, confidence: inferred}}  # DW12
+  - {topic: BISNAGO/SP/LINHAS/L72/M673, device_key: BISNAGO-SP-LINHAS-L72-M673,  id_equipment: 41104, tp_equipment: 1, id_unit: 41104, count_index: {value: 673, confidence: inferred}}  # DW0
+  # ── L73 (PLC 192.168.7.13) ──
+  - {topic: BISNAGO/SP/LINHAS/L73, device_key: BISNAGO-SP-LINHAS-L73,       id_equipment: 41003, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L73/M674, device_key: BISNAGO-SP-LINHAS-L73-M674,  id_equipment: 41105, tp_equipment: 1, id_unit: 41105, count_index: {value: 674, confidence: inferred}}  # DW4
+  - {topic: BISNAGO/SP/LINHAS/L73/M675, device_key: BISNAGO-SP-LINHAS-L73-M675,  id_equipment: 41106, tp_equipment: 1, id_unit: 41106, count_index: {value: 675, confidence: inferred}}  # DW0
+  # ── L56 (PLC 192.168.7.17) ──
+  - {topic: BISNAGO/SP/LINHAS/L56, device_key: BISNAGO-SP-LINHAS-L56,       id_equipment: 41004, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L56/M676, device_key: BISNAGO-SP-LINHAS-L56-M676,  id_equipment: 41107, tp_equipment: 1, id_unit: 41107, count_index: {value: 676, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L56/M677, device_key: BISNAGO-SP-LINHAS-L56-M677,  id_equipment: 41108, tp_equipment: 1, id_unit: 41108, count_index: {value: 677, confidence: inferred}}  # DW4
+  # ── L57 (PLC 192.168.7.21) ──
+  - {topic: BISNAGO/SP/LINHAS/L57, device_key: BISNAGO-SP-LINHAS-L57,       id_equipment: 41005, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L57/M678, device_key: BISNAGO-SP-LINHAS-L57-M678,  id_equipment: 41109, tp_equipment: 1, id_unit: 41109, count_index: {value: 678, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L57/M679, device_key: BISNAGO-SP-LINHAS-L57-M679,  id_equipment: 41110, tp_equipment: 1, id_unit: 41110, count_index: {value: 679, confidence: inferred}}  # DW4
+  # ── L58 (PLC 192.168.7.25) ──
+  - {topic: BISNAGO/SP/LINHAS/L58, device_key: BISNAGO-SP-LINHAS-L58,       id_equipment: 41006, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L58/M680, device_key: BISNAGO-SP-LINHAS-L58-M680,  id_equipment: 41111, tp_equipment: 1, id_unit: 41111, count_index: {value: 680, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L58/M681, device_key: BISNAGO-SP-LINHAS-L58-M681,  id_equipment: 41112, tp_equipment: 1, id_unit: 41112, count_index: {value: 681, confidence: inferred}}  # DW4
+  # ── L60 (PLC 192.168.7.29) ──
+  - {topic: BISNAGO/SP/LINHAS/L60, device_key: BISNAGO-SP-LINHAS-L60,       id_equipment: 41007, tp_equipment: 3}
+  - {topic: BISNAGO/SP/LINHAS/L60/M682, device_key: BISNAGO-SP-LINHAS-L60-M682,  id_equipment: 41113, tp_equipment: 1, id_unit: 41113, count_index: {value: 682, confidence: inferred}}  # DW0
+  - {topic: BISNAGO/SP/LINHAS/L60/M683, device_key: BISNAGO-SP-LINHAS-L60-M683,  id_equipment: 41114, tp_equipment: 1, id_unit: 41114, count_index: {value: 683, confidence: inferred}}  # DW4
+
+# ── agent wiring (→ bisnago-agent.yaml) ───────────────────────────────────────
+# NEEDS-DECISION (edge shape): the legacy flow ran on a Raspberry Pi reading 7 S7
+# PLCs → PubSub. On the new stack bisnago becomes EITHER a rebuilt tee OR our
+# client-edge container reading the same 7 S7 endpoints. Either way the raw
+# envelope carries {counter_id, value} and the STACK synthesizes canonical topics.
+# Broker/topic below are the staging loopback defaults; mTLS refs empty on staging.
+agent:
+  edge_node_id: bisnago-tee            # DISTINCT from bispharma-tee + plc-sim + every other tenant
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bisnago/#
+  uplink_broker: tcp://mosquitto:1883
+  mtls:
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee / client-edge forwarder parameters (→ bisnago-tee-node.json) ──
+# The tee is a DUMB forwarder of counterData[{id,value}] — the stack-side
+# translation layer (internal/agent/numeric, POST /v1/counters) does the id →
+# canonical-topic mapping. ingest_url is the staging front-door TBD (tenant-prep).
+tee:
+  ingest_url: "https://TODO-staging-ingest-front-door:9104/v1/counters"  # TODO(tenant-prep)
+  ingest_key_env: BISNAGO_INGEST_KEY
+  gateway: bisnago-edge
+  tls_insecure: true                   # staging self-signed

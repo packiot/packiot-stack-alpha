@@ -122,6 +122,37 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "edge-transformer dropped MQTT events — decode failures or backpressure (board 10/11)"
+      # Per-tenant routing on the `oee` exchange binds a queue only for
+      # allowlisted tenants (sparkplug.data.<tenant> exact keys). Before this
+      # alert, a message for a NON-allowlisted tenant matched no binding and was
+      # dropped silently as UNROUTABLE — no queue, no metric, no trace. The `oee`
+      # exchange now has an alternate-exchange (oee-unroutable, set via the
+      # oee-ae policy in definitions.template.json) that catches those messages
+      # into oee-unroutable-q instead of dropping them. Any depth here means a
+      # producer is emitting an unrecognised routing key (new tenant not yet
+      # provisioned, or a routing-key typo/drift) — messages are RETAINED for
+      # inspection/replay, not lost. Requires the rabbitmq-detailed scrape job.
+      - alert: OeeUnroutableMessages
+        expr: rabbitmq_detailed_queue_messages{queue="oee-unroutable-q"} > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "oee-unroutable-q holds {{ $value }} msgs — a tenant's SparkPlug data is hitting no `oee` binding (unprovisioned tenant or routing-key drift); caught by the alternate-exchange, not dropped"
+      # Application-level twin of OeeUnroutableMessages above. That one catches
+      # a delivery hitting no BROKER binding; THIS one catches a delivery that
+      # DID reach the worker but whose packml_topic has no active
+      # packml_register row — the worker acks-and-skips it (retry can't conjure
+      # the row), so the drop is otherwise invisible: only a 1/32 sampled log,
+      # and the tenant's equipment_values stay silently EMPTY while every
+      # pipeline shows green. A topic that keeps arriving but never routes =
+      # a missing/inactive register row (onboarding gap, an apply-register that
+      # never ran, or an `active=false` flag). Bounded to one series/tenant.
+      - alert: PackmlUnroutableTopic
+        expr: sum by (tenant) (rate(packml_unresolved_topic_total[10m])) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is publishing a SparkPlug topic with no active packml_register row for 15m — its equipment_values are silently empty. Check onboarding / apply-register and the packml_register.active flag; the offending topic is in the stream-engine `topic not registered, skipping` log (sampled 1/32)."
       # Some seq gaps are normal on reconnect; a stream of them means
       # the PLC/broker is losing messages (SparkPlug seq is per-session).
       - alert: SparkplugSeqGapStream
@@ -151,6 +182,18 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "shadow-mirror replay failures — operator-action parity hole on the shadow flows (board 12)"
+      # legacy-replicator is the AUTHORITATIVE CPACK operator-action source
+      # (F1 retired). A zero-row UPDATE = a "silent skip": a legacy action that
+      # resolved to nothing in staging — a replay gap (bugs 247/248 class:
+      # topology drift / id-map miss / unresolved equipment). The loop fail-opens
+      # past these so they never wedge it, which is exactly why they need an
+      # alert to be legible. `for: 30m` rides out incidental single noops.
+      - alert: ReplicatorReplayGaps
+        expr: sum by (table) (increase(shadow_mirror_update_noop_total{job="legacy-replicator"}[30m])) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "legacy-replicator: zero-row UPDATEs on {{ $labels.table }} for 30m — CPACK operator-action replay gap (topology drift / unresolved id-map; see 2026-08-23 twin-drop finding)"
 
   # Host + DB rules (need the 2026-07-07 exporters; extend as the
   # CAgg-invalidation/queue-depth backlog items land).

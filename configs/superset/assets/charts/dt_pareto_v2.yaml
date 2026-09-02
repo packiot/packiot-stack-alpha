@@ -1,0 +1,26 @@
+# Downtime pareto (v2) — SUM(duration) by desc_category, top 10 descending.
+# bi.downtimes. front4 v3 availabilityGraph "Disponibilidade" pareto.
+slice_name: Downtime pareto (by reason)
+description: bi.downtimes SUM(duration) by desc_category, desc. Top 10 pareto.
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params:
+  datasource: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table
+  viz_type: dist_bar
+  metrics:
+  - total_duration
+  groupby:
+  - reason
+  columns: []
+  adhoc_filters: []
+  row_limit: 10
+  order_desc: true
+  y_axis_format: .3~s
+  show_legend: false
+  time_range: last week
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "reason", "label": "reason", "expressionType": "SQL"}], "metrics": ["total_duration"], "orderby": [["total_duration", false]], "annotation_layers": [], "row_limit": 10, "series_columns": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["reason"], "columns": [], "aggregates": {"total_duration": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "1a8ca3a3-4430-4b6f-8d48-00a0dda85c05__table", "viz_type": "dist_bar", "metrics": ["total_duration"], "groupby": ["reason"], "columns": [], "adhoc_filters": [], "row_limit": 10, "order_desc": true, "y_axis_format": ".3~s", "show_legend": false, "time_range": "last week", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 40da5b2a-5031-4a6c-b096-4f9ab393b23f
+version: 1.0.0
+dataset_uuid: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05

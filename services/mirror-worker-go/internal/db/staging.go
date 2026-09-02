@@ -20,8 +20,13 @@ type Staging struct {
 	logger *slog.Logger
 
 	// ADR-0012 3-flow parity fan-out (see InsertEquipmentValueDelta).
-	valueFanout bool
-	shadowPool  *pgxpool.Pool // packiot_shadow (Flow 3); nil = not attached
+	valueFanout   bool
+	analyticsPool *pgxpool.Pool // packiot_analytics (Flow 3); nil = not attached
+	// ADR-0032 F3-collapse: gate the F2 (shadow_go_port) fan-out leg so it can be
+	// retired without a code change (the SHADOW_EMIT_GO analog for the mirror).
+	// Zero value (false) ⇒ F2 fanned as before; set true (SHADOW_FANOUT_F2=false)
+	// ⇒ mirror fans ONLY F3, so shadow_go_port stops receiving mirror writes.
+	f2Disabled bool
 }
 
 func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger) (*Staging, error) {
@@ -51,28 +56,34 @@ func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger
 
 func (s *Staging) Close() {
 	s.pool.Close()
-	if s.shadowPool != nil {
-		s.shadowPool.Close()
+	if s.analyticsPool != nil {
+		s.analyticsPool.Close()
 	}
 }
 
 // EnableValueFanout turns on ADR-0012 3-flow fan-out: every
 // InsertEquipmentValueDelta row is also written to packiot.shadow_go_port
-// (same pool) and, when AttachShadowPool succeeded, packiot_shadow.public.
+// (same pool) and, when AttachAnalyticsPool succeeded, packiot_analytics.public.
 func (s *Staging) EnableValueFanout() { s.valueFanout = true }
 
-// AttachShadowPool connects the ADR-0012 shadow DB (packiot_shadow) so
+// SetF2Fanout controls whether the mirror fans the F2 (shadow_go_port) leg.
+// enabled=true keeps the ADR-0012 behavior; enabled=false (SHADOW_FANOUT_F2=false)
+// makes the mirror fan ONLY F3 (packiot_analytics) — the ADR-0032 collapse step that
+// stops shadow_go_port receiving mirror writes so it can be frozen + dropped.
+func (s *Staging) SetF2Fanout(enabled bool) { s.f2Disabled = !enabled }
+
+// AttachAnalyticsPool connects the ADR-0012 shadow DB (packiot_analytics) so
 // value fan-out reaches Flow 3. Separate pool because pgbouncer's static
-// database list doesn't include packiot_shadow — callers pass a
+// database list doesn't include packiot_analytics — callers pass a
 // direct-to-postgres host via SHADOW_DB_HOST (same bypass shadow-mirror
 // uses).
-func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
+func (s *Staging) AttachAnalyticsPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
 	sc := *creds
 	sc.Database = dbName
 	if host != "" {
 		sc.Host = host
 	}
-	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-shadow"))
+	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-analytics"))
 	if err != nil {
 		return fmt.Errorf("parse shadow url: %w", err)
 	}
@@ -89,7 +100,7 @@ func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, 
 		p.Close()
 		return fmt.Errorf("shadow ping: %w", err)
 	}
-	s.shadowPool = p
+	s.analyticsPool = p
 	s.logger.Info("shadow pool ready", slog.String("db", dbName))
 	return nil
 }
@@ -437,15 +448,143 @@ func (s *Staging) FinishOrphanPO(ctx context.Context, stagingPOID int64, closeTs
 	return finished, err
 }
 
+// ──── Prod-terminal orphan closer (task follow-up to #48) ───────────────
+//
+// The #48 finisher above closes the STATUS=2 zombie class. Two blemishes it
+// structurally cannot reach:
+//   - a mirror-created PO stuck at STATUS=1 (available, ts_start NULL) whose
+//     prod twin already FINISHED — never a finisher candidate because
+//     ReconcileActivePOIDOrders only returns status=2; and
+//   - the ts_start-NULL close itself — FinishOrphanPO's header write trips the
+//     production_orders_ts_start_ts_end check (23514) the moment it sets ts_end
+//     on a row whose ts_start is still NULL.
+// These two helpers close exactly that gap, flag-gated by the reconciler.
+
+// TerminalOrphanCandidatePOs returns the MIRROR-CREATED staging POs in
+// status IN (1,2) for the enterprise, as id_order → id_production_order.
+// DELIBERATELY NARROWER than ReconcileActivePOIDOrders in two ways:
+//   - status IN (1,2), not just 2 — so a never-started (status=1, ts_start
+//     NULL) orphan is reachable; and
+//   - the origin predicate is nm_production_order LIKE 'CPACK-reconcile-%'
+//     ALONE (no mirror_id_map union) — this closer performs a header-status
+//     rewrite (status=1→3), a heavier mutation than the finisher's segment
+//     seal, so it is scoped to POs the reconciler itself CREATED. Operator- and
+//     manual-origin POs (even ones that happen to have a mirror_id_map row) are
+//     never touched.
+//
+// Enterprise scope ($2 = StagingEnterpriseID) is what makes this safe against
+// staging-only enterprises, exactly as in ReconcileActivePOIDOrders: the caller
+// diffs the result against prod's authority (FetchPOFinishInfo) and closes only
+// twins prod reports as status=3, so a PO from a no-prod-authority enterprise
+// can never be closed here (wrong id_enterprise → not returned; and no prod row
+// → skipped_unverified upstream).
+func (s *Staging) TerminalOrphanCandidatePOs(ctx context.Context, enterpriseID int) (map[int64]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT po.id_order, po.id_production_order
+		   FROM production_orders po
+		  WHERE po.id_enterprise = $1
+		    AND po.status IN (1, 2)
+		    AND po.nm_production_order LIKE 'CPACK-reconcile-%'`,
+		enterpriseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query mirror-created terminal-orphan candidate POs: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var idOrder, idPO int64
+		if err := rows.Scan(&idOrder, &idPO); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[idOrder] = idPO
+	}
+	return out, rows.Err()
+}
+
+// CloseProdTerminalOrphanPO closes a mirror-created staging PO whose prod twin
+// has FINISHED, AT prod's finish ts (closeTs). It is the STATUS-1-AWARE,
+// NULL-ts_start-SAFE, STRICT-constraint-safe superset of FinishOrphanPO:
+//   - the header UPDATE matches status IN (1,2) (not just 2), so a never-started
+//     orphan (status=1) closes too; and
+//   - it satisfies the strict production_orders_ts_start_ts_end check (a status=3
+//     row demands ts_start < ts_end, NOT <=) by pinning ts_end = closeTs and
+//     anchoring ts_start to LEAST(existing, closeTs - 1s) — see
+//     sqlCloseProdTerminalOrphanHeader for the full constraint + rationale.
+//
+// Returns whether a header row was actually closed (false = already status 3/4
+// → idempotent no-op). Idempotency is structural: the segment seal only matches
+// open segments, the header UPDATE only matches status IN (1,2). recalc_needed
+// lets staging's per-minute cron recompute the now-closed PO's final OEE.
+// sqlCloseProdTerminalOrphanHeader is the header close for the prod-terminal
+// orphan closer, extracted as a const so its 23514-avoidance invariants are
+// unit-guarded (staging_test.go). The live check constraint
+// production_orders_ts_start_ts_end is STRICTER than a naive ts_start<=ts_end:
+//
+//	CHECK ((ts_start < ts_end AND status IN (3,4))
+//	    OR (status=1 AND ts_start IS NULL)
+//	    OR (status=1 AND ts_end IS NULL)
+//	    OR (status=2 AND ts_start IS NOT NULL))
+//
+// so a status=3 row needs ts_start STRICTLY BEFORE ts_end — a zero-duration
+// close (ts_start == ts_end) is REJECTED. And because these orphans are
+// late-mirrored, staging's ts_start (when set) is usually AFTER prod's finish
+// ts, so we cannot just stamp ts_end = closeTs onto the existing ts_start
+// either. This close therefore:
+//   - pins ts_end = closeTs (prod's real finish ts — the faithful value); and
+//   - sets ts_start = LEAST(COALESCE(ts_start, closeTs), closeTs - 1s), i.e.
+//     it keeps a genuinely-earlier existing start but otherwise anchors a
+//     1-SECOND window ending exactly at the prod finish ts.
+//
+// That guarantees ts_start < ts_end for every input shape (NULL start,
+// start-before-finish, or the common start-after-finish) — closing the PO at
+// prod's finish moment with the minimal positive duration the constraint
+// admits. Header matches status IN (1,2) so a never-started (status=1) orphan
+// closes too.
+const sqlCloseProdTerminalOrphanHeader = `UPDATE production_orders
+	    SET status = 3,
+	        ts_start = LEAST(COALESCE(ts_start, $2::timestamptz), $2::timestamptz - interval '1 second'),
+	        ts_end = $2,
+	        recalc_needed = true
+	  WHERE id_production_order = $1
+	    AND status IN (1, 2)`
+
+func (s *Staging) CloseProdTerminalOrphanPO(ctx context.Context, stagingPOID int64, closeTs time.Time) (bool, error) {
+	var closed bool
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		// Seal any open runtime segment (the status=2 case; a status=1 orphan
+		// has none — this simply matches zero rows, same GREATEST clamp guard
+		// against an inverted range as FinishOrphanPO).
+		if _, err := tx.Exec(ctx,
+			`UPDATE production_orders_runtime
+			    SET runtime_timerange = tstzrange(
+			          lower(runtime_timerange),
+			          GREATEST($2::timestamptz, lower(runtime_timerange))),
+			        recalc_needed = true
+			  WHERE id_production_order = $1
+			    AND upper(runtime_timerange) IS NULL`,
+			stagingPOID, closeTs); err != nil {
+			return fmt.Errorf("close runtime segment: %w", err)
+		}
+		ct, err := tx.Exec(ctx, sqlCloseProdTerminalOrphanHeader, stagingPOID, closeTs)
+		if err != nil {
+			return fmt.Errorf("close prod-terminal orphan production_order: %w", err)
+		}
+		closed = ct.RowsAffected() > 0
+		return nil
+	})
+	return closed, err
+}
+
 // ──── ADR-0025 shadow fan-out (task #51) ───────────────────────────────
 //
 // FinishOrphanPO above closes ONLY Flow 1 (public schema, by the F1 surrogate
 // id_production_order). The shadow flows (F2 = shadow_go_port schema on the
-// main pool; F3 = packiot_shadow.public on the shadow pool) carry their OWN
+// main pool; F3 = packiot_analytics.public on the shadow pool) carry their OWN
 // surrogate id_production_order per row (bug 248), so the same close must be
 // re-expressed against each flow by the NATURAL KEY (id_enterprise, id_order)
 // — exactly what shadow-mirror's lifecycle handlers do. These helpers reuse
-// the ADR-0012 fan-out plumbing (s.pool + s.shadowPool) the value delta
+// the ADR-0012 fan-out plumbing (s.pool + s.analyticsPool) the value delta
 // already writes through, so the finisher reaches all three flows with no new
 // connection wiring.
 
@@ -453,7 +592,7 @@ func (s *Staging) FinishOrphanPO(ctx context.Context, stagingPOID int64, closeTs
 // ShadowFlows and passed back into the per-flow finisher helpers. Keeping
 // the pool/schema unexported keeps pgx out of the reconcile package.
 type ShadowFlow struct {
-	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_shadow" (F3)
+	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_analytics" (F3)
 	pool   *pgxpool.Pool
 	schema string
 }
@@ -463,7 +602,7 @@ type ShadowFlow struct {
 //   - nil when EnableValueFanout was never called (fan-out disabled) — the
 //     finisher then behaves exactly like #480 (F1 only);
 //   - {shadow_go_port} when only Flow 2 is attached;
-//   - {shadow_go_port, packiot_shadow} once AttachShadowPool succeeded.
+//   - {shadow_go_port, packiot_analytics} once AttachAnalyticsPool succeeded.
 //
 // One flag (RECONCILE_FINISHER_ENABLED) governs whether the finisher runs at
 // all; this method governs which flows it can reach given what's wired.
@@ -471,9 +610,12 @@ func (s *Staging) ShadowFlows() []ShadowFlow {
 	if !s.valueFanout {
 		return nil
 	}
-	flows := []ShadowFlow{{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"}}
-	if s.shadowPool != nil {
-		flows = append(flows, ShadowFlow{Name: "packiot_shadow", pool: s.shadowPool, schema: "public"})
+	var flows []ShadowFlow
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		flows = append(flows, ShadowFlow{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"})
+	}
+	if s.analyticsPool != nil {
+		flows = append(flows, ShadowFlow{Name: "packiot_analytics", pool: s.analyticsPool, schema: "public"})
 	}
 	return flows
 }
@@ -767,7 +909,7 @@ func (s *Staging) FetchMappedActiveCPACKPOs(ctx context.Context, source string, 
 //
 // ADR-0012 3-flow fan-out: when EnableValueFanout was called, the same
 // row also goes to packiot.shadow_go_port (Flow 2) and — if
-// AttachShadowPool succeeded — packiot_shadow.public (Flow 3). The
+// AttachAnalyticsPool succeeded — packiot_analytics.public (Flow 3). The
 // timestamp is computed ONCE in Go: (ts_value, id_equipment) is the
 // parity join key across flows, and a per-statement now() would give
 // each flow a different key. Shadow failures never fail the Flow 1
@@ -789,10 +931,12 @@ func (s *Staging) InsertEquipmentValueDelta(
 	if !s.valueFanout {
 		return nil
 	}
-	s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
-		ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
-	if s.shadowPool != nil {
-		s.fanoutValueDelta(ctx, s.shadowPool, "public", "packiot_shadow",
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
+			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
+	}
+	if s.analyticsPool != nil {
+		s.fanoutValueDelta(ctx, s.analyticsPool, "public", "packiot_analytics",
 			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	}
 	return nil
@@ -846,10 +990,12 @@ func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID,
 	if !s.valueFanout {
 		return
 	}
-	s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
-		fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
-	if s.shadowPool != nil {
-		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-state",
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
+			fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
+	}
+	if s.analyticsPool != nil {
+		s.execFanout(ctx, s.analyticsPool, "packiot_analytics", "-state",
 			fmt.Sprintf(sqlInsertStateRow, "public"), stagingEqID, ts, enterpriseID, status)
 	}
 }
@@ -865,10 +1011,12 @@ func (s *Staging) FanoutEventRow(ctx context.Context, stagingEqID, enterpriseID 
 	if !s.valueFanout {
 		return
 	}
-	s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
-		fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
-	if s.shadowPool != nil {
-		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-event",
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
+			fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
+	}
+	if s.analyticsPool != nil {
+		s.execFanout(ctx, s.analyticsPool, "packiot_analytics", "-event",
 			fmt.Sprintf(sqlInsertShadowEvent, "public"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	}
 }
@@ -937,7 +1085,7 @@ func dedupKey(c ShadowEventCandidate) shadowCandDedup {
 // FetchShadowEventCloseCandidates returns the DISTINCT set of shadow
 // equipment_events rows that are close-sweep candidates, UNIONed across
 // BOTH shadow planes (F2 = shadow_go_port on the staging pool, F3 = public
-// on the packiot_shadow pool). A row qualifies if it is either:
+// on the packiot_analytics pool). A row qualifies if it is either:
 //
 //	(a) still OPEN (ts_end IS NULL) at ANY age            — RISK-1 open-strand
 //	(b) has ts_event >= now()-recentHours                 — RISK-2 close-drift
@@ -1044,10 +1192,12 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 		return nil
 	}
 
-	if err := collect(s.pool, "shadow_go_port"); err != nil {
-		return nil, err
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		if err := collect(s.pool, "shadow_go_port"); err != nil {
+			return nil, err
+		}
 	}
-	if err := collect(s.shadowPool, "public"); err != nil {
+	if err := collect(s.analyticsPool, "public"); err != nil {
 		return nil, err
 	}
 
@@ -1056,7 +1206,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 
 // CountShadowOpenStrands counts shadow equipment_events rows still OPEN
 // (ts_end IS NULL) whose ts_event is older than olderThanHours, per plane
-// ("f2" = shadow_go_port, "f3" = public/packiot_shadow). Pure COUNT on the
+// ("f2" = shadow_go_port, "f3" = public/packiot_analytics). Pure COUNT on the
 // (id_enterprise) WHERE ts_end IS NULL partial index — the comparator's
 // close-field parity signal. A plane whose pool is nil is omitted from the
 // map (F3 not attached). Both planes should read EQUAL (F2==F3); inequality
@@ -1085,10 +1235,12 @@ func (s *Staging) CountShadowOpenStrands(ctx context.Context, enterpriseID, olde
 		out[plane] = n
 		return nil
 	}
-	if err := count(s.pool, "f2", "shadow_go_port"); err != nil {
-		return nil, err
+	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
+		if err := count(s.pool, "f2", "shadow_go_port"); err != nil {
+			return nil, err
+		}
 	}
-	if err := count(s.shadowPool, "f3", "public"); err != nil {
+	if err := count(s.analyticsPool, "f3", "public"); err != nil {
 		return nil, err
 	}
 	return out, nil

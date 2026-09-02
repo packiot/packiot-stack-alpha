@@ -24,6 +24,19 @@ systemctl start  amazon-ssm-agent
 dnf update -y --allowerasing
 dnf install -y git curl unzip jq python3-pip --allowerasing
 
+# ── Go toolchain (self-hosted runner: generate-client-bundle.yml) ─────────────
+# The bundle workflow builds cmd/onboard-gen with `go build` and assumes go is on
+# PATH on the runner (alongside openssl/aws). Install the pinned toolchain to
+# /usr/local + symlink into /usr/local/bin (on the runner service's PATH). Idempotent.
+GO_VERSION=1.25.0
+if ! /usr/local/go/bin/go version 2>/dev/null | grep -q "go$${GO_VERSION} "; then
+  curl -sSfL -o /tmp/go.tgz "https://go.dev/dl/go$${GO_VERSION}.linux-arm64.tar.gz"
+  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+  ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  rm -f /tmp/go.tgz
+fi
+
 # ── Swap ──────────────────────────────────────────────────────────────────────
 # Instance has 3.7 GiB RAM. Multi-stage Docker builds (especially Go's parallel
 # compiler when building oeecloud-worker) can OOM-kill the actions-runner
@@ -66,7 +79,6 @@ DB_SECRET=$(get_secret "packiot/staging/db")
 APP_SECRET=$(get_secret "packiot/staging/app")
 HASURA_SECRET=$(get_secret "packiot/staging/hasura")
 NR_AUTH=$(get_secret "packiot/staging/nodered-auth")
-AUTHENTIK_SECRET=$(get_secret "packiot/staging/authentik")
 
 DB_URL=$(echo "$DB_SECRET"     | jq -r '.url')
 DB_PASS=$(echo "$DB_SECRET"    | jq -r '.password')
@@ -78,12 +90,95 @@ API_KEY=$(echo "$APP_SECRET"   | jq -r '.edge_api_key')
 MQ_USER=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_user')
 MQ_PASS=$(echo "$APP_SECRET"   | jq -r '.rabbitmq_password')
 GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_pass')
+# dev@packiot.com Grafana Org Admin — previously hand-created directly in the
+# running Grafana's sqlite store (never codified, lost on any volume wipe).
+# Bootstrapped idempotently near the bottom of this script, same pattern as
+# the RabbitMQ client user. Empty-safe default so a secret predating this key
+# doesn't fail jq — see the merge instructions in terraform/staging/secrets.tf.
+GRAFANA_DEV_USER_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_dev_user_pass // ""')
+# CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
+# POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
+GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
+# Onboard-generate API key (ADR-0045 §generate) — bearer that edge-api uses to
+# call the edge-transformer onboard server (:9105). Durable so a fresh instance
+# does not lose it (it was hand-added to .env once; codified 2026-08-05).
+ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
+# Operator enterprise api_key (ADR-0018 wave 4) — nginx injects this on the
+# operator SPA's proxied /api/* writes; edge-api authenticates it as the client
+# enterprise's enterprises.api_key. The staging operator SPA is single-tenant
+# CPACK (enterprise 3), so this MUST be CPACK's key — an earlier live .env
+# wrongly carried Incoplast's (enterprise 4) key, 502'ing operator writes.
+# Sourced from the packiot/staging/app secret (key `operator_edge_api_key`,
+# value = CPACK's fe1681ba-… enterprises.api_key) so a full re-init re-creates
+# it in .env instead of the operator hand-appending it (drops on rebuild).
+# NOTE: keeping the literal secret OUT of git — populate the secret out-of-band
+# (see ADR-0020 / production-recut-runbook). Empty default keeps the box booting
+# if the secret key is absent; operator writes stay 401 until it is populated.
+OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
-AUTHENTIK_DB_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.db_password')
-AUTHENTIK_SK=$(echo "$AUTHENTIK_SECRET"       | jq -r '.secret_key')
-AUTHENTIK_BOOT_PASS=$(echo "$AUTHENTIK_SECRET" | jq -r '.bootstrap_password // ""')
-AUTHENTIK_BOOT_TOK=$(echo "$AUTHENTIK_SECRET"  | jq -r '.bootstrap_token // ""')
+# oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
+# the packiot/staging/app secret (keys populated out-of-band). client_id + issuer
+# + redirect/cookie domains are non-secret and stay in the compose service block;
+# only these two are secrets.
+OAUTH2_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_client_secret // ""')
+OAUTH2_COOKIE_SECRET=$(echo "$APP_SECRET" | jq -r '.oauth2_proxy_cookie_secret // ""')
+
+# Superset W2 (embedded self-service BI) secrets — durable so a fresh instance
+# re-materializes them into .env (they were provisioned into packiot/staging/app
+# on 2026-08-09). All default to "" so the block is harmless until the `superset`
+# compose profile is enabled (COMPOSE_PROFILES). The Cognito/dashboard values are
+# NOT generatable secrets — they are filled at their go-live step (see
+# docs/superset-golive-runbook.md): SUPERSET_COGNITO_* come from registering the
+# OIDC app client; SUPERSET_OEE_DASHBOARD_UUID from enabling embed on the curated
+# dashboard.
+SUPERSET_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.superset_secret_key // ""')
+SUPERSET_GUEST_TOKEN_JWT_SECRET=$(echo "$APP_SECRET" | jq -r '.superset_guest_token_jwt_secret // ""')
+SUPERSET_DB_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_db_password // ""')
+SUPERSET_DB_RO_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_db_ro_password // ""')
+SUPERSET_GUESTTOKEN_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_user // ""')
+SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_guesttoken_admin_password // ""')
+# Durable human super-admin, SEPARATE from the guest-token minter service account,
+# so bootstrap_guest_role.py can scope the minter down to a non-Admin role without
+# leaving the instance admin-less. Default "" -> minter keeps Admin (lockout guard).
+SUPERSET_ADMIN_USER=$(echo "$APP_SECRET" | jq -r '.superset_admin_user // ""')
+SUPERSET_ADMIN_PASSWORD=$(echo "$APP_SECRET" | jq -r '.superset_admin_password // ""')
+SUPERSET_COGNITO_ISSUER=$(echo "$APP_SECRET" | jq -r '.superset_cognito_issuer // ""')
+SUPERSET_COGNITO_CLIENT_ID=$(echo "$APP_SECRET" | jq -r '.superset_cognito_client_id // ""')
+SUPERSET_COGNITO_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -r '.superset_cognito_client_secret // ""')
+SUPERSET_OEE_DASHBOARD_UUID=$(echo "$APP_SECRET" | jq -r '.superset_oee_dashboard_uuid // ""')
+
+# CPACK sparkplug-agent ingest key (ADR-0042 P1) — OPTIONAL / populate-manually.
+# Absent until the CPACK tee is provisioned (secret packiot/staging/agent-ingest),
+# so this is a guarded fetch defaulting to empty rather than a required get_secret.
+# Materializing it here means a full re-init re-creates AGENT_INGEST_API_KEY in
+# .env, instead of the operator having to hand-append it (drops on rebuild).
+AGENT_INGEST_API_KEY=""
+if aws secretsmanager describe-secret \
+    --secret-id packiot/staging/agent-ingest \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+  AGENT_INGEST_API_KEY=$(get_secret "packiot/staging/agent-ingest" | jq -r '.api_key // ""')
+fi
+
+# Legacy DB password (SELECT-only `awslambda` role on prod packiot40) — used by
+# BOTH twin replicators: legacy-replicator (ent-3 faithful twin) and
+# legacy-replicator-sbx (sandbox fan-out → ent 2000003). Creds live in the
+# `databaseCredentials` secret, already granted to the app role via app_custom
+# IAM (ec2.tf). Without this, a fresh box brings up inert replicators and the
+# twins silently stop tracking the real client's operator actions.
+LEGACY_DB_PASSWORD=""
+if aws secretsmanager describe-secret \
+    --secret-id databaseCredentials \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+  LEGACY_DB_PASSWORD=$(get_secret "databaseCredentials" | jq -r '.DB_PASSWORD // ""')
+fi
+
+# edge-ssm control creds (ADR-0049): NONE fetched here by design. edge-api's SSM
+# control endpoints (Box Ops) + its Cognito user-management + Secrets access all
+# use the box INSTANCE ROLE (packiot-staging-app) via IMDSv2 — which now carries
+# both csadmin-cognito-user-mgmt AND the packiot-edge-ssm-control policy. Injecting
+# a static AWS_ACCESS_KEY_ID here hijacks the whole default credential chain (it
+# broke Secrets access in 2026-08-27, then Cognito ListUsers) — so we don't.
 
 
 # ── Write .env for Docker Compose ─────────────────────────────────────────────
@@ -91,6 +186,39 @@ mkdir -p /opt/packiot
 # Guard: skip .env regeneration if it already exists.
 # NODE_RED_CREDENTIAL_SECRET must stay stable — Node-RED uses it to decrypt
 # flows_cred.json; regenerating it on a re-run makes credentials unreadable.
+#
+# ⚠ oauth2-proxy (ADR-0034 §C): the guard means a box booted under an EARLIER
+# .env (Authentik-era) will NOT gain the OAUTH2_PROXY_*/COGNITO_* keys
+# automatically. To patch a RUNNING box without a full re-init, on the box:
+#   SEC=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app \
+#         --region us-east-1 --query SecretString --output text)
+#   {
+#     echo "OAUTH2_PROXY_CLIENT_SECRET=$(echo "$SEC" | jq -r '.oauth2_proxy_client_secret')"
+#     echo "OAUTH2_PROXY_COOKIE_SECRET=$(echo "$SEC" | jq -r '.oauth2_proxy_cookie_secret')"
+#     echo "COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt"
+#     echo "COGNITO_CS_ADMIN_GROUP=cs-admin"
+#     echo "EDGE_API_COGNITO_AUTH_ENABLED=true"
+#   } >> /opt/packiot/.env
+# then: cd /opt/packiot/stack && docker compose -f compose.staging.yml up -d oauth2-proxy edge-api
+#
+# ⚠ Superset W2 (same guard): a box booted under an earlier .env will NOT gain the
+# SUPERSET_*/POSTGRES_HOST_UPSTREAM keys. To patch a RUNNING box (per the go-live
+# runbook), append from Secrets Manager without a full re-init:
+#   SEC=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app \
+#         --region us-east-1 --query SecretString --output text)
+#   {
+#     echo "POSTGRES_HOST_UPSTREAM=$(grep -E '^POSTGRES_HOST=' /opt/packiot/.env | cut -d= -f2)"
+#     for k in superset_secret_key superset_guest_token_jwt_secret superset_db_password \
+#              superset_db_ro_password superset_guesttoken_admin_user \
+#              superset_guesttoken_admin_password superset_cognito_issuer \
+#              superset_cognito_client_id superset_cognito_client_secret \
+#              superset_oee_dashboard_uuid; do
+#       echo "$(echo "$k" | tr a-z A-Z)=$(echo "$SEC" | jq -r ".$k // \"\"")"
+#     done
+#     echo "SUPERSET_FRAME_ANCESTOR=https://front.${staging_domain}"
+#     echo "SUPERSET_BASE_URL=http://172.18.0.42:8088"
+#   } >> /opt/packiot/.env
+# then set COMPOSE_PROFILES=superset and bring up the profile — see the runbook.
 if [ -f /opt/packiot/.env ]; then
   echo ".env already exists — skipping generation to preserve NODE_RED_CREDENTIAL_SECRET"
 else
@@ -103,6 +231,11 @@ else
 # Postgres (DB EC2, private subnet)
 POSTGRES_URL=$DB_URL
 POSTGRES_HOST=${db_private_ip}
+# DIRECT r7g host (bypasses pgbouncer) for one-shot superuser DDL — Superset's
+# metadata role+DB bootstrap (compose.superset.yml superset-db-init) needs a
+# direct superuser connection, not the pooler. Same address as POSTGRES_HOST on
+# staging; named distinctly so the intent (upstream/direct) is explicit.
+POSTGRES_HOST_UPSTREAM=${db_private_ip}
 POSTGRES_PORT=5432
 POSTGRES_USER=${db_user}
 POSTGRES_DB=${db_name}
@@ -117,6 +250,13 @@ HASURA_GRAPHQL_DEV_MODE=false
 
 # Edge API / Node-RED
 EDGE_API_KEY=$API_KEY
+# CS-Admin edge-bundle dispatch (ADR-0045 P5)
+GITHUB_DISPATCH_TOKEN=$GITHUB_DISPATCH_TOKEN
+# Onboard-generate bearer: edge-api → edge-transformer:9105 (ADR-0045 §generate)
+ONBOARD_API_KEY=$ONBOARD_API_KEY
+# Operator SPA enterprise api_key (CPACK / enterprise 3) — nginx injects it on
+# proxied /api/* writes; consumed by the operator + operator-adapter services.
+OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 # NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward
@@ -135,17 +275,62 @@ RABBITMQ_URL=amqp://$MQ_USER:$MQ_PASS@rabbitmq:5672
 # Grafana
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
 GF_SERVER_ROOT_URL=https://grafana.$STAGING_DOMAIN
+# Consumed only by this script's dev@packiot.com bootstrap block below (NOT by
+# the grafana container itself — no GF_* equivalent exists for a second user).
+GRAFANA_DEV_USER_PASSWORD=$GRAFANA_DEV_USER_PASS
+
+# CPACK sparkplug-agent ingest (ADR-0042 P1) — empty until the agent-ingest
+# secret is populated; the sparkplug-agent-cpack service (profile cpack-tee)
+# reads this to auth CPACK's Node-RED tee.
+AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
+
+# Twin operator-action replicators (legacy packiot40 → analytics plane).
+# LEGACY_DB_PASSWORD: SELECT-only awslambda creds shared by BOTH replicator
+#   instances (legacy-replicator for the ent-3 faithful twin; legacy-replicator-sbx
+#   for the sandbox fan-out). The main replicator hardcodes REPLICATE_ENABLED=true
+#   in compose; both read this password from .env.
+# REPLICATE_SBX_ENABLED: activates legacy-replicator-sbx (fan-out → ent 2000003).
+#   Kept as an explicit flag so the sandbox twin can be paused independently of
+#   the ent-3 replicator without editing compose.
+LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
+REPLICATE_SBX_ENABLED=true
 
 # Compose substitution helpers
 STAGING_DOMAIN=$STAGING_DOMAIN
 
-# Authentik SSO
-AUTHENTIK_DB_PASSWORD=$AUTHENTIK_DB_PASS
-AUTHENTIK_SECRET_KEY=$AUTHENTIK_SK
-AUTHENTIK_WEB__WORKERS=1
-AUTHENTIK_BOOTSTRAP_EMAIL=admin@packiot.com
-AUTHENTIK_BOOTSTRAP_PASSWORD=$AUTHENTIK_BOOT_PASS
-AUTHENTIK_BOOTSTRAP_TOKEN=$AUTHENTIK_BOOT_TOK
+# oauth2-proxy (Cognito OIDC) — replaces Authentik (ADR-0034 §C). The oauth2-proxy
+# compose service reads these; nginx auth_request gates admin UIs on the cs-admin
+# group. edge-api validates Cognito JWTs when EDGE_API_COGNITO_AUTH_ENABLED=true.
+OAUTH2_PROXY_CLIENT_SECRET=$OAUTH2_CLIENT_SECRET
+OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET
+COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt
+COGNITO_CS_ADMIN_GROUP=cs-admin
+EDGE_API_COGNITO_AUTH_ENABLED=true
+
+# Superset W2 (embedded self-service BI) — INERT until COMPOSE_PROFILES includes
+# `superset`. compose.superset.yml reads these; edge-api's superset-embed slice
+# reads SUPERSET_BASE_URL + the guest-token admin creds + the dashboard UUID.
+# SECRET_KEY and GUEST_TOKEN_JWT_SECRET MUST stay identical across web/worker/init
+# (a mismatch invalidates sessions + in-flight guest tokens). Design:
+# docs/plans/w2-embedded-superset.md; go-live: docs/superset-golive-runbook.md.
+SUPERSET_SECRET_KEY=$SUPERSET_SECRET_KEY
+SUPERSET_GUEST_TOKEN_JWT_SECRET=$SUPERSET_GUEST_TOKEN_JWT_SECRET
+SUPERSET_DB_PASSWORD=$SUPERSET_DB_PASSWORD
+SUPERSET_DB_RO_PASSWORD=$SUPERSET_DB_RO_PASSWORD
+SUPERSET_GUESTTOKEN_ADMIN_USER=$SUPERSET_GUESTTOKEN_ADMIN_USER
+SUPERSET_GUESTTOKEN_ADMIN_PASSWORD=$SUPERSET_GUESTTOKEN_ADMIN_PASSWORD
+SUPERSET_ADMIN_USER=$SUPERSET_ADMIN_USER
+SUPERSET_ADMIN_PASSWORD=$SUPERSET_ADMIN_PASSWORD
+SUPERSET_COGNITO_ISSUER=$SUPERSET_COGNITO_ISSUER
+SUPERSET_COGNITO_CLIENT_ID=$SUPERSET_COGNITO_CLIENT_ID
+SUPERSET_COGNITO_CLIENT_SECRET=$SUPERSET_COGNITO_CLIENT_SECRET
+SUPERSET_FRAME_ANCESTOR=https://front.$STAGING_DOMAIN
+# edge-api superset-embed slice: in-network base URL + curated dashboard embed UUID.
+SUPERSET_BASE_URL=http://172.18.0.42:8088
+SUPERSET_OEE_DASHBOARD_UUID=$SUPERSET_OEE_DASHBOARD_UUID
+# Activate the profile by setting COMPOSE_PROFILES=superset (do it deliberately,
+# per the runbook — leaving it unset keeps the whole overlay dark).
+# COMPOSE_PROFILES=superset
 ENV
 fi
 
@@ -345,6 +530,60 @@ echo "Docker Compose stack started"
 echo "NOTE: set ID_ENTERPRISE in /opt/packiot/.env after enterprise onboarding, then:"
 echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud-worker"
 
+# ── Grafana: bootstrap dev@packiot.com (Org Admin) ────────────────────────────
+# Codifies a user that used to exist ONLY as a hand-created row in the running
+# Grafana's sqlite store — a `docker volume rm grafana-data` (or any fresh
+# instance) silently drops it with no error, no warning, and no re-provisioning
+# path (Grafana OSS has no declarative user-provisioning YAML the way it has
+# datasources/dashboards — GF_SECURITY_ADMIN_* only bootstraps the ONE built-in
+# admin account). This block re-creates it via the Admin HTTP API instead,
+# same idempotent-PUT idiom as the RabbitMQ client user below: skip cleanly if
+# the secret key is absent, safe to re-run via SSM once it's populated.
+if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
+  echo "Waiting for Grafana API..."
+  for i in $(seq 1 24); do
+    if curl -sf "http://127.0.0.1:3000/api/health" > /dev/null; then
+      echo "Grafana ready"
+      break
+    fi
+    sleep 5
+  done
+
+  DEV_USER_ID=$(curl -sf -u "admin:$GRAFANA_PASS" \
+    "http://127.0.0.1:3000/api/users/lookup?loginOrEmail=dev@packiot.com" \
+    | jq -r '.id // empty')
+
+  if [ -z "$DEV_USER_ID" ]; then
+    # POST /api/admin/users creates the user + adds them to the default org
+    # (id 1) at whatever role auto_assign_org_role defaults to; the PATCH
+    # below normalizes that to Admin regardless.
+    DEV_USER_ID=$(curl -sf -u "admin:$GRAFANA_PASS" -X POST \
+      "http://127.0.0.1:3000/api/admin/users" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":\"dev\",\"email\":\"dev@packiot.com\",\"login\":\"dev@packiot.com\",\"password\":\"$GRAFANA_DEV_USER_PASS\"}" \
+      | jq -r '.id // empty')
+    echo "Grafana user dev@packiot.com created (id=$DEV_USER_ID)"
+  else
+    # Already exists (e.g. re-running this script on a live box) — re-sync the
+    # password to whatever Secrets Manager currently holds.
+    curl -sf -u "admin:$GRAFANA_PASS" -X PUT \
+      "http://127.0.0.1:3000/api/admin/users/$DEV_USER_ID/password" \
+      -H "Content-Type: application/json" \
+      -d "{\"password\":\"$GRAFANA_DEV_USER_PASS\"}" > /dev/null
+    echo "Grafana user dev@packiot.com already exists (id=$DEV_USER_ID) — password re-synced"
+  fi
+
+  if [ -n "$DEV_USER_ID" ]; then
+    curl -sf -u "admin:$GRAFANA_PASS" -X PATCH \
+      "http://127.0.0.1:3000/api/org/users/$DEV_USER_ID" \
+      -H "Content-Type: application/json" \
+      -d '{"role":"Admin"}' > /dev/null
+    echo "Grafana user dev@packiot.com set to Org Admin"
+  fi
+else
+  echo "SKIP: grafana_dev_user_pass not in packiot/staging/app secret — add it (see terraform/staging/secrets.tf merge instructions) then re-run this block via SSM"
+fi
+
 # ── RabbitMQ: dedicated client user for external factory edges ────────────────
 # Requires the secret packiot/staging/rabbitmq-client-creds to exist:
 #   {"username":"edge-client","password":"<strong-password>"}
@@ -393,10 +632,16 @@ else
   echo "SKIP: packiot/staging/rabbitmq-client-creds not found — create it in Secrets Manager then re-run this block via SSM"
 fi
 
-# ── edge-transformer user + Phase 2 topology (ADR-0009) ──────────────────────
+# ── sparkplug-decoder user + Phase 2 topology (ADR-0009) ─────────────────────
 # Provisions:
-#   1. RMQ user `edge-transformer` with least-priv perms scoped to
-#      ^(edge-transformer\..*|outbox\..*|edge\.plc-normalized)$
+#   1. RMQ user `sparkplug-decoder` (formerly `edge-transformer`, renamed
+#      alongside the service — see
+#      docs/plans/rename-shadow-rabbitmq-addendum.md §A) with least-priv
+#      perms scoped to ^(edge-transformer\..*|outbox\..*|edge\.plc-normalized)$
+#      — the regex itself is UNCHANGED: it matches QUEUE-NAME prefixes
+#      (edge-transformer-q, edge-transformer-q-retry-30s, ...), which were
+#      NOT renamed by this pass (that's the separate, not-yet-done RabbitMQ
+#      queue/topic rename tracked in the addendum §B).
 #   2. Topic exchange `edge.plc-normalized` for normalized PLC payloads
 #      from Node-RED publishers (per docs/clients/_normalized-payload-schema.yaml).
 #   3. Topic exchange `dlx.edge.plc-normalized` for failed-after-retry messages.
@@ -408,34 +653,35 @@ fi
 # When the secret is missing, skip cleanly (matches the pattern above). For
 # the live secret created 2026-06-30, this block runs end-to-end on next deploy.
 if aws secretsmanager describe-secret \
-    --secret-id packiot/staging/rabbitmq-edge-transformer-creds \
+    --secret-id packiot/staging/rabbitmq-sparkplug-decoder-creds \
     --region "$AWS_REGION" > /dev/null 2>&1; then
 
-  ET_CREDS=$(get_secret "packiot/staging/rabbitmq-edge-transformer-creds")
-  ET_USER=$(echo "$ET_CREDS" | jq -r '.username')
-  ET_PASS=$(echo "$ET_CREDS" | jq -r '.password')
+  SD_CREDS=$(get_secret "packiot/staging/rabbitmq-sparkplug-decoder-creds")
+  SD_USER=$(echo "$SD_CREDS" | jq -r '.username')
+  SD_PASS=$(echo "$SD_CREDS" | jq -r '.password')
 
   # Idempotent user create. Tag "management" is needed if the service ever
   # uses the HTTP API (the AMQP consumer pattern doesn't, but it's harmless).
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
-    "http://127.0.0.1:15672/api/users/$ET_USER" \
+    "http://127.0.0.1:15672/api/users/$SD_USER" \
     -H "Content-Type: application/json" \
-    -d "{\"password\":\"$ET_PASS\",\"tags\":\"\"}"
+    -d "{\"password\":\"$SD_PASS\",\"tags\":\"\"}"
 
   # Least-priv perms — see docs/guides/edge-transformer-phase-2-runbook.md §2.B.
-  # The regex restricts edge-transformer to its own queues + the shared
+  # The regex restricts sparkplug-decoder to its own queues + the shared
   # publish exchange. Cannot touch other tenants' queues, management API,
   # or other exchanges. Bounded blast radius.
   #
   # Naming convention: hyphen-separated (matches oeecloud-worker's
   # `oeecloud-worker-q-retry-30s` style). The `.` in the regex is a
   # wildcard (any char) — matches `edge-transformer-q`, `edge-transformer-q-retry-30s`, etc.
+  # (queue names themselves unrenamed — see note above).
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
-    "http://127.0.0.1:15672/api/permissions/%2F/$ET_USER" \
+    "http://127.0.0.1:15672/api/permissions/%2F/$SD_USER" \
     -H "Content-Type: application/json" \
     -d '{"configure":"^(edge-transformer.*|outbox.*)$","write":"^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$","read":"^(edge\\.plc-normalized|dlx\\.edge\\.plc-normalized|edge-transformer.*|outbox.*|oee)$"}'
 
-  echo "RabbitMQ user '$ET_USER' created with edge-transformer least-priv perms"
+  echo "RabbitMQ user '$SD_USER' created with sparkplug-decoder least-priv perms"
 
   # Declare the Phase 2 topology — exchange + DLX. Topic-type, durable.
   curl -sf -u "$MQ_USER:$MQ_PASS" -X PUT \
@@ -450,7 +696,7 @@ if aws secretsmanager describe-secret \
 
   echo "RabbitMQ topology declared: edge.plc-normalized + dlx.edge.plc-normalized (topic, durable)"
 else
-  echo "SKIP: packiot/staging/rabbitmq-edge-transformer-creds not found — create it in Secrets Manager then re-run this block via SSM"
+  echo "SKIP: packiot/staging/rabbitmq-sparkplug-decoder-creds not found — create it in Secrets Manager then re-run this block via SSM"
 fi
 
 echo "=== App init complete $(date -u) ==="
