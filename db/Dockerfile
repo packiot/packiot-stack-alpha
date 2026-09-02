@@ -34,9 +34,12 @@ COPY --from=builder \
     /usr/local/share/postgresql/extension/ \
     /usr/local/share/postgresql/extension/
 
-# shared_preload_libraries and cron.database_name are passed via the
-# docker run -c "..." flags in db_init.sh / compose, NOT baked into the
-# image. The timescale base image reads only $PGDATA/postgresql.conf,
-# not /etc/postgresql/postgresql.conf.d, so conf.d drop-ins are ignored.
+# shared_preload_libraries (timescaledb,pg_cron,pg_stat_statements — timescaledb
+# MUST stay first) and cron.database_name are passed via the docker run -c "..."
+# flags in db_init.sh / compose, NOT baked into the image. The timescale base
+# image reads only $PGDATA/postgresql.conf, not /etc/postgresql/postgresql.conf.d,
+# so conf.d drop-ins are ignored. Because -c is the postmaster command line, it
+# overrides postgresql.conf and postgresql.auto.conf — ALTER SYSTEM cannot change
+# the preload set on a running cluster; edit db_init.sh and recreate the container.
 
 COPY docker-entrypoint-initdb.d/ /docker-entrypoint-initdb.d/

@@ -1,0 +1,90 @@
+# bi.production_targets — per-equipment target values (source: production_targets ⋈
+# equipments). EMPTY on CPACK until targets configured. Native id_enterprise (direct
+# RLS policy). Feeds chart reference lines (front4 productionChart target).
+table_name: production_targets
+main_dttm_col: null
+description: Per-equipment production targets (hour/shift/day/week/month). Reference lines. EMPTY until configured.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: c353b6aa-95b2-4339-955a-2d2f9ebe55f5
+metrics:
+- metric_name: sum_vl_shift
+  verbose_name: Shift target
+  expression: SUM(vl_shift)
+  d3format: .3~s
+  extra: null
+- metric_name: sum_vl_hour
+  verbose_name: Hourly target
+  expression: SUM(vl_hour)
+  d3format: .3~s
+  extra: null
+- metric_name: sum_vl_day
+  verbose_name: Daily target
+  expression: SUM(vl_day)
+  d3format: .3~s
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: Tenant key (RLS). Never charted; used by the RLS filter.
+- column_name: id_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_equipment
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_area
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_site
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: vl_hour
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: vl_shift
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: vl_day
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: vl_week
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: vl_month
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

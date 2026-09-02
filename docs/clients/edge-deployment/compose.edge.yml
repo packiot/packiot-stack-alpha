@@ -1,0 +1,480 @@
+# compose.edge.yml — ADR-0042 §4.2 Mode-B CLIENT-EDGE bundle.
+#
+# WHAT THIS IS
+# -----------------------------------------------------------------------------
+# The deployable edge a Customer Success engineer runs AT a client factory. It
+# is the productized counterpart to the Mode-A staging validation
+# (compose.staging.yml `sparkplug-agent-cpack`): the SAME agent image + tenant
+# config, now with a real Node-RED connectivity plane and a real mTLS WAN
+# crossing to new-production (ADR-0042 §4 "one image pair, two compose overlays").
+#
+# THE THREE TIERS (ADR-0042 §2.1), all on one loopback network:
+#
+#   PLC(s) ──fieldbus──▶ [ nodered ]  Tier-1 connectivity plane (per-client)
+#                          │  emits RAW suffix tags — SparkPlug-IGNORANT
+#                          │  (a) publish to internal mosquitto  edge/raw/<tenant>/#
+#                          │  (b) OR tee-POST to the agent HTTP ingest :9104/v1/tags
+#                          ▼
+#   [ mosquitto ] internal loopback bus (no TLS, no WAN, no cross-tenant)
+#                          │
+#                          ▼
+#                     [ sparkplug-agent ]  Tier-2 transmission plane (uniform)
+#                          │  alias-ASSIGN · NBIRTH/NDATA/NDEATH-LWT · RBE ·
+#                          │  store-and-forward outbox · protobuf encode
+#                          ▼  spBv1.0/<tenant>/…  over mTLS (CN=<tenant>)
+#                   ══════ OT/IT WAN ══════▶  new-prod ingest broker (DEPENDENCY)
+#
+# EVERYTHING per-client is env (see .env.template) + the generated <tenant>/
+# artifacts (onboard-gen output). A new client is a new .env + a new <tenant>/
+# dir — NEVER a fork (north-star #2, ADR-0042 §5.3).
+#
+# DEPLOY:   cp .env.template .env && edit .env    (or use a generated .env)
+#           docker compose -f compose.edge.yml --env-file .env config   # validate
+#           docker compose -f compose.edge.yml --env-file .env up -d
+# VALIDATE: curl -fsS localhost:${AGENT_HEALTH_PORT}/healthz  → {"healthy":true}
+#
+# See README.md for the full describe→generate→capture→validate→cutover runbook.
+
+name: packiot-edge-${TENANT_SLUG}
+
+networks:
+  edge-net:
+    driver: bridge
+
+volumes:
+  agent-outbox:        # ADR-0011 store-and-forward — survives a WAN outage
+  nodered-data:        # Node-RED flow/credential store
+  mosquitto-data:      # retained NBIRTHs survive a broker restart
+
+# Shared base for the three config-as-data PLC readers (s7/modbus/opcua). Defined
+# as a TOP-LEVEL x-extension (not a service) so the &anchor is merged into each
+# reader via `<<: *reader-base` without itself becoming a runnable service. See
+# the reader block under `services:` for the multi-PLC / mixed-protocol design.
+x-reader-base: &reader-base
+  image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+  build:
+    context: ../../../services/sparkplug-decoder
+    dockerfile: Dockerfile
+  restart: on-failure
+  env_file:
+    # Pass the deploy .env through so per-endpoint PLC_HOST_<NAME> overrides
+    # (which compose cannot enumerate as `environment:` keys) reach the reader.
+    # required:false so `docker compose config` parses in the repo (no .env).
+    - path: .env
+      required: false
+  environment:
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    TZ: ${TZ:-UTC}
+    # Protocol-wide fallback host (single-endpoint). Per-endpoint PLC_HOST_<NAME>
+    # overrides arrive via env_file above.
+    S7_HOST: ${S7_HOST:-}                       # s7:     host[:102] (or IP)
+    MODBUS_HOST: ${MODBUS_HOST:-}               # modbus: host:502
+    OPCUA_ENDPOINT_URL: ${OPCUA_ENDPOINT_URL:-} # opcua:  opc.tcp://host:4840/path
+  volumes:
+    # The GENERATED reader config (onboard-gen artifact 5) — all endpoints +
+    # tag maps. Mounts read-only at the path the --client-config flag points to.
+    - ${CLIENT_CONFIG_FILE:-./${TENANT_SLUG}/${TENANT_SLUG}-client.yaml}:/etc/packiot/client.yaml:ro
+  networks: [edge-net]
+  depends_on:
+    mosquitto:
+      condition: service_healthy
+  mem_limit: 128m
+  cpus: 0.25
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+
+  # ── Tier-1 CONNECTIVITY PLANE ────────────────────────────────────────────────
+  # The per-client Node-RED: PLC/OPC-UA/S7/Modbus I/O + the ADR-0042 §2.3 tee
+  # (a SECOND wire off the SparkPlug-assembly node that forwards RAW suffix tags).
+  # It is SparkPlug-IGNORANT — it MUST NOT publish spBv1.0/* (the agent owns that
+  # namespace). Its flows are the client's connectivity export + the generated
+  # <tenant>-tee-node.json imported onto the assembly node.
+  #
+  # PROFILE-GATED (`nodered`): the low-code path is now OPT-IN. A tenant that
+  # onboards via the config-as-data Go reader (profile `reader`, below) does NOT
+  # run Node-RED at all — the reader is the SparkPlug-ignorant Tier-1 producer.
+  # Bring this service up only for clients who deploy the Node-RED connectivity
+  # plane (the GENERATED reader flow, or a hand-exported flow + the tee):
+  #     docker compose --profile nodered -f compose.edge.yml --env-file .env up -d
+  #
+  # AUTONOMOUS FLOW LOAD (ADR-0045 config-as-data, the reader-flow deploy model)
+  # ---------------------------------------------------------------------------
+  # onboard-gen artifact 6, `<tenant>-reader-flow.json`, is a COMPLETE Node-RED flow
+  # (PLC input nodes → normalize fn → POST to sparkplug-agent :9104, plus a
+  # first-class "<tenant> customizations" tab). We SEED it as Node-RED's ACTIVE flow
+  # file (/data/flows.json) on FIRST boot only, so a client deploy runs the reader
+  # with ZERO manual import. Mechanics:
+  #   • NODERED_READER_FLOW is bind-mounted read-only at /data/reader-flow.seed.json.
+  #   • The entrypoint wrapper copies it to /data/flows.json and drops a
+  #     /data/.reader-seeded sentinel ONLY on first boot, then execs the stock
+  #     Node-RED entrypoint. The sentinel (NOT the presence of flows.json) is the
+  #     first-boot test on purpose: the node-red image SHIPS a default /data/flows.json,
+  #     which the named-volume copy-on-create places before the entrypoint runs, so a
+  #     "flows.json missing?" guard would never fire — the seed would be skipped.
+  #   • /data is the `nodered-data` NAMED VOLUME (writable), so after first boot
+  #     /data/flows.json is owned by Node-RED — UI edits and any integration nodes a
+  #     CS engineer adds on the "<tenant> customizations" tab PERSIST across restarts
+  #     (regeneration only ever rewrites the reader tab, never the customizations one).
+  # BACK-COMPAT: if NODERED_READER_FLOW is UNSET it resolves to /dev/null (a size-0
+  # non-regular file), the `-s` seed guard skips, and nothing is auto-loaded — the
+  # service falls back to the legacy manual-import workflow via the /data/flows-import
+  # mount below, exactly as before. Hand-flow + tee clients are unaffected.
+  nodered:
+    # The PLC-CAPABLE edge Node-RED (Dockerfile.nodered-reader): the vanilla
+    # nodered/node-red:4.0 base + baked s7/modbus/opcua palettes, so a generated
+    # reader-flow's fieldbus nodes resolve on a FRESH box with NO first-boot npm
+    # install (the CPACK F1 durable fix). Parameterized exactly like the agent
+    # image below: the bundle workflow `docker save`s the built image into the
+    # bundle and pins NODERED_IMAGE to the loaded tag; a client with egress can
+    # instead `docker compose --profile nodered build` from the `build:` stanza
+    # (context `.` = this dir, so it works both in-repo AND unpacked in a bundle).
+    # The default local tag matches what `docker compose build` produces.
+    image: ${NODERED_IMAGE:-packiot/nodered-reader:4.0}
+    build:
+      context: .
+      dockerfile: Dockerfile.nodered-reader
+    container_name: edge-${TENANT_SLUG}-nodered
+    profiles: ["nodered"]
+    restart: unless-stopped
+    # First-boot seed → install PLC palettes → exec the stock entrypoint. `exec` hands
+    # PID 1 (and thus the image's SIGINT/SIGTERM trap for a clean flow flush) to the
+    # real Node-RED. The image's WORKDIR is /usr/src/node-red, so ./entrypoint.sh
+    # resolves; it launches red.js with `--userDir /data $FLOWS`, and FLOWS=flows.json
+    # (set below) is the file the seed writes — so the seeded flow IS the active flow set.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /data/.reader-seeded ] && [ -s /data/reader-flow.seed.json ]; then
+          cp /data/reader-flow.seed.json /data/flows.json
+          touch /data/.reader-seeded
+          echo "[edge-seed] first boot: seeded /data/flows.json from the generated reader-flow"
+        else
+          echo "[edge-seed] already seeded or no seed mounted — leaving active flows as-is"
+        fi
+        # PLC PALETTES (s7/modbus/opcua) — the seeded reader flow's fieldbus nodes are
+        # "missing types" and the flow never starts without them (CPACK F1).
+        # PREFERRED: they are BAKED into the default NODERED_IMAGE
+        # (Dockerfile.nodered-reader) at /usr/src/node-red/node_modules, so this block
+        # is a fast no-op on a fresh box — works OFFLINE, no npm egress needed.
+        # FALLBACK: if NODERED_IMAGE is overridden to the VANILLA nodered/node-red image
+        # (no baked palettes), install the 3 contrib packs into /data (the userDir, a
+        # named volume) on FIRST boot only. The guard checks BOTH the baked image dir
+        # AND /data, so the baked path skips and only a truly vanilla image installs —
+        # and that only when the box has npm-registry egress on first boot.
+        if [ ! -d /usr/src/node-red/node_modules/node-red-contrib-s7 ] \
+           && [ ! -d /data/node_modules/node-red-contrib-s7 ]; then
+          echo "[edge-seed] vanilla base detected — installing PLC palettes (s7/modbus/opcua) into /data (needs npm egress)"
+          cd /data && npm install --no-audit --no-fund \
+            node-red-contrib-s7@3.1.3 node-red-contrib-modbus@5.45.0 node-red-contrib-opcua@0.2.354 \
+            || echo "[edge-seed] WARNING: PLC palette install failed — reader nodes may be missing (bake NODERED_IMAGE via Dockerfile.nodered-reader instead)"
+        else
+          echo "[edge-seed] PLC palettes present (baked in image or already installed) — skipping"
+        fi
+        cd /usr/src/node-red
+        exec ./entrypoint.sh
+    env_file:
+      # Pass the deploy .env through so the reader flow's per-endpoint PLC_HOST_<NAME>
+      # host secrets — which compose cannot enumerate as `environment:` keys — and an
+      # optional <TENANT_UPPER>_AGENT_URL override reach Node-RED at runtime.
+      # required:false so `docker compose config` parses in the repo (no .env).
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+      FLOWS: flows.json   # the active flow file the seed writes (also the image default)
+      # The generated reader flow reads its ingest key from AGENT_INGEST_API_KEY and
+      # POSTs it as X-Ingest-Key to the agent (constant-time match). Set the CONCRETE
+      # key name here: docker compose does NOT interpolate a variable used as an env-var
+      # KEY (`${TENANT_UPPER}_INGEST_KEY:` never expands → the container gets no usable
+      # key var → the agent logs accepted:0). Use the fixed name both sides agree on.
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+    volumes:
+      - nodered-data:/data
+      # The GENERATED reader flow (onboard-gen artifact 6) — seeded to /data/flows.json
+      # on FIRST boot by the entrypoint above. Unset ⇒ /dev/null ⇒ seed guard skips
+      # (back-compat: legacy manual-import via /data/flows-import stays the only path).
+      # The reader flow POSTs to http://sparkplug-agent:9104/v1/tags — the agent
+      # service name on edge-net (this service shares that network below).
+      - ${NODERED_READER_FLOW:-/dev/null}:/data/reader-flow.seed.json:ro
+      # LEGACY manual-import staging dir (back-compat): a client that still hand-exports
+      # its connectivity flow + imports the generated tee drops it here and imports it
+      # from the editor. Untouched by the seed path above.
+      - ${NODERED_FLOWS_DIR:-./bispharma/nodered}:/data/flows-import:ro
+    ports:
+      - "${NODERED_UI_PORT:-1880}:1880"   # editor UI — bind to a LAN/VPN iface in prod
+    networks: [edge-net]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Tier-1 CONNECTIVITY PLANE (config-as-data Go READERS) ────────────────────
+  # PROFILE-GATED (`reader`): the productized replacement for the Node-RED tee.
+  # Go PLC readers (s7 | modbus | opcua) poll the factory PLCs and publish RAW
+  # suffix tags to the internal mosquitto (edge/raw/<tenant>/#) — the exact wire
+  # the agent already consumes. They are SparkPlug-IGNORANT (the agent owns
+  # spBv1.0/*), need NO certs (internal-only) and NO ingest key (anonymous
+  # internal bus). All per-endpoint facts come from the GENERATED
+  # <tenant>-client.yaml (onboard-gen artifact 5) + the .env host secret(s).
+  #
+  # MULTI-PLC, MIXED-PROTOCOL (ADR-0045): a real client (e.g. CPACK: 9 S7 + 1
+  # Modbus) has MANY endpoints of the same protocol. Each protocol reader drives
+  # EVERY endpoint of its protocol in client.yaml (one poller + PLC connection
+  # each) — so N endpoints of any mix collapse to ≤3 reader services, no
+  # per-endpoint service explosion. The agent composes per-equipment from
+  # edge/raw/<tenant>, so an equipment fed by an S7 counter + a Modbus speed just
+  # works once both readers emit.
+  #
+  # PROFILES: each reader carries the umbrella `reader` (start them all — the
+  # config-as-data path) AND a per-protocol `reader-s7`/`reader-modbus`/
+  # `reader-opcua` (start only the ones a client needs). A reader whose protocol
+  # has NO endpoints in client.yaml logs "nothing to drive" and exits 0 (hence
+  # `restart: on-failure`, NOT unless-stopped — a clean exit must not loop), so the
+  # umbrella `reader` profile is safe for any protocol mix.
+  #
+  # HOSTS: each endpoint resolves its host from PLC_HOST_<ENDPOINT> (multi-PLC:
+  # give every cell its own host in .env), falling back to the protocol-wide
+  # S7_HOST / MODBUS_HOST / OPCUA_ENDPOINT_URL (single-endpoint, back-compat).
+  # `env_file` (required:false) passes the .env through so the per-endpoint
+  # PLC_HOST_* vars — whose names compose cannot enumerate — reach the container.
+  #
+  # The image is the MAIN sparkplug-decoder Dockerfile (NOT Dockerfile.agent) — it
+  # ships /usr/local/bin/{s7,modbus,opcua}-reader.
+  #
+  # NOTE: reader-only vars stay `${VAR:-}` (soft) — compose interpolates the WHOLE
+  # file (all profiles) before selecting one, so a `:?` on a reader-only var would
+  # break `--profile nodered` config for a Node-RED-only client. `--endpoint`
+  # empty ⇒ drive ALL of the protocol's endpoints; set it to pin ONE. The shared
+  # base is the top-level `x-reader-base` anchor above.
+
+  s7-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG}-s7-reader
+    profiles: ["reader", "reader-s7"]
+    entrypoint:
+      - /usr/local/bin/s7-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER}
+      - --tenant
+      - ${TENANT_SLUG}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true          # publish edge/raw/<tenant> (agent owns SparkPlug)
+
+  modbus-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG}-modbus-reader
+    profiles: ["reader", "reader-modbus"]
+    entrypoint:
+      - /usr/local/bin/modbus-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER}
+      - --tenant
+      - ${TENANT_SLUG}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
+
+  opcua-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG}-opcua-reader
+    profiles: ["reader", "reader-opcua"]
+    entrypoint:
+      - /usr/local/bin/opcua-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER}
+      - --tenant
+      - ${TENANT_SLUG}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
+
+  # ── INTERNAL LOOPBACK BUS ────────────────────────────────────────────────────
+  # The Tier-1→Tier-2 hop (ADR-0042 §2.3). Plain JSON raw tags, no TLS, no WAN,
+  # no cross-tenant — standardization happens only at the WAN crossing, not here.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: edge-${TENANT_SLUG}-mosquitto
+    restart: unless-stopped
+    init: true                            # reap zombies (mosquitto runs as PID 1)
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    networks: [edge-net]
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t healthcheck/ping -m ok -q 0"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Tier-2 TRANSMISSION PLANE ────────────────────────────────────────────────
+  # The uniform Go SparkPlug agent. Consumes raw tags (internal broker AND/OR the
+  # HTTP tee), runs the full SparkPlug session, and publishes to new-prod over
+  # mTLS. The image is either PINNED (AGENT_IMAGE, the released artifact) or built
+  # locally from the multi-arch Dockerfile.agent.
+  sparkplug-agent:
+    image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+    build:
+      context: ../../../services/sparkplug-decoder
+      dockerfile: Dockerfile.agent
+    container_name: edge-${TENANT_SLUG}-agent
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AGENT_CONFIG: /etc/packiot/agent.yaml
+      AGENT_PROFILE_PATH: /etc/packiot/profile.yaml
+      HEALTH_PORT: "9103"
+      OUTBOX_PATH: /var/lib/edge-transformer/agent-outbox.db
+
+      # ── HTTP raw-tag front-door (the CPACK-style tee target) ────────────────
+      # Enabled by default at the edge so the generated tee can POST directly.
+      # Fails closed if the key is empty (auth is never optional).
+      AGENT_HTTP_INGEST_ENABLED: "${AGENT_HTTP_INGEST_ENABLED:-true}"
+      AGENT_INGEST_PORT: "9104"
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+
+      # ── Mode-B mTLS uplink (ADR-0042 §6) ────────────────────────────────────
+      # Resolved cert FILE paths (secrets resolved out of band → mounted below).
+      # Unset ⇒ Mode-A plaintext (staging only). CN=<tenant> asserts the tenant;
+      # the broker ACL scopes spBv1.0/<tenant>/#.
+      AGENT_UPLINK_TLS_CERT: ${AGENT_UPLINK_TLS_CERT:-/etc/packiot/certs/uplink-cert.pem}
+      AGENT_UPLINK_TLS_KEY:  ${AGENT_UPLINK_TLS_KEY:-/etc/packiot/certs/uplink-key.pem}
+      AGENT_UPLINK_CA:       ${AGENT_UPLINK_CA:-/etc/packiot/certs/uplink-ca.pem}
+
+      # ── Register-driven tag map + parameter decomposition (ADR-0043/0044) ────
+      # Default OFF = the static raw_tag_map in agent.yaml, byte-for-byte. The
+      # CUTOVER step (VALIDATE green) flips these on. NOTE: these flags +
+      # AGENT_PROFILE_PATH activate only once the ADR-0043/0044 agent features
+      # land on staging (separate PRs); the base agent already on staging serves
+      # the static tag map + the HTTP-ingest tee path, so DESCRIBE→VALIDATE all
+      # work today — only the final register-driven CUTOVER waits on those merges.
+      # BUG-FIX (CPACK bring-up): this MUST default false at the edge. The
+      # register-driven tag map queries packml_register in the cloud DB, which the
+      # factory edge cannot reach — turning it on there crash-loops the agent on a
+      # DB dial it can never satisfy. Keep the :-false default; only ever flip it
+      # ON in a Mode-A staging harness that has DB reachability, never on a real
+      # client edge. The reader `.env` example sets it false EXPLICITLY.
+      AGENT_TAGMAP_FROM_REGISTER: "${AGENT_TAGMAP_FROM_REGISTER:-false}"
+      AGENT_PARAM_DECOMPOSITION: "${AGENT_PARAM_DECOMPOSITION:-false}"
+
+      # ── Birth-completeness (CPACK 2026-08-13 line-count regression fix) ──────
+      # Default ON (red-team fix, 2026-08-20): this defaulted OFF for every
+      # client except CPACK (hand-flipped only after the incident), leaving
+      # every OTHER client exposed to the identical silent sparse-line data
+      # loss. ON makes NBIRTH cover the FULL raw_tag_map: every mapped
+      # line/machine metric is birthed with a stable alias — never-seen ones as
+      # SparkPlug nulls — so a line that was IDLE at connect is already aliased
+      # at the cloud the instant it first reports. Fixes sparse CPACK lines
+      # (L3/L4/L8/L10/CELULA) whose NDATA was undecodable because they never
+      # got an alias in the seen-only birth. This is the RIGHT box for the
+      # flag: the SparkPlug session lives HERE, on the client edge
+      # (edge-cpack-agent), not in the cloud sparkplug-decoder. Safe on a real
+      # edge (no DB dependency, unlike AGENT_TAGMAP_FROM_REGISTER) — set
+      # AGENT_BIRTH_ALL_MAPPED=false explicitly to opt back out.
+      AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-true}"
+    volumes:
+      # Generated per-tenant artifacts (onboard-gen output) — read-only.
+      - ${AGENT_CONFIG_FILE:-./bispharma/bispharma-agent.yaml}:/etc/packiot/agent.yaml:ro
+      - ${AGENT_PROFILE_FILE:-./bispharma/bispharma-profile.yaml}:/etc/packiot/profile.yaml:ro
+      # mTLS material — resolved out of band into ./certs/ (gitignored). Read-only.
+      # BUG-FIX (CPACK bring-up): the agent runs as NON-ROOT uid 65532. A
+      # 0600 root/1000-owned uplink-key.pem is UNREADABLE to it → the uplink TLS
+      # load fails and the agent crash-loops. After placing the key under
+      # CERTS_DIR you MUST make it readable by 65532, e.g.:
+      #     sudo chown 65532:65532 ${CERTS_DIR:-./certs}/uplink-key.pem
+      #     # (or: sudo chmod 0644 ${CERTS_DIR:-./certs}/uplink-key.pem)
+      # See README §5 step 1 + gen-mtls-certs.sh output for the placement step.
+      - ${CERTS_DIR:-./certs}:/etc/packiot/certs:ro
+      - agent-outbox:/var/lib/edge-transformer
+    ports:
+      - "${AGENT_HEALTH_PORT:-9103}:9103"   # /healthz + /metrics (scrape target)
+    networks: [edge-net]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 256m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── s7-watchdog — self-heal wedged Node-RED S7 endpoint connections ──────────
+  # 2026-08-13 CPACK incident: a `node-red-contrib-s7` endpoint sticks on
+  # "Timeout connecting to the transport" and never self-recovers, silently
+  # dropping whole production lines (L8/L10/CELULA) for days. TCP:102 stays
+  # reachable (PLC Ethernet answers) but no S7 session is established, so the
+  # reader emits nothing for those lines. A full Node-RED flows RELOAD
+  # re-establishes the sessions (proven fix). This sidecar detects that exact
+  # signature in the reader's logs and triggers the reload, rate-limited.
+  # Profile-gated `nodered` (only meaningful when the reader is deployed).
+  # Reads the reader container's logs via a READ-ONLY docker socket (autoheal
+  # pattern) and POSTs the reload to the reader's admin over edge-net.
+  # See docs/clients/cpack-08-13-s7-wedge-incident.md + scripts/edge/s7-nodered-watchdog.sh
+  s7-watchdog:
+    image: ${DOCKER_CLI_IMAGE:-docker:27-cli}
+    container_name: edge-${TENANT_SLUG}-s7-watchdog
+    profiles: ["nodered"]
+    restart: unless-stopped
+    networks: [edge-net]
+    depends_on:
+      - nodered
+    environment:
+      NODERED_CONTAINER: edge-${TENANT_SLUG}-nodered   # for `docker logs`
+      NODERED_URL: http://nodered:1880                 # admin, over edge-net
+      WINDOW: 6m       # error must be present within this recent window
+      COOLDOWN: "720"  # min seconds between reloads (12 min) — no reload loops
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache curl >/dev/null 2>&1 || true
+        echo "[s7-watchdog] started; watching $$NODERED_CONTAINER (window=$$WINDOW cooldown=$${COOLDOWN}s)"
+        while true; do
+          if docker logs --since "$$WINDOW" "$$NODERED_CONTAINER" 2>&1 \
+             | grep -qiE '\[s7 endpoint:[^]]*\].*(Timeout connecting to the transport|Request timeout)'; then
+            now=$$(date +%s); last=$$(cat /tmp/last 2>/dev/null || echo 0)
+            if [ $$(( now - last )) -ge "$$COOLDOWN" ]; then
+              code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST "$$NODERED_URL/flows" \
+                -H 'Node-RED-Deployment-Type: reload' -H 'Content-Type: application/json' --data '{}' || echo 000)
+              echo "[s7-watchdog] $$(date -u +%FT%TZ) persistent S7 transport-timeout -> flows reload HTTP $$code"
+              echo "$$now" > /tmp/last
+            fi
+          fi
+          sleep 120
+        done
+    mem_limit: 48m
+    cpus: 0.05
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

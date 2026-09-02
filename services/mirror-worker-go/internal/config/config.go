@@ -10,6 +10,16 @@ import (
 	"strconv"
 )
 
+// Reconciler scheduler modes (RECONCILE_MODE). Poll is the pre-split
+// behavior — one combined pass runs BOTH the create-diff and the finisher
+// on a single prod snapshot every RECONCILE_INTERVAL_SEC. Tail splits the
+// two halves onto independent tickers so the cheap create-diff can run fast
+// (sub-3s PO-start detection) while the heavier finisher stays slow.
+const (
+	ReconcileModePoll = "poll"
+	ReconcileModeTail = "tail"
+)
+
 type Config struct {
 	AWSRegion string
 
@@ -35,12 +45,16 @@ type Config struct {
 
 	// ADR-0012 3-flow parity fan-out for equipment_values deltas.
 	// ShadowValueFanout gates the whole feature (shadow_go_port +
-	// packiot_shadow writes). ShadowDBName names the Flow 3 database
+	// packiot_analytics writes). ShadowDBName names the Flow 3 database
 	// (empty = shadow_go_port only). ShadowDBHost overrides the host for
 	// the shadow pool — pgbouncer's static database list doesn't include
-	// packiot_shadow, so staging passes the DB EC2 address directly.
+	// packiot_analytics, so staging passes the DB EC2 address directly.
 	ShadowValueFanout bool
-	ShadowDBName      string
+	// ShadowFanoutF2 gates the F2 (shadow_go_port) leg of the fan-out (ADR-0032
+	// collapse). Default true = fan both F2+F3; false = fan ONLY F3 so
+	// shadow_go_port can be frozen + dropped. Only meaningful when ShadowValueFanout.
+	ShadowFanoutF2 bool
+	ShadowDBName   string
 	ShadowDBHost      string
 
 	// Event-event interval-overlap matcher thresholds (Phase A4b).
@@ -66,6 +80,18 @@ type Config struct {
 	ReconcileIntervalSec int
 	ReconcileMaxPerRun   int
 
+	// Reconciler scheduler mode + per-half cadences (event-driven split).
+	// ReconcileMode selects poll (pre-split, default) or tail (split). In
+	// poll mode RECONCILE_INTERVAL_SEC drives the combined pass; in tail
+	// mode the create-diff runs at ReconcileCreateIntervalSec (default 3s,
+	// a 0.33ms cached status=2 index scan — cheap enough to poll fast) and
+	// the finisher runs at ReconcileFinisherIntervalSec (default 300s, stop
+	// latency is grace-bound so nothing is gained by finishing faster).
+	// Rollback to the pre-split scheduler = RECONCILE_MODE=poll (or unset).
+	ReconcileMode                string
+	ReconcileCreateIntervalSec   int
+	ReconcileFinisherIntervalSec int
+
 	// Prod-authoritative finisher pass (task #48). The create/revive
 	// reconciler above is CREATE-ONLY: it opens/keeps staging POs active to
 	// mirror prod's status=2 set, but never CLOSES one. When a prod PO ends
@@ -89,6 +115,25 @@ type Config struct {
 	// treated as possibly mid-transition / flapping and skipped this pass.
 	ReconcileFinisherEnabled      bool
 	ReconcileFinisherGraceMinutes int
+
+	// Prod-terminal orphan closer (task follow-up to #48). Closes the LAST
+	// finisher blemish: a MIRROR-CREATED staging PO (nm LIKE 'CPACK-reconcile-%')
+	// that is stuck NOT-YET-RUNNING (status=1, ts_start NULL) or running
+	// (status=2) while its prod twin has already FINISHED (status=3). The #48
+	// finisher can't reach these two ways: (a) its candidate set is status=2
+	// ONLY — a status=1 orphan (never observed a start) is invisible to it; and
+	// (b) FinishOrphanPO's header UPDATE hard-gates on status=2 AND its ts_end
+	// write trips the production_orders_ts_start_ts_end check (23514) when
+	// ts_start is NULL. This closer widens the candidate set to status IN (1,2)
+	// and closes at prod's finish ts with a NULL-ts_start-safe, strict-constraint
+	// -safe seal (ts_end := prod finish ts; ts_start := a 1-second-earlier floor,
+	// because production_orders_ts_start_ts_end demands ts_start < ts_end STRICTLY
+	// for status=3). It ONLY closes prod-terminal
+	// (status=3) twins — a prod-active (status=2) twin is SKIPPED, same safety
+	// posture as the finisher. Ships INERT (default false): with the flag off
+	// the finisher path is byte-identical to today's behavior. Enabled
+	// deliberately after review, staging-only.
+	ReconcileCloseProdTerminalOrphans bool
 
 	// Value-sync layer. The existence pass (above) tracks which POs are
 	// active. The value pass tracks WHAT they show: production_real,
@@ -235,7 +280,8 @@ func Load() (*Config, error) {
 		PerPostDelayMs:        getenvInt("PER_POST_DELAY_MS", 50),
 		StagingAPIBaseURL:     getenv("STAGING_API_URL", "http://edge-api:8080"),
 		ShadowValueFanout:     getenvBool("SHADOW_VALUE_FANOUT", false),
-		ShadowDBName:          getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShadowFanoutF2:        getenvBool("SHADOW_FANOUT_F2", true),
+		ShadowDBName:          getenv("POSTGRES_ANALYTICS_DB_NAME", ""),
 		ShadowDBHost:          getenv("SHADOW_DB_HOST", ""),
 		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
 		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
@@ -243,14 +289,22 @@ func Load() (*Config, error) {
 		ReconcileEnabled:      getenvBool("RECONCILE_ENABLED", true),
 		ReconcileIntervalSec:  getenvInt("RECONCILE_INTERVAL_SEC", 300),
 		ReconcileMaxPerRun:    getenvInt("RECONCILE_MAX_PER_RUN", 20),
+		// Scheduler split — all default to today's behavior: mode=poll makes
+		// RECONCILE_INTERVAL_SEC drive the combined pass exactly as before.
+		ReconcileMode:                getenv("RECONCILE_MODE", ReconcileModePoll),
+		ReconcileCreateIntervalSec:   getenvInt("RECONCILE_CREATE_INTERVAL_SEC", 3),
+		ReconcileFinisherIntervalSec: getenvInt("RECONCILE_FINISHER_INTERVAL_SEC", 300),
 		// Finisher ships INERT (default false) — enabled deliberately after review.
 		ReconcileFinisherEnabled:      getenvBool("RECONCILE_FINISHER_ENABLED", false),
 		ReconcileFinisherGraceMinutes: getenvInt("RECONCILE_FINISHER_GRACE_MINUTES", 30),
-		ReconcileValuesEnabled:        getenvBool("RECONCILE_VALUES_ENABLED", true),
-		ReconcileValuesIntervalSec:    getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
-		ReconcileEventsEnabled:        getenvBool("RECONCILE_EVENTS_ENABLED", true),
-		ReconcileEventsIntervalSec:    getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
-		ReconcileEventsBatchSize:      getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
+		// Prod-terminal orphan closer ships INERT (default false) — enabled
+		// deliberately after review; flag off = finisher behaves exactly as today.
+		ReconcileCloseProdTerminalOrphans: getenvBool("RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS", false),
+		ReconcileValuesEnabled:            getenvBool("RECONCILE_VALUES_ENABLED", true),
+		ReconcileValuesIntervalSec:        getenvInt("RECONCILE_VALUES_INTERVAL_SEC", 30),
+		ReconcileEventsEnabled:            getenvBool("RECONCILE_EVENTS_ENABLED", true),
+		ReconcileEventsIntervalSec:        getenvInt("RECONCILE_EVENTS_INTERVAL_SEC", 60),
+		ReconcileEventsBatchSize:          getenvInt("RECONCILE_EVENTS_BATCH_SIZE", 200),
 
 		ReconcileEventsCloseSweepEnabled:     getenvBool("RECONCILE_EVENTS_CLOSE_SWEEP_ENABLED", false),
 		ReconcileEventsCloseSweepEveryNTicks: getenvInt("RECONCILE_EVENTS_CLOSE_SWEEP_EVERY_N_TICKS", 10),
@@ -282,6 +336,20 @@ func Load() (*Config, error) {
 	// events-sync tick on `closerTick % N`.
 	if cfg.ReconcileEventsCloseSweepEveryNTicks < 1 {
 		cfg.ReconcileEventsCloseSweepEveryNTicks = 1
+	}
+	// Reconciler mode — fall back to poll (pre-split behavior) on anything
+	// unrecognized so a typo can never silently drop the finisher or spin
+	// the create loop at a bogus cadence.
+	if cfg.ReconcileMode != ReconcileModeTail {
+		cfg.ReconcileMode = ReconcileModePoll
+	}
+	// Guard the tail-mode tickers — a 0/negative interval would make
+	// time.Duration(...) a zero/negative tick that busy-loops the pass.
+	if cfg.ReconcileCreateIntervalSec < 1 {
+		cfg.ReconcileCreateIntervalSec = 3
+	}
+	if cfg.ReconcileFinisherIntervalSec < 1 {
+		cfg.ReconcileFinisherIntervalSec = 300
 	}
 	return cfg, nil
 }

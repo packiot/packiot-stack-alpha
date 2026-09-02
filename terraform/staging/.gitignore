@@ -4,3 +4,7 @@ terraform.tfstate
 terraform.tfstate.backup
 terraform.tfvars
 *.auto.tfvars
+
+# Lambda build artifacts (archive_file output for the Cognito migration Lambda)
+.build/
+*.zip

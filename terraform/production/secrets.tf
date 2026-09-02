@@ -70,6 +70,23 @@ resource "aws_secretsmanager_secret_version" "db" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ⚠ DURABILITY GAP (host is not terraform-managed) — DOCUMENTED, NOT FIXED.
+# The first live boot hand-added `host = 10.20.10.89` (the r7g DB EC2's PRIVATE
+# IP) to this secret so oeecloud-worker's PG resolver could reach the upstream.
+# But `ignore_changes = [secret_string]` above means terraform will NEVER
+# reconcile that field, AND the r7g private IP is DYNAMIC — an r7g replacement
+# (or stop/start on some instance types) assigns a new private IP, orphaning the
+# stale `host` in this secret. oeecloud-worker would then resolve a dead host.
+# Proper fix (pick one, out of scope for this PR):
+#   (a) terraform manages host — drop `host` from ignore_changes (or split it
+#       into a separate un-ignored version field) and template it from
+#       aws_instance.db.private_ip, so a replace re-writes the secret; OR
+#   (b) oeecloud-worker reads the host from the POSTGRES_HOST_UPSTREAM env var
+#       (already templated into .env by app_init.sh from db_private_ip) instead
+#       of from this secret — a small Go change that removes the secret's host
+#       responsibility entirely. (b) is preferred: single source of truth for
+#       the upstream IP, and app_init already owns it.
+
 # ── Hasura ────────────────────────────────────────────────────────────────────
 
 resource "aws_secretsmanager_secret" "hasura" {
@@ -108,6 +125,70 @@ resource "aws_secretsmanager_secret_version" "app" {
 # NOTE: staging's `packiot/staging/nodered-auth` secret is deliberately ABSENT
 # from production. No Node-RED runs in compose.production.yml (per ADR-0003
 # scope — edge-nodered is per-factory, not in the cloud stack).
+
+# ── RabbitMQ creds for oeecloud-worker ────────────────────────────────────────
+# oeecloud-worker fetches its own AMQP creds from a DEDICATED secret at startup
+# rather than reading RABBITMQ_USER/RABBITMQ_PASSWORD from .env (the worker does
+# NOT fall back to env — it refuses to run if this secret is missing). First
+# dry-run boot surfaced the missing declaration. In dry-run we reuse the admin
+# creds from `app` (random_password.rabbitmq); phase 2 should split these into a
+# least-priv AMQP user once real factory traffic flows.
+resource "aws_secretsmanager_secret" "rabbitmq_oeecloud_creds" {
+  name                    = "packiot/production/rabbitmq-oeecloud-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_oeecloud_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_oeecloud_creds.id
+  secret_string = jsonencode({
+    username = "packiot"
+    password = random_password.rabbitmq.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
+# ── RabbitMQ creds for edge-transformer + ingest-shim ─────────────────────────
+# Both edge-transformer and ingest-shim fetch their AMQP creds from a DEDICATED
+# secret at startup (RABBITMQ_SECRET_ID in compose.production.yml) rather than
+# reading RABBITMQ_USER/RABBITMQ_PASSWORD from .env. Like oeecloud-worker they
+# refuse to run if the secret is missing — first fresh boot surfaced the absence
+# (had to be hand-created). Same dry-run shortcut: reuse the admin creds from
+# `app` (random_password.rabbitmq); phase 2 should split into a least-priv AMQP
+# user once real factory traffic flows.
+resource "aws_secretsmanager_secret" "rabbitmq_edge_transformer_creds" {
+  name                    = "packiot/production/rabbitmq-edge-transformer-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_edge_transformer_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_edge_transformer_creds.id
+  secret_string = jsonencode({
+    username = "packiot"
+    password = random_password.rabbitmq.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
+# ── refdata-api per-tenant query keys ─────────────────────────────────────────
+# refdata-api reads QUERY_API_KEYS from this secret (deploy fills
+# REFDATA_QUERY_API_KEYS in .env; compose passes it through as
+# ${REFDATA_QUERY_API_KEYS:-}). The value is a "key:customer_id,key2:cid2" map
+# resolved SERVER-SIDE for tenant reads. It is NON-BLOCKING — refdata boots and
+# stays healthy with no keys (an empty/malformed map simply denies all X-Api-Key
+# reads). Declared here (was referenced but absent → hand-created on first boot)
+# with a minimal empty shape; CS fills real keys per client at onboarding.
+resource "aws_secretsmanager_secret" "refdata_query_keys" {
+  name                    = "packiot/production/refdata-query-keys"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "refdata_query_keys" {
+  secret_id = aws_secretsmanager_secret.refdata_query_keys.id
+  secret_string = jsonencode({
+    api_keys = ""
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
 
 # ── Nginx basic auth ──────────────────────────────────────────────────────────
 # All production service vhosts behind Nginx require this credential pair.

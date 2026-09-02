@@ -1,0 +1,176 @@
+# cpack-full-profile.yaml — CPACK FULL-TOPOLOGY conversion profile (task #13 /
+# ADR-0043, extends PR #590 + #593).
+#
+# WHAT THIS IS
+# ------------
+# The register-driven CONVERSION PROFILE (tenantprofile schema) covering CPACK's
+# ENTIRE prod topology, not just the LINHAS subtree that cpack-profile.yaml maps.
+# Same schema as cpack-profile.yaml; the difference is coverage + a corrected,
+# empirically-derived count-index override table.
+#
+# WHY A SECOND CPACK PROFILE
+# --------------------------
+# cpack-profile.yaml (PR #593) uses tenant_prefix "CPACK/SC/LINHAS" and is pinned
+# by TestBuildRawTagMap_MatchesPR590Yaml to reproduce the 44-entry hand YAML.
+# That prefix scopes ONE sparkplug-agent to the LINHAS cell only. CPACK's real
+# prod topology (SELECT-only read of prod ent-1 packml_register, 2026-07-23) spans
+# FIVE roots under CPACK/SC:
+#
+#   CPACK/SC/LINHAS   — 6 lines (L3 L4 L5 L6 L8 L10), each 4–5 named members
+#   CPACK/SC/CELULA1  — 5 single-machine cells (CER400 DUBUTI1 DUBUTI2 HOTMADAG ISIMAT)
+#   CPACK/SC/CELULA2  — 6 single-machine cells (BREYER1 BREYER2 POLYTYPE1 POLYTYPE2 PTH40-03 PTH80S)
+#   CPACK/SC/CELULA9  — FLEXO
+#   CPACK/SC/SLEEVE   — SLEEVE1 SLEEVE2
+#
+# 62 equipment total (20 lines tp=3 + 42 members tp=1) — ALL registered + active
+# on BOTH prod ent-1 and staging ent-3. The LINHAS-only profile silently skips
+# the 4 non-LINHAS cells (LocalSegment returns ok=false → the register loader
+# drops them). This profile widens tenant_prefix to CPACK/SC so one agent covers
+# the whole plant; local segments therefore carry the CELL (e.g. /LINHAS/L5/BREYER,
+# /CELULA1/CER400/CER400).
+#
+# TWO NAMING PATTERNS (both handled by the same templates, since the loader
+# derives structure from register topics, not from a per-pattern rule):
+#   • LINHAS  — a line (tp=3) with SEVERAL named members:  .../L5      + .../L5/BREYER
+#   • CELULA/SLEEVE — a line (tp=3) wrapping ONE same-named member:  .../CER400 + .../CER400/CER400
+#
+# ── THE COUNT-INDEX FINDING (the load-bearing correction) ────────────────────
+# The PLC count index embedded in a member's count metric (…/ProdProcessedCount/
+# <IDX>/Unit) is an ARBITRARY PLC-INTERNAL CHANNEL NUMBER. It is NOT the staging
+# surrogate id, and it is only COINCIDENTALLY the prod id_equipment for some cells.
+# Measured from prod's registered count topics:
+#   • L3, L5, L6, CELULA1, CELULA9 members     → IDX == prod id_equipment
+#   • L4 members                                → IDX is a separate small series 6/7/8/9(/10)
+#   • CELULA2/BREYER1                           → IDX 26   (prod id_equipment is 340)
+#   • CELULA2/POLYTYPE2                          → IDX 29   (prod id_equipment is 343)
+# Because staging renumbered every surrogate id, `mode: equipment_id` (the register
+# default) yields the STAGING id for {idx} — WRONG for every one of the 42 members
+# when the loader runs against staging ent-3. Correct synthesis therefore requires
+# an EXPLICIT per-member override = the observed PLC index. That full table is below.
+#
+# NB the count index does NOT affect id resolution (the worker resolver strips
+# segment-5-on and matches the unit topic exactly). It only has to equal what the
+# tee actually POSTs, so the agent's strict allowlist matches and the tag is not
+# dropped. A wrong index silently drops that member's counts — nothing else breaks.
+#
+# CONFIDENCE: indices marked (confirmed) come from an ACTIVE registered count
+# topic in prod; (inferred) are derived from the prevailing pattern (prod id, or
+# the L4 small series, or id_unit) and MUST be validated against a real tee
+# payload before cutover.
+
+tenant: CPACK
+enterprise_id: 3                 # staging CPACK (prod=1); register-query cross-tenant guard
+tenant_prefix: CPACK/SC          # widened from CPACK/SC/LINHAS to cover all 5 cells
+
+# ── NORMALIZE side (inbound real → canonical) ────────────────────────────────
+prefix_fixups:
+  - {from: "C-PACK/", to: "CPACK/"}          # real PLC enterprise head → canonical
+
+metric_aliases:
+  - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}   # real prod leaf (#590) → Calc input
+
+parameter_aliases:
+  - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}
+
+# ── count-index rules ────────────────────────────────────────────────────────
+# mode: equipment_id is the fallback for anything not overridden; but see the
+# finding above — every CPACK member IS overridden, because the staging default
+# is wrong for all of them. Keys are LOCAL SEGMENTS (topic minus tenant_prefix).
+count_index:
+  mode: equipment_id
+  overrides:
+    # ── LINHAS L3 (idx == prod id_equipment, confirmed active) ──
+    "/LINHAS/L3/BREYER": 76
+    "/LINHAS/L3/POLYTYPE": 82
+    "/LINHAS/L3/PTH": 81
+    "/LINHAS/L3/RMH": 79
+    "/LINHAS/L3/TEXA": 80
+    # ── LINHAS L4 (separate SMALL series, confirmed active 6/7/8/9; TEXA inferred) ──
+    "/LINHAS/L4/BREYER": 6
+    "/LINHAS/L4/POLYTYPE": 7
+    "/LINHAS/L4/PTH": 8
+    "/LINHAS/L4/RMH": 9
+    "/LINHAS/L4/TEXA": 10          # inferred (no active count topic; next in series)
+    # ── LINHAS L5 (idx == prod id; BREYER/TEXA confirmed, rest inferred) ──
+    "/LINHAS/L5/BREYER": 61
+    "/LINHAS/L5/POLYTYPE": 62
+    "/LINHAS/L5/PTH": 63
+    "/LINHAS/L5/RMH": 64
+    "/LINHAS/L5/TEXA": 65
+    # ── LINHAS L6 (idx == prod id, live-tee obs per #590) ──
+    "/LINHAS/L6/BREYER": 91
+    "/LINHAS/L6/POLYTYPE": 93
+    "/LINHAS/L6/PTH": 95
+    "/LINHAS/L6/RMH": 94
+    "/LINHAS/L6/TEXA": 92
+    # ── LINHAS L8 (idx == prod id, count topics INACTIVE → inferred) ──
+    "/LINHAS/L8/DXL": 219          # inferred
+    "/LINHAS/L8/PTH": 220          # inferred
+    "/LINHAS/L8/TCX": 221          # inferred
+    "/LINHAS/L8/TEXA": 222         # inferred
+    # ── LINHAS L10 (idx == prod id, count topics INACTIVE → inferred) ──
+    "/LINHAS/L10/DXL": 564         # inferred
+    "/LINHAS/L10/PTH": 565         # inferred
+    "/LINHAS/L10/TCX": 566         # inferred
+    "/LINHAS/L10/TEXA": 567        # inferred
+    # ── CELULA1 (idx == member id_unit, mostly inactive → inferred) ──
+    "/CELULA1/CER400/CER400": 107      # confirmed active (ProdProcessedCount)
+    "/CELULA1/DUBUTI1/DUBUTI1": 334    # inferred
+    "/CELULA1/DUBUTI2/DUBUTI2": 97     # inferred
+    "/CELULA1/HOTMADAG/HOTMADAG": 99   # inferred
+    "/CELULA1/ISIMAT/ISIMAT": 335      # inferred
+    # ── CELULA2 (idx mostly == member id_unit; BREYER1 + POLYTYPE2 are ANOMALIES) ──
+    "/CELULA2/BREYER1/BREYER1": 26     # ANOMALY: prod id_equipment is 340, PLC idx is 26
+    "/CELULA2/BREYER2/BREYER2": 101    # inferred
+    "/CELULA2/POLYTYPE1/POLYTYPE1": 110 # confirmed active (ProdDefectiveCount)
+    "/CELULA2/POLYTYPE2/POLYTYPE2": 29  # ANOMALY: prod id_equipment is 343, PLC idx is 29 (also emits 343)
+    "/CELULA2/PTH40-03/PTH40-03": 339  # inferred
+    "/CELULA2/PTH80S/PTH80S": 105      # confirmed active (ProdDefectiveCount)
+    # ── CELULA9 ──
+    "/CELULA9/FLEXO/FLEXO": 557        # inferred
+    # ── SLEEVE (no registered count topic in either DB → inferred = prod id) ──
+    "/SLEEVE/SLEEVE1/SLEEVE1": 763     # inferred, UNVERIFIED
+    "/SLEEVE/SLEEVE2/SLEEVE2": 823     # inferred, UNVERIFIED
+
+# ── line-vs-member metric templates ──────────────────────────────────────────
+# Members carry INDEXED counts (…/{idx}/Unit). Lines carry BARE counts (no index)
+# — this is the real prod line shape confirmed by PR #590's rebuild and by every
+# CELULA/SLEEVE line topic in prod register; it differs deliberately from the
+# pre-#590 cpack-profile.yaml line template (which used /{idx}/Unit). Lines also
+# publish Parameter30700 (the line-machines CSV) which members do not.
+#
+# The template is a SUPERSET allowlist: a member that does not emit ProdDefective
+# simply never matches that suffix (harmless); a MISSING suffix would drop a real
+# tag, so we err toward listing all three counts.
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+# ── OPEN ITEMS (CS-Admin / live-tee validation before cutover) ───────────────
+# 1. Inferred count indices (all L8/L10/SLEEVE members + most CELULA members)
+#    must be confirmed against a real tee payload; a wrong index silently drops
+#    that member's counts.
+# 2. CELULA2/BREYER1 (26) and CELULA2/POLYTYPE2 (29) use legacy PLC channel ids
+#    that diverge from id_equipment — POLYTYPE2 was seen emitting BOTH 29 and 343;
+#    confirm which the live tee sends.
+# 3. Bare Parameter → Parameter30700 is only meaningful for multi-member LINHAS
+#    lines; single-machine CELULA/SLEEVE "lines" have no line-machines CSV. Their
+#    Parameter30700 entry is harmless (unmatched) but semantically empty.
+# 4. CurMachSpeed→MachSpeed is a semantic substitution (instantaneous vs nominal)
+#    inherited from #590 and still pending owner sign-off.
+# 5. The SYNTHESIZE path assumes uniform per-class metrics. CPACK's real per-
+#    equipment metric presence varies (some members omit Defective; some lines
+#    are bare). Where the register already carries per-metric rows in real naming,
+#    the NORMALIZE loader (BuildRawTagMapFromMetricRows) is the more faithful path
+#    and sidesteps the count-index inference entirely.

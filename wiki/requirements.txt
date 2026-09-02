@@ -1,0 +1,5 @@
+# Pinned toolchain for the Packiot stack wiki static-site build.
+# Self-contained: mkdocs-material bundles its own CSS/JS/search index at build
+# time, so the rendered site under dist/wiki/ has NO external-CDN runtime deps
+# (see mkdocs.yml `theme.font: false`, which disables the Google Fonts fetch).
+mkdocs-material==9.5.44

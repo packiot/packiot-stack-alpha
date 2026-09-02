@@ -1,0 +1,25 @@
+# front4 dayKpi "Daily Production". Big Number WITH trendline over the hourly grain.
+slice_name: Daily production (trend)
+description: bi.oee_hourly SUM(net) with sparkline trend. front4 dayKpi net_production.
+certified_by: null
+certification_details: null
+viz_type: big_number
+params:
+  {
+    "datasource": "8b1d0810-a0d1-4012-86a9-45c64c2e9154__table",
+    "viz_type": "big_number",
+    "metric": "sum_net",
+    "adhoc_filters": [],
+    "x_axis": "ts_value",
+    "time_grain_sqla": "PT1H",
+    "compare_lag": "",
+    "compare_suffix": "",
+    "y_axis_format": ".3~s",
+    "subtitle": "Net production (today)",
+    "time_range": "last day"
+  }
+query_context: '{"datasource": {"id": 3, "type": "table"}, "force": false, "queries": [{"time_range": "last day", "filters": [], "extras": {"time_grain_sqla": "PT1H", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "PT1H", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}], "metrics": ["sum_net"], "annotation_layers": [], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing": [{"operation": "pivot", "options": {"index": ["ts_value"], "columns": [], "aggregates": {"sum_net": {"operator": "mean"}}, "drop_missing_columns": true}}, {"operation": "flatten"}]}], "form_data": {"datasource": "3__table", "viz_type": "big_number", "metric": "sum_net", "adhoc_filters": [], "x_axis": "ts_value", "time_grain_sqla": "PT1H", "compare_lag": "", "compare_suffix": "", "y_axis_format": ".3~s", "subtitle": "Net production (today)", "time_range": "last day", "annotation_layers": [], "slice_id": 2, "force": false, "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: c06d7d16-8712-425d-9b5b-85186bf5eda3
+version: 1.0.0
+dataset_uuid: 8b1d0810-a0d1-4012-86a9-45c64c2e9154

@@ -1,37 +1,22 @@
 # grafana/ — dashboards & provisioning
 
-Dashboards are **file-provisioned** (`provisioning/dashboards/all.yml`
-→ folder "Packiot", 10s reload; UI edits allowed but files are the
-source of truth — export back to JSON or lose the change).
+Dashboards are **file-provisioned** (`provisioning/dashboards/all.yml`,
+provider `packiot-v2` → folder "Packiot v2", 10s reload; UI edits allowed
+but files are the source of truth — export back to JSON or lose the change
+on the next reload).
 
-Datasources (`provisioning/datasources/`): `packiot-postgres`
-(**default**; staging TimescaleDB on the DB EC2), `packiot-postgres-shadow`
-(the F3/consolidation DB), `packiot-prometheus`, `packiot-loki`.
+Datasources (`provisioning/datasources/`): `packiot-postgres` (**default**;
+DB `packiot` — F1, the pre-flip source), `packiot-postgres-shadow` (DB
+`packiot_analytics` — F3, the post-flip source of truth; uid kept as-is
+across the F3 rename since every v2 panel references it by uid), `packiot-prometheus`,
+`packiot-loki`, `packiot-tempo`.
 
-## Board map
-
-| # | uid | What it answers |
-|---|---|---|
-| 01 | `oee-pipeline` | is OEE data flowing, live |
-| 02 | `equipment-config` | equipment & PackML routing state |
-| 03 | `system-health` | DB & pipeline health |
-| 04 | `packiot-logs` | stack overview (logs) |
-| 05 | `packiot-operator` | operator activity |
-| 06 | `packiot-services-logs` | per-service logs |
-| 07 | `mirror-worker-flow` | prod in → replay/fan-out out |
-| 08 | `oeecloud-worker-flow` | AMQP in → engine → writes per flow |
-| **09** | **`bake-flow-parity`** | **THE FLIP GATE** — legacy F1 vs Go F2: 10 fidelity surfaces + 3 identity fingerprints |
-| 10 | `edge-transformer-ingest` | MQTT in → Calc → triple-emit out |
-| 11 | `packiot-pipeline-logs` | plc-sim → edge-transformer logs |
-| 12 | `packiot-prometheus` | equipment_values fan-out (ADR-0012 data plane) |
-| 13 | `database-reach` | what actually lands on F1 / F2 / F3 |
-
-**The 09 discipline**: every non-zero parity reading must carry a
-*named, dated* cause (the known-noise ledger lives in ADR-0016 +
-session memory). A new unexplained non-zero is the only alarm that
-matters. The 7-day flip gate reads this board — treat edits to 09 as
-production changes.
-
-Reading order when triaging: 13 (does data land?) → 08/10 (which hop?)
-→ 09 (is it *correct*?) → 06/11 (logs for the guilty hop). Same
-layering as `docs/guides/manual-smoke-check.md`.
+**The board map, per-board audience, and the live-verified metric universe
+live in [`dashboards-v2/README.md`](./dashboards-v2/README.md) and
+[`dashboards-v2/_SPEC.md`](./dashboards-v2/_SPEC.md) — that's the canonical,
+maintained doc.** This file used to describe a "Packiot" v1 board set
+(`oee-pipeline`, `bake-flow-parity`, etc.) — that set was fully reviewed,
+rebuilt as v2, and **deleted** in 2026-07 once v2 was blessed (see
+`dashboards-v2/README.md`'s "Retiring v1" section). If you're reading old
+docs/notes that reference v1 uids, they no longer exist; the v2 uid is
+usually the same board renumbered — check the v2 README's board table.

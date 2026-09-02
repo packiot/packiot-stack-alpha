@@ -1,0 +1,75 @@
+name: Superset RLS isolation gate
+
+# THE non-negotiable W2 gate (docs/plans/w2-embedded-superset.md §8): no tenant
+# sees a Superset chart until this is green on staging. It stands up an ephemeral
+# Postgres, applies the SHIPPED db/superset/*.sql, seeds TWO enterprises, and
+# proves — as the NOBYPASSRLS superset_ro reading the curated bi.* views — that:
+#   * a session stamped for tenant A sees ONLY A's rows, B ONLY B's;
+#   * an UNSET tenant sees ZERO rows (fail-closed);
+#   * a wrong-tenant WHERE clause (the guest-token-clause shape) is blocked;
+#   * A and B row-sets are DISJOINT and partition the data;
+# plus the STRUCTURAL guards: every bi.* view exposes id_enterprise and every
+# base table under it has an RLS policy (fails if a NET-NEW bi.* view is added
+# without a tenant key / without base RLS).
+#
+# Runs on EVERY PR to staging (no path filter) so it can be wired as a REQUIRED
+# status check without deadlocking. SUPERSET_GATE_REQUIRE=1 makes the harness
+# FAIL rather than skip if docker is unavailable — a skip must never false-green
+# a required check.
+
+on:
+  pull_request:
+    branches: [staging]
+  workflow_dispatch:
+
+jobs:
+  isolation-gate:
+    name: 2-tenant RLS isolation + no-view-without-a-rule
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gate deps
+        run: python -m pip install -r tests/superset/requirements.txt
+
+      - name: Run the 2-tenant isolation gate (ephemeral Postgres)
+        env:
+          SUPERSET_GATE_REQUIRE: "1"   # fail (not skip) if the gate can't run
+        run: python -m pytest tests/superset -q -o cache_dir=/tmp/superset-gate-cache
+
+  validate-overlay:
+    name: compose.superset.yml merges + stays profile-gated
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Overlay must add NOTHING to a default (no --profile) up
+        # With no --profile, the superset overlay services must not appear —
+        # proving the default stack is unchanged.
+        run: |
+          set -e
+          touch .env
+          out=$(docker compose --env-file .env -f compose.staging.yml -f compose.superset.yml config --services 2>/dev/null | grep -E '^superset' || true)
+          if [ -n "$out" ]; then
+            echo "FAIL: superset services present without --profile superset:"; echo "$out"; exit 1
+          fi
+          echo "OK: overlay is fully profile-gated (nothing starts by default)"
+
+      - name: Overlay parses under --profile superset
+        run: |
+          touch .env
+          docker compose --env-file .env --profile superset \
+            -f compose.staging.yml -f compose.superset.yml config -q

@@ -1,0 +1,62 @@
+# bispharma.descriptor.yaml — BISPHARMA CLIENT DESCRIPTOR (ADR-0045 P1, the SSoT).
+#
+# The ONE artifact a CS engineer authors to onboard BISPHARMA. From it the
+# onboard generator emits all four downstream artifacts (tenant conversion
+# profile, packml_register SQL, agent client.yaml, Node-RED tee snippet) — none
+# hand-edited (ADR-0045 §2.2). Flow: describe → generate → capture → validate → cutover.
+#
+# NOTE: the equipment inventory + count indices below are an ONBOARDING SCAFFOLD
+# (illustrative topology). Real ids come from CS-Admin; real count indices are
+# CAPTURED from a live tee (ADR-0045 §2.4b) — all members ship 'inferred' here,
+# so --cutover generation refuses until CAPTURE confirms them.
+
+tenant: BISPHARMA
+enterprise_id: 7                      # packml_register.id_enterprise (cross-tenant guard)
+
+canonical:
+  prefix: BISPHARMA/SP                # tenant_prefix — canonical (post-fixup) head
+
+mapping:
+  count_index_default_mode: equipment_id
+  prefix_fixups: []
+  metric_aliases:
+    - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}
+  parameter_aliases:
+    - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}
+
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+# Illustrative: 2 blister/cartoning lines, one member each.
+equipment:
+  - {topic: BISPHARMA/SP/BLISTER1, id_equipment: 700, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/BLISTER1/UHLMANN, id_equipment: 701, tp_equipment: 1, id_unit: 701, count_index: {value: 0, confidence: inferred}}
+  - {topic: BISPHARMA/SP/CARTONER1, id_equipment: 702, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/CARTONER1/MARCHESINI, id_equipment: 703, tp_equipment: 1, id_unit: 703, count_index: {value: 0, confidence: inferred}}
+
+agent:
+  edge_node_id: bispharma-edge
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/bispharma/#
+  uplink_broker: ssl://ingest.packiot.com:8883      # Mode-B WAN crossing (prod ingest — DEPENDENCY)
+  mtls:                                              # CN=BISPHARMA; secret refs, never values
+    cert_ref: "secret://packiot/prod/bispharma/uplink-cert"
+    key_ref:  "secret://packiot/prod/bispharma/uplink-key"
+    ca_ref:   "secret://packiot/prod/bispharma/uplink-ca"
+
+tee:
+  ingest_url: "http://sparkplug-agent:9104/v1/tags"   # Mode-B: tee → internal agent HTTP ingest
+  ingest_key_env: BISPHARMA_INGEST_KEY
+  gateway: bispharma-edge
+  tls_insecure: false

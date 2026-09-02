@@ -26,8 +26,13 @@ resource "aws_route53_record" "staging_ns" {
 
 # One A record per service → App EC2 static EIP.
 # Nginx on the App EC2 routes each hostname to its local Docker port.
+#
+# Edge cutover (edge.tf, var.edge_cutover): when the flag is FALSE (default) this
+# stays the live path — A → EIP, exactly as before. When TRUE, the for_each goes
+# empty and the parallel `aws_route53_record.services_edge` (edge.tf) takes over
+# with ALIAS → CloudFront. One variable flips the whole service plane.
 resource "aws_route53_record" "services" {
-  for_each = var.services
+  for_each = var.edge_cutover ? {} : var.services
   zone_id  = aws_route53_zone.staging.zone_id
   name     = "${each.key}.${var.staging_domain}"
   type     = "A"
@@ -46,23 +51,77 @@ resource "aws_route53_record" "amqp" {
   records = [aws_eip.app.public_ip]
 }
 
-# RabbitMQ management HTTP API — exposed via Nginx HTTPS proxy (port 443).
-# Used by factory edges that lack amqplib: they POST to this endpoint to publish
-# SparkPlug messages. No nginx basic auth — RabbitMQ handles its own auth.
-# Client user must have the 'management' tag to access this endpoint.
-resource "aws_route53_record" "mq" {
-  zone_id = aws_route53_zone.staging.zone_id
-  name    = "mq.${var.staging_domain}"
-  type    = "A"
-  ttl     = 60
-  records = [aws_eip.app.public_ip]
-}
+# RETIRED (infra audit 2026-08-23): mq.staging.packiot.app — the RabbitMQ
+# management HTTP proxy vhost. The ungated console was closed in PR #876 and the
+# nginx server block for `mq.staging` was removed (only rabbitmq.staging remains,
+# oauth2-gated). The A record served no live nginx vhost (edges publish over
+# AMQPS:5671 / cpack-ingest:8447), so the dangling record + its exposed hostname
+# were deleted from Route53 and this resource removed. Do NOT reintroduce an
+# ungated management vhost — go through rabbitmq.staging (cs-admin oauth2 gate).
 
 # Authentik SSO login page — browser entry point for all staging SSO flows.
 # No Nginx auth_request on this vhost (it IS the authentication endpoint).
 resource "aws_route53_record" "auth" {
   zone_id = aws_route53_zone.staging.zone_id
   name    = "auth.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
+# Superset BI vhost — bi.staging.packiot.app. NOT in var.services because it uses a
+# bespoke nginx block (superset.conf: origin-verify + scoped CORS, NO oauth2 gate —
+# a cookie forward-auth would break the iframe embed + Cognito OIDC redirect), not
+# the generic csadmin-tier vhost loop. Mirrors the services record's edge_cutover
+# flip: A→App EIP while direct; goes dormant (count 0) when the parallel
+# ALIAS→CloudFront copy `bi_edge` (edge.tf) takes over. `bi` already matches the
+# distribution's `*.staging.packiot.app` alias, so no cert/alias change is needed.
+resource "aws_route53_record" "bi" {
+  count   = var.edge_cutover ? 0 : 1
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "bi.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
+# CPACK agent ingest front-door (ADR-0042 P1) — cpack-ingest.staging.packiot.app.
+# Not in var.services because it's a dedicated port-8447 TLS reverse-proxy for
+# the sparkplug-agent /v1/tags endpoint (not a standard 443 HTTP vhost). Nginx
+# on the App EC2 (terraform/staging/user_data/nginx_setup.sh) terminates TLS and
+# proxies to sparkplug-agent-cpack; the App EC2 SG admits 8447 from CPACK's
+# egress /32 only (security_groups.tf).
+resource "aws_route53_record" "cpack_ingest" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "cpack-ingest.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
+# Shared multi-tenant agent ingest front-door — ingest.staging.packiot.app.
+# One tenant-agnostic port-8449 TLS reverse-proxy for sparkplug-agent-shared
+# /v1/tags; the agent routes by the envelope group_id. Every client's box POSTs
+# here (no per-client DNS). App EC2 SG admits 8449 per-box egress /32.
+resource "aws_route53_record" "shared_ingest" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "ingest.${var.staging_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.app.public_ip]
+}
+
+# barcode-service box-scan ingest — scan.staging.packiot.app.
+# Not in var.services because that map's vhosts get the oauth2-proxy SSO gate;
+# barcode-service does its OWN fail-closed Cognito-JWT auth (tenant from the
+# signed custom:id_enterprise claim), so it needs the "deliberately open, own
+# auth" vhost in nginx_setup.sh (scan.conf) — same posture as refdata. Direct
+# A-record to the App EC2 EIP; nginx terminates TLS on 443 and reverse-proxies
+# the exact /v1/scans paths to barcode-service (172.18.0.36:8446). 443 is already
+# open to 0.0.0.0/0 in the App EC2 SG (the JWT is the gate, not the SG).
+resource "aws_route53_record" "scan" {
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "scan.${var.staging_domain}"
   type    = "A"
   ttl     = 60
   records = [aws_eip.app.public_ip]

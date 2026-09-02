@@ -35,15 +35,15 @@ variable "private_subnet_cidr" {
 # ── EC2 ────────────────────────────────────────────────────────────────────────
 
 variable "db_instance_type" {
-  description = "t4g = Graviton2 (ARM, ~20% cheaper than t3 equivalent)"
+  description = "Graviton3 r7g.large — memory-optimized (16 GB). The DB workload (caggs/comparators, bg workers) OOM'd + swapped on t4g.medium (4 GB); ops upsized out-of-band, now codified so a terraform apply can't silently revert it (2026-08-06)."
   type        = string
-  default     = "t4g.medium" # 2 vCPU / 4 GB — $24/mo on-demand
+  default     = "r7g.large" # 2 vCPU / 16 GB — memory headroom for the DB workload
 }
 
 variable "app_instance_type" {
   description = "On-demand Graviton2 — t4g.small saves ~$12/mo vs medium; upgrade if OOM"
   type        = string
-  default     = "t4g.medium" # 2 vCPU / 4 GB — ~$24/mo; upgraded from t4g.small due to Authentik OOM
+  default     = "t4g.large" # 2 vCPU / 8 GB — ~$48/mo; upgraded from t4g.medium: docker compose build of ~10 services OOM/swap-thrashed on 4GB (npm ci ECONNRESET + exit 137). 8GB removes the thrash.
 }
 
 variable "db_volume_size_gb" {
@@ -69,14 +69,45 @@ variable "services" {
   description = "Nginx virtual-host names; each maps to a local Docker port"
   type        = map(number)
   default = {
-    api              = 8080
-    hasura           = 8081
-    grafana          = 3000
-    edge-nodered     = 1880
-    oeecloud-nodered = 1881  # OEECloud Node-RED (mapped to host port 1881, container port 1880)
-    rabbitmq         = 15672 # RabbitMQ management UI
-    adminer          = 8082  # PostgreSQL web UI (Adminer)
-    operator         = 8083  # Dev operator SPA (Vite + nginx, container port 80)
+    api      = 8080
+    grafana  = 3000
+    rabbitmq = 15672 # RabbitMQ management UI
+    adminer  = 8082  # PostgreSQL web UI (Adminer)
+    operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
+    csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
+    # RETIRED vhosts (audit 2026-08-21):
+    #   hasura (8081)           — GraphQL engine retired: front4/edge-api moved off
+    #                             it (0 /v1/graphql ops observed); service removed
+    #                             from compose.staging.yml.
+    #   edge-nodered (1880)     — Node-RED retired (compose profile "legacy-sim",
+    #                             off by default); vhost 502'd for staff.
+    #   oeecloud-nodered (1881) — decommissioned 2026-06-23 (replaced by
+    #                             oeecloud-worker); no container ever ran here.
+  }
+}
+
+# Per-vhost oauth2-proxy auth tier, consumed by nginx_setup.sh (ADR-0034 §C).
+# Drives which forward-auth block each `services` vhost gets:
+#   csadmin           — origin-verify + auth_request /oauth2/auth-csadmin (cs-admin group; admin UIs + node-red editors)
+#   any               — origin-verify + auth_request /oauth2/auth (any pool user; operator)
+#   api               — origin-verify + cs-admin gate on /, but ~^/api/ bypasses (edge-api x-api-key)
+#   none-originverify — origin-verify only, no oauth2 gate (csadmin SPA owns its own login)
+# The generic staff-tier loop in nginx_setup.sh emits vhosts for tier "csadmin";
+# "api"/"any"/"none-originverify" are emitted as explicit blocks. The
+# deliberately-open carve-outs (mq / refdata / cpack-ingest) are NOT in the
+# `services` map — they have their own explicit blocks + DNS records. Any service
+# absent from this map defaults to the (gated) "csadmin" tier.
+variable "service_auth" {
+  description = "oauth2-proxy auth tier per nginx vhost (csadmin|any|api|none-originverify)"
+  type        = map(string)
+  default = {
+    api      = "api"
+    grafana  = "csadmin"
+    rabbitmq = "csadmin"
+    adminer  = "csadmin"
+    operator = "any"
+    csadmin  = "none-originverify"
+    # hasura / edge-nodered / oeecloud-nodered retired — see `services` above.
   }
 }
 

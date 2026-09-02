@@ -213,10 +213,10 @@ acknowledgment doesn't arrive in time, the publisher returns a *typed* error the
 drain loop knows how to handle:
 
 ```go
-// internal/shadowpub/publisher.go
+// internal/analyticspub/publisher.go
 var (
-    ErrPublishNacked  = errors.New("shadowpub: RabbitMQ nacked publish")
-    ErrConfirmTimeout = errors.New("shadowpub: RabbitMQ confirm timeout")
+    ErrPublishNacked  = errors.New("analyticspub: RabbitMQ nacked publish")
+    ErrConfirmTimeout = errors.New("analyticspub: RabbitMQ confirm timeout")
 )
 ```
 

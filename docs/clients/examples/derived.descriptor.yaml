@@ -1,0 +1,88 @@
+# ACME — DERIVED-metrics example (ADR-0045 P2c).
+#
+# What this proves
+# ----------------
+# Two GENERIC, config-driven agent-side synthesis shapes, declared per-equipment
+# in the descriptor, generate a valid onboarding config with NO custom code:
+#
+#   - INTEGRAL (FLEXO class): a machine with an analog SPEED but NO production
+#     counter register. The agent integrates rate·dt into a monotonic virtual
+#     counter. FLEXO has no NET/GROSS split, so it emits BOTH ProdConsumedCount
+#     (gross) AND ProdProcessedCount (net) at the SAME value → oee_quality = 1.
+#     (The legacy ***TRIG_C=O gross=net trick is NOT propagated cloud-side —
+#     edge-transformer hardcodes the bare ***TRIG — so we emit both leaves here.)
+#
+#   - SUM (PTH class): a machine whose gross count is split across TWO registers
+#     (A + B). The agent latches each addend and emits their sum as ONE canonical
+#     ProdConsumedCount. The raw A/B suffixes are CONSUMED (never republished — a
+#     partial sum would look like a totalizer drop to Calc).
+#
+# The mechanism: each `derived` rule's `emit` leaves become the equipment's
+# canonical count suffixes, synthesized into the agent raw_tag_map allowlist
+# (SynthesizeEquipment) so the cloud sees ordinary SparkPlug counts; the runtime
+# deriver computes their VALUES. The cloud edge-transformer + Calc stay generic.
+#
+# ⚠ VERIFY before a real fire: the integral `source` + the sum `addends` key on
+# the RAW ARRIVING suffix the tee sends (the agent ingest does NOT run metric
+# aliases inbound). Confirm FLEXO's real speed leaf on a live tee capture — here
+# "/Status/CurMachSpeed" is the CPACK-observed name; adjust if the client differs.
+#
+# tenant / ids below are illustrative placeholders for a fictional client.
+
+tenant: ACME
+enterprise_id: 4200
+canonical:
+  prefix: ACME/SP
+mapping:
+  count_index_default_mode: equipment_id
+metric_templates:
+  member:
+    # Only the analog speed is a template metric. The COUNTS are DERIVED (FLEXO
+    # integrates its speed; PTH sums two registers) — the template says nothing
+    # about them, the `derived` blocks below do.
+    - {leaf: "/Status/MachSpeed", type: double}
+agent:
+  edge_node_id: acme-edge
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: acme/raw
+  uplink_broker: ssl://ingest.example.invalid:8883
+  mtls:
+    cert_ref: secret://packiot/staging/acme/uplink-cert
+    key_ref: secret://packiot/staging/acme/uplink-key
+    ca_ref: secret://packiot/staging/acme/uplink-ca
+tee:
+  ingest_url: https://localhost:8444/v1/tags
+  tls_insecure: true
+equipment:
+  # ── FLEXO: analog speed → virtual production counter (INTEGRAL) ──────────────
+  - topic: ACME/SP/L5/FLEXO
+    id_equipment: 5001
+    tp_equipment: 1
+    id_unit: 5001
+    count_index: {value: 61, confidence: confirmed}
+    derived:
+      - type: double
+        # gross AND net at the same value (FLEXO has no scrap/rework split).
+        emit:
+          - "/Admin/ProdConsumedCount/{idx}/Unit"
+          - "/Admin/ProdProcessedCount/{idx}/Unit"
+        integral:
+          source: "/Status/CurMachSpeed"   # RAW arriving suffix (see VERIFY note)
+          conversion: 0.016666667           # units/min → units/s  (1/60)
+          clamp_min: 0                       # keep the accumulator monotonic
+          max_rate: 500                      # spike guard: reject rate > 500 u/s
+
+  # ── PTH: two count registers summed into one gross count (SUM) ───────────────
+  - topic: ACME/SP/L5/PTH
+    id_equipment: 5002
+    tp_equipment: 1
+    id_unit: 5002
+    count_index: {value: 70, confidence: confirmed}
+    derived:
+      - type: double
+        emit:
+          - "/Admin/ProdConsumedCount/{idx}/Unit"
+        sum:
+          addends:
+            - "/Status/CountA"   # RAW arriving suffixes — consumed, never republished
+            - "/Status/CountB"

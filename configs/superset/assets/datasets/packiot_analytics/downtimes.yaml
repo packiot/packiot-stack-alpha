@@ -1,0 +1,140 @@
+# bi.downtimes — downtime/events (source: equipment_events ⋈ equipments).
+# The F3 schema has NO `downtimes` table; the real source is equipment_events (a
+# compressed hypertable), tenant-keyed via the equipments dimension. Feeds the
+# front4 "Disponibilidade" downtime pareto (availabilityGraph) + "Last Events" table.
+# NOTE: `duration` type assumed BIGINT seconds — verify against equipment_events on
+# apply (if it is an interval, adjust the metric d3format / expression).
+table_name: downtimes
+main_dttm_col: ts_value
+description: Downtime + machine-status events. Reason/category, duration, planned/changeover flags.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 1a8ca3a3-4430-4b6f-8d48-00a0dda85c05
+metrics:
+- metric_name: total_duration
+  verbose_name: Total downtime
+  expression: SUM(duration)
+  d3format: .3~s
+  description: Sum of event durations (front4 availabilityGraph bar height = total_time).
+  extra: null
+- metric_name: event_count
+  verbose_name: Events
+  expression: COUNT(*)
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_downtime
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: id_equipment
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_equipment
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: cd_category
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: cd_subcategory
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: desc_category
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: Downtime reason (front4 events `reason` / availabilityGraph category).
+- column_name: desc_subcategory
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: ts_value
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+  filterable: true
+  description: Event start (equipment_events.ts_event).
+- column_name: ts_end
+  type: TIMESTAMP WITH TIME ZONE
+  is_dttm: true
+  is_active: true
+- column_name: duration
+  type: BIGINT
+  is_dttm: false
+  is_active: true
+- column_name: planned_downtime
+  type: BOOLEAN
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: change_over
+  type: BOOLEAN
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: status
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: 6=Running, 10=Stopped (integer enum).
+- column_name: status_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: 6->Running, 10->Stopped.
+- column_name: reason
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: desc_category, else Planned/Changeover/Unjustified — legible label for still-unjustified stops.
+- column_name: equipment_label
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: nm_equipment + (line)/(machine)/(sector) — disambiguates line/machine name-pairs.
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

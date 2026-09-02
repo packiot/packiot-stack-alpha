@@ -1,0 +1,21 @@
+{
+  "group_id": "CPACK",
+  "edge_node_id": "sparkplug-agent-cpack",
+  "devices": [
+    {
+      "device_key": "CPACK-SC-LINHAS-L5",
+      "metrics": [
+        { "name": "L5/gross", "alias": 10, "datatype": "Int64", "counter_role": "gross", "source_ref": "idx:168" },
+        { "name": "L5/net",   "alias": 11, "datatype": "Int64", "counter_role": "net",   "source_ref": "idx:169" }
+      ]
+    },
+    {
+      "device_key": "CPACK-SC-LINHAS-L5-BREYER",
+      "metrics": [
+        { "name": "L5/BREYER/net",   "alias": 20, "datatype": "Int64", "counter_role": "net",   "source_ref": "idx:62" },
+        { "name": "L5/BREYER/gross", "alias": 21, "datatype": "Int64", "counter_role": "gross", "source_ref": "idx:61" },
+        { "name": "L5/BREYER/scrap", "alias": 22, "datatype": "Int64", "counter_role": "scrap", "source_ref": "idx:63" }
+      ]
+    }
+  ]
+}

@@ -70,7 +70,7 @@ func loadConfig() config {
 		dbPort:          getenv("DB_PORT", "5432"),
 		dbUser:          getenv("DB_USER", "postgres"),
 		dbPassword:      os.Getenv("DB_PASSWORD"),
-		dbName:          getenv("DB_NAME", "packiot_shadow"),
+		dbName:          getenv("DB_NAME", "packiot_analytics"),
 		firebaseProject: getenv("FIREBASE_PROJECT_ID", defaultFirebaseProject),
 		cognitoIssuer:   os.Getenv("COGNITO_ISSUER"),
 		cognitoAudience: os.Getenv("COGNITO_CLIENT_ID"), // aud on Cognito ID tokens; same var refdata-api uses

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://packiot.com/schemas/edge-birth-declaration.schema.json",
+  "title": "Edge-Source Birth Declaration (ADR-0046 v1.0)",
+  "description": "The logical contract a conformant edge source MUST assert at (N/D)BIRTH. Maps onto SparkPlug B: edge_node_id → topic <edge_node_id>; device_key → <device_id>; each metric → a SparkPlug Metric whose properties carry counter_role (+ optional source_ref). A producer validates its birth against this; edge-transformer accepts exactly this.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["group_id", "edge_node_id", "devices"],
+  "properties": {
+    "group_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Tenant short-code. The ONLY tenant authority; MUST equal the SparkPlug group_id. MUST NOT be repeated inside metric names."
+    },
+    "edge_node_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Producing gateway id, unique per tenant (e.g. sparkplug-agent-cpack, highbyte-cpack). Aliases are unique within this scope."
+    },
+    "devices": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/device" }
+    }
+  },
+  "$defs": {
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_key", "metrics"],
+      "properties": {
+        "device_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable equipment key = SparkPlug <device_id>. The stack resolves it to id_equipment via packml_register (identity SSoT). Producers assert keys, never ids."
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/metric" }
+        }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "counter_role"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable UNS label, DISPLAY ONLY (birth-only). Never parsed for identity or semantics."
+        },
+        "alias": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "uint64 routing key, unique within the edge_node. Carried on every later DDATA; the name is not."
+        },
+        "datatype": {
+          "type": "string",
+          "enum": ["Int32", "Int64", "UInt32", "UInt64", "Float", "Double"],
+          "description": "Wire datatype of the totalizer value."
+        },
+        "counter_role": {
+          "type": "string",
+          "enum": ["gross", "net", "scrap"],
+          "description": "REQUIRED. The closed semantic role. The ONLY place counter meaning lives. gross=infeed/consumed (oee_q denominator), net=good/processed (numerator), scrap=defective."
+        },
+        "source_ref": {
+          "type": "string",
+          "description": "OPTIONAL lineage only — the origin PLC index/register/tag (e.g. 'idx:168', 'DB1.DBD8'). MUST NOT be used for routing."
+        }
+      }
+    }
+  }
+}

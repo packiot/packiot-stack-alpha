@@ -4,11 +4,11 @@ providers:
   # v1 "Packiot" provider RETIRED (2026-07): v2 was blessed. The v1 set was a
   # full duplicate of v2 that still carried dead primary-api/back4-api/hasura
   # panels + 3-flow/bake artifacts. Boards live in the "Packiot v2" folder now.
-  - name: packiot-v2
-    folder: Packiot v2
+  - name: packiot
+    folder: Packiot
     type: file
     disableDeletion: false
     updateIntervalSeconds: 10
     allowUiUpdates: true
     options:
-      path: /var/lib/grafana/dashboards-v2
+      path: /var/lib/grafana/dashboards

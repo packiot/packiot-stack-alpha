@@ -6,6 +6,18 @@ resource "aws_security_group" "app" {
   name   = "packiot-staging-app"
   vpc_id = aws_vpc.staging.id
 
+  # SSH is intentionally world-open as codified emergency access, and it is
+  # hardened at the sshd layer (password auth OFF, key-only). Kept as-is.
+  #
+  # RECOMMENDATION (infra audit 2026-08-23, not applied — behaviour change):
+  # if the team runs an ops bastion / VPN with a stable egress, tighten this to
+  # that CIDR (or an AWS-managed prefix list) instead of 0.0.0.0/0. Day-to-day
+  # box access already goes through SSM Session Manager (no inbound :22 needed),
+  # so restricting :22 to an ops CIDR loses nothing operationally while removing
+  # the internet-wide brute-force surface. Suggested shape (default preserves
+  # today's behaviour):
+  #   variable "ops_ssh_cidrs" { type = list(string)  default = ["0.0.0.0/0"] }
+  #   cidr_blocks = var.ops_ssh_cidrs
   ingress {
     description = "SSH - emergency/debug access"
     from_port   = 22
@@ -22,20 +34,67 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "HTTPS - all staging service endpoints"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  # HTTPS 443 — the edge origin-lock toggle (edge.tf, var.edge_origin_lock).
+  # FALSE (default): world-open, exactly as before. TRUE: admit 443 ONLY from the
+  # AWS-managed CloudFront origin-facing prefix list (pl-3b927c52) so the origin
+  # can no longer be reached by bypassing CloudFront. Exactly one of these two
+  # dynamic blocks is ever rendered. Port 80 stays world-open below: letsencrypt
+  # http-01 renewals come from Let's Encrypt's own servers (not CloudFront), and
+  # CloudFront dials the origin https-only so :80 carries no service traffic.
+  dynamic "ingress" {
+    for_each = var.edge_origin_lock ? [] : [1]
+    content {
+      description = "HTTPS - all staging service endpoints (world-open; pre origin-lock)"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.edge_origin_lock ? [1] : []
+    content {
+      description     = "HTTPS - CloudFront edge only (origin-lock; managed prefix list)"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      prefix_list_ids = [var.cloudfront_prefix_list_id]
+    }
   }
 
   ingress {
-    description = "AMQPS - factory edge clients publishing to RabbitMQ via Nginx TLS proxy"
+    description = "AMQPS (retiring, superseded by Node-RED agent mTLS 8883). CPACK egress /32 only"
     from_port   = 5671
     to_port     = 5671
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["179.162.112.58/32"]
+  }
+
+  # ADR-0042 P1 — CPACK Node-RED tee → sparkplug-agent /v1/tags front-door.
+  # Unlike the other ingress rules this is NOT world-open: it admits only CPACK's
+  # egress /32. Nginx terminates TLS on 8447 (nginx_setup.sh cpack-ingest.conf)
+  # and proxies to sparkplug-agent-cpack. Inline block (not a standalone
+  # aws_security_group_rule) so it stays inside this SG's authoritative rule set
+  # — mixing the two forms makes Terraform revoke the standalone rule on apply.
+  ingress {
+    description = "ADR-0042 P1 CPACK Node-RED tee to sparkplug-agent v1 tags (CPACK egress /32 only)"
+    from_port   = 8447
+    to_port     = 8447
+    protocol    = "tcp"
+    cidr_blocks = ["179.162.112.58/32"]
+  }
+
+  # Shared multi-tenant ingest front-door (ingest.staging:8449) → sparkplug-agent-shared.
+  # NOT world-open: admits each onboarded client's box egress /32. As clients are
+  # added, append their /32 here (bispharma SP = 200.153.25.2). A key-only public
+  # variant is possible later, but keep the /32 defence-in-depth for now.
+  ingress {
+    description = "Shared multi-tenant agent v1 tags front-door (per-box egress /32 allowlist)"
+    from_port   = 8449
+    to_port     = 8449
+    protocol    = "tcp"
+    cidr_blocks = ["200.153.25.2/32"] # bispharma SP box
   }
 
   egress {

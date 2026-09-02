@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -80,45 +81,142 @@ func New(
 	}
 }
 
-// RunForever blocks until ctx is canceled. Triggers the first pass
-// immediately so a fresh worker doesn't wait IntervalSec before catching
-// up on day-0 drift; subsequent passes fire on the interval.
+// RunForever blocks until ctx is canceled, scheduling the reconciler's two
+// halves — the create-diff and the finisher — per RECONCILE_MODE:
+//
+//   - "poll" (default, pre-split behavior): a single combined pass runs BOTH
+//     halves sequentially on ONE prod snapshot every RECONCILE_INTERVAL_SEC.
+//     This is the rollback target — the code path below is byte-identical to
+//     the pre-split scheduler, so RECONCILE_MODE=poll (or unset) restores
+//     exactly today's behavior.
+//   - "tail": the halves are split onto two independent tickers so the cheap
+//     create-diff (measured: a 0.33ms cached status=2 index scan) can run at
+//     RECONCILE_CREATE_INTERVAL_SEC (default 3s) for sub-3s PO-start
+//     detection, while the heavier finisher stays at
+//     RECONCILE_FINISHER_INTERVAL_SEC (default 300s). Stop latency is
+//     grace-bound anyway (RECONCILE_FINISHER_GRACE_MINUTES), so finishing
+//     faster buys nothing.
+//
+// Both modes fire their first pass immediately so a fresh worker doesn't wait
+// a full interval before catching up on day-0 drift.
 func (r *Reconciler) RunForever(ctx context.Context) error {
 	if !r.cfg.ReconcileEnabled {
 		r.logger.Info("reconciler disabled via RECONCILE_ENABLED=false")
 		return nil
 	}
+	if r.cfg.ReconcileMode == config.ReconcileModeTail {
+		return r.runForeverTail(ctx)
+	}
+	return r.runForeverPoll(ctx)
+}
+
+// runForeverPoll is the pre-split scheduler: one combined pass (Run) — create
+// then finisher on a shared snapshot — every RECONCILE_INTERVAL_SEC.
+func (r *Reconciler) runForeverPoll(ctx context.Context) error {
 	interval := time.Duration(r.cfg.ReconcileIntervalSec) * time.Second
-	r.logger.Info("reconciler starting",
+	r.logger.Info("reconciler starting (poll mode)",
 		slog.Int("interval_sec", r.cfg.ReconcileIntervalSec),
 		slog.Int("max_per_run", r.cfg.ReconcileMaxPerRun))
+	r.tickLoop(ctx, interval, r.Run)
+	r.logger.Info("reconciler stopping")
+	return nil
+}
+
+// runForeverTail splits the two halves onto independent tickers. The create
+// loop reuses runCreatePass verbatim (only the scheduling wrapper changed);
+// the finisher loop reuses runFinisher verbatim via runFinisherPass, which
+// fetches its OWN prod snapshot (poll mode shares the create pass's snapshot
+// instead). Each loop keeps running until ctx is canceled.
+func (r *Reconciler) runForeverTail(ctx context.Context) error {
+	createInterval := time.Duration(r.cfg.ReconcileCreateIntervalSec) * time.Second
+	finisherInterval := time.Duration(r.cfg.ReconcileFinisherIntervalSec) * time.Second
+	r.logger.Info("reconciler starting (tail mode)",
+		slog.Int("create_interval_sec", r.cfg.ReconcileCreateIntervalSec),
+		slog.Int("finisher_interval_sec", r.cfg.ReconcileFinisherIntervalSec),
+		slog.Int("max_per_run", r.cfg.ReconcileMaxPerRun),
+		slog.Bool("finisher_enabled", r.cfg.ReconcileFinisherEnabled))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		r.tickLoop(ctx, createInterval, func(ctx context.Context) error {
+			_, err := r.runCreatePass(ctx)
+			return err
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		r.tickLoop(ctx, finisherInterval, r.runFinisherPass)
+	}()
+	wg.Wait()
+	r.logger.Info("reconciler stopping")
+	return nil
+}
+
+// tickLoop fires fn immediately, then every interval until ctx is canceled.
+// A fn error is logged and the loop continues — a single bad pass must never
+// kill the scheduler; the next tick retries. Shared by both modes so the
+// "fire immediately + tick + swallow-and-continue" discipline lives in one
+// place.
+func (r *Reconciler) tickLoop(ctx context.Context, interval time.Duration, fn func(context.Context) error) {
 	for {
-		if err := r.Run(ctx); err != nil {
+		if err := fn(ctx); err != nil {
 			r.logger.Warn("reconciler pass failed", slog.String("err", err.Error()))
 		}
 		select {
 		case <-time.After(interval):
 		case <-ctx.Done():
-			r.logger.Info("reconciler stopping")
-			return nil
+			return
 		}
 	}
 }
 
-// Run executes one reconciliation pass. Exported so future ad-hoc
-// triggers (e.g. an HTTP endpoint, a SIGUSR1 handler) can invoke
-// without waiting for the next tick.
+// Run executes one COMBINED reconciliation pass — create-diff then finisher
+// on the single prod snapshot the create pass fetched. This is the poll-mode
+// pass and the ad-hoc trigger entrypoint (kept exported so a future HTTP
+// endpoint / SIGUSR1 handler can invoke without waiting for the next tick).
+// Tail mode does NOT call this — it drives runCreatePass and runFinisherPass
+// on separate tickers instead.
 func (r *Reconciler) Run(ctx context.Context) error {
+	prodPOs, err := r.runCreatePass(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Finisher pass (task #48) — closes the INVERSE gap the create pass
+	// leaves: mirror-managed staging POs stuck at status=2 after prod
+	// ended them via a user_logs-bypassing SparkPlug stop. Ships INERT
+	// (flag default false); runs on the same prod-active snapshot the create
+	// pass just returned, so no extra FetchActivePOs round-trip. A finisher
+	// error is logged but never fails the whole pass — the create side
+	// already succeeded and the next tick retries.
+	if r.cfg.ReconcileFinisherEnabled {
+		if err := r.runFinisher(ctx, prodPOs); err != nil {
+			r.logger.Warn("reconciler: finisher pass failed — create pass unaffected, next tick retries",
+				slog.String("err", err.Error()))
+		}
+	}
+	return nil
+}
+
+// runCreatePass executes the create-diff half of one reconciliation pass:
+// FetchActivePOs → ActivePOIDOrders → computeMissing → ensureOnePO. It
+// returns the prod active-PO snapshot it fetched so a combined poll-mode
+// pass (Run) can hand the SAME snapshot to the finisher without a second
+// FetchActivePOs round-trip. The diff/cap/ensure logic is verbatim what the
+// pre-split Run ran — only the finisher call moved out to the caller.
+func (r *Reconciler) runCreatePass(ctx context.Context) ([]db.ProdActivePO, error) {
 	start := time.Now()
 	prodPOs, err := r.prodDB.FetchActivePOs(ctx, r.cfg.ProdEnterpriseID)
 	if err != nil {
 		metrics.ReconcilerRunsTotal.WithLabelValues("failed").Inc()
-		return fmt.Errorf("fetch prod active POs: %w", err)
+		return nil, fmt.Errorf("fetch prod active POs: %w", err)
 	}
 	stagingActive, err := r.staging.ActivePOIDOrders(ctx, r.cfg.StagingEnterpriseID)
 	if err != nil {
 		metrics.ReconcilerRunsTotal.WithLabelValues("failed").Inc()
-		return fmt.Errorf("fetch staging active id_orders: %w", err)
+		return nil, fmt.Errorf("fetch staging active id_orders: %w", err)
 	}
 
 	missing := computeMissing(prodPOs, stagingActive)
@@ -157,23 +255,26 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		}
 	}
 
-	// Finisher pass (task #48) — closes the INVERSE gap the create pass
-	// leaves: mirror-managed staging POs stuck at status=2 after prod
-	// ended them via a user_logs-bypassing SparkPlug stop. Ships INERT
-	// (flag default false); runs on the same prod-active snapshot the create
-	// pass used, so no extra FetchActivePOs round-trip. A finisher error is
-	// logged but never fails the whole pass — the create side already
-	// succeeded and the next tick retries.
-	if r.cfg.ReconcileFinisherEnabled {
-		if err := r.runFinisher(ctx, prodPOs); err != nil {
-			r.logger.Warn("reconciler: finisher pass failed — create pass unaffected, next tick retries",
-				slog.String("err", err.Error()))
-		}
-	}
-
 	metrics.ReconcilerRunsTotal.WithLabelValues("ok").Inc()
-	r.logger.Info("reconciler pass complete", slog.Duration("elapsed", time.Since(start)))
-	return nil
+	r.logger.Info("reconciler create pass complete", slog.Duration("elapsed", time.Since(start)))
+	return prodPOs, nil
+}
+
+// runFinisherPass is the finisher half as a self-contained pass for tail
+// mode's finisher ticker: it fetches its OWN prod active-PO snapshot (poll
+// mode shares the create pass's snapshot via Run instead) and runs the
+// finisher. INERT unless RECONCILE_FINISHER_ENABLED — it returns nil without
+// touching prod when the finisher is off, so the tail finisher ticker costs
+// nothing until the finisher is deliberately enabled.
+func (r *Reconciler) runFinisherPass(ctx context.Context) error {
+	if !r.cfg.ReconcileFinisherEnabled {
+		return nil
+	}
+	prodPOs, err := r.prodDB.FetchActivePOs(ctx, r.cfg.ProdEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("finisher: fetch prod active POs: %w", err)
+	}
+	return r.runFinisher(ctx, prodPOs)
 }
 
 // computeMissing returns the prod active POs whose id_order isn't
@@ -241,6 +342,11 @@ const (
 	outcomeSkipGrace       finisherOutcome = "skipped_grace"
 	outcomeSkipNoActivity  finisherOutcome = "skipped_no_activity"
 	outcomeSkipUnverified  finisherOutcome = "skipped_unverified"
+	// outcomeSkipNotTerminal is the prod-terminal closer's extra rung: the prod
+	// twin exists and is NOT status=2, but is also NOT status=3 (FINISHED) —
+	// e.g. still available (1) or paused (4). The closer only closes FINISHED
+	// twins, so it leaves these for a future pass / the #48 finisher.
+	outcomeSkipNotTerminal finisherOutcome = "skipped_not_terminal"
 )
 
 // finisherDecision applies the per-candidate safety ladder AFTER the set diff
@@ -284,7 +390,125 @@ func (r *Reconciler) runFinisher(ctx context.Context, prodPOs []db.ProdActivePO)
 	if err := r.runF1Finisher(ctx, prodPOs); err != nil {
 		return err
 	}
-	return r.runShadowFanout(ctx, prodPOs)
+	if err := r.runShadowFanout(ctx, prodPOs); err != nil {
+		return err
+	}
+	// Prod-terminal orphan closer (task follow-up to #48). Flag-gated + INERT by
+	// default: with RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS off this returns
+	// immediately, so runFinisher above is byte-identical to today's behavior.
+	// Sequenced LAST so it reads staging state that already reflects this pass's
+	// F1 closes — a status=2 orphan the finisher just sealed is now status=3 and
+	// the closer's status IN (1,2) candidate query skips it (no double work).
+	return r.runProdTerminalCloser(ctx, prodPOs)
+}
+
+// terminalCloserDecision is the prod-terminal closer's per-candidate safety
+// ladder — the pure twin of finisherDecision. It closes ONLY when the prod twin
+// is authoritatively FINISHED (status=3); every other state is a safety skip:
+//   - unverified: prod has no row for this id_order → can't confirm → skip;
+//   - still active: prod's FRESH read shows status=2 → skip (never close a
+//     running PO — the load-bearing safety rung, protects 894330/894668/894749);
+//   - not terminal: prod is neither 2 nor 3 (available/paused) → skip (this
+//     closer only closes FINISHED twins);
+//   - no activity: prod gave no last-activity ts → skip (never fabricate one);
+//   - grace: prod last-activity is inside the grace window → skip (possible
+//     flap / mid-transition).
+//
+// Only a status=3 twin past all rungs returns outcomeFinish, with the close ts.
+func terminalCloserDecision(info db.ProdPOFinishInfo, present bool, graceCutoff time.Time) finisherOutcome {
+	if !present {
+		return outcomeSkipUnverified
+	}
+	if info.Status == 2 {
+		return outcomeSkipStillActive
+	}
+	if info.Status != 3 {
+		return outcomeSkipNotTerminal
+	}
+	if !info.HasActivity {
+		return outcomeSkipNoActivity
+	}
+	if info.LastActivity.After(graceCutoff) {
+		return outcomeSkipGrace
+	}
+	return outcomeFinish
+}
+
+// runProdTerminalCloser closes the LAST finisher blemish: mirror-CREATED staging
+// POs stuck at status IN (1,2) whose prod twin has already FINISHED (status=3).
+// It reuses the finisher's prod authority (FetchPOFinishInfo) + grace window,
+// but on a WIDER staging candidate set (TerminalOrphanCandidatePOs = status IN
+// (1,2), reconcile-named only) and with a NULL-ts_start-safe close
+// (CloseProdTerminalOrphanPO). SELECT-only on prod; the only mutation is the
+// idempotent staging close. No-op (returns nil before any DB read) unless the
+// flag is on, so it costs nothing until deliberately enabled.
+func (r *Reconciler) runProdTerminalCloser(ctx context.Context, prodPOs []db.ProdActivePO) error {
+	if !r.cfg.ReconcileCloseProdTerminalOrphans {
+		return nil
+	}
+	candidatesMap, err := r.staging.TerminalOrphanCandidatePOs(ctx, r.cfg.StagingEnterpriseID)
+	if err != nil {
+		return fmt.Errorf("fetch mirror-created terminal-orphan candidates: %w", err)
+	}
+
+	// Reuse computeOrphans' set diff (layer 1): a candidate still in prod's
+	// status=2 set is a legitimately-running PO and is excluded before any
+	// per-candidate work.
+	candidates := computeOrphans(candidatesMap, prodPOs)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	idOrders := make([]int64, len(candidates))
+	for i, c := range candidates {
+		idOrders[i] = c.IDOrder
+	}
+	info, err := r.prodDB.FetchPOFinishInfo(ctx, r.cfg.ProdEnterpriseID, idOrders)
+	if err != nil {
+		return fmt.Errorf("fetch prod PO finish info (terminal closer): %w", err)
+	}
+
+	graceCutoff := time.Now().UTC().Add(-time.Duration(r.cfg.ReconcileFinisherGraceMinutes) * time.Minute)
+	r.logger.Info("prod-terminal closer: evaluating candidates",
+		slog.Int("candidates", len(candidates)),
+		slog.Int("grace_minutes", r.cfg.ReconcileFinisherGraceMinutes))
+
+	for _, c := range candidates {
+		pi, present := info[c.IDOrder]
+		decision := terminalCloserDecision(pi, present, graceCutoff)
+		if decision != outcomeFinish {
+			metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues(string(decision)).Inc()
+			r.logger.Info("prod-terminal closer: skipping candidate",
+				slog.Int64("id_order", c.IDOrder),
+				slog.Int64("staging_po", c.StagingPOID),
+				slog.String("decision", string(decision)),
+				slog.Int("prod_status", pi.Status))
+			continue
+		}
+
+		closed, err := r.staging.CloseProdTerminalOrphanPO(ctx, c.StagingPOID, pi.LastActivity)
+		if err != nil {
+			metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues("failed").Inc()
+			r.logger.Warn("prod-terminal closer: close failed — next pass will retry",
+				slog.Int64("id_order", c.IDOrder),
+				slog.Int64("staging_po", c.StagingPOID),
+				slog.String("err", err.Error()))
+			continue
+		}
+		if !closed {
+			// Header already status!=(1,2) — a prior pass, the F1 finisher, or
+			// another writer beat us. The idempotency guard did its job.
+			metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues("skipped_idempotent").Inc()
+			continue
+		}
+		metrics.ReconcilerProdTerminalCloserTotal.WithLabelValues(string(outcomeFinish)).Inc()
+		r.logger.Info("prod-terminal closer: closed orphaned PO at prod finish ts",
+			slog.Int64("id_order", c.IDOrder),
+			slog.Int64("staging_po", c.StagingPOID),
+			slog.Int("prod_status", pi.Status),
+			slog.Time("close_ts", pi.LastActivity))
+	}
+	return nil
 }
 
 // runF1Finisher executes one Flow-1 finisher pass on the prod-active snapshot
@@ -413,7 +637,7 @@ func shadowFanoutPlan(f1 db.F1POShape, prodInfo db.ProdPOFinishInfo, prodPresent
 }
 
 // runShadowFanout reproduces the F1 finisher's close on the shadow flows
-// (F2 shadow_go_port, F3 packiot_shadow) by NATURAL KEY (id_enterprise,
+// (F2 shadow_go_port, F3 packiot_analytics) by NATURAL KEY (id_enterprise,
 // id_order), reusing the ADR-0012 fan-out pools. It is unconditional (runs
 // even with zero F1 candidates) so pre-existing #49 zombies — F1 closed, F2/F3
 // stuck status=2 — get corrected. Steps: collect each flow's still-open
@@ -579,6 +803,26 @@ func (r *Reconciler) ensureOnePO(ctx context.Context, p db.ProdActivePO) error {
 	stagingAreaID, err := r.trans.Area(ctx, p.IDArea)
 	if err != nil {
 		return fmt.Errorf("translate area: %w", err)
+	}
+
+	// Pre-flight existence check (partial-create wedge fix). ensureOnePO does
+	// create-then-start as two POSTs; recovery (reviveExistingStagingPO) only
+	// fired on a create HTTP 400 "already exists". When edge-api is mid-deploy
+	// and /create TIMES OUT (status 0) *after* a prior attempt already inserted
+	// the row, the old flow wedged: it couldn't complete /create and couldn't
+	// reach the 400-gated revive branch — leaving a prod-active line with a
+	// staging PO stuck at status=1 (observed: id_order 894561, ~3h). Looking
+	// staging up by (enterprise, id_order) BEFORE the create POST routes any
+	// already-existing row straight to start/revive regardless of /create's
+	// health, making create+start idempotent against partial progress +
+	// endpoint degradation. SELECT-only on staging; no prod side effect.
+	if _, exists, err := r.staging.LookupStagingPOByIDOrder(ctx, r.cfg.StagingEnterpriseID, p.IDOrder); err != nil {
+		return fmt.Errorf("pre-flight staging PO lookup: %w", err)
+	} else if exists {
+		r.logger.Info("reconciler: pre-flight found existing staging PO — routing to start/revive (create POST skipped)",
+			slog.Int64("prod_po", p.IDProductionOrder),
+			slog.Int64("id_order", p.IDOrder))
+		return r.reviveExistingStagingPO(ctx, p, stagingEqID, stagingSiteID, stagingAreaID)
 	}
 
 	// 1) Create.

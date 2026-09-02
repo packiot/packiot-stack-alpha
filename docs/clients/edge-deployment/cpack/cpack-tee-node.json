@@ -1,0 +1,109 @@
+[
+  {
+    "disabled": false,
+    "id": "cpack_tab",
+    "info": "Direction-B tee (ADR-0042 §2.3). Wire your PLC/SparkPlug-assembly node's output into 'CPACK tee'. It POSTs RAW tags to the LOCAL sparkplug-agent (http://localhost:9104/v1/tags); the agent builds SparkPlug B and uplinks over mTLS. Node-RED stays SparkPlug-ignorant. Set env CPACK_INGEST_KEY = the local tee↔agent key (compose.edge.yml wires it from AGENT_INGEST_API_KEY).",
+    "label": "CPACK ingest tee",
+    "type": "tab"
+  },
+  {
+    "finalize": "",
+    "func": "// CPACK → LOCAL AGENT tee — Direction B (ADR-0042 §2.3).\n// Place on a SECOND wire off your PLC read / assembly node (a tee, not a redirect).\n// Sends RAW tags to the local sparkplug-agent's POST /v1/tags; the AGENT builds\n// SparkPlug B and does the mTLS uplink. Key is env CPACK_INGEST_KEY (the local\n// tee↔agent shared secret) — NEVER hardcoded.\n\nconst key = env.get(\"CPACK_INGEST_KEY\");\nif (!key) {\n    node.error(\"CPACK_INGEST_KEY env var is not set — refusing to POST without an ingest key\", msg);\n    return null;\n}\n\n// Normalize the upstream output into the agent's /v1/tags rawtag envelope:\n//   { group, scan_ts, tags: [ { metric, value, long? } ] }\n// `metric` MUST match a raw_tag_map metric_suffix in cpack-agent.yaml (e.g.\n// \"/CELULA1/CER400/Admin/ProdConsumedCount\"). Unmatched tags increment the agent\n// metric sparkplug_agent_raw_dropped_total{reason=\"unmapped\"} (reject-don't-drop),\n// so a wrong name is VISIBLE, not silent. Adapt the .metric/.value pull below to\n// your assembly node's field names.\nlet src = msg.payload;\nif (src && Array.isArray(src.metrics)) src = src.metrics;   // {metrics:[…]} → […]\nif (!Array.isArray(src) || src.length === 0) {\n    node.warn(\"tee: payload has no tags/metrics[]; skipping\");\n    return null;\n}\nconst tags = src.map(m => {\n    const t = { metric: m.metric || m.name, value: m.value };\n    if (m.long === true) t.long = true;   // optional int hint; agent config is authoritative\n    return t;\n}).filter(t => t.metric != null && t.value != null);\nif (tags.length === 0) {\n    node.warn(\"tee: no {metric,value} pairs after mapping; skipping\");\n    return null;\n}\n\nmsg.headers = { \"Content-Type\": \"application/json\", \"X-Ingest-Key\": key };\nmsg.payload = { group: \"CPACK\", scan_ts: Date.now(), tags };\nreturn msg;\n",
+    "id": "cpack_fn",
+    "initialize": "",
+    "libs": [],
+    "name": "CPACK tee (build /v1/tags envelope)",
+    "noerr": 0,
+    "outputs": 1,
+    "type": "function",
+    "wires": [
+      [
+        "cpack_http"
+      ]
+    ],
+    "x": 320,
+    "y": 120,
+    "z": "cpack_tab"
+  },
+  {
+    "authType": "",
+    "headers": [],
+    "id": "cpack_http",
+    "insecureHTTPParser": false,
+    "method": "POST",
+    "name": "POST http://localhost:9104/v1/tags (local agent)",
+    "paytoqs": "ignore",
+    "persist": false,
+    "proxy": "",
+    "ret": "obj",
+    "senderr": true,
+    "tls": "",
+    "type": "http request",
+    "url": "http://localhost:9104/v1/tags",
+    "wires": [
+      [
+        "cpack_route"
+      ]
+    ],
+    "x": 620,
+    "y": 120,
+    "z": "cpack_tab"
+  },
+  {
+    "checkall": "false",
+    "id": "cpack_route",
+    "name": "statusCode",
+    "outputs": 2,
+    "property": "statusCode",
+    "propertyType": "msg",
+    "repair": false,
+    "rules": [
+      {
+        "t": "eq",
+        "v": "202",
+        "vt": "num"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "type": "switch",
+    "wires": [
+      [
+        "cpack_ok"
+      ],
+      [
+        "cpack_err"
+      ]
+    ],
+    "x": 840,
+    "y": 120,
+    "z": "cpack_tab"
+  },
+  {
+    "active": true,
+    "complete": "statusCode",
+    "console": false,
+    "id": "cpack_ok",
+    "name": "202 accepted",
+    "tosidebar": true,
+    "type": "debug",
+    "wires": [],
+    "x": 1030,
+    "y": 90,
+    "z": "cpack_tab"
+  },
+  {
+    "active": true,
+    "complete": "payload",
+    "console": true,
+    "id": "cpack_err",
+    "name": "NOT 202 (see README)",
+    "tosidebar": true,
+    "type": "debug",
+    "wires": [],
+    "x": 1050,
+    "y": 160,
+    "z": "cpack_tab"
+  }
+]

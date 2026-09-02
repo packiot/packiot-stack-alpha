@@ -15,15 +15,17 @@ PRs, deploys, and how the auto-bump chain wires it all together.
 ## TL;DR
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│  development  →  scratchpad, devs work here, NOT deployed     │
-│  staging      →  alpha-production, deploys to AWS automatically│
-│  main         →  reserved for future production tier (not used)│
-└───────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│  development  →  scratchpad; devs work here, NOT deployed       │
+│  staging      →  alpha-production; auto-deploys to AWS staging  │
+│  production   →  NEW production; deploys to prod EC2 (FF←staging)│
+│  main         →  frozen legacy anchor — do NOT push             │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 - Feature branches off `development`. PR to `development`. PR to `staging`
-  to promote. Auto-deploy fires on `staging`.
+  to promote (auto-deploys to staging). Promote staging→`production`
+  (fast-forward) to deploy **new-prod**.
 - Submodules track their own `staging` / `development` branches. The
   parent repo's pointer is updated automatically by a bot workflow on each
   submodule.
@@ -33,13 +35,14 @@ PRs, deploys, and how the auto-bump chain wires it all together.
 
 ---
 
-## The two-branch model
+## The branch model
 
 | Branch | Purpose | Deploys? | Protected? |
 |---|---|---|---|
 | `development` | Local scratchpad. Devs run `make` here. Integration of feature branches before promotion. | No | No |
 | `staging` | "Alpha production" — deploys to AWS staging EC2 via `deploy-staging.yml`. | Yes (auto on push) | Yes (ruleset "Protect staging") |
-| `main` | Reserved for a future real-production tier. Don't push here. | No | (Not currently used) |
+| `production` | **New production** — deploys to the prod EC2 via `deploy-production.yml` on a fast-forward from `staging` (gated on a live client). | Yes (on push) | Yes |
+| `main` | **Frozen legacy anchor.** No longer the default branch (`staging` is). Do NOT push. | No | (frozen) |
 
 ### The flow
 
