@@ -56,10 +56,14 @@ tracked follow-up.)
 
 ## What is NOT available offline (today)
 
-- **Live production numbers / OEE on the screen** — dashboards read cloud data
-  *after* the message bus, so offline they show last-known, not live. True live
-  offline reads need an on-box decode + local store (ADR-0019 C3 / ADR-0053) — a
-  per-client "fat edge" decision, not on by default.
+- **Live production numbers / OEE on the *product/operator* screens** — front4 and
+  the operator SPA read cloud data *after* the message bus, so offline **those**
+  screens show last-known, not live. True live offline reads need an on-box decode +
+  local store — a per-client **"fat edge"** decision, **not on by default**. That
+  fat edge now ships (opt-in): see
+  **[On-Prem Offline Operation](11-on-prem-offline-operation.md)**, which puts a
+  *separate*, self-contained dashboard on the box (`:8080`) serving live counts off
+  an on-box cache during an outage.
 - **Anything that needs a fresh server id** at the moment of the action (see above).
 
 ## Onboarding note — this is per box, automatic
@@ -68,7 +72,9 @@ The reader bundle the onboarding **Deploy** step pushes already includes the spo
 the operator's queue is on by build flag. There is nothing an operator or CS
 engineer toggles per outage — buffering is the default posture. The only knob is
 whether a specific client warrants the heavier on-box decode for live offline reads
-(rare; decided per client).
+(rare; decided per client) — that is the opt-in **"Enable on-prem offline
+operation"** toggle, detailed on
+**[On-Prem Offline Operation](11-on-prem-offline-operation.md)**.
 
 ## Quick reference
 
@@ -76,11 +82,12 @@ whether a specific client warrants the heavier on-box decode for live offline re
 |---|---|
 | Do we lose counts in an outage? | No — reader spools + replays them. |
 | Can the operator keep working? | Yes — PO transitions + downtimes queue + replay. |
-| Can they *see* live numbers offline? | No — last-known only (cache). |
+| Can they *see* live numbers offline? | On the product/operator screens: no — last-known only (cache). On a box with the opt-in [on-prem fat edge](11-on-prem-offline-operation.md): yes — a local dashboard serves live counts. |
 | Create a new PO offline? | Queued; the switch-to-it completes on reconnect. |
 | Does a double-reconnect double-apply? | No — every queued action is idempotent. |
 | What if the outage is very long? | Counts spool up to a cap (oldest dropped); actions persist on the device. |
 
-See also: [Edge & Data Ingestion](04-edge-and-ingestion.md) ·
+See also: [On-Prem Offline Operation](11-on-prem-offline-operation.md) ·
+[Edge & Data Ingestion](04-edge-and-ingestion.md) ·
 [Cloud Services & OEE](05-cloud-services-and-oee.md) ·
 [Frontends, Infra & Auth](07-frontends-infra-auth.md).

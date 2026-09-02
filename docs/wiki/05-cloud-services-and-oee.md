@@ -52,6 +52,16 @@ One Go binary, two halves (`services/oeecloud-worker/`):
 > "stream-engine" is the **prod rename** of `oeecloud-worker` (Prometheus scrapes
 > `stream-engine:9101`; compose still builds `./services/oeecloud-worker`). Same binary.
 
+> **Where decode runs — cloud vs. on-prem.** By default the SparkPlug **decode**
+> (edge-transformer) is a *cloud* step: the box is a thin reader, and only the
+> cloud has the `packml_register` mapping that resolves a topic → `id_equipment`.
+> The opt-in **fat edge** ([On-Prem Offline Operation](11-on-prem-offline-operation.md))
+> runs the *same* transformer image **on the box** in `LOCAL_DECODE_ONLY` mode — it
+> decodes to a local current-state cache for an offline dashboard and **never
+> publishes to cloud RabbitMQ**. So on such a box decode happens in *both* places,
+> but only the cloud copy is authoritative and computes OEE; the on-box copy is a
+> read-cache. `id_equipment` resolution still only happens cloud-side.
+
 ## The OEE computation
 
 **OEE = Availability × Performance × Quality**, all in the Go worker
