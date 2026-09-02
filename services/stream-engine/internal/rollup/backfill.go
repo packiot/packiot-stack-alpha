@@ -104,7 +104,7 @@ func widenHourWindows(sql string) string {
 // The cascade-day step flags the affected day rows, which the live day rollup
 // (1-month window — never stranded) then recomputes, so the whole grain tree
 // converges. No re-flag step: the backfill must never re-flag rows or it loops.
-func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail) (int64, error) {
+func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail, changeoverAvailability bool) (int64, error) {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -148,7 +148,7 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
 		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, d.EvSchema, d.RefSchema)},
 		{"speed", widenHourWindows(fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema))},
-		{"events", widenHourWindows(fmt.Sprintf(hourEventsSQL, d.EvSchema))},
+		{"events", widenHourWindows(fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability)))},
 		{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},
 		{"clear", fmt.Sprintf(hourBackfillClearSQL, d.EvSchema)},
 	}
@@ -182,13 +182,13 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 // is empty, then keeps ticking cheaply (each tick is a single indexed count once
 // drained). Runs alongside LoopGrains; the shared advisory lock keeps them from
 // racing on grain rows.
-func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("runtime-rollup-hour-backfill started (drains stranded recalc hours)",
 		slog.Int("limit_per_tick", limit), slog.Duration("every", every))
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup-hour-backfill", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			n, err := RunHourBackfill(ctx, d, exclAreas, exclEnterprises, limit, ca)
+			n, err := RunHourBackfill(ctx, d, exclAreas, exclEnterprises, limit, ca, changeoverAvailability)
 			if err != nil {
 				logger.Warn("hour-backfill failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {

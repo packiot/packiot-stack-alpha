@@ -134,6 +134,10 @@ const hourSpeedSQL = `
 
 // Phase E: CONDITIONAL; the ONLY flag clear. ideal_speed read from
 // the row (just written by the speed pass — prod reads r_speed).
+// %[1]s = EvSchema. %[2]s = the ts_planned classification predicate
+// (plannedDowntimeExpr) — ADR-0037 (c): off = "ee.planned_downtime = true"
+// (prod-verbatim); on = changeover excluded from the planned bucket so it
+// stays inside (ts_total − ts_planned) and depresses Availability.
 const hourEventsSQL = `
 	WITH last_seen AS (
 	    -- LAST OBSERVED DATA per equipment — the physical bound for a TRAILING open
@@ -186,7 +190,7 @@ const hourEventsSQL = `
 	), ev AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           extract(epoch FROM (least(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total,
-	           COALESCE(sum(CASE WHEN ee.planned_downtime = true THEN
+	           COALESCE(sum(CASE WHEN %[2]s THEN
 	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
 	           COALESCE(sum(CASE WHEN ee.change_over = true THEN
 	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
@@ -292,7 +296,10 @@ const hourReflagSQL = `
 // AFTER phase E (so it targets only the state-less rows E left flagged) and
 // BEFORE oee-p (so hourOeePSQL back-solves oee_p for them); when disabled the
 // statement stream is byte-identical to the state-only rollup.
-func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, ca CountersAvail) error {
+// changeoverAvailability (ADR-0037 c) selects the ts_planned classification:
+// false = prod-verbatim (changeover counted as planned), true = changeover
+// excluded from the planned bucket so it depresses Availability.
+func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, ca CountersAvail, changeoverAvailability bool) error {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -315,7 +322,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
 		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, d.EvSchema, d.RefSchema)},
 		{"speed", fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema)},
-		{"events", fmt.Sprintf(hourEventsSQL, d.EvSchema)},
+		{"events", fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability))},
 	}
 	// Counters-only Availability fallback — flag + opt-in gated, positioned
 	// after events / before oee-p. Inert (not appended) when not engaged, so
@@ -364,7 +371,9 @@ func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL str
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, evSchema)},
 		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, evSchema, refSchema)},
 		{"speed", fmt.Sprintf(hourSpeedSQL, evSchema, refSchema)},
-		{"events", fmt.Sprintf(hourEventsSQL, evSchema)},
+		// Parity accessor is frozen to the prod-verbatim (off) classification —
+		// it is diffed against prod (F2), which has no changeover reclassification.
+		{"events", fmt.Sprintf(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"oee-p", fmt.Sprintf(hourOeePSQL, evSchema)},
 		{"targets", fmt.Sprintf(hourTargetsSQL, evSchema, refSchema)},
 		{"reflag", fmt.Sprintf(hourReflagSQL, evSchema)},

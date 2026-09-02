@@ -328,7 +328,7 @@ func main() {
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
 			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
-			countersAvail,
+			countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Minute, logger, jobObs)
 	}
 	// Drain recalc_needed hour rows the live rollup can't reach (stranded outside
@@ -338,7 +338,7 @@ func main() {
 	if cfg.RuntimeRollupEnabled && cfg.RollupBackfillEnabled {
 		go rollup.LoopHourBackfill(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
-			cfg.RollupBackfillLimit, countersAvail,
+			cfg.RollupBackfillLimit, countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
 	}
 

@@ -13,7 +13,7 @@ import (
 func TestWidenHourWindows_replacesOnlyRecencyBounds(t *testing.T) {
 	// The live events pass: has both the 65-min value-window (none here) and the
 	// 6h UPDATE guard + the el.ts_value-anchored event math that must NOT change.
-	got := widenHourWindows(fmt.Sprintf(hourEventsSQL, "public"))
+	got := widenHourWindows(fmt.Sprintf(hourEventsSQL, "public", plannedDowntimeExpr(false)))
 
 	if strings.Contains(got, "interval '6 hour'") {
 		t.Error("6h UPDATE guard not widened — old rows would still be blocked")
