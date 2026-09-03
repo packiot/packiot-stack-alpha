@@ -178,6 +178,25 @@ resource "aws_iam_policy" "app_custom" {
         ]
       },
       {
+        # Write access to app-owned staging secrets (e.g. the operator super-admin
+        # password packiot/staging/operator/*). Scoped to packiot/staging/* so the
+        # box can create/rotate its own secrets instead of leaving a plaintext file
+        # on disk. Read stays the separate ReadStagingSecrets statement above.
+        # NOTE: applied live via `aws iam create-policy-version` (v8) because a
+        # pre-existing templatefile bug (app_init.sh references GO_VERSION, not
+        # passed in ec2.tf's vars map) currently blocks `terraform plan/apply`.
+        Sid    = "WriteStagingAppSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:TagResource",
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/staging/*",
+        ]
+      },
+      {
         Sid      = "ReadInitScript"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
