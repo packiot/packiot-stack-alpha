@@ -2,36 +2,53 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 const testJWTSecret = "test-secret"
 
-// mintOperatorToken forges an HS256 operator JWT the way edge-api's LoginService
-// does (payload carries `user`), signed with the given secret.
-func mintOperatorToken(t *testing.T, user, secret string) string {
-	t.Helper()
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"user": user})
-	s, err := tok.SignedString([]byte(secret))
-	if err != nil {
-		t.Fatalf("sign: %v", err)
+// fakeCognito stands in for the read-api Cognito verifier. It decodes a test
+// "token" of the form "valid:<email>" (verified) or "unverified:<email>"
+// (email_verified=false); anything else fails verification. This lets the
+// escalation's tenant-authority logic be tested without JWKS/network — the same
+// contract as the real *cognitoVerifier.VerifyClaims.
+type fakeCognito struct{}
+
+func (fakeCognito) VerifyClaims(_ context.Context, token string) (verifiedClaims, error) {
+	if e := strings.TrimPrefix(token, "valid:"); e != token {
+		return verifiedClaims{uid: "sub-" + e, email: strings.ToLower(e), emailVerified: true}, nil
 	}
-	return s
+	if e := strings.TrimPrefix(token, "unverified:"); e != token {
+		return verifiedClaims{uid: "sub-" + e, email: strings.ToLower(e), emailVerified: false}, nil
+	}
+	return verifiedClaims{}, errors.New("invalid token")
 }
 
-// escalator builds an operatorSuperAdminAuth with INJECTED DB checks (no pool),
-// so the tenant-authority logic is tested without a database.
+// mintOperatorToken returns a fake Cognito ID token for `user`. A non-default
+// secret simulates a forged/invalid token that VerifyClaims rejects — preserving
+// the "forged signature" fail-closed case from the HS256 era.
+func mintOperatorToken(t *testing.T, user, secret string) string {
+	t.Helper()
+	if secret != testJWTSecret {
+		return "forged:" + user // no valid:/unverified: prefix → fakeCognito errors
+	}
+	return "valid:" + user
+}
+
+// escalator builds an operatorSuperAdminAuth with INJECTED DB checks (no pool)
+// and the fake Cognito verifier, so the tenant-authority logic is tested without
+// a database or JWKS.
 func escalator(allow []string, superUsers map[string]bool, activeEnts map[int]bool) *operatorSuperAdminAuth {
 	al := map[string]bool{}
 	for _, e := range allow {
 		al[e] = true
 	}
 	return &operatorSuperAdminAuth{
-		secret:             []byte(testJWTSecret),
+		cognito:            fakeCognito{},
 		allowlist:          al,
 		isLiveSuperUser:    func(_ context.Context, u string) bool { return superUsers[u] },
 		isEnterpriseActive: func(_ context.Context, id int) bool { return activeEnts[id] },
@@ -117,14 +134,12 @@ func TestParseSuperAdminAllowlist_DefaultsAndNormalizes(t *testing.T) {
 
 func TestNewOperatorSuperAdminAuth_DarkByDefault(t *testing.T) {
 	t.Setenv("OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED", "false")
-	t.Setenv("JWT_SECRET", "whatever")
-	if a := newOperatorSuperAdminAuth(nil, discardLogger()); a != nil {
+	if a := newOperatorSuperAdminAuth(nil, discardLogger(), fakeCognito{}); a != nil {
 		t.Fatal("flag off → must be nil (dark)")
 	}
-	// Flag on but no secret → still dark (can't verify tokens).
+	// Flag on but no Cognito verifier → still dark (can't verify tokens).
 	t.Setenv("OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED", "true")
-	t.Setenv("JWT_SECRET", "")
-	if a := newOperatorSuperAdminAuth(nil, discardLogger()); a != nil {
-		t.Fatal("flag on but no JWT_SECRET → must be nil (dark)")
+	if a := newOperatorSuperAdminAuth(nil, discardLogger(), nil); a != nil {
+		t.Fatal("flag on but no Cognito verifier → must be nil (dark)")
 	}
 }

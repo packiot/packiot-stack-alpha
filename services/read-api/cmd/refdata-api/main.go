@@ -296,15 +296,17 @@ func main() {
 	// tenant-fencing path is byte-identical. Reverting to Firebase-only is a
 	// single env flip (COGNITO_AUTH_ENABLED=false), no redeploy of anything else.
 	var bv verifier = newFirebaseVerifier(projectID, nil)
+	var cognitoCV *cognitoVerifier // reused by the operator super-admin read escalation
 	cognitoDual := false
 	if cognitoAuthEnabled() {
 		cIss := getenv("COGNITO_ISSUER", defaultCognitoIssuer)
 		cClient := getenv("COGNITO_CLIENT_ID", defaultCognitoClientID)
 		cJWKS := os.Getenv("COGNITO_JWKS_URL") // "" → derived <issuer>/.well-known/jwks.json
 		if cIss != "" && cClient != "" {
+			cognitoCV = newCognitoVerifier(cIss, cClient, cJWKS, nil)
 			bv = newMultiVerifier(
 				namedVerifier{idp: "firebase", iss: "https://securetoken.google.com/" + projectID, v: bv},
-				namedVerifier{idp: "cognito", iss: cIss, v: newCognitoVerifier(cIss, cClient, cJWKS, nil)},
+				namedVerifier{idp: "cognito", iss: cIss, v: cognitoCV},
 			)
 			cognitoDual = true
 		} else {
@@ -324,7 +326,14 @@ func main() {
 	// unless OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED is on AND JWT_SECRET is
 	// set). The READ twin of edge-api's write-plane escalation — see
 	// auth_operator_superadmin.go.
-	superAdmin := newOperatorSuperAdminAuth(pool, logger)
+	// Pass the Cognito verifier (nil-safe — a typed nil would defeat the nil
+	// check inside) so the escalation verifies the same Cognito ID token the
+	// operator carries as its Bearer.
+	var saCognito claimsVerifier
+	if cognitoCV != nil {
+		saCognito = cognitoCV
+	}
+	superAdmin := newOperatorSuperAdminAuth(pool, logger, saCognito)
 	logger.Info("operator super-admin read escalation",
 		slog.Bool("enabled", superAdmin != nil))
 	authed := authMiddleware(keys, authExemptSet(), bearer.resolve, superAdmin, mux)
