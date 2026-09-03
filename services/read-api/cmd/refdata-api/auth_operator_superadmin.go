@@ -152,14 +152,21 @@ func dbSuperUserCheck(pool *pgxpool.Pool) func(context.Context, string) bool {
 	if pool == nil {
 		return func(context.Context, string) bool { return false }
 	}
-	return func(ctx context.Context, userName string) bool {
+	return func(ctx context.Context, identityEmail string) bool {
 		var super bool
+		// Match the VERIFIED token email against the user_email column (not
+		// user_name), and bool_or ACROSS all rows for that email: the same person
+		// legitimately has rows in several enterprises (a product tenant + the
+		// admin tenant that carries the super_user role), so "is this email a
+		// super_user anywhere?" must aggregate rather than pick one arbitrary row.
+		// Previously this matched user_name, which only worked because the admin
+		// row abused user_name to hold the email — a fragile coupling now removed.
 		err := pool.QueryRow(ctx,
-			`SELECT COALESCE(ur.super_user, false)
+			`SELECT COALESCE(bool_or(ur.super_user), false)
 			   FROM users u
 			   LEFT JOIN user_roles ur ON ur.id_user_role = u.user_roles
-			  WHERE u.user_name = $1 AND u.active IS NOT FALSE`,
-			userName).Scan(&super)
+			  WHERE lower(u.user_email) = lower($1) AND u.active IS NOT FALSE`,
+			identityEmail).Scan(&super)
 		if err != nil {
 			return false
 		}
