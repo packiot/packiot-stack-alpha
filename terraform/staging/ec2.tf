@@ -182,9 +182,9 @@ resource "aws_iam_policy" "app_custom" {
         # password packiot/staging/operator/*). Scoped to packiot/staging/* so the
         # box can create/rotate its own secrets instead of leaving a plaintext file
         # on disk. Read stays the separate ReadStagingSecrets statement above.
-        # NOTE: applied live via `aws iam create-policy-version` (v8) because a
-        # pre-existing templatefile bug (app_init.sh references GO_VERSION, not
-        # passed in ec2.tf's vars map) currently blocks `terraform plan/apply`.
+        # NOTE: this was applied live via `aws iam create-policy-version` (v8);
+        # a `terraform apply` from origin/staging reconciles it as a no-op (the
+        # policy JSON here matches the live default version).
         Sid    = "WriteStagingAppSecrets"
         Effect = "Allow"
         Action = [
