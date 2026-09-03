@@ -388,12 +388,27 @@ func newFirebaseBearerAuth(v verifier, pool *pgxpool.Pool, ttl time.Duration) *f
 //     resolves via the now-populated column.
 //   - active = true: never link a soft-deleted user.
 //
+// SINGLE-ROW TARGET (the dup-email fix): the same email CAN exist on more than
+// one active row — a real tenant user and a sandbox clone (id_user_firebase
+// 'sbx-…'), or a person in two enterprises. A bare `WHERE lower(user_email)=…`
+// then matched ALL of them and tried to write the SAME sub to each → the partial
+// UNIQUE index on id_user_cognito rejected the multi-row write → the whole UPDATE
+// errored → the sub was NEVER linked → permanent 401 (this is exactly what left
+// 0001_os2 dark). Bind to exactly ONE row via a deterministic subselect
+// (ORDER BY id_user ASC = the earliest/real row; sandbox clones are created later
+// with high ids), so the link always succeeds and picks the real tenant.
+//
 // REVERSIBLE: `UPDATE users SET id_user_cognito = NULL WHERE …` backs it out.
 // SAFE on no match: 0 rows updated → the re-lookup stays empty → 401 as today
 // (a genuinely unknown user). $1/$2 are the VERIFIED sub/email — never request
 // body — bound as parameters, so no injection surface.
 const linkCognitoSQL = `UPDATE users SET id_user_cognito = $1
-	WHERE lower(user_email) = lower($2) AND id_user_cognito IS NULL AND active = true`
+	WHERE id_user = (
+		SELECT id_user FROM users
+		WHERE lower(user_email) = lower($2) AND id_user_cognito IS NULL AND active = true
+		ORDER BY id_user ASC
+		LIMIT 1
+	)`
 
 // dbCognitoLink is the production link closure: run linkCognitoSQL against the
 // pool. A unique-index violation (an email shared by rows that would collide on
