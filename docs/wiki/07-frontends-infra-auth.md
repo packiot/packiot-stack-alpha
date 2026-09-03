@@ -86,6 +86,51 @@ CloudFront fronts all vhosts → X-Origin-Verify 403s non-CloudFront hits
 - **Authentik is retired** (oauth2-proxy replaced the embedded outpost); `authentik-*`
   containers linger in compose mid-decommission.
 
+## Operator super-admin: the cross-tenant enterprise switcher
+
+A **super-admin** operates **any** enterprise from a single operator account. The header
+shows an enterprise **picker**; selecting a tenant re-scopes the whole session — sidebar,
+reads, and writes all follow — without logging out. A normal operator never sees the
+picker and is always locked to their own enterprise.
+
+**Who can be a super-admin is exclusive and double-gated.** An account is a super-admin
+only when **all three** hold:
+
+1. the live DB flag `user_roles.super_user = true` (re-checked on every request — a
+   de-escalated role loses power immediately, never trusted from a token body);
+2. membership in an **email allowlist** — env `OPERATOR_SUPERADMIN_ALLOWLIST`, default
+   exactly `dev@packiot.com` (comma-separated, case-insensitive);
+3. the deployment capability flag `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED = true`.
+
+A stray `super_user=true` on any other account can therefore never escalate. On staging
+today the sole super-admin is **`dev@packiot.com`**, whose home is a dedicated internal
+enterprise **`PACKIOT-ADMIN` (id 1000000)** — not a client tenant.
+
+!!! note "One flag governs the whole feature, coherently"
+    `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED` is set on **both** `edge-api` and
+    `read-api`. It gates the picker (`super_user` login field), `POST /session/switch`,
+    `GET /session/enterprises`, **and** the cross-tenant read + write escalations
+    together. Flip it to `false` for instant, total rollback — picker, switch, reads,
+    and writes all go dark at once. There is no half-enabled state.
+
+How the three planes honor a switch (each **fail-closed to the home tenant** — a
+missing/forged claim is silently denied, never a leak):
+
+| Plane | Path | How it re-scopes |
+|-------|------|------------------|
+| **Session / picker** | edge-api `/session`, `/session/switch`, `/session/enterprises` | `LoginService.isCrossTenantSuperAdmin` = DB `super_user` **AND** allowlist **AND** flag; a fresh scoped JWT is minted per switch |
+| **Reads** | refdata-api `/v1/*` | The SPA tags reads with `?idEnterprise=<target>` + header `x-operator-superadmin-token`; refdata verifies the operator JWT (HS256, `JWT_SECRET`) + live `super_user` + allowlist + target-active, then re-scopes the `$1` tenant. The ADR-0027 single-injection `$1` fence is untouched — this changes *which* tenant is `$1`, never *whether* |
+| **Writes** | edge-api `/api/*` | Same header + `?idEnterprise=`; `auth.middleware` honors the target only for a verified super-admin, else locks to the api-key's home enterprise |
+
+**Using it (CS / dev):** log in to the operator as `dev@packiot.com` (password in AWS on
+the box at `/opt/packiot/dev-superadmin-pw.txt`, root-only — `sudo cat` to retrieve), pick
+a tenant from the header, and operate it exactly as its own operator would. Selecting the
+current enterprise is a cheap no-op reload.
+
+**Activating a NEW super-admin** is a deliberate two-step change (never accidental): add
+the email to `OPERATOR_SUPERADMIN_ALLOWLIST` **and** set `user_roles.super_user=true` for
+that operator user. Membership in one without the other confers nothing.
+
 ## Observability
 
 - **Grafana** (dashboards/datasources provisioned under `grafana/`) behind the cs-admin
