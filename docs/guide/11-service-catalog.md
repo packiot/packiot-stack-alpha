@@ -118,7 +118,7 @@ There is also a `customer_dashboards.*` pool for per-customer dashboard config.
   (end-state map §3); *not present in the legacy `schema.sql` snapshot*.
 - **`shadow_go_port`** (schema) and **`packiot_analytics`** (separate database) — the F2
   and F3 destinations of the three-flow migration. Referenced across the worker and
-  mirror services (`services/oeecloud-worker/internal/flows/flows.go`,
+  mirror services (`services/stream-engine/internal/flows/flows.go`,
   `services/shadow-mirror/internal/config/config.go`). → [Ch.2](02-architecture-at-a-glance.md#idea-2--the-three-flows).
 
 ### Extensions & access
@@ -126,7 +126,7 @@ There is also a `customer_dashboards.*` pool for per-customer dashboard config.
 - **TimescaleDB** — hypertables (`equipment_values`) and continuous aggregates (the
   `agg_*`/`ca_*` rollups) with per-grain compression + retention policies.
 - **`pg_cron` retired to Go** — the OEE math and scheduling that used to run inside
-  the database as `piot_*` stored procs + `pg_cron` rows now live in oeecloud-worker
+  the database as `piot_*` stored procs + `pg_cron` rows now live in stream-engine
   ([ADR-0014](../adr/0014-extract-oee-math-from-database-to-app.md)).
 - **Hasura** — a GraphQL layer historically sat directly on the DB; it is being
   retired in favor of refdata-api ([ADR-0015](../adr/0015-customer-facing-query-api.md)).
@@ -135,7 +135,7 @@ There is also a `customer_dashboards.*` pool for per-customer dashboard config.
 
 ---
 
-## edge-transformer (Go)
+## sparkplug-decoder (Go, formerly edge-transformer)
 
 **Objective.** The factory-side ingest workhorse: it subscribes directly to a
 machine's MQTT/SparkPlug B stream, decodes the protobuf, resolves aliases to a
@@ -144,7 +144,7 @@ to a local outbox, and publishes confirmed messages to RabbitMQ — stamped for 
 three migration flows. Its one obsession is *never lose a message*. It never touches
 PostgreSQL; its only output is a bus message. → [Ch.3](03-the-edge.md).
 
-**What it has.** Packages under `services/edge-transformer/internal/` (verified `ls`):
+**What it has.** Packages under `services/sparkplug-decoder/internal/` (verified `ls`):
 
 | Package | Responsibility |
 |---------|----------------|
@@ -165,7 +165,7 @@ Also ships companion `cmd/` binaries: `plc-sim` (see the simulator entry),
 
 ---
 
-## oeecloud-worker (Go)
+## stream-engine (Go, formerly oeecloud-worker)
 
 **Objective.** The engine. It does two distinct things on one clock: (1) consumes
 the RabbitMQ bus and writes raw data into the database in batched UPSERTs, and (2)
@@ -318,7 +318,7 @@ purpose-built services instead of a Node-RED backend-for-frontend.
 ## edge-node-red
 
 **Objective.** The deliberately-minimal factory-side Node-RED instance. After the
-"10.9 cutover" moved SparkPlug ingest into edge-transformer, Node-RED shrank to two
+"10.9 cutover" moved SparkPlug ingest into sparkplug-decoder, Node-RED shrank to two
 jobs: adapt *non-SparkPlug* PLC protocols, and host a governed surface for
 per-customer customization. It also still serves a small set of operator HTTP
 endpoints. It is not killed because real factories genuinely need a customization
@@ -335,7 +335,7 @@ routes it hosts (verified by grep of the flows) include: `/data`, `/change-po`,
 and the legacy `/plc-data` ingest leg (retiring with the flip).
 
 **No longer owns:** SparkPlug/MQTT ingest, decoding, normalization, durability — all
-now in edge-transformer.
+now in sparkplug-decoder.
 
 ---
 
@@ -405,7 +405,7 @@ without a real one attached. Documented authoritatively in `simulator/README.md`
 | | `simulator/` (Python) | `plc-sim` (Go) |
 |---|---|---|
 | **Objective** | Drive the *legacy HTTP ingest*: POST SparkPlug JSON to edge-node-red `/plc-data`, and rotate operator actions against edge-api to keep `user_logs` (and shadow-mirror) exercised. | Drive *the* ingest: publish SparkPlug B over MQTT to mosquitto (the 10.9 path). |
-| **Source** | `simulator/simulator.py` (+ `devctl.py` manual CLI) | `services/edge-transformer/cmd/plc-sim/main.go` |
+| **Source** | `simulator/simulator.py` (+ `devctl.py` manual CLI) | `services/sparkplug-decoder/cmd/plc-sim/main.go` |
 | **What it has** | A **PLC layer** (reads active `packml_register` topics from the DB, emits metrics every `SIM_INTERVAL`) and an **operator layer** (rotates 3 users calling edge-api every `OP_INTERVAL`: start/stop POs, justify downtimes). Env: `EDGE_NODERED_URL`, `EDGE_API_URL`, `DB_URL`, `SIM_INTERVAL`, `OP_INTERVAL`. | A DB-driven SparkPlug B source **and a DCMD listener** (verified in `main.go`), so it exercises the transformer's downlink command path too. |
 | **Fate** | Retires with the Node-RED leg (flip R6/R7). | **Stays** — it exercises the real ingest. |
 

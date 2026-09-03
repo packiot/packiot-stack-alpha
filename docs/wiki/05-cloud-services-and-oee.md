@@ -1,7 +1,7 @@
 # Cloud Services & OEE Compute
 
 The cloud is a **control plane** (`edge-api`) and a **data plane** (RabbitMQ →
-`oeecloud-worker` → Postgres) meeting at one Postgres/TimescaleDB, with `refdata-api`
+`stream-engine` → Postgres) meeting at one Postgres/TimescaleDB, with `refdata-api`
 serving reads back to front4.
 
 > **The through-line:** OEE math no longer lives in the database. Per ADR-0014 the
@@ -38,9 +38,9 @@ direct Hasura reads. **Tenancy is load-bearing** — `id_enterprise` is never
 client-supplied; it's derived from the credential and injected as `$1`; `api_key`/
 `operator_pw_hash` are projected out. Redis cache-aside (5-min TTL) fronts uid→enterprise.
 
-## oeecloud-worker (== stream-engine) — ingest + compute
+## stream-engine — ingest + compute
 
-One Go binary, two halves (`services/oeecloud-worker/`):
+One Go binary, two halves (dir `services/stream-engine/`, binary `cmd/oeecloud-worker/`):
 
 - **Half A — AMQP → Postgres ingest.** Consumes RabbitMQ, classifies each SparkPlug
   metric, UPSERTs into `equipment_values` (`ON CONFLICT (ts_value, id_equipment) DO
@@ -49,14 +49,16 @@ One Go binary, two halves (`services/oeecloud-worker/`):
   `StateCurrent→state`. Routes on `source_type` (`""`→F1, `"go"`→shadow, `"refactored"`→F3).
 - **Half B — scheduled compute** (`internal/jobs.Loop` ticker, replaced pg_cron).
 
-> "stream-engine" is the **prod rename** of `oeecloud-worker` (Prometheus scrapes
-> `stream-engine:9101`; compose still builds `./services/oeecloud-worker`). Same binary.
+> **Naming.** `stream-engine` is the current directory name (`services/stream-engine/`);
+> the old `oeecloud-worker` name now only survives as the binary `cmd/oeecloud-worker/` and
+> the Prometheus target label. Compose builds `./services/stream-engine`; the old
+> `services/oeecloud-worker/` directory is gone. Same binary, new home.
 
 > **Where decode runs — cloud vs. on-prem.** By default the SparkPlug **decode**
-> (edge-transformer) is a *cloud* step: the box is a thin reader, and only the
+> (`sparkplug-decoder`) is a *cloud* step: the box is a thin reader, and only the
 > cloud has the `packml_register` mapping that resolves a topic → `id_equipment`.
 > The opt-in **fat edge** ([On-Prem Offline Operation](11-on-prem-offline-operation.md))
-> runs the *same* transformer image **on the box** in `LOCAL_DECODE_ONLY` mode — it
+> runs the *same* decoder image **on the box** in `LOCAL_DECODE_ONLY` mode — it
 > decodes to a local current-state cache for an offline dashboard and **never
 > publishes to cloud RabbitMQ**. So on such a box decode happens in *both* places,
 > but only the cloud copy is authoritative and computes OEE; the on-box copy is a

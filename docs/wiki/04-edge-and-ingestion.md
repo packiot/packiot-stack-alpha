@@ -18,16 +18,15 @@ new container/nginx/DNS/SG.
 |------|-----------|------|---------|
 | **1 — connectivity** | Node-RED (stock `nodered/node-red:4.0`) or a thin native reader | messy per-client PLC I/O; emits *raw suffix tags* as plain JSON | weekly |
 | **2 — transmission** | Go `sparkplug-agent` | the entire SparkPlug B session: alias/NBIRTH/NDATA/NDEATH, seq, store-and-forward, mTLS uplink | never |
-| **cloud — decode** | Go `edge-transformer` | decode SparkPlug, resolve aliases, run Calc, publish to RabbitMQ | never |
+| **cloud — decode** | Go `sparkplug-decoder` | decode SparkPlug, resolve aliases, run Calc, publish to RabbitMQ | never |
 
 Two corrections newcomers get wrong:
 1. The native Go readers (`s7-reader`/`modbus-reader`/`opcua-reader`) are **self-contained
    SparkPlug producers** publishing straight to MQTT — they do **not** POST to the
    agent's `:9104`. That HTTP tee path is fed by a Node-RED/HTTP tee (or a thin reader)
    speaking the plain-JSON **rawtag** envelope.
-2. `edge-transformer` **publishes to RabbitMQ** (`exchange oee`, key `sparkplug.data`) and
-   does **not** write `equipment_values` — `oeecloud-worker` (the `stream-engine`
-   container) does, one hop downstream.
+2. `sparkplug-decoder` **publishes to RabbitMQ** (`exchange oee`, key `sparkplug.data`) and
+   does **not** write `equipment_values` — `stream-engine` does, one hop downstream.
 
 ## Shared multi-tenant ingest (the current model)
 
@@ -143,9 +142,9 @@ Tier-1 (Node-RED tee, or a thin reader) POSTs this **rawtag** JSON to `/v1/tags`
 | Tier-2 agent | `sparkplug-agent` | ingest `:9104` (`POST /v1/tags`), health `:9103`, onboard `:9105`; routes by envelope `group` |
 | uplink | agent → cloud | **SparkPlug B over mTLS**, `ssl://…:8883`, CN-scoped per tenant |
 | cloud broker | mosquitto | MQTT (retains NBIRTHs) |
-| decode | `edge-transformer` | subscribes `spBv1.0/#` → decode → alias-resolve → Calc |
+| decode | `sparkplug-decoder` | subscribes `spBv1.0/#` → decode → alias-resolve → Calc |
 | normalize → bus | → RabbitMQ | exchange `oee`, key `sparkplug.data` |
-| DB write | `oeecloud-worker` (`stream-engine`) | INSERT `equipment_values` + OEE aggregates |
+| DB write | `stream-engine` | INSERT `equipment_values` + OEE aggregates |
 
 > The full ADR-0042 topology (connectivity Node-RED → loopback MQTT → local agent on the
 > box) still exists. In the shared model the box needs only a **reader with WAN reach to the

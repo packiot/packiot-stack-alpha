@@ -96,7 +96,7 @@ box Node-RED / reader  ──(WAN, TLS + X-Ingest-Key)──▶  ingest.<env>  (
                                             (strict allowlist per tenant)
                                                            │  SparkPlug B → internal mosquitto
                                                            ▼
-                                          edge-transformer decode → Calc → equipment_values (ent 5)
+                                          sparkplug-decoder decode → Calc → equipment_values (ent 5)
 ```
 
 Onboarding writes the tenant's `raw_tag_map` (generated from the descriptor) into the

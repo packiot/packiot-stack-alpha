@@ -8,12 +8,12 @@ page. Everything in the later chapters is a zoom-in on part of this picture.
 ```
   FACTORY FLOOR                          CLOUD
   ┌───────────┐   SparkPlug B     ┌──────────────────┐   AMQP    ┌──────────────────┐
-  │    PLC    │──── over MQTT ───▶│  edge-transformer │──────────▶│  RabbitMQ (bus)  │
+  │    PLC    │──── over MQTT ───▶│ sparkplug-decoder │──────────▶│  RabbitMQ (bus)  │
   │ (machine) │                   │      (Go)         │           └────────┬─────────┘
   └───────────┘                   │ decode · normalize│                    │
         │                         │ calc · buffer     │                    ▼
         │                         └──────────────────┘           ┌──────────────────┐
-        ▼                                  ▲                      │ oeecloud-worker  │
+        ▼                                  ▲                      │ stream-engine    │
   ┌───────────┐                            │ consumes             │      (Go)        │
   │ edge      │────────────────────────────┘ for local            │ ingest writers + │
   │ Node-RED  │  operator screens + per-customer customization    │ ~13 engine jobs  │
@@ -50,9 +50,9 @@ or section later.
 |-----------|----------|------------------|
 | **PLC** | — | The machine's controller; emits raw signals (counts, speed, state). |
 | **edge Node-RED** | Node-RED | The *minimal* on-site flow: connects to the PLC, and hosts space for per-customer customization. |
-| **edge-transformer** | Go | Decodes the machine's SparkPlug protocol, normalizes and calculates, buffers durably, and publishes to the bus. |
+| **sparkplug-decoder** | Go | Decodes the machine's SparkPlug protocol, normalizes and calculates, buffers durably, and publishes to the bus. |
 | **RabbitMQ** | — | The message bus; the single contract between ingestion and processing. |
-| **oeecloud-worker** | Go | The engine: consumes messages, writes raw data, and runs the ~13 scheduled jobs that compute OEE. |
+| **stream-engine** | Go | The engine: consumes messages, writes raw data, and runs the ~13 scheduled jobs that compute OEE. |
 | **PostgreSQL + TimescaleDB** | SQL | Durable storage, time-series compression, and the OEE aggregates. |
 | **edge-api** | NestJS | The control plane: operator and admin *actions* (start a PO, justify a downtime). |
 | **refdata-api** | Go | The read plane: serves the data the UIs display (replacing a GraphQL layer). |
@@ -68,7 +68,7 @@ head, the rest of the documentation will feel inevitable rather than arbitrary.
 Notice in the diagram that **writes and reads go to different services**. Operator
 and admin *actions* (which change the world) go through **edge-api**. Screen *reads*
 (which just display the world) come from **refdata-api**. And *computation* (turning
-raw data into OEE) happens in **oeecloud-worker**, never in the database and never
+raw data into OEE) happens in **stream-engine**, never in the database and never
 in the API layer.
 
 This is the rebuild's core principle from [Chapter 1](01-what-packiot-is.md) made

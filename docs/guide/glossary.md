@@ -34,7 +34,7 @@ incidents), see [`BUSINESS-RULES.md`](../BUSINESS-RULES.md).
 | **Alias** | A small integer standing in for a full metric name on the wire — set at birth, reused on every DATA message to save bandwidth. |
 | **seq** | A per-publisher sequence number (mod 256); a gap means a lost message. |
 | **edge Node-RED** | The minimal on-site flow: non-SparkPlug PLC adapters, a few operator endpoints, and the governed customization surface. See [Ch. 3](03-the-edge.md). |
-| **edge-transformer** | The Go edge service: decode SparkPlug → normalize → calculate → publish durably. |
+| **sparkplug-decoder** (formerly `edge-transformer`; binary still `cmd/edge-transformer`) | The Go edge service: decode SparkPlug → normalize → calculate → publish durably. |
 | **counter calc** | Turning raw machine counters into per-message deltas and rates — ported arithmetic, not OEE. |
 | **outbox / store-and-forward** | The on-disk SQLite buffer the transformer writes to *before* publishing, so a broker/network outage loses nothing. |
 | **publisher confirms** | RabbitMQ's per-message acknowledgment; the outbox row is deleted only once the broker confirms. |
@@ -71,7 +71,7 @@ incidents), see [`BUSINESS-RULES.md`](../BUSINESS-RULES.md).
 
 | Term | One line |
 |------|----------|
-| **oeecloud-worker** | The engine: consumes the bus, writes raw data, and runs the ~13 scheduled jobs that compute OEE. |
+| **stream-engine** (formerly `oeecloud-worker`; binary still `cmd/oeecloud-worker`, metrics job + `oeecloud-worker-q` kept) | The engine: consumes the bus, writes raw data, and runs the ~13 scheduled jobs that compute OEE. |
 | **edge-api** | The control plane (NestJS): operator/admin *actions* — start a PO, justify a downtime — each writing an audit entry. |
 | **refdata-api** | The read plane (Go): serves the data the UIs display; resolves tenant identity server-side. |
 | **operator SPA** | The React floor screen an operator uses during a shift. |

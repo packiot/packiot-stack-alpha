@@ -36,10 +36,10 @@ platform into one browsable, searchable reference.
 ## The 30-second mental model
 
 ```
-PLC ─(SparkPlug B / mTLS)─▶ edge (agent) ─▶ cloud decode (edge-transformer)
+PLC ─(SparkPlug B / mTLS)─▶ edge (agent) ─▶ cloud decode (sparkplug-decoder)
                                                    │ RabbitMQ
                                                    ▼
-                              oeecloud-worker  ──▶  PostgreSQL + TimescaleDB
+                              stream-engine    ──▶  PostgreSQL + TimescaleDB
                               (writes raw + computes OEE)      │
    edge-api (control/writes) ◀── CS-Admin / operator          │ reads
    refdata-api (reads)       ─────────────────────────▶ front4 / operator SPA

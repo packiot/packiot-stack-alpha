@@ -27,7 +27,7 @@ growing one:
   reason about, and an opaque execution log.
 
 The rebuild's [ADR-0014](../adr/0014-extract-oee-math-from-database-to-app.md)
-decides to extract all of this into the **oeecloud-worker**, a Go service. But the
+decides to extract all of this into the **stream-engine**, a Go service. But the
 extraction has a hard constraint: the new code must produce **byte-identical**
 results to the old procedures on the same input. This chapter is about how you do
 that responsibly.
@@ -41,7 +41,7 @@ it consumes already-decoded messages off the bus) and does **not** own the read
 surface (that is refdata-api, [Chapter 6](06-apis-and-operator.md)). It is the only
 service that both writes raw telemetry to the database and computes OEE from it.
 
-The worker (`services/oeecloud-worker/`) does two distinct things.
+The worker (`services/stream-engine/`, binary `cmd/oeecloud-worker/`) does two distinct things.
 
 **1. It consumes the bus and writes raw data.** An AMQP consumer reads the messages
 the transformer published, and a set of *writers* upsert them into the database —

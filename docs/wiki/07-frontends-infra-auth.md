@@ -145,7 +145,7 @@ that operator user. Membership in one without the other confers nothing.
 - **Grafana** (dashboards/datasources provisioned under `grafana/`) behind the cs-admin
   oauth2 gate; **Loki**+**Promtail** logs, **Tempo** traces (48h), **Alertmanager**.
 - **Prometheus** scrapes the app plane's OpenMetrics: `edge-api:8080`, `refdata-api:9104`,
-  `stream-engine:9101`, `edge-transformer:9102`, exporters (`postgres-exporter`,
+  `oeecloud-worker:9101`, `edge-transformer:9102` (Prometheus keeps the old service names as job labels — see the naming note in 01), exporters (`postgres-exporter`,
   `node-exporter`, `cadvisor`, `blackbox`).
 - **Superset** (dedicated prod box, `bi.prod.packiot.app`): apache/superset 4.1.1;
   per-tenant FORCE-RLS; embedded in front4 via guest tokens.
