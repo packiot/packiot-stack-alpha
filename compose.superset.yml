@@ -213,8 +213,12 @@ services:
         condition: service_completed_successfully
       superset-redis:
         condition: service_healthy
+    # NOTE: .44 collided with sparkplug-agent-shared (which grabbed it dynamically
+    # while the superset profile was inert), so superset-init stayed `created` with
+    # "Address already in use". Moved to .47 (free). A one-shot init needs no fixed
+    # IP at all, but keeping the static-IP pattern consistent with its siblings.
     networks:
-      packiot-net: {ipv4_address: 172.18.0.44}
+      packiot-net: {ipv4_address: 172.18.0.47}
     restart: "no"
     logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
 
