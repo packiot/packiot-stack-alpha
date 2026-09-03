@@ -12,20 +12,22 @@
 //
 // TRUST MODEL — why letting the client name a tenant is safe HERE:
 //
-//	The operator SPA authenticates to /session with bcrypt and receives an
-//	HS256 operator JWT (edge-api mints it, signed with JWT_SECRET). A super-
-//	admin who has switched carries, on each /v1 read:
+//	Auth is Cognito, always Cognito: the operator SPA authenticates to the
+//	Cognito user pool via SRP and carries its Cognito ID token as the Bearer on
+//	every call. A super-admin who has switched carries, on each /v1 read:
 //	  - the FIXED api-key (nginx-injected) → proves the HOME tenant, AND
-//	  - `x-operator-superadmin-token` = that operator JWT, AND
+//	  - `x-operator-superadmin-token` = that same Cognito ID token, AND
 //	  - `?idEnterprise=<target>`.
 //	We honor <target> ONLY when ALL of these hold:
 //	  1) OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED is on (else this whole file is
 //	     inert — newOperatorSuperAdminAuth returns nil);
-//	  2) the JWT verifies (HS256, JWT_SECRET) — a forged/expired token is
-//	     rejected BEFORE any DB touch (the DoS gate);
-//	  3) the token's user is a LIVE user_roles.super_user in the DB, re-checked
-//	     every request (never trusted from the token body → a de-escalated role
-//	     loses cross-tenant power immediately);
+//	  2) the Cognito ID token VERIFIES (RS256 via JWKS, iss/aud/exp — the same
+//	     verifier the main /v1 read path uses) AND carries a VERIFIED email — a
+//	     forged/expired/unverified token is rejected BEFORE any DB touch (the DoS
+//	     gate); the identity is that verified email;
+//	  3) that email is a LIVE user_roles.super_user in the DB, re-checked every
+//	     request (never trusted from the token body → a de-escalated role loses
+//	     cross-tenant power immediately);
 //	  4) that user is on the exclusive email allowlist (default dev@packiot.com);
 //	  5) the target enterprise exists AND is active.
 //	Any failure ⇒ DENY the claim and fall back to the HOME tenant — never a 401,
@@ -34,7 +36,7 @@
 //	we resolved, so a granted target is fenced exactly like any normal tenant —
 //	this changes WHICH tenant is bound as $1, never WHETHER $1 is bound.
 //
-// Dark by default: nil escalator (flag off or JWT_SECRET unset) is a no-op in
+// Dark by default: nil escalator (flag off or no Cognito verifier) is a no-op in
 // authMiddleware, so /v1 behaves exactly as before (home key only).
 package main
 
@@ -42,11 +44,9 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -56,7 +56,7 @@ const defaultOperatorSuperAdminAllowlist = "dev@packiot.com"
 // checks are injected closures (the codebase's dbEnterpriseLookup idiom) so the
 // verifier is unit-testable without a live pool.
 type operatorSuperAdminAuth struct {
-	secret             []byte
+	cognito            claimsVerifier
 	allowlist          map[string]bool
 	isLiveSuperUser    func(ctx context.Context, userName string) bool
 	isEnterpriseActive func(ctx context.Context, idEnterprise int) bool
@@ -64,19 +64,21 @@ type operatorSuperAdminAuth struct {
 }
 
 // newOperatorSuperAdminAuth builds the escalator, or returns nil (feature dark)
-// when the capability flag is off or JWT_SECRET is unset. A nil result makes the
+// when the capability flag is off or no Cognito verifier is available. A nil result makes the
 // middleware skip the escalation entirely — fail-closed by absence.
-func newOperatorSuperAdminAuth(pool *pgxpool.Pool, logger *slog.Logger) *operatorSuperAdminAuth {
+func newOperatorSuperAdminAuth(pool *pgxpool.Pool, logger *slog.Logger, cognito claimsVerifier) *operatorSuperAdminAuth {
 	if !getenvBool("OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED", false) {
 		return nil
 	}
-	secret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
-	if secret == "" {
-		logger.Warn("operator super-admin read escalation enabled but JWT_SECRET unset — staying dark")
+	// Auth is Cognito, always Cognito: the escalation verifies the operator's
+	// Cognito ID token (the same verifier the main /v1 read path uses). Without a
+	// Cognito verifier (Firebase-only deploy / pool ids unset) it stays dark.
+	if cognito == nil {
+		logger.Warn("operator super-admin read escalation enabled but Cognito verifier unavailable — staying dark")
 		return nil
 	}
 	return &operatorSuperAdminAuth{
-		secret:             []byte(secret),
+		cognito:            cognito,
 		allowlist:          parseSuperAdminAllowlist(getenv("OPERATOR_SUPERADMIN_ALLOWLIST", defaultOperatorSuperAdminAllowlist)),
 		isLiveSuperUser:    dbSuperUserCheck(pool),
 		isEnterpriseActive: dbEnterpriseActiveCheck(pool),
@@ -117,16 +119,17 @@ func (a *operatorSuperAdminAuth) resolveTarget(ctx context.Context, r *http.Requ
 		// No cross-tenant intent (or the target IS home): cheapest exit, no verify.
 		return 0, false
 	}
-	// 1) Signature — reject a forged/expired token before any DB touch.
-	claims := jwt.MapClaims{}
-	tok, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-		return a.secret, nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
-	if err != nil || !tok.Valid {
+	// 1) Signature — verify the operator's Cognito ID token (RS256 via JWKS,
+	// iss/aud/exp) before any DB touch. This is the SAME token the operator
+	// carries as its Bearer (Cognito, always Cognito) — not an edge-api HS256 JWT.
+	// The identity is the token's VERIFIED email; an unverified mailbox is
+	// rejected (the allowlist/super_user match is by email, so an unconfirmed
+	// address would be an account-takeover vector).
+	vc, err := a.cognito.VerifyClaims(ctx, tokenStr)
+	if err != nil || vc.email == "" || !vc.emailVerified {
 		return 0, false
 	}
-	user, _ := claims["user"].(string)
-	user = strings.TrimSpace(user)
+	user := strings.ToLower(strings.TrimSpace(vc.email))
 	if user == "" {
 		return 0, false
 	}
