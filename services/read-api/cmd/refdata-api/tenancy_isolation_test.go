@@ -263,7 +263,7 @@ func TestAuthMiddlewareFailsClosed(t *testing.T) {
 		gotCID, _ = customerIDFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	mw := authMiddleware(keys, exempt, nil, next) // nil bearer: X-Api-Key path only
+	mw := authMiddleware(keys, exempt, nil, nil, next) // nil bearer: X-Api-Key path only
 
 	cases := []struct {
 		name      string
@@ -300,7 +300,7 @@ func TestAuthMiddlewareFailsClosed(t *testing.T) {
 // yields an empty map ⇒ EVERY non-infra route 401s. Credential-source failure
 // denies all access; it never falls through to "no filter".
 func TestAuthMiddlewareEmptyKeysDeniesAll(t *testing.T) {
-	mw := authMiddleware(map[string]int{}, infraExemptSet(), nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw := authMiddleware(map[string]int{}, infraExemptSet(), nil, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler reached with an empty keys map and nil bearer — must fail closed")
 	}))
 	req := httptest.NewRequest("GET", "/v1/query", nil)
@@ -349,7 +349,7 @@ func TestBearerPathResolvesTenantServerSide(t *testing.T) {
 		gotCID, _ = customerIDFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	mw := authMiddleware(map[string]int{}, infraExemptSet(), fb.resolve, next)
+	mw := authMiddleware(map[string]int{}, infraExemptSet(), fb.resolve, nil, next)
 
 	cases := []struct {
 		name      string
@@ -387,7 +387,7 @@ func TestBearerPathResolvesTenantServerSide(t *testing.T) {
 // failed VerifyIDToken.
 func TestBearerVerifyErrorFailsClosed(t *testing.T) {
 	badResolver := func(context.Context, string) (resolvedIdentity, error) { return resolvedIdentity{}, errEmptySubject }
-	mw := authMiddleware(map[string]int{}, infraExemptSet(), badResolver,
+	mw := authMiddleware(map[string]int{}, infraExemptSet(), badResolver, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("handler reached with an unverifiable token — must fail closed")
 		}))
@@ -403,7 +403,7 @@ func TestBearerVerifyErrorFailsClosed(t *testing.T) {
 // TestBearerDisabledWhenNilResolver: with the Bearer path unconfigured (nil
 // resolver), a Bearer credential must 401 — never silently succeed.
 func TestBearerDisabledWhenNilResolver(t *testing.T) {
-	mw := authMiddleware(map[string]int{"k": 5}, infraExemptSet(), nil,
+	mw := authMiddleware(map[string]int{"k": 5}, infraExemptSet(), nil, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("handler reached with a Bearer token but nil resolver — must fail closed")
 		}))
@@ -429,7 +429,7 @@ func TestXApiKeyWinsOverBearer(t *testing.T) {
 		gotCID, _ = customerIDFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	mw := authMiddleware(map[string]int{"good": 7}, infraExemptSet(), fb.resolve, next)
+	mw := authMiddleware(map[string]int{"good": 7}, infraExemptSet(), fb.resolve, nil, next)
 
 	// (1) valid key + bearer both present → key wins, bearer NOT consulted.
 	fb.called, reached, gotCID = false, false, 0
@@ -572,7 +572,7 @@ func TestBearerPathStashesUserRoleInContext(t *testing.T) {
 		gotRole, roleOK = userRoleFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	mw := authMiddleware(map[string]int{"op-key": 9}, infraExemptSet(), fb.resolve, next)
+	mw := authMiddleware(map[string]int{"op-key": 9}, infraExemptSet(), fb.resolve, nil, next)
 
 	cases := []struct {
 		name        string

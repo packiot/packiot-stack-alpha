@@ -247,8 +247,8 @@ func main() {
 	for _, ep := range endpoints {
 		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
 	}
-	ensureSchema(pool)                  // startup migrations (P2 screen-config table)
-	registerQueryAPI(mux, pool, qcache) // ADR-0015 P1-P3 + ADR-0035 cache-aside
+	ensureSchema(pool)                     // startup migrations (P2 screen-config table)
+	registerQueryAPI(mux, pool, qcache)    // ADR-0015 P1-P3 + ADR-0035 cache-aside
 	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
 
 	// Gap-closure 2026-07-07: the only service without /metrics.
@@ -320,7 +320,14 @@ func main() {
 	// authority) but self-authenticate, so they sit in the auth-exempt set below.
 	// Must register BEFORE the middleware wraps the mux.
 	registerExternalShims(mux, pool, keys, logger)
-	authed := authMiddleware(keys, authExemptSet(), bearer.resolve, mux)
+	// Operator super-admin cross-tenant READ escalation (dark by default; nil
+	// unless OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED is on AND JWT_SECRET is
+	// set). The READ twin of edge-api's write-plane escalation — see
+	// auth_operator_superadmin.go.
+	superAdmin := newOperatorSuperAdminAuth(pool, logger)
+	logger.Info("operator super-admin read escalation",
+		slog.Bool("enabled", superAdmin != nil))
+	authed := authMiddleware(keys, authExemptSet(), bearer.resolve, superAdmin, mux)
 	// RED metrics on every /v1 route → the same promhttp default registry
 	// /metrics already serves. httpmetrics wraps the auth middleware so 401s
 	// are counted too; otelhttp is the outermost server span (the trace root,

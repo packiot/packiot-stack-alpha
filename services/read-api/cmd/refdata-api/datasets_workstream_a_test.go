@@ -260,7 +260,7 @@ func TestParseDateFilter(t *testing.T) {
 // tenant-less request. (Dataset-agnostic by construction; asserted here for the
 // #54 datasets' request path.)
 func TestWorkstreamAReadsRequireAuth(t *testing.T) {
-	mw := authMiddleware(map[string]int{"good-key": 7}, infraExemptSet(), nil,
+	mw := authMiddleware(map[string]int{"good-key": 7}, infraExemptSet(), nil, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("handler reached without a credential — the read must fail closed")
 		}))
