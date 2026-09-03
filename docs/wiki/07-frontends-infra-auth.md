@@ -122,10 +122,19 @@ missing/forged claim is silently denied, never a leak):
 | **Reads** | refdata-api `/v1/*` | The SPA tags reads with `?idEnterprise=<target>` + header `x-operator-superadmin-token`; refdata verifies the operator JWT (HS256, `JWT_SECRET`) + live `super_user` + allowlist + target-active, then re-scopes the `$1` tenant. The ADR-0027 single-injection `$1` fence is untouched — this changes *which* tenant is `$1`, never *whether* |
 | **Writes** | edge-api `/api/*` | Same header + `?idEnterprise=`; `auth.middleware` honors the target only for a verified super-admin, else locks to the api-key's home enterprise |
 
-**Using it (CS / dev):** log in to the operator as `dev@packiot.com` (password in AWS on
-the box at `/opt/packiot/dev-superadmin-pw.txt`, root-only — `sudo cat` to retrieve), pick
-a tenant from the header, and operate it exactly as its own operator would. Selecting the
-current enterprise is a cheap no-op reload.
+**Using it (CS / dev):** log in to the operator as `dev@packiot.com` — the password lives
+in **AWS Secrets Manager**:
+
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id packiot/staging/operator/dev-superadmin-password \
+  --query SecretString --output text
+```
+
+Then pick a tenant from the header and operate it exactly as its own operator would.
+Selecting the current enterprise is a cheap no-op reload. (The box's app instance role
+`packiot-staging-app` has `secretsmanager:Create/PutSecretValue` on `packiot/staging/*`, so
+the stack stores its own secrets rather than leaving plaintext on disk.)
 
 **Activating a NEW super-admin** is a deliberate two-step change (never accidental): add
 the email to `OPERATOR_SUPERADMIN_ALLOWLIST` **and** set `user_roles.super_user=true` for
