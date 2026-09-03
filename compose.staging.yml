@@ -2737,6 +2737,10 @@ services:
         # Client-side only, CPACK-keyed staging SPA (Incoplast bypasses via
         # operator-adapter). See operator/Dockerfile.staging + durableWrite.js.
         VITE_PO_WRITE_QUEUE_ENABLED: "true"
+        # Cognito auth (public pool + app-client ids, NOT secrets). Vite bakes
+        # them at build; the operator Dockerfile.staging declares the ARGs.
+        VITE_COGNITO_USER_POOL_ID: "us-east-1_0T9t1sTwt"
+        VITE_COGNITO_USER_POOL_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
     container_name: operator
     restart: unless-stopped
     # ADR-0018 wave 4: nginx injects the enterprise api key on proxied
@@ -2809,6 +2813,10 @@ services:
       dockerfile: Dockerfile.staging
       args:
         VITE_PO_WRITE_QUEUE_ENABLED: "true"
+        # Cognito auth (public pool + app-client ids, NOT secrets). Vite bakes
+        # them at build; the operator Dockerfile.staging declares the ARGs.
+        VITE_COGNITO_USER_POOL_ID: "us-east-1_0T9t1sTwt"
+        VITE_COGNITO_USER_POOL_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
     container_name: operator-sbx
     restart: unless-stopped
     environment:
