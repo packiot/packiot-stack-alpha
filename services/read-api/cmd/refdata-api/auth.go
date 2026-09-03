@@ -255,8 +255,29 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 				unauthorized(w)
 				return
 			}
-			ctx := withCustomerID(r.Context(), id.customerID)
-			if id.hasRole {
+			// Super-admin cross-tenant READ escalation on the BEARER path too
+			// (front4's SPA authenticates with a Bearer, not an X-Api-Key). Same
+			// fail-closed contract as the X-Api-Key branch above: a verified,
+			// allowlisted super_user who switched the SPA onto another tenant
+			// (x-operator-superadmin-token + ?idEnterprise) reads that tenant;
+			// a missing/forged/unauthorized claim silently keeps the home cid, so
+			// a normal user can never cross tenants.
+			cid := id.customerID
+			escalated := false
+			if superAdmin != nil {
+				if target, ok := superAdmin.resolveTarget(r.Context(), r, cid); ok {
+					cid = target
+					escalated = true
+				}
+			}
+			ctx := withCustomerID(r.Context(), cid)
+			// Only stash the caller's home role when NOT escalated: a super-admin
+			// viewing ANOTHER tenant has no role there, so the two per-user-role
+			// datasets must fail closed rather than mis-apply the home role to a
+			// foreign tenant (mirrors the X-Api-Key operator path, which sets no
+			// role). Enterprise-scoped datasets (the dashboards) still resolve via
+			// the escalated customer_id.
+			if id.hasRole && !escalated {
 				ctx = withUserRole(ctx, id.userRole)
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
