@@ -60,9 +60,9 @@ surface," and it is not killed only because that surface is genuinely needed.
 > outright, is [ADR-0009](../adr/0009-edge-transformer-go-service-and-nodered-split.md).
 > The "all-Go, kill Node-RED" option was considered and explicitly rejected.
 
-### edge-transformer — the Go pipeline
+### sparkplug-decoder — the Go pipeline
 
-The `edge-transformer` (in `services/edge-transformer/`) is the workhorse. As of
+The `sparkplug-decoder` (in `services/sparkplug-decoder/`, binary `cmd/edge-transformer/`) is the workhorse. As of
 the "10.9 cutover," it subscribes to the machine's MQTT/SparkPlug stream **directly**
 — it is *the* ingest, not a downstream of Node-RED — and runs a four-stage pipeline.
 

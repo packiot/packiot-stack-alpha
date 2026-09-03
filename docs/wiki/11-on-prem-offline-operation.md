@@ -29,7 +29,7 @@ PLC ─raw tags─▶ packiot-edge-reader ─┬─▶ cloud shared-agent (HTTPS
                                          mosquitto (local broker)
                                               │
                                               ▼
-                                     edge-transformer  (LOCAL_DECODE_ONLY)
+                                     sparkplug-decoder (LOCAL_DECODE_ONLY)
                                               │ UPSERT each decoded metric
                                               ▼
                                      localstate  (SQLite current-state)

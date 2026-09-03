@@ -44,7 +44,7 @@ references something that doesn't exist.
 
 **`active` soft-delete** is enforced in edge-api reads (sites/areas/equipments/tree DAOs
 filter `active=true`) but **not universally downstream** — don't assume it's enforced by
-oeecloud-worker/reports until verified.
+stream-engine/reports until verified.
 
 ## packml_register — SparkPlug topic routing
 
@@ -127,7 +127,7 @@ The most counter-intuitive part.
 - **`week_begin`** (on enterprises/sites/areas) is a **signed** seconds offset defining
   where the operational week starts relative to **Monday 00:00** — **can be negative**.
   CPACK's `-3000` = −50 min = the week starts **Sunday 23:10**. The Go shift resolver
-  (`oeecloud-worker/internal/shiftresolver/`, a 1:1 port of the old SQL trigger) does
+  (`stream-engine/internal/shiftresolver/`, a 1:1 port of the old SQL trigger) does
   naive-week arithmetic with the negative offset, area-priority, fail-open.
 
 ## Other key tables

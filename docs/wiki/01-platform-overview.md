@@ -21,10 +21,10 @@ sparkplug-agent (Go, SHARED multi-tenant)  ── Tier 2: transmission (uniform,
   │  one process, N tenants routed by SparkPlug group_id (one :8449 front-door for all)
   │  SparkPlug B over mTLS, ssl://…:8883   (alias/BIRTH/seq/outbox, per-tenant)
   ▼
-cloud mosquitto ──▶ edge-transformer (Go)   ── decode + normalize + Calc
+cloud mosquitto ──▶ sparkplug-decoder (Go)   ── decode + normalize + Calc
   │  publishes normalized envelope to RabbitMQ (exchange `oee`, key `sparkplug.data`)
   ▼
-oeecloud-worker (Go, == "stream-engine")    ── ingest half + OEE-compute half
+stream-engine (Go)                          ── ingest half + OEE-compute half
   │  writes equipment_values, computes runtime rollups
   ▼
 PostgreSQL + TimescaleDB (packiot_analytics)
@@ -38,9 +38,9 @@ csadmin · operator                         front4 · operator
 
 Two corrections that trip up newcomers (both verified in code):
 
-1. **`edge-transformer` does not write the database.** It decodes SparkPlug, resolves
+1. **`sparkplug-decoder` does not write the database.** It decodes SparkPlug, resolves
    aliases, runs Calc, and **publishes to RabbitMQ**. The DB write is one hop
-   downstream, in **`oeecloud-worker`**.
+   downstream, in **`stream-engine`**.
 2. **The OEE math is not in the database.** Post-ADR-0014 it was lifted out of the old
    `pg_cron` + PL/pgSQL engine into the Go worker (embedded SQL run on a job ticker).
    TimescaleDB now owns only *storage* (hypertables + continuous aggregates).
@@ -55,7 +55,7 @@ Packiot's backend has **two orthogonal splits**. Confusing them is the #1 source
 | | Control plane | Data plane |
 |---|---|---|
 | **What** | tenant/hierarchy/config, PO lifecycle, shifts, `packml_register` | telemetry (`equipment_values`), events, OEE aggregates |
-| **Who writes** | humans via edge-api (CS-Admin, operator) | `oeecloud-worker` from the SparkPlug stream |
+| **Who writes** | humans via edge-api (CS-Admin, operator) | `stream-engine` from the SparkPlug stream |
 | **Storage** | ordinary Postgres tables + FKs | TimescaleDB hypertables + continuous aggregates |
 | **Cadence** | small, mutable, hand-authored | high-volume, append + rollup |
 
@@ -80,12 +80,32 @@ drifted (columns added out-of-band on one). Never assume a column exists on both
 |---|---|---|
 | **edge-api** | NestJS/TS | Control plane: hierarchy/PO/shift/downtime/register CRUD, onboarding descriptor, edge deploy dispatch, auth |
 | **refdata-api** | Go | Read plane for front4 (the Hasura replacement); datasets + composable query |
-| **edge-transformer** | Go | Cloud SparkPlug decode + normalize + Calc → RabbitMQ |
+| **sparkplug-decoder** | Go | Cloud SparkPlug decode + normalize + Calc → RabbitMQ |
 | **sparkplug-agent** | Go | Factory-side Tier-2 transmission (raw tags → SparkPlug B/mTLS uplink) |
-| **oeecloud-worker** (== stream-engine) | Go | AMQP→Postgres ingest + the OEE compute engine |
+| **stream-engine** | Go | AMQP→Postgres ingest + the OEE compute engine |
 | **csadmin** | React | Internal CS provisioning/onboarding tool |
 | **front4** | React | Customer OEE product (Amplify) |
 | **operator** | React | Factory-floor kiosk |
+
+> **Service naming (a rename you will hit in the code — and where it deliberately *stops*).**
+> The two Go data-plane services were renamed at the directory + compose-service level, but the
+> old names were **intentionally preserved** at the observability/topology layer so live
+> PromQL and queue bindings don't break. The result is a split you must hold in your head:
+>
+> | Layer | decode service | worker service | renamed? |
+> |---|---|---|---|
+> | **Directory** | `services/sparkplug-decoder/` | `services/stream-engine/` | ✅ new |
+> | **Compose service** | `sparkplug-decoder` | `stream-engine` | ✅ new |
+> | **Binary (`cmd/`)** | `cmd/edge-transformer/`, `cmd/sparkplug-agent/` | `cmd/oeecloud-worker/` | ❌ old (kept) |
+> | **Prometheus job + host** | `edge-transformer:9102` | `oeecloud-worker:9101` | ❌ old (kept via compose alias) |
+> | **RabbitMQ queue** | — | `oeecloud-worker-q` (`WORKER_QUEUE`) | ❌ old (kept) |
+>
+> The observability names are kept **on purpose**: `job="oeecloud-worker"` / `job="edge-transformer"`
+> selectors are load-bearing in ~11 live Grafana dashboards, so compose keeps `oeecloud-worker:9101`
+> and `edge-transformer:9102` as network aliases (see `monitoring/prometheus/prometheus.yml`, which
+> documents the decision inline). On staging the *old directories* are gone (`services/oeecloud-worker/`
+> = empty, `services/edge-transformer/` = one orphaned test). Rule of thumb: **new names for the
+> service/dir, old names for the binary + metrics + queue.**
 
 ## Where to go next
 
