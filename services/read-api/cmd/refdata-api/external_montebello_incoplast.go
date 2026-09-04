@@ -286,7 +286,7 @@ const sqlIncoplastEvents = `
                                 and ts_event >= now() - interval '2 month' ) ee
                             left join equipments eq on eq.id_equipment = ee.id_equipment
                             left join sites st on eq.id_site = st.id_site
-                            left join equipment_runtime_shift ers on ee.ts_event <@ ers.ts_range and ers.id_equipment = ee.id_equipment
+                            left join equipment_oee_shift ers on ee.ts_event <@ ers.ts_range and ers.id_equipment = ee.id_equipment
                             left join shifts sh on ers.id_shift = sh.id_shift
                             left join packml_register pr on pr.id_equipment = eq.id_equipment
                     where

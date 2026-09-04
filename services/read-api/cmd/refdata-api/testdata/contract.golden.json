@@ -106,7 +106,7 @@
     "ref": "/integration/job_report/:id_enterprise",
     "source": "external",
     "kind": "relation",
-    "name": "equipment_runtime_shift"
+    "name": "equipment_oee_shift"
   },
   {
     "ref": "/integration/job_report/:id_enterprise",
@@ -239,16 +239,7 @@
     "ref": "current-shift",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipments",
-    "columns": [
-      "tp_equipment"
-    ]
-  },
-  {
-    "ref": "current-shift",
-    "source": "dataset",
-    "kind": "relation",
-    "name": "uns_equipment_current_shift",
+    "name": "equipment_live_shift",
     "columns": [
       "net_production",
       "gross_production",
@@ -261,10 +252,19 @@
     ]
   },
   {
+    "ref": "current-shift",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "tp_equipment"
+    ]
+  },
+  {
     "ref": "custom-target-day",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipment_runtime_1day",
+    "name": "equipment_oee_daily",
     "columns": [
       "ts_value",
       "target"
@@ -283,7 +283,7 @@
     "ref": "custom-target-month",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipment_runtime_1month",
+    "name": "equipment_oee_monthly",
     "columns": [
       "ts_value",
       "target"
@@ -302,7 +302,7 @@
     "ref": "custom-target-week",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipment_runtime_1week",
+    "name": "equipment_oee_weekly",
     "columns": [
       "ts_value",
       "target"
@@ -464,7 +464,7 @@
     "ref": "equipment-runtime-1day",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipment_runtime_1day",
+    "name": "equipment_oee_daily",
     "columns": [
       "ts_value",
       "id_equipment",
@@ -543,31 +543,37 @@
     "ref": "live-equipment-day",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipments"
+    "name": "equipment_live_day"
   },
   {
     "ref": "live-equipment-day",
     "source": "dataset",
     "kind": "relation",
-    "name": "uns_equipment_current_day"
-  },
-  {
-    "ref": "live-equipment-job",
-    "source": "dataset",
-    "kind": "relation",
     "name": "equipments"
   },
   {
     "ref": "live-equipment-job",
     "source": "dataset",
     "kind": "relation",
-    "name": "uns_equipment_current_job"
+    "name": "equipment_live_job"
+  },
+  {
+    "ref": "live-equipment-job",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments"
   },
   {
     "ref": "live-equipment-metrics",
     "source": "dataset",
     "kind": "relation",
-    "name": "uns_equipment_current_metrics"
+    "name": "equipment_live_metrics"
+  },
+  {
+    "ref": "live-equipment-month",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipment_live_month"
   },
   {
     "ref": "live-equipment-month",
@@ -576,22 +582,16 @@
     "name": "equipments"
   },
   {
-    "ref": "live-equipment-month",
+    "ref": "live-equipment-shift",
     "source": "dataset",
     "kind": "relation",
-    "name": "uns_equipment_current_month"
+    "name": "equipment_live_shift"
   },
   {
     "ref": "live-equipment-shift",
     "source": "dataset",
     "kind": "relation",
     "name": "equipments"
-  },
-  {
-    "ref": "live-equipment-shift",
-    "source": "dataset",
-    "kind": "relation",
-    "name": "uns_equipment_current_shift"
   },
   {
     "ref": "machine-speed",
@@ -636,7 +636,7 @@
     "ref": "oee-by-month",
     "source": "dataset",
     "kind": "relation",
-    "name": "equipment_runtime_shift",
+    "name": "equipment_oee_shift",
     "columns": [
       "oee",
       "cd_shift"
