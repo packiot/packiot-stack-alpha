@@ -16,13 +16,17 @@ reversible-by-construction. Branch `feat/historian-gateway` (pushed to origin;
 | **Dead-function drop** (56, triple-signal) | ✅ DONE | ✅ restore script |
 | **Historian T1** (raw enterprises landed) | ✅ verified | n/a (read) |
 | **Historian T2** (Incoplast deep-remap) | ✅ verified | n/a (read) |
-| **Deploy services + drop shims** (#185, #184) | ⏸ deferred — supervised | — |
+| **Deploy services** (#185) | ✅ DONE — green deploy, services healthy | ✅ git |
+| **Drop compat shims** (#184) | ✅ DONE — 0 shims, 4-min live watch clean | ✅ down.sql |
 | **Historian T3–T6 + gateway** (#172/173/176/175) | ⏸ blocked on gateway deploy | — |
 | **agg_* → metrics redesign cutover** | ⏸ gated on §7 equivalence | — |
 
-The shims keep the still-old-code running services **correct throughout**
-(proven: stream-engine + uns writers landed 35–83 s after the renames). Nothing
-in the live pipeline broke at any point.
+The shims kept the running services correct throughout the rollout; after all
+consumers deployed on canonical names they were dropped and a 4-minute live
+watch showed **zero** `42P01` errors. The drop also *caught* a dynamic-name gap
+(`entity_grains.go` concatenated `sp.Name+"_runtime_1hour"`) that static repoint
++ CI + write-verify all missed — recreated shims in ~1 min, fixed, redeployed,
+re-dropped clean. The rename is fully complete: 0 shims, canonical tables only.
 
 ---
 
