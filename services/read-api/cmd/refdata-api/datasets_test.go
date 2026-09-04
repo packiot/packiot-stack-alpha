@@ -49,8 +49,8 @@ func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 		// oee
 		"h_piot_oee_score_with_teams", "h_piot_oee_score_full_3", "h_piot_oee_progress_new2",
 		// live-uns-equipment
-		"uns_equipment_current_job", "uns_equipment_current_metrics",
-		"uns_equipment_current_day", "uns_equipment_current_shift", "uns_equipment_current_month",
+		"equipment_live_job", "equipment_live_metrics",
+		"equipment_live_day", "equipment_live_shift", "equipment_live_month",
 		// mission-control
 		"h_piot_get_mission_control_uns_3", "h_piot_get_mission_control_area_uns_2",
 		"h_piot_get_mission_control_timeline",
@@ -73,7 +73,7 @@ func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 		"h_piot_get_events_timeline_from_po", "h_piot_get_events_timeline_full_with_filter_3",
 		"h_piot_production_orders_runtimes", "h_piot_production_orders_with_runtimes4",
 		"v_entities_per_user_role", "v_menu_per_user_role",
-		"equipment_runtime_1month", "equipment_runtime_1week", "equipment_runtime_1day",
+		"equipment_oee_monthly", "equipment_oee_weekly", "equipment_oee_daily",
 		"sites", "downtime_reasons",
 	}
 	all := ""
@@ -374,7 +374,7 @@ func TestSoftDeletedEntitiesAreFiltered(t *testing.T) {
 	//     LEFT-JOIN name enrichment, so an active predicate would over-filter and
 	//     DROP valid rows. The equipment set front4 passes is already fenced
 	//     upstream by equipments-list.
-	//   - live-equipment-metrics: reads uns_equipment_current_metrics directly
+	//   - live-equipment-metrics: reads equipment_live_metrics directly
 	//     (it carries its own id_enterprise, so no equipments JOIN exists to
 	//     fence); closing it would require restructuring into an EXISTS, out of
 	//     scope for this predicate-only correctness fix. Tracked as a residual.

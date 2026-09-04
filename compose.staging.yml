@@ -40,6 +40,7 @@ volumes:
   loki-data:
   prom-data:
   tempo-data:   # Tempo trace blocks + WAL (48h retention)
+  alloy-data:   # Alloy WAL/positions (OTLP gateway + DB-log relay)
   alertmanager-data:   # Alertmanager silences + notification state
   rabbitmq-data:
   mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
@@ -58,7 +59,10 @@ volumes:
 # .35 app-redis (ADR-0035 application cache for refdata-api cache-aside; SEPARATE from authentik-redis .14)
 # .37 redis-exporter (white-box Redis metrics on :9121; scrapes authentik-redis today, ADR-0035 app-redis later)
 # .39 (free — edge-api-db jump-box decommissioned 2026-08-24)
+# .31 tempo (OTLP receiver :4317 grpc/:4318 http; trace API :3200)
 # .41 oeecloud-fanout (task #17 re-tenant twin fan-out CPACK→SBXCPACK; flag-gated, STAGING ONLY, health :9102)
+# .33 alloy (OTLP trace gateway :4317/:4318 → tempo; Loki-push relay :3101 for the DB-box log agent)
+# .42-.45 superset stack (superset/.42, superset-worker/.43, sparkplug-agent-shared/.44, superset-redis/.45)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -1010,6 +1014,43 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
     mem_limit: 512m
+
+  # ── Grafana Alloy — OTLP trace gateway + DB-log relay ──────────────────────────
+  # ADDITIVE collector in front of Tempo (see monitoring/alloy/gateway.alloy for
+  # the full rationale). Receives OTLP (4317 grpc / 4318 http) from services and
+  # forwards to Tempo; also relays Loki-push logs from the DB-box agent into Loki.
+  # read-api is repointed at alloy:4317 as the proof; other instrumented services
+  # still send direct to Tempo until migrated.
+  alloy:
+    image: grafana/alloy:v1.5.1
+    container_name: alloy
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/gateway.alloy
+    volumes:
+      - ./monitoring/alloy/gateway.alloy:/etc/alloy/gateway.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      # Loki-push endpoint for the cross-box DB log agent. Bound to the private
+      # IP (ALLOY_GATEWAY_BIND) so it is reachable from the DB box over the VPC
+      # but never world-exposed; defaults to loopback when unset (safe no-op).
+      - "${ALLOY_GATEWAY_BIND:-127.0.0.1}:3101:3101"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.33
+    healthcheck:
+      test: ["CMD", "/bin/sh", "-c", "wget -qO- http://localhost:12345/-/ready >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 256m
 
   # alertmanager: routes the Prometheus alert rules to Slack (they fired into the
   # void before). Slack webhook URL is a secret read from a mounted file
@@ -2282,9 +2323,12 @@ services:
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
       DB_NAME_F3: packiot_analytics
       HEALTH_PORT: "9104"
-      # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on; a /v1 read
-      # becomes one trace with its DB query time as a child span (otelpgx).
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      # Distributed tracing (OTLP/gRPC). Present = tracing on; a /v1 read becomes
+      # one trace with its DB query time as a child span (otelpgx). Sent to the
+      # Alloy collector gateway (alloy:4317), which batches + forwards to Tempo —
+      # the industry-standard collector pattern (single egress, buffering, a place
+      # to add tail-sampling later). Fall back to tempo:4317 for a direct path.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4317
       # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
       # keys only; production keys move to Secrets Manager at P3
       # hardening. customer_id is NEVER client-supplied.

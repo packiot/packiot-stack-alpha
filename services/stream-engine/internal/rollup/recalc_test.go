@@ -82,17 +82,17 @@ func TestOEEFormulaProperties(t *testing.T) {
 // The cascade grains: formulas + THE AMBER BUG fixed + canonical A·P·Q identity.
 func TestGrainMatrix(t *testing.T) {
 	// Grain → own table (the amber bug was week's oee_p landing in 1MONTH).
-	if grainMatrix[0].Grain != "week" || grainMatrix[0].Table != "equipment_runtime_1week" {
-		t.Error("week grain must target equipment_runtime_1week")
+	if grainMatrix[0].Grain != "week" || grainMatrix[0].Table != "equipment_oee_weekly" {
+		t.Error("week grain must target equipment_oee_weekly")
 	}
-	if grainMatrix[1].Grain != "month" || grainMatrix[1].Table != "equipment_runtime_1month" {
-		t.Error("month grain must target equipment_runtime_1month")
+	if grainMatrix[1].Grain != "month" || grainMatrix[1].Table != "equipment_oee_monthly" {
+		t.Error("month grain must target equipment_oee_monthly")
 	}
 	// AMBER BUG FIXED: neither oee_p write path may hardcode a table — both are
 	// parameterized (%[2]s = the grain's OWN table), so week's oee_p can never
 	// again be written to 1month.
 	for _, sql := range []string{grainOeePSQL, grainOeeReconcileSQL} {
-		if strings.Contains(sql, "equipment_runtime_1month") || strings.Contains(sql, "equipment_runtime_1week") {
+		if strings.Contains(sql, "equipment_oee_monthly") || strings.Contains(sql, "equipment_oee_weekly") {
 			t.Error("amber-bug regression: oee_p write path hardcodes a grain table — must be parameterized to the grain's own table")
 		}
 	}

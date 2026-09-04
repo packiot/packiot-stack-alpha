@@ -292,16 +292,16 @@ var datasets = map[string]dataset{
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF, pTeamF},
 	},
 	// oee-by-month (task #54, ADR-0031 §2b-1 — was back4 GET /api/admin/oeeavgmonth/{id},
-	// OeeRepository.getAvgOeebyMonth). equipment_runtime_shift has NO id_enterprise
+	// OeeRepository.getAvgOeebyMonth). equipment_oee_shift has NO id_enterprise
 	// column, so — exactly like custom-target-* / liveUNS — we scope through
 	// `equipments` ($1 = tenant, $2 = the ownership-guarded equipment). back4 took a
 	// bare (id_equipment, date) with NO tenant fence; the fence is the load-bearing
 	// rewrite. Projection-shaped per ADR-0027 rule #2 (avg(oee) AS oee, not SELECT *);
 	// the month scalar is bound via pDate ($3), never a window. Not windowed.
 	"oee-by-month": {
-		group: "oee", doc: "Avg OEE per shift for one equipment's month (equipment_runtime_shift, scoped through equipments)",
+		group: "oee", doc: "Avg OEE per shift for one equipment's month (equipment_oee_shift, scoped through equipments)",
 		sql: `SELECT avg(r.oee) AS oee, r.cd_shift
-			FROM equipment_runtime_shift r JOIN equipments e USING (id_equipment)
+			FROM equipment_oee_shift r JOIN equipments e USING (id_equipment)
 			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND date_trunc('month', r.ts_value) = date_trunc('month', $3::date)
 			AND r.cd_shift IS NOT NULL
@@ -337,15 +337,15 @@ var datasets = map[string]dataset{
 
 	// ── live-uns-equipment (snapshot tables — no window by design) ───
 	"live-equipment-metrics": {
-		group: "live-uns-equipment", doc: "Live equipment state/speed/status snapshot (uns_equipment_current_metrics)",
-		sql: `SELECT * FROM uns_equipment_current_metrics
+		group: "live-uns-equipment", doc: "Live equipment state/speed/status snapshot (equipment_live_metrics)",
+		sql: `SELECT * FROM equipment_live_metrics
 			WHERE id_enterprise = $1 AND (cardinality($2::int[]) = 0 OR id_equipment = ANY($2::int[]))`,
 		params: []dsParam{pEnt, ids("equipments")},
 	},
-	"live-equipment-job":   liveUNS("Current job snapshot per equipment (uns_equipment_current_job)", "uns_equipment_current_job"),
-	"live-equipment-day":   liveUNS("Current day snapshot per equipment (uns_equipment_current_day)", "uns_equipment_current_day"),
-	"live-equipment-shift": liveUNS("Current shift snapshot per equipment (uns_equipment_current_shift)", "uns_equipment_current_shift"),
-	"live-equipment-month": liveUNS("Current month snapshot per equipment (uns_equipment_current_month)", "uns_equipment_current_month"),
+	"live-equipment-job":   liveUNS("Current job snapshot per equipment (equipment_live_job)", "equipment_live_job"),
+	"live-equipment-day":   liveUNS("Current day snapshot per equipment (equipment_live_day)", "equipment_live_day"),
+	"live-equipment-shift": liveUNS("Current shift snapshot per equipment (equipment_live_shift)", "equipment_live_shift"),
+	"live-equipment-month": liveUNS("Current month snapshot per equipment (equipment_live_month)", "equipment_live_month"),
 
 	// current-shift (ADR-0032 Wave-D — front4 neopacStats CURRENT_SHIFT, the last
 	// non-fork Hasura read in lib/dashboard/hooks/neopacStats.js). The Neopac stats
@@ -358,7 +358,7 @@ var datasets = map[string]dataset{
 	// perEquipment group ($1 = tenant fence via equipments.id_enterprise, $2 = the
 	// equipment), an EXPLICIT projection (ADR-0027) of exactly the seven shift columns
 	// neopacStats reads PLUS e.tp_equipment (the front4 adapter re-nests it under
-	// `equipment{tp_equipment}`, frozen-skin parity). All seven uns_equipment_current_shift
+	// `equipment{tp_equipment}`, frozen-skin parity). All seven equipment_live_shift
 	// columns AND equipments.tp_equipment are column-parity verified in BOTH packiot
 	// (F1) and packiot_analytics (F3) (2026-07-22 census) — both backing objects are
 	// already SERVABLE_BOTH, so NO F3 migration is needed. Not windowed (a live
@@ -366,10 +366,10 @@ var datasets = map[string]dataset{
 	// and the single-equipment ($2) axis (neopacStats fires one line id, matching its
 	// sibling overview-takt / overview-scrap-rate legs).
 	"current-shift": {
-		group: "live-uns-equipment", doc: "Current-shift snapshot for one equipment with tp_equipment (uns_equipment_current_shift + equipments, front4 neopacStats CURRENT_SHIFT)",
+		group: "live-uns-equipment", doc: "Current-shift snapshot for one equipment with tp_equipment (equipment_live_shift + equipments, front4 neopacStats CURRENT_SHIFT)",
 		sql: `SELECT t.net_production, t.gross_production, t.scrap, t.elapsed_time, t.target,
 			t.duration, t.proportional_target, t.id_equipment, e.tp_equipment
-			FROM uns_equipment_current_shift t JOIN equipments e USING (id_equipment)
+			FROM equipment_live_shift t JOIN equipments e USING (id_equipment)
 			WHERE e.id_enterprise = $1 AND t.id_equipment = $2 AND e.active`,
 		params: []dsParam{pEnt, pEquip},
 	},
@@ -417,7 +417,7 @@ var datasets = map[string]dataset{
 	// front4's machineStatus composite (lib/dashboard/hooks/machineStatus.js) and
 	// neopacStats read the `equipments` row for one line — nm_equipment (the V3
 	// status card's title) and tp_equipment. The other two legs of machineStatus
-	// (uns_equipment_current_job.speed, h_piot_overview_i_get_events_3.colorcolumn)
+	// (equipment_live_job.speed, h_piot_overview_i_get_events_3.colorcolumn)
 	// are ALREADY served by `live-equipment-job` + `overview-events`; this closes
 	// the third leg. A dedicated per-equipment metadata read: enterprise fence at
 	// $1 (equipments carries id_enterprise), the equipment id at $2 — same shape
@@ -809,27 +809,27 @@ var datasets = map[string]dataset{
 	// adapter applies the date bound client-side. front4's nested
 	// `equipment { nm_equipment }` is flattened to an nm_equipment column.
 	"custom-target-month": {
-		group: "settings", doc: "Customized monthly targets per equipment (equipment_runtime_1month)",
+		group: "settings", doc: "Customized monthly targets per equipment (equipment_oee_monthly)",
 		sql: `SELECT r.ts_value, r.target, e.nm_equipment
-			FROM equipment_runtime_1month r JOIN equipments e USING (id_equipment)
+			FROM equipment_oee_monthly r JOIN equipments e USING (id_equipment)
 			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND r.target IS NOT NULL AND r.target_customized = true
 			ORDER BY r.ts_value DESC`,
 		params: []dsParam{pEnt, pEquip},
 	},
 	"custom-target-week": {
-		group: "settings", doc: "Customized weekly targets per equipment (equipment_runtime_1week)",
+		group: "settings", doc: "Customized weekly targets per equipment (equipment_oee_weekly)",
 		sql: `SELECT r.ts_value, r.target, e.nm_equipment
-			FROM equipment_runtime_1week r JOIN equipments e USING (id_equipment)
+			FROM equipment_oee_weekly r JOIN equipments e USING (id_equipment)
 			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND r.target IS NOT NULL AND r.target_customized = true
 			ORDER BY r.ts_value DESC`,
 		params: []dsParam{pEnt, pEquip},
 	},
 	"custom-target-day": {
-		group: "settings", doc: "Customized daily targets per equipment (equipment_runtime_1day)",
+		group: "settings", doc: "Customized daily targets per equipment (equipment_oee_daily)",
 		sql: `SELECT r.ts_value, r.target, e.nm_equipment
-			FROM equipment_runtime_1day r JOIN equipments e USING (id_equipment)
+			FROM equipment_oee_daily r JOIN equipments e USING (id_equipment)
 			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active
 			AND r.target IS NOT NULL AND r.target_customized = true
 			ORDER BY r.ts_value DESC`,
@@ -900,7 +900,7 @@ var datasets = map[string]dataset{
 	// shift bucket is bound via pDate ($2::timestamp). Not windowed (a single shift).
 	//
 	// BUCKET SEMANTICS (fix): v_report_downtimes.ts_value is the SHIFT BEGIN
-	// timestamp (equipment_runtime_shift.ts_value), NOT an hour boundary. Shifts
+	// timestamp (equipment_oee_shift.ts_value), NOT an hour boundary. Shifts
 	// only start on the hour for tenants whose shift schedule happens to be hour-
 	// aligned — which was true for Suzano (ent 37), the ONLY tenant back4 ever
 	// served here (its query hardcoded id_enterprise = 37). back4 matched
@@ -1049,7 +1049,7 @@ var datasets = map[string]dataset{
 
 	// equipment-runtime-1day (C6 — PdfSuzano EQP_RUNTIME_1DAY; also OverviewV3
 	// commented). front4 reads the RAW daily runtime rollup for a SET of equipment
-	// over a date range (front4 uses _gte/_lt half-open bounds). equipment_runtime_1day
+	// over a date range (front4 uses _gte/_lt half-open bounds). equipment_oee_daily
 	// carries NO id_enterprise, so — like custom-target-day / liveUNS — we scope
 	// through the equipments hierarchy ($1) and add the equipment id-list ($2). This is
 	// DISTINCT from custom-target-day (which filters target_customized = true — a
@@ -1058,12 +1058,12 @@ var datasets = map[string]dataset{
 	// budgeted at analyticsWindow (one row per equipment per day is cheap). The join to
 	// equipments supplies nm_equipment (front4's nested equipment{nm_equipment}).
 	"equipment-runtime-1day": {
-		group: "settings", doc: "Raw daily runtime rollup for a set of equipment over a date range (equipment_runtime_1day, front4 PdfSuzano)",
+		group: "settings", doc: "Raw daily runtime rollup for a set of equipment over a date range (equipment_oee_daily, front4 PdfSuzano)",
 		sql: `SELECT r.ts_value, r.id_equipment, r.available_time, r.changeover_time, r.downtime, r.gross,
 			r.ideal_production, r.idle_blocked, r.idle_starved, r.idle_time, r.net, r.planned_downtime,
 			r.proportional_target, r.recalc_needed, r.running_time, r.scrap, r.speed, r.stopped_time,
 			r.target, r.target_customized, e.nm_equipment
-			FROM equipment_runtime_1day r JOIN equipments e USING (id_equipment)
+			FROM equipment_oee_daily r JOIN equipments e USING (id_equipment)
 			WHERE e.id_enterprise = $1 AND e.active
 			AND (cardinality($2::int[]) = 0 OR r.id_equipment = ANY($2::int[]))
 			AND r.ts_value >= $3 AND r.ts_value < $4`,

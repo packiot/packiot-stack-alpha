@@ -10,7 +10,7 @@
 //     tomorrow's per-equipment day anchor, tp>1 + exclusions (prod
 //     hardcodes incl. 35=CPACK → config here; our flows keep CPACK
 //     live — divergence-by-config, documented).
-//   - One statement class: sums equipment_runtime_1hour rows where
+//   - One statement class: sums equipment_oee_hourly rows where
 //     hr.ts_value_production = day.ts_value AND hr.ts_value >=
 //     day.ts_value − 1 day (verbatim keys). 13 metrics + oee =
 //     net/ideal + target (sum of hour targets, CASE-preserved when
@@ -26,8 +26,8 @@
 //     ideal_production), so the tp_equipment=3 NULL-ideal LOCF fix
 //     lives in hour.go's speed pass and this grain inherits it.
 //
-// GUARDRAIL: UPDATEs equipment_runtime_1day (+week/month flags) by
-// (id_equipment, ts_value); reads equipment_runtime_1hour. No PO tables.
+// GUARDRAIL: UPDATEs equipment_oee_daily (+week/month flags) by
+// (id_equipment, ts_value); reads equipment_oee_hourly. No PO tables.
 package rollup
 
 import (
@@ -55,7 +55,7 @@ const dayEligibleSQL = `
 	       --
 	       -- MUST subtract the two timestamptz ANCHORS (the fn's ts_value
 	       -- column), NOT the date-typed ts_value_production label and NOT
-	       -- d.ts_value directly: equipment_runtime_1day.ts_value is DATE
+	       -- d.ts_value directly: equipment_oee_daily.ts_value is DATE
 	       -- (production-date key), and the fn's ts_value_production is also
 	       -- DATE, so (ts_value_production - d.ts_value) is (date - date) =
 	       -- INTEGER (a day count), and extract(epoch FROM integer) does
@@ -66,7 +66,7 @@ const dayEligibleSQL = `
 	           (SELECT ts_value FROM piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day') LIMIT 1)
 	         - (SELECT ts_value FROM piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value) LIMIT 1)
 	       )) AS day_len_s
-	  FROM %[1]s.equipment_runtime_1day d
+	  FROM %[1]s.equipment_oee_daily d
 	 WHERE d.ts_value >= now() - interval '1 month'
 	   AND d.ts_value < (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(d.id_equipment, now() + interval '1 day') LIMIT 1)
 	   AND d.recalc_needed
@@ -125,13 +125,13 @@ const dayRollupSQL = `
 	           avg(hr.speed)            AS speed,
 	           sum(hr.proportional_target) AS proportional_target
 	      FROM day_elig el
-	      JOIN %[1]s.equipment_runtime_1hour hr
+	      JOIN %[1]s.equipment_oee_hourly hr
 	        ON hr.id_equipment = el.id_equipment
 	       AND hr.ts_value >= el.ts_value - interval '1 day'
 	       AND hr.ts_value_production = el.ts_value
 	     GROUP BY el.id_equipment, el.ts_value, el.day_len_s
 	)
-	UPDATE %[1]s.equipment_runtime_1day e SET
+	UPDATE %[1]s.equipment_oee_daily e SET
 	       oee              = COALESCE(s.oee, 0),
 	       oee_a            = COALESCE(s.oee_a, 0),
 	       oee_q            = COALESCE(s.oee_q, 0),
@@ -171,7 +171,7 @@ const dayRollupSQL = `
 // division (e.g. 3060/3600 → 0), zeroing oee_a. net=0 → oee_q = net/NULLIF(gross,0)
 // → 0 (never 1), so zero-output days read oee=0, never a spurious 1.0.
 const dayOeeReconcileSQL = `
-	UPDATE %[1]s.equipment_runtime_1day e SET
+	UPDATE %[1]s.equipment_oee_daily e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0),
@@ -182,13 +182,13 @@ const dayOeeReconcileSQL = `
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
 const dayCascadeMonthSQL = `
-	UPDATE %[1]s.equipment_runtime_1month m SET recalc_needed = true
+	UPDATE %[1]s.equipment_oee_monthly m SET recalc_needed = true
 	  FROM day_elig el
 	 WHERE m.id_equipment = el.id_equipment AND m.ts_value = el.ts_month
 	   AND m.ts_value >= el.ts_month`
 
 const dayCascadeWeekSQL = `
-	UPDATE %[1]s.equipment_runtime_1week w SET recalc_needed = true
+	UPDATE %[1]s.equipment_oee_weekly w SET recalc_needed = true
 	  FROM day_elig el
 	 WHERE w.id_equipment = el.id_equipment AND w.ts_value = el.ts_week
 	   AND w.ts_value >= el.ts_week`
@@ -199,14 +199,14 @@ const dayCascadeWeekSQL = `
 // the day grain is DATE → cast to timestamptz; source_watermark = LEAST(day
 // bucket end, now()).
 const dayStampSQL = `
-	UPDATE %[1]s.equipment_runtime_1day e SET
+	UPDATE %[1]s.equipment_oee_daily e SET
 	       computed_at = now(),
 	       source_watermark = LEAST(e.ts_value::timestamptz + interval '1 day', now())
 	  FROM day_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
 const dayReflagSQL = `
-	UPDATE %[1]s.equipment_runtime_1day e SET recalc_needed = true
+	UPDATE %[1]s.equipment_oee_daily e SET recalc_needed = true
 	 WHERE e.ts_value >= (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(e.id_equipment, now()) LIMIT 1)
 	   AND e.ts_value <  (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(e.id_equipment, now()) LIMIT 1) + interval '1 day'
 	   AND e.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments

@@ -176,7 +176,7 @@ const hourCountsAvailSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       available_time   = b.ts_total,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), b.ts_total),
 	       stopped_time     = b.ts_total - LEAST(COALESCE(a.raw_running, 0), b.ts_total),
@@ -238,7 +238,7 @@ const shiftCountsAvailSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       available_time   = b.ts_total,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), b.ts_total),
 	       stopped_time     = b.ts_total - LEAST(COALESCE(a.raw_running, 0), b.ts_total),
@@ -302,7 +302,7 @@ const shiftAvailFloorSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       running_time = LEAST(GREATEST(e.running_time, a.raw_running), e.available_time),
 	       stopped_time = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
 	       downtime     = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
@@ -348,7 +348,7 @@ const hourAvailFloorSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       running_time = LEAST(GREATEST(e.running_time, a.raw_running), e.available_time),
 	       stopped_time = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
 	       downtime     = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
@@ -375,7 +375,7 @@ const hourAvailFloorSQL = `
 // cast reproduces that same value (a_new == a_old, verified live) — but the cast
 // removes the integer-division trap for any future refactor (matches day/week/month).
 const shiftOeeReconcileSQL = `
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
@@ -387,7 +387,7 @@ const shiftOeeReconcileSQL = `
 	   AND e.ts_value >= now() - interval '25 day'`
 
 const hourOeeReconcileSQL = `
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),

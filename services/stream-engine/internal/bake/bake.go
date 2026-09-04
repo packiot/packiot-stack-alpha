@@ -48,27 +48,27 @@ import (
 // the positively-scoped variant (`ScopedSQL`, $1 = id_enterprise).
 //
 // Why freeze rather than positively-scope enterprise 3? Two surfaces
-// (equipment_runtime_1hour / _1day) have a legacy side that EXCLUDES
+// (equipment_oee_hourly / _1day) have a legacy side that EXCLUDES
 // CPACK (see KNOWN DIVERGENCES below); positively scoping them to
 // id_enterprise=3 would zero out `compared` (the inner join has no
 // legacy CPACK rows to match) — a regression in the gate signal.
 // Freezing sidesteps that entirely.
 //
 // PER-QUERY SCOPING MAP (surface -> what it compares -> how it scopes):
-//   - equipment_runtime_shift:     gross/running_time on the shift grain;
+//   - equipment_oee_shift:     gross/running_time on the shift grain;
 //     scoped by l.id_equipment in equipments(id_enterprise=$1).
 //   - production_orders_runtime:   gross_production/running_time per PO;
 //     scoped by l.id_equipment in equipments(id_enterprise=$1).
-//   - equipment_runtime_1hour:     gross/running_time, hour grain. Legacy
+//   - equipment_oee_hourly:     gross/running_time, hour grain. Legacy
 //     side EXCLUDES CPACK, so positive-scoping the gate (3) would zero
 //     `compared`; gate stays FROZEN, only non-gate tenants scope.
-//   - equipment_runtime_1day:      gross, day grain; same CPACK-exclusion
+//   - equipment_oee_daily:      gross, day grain; same CPACK-exclusion
 //     caveat as _1hour (gate frozen, non-gate scoped).
-//   - uns_equipment_current_month: gross_production, month bucket;
+//   - equipment_live_month: gross_production, month bucket;
 //     scoped by id_equipment in equipments(id_enterprise=$1).
-//   - uns_equipment_current_hour:  gross_production, hour bucket; same.
-//   - uns_equipment_current_job:   id_order equality; same.
-//   - uns_equipment_current_week:  gross_production, week bucket; same.
+//   - equipment_live_hour:  gross_production, hour bucket; same.
+//   - equipment_live_job:   id_order equality; same.
+//   - equipment_live_week:  gross_production, week bucket; same.
 //   - equipment_events_closed:     ts_end of closed events (2s tol);
 //     scoped by l.id_equipment in equipments(id_enterprise=$1).
 //   - customer_reports_shift_06:   liveness of the pool report (ok=true).
@@ -102,20 +102,20 @@ var (
 // ScopedSQL variants add ONLY the enterprise filter — every time-window
 // and tolerance clause is byte-identical to SQL (asserted in tests).
 var surfaces = []struct{ Name, SQL, ScopedSQL, Fixed string }{
-	{Name: "equipment_runtime_shift", SQL: `
+	{Name: "equipment_oee_shift", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_runtime_shift l
-	      JOIN shadow_go_port.equipment_runtime_shift g
+	      FROM public.equipment_oee_shift l
+	      JOIN shadow_go_port.equipment_oee_shift g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_end < now() - interval '2 hours'
 	       AND l.ts_value >= now() - interval '3 days') d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_runtime_shift l
-	      JOIN shadow_go_port.equipment_runtime_shift g
+	      FROM public.equipment_oee_shift l
+	      JOIN shadow_go_port.equipment_oee_shift g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_end < now() - interval '2 hours'
 	       AND l.ts_value >= now() - interval '3 days'
@@ -141,73 +141,73 @@ var surfaces = []struct{ Name, SQL, ScopedSQL, Fixed string }{
 	       AND lower(l.runtime_timerange) >= now() - interval '3 days'
 	       AND l.id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
 
-	{Name: "equipment_runtime_1hour", SQL: `
+	{Name: "equipment_oee_hourly", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_runtime_1hour l
-	      JOIN shadow_go_port.equipment_runtime_1hour g
+	      FROM public.equipment_oee_hourly l
+	      JOIN shadow_go_port.equipment_oee_hourly g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '2 days'
 	       AND l.ts_value < date_trunc('hour', now() - interval '2 hours')) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_runtime_1hour l
-	      JOIN shadow_go_port.equipment_runtime_1hour g
+	      FROM public.equipment_oee_hourly l
+	      JOIN shadow_go_port.equipment_oee_hourly g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '2 days'
 	       AND l.ts_value < date_trunc('hour', now() - interval '2 hours')
 	       AND l.id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
-	{Name: "equipment_runtime_1day", SQL: `
+	{Name: "equipment_oee_daily", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))) AS ok
-	      FROM public.equipment_runtime_1day l
-	      JOIN shadow_go_port.equipment_runtime_1day g
+	      FROM public.equipment_oee_daily l
+	      JOIN shadow_go_port.equipment_oee_daily g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '4 days'
 	       AND l.ts_value < date_trunc('day', now())) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))) AS ok
-	      FROM public.equipment_runtime_1day l
-	      JOIN shadow_go_port.equipment_runtime_1day g
+	      FROM public.equipment_oee_daily l
+	      JOIN shadow_go_port.equipment_oee_daily g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '4 days'
 	       AND l.ts_value < date_trunc('day', now())
 	       AND l.id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
-	{Name: "uns_equipment_current_month", SQL: `
+	{Name: "equipment_live_month", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_month l
-	      JOIN shadow_go_port.uns_equipment_current_month g USING (id_equipment)) d`, ScopedSQL: `
+	      FROM public.equipment_live_month l
+	      JOIN shadow_go_port.equipment_live_month g USING (id_equipment)) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_month l
-	      JOIN shadow_go_port.uns_equipment_current_month g USING (id_equipment)
+	      FROM public.equipment_live_month l
+	      JOIN shadow_go_port.equipment_live_month g USING (id_equipment)
 	     WHERE id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
-	{Name: "uns_equipment_current_hour", SQL: `
+	{Name: "equipment_live_hour", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.05*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_hour l
-	      JOIN shadow_go_port.uns_equipment_current_hour g USING (id_equipment)) d`, ScopedSQL: `
+	      FROM public.equipment_live_hour l
+	      JOIN shadow_go_port.equipment_live_hour g USING (id_equipment)) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.05*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_hour l
-	      JOIN shadow_go_port.uns_equipment_current_hour g USING (id_equipment)
+	      FROM public.equipment_live_hour l
+	      JOIN shadow_go_port.equipment_live_hour g USING (id_equipment)
 	     WHERE id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
-	{Name: "uns_equipment_current_job", SQL: `
+	{Name: "equipment_live_job", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (COALESCE(l.id_order::text,'') = COALESCE(g.id_order::text,'')) AS ok
-	      FROM public.uns_equipment_current_job l
-	      JOIN shadow_go_port.uns_equipment_current_job g USING (id_equipment)) d`, ScopedSQL: `
+	      FROM public.equipment_live_job l
+	      JOIN shadow_go_port.equipment_live_job g USING (id_equipment)) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (COALESCE(l.id_order::text,'') = COALESCE(g.id_order::text,'')) AS ok
-	      FROM public.uns_equipment_current_job l
-	      JOIN shadow_go_port.uns_equipment_current_job g USING (id_equipment)
+	      FROM public.equipment_live_job l
+	      JOIN shadow_go_port.equipment_live_job g USING (id_equipment)
 	     WHERE id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
 	// POOL/GLOBAL surface — keyed by customer_id=6 (the sync06/shift06 pool
 	// tenant = enterprise 6, NEITHER a bake tenant nor CPACK). Not scopable
@@ -231,17 +231,17 @@ var surfaces = []struct{ Name, SQL, ScopedSQL, Fixed string }{
 	     WHERE l.ts_event >= now() - interval '2 days'
 	       AND l.ts_end IS NOT NULL AND g.ts_end IS NOT NULL
 	       AND l.id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
-	{Name: "uns_equipment_current_week", SQL: `
+	{Name: "equipment_live_week", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_week l
-	      JOIN shadow_go_port.uns_equipment_current_week g USING (id_equipment)) d`, ScopedSQL: `
+	      FROM public.equipment_live_week l
+	      JOIN shadow_go_port.equipment_live_week g USING (id_equipment)) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_week l
-	      JOIN shadow_go_port.uns_equipment_current_week g USING (id_equipment)
+	      FROM public.equipment_live_week l
+	      JOIN shadow_go_port.equipment_live_week g USING (id_equipment)
 	     WHERE id_equipment IN (SELECT id_equipment FROM equipments WHERE id_enterprise = $1)) d`},
 }
 
@@ -370,7 +370,7 @@ var identitySurfaces = []struct {
 	{Name: "equipment_runtime_shift_3d", SQL: `
 	SELECT count(*)::text || '|' || COALESCE(sum(gross)::numeric(20,3),0)::text
 	    || '|' || COALESCE(sum(running_time)::numeric(20,1),0)::text
-	  FROM %s.equipment_runtime_shift
+	  FROM %s.equipment_oee_shift
 	 WHERE ts_value >= now() - interval '3 days' AND ts_end < now() - interval '2 hours'`},
 	{Name: "production_orders_runtime_3d", SQL: `
 	SELECT count(*)::text || '|' || COALESCE(sum(gross_production)::numeric(20,3),0)::text

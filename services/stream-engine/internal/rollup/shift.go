@@ -17,7 +17,7 @@
 //     NULL ideal_production_speed (prod's tier carries the trigger
 //     table's LOCF'd value — see shiftValuesSQL comment; the
 //     tp_equipment=3 NULL-ideal fix, shared with hour.go).
-//   - Cascade: area_runtime_shift flagged (same ts_value).
+//   - Cascade: area_oee_shift flagged (same ts_value).
 //   - Phase E: overlaps over [ts_value, ts_end] (shift rows carry
 //     ts_end), 25-day window, CONDITIONAL; oee = net/ideal with the
 //     row's just-written ideal_speed; 25d update guard. E banks its
@@ -30,7 +30,7 @@
 //     tp-agnostic, single writer. (Was full-shift: shift_size − ts_planned.)
 //   - Tail: re-flag [now−12h, now+18h] with the same UNION selector.
 //
-// GUARDRAIL: UPDATEs equipment_runtime_shift (+area flag) by
+// GUARDRAIL: UPDATEs equipment_oee_shift (+area flag) by
 // (id_equipment, ts_value); reads ca_agg + events. No PO tables.
 package rollup
 
@@ -62,7 +62,7 @@ const shiftEligibleSQL = `
 	CREATE TEMP TABLE shift_elig ON COMMIT DROP AS
 	SELECT e.id_equipment, e.ts_value, e.ts_end, e.ts_value_production,
 	       e.id_shift, e.target_customized, s.cd_shift AS cd_shift2
-	  FROM %[1]s.equipment_runtime_shift e
+	  FROM %[1]s.equipment_oee_shift e
 	  JOIN %[2]s.shifts s ON e.id_shift = s.id_shift
 	  JOIN %[2]s.equipments eq ON e.id_equipment = eq.id_equipment
 	 WHERE e.ts_value >= now() - interval '30 days' AND e.ts_value <= now()
@@ -111,7 +111,7 @@ const shiftValuesSQL = `
 	      ) locf ON ca.ideal_production_speed IS NULL
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       gross = COALESCE(s.gross, 0),
 	       net   = COALESCE(s.net, 0),
 	       scrap = COALESCE(s.gross - s.net, 0),
@@ -138,7 +138,7 @@ const shiftValuesSQL = `
 	   AND e.ts_value >= now() - interval '30 day'`
 
 const shiftCascadeAreaSQL = `
-	UPDATE %[1]s.area_runtime_shift a SET recalc_needed = true
+	UPDATE %[1]s.area_oee_shift a SET recalc_needed = true
 	  FROM shift_elig el
 	  JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	 WHERE a.id_area = q.id_area AND a.ts_value = el.ts_value
@@ -209,7 +209,7 @@ const shiftEventsSQL = `
 	 GROUP BY el.id_equipment, el.ts_value, el.ts_end, el.target_customized`
 
 const shiftEventsUpdateSQL = `
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       -- Denominator degrades gracefully (see hour.go): subtract
 	       -- LEAST(ts_planned, ts_total) so available_time / oee_a stay ≥ 0. Inert
 	       -- now that ee_bounded makes ts_planned physical.
@@ -242,7 +242,7 @@ const shiftEventsUpdateSQL = `
 // Performance residual — closes oee = oee_a · oee_p · oee_q on the event-hit
 // shift rows the events update just persisted (see hourOeePSQL for rationale).
 const shiftOeePSQL = `
-	UPDATE %[1]s.equipment_runtime_shift e
+	UPDATE %[1]s.equipment_oee_shift e
 	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
@@ -278,7 +278,7 @@ const shiftOeePSQL = `
 //	  found" guard (legacy's `if found`): its shift_size is intentionally
 //	  no longer referenced now that proration is elapsed-based.
 const shiftTargetsSQL = `
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
 	  FROM shift_ev ev
 	  JOIN %[2]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
@@ -296,14 +296,14 @@ const shiftTargetsSQL = `
 // for a live shift the two coincide, for a replayed old shift computed_at is
 // recent while source_watermark settles at ts_end — the auditable distinction.
 const shiftStampSQL = `
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       computed_at = now(),
 	       source_watermark = LEAST(COALESCE(e.ts_end, e.ts_value + interval '1 day'), now())
 	  FROM shift_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
 const shiftReflagSQL = `
-	UPDATE %[1]s.equipment_runtime_shift e SET recalc_needed = true
+	UPDATE %[1]s.equipment_oee_shift e SET recalc_needed = true
 	 WHERE e.ts_value >= now() - interval '12 hours'
 	   AND e.ts_value < now() + interval '18 hour'
 	   AND e.id_equipment IN (

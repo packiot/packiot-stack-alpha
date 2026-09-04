@@ -455,7 +455,7 @@ func TestIntegrationBackingObjectsAreDriftGated(t *testing.T) {
 	want := map[key]bool{
 		{"function", "get_data_sync_enterprsie_06b"}: false, // job_data_integration (argc 1)
 		{"relation", "equipment_validation_shift"}:   false, // get-shift-validation
-		{"relation", "equipment_runtime_shift"}:      false, // job_report
+		{"relation", "equipment_oee_shift"}:      false, // job_report
 		{"relation", "agg_equipment_values_1min"}:    false, // job_report
 	}
 	for _, o := range objs {

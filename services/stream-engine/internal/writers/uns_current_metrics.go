@@ -9,7 +9,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/sparkplug"
 )
 
-// UnsMetrics builds the live-state UPSERT for public.uns_equipment_current_metrics
+// UnsMetrics builds the live-state UPSERT for public.equipment_live_metrics
 // — keyed by id_equipment alone (one row per equipment, always the latest
 // value). ON CONFLICT (id_equipment) DO UPDATE. Mirrors Node-RED's
 // "Prep: CurMachSpeed → UNS Metric" function.
@@ -49,7 +49,7 @@ func (w *UnsMetrics) Build(ctx context.Context, m *sparkplug.Metric, _ string, s
 	}
 
 	sql := fmt.Sprintf(`
-		INSERT INTO %s.uns_equipment_current_metrics
+		INSERT INTO %s.equipment_live_metrics
 			(id_enterprise, id_site, id_area, id_equipment, speed, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (id_equipment) DO UPDATE SET
@@ -61,7 +61,7 @@ func (w *UnsMetrics) Build(ctx context.Context, m *sparkplug.Metric, _ string, s
 		Args: []any{
 			info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment, speed,
 		},
-		Desc: fmt.Sprintf("upsert %s.uns_equipment_current_metrics eq=%d speed=%v",
+		Desc: fmt.Sprintf("upsert %s.equipment_live_metrics eq=%d speed=%v",
 			schema, info.IDEquipment, speed),
 	}, nil
 }

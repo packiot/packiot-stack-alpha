@@ -331,13 +331,13 @@ var hourSnapshotSQL = []string{
 	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1hour AS
-	   SELECT * FROM public.equipment_runtime_1hour WHERE ts_value >= now() - interval '4 hours' AND ts_value <= now() + interval '1 hour'`,
-	`UPDATE ` + legacySchema + `.equipment_runtime_1hour SET recalc_needed = true WHERE ts_value >= now() - interval '65 minutes' AND ts_value <= now()`,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1day AS
-	   SELECT * FROM public.equipment_runtime_1day WHERE ts_value >= now() - interval '3 days'`,
-	`CREATE TABLE ` + legacySchema + `.area_runtime_1hour AS
-	   SELECT * FROM public.area_runtime_1hour WHERE ts_value >= now() - interval '4 hours'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_hourly AS
+	   SELECT * FROM public.equipment_oee_hourly WHERE ts_value >= now() - interval '4 hours' AND ts_value <= now() + interval '1 hour'`,
+	`UPDATE ` + legacySchema + `.equipment_oee_hourly SET recalc_needed = true WHERE ts_value >= now() - interval '65 minutes' AND ts_value <= now()`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_daily AS
+	   SELECT * FROM public.equipment_oee_daily WHERE ts_value >= now() - interval '3 days'`,
+	`CREATE TABLE ` + legacySchema + `.area_oee_hourly AS
+	   SELECT * FROM public.area_oee_hourly WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.agg_equipment_values_1min_t AS
@@ -346,9 +346,9 @@ var hourSnapshotSQL = []string{
 	   SELECT * FROM public.equipment_events WHERE ts_event >= now() - interval '10 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_1hour AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1hour`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_1day AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1day`,
-	`CREATE TABLE ` + goSchema + `.area_runtime_1hour AS SELECT * FROM ` + legacySchema + `.area_runtime_1hour`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_daily AS SELECT * FROM ` + legacySchema + `.equipment_oee_daily`,
+	`CREATE TABLE ` + goSchema + `.area_oee_hourly AS SELECT * FROM ` + legacySchema + `.area_oee_hourly`,
 	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1hour AS SELECT * FROM ` + legacySchema + `.ca_agg_equipment_values_1hour`,
 	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1min AS SELECT * FROM ` + legacySchema + `.agg_equipment_values_1min_t`,
 	`CREATE TABLE ` + goSchema + `.equipment_events AS SELECT * FROM ` + legacySchema + `.equipment_events`,
@@ -376,8 +376,8 @@ const hourDiffSQL = `
 	        AND abs(COALESCE(l.planned_downtime,0) - COALESCE(g.planned_downtime,0)) < 1.5
 	        AND (l.recalc_needed = g.recalc_needed
 	             OR abs(extract(epoch FROM (l.ts_value - date_trunc('hour', now() - interval '2 hour')))) < 3600)) AS ok
-	      FROM ` + legacySchema + `.equipment_runtime_1hour l
-	      FULL JOIN ` + goSchema + `.equipment_runtime_1hour g
+	      FROM ` + legacySchema + `.equipment_oee_hourly l
+	      FULL JOIN ` + goSchema + `.equipment_oee_hourly g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value < date_trunc('hour', now())  -- open-bucket drift
 	  ) d`
@@ -385,8 +385,8 @@ const hourDiffSQL = `
 const hourMismatchDetail = `
 	SELECT l.id_equipment, l.ts_value, l.gross, g.gross, l.running_time, g.running_time,
 	       l.speed, g.speed, l.recalc_needed, g.recalc_needed
-	  FROM ` + legacySchema + `.equipment_runtime_1hour l
-	  FULL JOIN ` + goSchema + `.equipment_runtime_1hour g
+	  FROM ` + legacySchema + `.equipment_oee_hourly l
+	  FULL JOIN ` + goSchema + `.equipment_oee_hourly g
 	    ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	 WHERE l.ts_value < date_trunc('hour', now())
 	   AND NOT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
@@ -418,23 +418,23 @@ var daySnapshotSQL = []string{
 	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1day AS
-	   SELECT * FROM public.equipment_runtime_1day WHERE ts_value >= now() - interval '35 days' AND ts_value <= now() + interval '2 days'`,
-	`UPDATE ` + legacySchema + `.equipment_runtime_1day SET recalc_needed = true WHERE ts_value >= now() - interval '1 month'`,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1hour AS
-	   SELECT * FROM public.equipment_runtime_1hour WHERE ts_value >= now() - interval '35 days'`,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1week AS
-	   SELECT * FROM public.equipment_runtime_1week WHERE ts_value >= now() - interval '40 days'`,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_1month AS
-	   SELECT * FROM public.equipment_runtime_1month WHERE ts_value >= now() - interval '70 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_daily AS
+	   SELECT * FROM public.equipment_oee_daily WHERE ts_value >= now() - interval '35 days' AND ts_value <= now() + interval '2 days'`,
+	`UPDATE ` + legacySchema + `.equipment_oee_daily SET recalc_needed = true WHERE ts_value >= now() - interval '1 month'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_hourly AS
+	   SELECT * FROM public.equipment_oee_hourly WHERE ts_value >= now() - interval '35 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_weekly AS
+	   SELECT * FROM public.equipment_oee_weekly WHERE ts_value >= now() - interval '40 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_monthly AS
+	   SELECT * FROM public.equipment_oee_monthly WHERE ts_value >= now() - interval '70 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_1day AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1day`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_1hour AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1hour`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_1week AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1week`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_1month AS SELECT * FROM ` + legacySchema + `.equipment_runtime_1month`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_daily AS SELECT * FROM ` + legacySchema + `.equipment_oee_daily`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_weekly AS SELECT * FROM ` + legacySchema + `.equipment_oee_weekly`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_monthly AS SELECT * FROM ` + legacySchema + `.equipment_oee_monthly`,
 	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
-	`CREATE INDEX ON ` + legacySchema + `.equipment_runtime_1hour (id_equipment, ts_value_production)`,
-	`CREATE INDEX ON ` + goSchema + `.equipment_runtime_1hour (id_equipment, ts_value_production)`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_oee_hourly (id_equipment, ts_value_production)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_oee_hourly (id_equipment, ts_value_production)`,
 }
 
 const dayLegacyRun = `SELECT piot_get_equipment_runtime_1day_production2()`
@@ -451,8 +451,8 @@ const dayDiffSQL = `
 	        AND (l.recalc_needed = g.recalc_needed
 	             OR l.ts_value >= now() - interval '2 days'))  -- tail band (per-eq day anchors)
 	           AS ok
-	      FROM ` + legacySchema + `.equipment_runtime_1day l
-	      FULL JOIN ` + goSchema + `.equipment_runtime_1day g
+	      FROM ` + legacySchema + `.equipment_oee_daily l
+	      FULL JOIN ` + goSchema + `.equipment_oee_daily g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     -- month-edge eligibility band
 	     WHERE abs(extract(epoch FROM (l.ts_value - (now() - interval '1 month')))) > 7200
@@ -461,8 +461,8 @@ const dayDiffSQL = `
 const dayMismatchDetail = `
 	SELECT l.id_equipment, l.ts_value, l.gross, g.gross, l.running_time, g.running_time,
 	       l.oee, g.oee, l.recalc_needed, g.recalc_needed
-	  FROM ` + legacySchema + `.equipment_runtime_1day l
-	  FULL JOIN ` + goSchema + `.equipment_runtime_1day g
+	  FROM ` + legacySchema + `.equipment_oee_daily l
+	  FULL JOIN ` + goSchema + `.equipment_oee_daily g
 	    ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	 WHERE NOT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 1.5)
@@ -497,11 +497,11 @@ var shiftSnapshotSQL = []string{
 	`DROP SCHEMA IF EXISTS ` + goSchema + ` CASCADE`,
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
-	`CREATE TABLE ` + legacySchema + `.equipment_runtime_shift AS
-	   SELECT * FROM public.equipment_runtime_shift WHERE ts_value >= now() - interval '32 days' AND ts_value <= now() + interval '1 day'`,
-	`UPDATE ` + legacySchema + `.equipment_runtime_shift SET recalc_needed = true WHERE ts_value >= now() - interval '30 days' AND ts_value <= now()`,
-	`CREATE TABLE ` + legacySchema + `.area_runtime_shift AS
-	   SELECT * FROM public.area_runtime_shift WHERE ts_value >= now() - interval '32 days'`,
+	`CREATE TABLE ` + legacySchema + `.equipment_oee_shift AS
+	   SELECT * FROM public.equipment_oee_shift WHERE ts_value >= now() - interval '32 days' AND ts_value <= now() + interval '1 day'`,
+	`UPDATE ` + legacySchema + `.equipment_oee_shift SET recalc_needed = true WHERE ts_value >= now() - interval '30 days' AND ts_value <= now()`,
+	`CREATE TABLE ` + legacySchema + `.area_oee_shift AS
+	   SELECT * FROM public.area_oee_shift WHERE ts_value >= now() - interval '32 days'`,
 	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '32 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
@@ -509,8 +509,8 @@ var shiftSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + legacySchema + `.shifts AS SELECT * FROM public.shifts`,
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
-	`CREATE TABLE ` + goSchema + `.equipment_runtime_shift AS SELECT * FROM ` + legacySchema + `.equipment_runtime_shift`,
-	`CREATE TABLE ` + goSchema + `.area_runtime_shift AS SELECT * FROM ` + legacySchema + `.area_runtime_shift`,
+	`CREATE TABLE ` + goSchema + `.equipment_oee_shift AS SELECT * FROM ` + legacySchema + `.equipment_oee_shift`,
+	`CREATE TABLE ` + goSchema + `.area_oee_shift AS SELECT * FROM ` + legacySchema + `.area_oee_shift`,
 	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1hour AS SELECT * FROM ` + legacySchema + `.ca_agg_equipment_values_1hour`,
 	`CREATE TABLE ` + goSchema + `.equipment_events AS SELECT * FROM ` + legacySchema + `.equipment_events`,
 	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
@@ -520,8 +520,8 @@ var shiftSnapshotSQL = []string{
 	`CREATE INDEX ON ` + goSchema + `.ca_agg_equipment_values_1hour (id_equipment, ts_value_production)`,
 	`CREATE INDEX ON ` + legacySchema + `.equipment_events (id_equipment, ts_event)`,
 	`CREATE INDEX ON ` + goSchema + `.equipment_events (id_equipment, ts_event)`,
-	`CREATE INDEX ON ` + legacySchema + `.equipment_runtime_shift (id_equipment, ts_value)`,
-	`CREATE INDEX ON ` + goSchema + `.equipment_runtime_shift (id_equipment, ts_value)`,
+	`CREATE INDEX ON ` + legacySchema + `.equipment_oee_shift (id_equipment, ts_value)`,
+	`CREATE INDEX ON ` + goSchema + `.equipment_oee_shift (id_equipment, ts_value)`,
 }
 
 const shiftLegacyRun = `SELECT piot_get_equipment_runtime_shift_production()`
@@ -538,8 +538,8 @@ const shiftDiffSQL = `
 	        AND (l.recalc_needed = g.recalc_needed
 	             OR (l.ts_value >= now() - interval '14 hours' AND l.ts_value < now() + interval '20 hours')))
 	           AS ok
-	      FROM ` + legacySchema + `.equipment_runtime_shift l
-	      FULL JOIN ` + goSchema + `.equipment_runtime_shift g
+	      FROM ` + legacySchema + `.equipment_oee_shift l
+	      FULL JOIN ` + goSchema + `.equipment_oee_shift g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE COALESCE(l.ts_end, now()) < now() - interval '1 hour'  -- closed, outside drift band
 	       AND abs(extract(epoch FROM (l.ts_value - (now() - interval '30 days')))) > 7200
@@ -548,8 +548,8 @@ const shiftDiffSQL = `
 const shiftMismatchDetail = `
 	SELECT l.id_equipment, l.ts_value, l.gross, g.gross, l.running_time, g.running_time,
 	       l.cd_shift, g.cd_shift, l.recalc_needed, g.recalc_needed
-	  FROM ` + legacySchema + `.equipment_runtime_shift l
-	  FULL JOIN ` + goSchema + `.equipment_runtime_shift g
+	  FROM ` + legacySchema + `.equipment_oee_shift l
+	  FULL JOIN ` + goSchema + `.equipment_oee_shift g
 	    ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	 WHERE COALESCE(l.ts_end, now()) < now() - interval '1 hour'
 	   AND NOT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 1e-6*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))

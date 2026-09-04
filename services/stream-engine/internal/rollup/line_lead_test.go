@@ -45,7 +45,7 @@ func TestLineLeadSQLFormatting(t *testing.T) {
 		if strings.Contains(tc.sql, "%!") {
 			t.Errorf("%s SQL has an unsatisfied fmt verb (%%!): %s", tc.name, tc.sql)
 		}
-		if !strings.Contains(tc.sql, "ev.equipment_runtime_") {
+		if !strings.Contains(tc.sql, "ev.equipment_oee_") {
 			t.Errorf("%s SQL missing EvSchema-qualified target table", tc.name)
 		}
 		if !strings.Contains(tc.sql, "ref.equipments") {

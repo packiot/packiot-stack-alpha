@@ -36,7 +36,7 @@ import (
 // vl_day = 86400 everywhere ⇒ proportional_target == elapsed-productive seconds.
 const shiftGoldenSchema = `
 	CREATE TABLE golden.shifts (id_shift int, cd_shift text);
-	CREATE TABLE golden.area_runtime_shift (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
+	CREATE TABLE golden.area_oee_shift (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
 	CREATE TABLE golden.production_targets (id_equipment int, vl_day double precision);
 	CREATE TABLE golden.equipment_values (
 	    id_equipment int, ts_value timestamptz, ideal_production_speed double precision
@@ -50,7 +50,7 @@ const shiftGoldenSchema = `
 	    id_shift int, state int, speed double precision, ideal_production_speed double precision,
 	    gross_production_incr double precision, net_production_incr double precision
 	);
-	CREATE TABLE golden.equipment_runtime_shift (
+	CREATE TABLE golden.equipment_oee_shift (
 	    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 	    ts_value_production timestamptz, id_shift int, cd_shift text,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
@@ -89,7 +89,7 @@ const shiftGoldenFixture = `
 	INSERT INTO golden.shifts VALUES (1,'S1');
 
 	-- LIVE rows: 2h into an 8h shift (ts_value = now()-2h, ts_end = now()+6h).
-	INSERT INTO golden.equipment_runtime_shift
+	INSERT INTO golden.equipment_oee_shift
 	    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, target_customized, recalc_needed, net, ideal_speed, proportional_target)
 	VALUES
 	    (30, now()-interval '2 hours', now()+interval '6 hours', date_trunc('day',now()), 1, false, true, 100, 100, 0),
@@ -160,7 +160,7 @@ func TestGoldenShiftProportionalTarget(t *testing.T) {
 	prop := func(eq int) float64 {
 		var v float64
 		if err := pool.QueryRow(ctx,
-			`SELECT COALESCE(proportional_target,-1) FROM golden.equipment_runtime_shift WHERE id_equipment=$1`, eq).
+			`SELECT COALESCE(proportional_target,-1) FROM golden.equipment_oee_shift WHERE id_equipment=$1`, eq).
 			Scan(&v); err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +207,7 @@ func TestGoldenShiftProportionalTarget(t *testing.T) {
 	var oee, a, p, q float64
 	if err := pool.QueryRow(ctx,
 		`SELECT COALESCE(oee,0),COALESCE(oee_a,0),COALESCE(oee_p,0),COALESCE(oee_q,0)
-		   FROM golden.equipment_runtime_shift WHERE id_equipment=30`).
+		   FROM golden.equipment_oee_shift WHERE id_equipment=30`).
 		Scan(&oee, &a, &p, &q); err != nil {
 		t.Fatal(err)
 	}

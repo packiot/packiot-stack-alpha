@@ -143,10 +143,10 @@ func TestParseSQLShapes(t *testing.T) {
 		{
 			name: "two-relation JOIN with qualified columns",
 			sql: `SELECT r.ts_value, r.target, e.nm_equipment
-				FROM equipment_runtime_1month r JOIN equipments e USING (id_equipment)
+				FROM equipment_oee_monthly r JOIN equipments e USING (id_equipment)
 				WHERE e.id_enterprise = $1 AND e.id_equipment = $2`,
 			want: []contractObject{
-				{Kind: "relation", Name: "equipment_runtime_1month", Columns: []string{"ts_value", "target"}},
+				{Kind: "relation", Name: "equipment_oee_monthly", Columns: []string{"ts_value", "target"}},
 				{Kind: "relation", Name: "equipments", Columns: []string{"nm_equipment"}},
 			},
 		},
@@ -154,12 +154,12 @@ func TestParseSQLShapes(t *testing.T) {
 			// task #54: aggregate projection avg(r.oee) reduces to the column r.oee.
 			name: "aggregate projection reduces to inner column (oee-by-month)",
 			sql: `SELECT avg(r.oee) AS oee, r.cd_shift
-				FROM equipment_runtime_shift r JOIN equipments e USING (id_equipment)
+				FROM equipment_oee_shift r JOIN equipments e USING (id_equipment)
 				WHERE e.id_enterprise = $1 AND e.id_equipment = $2
 				AND date_trunc('month', r.ts_value) = date_trunc('month', $3::date)
 				AND r.cd_shift IS NOT NULL GROUP BY r.cd_shift ORDER BY r.cd_shift`,
 			want: []contractObject{
-				{Kind: "relation", Name: "equipment_runtime_shift", Columns: []string{"oee", "cd_shift"}},
+				{Kind: "relation", Name: "equipment_oee_shift", Columns: []string{"oee", "cd_shift"}},
 				{Kind: "relation", Name: "equipments"},
 			},
 		},
@@ -177,10 +177,10 @@ func TestParseSQLShapes(t *testing.T) {
 		},
 		{
 			name: "liveUNS alias.* → existence-only + guard",
-			sql: `SELECT t.* FROM uns_equipment_current_shift t JOIN equipments e USING (id_equipment)
+			sql: `SELECT t.* FROM equipment_live_shift t JOIN equipments e USING (id_equipment)
 				WHERE e.id_enterprise = $1 AND (cardinality($2::int[]) = 0 OR t.id_equipment = ANY($2::int[]))`,
 			want: []contractObject{
-				{Kind: "relation", Name: "uns_equipment_current_shift"},
+				{Kind: "relation", Name: "equipment_live_shift"},
 				{Kind: "relation", Name: "equipments"},
 			},
 		},

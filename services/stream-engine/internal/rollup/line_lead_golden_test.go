@@ -49,7 +49,7 @@ func TestGoldenLineLead(t *testing.T) {
 		-- no-op path (gross_id == lead_id ⇒ behaviour identical to pre-split).
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
-		CREATE TABLE golden.equipment_runtime_shift (
+		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
 		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
@@ -95,7 +95,7 @@ func TestGoldenLineLead(t *testing.T) {
 		INSERT INTO shift_elig
 		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
 		            date_trunc('hour', now()) - interval '2 hours';
-		INSERT INTO golden.equipment_runtime_shift
+		INSERT INTO golden.equipment_oee_shift
 		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
 		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
 		             date_trunc('hour', now()) - interval '2 hours',
@@ -138,7 +138,7 @@ func TestGoldenLineLead(t *testing.T) {
 	if err := conn.QueryRow(ctx,
 		`SELECT gross, net, available_time, running_time, stopped_time, ideal_speed,
 		        oee, oee_a, oee_p, oee_q, recalc_needed
-		   FROM golden.equipment_runtime_shift WHERE id_equipment = 900`).
+		   FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
 		Scan(&r.gross, &r.net, &r.avail, &r.running, &r.stopped, &r.ideal,
 			&r.oee, &r.oeeA, &r.oeeP, &r.oeeQ, &r.recalc); err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
-		CREATE TABLE golden.equipment_runtime_shift (
+		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
 		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
@@ -261,7 +261,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		INSERT INTO shift_elig
 		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
 		            date_trunc('hour', now()) - interval '2 hours';
-		INSERT INTO golden.equipment_runtime_shift
+		INSERT INTO golden.equipment_oee_shift
 		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
 		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
 		             date_trunc('hour', now()) - interval '2 hours',
@@ -308,7 +308,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 	if err := conn.QueryRow(ctx,
 		`SELECT gross, net, available_time, running_time, ideal_speed,
 		        oee, oee_a, oee_q, recalc_needed
-		   FROM golden.equipment_runtime_shift WHERE id_equipment = 900`).
+		   FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
 		Scan(&r.gross, &r.net, &r.avail, &r.running, &r.ideal,
 			&r.oee, &r.oeeA, &r.oeeQ, &r.recalc); err != nil {
 		t.Fatal(err)
@@ -378,7 +378,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
-		CREATE TABLE golden.equipment_runtime_shift (
+		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
 		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
@@ -417,7 +417,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 		INSERT INTO shift_elig
 		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
 		            date_trunc('hour', now()) - interval '2 hours';
-		INSERT INTO golden.equipment_runtime_shift
+		INSERT INTO golden.equipment_oee_shift
 		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
 		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
 		             date_trunc('hour', now()) - interval '2 hours',
@@ -455,7 +455,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 	}
 	if err := conn.QueryRow(ctx,
 		`SELECT gross, net, scrap, oee_a, oee_q
-		   FROM golden.equipment_runtime_shift WHERE id_equipment = 900`).
+		   FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
 		Scan(&r.gross, &r.net, &r.scrap, &r.oeeA, &r.oeeQ); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ const counterMatrixSchema = `
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
-	CREATE TABLE golden.equipment_runtime_shift (
+	CREATE TABLE golden.equipment_oee_shift (
 	    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 	    ts_value_production timestamptz, id_shift int, cd_shift text,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
@@ -551,7 +551,7 @@ func runCounterMatrixCase(t *testing.T, hourGross, hourNet, hourScrap float64, s
 		INSERT INTO shift_elig
 		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
 		            date_trunc('hour', now()) - interval '2 hours';
-		INSERT INTO golden.equipment_runtime_shift
+		INSERT INTO golden.equipment_oee_shift
 		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
 		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
 		             date_trunc('hour', now()) - interval '2 hours',
@@ -584,7 +584,7 @@ func runCounterMatrixCase(t *testing.T, hourGross, hourNet, hourScrap float64, s
 	}
 	if err := conn.QueryRow(ctx,
 		`SELECT gross, net, scrap, oee_a, oee_q
-		   FROM golden.equipment_runtime_shift WHERE id_equipment = 900`).
+		   FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
 		Scan(&gross, &net, &scrap, &oeeA, &oeeQ); err != nil {
 		t.Fatal(err)
 	}

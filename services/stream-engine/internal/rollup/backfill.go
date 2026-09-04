@@ -38,8 +38,8 @@
 // `e.ts_value = el.ts_value`. The live eligible set is `ts_value >= now()-65min`;
 // this backfill's is `ts_value < now()-65min AND >= now()-10d` — DISJOINT by the
 // 65-minute boundary. So the live rollup and the backfill never UPDATE the same
-// equipment_runtime_1hour / area_runtime_1hour row; the only cross-writer is the
-// idempotent `recalc_needed = true` flag on equipment_runtime_1day (both may set
+// equipment_oee_hourly / area_oee_hourly row; the only cross-writer is the
+// idempotent `recalc_needed = true` flag on equipment_oee_daily (both may set
 // it TRUE — safe under concurrency). Given that, the backfill takes its OWN key
 // ("<dest>:runtime-backfill") so it no longer serializes behind the live rollup
 // and gets its lock every tick — the backlog drains at the tick rate instead of
@@ -65,7 +65,7 @@ import (
 const hourBackfillEligibleSQL = `
 	CREATE TEMP TABLE hour_elig ON COMMIT DROP AS
 	SELECT h.id_equipment, h.ts_value, h.target_customized
-	  FROM %[1]s.equipment_runtime_1hour h
+	  FROM %[1]s.equipment_oee_hourly h
 	 WHERE h.recalc_needed
 	   AND h.ts_value <  now() - interval '65 minutes'
 	   AND h.ts_value >= now() - interval '10 days'
@@ -82,7 +82,7 @@ const hourBackfillEligibleSQL = `
 // eligible batch here (after the passes have written their values) drains those
 // too. recalc_needed is an internal processing flag, not a bake-compared column.
 const hourBackfillClearSQL = `
-	UPDATE %[1]s.equipment_runtime_1hour e SET recalc_needed = false
+	UPDATE %[1]s.equipment_oee_hourly e SET recalc_needed = false
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 

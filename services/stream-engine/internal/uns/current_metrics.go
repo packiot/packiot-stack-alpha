@@ -1,7 +1,7 @@
-// current_metrics.go — the uns_equipment_current_metrics deriver: the
+// current_metrics.go — the equipment_live_metrics deriver: the
 // frozen table's NEW MECHANISM (owner-approved 2026-07-07).
 //
-// WHY THIS EXISTS: public.uns_equipment_current_metrics (one row per
+// WHY THIS EXISTS: public.equipment_live_metrics (one row per
 // equipment: live state/speed/downtime snapshot for mission-control
 // reads) FROZE on all flows after the 10.9 cutover. It was written at
 // ingest by a writer keyed to AMQP routing key `sparkplug.uns_metrics`
@@ -81,7 +81,7 @@
 //     equipments-sourced value per owner spec.
 //   - production_record_shifts: NOT derived here — untouched on
 //     conflict (omitted from both column list and DO UPDATE). Prod's
-//     high-water update (max(net) over equipment_runtime_shift, only
+//     high-water update (max(net) over equipment_oee_shift, only
 //     ratchets up) stays with the legacy engine until it retires.
 //   - last_updated = now().
 //
@@ -89,7 +89,7 @@
 // to job-cadence (default 1 minute).
 //
 // GUARDRAIL: one set-based UPSERT per destination; writes ONLY
-// uns_equipment_current_metrics, keyed by id_equipment.
+// equipment_live_metrics, keyed by id_equipment.
 package uns
 
 import (
@@ -205,7 +205,7 @@ const currentMetricsSQL = `
 	             AND v.ts_value <  h.bucket + interval '1 hour') hb ON true
 	     GROUP BY m.id_equipment
 	)
-	INSERT INTO %[1]s.uns_equipment_current_metrics
+	INSERT INTO %[1]s.equipment_live_metrics
 	       (id_enterprise, id_site, id_area, id_equipment, state, speed, updated_at,
 	        status, downtime_category, downtime_subcategory, status_time,
 	        nm_equipment, nm_area, nm_site, status_24h, ideal_speed,

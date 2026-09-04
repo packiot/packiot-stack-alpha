@@ -44,7 +44,7 @@ const changeoverGoldenFixture = `
 	INSERT INTO golden.production_targets VALUES (40, 86400);
 	INSERT INTO golden.shifts VALUES (1,'S1');
 	-- PAST fully-elapsed 8h shift a day ago ⇒ ts_total = 28800.
-	INSERT INTO golden.equipment_runtime_shift
+	INSERT INTO golden.equipment_oee_shift
 	    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, target_customized, recalc_needed, net, gross, ideal_speed)
 	VALUES
 	    (40, now()-interval '1 day', now()-interval '1 day'+interval '8 hours', date_trunc('day',now()-interval '1 day'), 1, false, true, 90, 100, 100);
@@ -65,7 +65,7 @@ type shiftAvail struct {
 func runShiftPassChangeover(ctx context.Context, t *testing.T, pool *pgxpool.Pool, changeoverAvailability bool) shiftAvail {
 	t.Helper()
 	// Re-flag the row so the pass re-selects it.
-	if _, err := pool.Exec(ctx, `UPDATE golden.equipment_runtime_shift SET recalc_needed = true WHERE id_equipment = 40`); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE golden.equipment_oee_shift SET recalc_needed = true WHERE id_equipment = 40`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(ctx)
@@ -97,7 +97,7 @@ func runShiftPassChangeover(ctx context.Context, t *testing.T, pool *pgxpool.Poo
 	if err := pool.QueryRow(ctx,
 		`SELECT COALESCE(available_time,0), COALESCE(running_time,0), COALESCE(planned_downtime,0),
 		        COALESCE(changeover_time,0), COALESCE(oee_a,0)
-		   FROM golden.equipment_runtime_shift WHERE id_equipment = 40`).
+		   FROM golden.equipment_oee_shift WHERE id_equipment = 40`).
 		Scan(&a.available, &a.running, &a.planned, &a.changeover, &a.oeeA); err != nil {
 		t.Fatal(err)
 	}

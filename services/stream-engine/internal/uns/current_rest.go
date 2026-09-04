@@ -115,17 +115,17 @@ const refreshShiftAreaSQL = `
 	           v.stopped_time, v.planned_downtime, v.ideal_production,
 	           v.idle_time, v.idle_starved, v.idle_blocked, v.target,
 	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration, v.proportional_target
-	      FROM %[1]s.area_runtime_shift v
+	      FROM %[1]s.area_oee_shift v
 	      JOIN ts ON v.id_area = ts.id_area AND v.ts_value = ts.ts_value
 	), prod1 AS (
 	    SELECT v.id_area, v.ts_value, v.net, v.gross, v.scrap,
 	           v.oee, v.oee_a, v.oee_p, v.oee_q, v.target,
 	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration
-	      FROM %[1]s.area_runtime_shift v
+	      FROM %[1]s.area_oee_shift v
 	      JOIN ts ON v.id_area = ts.id_area
 	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
 	)
-	UPDATE %[1]s.uns_area_current_shift u SET
+	UPDATE %[1]s.area_live_shift u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
 	       available_time = p.available_time, running_time = p.running_time,
@@ -163,7 +163,7 @@ const refreshJobsSQL = `
 	      LEFT JOIN %[2]s.clients c ON c.id_client = po.id_client
 	     WHERE e.tp_equipment = 3
 	)
-	UPDATE %[1]s.uns_equipment_current_job u SET
+	UPDATE %[1]s.equipment_live_job u SET
 	       id_production_order = p.id_production_order, id_order = p.id_order,
 	       nm_product = p.nm_product, nm_client = p.nm_client,
 	       nm_product_family = p.nm_product_family,
@@ -189,7 +189,7 @@ const refreshJobsElapsedSQL = `
 	      LEFT JOIN %[1]s.production_orders_runtime por ON po.id_production_order = por.id_production_order
 	     GROUP BY 1, 2
 	)
-	UPDATE %[1]s.uns_equipment_current_job u SET elapsed_time = p.duration
+	UPDATE %[1]s.equipment_live_job u SET elapsed_time = p.duration
 	  FROM po_time p WHERE u.id_equipment = p.id_equipment`
 
 // RefreshCurrentRest runs the remaining live refreshers (day/week/
@@ -197,8 +197,8 @@ const refreshJobsElapsedSQL = `
 func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 	type ent struct{ key, rtDay, unsDay, rtWeek, unsWeek, rtMonth, unsMonth string }
 	ents := []ent{
-		{"id_area", "area_runtime_1day", "uns_area_current_day", "area_runtime_1week", "uns_area_current_week", "area_runtime_1month", "uns_area_current_month"},
-		{"id_site", "site_runtime_1day", "uns_site_current_day", "site_runtime_1week", "uns_site_current_week", "site_runtime_1month", "uns_site_current_month"},
+		{"id_area", "area_oee_daily", "area_live_day", "area_oee_weekly", "area_live_week", "area_oee_monthly", "area_live_month"},
+		{"id_site", "site_oee_daily", "site_live_day", "site_oee_weekly", "site_live_week", "site_oee_monthly", "site_live_month"},
 	}
 	for _, e := range ents {
 		steps := []struct{ name, sql string }{

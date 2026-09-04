@@ -71,13 +71,13 @@ import (
 // (equipment_runtime_shift_job) are intentionally excluded — they are
 // not per-machine tiles.
 var unmeteredMachineTables = []string{
-	"equipment_runtime_1hour",
-	"equipment_runtime_1day",
-	"equipment_runtime_1week",
-	"equipment_runtime_1month",
-	"equipment_runtime_shift",
-	"equipment_runtime_shift_1week",
-	"equipment_runtime_shift_1month",
+	"equipment_oee_hourly",
+	"equipment_oee_daily",
+	"equipment_oee_weekly",
+	"equipment_oee_monthly",
+	"equipment_oee_shift",
+	"equipment_oee_shift_weekly",
+	"equipment_oee_shift_monthly",
 }
 
 // %[1]s = event schema (grain tables), %[2]s = reference schema

@@ -12,12 +12,12 @@ import (
 // (git-blame the original single-field struct). The gate tenant runs
 // exactly these strings; any drift here means CPACK's signal moved.
 var goldenGateSQL = map[string]string{
-	"equipment_runtime_shift": `
+	"equipment_oee_shift": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_runtime_shift l
-	      JOIN shadow_go_port.equipment_runtime_shift g
+	      FROM public.equipment_oee_shift l
+	      JOIN shadow_go_port.equipment_oee_shift g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_end < now() - interval '2 hours'
 	       AND l.ts_value >= now() - interval '3 days') d`,
@@ -31,40 +31,40 @@ var goldenGateSQL = map[string]string{
 	       AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
 	     WHERE upper(l.runtime_timerange) < now() - interval '2 hours'
 	       AND lower(l.runtime_timerange) >= now() - interval '3 days') d`,
-	"equipment_runtime_1hour": `
+	"equipment_oee_hourly": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_runtime_1hour l
-	      JOIN shadow_go_port.equipment_runtime_1hour g
+	      FROM public.equipment_oee_hourly l
+	      JOIN shadow_go_port.equipment_oee_hourly g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '2 days'
 	       AND l.ts_value < date_trunc('hour', now() - interval '2 hours')) d`,
-	"equipment_runtime_1day": `
+	"equipment_oee_daily": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))) AS ok
-	      FROM public.equipment_runtime_1day l
-	      JOIN shadow_go_port.equipment_runtime_1day g
+	      FROM public.equipment_oee_daily l
+	      JOIN shadow_go_port.equipment_oee_daily g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '4 days'
 	       AND l.ts_value < date_trunc('day', now())) d`,
-	"uns_equipment_current_month": `
+	"equipment_live_month": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_month l
-	      JOIN shadow_go_port.uns_equipment_current_month g USING (id_equipment)) d`,
-	"uns_equipment_current_hour": `
+	      FROM public.equipment_live_month l
+	      JOIN shadow_go_port.equipment_live_month g USING (id_equipment)) d`,
+	"equipment_live_hour": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.05*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_hour l
-	      JOIN shadow_go_port.uns_equipment_current_hour g USING (id_equipment)) d`,
-	"uns_equipment_current_job": `
+	      FROM public.equipment_live_hour l
+	      JOIN shadow_go_port.equipment_live_hour g USING (id_equipment)) d`,
+	"equipment_live_job": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (COALESCE(l.id_order::text,'') = COALESCE(g.id_order::text,'')) AS ok
-	      FROM public.uns_equipment_current_job l
-	      JOIN shadow_go_port.uns_equipment_current_job g USING (id_equipment)) d`,
+	      FROM public.equipment_live_job l
+	      JOIN shadow_go_port.equipment_live_job g USING (id_equipment)) d`,
 	"customer_reports_shift_06": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT true AS ok FROM customer_reports.shift WHERE customer_id = 6) d`,
@@ -76,12 +76,12 @@ var goldenGateSQL = map[string]string{
 	        ON l.id_equipment = g.id_equipment AND l.ts_event = g.ts_event
 	     WHERE l.ts_event >= now() - interval '2 days'
 	       AND l.ts_end IS NOT NULL AND g.ts_end IS NOT NULL) d`,
-	"uns_equipment_current_week": `
+	"equipment_live_week": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0))
 	              < 1e-6 + 0.02*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))) AS ok
-	      FROM public.uns_equipment_current_week l
-	      JOIN shadow_go_port.uns_equipment_current_week g USING (id_equipment)) d`,
+	      FROM public.equipment_live_week l
+	      JOIN shadow_go_port.equipment_live_week g USING (id_equipment)) d`,
 }
 
 func surfaceByName(t *testing.T, name string) (sql, scoped, fixed string) {
@@ -236,15 +236,15 @@ func TestTwoTenantPlan(t *testing.T) {
 func TestScopedPreservesWindowsAndTolerances(t *testing.T) {
 	// distinctive window + tolerance fragments per surface
 	clauses := map[string][]string{
-		"equipment_runtime_shift":     {"interval '2 hours'", "interval '3 days'", "< 120", "0.01*greatest"},
+		"equipment_oee_shift":     {"interval '2 hours'", "interval '3 days'", "< 120", "0.01*greatest"},
 		"production_orders_runtime":   {"interval '2 hours'", "interval '3 days'", "< 120", "0.01*greatest", "lower(l.runtime_timerange)"},
-		"equipment_runtime_1hour":     {"interval '2 days'", "date_trunc('hour', now() - interval '2 hours')", "< 120", "0.01*greatest"},
-		"equipment_runtime_1day":      {"interval '4 days'", "date_trunc('day', now())", "0.01*greatest"},
-		"uns_equipment_current_month": {"0.02*greatest"},
-		"uns_equipment_current_hour":  {"0.05*greatest"},
-		"uns_equipment_current_job":   {"id_order::text"},
+		"equipment_oee_hourly":     {"interval '2 days'", "date_trunc('hour', now() - interval '2 hours')", "< 120", "0.01*greatest"},
+		"equipment_oee_daily":      {"interval '4 days'", "date_trunc('day', now())", "0.01*greatest"},
+		"equipment_live_month": {"0.02*greatest"},
+		"equipment_live_hour":  {"0.05*greatest"},
+		"equipment_live_job":   {"id_order::text"},
 		"equipment_events_closed":     {"interval '2 days'", "< 2", "ts_end IS NOT NULL"},
-		"uns_equipment_current_week":  {"0.02*greatest"},
+		"equipment_live_week":  {"0.02*greatest"},
 	}
 	for _, s := range surfaces {
 		if s.ScopedSQL == "" {
@@ -293,12 +293,12 @@ func TestPoolSurfaceNotPerTenant(t *testing.T) {
 func TestGateIsFirstConfigured(t *testing.T) {
 	runs := planRuns([]int{4, 3}) // deliberately gate=4
 	for _, r := range runs {
-		if r.Surface == "equipment_runtime_shift" && r.Label == "4" {
+		if r.Surface == "equipment_oee_shift" && r.Label == "4" {
 			if r.Args != nil {
 				t.Error("first configured enterprise (4 here) must be the verbatim gate")
 			}
 		}
-		if r.Surface == "equipment_runtime_shift" && r.Label == "3" {
+		if r.Surface == "equipment_oee_shift" && r.Label == "3" {
 			if len(r.Args) != 1 || r.Args[0] != 3 {
 				t.Error("non-first enterprise must run scoped with its bind arg")
 			}

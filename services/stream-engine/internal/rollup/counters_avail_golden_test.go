@@ -38,7 +38,7 @@ func TestGoldenCountersAvail(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// DDL: golden schema + grain tables (equipment_runtime_1hour,
+	// DDL: golden schema + grain tables (equipment_oee_hourly,
 	// ca_agg_equipment_values_1min, equipments) from the shared fixtures.
 	for _, s := range []string{goldenSchema, grainGoldenSchema} {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -65,7 +65,7 @@ func TestGoldenCountersAvail(t *testing.T) {
 		INSERT INTO hour_elig
 		SELECT g, date_trunc('hour', now()) - interval '3 hours'
 		  FROM (VALUES (30),(31),(32)) v(g);
-		INSERT INTO golden.equipment_runtime_1hour
+		INSERT INTO golden.equipment_oee_hourly
 		    (id_equipment, ts_value, ts_value_production, gross, net, ideal_speed, recalc_needed)
 		SELECT g, date_trunc('hour', now()) - interval '3 hours',
 		       date_trunc('day', now()), 1000, 950, 147, true
@@ -111,7 +111,7 @@ func TestGoldenCountersAvail(t *testing.T) {
 		if err := conn.QueryRow(ctx,
 			`SELECT available_time, running_time, stopped_time, oee_a, oee_q, oee,
 			        planned_downtime, recalc_needed
-			   FROM golden.equipment_runtime_1hour WHERE id_equipment=$1`, id).
+			   FROM golden.equipment_oee_hourly WHERE id_equipment=$1`, id).
 			Scan(&r.avail, &r.running, &r.stopped, &r.oeeA, &r.oeeQ, &r.oee, &r.planned, &r.recalc); err != nil {
 			t.Fatal(err)
 		}

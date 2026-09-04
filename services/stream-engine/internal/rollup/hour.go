@@ -30,7 +30,7 @@
 //   - Exclusion lists (prod hardcodes incl. 35=CPACK) → config; our
 //     flows keep CPACK live (divergence-by-config, documented).
 //
-// GUARDRAIL: UPDATEs equipment_runtime_1hour (+day/area flag
+// GUARDRAIL: UPDATEs equipment_oee_hourly (+day/area flag
 // cascades) by (id_equipment, ts_value). No PO tables.
 package rollup
 
@@ -44,7 +44,7 @@ import (
 const hourEligibleSQL = `
 	CREATE TEMP TABLE hour_elig ON COMMIT DROP AS
 	SELECT h.id_equipment, h.ts_value, h.target_customized
-	  FROM %[1]s.equipment_runtime_1hour h
+	  FROM %[1]s.equipment_oee_hourly h
 	 WHERE h.ts_value >= now() - interval '65 minutes' AND h.ts_value <= now()
 	   AND h.recalc_needed
 	   AND h.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
@@ -64,7 +64,7 @@ const hourValuesSQL = `
 	       AND ca.ts_value = el.ts_value
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       gross = COALESCE(s.gross, 0),
 	       net   = COALESCE(s.net, 0),
 	       scrap = COALESCE(s.gross - s.net, 0),
@@ -75,13 +75,13 @@ const hourValuesSQL = `
 	   AND e.ts_value >= now() - interval '65 minutes'`
 
 const hourCascadeDaySQL = `
-	UPDATE %[1]s.equipment_runtime_1day d SET recalc_needed = true
+	UPDATE %[1]s.equipment_oee_daily d SET recalc_needed = true
 	  FROM hour_elig el
 	 WHERE d.id_equipment = el.id_equipment
 	   AND d.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)`
 
 const hourCascadeAreaSQL = `
-	UPDATE %[1]s.area_runtime_1hour a SET recalc_needed = true
+	UPDATE %[1]s.area_oee_hourly a SET recalc_needed = true
 	  FROM hour_elig el
 	  JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	 WHERE a.id_area = q.id_area AND a.ts_value = el.ts_value`
@@ -126,7 +126,7 @@ const hourSpeedSQL = `
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       speed       = COALESCE(sp.speed, 0),
 	       ideal_speed = COALESCE(sp.ideal_speed, 0)
 	  FROM sp
@@ -206,7 +206,7 @@ const hourEventsSQL = `
 	       AND tstzrange(ee.ts_event, ee.ts_eff_end) && tstzrange(el.ts_value, el.ts_value + interval '1 hour')
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       -- Denominator degrades gracefully: planned-production-time can never
 	       -- exceed the bucket, so subtract LEAST(ts_planned, ts_total). With the
 	       -- ee_bounded fix ts_planned is already ≤ ts_total (inert here), but this
@@ -255,7 +255,7 @@ const hourEventsSQL = `
 // throughput can drive oee_p > 1; the GREATEST(LEAST(..,1),0) clamp keeps this
 // write inside the *_oee_bounds invariant (#663) so the tick's CHECK holds.
 const hourOeePSQL = `
-	UPDATE %[1]s.equipment_runtime_1hour e
+	UPDATE %[1]s.equipment_oee_hourly e
 	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
@@ -264,7 +264,7 @@ const hourOeePSQL = `
 
 // Targets: event-hit rows only (cleared ∩ eligible — see argument).
 const hourTargetsSQL = `
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       proportional_target = COALESCE(pt.vl_day::float / 24, 0)
 	  FROM hour_elig el
 	  JOIN %[2]s.production_targets pt ON pt.id_equipment = el.id_equipment
@@ -279,14 +279,14 @@ const hourTargetsSQL = `
 // the tick's batch (hour_elig). source_watermark = LEAST(hour bucket end,
 // now()) — the latest event-time this hour row has visibility through.
 const hourStampSQL = `
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       computed_at = now(),
 	       source_watermark = LEAST(e.ts_value + interval '1 hour', now())
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
 const hourReflagSQL = `
-	UPDATE %[1]s.equipment_runtime_1hour SET recalc_needed = true
+	UPDATE %[1]s.equipment_oee_hourly SET recalc_needed = true
 	 WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
 	   AND ts_value <= now()`
 

@@ -225,7 +225,7 @@ type Config struct {
 	UnsRefreshEnabled      bool
 	UnsIntervalMinutes     int
 
-	// UnsCurrentMetricsEnabled — the uns_equipment_current_metrics
+	// UnsCurrentMetricsEnabled — the equipment_live_metrics
 	// deriver (the table froze post-10.9: its ingest writer's routing
 	// key `sparkplug.uns_metrics` lost its only producer). DEFAULT
 	// FALSE — ships inert, enabled at the flip. See

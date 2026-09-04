@@ -32,8 +32,8 @@ import (
 // silverGrainTables is dqGrainMatrix's table set — RunSilverClamp iterates all of
 // them, so the fixture must create every one (empty tables are a clean no-op).
 var silverGrainTables = []string{
-	"equipment_runtime_shift", "equipment_runtime_1hour", "equipment_runtime_1day",
-	"equipment_runtime_1week", "equipment_runtime_1month",
+	"equipment_oee_shift", "equipment_oee_hourly", "equipment_oee_daily",
+	"equipment_oee_weekly", "equipment_oee_monthly",
 }
 
 // silverRuntimeCols mirrors the columns the clamp touches; every equipment_runtime_*
@@ -104,7 +104,7 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 
 		-- 81: maximally out-of-range shift row. oee/oee_a/oee_p/oee_q all >1;
 		-- net(200) > gross(100); scrap negative; running_time negative.
-		INSERT INTO silver.equipment_runtime_shift
+		INSERT INTO silver.equipment_oee_shift
 		    (id_equipment, ts_value, oee, oee_a, oee_p, oee_q, gross, net, scrap,
 		     available_time, running_time, stopped_time, planned_downtime, downtime,
 		     changeover_time, idle_time, idle_starved, idle_blocked, ideal_production)
@@ -112,7 +112,7 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 		     3600, -3600, 0, 0, 0, 0, 0, 0, 0, 0);
 
 		-- 82: fully clean shift row — must be byte-identical after the pass.
-		INSERT INTO silver.equipment_runtime_shift
+		INSERT INTO silver.equipment_oee_shift
 		    (id_equipment, ts_value, oee, oee_a, oee_p, oee_q, gross, net, scrap,
 		     available_time, running_time, stopped_time, planned_downtime, downtime,
 		     changeover_time, idle_time, idle_starved, idle_blocked, ideal_production)
@@ -121,7 +121,7 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 
 		-- 83: "not metered" NULL row (RunUnmetered's shape) with clean counts —
 		-- must NOT be selected (NULL never satisfies the WHERE) → oee stays NULL.
-		INSERT INTO silver.equipment_runtime_shift
+		INSERT INTO silver.equipment_oee_shift
 		    (id_equipment, ts_value, oee, oee_a, oee_p, oee_q, gross, net, scrap,
 		     available_time, running_time, stopped_time, planned_downtime, downtime,
 		     changeover_time, idle_time, idle_starved, idle_blocked, ideal_production)
@@ -151,7 +151,7 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 		var oee *float64
 		if err := pool.QueryRow(ctx, `
 			SELECT oee, oee_a, oee_p, oee_q, gross, net, scrap, running_time
-			  FROM silver.equipment_runtime_shift WHERE id_equipment=$1`, id).
+			  FROM silver.equipment_oee_shift WHERE id_equipment=$1`, id).
 			Scan(&oee, &r.oeeA, &r.oeeP, &r.oeeQ, &r.gross, &r.net, &r.scrap, &r.running); err != nil {
 			t.Fatalf("get %d: %v", id, err)
 		}

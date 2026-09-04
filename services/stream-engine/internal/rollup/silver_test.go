@@ -10,8 +10,8 @@ import (
 // (silver_clamp_golden_test.go); these pin the SQL contract so a refactor can't
 // silently drop the clamp or start lowering gross.
 func TestSilverNetLeGrossClampShape(t *testing.T) {
-	clamp := silverClampSQL("ev", "equipment_runtime_shift")
-	detect := silverDetectSQL("ev", "equipment_runtime_shift", "ref", "shift")
+	clamp := silverClampSQL("ev", "equipment_oee_shift")
+	detect := silverDetectSQL("ev", "equipment_oee_shift", "ref", "shift")
 
 	// The clamp lowers net to gross (folded with the non-negative clamp), and does
 	// so via one SET clause — never two SET clauses for net (which is a SQL error).

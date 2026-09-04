@@ -312,7 +312,7 @@ const sqlJobReport = `
           case
             when ts_end > now() then now()
             else ts_end  end as tz_end
-        from equipment_runtime_shift
+        from equipment_oee_shift
         where id_equipment in (select id_equipment from equipments where id_enterprise = $1 and tp_equipment = 3)
         and ts_value  >=now() - interval '48 hour'
         and ts_value < now()
