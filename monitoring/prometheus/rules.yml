@@ -234,6 +234,12 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "TimescaleDB job {{ $labels.proc_name }} ({{ $labels.job_id }}) last run failed"
+      - alert: HistorianGatewayDown
+        expr: probe_success{instance="hist-gateway:5432"} == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "historian-gateway (ev_all hot+cold union) unreachable >5m — Superset/tools cold queries fail"
 
   # ADR-0022 V3 — the per-tenant flip-readiness VERDICT. Layered ON TOP
   # of the bake gauges (bake_surface_mismatches / bake_surface_compared);
