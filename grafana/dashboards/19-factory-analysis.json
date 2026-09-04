@@ -159,7 +159,7 @@
           "type": "postgres",
           "uid": "packiot-postgres-shadow"
         },
-        "query": "SELECT DISTINCT cd_shift AS __text, cd_shift AS __value FROM equipment_runtime_shift WHERE cd_shift IS NOT NULL ORDER BY 1",
+        "query": "SELECT DISTINCT cd_shift AS __text, cd_shift AS __value FROM equipment_oee_shift WHERE cd_shift IS NOT NULL ORDER BY 1",
         "multi": true,
         "includeAll": true,
         "refresh": 2,
@@ -179,7 +179,7 @@
         "name": "grain",
         "label": "Trend grain",
         "type": "custom",
-        "query": "shift,1hour,1day",
+        "query": "shift,hourly,daily",
         "multi": false,
         "includeAll": false,
         "current": {
@@ -195,13 +195,13 @@
           },
           {
             "selected": false,
-            "text": "1hour",
-            "value": "1hour"
+            "text": "hourly",
+            "value": "hourly"
           },
           {
             "selected": false,
-            "text": "1day",
-            "value": "1day"
+            "text": "daily",
+            "value": "daily"
           }
         ]
       }
@@ -220,7 +220,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Factory / OEE analysis \u2014 the plant-manager & tee-validation lens\nExploratory business view over the **F3 shadow Gold tables** (`packiot_analytics`: `equipment_runtime_shift/_1hour/_1day`, `area_/site_runtime_*`, `production_orders_runtime`, `equipment_events`, `data_quality_event`). OEE / A / P / Q are stored **0\u20131** and rendered \u00d7100 as %. Scope with the **$enterprise \u2192 $site \u2192 $area \u2192 $line \u2192 $shift** chain; `$grain` switches the trend panels between shift / hour / day rollups.\n\n**Reading blanks (v2 contract):** with plc-sim + Incoplast data some loss buckets read 0 by design \u2014 downtime *reason categories*, `changeover_time`, `idle_starved/idle_blocked` are emitted by real client PLCs; they light up when **CPACK real data lands via the tee**. The **Data-quality strip** (bottom) tells you which numbers the engine clamped/flagged in the window \u2014 read it before trusting a KPI."
+        "content": "### Factory / OEE analysis \u2014 the plant-manager & tee-validation lens\nExploratory business view over the **F3 shadow Gold tables** (`packiot_analytics`: `equipment_oee_shift/_hourly/_daily`, `area_/site_oee_*`, `production_orders_runtime`, `equipment_events`, `data_quality_event`). OEE / A / P / Q are stored **0\u20131** and rendered \u00d7100 as %. Scope with the **$enterprise \u2192 $site \u2192 $area \u2192 $line \u2192 $shift** chain; `$grain` switches the trend panels between shift / hour / day rollups.\n\n**Reading blanks (v2 contract):** with plc-sim + Incoplast data some loss buckets read 0 by design \u2014 downtime *reason categories*, `changeover_time`, `idle_starved/idle_blocked` are emitted by real client PLCs; they light up when **CPACK real data lands via the tee**. The **Data-quality strip** (bottom) tells you which numbers the engine clamped/flagged in the window \u2014 read it before trusting a KPI."
       }
     },
     {
@@ -239,7 +239,7 @@
       "id": 3,
       "type": "stat",
       "title": "OEE %",
-      "description": "Mean OEE over the scoped window (equipment_runtime_shift.oee \u00d7100). World-class \u2265 85%. This is the engine's authoritative rollup, not a raw-tick re-derivation.",
+      "description": "Mean OEE over the scoped window (equipment_oee_shift.oee \u00d7100). World-class \u2265 85%. This is the engine's authoritative rollup, not a raw-tick re-derivation.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -293,7 +293,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -357,7 +357,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -421,7 +421,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -485,7 +485,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -552,7 +552,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\", ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\", ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\", ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\", ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability %\", ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance %\", ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -609,7 +609,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, SUM(r.net) AS \"Net\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, SUM(r.net) AS \"Net\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -673,7 +673,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, SUM(r.scrap) AS \"Scrap\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
+          "rawSql": "SELECT NOW() AS time, SUM(r.scrap) AS \"Scrap\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now()",
           "format": "table",
           "refId": "A"
         }
@@ -730,7 +730,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT NOW() AS time, SUM(r.downtime) AS \"Downtime\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
+          "rawSql": "SELECT NOW() AS time, SUM(r.downtime) AS \"Downtime\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})",
           "format": "table",
           "refId": "A"
         }
@@ -1016,7 +1016,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "WITH r AS (SELECT r.running_time, r.stopped_time, r.downtime, r.changeover_time, COALESCE(r.idle_starved,0)+COALESCE(r.idle_blocked,0)+COALESCE(r.idle_time,0) AS idle_all, r.oee_p, r.oee_q FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})) SELECT loss, secs FROM ( SELECT '1 Breakdowns (unplanned stop)' AS loss, COALESCE(SUM(GREATEST(downtime-changeover_time,0)),0) AS secs, 1 o FROM r UNION ALL SELECT '2 Setup & changeover', COALESCE(SUM(changeover_time),0), 2 FROM r UNION ALL SELECT '3 Idling & minor stops', COALESCE(SUM(idle_all),0), 3 FROM r UNION ALL SELECT '4 Reduced speed', COALESCE(SUM(GREATEST(running_time*(1-COALESCE(oee_p,1)),0)),0)::bigint, 4 FROM r UNION ALL SELECT '5 Scrap / process defects', COALESCE(SUM(GREATEST(running_time*(1-COALESCE(oee_q,1)),0)),0)::bigint, 5 FROM r ) s ORDER BY o",
+          "rawSql": "WITH r AS (SELECT r.running_time, r.stopped_time, r.downtime, r.changeover_time, COALESCE(r.idle_starved,0)+COALESCE(r.idle_blocked,0)+COALESCE(r.idle_time,0) AS idle_all, r.oee_p, r.oee_q FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring})) SELECT loss, secs FROM ( SELECT '1 Breakdowns (unplanned stop)' AS loss, COALESCE(SUM(GREATEST(downtime-changeover_time,0)),0) AS secs, 1 o FROM r UNION ALL SELECT '2 Setup & changeover', COALESCE(SUM(changeover_time),0), 2 FROM r UNION ALL SELECT '3 Idling & minor stops', COALESCE(SUM(idle_all),0), 3 FROM r UNION ALL SELECT '4 Reduced speed', COALESCE(SUM(GREATEST(running_time*(1-COALESCE(oee_p,1)),0)),0)::bigint, 4 FROM r UNION ALL SELECT '5 Scrap / process defects', COALESCE(SUM(GREATEST(running_time*(1-COALESCE(oee_q,1)),0)),0)::bigint, 5 FROM r ) s ORDER BY o",
           "format": "table",
           "refId": "A"
         }
@@ -1127,7 +1127,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT r.ts_value::timestamptz AS time, SUM(r.net) AS \"Net\", SUM(r.gross) AS \"Gross\", SUM(r.proportional_target) AS \"Proportional target\" FROM equipment_runtime_${grain} r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value::timestamptz) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT r.ts_value::timestamptz AS time, SUM(r.net) AS \"Net\", SUM(r.gross) AS \"Gross\", SUM(r.proportional_target) AS \"Proportional target\" FROM equipment_oee_ r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value::timestamptz) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -1205,7 +1205,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT r.ts_value::timestamptz AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE\", ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability\", ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance\", ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality\" FROM equipment_runtime_${grain} r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value::timestamptz) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT r.ts_value::timestamptz AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE\", ROUND((AVG(r.oee_a)*100)::numeric,1) AS \"Availability\", ROUND((AVG(r.oee_p)*100)::numeric,1) AS \"Performance\", ROUND((AVG(r.oee_q)*100)::numeric,1) AS \"Quality\" FROM equipment_oee_ r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value::timestamptz) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -1311,7 +1311,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT eq.nm_equipment AS machine, ROUND((AVG(r.oee) FILTER (WHERE r.cd_shift='1')*100)::numeric,1) AS \"Shift 1\", ROUND((AVG(r.oee) FILTER (WHERE r.cd_shift='2')*100)::numeric,1) AS \"Shift 2\", ROUND((AVG(r.oee) FILTER (WHERE r.cd_shift='3')*100)::numeric,1) AS \"Shift 3\", ROUND((AVG(r.oee)*100)::numeric,1) AS \"All\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN equipments eq ON eq.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY eq.nm_equipment ORDER BY \"All\" ASC NULLS LAST",
+          "rawSql": "SELECT eq.nm_equipment AS machine, ROUND((AVG(r.oee) FILTER (WHERE r.cd_shift='1')*100)::numeric,1) AS \"Shift 1\", ROUND((AVG(r.oee) FILTER (WHERE r.cd_shift='2')*100)::numeric,1) AS \"Shift 2\", ROUND((AVG(r.oee) FILTER (WHERE r.cd_shift='3')*100)::numeric,1) AS \"Shift 3\", ROUND((AVG(r.oee)*100)::numeric,1) AS \"All\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN equipments eq ON eq.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY eq.nm_equipment ORDER BY \"All\" ASC NULLS LAST",
           "format": "table",
           "refId": "A"
         }
@@ -1367,7 +1367,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT eq.nm_equipment AS machine, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN equipments eq ON eq.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20",
+          "rawSql": "SELECT eq.nm_equipment AS machine, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN equipments eq ON eq.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IN (${shift:sqlstring}) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20",
           "format": "table",
           "refId": "A"
         }
@@ -1423,7 +1423,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT 'Shift '||r.cd_shift AS shift, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_runtime_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IS NOT NULL AND r.running_time > 0 AND r.ts_value <= now() GROUP BY r.cd_shift ORDER BY r.cd_shift",
+          "rawSql": "SELECT 'Shift '||r.cd_shift AS shift, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.cd_shift IS NOT NULL AND r.running_time > 0 AND r.ts_value <= now() GROUP BY r.cd_shift ORDER BY r.cd_shift",
           "format": "table",
           "refId": "A"
         }
@@ -1433,7 +1433,7 @@
       "id": 23,
       "type": "timeseries",
       "title": "OEE by day",
-      "description": "Mean OEE % per calendar day (equipment_runtime_1day) \u2014 the day-over-day trend for the scoped hierarchy.",
+      "description": "Mean OEE % per calendar day (equipment_oee_daily) \u2014 the day-over-day trend for the scoped hierarchy.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1481,7 +1481,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT r.ts_value::timestamptz AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_runtime_1day r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value::timestamptz) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT r.ts_value::timestamptz AS time, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM equipment_oee_daily r JOIN equipments e ON e.id_equipment=r.id_equipment WHERE $__timeFilter(r.ts_value::timestamptz) AND e.id_enterprise IN ($enterprise) AND e.id_site IN ($site) AND e.id_area IN ($area) AND r.id_equipment IN ($line) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 1",
           "format": "time_series",
           "refId": "A"
         }
@@ -1490,8 +1490,8 @@
     {
       "id": 24,
       "type": "barchart",
-      "title": "OEE by area (area_runtime_shift)",
-      "description": "Mean OEE % per area straight from the area-level Gold rollup \u2014 exercises area_runtime_shift, the aggregate the site/plant view reads.",
+      "title": "OEE by area (area_oee_shift)",
+      "description": "Mean OEE % per area straight from the area-level Gold rollup \u2014 exercises area_oee_shift, the aggregate the site/plant view reads.",
       "datasource": {
         "type": "postgres",
         "uid": "packiot-postgres-shadow"
@@ -1537,7 +1537,7 @@
             "type": "postgres",
             "uid": "packiot-postgres-shadow"
           },
-          "rawSql": "SELECT a.nm_area AS area, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM area_runtime_shift r JOIN areas a ON a.id_area=r.id_area WHERE $__timeFilter(r.ts_value) AND a.id_enterprise IN ($enterprise) AND a.id_site IN ($site) AND a.id_area IN ($area) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20",
+          "rawSql": "SELECT a.nm_area AS area, ROUND((AVG(r.oee)*100)::numeric,1) AS \"OEE %\" FROM area_oee_shift r JOIN areas a ON a.id_area=r.id_area WHERE $__timeFilter(r.ts_value) AND a.id_enterprise IN ($enterprise) AND a.id_site IN ($site) AND a.id_area IN ($area) AND r.running_time > 0 AND r.ts_value <= now() GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20",
           "format": "table",
           "refId": "A"
         }
