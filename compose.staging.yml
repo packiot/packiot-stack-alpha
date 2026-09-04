@@ -1041,12 +1041,11 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.33
-    healthcheck:
-      test: ["CMD", "/bin/sh", "-c", "wget -qO- http://localhost:12345/-/ready >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # No healthcheck: the grafana/alloy:v1.5.1 image ships no wget/curl/busybox
+    # and its /bin/sh (dash) has no /dev/tcp, so any in-container HTTP probe
+    # exits 127 → the container reads "unhealthy" forever and fails the deploy
+    # gate even though Alloy is fine (OTLP receiver on 4317/4318, Loki push on
+    # 3101 — verified in logs). Liveness is covered by `restart: unless-stopped`.
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
