@@ -1716,7 +1716,14 @@ services:
       # = productive minutes (gross_production_incr>0). Codified from the live staging worker
       # (was "50,68,69,70,71,72" — a re-provision would have shrunk it, dropping availability
       # for every other CPACK line). See docs/clients/cpack-legacy-oracle-line-meters.md.
-      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "47,48,49,50,51,52,81,82,83,84,85,91,92,93,94,95,96,103,105,106,2000047,2000048,2000049,2000050,2000051,2000052,2000081,2000082,2000083,2000084,2000085,2000091,2000092,2000093,2000094,2000095,2000096,2000103,2000105,2000106,68,69,70,71,72"
+      # ent-3 tp=3 LINES (47-52,81-85,91-96,103,105,106 + 2000xxx twins) removed
+      # 2026-09-04: they moved to line-lead (COUNTERS_ONLY_LINE_LEAD_ENTERPRISES
+      # now includes 3, matching prod). Leaving them here too = two availability
+      # writers on the same rows (the #456 two-writer class) + the broken
+      # state-events path that stretched a stale planned-downtime event over every
+      # bucket (available_time=0 -> ideal_production=0 -> Performance>1). Kept:
+      # 68-72 = the tp=1 L6 member machines that need machine-level counters-avail.
+      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "68,69,70,71,72"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
       # LINE-LEAD (ADR-0045 split instrumentation) — bispharma (ent 5) is a
       # line-metered tenant: separate infeed (gross_machine) + outfeed (lead_machine)
@@ -1728,7 +1735,7 @@ services:
       # mutually exclusive PER enterprise, so different ents never collide). Prod
       # already runs line-lead for ent 3 (compose.production.yml).
       COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
-      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "5"
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3,5"
       # ADR-0037 Silver invariant — per-equipment production-increment SANITY
       # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
       # K · equipments.production_speed · Δt (a physically-impossible count at
