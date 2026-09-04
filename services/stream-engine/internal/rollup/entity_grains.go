@@ -158,7 +158,7 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	sameBucket := `ard.ts_value = el.ts_value`
 	weekSpan := `ard.ts_value >= date_trunc('week', el.ts_value) AND ard.ts_value <= el.ts_value + interval '1 week'`
 	monthSpan := `ard.ts_value >= date_trunc('month', el.ts_value) AND ard.ts_value <= el.ts_value + interval '1 month'`
-	ownDay := sp.Name + `_runtime_1day`
+	ownDay := sp.Name + `_oee_daily`
 	if sp.Name == "area" {
 		ownDay = "area_oee_daily"
 	} else {
@@ -169,7 +169,7 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	hour := `
 	WITH el AS (
 	    SELECT d.` + sp.Key + `, d.ts_value
-	      FROM ` + evSchema + `.` + sp.Name + `_runtime_1hour d
+	      FROM ` + evSchema + `.` + sp.Name + `_oee_hourly d
 	     WHERE d.recalc_needed AND d.ts_value >= now() - interval '1 month' AND d.ts_value <= now()
 	       AND NOT (d.` + sp.Key + ` = ANY($1))
 	), sums AS (
@@ -179,7 +179,7 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	       AND ` + scope + `
 	     GROUP BY el.` + sp.Key + `, el.ts_value
 	)
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1hour e SET
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_hourly e SET
 	       gross = s.gross, net = s.net, scrap = s.scrap,
 	       oee_q = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
 	       available_time = s.available_time, running_time = s.running_time,
@@ -205,66 +205,66 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	hour = hourRawLeftJoin(hour)
 
 	hourCascadeDay := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1day t SET recalc_needed = true
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_daily t SET recalc_needed = true
 	  FROM el
 	 WHERE t.` + sp.Key + ` = el.` + sp.Key + `
 	   AND t.ts_value = (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(el.` + sp.Key + `, el.ts_value) LIMIT 1)`
 	_ = hourCascadeDay // folded into the tx below via temp view; see runner
 
 	hourTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1hour SET recalc_needed = true,
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_hourly SET recalc_needed = true,
 	       proportional_target = target * (SELECT extract(minute FROM now()) / 60)
 	 WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()`
 
 	dayCascades := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1month t SET recalc_needed = true
-	  FROM ` + evSchema + `.` + sp.Name + `_runtime_1day d
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_monthly t SET recalc_needed = true
+	  FROM ` + evSchema + `.` + sp.Name + `_oee_daily d
 	 WHERE d.recalc_needed = false AND d.ts_value >= now() - interval '1 month'
 	   AND t.` + sp.Key + ` = d.` + sp.Key + ` AND t.ts_value = date_trunc('month', d.ts_value)`
 	dayCascadeWeek := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1week t SET recalc_needed = true
-	  FROM ` + evSchema + `.` + sp.Name + `_runtime_1day d
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_weekly t SET recalc_needed = true
+	  FROM ` + evSchema + `.` + sp.Name + `_oee_daily d
 	 WHERE d.recalc_needed = false AND d.ts_value >= now() - interval '1 month'
 	   AND t.` + sp.Key + ` = d.` + sp.Key + ` AND t.ts_value = date_trunc('week', d.ts_value)`
 
 	weekTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1week SET recalc_needed = true
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_weekly SET recalc_needed = true
 	 WHERE ts_value >= date_trunc('week', now())
 	   AND ts_value < date_trunc('week', now() + interval '1 week')`
 	monthTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1month SET recalc_needed = true
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_monthly SET recalc_needed = true
 	 WHERE ts_value >= date_trunc('month', now())
 	   AND ts_value < date_trunc('month', now() + interval '1 month')`
 	// Shift tail: prod leaks the loop variable — per-row intent restore.
 	shiftTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_shift e SET recalc_needed = true
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_shift e SET recalc_needed = true
 	 WHERE e.ts_value_production >= (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(e.` + sp.Key + `, now()) LIMIT 1)
 	   AND e.ts_value_production <  (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(e.` + sp.Key + `, now() + interval '1 day') LIMIT 1)`
 
 	return []struct{ Name, SQL string }{
 		{sp.Name + "-hour", hour},
 		{sp.Name + "-hour-cascade-day", `
-	UPDATE ` + evSchema + `.` + sp.Name + `_runtime_1day t SET recalc_needed = true
-	  FROM ` + evSchema + `.` + sp.Name + `_runtime_1hour h
+	UPDATE ` + evSchema + `.` + sp.Name + `_oee_daily t SET recalc_needed = true
+	  FROM ` + evSchema + `.` + sp.Name + `_oee_hourly h
 	 WHERE h.recalc_needed = false AND h.ts_value >= now() - interval '1 month'
 	   AND t.` + sp.Key + ` = h.` + sp.Key + `
 	   AND t.ts_value = (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(h.` + sp.Key + `, h.ts_value) LIMIT 1)`},
 		{sp.Name + "-hour-tail", hourTail},
-		{sp.Name + "-day", rollup(sp.Name+"_runtime_1day", sp.DaySource, sameBucket, `,
+		{sp.Name + "-day", rollup(sp.Name+"_oee_daily", sp.DaySource, sameBucket, `,
 	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 day"), monthWindow, true)},
-		{sp.Name + "-day-oeep", oeeP(sp.Name + "_runtime_1day")},
+		{sp.Name + "-day-oeep", oeeP(sp.Name + "_oee_daily")},
 		{sp.Name + "-day-cascade-month", dayCascades},
 		{sp.Name + "-day-cascade-week", dayCascadeWeek},
-		{sp.Name + "-shift", rollup(sp.Name+"_runtime_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
-		{sp.Name + "-shift-oeep", oeeP(sp.Name + "_runtime_shift")},
+		{sp.Name + "-shift", rollup(sp.Name+"_oee_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
+		{sp.Name + "-shift-oeep", oeeP(sp.Name + "_oee_shift")},
 		{sp.Name + "-shift-tail", shiftTail},
-		{sp.Name + "-week", rollup(sp.Name+"_runtime_1week", ownDay, weekSpan, `,
+		{sp.Name + "-week", rollup(sp.Name+"_oee_weekly", ownDay, weekSpan, `,
 	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("7 days"), weekWindow, false)},
-		{sp.Name + "-week-oeep", oeeP(sp.Name + "_runtime_1week")},
+		{sp.Name + "-week-oeep", oeeP(sp.Name + "_oee_weekly")},
 		{sp.Name + "-week-tail", weekTail},
-		{sp.Name + "-month", rollup(sp.Name+"_runtime_1month", ownDay, monthSpan, `,
+		{sp.Name + "-month", rollup(sp.Name+"_oee_monthly", ownDay, monthSpan, `,
 	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 month"), weekWindow, false)},
-		{sp.Name + "-month-oeep", oeeP(sp.Name + "_runtime_1month")},
+		{sp.Name + "-month-oeep", oeeP(sp.Name + "_oee_monthly")},
 		{sp.Name + "-month-tail", monthTail},
 	}
 }
