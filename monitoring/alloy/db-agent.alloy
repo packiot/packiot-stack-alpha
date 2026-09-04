@@ -1,0 +1,52 @@
+// Grafana Alloy — DB-box LOG AGENT.
+//
+// Runs on the analytics DB box (i-064bb36d...), which hosts ONLY the timescaledb
+// container. That box has no Loki and no app-box promtail reaching it, so its
+// PostgreSQL logs (log_min_duration_statement=3000 → every query slower than 3s
+// is logged, plus auto_explain plans) never reached the central Loki.
+//
+// This agent tails the timescaledb container's stdout/stderr via the Docker API
+// and pushes to the app-box Alloy gateway's Loki-push endpoint, which relays to
+// Loki. The gateway address is injected via the ALLOY_LOKI_GATEWAY env var so
+// the box's private IP is not hardcoded in git.
+
+discovery.docker "dockerd" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "timescaledb" {
+  targets = discovery.docker.dockerd.targets
+
+  // Keep only the timescaledb container.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/timescaledb"
+    action        = "keep"
+  }
+  // Stable labels so slow queries are queryable as
+  // {job="postgres", container="timescaledb"} in Loki/Grafana.
+  rule {
+    target_label = "job"
+    replacement  = "postgres"
+  }
+  rule {
+    target_label = "container"
+    replacement  = "timescaledb"
+  }
+  rule {
+    target_label = "host"
+    replacement  = "db-box"
+  }
+}
+
+loki.source.docker "pg" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.timescaledb.output
+  forward_to = [loki.write.gateway.receiver]
+}
+
+loki.write "gateway" {
+  endpoint {
+    url = env("ALLOY_LOKI_GATEWAY")   // http://<app-box-private-ip>:3101/loki/api/v1/push
+  }
+}

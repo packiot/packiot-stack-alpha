@@ -1,0 +1,65 @@
+// Grafana Alloy — app-box OTLP GATEWAY (traces) + Loki log relay.
+//
+// WHY a collector when services already send OTLP straight to Tempo:
+//   Tempo's own OTLP receiver works (services point at tempo:4317 today), but a
+//   dedicated collector in front is the industry-standard "gateway" pattern:
+//     - one egress point to the trace backend (swap Tempo for another backend by
+//       editing ONE config, not every service's env),
+//     - batching + retry/queue buffering that survives a Tempo restart,
+//       decoupled from each service's own exporter,
+//     - a place to add processors later (tail-sampling, resource detection,
+//       attribute scrubbing) without touching service code.
+//   So this is ADDITIVE: read-api is repointed here (alloy:4317) as the proof;
+//   the other already-instrumented services (edge-api, stream-engine,
+//   sparkplug-decoder, operator-gateway, ingest-shim) keep sending direct to
+//   Tempo until they are migrated the same way (see the per-service plan).
+//
+// Runs on the app box (i-06c9547a...) on the stack_packiot-net network; Tempo
+// and Loki are reachable there by service name.
+
+// ── Traces: OTLP in → batch → Tempo ─────────────────────────────────────────
+otelcol.receiver.otlp "in" {
+  grpc { endpoint = "0.0.0.0:4317" }
+  http { endpoint = "0.0.0.0:4318" }
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  // Small timeout so a low-volume staging trace still flushes promptly during
+  // a hardproof, while still batching under load.
+  timeout = "2s"
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls { insecure = true }   // internal compose network, no TLS
+  }
+}
+
+// ── Logs: receive Loki-push from the DB-box agent → relay to Loki ────────────
+// The timescaledb container runs on a SEPARATE EC2 (i-064bb36d...), so the
+// app-box promtail (which scrapes only the local docker.sock) can never see its
+// slow-query logs. A small Alloy agent on the DB box scrapes them and pushes
+// here; this endpoint forwards them into Loki on the internal network so Loki is
+// never itself exposed off-box.
+loki.source.api "db_ingest" {
+  http {
+    listen_address = "0.0.0.0"
+    listen_port    = 3101
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// Alloy's own UI/metrics on :12345 (health = GET /-/ready).
