@@ -147,6 +147,18 @@ func defaultInt(v, def int) int {
 }
 
 // RunOnceClose closes stale opens for one destination. Returns rows closed.
+//
+// COMPRESSED-CHUNK SAFETY (SQLSTATE 53400). equipment_events is a compressed
+// hypertable; setting ts_end on an open row that lives in a compressed chunk
+// forces TimescaleDB to decompress the affected segments. A CPACK tick can touch
+// opens spread across dozens of chunks, blowing past the default
+// max_tuples_decompressed_per_dml_transaction (100k) → the whole UPDATE aborts
+// and NOT ONE stale open gets closed (observed on staging: every tick failing,
+// 15k opens accumulated back to 2026-06-22). We therefore run the UPDATE in an
+// explicit tx and lift the per-tx decompression cap to unlimited (0) for that tx
+// only via SET LOCAL — the close is deterministic and bounded by the horizon, so
+// unlimited decompression is safe and scoped. Mirrors the teardown-DAO fix for
+// the same 53400 on telemetry deletes.
 func RunOnceClose(ctx context.Context, d Dest, cfg CloserConfig) (int64, error) {
 	thr := defaultInt(cfg.ThresholdDefSec, 300)
 	horizon := defaultInt(cfg.HorizonHours, 72)
@@ -154,9 +166,22 @@ func RunOnceClose(ctx context.Context, d Dest, cfg CloserConfig) (int64, error) 
 	// shared humanTouchedPred's %[4]s row-alias lands at index 4 — same contract
 	// as fmtCPAC), %[4]s the aliased UPDATE-target row ("ev").
 	sql := fmt.Sprintf(closeStaleOpensSQL, d.EvSchema, d.RefSchema, "", "ev")
-	tag, err := d.Pool.Exec(ctx, sql, cfg.Enterprises, thr, horizon)
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("close stale opens begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	// SET LOCAL: scoped to this tx, reverts on commit/rollback — never leaks to
+	// the pooled connection. 0 = unlimited decompression for this DML.
+	if _, err := tx.Exec(ctx, `SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 0`); err != nil {
+		return 0, fmt.Errorf("close stale opens set-local: %w", err)
+	}
+	tag, err := tx.Exec(ctx, sql, cfg.Enterprises, thr, horizon)
 	if err != nil {
 		return 0, fmt.Errorf("close stale opens: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("close stale opens commit: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
