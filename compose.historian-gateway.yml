@@ -1,0 +1,44 @@
+# historian-gateway — transparent hot+cold query layer over the historian.
+#
+# Exposes `ev_all` (live timescaledb hypertable via postgres_fdw  UNION  S3
+# Parquet historian via pg_duckdb). Consumers (Superset, read-api, tools) query
+# it with plain Postgres SQL; old timestamps transparently resolve to S3 and
+# prune to the relevant partition file.
+#
+# Proven on staging (CPACK): one query spans 2021→today; old-timestamp lookups
+# scan 1/181 files. See services/historian-gateway/README.md.
+services:
+  historian-gateway:
+    image: pgduckdb/pgduckdb:16-main
+    container_name: hist-gateway
+    restart: unless-stopped
+    networks: [packiot-net]
+    environment:
+      POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:?set in .env}
+      # live timescaledb (HOT)
+      FDW_HOST: ${DB_HOST:-10.10.10.89}
+      FDW_PORT: ${DB_PORT:-5432}
+      FDW_DB: ${DB_NAME:-packiot_analytics}
+      FDW_USER: ${DB_USER:-postgres}
+      FDW_PASS: ${DB_PASSWORD:?set in .env}
+      # S3 historian (COLD) — scoped read-only key (svc-historian-gateway)
+      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:?set in .env}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      HIST_AWS_KEY: ${HIST_AWS_KEY:?set in .env}
+      HIST_AWS_SECRET: ${HIST_AWS_SECRET:?set in .env}
+    volumes:
+      - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      - hist_gateway_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  hist_gateway_data:
+
+networks:
+  packiot-net:
+    external: true
+    name: stack_packiot-net
