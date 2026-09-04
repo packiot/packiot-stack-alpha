@@ -78,6 +78,11 @@ Go*. Hardproof answer:
 Reversible: full restore snapshot on box `/tmp` + canonical defs in
 `edge-node-red/db/19,20.sql`. Codified `db/migrations/analytics-cruft-drop/`.
 
+**Plus 25 orphaned `h_*` scaffolding tables** (function-return-type composites
+orphaned by the 56-function drop) — triple-confirmed dead (0 as-return-type, 0
+fn/view refs, 0 rows, 0 backend code refs) and dropped reversibly (CREATE DDL
+captured). `h_*` tables 64 → 39.
+
 ---
 
 ## 4. Historian (T1/T2 verified; T3–T6 blocked on gateway deploy)
