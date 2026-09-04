@@ -77,7 +77,7 @@ func TestCurrentMetricsSQLBuilds(t *testing.T) {
 		if strings.Contains(out, "%!") || strings.Contains(out, "%[") {
 			t.Errorf("Sprintf left verb residue for %v", schemas)
 		}
-		if !strings.Contains(out, schemas[0]+".uns_equipment_current_metrics") {
+		if !strings.Contains(out, schemas[0]+".equipment_live_metrics") {
 			t.Errorf("target table not schema-qualified to EvSchema %q", schemas[0])
 		}
 	}

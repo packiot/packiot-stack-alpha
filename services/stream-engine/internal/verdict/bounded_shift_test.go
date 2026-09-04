@@ -47,7 +47,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 	// them, or the backlog could never reach zero.
 	const total = 10
 	mustExec(t, ctx, pool, `
-		INSERT INTO v3.equipment_runtime_shift
+		INSERT INTO v3.equipment_oee_shift
 		       (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed)
 		SELECT 103,
 		       now() - (g || ' days')::interval,
@@ -62,7 +62,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 	flagged := func() int {
 		var n int
 		if err := pool.QueryRow(ctx,
-			`SELECT count(*) FROM v3.equipment_runtime_shift WHERE recalc_needed`).Scan(&n); err != nil {
+			`SELECT count(*) FROM v3.equipment_oee_shift WHERE recalc_needed`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -70,7 +70,7 @@ func TestBoundedShiftDrain(t *testing.T) {
 	oldestFlagged := func() time.Time {
 		var ts time.Time
 		if err := pool.QueryRow(ctx,
-			`SELECT min(ts_value) FROM v3.equipment_runtime_shift WHERE recalc_needed`).Scan(&ts); err != nil {
+			`SELECT min(ts_value) FROM v3.equipment_oee_shift WHERE recalc_needed`).Scan(&ts); err != nil {
 			t.Fatalf("oldestFlagged (backlog may be empty): %v", err)
 		}
 		return ts

@@ -205,11 +205,11 @@ type dqGrainScan struct {
 }
 
 var dqGrainMatrix = []dqGrainScan{
-	{"shift", "equipment_runtime_shift", "30 days", true},
-	{"hour", "equipment_runtime_1hour", "7 days", true},
-	{"day", "equipment_runtime_1day", "30 days", false},
-	{"week", "equipment_runtime_1week", "180 days", false},
-	{"month", "equipment_runtime_1month", "365 days", false},
+	{"shift", "equipment_oee_shift", "30 days", true},
+	{"hour", "equipment_oee_hourly", "7 days", true},
+	{"day", "equipment_oee_daily", "30 days", false},
+	{"week", "equipment_oee_weekly", "180 days", false},
+	{"month", "equipment_oee_monthly", "365 days", false},
 }
 
 // dqScanLimit caps rows read per grain per tick (most-recent-first). A bound on a

@@ -42,10 +42,10 @@ func TestRefreshShape(t *testing.T) {
 // sourced from the runtime tables, and each ADVANCES last_updated so
 // the frozen freshness timestamp moves.
 func TestEquipmentShiftDayShape(t *testing.T) {
-	// day: sourced from equipment_runtime_1day at today's bucket.
+	// day: sourced from equipment_oee_daily at today's bucket.
 	for _, m := range []string{
-		"equipment_runtime_1day",
-		"uns_equipment_current_day",
+		"equipment_oee_daily",
+		"equipment_live_day",
 		"date_trunc('day', now())::date",
 		"tp_equipment > 1",
 		"id_area = ANY($1)", "id_enterprise = ANY($2)",
@@ -59,8 +59,8 @@ func TestEquipmentShiftDayShape(t *testing.T) {
 	// block; prev1 LEFT-joined so the current tile advances even with
 	// no prior shift row.
 	for _, m := range []string{
-		"equipment_runtime_shift",
-		"uns_equipment_current_shift",
+		"equipment_oee_shift",
+		"equipment_live_shift",
 		"piot_get_shift_hour_begin_by_equipment",
 		"tp_equipment > 1",
 		"prev1_oee = p1.oee",

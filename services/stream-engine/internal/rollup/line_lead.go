@@ -150,7 +150,7 @@ const shiftLineLeadSQL = `
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_shift e SET
+	UPDATE %[1]s.equipment_oee_shift e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
 	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),
@@ -267,7 +267,7 @@ const hourLineLeadSQL = `
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
-	UPDATE %[1]s.equipment_runtime_1hour e SET
+	UPDATE %[1]s.equipment_oee_hourly e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
 	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),

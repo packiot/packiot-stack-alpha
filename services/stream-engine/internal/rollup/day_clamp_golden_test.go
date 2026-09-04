@@ -21,7 +21,7 @@
 //	203 — DST fall-back, true length 90000, 25×3600 buckets summing
 //	      to 90000 ⇒ must stay 90000, NOT be mis-clamped to 86400.
 //
-// TYPE FIDELITY (task #93): the real equipment_runtime_1day.ts_value is
+// TYPE FIDELITY (task #93): the real equipment_oee_daily.ts_value is
 // DATE and the real piot_get_day_begin_by_equipment returns ts_value
 // (timestamptz anchor) + ts_value_production (DATE). An earlier version
 // of this fixture typed both as timestamptz, which let the buggy
@@ -52,7 +52,7 @@ const dayClampSchema = `
 	    id_equipment int PRIMARY KEY,
 	    id_site int, id_area int, id_enterprise int, tp_equipment int
 	);
-	CREATE TABLE dayclamp.equipment_runtime_1day (
+	CREATE TABLE dayclamp.equipment_oee_daily (
 	    id_equipment int, ts_value date,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT true,
 	    oee double precision,
@@ -66,7 +66,7 @@ const dayClampSchema = `
 	    -- ADR-0036 §5A lineage columns (T0-2).
 	    computed_at timestamptz, source_watermark timestamptz
 	);
-	CREATE TABLE dayclamp.equipment_runtime_1hour (
+	CREATE TABLE dayclamp.equipment_oee_hourly (
 	    id_equipment int, ts_value timestamptz, ts_value_production date,
 	    available_time double precision, running_time double precision,
 	    stopped_time double precision, planned_downtime double precision,
@@ -127,7 +127,7 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		-- ts_value is DATE (the production-date key) — the 25th straddling
 		-- hour bucket that drives the over-mint comes from the hour grain,
 		-- not from a non-midnight day key (which a DATE column cannot hold).
-		INSERT INTO dayclamp.equipment_runtime_1day (id_equipment, ts_value) VALUES
+		INSERT INTO dayclamp.equipment_oee_daily (id_equipment, ts_value) VALUES
 		    (201, (now() - interval '2 days')::date),
 		    (202, (now() - interval '2 days')::date),
 		    (203, (now() - interval '2 days')::date);
@@ -135,7 +135,7 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		-- 201: 25 buckets × (3600 available, 3600 running, 3600 stopped,
 		-- 3600 downtime) ⇒ each sums to 90000 (impossible). Counts:
 		-- net 100, gross 120 per bucket ⇒ 2500 / 3000 (must NOT clamp).
-		INSERT INTO dayclamp.equipment_runtime_1hour
+		INSERT INTO dayclamp.equipment_oee_hourly
 		    (id_equipment, ts_value, ts_value_production,
 		     available_time, running_time, stopped_time, downtime,
 		     planned_downtime, ideal_production, target, gross, net, changeover_time, scrap, speed, proportional_target)
@@ -148,7 +148,7 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		-- 202: PARTIAL day — 20 buckets. available 3600, running 3000,
 		-- stopped 600, downtime 600 ⇒ 72000/60000/12000/12000, all below
 		-- 86400 ⇒ clamp must be a no-op.
-		INSERT INTO dayclamp.equipment_runtime_1hour
+		INSERT INTO dayclamp.equipment_oee_hourly
 		    (id_equipment, ts_value, ts_value_production,
 		     available_time, running_time, stopped_time, downtime,
 		     planned_downtime, ideal_production, target, gross, net, changeover_time, scrap, speed, proportional_target)
@@ -160,7 +160,7 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 
 		-- 203: DST fall-back, 25 buckets × 3600 available/running ⇒ 90000,
 		-- day_len_s is also 90000 ⇒ LEAST(90000, 90000) = 90000 (kept).
-		INSERT INTO dayclamp.equipment_runtime_1hour
+		INSERT INTO dayclamp.equipment_oee_hourly
 		    (id_equipment, ts_value, ts_value_production,
 		     available_time, running_time, stopped_time, downtime,
 		     planned_downtime, ideal_production, target, gross, net, changeover_time, scrap, speed, proportional_target)
@@ -200,7 +200,7 @@ func TestDayOverMintClampBehaviour(t *testing.T) {
 		var d day
 		if err := pool.QueryRow(ctx, `
 			SELECT available_time, running_time, stopped_time, downtime, gross, net
-			  FROM dayclamp.equipment_runtime_1day WHERE id_equipment = $1`, id).
+			  FROM dayclamp.equipment_oee_daily WHERE id_equipment = $1`, id).
 			Scan(&d.avail, &d.running, &d.stopped, &d.downtime, &d.gross, &d.net); err != nil {
 			t.Fatalf("get %d: %v", id, err)
 		}

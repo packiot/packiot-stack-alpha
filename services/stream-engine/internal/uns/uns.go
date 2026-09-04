@@ -30,24 +30,24 @@ import (
 var provisionMatrix = []struct {
 	unsTable, entityTable, idCol string
 }{
-	{"uns_equipment_current_day", "equipments", "id_equipment"},
-	{"uns_equipment_current_hour", "equipments", "id_equipment"},
-	{"uns_equipment_current_job", "equipments", "id_equipment"},
-	{"uns_equipment_current_month", "equipments", "id_equipment"},
-	{"uns_equipment_current_shift", "equipments", "id_equipment"},
-	{"uns_equipment_current_week", "equipments", "id_equipment"},
-	{"uns_area_current_day", "areas", "id_area"},
-	{"uns_area_current_hour", "areas", "id_area"},
-	{"uns_area_current_month", "areas", "id_area"},
-	{"uns_area_current_shift", "areas", "id_area"},
-	{"uns_area_current_week", "areas", "id_area"},
+	{"equipment_live_day", "equipments", "id_equipment"},
+	{"equipment_live_hour", "equipments", "id_equipment"},
+	{"equipment_live_job", "equipments", "id_equipment"},
+	{"equipment_live_month", "equipments", "id_equipment"},
+	{"equipment_live_shift", "equipments", "id_equipment"},
+	{"equipment_live_week", "equipments", "id_equipment"},
+	{"area_live_day", "areas", "id_area"},
+	{"area_live_hour", "areas", "id_area"},
+	{"area_live_month", "areas", "id_area"},
+	{"area_live_shift", "areas", "id_area"},
+	{"area_live_week", "areas", "id_area"},
 }
 
 const provisionSQL = `INSERT INTO %[1]s.%[3]s (SELECT %[4]s FROM %[2]s.%[5]s) ON CONFLICT DO NOTHING`
 
 // The metrics table gets the name-enriched upsert (verbatim).
 const provisionMetricsSQL = `
-	INSERT INTO %[1]s.uns_equipment_current_metrics
+	INSERT INTO %[1]s.equipment_live_metrics
 	       (id_equipment, id_area, id_site, id_enterprise, nm_equipment, nm_area, nm_site)
 	SELECT e.id_equipment, e.id_area, e.id_site, e.id_enterprise, e.nm_equipment, a.nm_area, s.nm_site
 	  FROM %[2]s.equipments e
@@ -77,8 +77,8 @@ func Provision(ctx context.Context, d flows.Dest) error {
 var equipmentGrains = []struct {
 	grain, unsTable, span string
 }{
-	{"week", "uns_equipment_current_week", "1 week"},
-	{"month", "uns_equipment_current_month", "1 month"},
+	{"week", "equipment_live_week", "1 week"},
+	{"month", "equipment_live_month", "1 month"},
 }
 
 // Verbatim generalization of piot_uns_equipment_refresh_current_week:
@@ -200,13 +200,13 @@ const refreshHourEquipmentSQL = `
 	           stopped_time, planned_downtime, ideal_production,
 	           idle_time, idle_starved, idle_blocked, target,
 	           changeover_time, proportional_target
-	      FROM %[1]s.equipment_runtime_1hour v
+	      FROM %[1]s.equipment_oee_hourly v
 	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
 	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
 	            WHERE tp_equipment > 1
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	)
-	UPDATE %[1]s.uns_equipment_current_hour u SET
+	UPDATE %[1]s.equipment_live_hour u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed, begin_time = p.ts_value,
 	       end_time = p.ts_value + interval '1 hour',
@@ -225,7 +225,7 @@ const refreshHourTrailEquipmentSQL = `
 	           'ts_value', ts_value, 'net_production', net,
 	           'gross_production', gross, 'scrap', scrap, 'speed', speed)) AS data
 	      FROM (SELECT id_equipment, ts_value, net, gross, scrap, speed
-	              FROM %[1]s.equipment_runtime_1hour
+	              FROM %[1]s.equipment_oee_hourly
 	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
 	               AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
 	                    WHERE tp_equipment > 1
@@ -233,7 +233,7 @@ const refreshHourTrailEquipmentSQL = `
 	             ORDER BY id_equipment, ts_value) t
 	     GROUP BY id_equipment
 	)
-	UPDATE %[1]s.uns_equipment_current_hour u SET last_24_hours = p.data
+	UPDATE %[1]s.equipment_live_hour u SET last_24_hours = p.data
 	  FROM prod p WHERE u.id_equipment = p.id_equipment`
 
 // entityHourSQL parameterizes the area/site hour refreshers (verbatim:
@@ -282,8 +282,8 @@ func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterp
 		return fmt.Errorf("uns hour equipment trail: %w", err)
 	}
 	for _, e := range []struct{ key, rt, uns string }{
-		{"id_area", "area_runtime_1hour", "uns_area_current_hour"},
-		{"id_site", "site_runtime_1hour", "uns_site_current_hour"},
+		{"id_area", "area_oee_hourly", "area_live_hour"},
+		{"id_site", "site_oee_hourly", "site_live_hour"},
 	} {
 		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
 			return fmt.Errorf("uns hour %s: %w", e.uns, err)
@@ -298,13 +298,13 @@ func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterp
 // ── EQUIPMENT current-SHIFT + current-DAY refreshers (the grey-tile
 // unfreeze). BACKGROUND: prod's piot_refresh_uns runs hour+week+month
 // for the equipment grain but leaves DAY and SHIFT commented out
-// (dead) — so uns_equipment_current_shift/_day never advanced past
+// (dead) — so equipment_live_shift/_day never advanced past
 // their Provision seed (INSERT … ON CONFLICT DO NOTHING). On the new
 // stack that froze the mission-control shift/day equipment tiles.
 // These two refreshers close that gap the SAME way the area/site
 // shift/day refreshers (current_rest.go) do — an UPDATE-from-join off
-// the now-filled RUNTIME grain (equipment_runtime_1day for day,
-// equipment_runtime_shift for shift), scoped to the SAME equipment
+// the now-filled RUNTIME grain (equipment_oee_daily for day,
+// equipment_oee_shift for shift), scoped to the SAME equipment
 // population as the working hour/week/month refreshers
 // (tp_equipment > 1 + the shared exclusion lists). They additionally
 // stamp last_updated = now() so the freshness signal on the tile
@@ -313,20 +313,20 @@ func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterp
 
 // Equipment current-day: the single current-day runtime row → the UNS
 // day tile. Mirrors refreshHourEquipmentSQL at day grain (source
-// equipment_runtime_1day, keyed on ts_value = today's date).
+// equipment_oee_daily, keyed on ts_value = today's date).
 const refreshDayEquipmentSQL = `
 	WITH prod AS (
 	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
 	           oee, oee_p, oee_a, oee_q, available_time, running_time,
 	           stopped_time, planned_downtime, ideal_production,
 	           idle_time, idle_starved, idle_blocked, target, proportional_target
-	      FROM %[1]s.equipment_runtime_1day v
+	      FROM %[1]s.equipment_oee_daily v
 	     WHERE ts_value = date_trunc('day', now())::date
 	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
 	            WHERE tp_equipment > 1
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	)
-	UPDATE %[1]s.uns_equipment_current_day u SET
+	UPDATE %[1]s.equipment_live_day u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed, begin_time = p.ts_value,
 	       end_time = (p.ts_value + interval '1 day')::date,
@@ -363,17 +363,17 @@ const refreshShiftEquipmentSQL = `
 	           v.stopped_time, v.planned_downtime, v.ideal_production,
 	           v.idle_time, v.idle_starved, v.idle_blocked, v.target,
 	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration, v.proportional_target
-	      FROM %[1]s.equipment_runtime_shift v
+	      FROM %[1]s.equipment_oee_shift v
 	      JOIN ts ON v.id_equipment = ts.id_equipment AND v.ts_value = ts.ts_value
 	), prod1 AS (
 	    SELECT v.id_equipment, v.ts_value, v.net, v.gross, v.scrap,
 	           v.oee, v.oee_a, v.oee_p, v.oee_q, v.target,
 	           v.id_shift, v.id_shift_hour, v.ts_end, v.duration
-	      FROM %[1]s.equipment_runtime_shift v
+	      FROM %[1]s.equipment_oee_shift v
 	      JOIN ts ON v.id_equipment = ts.id_equipment
 	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
 	)
-	UPDATE %[1]s.uns_equipment_current_shift u SET
+	UPDATE %[1]s.equipment_live_shift u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed,
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,

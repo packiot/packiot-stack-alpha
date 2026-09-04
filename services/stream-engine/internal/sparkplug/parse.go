@@ -156,7 +156,7 @@ const (
 	KindStateCurrent
 	KindUnitModeCurrent
 
-	// uns_equipment_current_metrics writer (separate handler — task #28)
+	// equipment_live_metrics writer (separate handler — task #28)
 	KindCurMachSpeed
 
 	// PO control parameter (separate handler — task #28)

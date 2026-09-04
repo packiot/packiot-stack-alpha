@@ -49,11 +49,11 @@ const overflowFactorSQL = "1.05"
 // overflowSurfaces — GATE 2. Run per-plane; return ONLY violating rows
 // (natkey, running_time, span_seconds). Non-empty = overflow.
 var overflowSurfaces = []struct{ Name, SQL string }{
-	{Name: "equipment_runtime_shift", SQL: `
+	{Name: "equipment_oee_shift", SQL: `
 		SELECT e.nm_equipment || '|' || e.tp_equipment AS natkey,
 		       s.running_time::text,
 		       EXTRACT(epoch FROM (s.ts_end - s.ts_value))::text AS span
-		  FROM %s.equipment_runtime_shift s
+		  FROM %s.equipment_oee_shift s
 		  JOIN public.equipments e ON e.id_equipment = s.id_equipment
 		 WHERE e.id_enterprise = $1
 		   AND s.ts_value >= now() - interval '3 days'

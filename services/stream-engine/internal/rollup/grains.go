@@ -1,6 +1,6 @@
 // grains.go — runtime-rollup-{grain} (ledger names): the cascade tier,
 // ported from piot_get_equipment_runtime_{1week,1month}_production.
-// Both roll up from equipment_runtime_1day (siblings, not chained).
+// Both roll up from equipment_oee_daily (siblings, not chained).
 //
 // EQUIVALENCE ARGUMENT:
 //   - Recipe = the recalc-flag class: eligible (flagged, 1yr window,
@@ -47,8 +47,8 @@ type grainSpec struct {
 }
 
 var grainMatrix = []grainSpec{
-	{"week", "equipment_runtime_1week", "vl_week"},
-	{"month", "equipment_runtime_1month", "vl_month"},
+	{"week", "equipment_oee_weekly", "vl_week"},
+	{"month", "equipment_oee_monthly", "vl_month"},
 }
 
 const grainRollupSQL = `
@@ -76,7 +76,7 @@ const grainRollupSQL = `
 	           sum(ard.downtime)       AS downtime,
 	           sum(ard.changeover_time) AS changeover_time
 	      FROM eligible el
-	      JOIN %[1]s.equipment_runtime_1day ard
+	      JOIN %[1]s.equipment_oee_daily ard
 	        ON ard.id_equipment = el.id_equipment
 	       AND el.ts_value = date_trunc('%[4]s', ard.ts_value::date)::date
 	     GROUP BY el.id_equipment, el.ts_value

@@ -3,7 +3,7 @@
 // With these, EVERY parameter branch of the captured prep node is
 // ported.
 //
-// 30861/30862 update uns_equipment_current_job — engine-populated
+// 30861/30862 update equipment_live_job — engine-populated
 // (P3c); on shadow flows the UPDATE no-ops until P3c lands, exactly
 // as prod's would against an absent row. GUARDRAIL: single-row
 // UPDATEs by id_equipment + user_logs append; nothing else.
@@ -24,12 +24,12 @@ import (
 func HandlesSetup(id int) bool { return id == 30861 || id == 30862 || id == 30880 }
 
 const setupBegin = `
-	UPDATE %[1]s.uns_equipment_current_job
+	UPDATE %[1]s.equipment_live_job
 	   SET setup_begin_time = $2, setup_end_time = NULL
 	 WHERE id_equipment = $1`
 
 const setupEnd = `
-	UPDATE %[1]s.uns_equipment_current_job
+	UPDATE %[1]s.equipment_live_job
 	   SET setup_end_time = $2
 	 WHERE id_equipment = $1`
 

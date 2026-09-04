@@ -141,7 +141,7 @@ func TestGoldenRecalc(t *testing.T) {
 // helpers the statements call are stubbed in the fixture schema —
 // deterministic anchors, no shift calendar needed.
 const grainGoldenSchema = `
-	CREATE TABLE golden.equipment_runtime_1hour (
+	CREATE TABLE golden.equipment_oee_hourly (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    gross double precision, net double precision, scrap double precision,
 	    speed double precision, ideal_speed double precision,
@@ -156,10 +156,10 @@ const grainGoldenSchema = `
 	    computed_at timestamptz, source_watermark timestamptz
 	);
 	-- 1day/1week/1month inherit oee_a/oee_p/oee_q + computed_at/source_watermark via LIKE (they now live on 1hour too — ADR-0037 C).
-	CREATE TABLE golden.equipment_runtime_1day (LIKE golden.equipment_runtime_1hour INCLUDING ALL);
-	CREATE TABLE golden.equipment_runtime_1week (LIKE golden.equipment_runtime_1day INCLUDING ALL);
-	CREATE TABLE golden.equipment_runtime_1month (LIKE golden.equipment_runtime_1day INCLUDING ALL);
-	CREATE TABLE golden.area_runtime_1hour (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
+	CREATE TABLE golden.equipment_oee_daily (LIKE golden.equipment_oee_hourly INCLUDING ALL);
+	CREATE TABLE golden.equipment_oee_weekly (LIKE golden.equipment_oee_daily INCLUDING ALL);
+	CREATE TABLE golden.equipment_oee_monthly (LIKE golden.equipment_oee_daily INCLUDING ALL);
+	CREATE TABLE golden.area_oee_hourly (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
 	CREATE TABLE golden.ca_agg_equipment_values_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    state int, speed double precision, ideal_production_speed double precision,
@@ -189,15 +189,15 @@ const grainGoldenSchema = `
 const grainGoldenFixture = `
 	INSERT INTO golden.equipments VALUES (20,1,1,35,3,100);
 	-- hour bucket (current hour, flagged) with one ca row: gross 50, net 45, state-6 speed 40
-	INSERT INTO golden.equipment_runtime_1hour (id_equipment, ts_value, ts_value_production, recalc_needed)
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (20, date_trunc('hour', now()), date_trunc('day', now()), true);
 	INSERT INTO golden.ca_agg_equipment_values_1hour
 	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
 	VALUES (20, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
 	-- day bucket (yesterday, flagged) summing two hour rows: 100+60 / 90+55
-	INSERT INTO golden.equipment_runtime_1day (id_equipment, ts_value, recalc_needed, target_customized, target)
+	INSERT INTO golden.equipment_oee_daily (id_equipment, ts_value, recalc_needed, target_customized, target)
 	VALUES (20, date_trunc('day', now() - interval '1 day'), true, true, 777);
-	INSERT INTO golden.equipment_runtime_1hour
+	INSERT INTO golden.equipment_oee_hourly
 	    (id_equipment, ts_value, ts_value_production, gross, net, ideal_production, target, proportional_target, running_time, available_time, stopped_time, planned_downtime, downtime, changeover_time, scrap, speed)
 	VALUES
 	    (20, date_trunc('day', now() - interval '1 day') + interval '1 hour', date_trunc('day', now() - interval '1 day'), 100, 90, 200, 10, 10, 1800, 3600, 600, 0, 900, 0, 10, 50),
@@ -209,7 +209,7 @@ const grainGoldenFixture = `
 	-- (capture :10162-10172) → ideal_speed 120; the pre-fix port got 0
 	-- → oee 0 while F1 said ~0.95.
 	INSERT INTO golden.equipments VALUES (21,1,1,35,3,NULL);
-	INSERT INTO golden.equipment_runtime_1hour (id_equipment, ts_value, ts_value_production, recalc_needed)
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), true);
 	INSERT INTO golden.ca_agg_equipment_values_1hour
 	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
@@ -232,7 +232,7 @@ const grainGoldenFixture = `
 	-- last observed data (now()-2h + 1h grace = now()-1h < this hour), so it
 	-- contributes ZERO running to the current hour: running_time == 0 ≤ available.
 	INSERT INTO golden.equipments VALUES (22,1,1,35,3,100);
-	INSERT INTO golden.equipment_runtime_1hour (id_equipment, ts_value, ts_value_production, recalc_needed)
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (22, date_trunc('hour', now()), date_trunc('day', now()), true);
 	INSERT INTO golden.ca_agg_equipment_values_1hour
 	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
@@ -282,7 +282,7 @@ func TestGoldenGrains(t *testing.T) {
 	}
 	var gross, net float64
 	var recalc bool
-	if err := pool.QueryRow(ctx, `SELECT gross, net, recalc_needed FROM golden.equipment_runtime_1hour
+	if err := pool.QueryRow(ctx, `SELECT gross, net, recalc_needed FROM golden.equipment_oee_hourly
 	    WHERE id_equipment=20 AND ts_value=date_trunc('hour', now())`).Scan(&gross, &net, &recalc); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestGoldenGrains(t *testing.T) {
 	// is PER EXISTING ROW only — a regression to the null-extended
 	// CASE would write 100 here.
 	var idle20 float64
-	if err := pool.QueryRow(ctx, `SELECT ideal_speed FROM golden.equipment_runtime_1hour
+	if err := pool.QueryRow(ctx, `SELECT ideal_speed FROM golden.equipment_oee_hourly
 	    WHERE id_equipment=20 AND ts_value=date_trunc('hour', now())`).Scan(&idle20); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestGoldenGrains(t *testing.T) {
 	// port wrote ideal_speed=0 → oee=0 (the measured F1≈0.95 vs
 	// F2/F3=0.000 divergence on equipments 51/96).
 	var ideal21, oee21 float64
-	if err := pool.QueryRow(ctx, `SELECT ideal_speed, COALESCE(oee, -1) FROM golden.equipment_runtime_1hour
+	if err := pool.QueryRow(ctx, `SELECT ideal_speed, COALESCE(oee, -1) FROM golden.equipment_oee_hourly
 	    WHERE id_equipment=21 AND ts_value=date_trunc('hour', now())`).Scan(&ideal21, &oee21); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestGoldenGrains(t *testing.T) {
 	// while the closed planned event shrank available_time → running > available
 	// (the ~100% / running>available Availability defect this fix removes).
 	var run22, avail22 float64
-	if err := pool.QueryRow(ctx, `SELECT running_time, available_time FROM golden.equipment_runtime_1hour
+	if err := pool.QueryRow(ctx, `SELECT running_time, available_time FROM golden.equipment_oee_hourly
 	    WHERE id_equipment=22 AND ts_value=date_trunc('hour', now())`).Scan(&run22, &avail22); err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestGoldenGrains(t *testing.T) {
 		t.Fatal(err)
 	}
 	var dg, dn, dtarget float64
-	if err := pool.QueryRow(ctx, `SELECT gross, net, target FROM golden.equipment_runtime_1day
+	if err := pool.QueryRow(ctx, `SELECT gross, net, target FROM golden.equipment_oee_daily
 	    WHERE id_equipment=20 AND ts_value=date_trunc('day', now() - interval '1 day')`).Scan(&dg, &dn, &dtarget); err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestGoldenGrains(t *testing.T) {
 // oee == oee_a·oee_p·oee_q (last step, by construction), each factor ∈ [0,1],
 // and Performance derived from the summed ideal_production (the grain has no
 // ideal_speed column). It also proves the amber-bug fix: the reconcile writes to
-// equipment_runtime_1week, never 1month.
+// equipment_oee_weekly, never 1month.
 func TestGoldenGrainOeeReconcile(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
@@ -404,7 +404,7 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 		-- INTEGER division that the ::float cast must defeat. gross/net/oee* are real,
 		-- ideal_production double precision. A regression to a cast-less oee_a would
 		-- make eq 1 read oee_a=0 (3600/7200 → 0 in bigint) and fail below.
-		CREATE TABLE greconcile.equipment_runtime_1week (
+		CREATE TABLE greconcile.equipment_oee_weekly (
 		    id_equipment int, ts_value timestamptz,
 		    gross real, net real,
 		    available_time bigint, running_time bigint,
@@ -415,7 +415,7 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 		-- A: clean producing row (all factors < 1). running 3600 / avail 7200 = A=0.5;
 		--    net 90 / gross 100 = Q=0.9; P = gross·avail/(ideal·running)
 		--                                   = 100·7200/(200·3600) = 1.0 → oee=0.45.
-		INSERT INTO greconcile.equipment_runtime_1week VALUES
+		INSERT INTO greconcile.equipment_oee_weekly VALUES
 		    (1, now(), 100, 90, 7200, 3600, 200, 0,0,0,0, false),
 		-- B: performance SPIKE (gross beyond ideal) → P clamps to 1, so oee<top-down.
 		    (2, now(), 300, 280, 3600, 3600, 100, 0,0,0,0, false),
@@ -428,12 +428,12 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 	}
 	defer pool.Exec(context.Background(), `DROP SCHEMA greconcile CASCADE`)
 
-	if _, err := pool.Exec(ctx, GrainOeeReconcileSQLForParity("greconcile", "equipment_runtime_1week")); err != nil {
+	if _, err := pool.Exec(ctx, GrainOeeReconcileSQLForParity("greconcile", "equipment_oee_weekly")); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
 	rows, err := pool.Query(ctx, `SELECT id_equipment, oee, oee_a, oee_p, oee_q
-	    FROM greconcile.equipment_runtime_1week ORDER BY id_equipment`)
+	    FROM greconcile.equipment_oee_weekly ORDER BY id_equipment`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 	// eq 1: expected factors A=0.5 (3600/7200 — the ::float cast on the BIGINT
 	// columns; a cast-less regression reads 0 here), P=1.0, Q=0.9, oee=0.45.
 	var a1, p1, q1, oee1 float64
-	if err := pool.QueryRow(ctx, `SELECT oee_a, oee_p, oee_q, oee FROM greconcile.equipment_runtime_1week WHERE id_equipment=1`).Scan(&a1, &p1, &q1, &oee1); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT oee_a, oee_p, oee_q, oee FROM greconcile.equipment_oee_weekly WHERE id_equipment=1`).Scan(&a1, &p1, &q1, &oee1); err != nil {
 		t.Fatal(err)
 	}
 	near := func(got, want float64) bool { return got > want-1e-4 && got < want+1e-4 }
@@ -494,7 +494,7 @@ func TestGoldenDayOeeReconcile(t *testing.T) {
 	schema := `
 		CREATE SCHEMA IF NOT EXISTS dreconcile;
 		SET search_path TO dreconcile, public;
-		CREATE TABLE dreconcile.equipment_runtime_1day (
+		CREATE TABLE dreconcile.equipment_oee_daily (
 		    id_equipment int, ts_value timestamptz,
 		    gross real, net real,
 		    available_time integer, running_time integer,
@@ -506,7 +506,7 @@ func TestGoldenDayOeeReconcile(t *testing.T) {
 		CREATE TABLE dreconcile.day_elig (id_equipment int, ts_value timestamptz);
 		-- A: clean producing day. A=running/avail=43200/86400=0.5; Q=net/gross=0.9;
 		--    P=gross·avail/(ideal·run)=1000·86400/(2000·43200)=1.0 → oee=0.45.
-		INSERT INTO dreconcile.equipment_runtime_1day VALUES
+		INSERT INTO dreconcile.equipment_oee_daily VALUES
 		    (1, now(), 1000, 900, 86400, 43200, 2000, 0,0,0,0, false),
 		-- B: net=0 empty-output day with a spurious pre-existing oee=1.0/oee_q=1.0
 		--    (the old 0/0→1 bug). Must be driven to oee=0.
@@ -523,7 +523,7 @@ func TestGoldenDayOeeReconcile(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	rows, err := pool.Query(ctx, `SELECT id_equipment, oee, oee_a, oee_p, oee_q
-	    FROM dreconcile.equipment_runtime_1day ORDER BY id_equipment`)
+	    FROM dreconcile.equipment_oee_daily ORDER BY id_equipment`)
 	if err != nil {
 		t.Fatal(err)
 	}

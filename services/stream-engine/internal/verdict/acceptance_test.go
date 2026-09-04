@@ -42,7 +42,7 @@ CREATE TABLE v3.production_targets (
 );
 
 -- shift grain (equipment + area) — columns the shift statements read/write
-CREATE TABLE v3.equipment_runtime_shift (
+CREATE TABLE v3.equipment_oee_shift (
     id_equipment int, ts_value timestamptz, ts_end timestamptz,
     ts_value_production timestamptz, id_shift int,
     target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
@@ -61,7 +61,7 @@ CREATE TABLE v3.equipment_runtime_shift (
     -- drives RunShift, whose stamp step writes these; without them RunShift errors.
     computed_at timestamptz, source_watermark timestamptz
 );
-CREATE TABLE v3.area_runtime_shift (
+CREATE TABLE v3.area_oee_shift (
     id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false,
     computed_at timestamptz, source_watermark timestamptz
 );
@@ -233,7 +233,7 @@ func scenarioOEECascadeShift(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	mustExec(t, ctx, pool, `INSERT INTO v3.shifts VALUES (1, 'T1');`)
 	// closed shift: started 4h ago, ended 1h ago (ts_end < now → no now() drift).
 	mustExec(t, ctx, pool, fmt.Sprintf(`
-		INSERT INTO v3.equipment_runtime_shift
+		INSERT INTO v3.equipment_oee_shift
 		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed)
 		VALUES (%d, now() - interval '4 hours', now() - interval '1 hour',
 		        date_trunc('day', now() - interval '4 hours'), 1, true);`, eq))
@@ -258,7 +258,7 @@ func scenarioOEECascadeShift(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	var gross, net, avail, running, planned, idealProd, oee float64
 	if err := pool.QueryRow(ctx, `
 		SELECT gross, net, available_time, running_time, planned_downtime, ideal_production, oee
-		  FROM v3.equipment_runtime_shift WHERE id_equipment = $1`, eq).
+		  FROM v3.equipment_oee_shift WHERE id_equipment = $1`, eq).
 		Scan(&gross, &net, &avail, &running, &planned, &idealProd, &oee); err != nil {
 		t.Fatalf("read shift row: %v", err)
 	}
@@ -403,7 +403,7 @@ func scenarioDowntimeClassification(t *testing.T, ctx context.Context, pool *pgx
 		mustExec(t, ctx, pool, fmt.Sprintf(
 			`INSERT INTO v3.equipments VALUES (%d, 1, 1, %d, 3, 100);`, eq, ent))
 		mustExec(t, ctx, pool, fmt.Sprintf(`
-			INSERT INTO v3.equipment_runtime_shift
+			INSERT INTO v3.equipment_oee_shift
 			    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed)
 			VALUES (%d, $1::timestamptz - interval '4 hours', $1::timestamptz - interval '1 hour',
 			        date_trunc('day', $1::timestamptz - interval '4 hours'), 1, true);`, eq), anchor)
@@ -434,7 +434,7 @@ func scenarioDowntimeClassification(t *testing.T, ctx context.Context, pool *pgx
 	read := func(eq int) (avail, run, planned, oee float64) {
 		if err := pool.QueryRow(ctx, `
 			SELECT available_time, running_time, planned_downtime, oee
-			  FROM v3.equipment_runtime_shift WHERE id_equipment = $1`, eq).
+			  FROM v3.equipment_oee_shift WHERE id_equipment = $1`, eq).
 			Scan(&avail, &run, &planned, &oee); err != nil {
 			t.Fatalf("read eq %d: %v", eq, err)
 		}

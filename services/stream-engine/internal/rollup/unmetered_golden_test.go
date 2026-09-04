@@ -33,19 +33,19 @@ const unmeteredGoldenSchema = `
 	CREATE TABLE ug.equipments (
 	    id_equipment int PRIMARY KEY, id_enterprise int, tp_equipment int
 	);
-	CREATE TABLE ug.equipment_runtime_1hour (
+	CREATE TABLE ug.equipment_oee_hourly (
 	    id_equipment int, ts_value timestamptz,
 	    oee double precision, oee_a double precision,
 	    oee_p double precision, oee_q double precision,
 	    -- ADR-0036 §5A lineage columns (T0-2); propagate to every grain via LIKE.
 	    computed_at timestamptz, source_watermark timestamptz
 	);
-	CREATE TABLE ug.equipment_runtime_1day        (LIKE ug.equipment_runtime_1hour INCLUDING ALL);
-	CREATE TABLE ug.equipment_runtime_1week       (LIKE ug.equipment_runtime_1hour INCLUDING ALL);
-	CREATE TABLE ug.equipment_runtime_1month      (LIKE ug.equipment_runtime_1hour INCLUDING ALL);
-	CREATE TABLE ug.equipment_runtime_shift       (LIKE ug.equipment_runtime_1hour INCLUDING ALL);
-	CREATE TABLE ug.equipment_runtime_shift_1week (LIKE ug.equipment_runtime_1hour INCLUDING ALL);
-	CREATE TABLE ug.equipment_runtime_shift_1month(LIKE ug.equipment_runtime_1hour INCLUDING ALL);`
+	CREATE TABLE ug.equipment_oee_daily        (LIKE ug.equipment_oee_hourly INCLUDING ALL);
+	CREATE TABLE ug.equipment_oee_weekly       (LIKE ug.equipment_oee_hourly INCLUDING ALL);
+	CREATE TABLE ug.equipment_oee_monthly      (LIKE ug.equipment_oee_hourly INCLUDING ALL);
+	CREATE TABLE ug.equipment_oee_shift       (LIKE ug.equipment_oee_hourly INCLUDING ALL);
+	CREATE TABLE ug.equipment_oee_shift_weekly (LIKE ug.equipment_oee_hourly INCLUDING ALL);
+	CREATE TABLE ug.equipment_oee_shift_monthly(LIKE ug.equipment_oee_hourly INCLUDING ALL);`
 
 // Fixture: four equipments, and one flat-0 row per equipment in EVERY
 // grain table (within the 90d window).
@@ -59,9 +59,9 @@ const unmeteredGoldenFixture = `
 	DECLARE t text;
 	BEGIN
 	  FOREACH t IN ARRAY ARRAY[
-	    'equipment_runtime_1hour','equipment_runtime_1day','equipment_runtime_1week',
-	    'equipment_runtime_1month','equipment_runtime_shift','equipment_runtime_shift_1week',
-	    'equipment_runtime_shift_1month'] LOOP
+	    'equipment_oee_hourly','equipment_oee_daily','equipment_oee_weekly',
+	    'equipment_oee_monthly','equipment_oee_shift','equipment_oee_shift_weekly',
+	    'equipment_oee_shift_monthly'] LOOP
 	    EXECUTE format(
 	      'INSERT INTO ug.%I (id_equipment, ts_value, oee, oee_a, oee_p, oee_q)
 	         VALUES (100, now()-interval ''1 hour'', 0,0,0,0),
@@ -151,7 +151,7 @@ func TestGoldenUnmeteredToleratesMissingTable(t *testing.T) {
 	}
 	// Drop one table from the middle of the set so the pass hits a 42P01 and must
 	// keep going for the tables after it.
-	if _, err := pool.Exec(ctx, `DROP TABLE ug.equipment_runtime_shift_1month`); err != nil {
+	if _, err := pool.Exec(ctx, `DROP TABLE ug.equipment_oee_shift_monthly`); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestGoldenUnmeteredToleratesMissingTable(t *testing.T) {
 	// The tables that DO exist were still corrected (eq100 → NULL).
 	var oee *float64
 	if err := pool.QueryRow(ctx,
-		`SELECT oee FROM ug.equipment_runtime_shift WHERE id_equipment=100`).Scan(&oee); err != nil {
+		`SELECT oee FROM ug.equipment_oee_shift WHERE id_equipment=100`).Scan(&oee); err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if oee != nil {

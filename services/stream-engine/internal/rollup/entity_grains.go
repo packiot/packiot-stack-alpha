@@ -47,21 +47,21 @@ type entitySpec struct {
 	DayBeginFn string // piot_get_day_begin_by_area | _site
 	// sourceJoin yields rows of the tier below scoped to the entity:
 	// area ← lines of the area; site ← areas of the site.
-	HourSource  string // equipment_runtime_1hour | area_runtime_1hour
-	DaySource   string // equipment_runtime_1day  | area_runtime_1day
-	ShiftSource string // equipment_runtime_shift | area_runtime_shift
+	HourSource  string // equipment_oee_hourly | area_oee_hourly
+	DaySource   string // equipment_oee_daily  | area_oee_daily
+	ShiftSource string // equipment_oee_shift | area_oee_shift
 	ScopePred   string // join predicate template against el (uses %[2]s ref schema)
 }
 
 var entityMatrix = []entitySpec{
 	{
 		Name: "area", Key: "id_area", DayBeginFn: "piot_get_day_begin_by_area",
-		HourSource: "equipment_runtime_1hour", DaySource: "equipment_runtime_1day", ShiftSource: "equipment_runtime_shift",
+		HourSource: "equipment_oee_hourly", DaySource: "equipment_oee_daily", ShiftSource: "equipment_oee_shift",
 		ScopePred: `ard.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE id_area = el.id_area AND tp_equipment = 3)`,
 	},
 	{
 		Name: "site", Key: "id_site", DayBeginFn: "piot_get_day_begin_by_site",
-		HourSource: "area_runtime_1hour", DaySource: "area_runtime_1day", ShiftSource: "area_runtime_shift",
+		HourSource: "area_oee_hourly", DaySource: "area_oee_daily", ShiftSource: "area_oee_shift",
 		ScopePred: `ard.id_area IN (SELECT id_area FROM %[2]s.areas WHERE id_site = el.id_site)`,
 	},
 }
@@ -160,9 +160,9 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	monthSpan := `ard.ts_value >= date_trunc('month', el.ts_value) AND ard.ts_value <= el.ts_value + interval '1 month'`
 	ownDay := sp.Name + `_runtime_1day`
 	if sp.Name == "area" {
-		ownDay = "area_runtime_1day"
+		ownDay = "area_oee_daily"
 	} else {
-		ownDay = "site_runtime_1day"
+		ownDay = "site_oee_daily"
 	}
 
 	// HOUR shape: RAW fill (NULL propagates), inline oee_p, prop = target.

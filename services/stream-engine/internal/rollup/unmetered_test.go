@@ -45,10 +45,10 @@ func TestUnmeteredShape(t *testing.T) {
 // area/site tier or the PO×shift join.
 func TestUnmeteredTableSet(t *testing.T) {
 	want := map[string]bool{
-		"equipment_runtime_1hour": true, "equipment_runtime_1day": true,
-		"equipment_runtime_1week": true, "equipment_runtime_1month": true,
-		"equipment_runtime_shift": true, "equipment_runtime_shift_1week": true,
-		"equipment_runtime_shift_1month": true,
+		"equipment_oee_hourly": true, "equipment_oee_daily": true,
+		"equipment_oee_weekly": true, "equipment_oee_monthly": true,
+		"equipment_oee_shift": true, "equipment_oee_shift_weekly": true,
+		"equipment_oee_shift_monthly": true,
 	}
 	if len(unmeteredMachineTables) != len(want) {
 		t.Fatalf("table set size = %d, want %d", len(unmeteredMachineTables), len(want))
