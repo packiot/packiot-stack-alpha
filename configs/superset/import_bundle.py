@@ -22,14 +22,23 @@ import shutil
 import sys
 import zipfile
 
-# Placeholder committed in configs/superset/assets/databases/packiot_analytics.yaml
-# (sqlalchemy_uri password). Replaced at import time with the real superset_ro pw.
+# Password placeholders committed in the DB assets (sqlalchemy_uri), each replaced
+# at import time with the real credential from the environment. DISTINCT literals
+# per asset so a shorter one can never partial-match another.
 PLACEHOLDER = "XXXXXXXXXXXX"  # noqa: S105 (not a secret — the literal placeholder)
 
 SRC = pathlib.Path(os.environ.get("SUPERSET_ASSETS_DIR", "/app/pythonpath/assets"))
 STAGED = pathlib.Path("/tmp/assets")
 ZIP_PATH = pathlib.Path(os.environ.get("SUPERSET_BUNDLE_ZIP", "/tmp/superset-bundle.zip"))
 DB_ASSET = ("databases", "packiot_analytics.yaml")
+
+# Per-DB-asset password injections: (asset_path, env_var, placeholder).
+#   * packiot_analytics — the bi.* read-only superset_ro credential.
+#   * historian_union   — the hist-gateway (pg_duckdb) HIST_GW_PASSWORD.
+DB_INJECTIONS = [
+    (("databases", "packiot_analytics.yaml"), "SUPERSET_DB_RO_PASSWORD", "XXXXXXXXXXXX"),
+    (("databases", "historian_union.yaml"), "HIST_GW_PASSWORD", "YYYYYYYYYYYY"),
+]
 
 
 def main() -> int:
@@ -41,18 +50,21 @@ def main() -> int:
         shutil.rmtree(STAGED)
     shutil.copytree(SRC, STAGED)
 
-    dbf = STAGED.joinpath(*DB_ASSET)
-    pw = os.environ.get("SUPERSET_DB_RO_PASSWORD", "")
-    if dbf.is_file():
+    for asset_path, env_var, placeholder in DB_INJECTIONS:
+        dbf = STAGED.joinpath(*asset_path)
+        pw = os.environ.get(env_var, "")
+        if not dbf.is_file():
+            # An optional asset (e.g. historian_union) may not be present in every
+            # bundle — skip quietly rather than fail the whole import.
+            print(f"[import_bundle] note: DB asset absent, skipping: {dbf}")
+            continue
         if pw:
-            dbf.write_text(dbf.read_text().replace(PLACEHOLDER, pw))
-            print("[import_bundle] injected superset_ro password into DB asset")
+            dbf.write_text(dbf.read_text().replace(placeholder, pw))
+            print(f"[import_bundle] injected {env_var} into {asset_path[-1]}")
         else:
-            print("[import_bundle] WARN: SUPERSET_DB_RO_PASSWORD unset — DB asset "
-                  "keeps the placeholder; the analytics connection will fail to "
-                  "authenticate until it is set.", file=sys.stderr)
-    else:
-        print(f"[import_bundle] WARN: DB asset missing: {dbf}", file=sys.stderr)
+            print(f"[import_bundle] WARN: {env_var} unset — {asset_path[-1]} keeps "
+                  "the placeholder; that connection will fail to authenticate until "
+                  "it is set.", file=sys.stderr)
 
     # Zip with a single top-level `assets/` root (what the importer expects).
     if ZIP_PATH.exists():
