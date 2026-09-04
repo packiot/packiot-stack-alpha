@@ -215,3 +215,20 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+
+  # Historian gateway liveness (P2): tcp_connect probe — hist-gateway is on
+  # stack_packiot-net (verified reachable from blackbox-exporter). Gives
+  # probe_success{instance="hist-gateway:5432"} for free alerting.
+  - job_name: blackbox-historian
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ['hist-gateway:5432']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
