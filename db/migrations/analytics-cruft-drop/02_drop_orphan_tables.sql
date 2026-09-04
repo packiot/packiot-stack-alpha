@@ -24,3 +24,4 @@ DROP TABLE IF EXISTS public.h_piot_split_downtime;
 DROP TABLE IF EXISTS public.h_shift_hours_per_equipment;
 DROP TABLE IF EXISTS public.h_total_production_chart_data;
 DROP TABLE IF EXISTS public.h_total_production_chart_data_tz_fix;
+DROP TABLE IF EXISTS public.hasura_test;  -- orphaned (its fn h_piot_get_hasura_test was dropped in the 56); 0 rows

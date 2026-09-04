@@ -219,6 +219,21 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "{{ $value }} DB backends (>80% of max_connections=50) — connection leak or pgbouncer bypass growing"
+      # Analytics freshness — metrics already flow from postgres-exporter
+      # (queries.yaml pg_timescaledb_cagg / pg_timescaledb_jobs); these were
+      # unalerted. A stale cagg or failing TS job = OEE rollups falling behind.
+      - alert: AnalyticsCaggRefreshLag
+        expr: max by (datname,cagg) (pg_timescaledb_cagg_seconds_since_last_success{datname="packiot_analytics"}) > 900
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "cagg {{ $labels.cagg }} stale >15m — OEE rollup plane falling behind"
+      - alert: AnalyticsTimescaleJobFailing
+        expr: pg_timescaledb_jobs_last_run_success{datname="packiot_analytics"} == 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "TimescaleDB job {{ $labels.proc_name }} ({{ $labels.job_id }}) last run failed"
 
   # ADR-0022 V3 — the per-tenant flip-readiness VERDICT. Layered ON TOP
   # of the bake gauges (bake_surface_mismatches / bake_surface_compared);
