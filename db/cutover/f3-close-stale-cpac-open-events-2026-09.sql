@@ -98,19 +98,25 @@ UPDATE equipment_events ev
 
 -- ── STEP 2: reflag runtime grains so the deployed rollup/backfill recompute ───
 -- Post-rename grain names (analytics v2 cutover): equipment_oee_hourly/_shift.
--- Closing an open event only REMOVES running-coverage, so a row already at
--- running_time=0 AND oee_a=0 stays 0 and needs no recompute — narrow to rows that
--- can change to keep the backfill drain small.
+-- Closing an open event changes a row TWO ways: (1) an open status=6/running
+-- REMOVES fabricated running-coverage (running_time / oee_a drop); (2) an open
+-- status=10 PLANNED-downtime ADDS available time (the false planned blanket lifts:
+-- available_time 0 → full, planned_downtime full → 0). The reflag MUST catch both
+-- — an earlier version gated only on (running_time>0 OR oee_a>0) and silently
+-- skipped every blanketed row (available_time=0, running=0, oee_a=0), leaving
+-- net>0 hours stuck at available_time=0 → net/ideal>1. So reflag any row that
+-- carried event-derived time OR was fully blanketed, excluding only pristine
+-- future skeletons (all-zero, ts in the future).
 UPDATE equipment_oee_hourly e SET recalc_needed = true
   FROM equipments q
  WHERE e.id_equipment = q.id_equipment AND q.id_enterprise = :ent
-   AND e.ts_value >= now() - interval '10 days'
-   AND (e.running_time > 0 OR e.oee_a > 0);
+   AND e.ts_value >= now() - interval '10 days' AND e.ts_value <= now()
+   AND (e.running_time > 0 OR e.oee_a > 0 OR e.planned_downtime > 0 OR e.available_time = 0);
 UPDATE equipment_oee_shift e SET recalc_needed = true
   FROM equipments q
  WHERE e.id_equipment = q.id_equipment AND q.id_enterprise = :ent
-   AND e.ts_value >= now() - interval '30 days'
-   AND (e.running_time > 0 OR e.oee_a > 0);
+   AND e.ts_value >= now() - interval '30 days' AND e.ts_value <= now()
+   AND (e.running_time > 0 OR e.oee_a > 0 OR e.planned_downtime > 0 OR e.available_time = 0);
 
 \echo ===== AFTER (events closed; runtime recompute happens async in the worker) =====
 SELECT status, count(*) AS open_rows
