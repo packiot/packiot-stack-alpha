@@ -49,8 +49,20 @@ func TestCloserBoundsAndClosesStaleOpens(t *testing.T) {
 func TestCloserNeverClobbersHumanEdits(t *testing.T) {
 	// Formatted exactly as it executes: %[1]s/%[2]s schemas, %[4]s alias → "ev".
 	sql := formatCloserSQL("s", "public", "ev")
-	if !strings.Contains(sql, "AND NOT (ev.cd_category IS NOT NULL") {
-		t.Fatal("closer must guard the UPDATE with the human-justified predicate")
+	// The human-justified guard protects ONLY the trailing count-silence close:
+	// a next-event-bounded close is pure physics and bypasses it (see below).
+	if !strings.Contains(sql, "OR NOT (ev.cd_category IS NOT NULL") {
+		t.Fatal("closer must guard the trailing close with the human-justified predicate")
+	}
+	// Non-latest opens close UNCONDITIONALLY at next_ts — the guard must be gated
+	// behind bounded_by_next so a source-categorized mirror row (category but no
+	// ts_end) is still closed at its successor. Regression guard for the ent-3
+	// line-OEE blanket: without this, categorized CPACK opens never close.
+	if !strings.Contains(sql, "p.bounded_by_next OR NOT") {
+		t.Fatal("next-event-bounded closes must bypass the human-justified guard (bounded_by_next)")
+	}
+	if !strings.Contains(sql, "(o.next_ts IS NOT NULL) AS bounded_by_next") {
+		t.Fatal("plan must expose bounded_by_next = next-event exists (physics-bounded)")
 	}
 	// (1) forced_creation_system must NOT appear — it is the normal system flag on
 	// the live table, so gating on it would skip 100% of the rows to close.
