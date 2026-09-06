@@ -36,15 +36,11 @@ var provisionFns = []string{
 	"piot_create_equipment_runtime_shift",
 	"piot_create_equipment_runtime_shift_1week",
 	"piot_create_equipment_runtime_shift_1month",
-	"piot_create_area_runtime_1hour",
+	// #186: area/site 1hour/1week/1month provisioning removed with the retired
+	// dead grains; only day + shift (+ all equipment grains) are provisioned now.
 	"piot_create_area_runtime_1day",
-	"piot_create_area_runtime_1week",
-	"piot_create_area_runtime_1month",
 	"piot_create_area_runtime_shift",
-	"piot_create_site_runtime_1hour",
 	"piot_create_site_runtime_1day",
-	"piot_create_site_runtime_1week",
-	"piot_create_site_runtime_1month",
 	"piot_create_site_runtime_shift",
 }
 
