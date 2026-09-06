@@ -159,7 +159,7 @@ const grainGoldenSchema = `
 	CREATE TABLE golden.equipment_oee_daily (LIKE golden.equipment_oee_hourly INCLUDING ALL);
 	CREATE TABLE golden.equipment_oee_weekly (LIKE golden.equipment_oee_daily INCLUDING ALL);
 	CREATE TABLE golden.equipment_oee_monthly (LIKE golden.equipment_oee_daily INCLUDING ALL);
-	CREATE TABLE golden.area_oee_hourly (id_area int, ts_value timestamptz, recalc_needed boolean DEFAULT false, computed_at timestamptz, source_watermark timestamptz);
+	-- #186: golden.area_oee_hourly fixture removed with the retired area-hour grain.
 	CREATE TABLE golden.ca_agg_equipment_values_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    state int, speed double precision, ideal_production_speed double precision,
