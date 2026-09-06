@@ -2,10 +2,17 @@
 // names), ported from the 10 piot_get_{area,site}_runtime_*_production
 // bodies (dispatcher-verified plain names; captures banked in docs).
 //
-// TOPOLOGY: area ← equipment (LINES ONLY, tp_equipment = 3) for
-// hour/day/shift; site ← area (areas-of-site); week/month ← own-entity
-// day. Same-bucket sums (ts_value = ts_value) except week/month
-// ([week_trunc(ts), ts + 1 week] — the <= upper bound is verbatim).
+// TOPOLOGY: area ← equipment (LINES ONLY, tp_equipment = 3) for day/shift;
+// site ← area (areas-of-site). Same-bucket sums (ts_value = ts_value).
+//
+// #186 (necessity-proven, triple-signal): the area/site HOUR, WEEK, and MONTH
+// grains + their *_live_* UNS derivatives had ZERO external consumers (the only
+// live area/site consumer — front4 mission control — reads only the DAY/SHIFT
+// chain), so those grains + the six piot_create_{area,site}_runtime_{1hour,1week,
+// 1month} seed procs were retired. The hour grain's ONE remaining job for the live
+// chain was flagging its day grain recalc_needed; that flag is now re-sourced from
+// the tier-below DAY grain (equipment→area, area→site — same ts_value the day
+// rollup already sums on), so area/site day/shift freshness is unchanged.
 //
 // EQUIVALENCE ARGUMENT:
 //   - All bodies are the always-FOUND class → eligible LEFT JOIN with
@@ -47,7 +54,6 @@ type entitySpec struct {
 	DayBeginFn string // piot_get_day_begin_by_area | _site
 	// sourceJoin yields rows of the tier below scoped to the entity:
 	// area ← lines of the area; site ← areas of the site.
-	HourSource  string // equipment_oee_hourly | area_oee_hourly
 	DaySource   string // equipment_oee_daily  | area_oee_daily
 	ShiftSource string // equipment_oee_shift | area_oee_shift
 	ScopePred   string // join predicate template against el (uses %[2]s ref schema)
@@ -56,12 +62,12 @@ type entitySpec struct {
 var entityMatrix = []entitySpec{
 	{
 		Name: "area", Key: "id_area", DayBeginFn: "piot_get_day_begin_by_area",
-		HourSource: "equipment_oee_hourly", DaySource: "equipment_oee_daily", ShiftSource: "equipment_oee_shift",
+		DaySource: "equipment_oee_daily", ShiftSource: "equipment_oee_shift",
 		ScopePred: `ard.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE id_area = el.id_area AND tp_equipment = 3)`,
 	},
 	{
 		Name: "site", Key: "id_site", DayBeginFn: "piot_get_day_begin_by_site",
-		HourSource: "area_oee_hourly", DaySource: "area_oee_daily", ShiftSource: "area_oee_shift",
+		DaySource: "area_oee_daily", ShiftSource: "area_oee_shift",
 		ScopePred: `ard.id_area IN (SELECT id_area FROM %[2]s.areas WHERE id_site = el.id_site)`,
 	},
 }
@@ -154,125 +160,49 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	 WHERE NOT e.recalc_needed AND e.ts_value >= now() - interval '1 month'`
 	}
 	monthWindow := `d.ts_value >= now() - interval '1 month' AND d.ts_value <= now()`
-	weekWindow := `d.ts_value >= now() - interval '1 month' AND d.ts_value < now()`
 	sameBucket := `ard.ts_value = el.ts_value`
-	weekSpan := `ard.ts_value >= date_trunc('week', el.ts_value) AND ard.ts_value <= el.ts_value + interval '1 week'`
-	monthSpan := `ard.ts_value >= date_trunc('month', el.ts_value) AND ard.ts_value <= el.ts_value + interval '1 month'`
-	ownDay := sp.Name + `_oee_daily`
+
+	// #186 DAY-flag cascade — replaces the retired hour→day cascade. The removed
+	// hour grain's only remaining job for the live chain was flagging its day grain
+	// recalc_needed; re-source that flag from the tier-BELOW day grain
+	// (equipment→area, area→site). The day rollup already sums that same source on
+	// ard.ts_value = el.ts_value, so the tiers share ts_value and a changed
+	// equipment/area day propagates to the area/site day exactly as the hour path did.
+	var dayFlagCascade string
 	if sp.Name == "area" {
-		ownDay = "area_oee_daily"
+		dayFlagCascade = `
+	UPDATE ` + evSchema + `.area_oee_daily t SET recalc_needed = true
+	  FROM ` + evSchema + `.equipment_oee_daily ed
+	  JOIN ` + refSchema + `.equipments q ON q.id_equipment = ed.id_equipment AND q.tp_equipment = 3
+	 WHERE ed.recalc_needed = false AND ed.ts_value >= now() - interval '1 month'
+	   AND t.id_area = q.id_area AND t.ts_value = ed.ts_value`
 	} else {
-		ownDay = "site_oee_daily"
+		dayFlagCascade = `
+	UPDATE ` + evSchema + `.site_oee_daily t SET recalc_needed = true
+	  FROM ` + evSchema + `.area_oee_daily ad
+	  JOIN ` + refSchema + `.areas a ON a.id_area = ad.id_area
+	 WHERE ad.recalc_needed = false AND ad.ts_value >= now() - interval '1 month'
+	   AND t.id_site = a.id_site AND t.ts_value = ad.ts_value`
 	}
 
-	// HOUR shape: RAW fill (NULL propagates), inline oee_p, prop = target.
-	hour := `
-	WITH el AS (
-	    SELECT d.` + sp.Key + `, d.ts_value
-	      FROM ` + evSchema + `.` + sp.Name + `_oee_hourly d
-	     WHERE d.recalc_needed AND d.ts_value >= now() - interval '1 month' AND d.ts_value <= now()
-	       AND NOT (d.` + sp.Key + ` = ANY($1))
-	), sums AS (
-	    SELECT el.` + sp.Key + `, el.ts_value,` + entitySumList + `
-	      FROM el
-	      JOIN ` + evSchema + `.` + sp.HourSource + ` ard ON ard.ts_value = el.ts_value
-	       AND ` + scope + `
-	     GROUP BY el.` + sp.Key + `, el.ts_value
-	)
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_hourly e SET
-	       gross = s.gross, net = s.net, scrap = s.scrap,
-	       oee_q = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
-	       available_time = s.available_time, running_time = s.running_time,
-	       stopped_time = s.stopped_time, planned_downtime = s.planned_downtime,
-	       ideal_production = s.ideal_production,
-	       idle_time = s.idle_time, idle_starved = s.idle_starved, idle_blocked = s.idle_blocked,
-	       target = s.target, downtime = s.downtime, changeover_time = s.changeover_time,
-	       oee   = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1), 0), -- ADR-0037 clamp [0,1]
-	       oee_a = GREATEST(LEAST(COALESCE(s.running_time::float / NULLIF(s.available_time, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE((s.net / NULLIF(s.ideal_production, 0)) /
-	               NULLIF(s.running_time::float / NULLIF(s.available_time, 0) * (s.net::float / NULLIF(s.gross, 0)), 0), 0), 1), 0),
-	       proportional_target = s.target,
-	       recalc_needed = false` + stamp("1 hour") + `
-	  FROM el
-	  JOIN sums s ON s.` + sp.Key + ` = el.` + sp.Key + ` AND s.ts_value = el.ts_value
-	 WHERE e.` + sp.Key + ` = el.` + sp.Key + ` AND e.ts_value = el.ts_value`
-	// hour body updates ONLY on found (inner join) — sums exist ⇒
-	// always-FOUND makes inner ≈ left for non-empty; empty-sum rows
-	// keep prior values AND their flag: prod's if-found gates the
-	// whole update, and with no source rows FOUND is still true but
-	// every field is NULL — RAW fill writes those NULLs. Left join +
-	// raw fill reproduces exactly that.
-	hour = hourRawLeftJoin(hour)
-
-	hourCascadeDay := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_daily t SET recalc_needed = true
-	  FROM el
-	 WHERE t.` + sp.Key + ` = el.` + sp.Key + `
-	   AND t.ts_value = (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(el.` + sp.Key + `, el.ts_value) LIMIT 1)`
-	_ = hourCascadeDay // folded into the tx below via temp view; see runner
-
-	hourTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_hourly SET recalc_needed = true,
-	       proportional_target = target * (SELECT extract(minute FROM now()) / 60)
-	 WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()`
-
-	dayCascades := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_monthly t SET recalc_needed = true
-	  FROM ` + evSchema + `.` + sp.Name + `_oee_daily d
-	 WHERE d.recalc_needed = false AND d.ts_value >= now() - interval '1 month'
-	   AND t.` + sp.Key + ` = d.` + sp.Key + ` AND t.ts_value = date_trunc('month', d.ts_value)`
-	dayCascadeWeek := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_weekly t SET recalc_needed = true
-	  FROM ` + evSchema + `.` + sp.Name + `_oee_daily d
-	 WHERE d.recalc_needed = false AND d.ts_value >= now() - interval '1 month'
-	   AND t.` + sp.Key + ` = d.` + sp.Key + ` AND t.ts_value = date_trunc('week', d.ts_value)`
-
-	weekTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_weekly SET recalc_needed = true
-	 WHERE ts_value >= date_trunc('week', now())
-	   AND ts_value < date_trunc('week', now() + interval '1 week')`
-	monthTail := `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_monthly SET recalc_needed = true
-	 WHERE ts_value >= date_trunc('month', now())
-	   AND ts_value < date_trunc('month', now() + interval '1 month')`
 	// Shift tail: prod leaks the loop variable — per-row intent restore.
 	shiftTail := `
 	UPDATE ` + evSchema + `.` + sp.Name + `_oee_shift e SET recalc_needed = true
 	 WHERE e.ts_value_production >= (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(e.` + sp.Key + `, now()) LIMIT 1)
 	   AND e.ts_value_production <  (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(e.` + sp.Key + `, now() + interval '1 day') LIMIT 1)`
 
+	// #186: hour/week/month retired (dead). Order preserved for the survivors:
+	// the day-flag cascade runs FIRST (flags this entity's day grain from the
+	// tier-below day grain), then the day rollup consumes those flags, then shift.
 	return []struct{ Name, SQL string }{
-		{sp.Name + "-hour", hour},
-		{sp.Name + "-hour-cascade-day", `
-	UPDATE ` + evSchema + `.` + sp.Name + `_oee_daily t SET recalc_needed = true
-	  FROM ` + evSchema + `.` + sp.Name + `_oee_hourly h
-	 WHERE h.recalc_needed = false AND h.ts_value >= now() - interval '1 month'
-	   AND t.` + sp.Key + ` = h.` + sp.Key + `
-	   AND t.ts_value = (SELECT ts_value_production FROM ` + sp.DayBeginFn + `(h.` + sp.Key + `, h.ts_value) LIMIT 1)`},
-		{sp.Name + "-hour-tail", hourTail},
+		{sp.Name + "-day-flag", dayFlagCascade},
 		{sp.Name + "-day", rollup(sp.Name+"_oee_daily", sp.DaySource, sameBucket, `,
 	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 day"), monthWindow, true)},
 		{sp.Name + "-day-oeep", oeeP(sp.Name + "_oee_daily")},
-		{sp.Name + "-day-cascade-month", dayCascades},
-		{sp.Name + "-day-cascade-week", dayCascadeWeek},
 		{sp.Name + "-shift", rollup(sp.Name+"_oee_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
 		{sp.Name + "-shift-oeep", oeeP(sp.Name + "_oee_shift")},
 		{sp.Name + "-shift-tail", shiftTail},
-		{sp.Name + "-week", rollup(sp.Name+"_oee_weekly", ownDay, weekSpan, `,
-	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("7 days"), weekWindow, false)},
-		{sp.Name + "-week-oeep", oeeP(sp.Name + "_oee_weekly")},
-		{sp.Name + "-week-tail", weekTail},
-		{sp.Name + "-month", rollup(sp.Name+"_oee_monthly", ownDay, monthSpan, `,
-	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 month"), weekWindow, false)},
-		{sp.Name + "-month-oeep", oeeP(sp.Name + "_oee_monthly")},
-		{sp.Name + "-month-tail", monthTail},
 	}
-}
-
-// hourRawLeftJoin converts the hour statement's inner sums join to a
-// left join (see the equivalence note in the hour template).
-func hourRawLeftJoin(s string) string {
-	return strings.Replace(s, "JOIN sums s ON", "LEFT JOIN sums s ON", 1)
 }
 
 // RunEntityGrains executes both entity tiers for one destination.
