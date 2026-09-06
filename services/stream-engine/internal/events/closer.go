@@ -37,9 +37,15 @@
 //   COALESCE(NULLIF(stop_threshold_time,0), default)) so the two share one model.
 //
 // ── INVARIANTS ───────────────────────────────────────────────────────────────
-//   - Never clobbers a human edit: guarded by humanTouchedPred (shared with the
-//     CPAC deriver) — justified/trimmed/reclassified operator rows are skipped,
-//     so operator downtimes keep their ts_end/category intact.
+//   - Never clobbers a human edit: the human-justified guard (humanJustifiedPred)
+//     protects ONLY the trailing count-silence close — where auto-closing an
+//     operator's genuinely-ongoing downtime would overwrite intent. A NON-LATEST
+//     open (a successor transition exists) is closed at next_ts UNCONDITIONALLY:
+//     the interval provably ended when the next event began, and filling the
+//     missing ts_end never touches the category. This is required for CPACK mirror
+//     rows, which carry the source's category/notes but no ts_end — the guard
+//     would otherwise mistake source categories for staging-table operator edits
+//     and leave them open forever, blanketing availability (the ent-3 line-OEE bug).
 //   - Idempotent: only ts_end IS NULL rows are ever written; a replay after the
 //     backlog is drained touches nothing until fresh opens appear.
 //   - Parity-safe: scoped to the configured status_type=0 enterprises and inert
@@ -122,7 +128,15 @@ WITH scope AS (
            CASE
              WHEN o.next_ts IS NOT NULL THEN o.next_ts
              ELSE greatest(o.ts_event, lc.last_ts + make_interval(secs => lc.thr))
-           END AS new_end
+           END AS new_end,
+           -- NON-LATEST (a successor transition exists) ⇒ the interval PROVABLY
+           -- ended when the next event began. This bound is pure physics, not a
+           -- judgment call, so it is applied UNCONDITIONALLY — even to a
+           -- source-categorized row. (CPACK mirror rows carry the source's
+           -- category/notes but never a ts_end; the human-edit guard below would
+           -- otherwise mistake that for a staging-table operator edit and leave
+           -- them open forever, blanketing availability — the ent-3 line-OEE bug.)
+           (o.next_ts IS NOT NULL) AS bounded_by_next
       FROM open_ev o
       LEFT JOIN lastcount lc ON lc.id_equipment = o.id_equipment
      WHERE o.next_ts IS NOT NULL
@@ -135,7 +149,11 @@ UPDATE %[1]s.equipment_events ev
   FROM plan p
  WHERE ev.id_equipment_event = p.id_equipment_event
    AND ev.ts_end IS NULL
-   AND NOT ` + humanJustifiedPred
+   -- Human-edit guard applies ONLY to the TRAILING close (count-silence), where
+   -- auto-closing an operator's genuinely-ongoing downtime would clobber intent.
+   -- A next-event-bounded close never destroys the category — it only fills the
+   -- missing ts_end at the physically-correct boundary — so it bypasses the guard.
+   AND (p.bounded_by_next OR NOT ` + humanJustifiedPred + `)`
 
 // defaultInt returns v when it is positive, else def — the inert-safe fallback
 // for a zero-valued CloserConfig knob.
