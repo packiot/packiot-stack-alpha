@@ -47,59 +47,10 @@ const refreshDayEntitySQL = `
 	       target = p.target, proportional_target = p.proportional_target
 	  FROM prod p WHERE u.%[3]s = p.%[3]s`
 
-const refreshMonthEntitySQL = `
-	WITH prod AS (
-	    SELECT %[3]s, ts_value, net, gross, scrap,
-	           oee, oee_a, oee_p, oee_q, available_time, running_time,
-	           stopped_time, planned_downtime, ideal_production,
-	           idle_time, idle_starved, idle_blocked, target,
-	           extract(epoch FROM (now() - ts_value)) AS elapsed_time,
-	           (target * extract(epoch FROM (now() - ts_value)))
-	             / extract(epoch FROM ((date_trunc('month', now()) + interval '1 month') - date_trunc('month', now()))) AS proportional_target,
-	           (ideal_production * extract(epoch FROM (now() - ts_value)))
-	             / extract(epoch FROM ((date_trunc('month', now()) + interval '1 month') - date_trunc('month', now()))) AS proportional_ideal_production
-	      FROM %[1]s.%[4]s
-	     WHERE ts_value = date_trunc('month', now())::timestamptz
-	)
-	UPDATE %[1]s.%[5]s u SET
-	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
-	       oee = p.oee, oee_a = p.oee_a, oee_p = p.oee_p, oee_q = p.oee_q,
-	       available_time = p.available_time, running_time = p.running_time,
-	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
-	       ideal_production = p.ideal_production, idle_time = p.idle_time,
-	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
-	       target = p.target, elapsed_time = p.elapsed_time,
-	       proportional_target = p.proportional_target,
-	       begin_time = p.ts_value,
-	       end_time = date_trunc('month', now()) + interval '1 month'
-	  FROM prod p WHERE u.%[3]s = p.%[3]s`
-
-const refreshWeekEntitySQL = `
-	WITH c AS (
-	    SELECT erw.*, e.id_equipment, e.id_enterprise
-	      FROM %[1]s.%[4]s erw
-	      JOIN %[2]s.equipments e USING (%[3]s)
-	      JOIN piot_get_shift_hour_list_by_equipment(e.id_enterprise, e.id_equipment) USING (%[3]s, id_equipment, id_enterprise)
-	     WHERE erw.ts_value >= date_trunc('week', now())::date
-	       AND erw.ts_value < date_trunc('week', now() + interval '1 week')::date
-	       AND e.tp_equipment = 3
-	)
-	UPDATE %[1]s.%[5]s w SET
-	       gross_production = c.gross, net_production = c.net, scrap = c.scrap,
-	       begin_time = c.ts_value,
-	       end_time = date_trunc('week', now() + interval '1 week'),
-	       elapsed_time = (SELECT extract(epoch FROM now() - ts_value)
-	                         FROM piot_get_day_begin_by_equipment(c.id_equipment, date_trunc('week', now()))),
-	       target = c.target,
-	       proportional_target = (SELECT c.target * (SELECT extract(epoch FROM now() - ts_value)
-	               FROM piot_get_day_begin_by_equipment(c.id_equipment, date_trunc('week', now())))
-	             / (SELECT sum(shift_size) FROM piot_get_shift_hour_list_by_equipment(c.id_enterprise, c.id_equipment))),
-	       idle_time = c.idle_time, idle_blocked = c.idle_blocked, idle_starved = c.idle_starved,
-	       running_time = c.running_time, stopped_time = c.stopped_time,
-	       available_time = c.available_time, planned_downtime = c.planned_downtime,
-	       ideal_production = c.ideal_production,
-	       oee = c.oee, oee_a = c.oee_a, oee_p = c.oee_p, oee_q = c.oee_q
-	  FROM c WHERE w.%[3]s = c.%[3]s`
+// #186: refreshMonthEntitySQL / refreshWeekEntitySQL (area/site live-week and
+// live-month refreshers) were removed with the retired area/site weekly/monthly
+// grains. refreshDayEntitySQL (above) and refreshShiftAreaSQL (below) stay — the
+// day + area-shift live grains feed front4 mission control.
 
 const refreshShiftAreaSQL = `
 	WITH ts AS (
@@ -192,19 +143,20 @@ const refreshJobsElapsedSQL = `
 	UPDATE %[1]s.equipment_live_job u SET elapsed_time = p.duration
 	  FROM po_time p WHERE u.id_equipment = p.id_equipment`
 
-// RefreshCurrentRest runs the remaining live refreshers (day/week/
-// month for area+site, shift for area).
+// RefreshCurrentRest runs the remaining live refreshers (day for area+site,
+// shift for area). #186: the area/site live-WEEK and live-MONTH refreshers were
+// retired — their source grains (area/site_oee_weekly/monthly) and sink tables
+// (area/site_live_week/month) had zero consumers. area/site_live_day stays LIVE
+// (front4 mission control reads it), so the DAY refresh is preserved.
 func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
-	type ent struct{ key, rtDay, unsDay, rtWeek, unsWeek, rtMonth, unsMonth string }
+	type ent struct{ key, rtDay, unsDay string }
 	ents := []ent{
-		{"id_area", "area_oee_daily", "area_live_day", "area_oee_weekly", "area_live_week", "area_oee_monthly", "area_live_month"},
-		{"id_site", "site_oee_daily", "site_live_day", "site_oee_weekly", "site_live_week", "site_oee_monthly", "site_live_month"},
+		{"id_area", "area_oee_daily", "area_live_day"},
+		{"id_site", "site_oee_daily", "site_live_day"},
 	}
 	for _, e := range ents {
 		steps := []struct{ name, sql string }{
 			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtDay, e.unsDay)},
-			{"week-" + e.key, fmt.Sprintf(refreshWeekEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtWeek, e.unsWeek)},
-			{"month-" + e.key, fmt.Sprintf(refreshMonthEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtMonth, e.unsMonth)},
 		}
 		for _, s := range steps {
 			if _, err := d.Pool.Exec(ctx, s.sql); err != nil {

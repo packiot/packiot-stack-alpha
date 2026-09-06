@@ -239,41 +239,10 @@ const refreshHourTrailEquipmentSQL = `
 // entityHourSQL parameterizes the area/site hour refreshers (verbatim:
 // no exclusion lists on these; area carries the full OEE family, site
 // identical). %[3]s = entity key, %[4]s = runtime table, %[5]s = uns table.
-const refreshHourEntitySQL = `
-	WITH prod AS (
-	    SELECT %[3]s, ts_value, net, gross, scrap,
-	           oee, oee_p, oee_a, oee_q, available_time, running_time,
-	           stopped_time, planned_downtime, ideal_production,
-	           idle_time, idle_starved, idle_blocked, target, proportional_target
-	      FROM %[1]s.%[4]s v
-	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
-	)
-	UPDATE %[1]s.%[5]s u SET
-	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
-	       begin_time = p.ts_value, end_time = p.ts_value + interval '1 hour',
-	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
-	       available_time = p.available_time, running_time = p.running_time,
-	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
-	       ideal_production = p.ideal_production, idle_time = p.idle_time,
-	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
-	       target = p.target, proportional_target = p.proportional_target
-	  FROM prod p WHERE u.%[3]s = p.%[3]s`
+// #186: refreshHourEntitySQL / refreshHourTrailEntitySQL (area/site live-hour
+// refreshers) were removed with the retired area/site hourly grains.
 
-const refreshHourTrailEntitySQL = `
-	WITH prod AS (
-	    SELECT %[3]s, json_agg(json_build_object(
-	           'ts_value', ts_value, 'net_production', net,
-	           'gross_production', gross, 'scrap', scrap)) AS data
-	      FROM (SELECT %[3]s, ts_value, net, gross, scrap
-	              FROM %[1]s.%[4]s
-	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
-	             ORDER BY %[3]s, ts_value) t
-	     GROUP BY %[3]s
-	)
-	UPDATE %[1]s.%[5]s u SET last_24_hours = p.data
-	  FROM prod p WHERE u.%[3]s = p.%[3]s`
-
-// RefreshCurrentHour runs the three live hour refreshers.
+// RefreshCurrentHour runs the equipment live-hour refreshers.
 func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
 	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns hour equipment: %w", err)
@@ -281,17 +250,10 @@ func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterp
 	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns hour equipment trail: %w", err)
 	}
-	for _, e := range []struct{ key, rt, uns string }{
-		{"id_area", "area_oee_hourly", "area_live_hour"},
-		{"id_site", "site_oee_hourly", "site_live_hour"},
-	} {
-		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
-			return fmt.Errorf("uns hour %s: %w", e.uns, err)
-		}
-		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rt, e.uns)); err != nil {
-			return fmt.Errorf("uns hour trail %s: %w", e.uns, err)
-		}
-	}
+	// #186: the area/site live-HOUR refreshers were retired — their source grains
+	// (area/site_oee_hourly) and sink tables (area/site_live_hour) had zero
+	// consumers (mission control reads only the day/shift chain). Only the
+	// equipment live-hour refresh above remains.
 	return nil
 }
 
