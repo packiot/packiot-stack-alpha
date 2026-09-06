@@ -146,7 +146,7 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	steps := []struct{ name, sql string }{
 		{"values", widenHourWindows(fmt.Sprintf(hourValuesSQL, d.EvSchema))},
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
-		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, d.EvSchema, d.RefSchema)},
+		// #186: cascade-area removed (area hourly grain retired).
 		{"speed", widenHourWindows(fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema))},
 		{"events", widenHourWindows(fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability)))},
 		{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},

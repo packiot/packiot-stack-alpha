@@ -37,10 +37,9 @@ var provisionMatrix = []struct {
 	{"equipment_live_shift", "equipments", "id_equipment"},
 	{"equipment_live_week", "equipments", "id_equipment"},
 	{"area_live_day", "areas", "id_area"},
-	{"area_live_hour", "areas", "id_area"},
-	{"area_live_month", "areas", "id_area"},
+	// #186: area_live_hour/month/week removed (retired dead grains). Only the
+	// live-DAY and live-SHIFT area grains survive (mission control reads them).
 	{"area_live_shift", "areas", "id_area"},
-	{"area_live_week", "areas", "id_area"},
 }
 
 const provisionSQL = `INSERT INTO %[1]s.%[3]s (SELECT %[4]s FROM %[2]s.%[5]s) ON CONFLICT DO NOTHING`

@@ -80,11 +80,7 @@ const hourCascadeDaySQL = `
 	 WHERE d.id_equipment = el.id_equipment
 	   AND d.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)`
 
-const hourCascadeAreaSQL = `
-	UPDATE %[1]s.area_oee_hourly a SET recalc_needed = true
-	  FROM hour_elig el
-	  JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
-	 WHERE a.id_area = q.id_area AND a.ts_value = el.ts_value`
+// #186: hourCascadeAreaSQL removed — it flagged the retired area_oee_hourly grain.
 
 // Speed pass from the 1min tier — always-FOUND → always-update.
 // IDEAL-SPEED SOURCE (line-OEE fix, measured 2026-07-07 eq 51/96):
@@ -320,7 +316,9 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	steps := []rollupStep{
 		{"values", fmt.Sprintf(hourValuesSQL, d.EvSchema)},
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
-		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, d.EvSchema, d.RefSchema)},
+		// #186: cascade-area (flag area_oee_hourly) removed — the area/site hourly
+		// grain was retired (dead). Area day freshness is now driven by the
+		// equipment→area day-flag cascade in entity_grains.go.
 		{"speed", fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema)},
 		{"events", fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability))},
 	}
@@ -369,7 +367,7 @@ func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL str
 		{"eligible", fmt.Sprintf(hourEligibleSQL, evSchema, refSchema)},
 		{"values", fmt.Sprintf(hourValuesSQL, evSchema)},
 		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, evSchema)},
-		{"cascade-area", fmt.Sprintf(hourCascadeAreaSQL, evSchema, refSchema)},
+		// #186: cascade-area removed (area hourly grain retired).
 		{"speed", fmt.Sprintf(hourSpeedSQL, evSchema, refSchema)},
 		// Parity accessor is frozen to the prod-verbatim (off) classification —
 		// it is diffed against prod (F2), which has no changeover reclassification.
