@@ -7,10 +7,10 @@ import (
 )
 
 func TestProvisionMatrixFidelity(t *testing.T) {
-	// prod's upsert_features: equipment×6 plain + metrics special +
-	// area×5; NO site provisioning.
-	if len(provisionMatrix) != 11 {
-		t.Errorf("matrix size %d != 11", len(provisionMatrix))
+	// equipment×6 plain + metrics special + area×2 (day, shift). #186 retired the
+	// area live hour/week/month grains, so provisioning drops to 8; NO site provisioning.
+	if len(provisionMatrix) != 8 {
+		t.Errorf("matrix size %d != 8", len(provisionMatrix))
 	}
 	for _, m := range provisionMatrix {
 		if strings.HasPrefix(m.unsTable, "uns_site") {

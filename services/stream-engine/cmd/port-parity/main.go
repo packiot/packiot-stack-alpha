@@ -336,8 +336,6 @@ var hourSnapshotSQL = []string{
 	`UPDATE ` + legacySchema + `.equipment_oee_hourly SET recalc_needed = true WHERE ts_value >= now() - interval '65 minutes' AND ts_value <= now()`,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_daily AS
 	   SELECT * FROM public.equipment_oee_daily WHERE ts_value >= now() - interval '3 days'`,
-	`CREATE TABLE ` + legacySchema + `.area_oee_hourly AS
-	   SELECT * FROM public.area_oee_hourly WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.agg_equipment_values_1min_t AS
@@ -348,7 +346,6 @@ var hourSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_daily AS SELECT * FROM ` + legacySchema + `.equipment_oee_daily`,
-	`CREATE TABLE ` + goSchema + `.area_oee_hourly AS SELECT * FROM ` + legacySchema + `.area_oee_hourly`,
 	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1hour AS SELECT * FROM ` + legacySchema + `.ca_agg_equipment_values_1hour`,
 	`CREATE TABLE ` + goSchema + `.ca_agg_equipment_values_1min AS SELECT * FROM ` + legacySchema + `.agg_equipment_values_1min_t`,
 	`CREATE TABLE ` + goSchema + `.equipment_events AS SELECT * FROM ` + legacySchema + `.equipment_events`,
