@@ -36,6 +36,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -112,10 +114,14 @@ type histSeriesReq struct {
 // force-on → DuckDB doesn't know the PG function). So we inline the view and
 // carry ev_between's year/month prune predicate ourselves.
 //
-// $1=id_enterprise (TENANT FENCE, server-resolved) $2=from $3=to $4=equipment[]
-// (NULL ⇒ all) $5=fromYear $6=fromMonth $7=toYear $8=toMonth. The ts_value bound
-// is exact; the year/month bound is what prunes the cold parquet to the relevant
-// partition files (T3 — a bounded query reads 1/181 files, not all). Row cap appended.
+// $1=id_enterprise (TENANT FENCE, server-resolved) $2=from $3=to $4=fromYear
+// $5=fromMonth $6=toYear $7=toMonth. The ts_value bound is exact; the year/month
+// bound prunes the cold parquet to the relevant partition files (T3 — a bounded
+// query reads 1/181 files, not all). First %s = the optional equipment filter
+// (inline integer IN-list; NOT a bind param — pg_duckdb cannot cast a Postgres
+// int[] array literal, so an int[] param throws "'{50}' can't be cast to
+// INTEGER[]"). The ids are Go-validated ints, so the inline list is injection-safe.
+// Second %d = the row cap.
 const histProductionSeriesSQL = `
   SELECT date_trunc('day', ts_value)::date       AS day,
          id_equipment,
@@ -124,9 +130,9 @@ const histProductionSeriesSQL = `
     FROM ev_all
    WHERE id_enterprise = $1
      AND ts_value >= $2 AND ts_value < $3
-     AND ($4::int[] IS NULL OR id_equipment = ANY($4))
-     AND ( year >  $5 OR (year = $5 AND month >= $6) )
-     AND ( year <  $7 OR (year = $7 AND month <= $8) )
+     %s
+     AND ( year >  $4 OR (year = $4 AND month >= $5) )
+     AND ( year <  $6 OR (year = $6 AND month <= $7) )
    GROUP BY 1, 2
    ORDER BY 1, 2
    LIMIT %d`
@@ -168,14 +174,17 @@ func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *sl
 			http.Error(w, `{"error":"historian gateway not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
-		// Optional equipment filter → NULL when empty so the SQL predicate is a
-		// no-op (all of the tenant's equipment). NEVER the tenant fence — that is
-		// always the server-resolved cid ($3).
-		var equip any
+		// Optional equipment filter → an INLINE integer IN-list (not a bind param;
+		// pg_duckdb can't cast a PG int[] literal). NEVER the tenant fence — that is
+		// always the server-resolved cid ($1). ids come from JSON as []int, so each
+		// is a validated integer → injection-safe to inline.
+		equipFilter := ""
 		if len(q.Equipment) > 0 {
-			equip = q.Equipment
-		} else {
-			equip = nil
+			parts := make([]string, len(q.Equipment))
+			for i, e := range q.Equipment {
+				parts[i] = strconv.Itoa(e)
+			}
+			equipFilter = "AND id_equipment IN (" + strings.Join(parts, ",") + ")"
 		}
 		// Year/month prune bounds (UTC — the partition columns are UTC-derived).
 		// Computed in Go so they bind as plain int constants the planner prunes on.
@@ -185,8 +194,8 @@ func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *sl
 		// A cold duckdb scan can be slow even pruned; give it room but bound it.
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
-		sql := fmt.Sprintf(histProductionSeriesSQL, histRowLimit)
-		payload, err := runQueryJSON(ctx, histPool, sql, []any{cid, q.From, q.To, equip, fy, fm, ty, tm})
+		sql := fmt.Sprintf(histProductionSeriesSQL, equipFilter, histRowLimit)
+		payload, err := runQueryJSON(ctx, histPool, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
 		if err != nil {
 			logger.Warn("historian query failed", slog.Int("cid", cid), slog.String("err", err.Error()))
 			http.Error(w, `{"error":"historian query failed"}`, http.StatusInternalServerError)
