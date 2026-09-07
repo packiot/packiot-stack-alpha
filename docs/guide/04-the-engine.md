@@ -277,8 +277,10 @@ it:
 
 ```go
 // internal/rollup/hour.go — the hourly pass flags the grains above it
-UPDATE %[1]s.equipment_runtime_1day  d SET recalc_needed = true ...   // the day that contains this hour
-UPDATE %[1]s.area_runtime_1hour      a SET recalc_needed = true ...   // the area that contains this equipment
+UPDATE %[1]s.equipment_oee_daily d SET recalc_needed = true ...   // the day that contains this hour
+// (area/site totals are re-flagged FROM the day grain via the equipment→area
+//  day-flag cascade in entity_grains.go — the area/site *hourly* grains were
+//  retired as dead, ADR-0045 #186, so there is no area-hour flag anymore)
 ```
 
 Second, the PO-runtime pass **re-arms the flag on anything that can still change** —
@@ -297,7 +299,7 @@ UPDATE %[1]s.production_orders SET recalc_needed = true
 Read together, these are the whole cascade: writes and self-re-enqueues *set* the
 flag, the rollup passes *consume* it, and the flag propagates up the grain hierarchy
 so a fix at the bottom reaches every total built on it. This is the `equipment_values
-→ agg_equipment_values_1min → equipment_runtime_1hour → _shift/_1day` chain from
+→ agg_equipment_values_1min → equipment_oee_hourly → _oee_shift/_oee_daily` chain from
 [Chapter 5](05-the-database.md#agg_equipment_values_1min--the-first-aggregate), driven
 one dirty row at a time rather than by recomputing the world.
 

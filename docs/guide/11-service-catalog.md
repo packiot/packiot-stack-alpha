@@ -59,16 +59,20 @@ The OEE cascade concretely — data flows *up* these grains, and the `recalc_nee
 dirty flag propagates up with it (→ [Ch.4](04-the-engine.md#the-dirty-flag-cascade-concretely)):
 
 ```
-equipment_values → agg_equipment_values_1min → equipment_runtime_1hour → equipment_runtime_shift
-                                                                       ↘ _1day / _1week / _1month
+equipment_values → agg_equipment_values_1min → equipment_oee_hourly → equipment_oee_shift
+                                                                    ↘ _daily / _weekly / _monthly
 ```
 
-Verified present in `edge-api/schema.sql`:
+Grain tables (analytics `oee_*` names — the `runtime_*` originals were renamed by
+ADR-0045 §A; verify live via the parity manifest, not `edge-api/schema.sql` which
+predates the rename):
 
-- **Equipment grain:** `equipment_runtime_1hour`, `equipment_runtime_shift`,
-  `equipment_runtime_1day`, `equipment_runtime_1week`, `equipment_runtime_1month`.
-- **Area rollup:** `area_runtime_1hour` / `_shift` / `_1day` / `_1week` / `_1month`.
-- **Site rollup:** `site_runtime_1hour` / `_1day` / `_1month` (and peers).
+- **Equipment grain:** `equipment_oee_hourly`, `equipment_oee_shift`,
+  `equipment_oee_daily`, `equipment_oee_weekly`, `equipment_oee_monthly`
+  (+ `equipment_oee_shift_weekly` / `_shift_monthly`).
+- **Area rollup:** `area_oee_shift` / `area_oee_daily` only — the hourly/weekly/monthly
+  area grains were retired as dead (ADR-0045 #186).
+- **Site rollup:** `site_oee_shift` / `site_oee_daily` only — likewise retired (#186).
 - **Box CAggs (`ca_` prefixed):** `ca_equipment_boxes_1s`, `ca_equipment_boxes_1hour`
   — the `ca_` prefix that *does* exist in the code today lives on these box/discrete
   aggregates, plus `ca_discrete_changes_1s` (per the end-state map).
