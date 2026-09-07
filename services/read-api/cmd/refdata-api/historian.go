@@ -91,17 +91,30 @@ type histSeriesReq struct {
 }
 
 // histProductionSeriesSQL — daily gross/net per equipment over [from,to) for one
-// tenant, hot+cold via ev_between. $1=from $2=to $3=id_enterprise $4=equipment[]
-// (NULL ⇒ all). id_enterprise is the tenant fence; year/month prune the cold
-// side (ev_between injects the partition range). Row cap appended.
+// tenant, hot+cold via the ev_all VIEW.
+//
+// WHY ev_all (view) and NOT ev_between (function): pg_duckdb runs the cold-side
+// read_parquet in DuckDB and the hot-side FDW in Postgres as ONE mixed plan when
+// the parquet scan is inline in a query/view — but wrapping it in a SQL function
+// breaks that (force-off → "read_parquet only works with DuckDB execution";
+// force-on → DuckDB doesn't know the PG function). So we inline the view and
+// carry ev_between's year/month prune predicate ourselves.
+//
+// $1=id_enterprise (TENANT FENCE, server-resolved) $2=from $3=to $4=equipment[]
+// (NULL ⇒ all) $5=fromYear $6=fromMonth $7=toYear $8=toMonth. The ts_value bound
+// is exact; the year/month bound is what prunes the cold parquet to the relevant
+// partition files (T3 — a bounded query reads 1/181 files, not all). Row cap appended.
 const histProductionSeriesSQL = `
   SELECT date_trunc('day', ts_value)::date       AS day,
          id_equipment,
          sum(gross_production_incr)               AS gross_production,
          sum(net_production_incr)                 AS net_production
-    FROM ev_between($1, $2)
-   WHERE id_enterprise = $3
+    FROM ev_all
+   WHERE id_enterprise = $1
+     AND ts_value >= $2 AND ts_value < $3
      AND ($4::int[] IS NULL OR id_equipment = ANY($4))
+     AND ( year >  $5 OR (year = $5 AND month >= $6) )
+     AND ( year <  $7 OR (year = $7 AND month <= $8) )
    GROUP BY 1, 2
    ORDER BY 1, 2
    LIMIT %d`
@@ -152,11 +165,16 @@ func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *sl
 		} else {
 			equip = nil
 		}
+		// Year/month prune bounds (UTC — the partition columns are UTC-derived).
+		// Computed in Go so they bind as plain int constants the planner prunes on.
+		fu, tu := q.From.UTC(), q.To.UTC()
+		fy, fm := fu.Year(), int(fu.Month())
+		ty, tm := tu.Year(), int(tu.Month())
 		// A cold duckdb scan can be slow even pruned; give it room but bound it.
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 		sql := fmt.Sprintf(histProductionSeriesSQL, histRowLimit)
-		payload, err := runQueryJSON(ctx, histPool, sql, []any{q.From, q.To, cid, equip})
+		payload, err := runQueryJSON(ctx, histPool, sql, []any{cid, q.From, q.To, equip, fy, fm, ty, tm})
 		if err != nil {
 			logger.Warn("historian query failed", slog.Int("cid", cid), slog.String("err", err.Error()))
 			http.Error(w, `{"error":"historian query failed"}`, http.StatusInternalServerError)
