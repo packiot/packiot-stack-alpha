@@ -82,6 +82,7 @@ volumes:
   rabbitmq-data:
   mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
+  hist_gateway_data:         # D3: pg_duckdb gateway state (fdw defs + hist cutover cache)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura          .3  edge-api          .5  rabbitmq
@@ -89,7 +90,7 @@ volumes:
 # .10 pgbouncer       .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init     .16 db-migrate        .17 adminer
 # .19 operator        .20 oeecloud-worker   .22 prometheus
-# .23 edge-transformer  .24 mosquitto       .26 refdata-api
+# .23 edge-transformer  .24 mosquitto       .26 refdata-api        .27 hist-gateway
 # .29 ingest-shim     .30 db-init-bootstrap .31 operator-adapter   .35 app-redis
 #
 # DELIBERATELY ABSENT vs staging (see header):
@@ -1258,6 +1259,52 @@ services:
       start_period: 10s
     mem_limit: 128m
     cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── historian-gateway (D3 — transparent hot+cold query layer) ─────────────────
+  # Exposes `ev_all`: live timescaledb (HOT, postgres_fdw to the r7g) UNION S3
+  # Parquet historian (COLD, pg_duckdb). Consumers (read-api, Superset, tools)
+  # query plain Postgres SQL; old timestamps resolve to S3 and prune to the
+  # relevant partition file. Cold-store infra = terraform/production/historian.tf
+  # (S3 + Athena + partition-projection, Approach B3). Proven on staging (CPACK):
+  # one query spans 2021→today; old-timestamp lookups scan 1/181 files.
+  # NOT a dependency of read-api (loose coupling, like staging) — read-api
+  # tolerates the gateway being unready so it never gates on the 20m first boot.
+  # First boot on a fresh hist_gateway_data volume runs refresh_hist_cutover() (a
+  # full one-pass parquet scan — minutes on the 336M-row CPACK partition) inside
+  # initdb before Postgres accepts TCP; start_period 20m suppresses false
+  # "unhealthy" during that window. Only the first boot on a fresh volume pays it.
+  historian-gateway:
+    image: pgduckdb/pgduckdb:16-main
+    container_name: hist-gateway
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:?set in .env}
+      # live timescaledb (HOT) — the same external r7g every other service uses
+      FDW_HOST: ${POSTGRES_HOST_UPSTREAM:?set in .env}
+      FDW_PORT: "5432"
+      FDW_DB: ${POSTGRES_DB:?set in .env}
+      FDW_USER: ${POSTGRES_USER:-postgres}
+      FDW_PASS: ${POSTGRES_PASSWORD:?set in .env}
+      # S3 historian (COLD) — scoped read-only key (svc-historian-gateway)
+      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:?set in .env}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      HIST_AWS_KEY: ${HIST_AWS_KEY:?set in .env}
+      HIST_AWS_SECRET: ${HIST_AWS_SECRET:?set in .env}
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.27
+    volumes:
+      - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      - hist_gateway_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20m
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
