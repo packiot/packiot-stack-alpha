@@ -519,6 +519,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: pgbouncer
+      # Operator super-admin cross-tenant WRITE escalation (RS256/JWKS verifier,
+      # #188). Enabled per prod decision (2026-09-07). Gated by construction: an
+      # exclusive single super_user + email allowlist. NOTE: only takes effect once
+      # the dev super-admin user is PROVISIONED in prod (a seed step, cutover-gated).
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -824,9 +829,17 @@ services:
       # fallback for lines (mutually exclusive per client — do NOT also enable
       # COUNTERS_ONLY_AVAILABILITY for a line-metered tenant, or lines double-write).
       COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
+      # Greenfield: tenant list stays minimal — each line-metered client is added
+      # to this list at ITS onboarding (staging pattern). Do NOT pre-bake staging's
+      # tenants (e.g. ent 5).
       COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
       COUNTERS_ONLY_AVAILABILITY_ENABLED: "false"
+      # Client-agnostic hardening (forward-port): the oldest-first backfill drain
+      # that recomputes stranded recalc_needed hour rows (stream-engine
+      # internal/rollup/backfill.go, dedicated advisory key). Safe on all tenants.
+      ROLLUP_BACKFILL_ENABLED: "true"
+      ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.20
