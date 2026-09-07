@@ -250,6 +250,14 @@ func main() {
 	ensureSchema(pool)                     // startup migrations (P2 screen-config table)
 	registerQueryAPI(mux, pool, qcache)    // ADR-0015 P1-P3 + ADR-0035 cache-aside
 	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
+	// T6 (#176): optional reach into the hot+cold historian gateway for long
+	// time-range reads past the 90-day hot window. nil-safe — histPool is nil (and
+	// the endpoint 503s) unless HIST_GW_PASSWORD is set and the gateway answers.
+	histPool := newHistPool(context.Background(), logger)
+	if histPool != nil {
+		defer histPool.Close()
+	}
+	registerHistorianAPI(mux, histPool, logger)
 
 	// Gap-closure 2026-07-07: the only service without /metrics.
 	// promhttp default registry — request counts come from reqCount
