@@ -71,12 +71,12 @@ func TestHistorian_WindowGuards(t *testing.T) {
 // contract so a refactor can't silently drop the isolation or the pruning.
 func TestHistorianSQLShape(t *testing.T) {
 	for _, m := range []string{
-		"FROM ev_all",                       // the VIEW (mixed hot+cold); NOT the ev_between function
-		"id_enterprise = $1",                // tenant fence on the SERVER-resolved cid
-		"ts_value >= $2 AND ts_value < $3",  // exact window bound
-		"$4::int[] IS NULL OR id_equipment", // optional equipment filter, NULL ⇒ all
-		"year >  $5 OR (year = $5 AND month >= $6)", // cold-partition prune (lower)
-		"date_trunc('day', ts_value)",       // daily aggregate (bounds row count)
+		"FROM ev_all",                      // the VIEW (mixed hot+cold); NOT the ev_between function
+		"id_enterprise = $1",               // tenant fence on the SERVER-resolved cid
+		"ts_value >= $2 AND ts_value < $3", // exact window bound
+		"\n     %s\n",                      // optional equipment filter is an INLINE list (not a param)
+		"year >  $4 OR (year = $4 AND month >= $5)", // cold-partition prune (lower)
+		"date_trunc('day', ts_value)",      // daily aggregate (bounds row count)
 	} {
 		if !strings.Contains(histProductionSeriesSQL, m) {
 			t.Errorf("historian SQL lost %q", m)
