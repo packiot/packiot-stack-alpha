@@ -1748,6 +1748,14 @@ services:
       # future double-source / reordered-sample phantoms. K=4, Δt floored 60s.
       # Reversible: set ENABLED=false + redeploy → byte-identical prior writes.
       INCREMENT_SANITY_CLAMP_ENABLED: "true"
+      # Fraction of the absolute totalizer above which one increment is a phantom.
+      # The bare value>=absolute catch only caught delta-from-EXACTLY-zero; the real
+      # staging CPACK leak was delta-from-a-STALE-baseline (incr<val by the baseline,
+      # e.g. 920090/920390 ratio 0.9997 AND 479222/558076 ratio 0.859) on the
+      # rate-less / first-sample paths. 0.5 catches every observed spike (min 0.858)
+      # while a real delta is ~3e-5 of the cumulative. Explicit here for auditability
+      # (code default is also 0.5).
+      INCREMENT_SANITY_CLAMP_SPIKE_FRACTION: "0.5"
       # ── Strategy D — shared worker pool + dynamic tenant discovery ─────────
       # Periodic re-discovery of active tenants from packml_register. A client
       # added mid-run starts flowing within this interval with NO worker

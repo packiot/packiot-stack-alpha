@@ -104,7 +104,7 @@ func tenantFromTopic(name string) string {
 // (K·rate·Δt) and minDtSec floors Δt so a burst of sub-interval samples
 // can't produce a near-zero bound that false-positives a legitimate count.
 // Passing enabled=false leaves the clamp nil (no-op — flag-off parity).
-func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int, spikeFloor float64) {
+func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int, spikeFloor, spikeFraction float64) {
 	if !enabled {
 		w.clamp = nil
 		return
@@ -116,17 +116,25 @@ func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec in
 		minDtSec = 60
 	}
 	if spikeFloor <= 0 {
-		// Default: 1000 parts. Spikes are the whole totalizer (5–6 digits);
-		// a benign reset that ticks up a few parts (value==absolute, small) is
-		// well under this, so it is never mistaken for a spike.
+		// Default: 1000 parts. Spikes are most of the totalizer (5–6 digits);
+		// a benign reset that ticks up a few parts is well under this, so it is
+		// never mistaken for a spike.
 		spikeFloor = 1000
 	}
+	if spikeFraction <= 0 || spikeFraction > 1 {
+		// Default: 0.5. A single sample's delta can never be half the all-time
+		// cumulative; observed staging phantoms were 0.858–0.9997 of it, so 0.5
+		// catches them all with margin while never touching a real delta
+		// (~0.00003 of the cumulative).
+		spikeFraction = 0.5
+	}
 	w.clamp = &incrementClamp{
-		k:          k,
-		minDt:      time.Duration(minDtSec) * time.Second,
-		spikeFloor: spikeFloor,
-		last:       make(map[clampKey]int64),
-		logger:     w.logger,
+		k:             k,
+		minDt:         time.Duration(minDtSec) * time.Second,
+		spikeFloor:    spikeFloor,
+		spikeFraction: spikeFraction,
+		last:          make(map[clampKey]int64),
+		logger:        w.logger,
 	}
 }
 

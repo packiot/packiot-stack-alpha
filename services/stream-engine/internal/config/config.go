@@ -374,6 +374,9 @@ type Config struct {
 	// speed (the counters-only line-lead path) and on the first sample after a
 	// worker restart. Defaults to 1000 parts.
 	IncrementSanityClampSpikeFloor float64
+	// IncrementSanityClampSpikeFraction is the share of the absolute totalizer
+	// above which a single increment is treated as a phantom (default 0.5).
+	IncrementSanityClampSpikeFraction float64
 
 	// ── Provisional ideal-speed inference (counters-only, no nameplate) ──
 	// Sibling of the counters-only OEE mode (#591): #591 gives a
@@ -510,6 +513,10 @@ func Load() (*Config, error) {
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
 		IncrementSanityClampMinDtSec:   getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
 		IncrementSanityClampSpikeFloor: getenvFloat("INCREMENT_SANITY_CLAMP_SPIKE_FLOOR", 1000),
+		// Fraction of the absolute totalizer above which one increment is a
+		// phantom (delta-from-stale-baseline). 0.5 catches every observed spike
+		// (ratios 0.858–0.9997) while never touching a real delta (~3e-5).
+		IncrementSanityClampSpikeFraction: getenvFloat("INCREMENT_SANITY_CLAMP_SPIKE_FRACTION", 0.5),
 		// Provisional ideal-speed inference (default OFF — no behavior change)
 		ProvisionalSpeedEnabled:     getenv("PROVISIONAL_SPEED_INFERENCE_ENABLED", "false") == "true",
 		ProvisionalSpeedEquipments:  getenv("PROVISIONAL_SPEED_EQUIPMENTS", ""),

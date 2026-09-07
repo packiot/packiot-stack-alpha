@@ -12,7 +12,7 @@ import (
 // set to a very high value in these rate-path tests so the delta-from-zero
 // catch never interferes — the dedicated spike tests below use the real floor.
 func newTestClamp() *incrementClamp {
-	return &incrementClamp{k: 4.0, minDt: 60 * time.Second, spikeFloor: 1e15, last: make(map[clampKey]int64)}
+	return &incrementClamp{k: 4.0, minDt: 60 * time.Second, spikeFloor: 1e15, spikeFraction: 0.5, last: make(map[clampKey]int64)}
 }
 
 // absGap is an absolute totalizer strictly greater than the increment under
@@ -134,12 +134,12 @@ func TestClamp_PerKindStreamsIndependent(t *testing.T) {
 // `if w.clamp != nil` guard is skipped entirely — the byte-identical path.
 func TestSetIncrementClamp_DisabledIsNil(t *testing.T) {
 	w := &EquipmentValues{}
-	w.SetIncrementClamp(false, 4, 60, 1000)
+	w.SetIncrementClamp(false, 4, 60, 1000, 0.5)
 	if w.clamp != nil {
 		t.Fatal("disabled clamp must leave w.clamp nil (flag-off parity)")
 	}
-	w.SetIncrementClamp(true, 0, 0, 0) // zero args must default, not divide-by-zero
-	if w.clamp == nil || w.clamp.k != 4.0 || w.clamp.minDt != 60*time.Second || w.clamp.spikeFloor != 1000 {
+	w.SetIncrementClamp(true, 0, 0, 0, 0) // zero args must default, not divide-by-zero
+	if w.clamp == nil || w.clamp.k != 4.0 || w.clamp.minDt != 60*time.Second || w.clamp.spikeFloor != 1000 || w.clamp.spikeFraction != 0.5 {
 		t.Fatalf("enabled clamp defaults wrong: %+v", w.clamp)
 	}
 }
@@ -151,7 +151,7 @@ func TestSetIncrementClamp_DisabledIsNil(t *testing.T) {
 // prior Δt (first sample after a worker restart) — the two holes the rate·Δt
 // bound leaves open.
 func realFloorClamp() *incrementClamp {
-	return &incrementClamp{k: 4.0, minDt: 60 * time.Second, spikeFloor: 1000, last: make(map[clampKey]int64)}
+	return &incrementClamp{k: 4.0, minDt: 60 * time.Second, spikeFloor: 1000, spikeFraction: 0.5, last: make(map[clampKey]int64)}
 }
 
 // The exact spike signature: increment == absolute totalizer (delta-from-zero),
@@ -201,6 +201,46 @@ func TestClamp_DeltaFromZeroSpikeRejectedWithRate(t *testing.T) {
 	const proc = sparkplug.KindProdProcessedCount
 	if v, ev := c.eval(57, 1, proc, t0, 147, 828_000, 828_000); v != 0 || ev == nil {
 		t.Fatalf("first-sample delta-from-zero spike (with rate) must be rejected: got (%v,%v)", v, ev)
+	}
+}
+
+// ── Regression: delta-from-STALE-baseline (the staging CPACK leak) ─────────
+// The real leak was NOT incr==val: it was a delta from a small STALE baseline,
+// so incr < val by the baseline and the old `value >= absolute` catch missed it
+// on the rate-less / first-sample paths. Exact observed numbers (equip 53):
+//   near-zero baseline: incr 920090 vs val 920390 (ratio 0.9997, baseline ~300)
+//   partial baseline:   incr 479222 vs val 558076 (ratio 0.859,  baseline ~78k)
+// Both are impossible real production (a steady delta is ~3e-5 of the cumulative)
+// and MUST clamp now that the catch uses value >= absolute·spikeFraction (0.5).
+func TestClamp_StaleBaselineNearZeroSpikeRejected(t *testing.T) {
+	c := realFloorClamp()
+	const proc = sparkplug.KindProdProcessedCount
+	// First sample of the stream (no Δt) with a configured rate — the exact hole.
+	if v, ev := c.eval(53, 3, proc, t0, 147, 920_090, 920_390); v != 0 || ev == nil {
+		t.Fatalf("stale-baseline near-zero spike (920090/920390) must be rejected: got (%v,%v)", v, ev)
+	}
+}
+
+func TestClamp_StaleBaselinePartialSpikeRejected(t *testing.T) {
+	c := realFloorClamp()
+	const proc = sparkplug.KindProdProcessedCount
+	// ratio 0.859 — above the 0.5 fraction, below the old value>=absolute test
+	// (which is exactly why it leaked). Rate-less line-lead path (rate 0).
+	if v, ev := c.eval(53, 3, proc, t0, 0, 479_222, 558_076); v != 0 || ev == nil {
+		t.Fatalf("stale-baseline partial spike (479222/558076, ratio 0.859) must be rejected: got (%v,%v)", v, ev)
+	}
+}
+
+// Boundary: an increment just BELOW the fraction is left alone. A single delta
+// that is 49% of the all-time totalizer is already implausible, but the clamp is
+// deliberately conservative — it only rejects ≥50% so it can never eat a real
+// burst. Documents the threshold and guards against over-clamping regressions.
+func TestClamp_JustUnderFractionPasses(t *testing.T) {
+	c := realFloorClamp()
+	const proc = sparkplug.KindProdProcessedCount
+	// value 490000 vs absolute 1000000 = 0.49 < 0.5 → passes (rate 0, first sample).
+	if v, ev := c.eval(53, 3, proc, t0, 0, 490_000, 1_000_000); v != 490_000 || ev != nil {
+		t.Fatalf("increment just under the fraction (0.49) must pass: got (%v,%v)", v, ev)
 	}
 }
 
