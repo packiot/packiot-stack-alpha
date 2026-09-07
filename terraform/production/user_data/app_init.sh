@@ -160,6 +160,18 @@ OPERATOR_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_refdata_api_key
 JWT_SECRET=$(echo "$APP_SECRET" | jq -r '.edge_api_jwt_secret // ""')
 REFDATA_QUERY_API_KEYS=$(get_secret "packiot/production/refdata-query-keys" 2>/dev/null | jq -r '.api_keys // ""' || echo "")
 
+# historian-gateway (COLD S3 parquet union) — OPT-IN, profile-gated in
+# compose.production.yml (`--profile historian`). All // "" best-effort: a box
+# booted before the historian is provisioned comes up fine and the gateway simply
+# stays off/unconfigured. To enable: create a scoped read-only IAM user for the
+# historian S3 bucket (historian.tf uses role-based Athena and does NOT mint a
+# static key), store its creds + the bucket in the app secret, then
+# `docker compose -f compose.production.yml --profile historian up -d historian-gateway`.
+HIST_GW_PASSWORD=$(echo "$APP_SECRET"  | jq -r '.hist_gw_password // ""')
+HISTORIAN_BUCKET=$(echo "$APP_SECRET"  | jq -r '.historian_bucket // ""')
+HIST_AWS_KEY=$(echo "$APP_SECRET"      | jq -r '.hist_aws_key // ""')
+HIST_AWS_SECRET=$(echo "$APP_SECRET"   | jq -r '.hist_aws_secret // ""')
+
 # DB URL (via pgbouncer): app services connect to the `pgbouncer` compose
 # service on :5432; pgbouncer proxies to the r7g upstream. The r7g private IP is
 # templated in from terraform (aws_instance.db.private_ip) and exported below as
@@ -304,6 +316,13 @@ OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET
 COGNITO_USER_POOL_ID=us-east-1_0T9t1sTwt
 COGNITO_CS_ADMIN_GROUP=cs-admin
 EDGE_API_COGNITO_AUTH_ENABLED=true
+
+# historian-gateway (opt-in, profile "historian"). Empty until the app secret
+# carries them (see fetch block above); compose defaults keep the stack up regardless.
+HIST_GW_PASSWORD=$HIST_GW_PASSWORD
+HISTORIAN_BUCKET=$HISTORIAN_BUCKET
+HIST_AWS_KEY=$HIST_AWS_KEY
+HIST_AWS_SECRET=$HIST_AWS_SECRET
 ENV
 fi
 
