@@ -521,6 +521,15 @@ services:
       context: ./edge-api
       target: production
     restart: unless-stopped
+    # Container-level liveness so orchestration/compose can see edge-api health
+    # (was health=none). /health is outside the /api auth chain → 200 {status:ok}.
+    # wget is present in the node image; -O /dev/null so a 200 body isn't logged.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 40s
     env_file: [.env]
     environment:
       NODE_ENV: production
@@ -1295,6 +1304,13 @@ services:
         VITE_API_BASE_URL: ""
     container_name: csadmin
     restart: unless-stopped
+    # Container-level liveness (was health=none): the nginx SPA root must serve 200.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://localhost:80/"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 20s
     ports:
       - "127.0.0.1:8084:80"
     networks:
