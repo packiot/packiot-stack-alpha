@@ -852,7 +852,7 @@ services:
       db-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "/usr/local/bin/oeecloud-worker", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/stream-engine", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -960,7 +960,7 @@ services:
       mosquitto:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/usr/local/bin/edge-transformer", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/sparkplug-decoder", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -1095,7 +1095,7 @@ services:
       app-redis:
         condition: service_started
     healthcheck:
-      test: ["CMD", "/usr/local/bin/refdata-api", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/read-api", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -1182,7 +1182,7 @@ services:
       pgbouncer:
         condition: service_started
     healthcheck:
-      test: ["CMD", "/usr/local/bin/operator-adapter", "--healthcheck"]
+      test: ["CMD", "/usr/local/bin/operator-gateway", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
