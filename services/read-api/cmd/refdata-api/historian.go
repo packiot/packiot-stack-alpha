@@ -21,8 +21,12 @@ package main
 //   - TENANT ISOLATION: the gateway view has NO RLS engine — the caller MUST carry
 //     id_enterprise. We inject it from the SERVER-RESOLVED customer_id (auth
 //     middleware), never the request body — identical rule to /v1/query.
-//   - ev_between(p_start, p_end) (not bare ev_all) so the cold side prunes to the
-//     relevant year/month partition files instead of scanning all 181.
+//   - Queries the ev_all VIEW (NOT the ev_between function — pg_duckdb can't run
+//     read_parquet wrapped in a SQL function) and carries ev_between's year/month
+//     prune predicate inline, so the cold side reads the relevant partition files
+//     only (T3: 1/181), not the whole archive.
+//   - The gateway pool uses the SIMPLE query protocol — pg_duckdb doesn't apply
+//     the S3 secret on the prepared-statement path (see newHistPool).
 
 import (
 	"context"
@@ -34,6 +38,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -65,6 +70,13 @@ func newHistPool(ctx context.Context, logger *slog.Logger) *pgxpool.Pool {
 		logger.Warn("historian: parse dsn failed — endpoint disabled", slog.String("err", err.Error()))
 		return nil
 	}
+	// SIMPLE protocol (not the pgx default extended/prepared) — REQUIRED for
+	// pg_duckdb: on the prepared-statement path the S3 secret is NOT applied to
+	// the DuckDB read_parquet, so a cold scan fails "HTTP 403 ... No credentials"
+	// (and empty results throw "Could not convert DuckDB type: UNKNOWN"). A
+	// simple-protocol query — exactly what psql sends, which works — resolves both.
+	// pgx still sanitizes the $N params client-side, so the tenant fence stays safe.
+	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	// A duckdb-backed cold scan is heavy; keep the pool small so read-api can never
 	// stampede the gateway.
 	pc.MaxConns = 4
