@@ -248,6 +248,7 @@ func main() {
 		cfg.IncrementSanityClampK,
 		cfg.IncrementSanityClampMinDtSec,
 		cfg.IncrementSanityClampSpikeFloor,
+		cfg.IncrementSanityClampSpikeFraction,
 	)
 	if cfg.IncrementSanityClampEnabled {
 		logger.Info("increment sanity clamp ENABLED (ADR-0037/ADR-0045 P1) — K·rated_speed·Δt bound + delta-from-zero spike floor",

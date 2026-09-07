@@ -66,16 +66,29 @@ type incrementClamp struct {
 	logger *slog.Logger
 
 	// spikeFloor is the rate-INDEPENDENT backstop for the ADR-0045 P1 first-boot
-	// spike: when an increment consumes the ENTIRE absolute totalizer
-	// (value >= absolute) and that totalizer is >= spikeFloor, the upstream
-	// differenced cur−0 on a missing/reset baseline — a physically-impossible
-	// "whole totalizer as one increment". This catch fires even when no rated
-	// speed is configured (the counters-only LINE-LEAD path, where the rate·Δt
-	// bound fails open) and on the first sample after a worker restart (empty Δt
+	// spike: when an increment consumes a large FRACTION of the absolute
+	// totalizer (value >= absolute·spikeFraction) and that totalizer is
+	// >= spikeFloor, the upstream differenced cur−baseline against a
+	// missing/reset/stale baseline — a physically-impossible "most of the
+	// totalizer as one increment". This catch fires even when no rated speed is
+	// configured (the counters-only LINE-LEAD path, where the rate·Δt bound
+	// fails open) and on the first sample after a worker restart (empty Δt
 	// cache), the two holes the rate·Δt bound alone leaves open. The floor keeps
-	// a genuinely-small totalizer (a legit reset that ticked up a few parts,
-	// where value==absolute is benign) from being clamped.
+	// a genuinely-small totalizer (a legit reset that ticked up a few parts) from
+	// being clamped.
 	spikeFloor float64
+
+	// spikeFraction is the share of the absolute totalizer above which a single
+	// increment is treated as a phantom (default 0.5). The original catch used
+	// value >= absolute (delta-from-EXACTLY-zero, incr==val), which MISSED the
+	// real staging signature: a delta from a small STALE baseline — e.g. incr
+	// 920090 vs val 920390 (baseline ~300, ratio 0.9997) AND incr 479222 vs val
+	// 558076 (baseline ~78k, ratio 0.859). Both are impossible real production
+	// (a steady-state delta is ~0.00003 of the cumulative) yet incr < val, so a
+	// bare value>=absolute test let them through on the rate-less / first-sample
+	// paths. A fraction ≥0.5 catches every observed spike (min ratio 0.858) with
+	// vast margin while never touching a legitimate delta.
+	spikeFraction float64
 
 	mu   sync.Mutex
 	last map[clampKey]int64 // stream → last sample ts (unix ms)
@@ -97,23 +110,27 @@ func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsM
 		return value, nil
 	}
 
-	// ── Delta-from-zero spike catch (rate-independent, first-sample-proof) ──
-	// The ADR-0045 P1 first-boot signature: the increment equals/exceeds the
-	// whole absolute totalizer because the upstream differenced cur−0 on a
-	// missing/reset baseline (*_incr == *_val). In steady state a delta is a
-	// tiny fraction of the cumulative, so value >= absolute >= spikeFloor is
-	// never real production. Checked BEFORE the rate·Δt path so it also guards
-	// the counters-only LINE-LEAD path (ratePerMin==0 → fails open below) and
-	// the first sample after a worker restart (no Δt yet → fails open below).
-	if c.spikeFloor > 0 && absolute >= c.spikeFloor && value >= absolute {
+	// ── Delta-from-(near)-zero spike catch (rate-independent, first-sample-proof) ──
+	// First-boot / reconnect signature: the increment is a large FRACTION of the
+	// whole absolute totalizer because the upstream differenced cur against a
+	// missing/reset/STALE baseline. In steady state a delta is a tiny fraction of
+	// the cumulative (~0.00003), so value >= absolute·spikeFraction >= spikeFloor
+	// is never real production. This uses a fraction (not value>=absolute) so it
+	// also catches a delta from a small NON-zero stale baseline (incr < val by
+	// the baseline), the shape that leaked on staging CPACK. Checked BEFORE the
+	// rate·Δt path so it also guards the counters-only LINE-LEAD path
+	// (ratePerMin==0 → fails open below) and the first sample after a worker
+	// restart (no Δt yet → fails open below).
+	if c.spikeFloor > 0 && absolute >= c.spikeFloor && value >= absolute*c.spikeFraction {
 		c.observe(key, tsMs)
 		if c.logger != nil {
-			c.logger.Warn("increment sanity clamp REJECTED delta-from-zero spike (increment ≈ absolute totalizer)",
+			c.logger.Warn("increment sanity clamp REJECTED delta-from-near-zero spike (increment is a large fraction of the absolute totalizer)",
 				slog.Int("id_equipment", eq),
 				slog.String("kind", kind.String()),
 				slog.Float64("observed", value),
 				slog.Float64("absolute", absolute),
 				slog.Float64("spike_floor", c.spikeFloor),
+				slog.Float64("spike_fraction", c.spikeFraction),
 			)
 		}
 		return 0, &ClampEvent{
