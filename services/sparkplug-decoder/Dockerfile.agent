@@ -1,0 +1,75 @@
+# Dockerfile.agent — PRODUCTION image for the ADR-0042 Tier-2 sparkplug-agent,
+# the client-edge transmission plane (Mode-B). This is the lean, single-binary
+# counterpart to the fat multi-binary ./Dockerfile: it ships ONLY the agent, so
+# a client edge box pulls the smallest possible artifact.
+#
+# ── MULTI-ARCH (the redis-exporter lesson) ────────────────────────────────────
+# A client's edge hardware may be amd64 (an industrial PC) OR arm64 (a Raspberry-
+# Pi-class gateway). A single-arch image "exec format error"s on the other. So:
+#   • the BUILDER runs on the native $BUILDPLATFORM (no QEMU emulation of the Go
+#     toolchain — fast), and CROSS-COMPILES to $TARGETOS/$TARGETARCH that buildx
+#     injects, one build per requested platform;
+#   • the runtime base (distroless static) is itself a multi-arch manifest list,
+#     so buildx assembles a manifest covering every --platform.
+# Build both arches at once with:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f services/sparkplug-decoder/Dockerfile.agent \
+#     -t <registry>/sparkplug-agent:<semver> --push services/sparkplug-decoder
+#
+# CGO is disabled (all deps — paho, pgx, the sparkplug encoder — are pure Go),
+# so cross-compilation is a plain GOARCH switch with no C cross-toolchain.
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+WORKDIR /src
+
+# buildx injects these; default to the build host when invoked via plain
+# `docker build` (single-arch, still correct).
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+# Deps first so the layer caches across source-only changes.
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+
+# -trimpath strips local paths; -ldflags '-s -w' drops symbols/debug for a
+# smaller binary. GOMAXPROCS=1 + -p=1 caps compiler memory on the modest CI
+# runner (the same OOM guard as ./Dockerfile).
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOMAXPROCS=1 \
+    go build -p=1 -trimpath -ldflags "-s -w" \
+    -o /out/sparkplug-agent ./cmd/sparkplug-agent
+
+# Outbox dir with nonroot ownership. A Docker named volume mounted on an empty
+# path inherits the image's dir ownership — without this the volume is
+# root-owned and the nonroot agent cannot write the store-and-forward SQLite DB
+# (ADR-0011 store-and-forward across a WAN outage).
+FROM alpine AS outbox-dir
+RUN mkdir -p /out/var/lib/edge-transformer && chown -R 65532:65532 /out/var/lib
+
+# Distroless static: binary + ca-certs + nonroot user. No shell, no package
+# manager — minimal attack surface for a box sitting on a client's OT network.
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.title="packiot-sparkplug-agent" \
+      org.opencontainers.image.description="ADR-0042 Tier-2 client-edge SparkPlug B transmission agent" \
+      org.opencontainers.image.source="https://github.com/packiot/packiot-stack-alpha"
+
+COPY --from=builder  /out/sparkplug-agent /usr/local/bin/sparkplug-agent
+COPY --from=outbox-dir /out/var/lib       /var/lib
+USER nonroot:nonroot
+
+# Store-and-forward outbox — declare the durable boundary so an ephemeral run
+# still gets an anonymous volume, and a compose/k8s mount lands on the right path.
+VOLUME ["/var/lib/edge-transformer"]
+
+# 9103 = /healthz + /metrics; 9104 = optional HTTP raw-tag ingest front-door.
+EXPOSE 9103 9104
+
+# Distroless has no shell → self-probe via the binary's --healthcheck subcommand
+# (GETs /healthz on HEALTH_PORT and exits nonzero when unhealthy).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
+    CMD ["/usr/local/bin/sparkplug-agent", "--healthcheck"]
+
+ENTRYPOINT ["/usr/local/bin/sparkplug-agent"]
+CMD ["--config", "/etc/packiot/agent.yaml"]

@@ -1,0 +1,425 @@
+// Package session is the producer-side SparkPlug B state machine (ADR-0042
+// §2.2 net-new #4) — the mirror of the cloud consumer's internal/sparkplug
+// StateStore. It mints NBIRTH (seq=0, full name↔alias table, bdSeq),
+// NDATA (rolling seq, alias-only report-by-exception values), and NDEATH
+// (bdSeq) for the MQTT Last-Will.
+//
+// bdSeq discipline (ADR-0042 open-Q1): bdSeq is a real monotonic counter, not
+// the 0-stub s7-reader/plc-sim leave it at. The bdSeq carried in an NDEATH
+// (registered as the Last-Will at connect) MUST equal the bdSeq in the NBIRTH
+// of the SAME connection, so the cloud correlates death→birth. NewConnection
+// advances it once per connection lifecycle.
+package session
+
+import (
+	"fmt"
+	"sync"
+
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/aliasmap"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/birth"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawtag"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
+)
+
+// Resolver maps a raw-tag metric SUFFIX to the full SparkPlug metric name +
+// datatype. Backed by the agent's raw_tag_map (agentcfg).
+type Resolver interface {
+	// Resolve returns the full SparkPlug name + datatype for a suffix.
+	// ok=false for an unmapped suffix (the caller skips it — it was meant to
+	// be dropped-with-metric upstream).
+	Resolve(suffix string) (name string, dt sparkplug.DataType, ok bool)
+}
+
+// MappedMetric is one entry of a Resolver's COMPLETE mapped set: the raw-tag
+// suffix, its resolved full SparkPlug name, and its datatype. Emitted by
+// AllResolver.AllMapped in a stable (suffix-sorted) order.
+type MappedMetric struct {
+	Suffix   string
+	Name     string
+	Datatype sparkplug.DataType
+}
+
+// AllResolver is an OPTIONAL capability a Resolver may implement to expose its
+// full mapped metric set — every metric the agent can ever emit, not just the
+// ones seen so far — in a stable, suffix-sorted order. When the birth-all-mapped
+// posture is on (WithBirthAllMapped) and the Resolver implements this, BuildNBIRTH
+// births EVERY mapped metric with a stable alias (unseen ones as SparkPlug nulls),
+// so a sparse line that was idle at connect is already aliased at the cloud the
+// instant it first reports — no dependency on rebirth timing. Resolvers that do
+// not implement it fall back to the legacy seen-only birth.
+type AllResolver interface {
+	// AllMapped returns the full mapped set in a deterministic suffix-sorted
+	// order (the same discipline tagstore.Snapshot uses), so alias allocation
+	// over it is reproducible across process restarts.
+	AllMapped() []MappedMetric
+}
+
+// Publisher is the SparkPlug B session state machine for one edge node.
+// Concurrency: Build* + NewConnection are mutex-guarded; the agent calls them
+// from the tick loop + the connect handler.
+type Publisher struct {
+	resolver Resolver
+	aliases  *aliasmap.Table
+
+	// definitive gates the ADR-0046 definitive-birth declaration: when set,
+	// NBIRTH counter metrics carry properties[counter_role|source_ref|
+	// device_key]. Default (false) = the legacy string-name birth, byte-
+	// unchanged. Set once at construction from the EMIT_DEFINITIVE_BIRTH flag.
+	definitive bool
+
+	// deviceKeys maps a full SparkPlug metric name → its DECLARED device_key
+	// (ADR-0046 task #18), sourced from the client descriptor via the agent
+	// tag-map. When definitive birth is on, a counter metric present here emits the
+	// DECLARED identity; absent, birth falls back to the topic derivation. nil/empty
+	// ⇒ pure derivation (the pre-#18 behaviour), so this is fully additive.
+	deviceKeys map[string]string
+
+	// birthAllMapped gates birth-completeness (CPACK line-count regression fix,
+	// 2026-08-13). When set AND the resolver implements AllResolver, BuildNBIRTH
+	// births EVERY mapped metric — including ones never yet seen — with a stable
+	// alias (unseen as a SparkPlug null), so a sparse line's NDATA is decodable at
+	// the cloud the instant it first reports. Default (false) = the legacy
+	// seen-only birth, byte-unchanged. Set once at construction from
+	// AGENT_BIRTH_ALL_MAPPED.
+	birthAllMapped bool
+
+	mu      sync.Mutex
+	seq     uint64 // rolling NDATA sequence (mod 256); NBIRTH resets to 0
+	bdSeq   uint64 // birth/death sequence — same value across a birth+its death
+	started bool   // has the first connection cycle begun?
+}
+
+// Option configures a Publisher at construction (the functional-options pattern,
+// so New's core signature stays stable for every existing caller).
+type Option func(*Publisher)
+
+// WithDefinitiveBirth turns on ADR-0046 step-2 definitive-birth emission. Absent
+// (the default), the birth is the legacy string-name form, byte-unchanged — a
+// no-op deploy. Wired from EMIT_DEFINITIVE_BIRTH in cmd/sparkplug-agent.
+func WithDefinitiveBirth(on bool) Option {
+	return func(p *Publisher) { p.definitive = on }
+}
+
+// WithDeviceKeys supplies the DECLARED device_key per full metric name (ADR-0046
+// task #18). Only consulted when definitive birth is on; a name absent from the map
+// falls back to the topic-derived key. nil/empty ⇒ pure derivation (additive).
+func WithDeviceKeys(m map[string]string) Option {
+	return func(p *Publisher) { p.deviceKeys = m }
+}
+
+// WithBirthAllMapped turns on birth-completeness: every mapped metric is birthed
+// with a stable alias (unseen ones as SparkPlug nulls), closing the sparse-line
+// alias gap (CPACK 2026-08-13 regression). Requires the Resolver to implement
+// AllResolver; otherwise BuildNBIRTH falls back to the legacy seen-only birth.
+// Absent (the default) = byte-unchanged behaviour, a no-op deploy. Wired from
+// AGENT_BIRTH_ALL_MAPPED in cmd/sparkplug-agent.
+func WithBirthAllMapped(on bool) Option {
+	return func(p *Publisher) { p.birthAllMapped = on }
+}
+
+// New constructs a Publisher. The alias allocator is owned here so BIRTH and
+// DATA share one stable name↔alias table.
+func New(resolver Resolver, aliases *aliasmap.Table, opts ...Option) *Publisher {
+	p := &Publisher{resolver: resolver, aliases: aliases}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
+}
+
+// NewConnection advances the birth/death sequence for a new connection cycle
+// and returns the value to stamp into BOTH this connection's NBIRTH and its
+// NDEATH Last-Will. The first connection is bdSeq=0; each reconnect increments
+// (mod 256). Call once per (re)connect, before registering the LWT.
+func (p *Publisher) NewConnection() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.started {
+		p.bdSeq = (p.bdSeq + 1) & 0xff
+	}
+	p.started = true
+	return p.bdSeq
+}
+
+// BdSeq returns the current birth/death sequence (diagnostic).
+func (p *Publisher) BdSeq() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.bdSeq
+}
+
+// Seq returns the current rolling NDATA sequence (diagnostic).
+func (p *Publisher) Seq() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.seq
+}
+
+// BuildNBIRTH freezes the full snapshot into an NBIRTH payload: seq reset to
+// 0, every metric carrying Name + allocated Alias + Datatype + Value, plus the
+// bdSeq metric. Allocating aliases here (in the stable, suffix-sorted snapshot
+// order tagstore.Snapshot guarantees) is what makes the name↔alias table
+// reproducible. Unmapped suffixes are skipped defensively.
+func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.seq = 0
+	ts := maxTS(snapshot)
+	pl := &sparkplug.Payload{Timestamp: u64(ts), Seq: u64(p.seq)}
+
+	// Birth-completeness (CPACK 2026-08-13 line-count regression fix): when the
+	// posture is on AND the resolver can enumerate its full map, birth EVERY
+	// mapped metric — seen ones with their real value, never-seen ones as a
+	// SparkPlug null (is_null=true, no value oneof). The cloud StateStore's
+	// applyBirth registers an alias from name+datatype ALONE (it never reads the
+	// value), so a null birth freezes the alias with zero phantom-value risk; the
+	// sparse line's later NDATA then resolves immediately. Aliases are allocated
+	// in the resolver's stable suffix-sorted order, so the name↔alias table is
+	// reproducible across restarts regardless of arrival order.
+	if all, ok := p.allMapped(); ok {
+		seen := make(map[string]rawtag.RawTag, len(snapshot))
+		for _, t := range snapshot {
+			seen[t.Metric] = t
+		}
+		for _, mm := range all {
+			alias, _ := p.aliases.Alias(mm.Name)
+			m := &sparkplug.Metric{
+				Name:      strp(mm.Name),
+				Alias:     u64(alias),
+				Timestamp: u64(ts),
+				Datatype:  u32(uint32(mm.Datatype.Number())),
+			}
+			if t, wasSeen := seen[mm.Suffix]; wasSeen {
+				m.Timestamp = u64(tagTS(t, ts))
+				if err := setValue(m, mm.Datatype, t.Value); err != nil {
+					return nil, fmt.Errorf("session: NBIRTH metric %q: %w", mm.Name, err)
+				}
+			} else {
+				// Never-seen mapped metric: an explicit SparkPlug null. No value
+				// oneof is set — the alias is established, no production value implied.
+				m.IsNull = boolp(true)
+			}
+			// ADR-0046 step 2 definitive-birth props apply identically here: a
+			// counter metric's role/lineage/device_key derive from the NAME, so a
+			// null (unseen) counter still declares its identity.
+			if p.definitive {
+				if ps, ok := birth.CounterMetricPropsWithDeviceKey(mm.Name, p.deviceKeys[mm.Name]); ok {
+					m.Properties = ps
+				}
+			}
+			pl.Metrics = append(pl.Metrics, m)
+		}
+		pl.Metrics = append(pl.Metrics, bdSeqMetric(p.bdSeq, ts))
+		return pl, nil
+	}
+
+	for _, t := range snapshot {
+		name, dt, ok := p.resolver.Resolve(t.Metric)
+		if !ok {
+			continue
+		}
+		alias, _ := p.aliases.Alias(name)
+		m := &sparkplug.Metric{
+			Name:      strp(name),
+			Alias:     u64(alias),
+			Timestamp: u64(tagTS(t, ts)),
+			Datatype:  u32(uint32(dt.Number())),
+		}
+		if err := setValue(m, dt, t.Value); err != nil {
+			return nil, fmt.Errorf("session: NBIRTH metric %q: %w", name, err)
+		}
+		// ADR-0046 step 2: when the definitive-birth flag is on, a counter metric
+		// carries its resolved counter_role + source_ref (lineage) + device_key as
+		// birth-only properties (birth pkg resolves index→role at the edge). A
+		// non-counter metric (state/speed) gets none — ok=false leaves it clean.
+		// DDATA never resends these (BuildNDATA emits alias+value only).
+		if p.definitive {
+			if ps, ok := birth.CounterMetricPropsWithDeviceKey(name, p.deviceKeys[name]); ok {
+				m.Properties = ps
+			}
+		}
+		pl.Metrics = append(pl.Metrics, m)
+	}
+	// bdSeq — the birth half of the birth/death correlation (must match the
+	// NDEATH Last-Will's bdSeq for this connection).
+	pl.Metrics = append(pl.Metrics, bdSeqMetric(p.bdSeq, ts))
+	return pl, nil
+}
+
+// BuildNDATA builds an alias-only NDATA payload from the report-by-exception
+// dirty set: seq advances (mod 256), each metric carries only Alias + Value +
+// Timestamp (no Name, no Datatype — the cloud StateStore falls back to the
+// BIRTH-established datatype per alias). Callers MUST have ensured no dirty tag
+// is a NeedsRebirth tag first (else the alias is unresolvable at the cloud).
+func (p *Publisher) BuildNDATA(dirty []rawtag.RawTag) (*sparkplug.Payload, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.seq = (p.seq + 1) & 0xff
+	ts := maxTS(dirty)
+	pl := &sparkplug.Payload{Timestamp: u64(ts), Seq: u64(p.seq)}
+	for _, t := range dirty {
+		name, dt, ok := p.resolver.Resolve(t.Metric)
+		if !ok {
+			continue
+		}
+		// Alias-reference form. The tag must already be aliased (BuildNBIRTH
+		// or a prior build allocated it); Alias returns the stable value.
+		alias, _ := p.aliases.Alias(name)
+		m := &sparkplug.Metric{
+			Alias:     u64(alias),
+			Timestamp: u64(tagTS(t, ts)),
+		}
+		if err := setValue(m, dt, t.Value); err != nil {
+			return nil, fmt.Errorf("session: NDATA alias %d: %w", alias, err)
+		}
+		pl.Metrics = append(pl.Metrics, m)
+	}
+	return pl, nil
+}
+
+// BuildNDEATH builds the NDEATH payload for the MQTT Last-Will: a single bdSeq
+// metric carrying THIS connection's bdSeq. An ungraceful agent loss then
+// surfaces to the cloud as a death correlated to the matching birth. No seq
+// (NDEATH is out-of-band w.r.t. the rolling NDATA sequence).
+func (p *Publisher) BuildNDEATH() (*sparkplug.Payload, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pl := &sparkplug.Payload{Metrics: []*sparkplug.Metric{bdSeqMetric(p.bdSeq, 0)}}
+	return pl, nil
+}
+
+// allMapped returns the resolver's full mapped set (suffix-sorted) when the
+// birth-all-mapped posture is on AND the resolver implements AllResolver. ok=false
+// ⇒ the legacy seen-only birth (flag off, or a resolver that can't enumerate).
+// Called under p.mu (BuildNBIRTH holds it).
+func (p *Publisher) allMapped() ([]MappedMetric, bool) {
+	if !p.birthAllMapped {
+		return nil, false
+	}
+	ar, ok := p.resolver.(AllResolver)
+	if !ok {
+		return nil, false
+	}
+	return ar.AllMapped(), true
+}
+
+// NeedsRebirth reports whether any tag in the set resolves to a name the alias
+// table has NOT yet frozen — a brand-new tag that appeared since the last
+// BIRTH. Emitting it as alias-only NDATA would be unresolvable at the cloud
+// (ADR-0042 §2.2: "isNew anywhere ⇒ force rebirth"), so the agent rebirths the
+// full snapshot first. Read-only: it does NOT allocate (uses aliasmap.Has).
+func (p *Publisher) NeedsRebirth(tags []rawtag.RawTag) bool {
+	for _, t := range tags {
+		name, _, ok := p.resolver.Resolve(t.Metric)
+		if !ok {
+			continue
+		}
+		if !p.aliases.Has(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// bdSeqMetric builds the canonical bdSeq metric (Int64, name "bdSeq").
+func bdSeqMetric(bdSeq, ts uint64) *sparkplug.Metric {
+	m := &sparkplug.Metric{
+		Name:     strp("bdSeq"),
+		Datatype: u32(uint32(sparkplug.DataType_Int64.Number())),
+		Value:    &sparkplug.Metric_LongValue{LongValue: bdSeq},
+	}
+	if ts != 0 {
+		m.Timestamp = u64(ts)
+	}
+	return m
+}
+
+// setValue coerces a raw scalar (float64 | bool | string | nil) into the
+// wire-format oneof Value for the configured SparkPlug datatype. A nil value
+// leaves the metric value unset (a SparkPlug null — legal per spec).
+func setValue(m *sparkplug.Metric, dt sparkplug.DataType, v any) error {
+	if v == nil {
+		return nil
+	}
+	switch dt {
+	case sparkplug.DataType_Double:
+		f, err := toFloat(v)
+		if err != nil {
+			return err
+		}
+		m.Value = &sparkplug.Metric_DoubleValue{DoubleValue: f}
+	case sparkplug.DataType_Float:
+		f, err := toFloat(v)
+		if err != nil {
+			return err
+		}
+		m.Value = &sparkplug.Metric_FloatValue{FloatValue: float32(f)}
+	case sparkplug.DataType_Int64:
+		f, err := toFloat(v)
+		if err != nil {
+			return err
+		}
+		m.Value = &sparkplug.Metric_LongValue{LongValue: uint64(int64(f))}
+	case sparkplug.DataType_Int32:
+		f, err := toFloat(v)
+		if err != nil {
+			return err
+		}
+		m.Value = &sparkplug.Metric_IntValue{IntValue: uint32(int32(f))}
+	case sparkplug.DataType_Boolean:
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("value %v is not a bool", v)
+		}
+		m.Value = &sparkplug.Metric_BooleanValue{BooleanValue: b}
+	case sparkplug.DataType_String:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("value %v is not a string", v)
+		}
+		m.Value = &sparkplug.Metric_StringValue{StringValue: s}
+	default:
+		return fmt.Errorf("unsupported datatype %v", dt)
+	}
+	return nil
+}
+
+func toFloat(v any) (float64, error) {
+	switch x := v.(type) {
+	case float64:
+		return x, nil
+	case bool:
+		if x {
+			return 1, nil
+		}
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("value %v (%T) is not numeric", v, v)
+	}
+}
+
+// maxTS returns the greatest tag timestamp in the set (the payload-level ts),
+// or 0 if none carry one — callers stamp the metric-level ts per tag.
+func maxTS(tags []rawtag.RawTag) uint64 {
+	var max int64
+	for _, t := range tags {
+		if t.TsMillis > max {
+			max = t.TsMillis
+		}
+	}
+	return uint64(max)
+}
+
+func tagTS(t rawtag.RawTag, fallback uint64) uint64 {
+	if t.TsMillis > 0 {
+		return uint64(t.TsMillis)
+	}
+	return fallback
+}
+
+func u64(v uint64) *uint64  { return &v }
+func u32(v uint32) *uint32  { return &v }
+func strp(s string) *string { return &s }
+func boolp(b bool) *bool    { return &b }

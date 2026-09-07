@@ -764,7 +764,7 @@ services:
   # Secrets: PG via packiot/production/db; AMQP via
   # packiot/production/rabbitmq-oeecloud-creds (least-privilege consumer).
   oeecloud-worker:
-    build: ./services/oeecloud-worker
+    build: ./services/stream-engine
     container_name: oeecloud-worker
     restart: unless-stopped
     env_file: [.env]
@@ -870,7 +870,7 @@ services:
   # Secrets: AMQP via packiot/production/rabbitmq-edge-transformer-creds
   # (publish-perm on `oee`). Idle until a client agent publishes to mosquitto.
   edge-transformer:
-    build: ./services/edge-transformer
+    build: ./services/sparkplug-decoder
     container_name: edge-transformer
     profiles: ["client-ingest"]  # GATED: needs a tenant client.yaml (tenant_id) — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
@@ -1046,7 +1046,7 @@ services:
   # F3 schema at W1.4 (any R5-dimension datasets with a divergent sqlF3 must have
   # their backing objects present in prod `public`).
   refdata-api:
-    build: ./services/refdata-api
+    build: ./services/read-api
     container_name: refdata-api
     restart: unless-stopped
     env_file: [.env]
@@ -1146,7 +1146,7 @@ services:
       options: {max-size: "5m", max-file: "2"}
 
   operator-adapter:
-    build: ./services/operator-adapter
+    build: ./services/operator-gateway
     container_name: operator-adapter
     profiles: ["client-ingest"]  # GATED: needs OPERATOR_API_KEY + a bespoke-operator client — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
