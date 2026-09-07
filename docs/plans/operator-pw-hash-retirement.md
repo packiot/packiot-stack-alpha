@@ -1,7 +1,11 @@
 # Plan — `operator_pw_hash` retirement (task #159, operator-password slice)
 
-**Status:** DECISION REQUIRED before execution. Not a mechanical safe-slice.
-**Date:** 2026-09-06 · **Scope:** staging first (new stack), then prod.
+**Status:** DONE on staging (2026-09-06) — architect chose **REMOVE**. edge-api
+retirement deployed (#1121); csadmin UI field removed (staging); DB column dropped
+from packiot_analytics (7 dead hashes discarded, 0 remaining); read-api comments +
+ADR-0054 bcrypt-fallback superseded. **Prod:** repeat the column drop on the prod
+DB after the prod edge-api/csadmin carry these commits.
+**Scope:** staging first (new stack), then prod.
 
 ## TL;DR
 
