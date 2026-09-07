@@ -161,7 +161,7 @@ effect on the box's next agent cycle — never auto-advanced.
 **A fully-onboarded, cutover tenant can still show ZERO OEE.** Cutover only flips the
 tag map — it does **not** wire the tenant into the analytics OEE pipeline. Several
 separate per-tenant gates must **all** be satisfied, or the numbers stay silently empty
-(raw counts flow, but no `equipment_runtime_shift` rows exist). Check them in this order:
+(raw counts flow, but no `equipment_oee_shift` rows exist). Check them in this order:
 
 1. **Shifts** — onboarding step 5 of the hierarchy is *shifts*, and it is load-bearing:
    with no `shifts` / `shift_hours` there is no shift window, so **nothing** aggregates.
@@ -172,7 +172,7 @@ separate per-tenant gates must **all** be satisfied, or the numbers stay silentl
 
 2. **`BAKE_ENTERPRISE_IDS`** (stream-engine env) — the runtime-provision
    (`provision.go`, the `piot_create_*_runtime` fns) that **creates** each tenant's
-   `equipment_runtime_shift` skeleton rows only runs for enterprises in this CSV. The
+   `equipment_oee_shift` skeleton rows only runs for enterprises in this CSV. The
    base rollup then only fills rows flagged `recalc_needed`, so **with no skeletons,
    nothing computes.** Add the new id here (e.g. `"3,4"` → `"3,4,5"`) and redeploy —
    provision creates the skeletons on boot. **This is the master gate for the OEE
@@ -219,7 +219,7 @@ several outfeed candidates the outfeed is a flagged **guess** you confirm in the
 per-line dropdowns. Runs the `POST /api/onboarding/apply-line-meters` endpoint —
 descriptor-driven, so it survives a re-onboard.
 
-> **Verify OEE is computing:** `SELECT count(*) FROM equipment_runtime_shift r JOIN
+> **Verify OEE is computing:** `SELECT count(*) FROM equipment_oee_shift r JOIN
 > equipments e ON e.id_equipment=r.id_equipment WHERE e.id_enterprise=<id>;` — zero rows
 > means one of the gates above is unset (start with `BAKE_ENTERPRISE_IDS`, then shifts).
 

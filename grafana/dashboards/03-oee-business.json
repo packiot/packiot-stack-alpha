@@ -86,14 +86,14 @@
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "### OEE per equipment — SQL over `equipment_values`\nAvailability × Performance × Quality, computed **in SQL directly from raw `equipment_values`** and scoped by the **$enterprise → $site → $area → $equipment** chain. This is a hand-rolled business view for the selected time window — it does **not** read the engine's authoritative `production_orders_runtime` / `equipment_runtime_*` aggregates. Cross-check against those tables; small disagreements are expected because the engine buckets by shift/PO while this rolls up raw ticks over the picker window."
+        "content": "### OEE per equipment — SQL over `equipment_values`\nAvailability × Performance × Quality, computed **in SQL directly from raw `equipment_values`** and scoped by the **$enterprise → $site → $area → $equipment** chain. This is a hand-rolled business view for the selected time window — it does **not** read the engine's authoritative `production_orders_runtime` / `equipment_oee_*` aggregates. Cross-check against those tables; small disagreements are expected because the engine buckets by shift/PO while this rolls up raw ticks over the picker window."
       }
     },
     {
       "id": 2,
       "type": "stat",
       "title": "OEE %",
-      "description": "Availability × Performance × Quality over the selected window, computed in SQL from raw equipment_values. World-class ≥ 85%. NOTE: this is a raw-tick roll-up — the engine's authoritative OEE lives in production_orders_runtime / equipment_runtime_*; cross-check there, minor drift is expected.",
+      "description": "Availability × Performance × Quality over the selected window, computed in SQL from raw equipment_values. World-class ≥ 85%. NOTE: this is a raw-tick roll-up — the engine's authoritative OEE lives in production_orders_runtime / equipment_oee_*; cross-check there, minor drift is expected.",
       "datasource": { "type": "postgres", "uid": "${datasource}" },
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 3 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
@@ -111,7 +111,7 @@
       "id": 3,
       "type": "stat",
       "title": "Availability %",
-      "description": "Fraction of reporting ticks in Execute state (state=6), in SQL over equipment_values. Target ≥ 90%. Cross-check against the engine's equipment_runtime_* availability.",
+      "description": "Fraction of reporting ticks in Execute state (state=6), in SQL over equipment_values. Target ≥ 90%. Cross-check against the engine's equipment_oee_* availability.",
       "datasource": { "type": "postgres", "uid": "${datasource}" },
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 3 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
@@ -129,7 +129,7 @@
       "id": 4,
       "type": "stat",
       "title": "Performance %",
-      "description": "Avg actual speed / ideal_speed (from equipments), in SQL over equipment_values. Target ≥ 95%. Cross-check against the engine's equipment_runtime_* performance.",
+      "description": "Avg actual speed / ideal_speed (from equipments), in SQL over equipment_values. Target ≥ 95%. Cross-check against the engine's equipment_oee_* performance.",
       "datasource": { "type": "postgres", "uid": "${datasource}" },
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 3 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
