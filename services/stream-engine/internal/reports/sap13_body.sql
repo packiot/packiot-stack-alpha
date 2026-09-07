@@ -56,7 +56,7 @@ select
 	case 
 		when ers.ts_end > now() then now() 
 		else ers.ts_end end as tz_end
-from equipment_runtime_shift ers, start_counting_day scd, shifts shi 
+from equipment_oee_shift ers, start_counting_day scd, shifts shi
 where ers.id_equipment in (select id_equipment from equipments where id_enterprise = 13 and tp_equipment = 3 and id_site = 13)
 and ers.ts_value_production >= scd.start_day --now()::date -  interval '3 day' 
 and ers.ts_value <= now()
