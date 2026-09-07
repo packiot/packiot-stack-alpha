@@ -154,9 +154,10 @@ debris). The snapshot is then THREE ordered files `db-schema-f3` applies:
 
 | File | Applied | What |
 |---|---|---|
-| `snapshot/00-packiot_shadow-schema.sql` | best-effort | curated pg_dump base — **all 152 tables, 129 functions, 10 views** (byte-parity) |
+| `snapshot/00-packiot_analytics-schema.sql` | best-effort | curated pg_dump base — **all 152 tables, 129 functions, 10 views** (byte-parity) |
 | `snapshot/05-f3-cagg-agg.sql` | strict | `= 0012-f3-cagg-layer.sql` — `equipment_values` hypertable + the 9 `agg_*` caggs |
-| `snapshot/10-f3-timescale-supplement.sql` | strict | the 3 remaining raw hypertables + the 5 `ca_*` caggs (defs introspected SELECT-only from `packiot_shadow`) |
+| `snapshot/10-f3-timescale-supplement.sql` | strict | the 3 remaining raw hypertables + the 5 `ca_*` caggs (defs introspected SELECT-only from `packiot_analytics`) |
+| `snapshot/15-f3-read-api-composite-type-fixes.sql` | strict | fixes 2 porting bugs `00` inherited (8 `h_piot_*`/`h_*` `text[]`→`jsonb[]` + `agg_equipment_values_1min` name collision) that 500'd 9 read-api `/v1/query` datasets |
 
 **Why the split:** a plain pg_dump **cannot** restore TimescaleDB continuous
 aggregates (it dumps them as views over `_timescaledb_internal._materialized_

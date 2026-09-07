@@ -2,7 +2,7 @@
 # prod-f3-schema-parity-check.sh — the W1.4 CORRECTNESS GATE.
 #
 # Proves a freshly-assembled greenfield-prod `public` schema is STRUCTURALLY
-# identical to staging's F3 schema (`packiot_shadow`) — BEFORE any client data
+# identical to staging's F3 schema (`packiot_analytics`) — BEFORE any client data
 # flows. If prod's `public` is not F3-shaped, the compute chain (edge-transformer
 # Go Calc → oeecloud-worker rollups → caggs → uns_*) runs and produces SILENTLY
 # WRONG OEE. This script is what stops that.
@@ -16,7 +16,7 @@
 # feedback_prod_db_readonly). No writes, ever. Staging is SELECT-only.
 #
 # ── Two manifests, one diff ───────────────────────────────────────────────────
-#   TARGET   = staging packiot_shadow (the authoritative F3 shape).
+#   TARGET   = staging packiot_analytics (the authoritative F3 shape).
 #   CANDIDATE= the DB under test: a local throwaway TimescaleDB container that
 #              has run db/init-f3/assemble.sh, OR (gated) the real prod `public`.
 # The same MANIFEST_SQL runs against both; we diff the normalized output.
@@ -49,7 +49,7 @@ set -euo pipefail
 
 INSTANCE="${INSTANCE:-i-064bb36d1c454d861}"
 REGION="${REGION:-us-east-1}"
-TARGET_DB="${TARGET_DB:-packiot_shadow}"
+TARGET_DB="${TARGET_DB:-packiot_analytics}"
 CANDIDATE_DSN="${CANDIDATE_DSN:-}"
 
 # ── The normalized-manifest query ─────────────────────────────────────────────
@@ -114,7 +114,7 @@ SELECT line FROM (
 ) s ORDER BY ord, nm;
 SQL
 
-# ── TARGET transport (staging packiot_shadow via SSM, READ ONLY) ──────────────
+# ── TARGET transport (staging packiot_analytics via SSM, READ ONLY) ──────────────
 run_target() {
   local sql="$1" full sql_b64 remote remote_b64
   full=$'BEGIN READ ONLY;\n'"$sql"$'\nCOMMIT;'
@@ -188,7 +188,7 @@ case "$cmd" in
   diff)              do_diff "$2" "$3" ;;
   gate)
     t=$(mktemp); c=$(mktemp)
-    echo "capturing TARGET (staging packiot_shadow)..." >&2
+    echo "capturing TARGET (staging packiot_analytics)..." >&2
     run_target    "$MANIFEST_SQL" | clean > "$t"
     echo "capturing CANDIDATE ($CANDIDATE_DSN)..." >&2
     run_candidate "$MANIFEST_SQL" | clean > "$c"

@@ -54,7 +54,8 @@ db/
     ├── assemble.sh                   reviewable fragment-scaffold (authoring aid; does NOT reach parity by itself)
     └── snapshot/                     the AUTHORITATIVE F3 DDL that compose.production.yml applies
         ├── README.md
-        ├── 00-packiot_shadow-schema.sql   curated schema-only pg_dump (152 tables, 129 fns, 10 views) — best-effort
+        ├── 00-packiot_analytics-schema.sql curated schema-only pg_dump (152 tables, 129 fns, 10 views) — best-effort
+        ├── 15-f3-read-api-composite-type-fixes.sql fixes 9 read-api /v1/query datasets (text[]→jsonb[]) — strict
         ├── 05-f3-cagg-agg.sql              equipment_values hypertable + 9 agg_* continuous aggregates — strict
         └── 10-f3-timescale-supplement.sql  3 remaining raw hypertables + 5 ca_* continuous aggregates — strict
 ```
