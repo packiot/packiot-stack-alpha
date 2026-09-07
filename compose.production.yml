@@ -1280,19 +1280,32 @@ services:
     image: pgduckdb/pgduckdb:16-main
     container_name: hist-gateway
     restart: unless-stopped
+    # OPT-IN: the gateway serves COLD (S3 parquet) history — a greenfield first
+    # cutover has none, so it does NOT auto-start. Enable once the historian is
+    # configured (SM secrets present + bucket populated) with:
+    #   docker compose -f compose.production.yml --profile historian up -d historian-gateway
+    # (or COMPOSE_PROFILES=historian). Being profiled keeps it OUT of the default
+    # `up -d --remove-orphans` deploy AND safe from orphan-removal.
+    profiles: ["historian"]
     environment:
-      POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:?set in .env}
+      # gateway-ONLY vars use safe defaults (NOT :?): an unconfigured historian
+      # must never fail compose interpolation and block the whole 25-service deploy
+      # (compose evaluates :? even for inactive profiles). Override in .env when live.
+      POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:-hist_gw_local_changeme}   # gateway's own PG (packiot-net only, no host port)
       # live timescaledb (HOT) — the same external r7g every other service uses
-      FDW_HOST: ${POSTGRES_HOST_UPSTREAM:?set in .env}
+      # (bare, like the rest of compose: app_init.sh always sets POSTGRES_HOST_UPSTREAM)
+      FDW_HOST: ${POSTGRES_HOST_UPSTREAM}
       FDW_PORT: "5432"
-      FDW_DB: ${POSTGRES_DB:?set in .env}
+      FDW_DB: ${POSTGRES_DB}
       FDW_USER: ${POSTGRES_USER:-postgres}
-      FDW_PASS: ${POSTGRES_PASSWORD:?set in .env}
-      # S3 historian (COLD) — scoped read-only key (svc-historian-gateway)
-      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:?set in .env}
+      FDW_PASS: ${POSTGRES_PASSWORD}
+      # S3 historian (COLD) — scoped read-only key (svc-historian-gateway).
+      # Empty defaults so the stack never blocks; the gateway simply has no cold
+      # store until these are set (then re-create it on a fresh hist_gateway_data vol).
+      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:-}
       AWS_REGION: ${AWS_REGION:-us-east-1}
-      HIST_AWS_KEY: ${HIST_AWS_KEY:?set in .env}
-      HIST_AWS_SECRET: ${HIST_AWS_SECRET:?set in .env}
+      HIST_AWS_KEY: ${HIST_AWS_KEY:-}
+      HIST_AWS_SECRET: ${HIST_AWS_SECRET:-}
     networks:
       packiot-net:
         ipv4_address: 172.18.0.27
