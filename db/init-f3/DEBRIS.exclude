@@ -14,3 +14,11 @@
 \tequipment_boxes_cust_[0-9]+(\t|$)
 # lab leftovers (ADR-0012 d1: "lab leftovers, drop")
 \t[a-z_]*lab_equipment_values[a-z0-9_]*(\t|$)
+# neopac (customer 13) per-customer external-SAP read-plane views. Same customer as
+# equipment_boxes_cust_13 above. read-api's /ext/neopac/sap-report[-sync] shims read
+# them (external.go), but that endpoint is INACTIVE (EXTERNAL_NEOPAC_CUSTOMER_ID unset
+# on staging AND prod) and read-api does NOT validate backingViews at startup (contract
+# is a --dump-contract exit-path + a separate drift-check), so it starts healthy without
+# them. Per-customer artifacts → NOT base F3 schema; provision on neopac prod-onboarding.
+\tv_13_site_deb_sap_report(\t|$)
+\tv_sap_report_data_sync_customer_13[a-z0-9_]*(\t|$)
