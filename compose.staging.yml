@@ -2328,6 +2328,17 @@ services:
       # INTERNAL_API_KEY in /opt/packiot/.env before the birth-bound flip.
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
       DB_NAME_F3: packiot_analytics
+      # ── T6 (#176): optional historian-gateway reach (POST /v1/historian/*) ─────
+      # read-api opens a SEPARATE small pool to the hot+cold historian gateway
+      # (compose.historian-gateway.yml, container hist-gateway, on the shared
+      # stack_packiot-net) so a long time-range read can reach the S3 archive past
+      # the 90-day hot window. HIST_GW_PASSWORD comes from env_file (.env); if it is
+      # absent or the gateway is unreachable at boot, the pool is nil and the
+      # endpoint returns 503 — read-api is otherwise unchanged (nil-safe, additive).
+      HIST_GW_HOST: hist-gateway
+      HIST_GW_PORT: "5432"
+      HIST_GW_USER: postgres
+      HIST_GW_DB: postgres
       HEALTH_PORT: "9104"
       # Distributed tracing (OTLP/gRPC). Present = tracing on; a /v1 read becomes
       # one trace with its DB query time as a child span (otelpgx). Sent to the
