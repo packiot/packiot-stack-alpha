@@ -50,8 +50,15 @@ is designed but gated on [C1](reference/designs/0019-C1-edge-command-channel.md)
 ### Option A — durable-forward-only (CHOSEN)
 
 - The box serves the operator SPA (`Dockerfile.edge`) + a **local read layer** (refdata
-  cache) on `:9104`, and a **factory-local edge-api** serving `/session` (bcrypt, local
-  creds) and accepting `/api/*` writes.
+  cache) on `:9104`, and a **factory-local edge-api** serving `/session` and accepting
+  `/api/*` writes.
+  > **SUPERSEDED (#159, 2026-09-06):** the factory-local `/session` **bcrypt / local
+  > `users.operator_pw_hash`** credential is RETIRED. Offline operator auth is now
+  > cached Cognito ID token + local-JWKS ONLY (#158). Consequence: a *fresh* operator
+  > login while the factory is offline is **unsupported** (the operator must have logged
+  > in at least once while online to hold a cached token). If a fresh-offline-login
+  > requirement re-emerges, re-introduce a local credential deliberately — do not revive
+  > `operator_pw_hash`.
 - The cloud edge-api remains the **single authoritative writer**. Factory-local edge-api
   is a **buffering forwarder**: online → proxy to cloud; offline → enqueue to a durable
   **box-side outbox** (SQLite, modelled on the reader spool `reader-bundle.ts:585` and

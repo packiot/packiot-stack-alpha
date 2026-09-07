@@ -16,7 +16,8 @@
 //   - per-equipment functions (which take only an equipment id) are
 //     wrapped in an EXISTS ownership guard on equipments.id_enterprise.
 //   - enterprise-config projects enterprises MINUS api_key; users
-//     projects MINUS operator_pw_hash / id_user_firebase.
+//     projects MINUS id_user_firebase (auth-provider internal). (#159:
+//     operator_pw_hash was retired and dropped — no longer a column to exclude.)
 //
 // Wire-format notes (Hasura parity):
 //   - id-list args are postgres int-array literals ("{1,2}") because
@@ -692,8 +693,8 @@ var datasets = map[string]dataset{
 
 	// ── enterprise-config ────────────────────────────────────────────
 	// Explicit projections: enterprises minus api_key (the tenancy
-	// secret must never transit this API), users minus operator_pw_hash
-	// and id_user_firebase (credentials / auth-provider internals).
+	// secret must never transit this API), users minus id_user_firebase
+	// (auth-provider internal). (#159: operator_pw_hash retired + dropped.)
 	"enterprise-config": {
 		group: "enterprise-config", doc: "Enterprise settings (enterprises minus api_key)",
 		sql: `SELECT id_enterprise, nm_enterprise, week_begin, day_begin, week_size, timezone,
