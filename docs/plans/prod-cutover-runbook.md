@@ -44,6 +44,17 @@ git commit -m "cutover: regenerate F3 snapshot + MANIFEST from live packiot_anal
 The strict `05`/`10`/`15` layer is already committed; `15` (read-api composite-type
 fixes) is idempotent and required (9 `/v1/query` datasets 500 without it).
 
+**Pre-validated (2026-09-07, read-only `capture-target` vs the committed placeholder):**
+the regen will take the MANIFEST from **307 → 255** objects: **−137** (renamed-away
+`equipment/area/site_runtime_*` tables, #186 dead grains, #182 cruft) and **+85**
+(the `*_oee_*` + `*_live_*` rename targets services read). Live staging is confirmed
+correctly post-rename: tables are `oee_*`, and the `piot_create_*_runtime_*`
+provisioning FUNCTIONS keep only a stale *name* — their bodies correctly write
+`*_oee_*` (verified `piot_create_equipment_runtime_shift` body inserts/updates
+`equipment_oee_shift`). No rename gap. #186 grains confirmed absent from live.
+(Stale provisioning-function *names* are a cosmetic clean-trails item for a future
+analytics-naming pass — NOT a cutover blocker.)
+
 ## Step 2 — Correctness GATE (do NOT skip; this is what stops silently-wrong OEE)
 Assemble a throwaway TimescaleDB from `db/init-f3/`, then diff its shape against
 LIVE staging (the gate captures TARGET live — it does NOT trust the committed file):
