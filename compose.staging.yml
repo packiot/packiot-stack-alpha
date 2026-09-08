@@ -1300,7 +1300,7 @@ services:
     restart: unless-stopped
     command: ["--bind=0.0.0.0", "--listen=8081", "--lock-session"]
     environment:
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@hist-gateway:5432/postgres?sslmode=disable"
+      DATABASE_URL: "postgres://postgres:${HIST_GW_PASSWORD}@hist-gateway:5432/postgres?sslmode=disable"
     ports:
       - "127.0.0.1:8091:8081"
     networks:
