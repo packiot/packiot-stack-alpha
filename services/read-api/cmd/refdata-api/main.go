@@ -288,43 +288,30 @@ func main() {
 	//
 	// Two credential types resolve to the SAME tenant:
 	//   - X-Api-Key → customer_id via the static QUERY_API_KEYS map (operator).
-	//   - Authorization: Bearer <firebase-jwt> → uid → id_enterprise via the
+	//   - Authorization: Bearer <cognito-jwt> → sub → id_enterprise via the
 	//     users table (task #68, the front4 static-SPA path). Public-key token
-	//     verification: no secret needed. The project id is config
-	//     (FIREBASE_PROJECT_ID, default fbpackiot); the JWKS/x509 URL is a
-	//     public constant. The uid→tenant lookup is cached (5-min TTL).
+	//     verification: no secret needed. The uid→tenant lookup is cached
+	//     (5-min TTL).
 	keys := parseAPIKeys(os.Getenv("QUERY_API_KEYS"))
-	projectID := getenv("FIREBASE_PROJECT_ID", defaultFirebaseProject)
-	// ADR-0034 dual-accept IdP cutover: Firebase is ALWAYS a relying party (the
-	// incumbent — never broken mid-cutover). When COGNITO_AUTH_ENABLED is on
-	// (default) AND the pool identifiers resolve, ALSO accept Cognito tokens by
-	// wrapping both verifiers in a multiVerifier that dispatches by issuer. Both
-	// IdPs resolve their subject through the SAME unified users lookup
-	// (usersEnterpriseSQL matches id_user_firebase OR id_user_cognito), so the
-	// tenant-fencing path is byte-identical. Reverting to Firebase-only is a
-	// single env flip (COGNITO_AUTH_ENABLED=false), no redeploy of anything else.
-	var bv verifier = newFirebaseVerifier(projectID, nil)
-	var cognitoCV *cognitoVerifier // reused by the operator super-admin read escalation
-	cognitoDual := false
-	if cognitoAuthEnabled() {
-		cIss := getenv("COGNITO_ISSUER", defaultCognitoIssuer)
-		cClient := getenv("COGNITO_CLIENT_ID", defaultCognitoClientID)
-		cJWKS := os.Getenv("COGNITO_JWKS_URL") // "" → derived <issuer>/.well-known/jwks.json
-		if cIss != "" && cClient != "" {
-			cognitoCV = newCognitoVerifier(cIss, cClient, cJWKS, nil)
-			bv = newMultiVerifier(
-				namedVerifier{idp: "firebase", iss: "https://securetoken.google.com/" + projectID, v: bv},
-				namedVerifier{idp: "cognito", iss: cIss, v: cognitoCV},
-			)
-			cognitoDual = true
-		} else {
-			logger.Warn("COGNITO_AUTH_ENABLED but pool identifiers unset — Firebase-only")
-		}
-	}
+	// #159: Firebase IdP RETIRED on the new-stack plane — Cognito is now the SOLE
+	// per-user relying party (the new-stack prod tenant has 0 Firebase users; the
+	// staging backfill linked every active user's id_user_cognito). The verifier
+	// is still wrapped in a SINGLE-ENTRY multiVerifier so the idp tagging +
+	// claimsVerifier that drive the link-on-login self-heal are preserved
+	// unchanged; a token from any OTHER issuer (e.g. a stale Firebase ID token)
+	// matches no entry and is rejected (401). No FIREBASE_PROJECT_ID is read and
+	// no Firebase verifier is constructed. Mirrors the staging removal (#1130).
+	cIss := getenv("COGNITO_ISSUER", defaultCognitoIssuer)
+	cClient := getenv("COGNITO_CLIENT_ID", defaultCognitoClientID)
+	cJWKS := os.Getenv("COGNITO_JWKS_URL") // "" → derived <issuer>/.well-known/jwks.json
+	cognitoCV := newCognitoVerifier(cIss, cClient, cJWKS, nil) // reused by the operator super-admin read escalation
+	var bv verifier = newMultiVerifier(
+		namedVerifier{idp: "cognito", iss: cIss, v: cognitoCV},
+	)
 	bearer := newFirebaseBearerAuth(bv, pool, 5*time.Minute)
 	logger.Info("tenant auth configured",
-		slog.Int("keys", len(keys)), slog.String("firebase_project", projectID),
-		slog.Bool("cognito_dual_accept", cognitoDual))
+		slog.Int("keys", len(keys)), slog.String("cognito_issuer", cIss),
+		slog.Bool("cognito_only", true))
 	// ADR-0031 Workstream B: mount the external-contract anti-corruption shims.
 	// They resolve the tenant through the SAME key map (single injection
 	// authority) but self-authenticate, so they sit in the auth-exempt set below.
