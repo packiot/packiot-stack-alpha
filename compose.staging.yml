@@ -661,8 +661,8 @@ services:
       # the shared key from .env/Secrets.
       ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
       ONBOARD_API_KEY: ${ONBOARD_API_KEY}
-      FIREBASE_ISSUER: https://securetoken.google.com/fbpackiot
-      FIREBASE_AUDIENCE: fbpackiot
+      # #159: Firebase IdP retired on the new-stack plane — edge-api trusts only
+      # the Cognito issuer now (FIREBASE_ISSUER/FIREBASE_AUDIENCE removed).
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -2465,7 +2465,10 @@ services:
       # (Firebase project / Cognito pool + app-client id / issuer) — NOT secrets.
       # Same values refdata-api uses so "authenticated as enterprise N" agrees
       # across services. Leave COGNITO_ISSUER empty to run Firebase-only.
-      FIREBASE_PROJECT_ID: fbpackiot
+      # #159: Firebase IdP retired — empty project id disables barcode-service's
+      # Firebase path (its id_user_firebase lookup never runs), leaving Cognito
+      # (custom:id_enterprise claim) as the sole auth authority.
+      FIREBASE_PROJECT_ID: ""
       COGNITO_ISSUER: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt"
       COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
       LOG_LEVEL: info
