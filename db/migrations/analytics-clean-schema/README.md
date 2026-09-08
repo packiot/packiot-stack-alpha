@@ -175,16 +175,63 @@ Resolves blocker #3 (agg_*/ca_agg_* not droppable — silver lacks the categoric
   `silver.*`, before the manual live-prod-drift gate passes. edge-api production-targets DAO is P4-coupled
   (no `serving.set_*` twins exist; it's tied to the 3-target-table merge).
 
-## Remaining (mapped, NOT executed — destructive, deferred to a focused follow-up)
-- **P4:** §4 renames (packml_register→topic_routing, oee_quality/a/p→oee_q/a/p, leftover runtime_/uns_
-  PK/index/proc→oee_/live_, merge equipment_events+_man via is_manual, merge 3 target tables) + bi.*
-  COLUMN renames (bi.* stays security-DEFINER, Decision #3) + §5 column prune (keep box tables +
-  id_user_firebase) + fold 5 SAP views→customer_reports (+ repoint read-api external*.go).
-- **P5 (now unblocked by the read-api deploy):** the 29 old `h_piot_*` originals read-api left behind are
-  droppable — EXCEPT the 3 helpers that back live serving fns: `h_piot_get_downtimes_per_category_equipment_level_new_4`,
-  `h_piot_get_downtimes_sector_microstops` (called by serving.downtime_by_category) and the return-type
-  `h_piot_production_orders_with_runtimes_table2` (serving.production_orders_with_runtimes). THEN
-  `ca_agg_equipment_values_*` (its only readers are the 7 dropped h_piot originals — coordinator confirmed
-  it is STALE + gross-inflated ~4200×, so the drop is a FIX). `agg_*` needs the 3 SAP views folded (P4)
-  + `get_report_shift_enterprsie_06c` (dead) handled first. drop_backup_20260908 KEPT until sign-off.
-  #186 writer-audit + 42P01 watch + re-verify EACH before dropping.
+## P4 step2 (subordinate-object + proc renames) — APPLIED + PROVEN on staging 2026-09-08 (files 13, 14)
+
+Renames the leftover runtime_/uns_ **names** on the already-renamed grain tables (the TABLES were
+renamed in the earlier cutover; only their subordinate objects still carried old names).
+
+- **13_p4_rename_runtime_uns_subordinate_objects.sql** — 29 constraints + 6 standalone indexes + 1
+  sequence renamed (`runtime_`→`oee_`, `uns_`→`live_`), one transaction. Behavior-neutral: all
+  OID-tracked (edge-api upserts via column-inference `ON CONFLICT (id_equipment, ts_value)`, not
+  constraint name; FKs/indexes by OID). **Hardproof pre-check:** 0 fn bodies reference any of these
+  names (0 `ON CONSTRAINT`, 0 name-string refs — checked every prokind f/p in public/serving/bi).
+  `production_orders_runtime` deliberately NOT renamed (correctly named). **Post-proof:** only the 3
+  `production_orders_runtime` old names remain; the renamed sequence's column DEFAULT auto-repointed to
+  `nextval('equipment_oee_shift_id_seq')`; `equipment_oee_shift` constraints all `convalidated`.
+- **14_p4_rename_provision_procs_oee.sql** — the 11 `piot_create_*_runtime` provisioning procs renamed
+  to `piot_create_*_oee_*`. **EXPAND phase:** each old name kept as a thin `PERFORM new()` shim so the
+  live external caller (stream-engine `internal/rollup/provision.go` `provisionFns`, hourly, fail-soft)
+  is unaffected (procs are public-only, 11; no `ev_*` flow schemas; no trigger/fn/pg_cron caller — the
+  Go list is the sole caller). Proven: 11 REAL procs (large bodies) + 11 SHIMs.
+  **CONTRACT tail (NOT done — needs a stream-engine deploy):** update `provisionFns` to the new names +
+  `edge-node-red/db/20-oee-engine-parity.sql` bootstrap defs, deploy stream-engine, verify
+  runtime-provision runs on new names, then drop the 11 shims (a 15b migration).
+
+## P5 h_piot cull — APPLIED + PROVEN on staging 2026-09-08 (files 15, 15.ROLLBACK)
+
+**28** legacy `h_piot_*` originals dropped (read-api PR #1132 repointed to `serving.*` twins, deployed
++ live-proven). Exhaustive writer-audit (#186): none of the 28 is referenced as EXECUTED SQL by
+read-api (golden = `serving.*` + `h_piot_machine_speed` + `h_piot_oee_score_full_3`), edge-api (only
+`h_piot_set_production_target`/`h_piot_set_scrap_target`), stream-engine, any other stack service,
+back4-api, primary-api, any view, any serving fn (only the 2 kept downtime helpers), any surviving
+h_piot, Hasura (`hdb_catalog` absent on staging) or pg_cron (not installed).
+- **KEEP 7** (excluded from the drop): `h_piot_machine_speed`, `h_piot_oee_score_full_3` (read-api,
+  #218-owned), `h_piot_oee_score_with_teams` (called by oee_score_full_3), `h_piot_set_production_target`,
+  `h_piot_set_scrap_target` (edge-api DAO — **writer-audit catch: NOT in the original task keep-list**),
+  `h_piot_get_downtimes_per_category_equipment_level_new_4`, `h_piot_get_downtimes_sector_microstops`
+  (bodies of `serving.downtime_by_category`). Note the task's `h_piot_production_orders_with_runtimes_table2`
+  is a composite TYPE, not a function — never in the drop set.
+- **Proof:** self-guarding (no CASCADE → transaction COMMITted ⇒ 0 dependents existed); 7 keepers present;
+  all 411 serving+public fn defs still resolve (no broken deps); serving twins execute live post-drop
+  (`downtime_events` 1842, `production_orders_with_runtimes` 143, `oee_progress` 20, `mission_control_area`
+  5) + kept `oee_score_full_3`→`oee_score_with_teams` returns 20; read-api logs clean (0 errors). pg_stat
+  delta was flat (staging idle) — not used as the gate; the no-CASCADE self-guard + live twin execution is
+  the definitive proof. Reverse: `15_p5_drop_h_piot_originals.ROLLBACK.sql` (full live defs, 28).
+
+## STILL Remaining (mapped, NOT executed — need live-writer coordination and/or a service deploy)
+- **P4 §4 table/col renames (step 3):** `packml_register`→`topic_routing` (live SparkPlug-routing writer;
+  no Hasura on staging, so a rename + auto-updatable view shim is viable but must verify oeecloud/CS-Admin
+  write path); `production_orders.oee_quality/availability/performance`→`oee_q/a/p` (oeecloud WRITES these →
+  needs add-col + dual-write trigger, NOT a plain rename; **intersects the sibling's Superset domain** —
+  Superset YAMLs already expect `oee_a/p/q`); merge `equipment_events`+`_man`→`is_manual` (replicator
+  writer); merge `production_targets`/`oee_targets`/`scrap_targets`→`targets(kind)` (coupled to the KEPT
+  `h_piot_set_production_target`/`set_scrap_target` + edge-api DAO — a coordinated edge-api change).
+- **P4 SAP fold (step 4):** create `customer_reports`, move the 3 SAP views, **repoint read-api
+  external*.go + deploy**, verify neopac/incoplast/montebello golden endpoints.
+- **P4 bi.\* COLUMN renames** (bi.* stays security-DEFINER, Decision #3) + §5 column prune (keep box tables
+  + id_user_firebase).
+- **P5 tail:** `ca_agg_equipment_values_*` now has no h_piot reader (the readers were in the 28 dropped) —
+  but **HELD** per step-6 gate (#218); re-verify 0 readers then drop with agg_*. `agg_*` needs the 3 SAP
+  views folded (step 4) + `get_report_shift_enterprsie_06c` (dead) first. `drop_backup_20260908` KEPT until
+  sign-off. #186 writer-audit + 42883/42P01 watch + re-verify EACH before dropping.
+- **P6 HOLD (step 6):** `agg_*`/`ca_agg_*` families + the 2+1 kept front4/#218 h_piot — do NOT drop.
