@@ -44,3 +44,44 @@ datasets + front4); `shifts_exception_period` (join in `piot_create_equipment_ru
 `h_piot_production_orders_with_runtimes_table2` (bodies of live CONTRACT functions);
 `function_execution_log` (backs the manifest-kept view `monitoramento_execucao_functions`).
 `scanned_boxes`/`sample_boxes`/`box_scans`/`po_box_counter` kept per decision §8.3.
+
+## Files added (P2 cont. — serving function port, applied on STAGING 2026-09-08)
+
+| File | What |
+|---|---|
+| `08_p2_serving_functions_port.sql` | Ports the other 29 contract `h_piot_*` SETOF functions to `serving.<intent>` + real composite `serving.<intent>_row` TYPEs. Generated from **live** `pg_get_functiondef` (drift-proof; picks up the runtime_→oee_ / uns_→live_ renames the stale snapshot misses) with a two-token swap (fn name + return type). Every body references its return type exactly once → copied byte-for-byte → equivalent by construction. |
+| `08b_p2_serving_functions_drop.sql` | Reverse of 08 (drops the 29 serving fns + row types via `DROP TYPE … CASCADE`; leaves `serving.oee_score`/`serving.machine_speed`). |
+| `09_p0c_fix_restore_v_events_2.sql` | **P0c remediation.** `03_p0c` dropped `public.v_events_2` as "orphan", but it backs the LIVE contract fn `h_piot_get_events_timeline_full_with_filter_3` — the endpoint was 500ing on staging. Restored (recovered from `db/cutover/f3-stop-threshold.sql`, with `equipment_runtime_shift`→`equipment_oee_shift`). Additive; reverse with `DROP VIEW`. |
+
+## P2 equivalence gate (function layer) — 2026-09-08
+
+- **Method.** Each `serving.<intent>` is a byte-identical body twin of its `h_piot_*` source, so
+  equivalence is guaranteed by construction; the gate CONFIRMS it on live data + smoke-tests the
+  transform. Executed as `postgres` (the real prod caller — read-api connects as postgres; all 35
+  h_piot fns are SECURITY INVOKER, secdef=0; only 6 tables have RLS). The bi_owner+RLS caller-binding
+  dimension is covered by the P2 **view** gate (`bi_next.*` / serving views, 06/07). Symmetric multiset
+  diff via `EXCEPT ALL` both directions over the full projected column set (NULL-aware = `IS DISTINCT
+  FROM`); `json`-returning fns compared via `to_jsonb(row)` (json has no equality operator).
+- **Contexts.** busy tenant 3 (two frozen windows 2026-08-01..08-15 and 2026-09-01..09-08) + quiet
+  tenant 120; `app.tenant_id` set per context.
+- **Result: 29/29 ported functions PASS (symdiff 0, both directions, every context). 0 DIFF, 0 regressions.**
+  Non-trivial row coverage e.g. downtime_events 3318, events_timeline_full 10030, oee_score_by_team 40,
+  production_orders_with_runtimes 143, total_production_by_team 15.
+- **Aggregate tier (HP-1 + perf).** silver `equipment_metrics_1min` vs direct RAW over ent3/W1:
+  **row-complete (678604=678604) and bucket-complete (150585=150585)**; residual sum delta is pure
+  float4 accumulation (silver partials inherit `real`; max rel err 4.8e-6). EXPLAIN of the silver
+  1hour path hits `_materialized_hypertable_51` chunks — **no `Seq Scan on equipment_values`**. NOTE:
+  the ported aggregate fns still read the legacy `agg_*` tables (faithful twins); repointing them to
+  `silver.*` is P3 and should first make silver partials float8/numeric (see finding below).
+
+## Findings for P3–P5
+- **P0c over-drop (FIXED):** `v_events_2` was a live dependency, not an orphan → restored (09_*). Audit
+  the rest of the `03_p0c` drop list the same way before P5.
+- **silver float4 partials:** `equipment_metrics_*` store `sum_net/gross/scrap` as `real` (inherited),
+  losing ~5e-6 relative precision on large buckets. Redefine partials as `float8`/`numeric` before P3
+  repoints aggregate serving fns to silver, so silver is exactly RAW-equivalent.
+- **P3 (repoint):** consumers (read-api, Superset `bi.*`, front4, operator, edge-api) still call
+  `h_piot_*` / `bi.*`. Repoint to `serving.*` / `bi_next.*` (staging-first, pin/config bump).
+- **P4/P5:** GOLD/dimension renames + column prune (expand/contract); then drop the `agg_*`/`ca_agg_*`
+  parallel families, the compat shims, the 13 non-contract numbered/`_fix` h_piot variants, and the
+  old h_piot_* originals once no consumer references them (42P01 log-watch + #186 writer-audit).
