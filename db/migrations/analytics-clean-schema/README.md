@@ -77,11 +77,46 @@ datasets + front4); `shifts_exception_period` (join in `piot_create_equipment_ru
 ## Findings for P3–P5
 - **P0c over-drop (FIXED):** `v_events_2` was a live dependency, not an orphan → restored (09_*). Audit
   the rest of the `03_p0c` drop list the same way before P5.
-- **silver float4 partials:** `equipment_metrics_*` store `sum_net/gross/scrap` as `real` (inherited),
-  losing ~5e-6 relative precision on large buckets. Redefine partials as `float8`/`numeric` before P3
-  repoints aggregate serving fns to silver, so silver is exactly RAW-equivalent.
-- **P3 (repoint):** consumers (read-api, Superset `bi.*`, front4, operator, edge-api) still call
-  `h_piot_*` / `bi.*`. Repoint to `serving.*` / `bi_next.*` (staging-first, pin/config bump).
-- **P4/P5:** GOLD/dimension renames + column prune (expand/contract); then drop the `agg_*`/`ca_agg_*`
-  parallel families, the compat shims, the 13 non-contract numbered/`_fix` h_piot variants, and the
-  old h_piot_* originals once no consumer references them (42P01 log-watch + #186 writer-audit).
+
+## P3 pre-fix — APPLIED + PROVEN on staging 2026-09-08 (10_p3pre_silver_float8_partials.sql)
+- silver partials `real`→`float8` (cast RAW ::float8 in tier-1). Drop/recreate the 4-tier family +
+  serving.machine_speed (tier-1 dependent) + re-add policies (4/4) + rematerialize oldest-first
+  (1min 65s / 10min 11s / 1hour 1.4s / 1day 0.3s).
+- **HP-1 re-proof (frozen window 07-08..09-07, FULL dim grouping):** silver 1min ≡ direct-RAW float8 —
+  1,388,365 rows, **0 presence / 0 count / 0 sum mismatch, max abs diff = 0.0**. Telescoping 1min→1hour
+  0 count mismatch, max abs 7.3e-12 (float8 assoc noise). silver is now exactly RAW-equivalent.
+
+## P3/P5 BLOCKERS found during live audit — resolve before executing the destructive phases
+
+1. **bi.* → security_invoker swap is UNSAFE — Superset would break.** `superset_ro` deliberately has
+   **NO base-table grants** (dark-schema posture; `configs/superset/.../packiot_analytics.yaml`,
+   `superset_config.py`). bi.* work as **security-DEFINER (bi_owner, non-bypassrls, RLS-subject)** and
+   Superset stamps `-c app.tenant_id=<id>` per request. HARDPROOF as `superset_ro`: `bi.oee_shift`
+   (definer) tenant 3 → 2093 rows; `bi_next.oee_shift` (security_invoker) → **permission denied for
+   table equipment_oee_shift**; direct base table → permission denied; isolation holds (tenant 120 → 0).
+   → **DECISION: keep bi.* as security-definer. No Superset change in P3.** `bi_next` (0 external
+   dependents) is equivalence-gate scaffolding → drop in P5. bi.* still need the §4 **column** renames
+   in P4 (e.g. `oee_quality`→`oee_q` on production_orders) via expand/contract.
+
+2. **read-api repoint: 29/31 datasets have clean serving twins; 2 do NOT.** `h_piot_oee_score_full_3`
+   (10-arg fn) and `h_piot_machine_speed` (10-arg fn) map in the plan to `serving.oee_score` (3-arg
+   canonical A·P·Q redesign) and `serving.machine_speed` (a silver-backed VIEW) — **intentional
+   redesigns, not byte-identical twins** (different signature + semantics). Repointing them is a
+   frontend-visible behaviour change, not a transparent P3 swap. → Either add byte-identical
+   `serving.*` twins of those two fns (drift-proof method, like 08), or migrate the oee/speed read
+   paths deliberately with frontend coordination. The other 29 datasets repoint 1:1
+   (`h_piot_X`→`serving.<intent>`), then regen `contract.golden.json` + build + deploy + verify.
+
+3. **agg_*/ca_agg_* are NOT droppable as planned — silver lacks the categorical grain.** 9 public
+   `h_piot_*` fns + their 6 `serving.*` twins read `agg_*`. Several group by **shift/team/state/mode/
+   id_production_order** (`oee_score_by_team`, `single_period_by_team[_v4]`, `targets`,
+   `overview_production_chart`, `mission_control_timeline`) — dimensions silver **deliberately omits**
+   ("categorical context is not a grouping key", plan §2.1). So those fns cannot repoint to `silver.*`;
+   agg_* (or a new categorical tier / RAW read) must remain. Only the non-categorical
+   equipment×time aggregations can move to silver. Reconcile before any agg_* drop.
+
+- **P4/P5 remaining:** GOLD/dimension renames + column prune (expand/contract); fold 5 SAP views into
+  `customer_reports`; then drop `bi_next`, `analytics_v2` PoC caggs (6 views, no external deps),
+  the 13 non-contract h_piot variants (verify each absent from contract.golden.json), old h_piot_*
+  originals (after read-api repoints), `drop_backup_20260908` (8 tables, post sign-off). #186
+  writer-audit + 42P01 log-watch before EACH drop.
