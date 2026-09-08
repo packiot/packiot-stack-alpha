@@ -115,6 +115,9 @@ CREATE USER MAPPING FOR ${POSTGRES_USER} SERVER live_pg
   OPTIONS (user '${FDW_USER}', password '${FDW_PASS}');
 CREATE SCHEMA IF NOT EXISTS live;
 IMPORT FOREIGN SCHEMA public LIMIT TO (equipment_values) FROM SERVER live_pg INTO live;
+-- HOT equipment_events (downtime/OEE-reconstruction) — see the EE section at the
+-- bottom (ev_all_events). Imported here so live.equipment_events exists before it.
+IMPORT FOREIGN SCHEMA public LIMIT TO (equipment_events) FROM SERVER live_pg INTO live;
 
 -- COLD: S3 Parquet historian via pg_duckdb. Scoped read-only key (instance-role
 -- credential_chain is unavailable: the DB enforces IMDSv2 and DuckDB's aws
@@ -227,6 +230,109 @@ LANGUAGE sql STABLE AS \$fn\$
         OR (h.year = EXTRACT(YEAR FROM p_end)::int AND h.month <= EXTRACT(MONTH FROM p_end)::int) )
      AND h.ts_value >= p_start::timestamp AND h.ts_value < p_end::timestamp;
 \$fn\$;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- equipment_events (EE) — downtime / OEE-reconstruction hot+cold union
+--                         (task #227 / historian-clean-schema-redesign §8-EE)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The EE cold archive was backfilled with LEGACY enterprise ids; it is re-keyed
+-- to the F3 id-space ON DISK (scripts/historian-events-reunload.sh, same "partition
+-- key IS the F3 id, no in-view CASE" convention as EV). Only VERIFIED-F3-remapped
+-- partitions live under equipment_events/ — un-promoted legacy partitions are held
+-- under equipment_events_legacy_unpromoted/ (their legacy ids collide numerically
+-- with real F3 tenant ids, so serving them would be a CROSS-TENANT LEAK). As more
+-- tenants are promoted, re-unload their partition to F3 + move it into
+-- equipment_events/; no view change needed (the glob is F3-only by construction).
+--
+-- ── WHY THE EE BOUNDARY IS THE **MIRROR** OF hist_cutover ──────────────────────
+-- hist_cutover (EV) is COLD-anchored: cold is the full archive, hot is the live
+-- tail, cutover = max(cold ts), COLD owns ts<=cutover / HOT owns ts>cutover.
+-- EE is the OPPOSITE. db/cutover/f3-phasec-history-backfill.sql loaded ~197k CPACK
+-- pre-cutover events INTO the hot F3 store (ent-3) WITH irreplaceable operator
+-- reasons/notes — surfaced in v_report_downtimes. So for EE the HOT store holds the
+-- deep history AND the live tail (continuous from its earliest event), and the cold
+-- archive OVERLAPS it. A naïve hot ∪ cold DOUBLE-COUNTS the overlap (HARDPROOF,
+-- staging ent-3, window 2026-04-01..2026-09-08: naïve=432,801 vs correct=316,688;
+-- 116,113 rows double-counted). So EE is HOT-ANCHORED:
+--   ev_events_cutover.cutover_ts = min(hot ts_event) per enterprise
+--   COLD owns ts_event <  cutover_ts   (the pre-hot window only)
+--   HOT  owns ts_event >= cutover_ts   (its whole covered range — every hot row
+--                                        is >= its own min, so hot keeps ALL rows)
+-- Disjoint at a single instant per enterprise => no double-count, no gap.
+-- HARDPROOF (staging ent-3): union 316,688 == cold_kept 53,959 + hot_kept 262,729.
+--
+-- NOTE (completeness caveat, for analytics-owner coordination): handing the
+-- overlap window to hot assumes hot fully covers it for all equipment. Equipment
+-- present in cold-but-not-hot for that window would be under-covered (NOT double-
+-- counted — the conservative failure mode). Revisit if a promoted tenant's hot
+-- deep-history backfill is known-partial.
+CREATE OR REPLACE VIEW hist_ee AS
+SELECT r['ts_event']::timestamp         AS ts_event,
+       r['enterprise']::int             AS id_enterprise,
+       r['year']::int                   AS year,
+       r['month']::int                  AS month,
+       r['id_equipment']::int           AS id_equipment,
+       r['ts_end']::timestamp           AS ts_end,
+       r['duration']::int               AS duration,
+       r['status']::int                 AS status,
+       r['planned_downtime']::boolean   AS planned_downtime,
+       r['cd_category']::varchar        AS cd_category,
+       r['desc_category']::varchar      AS desc_category,
+       r['cd_subcategory']::varchar     AS cd_subcategory,
+       r['desc_subcategory']::varchar   AS desc_subcategory,
+       r['txt_downtime_notes']::varchar AS txt_downtime_notes
+FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_events/*/*/*/*-legacy.parquet',
+                  hive_partitioning => true) r;
+
+CREATE TABLE IF NOT EXISTS ev_events_cutover (
+  id_enterprise int PRIMARY KEY,
+  cutover_ts    timestamp NOT NULL,
+  refreshed_at  timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE ev_events_cutover IS
+  'EE disjointness boundary. UNLIKE hist_cutover (cold-anchored: cutover=max(cold ts)), '
+  'this is HOT-ANCHORED: cutover_ts = min(hot ts_event) per enterprise. COLD owns '
+  'ts_event < cutover_ts, HOT owns ts_event >= cutover_ts. Refresh reads the hot FDW '
+  '(a cheap PG aggregate — NOT a parquet scan), so it MAY run in a function/simple '
+  'statement (companion refresh-ee-cutover.sql). Re-run after any change to the hot '
+  'EE earliest event (e.g. a further deep-history backfill).';
+
+-- Seed cutover = min(hot ts_event) per enterprise (reads the FDW, not parquet).
+INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
+SELECT id_enterprise, min(ts_event)::timestamp, now()
+  FROM live.equipment_events
+ WHERE id_enterprise IS NOT NULL
+ GROUP BY id_enterprise
+ON CONFLICT (id_enterprise)
+  DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
+
+-- Hot+cold EE union, HOT-ANCHORED (see header). HOT keeps ALL live rows; COLD
+-- (LEFT JOIN cutover) keeps its pre-hot window, or ALL rows for a cold-only tenant
+-- (no cutover row). year/month surfaced so a bounded query prunes the cold parquet.
+CREATE OR REPLACE VIEW ev_all_events AS
+  SELECT lv.ts_event::timestamp                    AS ts_event,
+         lv.id_enterprise,
+         EXTRACT(YEAR  FROM lv.ts_event)::int       AS year,
+         EXTRACT(MONTH FROM lv.ts_event)::int       AS month,
+         lv.id_equipment,
+         lv.ts_end::timestamp                       AS ts_end,
+         lv.duration,
+         lv.status,
+         lv.planned_downtime,
+         lv.cd_category,
+         lv.desc_category,
+         lv.cd_subcategory,
+         lv.desc_subcategory,
+         lv.txt_downtime_notes
+    FROM live.equipment_events lv
+  UNION ALL
+  SELECT h.ts_event, h.id_enterprise, h.year, h.month, h.id_equipment,
+         h.ts_end, h.duration, h.status, h.planned_downtime,
+         h.cd_category, h.desc_category, h.cd_subcategory, h.desc_subcategory,
+         h.txt_downtime_notes
+    FROM hist_ee h
+    LEFT JOIN ev_events_cutover c ON c.id_enterprise = h.id_enterprise
+   WHERE c.cutover_ts IS NULL OR h.ts_event < c.cutover_ts;
 SQL
 
-echo "[historian-gateway] init complete: ev_all (legacy-priority hot+cold), hist_cutover seeded, ev_between() ready"
+echo "[historian-gateway] init complete: ev_all (EV hot+cold) + ev_all_events (EE hot+cold), hist_cutover + ev_events_cutover seeded, ev_between() ready"
