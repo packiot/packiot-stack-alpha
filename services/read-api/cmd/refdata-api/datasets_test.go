@@ -64,8 +64,8 @@ func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 		"serving.downtime_events", "serving.downtime_events_v2",
 		// total-production / single-period / speed / flow
 		"serving.total_production_by_team", "serving.single_period_by_team",
-		// machine-speed HELD on legacy h_piot_machine_speed pending front4 redesign
-		"serving.single_period_by_team_v4", "h_piot_machine_speed", "serving.production_flow",
+		// machine-speed CANONICAL redesign (#221): serving.machine_speed grain-aware fn
+		"serving.single_period_by_team_v4", "serving.machine_speed", "serving.production_flow",
 		// targets
 		"serving.targets", "production_targets", "scrap_targets", "oee_targets",
 		// enterprise-config
