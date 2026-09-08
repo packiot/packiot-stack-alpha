@@ -120,3 +120,39 @@ datasets + front4); `shifts_exception_period` (join in `piot_create_equipment_ru
   the 13 non-contract h_piot variants (verify each absent from contract.golden.json), old h_piot_*
   originals (after read-api repoints), `drop_backup_20260908` (8 tables, post sign-off). #186
   writer-audit + 42P01 log-watch before EACH drop.
+
+## P3 categorical companion — BUILT + REPOINTED + GATED on staging 2026-09-08 (files 11a/11b/11c/12)
+
+Resolves blocker #3 (agg_*/ca_agg_* not droppable — silver lacks the categorical grain).
+
+- **`silver.equipment_categorical_{1min,10min,1hour}`** (11a): a CLEAN telescoping cagg family that
+  mirrors `ca_agg_equipment_values_*`'s EXACT grain (18 keys: equipment×time × state/mode/id_order/
+  conversion_factor/number_cavities/signal_quality/id_shift/id_team/id_shift_hour/id_production_order/
+  ts_value_production/ideal_production_speed), with **float8 partials** (== the silver numeric family,
+  P3 pre-fix) so it is exactly RAW-equivalent, and the non-telescoping `avg(speed)` replaced by
+  decomposable `sum_speed`/`cnt_speed`/`cnt_rows`. Key + `*_incr`/`*_val` column NAMES match ca_agg,
+  so the repoint is a pure FROM-target swap. 1hour built on 1min (bit-exact to ca_agg's 1min→1hour).
+- **The 5 categorical consumers** (`oee_score_by_team`, `single_period_by_team`,
+  `single_period_by_team_v4`, `targets`, `overview_production_chart`) repointed
+  `ca_agg_equipment_values_1hour` → `silver.equipment_categorical_1hour` (12, drift-proof
+  CREATE OR REPLACE + post-condition assertion: 0 serving fns still read ca_agg). `mission_control_timeline`
+  reads the NUMERIC `agg_equipment_values_1min` (not categorical) → repoints to `silver.equipment_metrics_1min`
+  (P5 prep, NOT yet done).
+- **WATERMARK LESSON (11b):** first backfill refreshed the higher tiers to a FUTURE date (2026-09-10),
+  which materialized the current *incomplete* hour as a stale snapshot (fn-gate caught it: current-hour
+  production 56 frozen vs 81 live). Fix: refresh 10min/1hour only to a COMPLETED boundary (12:00 == ca_agg
+  watermark), leaving the current bucket to the real-time union. Policies (`end_offset` 1 tier-width)
+  maintain the invariant. 1min tier tracks the last datapoint (fine).
+- **GATE (all PASS):**
+  - *Correctness* — companion 1min ≡ direct-from-RAW float8 categorical aggregation (busy day 08-05, T3):
+    19193=19193 rows, **0 value mismatches, max abs = 0**. Companion is the exact RAW value.
+  - *Presence* — vs `ca_agg_1hour` (T3 windows 08-01..15 & 09-01..08, T120): key sets IDENTICAL
+    (8732=8732, 5759=5759; T120 0=0 isolation). Residual = value-only on ~2.6% of *historical large-totalizer*
+    buckets = **legacy float4 sum-order rounding** (max rel 3.6e-7 ≈ 3 float4 ULP); companion (float8) is
+    the correct side. Recent/small-value buckets are integer-exact in both → zero residual.
+  - *fn-level symdiff-0* (old ca_agg-backed vs companion-backed, live window):
+    `overview_production_chart` 5 lines × 12 buckets = 0/0 (max_rel_prod 0, max_abs_scrap 0);
+    `oee_score_by_team` 20 rows 0/0; `single_period_by_team` 0/0; `single_period_by_team_v4` 0/0; `targets` 0/0.
+  - Refresh policies 3/3 (jobs on all tiers), assertion PASS.
+- **Unblocks:** `ca_agg_equipment_values_{1min,1hour}` become droppable in P5 once the 7 `h_piot_*`
+  originals that still read them are dropped (they are non-contract legacy → dropped with the h_piot cull).
