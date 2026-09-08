@@ -46,8 +46,9 @@ func TestDatasetRegistryInvariants(t *testing.T) {
 // census (2026-07-07 audit) that isn't already a fixed /v1/* route.
 func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 	wantRoots := []string{
-		// oee (serving.* cutover; oee-score-full redesigned to canonical serving.oee_score)
-		"serving.oee_score_by_team", "serving.oee_score", "serving.oee_progress",
+		// oee (serving.* cutover; oee-score-full HELD on legacy h_piot_oee_score_full_3
+		// pending front4 redesign — see datasets.go)
+		"serving.oee_score_by_team", "h_piot_oee_score_full_3", "serving.oee_progress",
 		// live-uns-equipment
 		"equipment_live_job", "equipment_live_metrics",
 		"equipment_live_day", "equipment_live_shift", "equipment_live_month",
@@ -63,7 +64,8 @@ func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 		"serving.downtime_events", "serving.downtime_events_v2",
 		// total-production / single-period / speed / flow
 		"serving.total_production_by_team", "serving.single_period_by_team",
-		"serving.single_period_by_team_v4", "serving.machine_speed", "serving.production_flow",
+		// machine-speed HELD on legacy h_piot_machine_speed pending front4 redesign
+		"serving.single_period_by_team_v4", "h_piot_machine_speed", "serving.production_flow",
 		// targets
 		"serving.targets", "production_targets", "scrap_targets", "oee_targets",
 		// enterprise-config

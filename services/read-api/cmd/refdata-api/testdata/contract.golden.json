@@ -596,8 +596,9 @@
   {
     "ref": "machine-speed",
     "source": "dataset",
-    "kind": "relation",
-    "name": "serving.machine_speed"
+    "kind": "function",
+    "name": "h_piot_machine_speed",
+    "argc": 10
   },
   {
     "ref": "menu-per-user-role",
@@ -658,8 +659,8 @@
     "ref": "oee-score-full",
     "source": "dataset",
     "kind": "function",
-    "name": "serving.oee_score",
-    "argc": 3
+    "name": "h_piot_oee_score_full_3",
+    "argc": 10
   },
   {
     "ref": "oee-score-teams",

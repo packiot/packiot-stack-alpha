@@ -278,11 +278,21 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF},
 	},
+	// oee-score-full — HELD on legacy h_piot_oee_score_full_3 (analytics clean-schema
+	// P3 STOP boundary). serving.oee_score (per-equipment A·P·Q) is BUILT + live in the
+	// DB, but staging front4 (TotalProductionUNS/BarChart) consumes this dataset's OLD
+	// contract: sends {areas,equipments,sites,nav_level,time_grain} and reads
+	// [0].oee_componentes.{oee,oee_a,oee_p,oee_q}. The canonical redesign returns
+	// PER-EQUIPMENT rows without the server-side nav rollup, so switching needs a
+	// coordinated front4 change (client-side scope + weighted aggregation + nested→flat
+	// field path) — a product decision, deferred. Reverted from PR #1132 to unbreak
+	// front4; flip back to serving.oee_score once the front4 redesign lands.
 	"oee-score-full": {
-		group: "oee", doc: "Full OEE score breakdown (serving.oee_score canonical A·P·Q)",
-		sql:      `SELECT * FROM serving.oee_score($1,$2,$3)`,
+		group: "oee", doc: "Full OEE score breakdown (h_piot_oee_score_full_3)",
+		sql:      `SELECT * FROM h_piot_oee_score_full_3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		windowed: true, maxWindow: analyticsWindow,
-		params:   []dsParam{pEnt, pWinFrom, pWinTo},
+		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
+			pWinFrom, pWinTo, pGrain, pNav, pShiftF},
 	},
 	"oee-progress": {
 		group: "oee", doc: "OEE progress over time (serving.oee_progress)",
@@ -485,11 +495,17 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
 	},
+	// machine-speed — HELD on legacy h_piot_machine_speed (analytics clean-schema P3
+	// STOP boundary). serving.machine_speed (silver-backed view) is BUILT + live, but
+	// staging front4 (MachineSpeed page) consumes this dataset's OLD contract — the
+	// 10-arg SETOF fn with site/area/equipment/shift/team filters + grain/group_by.
+	// Reverted from PR #1132 to unbreak front4; flip back once the front4 redesign lands.
 	"machine-speed": {
-		group: "machine-speed", doc: "Machine speed series (serving.machine_speed, silver-backed view)",
-		sql:      `SELECT * FROM serving.machine_speed WHERE id_enterprise = $1 AND ts_value >= $2 AND ts_value < $3 AND (cardinality($4::int[]) = 0 OR id_equipment = ANY ($4::int[]))`,
+		group: "machine-speed", doc: "Machine speed series (h_piot_machine_speed)",
+		sql:      `SELECT * FROM h_piot_machine_speed($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		windowed: true, maxWindow: eventWindow,
-		params:   []dsParam{pEnt, pWinFrom, pWinTo, ids("equipments")},
+		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
+			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
 	},
 	"production-flow": {
 		group: "production-flow", doc: "Production flow (infeed/outfeed) series (serving.production_flow)",
