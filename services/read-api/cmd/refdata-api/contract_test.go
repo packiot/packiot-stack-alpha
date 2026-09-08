@@ -40,8 +40,8 @@ func TestContractParses(t *testing.T) {
 		default:
 			t.Errorf("%s: object %s has unknown kind %q", o.Ref, o.Name, o.Kind)
 		}
-		if !isIdent(o.Name) {
-			t.Errorf("%s: backing object name %q is not a bare identifier", o.Ref, o.Name)
+		if !isQualifiedIdent(o.Name) {
+			t.Errorf("%s: backing object name %q is not a bare or schema-qualified identifier", o.Ref, o.Name)
 		}
 	}
 	for name := range datasets {

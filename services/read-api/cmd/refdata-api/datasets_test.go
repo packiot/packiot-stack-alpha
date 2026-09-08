@@ -46,32 +46,32 @@ func TestDatasetRegistryInvariants(t *testing.T) {
 // census (2026-07-07 audit) that isn't already a fixed /v1/* route.
 func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 	wantRoots := []string{
-		// oee
-		"h_piot_oee_score_with_teams", "h_piot_oee_score_full_3", "h_piot_oee_progress_new2",
+		// oee (serving.* cutover; oee-score-full redesigned to canonical serving.oee_score)
+		"serving.oee_score_by_team", "serving.oee_score", "serving.oee_progress",
 		// live-uns-equipment
 		"equipment_live_job", "equipment_live_metrics",
 		"equipment_live_day", "equipment_live_shift", "equipment_live_month",
 		// mission-control
-		"h_piot_get_mission_control_uns_3", "h_piot_get_mission_control_area_uns_2",
-		"h_piot_get_mission_control_timeline",
+		"serving.mission_control", "serving.mission_control_area",
+		"serving.mission_control_timeline",
 		// overview-detail
-		"h_piot_overview_i_get_job_info", "h_piot_overview_i_get_events", "h_piot_overview_i_get_events_3",
-		"h_piot_overview_i_production_chart", "h_piot_overview_production_chart_v6",
-		"h_piot_get_production_health", "h_piot_downtimes_duration_by_category",
+		"serving.overview_job_info", "serving.overview_events", "serving.overview_events_v3",
+		"serving.overview_production_chart", "serving.production_chart",
+		"serving.production_health", "serving.downtime_duration_by_category",
 		// downtimes-analytics
-		"h_piot_get_downtimes_resumo", "h_piot_get_downtimes_per_category",
-		"h_piot_get_downtimes_events", "h_piot_get_downtimes_events_2",
+		"serving.downtime_summary", "serving.downtime_by_category",
+		"serving.downtime_events", "serving.downtime_events_v2",
 		// total-production / single-period / speed / flow
-		"h_piot_total_production_teams_2", "h_piot_single_period_with_teams_3",
-		"h_piot_single_period_with_teams_4", "h_piot_machine_speed", "h_piot_production_flow",
+		"serving.total_production_by_team", "serving.single_period_by_team",
+		"serving.single_period_by_team_v4", "serving.machine_speed", "serving.production_flow",
 		// targets
-		"h_piot_get_targets", "production_targets", "scrap_targets", "oee_targets",
+		"serving.targets", "production_targets", "scrap_targets", "oee_targets",
 		// enterprise-config
 		"enterprises", "user_roles", "users",
 		// front4→refdata migration (#58 Phases 2-3) net-new datasets
-		"h_piot_home_uns",
-		"h_piot_get_events_timeline_from_po", "h_piot_get_events_timeline_full_with_filter_3",
-		"h_piot_production_orders_runtimes", "h_piot_production_orders_with_runtimes4",
+		"serving.home",
+		"serving.events_timeline_by_po", "serving.events_timeline_full",
+		"serving.production_orders", "serving.production_orders_with_runtimes",
 		"v_entities_per_user_role", "v_menu_per_user_role",
 		"equipment_oee_monthly", "equipment_oee_weekly", "equipment_oee_daily",
 		"sites", "downtime_reasons",
@@ -112,7 +112,7 @@ func TestCompileDatasetWindowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sql, "h_piot_oee_score_with_teams") || !strings.Contains(sql, "LIMIT 10000") {
+	if !strings.Contains(sql, "serving.oee_score_by_team") || !strings.Contains(sql, "LIMIT 10000") {
 		t.Errorf("fn call or row cap missing: %s", sql)
 	}
 	// params order: ent, equipments, areas, sites, shifts, teams, from, to, grain, nav, shiftF
@@ -204,7 +204,7 @@ func TestHomeUnsBindsTenantAtDollarOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sql, "h_piot_home_uns($1)") || args[0] != 42 {
+	if !strings.Contains(sql, "serving.home($1)") || args[0] != 42 {
 		t.Errorf("home-uns must call the function with the injected tenant at $1: %s %v", sql, args)
 	}
 }
@@ -224,7 +224,7 @@ func TestEventsTimelineFromPOIsFenced(t *testing.T) {
 	if !strings.Contains(sql, "WHERE id_enterprise = $1") {
 		t.Errorf("events-timeline-from-po must fence the tenant with an outer WHERE id_enterprise = $1: %s", sql)
 	}
-	if !strings.Contains(sql, "h_piot_get_events_timeline_from_po($2)") {
+	if !strings.Contains(sql, "serving.events_timeline_by_po($2)") {
 		t.Errorf("events-timeline-from-po must pass the PO id at $2 (client), tenant at $1: %s", sql)
 	}
 	if args[0] != 42 || args[1] != 915 {

@@ -11,8 +11,8 @@ import (
 // must reference the LIVE view generation (the version-suffixed ones).
 func TestContractCoverage(t *testing.T) {
 	wantRoots := []string{
-		"h_piot_get_events_timeline3_with_event_id",
-		"h_piot_get_equipment_pending_downtime_with_event_id",
+		"serving.events_timeline",
+		"serving.pending_downtime",
 		"piot_get_shift_hours_by_packml_topic_2",
 		"piot_get_shift_hours_by_enterprise_packml_topic_2",
 		"piot_get_day_week_begin_by_packml_topic",
