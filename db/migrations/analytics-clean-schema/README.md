@@ -156,3 +156,35 @@ Resolves blocker #3 (agg_*/ca_agg_* not droppable — silver lacks the categoric
   - Refresh policies 3/3 (jobs on all tiers), assertion PASS.
 - **Unblocks:** `ca_agg_equipment_values_{1min,1hour}` become droppable in P5 once the 7 `h_piot_*`
   originals that still read them are dropped (they are non-contract legacy → dropped with the h_piot cull).
+
+## P3 read-api repoint — MERGED + DEPLOYED + LIVE-VERIFIED on staging 2026-09-08 (PR #1132)
+
+- Branch `feat/p3-readapi-serving-repoint` off origin/staging; 31 read-api datasets/routes repointed
+  `h_piot_*` → `serving.*` (29 byte-identical twins + 2 Decision #2 redesigns: `oee-score-full` →
+  `serving.oee_score` canonical A·P·Q, `machine-speed` → `serving.machine_speed` silver view).
+  `contract.go` taught to parse schema-qualified names; golden regenerated + idempotent; all 13 PR
+  checks green (live-prod-drift job is workflow_dispatch-only → skipped, non-blocking). Merged → staging
+  (e63d7721) → deploy-staging rebuilt the read-api container.
+- **LIVE PROOF (on-box, curl→read-api:9104 over stack_packiot-net):** `/healthz` healthy; `oee-score-full`
+  returns CANONICAL A·P·Q — `{oee:0.311, oee_a:0.954, oee_p:0.690, oee_q:0.472}` (0.954·0.690·0.472≈0.311);
+  `machine-speed` returns silver-backed rows. read-api container healthy on the new image.
+- deploy-staging job went RED only on a **pre-existing** `adminer` port-8082 conflict (`up -d` exited 1
+  AFTER read-api recreated+started healthy) — unrelated to this change; all critical services healthy.
+- **Prod-flip follow-up (NOT staging):** `services/read-api/scripts/refdata-contract-drift-check.sh`
+  matches `pg_proc WHERE nspname='public'` → must be made schema-aware, and prod must have `serving.*`/
+  `silver.*`, before the manual live-prod-drift gate passes. edge-api production-targets DAO is P4-coupled
+  (no `serving.set_*` twins exist; it's tied to the 3-target-table merge).
+
+## Remaining (mapped, NOT executed — destructive, deferred to a focused follow-up)
+- **P4:** §4 renames (packml_register→topic_routing, oee_quality/a/p→oee_q/a/p, leftover runtime_/uns_
+  PK/index/proc→oee_/live_, merge equipment_events+_man via is_manual, merge 3 target tables) + bi.*
+  COLUMN renames (bi.* stays security-DEFINER, Decision #3) + §5 column prune (keep box tables +
+  id_user_firebase) + fold 5 SAP views→customer_reports (+ repoint read-api external*.go).
+- **P5 (now unblocked by the read-api deploy):** the 29 old `h_piot_*` originals read-api left behind are
+  droppable — EXCEPT the 3 helpers that back live serving fns: `h_piot_get_downtimes_per_category_equipment_level_new_4`,
+  `h_piot_get_downtimes_sector_microstops` (called by serving.downtime_by_category) and the return-type
+  `h_piot_production_orders_with_runtimes_table2` (serving.production_orders_with_runtimes). THEN
+  `ca_agg_equipment_values_*` (its only readers are the 7 dropped h_piot originals — coordinator confirmed
+  it is STALE + gross-inflated ~4200×, so the drop is a FIX). `agg_*` needs the 3 SAP views folded (P4)
+  + `get_report_shift_enterprsie_06c` (dead) handled first. drop_backup_20260908 KEPT until sign-off.
+  #186 writer-audit + 42P01 watch + re-verify EACH before dropping.
