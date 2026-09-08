@@ -101,10 +101,10 @@ var endpoints = []endpoint{
 	// from their internal equipments join; ?topics= binds $2 (a filter within
 	// the tenant), $1 is the caller's id.
 	{path: "/v1/events-timeline",
-		sql:   `SELECT * FROM h_piot_get_events_timeline3_with_event_id($2) WHERE id_enterprise = $1`,
+		sql:   `SELECT * FROM serving.events_timeline($2) WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 	{path: "/v1/pending-downtime",
-		sql:   `SELECT * FROM h_piot_get_equipment_pending_downtime_with_event_id($2) WHERE id_enterprise = $1`,
+		sql:   `SELECT * FROM serving.pending_downtime($2) WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 	{path: "/v1/shift-hours",
 		sql:   `SELECT * FROM piot_get_shift_hours_by_packml_topic_2($2) WHERE id_enterprise = $1`,

@@ -272,22 +272,21 @@ var datasets = map[string]dataset{
 	// vector, $6) is still passed; only the phantom is_team_filtered flag is
 	// dropped — no functionality lost (the fn never implemented that flag).
 	"oee-score-teams": {
-		group: "oee", doc: "OEE score split by shifts/teams (h_piot_oee_score_with_teams)",
-		sql:      `SELECT * FROM h_piot_oee_score_with_teams($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		group: "oee", doc: "OEE score split by shifts/teams (serving.oee_score_by_team)",
+		sql:      `SELECT * FROM serving.oee_score_by_team($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF},
 	},
 	"oee-score-full": {
-		group: "oee", doc: "Full OEE score breakdown (h_piot_oee_score_full_3)",
-		sql:      `SELECT * FROM h_piot_oee_score_full_3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "oee", doc: "Full OEE score breakdown (serving.oee_score canonical A·P·Q)",
+		sql:      `SELECT * FROM serving.oee_score($1,$2,$3)`,
 		windowed: true, maxWindow: analyticsWindow,
-		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
-			pWinFrom, pWinTo, pGrain, pNav, pShiftF},
+		params:   []dsParam{pEnt, pWinFrom, pWinTo},
 	},
 	"oee-progress": {
-		group: "oee", doc: "OEE progress over time (h_piot_oee_progress_new2)",
-		sql:      `SELECT * FROM h_piot_oee_progress_new2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		group: "oee", doc: "OEE progress over time (serving.oee_progress)",
+		sql:      `SELECT * FROM serving.oee_progress($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF, pTeamF},
@@ -377,32 +376,32 @@ var datasets = map[string]dataset{
 
 	// ── mission-control ──────────────────────────────────────────────
 	"mission-control": {
-		group: "mission-control", doc: "Mission control equipment grid (h_piot_get_mission_control_uns_3)",
-		sql:    `SELECT * FROM h_piot_get_mission_control_uns_3($1,$2,$3,$4)`,
+		group: "mission-control", doc: "Mission control equipment grid (serving.mission_control)",
+		sql:    `SELECT * FROM serving.mission_control($1,$2,$3,$4)`,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments")},
 	},
 	"mission-control-area": {
-		group: "mission-control", doc: "Mission control area rollup (h_piot_get_mission_control_area_uns_2)",
-		sql:    `SELECT * FROM h_piot_get_mission_control_area_uns_2($1,$2,$3)`,
+		group: "mission-control", doc: "Mission control area rollup (serving.mission_control_area)",
+		sql:    `SELECT * FROM serving.mission_control_area($1,$2,$3)`,
 		params: []dsParam{pEnt, ids("areas"), ids("sites")},
 	},
 	"mission-control-timeline": {
-		group: "mission-control", doc: "Mission control status timeline (h_piot_get_mission_control_timeline)",
-		sql:    `SELECT * FROM h_piot_get_mission_control_timeline($1,$2,$3,$4)`,
+		group: "mission-control", doc: "Mission control status timeline (serving.mission_control_timeline)",
+		sql:    `SELECT * FROM serving.mission_control_timeline($1,$2,$3,$4)`,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments")},
 	},
 
 	// ── overview-detail (per-equipment, tenancy-guarded) ─────────────
 	"overview-job-info": perEquipment("overview-detail",
-		"Current job info for one equipment (h_piot_overview_i_get_job_info)", "h_piot_overview_i_get_job_info"),
+		"Current job info for one equipment (serving.overview_job_info)", "serving.overview_job_info"),
 	"overview-events": perEquipment("overview-detail",
-		"Overview event list, live generation (h_piot_overview_i_get_events_3)", "h_piot_overview_i_get_events_3"),
+		"Overview event list, live generation (serving.overview_events_v3)", "serving.overview_events_v3"),
 	"overview-events-legacy": perEquipment("overview-detail",
-		"Overview event list, legacy generation (h_piot_overview_i_get_events)", "h_piot_overview_i_get_events"),
+		"Overview event list, legacy generation (serving.overview_events)", "serving.overview_events"),
 	"overview-production-chart": perEquipment("overview-detail",
-		"Overview production chart, live generation (h_piot_overview_production_chart_v6)", "h_piot_overview_production_chart_v6"),
+		"Overview production chart, live generation (serving.production_chart)", "serving.production_chart"),
 	"overview-production-chart-legacy": perEquipment("overview-detail",
-		"Overview production chart, legacy generation (h_piot_overview_i_production_chart)", "h_piot_overview_i_production_chart"),
+		"Overview production chart, legacy generation (serving.overview_production_chart)", "serving.overview_production_chart"),
 	// overview-production-chart-base (ADR-0032 §5.1 — front4 PR #202 gap #2).
 	// front4's productionChart hook + every Overview* fork call the BARE
 	// `h_piot_overview_production_chart(idequipment)` (lib/dashboard/hooks/
@@ -413,7 +412,7 @@ var datasets = map[string]dataset{
 	// replay materialized it in F3 — so this is a true version-match, not a new
 	// object. Same perEquipment ownership shape as its siblings.
 	"overview-production-chart-base": perEquipment("overview-detail",
-		"Overview production chart, base generation (h_piot_overview_production_chart)", "h_piot_overview_production_chart"),
+		"Overview production chart, base generation (serving.production_chart_legacy)", "serving.production_chart_legacy"),
 	// equipment-info (ADR-0032 §5.1 — front4 PR #202 gap #4, machineStatus).
 	// front4's machineStatus composite (lib/dashboard/hooks/machineStatus.js) and
 	// neopacStats read the `equipments` row for one line — nm_equipment (the V3
@@ -430,35 +429,35 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, pEquip},
 	},
 	"overview-production-health": perEquipment("overview-detail",
-		"Production health gauge (h_piot_get_production_health)", "h_piot_get_production_health"),
+		"Production health gauge (serving.production_health)", "serving.production_health"),
 	"overview-downtimes-by-category": perEquipment("overview-detail",
-		"Downtime duration by category for one equipment (h_piot_downtimes_duration_by_category)", "h_piot_downtimes_duration_by_category"),
+		"Downtime duration by category for one equipment (serving.downtime_duration_by_category)", "serving.downtime_duration_by_category"),
 
 	// ── downtimes-analytics ──────────────────────────────────────────
 	"downtimes-summary": {
-		group: "downtimes-analytics", doc: "Downtimes summary (h_piot_get_downtimes_resumo)",
-		sql:      `SELECT * FROM h_piot_get_downtimes_resumo($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "downtimes-analytics", doc: "Downtimes summary (serving.downtime_summary)",
+		sql:      `SELECT * FROM serving.downtime_summary($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			pWinFrom, pWinTo, ids("teams")},
 	},
 	"downtimes-per-category": {
-		group: "downtimes-analytics", doc: "Downtimes grouped by category (h_piot_get_downtimes_per_category)",
-		sql:      `SELECT * FROM h_piot_get_downtimes_per_category($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "downtimes-analytics", doc: "Downtimes grouped by category (serving.downtime_by_category)",
+		sql:      `SELECT * FROM serving.downtime_by_category($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			pWinFrom, pWinTo, ids("teams")},
 	},
 	"downtimes-events": {
-		group: "downtimes-analytics", doc: "Downtime event list, live generation (h_piot_get_downtimes_events_2)",
-		sql:      `SELECT * FROM h_piot_get_downtimes_events_2($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "downtimes-analytics", doc: "Downtime event list, live generation (serving.downtime_events_v2)",
+		sql:      `SELECT * FROM serving.downtime_events_v2($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("sectors"),
 			pWinFrom, pWinTo, pMicro},
 	},
 	"downtimes-events-legacy": {
-		group: "downtimes-analytics", doc: "Downtime event list, legacy generation (h_piot_get_downtimes_events)",
-		sql:      `SELECT * FROM h_piot_get_downtimes_events($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "downtimes-analytics", doc: "Downtime event list, legacy generation (serving.downtime_events)",
+		sql:      `SELECT * FROM serving.downtime_events($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("sectors"),
 			pWinFrom, pWinTo, pMicro},
@@ -466,36 +465,35 @@ var datasets = map[string]dataset{
 
 	// ── total-production / single-period / machine-speed / flow ─────
 	"total-production": {
-		group: "total-production", doc: "Total production partitioned by shifts/teams (h_piot_total_production_teams_2)",
-		sql:      `SELECT * FROM h_piot_total_production_teams_2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "total-production", doc: "Total production partitioned by shifts/teams (serving.total_production_by_team)",
+		sql:      `SELECT * FROM serving.total_production_by_team($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pPartBy, pGrain},
 	},
 	"single-period": {
-		group: "single-period", doc: "Single-period comparison, live generation (h_piot_single_period_with_teams_4)",
-		sql:      `SELECT * FROM h_piot_single_period_with_teams_4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "single-period", doc: "Single-period comparison, live generation (serving.single_period_by_team_v4)",
+		sql:      `SELECT * FROM serving.single_period_by_team_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
 	},
 	"single-period-legacy": {
-		group: "single-period", doc: "Single-period comparison, legacy generation (h_piot_single_period_with_teams_3)",
-		sql:      `SELECT * FROM h_piot_single_period_with_teams_3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "single-period", doc: "Single-period comparison, legacy generation (serving.single_period_by_team)",
+		sql:      `SELECT * FROM serving.single_period_by_team($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
 	},
 	"machine-speed": {
-		group: "machine-speed", doc: "Machine speed series (h_piot_machine_speed)",
-		sql:      `SELECT * FROM h_piot_machine_speed($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "machine-speed", doc: "Machine speed series (serving.machine_speed, silver-backed view)",
+		sql:      `SELECT * FROM serving.machine_speed WHERE id_enterprise = $1 AND ts_value >= $2 AND ts_value < $3 AND (cardinality($4::int[]) = 0 OR id_equipment = ANY ($4::int[]))`,
 		windowed: true, maxWindow: eventWindow,
-		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
-			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
+		params:   []dsParam{pEnt, pWinFrom, pWinTo, ids("equipments")},
 	},
 	"production-flow": {
-		group: "production-flow", doc: "Production flow (infeed/outfeed) series (h_piot_production_flow)",
-		sql:      `SELECT * FROM h_piot_production_flow($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		group: "production-flow", doc: "Production flow (infeed/outfeed) series (serving.production_flow)",
+		sql:      `SELECT * FROM serving.production_flow($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain},
@@ -503,8 +501,8 @@ var datasets = map[string]dataset{
 
 	// ── targets ──────────────────────────────────────────────────────
 	"targets": {
-		group: "targets", doc: "Computed targets vs actuals (h_piot_get_targets)",
-		sql:      `SELECT * FROM h_piot_get_targets($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		group: "targets", doc: "Computed targets vs actuals (serving.targets)",
+		sql:      `SELECT * FROM serving.targets($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pGroupBy},
@@ -563,8 +561,8 @@ var datasets = map[string]dataset{
 	// (tp_equipment=3, line level). No wrapper needed. Not windowed — it
 	// returns the current live sites→areas→lines OEE tree.
 	"home-uns": {
-		group: "home", doc: "Home page live OEE tree (h_piot_home_uns)",
-		sql:    `SELECT * FROM h_piot_home_uns($1)`,
+		group: "home", doc: "Home page live OEE tree (serving.home)",
+		sql:    `SELECT * FROM serving.home($1)`,
 		params: []dsParam{pEnt},
 	},
 
@@ -576,8 +574,8 @@ var datasets = map[string]dataset{
 	// $1 = the caller's tenant, $2 = the PO id. A PO in another tenant
 	// yields zero rows. Not windowed.
 	"events-timeline-from-po": {
-		group: "events-timeline", doc: "Event timeline for one production order (h_piot_get_events_timeline_from_po)",
-		sql:    `SELECT * FROM h_piot_get_events_timeline_from_po($2) WHERE id_enterprise = $1`,
+		group: "events-timeline", doc: "Event timeline for one production order (serving.events_timeline_by_po)",
+		sql:    `SELECT * FROM serving.events_timeline_by_po($2) WHERE id_enterprise = $1`,
 		params: []dsParam{pEnt, pPO},
 	},
 	// events-timeline-full: enterprise is arg 1 (self-scoping). The id-filter
@@ -586,8 +584,8 @@ var datasets = map[string]dataset{
 	// middle arg _id_production_order (DEFAULT NULL) is pinned to a literal
 	// NULL so the window binds cleanly at $6/$7 without a null-param kind.
 	"events-timeline-full": {
-		group: "events-timeline", doc: "Full filtered event timeline (h_piot_get_events_timeline_full_with_filter_3)",
-		sql:      `SELECT * FROM h_piot_get_events_timeline_full_with_filter_3($1,$2,$3,$4,$5,NULL,$6,$7)`,
+		group: "events-timeline", doc: "Full filtered event timeline (serving.events_timeline_full)",
+		sql:      `SELECT * FROM serving.events_timeline_full($1,$2,$3,$4,$5,NULL,$6,$7)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("event_types"), pWinFrom, pWinTo},
 	},
@@ -600,15 +598,15 @@ var datasets = map[string]dataset{
 	// per PO with a nested `runtimes` json array. Windowed at analyticsWindow
 	// (front4's PO views span months).
 	"production-orders-runtimes": {
-		group: "production-orders", doc: "One row per PO runtime segment (h_piot_production_orders_runtimes)",
-		sql:      `SELECT * FROM h_piot_production_orders_runtimes($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "production-orders", doc: "One row per PO runtime segment (serving.production_orders)",
+		sql:      `SELECT * FROM serving.production_orders($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			pWinFrom, pWinTo, ids("teams")},
 	},
 	"production-orders-with-runtimes": {
-		group: "production-orders", doc: "One row per PO with nested runtimes (h_piot_production_orders_with_runtimes4)",
-		sql:      `SELECT * FROM h_piot_production_orders_with_runtimes4($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "production-orders", doc: "One row per PO with nested runtimes (serving.production_orders_with_runtimes)",
+		sql:      `SELECT * FROM serving.production_orders_with_runtimes($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			pWinFrom, pWinTo, ids("teams")},
