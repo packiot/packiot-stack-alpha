@@ -597,7 +597,7 @@
     "ref": "machine-speed",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_machine_speed",
+    "name": "serving.machine_speed",
     "argc": 10
   },
   {

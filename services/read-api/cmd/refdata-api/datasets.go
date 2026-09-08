@@ -497,14 +497,20 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
 	},
-	// machine-speed — HELD on legacy h_piot_machine_speed (analytics clean-schema P3
-	// STOP boundary). serving.machine_speed (silver-backed view) is BUILT + live, but
-	// staging front4 (MachineSpeed page) consumes this dataset's OLD contract — the
-	// 10-arg SETOF fn with site/area/equipment/shift/team filters + grain/group_by.
-	// Reverted from PR #1132 to unbreak front4; flip back once the front4 redesign lands.
+	// machine-speed — CANONICAL redesign (#221). serving.machine_speed is now a
+	// grain-aware SETOF function (silver-backed), NOT the old flat 1-min view: it
+	// carries the same 10-arg signature + return shape as the legacy
+	// h_piot_machine_speed (site/area/equipment/shift/team filters + HOUR/DAY grain
+	// + GENERAL/SHIFTS/TEAMS group_by), so the front4 MachineSpeed page contract is
+	// UNCHANGED. Sourced from silver.equipment_categorical_1hour (HOUR) +
+	// equipment_oee_shift (DAY) — removes machine_speed's last dependency on
+	// ca_agg_equipment_values_1hour. DAY branch is byte-identical to legacy;
+	// HOUR gross/net/scrap identical, HOUR speed is now the silver decomposable
+	// sample-weighted average and the window leak (legacy returned periods past
+	// `to`) is fixed. Legacy public.h_piot_machine_speed dropped once proven.
 	"machine-speed": {
-		group: "machine-speed", doc: "Machine speed series (h_piot_machine_speed)",
-		sql:      `SELECT * FROM h_piot_machine_speed($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "machine-speed", doc: "Machine speed series (serving.machine_speed, silver-backed grain-aware fn)",
+		sql:      `SELECT * FROM serving.machine_speed($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		windowed: true, maxWindow: eventWindow,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pGroupBy},
