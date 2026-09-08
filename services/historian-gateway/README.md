@@ -13,6 +13,16 @@ consumer ──SQL──► historian-gateway (Postgres)
                      └─ ev_all = live ∪ hist     ← query THIS
 ```
 
+**Serving surface (canonical, narrow):** `{ts_value, id_enterprise, year, month,
+id_equipment, gross_production_incr, net_production_incr, speed}`. This is a
+production-series server, not a raw mirror — widen only on demand.
+
+**Prune-proof FDW import:** `live.equipment_values` is a **pinned** foreign table
+declaring ONLY those served columns, not `IMPORT FOREIGN SCHEMA` (which pulls all
+~58). The analytics clean-schema cutover prunes the dead columns off the remote
+`equipment_values`; a pinned import can never break when that happens (postgres_fdw
+only ships referenced columns).
+
 ## Why a gateway (not pg_duckdb in the timescaledb instance)
 
 - The operational DB image is **Alpine/musl** (`timescale/timescaledb:*-pg15`);
@@ -50,9 +60,13 @@ the Postgres view (`Custom Scan (DuckDBScan)`).
    max(hist.ts_value))`: COLD owns `ts <= cutover`, HOT owns `ts > cutover` (disjoint;
    live fills forward from the archive's end). Hardproof of the fix: the same day now
    returns **196,671** (HOT 0 + COLD 196,671), 1 parquet file. **Operational
-   invariant:** `refresh_hist_cutover()` MUST be re-run after every historian
-   backfill/append, and every in-historian enterprise MUST have a `hist_cutover` row,
-   or the double-count returns.
+   invariant:** the cutover refresh (top-level `refresh-hist-cutover.sql`) MUST be
+   re-run after every historian backfill/append, and every in-historian enterprise
+   MUST have a `hist_cutover` row, or the double-count returns. **Never** wrap this
+   refresh in a PL/pgSQL function — pg_duckdb cannot scan the `hist` parquet inside a
+   function body, so it throws and leaves the cutover silently stale (a broken
+   `refresh_hist_cutover()` fn of exactly this shape was found live on staging and
+   dropped 2026-09-08).
    *(A naïve `live ∪ all-historian` double-counted 2026 and surfaced 99e9 gross.)*
 2. **Tenant RLS must be a LITERAL.** pg_duckdb pushes predicates into DuckDB,
    which has **no PG session context** — `current_setting('app.tenant_id')` and a
