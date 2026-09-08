@@ -659,8 +659,8 @@
     "ref": "oee-score-full",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_oee_score_full_3",
-    "argc": 10
+    "name": "serving.oee_score",
+    "argc": 3
   },
   {
     "ref": "oee-score-teams",

@@ -278,21 +278,23 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
 			ids("teams"), pWinFrom, pWinTo, pGrain, pNav, pShiftF},
 	},
-	// oee-score-full — HELD on legacy h_piot_oee_score_full_3 (analytics clean-schema
-	// P3 STOP boundary). serving.oee_score (per-equipment A·P·Q) is BUILT + live in the
-	// DB, but staging front4 (TotalProductionUNS/BarChart) consumes this dataset's OLD
-	// contract: sends {areas,equipments,sites,nav_level,time_grain} and reads
-	// [0].oee_componentes.{oee,oee_a,oee_p,oee_q}. The canonical redesign returns
-	// PER-EQUIPMENT rows without the server-side nav rollup, so switching needs a
-	// coordinated front4 change (client-side scope + weighted aggregation + nested→flat
-	// field path) — a product decision, deferred. Reverted from PR #1132 to unbreak
-	// front4; flip back to serving.oee_score once the front4 redesign lands.
+	// oee-score-full — REPOINTED to serving.oee_score (canonical A·P·Q) (#218). The
+	// canonical redesign returns PER-EQUIPMENT rows (one row per line/tp=3) with the
+	// invariant oee == oee_a·oee_p·oee_q, and does NOT do the server-side nav rollup
+	// the OLD h_piot_oee_score_full_3 baked in — its only args are the tenant + window.
+	// front4 (TotalProductionUNS) was adapted FIRST (PR-pair with this repoint): it now
+	// sends ONLY the window (no areas/equipments/sites/nav_level/time_grain filters —
+	// this dataset's param list rejects those keys), scopes the returned rows to its
+	// selected line ids CLIENT-SIDE, and running-time-weight-aggregates A·P (net/gross
+	// for Q) into the [0].oee_componentes shape BarChart reads. The previous flip
+	// (PR #1132) repointed WITHOUT the front4 change and broke the page → reverted;
+	// this lands both halves together. CS note: the displayed OEE drops ~ (canonical
+	// A·P·Q vs the old fn's non-canonical math) — an expected correction, not a regression.
 	"oee-score-full": {
-		group: "oee", doc: "Full OEE score breakdown (h_piot_oee_score_full_3)",
-		sql:      `SELECT * FROM h_piot_oee_score_full_3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group: "oee", doc: "OEE score, canonical per-equipment A·P·Q (serving.oee_score)",
+		sql:      `SELECT * FROM serving.oee_score($1,$2,$3)`,
 		windowed: true, maxWindow: analyticsWindow,
-		params: []dsParam{pEnt, ids("equipments"), ids("areas"), ids("sites"), ids("shifts"),
-			pWinFrom, pWinTo, pGrain, pNav, pShiftF},
+		params:   []dsParam{pEnt, pWinFrom, pWinTo},
 	},
 	"oee-progress": {
 		group: "oee", doc: "OEE progress over time (serving.oee_progress)",

@@ -46,9 +46,9 @@ func TestDatasetRegistryInvariants(t *testing.T) {
 // census (2026-07-07 audit) that isn't already a fixed /v1/* route.
 func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 	wantRoots := []string{
-		// oee (serving.* cutover; oee-score-full HELD on legacy h_piot_oee_score_full_3
-		// pending front4 redesign — see datasets.go)
-		"serving.oee_score_by_team", "h_piot_oee_score_full_3", "serving.oee_progress",
+		// oee (serving.* cutover; oee-score-full repointed to serving.oee_score canonical
+		// A·P·Q with the coordinated front4 adaptation — #218, see datasets.go)
+		"serving.oee_score_by_team", "serving.oee_score", "serving.oee_progress",
 		// live-uns-equipment
 		"equipment_live_job", "equipment_live_metrics",
 		"equipment_live_day", "equipment_live_shift", "equipment_live_month",
