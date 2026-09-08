@@ -1,0 +1,586 @@
+From ca31dc6e90556aaa7924031c9e3caf8154dc148c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Emmanuel=20Podest=C3=A1=20Junior?= <epodesta@pm.me>
+Date: Tue, 8 Sep 2026 16:11:11 -0300
+Subject: [PATCH] feat(auth): #159 dual-accept Cognito strategy (dark by
+ default)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Mirror of the back4-api dual-accept work (feat/cognito-dual-accept) for the
+NestJS primary-api relying party, so the LEGACY packiot40 customer plane can
+accept a Cognito ID token OR a Firebase token during the Firebase→Cognito
+cutover (ADR-0034 / docs/plans/firebase-to-cognito-migration-epic.md).
+
+- CognitoStrategy: verifies a Cognito ID token via aws-jwt-verify (RS256/JWKS,
+  iss+aud+exp), then resolves the tenant server-side. DARK BY DEFAULT — rejects
+  fast unless COGNITO_AUTH_ENABLED=true AND COGNITO_USER_POOL_ID/COGNITO_CLIENT_ID
+  are set, so the MultiAuthGuard falls through to the Firebase/api-key legs
+  exactly as today. Additive, behavior-neutral until cutover.
+- AuthCognito DAO: resolve-by-sub + link-on-login by VERIFIED email with the
+  single-row `ORDER BY id_user ASC LIMIT 1` guard (the exact read-api guard that
+  makes the 2 packiot40 dup-email collisions safe). Requires the packiot40
+  id_user_cognito column migration.
+- Wired into AuthGuardModule + MultiAuthGuard (Cognito added to the OR-set via an
+  @Optional() inject so existing 2-arg constructions keep compiling).
+- +aws-jwt-verify ^4.0.1.
+
+Tenant is NEVER taken from a token claim: the migrate-on-login Lambda does not
+populate custom:id_enterprise, so resolution is DB-only via users.id_user_cognito.
+
+nest build clean; 24 auth tests green (10 new: DAO single-row guard + strategy
+dark-by-default + enabled verify/resolve).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ package-lock.json                             |  10 ++
+ package.json                                  |   1 +
+ src/auth/auth.guard.module.ts                 |  16 ++-
+ src/auth/guards/multi-auth.guard.spec.ts      |   2 +-
+ src/auth/guards/multi-auth.guard.ts           |  13 ++-
+ src/auth/strategies/cognito.strategy.spec.ts  | 105 ++++++++++++++++++
+ src/auth/strategies/cognito.strategy.ts       | 102 +++++++++++++++++
+ .../auth-middleware/auth-cognito-dao.spec.ts  |  68 ++++++++++++
+ .../DAO/auth-middleware/auth-cognito-dao.ts   | 102 +++++++++++++++++
+ 9 files changed, 416 insertions(+), 3 deletions(-)
+ create mode 100644 src/auth/strategies/cognito.strategy.spec.ts
+ create mode 100644 src/auth/strategies/cognito.strategy.ts
+ create mode 100644 src/data/DAO/auth-middleware/auth-cognito-dao.spec.ts
+ create mode 100644 src/data/DAO/auth-middleware/auth-cognito-dao.ts
+
+diff --git a/package-lock.json b/package-lock.json
+index b083c85..2cf547a 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -25,6 +25,7 @@
+         "@opentelemetry/semantic-conventions": "^1.28.0",
+         "@prisma/client": "^6.11.0",
+         "amqplib": "^0.10.5",
++        "aws-jwt-verify": "^4.0.1",
+         "bcrypt": "^5.1.1",
+         "braces": "^3.0.3",
+         "cache-manager": "^7.2.5",
+@@ -6120,6 +6121,15 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/aws-jwt-verify": {
++      "version": "4.0.1",
++      "resolved": "https://registry.npmjs.org/aws-jwt-verify/-/aws-jwt-verify-4.0.1.tgz",
++      "integrity": "sha512-kzvi71eD3w/mCpYRUY7cz6DX4bfYihGdI2yV3FYQ2JuZZenqAqDPz0gWj0ew6vlAtdEVBNb7p+Dm2TAIxpVYMA==",
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=14.0.0"
++      }
++    },
+     "node_modules/axe-core": {
+       "version": "4.11.1",
+       "resolved": "https://registry.npmjs.org/axe-core/-/axe-core-4.11.1.tgz",
+diff --git a/package.json b/package.json
+index 598ed2b..5768d5e 100644
+--- a/package.json
++++ b/package.json
+@@ -44,6 +44,7 @@
+     "cache-manager": "^7.2.5",
+     "cache-manager-ioredis-yet": "^2.1.2",
+     "class-transformer": "^0.5.1",
++    "aws-jwt-verify": "^4.0.1",
+     "class-validator": "^0.14.1",
+     "dayjs": "^1.11.14",
+     "dotenv": "^16.4.7",
+diff --git a/src/auth/auth.guard.module.ts b/src/auth/auth.guard.module.ts
+index 6eb0027..05a43d5 100644
+--- a/src/auth/auth.guard.module.ts
++++ b/src/auth/auth.guard.module.ts
+@@ -1,7 +1,9 @@
+ import { Module } from '@nestjs/common';
+ import { FirebaseStrategy } from './strategies/firebase.strategy';
+ import { ApiKeyStrategy } from './strategies/api-key.strategy';
++import { CognitoStrategy } from './strategies/cognito.strategy';
+ import { AuthApiKey } from '../data/DAO/auth-middleware/auth-apikey-dao';
++import { AuthCognito } from '../data/DAO/auth-middleware/auth-cognito-dao';
+ import PostgresAdapter from '../providers/database/postgres-adapter';
+ import { DatabaseModule } from '../providers/database/database.module';
+ import { MultiAuthGuard } from './guards/multi-auth.guard';
+@@ -23,11 +25,23 @@ import { MultiAuthGuard } from './guards/multi-auth.guard';
+       provide: 'FirebaseStrategy',
+       useClass: FirebaseStrategy,
+     },
++    // #159 / ADR-0034 — dual-accept Cognito leg. DARK unless COGNITO_AUTH_ENABLED
++    // === 'true' AND COGNITO_USER_POOL_ID/COGNITO_CLIENT_ID are set (the strategy
++    // self-gates in its constructor). Additive: no behavior change while off.
++    {
++      provide: 'AuthCognito',
++      useFactory: (db: PostgresAdapter) => new AuthCognito(db),
++      inject: [PostgresAdapter],
++    },
++    {
++      provide: 'CognitoStrategy',
++      useClass: CognitoStrategy,
++    },
+     {
+       provide: MultiAuthGuard,
+       useClass: MultiAuthGuard,
+     },
+   ],
+-  exports: ['ApiKeyStrategy', 'FirebaseStrategy', MultiAuthGuard],
++  exports: ['ApiKeyStrategy', 'FirebaseStrategy', 'CognitoStrategy', MultiAuthGuard],
+ })
+ export class AuthGuardModule {}
+diff --git a/src/auth/guards/multi-auth.guard.spec.ts b/src/auth/guards/multi-auth.guard.spec.ts
+index c1bc8da..16195cc 100644
+--- a/src/auth/guards/multi-auth.guard.spec.ts
++++ b/src/auth/guards/multi-auth.guard.spec.ts
+@@ -111,7 +111,7 @@ describe('MultiAuthGuard', () => {
+       .mockRejectedValue(new Error('API key failed'));
+     await expect(guard.canActivate(mockExecutionContext)).rejects.toThrow(
+       new UnauthorizedException(
+-        'Authentication failed: Both Firebase and API key are invalid',
++        'Authentication failed: no valid credential (Firebase, Cognito, or API key)',
+       ),
+     );
+     expect(firebaseStrategyMock.validate).toHaveBeenCalledWith('invalid-key');
+diff --git a/src/auth/guards/multi-auth.guard.ts b/src/auth/guards/multi-auth.guard.ts
+index 6d9b09c..c3d5ace 100644
+--- a/src/auth/guards/multi-auth.guard.ts
++++ b/src/auth/guards/multi-auth.guard.ts
+@@ -3,6 +3,7 @@ import {
+   ExecutionContext,
+   Inject,
+   Injectable,
++  Optional,
+   UnauthorizedException,
+ } from '@nestjs/common';
+ import {
+@@ -25,8 +26,18 @@ export class MultiAuthGuard implements CanActivate {
+     @Inject('FirebaseStrategy')
+     readonly firebaseStrategy: AbstractAuthStrategy,
+     @Inject('ApiKeyStrategy') readonly apiKeyStrategy: AbstractAuthStrategy,
++    // #159 — Cognito leg. Optional so existing unit tests that construct the
++    // guard with two strategies keep compiling; dark-by-default at runtime (the
++    // strategy self-rejects unless COGNITO_AUTH_ENABLED is set), so adding it to
++    // the OR-set is behavior-neutral until cutover.
++    @Optional()
++    @Inject('CognitoStrategy')
++    readonly cognitoStrategy?: AbstractAuthStrategy,
+   ) {
+     this.strategies = [firebaseStrategy, apiKeyStrategy];
++    if (cognitoStrategy) {
++      this.strategies.push(cognitoStrategy);
++    }
+   }
+ 
+   async strategyValidate(authToken: string): Promise<AuthReturn> {
+@@ -49,7 +60,7 @@ export class MultiAuthGuard implements CanActivate {
+         return validResult; // Return the first valid result
+       }
+       throw new UnauthorizedException(
+-        'Authentication failed: Both Firebase and API key are invalid',
++        'Authentication failed: no valid credential (Firebase, Cognito, or API key)',
+       );
+     });
+   }
+diff --git a/src/auth/strategies/cognito.strategy.spec.ts b/src/auth/strategies/cognito.strategy.spec.ts
+new file mode 100644
+index 0000000..d0106d6
+--- /dev/null
++++ b/src/auth/strategies/cognito.strategy.spec.ts
+@@ -0,0 +1,105 @@
++import { UnauthorizedException } from '@nestjs/common';
++
++// Mock aws-jwt-verify so no network/JWKS fetch happens in the enabled path.
++const verifyMock = jest.fn();
++jest.mock('aws-jwt-verify', () => ({
++  CognitoJwtVerifier: {
++    create: jest.fn(() => ({ verify: verifyMock })),
++  },
++}));
++
++import { CognitoStrategy } from './cognito.strategy';
++import { AuthCognito } from '../../data/DAO/auth-middleware/auth-cognito-dao';
++
++describe('CognitoStrategy (#159 dual-accept, dark-by-default)', () => {
++  const daoMock = {
++    resolveBySub: jest.fn(),
++  } as unknown as jest.Mocked<AuthCognito>;
++
++  const OLD_ENV = process.env;
++  afterEach(() => {
++    process.env = OLD_ENV;
++    jest.clearAllMocks();
++  });
++
++  function withEnv(env: Record<string, string | undefined>) {
++    process.env = { ...OLD_ENV, ...env };
++  }
++
++  it('is DARK by default: rejects without touching the DAO when the flag is off', async () => {
++    withEnv({
++      COGNITO_AUTH_ENABLED: undefined,
++      COGNITO_USER_POOL_ID: undefined,
++      COGNITO_CLIENT_ID: undefined,
++    });
++    const strat = new CognitoStrategy(daoMock);
++    await expect(strat.validate('Bearer whatever')).rejects.toBeInstanceOf(
++      UnauthorizedException,
++    );
++    expect(daoMock.resolveBySub).not.toHaveBeenCalled();
++    expect(verifyMock).not.toHaveBeenCalled();
++  });
++
++  it('stays dark if the flag is on but pool/client env is missing', async () => {
++    withEnv({
++      COGNITO_AUTH_ENABLED: 'true',
++      COGNITO_USER_POOL_ID: undefined,
++      COGNITO_CLIENT_ID: undefined,
++    });
++    const strat = new CognitoStrategy(daoMock);
++    await expect(strat.validate('Bearer x')).rejects.toBeInstanceOf(
++      UnauthorizedException,
++    );
++  });
++
++  it('when enabled: verifies the token and resolves the tenant via the DAO', async () => {
++    withEnv({
++      COGNITO_AUTH_ENABLED: 'true',
++      COGNITO_USER_POOL_ID: 'us-east-1_TEST',
++      COGNITO_CLIENT_ID: 'client123',
++    });
++    verifyMock.mockResolvedValueOnce({
++      sub: 'sub-1',
++      email: 'a@x.com',
++      email_verified: true,
++    });
++    (daoMock.resolveBySub as jest.Mock).mockResolvedValueOnce({
++      uid: 'sub-1',
++      idEnterprise: 5,
++    });
++
++    const strat = new CognitoStrategy(daoMock);
++    const out = await strat.validate('Bearer good.jwt.token');
++    expect(out).toEqual({ uid: 'sub-1', idEnterprise: 5 });
++    expect(daoMock.resolveBySub).toHaveBeenCalledWith('sub-1', 'a@x.com', true);
++  });
++
++  it('when enabled: rejects a non-Bearer credential (leaves it for other legs)', async () => {
++    withEnv({
++      COGNITO_AUTH_ENABLED: 'true',
++      COGNITO_USER_POOL_ID: 'us-east-1_TEST',
++      COGNITO_CLIENT_ID: 'client123',
++    });
++    const strat = new CognitoStrategy(daoMock);
++    await expect(strat.validate('some-api-key')).rejects.toBeInstanceOf(
++      UnauthorizedException,
++    );
++    expect(verifyMock).not.toHaveBeenCalled();
++  });
++
++  it('when enabled: a verified token with no resolvable tenant → 401', async () => {
++    withEnv({
++      COGNITO_AUTH_ENABLED: 'true',
++      COGNITO_USER_POOL_ID: 'us-east-1_TEST',
++      COGNITO_CLIENT_ID: 'client123',
++    });
++    verifyMock.mockResolvedValueOnce({ sub: 'sub-2', email_verified: false });
++    (daoMock.resolveBySub as jest.Mock).mockRejectedValueOnce(
++      new Error('unverified or missing email'),
++    );
++    const strat = new CognitoStrategy(daoMock);
++    await expect(strat.validate('Bearer t')).rejects.toBeInstanceOf(
++      UnauthorizedException,
++    );
++  });
++});
+diff --git a/src/auth/strategies/cognito.strategy.ts b/src/auth/strategies/cognito.strategy.ts
+new file mode 100644
+index 0000000..c899093
+--- /dev/null
++++ b/src/auth/strategies/cognito.strategy.ts
+@@ -0,0 +1,102 @@
++import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
++import { CognitoJwtVerifier } from 'aws-jwt-verify';
++import { AbstractAuthStrategy, AuthReturn } from './auth.abstract.strategy';
++import { AuthCognito } from '../../data/DAO/auth-middleware/auth-cognito-dao';
++import { AuthCreateUser, AuthUpdateUser } from '../../types/user';
++
++/**
++ * CognitoStrategy — dual-accept Cognito leg for primary-api (#159 / ADR-0034).
++ *
++ * DARK BY DEFAULT. Unless COGNITO_AUTH_ENABLED === 'true' AND the pool/client env
++ * is present, `validate` rejects immediately — the MultiAuthGuard then falls
++ * through to the Firebase / api-key legs exactly as today. Deploying this changes
++ * nothing while front4-prod still issues Firebase tokens.
++ *
++ * When enabled it verifies a Cognito **ID token** (RS256/JWKS, iss + aud + exp
++ * enforced by aws-jwt-verify — the AWS-maintained verifier) and resolves the
++ * tenant server-side via AuthCognito (id_user_cognito + link-on-login), mirroring
++ * the read-api/edge-api contract. It never reads a tenant claim from the token
++ * (the migrate-on-login Lambda does not populate custom:id_enterprise).
++ *
++ * Required env when enabled:
++ *   COGNITO_AUTH_ENABLED=true
++ *   COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX   (the prod packiot-prod pool)
++ *   COGNITO_CLIENT_ID=<front4-prod app client id>
++ */
++@Injectable()
++export class CognitoStrategy extends AbstractAuthStrategy {
++  private readonly enabled: boolean;
++  private readonly verifier: ReturnType<typeof CognitoJwtVerifier.create> | null;
++
++  constructor(
++    @Inject('AuthCognito') private readonly authCognito: AuthCognito,
++  ) {
++    super();
++
++    const userPoolId = process.env.COGNITO_USER_POOL_ID;
++    const clientId = process.env.COGNITO_CLIENT_ID;
++    this.enabled =
++      process.env.COGNITO_AUTH_ENABLED === 'true' &&
++      Boolean(userPoolId) &&
++      Boolean(clientId);
++
++    // Only construct the verifier (which primes a JWKS cache) when actually on.
++    this.verifier = this.enabled
++      ? CognitoJwtVerifier.create({
++          userPoolId: userPoolId as string,
++          tokenUse: 'id', // front4 presents the Cognito ID token as Bearer
++          clientId: clientId as string,
++        })
++      : null;
++  }
++
++  static getStrategyName(): string {
++    return 'cognito';
++  }
++
++  async createUser(_data: AuthCreateUser): Promise<string> {
++    // User lifecycle stays on Firebase / the migrate-on-login Lambda during the
++    // dual-accept window; this strategy only verifies + resolves.
++    throw new Error('createUser not supported by CognitoStrategy');
++  }
++
++  async updateUser(_data: AuthUpdateUser): Promise<AuthReturn> {
++    throw new Error('updateUser not supported by CognitoStrategy');
++  }
++
++  async deleteUser(_uid: string): Promise<AuthReturn> {
++    throw new Error('deleteUser not supported by CognitoStrategy');
++  }
++
++  async validate(authToken: string): Promise<AuthReturn> {
++    // Dark path: reject fast so the guard falls through to the other legs.
++    if (!this.enabled || !this.verifier) {
++      throw new UnauthorizedException('Cognito auth disabled');
++    }
++
++    const [scheme, token] = (authToken || '').split(' ');
++    // Only handle Bearer tokens; anything else is for another strategy.
++    if (!token || scheme.toLowerCase() !== 'bearer') {
++      throw new UnauthorizedException('No bearer token provided');
++    }
++
++    let payload: { sub: string; email?: string; email_verified?: boolean };
++    try {
++      payload = (await this.verifier.verify(token)) as typeof payload;
++    } catch {
++      throw new UnauthorizedException('Invalid or expired Cognito token');
++    }
++
++    try {
++      return await this.authCognito.resolveBySub(
++        payload.sub,
++        payload.email,
++        payload.email_verified === true,
++      );
++    } catch {
++      // Verified token but no resolvable/ linkable tenant → 401 (same shape as
++      // the other legs; the guard will report a generic auth failure).
++      throw new UnauthorizedException('Cognito token could not resolve a tenant');
++    }
++  }
++}
+diff --git a/src/data/DAO/auth-middleware/auth-cognito-dao.spec.ts b/src/data/DAO/auth-middleware/auth-cognito-dao.spec.ts
+new file mode 100644
+index 0000000..d08ee09
+--- /dev/null
++++ b/src/data/DAO/auth-middleware/auth-cognito-dao.spec.ts
+@@ -0,0 +1,68 @@
++import { AuthCognito } from './auth-cognito-dao';
++import { Database } from 'src/providers/database/database.interface';
++
++describe('AuthCognito.resolveBySub (#159 link-on-login guard)', () => {
++  let db: jest.Mocked<Database>;
++  let dao: AuthCognito;
++
++  beforeEach(() => {
++    db = {
++      query: jest.fn(),
++      executeTransactions: jest.fn(),
++      getTransactionsLength: jest.fn(),
++      close: jest.fn(),
++    } as unknown as jest.Mocked<Database>;
++    dao = new AuthCognito(db);
++  });
++
++  it('resolves directly when the sub is already linked (steady state)', async () => {
++    db.query.mockResolvedValueOnce([{ id_enterprise: 42 }]); // existing lookup
++    const out = await dao.resolveBySub('sub-abc', 'a@x.com', true);
++    expect(out).toEqual({ uid: 'sub-abc', idEnterprise: 42 });
++    // Only the existing-lookup query runs; no link UPDATE.
++    expect(db.query).toHaveBeenCalledTimes(1);
++    expect(db.query.mock.calls[0][0]).toContain('id_user_cognito = $1');
++  });
++
++  it('links on first login by verified email (single-row) and returns the tenant', async () => {
++    db.query
++      .mockResolvedValueOnce([]) // not yet linked
++      .mockResolvedValueOnce([{ id_enterprise: 7 }]); // UPDATE ... RETURNING
++    const out = await dao.resolveBySub('sub-new', 'User@X.com', true);
++    expect(out).toEqual({ uid: 'sub-new', idEnterprise: 7 });
++    // The link UPDATE must use the single-row ORDER BY id_user ASC guard.
++    const linkSql = db.query.mock.calls[1][0] as string;
++    expect(linkSql).toContain('UPDATE users');
++    expect(linkSql).toContain('ORDER  BY id_user ASC');
++    expect(linkSql).toContain('LIMIT  1');
++    expect(linkSql).toContain('id_user_cognito IS NULL');
++    // sub + email are the bound params.
++    expect(db.query.mock.calls[1][1]).toEqual(['sub-new', 'User@X.com']);
++  });
++
++  it('refuses to link an unverified email', async () => {
++    db.query.mockResolvedValueOnce([]); // not linked
++    await expect(dao.resolveBySub('sub-x', 'a@x.com', false)).rejects.toThrow(
++      /unverified or missing email/,
++    );
++    // Must NOT attempt the link UPDATE.
++    expect(db.query).toHaveBeenCalledTimes(1);
++  });
++
++  it('refuses to link when no email claim is present', async () => {
++    db.query.mockResolvedValueOnce([]); // not linked
++    await expect(dao.resolveBySub('sub-x', undefined, true)).rejects.toThrow(
++      /unverified or missing email/,
++    );
++    expect(db.query).toHaveBeenCalledTimes(1);
++  });
++
++  it('throws when the email matches no active tenant row', async () => {
++    db.query
++      .mockResolvedValueOnce([]) // not linked
++      .mockResolvedValueOnce([]); // UPDATE ... RETURNING found nothing
++    await expect(dao.resolveBySub('sub-x', 'ghost@x.com', true)).rejects.toThrow(
++      /no active tenant row/,
++    );
++  });
++});
+diff --git a/src/data/DAO/auth-middleware/auth-cognito-dao.ts b/src/data/DAO/auth-middleware/auth-cognito-dao.ts
+new file mode 100644
+index 0000000..05cc67b
+--- /dev/null
++++ b/src/data/DAO/auth-middleware/auth-cognito-dao.ts
+@@ -0,0 +1,102 @@
++import { Database } from 'src/providers/database/database.interface';
++
++/**
++ * AuthCognito — resolves a verified Cognito subject to its tenant on the LEGACY
++ * `packiot40` DB, with link-on-login self-heal.
++ *
++ * #159 / ADR-0034. This is the DB half of the dual-accept cutover: back4-api,
++ * primary-api, edge-api-prod and read-api all resolve a Cognito `sub` →
++ * id_enterprise the SAME way. The unified match is
++ *   WHERE id_user_cognito = $sub  OR  id_user_firebase = $firebaseUid
++ * but a Cognito token only carries `sub`, so this DAO resolves by
++ * id_user_cognito and, on the user's FIRST Cognito login (sub not yet bound),
++ * links the sub to the row matching the token's VERIFIED email.
++ *
++ * The link is single-row (`ORDER BY id_user ASC LIMIT 1`) — the exact guard read-
++ * api uses (auth_firebase.go linkCognitoSQL). It is what makes the 2 packiot40
++ * duplicate-email collisions safe: the partial-unique index on id_user_cognito
++ * rejects a multi-row link, so without the single-row subselect the sub would
++ * never bind and the user would 401 forever.
++ *
++ * Requires migration `db/migrations/packiot40-cognito-user-id` (adds
++ * users.id_user_cognito + its partial-unique index) to be applied first.
++ */
++export class AuthCognito {
++  private db: Database;
++
++  constructor(db: Database) {
++    this.db = db;
++  }
++
++  /**
++   * Resolve a verified Cognito identity to its tenant, linking the sub on first
++   * login. Throws if the sub cannot be bound to exactly one active tenant row.
++   *
++   * @param sub            the verified Cognito subject (token `sub`)
++   * @param email          the verified email claim (may be undefined)
++   * @param emailVerified  the `email_verified` claim
++   */
++  public async resolveBySub(
++    sub: string,
++    email: string | undefined,
++    emailVerified: boolean,
++  ): Promise<{ uid: string; idEnterprise: number }> {
++    const transactional = false;
++
++    // 1) Already linked → resolve directly (steady state, idempotent).
++    const existing = await this.db.query(
++      `
++        SELECT id_enterprise
++        FROM   users
++        WHERE  id_user_cognito = $1
++          AND  active
++          AND  id_enterprise IS NOT NULL
++        LIMIT 1;
++      `,
++      [sub],
++      transactional,
++    );
++    if (existing[0]) {
++      return { uid: sub, idEnterprise: existing[0].id_enterprise };
++    }
++
++    // 2) First Cognito login → link-on-login by VERIFIED email, single row.
++    // A verified email is mandatory: an unverified/absent email must never be
++    // allowed to seize a tenant row.
++    if (!email || !emailVerified) {
++      throw new Error(
++        'Cognito token has no linkable tenant: unverified or missing email',
++      );
++    }
++
++    // Single-statement atomic bind: the subselect picks the earliest active,
++    // not-yet-linked row for this email; the partial-unique index guarantees at
++    // most one sub per row. RETURNING gives us the tenant in the same round-trip.
++    const linked = await this.db.query(
++      `
++        UPDATE users
++        SET    id_user_cognito = $1
++        WHERE  id_user = (
++                 SELECT id_user
++                 FROM   users
++                 WHERE  lower(user_email) = lower($2)
++                   AND  id_user_cognito IS NULL
++                   AND  active
++                   AND  id_enterprise IS NOT NULL
++                 ORDER  BY id_user ASC
++                 LIMIT  1
++               )
++        RETURNING id_enterprise;
++      `,
++      [sub, email],
++      transactional,
++    );
++    if (linked[0]) {
++      return { uid: sub, idEnterprise: linked[0].id_enterprise };
++    }
++
++    throw new Error(
++      'Cognito token could not be linked: no active tenant row for this email',
++    );
++  }
++}
+-- 
+2.54.0
+

@@ -10,6 +10,11 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    # Used by cognito_migration_lambda.tf to zip the handler (mirrors staging).
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 
   # Backend values supplied at init time via `make tf-init` (production-specific

@@ -117,3 +117,26 @@ output "estimated_monthly_cost" {
     total             = "~$180/mo once the DB EC2 + NAT are applied (dominated by the r7g the roadmap requires; the t4g.medium local-DB topology it replaces is the one that swap-died)"
   }
 }
+
+# ── Cognito (ADR-0034 / #159) — consumed by front4-prod Amplify config + the
+#    back4-api/primary-api/edge-api-prod Cognito verifiers (COGNITO_ISSUER /
+#    COGNITO_CLIENT_ID). All are non-secret identifiers. ──────────────────────
+output "cognito_user_pool_id" {
+  description = "PROD Cognito user pool id (non-secret identifier) — front4 VITE_COGNITO_USER_POOL_ID"
+  value       = aws_cognito_user_pool.prod.id
+}
+
+output "cognito_user_pool_client_id" {
+  description = "front4-prod Amplify app client id (public client, no secret) — front4 VITE_COGNITO_USER_POOL_CLIENT_ID"
+  value       = aws_cognito_user_pool_client.front4.id
+}
+
+output "cognito_issuer_url" {
+  description = "OIDC issuer — the back4-api/primary-api/edge-api Cognito verifiers validate `iss` against this (COGNITO_ISSUER)"
+  value       = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.prod.id}"
+}
+
+output "cognito_jwks_url" {
+  description = "JWKS endpoint — the verifiers fetch Cognito signing keys here"
+  value       = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.prod.id}/.well-known/jwks.json"
+}
