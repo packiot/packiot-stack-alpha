@@ -10,6 +10,11 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    # Zips the Cognito migrate-on-login Lambda handler (cognito_migration_lambda.tf).
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 
   # Backend values supplied at init time via `make tf-init` (production-specific

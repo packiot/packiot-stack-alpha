@@ -4,3 +4,5 @@ terraform.tfstate
 terraform.tfstate.backup
 terraform.tfvars
 *.auto.tfvars
+# Generated Lambda package (cognito_migration_lambda.tf archive_file output)
+.build/
