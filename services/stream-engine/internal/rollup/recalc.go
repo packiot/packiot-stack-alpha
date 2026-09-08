@@ -83,7 +83,12 @@ const recalcSQL = `
 	UPDATE %[1]s.production_orders e SET
 	       gross_production = COALESCE(s.gross, 0),
 	       net_production   = COALESCE(s.net, 0),
-	       oee_quality      = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0),
+	       -- #226 item 1b CONTRACT: writer repointed to canonical oee_q/oee_a/oee_p.
+	       -- The legacy oee_quality/availability/performance cols (+ the old->new
+	       -- dual-write trigger, gated on UPDATE OF those cols) are dropped in
+	       -- migration 02; setting only the new cols makes that trigger inert
+	       -- (never fires on a new-col-only UPDATE) — no clobber during rollout.
+	       oee_q            = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0),
 	       speed            = COALESCE(s.speed, 0),
 	       available_time   = COALESCE(s.avail, 0),
 	       running_time     = COALESCE(s.run, 0),
@@ -94,8 +99,8 @@ const recalcSQL = `
 	             NULLIF(COALESCE(e.ideal_production_speed,
 	                 (SELECT q.production_speed FROM %[2]s.equipments q
 	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 1), 0),
-	       oee_availability = GREATEST(LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1), 0),
-	       oee_performance  = GREATEST(LEAST(COALESCE(
+	       oee_a = GREATEST(LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1), 0),
+	       oee_p  = GREATEST(LEAST(COALESCE(
 	             COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	                 NULLIF(COALESCE(e.ideal_production_speed,
 	                     (SELECT q.production_speed FROM %[2]s.equipments q
