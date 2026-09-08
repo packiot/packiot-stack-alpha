@@ -56,3 +56,27 @@ func TestLineLeadSQLFormatting(t *testing.T) {
 		}
 	}
 }
+
+// #207: the SHIFT line-lead lines-CTE window was widened 2d → 25d so RunShift's
+// oldest-first backlog drain (30-day eligible set) computes LINE grains for an
+// outage older than the live 2-day lookback. Guard the constant so a future edit
+// can't silently re-narrow it, and confirm it agrees with the pass's own UPDATE
+// guard so the whole selected set is writable.
+func TestShiftLineLeadWindow_widened(t *testing.T) {
+	sql := ShiftLineLeadSQLForParity()
+	if strings.Contains(sql, "interval '2 days'") {
+		t.Error("shift line-lead still capped at 2 days — outage-old line shifts won't backfill")
+	}
+	if !strings.Contains(sql, "el.ts_value >= now() - interval '25 day'") {
+		t.Error("shift line-lead lines-CTE window must be widened to 25 days (matches the UPDATE guard)")
+	}
+	if !strings.Contains(sql, "e.ts_value >= now() - interval '25 day'") {
+		t.Error("shift line-lead UPDATE guard drifted from 25 days")
+	}
+	// The HOUR line-lead pass is driven purely by hour_elig (no ts_value window in
+	// its lines CTE); it must carry neither the 2d nor the 25d shift filter.
+	hour := HourLineLeadSQLForParity()
+	if strings.Contains(hour, "interval '2 days'") || strings.Contains(hour, "interval '25 day'") {
+		t.Error("hour line-lead unexpectedly gained a lines-CTE ts_value window")
+	}
+}

@@ -149,9 +149,27 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		// #186: cascade-area removed (area hourly grain retired).
 		{"speed", widenHourWindows(fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema))},
 		{"events", widenHourWindows(fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability)))},
-		{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},
-		{"clear", fmt.Sprintf(hourBackfillClearSQL, d.EvSchema)},
 	}
+	// #207: LINE-FROM-LEAD backfill. Same position as the live RunHour (after
+	// events, so it targets only the state-less tp=3 line rows the events pass left
+	// flagged) and BEFORE "clear" (its `e.recalc_needed = true` guard needs the flag
+	// still set — clear settles the whole batch). WIDENED to the 10-day horizon:
+	// hourLineLeadSQL's live UPDATE guard is `e.ts_value >= now()-6 hour`, so an
+	// outage older than that lookback (e.g. the #196 Sept 1–5 CPACK gap) never had
+	// its tp=3 LINE hour grains recomputed by the backfill — they stayed 0/stranded.
+	// widenHourWindows stretches only that 6h guard to 10 days (row-selection, not
+	// per-row math), so the drained old line hours now get their lead-derived
+	// gross/net/availability. The day LINE grain follows via cascade-day (RunDay
+	// sums the hour grain over a 1-month window — never stranded). Inert (not
+	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
+	if ca.engagedLineLead() {
+		steps = append(steps, struct{ name, sql string }{"line-lead",
+			widenHourWindows(fmt.Sprintf(hourLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec))})
+	}
+	steps = append(steps,
+		struct{ name, sql string }{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},
+		struct{ name, sql string }{"clear", fmt.Sprintf(hourBackfillClearSQL, d.EvSchema)},
+	)
 	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q
 	// with a last pass (canonical A·P·Q reconcile when engaged, else the legacy oee_p
 	// residual); the backfill previously OMITTED it, so a stranded hour it drained got
