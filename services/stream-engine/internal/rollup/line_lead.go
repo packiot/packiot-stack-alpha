@@ -82,7 +82,18 @@ const shiftLineLeadSQL = `
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
 	       AND eq.id_enterprise = ANY(%[3]s)
-	       AND el.ts_value >= now() - interval '2 days'
+	       -- #207: was a 2-day window — the live line-lead lookback.
+	       -- RunShift drains its 30-day recalc_needed backlog oldest-first (bounded
+	       -- LIMIT), but this 2-day filter capped the line-lead pass to the recent
+	       -- tail, so a tp=3 LINE shift row stranded by an outage OLDER than 2 days
+	       -- (e.g. the #196 Sept 1–5 CPACK gap, drained days later) never got its
+	       -- lead-derived runtime — it kept the state-only zero-fill. Widen to the
+	       -- 25-day window this pass already writes over (the final UPDATE guard
+	       -- below) so the whole draining backlog is covered. Pure row-selection
+	       -- (each row's math is anchored on its own ts_value/ts_end); the set is
+	       -- still bounded by shift_elig + the LIMIT, so live ticks are unaffected
+	       -- (no old rows are flagged in steady state). Not in the parity accessors.
+	       AND el.ts_value >= now() - interval '25 day'
 	), counts AS (
 	    -- Raw per-source sums: GROSS from gross_id (input machine), NET from lead_id
 	    -- (output machine), SCRAP from scrap_id (defect machine). Correlated subqueries

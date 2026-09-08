@@ -64,6 +64,31 @@ func TestBackfillOeeFinalize_widened(t *testing.T) {
 	}
 }
 
+// #207: the backfill now runs the line-from-lead pass so an outage OLDER than the
+// live 6h line-lead lookback still backfills tp=3 LINE hour grains. widen must
+// stretch ONLY the 6h UPDATE guard — never the recalc_needed guard (which scopes
+// the pass to the state-less line rows the events pass left flagged), the tp=3
+// selector, or the per-row lead-machine math.
+func TestBackfillLineLead_widened(t *testing.T) {
+	got := widenHourWindows(fmt.Sprintf(hourLineLeadSQL, "public", "ref", pgIntArrayLiteral([]int{3}), 300))
+	if strings.Contains(got, "interval '6 hour'") {
+		t.Error("line-lead 6h UPDATE guard not widened — outage-old line hours would be skipped")
+	}
+	if !strings.Contains(got, "now() - interval '10 days'") {
+		t.Error("expected the widened 10-day horizon on the line-lead pass")
+	}
+	for _, must := range []string{
+		"e.recalc_needed = true",          // only the state-less line rows
+		"eq.tp_equipment = 3",             // lines only
+		"COALESCE(eq.lead_machine,0) > 0", // must have a designated lead machine
+		"eq.id_enterprise = ANY('{3}'::bigint[])", // opted-in enterprise
+	} {
+		if !strings.Contains(got, must) {
+			t.Errorf("widen corrupted the line-lead pass — missing %q", must)
+		}
+	}
+}
+
 // The backfill eligibility must select OLD rows only (RunHour owns recent) and
 // stay inside event retention, bounded and oldest-first.
 func TestHourBackfillEligible_shape(t *testing.T) {

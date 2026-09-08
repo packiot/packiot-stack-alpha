@@ -13,6 +13,22 @@ SELECT create_hypertable('public.equipment_values_raw', 'ts_value', chunk_time_i
 SELECT create_hypertable('public.equipment_events_raw', 'ts_event', chunk_time_interval => INTERVAL '7 days', migrate_data => true, if_not_exists => true);
 
 -- ── ca_* continuous-aggregate tier (dependency-ordered: bases before rollups) ──
+--
+-- #206 RECURRENCE-PREVENTER (from the #196 incident): every one of these is a
+-- REAL-TIME continuous aggregate (materialized_only=false). A real-time cagg with
+-- NO refresh policy is a time bomb — its materialization watermark freezes at the
+-- last manual refresh (or -infinity if never refreshed) and every read silently
+-- re-aggregates ALL raw equipment_values past the watermark, so query cost grows
+-- with ingest until a rollup tick crosses its statement timeout (exactly what took
+-- CPACK OEE down Sept 2026). So EACH ca_* CREATE below is immediately PAIRED with
+-- add_continuous_aggregate_policy(..., if_not_exists => true). Offsets are scaled
+-- to the bucket width (end_offset ≥ 1 bucket so the newest, still-filling bucket
+-- is left to the real-time union; start_offset covers a sane reprocessing horizon).
+-- Safe HERE because the caggs are created WITH NO DATA — there is no watermark gap
+-- to leave behind, so the policy cannot open a read-hole. On an EXISTING database a
+-- frozen cagg must instead be caught up oldest-first BEFORE a policy is attached
+-- (see db/migrations/analytics-cagg-refresh-policies/). if_not_exists keeps this
+-- idempotent on re-runs.
 
 
 -- ===== ca_discrete_changes_1s =====
@@ -38,6 +54,9 @@ CREATE MATERIALIZED VIEW public.ca_discrete_changes_1s WITH (timescaledb.continu
   WHERE (NOT ((equipment_values.state IS NULL) AND (equipment_values.mode IS NULL) AND (equipment_values.id_order IS NULL) AND (equipment_values.id_production_order IS NULL) AND (equipment_values.conversion_factor IS NULL) AND (equipment_values.number_cavities IS NULL) AND (equipment_values.ts_value_production IS NULL) AND (equipment_values.id_shift IS NULL) AND (equipment_values.id_team IS NULL) AND (equipment_values.id_shift_hour IS NULL) AND (equipment_values.sub_mode IS NULL) AND (equipment_values.ideal_production_speed IS NULL)))
   GROUP BY (time_bucket('00:00:01'::interval, equipment_values.ts_value)), equipment_values.id_equipment, equipment_values.id_enterprise, equipment_values.id_site, equipment_values.id_area, equipment_values.state, equipment_values.mode, equipment_values.id_order, equipment_values.id_production_order, equipment_values.conversion_factor, equipment_values.number_cavities, equipment_values.ts_value_production, equipment_values.id_shift, equipment_values.id_team, equipment_values.id_shift_hour, equipment_values.sub_mode, equipment_values.ideal_production_speed
 WITH NO DATA;
+SELECT add_continuous_aggregate_policy('public.ca_discrete_changes_1s',
+       start_offset => INTERVAL '2 hours', end_offset => INTERVAL '1 minute',
+       schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
 
 -- ===== ca_equipment_boxes_1s =====
 CREATE MATERIALIZED VIEW public.ca_equipment_boxes_1s WITH (timescaledb.continuous, timescaledb.materialized_only=false) AS
@@ -53,6 +72,9 @@ CREATE MATERIALIZED VIEW public.ca_equipment_boxes_1s WITH (timescaledb.continuo
   WHERE ((ev.analogs IS NOT NULL) AND (ev.analogs ? 'Label'::text))
   GROUP BY (time_bucket('00:00:01'::interval, ev.ts_value)), ((ev.analogs -> 'Label'::text) ->> 'job'::text), ev.id_equipment, ev.id_area, ev.id_site, ev.id_enterprise
 WITH NO DATA;
+SELECT add_continuous_aggregate_policy('public.ca_equipment_boxes_1s',
+       start_offset => INTERVAL '6 hours', end_offset => INTERVAL '1 minute',
+       schedule_interval => INTERVAL '15 minutes', if_not_exists => true);
 
 -- ===== ca_agg_equipment_values_1min =====
 CREATE MATERIALIZED VIEW public.ca_agg_equipment_values_1min WITH (timescaledb.continuous, timescaledb.materialized_only=false) AS
@@ -84,6 +106,11 @@ CREATE MATERIALIZED VIEW public.ca_agg_equipment_values_1min WITH (timescaledb.c
    FROM equipment_values ev
   GROUP BY (time_bucket('00:01:00'::interval, ev.ts_value)), ev.id_equipment, ev.id_enterprise, ev.id_site, ev.id_area, ev.tp_equipment, ev.state, ev.mode, ev.id_order, ev.conversion_factor, ev.number_cavities, ev.signal_quality, ev.id_shift, ev.id_team, ev.id_shift_hour, ev.id_production_order, ev.ts_value_production, ev.ideal_production_speed
 WITH NO DATA;
+-- ROLLUP-CRITICAL: the stream-engine hour/shift passes JOIN this cagg (and the
+-- 1hour rollup below). Offsets mirror the prod-proven job 1010 (2h/1m/1m).
+SELECT add_continuous_aggregate_policy('public.ca_agg_equipment_values_1min',
+       start_offset => INTERVAL '2 hours', end_offset => INTERVAL '1 minute',
+       schedule_interval => INTERVAL '1 minute', if_not_exists => true);
 
 -- ===== ca_equipment_boxes_1hour =====
 CREATE MATERIALIZED VIEW public.ca_equipment_boxes_1hour WITH (timescaledb.continuous, timescaledb.materialized_only=false) AS
@@ -99,6 +126,9 @@ CREATE MATERIALIZED VIEW public.ca_equipment_boxes_1hour WITH (timescaledb.conti
   WHERE ((ev.analogs IS NOT NULL) AND (ev.analogs ? 'Label'::text))
   GROUP BY (time_bucket('01:00:00'::interval, ev.ts_value)), ((ev.analogs -> 'Label'::text) ->> 'job'::text), ev.id_equipment, ev.id_area, ev.id_site, ev.id_enterprise
 WITH NO DATA;
+SELECT add_continuous_aggregate_policy('public.ca_equipment_boxes_1hour',
+       start_offset => INTERVAL '2 days', end_offset => INTERVAL '1 hour',
+       schedule_interval => INTERVAL '30 minutes', if_not_exists => true);
 
 -- ===== ca_agg_equipment_values_1hour =====
 CREATE MATERIALIZED VIEW public.ca_agg_equipment_values_1hour WITH (timescaledb.continuous, timescaledb.materialized_only=false) AS
@@ -131,6 +161,12 @@ CREATE MATERIALIZED VIEW public.ca_agg_equipment_values_1hour WITH (timescaledb.
    FROM ca_agg_equipment_values_1min m
   GROUP BY (time_bucket('01:00:00'::interval, m.ts_value)), m.id_equipment, m.id_enterprise, m.id_site, m.id_area, m.tp_equipment, m.state, m.mode, m.id_order, m.conversion_factor, m.number_cavities, m.signal_quality, m.id_shift, m.id_team, m.id_shift_hour, m.id_production_order, m.ts_value_production, m.ideal_production_speed
 WITH NO DATA;
+-- ROLLUP-CRITICAL: the stream-engine hour/shift passes JOIN this cagg. Offsets
+-- mirror the prod-proven job 1011 (3d/1h/30m — schedule loosened to 30m, matching
+-- the agg_* 1hour tier; the incident hotfix used 10m, either advances the watermark).
+SELECT add_continuous_aggregate_policy('public.ca_agg_equipment_values_1hour',
+       start_offset => INTERVAL '3 days', end_offset => INTERVAL '1 hour',
+       schedule_interval => INTERVAL '30 minutes', if_not_exists => true);
 
 
 -- ══════════════════════════════════════════════════════════════════════════════
