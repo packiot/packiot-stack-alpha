@@ -1024,7 +1024,7 @@ var datasets = map[string]dataset{
 		sql: `SELECT po.id_production_order, po.id_order, po.id_order_text, po.id_equipment, po.id_equipment_executed,
 			po.id_product, po.id_user_operator, po.status, po.available_time, po.conversion_factor,
 			po.gross_production, po.ideal_production, po.ideal_production_speed, po.net_production,
-			po.oee, po.oee_availability, po.oee_performance, po.oee_quality, po.planned_downtime,
+			po.oee, po.oee_a AS oee_availability, po.oee_p AS oee_performance, po.oee_q AS oee_quality, po.planned_downtime,
 			po.production_final, po.production_ordered, po.production_programmed, po.production_real,
 			po.qt_stops, po.running_time, po.speed, po.stopped_time, po.ts_creation,
 			po.ts_start, po.ts_start_tz, po.ts_end, po.ts_end_tz,
