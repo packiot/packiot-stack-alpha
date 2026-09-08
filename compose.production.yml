@@ -1065,11 +1065,14 @@ services:
       # (never client-supplied). # FILL AT DEPLOY from packiot/production/refdata-query-keys
       # (e.g. "prod-<client>-key:<enterprise_id>").
       QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:-}
-      # Dual JWT verify. front4 sends a Firebase JWT (fbpackiot project — PUBLIC
-      # id, not a secret). Cognito is OFF until a prod pool is chosen (roadmap
-      # W3.2); flip COGNITO_AUTH_ENABLED=true + set the prod issuer/client-id.
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
-      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-false}
+      # #159: Firebase IdP RETIRED on the new-stack plane — refdata-api trusts
+      # ONLY the Cognito issuer now. FIREBASE_PROJECT_ID is removed (the binary no
+      # longer reads it nor constructs a Firebase verifier — see main.go). front4
+      # authenticates the /v1 read plane with a Cognito ID token; a stale Firebase
+      # token matches no verifier and is rejected (401). Mirrors staging (#1130).
+      # COGNITO_AUTH_ENABLED is now inert for refdata (Cognito is unconditional);
+      # kept for parity with other services that still read it.
+      COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-true}
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
       # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}
