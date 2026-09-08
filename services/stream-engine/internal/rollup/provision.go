@@ -27,21 +27,27 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
-// The 17-function matrix, prod order (equipment → area → site).
+// The provision matrix, prod order (equipment → area → site).
+//
+// #224 (analytics clean-schema P4/P5): these call the canonical *_oee_* provision
+// procs directly. The transitional PERFORM-new() shims under the old *_runtime_*
+// names (created by the P4-step2 rename) are being contracted away — repointing the
+// sole live caller here is the prerequisite for dropping those shims. The proc
+// bodies are unchanged; only the name each entry resolves to moved runtime_->oee_.
 var provisionFns = []string{
-	"piot_create_equipment_runtime_1hour",
-	"piot_create_equipment_runtime_1day",
-	"piot_create_equipment_runtime_1week",
-	"piot_create_equipment_runtime_1month",
-	"piot_create_equipment_runtime_shift",
-	"piot_create_equipment_runtime_shift_1week",
-	"piot_create_equipment_runtime_shift_1month",
+	"piot_create_equipment_oee_hourly",
+	"piot_create_equipment_oee_daily",
+	"piot_create_equipment_oee_weekly",
+	"piot_create_equipment_oee_monthly",
+	"piot_create_equipment_oee_shift",
+	"piot_create_equipment_oee_shift_weekly",
+	"piot_create_equipment_oee_shift_monthly",
 	// #186: area/site 1hour/1week/1month provisioning removed with the retired
 	// dead grains; only day + shift (+ all equipment grains) are provisioned now.
-	"piot_create_area_runtime_1day",
-	"piot_create_area_runtime_shift",
-	"piot_create_site_runtime_1day",
-	"piot_create_site_runtime_shift",
+	"piot_create_area_oee_daily",
+	"piot_create_area_oee_shift",
+	"piot_create_site_oee_daily",
+	"piot_create_site_oee_shift",
 }
 
 // RunProvision executes the matrix for one destination: one session,
