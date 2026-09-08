@@ -33,8 +33,8 @@ const goldenSchema = `
 	    recalc_needed boolean NOT NULL DEFAULT false,
 	    gross_production double precision,
 	    net_production double precision,
-	    oee double precision, oee_quality double precision,
-	    oee_availability double precision, oee_performance double precision,
+	    oee double precision, oee_q double precision,
+	    oee_a double precision, oee_p double precision,
 	    speed double precision, available_time double precision,
 	    running_time double precision, stopped_time double precision,
 	    planned_downtime double precision, total_time double precision,
@@ -108,7 +108,7 @@ func TestGoldenRecalc(t *testing.T) {
 		var p po
 		if err := pool.QueryRow(ctx,
 			`SELECT COALESCE(gross_production,-1), COALESCE(net_production,-1),
-			        COALESCE(oee_quality,-1), recalc_needed
+			        COALESCE(oee_q,-1), recalc_needed
 			   FROM golden.production_orders WHERE id_production_order=$1`, id).
 			Scan(&p.gross, &p.net, &p.quality, &p.recalc); err != nil {
 			t.Fatal(err)
