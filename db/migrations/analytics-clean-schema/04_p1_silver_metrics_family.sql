@@ -8,9 +8,12 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS silver.equipment_metrics_1min
 WITH (timescaledb.continuous, timescaledb.materialized_only = true) AS
 SELECT time_bucket('1 minute', ts_value) AS bucket,
   id_equipment, id_enterprise, id_site, id_area, tp_equipment,
-  sum(net_production_incr) AS sum_net, sum(gross_production_incr) AS sum_gross,
-  sum(scrap_incr) AS sum_scrap, sum(speed) AS sum_speed, count(speed) AS cnt_speed,
-  count(*) AS cnt_rows, max(speed) AS max_speed, max(ideal_production_speed) AS ideal_production_speed
+  sum(net_production_incr::float8) AS sum_net, sum(gross_production_incr::float8) AS sum_gross,
+  sum(scrap_incr::float8) AS sum_scrap, sum(speed::float8) AS sum_speed, count(speed) AS cnt_speed,
+  count(*) AS cnt_rows, max(speed::float8) AS max_speed, max(ideal_production_speed) AS ideal_production_speed
+  -- NOTE: partials are float8 (not the float4 source type) so the telescoping rollup is exactly
+  -- equal to a float8 direct-RAW sum. float4 partials lost ~4.8e-6 rel precision on large buckets
+  -- (fixed 2026-09-08, P3 pre-fix — see 10_p3pre_silver_float8_partials.sql).
 FROM public.equipment_values WHERE tp_equipment IS NOT NULL
 GROUP BY 1, id_equipment, id_enterprise, id_site, id_area, tp_equipment
 WITH NO DATA;
