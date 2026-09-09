@@ -155,7 +155,7 @@ const sqlOverlapMatch = `SELECT ts_event,
 		          LEAST(COALESCE(ts_end, now()), $4::timestamptz)
 		          - GREATEST(ts_event, $3::timestamptz)
 		        ))::int AS overlap_seconds
-		   FROM public.equipment_events
+		   FROM silver.equipment_events
 		  WHERE id_equipment = $1
 		    AND id_enterprise = $2
 		    AND status = $5
@@ -296,13 +296,13 @@ const sqlClosePOChanged = `UPDATE public.production_orders
 // with no default on staging, so we synthesise a deterministic value from
 // (ts_ms, id_equipment) — it carries no cross-flow meaning (no unique index
 // on it); the natural key is (id_equipment, ts_event).
-const sqlInsertEquipmentEvent = `INSERT INTO public.equipment_events (
+const sqlInsertEquipmentEvent = `INSERT INTO silver.equipment_events (
 		id_equipment, ts_event, status, id_equipment_event, id_enterprise,
 		forced_creation_system, last_update)
 	VALUES ($1,$2,$3,$4,$5,true,now())
 	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
-const sqlUpdateEventClassification = `UPDATE public.equipment_events
+const sqlUpdateEventClassification = `UPDATE silver.equipment_events
 	   SET cd_category = $1, desc_category = $2, cd_machine = $3,
 	       cd_subcategory = $4, desc_subcategory = $5, txt_downtime_notes = $6,
 	       change_over = $7, idle = $8, planned_downtime = $9, last_update = now()
@@ -341,7 +341,7 @@ func genEventID(ts time.Time, stagingEquip int) int64 {
 // closes it at the segment-0 end and applies the operator's classification.
 // ts_event is left untouched (it is the PK and the overlap-match key); only the
 // end + classification move. Idempotent (a re-run sets the same values).
-const sqlSplitShrinkOriginal = `UPDATE public.equipment_events
+const sqlSplitShrinkOriginal = `UPDATE silver.equipment_events
 	   SET ts_end = $1,
 	       duration = GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - ts_event))::int),
 	       cd_machine = $2, cd_category = $3, cd_subcategory = $4,
@@ -354,7 +354,7 @@ const sqlSplitShrinkOriginal = `UPDATE public.equipment_events
 // status is inherited from the original base event (segments carry the same
 // machine state). id_equipment_event is synthesised (no unique meaning; the
 // natural key is (id_equipment, ts_event)). Idempotent on the PK.
-const sqlInsertSplitSegment = `INSERT INTO public.equipment_events (
+const sqlInsertSplitSegment = `INSERT INTO silver.equipment_events (
 		id_equipment, ts_event, ts_end, status, id_equipment_event, id_enterprise,
 		duration, cd_machine, cd_category, cd_subcategory, desc_category, desc_subcategory,
 		change_over, planned_downtime, idle, txt_downtime_notes,
@@ -722,7 +722,7 @@ func EventSplitted(logger *slog.Logger, cfg *Config) Handler {
 func locateTwinBase(ctx context.Context, dst *pgxpool.Pool, eq StagingEquip, ev legacyEvent, cfg *Config, logger *slog.Logger, userLogID int64) (time.Time, bool) {
 	var exists bool
 	err := dst.QueryRow(ctx,
-		`SELECT true FROM public.equipment_events WHERE id_equipment = $1 AND ts_event = $2`,
+		`SELECT true FROM silver.equipment_events WHERE id_equipment = $1 AND ts_event = $2`,
 		eq.IDEquipment, ev.tsEvent).Scan(&exists)
 	if err == nil && exists {
 		return ev.tsEvent, true

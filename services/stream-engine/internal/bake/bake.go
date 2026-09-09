@@ -218,14 +218,14 @@ var surfaces = []struct{ Name, SQL, ScopedSQL, Fixed string }{
 	{Name: "equipment_events_closed", SQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(extract(epoch FROM (l.ts_end - g.ts_end))) < 2) AS ok
-	      FROM public.equipment_events l
+	      FROM silver.equipment_events l
 	      JOIN shadow_go_port.equipment_events g
 	        ON l.id_equipment = g.id_equipment AND l.ts_event = g.ts_event
 	     WHERE l.ts_event >= now() - interval '2 days'
 	       AND l.ts_end IS NOT NULL AND g.ts_end IS NOT NULL) d`, ScopedSQL: `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(extract(epoch FROM (l.ts_end - g.ts_end))) < 2) AS ok
-	      FROM public.equipment_events l
+	      FROM silver.equipment_events l
 	      JOIN shadow_go_port.equipment_events g
 	        ON l.id_equipment = g.id_equipment AND l.ts_event = g.ts_event
 	     WHERE l.ts_event >= now() - interval '2 days'

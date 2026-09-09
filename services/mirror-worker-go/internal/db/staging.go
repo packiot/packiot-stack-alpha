@@ -1561,7 +1561,7 @@ func (s *Staging) RetireDLQRow(ctx context.Context, id int64, retiredAttempts in
 func (s *Staging) SumInjectedPOValues(ctx context.Context, stagingPOID int64) (net, gross float64, err error) {
 	err = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(sum(net_production_incr), 0), COALESCE(sum(gross_production_incr), 0)
-		  FROM public.equipment_values
+		  FROM silver.equipment_values
 		 WHERE id_production_order = $1`, stagingPOID).Scan(&net, &gross)
 	return net, gross, err
 }

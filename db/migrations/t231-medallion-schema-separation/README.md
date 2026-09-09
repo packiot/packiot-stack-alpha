@@ -13,14 +13,59 @@ Phased **expand/contract**. Each phase applied → hardproof gate → next. Symm
 | 1 · bronze | `equipment_values_raw`, `equipment_events_raw` → `bronze` (dormant, 0 chunks) | **APPLIED + GATED** |
 | 2 · search_path | DB default `"$user", gold, silver, bronze, public` | **APPLIED + GATED** |
 | 3 · gold (expand) | 12 computed OEE grains → `gold` + public shim views | **APPLIED + GATED** |
-| 4 · silver | fact hypertables → `silver` + FDW re-point (**live ingest**) | **NOT STARTED** — needs code+deploy |
-| 5 · cleanup/contract | fix hard-coded `public.`; drop gold shims; codify code lift | **NOT STARTED** |
+| 4 · silver | fact hypertables → `silver` + shims + FDW re-point (**live ingest**) | **APPLIED + GATED** |
+| 5 · cleanup/contract | code lifts → silver/gold; `purge_analytics_plain` → gold; shim DROP deferred | **PARTIAL** — proc fixed + code lifts committed; shim DROP gated |
 
-**Stopped deliberately at the post-gold boundary** — a clean, fully-reversible
-point that leaves live ingest untouched. Silver is a distinct high-risk
-live-ingest unit (Go refactor + build + deploy of the ingest service + hypertable
-move + FDW re-point with zero-gap continuity gating) that deserves its own focused
-session with full runway.
+### Phase 4 (silver) — cutover result (2026-09-09 ~02:08 UTC)
+`equipment_values`, `equipment_events`, `equipment_live_metrics` moved to `silver`
+with auto-updatable `public` shim views (migration `04`). Executed during a
+**stream-engine stop** (the rollup pool's long AccessShare read on
+`equipment_values` — an 88s line-lead rollup — could not be beaten by a 4s
+`lock_timeout`; stopping the consumer released it → all 3 moved on attempt 1 with
+a 30s timeout). Ingest is RabbitMQ-durable, so the consumer's messages buffered in
+the queue during the stop and drained against `silver` on restart.
+
+**Ingest routing** now per-layer (`services/stream-engine/.../handlers/sparkplug.go`
+`route{silver,bronze,ev}`): facts→silver, raw→bronze, DQ + PO control→public. Only
+the staging `refactored` analytics route (analyticsPool != nil) fans to
+silver/bronze — prod single-flow stays on public until the forward-port.
+
+**FDW re-point:** `live.equipment_values` + `live.equipment_events` →
+`schema_name 'silver'` on the hist-gateway (and the init script). Literal-timestamp
+pushdown to `silver` proven **68 ms** fresh; `ev_all` resolves hot(silver FDW)∪cold.
+
+**Gate results (all GREEN):** `silver.equipment_values` `max(ts_value)` advancing
+(multi-sample); silver caggs + 4 compression/retention policies followed by OID;
+rollup gold on normal hourly cadence (transient post-restart `hour reflag`
+deadlocks self-cleared); no `42P01`/`500` in read-api/edge-api/analytics-sync;
+analytics-sync `equipment_events` INSERT-ON-CONFLICT+UPDATE traverse the public
+shim (hardproofed on a throwaway hypertable+view).
+
+**⚠ First attempt aborted + rolled back:** the initial deploy-first attempt hit the
+lock contention above and the ingest window opened while facts still lived in
+public → ~736 window messages (02:02–02:04) exhausted retries into the `*-failed`
+queues. Rolled the binary back to restore ingest, then re-cut via the stop-move-
+start path. A failed-queue replay mistakenly preserved the `x-death` header
+(consumer's `retries>=MaxRetries` guard re-failed them + cpack→sbxcpack fanout
+amplified) → the failed queues were purged after most window data was re-UPSERTed
+into silver (deduped by `ts_value`; residual is a self-healing cumulative-counter
+gap on staging). RULE: dead-letter replay MUST strip `x-death`/reset retry count.
+
+### Phase 5 (cleanup) — done vs deferred
+- **DONE (committed, code lifts):** `analytics-sync` (`equipment_events`→silver,
+  `_man` stays public), `stream-engine` `bake.go`/`cmd/port-parity`,
+  `mirror-worker-go`, `parity-check.sql` — facts `public.`→`silver.` (take effect
+  on next deploy; traverse the shim until then).
+- **DONE (applied):** `purge_analytics_plain` repointed off the public gold shims →
+  `gold.equipment_oee_{hourly,shift}` (migration `05`); `equipment_events_cpac_shadow`
+  stays public.
+- **N/A:** terraform `db_init.sh` retention/VACUUM cron targets the MAIN `packiot`
+  DB (`cron.database_name=${db_name}`), NOT `packiot_analytics` — its
+  `public.equipment_values` was never moved. Analytics retention rides the
+  TimescaleDB policies that followed the move.
+- **DEFERRED (gated, #186):** DROP the gold (03) + silver (04) public shim views —
+  only after the code lifts are DEPLOYED and a zero-writer log-watch confirms no
+  service references the `public.` fact/grain names.
 
 ### Phase gate results (hardproof)
 - **Bronze:** raw tables in `bronze`; compression+retention jobs 1027-1030 followed
