@@ -38,14 +38,16 @@
   {
     "ref": "/ext/montebello/data-sync",
     "source": "external",
-    "kind": "relation",
-    "name": "v_piot_production_data_sync_cust6"
+    "kind": "function",
+    "name": "serving.production_data_sync",
+    "argc": 1
   },
   {
     "ref": "/ext/montebello/events",
     "source": "external",
     "kind": "function",
-    "name": "get_downtime_sync_enterprsie_06"
+    "name": "serving.downtime_sync",
+    "argc": 1
   },
   {
     "ref": "/ext/neopac/sap-report",
@@ -56,14 +58,16 @@
   {
     "ref": "/ext/neopac/sap-report",
     "source": "external",
-    "kind": "relation",
-    "name": "v_13_site_deb_sap_report"
+    "kind": "function",
+    "name": "serving.sap_site_report",
+    "argc": 2
   },
   {
     "ref": "/ext/neopac/sap-report-sync",
     "source": "external",
-    "kind": "relation",
-    "name": "v_sap_report_data_sync_customer_13"
+    "kind": "function",
+    "name": "serving.sap_report_data_sync",
+    "argc": 1
   },
   {
     "ref": "/integration/get-shift-validation/:id_enterprise",
@@ -87,8 +91,8 @@
     "ref": "/integration/job_data_integration/:id_enterprise",
     "source": "external",
     "kind": "function",
-    "name": "get_data_sync_enterprsie_06b",
-    "argc": 1
+    "name": "serving.data_sync",
+    "argc": 2
   },
   {
     "ref": "/integration/job_report/:id_enterprise",
@@ -804,15 +808,9 @@
   {
     "ref": "overview-scrap-rate",
     "source": "dataset",
-    "kind": "relation",
-    "name": "v_13_overview_partial_scrap_rate",
-    "columns": [
-      "cd_equipment",
-      "gross",
-      "net",
-      "scrap",
-      "scrap_rate"
-    ]
+    "kind": "function",
+    "name": "serving.overview_scrap_rate",
+    "argc": 1
   },
   {
     "ref": "overview-takt",
@@ -823,12 +821,9 @@
   {
     "ref": "overview-takt",
     "source": "dataset",
-    "kind": "relation",
-    "name": "v_13_overview_takt",
-    "columns": [
-      "id_equipment",
-      "avg_speed"
-    ]
+    "kind": "function",
+    "name": "serving.overview_takt",
+    "argc": 1
   },
   {
     "ref": "production-flow",

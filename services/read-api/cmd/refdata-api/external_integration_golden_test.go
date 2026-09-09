@@ -165,12 +165,15 @@ func TestIntegrationShimEndToEndThroughMiddleware(t *testing.T) {
 func TestJobDataIntegrationGoldenShape(t *testing.T) {
 	sh := shimByPath(t, "/integration/job_data_integration/:id_enterprise")
 	reader := &scriptedReader{fn: func(sql string, args []any) (externalRows, error) {
-		// ent-06-frozen function: NO id_enterprise arg — the fence is the owner
-		// binding. $1 = days_interval, $2 = site (when present).
-		if !strings.Contains(sql, "get_data_sync_enterprsie_06b($1)") {
-			t.Errorf("expected the frozen ent-06 function, got %s", sql)
+		// t244: generic serving.data_sync(p_id_enterprise, p_numdays) — the tenant is
+		// now the explicit $1 = cid, $2 = days_interval, $3 = site (when present).
+		if !strings.Contains(sql, "serving.data_sync($1, $2)") {
+			t.Errorf("expected the generic serving.data_sync function, got %s", sql)
 		}
-		// get_data_sync_enterprsie_06b projects bigint (job, presscnt) → node-pg
+		if len(args) < 1 || args[0] != montebelloOwner {
+			t.Errorf("serving.data_sync must bind $1 = cid (%d); got args %v", montebelloOwner, args)
+		}
+		// serving.data_sync projects bigint (job, presscnt) → node-pg
 		// strings, numeric(10,2) (totalavailablehrsinmin, setuphoursinmin→"0.00")
 		// → strings with scale, and supervisornotes JSONB → an OBJECT in node-pg's
 		// stored key order (rawJSON). All delivered by the reader.
@@ -190,7 +193,7 @@ func TestJobDataIntegrationGoldenShape(t *testing.T) {
 }
 
 // TestJobDataIntegrationDaysInterval pins the post-auth 400 window (1..41) and the
-// site-filter binding ($1=days, $2=UPPER(site)).
+// site-filter binding (t244: $1=cid, $2=days, $3=UPPER(site)).
 func TestJobDataIntegrationDaysInterval(t *testing.T) {
 	sh := shimByPath(t, "/integration/job_data_integration/:id_enterprise")
 	var gotSQL string
@@ -213,11 +216,11 @@ func TestJobDataIntegrationDaysInterval(t *testing.T) {
 	if status, _, _ := serveShim(sh, reader, mbKeys(), montebelloOwner, req); status != http.StatusOK {
 		t.Fatalf("valid days_interval status = %d, want 200", status)
 	}
-	if !strings.Contains(gotSQL, "where site = UPPER($2)") {
+	if !strings.Contains(gotSQL, "where site = UPPER($3)") {
 		t.Errorf("site SQL wrong: %s", gotSQL)
 	}
-	if len(gotArgs) != 2 || gotArgs[0] != 10 || gotArgs[1] != "abc" {
-		t.Errorf("args = %v, want [10 abc]", gotArgs)
+	if len(gotArgs) != 3 || gotArgs[0] != montebelloOwner || gotArgs[1] != 10 || gotArgs[2] != "abc" {
+		t.Errorf("args = %v, want [%d 10 abc]", gotArgs, montebelloOwner)
 	}
 }
 
@@ -453,10 +456,12 @@ func TestIntegrationBackingObjectsAreDriftGated(t *testing.T) {
 	}
 	type key struct{ kind, name string }
 	want := map[key]bool{
-		{"function", "get_data_sync_enterprsie_06b"}: false, // job_data_integration (argc 1)
-		{"relation", "equipment_validation_shift"}:   false, // get-shift-validation
-		{"relation", "equipment_oee_shift"}:      false, // job_report
-		{"relation", "agg_equipment_values_1min"}:    false, // job_report
+		// t244: job_data_integration repointed off get_data_sync_enterprsie_06b(argc 1)
+		// onto serving.data_sync(p_id_enterprise, p_numdays) (argc 2).
+		{"function", "serving.data_sync"}:          false, // job_data_integration (argc 2)
+		{"relation", "equipment_validation_shift"}: false, // get-shift-validation
+		{"relation", "equipment_oee_shift"}:        false, // job_report
+		{"relation", "agg_equipment_values_1min"}:  false, // job_report
 	}
 	for _, o := range objs {
 		if o.Source != "external" {
@@ -465,9 +470,12 @@ func TestIntegrationBackingObjectsAreDriftGated(t *testing.T) {
 		k := key{o.Kind, o.Name}
 		if _, tracked := want[k]; tracked {
 			want[k] = true
-			if o.Kind == "function" && o.Name == "get_data_sync_enterprsie_06b" && o.ArgC != 1 {
-				t.Errorf("get_data_sync_enterprsie_06b argc = %d, want 1", o.ArgC)
+			if o.Kind == "function" && o.Name == "serving.data_sync" && o.ArgC != 2 {
+				t.Errorf("serving.data_sync argc = %d, want 2", o.ArgC)
 			}
+		}
+		if o.Name == "get_data_sync_enterprsie_06b" {
+			t.Errorf("legacy function %q still referenced by an external shim after the t244 repoint", o.Name)
 		}
 	}
 	for k, found := range want {

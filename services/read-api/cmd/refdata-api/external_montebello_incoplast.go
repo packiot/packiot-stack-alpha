@@ -94,7 +94,12 @@ type envJobsFiltered struct {
 // The 404 "Data not found" branch is DEAD in back4: db.query returns [] on error
 // (truthy), so `if (!data)` never fires — reproduced faithfully by NOT emitting
 // it (deps.query already mirrors back4's error→[] swallow).
-func runMontebelloDataSync(ctx context.Context, deps shimDeps, _ int, r *http.Request) (any, *shimError) {
+//
+// t244: the frozen ent-6 view v_piot_production_data_sync_cust6 is replaced by the
+// generic serving.production_data_sync(p_id_enterprise); the injected cid is now
+// passed as the function's $1 argument, so the optional site filter + LIMIT/OFFSET
+// shift up one position.
+func runMontebelloDataSync(ctx context.Context, deps shimDeps, cid int, r *http.Request) (any, *shimError) {
 	q := r.URL.Query()
 	site := q.Get("site")
 
@@ -114,12 +119,12 @@ func runMontebelloDataSync(ctx context.Context, deps shimDeps, _ int, r *http.Re
 	var data externalRows
 	if site != "" {
 		data = deps.query(ctx,
-			`select * from v_piot_production_data_sync_cust6 where site = UPPER($1) limit $2 offset $3`,
-			site, limitNum, offset)
+			`select * from serving.production_data_sync($1) where site = UPPER($2) limit $3 offset $4`,
+			cid, site, limitNum, offset)
 	} else {
 		data = deps.query(ctx,
-			`select * from v_piot_production_data_sync_cust6 limit $1 offset $2`,
-			limitNum, offset)
+			`select * from serving.production_data_sync($1) limit $2 offset $3`,
+			cid, limitNum, offset)
 	}
 	return envPageResults{Page: page, Results: len(data.rows), Data: data}, nil
 }
@@ -128,18 +133,20 @@ func runMontebelloDataSync(ctx context.Context, deps shimDeps, _ int, r *http.Re
 // + repositories/ApiMontebelloEvents/Downtimes.js:
 //   - `api_key` QUERY-param auth (400 "api_key is required!", reject
 //     "Not authorized!"), owner-bound to ent 6 (queryAPIKeyAuth in the registry);
-//   - read set-returning get_downtime_sync_enterprsie_06(), optional nm_site
-//     filter (UPPER'd — parameterized here, string-interpolated in back4);
+//   - read set-returning serving.downtime_sync(cid) (t244 — replaces the ent-6
+//     hardcoded get_downtime_sync_enterprsie_06(); the tenant is now the explicit
+//     $1 param), optional nm_site filter at $2 (UPPER'd — parameterized here,
+//     string-interpolated in back4);
 //   - frozen `{newData}` with the ts_event/ts_end/last_update moment[Z] adapter.
-func runMontebelloEvents(ctx context.Context, deps shimDeps, _ int, r *http.Request) (any, *shimError) {
+func runMontebelloEvents(ctx context.Context, deps shimDeps, cid int, r *http.Request) (any, *shimError) {
 	siteName := strings.TrimSpace(r.URL.Query().Get("site_name"))
 	var data externalRows
 	if siteName != "" {
 		data = deps.query(ctx,
-			`select * from get_downtime_sync_enterprsie_06() where nm_site = UPPER($1)`,
-			siteName)
+			`select * from serving.downtime_sync($1) where nm_site = UPPER($2)`,
+			cid, siteName)
 	} else {
-		data = deps.query(ctx, `select * from get_downtime_sync_enterprsie_06()`)
+		data = deps.query(ctx, `select * from serving.downtime_sync($1)`, cid)
 	}
 	return envNewData{NewData: data.withMomentZColumns("ts_event", "ts_end", "last_update")}, nil
 }
