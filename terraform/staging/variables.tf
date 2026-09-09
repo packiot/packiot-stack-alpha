@@ -74,6 +74,7 @@ variable "services" {
     rabbitmq = 15672 # RabbitMQ management UI
     db       = 8082  # PostgreSQL web browser — analytics plane (pgweb-analytics; ex-adminer)
     histdb   = 8091  # PostgreSQL web browser — historian plane (pgweb-historian → hist-gateway)
+    barcode  = 8092  # barcode-scanner-v2 SPA cloud instance (barcode-app; nginx injects SANDBOX api-key → edge-api)
     operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
     csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
     # RETIRED vhosts (audit 2026-08-21):
@@ -107,6 +108,7 @@ variable "service_auth" {
     rabbitmq = "csadmin"
     db       = "csadmin" # pgweb-analytics — staff-only DB browser (db.staging.packiot.app)
     histdb   = "csadmin" # pgweb-historian — staff-only DB browser (histdb.staging.packiot.app)
+    barcode  = "csadmin" # barcode-app cloud instance — staff-only demo/test (barcode.staging.packiot.app)
     operator = "any"
     csadmin  = "none-originverify"
     # hasura / edge-nodered / oeecloud-nodered retired — see `services` above.
