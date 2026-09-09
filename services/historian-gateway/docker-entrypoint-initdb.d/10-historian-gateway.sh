@@ -138,12 +138,17 @@ CREATE FOREIGN TABLE live.equipment_values (
   gross_production_incr real,
   net_production_incr   real,
   speed                 real
-) SERVER live_pg OPTIONS (schema_name 'public', table_name 'equipment_values');
+-- t231 medallion split (STAGING): the live fact hypertable now lives in the
+-- `silver` schema on packiot_analytics (was `public`). A fresh gateway init must
+-- foreign-mount from silver. (On an already-running gateway the live re-point is
+-- `ALTER FOREIGN TABLE live.equipment_values OPTIONS (SET schema_name 'silver')`.)
+) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_values');
 -- HOT equipment_events (downtime/OEE-reconstruction) — see the EE section at the
 -- bottom (ev_all_events). Imported here so live.equipment_events exists before it.
 -- NOTE: equipment_events is NOT part of the analytics clean-schema column-prune, so
 -- an IMPORT (vs a pinned table) is safe here; ev_all_events selects a fixed subset.
-IMPORT FOREIGN SCHEMA public LIMIT TO (equipment_events) FROM SERVER live_pg INTO live;
+-- t231: imported from `silver` (was `public`) — the fact moved schemas.
+IMPORT FOREIGN SCHEMA silver LIMIT TO (equipment_events) FROM SERVER live_pg INTO live;
 
 -- COLD: S3 Parquet historian via pg_duckdb. Scoped read-only key (instance-role
 -- credential_chain is unavailable: the DB enforces IMDSv2 and DuckDB's aws

@@ -231,10 +231,10 @@ var computeSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.equipment_values AS
 	   SELECT id_equipment, ts_value, gross_production_incr, net_production_incr,
 	          speed, ideal_production_speed
-	     FROM public.equipment_values WHERE ts_value >= now() - interval '1 month'`,
+	     FROM silver.equipment_values WHERE ts_value >= now() - interval '1 month'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
 	   SELECT id_equipment, ts_event, ts_end, status
-	     FROM public.equipment_events WHERE ts_event >= now() - interval '1 month'`,
+	     FROM silver.equipment_events WHERE ts_event >= now() - interval '1 month'`,
 	`UPDATE ` + legacySchema + `.production_orders_runtime SET recalc_needed = true`,
 	`CREATE TABLE ` + goSchema + `.production_orders_runtime AS SELECT * FROM ` + legacySchema + `.production_orders_runtime`,
 	`CREATE TABLE ` + goSchema + `.equipments AS SELECT * FROM ` + legacySchema + `.equipments`,
@@ -341,7 +341,7 @@ var hourSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.agg_equipment_values_1min_t AS
 	   SELECT * FROM public.agg_equipment_values_1min_t WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
-	   SELECT * FROM public.equipment_events WHERE ts_event >= now() - interval '10 days'`,
+	   SELECT * FROM silver.equipment_events WHERE ts_event >= now() - interval '10 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
@@ -502,7 +502,7 @@ var shiftSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '32 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
-	   SELECT * FROM public.equipment_events WHERE ts_event >= now() - interval '25 days'`,
+	   SELECT * FROM silver.equipment_events WHERE ts_event >= now() - interval '25 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + legacySchema + `.shifts AS SELECT * FROM public.shifts`,
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,

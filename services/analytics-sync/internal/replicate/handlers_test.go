@@ -92,7 +92,7 @@ func TestOrderChangedDecodesLegacyPayload(t *testing.T) {
 // This is the residual-#3 divergence (92 forced twin manual rows vs ~20 genuine
 // legacy manual events) that this handler now closes.
 func TestSplitTargetsEquipmentEventsNotManual(t *testing.T) {
-	if !strings.Contains(sqlInsertSplitSegment, "INSERT INTO public.equipment_events (") {
+	if !strings.Contains(sqlInsertSplitSegment, "INSERT INTO silver.equipment_events (") {
 		t.Errorf("split segments must insert into equipment_events (auto), not _man:\n%s", sqlInsertSplitSegment)
 	}
 	if strings.Contains(sqlInsertSplitSegment, "equipment_events_man") {
@@ -104,7 +104,7 @@ func TestSplitTargetsEquipmentEventsNotManual(t *testing.T) {
 	if !strings.Contains(sqlInsertSplitSegment, "forced_creation_system, last_update)") {
 		t.Errorf("split segments must be forced auto events:\n%s", sqlInsertSplitSegment)
 	}
-	if !strings.Contains(sqlSplitShrinkOriginal, "UPDATE public.equipment_events") ||
+	if !strings.Contains(sqlSplitShrinkOriginal, "UPDATE silver.equipment_events") ||
 		!strings.Contains(sqlSplitShrinkOriginal, "id_equipment = $11 AND ts_event = $12") {
 		t.Errorf("segment-0 shrink must update equipment_events by (id_equipment, ts_event):\n%s", sqlSplitShrinkOriginal)
 	}
