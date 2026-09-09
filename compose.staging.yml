@@ -64,6 +64,7 @@ volumes:
 # .33 alloy (OTLP trace gateway :4317/:4318 → tempo; Loki-push relay :3101 for the DB-box log agent)
 # .42-.45 superset stack (superset/.42, superset-worker/.43, sparkplug-agent-shared/.44, superset-redis/.45)
 # .46 pgweb-historian (DB browser → hist-gateway:5432)
+# .50 barcode-app (barcode-scanner-v2 SPA cloud instance; nginx-injects SANDBOX api-key → edge-api; behind cs-admin oauth2 gate at barcode.staging.packiot.app; host 127.0.0.1:8092)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -1306,6 +1307,60 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.48
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── barcode-app (barcode-scanner-v2 SPA — CLOUD staging instance) ──────────────
+  # A CLOUD instance of the barcode scanner, mirroring the operator pattern: even
+  # though PRODUCTION barcode runs ON THE FACTORY BOX (Dockerfile.edge, next to the
+  # USB scanner + label printer), CS/demo needs a cloud tier to exercise the flow.
+  # Same image + nginx-inject model as the edge build (barcode-scanner-v2
+  # Dockerfile.edge + nginx.edge.conf.template): the SPA calls edge-api SAME-ORIGIN
+  # and the container's nginx injects `x-api-key` server-side, so the tenant secret
+  # NEVER enters the browser bundle. Here the injected key is the SANDBOX tenant
+  # (enterprises.api_key for id_enterprise 2000003 = SANDBOX-CPACK) and the upstream
+  # is the staging edge-api on this network. Reachable at barcode.staging.packiot.app
+  # behind the SAME cs-admin oauth2 gate as db/histdb (nginx barcode.conf, terraform
+  # var.services) — the browser holds only the Cognito staff cookie, never the key.
+  #
+  # IMAGE (not build:): barcode-scanner-v2 is a separate repo (NOT a stack submodule),
+  # so the image is pre-built on the box and referenced by tag — a `build:` context
+  # whose source is absent from the CI checkout would break the next full deploy.
+  # Rebuild: on the box, from a checkout of barcode-scanner-v2 @ the deployed branch
+  #   docker build -f Dockerfile.edge \
+  #     --build-arg VITE_STATION_EQUIPMENT_ID=2000047 -t barcode-app:staging .
+  # (2000047 = a valid SANDBOX-CPACK machine with production orders; the station id
+  # is NOT a secret — the tenant is resolved server-side from the injected api-key.)
+  barcode-app:
+    image: barcode-app:staging
+    container_name: barcode-app
+    restart: unless-stopped
+    environment:
+      # Same-origin edge-api (WRITE/list plane): nginx injects x-api-key here.
+      EDGE_API_UPSTREAM: "http://edge-api:8080"
+      EDGE_API_KEY: ${BARCODE_EDGE_API_KEY:-}   # SANDBOX-CPACK enterprises.api_key (/opt/packiot/.env)
+      # /v1 read plane is unused by this build (PO/label reads were repointed to the
+      # same-origin /api edge-api plane, barcode-scanner-v2 #230/#232); wired for
+      # parity with the edge image. read-api derives the tenant from this key.
+      REFDATA_UPSTREAM: "http://read-api:9104"
+      REFDATA_API_KEY: ${BARCODE_REFDATA_API_KEY:-}
+    ports:
+      - "127.0.0.1:8092:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://localhost:80/"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 15s
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.50
+    depends_on:
+      edge-api:
+        condition: service_started
+    mem_limit: 128m
+    cpus: 0.25
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
