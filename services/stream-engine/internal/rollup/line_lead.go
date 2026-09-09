@@ -11,7 +11,7 @@
 // machine — equipments.lead_machine — REPRESENTS the line. Everything the line
 // grain needs is read off that lead machine's aggregates:
 //
-//   - gross / net / scrap ← sum of ca_agg_equipment_values_1hour buckets over the
+//   - gross / net / scrap ← sum of equipment_categorical_1hour buckets over the
 //     grain window (the same _1hour cagg the machine grain sums). By default all
 //     three come from lead_machine. A SPLIT-INSTRUMENTATION line puts its counters
 //     on DIFFERENT machines: equipments.gross_machine names the gross/input source
@@ -32,7 +32,7 @@
 //     With no scrap counter (s=0) every branch reduces to the pre-scrap G+N /
 //     net-only logic byte-for-byte.
 //   - availability   ← idle-timeout sessionization of the lead's
-//     ca_agg_equipment_values_1min productive minutes (identical inference to
+//     equipment_categorical_1min productive minutes (identical inference to
 //     availability.go: order the productive minutes, an inter-minute gap beyond
 //     the idle timeout closes a session; running = Σ session-seconds, each
 //     session credited through last-count + idle-timeout, clipped to bucket end;
@@ -100,13 +100,13 @@ const shiftLineLeadSQL = `
 	    -- so each factor draws from its own source; few lines, so the lookups are cheap.
 	    -- A NULL source id ⇒ no matching rows ⇒ NULL sum ⇒ 0 downstream.
 	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
+	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id
 	               AND cg.ts_value >= l.ts_value AND cg.ts_value < l.bend) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
+	           (SELECT sum(cn.net_production_incr) FROM %[1]s.equipment_categorical_1hour cn
 	             WHERE cn.id_equipment = l.lead_id
 	               AND cn.ts_value >= l.ts_value AND cn.ts_value < l.bend) AS net,
-	           (SELECT sum(cs.scrap_incr) FROM %[1]s.ca_agg_equipment_values_1hour cs
+	           (SELECT sum(cs.scrap_incr) FROM %[1]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id
 	               AND cs.ts_value >= l.ts_value AND cs.ts_value < l.bend) AS scrap
 	      FROM lines l
@@ -138,7 +138,7 @@ const shiftLineLeadSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM lines l
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = l.lead_id
 	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
 	       -- A minute is "productive" if the lead moved EITHER input (gross) or
@@ -220,11 +220,11 @@ const hourLineLeadSQL = `
 	    -- matching the hour join (ts_value = l.ts_value). A NULL source id ⇒ no matching
 	    -- rows ⇒ NULL sum ⇒ 0 downstream.
 	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cg
+	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[1]s.ca_agg_equipment_values_1hour cn
+	           (SELECT sum(cn.net_production_incr) FROM %[1]s.equipment_categorical_1hour cn
 	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = l.ts_value) AS net,
-	           (SELECT sum(cs.scrap_incr) FROM %[1]s.ca_agg_equipment_values_1hour cs
+	           (SELECT sum(cs.scrap_incr) FROM %[1]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = l.ts_value) AS scrap
 	      FROM lines l
 	), reconciled AS (
@@ -255,7 +255,7 @@ const hourLineLeadSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM lines l
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = l.lead_id
 	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
 	       -- A minute is "productive" if the lead moved EITHER input (gross) or

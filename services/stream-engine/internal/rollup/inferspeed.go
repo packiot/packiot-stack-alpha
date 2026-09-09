@@ -11,7 +11,7 @@
 //
 // THE INFERENCE. Per opted-in tp=3 line equipment, we read the per-minute
 // good-count rate from the 1-min continuous aggregate
-// (<EvSchema>.ca_agg_equipment_values_1min, column `gross_production_incr` — the
+// (<EvSchema>.equipment_categorical_1min, column `gross_production_incr` — the
 // same per-minute increment availability.go sessionizes) over a trailing window
 // (default 72h). Ideal := p95 of the PRODUCTIVE per-minute rates (rate > 0),
 // via percentile_cont. p95 — NOT max — deliberately: a counter reset or a
@@ -94,7 +94,7 @@ func (p ProvisionalSpeed) engaged() bool {
 
 // inferSpeedSQL — the provisional ideal-speed UPSERT. Format args:
 //
-//	%[1]s = EvSchema        (ca_agg_equipment_values_1min lives per-flow)
+//	%[1]s = EvSchema        (equipment_categorical_1min lives per-flow)
 //	%[2]s = opted-in id array literal (pgIntArrayLiteral — config, not user input)
 //	%[3]d = window hours
 //	%[4]s = percentile fraction (e.g. "0.95")
@@ -112,7 +112,7 @@ const inferSpeedSQL = `
 	    SELECT m.id_equipment,
 	           percentile_cont(%[4]s) WITHIN GROUP (ORDER BY m.gross_production_incr) AS p95,
 	           count(*) AS productive_minutes
-	      FROM %[1]s.ca_agg_equipment_values_1min m
+	      FROM %[1]s.equipment_categorical_1min m
 	     WHERE m.id_equipment = ANY(%[2]s)
 	       AND m.ts_value >= now() - make_interval(hours => %[3]d)
 	       AND m.gross_production_incr > 0

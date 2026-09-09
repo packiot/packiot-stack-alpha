@@ -131,7 +131,7 @@ WITH scope AS (
            extract(epoch FROM (m.ts_value - lag(m.ts_value)
                OVER (PARTITION BY s.id_equipment ORDER BY m.ts_value))) AS gap
       FROM scope s
-      JOIN %[1]s.ca_agg_equipment_values_1min m
+      JOIN %[1]s.equipment_categorical_1min m
         ON m.id_equipment = s.id_equipment
        AND m.ts_value > now() - interval '25 hours'
        AND m.gross_production_incr > 0

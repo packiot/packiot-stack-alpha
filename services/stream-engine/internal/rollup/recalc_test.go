@@ -253,7 +253,7 @@ func TestHourShape(t *testing.T) {
 	}
 	for _, m := range []string{
 		"interval '65 minutes'",
-		"ca_agg_equipment_values_1min",     // speed from the 1min tier
+		"equipment_categorical_1min",     // speed from the 1min tier
 		"locf.ideal_production_speed",      // line-OEE fix: LOCF ideal from equipment_values
 		"q.production_speed)",              // ideal fallback (final COALESCE arg)
 		"now() - interval '6 hour'",        // E guard

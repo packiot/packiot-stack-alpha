@@ -8,7 +8,7 @@
 //	    go test -tags cpac_integration -run TestCPAC -v ./internal/events/
 //
 // It fabricates a self-contained schema (equipments + a plain table standing in
-// for the ca_agg_equipment_values_1min cagg + the shadow target), seeds a run →
+// for the equipment_categorical_1min cagg + the shadow target), seeds a run →
 // stop → run count pattern plus an operator-justified event, and proves the two
 // invariants that gate enablement: IDEMPOTENCY and NEVER-CLOBBER-A-HUMAN-EDIT.
 package events
@@ -47,7 +47,7 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 		`CREATE TABLE ` + schema + `.equipments (
 			id_equipment int PRIMARY KEY, id_enterprise int, status_type int,
 			tp_equipment int, stop_threshold_time int)`,
-		`CREATE TABLE ` + schema + `.ca_agg_equipment_values_1min (
+		`CREATE TABLE ` + schema + `.equipment_categorical_1min (
 			id_equipment int, ts_value timestamptz, gross_production_incr numeric)`,
 		// full-enough clone of equipment_events for the guard columns + key
 		`CREATE TABLE ` + schema + `.equipment_events_cpac_shadow (
@@ -76,7 +76,7 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 		for i := 0; i < n; i++ {
 			ts := start.Add(time.Duration(i) * time.Minute)
 			if _, err := pool.Exec(ctx,
-				`INSERT INTO `+schema+`.ca_agg_equipment_values_1min VALUES (1000, $1, 5)`, ts); err != nil {
+				`INSERT INTO `+schema+`.equipment_categorical_1min VALUES (1000, $1, 5)`, ts); err != nil {
 				t.Fatal(err)
 			}
 		}

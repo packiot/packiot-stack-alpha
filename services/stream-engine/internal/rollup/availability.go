@@ -156,7 +156,7 @@ const hourCountsAvailSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
@@ -218,7 +218,7 @@ const shiftCountsAvailSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
@@ -282,7 +282,7 @@ const shiftAvailFloorSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
@@ -328,7 +328,7 @@ const hourAvailFloorSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend

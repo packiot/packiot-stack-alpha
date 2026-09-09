@@ -58,7 +58,7 @@ const hourValuesSQL = `
 	           sum(ca.gross_production_incr) AS gross,
 	           sum(ca.net_production_incr)   AS net
 	      FROM hour_elig el
-	      JOIN %[1]s.ca_agg_equipment_values_1hour ca
+	      JOIN %[1]s.equipment_categorical_1hour ca
 	        ON ca.id_equipment = el.id_equipment
 	       AND ca.ts_value >= now() - interval '65 minutes'
 	       AND ca.ts_value = el.ts_value
@@ -104,7 +104,7 @@ const hourSpeedSQL = `
 	                    q.production_speed) END) AS ideal_speed,
 	           avg(m.speed) AS speed
 	      FROM hour_elig el
-	      LEFT JOIN %[1]s.ca_agg_equipment_values_1min m
+	      LEFT JOIN %[1]s.equipment_categorical_1min m
 	        ON m.id_equipment = el.id_equipment
 	       AND m.ts_value >= now() - interval '65 minutes'
 	       AND m.ts_value >= el.ts_value
@@ -142,7 +142,7 @@ const hourEventsSQL = `
 	    -- hour; +1h (below) covers through its end. Scanned over a generous horizon
 	    -- so a line idle for a while is still bounded to its true last data, not now().
 	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
-	      FROM %[1]s.ca_agg_equipment_values_1hour m
+	      FROM %[1]s.equipment_categorical_1hour m
 	     WHERE m.id_equipment IN (SELECT id_equipment FROM hour_elig)
 	       AND m.ts_value >= now() - interval '90 days'
 	     GROUP BY m.id_equipment

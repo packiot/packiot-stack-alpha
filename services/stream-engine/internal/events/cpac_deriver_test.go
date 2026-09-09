@@ -8,13 +8,13 @@ import (
 // TestCPACDeriverScopeAndInput locks in the two design-defining decisions that
 // STEP-1 empirical sampling forced: the derivation is scoped to status_type=0
 // (a PARALLEL path — it must NOT touch the status_type=4 gates) and it islands
-// over COUNT ACTIVITY (ca_agg_equipment_values_1min.gross_production_incr), NOT
+// over COUNT ACTIVITY (equipment_categorical_1min.gross_production_incr), NOT
 // state (CPACK's live `state` is NULL).
 func TestCPACDeriverScopeAndInput(t *testing.T) {
 	both := cpacUpsertSQL + cpacCorrectSQL
 	for _, m := range []string{
 		"status_type = 0",                       // parallel path, not the 4-only gate
-		"ca_agg_equipment_values_1min",          // count source, not the state stream
+		"equipment_categorical_1min",          // count source, not the state stream
 		"gross_production_incr > 0",             // heartbeat = a productive minute
 		"COALESCE(NULLIF(e.stop_threshold_time", // per-equipment threshold, default fallback
 		"make_interval(secs => thr)",            // grace before declaring a stop

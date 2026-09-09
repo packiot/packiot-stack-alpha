@@ -45,7 +45,7 @@ const shiftGoldenSchema = `
 	    id_equipment int, ts_event timestamptz, ts_end timestamptz,
 	    status int, planned_downtime boolean, change_over boolean
 	);
-	CREATE TABLE golden.ca_agg_equipment_values_1hour (
+	CREATE TABLE golden.equipment_categorical_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    id_shift int, state int, speed double precision, ideal_production_speed double precision,
 	    gross_production_incr double precision, net_production_incr double precision
