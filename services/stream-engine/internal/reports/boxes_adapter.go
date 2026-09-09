@@ -1,7 +1,7 @@
 // boxes_adapter.go — the label-adapter boxes pipeline (design:
 // docs/adr/reference/designs/0014-label-adapter-design.md). Replaces the
 // per-customer boxes13.go: one pool table (customer_reports.boxes),
-// per-tenant DESCRIPTOR rows (public.label_formats), two archetypes.
+// per-tenant DESCRIPTOR rows (app.label_formats), two archetypes.
 // Onboarding another scanner enterprise = one descriptor INSERT,
 // zero code.
 //
@@ -21,7 +21,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
-// LabelFormat is one tenant descriptor (public.label_formats row).
+// LabelFormat is one tenant descriptor (app.label_formats row).
 type LabelFormat struct {
 	Enterprise                                                      int
 	LabelKey, Archetype                                             string
@@ -35,7 +35,7 @@ const loadFormatsSQL = `
 	       COALESCE(workcenter_field,''), COALESCE(date_field,''),
 	       COALESCE(time_field,''), COALESCE(tz,'UTC'),
 	       COALESCE(bucket::text,'')
-	  FROM %[2]s.label_formats`
+	  FROM %[1]s.label_formats`
 
 // delivery archetype: each label carries its own date + ISO-8601
 // duration time (composed at the descriptor's tz) and workcenter.
@@ -86,7 +86,7 @@ const counterSQL = `
 // RunBoxes executes one pass for one destination: load descriptors,
 // run each through its archetype.
 func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
-	rows, err := d.Pool.Query(ctx, fmt.Sprintf(loadFormatsSQL, d.EvSchema, d.RefSchema))
+	rows, err := d.Pool.Query(ctx, fmt.Sprintf(loadFormatsSQL, d.AppSchema))
 	if err != nil {
 		return 0, fmt.Errorf("load label_formats: %w", err)
 	}
@@ -111,7 +111,7 @@ func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
 		var tag int64
 		switch f.Archetype {
 		case "delivery":
-			t, err := d.Pool.Exec(ctx, fmt.Sprintf(deliverySQL, d.EvSchema, d.RefSchema),
+			t, err := d.Pool.Exec(ctx, fmt.Sprintf(deliverySQL, d.SilverSchema, d.RefSchema),
 				f.LabelKey, f.OrderField, f.QtyField, f.WorkcenterField,
 				f.DateField, f.TimeField, f.Enterprise, f.TZ)
 			if err != nil {
@@ -119,7 +119,7 @@ func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
 			}
 			tag = t.RowsAffected()
 		case "counter":
-			t, err := d.Pool.Exec(ctx, fmt.Sprintf(counterSQL, d.EvSchema),
+			t, err := d.Pool.Exec(ctx, fmt.Sprintf(counterSQL, d.SilverSchema),
 				f.LabelKey, f.Enterprise, f.Bucket, f.OrderField, f.QtyField)
 			if err != nil {
 				return total, fmt.Errorf("counter %d/%s: %w", f.Enterprise, f.LabelKey, err)

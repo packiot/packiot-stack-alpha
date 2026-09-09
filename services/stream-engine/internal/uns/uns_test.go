@@ -101,12 +101,15 @@ func TestEquipmentFreshnessStamp(t *testing.T) {
 // TestEquipmentShiftDaySQLBuilds ensures both statements schema-qualify
 // cleanly with no leftover Sprintf verbs for both flow layouts.
 func TestEquipmentShiftDaySQLBuilds(t *testing.T) {
-	for _, schemas := range [][2]string{
-		{"shadow_go_port", "public"}, // F2 comparator layout
-		{"public", "public"},         // single-flow F3-native
+	// [ev, ref, grain] — the grain-sink schema (equipment_live_*) is now a
+	// separate arg (t237 GrainSchema knob; flips public→silver at P-silver).
+	for _, schemas := range [][3]string{
+		{"shadow_go_port", "public", "shadow_go_port"}, // F2 comparator layout
+		{"public", "public", "public"},                 // single-flow F3-native
+		{"public", "public", "silver"},                 // staging post P-silver
 	} {
 		for _, q := range []string{refreshDayEquipmentSQL, refreshShiftEquipmentSQL} {
-			out := fmt.Sprintf(q, schemas[0], schemas[1])
+			out := fmt.Sprintf(q, schemas[0], schemas[1], schemas[2])
 			if strings.Contains(out, "%!") || strings.Contains(out, "%[") {
 				t.Errorf("Sprintf verb residue for %v", schemas)
 			}

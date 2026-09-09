@@ -807,3 +807,63 @@ born with these views in place; `serving`/`customer_reports` already existed pre
 
 **Move phases still remaining: P-silver → P-core** (per task risk-order; the stream-engine Dest
 per-schema refactor precedes P-silver/P-core as the enabler).
+
+### Phase 1 — stream-engine Dest per-schema REFACTOR (2026-09-09)
+
+**The enabler.** `flows.Dest` previously carried only `EvSchema`/`RefSchema`, both hard-coded
+`"public"` for the analytics dest — every flow table hid behind a `public` shim view, and (per the
+P-app.2 carry-forward) the engine is **public-qualified, NOT search_path-absorbed**. This phase
+peels `Dest` into per-LAYER knobs so each table resolves to its real home and its public shim can
+drop — the prerequisite for P-silver (grains→silver), P-core (dims→core), #233 (grains→gold),
+#228 (facts→silver), #239 (caggs).
+
+**New `Dest` shape** (`internal/flows/flows.go`) — the analytics (staging) dest values in brackets:
+- `EvSchema` [public] — the un-re-homed flow residue: legacy caggs (`ca_agg_equipment_values_1min/_1hour`),
+  event side-tables (`equipment_events_cpac_shadow/_man/_low_speed`), `data_quality_event`; also the
+  `RunProvision` search_path anchor.
+- `RefSchema` [public] — the dimension plane (equipments, sites, areas, production_orders,
+  packml_register, shifts, shift_hours, production_targets, box_production_bridges, targets). **P-core
+  flips this to `core`.**
+- `SilverSchema` [silver] — facts + silver caggs (equipment_values, equipment_events,
+  equipment_live_metrics, equipment_metrics_/categorical_).
+- `GoldSchema` [gold] — OEE grains (equipment_oee_*, area_oee_*, site_oee_*, production_orders_runtime).
+- `GrainSchema` [public] — current-state grains (equipment_live_*, area_live_*, site_live_day).
+  **P-silver flips this to `silver`.**
+- `AppSchema` [app] — label_formats, user_logs.
+
+**What was repointed this phase (the app-shim drop + the P-silver enabler):**
+- **App peel (the Phase-1 hard contract):** `reports/boxes_adapter.go` `label_formats`→`AppSchema`;
+  `pocontrol/{events_justify,setup_userlog}.go` `user_logs`→a new `appSchema` param threaded from the
+  ingest `route` (which gained `app`/`grain` fields). This lets the two P-app.2 `06` public shims drop.
+- **Grain peel (the P-silver enabler):** every current-state-grain SINK write in `uns/uns.go`,
+  `uns/current_rest.go`, `pocontrol/setup_userlog.go` (equipment_live_job) now qualifies with
+  `GrainSchema` (a dedicated placeholder), leaving the OEE/cagg SOURCE reads on `EvSchema`. With
+  `GrainSchema="public"` this is byte-identical NOW; P-silver flips it to `silver` in one place
+  (Dest + `routeForSource`).
+- **Silver peel (reports):** `boxes_adapter`/`boxes_bridge` read `equipment_values` from `SilverSchema`.
+- `pocontrol` threads `appSchema`/`grainSchema` (Execute→execute→executeEvents/executeSetupOrUserlog).
+
+**DELIBERATELY DEFERRED — the rollup hot-path oee→gold / facts→silver requalification.** The
+`rollup/*.go` OEE constants were **left untouched** (still `EvSchema="public"` → public shims →
+gold/silver). Rationale: (1) it is **byte-identical** to the current public-shim resolution (a shim
+is a pass-through `SELECT * FROM gold.<t>`), so the gate shows no change either way; (2) each such
+constant conflates up to FOUR layers under one `%[1]s` (e.g. `hourSpeedSQL` touches ca_agg[public],
+equipment_values[silver], equipment_oee_hourly[gold], equipments[ref]), so the peel is intricate
+placeholder surgery on the LIVE OEE engine; (3) its only benefit accrues to the SEPARATE #228/#233
+tickets, and #233 also needs `RunProvision`'s search_path lifted (it writes the OEE grains through
+the same public shim via `SET search_path TO public`). **Safety property that makes this deferral
+clean: EvSchema stays `"public"`, so every un-peeled ref still resolves through its public shim to
+the SAME physical table — the partial peel is byte-identical and fully deployable.** #228/#233 flip
+`SilverSchema`/`GoldSchema` (already defaulted correctly on the dest) per-constant later.
+
+**GATE (byte-identical gold OEE, absolute frozen window `[2026-08-10, 2026-09-09 00:00Z)`):**
+`gold.equipment_oee_shift` 12944 rows md5 `2b6d88c665e378f17f2806154b5f53d1`;
+`gold.equipment_oee_hourly` 121662 rows md5 `2df7b7d886224414809dbbf0d0b66b26` (pre-deploy baseline;
+re-hashed post-deploy — see below). `go build`/`go vet`/`go test ./...` all green (rewrote the
+`uns` SQL-builds golden for the new grain arg + the pocontrol `Execute` signature ripples clean).
+
+**Contract:** `db/migrations/t237-stream-engine-schema/01-contract-app-shims.sql` drops
+`public.label_formats` + `public.user_logs` (reverts P-app.2 `06`) AFTER the deploy is healthy.
+
+**Remaining after Phase 1: P-silver (grains→silver, flip GrainSchema) → P-core (dims→core, flip
+RefSchema).** The deferred rollup oee/facts requalification is owned by #228/#233 (knobs in place).

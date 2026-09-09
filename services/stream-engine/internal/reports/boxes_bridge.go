@@ -78,7 +78,7 @@ func RunBoxesBridge(ctx context.Context, d flows.Dest) (int64, error) {
 	}
 	var total int64
 	for _, b := range bridges {
-		tag, err := d.Pool.Exec(ctx, fmt.Sprintf(bridgeSQL, d.EvSchema, d.RefSchema),
+		tag, err := d.Pool.Exec(ctx, fmt.Sprintf(bridgeSQL, d.SilverSchema, d.RefSchema),
 			b.TargetCd, b.SourceCd, b.Enterprise, b.Bucket, b.LabelKey, b.Lookback)
 		if err != nil {
 			return total, fmt.Errorf("bridge %d %s->%s: %w", b.Enterprise, b.SourceCd, b.TargetCd, err)

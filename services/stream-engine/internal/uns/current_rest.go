@@ -36,7 +36,7 @@ const refreshDayEntitySQL = `
 	      FROM %[1]s.%[4]s
 	     WHERE ts_value >= date_trunc('day', now())::timestamptz AND ts_value <= now()
 	)
-	UPDATE %[1]s.%[5]s u SET
+	UPDATE %[6]s.%[5]s u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       begin_time = p.ts_value, end_time = p.ts_value + interval '1 day',
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
@@ -76,7 +76,7 @@ const refreshShiftAreaSQL = `
 	      JOIN ts ON v.id_area = ts.id_area
 	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
 	)
-	UPDATE %[1]s.area_live_shift u SET
+	UPDATE %[3]s.area_live_shift u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
 	       available_time = p.available_time, running_time = p.running_time,
@@ -114,7 +114,7 @@ const refreshJobsSQL = `
 	      LEFT JOIN %[2]s.clients c ON c.id_client = po.id_client
 	     WHERE e.tp_equipment = 3
 	)
-	UPDATE %[1]s.equipment_live_job u SET
+	UPDATE %[3]s.equipment_live_job u SET
 	       id_production_order = p.id_production_order, id_order = p.id_order,
 	       nm_product = p.nm_product, nm_client = p.nm_client,
 	       nm_product_family = p.nm_product_family,
@@ -140,7 +140,7 @@ const refreshJobsElapsedSQL = `
 	      LEFT JOIN %[1]s.production_orders_runtime por ON po.id_production_order = por.id_production_order
 	     GROUP BY 1, 2
 	)
-	UPDATE %[1]s.equipment_live_job u SET elapsed_time = p.duration
+	UPDATE %[3]s.equipment_live_job u SET elapsed_time = p.duration
 	  FROM po_time p WHERE u.id_equipment = p.id_equipment`
 
 // RefreshCurrentRest runs the remaining live refreshers (day for area+site,
@@ -156,7 +156,7 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 	}
 	for _, e := range ents {
 		steps := []struct{ name, sql string }{
-			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtDay, e.unsDay)},
+			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtDay, e.unsDay, d.GrainSchema)},
 		}
 		for _, s := range steps {
 			if _, err := d.Pool.Exec(ctx, s.sql); err != nil {
@@ -164,7 +164,7 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 			}
 		}
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.EvSchema, d.RefSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.EvSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns shift-area: %w", err)
 	}
 	return nil
@@ -172,10 +172,10 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 
 // RefreshCurrentJobs is the PO dispatcher's third step.
 func RefreshCurrentJobs(ctx context.Context, d flows.Dest) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsSQL, d.EvSchema, d.RefSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsSQL, d.EvSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns jobs: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsElapsedSQL, d.EvSchema, d.RefSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsElapsedSQL, d.EvSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns jobs elapsed: %w", err)
 	}
 	return nil

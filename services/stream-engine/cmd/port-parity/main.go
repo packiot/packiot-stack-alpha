@@ -157,7 +157,10 @@ func main() {
 	conn.Release()
 
 	fmt.Println("== go run (schema-parameterized port SQL)")
-	d := flows.Dest{Name: goSchema, Pool: pool, EvSchema: goSchema, RefSchema: goSchema}
+	// Parity sandbox copies every table flat into one schema, so all layer
+	// schemas resolve to goSchema.
+	d := flows.Dest{Name: goSchema, Pool: pool, EvSchema: goSchema, RefSchema: goSchema,
+		SilverSchema: goSchema, GoldSchema: goSchema, GrainSchema: goSchema, AppSchema: goSchema}
 	_, err = rollup.RunRecalc(ctx, d, "1 month", []int{6})
 	fatal(err)
 

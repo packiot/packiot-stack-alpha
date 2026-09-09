@@ -231,7 +231,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		// consolidation, when Node-RED and the mirror replays retire.
 		if h.poControl != nil && p.SourceType != "" && kind == sparkplug.KindParameter &&
 			m.ID != nil && pocontrol.Handles(int(*m.ID)) {
-			_ = h.poControl.Execute(ctx, pool, m, schema)
+			_ = h.poControl.Execute(ctx, pool, m, schema, r.app, r.grain)
 			continue
 		}
 
@@ -487,6 +487,14 @@ type route struct {
 	silver string
 	bronze string
 	ev     string
+	// app / grain — the t237 reorg homes for the pocontrol write path.
+	// user_logs moved public→app (its public shim is being dropped, so pocontrol
+	// must write `app` directly); the equipment_live_job current-state grain moves
+	// public→silver at P-silver (grain stays "public" until then). Every other
+	// pocontrol table (production_orders, production_orders_runtime, equipment_events)
+	// still resolves through `ev`'s public/gold/silver shims (#233/#228/P-core own those).
+	app   string
+	grain string
 }
 
 // routeForSource picks the destination route based on envelope source_type.
@@ -513,16 +521,16 @@ func (h *SparkplugHandler) routeForSource(sourceType string) route {
 		// Shadow comparator plane: all layers collapse to shadow_go_port so
 		// the missing-schema swallow (keyed on ev) still fires on a single-flow
 		// stack where shadow_go_port is absent.
-		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port"}
+		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", app: "shadow_go_port", grain: "shadow_go_port"}
 	case "refactored":
 		if h.analyticsPool != nil {
-			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public"}
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", app: "app", grain: "public"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
-		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public"}
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", app: "public", grain: "public"}
 	default:
-		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public"}
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", app: "public", grain: "public"}
 	}
 }
 
