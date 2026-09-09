@@ -131,7 +131,7 @@ const refreshJobsElapsedSQL = `
 	WITH po AS (
 	    SELECT po.id_production_order, e.id_equipment
 	      FROM %[2]s.equipments e
-	      LEFT JOIN %[1]s.production_orders po ON e.id_equipment = po.id_equipment AND po.status = 2
+	      LEFT JOIN %[2]s.production_orders po ON e.id_equipment = po.id_equipment AND po.status = 2
 	     WHERE e.tp_equipment = 3
 	), po_time AS (
 	    SELECT po.id_production_order, po.id_equipment,
@@ -156,7 +156,8 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 	}
 	for _, e := range ents {
 		steps := []struct{ name, sql string }{
-			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtDay, e.unsDay, d.GrainSchema)},
+			// %[1]s reads the *_oee_daily fact (gold); %[6]s writes the *_live_day grain (silver/GrainSchema).
+			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.GoldSchema, d.RefSchema, e.key, e.rtDay, e.unsDay, d.GrainSchema)},
 		}
 		for _, s := range steps {
 			if _, err := d.Pool.Exec(ctx, s.sql); err != nil {
@@ -164,7 +165,8 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 			}
 		}
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.EvSchema, d.RefSchema, d.GrainSchema)); err != nil {
+	// %[1]s reads area_oee_shift (gold); %[3]s writes area_live_shift (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.GoldSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns shift-area: %w", err)
 	}
 	return nil
@@ -172,10 +174,12 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 
 // RefreshCurrentJobs is the PO dispatcher's third step.
 func RefreshCurrentJobs(ctx context.Context, d flows.Dest) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsSQL, d.EvSchema, d.RefSchema, d.GrainSchema)); err != nil {
+	// %[1]s=%[2]s=core (production_orders + equipments/products/families/clients); %[3]s writes equipment_live_job (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsSQL, d.RefSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns jobs: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsElapsedSQL, d.EvSchema, d.RefSchema, d.GrainSchema)); err != nil {
+	// %[1]s reads production_orders_runtime (gold); %[2]s reads production_orders (core); %[3]s writes equipment_live_job (silver).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsElapsedSQL, d.GoldSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns jobs elapsed: %w", err)
 	}
 	return nil

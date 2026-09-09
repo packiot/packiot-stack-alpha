@@ -51,15 +51,21 @@ var provisionFns = []string{
 }
 
 // RunProvision executes the matrix for one destination: one session,
-// search_path = flow schema first (fail-soft per function — prod's
-// dispatcher wraps each create in its own EXCEPTION block).
+// search_path = the canonical medallion path (fail-soft per function —
+// prod's dispatcher wraps each create in its own EXCEPTION block).
+// The piot_create_*_oee_* provision fns have no own search_path and
+// reference the grain tables by BARE name (e.g. INSERT INTO
+// equipment_oee_shift), so gold/silver/core MUST precede public — else
+// the bare refs resolve to the public compat SHIMS (which are being
+// retired) instead of the real medallion tables. This mirrors the DB
+// role/database default search_path exactly.
 func RunProvision(ctx context.Context, d flows.Dest, logger *slog.Logger) error {
 	conn, err := d.Pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire: %w", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, fmt.Sprintf(`SET search_path TO %s, public`, d.EvSchema)); err != nil {
+	if _, err := conn.Exec(ctx, `SET search_path TO gold, silver, bronze, identity, config, ops, serving, customer_reports, core, public`); err != nil {
 		return fmt.Errorf("search_path: %w", err)
 	}
 	// Provision is allowed to be slow (hourly cadence, 30min job

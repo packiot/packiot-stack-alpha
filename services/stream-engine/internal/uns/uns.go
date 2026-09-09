@@ -65,7 +65,8 @@ func Provision(ctx context.Context, d flows.Dest) error {
 			return fmt.Errorf("provision %s: %w", m.unsTable, err)
 		}
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionMetricsSQL, d.EvSchema, d.RefSchema)); err != nil {
+	// %[1]s writes equipment_live_metrics (silver); %[2]s reads core dims.
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionMetricsSQL, d.SilverSchema, d.RefSchema)); err != nil {
 		return fmt.Errorf("provision metrics: %w", err)
 	}
 	return nil
@@ -243,10 +244,11 @@ const refreshHourTrailEquipmentSQL = `
 
 // RefreshCurrentHour runs the equipment live-hour refreshers.
 func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
+	// %[1]s reads equipment_oee_hourly (gold); %[3]s writes equipment_live_hour (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.GoldSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns hour equipment: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.GoldSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns hour equipment trail: %w", err)
 	}
 	// #186: the area/site live-HOUR refreshers were retired — their source grains
@@ -360,10 +362,11 @@ const refreshShiftEquipmentSQL = `
 // refreshers (the grey-tile unfreeze). Same exclusion lists as the
 // hour/week/month equipment refreshers.
 func RefreshCurrentEquipmentShiftDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
+	// %[1]s reads equipment_oee_daily/shift (gold); %[3]s writes equipment_live_day/shift (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.GoldSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns day equipment: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.GoldSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns shift equipment: %w", err)
 	}
 	return nil

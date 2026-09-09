@@ -102,7 +102,8 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
-// %[1]s = EvSchema (flow tables), %[2]s = RefSchema (reference plane).
+// %[1]s = SilverSchema (equipment_values/events + the equipment_live_metrics
+// sink all live in silver post-medallion), %[2]s = RefSchema (core dims).
 const currentMetricsSQL = `
 	WITH machines AS (
 	    -- sig_id = the entity's live-signal SOURCE. A LINE (tp=3) that
@@ -257,7 +258,7 @@ const currentMetricsSQL = `
 
 // RunCurrentMetrics executes one derivation pass for one destination.
 func RunCurrentMetrics(ctx context.Context, d flows.Dest) (int64, error) {
-	tag, err := d.Pool.Exec(ctx, fmt.Sprintf(currentMetricsSQL, d.EvSchema, d.RefSchema))
+	tag, err := d.Pool.Exec(ctx, fmt.Sprintf(currentMetricsSQL, d.SilverSchema, d.RefSchema))
 	if err != nil {
 		return 0, fmt.Errorf("uns current-metrics: %w", err)
 	}
