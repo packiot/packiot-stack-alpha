@@ -16,7 +16,6 @@ package rollup
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"testing"
@@ -97,7 +96,7 @@ func TestGoldenCountersAvail(t *testing.T) {
 	}
 	// The fallback pass, verbatim from availability.go (single source), with
 	// the three machines opted in and a 300s idle timeout.
-	stmt := fmt.Sprintf(HourCountsAvailSQLForParity(), "golden", pgIntArrayLiteral([]int{30, 31, 32}), 300)
+	stmt := fmtRP(HourCountsAvailSQLForParity(), "golden", pgIntArrayLiteral([]int{30, 31, 32}), 300)
 	if _, err := conn.Exec(ctx, stmt); err != nil {
 		t.Fatalf("counters-avail: %v", err)
 	}

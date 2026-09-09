@@ -126,7 +126,7 @@ func TestGoldenLineLead(t *testing.T) {
 	}
 	// The line-lead pass, verbatim from line_lead.go (single source): enterprise
 	// 3 opted in, 300s idle timeout. %[1]s=EvSchema, %[2]s=RefSchema.
-	stmt := fmt.Sprintf(ShiftLineLeadSQLForParity(), "golden", "golden", pgIntArrayLiteral([]int{3}), 300)
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
 	if _, err := conn.Exec(ctx, stmt); err != nil {
 		t.Fatalf("line-lead: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 	if _, err := conn.Exec(ctx, fixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	stmt := fmt.Sprintf(ShiftLineLeadSQLForParity(), "golden", "golden", pgIntArrayLiteral([]int{3}), 300)
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
 	if _, err := conn.Exec(ctx, stmt); err != nil {
 		t.Fatalf("line-lead: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 	if _, err := conn.Exec(ctx, fixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	stmt := fmt.Sprintf(ShiftLineLeadSQLForParity(), "golden", "golden", pgIntArrayLiteral([]int{3}), 300)
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
 	if _, err := conn.Exec(ctx, stmt); err != nil {
 		t.Fatalf("line-lead: %v", err)
 	}
@@ -578,7 +578,7 @@ func runCounterMatrixCase(t *testing.T, hourGross, hourNet, hourScrap float64, s
 	if _, err := conn.Exec(ctx, fixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	stmt := fmt.Sprintf(ShiftLineLeadSQLForParity(), "golden", "golden", pgIntArrayLiteral([]int{3}), 300)
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
 	if _, err := conn.Exec(ctx, stmt); err != nil {
 		t.Fatalf("line-lead: %v", err)
 	}
