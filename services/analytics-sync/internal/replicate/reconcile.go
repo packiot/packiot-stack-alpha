@@ -78,14 +78,14 @@ func NewPOReconciler(legacy, dest *pgxpool.Pool, r *Resolver, cfg *Config, m Rec
 
 // insert missing PO header from legacy's authoritative row. ON CONFLICT keeps
 // it idempotent against a concurrent handler insert or a re-run.
-const sqlReconcileInsertPO = `INSERT INTO public.production_orders (
+const sqlReconcileInsertPO = `INSERT INTO core.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order, status,
 		production_programmed, production_ordered, production_real, production_final,
 		ts_start, ts_end, nm_production_order, txt_production_order_notes, recalc_needed)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)
 	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
 
-const sqlReconcileFinishPO = `UPDATE public.production_orders
+const sqlReconcileFinishPO = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_final = COALESCE($3, production_final),
 	       recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $4 AND id_order = $5 AND status = 2`

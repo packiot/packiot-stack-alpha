@@ -23,12 +23,12 @@ type poKey struct {
 }
 
 // resolvePOKey maps a Flow 1 id_production_order to its natural key by
-// reading packiot.public.production_orders via the main pool. found=false
+// reading packiot.core.production_orders via the main pool. found=false
 // means the Flow 1 row is gone (pre-cursor history) — callers skip.
 func resolvePOKey(ctx context.Context, mainPool *pgxpool.Pool, idProductionOrder int64) (poKey, bool, error) {
 	var k poKey
 	err := mainPool.QueryRow(ctx,
-		`SELECT id_enterprise, id_order FROM public.production_orders WHERE id_production_order = $1`,
+		`SELECT id_enterprise, id_order FROM core.production_orders WHERE id_production_order = $1`,
 		idProductionOrder).Scan(&k.IDEnterprise, &k.IDOrder)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return k, false, nil
