@@ -1129,3 +1129,34 @@ ON-CONFLICT writers, prefer a short qualified-code deploy over a shim). Migratio
 The rule that makes the hybrid defensible: **each schema answers exactly ONE question about its
 tables** (what maturity? what bounded context? what security posture?) — a table's home is
 predictable from its role; you never ask "which axis decided this?"
+
+### 12.4 EXECUTED on staging (2026-09-09) — all hardproofed
+
+**Barcode fold — DONE** (`db/migrations/t241-barcode-fold/`, zero code change).
+`box_scans → bronze`, `po_box_counter → gold` (SHIM-FREE — bronze/gold precede the old `barcode`
+on the search_path + all writers are bare, so the move is transparent and never routes the
+`po_box_counter` `ON CONFLICT` upsert through a view). `scanned_boxes`/`sample_boxes → public`
+(KEPT — the writer audit proved they back the LIVE Samples feature, not legacy box_scans dupes;
+see §12.1.1). `DROP SCHEMA barcode`. Hardproof: counts preserved (32/3); trigger + self-FK +
+`serving.v_po_box_totals` followed by OID; bare resolution on the new path proven; the
+`ON CONFLICT (id_production_order)` upsert arbiter resolves against `gold.po_box_counter`
+(insert **and** DO-UPDATE branches exercised, rolled back).
+
+**App split — DONE** (`db/migrations/t241-app-split/`, PR #1171 code deploy 34359513014).
+Expand: 16 tables → `auth`(4)/`config`(7)/`ops`(5) behind 16 auto-updatable `app.*` shim views;
+search_path `app → auth,config,ops`. Live-proven non-disruptive (old binaries kept writing
+*through* the shims mid-window — `ops.mirror_replay_cursor` advancing at 6s age). Code repoint of
+the **four** services that hard-code `app.` (stream-engine `AppSchema`→`ConfigSchema`+`route.auth`;
+analytics-sync + **mirror-worker-go** `app.mirror_replay_*`→`ops.*` incl. self-provisioning DDL;
+read-api `app.user_screen_config`→`auth.*`) — the pre-contract writer-audit caught mirror-worker-go
+as a heavy consumer the first pass missed. Deploy 13:53 (post-merge) confirmed by image timestamps;
+bare writers recycled onto the new path (pgbouncer bounce + sparkplug-decoder restart) and PROVEN
+through pgbouncer (`users→auth`, `translations→config`, `idempotency_keys→ops`, `capture_observations→ops`).
+Contract (`03-contract.sql`): dropped the 16 shims + `app` after verifying 0 DB objects depend on
+them (the `current_tenant` `app.tenant_id` match was a GUC, not the schema). Post-contract: 0 new
+42P01 across edge-api/stream-engine/analytics-sync/read-api/sparkplug-decoder (stream-engine's
+residual 42P01 is the pre-existing `sync06` fossil); ingest 1.3s; gold OEE stable.
+
+**Final live census:** bronze 3 · silver 12+7v · gold 13 · core 23+1v · auth 4 · config 7 · ops 5 ·
+serving 10v · bi 10v · customer_reports 4+5v · customer_dashboards 3 · public 20+49v. `app` and
+`barcode` schemas gone. Fully reversible via each migration's rollback (revert deploys first).
