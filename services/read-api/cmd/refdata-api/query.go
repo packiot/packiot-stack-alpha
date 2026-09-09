@@ -267,7 +267,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		case http.MethodGet:
 			var cfg []byte
 			err := pool.QueryRow(r.Context(),
-				`SELECT config FROM auth.user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
+				`SELECT config FROM identity.user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
 				cid, user, screen).Scan(&cfg)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -282,7 +282,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 				http.Error(w, `{"error":"config must be valid JSON <= 64KB"}`, http.StatusBadRequest)
 				return
 			}
-			_, err = pool.Exec(r.Context(), `INSERT INTO auth.user_screen_config (id_enterprise, id_user, screen, config)
+			_, err = pool.Exec(r.Context(), `INSERT INTO identity.user_screen_config (id_enterprise, id_user, screen, config)
 				VALUES ($1,$2,$3,$4) ON CONFLICT (id_enterprise, id_user, screen)
 				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, cid, user, screen, string(body))
 			if err != nil {
@@ -368,7 +368,7 @@ WITH baseline AS (
 ),
 override AS (
     SELECT config
-    FROM auth.user_screen_config
+    FROM identity.user_screen_config
     WHERE id_enterprise = $1 AND id_user = $3 AND screen = $2
 )
 SELECT
@@ -488,15 +488,15 @@ func ensureSchema(pool *pgxpool.Pool) {
 	// CREATE TABLE IF NOT EXISTS checks ONLY the creation namespace (first schema on the
 	// search_path), NOT the whole path — so an UNQUALIFIED create here would re-spawn an
 	// empty shadow in `gold` (the medallion first-schema) even though the real table
-	// lives in `auth`. CREATE SCHEMA IF NOT EXISTS auth first so a fresh dest self-provisions it.
+	// lives in `auth`. CREATE SCHEMA IF NOT EXISTS identity first so a fresh dest self-provisions it.
 	_, _ = pool.Exec(context.Background(), `
-		CREATE SCHEMA IF NOT EXISTS auth;
-		CREATE TABLE IF NOT EXISTS auth.user_screen_config (
+		CREATE SCHEMA IF NOT EXISTS identity;
+		CREATE TABLE IF NOT EXISTS identity.user_screen_config (
 			id_enterprise int NOT NULL DEFAULT 0,
 			id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
 			updated_at timestamptz NOT NULL DEFAULT now());
-		ALTER TABLE auth.user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
-		ALTER TABLE auth.user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
+		ALTER TABLE identity.user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
+		ALTER TABLE identity.user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
 		CREATE UNIQUE INDEX IF NOT EXISTS user_screen_config_tenant_key
-			ON auth.user_screen_config (id_enterprise, id_user, screen);`)
+			ON identity.user_screen_config (id_enterprise, id_user, screen);`)
 }
