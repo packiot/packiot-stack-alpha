@@ -79,16 +79,19 @@ func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled boo
 	if analyticsPool != nil {
 		// STAGING live flow — the medallion + t237 reorg have re-homed the tables:
 		// facts→silver, OEE grains→gold, label_formats/user_logs→app, current-state
-		// grains→silver (P-silver). Dims have NOT moved yet (P-core), so RefSchema
-		// stays `public` here and flips at that phase. GrainSchema is now `silver`
-		// (P-silver): the uns/pocontrol live-state SINKS write silver.equipment_live_*
-		// directly. NOTE the rollup UPDATE path (internal/rollup/{grains,entity_grains}.go)
-		// still writes the grains via EvSchema="public" → the permanent public grain
-		// shim → silver base (that requalification is deferred to #228/#233). EvSchema
-		// keeps the caggs/event side-tables/data_quality_event that no ticket has re-homed.
+		// grains→silver (P-silver), dims→core (P-core). RefSchema is now `core`: the
+		// rollup/reports/events RefSchema reads (equipments, sites, areas, enterprises,
+		// clients, production_orders, products, product_families, shifts, production_targets,
+		// box_production_bridges, packml_register) hit core.<dim> directly (core.packml_register
+		// is a compat view over core.topic_routing). GrainSchema is `silver` (P-silver).
+		// NOTE two paths still read `public` via PERMANENT compat shims → core: (a) the
+		// shiftresolver hardcodes public.{sites,equipments,shift_hours} (literal, not RefSchema);
+		// (b) the rollup grain UPDATE writes public.equipment_live_* (EvSchema, deferred to
+		// #228/#233). EvSchema keeps the caggs/event side-tables/data_quality_event no ticket
+		// has re-homed.
 		return []Dest{{
 			Name: "packiot_analytics", Pool: analyticsPool,
-			EvSchema: "public", RefSchema: "public",
+			EvSchema: "public", RefSchema: "core",
 			SilverSchema: "silver", GoldSchema: "gold",
 			GrainSchema: "silver", AppSchema: "app",
 		}}

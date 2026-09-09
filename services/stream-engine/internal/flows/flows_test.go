@@ -57,7 +57,9 @@ func TestStandardFiltered_ShadowGoPortEnabled(t *testing.T) {
 		if !ok {
 			t.Fatalf("packiot_analytics dest missing: %+v", dests)
 		}
-		if ps.Pool != shadow || ps.EvSchema != "public" || ps.RefSchema != "public" {
+		// P-core: the analytics dest's RefSchema flipped public→core (dims re-homed to
+		// `core`). EvSchema stays "public" (un-re-homed caggs/event side-tables).
+		if ps.Pool != shadow || ps.EvSchema != "public" || ps.RefSchema != "core" {
 			t.Fatalf("packiot_analytics dest wrong: %+v", ps)
 		}
 	})
