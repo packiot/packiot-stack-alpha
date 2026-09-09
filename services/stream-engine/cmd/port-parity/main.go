@@ -48,7 +48,7 @@ var recalcSnapshotSQL = []string{
 	   SELECT * FROM public.production_orders
 	    WHERE ts_start >= now() - interval '1 month' AND status > 1`,
 	`CREATE TABLE ` + legacySchema + `.production_orders_runtime AS
-	   SELECT r.* FROM public.production_orders_runtime r
+	   SELECT r.* FROM gold.production_orders_runtime r
 	    JOIN ` + legacySchema + `.production_orders p USING (id_production_order)`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM public.sites`,
@@ -224,7 +224,7 @@ var computeSnapshotSQL = []string{
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
 	`CREATE TABLE ` + legacySchema + `.production_orders_runtime AS
-	   SELECT * FROM public.production_orders_runtime
+	   SELECT * FROM gold.production_orders_runtime
 	    WHERE runtime_timerange && tstzrange(now() - interval '1 month', now())`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM public.sites`,
@@ -332,10 +332,10 @@ var hourSnapshotSQL = []string{
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_hourly AS
-	   SELECT * FROM public.equipment_oee_hourly WHERE ts_value >= now() - interval '4 hours' AND ts_value <= now() + interval '1 hour'`,
+	   SELECT * FROM gold.equipment_oee_hourly WHERE ts_value >= now() - interval '4 hours' AND ts_value <= now() + interval '1 hour'`,
 	`UPDATE ` + legacySchema + `.equipment_oee_hourly SET recalc_needed = true WHERE ts_value >= now() - interval '65 minutes' AND ts_value <= now()`,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_daily AS
-	   SELECT * FROM public.equipment_oee_daily WHERE ts_value >= now() - interval '3 days'`,
+	   SELECT * FROM gold.equipment_oee_daily WHERE ts_value >= now() - interval '3 days'`,
 	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.agg_equipment_values_1min_t AS
@@ -416,14 +416,14 @@ var daySnapshotSQL = []string{
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_daily AS
-	   SELECT * FROM public.equipment_oee_daily WHERE ts_value >= now() - interval '35 days' AND ts_value <= now() + interval '2 days'`,
+	   SELECT * FROM gold.equipment_oee_daily WHERE ts_value >= now() - interval '35 days' AND ts_value <= now() + interval '2 days'`,
 	`UPDATE ` + legacySchema + `.equipment_oee_daily SET recalc_needed = true WHERE ts_value >= now() - interval '1 month'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_hourly AS
-	   SELECT * FROM public.equipment_oee_hourly WHERE ts_value >= now() - interval '35 days'`,
+	   SELECT * FROM gold.equipment_oee_hourly WHERE ts_value >= now() - interval '35 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_weekly AS
-	   SELECT * FROM public.equipment_oee_weekly WHERE ts_value >= now() - interval '40 days'`,
+	   SELECT * FROM gold.equipment_oee_weekly WHERE ts_value >= now() - interval '40 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_monthly AS
-	   SELECT * FROM public.equipment_oee_monthly WHERE ts_value >= now() - interval '70 days'`,
+	   SELECT * FROM gold.equipment_oee_monthly WHERE ts_value >= now() - interval '70 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_daily AS SELECT * FROM ` + legacySchema + `.equipment_oee_daily`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
@@ -495,10 +495,10 @@ var shiftSnapshotSQL = []string{
 	`CREATE SCHEMA ` + legacySchema,
 	`CREATE SCHEMA ` + goSchema,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_shift AS
-	   SELECT * FROM public.equipment_oee_shift WHERE ts_value >= now() - interval '32 days' AND ts_value <= now() + interval '1 day'`,
+	   SELECT * FROM gold.equipment_oee_shift WHERE ts_value >= now() - interval '32 days' AND ts_value <= now() + interval '1 day'`,
 	`UPDATE ` + legacySchema + `.equipment_oee_shift SET recalc_needed = true WHERE ts_value >= now() - interval '30 days' AND ts_value <= now()`,
 	`CREATE TABLE ` + legacySchema + `.area_oee_shift AS
-	   SELECT * FROM public.area_oee_shift WHERE ts_value >= now() - interval '32 days'`,
+	   SELECT * FROM gold.area_oee_shift WHERE ts_value >= now() - interval '32 days'`,
 	`CREATE TABLE ` + legacySchema + `.ca_agg_equipment_values_1hour AS
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '32 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
