@@ -217,7 +217,7 @@ var dqGrainMatrix = []dqGrainScan{
 const dqScanLimit = 20000
 
 // dqGrainScanSQL reads recently-computed grain rows, joining equipments for the
-// tenant id. %[1]s = EvSchema (flow tables), %[2]s = the grain table, %[3]s =
+// tenant id. %[1]s = GoldSchema (the *_oee_* grain facts live in gold), %[2]s = the grain table, %[3]s =
 // RefSchema (equipments), %[4]s = the ideal_speed projection (r.ideal_speed for
 // shift/hour, NULL::float8 for day/week/month which lack the column), %[5]d =
 // LIMIT. $1 = window interval.
@@ -274,7 +274,7 @@ func runDQScanGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int64, er
 		idealExpr = "r.ideal_speed"
 	}
 	rows, err := d.Pool.Query(ctx,
-		fmt.Sprintf(dqGrainScanSQL, d.EvSchema, g.Table, d.RefSchema, idealExpr, dqScanLimit), g.Window)
+		fmt.Sprintf(dqGrainScanSQL, d.GoldSchema, g.Table, d.RefSchema, idealExpr, dqScanLimit), g.Window)
 	if err != nil {
 		return 0, fmt.Errorf("query: %w", err)
 	}
