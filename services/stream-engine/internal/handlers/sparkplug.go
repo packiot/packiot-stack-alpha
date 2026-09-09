@@ -231,7 +231,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		// consolidation, when Node-RED and the mirror replays retire.
 		if h.poControl != nil && p.SourceType != "" && kind == sparkplug.KindParameter &&
 			m.ID != nil && pocontrol.Handles(int(*m.ID)) {
-			_ = h.poControl.Execute(ctx, pool, m, schema, r.app, r.grain)
+			_ = h.poControl.Execute(ctx, pool, m, schema, r.auth, r.grain)
 			continue
 		}
 
@@ -493,7 +493,7 @@ type route struct {
 	// public→silver at P-silver (grain stays "public" until then). Every other
 	// pocontrol table (production_orders, production_orders_runtime, equipment_events)
 	// still resolves through `ev`'s public/gold/silver shims (#233/#228/P-core own those).
-	app   string
+	auth  string
 	grain string
 }
 
@@ -521,16 +521,16 @@ func (h *SparkplugHandler) routeForSource(sourceType string) route {
 		// Shadow comparator plane: all layers collapse to shadow_go_port so
 		// the missing-schema swallow (keyed on ev) still fires on a single-flow
 		// stack where shadow_go_port is absent.
-		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", app: "shadow_go_port", grain: "shadow_go_port"}
+		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", auth: "shadow_go_port", grain: "shadow_go_port"}
 	case "refactored":
 		if h.analyticsPool != nil {
-			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", app: "app", grain: "silver"}
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", auth: "auth", grain: "silver"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
-		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", app: "public", grain: "public"}
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public"}
 	default:
-		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", app: "public", grain: "public"}
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public"}
 	}
 }
 

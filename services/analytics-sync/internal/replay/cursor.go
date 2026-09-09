@@ -29,7 +29,7 @@ const cursorSource = "shadow-mirror"
 func EnsureCursor(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	var existing int64
 	err := pool.QueryRow(ctx,
-		`SELECT last_log_id FROM app.mirror_replay_cursor WHERE source = $1`,
+		`SELECT last_log_id FROM ops.mirror_replay_cursor WHERE source = $1`,
 		cursorSource).Scan(&existing)
 	if err == nil {
 		return existing, nil
@@ -41,7 +41,7 @@ func EnsureCursor(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 		return 0, fmt.Errorf("seed cursor: read max id: %w", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO app.mirror_replay_cursor (source, last_log_id, last_run_at)
+		`INSERT INTO ops.mirror_replay_cursor (source, last_log_id, last_run_at)
 		 VALUES ($1, $2, now())
 		 ON CONFLICT (source) DO NOTHING`,
 		cursorSource, maxID); err != nil {
@@ -54,7 +54,7 @@ func EnsureCursor(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 // toID > current.
 func AdvanceCursor(ctx context.Context, pool *pgxpool.Pool, toID int64) error {
 	_, err := pool.Exec(ctx,
-		`UPDATE app.mirror_replay_cursor
+		`UPDATE ops.mirror_replay_cursor
 		    SET last_log_id = $1, last_run_at = now()
 		  WHERE source = $2
 		    AND last_log_id < $1`,

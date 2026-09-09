@@ -34,20 +34,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dlqSchemaDDL homes the DLQ in the `app` schema (ops/auth/i18n tier, task
-// #237 public→app/core/barcode reorg). Created explicitly (never via an
-// unqualified CREATE that a widened search_path would land in the wrong
-// schema): CREATE TABLE IF NOT EXISTS checks ONLY the creation namespace
-// (first schema on the path), not the whole path — an empty `core`/`gold`
-// ahead of `app` on the path would otherwise spawn an empty shadow table
-// (the exact mirror_replay_dlq gold-vs-public split this reorg fixes).
-// Schema-qualifying every ref removes that hazard entirely.
-const dlqSchemaDDL = `CREATE SCHEMA IF NOT EXISTS app`
+// dlqSchemaDDL homes the DLQ in the `ops` schema (operational-plumbing tier of the
+// task #241 app-split). Created explicitly (never via an unqualified CREATE that a
+// widened search_path would land in the wrong schema): CREATE TABLE IF NOT EXISTS
+// checks ONLY the creation namespace (first schema on the path), not the whole path —
+// an empty `core`/`gold` ahead of `ops` on the path would otherwise spawn an empty
+// shadow table. Schema-qualifying every ref removes that hazard entirely.
+const dlqSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ops`
 
 // dlqDDL creates the DLQ table on demand. Shape matches edge-node-red/db/
 // 25-mirror-replay-schema.sql plus the retry_attempts / last_retry_at columns
 // the retrier needs (mirror-worker-go carries the same two columns).
-const dlqDDL = `CREATE TABLE IF NOT EXISTS app.mirror_replay_dlq (
+const dlqDDL = `CREATE TABLE IF NOT EXISTS ops.mirror_replay_dlq (
 	id             BIGSERIAL   PRIMARY KEY,
 	source         text        NOT NULL,
 	source_log_id  bigint      NOT NULL,
@@ -61,7 +59,7 @@ const dlqDDL = `CREATE TABLE IF NOT EXISTS app.mirror_replay_dlq (
 )`
 
 const dlqIndexDDL = `CREATE INDEX IF NOT EXISTS mirror_replay_dlq_source_idx
-	ON app.mirror_replay_dlq (source, created_at DESC)`
+	ON ops.mirror_replay_dlq (source, created_at DESC)`
 
 // EnsureDLQ creates the DLQ table + index if absent. Called once at loop start
 // (and idempotent). Failure here is returned so the caller can decide — but the
@@ -79,7 +77,7 @@ func EnsureDLQ(ctx context.Context, dst *pgxpool.Pool) error {
 	// Older deployments created the table without the retry columns — add them
 	// idempotently so a shared table converges to the full shape.
 	if _, err := dst.Exec(ctx,
-		`ALTER TABLE app.mirror_replay_dlq
+		`ALTER TABLE ops.mirror_replay_dlq
 		   ADD COLUMN IF NOT EXISTS retry_attempts int NOT NULL DEFAULT 0,
 		   ADD COLUMN IF NOT EXISTS last_retry_at  timestamptz`); err != nil {
 		return err
@@ -93,7 +91,7 @@ func EnsureDLQ(ctx context.Context, dst *pgxpool.Pool) error {
 // caller still advances the cursor.
 func writeDLQ(ctx context.Context, dst *pgxpool.Pool, source string, u *UserLog, errMsg string, logger *slog.Logger) {
 	_, err := dst.Exec(ctx,
-		`INSERT INTO app.mirror_replay_dlq (source, source_log_id, category, payload, error)
+		`INSERT INTO ops.mirror_replay_dlq (source, source_log_id, category, payload, error)
 		 VALUES ($1, $2, $3, $4::jsonb, $5)`,
 		source, u.ID, u.Category, string(u.Payload), errMsg)
 	if err != nil {
@@ -114,7 +112,7 @@ type dlqRow struct {
 // elapsed. Backoff = (1 << retry_attempts) minutes on last_retry_at; a NULL
 // last_retry_at (never retried) is immediately eligible.
 const sqlFetchRetriableDLQ = `SELECT id, source_log_id, category, retry_attempts
-		   FROM app.mirror_replay_dlq
+		   FROM ops.mirror_replay_dlq
 		  WHERE source = $1 AND retry_attempts < $2
 		    AND (last_retry_at IS NULL
 		         OR last_retry_at + (interval '1 minute' * (1 << retry_attempts)) < now())
@@ -266,24 +264,24 @@ func (rt *DLQRetrier) retryOne(ctx context.Context, row dlqRow) string {
 
 func countDLQ(ctx context.Context, dst *pgxpool.Pool, source string) (int64, error) {
 	var n int64
-	err := dst.QueryRow(ctx, `SELECT count(*) FROM app.mirror_replay_dlq WHERE source = $1`, source).Scan(&n)
+	err := dst.QueryRow(ctx, `SELECT count(*) FROM ops.mirror_replay_dlq WHERE source = $1`, source).Scan(&n)
 	return n, err
 }
 
 func deleteDLQ(ctx context.Context, dst *pgxpool.Pool, id int64) error {
-	_, err := dst.Exec(ctx, `DELETE FROM app.mirror_replay_dlq WHERE id = $1`, id)
+	_, err := dst.Exec(ctx, `DELETE FROM ops.mirror_replay_dlq WHERE id = $1`, id)
 	return err
 }
 
 func markDLQRetried(ctx context.Context, dst *pgxpool.Pool, id int64) error {
 	_, err := dst.Exec(ctx,
-		`UPDATE app.mirror_replay_dlq SET retry_attempts = retry_attempts + 1, last_retry_at = now() WHERE id = $1`, id)
+		`UPDATE ops.mirror_replay_dlq SET retry_attempts = retry_attempts + 1, last_retry_at = now() WHERE id = $1`, id)
 	return err
 }
 
 func retireDLQ(ctx context.Context, dst *pgxpool.Pool, id int64, cap int) error {
 	_, err := dst.Exec(ctx,
-		`UPDATE app.mirror_replay_dlq SET retry_attempts = GREATEST(retry_attempts, $2), last_retry_at = now() WHERE id = $1`, id, cap)
+		`UPDATE ops.mirror_replay_dlq SET retry_attempts = GREATEST(retry_attempts, $2), last_retry_at = now() WHERE id = $1`, id, cap)
 	return err
 }
 

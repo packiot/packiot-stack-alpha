@@ -55,11 +55,11 @@ func Handles(id int) bool {
 // callers must not retry.
 // schema is the flow/ev plane (production_orders, production_orders_runtime,
 // equipment_events, equipment_values — resolved through their public/gold/silver
-// shims). appSchema/grainSchema are the t237 homes for user_logs (→app) and the
+// shims). authSchema/grainSchema are the homes for user_logs (→auth, t241 app-split) and the
 // equipment_live_job current-state grain (→silver at P-silver); they are threaded
 // separately so those shims can drop without moving the PO-lifecycle plane.
-func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, appSchema, grainSchema string) error {
-	if err := h.execute(ctx, pool, m, schema, appSchema, grainSchema); err != nil {
+func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, authSchema, grainSchema string) error {
+	if err := h.execute(ctx, pool, m, schema, authSchema, grainSchema); err != nil {
 		h.dropped.Add(1)
 		h.logger.Error("po-control command dropped (no retry — nodered catch semantics)",
 			slog.Int("param", derefID((*int)(m.ID))), slog.String("err", err.Error()))
@@ -67,7 +67,7 @@ func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	return nil
 }
 
-func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, appSchema, grainSchema string) error {
+func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, authSchema, grainSchema string) error {
 	paramID := derefID((*int)(m.ID))
 
 	info, ok, err := h.resolveOrNoop(ctx, m)
@@ -99,10 +99,10 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 		return h.executeCreatePO(ctx, pool, m, schema)
 	}
 	if HandlesEvents(paramID) {
-		return h.executeEvents(ctx, pool, m, schema, appSchema)
+		return h.executeEvents(ctx, pool, m, schema, authSchema)
 	}
 	if HandlesSetup(paramID) {
-		return h.executeSetupOrUserlog(ctx, pool, m, schema, appSchema, grainSchema)
+		return h.executeSetupOrUserlog(ctx, pool, m, schema, authSchema, grainSchema)
 	}
 
 	tx, err := pool.Begin(ctx)
