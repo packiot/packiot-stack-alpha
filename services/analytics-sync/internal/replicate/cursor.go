@@ -15,17 +15,17 @@ import (
 // Same mirror_replay_cursor shape as the in-instance mirror, created
 // on demand here since packiot_analytics has no such table yet.
 //
-// SCHEMA-QUALIFIED to app (task #237 P-app.2): the cursor is an app/ops table.
-// CREATE TABLE IF NOT EXISTS checks ONLY the creation namespace (first schema on
-// the search_path), NOT the whole path — so an UNQUALIFIED create here would
-// re-spawn an empty shadow in `gold` (the medallion first-schema) even though the
-// real table lives in `app`. Qualifying the create + every ref keeps this bound to
-// app.mirror_replay_cursor. CREATE SCHEMA IF NOT EXISTS app first so a fresh dest
-// self-provisions the home schema.
+// SCHEMA-QUALIFIED to ops (task #241 app-split: the `app` junk-drawer was split by
+// concern, and this operational-plumbing cursor lands in `ops`). CREATE TABLE IF NOT
+// EXISTS checks ONLY the creation namespace (first schema on the search_path), NOT
+// the whole path — so an UNQUALIFIED create here would re-spawn an empty shadow in
+// `gold` (the medallion first-schema) even though the real table lives in `ops`.
+// Qualifying the create + every ref keeps this bound to ops.mirror_replay_cursor.
+// CREATE SCHEMA IF NOT EXISTS ops first so a fresh dest self-provisions the home schema.
 
-const cursorSchemaDDL = `CREATE SCHEMA IF NOT EXISTS app`
+const cursorSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ops`
 
-const cursorDDL = `CREATE TABLE IF NOT EXISTS app.mirror_replay_cursor (
+const cursorDDL = `CREATE TABLE IF NOT EXISTS ops.mirror_replay_cursor (
 	source       text PRIMARY KEY,
 	last_log_id  bigint NOT NULL,
 	last_run_at  timestamptz NOT NULL DEFAULT now()
@@ -38,14 +38,14 @@ const cursorDDL = `CREATE TABLE IF NOT EXISTS app.mirror_replay_cursor (
 // store); legacyPool = source (window probe, read-only).
 func EnsureCursor(ctx context.Context, destPool, legacyPool *pgxpool.Pool, source string, srcEnterprise int, sinceStart time.Time) (int64, error) {
 	if _, err := destPool.Exec(ctx, cursorSchemaDDL); err != nil {
-		return 0, fmt.Errorf("ensure app schema: %w", err)
+		return 0, fmt.Errorf("ensure ops schema: %w", err)
 	}
 	if _, err := destPool.Exec(ctx, cursorDDL); err != nil {
 		return 0, fmt.Errorf("ensure cursor table: %w", err)
 	}
 	var existing int64
 	err := destPool.QueryRow(ctx,
-		`SELECT last_log_id FROM app.mirror_replay_cursor WHERE source = $1`, source).Scan(&existing)
+		`SELECT last_log_id FROM ops.mirror_replay_cursor WHERE source = $1`, source).Scan(&existing)
 	if err == nil {
 		return existing, nil
 	}
@@ -74,7 +74,7 @@ func EnsureCursor(ctx context.Context, destPool, legacyPool *pgxpool.Pool, sourc
 		}
 	}
 	if _, err := destPool.Exec(ctx,
-		`INSERT INTO app.mirror_replay_cursor (source, last_log_id, last_run_at)
+		`INSERT INTO ops.mirror_replay_cursor (source, last_log_id, last_run_at)
 		 VALUES ($1, $2, now()) ON CONFLICT (source) DO NOTHING`,
 		source, seed); err != nil {
 		return 0, fmt.Errorf("seed insert: %w", err)
@@ -85,7 +85,7 @@ func EnsureCursor(ctx context.Context, destPool, legacyPool *pgxpool.Pool, sourc
 // AdvanceCursor moves the cursor forward only.
 func AdvanceCursor(ctx context.Context, destPool *pgxpool.Pool, source string, toID int64) error {
 	_, err := destPool.Exec(ctx,
-		`UPDATE app.mirror_replay_cursor SET last_log_id = $1, last_run_at = now()
+		`UPDATE ops.mirror_replay_cursor SET last_log_id = $1, last_run_at = now()
 		  WHERE source = $2 AND last_log_id < $1`,
 		toID, source)
 	return err

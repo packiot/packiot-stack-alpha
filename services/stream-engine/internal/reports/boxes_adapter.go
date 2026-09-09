@@ -1,7 +1,7 @@
 // boxes_adapter.go — the label-adapter boxes pipeline (design:
 // docs/adr/reference/designs/0014-label-adapter-design.md). Replaces the
 // per-customer boxes13.go: one pool table (customer_reports.boxes),
-// per-tenant DESCRIPTOR rows (app.label_formats), two archetypes.
+// per-tenant DESCRIPTOR rows (config.label_formats), two archetypes.
 // Onboarding another scanner enterprise = one descriptor INSERT,
 // zero code.
 //
@@ -21,7 +21,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
-// LabelFormat is one tenant descriptor (app.label_formats row).
+// LabelFormat is one tenant descriptor (config.label_formats row).
 type LabelFormat struct {
 	Enterprise                                                      int
 	LabelKey, Archetype                                             string
@@ -86,7 +86,7 @@ const counterSQL = `
 // RunBoxes executes one pass for one destination: load descriptors,
 // run each through its archetype.
 func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
-	rows, err := d.Pool.Query(ctx, fmt.Sprintf(loadFormatsSQL, d.AppSchema))
+	rows, err := d.Pool.Query(ctx, fmt.Sprintf(loadFormatsSQL, d.ConfigSchema))
 	if err != nil {
 		return 0, fmt.Errorf("load label_formats: %w", err)
 	}

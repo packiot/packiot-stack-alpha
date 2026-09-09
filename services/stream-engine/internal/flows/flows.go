@@ -37,9 +37,11 @@ type Dest struct {
 	// GrainSchema — current-state grains: equipment_live_{day,hour,job,month,shift,week},
 	// area_live_{day,shift}, site_live_day. t237 P-silver flips this to `silver`.
 	GrainSchema string
-	// AppSchema — ops/i18n tables read/written by the flows: label_formats, user_logs.
-	// t237 P-app moved these to `app`; peeling them here lets their public shims drop.
-	AppSchema string
+	// ConfigSchema — the i18n/label config plane read by the boxes flow: label_formats.
+	// t241 app-split moved label_formats `app → config` (user_logs, the other former
+	// AppSchema table, is threaded separately via route.auth → `auth`, since the split
+	// sends them to different schemas). Keeping this a knob lets the app shims drop.
+	ConfigSchema string
 }
 
 // Standard returns the worker's shadow destinations. When a shadow pool is
@@ -78,7 +80,7 @@ func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled boo
 	// is therefore moot here. See ADR-0045 G3 + the 2026-08-13 residuals sweep.
 	if analyticsPool != nil {
 		// STAGING live flow — the medallion + t237 reorg have re-homed the tables:
-		// facts→silver, OEE grains→gold, label_formats/user_logs→app, current-state
+		// facts→silver, OEE grains→gold, label_formats→config + user_logs→auth (app-split), current-state
 		// grains→silver (P-silver), dims→core (P-core). RefSchema is now `core`: the
 		// rollup/reports/events RefSchema reads (equipments, sites, areas, enterprises,
 		// clients, production_orders, products, product_families, shifts, production_targets,
@@ -93,7 +95,7 @@ func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled boo
 			Name: "packiot_analytics", Pool: analyticsPool,
 			EvSchema: "public", RefSchema: "core",
 			SilverSchema: "silver", GoldSchema: "gold",
-			GrainSchema: "silver", AppSchema: "app",
+			GrainSchema: "silver", ConfigSchema: "config",
 		}}
 	}
 	// Single-flow deployment (new-prod, analyticsPool==nil): the three flows have
@@ -104,7 +106,7 @@ func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled boo
 		Name: "public", Pool: pool,
 		EvSchema: "public", RefSchema: "public",
 		SilverSchema: "public", GoldSchema: "public",
-		GrainSchema: "public", AppSchema: "public",
+		GrainSchema: "public", ConfigSchema: "public",
 	}
 	if shadowGoPortEnabled {
 		// Retired F2 comparator: all flow layers lived flat in shadow_go_port; the
@@ -114,7 +116,7 @@ func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled boo
 			Name: "shadow_go_port", Pool: pool,
 			EvSchema: "shadow_go_port", RefSchema: "public",
 			SilverSchema: "shadow_go_port", GoldSchema: "shadow_go_port",
-			GrainSchema: "shadow_go_port", AppSchema: "public",
+			GrainSchema: "shadow_go_port", ConfigSchema: "public",
 		}
 	}
 	return []Dest{main}

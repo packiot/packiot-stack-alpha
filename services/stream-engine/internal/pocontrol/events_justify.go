@@ -141,7 +141,7 @@ const ujScrapReset = `
 	UPDATE %[1]s.equipment_values SET scrap_incr = 0
 	 WHERE id_equipment = $1 AND ts_value = $2`
 
-func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, appSchema string) error {
+func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, authSchema string) error {
 	paramID := derefID((*int)(m.ID))
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
@@ -186,7 +186,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 			return fmt.Errorf("justify: %w", err)
 		}
 		logSub = "justify"
-		if err := h.writeUserLog(ctx, tx, appSchema, info, tsEvent, p.User, logSub, logDesc); err != nil {
+		if err := h.writeUserLog(ctx, tx, authSchema, info, tsEvent, p.User, logSub, logDesc); err != nil {
 			return err
 		}
 
@@ -218,7 +218,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 			}
 		}
 		logSub = "manual event"
-		if err := h.writeUserLog(ctx, tx, appSchema, info, tsEvent, p.User, logSub, logDesc); err != nil {
+		if err := h.writeUserLog(ctx, tx, authSchema, info, tsEvent, p.User, logSub, logDesc); err != nil {
 			return err
 		}
 
@@ -268,8 +268,8 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 	return tx.Commit(ctx)
 }
 
-func (h *Handler) writeUserLog(ctx context.Context, tx txExecer, appSchema string, info *sparkplug.EquipmentInfo, tsEvent time.Time, user, sub, desc string) error {
-	if _, err := tx.Exec(ctx, fmt.Sprintf(ujUserLog, appSchema),
+func (h *Handler) writeUserLog(ctx context.Context, tx txExecer, authSchema string, info *sparkplug.EquipmentInfo, tsEvent time.Time, user, sub, desc string) error {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(ujUserLog, authSchema),
 		tsEvent, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		user, sub, desc); err != nil {
 		return fmt.Errorf("user log: %w", err)

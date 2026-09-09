@@ -160,7 +160,7 @@ func main() {
 	// Parity sandbox copies every table flat into one schema, so all layer
 	// schemas resolve to goSchema.
 	d := flows.Dest{Name: goSchema, Pool: pool, EvSchema: goSchema, RefSchema: goSchema,
-		SilverSchema: goSchema, GoldSchema: goSchema, GrainSchema: goSchema, AppSchema: goSchema}
+		SilverSchema: goSchema, GoldSchema: goSchema, GrainSchema: goSchema, ConfigSchema: goSchema}
 	_, err = rollup.RunRecalc(ctx, d, "1 month", []int{6})
 	fatal(err)
 
