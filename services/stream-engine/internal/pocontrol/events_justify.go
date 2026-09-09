@@ -141,7 +141,7 @@ const ujScrapReset = `
 	UPDATE %[1]s.equipment_values SET scrap_incr = 0
 	 WHERE id_equipment = $1 AND ts_value = $2`
 
-func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, authSchema string) error {
+func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, s Schemas) error {
 	paramID := derefID((*int)(m.ID))
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
@@ -168,7 +168,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 			tsMs = m.Timestamp
 		}
 		ts := time.UnixMilli(tsMs).Round(time.Second).UTC()
-		if _, err := tx.Exec(ctx, fmt.Sprintf(ujScrapReset, schema), info.IDEquipment, ts); err != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(ujScrapReset, s.Silver), info.IDEquipment, ts); err != nil {
 			return fmt.Errorf("scrap reset: %w", err)
 		}
 		h.events.Add(1)
@@ -179,14 +179,14 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf(ujJustify, schema),
+		if _, err := tx.Exec(ctx, fmt.Sprintf(ujJustify, s.Silver),
 			info.IDEquipment, tsEvent, p.PlannedDwt, p.ChangeOver, p.Idle,
 			p.TxtDowntime, p.Subcategory, p.Sector, p.Category,
 			p.CategoryDesc, p.SubcategoryDesc, p.CategoryCode, p.SubcategoryCode); err != nil {
 			return fmt.Errorf("justify: %w", err)
 		}
 		logSub = "justify"
-		if err := h.writeUserLog(ctx, tx, authSchema, info, tsEvent, p.User, logSub, logDesc); err != nil {
+		if err := h.writeUserLog(ctx, tx, s.Identity, info, tsEvent, p.User, logSub, logDesc); err != nil {
 			return err
 		}
 
@@ -202,7 +202,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 			}
 			// prod 30811: signed duration (Date.parse diff, NOT abs).
 			duration := int(tsEnd.Sub(tsEvent).Seconds())
-			if _, err := tx.Exec(ctx, fmt.Sprintf(ujManualInsert, schema),
+			if _, err := tx.Exec(ctx, fmt.Sprintf(ujManualInsert, s.Ev),
 				info.IDEquipment, info.IDEnterprise, p.PlannedDwt, p.Idle, p.ChangeOver,
 				p.Sector, p.Category, p.Subcategory, p.TxtDowntime,
 				tsEvent, tsEnd, duration, p.CategoryDesc, p.SubcategoryDesc,
@@ -210,7 +210,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 				return fmt.Errorf("manual insert: %w", err)
 			}
 		} else {
-			if _, err := tx.Exec(ctx, fmt.Sprintf(ujManualUpdate, schema),
+			if _, err := tx.Exec(ctx, fmt.Sprintf(ujManualUpdate, s.Ev),
 				info.IDEquipment, tsEvent, p.PlannedDwt, p.Idle, p.ChangeOver,
 				p.TxtDowntime, p.Subcategory, p.Sector, p.Category,
 				p.CategoryDesc, p.SubcategoryDesc, p.CategoryCode, p.SubcategoryCode); err != nil {
@@ -218,7 +218,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 			}
 		}
 		logSub = "manual event"
-		if err := h.writeUserLog(ctx, tx, authSchema, info, tsEvent, p.User, logSub, logDesc); err != nil {
+		if err := h.writeUserLog(ctx, tx, s.Identity, info, tsEvent, p.User, logSub, logDesc); err != nil {
 			return err
 		}
 
@@ -246,7 +246,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 			if tsEnd == nil {
 				return fmt.Errorf("30813 requires ts_end")
 			}
-			if _, err := tx.Exec(ctx, fmt.Sprintf(ujTrimFirst, schema),
+			if _, err := tx.Exec(ctx, fmt.Sprintf(ujTrimFirst, s.Silver),
 				info.IDEquipment, tsEvent, p.Idle, p.PlannedDwt, p.ChangeOver,
 				p.TxtDowntime, p.Subcategory, p.Sector, p.Category,
 				p.CategoryDesc, p.SubcategoryDesc, p.CategoryCode, p.SubcategoryCode,
@@ -254,7 +254,7 @@ func (h *Handler) executeEvents(ctx context.Context, pool *pgxpool.Pool, m *spar
 				return fmt.Errorf("trim first: %w", err)
 			}
 		} else {
-			if _, err := tx.Exec(ctx, fmt.Sprintf(ujTrimSecond, schema),
+			if _, err := tx.Exec(ctx, fmt.Sprintf(ujTrimSecond, s.Silver),
 				info.IDEquipment, info.IDEnterprise, p.PlannedDwt, p.Idle, p.ChangeOver,
 				p.Sector, p.Category, p.Subcategory, p.TxtDowntime,
 				tsEvent, tsEnd, duration, p.CategoryDesc, p.SubcategoryDesc,

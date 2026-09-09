@@ -231,7 +231,9 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		// consolidation, when Node-RED and the mirror replays retire.
 		if h.poControl != nil && p.SourceType != "" && kind == sparkplug.KindParameter &&
 			m.ID != nil && pocontrol.Handles(int(*m.ID)) {
-			_ = h.poControl.Execute(ctx, pool, m, schema, r.auth, r.grain)
+			_ = h.poControl.Execute(ctx, pool, m, pocontrol.Schemas{
+				Core: r.ref, Gold: r.gold, Silver: r.silver, Ev: r.ev, Identity: r.auth,
+			})
 			continue
 		}
 
@@ -495,6 +497,14 @@ type route struct {
 	// still resolves through `ev`'s public/gold/silver shims (#233/#228/P-core own those).
 	auth  string
 	grain string
+	// #251 P2: the pocontrol write path is de-shimmed off `ev`. ref (core) homes
+	// production_orders + dims (products/families/clients/packml_register, replacing
+	// the old refSchema="public" const); gold homes production_orders_runtime.
+	// equipment_values/events use silver; user_logs uses auth (identity);
+	// equipment_events_man stays on ev (a genuine public table). On the prod/default
+	// route all layers collapse to "public", so behaviour there is unchanged.
+	ref  string
+	gold string
 }
 
 // routeForSource picks the destination route based on envelope source_type.
@@ -521,16 +531,16 @@ func (h *SparkplugHandler) routeForSource(sourceType string) route {
 		// Shadow comparator plane: all layers collapse to shadow_go_port so
 		// the missing-schema swallow (keyed on ev) still fires on a single-flow
 		// stack where shadow_go_port is absent.
-		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", auth: "shadow_go_port", grain: "shadow_go_port"}
+		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", auth: "shadow_go_port", grain: "shadow_go_port", ref: "shadow_go_port", gold: "shadow_go_port"}
 	case "refactored":
 		if h.analyticsPool != nil {
-			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", auth: "identity", grain: "silver"}
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", auth: "identity", grain: "silver", ref: "core", gold: "gold"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
-		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public"}
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public", ref: "public", gold: "public"}
 	default:
-		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public"}
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public", ref: "public", gold: "public"}
 	}
 }
 
