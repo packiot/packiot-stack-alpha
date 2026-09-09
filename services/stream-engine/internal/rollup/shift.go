@@ -78,7 +78,7 @@ const shiftEligibleSQL = `
 	 LIMIT %[3]d`
 
 // IDEAL-SPEED SOURCE (line-OEE fix, same mechanism as hour.go):
-// prod's ca_agg_equipment_values_1hour rows inherit the trigger
+// prod's equipment_categorical_1hour rows inherit the trigger
 // table's LOCF'd ideal_production_speed (equipment_values last
 // non-null ≤ row ts; capture 20-oee-engine-parity.sql:10162-10172,
 // carried through 22-agg-views.sql:248 GROUP BY). Our flow CAgg is
@@ -95,7 +95,7 @@ const shiftValuesSQL = `
 	               (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = el.id_equipment)) AS ideal_speed,
 	           avg(CASE WHEN ca.state = 6 THEN ca.speed END) AS speed
 	      FROM shift_elig el
-	      JOIN %[1]s.ca_agg_equipment_values_1hour ca
+	      JOIN %[1]s.equipment_categorical_1hour ca
 	        ON ca.id_equipment = el.id_equipment
 	       AND ca.id_shift = el.id_shift
 	       AND ca.ts_value >= now() - interval '30 days'
@@ -156,7 +156,7 @@ const shiftEventsSQL = `
 	    -- TRAILING open event. max(ts_value) of the 1-hour cagg = start of the last
 	    -- data-bearing hour; +1h grace covers through its end.
 	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
-	      FROM %[1]s.ca_agg_equipment_values_1hour m
+	      FROM %[1]s.equipment_categorical_1hour m
 	     WHERE m.id_equipment IN (SELECT id_equipment FROM shift_elig)
 	       AND m.ts_value >= now() - interval '90 days'
 	     GROUP BY m.id_equipment

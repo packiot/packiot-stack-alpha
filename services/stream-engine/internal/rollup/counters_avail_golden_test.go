@@ -39,7 +39,7 @@ func TestGoldenCountersAvail(t *testing.T) {
 	defer pool.Close()
 
 	// DDL: golden schema + grain tables (equipment_oee_hourly,
-	// ca_agg_equipment_values_1min, equipments) from the shared fixtures.
+	// equipment_categorical_1min, equipments) from the shared fixtures.
 	for _, s := range []string{goldenSchema, grainGoldenSchema} {
 		if _, err := pool.Exec(ctx, s); err != nil {
 			t.Fatalf("ddl: %v", err)
@@ -71,14 +71,14 @@ func TestGoldenCountersAvail(t *testing.T) {
 		       date_trunc('day', now()), 1000, 950, 147, true
 		  FROM (VALUES (30),(31),(32)) v(g);
 		-- eq 30: productive minutes 0-9 and 40-59 (idle gap between)
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 30, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
 		  FROM generate_series(0,9) m
 		UNION ALL
 		SELECT 30, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
 		  FROM generate_series(40,59) m;
 		-- eq 31: every minute productive
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 31, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
 		  FROM generate_series(0,59) m;
 		-- eq 32: no 1-min rows at all (totally idle hour)`

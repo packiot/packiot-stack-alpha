@@ -33,7 +33,7 @@
 //       time); a real run that then went quiet settles at last-count+grace. A
 //       still-live machine (last count + thr in the future) is LEFT OPEN.
 //   Count activity + threshold are read EXACTLY as cpac_deriver.go infers them
-//   (ca_agg_equipment_values_1min.gross_production_incr>0 ;
+//   (equipment_categorical_1min.gross_production_incr>0 ;
 //   COALESCE(NULLIF(stop_threshold_time,0), default)) so the two share one model.
 //
 // ── INVARIANTS ───────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ WITH scope AS (
     -- silence is the CPACK availability signal — cpac_deriver.go rationale).
     SELECT s.id_equipment, s.thr, max(m.ts_value) AS last_ts
       FROM scope s
-      JOIN %[1]s.ca_agg_equipment_values_1min m
+      JOIN %[1]s.equipment_categorical_1min m
         ON m.id_equipment = s.id_equipment
        AND m.ts_value > now() - make_interval(hours => $3)
        AND m.gross_production_incr > 0

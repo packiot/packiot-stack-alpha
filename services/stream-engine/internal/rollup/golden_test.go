@@ -160,12 +160,12 @@ const grainGoldenSchema = `
 	CREATE TABLE golden.equipment_oee_weekly (LIKE golden.equipment_oee_daily INCLUDING ALL);
 	CREATE TABLE golden.equipment_oee_monthly (LIKE golden.equipment_oee_daily INCLUDING ALL);
 	-- #186: golden.area_oee_hourly fixture removed with the retired area-hour grain.
-	CREATE TABLE golden.ca_agg_equipment_values_1hour (
+	CREATE TABLE golden.equipment_categorical_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    state int, speed double precision, ideal_production_speed double precision,
 	    net_production_incr double precision, gross_production_incr double precision, id_shift int
 	);
-	CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+	CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
 	CREATE TABLE golden.equipment_values (
 	    id_equipment int, ts_value timestamptz, ideal_production_speed double precision
 	);
@@ -191,7 +191,7 @@ const grainGoldenFixture = `
 	-- hour bucket (current hour, flagged) with one ca row: gross 50, net 45, state-6 speed 40
 	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (20, date_trunc('hour', now()), date_trunc('day', now()), true);
-	INSERT INTO golden.ca_agg_equipment_values_1hour
+	INSERT INTO golden.equipment_categorical_1hour
 	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
 	VALUES (20, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
 	-- day bucket (yesterday, flagged) summing two hour rows: 100+60 / 90+55
@@ -211,10 +211,10 @@ const grainGoldenFixture = `
 	INSERT INTO golden.equipments VALUES (21,1,1,35,3,NULL);
 	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), true);
-	INSERT INTO golden.ca_agg_equipment_values_1hour
+	INSERT INTO golden.equipment_categorical_1hour
 	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
 	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
-	INSERT INTO golden.ca_agg_equipment_values_1min
+	INSERT INTO golden.equipment_categorical_1min
 	    (id_equipment, ts_value, state, speed, ideal_production_speed)
 	VALUES (21, date_trunc('hour', now()), 6, 40, NULL);
 	INSERT INTO golden.equipment_values VALUES (21, now() - interval '3 hours', 120);
@@ -234,7 +234,7 @@ const grainGoldenFixture = `
 	INSERT INTO golden.equipments VALUES (22,1,1,35,3,100);
 	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (22, date_trunc('hour', now()), date_trunc('day', now()), true);
-	INSERT INTO golden.ca_agg_equipment_values_1hour
+	INSERT INTO golden.equipment_categorical_1hour
 	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
 	VALUES (22, date_trunc('hour', now()) - interval '2 hours', date_trunc('day', now()), 6, 40, 45, 50);
 	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)

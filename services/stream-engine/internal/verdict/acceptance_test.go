@@ -67,7 +67,7 @@ CREATE TABLE v3.area_oee_shift (
 );
 
 -- flow-plane inputs
-CREATE TABLE v3.ca_agg_equipment_values_1hour (
+CREATE TABLE v3.equipment_categorical_1hour (
     id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
     state int, speed double precision, ideal_production_speed double precision,
     net_production_incr double precision, gross_production_incr double precision,
@@ -239,7 +239,7 @@ func scenarioOEECascadeShift(t *testing.T, ctx context.Context, pool *pgxpool.Po
 		        date_trunc('day', now() - interval '4 hours'), 1, true);`, eq))
 	// two CAgg buckets inside the shift, both state 6.
 	mustExec(t, ctx, pool, fmt.Sprintf(`
-		INSERT INTO v3.ca_agg_equipment_values_1hour
+		INSERT INTO v3.equipment_categorical_1hour
 		    (id_equipment, ts_value, ts_value_production, state, speed,
 		     ideal_production_speed, net_production_incr, gross_production_incr, id_shift)
 		VALUES
@@ -410,7 +410,7 @@ func scenarioDowntimeClassification(t *testing.T, ctx context.Context, pool *pgx
 		// one CAgg bucket so the value phase populates net/gross (needed
 		// for a defined OEE); identical for both equipments.
 		mustExec(t, ctx, pool, fmt.Sprintf(`
-			INSERT INTO v3.ca_agg_equipment_values_1hour
+			INSERT INTO v3.equipment_categorical_1hour
 			    (id_equipment, ts_value, ts_value_production, state, speed,
 			     ideal_production_speed, net_production_incr, gross_production_incr, id_shift)
 			VALUES (%d, $1::timestamptz - interval '4 hours', date_trunc('day', $1::timestamptz - interval '4 hours'),

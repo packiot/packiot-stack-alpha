@@ -17,7 +17,7 @@ func TestCloserBoundsAndClosesStaleOpens(t *testing.T) {
 		"status_type = 0",                              // CPACK-class scope, not the 4-only deriver
 		"tp_equipment IN (1, 3)",                       // machines + lines
 		"lead(ev.ts_event)",                            // (a) next-event bounding
-		"ca_agg_equipment_values_1min",                 // count-silence source (same as cpac_deriver)
+		"equipment_categorical_1min",                 // count-silence source (same as cpac_deriver)
 		"gross_production_incr > 0",                    // productive-minute heartbeat
 		"COALESCE(NULLIF(e.stop_threshold_time, 0), $2)", // per-equipment threshold w/ default
 		"greatest(o.ts_event, lc.last_ts + make_interval(secs => lc.thr))", // (b) count-silence, clamped >= ts_event

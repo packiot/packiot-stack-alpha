@@ -23,7 +23,7 @@ func TestInferSpeedShape(t *testing.T) {
 		"e.tp_equipment = 3",                                                     // guardrail 4: line only
 		"round(r.p95)::int",                                                      // integer result
 		"m.id_equipment = ANY(%[2]s)",                                           // opted-in gate
-		"ca_agg_equipment_values_1min",                                          // 1-min cagg source
+		"equipment_categorical_1min",                                          // 1-min cagg source
 	} {
 		if !strings.Contains(sql, m) {
 			t.Errorf("inferSpeed statement lost guardrail/clause %q", m)
@@ -78,7 +78,7 @@ func TestInferSpeedSchemaBinding(t *testing.T) {
 	cfg := ProvisionalSpeed{Enabled: true, Equipments: []int{670, 671}, WindowHours: 72, MinMinutes: 240, Percentile: 0.95, Floor: 1.0}
 	stmt := fmtInferSpeed(d, cfg)
 	for _, m := range []string{
-		"FROM shadow_go_port.ca_agg_equipment_values_1min m", // read the flow cagg
+		"FROM shadow_go_port.equipment_categorical_1min m", // read the flow cagg
 		"UPDATE public.equipments e SET",                     // write the reference plane
 		"ANY('{670,671}'::bigint[])",                         // opted-in ids inlined
 		"make_interval(hours => 72)",                         // window

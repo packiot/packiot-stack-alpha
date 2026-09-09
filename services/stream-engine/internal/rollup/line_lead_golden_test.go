@@ -63,13 +63,13 @@ func TestGoldenLineLead(t *testing.T) {
 		    target double precision, proportional_target double precision,
 		    computed_at timestamptz, source_watermark timestamptz
 		);
-		CREATE TABLE golden.ca_agg_equipment_values_1hour (
+		CREATE TABLE golden.equipment_categorical_1hour (
 		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
 		    gross_production_incr double precision, net_production_incr double precision,
 		    scrap_incr double precision
 		);
-		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
 		SET search_path TO golden, public;`
 	for _, s := range []string{goldenSchema, lineLeadSchema} {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -101,11 +101,11 @@ func TestGoldenLineLead(t *testing.T) {
 		             date_trunc('hour', now()) - interval '2 hours',
 		             date_trunc('day', now()), 1, true, 0);
 		-- lead's 1hour cagg (gross/net for the line)
-		INSERT INTO golden.ca_agg_equipment_values_1hour
+		INSERT INTO golden.equipment_categorical_1hour
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 1000, 950);
 		-- lead's 1min productive minutes: 0-9 and 40-59 (idle gap between)
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
 		  FROM generate_series(0,9) m
 		UNION ALL
@@ -231,13 +231,13 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		    target double precision, proportional_target double precision,
 		    computed_at timestamptz, source_watermark timestamptz
 		);
-		CREATE TABLE golden.ca_agg_equipment_values_1hour (
+		CREATE TABLE golden.equipment_categorical_1hour (
 		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
 		    gross_production_incr double precision, net_production_incr double precision,
 		    scrap_incr double precision
 		);
-		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
 		SET search_path TO golden, public;`
 	for _, s := range []string{goldenSchema, splitSchema} {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -267,18 +267,18 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		             date_trunc('hour', now()) - interval '2 hours',
 		             date_trunc('day', now()), 1, true, 0);
 		-- NET source (lead 901): net 950, NO gross.
-		INSERT INTO golden.ca_agg_equipment_values_1hour
+		INSERT INTO golden.equipment_categorical_1hour
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 0, 950);
 		-- GROSS source (902): gross 1000, NO net.
-		INSERT INTO golden.ca_agg_equipment_values_1hour
+		INSERT INTO golden.equipment_categorical_1hour
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		VALUES (902, date_trunc('hour', now()) - interval '3 hours', 1000, 0);
 		-- lead's 1min productive minutes drive availability (the output cadence).
 		-- REGRESSION GUARD: the lead is NET-ONLY (net_production_incr>0,
 		-- gross_production_incr=0). The old prod_min filter (gross>0) would see NO
 		-- productive minutes here → oee_a=0; the net-or-gross filter recovers them.
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
 		  FROM generate_series(0,9) m
 		UNION ALL
@@ -392,13 +392,13 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 		    target double precision, proportional_target double precision,
 		    computed_at timestamptz, source_watermark timestamptz
 		);
-		CREATE TABLE golden.ca_agg_equipment_values_1hour (
+		CREATE TABLE golden.equipment_categorical_1hour (
 		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
 		    gross_production_incr double precision, net_production_incr double precision,
 		    scrap_incr double precision
 		);
-		CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
 		SET search_path TO golden, public;`
 	for _, s := range []string{goldenSchema, netOnlySchema} {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -423,11 +423,11 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 		             date_trunc('hour', now()) - interval '2 hours',
 		             date_trunc('day', now()), 1, true, 0);
 		-- lead 901: net 950, NO gross (net-only line).
-		INSERT INTO golden.ca_agg_equipment_values_1hour
+		INSERT INTO golden.equipment_categorical_1hour
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 0, 950);
 		-- lead's 1min NET pulses (gross 0) drive availability.
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 0, 10
 		  FROM generate_series(0,9) m
 		UNION ALL
@@ -502,13 +502,13 @@ const counterMatrixSchema = `
 	    target double precision, proportional_target double precision,
 	    computed_at timestamptz, source_watermark timestamptz
 	);
-	CREATE TABLE golden.ca_agg_equipment_values_1hour (
+	CREATE TABLE golden.equipment_categorical_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 	    id_shift int, state int, speed double precision, ideal_production_speed double precision,
 	    gross_production_incr double precision, net_production_incr double precision,
 	    scrap_incr double precision
 	);
-	CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+	CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
 	SET search_path TO golden, public;`
 
 // runCounterMatrixCase — driver shared by the three identity tests. Builds a
@@ -556,10 +556,10 @@ func runCounterMatrixCase(t *testing.T, hourGross, hourNet, hourScrap float64, s
 		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
 		             date_trunc('hour', now()) - interval '2 hours',
 		             date_trunc('day', now()), 1, true, 0);
-		INSERT INTO golden.ca_agg_equipment_values_1hour
+		INSERT INTO golden.equipment_categorical_1hour
 		    (id_equipment, ts_value, gross_production_incr, net_production_incr, scrap_incr)
 		VALUES (901, date_trunc('hour', now()) - interval '3 hours', %v, %v, %v);
-		INSERT INTO golden.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
 		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), %v, %v
 		  FROM generate_series(0,9) m
 		UNION ALL
