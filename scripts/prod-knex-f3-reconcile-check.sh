@@ -73,11 +73,27 @@ RUN_ALLOWLIST="$(cat <<'EOF'
 20260630235959_create_uns_equipment_current_metrics.ts
 20260707120000_add_operator_pw_hash_to_users.ts
 20260707180000_create_idempotency_keys.ts
+20260728000001_create_client_descriptors.ts
+20260807000001_add_gross_scrap_machine_to_equipments.ts
+20260809000001_enterprises_api_key_integrity.ts
+20260809000002_users_id_user_cognito_unique.ts
+20260809000003_users_id_enterprise_notnull_fk.ts
+20260809000004_user_roles_super_user_notnull.ts
+20260812000001_add_equipment_active_dup_guard.ts
+20260813000001_fix_scrap_target_on_conflict.ts
+20260819000001_add_availability_policy_to_equipments.ts
+20260820000001_seed_legacy_language_packs.ts
+20260820000002_create_translations.ts
+20260820000003_explode_language_packs_to_translations.ts
+20260823000001_create_capture_observations.ts
+20260827000001_client_descriptors_add_deployed_status.ts
 EOF
 )"
 
 # Tables the RUN set must materialise in the candidate (F3 lacks them).
-RUN_NEW_TABLES="labels sample_boxes scanned_boxes idempotency_keys mirror_replay_dlq"
+# language_packs is NOT listed: F3 already carries that table (the seed migration
+# is IF-NOT-EXISTS + ON CONFLICT, a no-op create over F3), so it is not net-new.
+RUN_NEW_TABLES="labels sample_boxes scanned_boxes idempotency_keys mirror_replay_dlq client_descriptors translations tenant_translations capture_observations"
 
 # ── Column manifest: one "<table>\t<col>\t<type>" line per user column ─────────
 read -r -d '' COLS_SQL <<'SQL' || true
