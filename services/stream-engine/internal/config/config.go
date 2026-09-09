@@ -210,12 +210,14 @@ type Config struct {
 	EventsCloseStaleThresholdSec int    // trailing-close grace when stop_threshold_time IS NULL/0
 	EventsCloseStaleHorizonHours int    // only reconcile opens with ts_event >= now()-horizon
 
-	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
-	// sync (verbatim-embedded state machine).
+	// Sync06ReportEnabled — ADR-0014 P4 / t244: enterprise production
+	// data sync (embedded state machine). Reads serving.data_sync and
+	// writes the multi-tenant pool customer_reports.production_data_sync;
+	// Sync06EnterpriseID is now a real serving.data_sync(id, 21) argument
+	// (the SYNC06_TARGET knob was retired with the pool cutover).
 	Sync06ReportEnabled   bool
 	Sync06IntervalMinutes int
 	Sync06EnterpriseID    int
-	Sync06Target          string // empty = legacy table name (verbatim body)
 
 	// Boxes13ReportEnabled — ADR-0014 P4: the Neopac beep-chain
 	// aggregator (analogs Label_Neopac → equipment_boxes_cust_13).
@@ -497,7 +499,6 @@ func Load() (*Config, error) {
 		Sync06ReportEnabled:              getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:            getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Sync06EnterpriseID:               getenvInt("SYNC06_ENTERPRISE_ID", 6),
-		Sync06Target:                     getenv("SYNC06_TARGET", ""),
 		Boxes13IntervalMinutes:           getenvInt("BOXES13_INTERVAL_MINUTES", 5),
 		// Counters-only Availability fallback (default OFF — no behavior change)
 		CountersOnlyAvailEnabled:        getenv("COUNTERS_ONLY_AVAILABILITY_ENABLED", "false") == "true",
