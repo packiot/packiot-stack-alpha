@@ -77,7 +77,7 @@ const cpInsertPO = `
 	ON CONFLICT (id_enterprise, id_order) DO UPDATE SET
 	       custom_field = EXCLUDED.custom_field, id_equipment = EXCLUDED.id_equipment`
 
-func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
+func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, s Schemas) error {
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
 		return err
@@ -114,25 +114,25 @@ func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sp
 	defer tx.Rollback(ctx)
 
 	var familyID int64
-	if err := tx.QueryRow(ctx, fmt.Sprintf(cpFamilyUpsert, schema, refSchema),
+	if err := tx.QueryRow(ctx, fmt.Sprintf(cpFamilyUpsert, s.Core, s.Core),
 		family, info.IDEnterprise).Scan(&familyID); err != nil {
 		return fmt.Errorf("family upsert: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(cpProductInsert, schema, refSchema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(cpProductInsert, s.Core, s.Core),
 		p.NmProduct, familyID, p.TxtProduct, info.IDEnterprise, p.CdProduct); err != nil {
 		return fmt.Errorf("product insert: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(cpClientUpsert, schema, refSchema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(cpClientUpsert, s.Core, s.Core),
 		p.NmClient, info.IDEnterprise); err != nil {
 		return fmt.Errorf("client upsert: %w", err)
 	}
 	var idProduct, idClient *int64
 	var convFactor *float64
-	if err := tx.QueryRow(ctx, fmt.Sprintf(cpResolve, schema, refSchema),
+	if err := tx.QueryRow(ctx, fmt.Sprintf(cpResolve, s.Core, s.Core),
 		p.CdProduct, p.NmClient, info.IDEnterprise).Scan(&idProduct, &idClient, &convFactor); err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("resolve ids: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(cpInsertPO, schema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(cpInsertPO, s.Core),
 		info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		idProduct, idClient, qty, idOrder, tsCreated,
 		p.TxtProduct, convFactor, fmt.Sprint(idOrder), custom); err != nil {
