@@ -882,3 +882,61 @@ dependents first). Post-drop both live SOLELY in `app` (relkind `r`), no shadow 
 
 **Remaining after Phase 1: P-silver (grains→silver, flip GrainSchema) → P-core (dims→core, flip
 RefSchema).** The deferred rollup oee/facts requalification is owned by #228/#233 (knobs in place).
+
+### Phase P-silver — DONE (2026-09-09, PR #1167, deploy run 34352474554 = success)
+
+Moved the 9 current-state grains `public → silver` to join the live fact tier:
+`equipment_live_{day,hour,job,month,shift,week}`, `area_live_{day,shift}`, `site_live_day`.
+Migration `db/migrations/t237-silver-schema/{01-expand,rollback}.sql`.
+
+**Why NO search-path change / NO pgbouncer bounce:** `silver` was already on the DB search_path
+(before `public`). So every unqualified NON-SE reader (read-api `liveUNS` datasets, mission-control)
+resolves to the `silver` base the instant the `SET SCHEMA` lands — the public shim is shadowed for
+them, never on their hot path. Only the stream-engine (public-qualified, not search_path-absorbed)
+needed a code flip + deploy.
+
+**The grain writes are SPLIT across two SE code paths (the load-bearing nuance):**
+1. **uns/pocontrol live-state SINKS** — `internal/uns/{uns,current_rest}.go` (`Dest.GrainSchema`) +
+   `internal/pocontrol/setup_userlog.go` `equipment_live_job` (`route.grain`). **Peeled in Phase 1;
+   flipped here** `public→silver` in TWO places: `flows.go` analytics `Dest.GrainSchema` +
+   `sparkplug.go` `routeForSource` refactored+analyticsPool `route.grain`. New binary writes
+   `silver.equipment_live_*` directly.
+2. **rollup UPDATE** — `internal/rollup/{grains,entity_grains}.go` writes the grains via
+   `Dest.EvSchema="public"` (a `UPDATE %[1]s.%[3]s … FROM (…)`, NO `ON CONFLICT`). **Left on
+   `EvSchema="public"` (deferred to #228/#233)** → it writes `public.equipment_live_*` → the
+   auto-updatable public shim → `silver` base. **⇒ the public grain shims are a PERMANENT SE-rollup
+   bridge, NOT contracted at P-silver** (exact P-app.2 carry-forward: never drop a public shim a
+   still-public-qualified SE path reads/writes). A plain `SELECT *` view is auto-updatable and passes
+   `UPDATE…FROM` through to the base (proven family: P-barcode/P-app.2 ON CONFLICT(col) cases).
+
+**Census that made it deploy-simple:** read-api reads all grains UNQUALIFIED (`datasets.go` liveUNS
++ `equipment_live_shift JOIN equipments`); bake.go live-grain refs are TEST-ONLY (`bake_test.go`,
+shadow_go_port) and the comparator is off (`BAKE_COMPARATOR_ENABLED=false`, verified on the running
+container); the only DB-internal dependent is `serving.production_information (v)` on
+`equipment_live_shift` — OID-bound, survives. No owned sequences on the grains.
+
+**Sequence:** expand (`SET SCHEMA silver` ×9 + 9 auto-updatable public shim views, atomic,
+`lock_timeout=3s`; OLD engine bridged through the shims during the window — 0 42P01) → deploy
+(PR #1167: `go build/vet/test` green, golden fixtures + all 12 checks pass; stream-engine restarted
+healthy) → GATE.
+
+**GATE — all green (PROVEN post-deploy):**
+- **Grain writes land in `silver`:** `silver.equipment_live_job` fresh 48s, `equipment_live_hour`
+  `last_updated` advanced 12:32:31→12:43:47, `equipment_live_shift`→12:43:48 (both the new-binary
+  GrainSchema=silver sink AND the EvSchema=public→shim rollup land on the silver base).
+- **read-api HTTP 200** (POST `/v1/query` `{dataset}` via sidecar on `stack_packiot-net`, key
+  `stg-cpack-key` cid 3) on `live-equipment-{shift,job,day}` returning grain rows — the
+  mission-control reader path.
+- **Reader resolution proof through pgbouncer** (read-api's exact pooled path): unqualified
+  `equipment_live_shift` → `silver` (NOT the shim), 283 rows, `JOIN equipments` → 283.
+- **Ingest healthy** (silver.equipment_values lag 2s); **gold OEE UNCHANGED** (equipment_oee_hourly
+  366764 rows, == baseline); row counts preserved (hour 505, day/job/month/shift 283, area 23×2).
+- **0 new 42P01** across stream-engine/read-api (the sole 42P01 is the pre-existing
+  `sync06`/`report_shift_enterprsie_06` DEBRIS fossil).
+
+**Final state:** the 9 grains live SOLELY in `silver` (base `r` + pkeys followed by OID); `public`
+holds 9 auto-updatable shim views KEPT PERMANENTLY as the SE-rollup EvSchema bridge (contraction is
+owned by #228/#233 when the rollup constants requalify). Fully reversible via `rollback.sql` (revert
+the two flips first).
+
+**Remaining after P-silver: P-core (dims→core, flip RefSchema).**
