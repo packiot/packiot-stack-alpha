@@ -856,14 +856,29 @@ clean: EvSchema stays `"public"`, so every un-peeled ref still resolves through 
 the SAME physical table — the partial peel is byte-identical and fully deployable.** #228/#233 flip
 `SilverSchema`/`GoldSchema` (already defaulted correctly on the dest) per-constant later.
 
-**GATE (byte-identical gold OEE, absolute frozen window `[2026-08-10, 2026-09-09 00:00Z)`):**
-`gold.equipment_oee_shift` 12944 rows md5 `2b6d88c665e378f17f2806154b5f53d1`;
-`gold.equipment_oee_hourly` 121662 rows md5 `2df7b7d886224414809dbbf0d0b66b26` (pre-deploy baseline;
-re-hashed post-deploy — see below). `go build`/`go vet`/`go test ./...` all green (rewrote the
-`uns` SQL-builds golden for the new grain arg + the pocontrol `Execute` signature ripples clean).
+**Deployed:** PR #1165 → deploy run 34349950412 = success; `stream-engine` restarted healthy.
 
-**Contract:** `db/migrations/t237-stream-engine-schema/01-contract-app-shims.sql` drops
-`public.label_formats` + `public.user_logs` (reverts P-app.2 `06`) AFTER the deploy is healthy.
+**GATE — all green (PROVEN):**
+- **Byte-identical gold OEE** (absolute frozen window `[2026-08-10, 2026-09-09 00:00Z)`, older than the
+  live recalc horizon so byte-stable across deploy): pre- and post-deploy md5 IDENTICAL —
+  `gold.equipment_oee_shift` 12944 rows `2b6d88c665e378f17f2806154b5f53d1`,
+  `gold.equipment_oee_hourly` 121662 rows `2df7b7d886224414809dbbf0d0b66b26`. Requalification did
+  not move OEE (as expected — the rollup constants were untouched and the analytics dest keeps
+  EvSchema/RefSchema="public").
+- **0 relevant 42P01** across stream-engine/edge-api (the sole 42P01 is the pre-existing
+  `sync06`/`report_shift_enterprsie_06` DEBRIS fossil, predates this task).
+- **Ingest healthy** (silver.equipment_values lag 5.8s); **rollup writing** (gold.equipment_oee_hourly
+  computed_at lag 3m26s); **grain refresh writing** (public.equipment_live_hour last_updated 3m21s —
+  proves the GrainSchema="public" sink peel resolves); **boxes clean** (no `load label_formats`/
+  `load bridges`/`boxes pass failed`; app.label_formats resolves, 2 rows).
+- `go build`/`go vet`/`go test ./...` all green (rewrote the `uns` SQL-builds golden for the new
+  grain arg + the pocontrol `Execute`/`route` signature ripples; CI `stream-engine — golden fixtures`
+  + all 12 checks passed on #1165).
+
+**Contract — DONE.** `db/migrations/t237-stream-engine-schema/01-contract-app-shims.sql` applied:
+`DROP VIEW public.label_formats` + `public.user_logs` (reverts P-app.2 `06`; pg_depend confirmed 0
+dependents first). Post-drop both live SOLELY in `app` (relkind `r`), no shadow re-spawned, 0 new
+42P01 on SE/edge-api. Fully reversible via `rollback-app-shims.sql`.
 
 **Remaining after Phase 1: P-silver (grains→silver, flip GrainSchema) → P-core (dims→core, flip
 RefSchema).** The deferred rollup oee/facts requalification is owned by #228/#233 (knobs in place).
