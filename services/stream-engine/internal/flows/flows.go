@@ -78,15 +78,19 @@ func StandardFiltered(pool, analyticsPool *pgxpool.Pool, shadowGoPortEnabled boo
 	// is therefore moot here. See ADR-0045 G3 + the 2026-08-13 residuals sweep.
 	if analyticsPool != nil {
 		// STAGING live flow — the medallion + t237 reorg have re-homed the tables:
-		// facts→silver, OEE grains→gold, label_formats/user_logs→app. Dims and the
-		// live-state grains have NOT moved yet (P-core / P-silver), so RefSchema and
-		// GrainSchema stay `public` here and flip at their phase. EvSchema keeps the
-		// caggs/event side-tables/data_quality_event that no ticket has re-homed.
+		// facts→silver, OEE grains→gold, label_formats/user_logs→app, current-state
+		// grains→silver (P-silver). Dims have NOT moved yet (P-core), so RefSchema
+		// stays `public` here and flips at that phase. GrainSchema is now `silver`
+		// (P-silver): the uns/pocontrol live-state SINKS write silver.equipment_live_*
+		// directly. NOTE the rollup UPDATE path (internal/rollup/{grains,entity_grains}.go)
+		// still writes the grains via EvSchema="public" → the permanent public grain
+		// shim → silver base (that requalification is deferred to #228/#233). EvSchema
+		// keeps the caggs/event side-tables/data_quality_event that no ticket has re-homed.
 		return []Dest{{
 			Name: "packiot_analytics", Pool: analyticsPool,
 			EvSchema: "public", RefSchema: "public",
 			SilverSchema: "silver", GoldSchema: "gold",
-			GrainSchema: "public", AppSchema: "app",
+			GrainSchema: "silver", AppSchema: "app",
 		}}
 	}
 	// Single-flow deployment (new-prod, analyticsPool==nil): the three flows have
