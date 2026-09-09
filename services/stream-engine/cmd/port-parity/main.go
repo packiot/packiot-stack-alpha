@@ -45,7 +45,7 @@ var recalcSnapshotSQL = []string{
 	// identical input snapshots (source: public = staging F1, where the
 	// legacy engine's data lives). Window matches the port's default.
 	`CREATE TABLE ` + legacySchema + `.production_orders AS
-	   SELECT * FROM public.production_orders
+	   SELECT * FROM core.production_orders
 	    WHERE ts_start >= now() - interval '1 month' AND status > 1`,
 	`CREATE TABLE ` + legacySchema + `.production_orders_runtime AS
 	   SELECT r.* FROM gold.production_orders_runtime r

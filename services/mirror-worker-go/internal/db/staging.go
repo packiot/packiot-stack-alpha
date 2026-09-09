@@ -711,7 +711,7 @@ func (s *Staging) F1MirrorClosedPOShapes(ctx context.Context, source string, ent
 		       max(upper(por.runtime_timerange)) AS sealed_upper,
 		       bool_or(por.id_production_order IS NOT NULL
 		               AND upper(por.runtime_timerange) IS NULL) AS has_open_segment
-		  FROM public.production_orders po
+		  FROM core.production_orders po
 		  LEFT JOIN gold.production_orders_runtime por
 		    ON por.id_production_order = po.id_production_order
 		 WHERE po.id_enterprise = $2

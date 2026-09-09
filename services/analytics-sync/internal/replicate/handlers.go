@@ -219,21 +219,21 @@ const sqlCloseWindowsForEquipment = `UPDATE gold.production_orders_runtime r
 	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $2), recalc_needed = true
 	 WHERE r.id_equipment = $1 AND upper(runtime_timerange) IS NULL AND lower(runtime_timerange) < $2`
 
-const sqlSupersedeRunningPO = `UPDATE public.production_orders
+const sqlSupersedeRunningPO = `UPDATE core.production_orders
 	   SET status = 3, last_update = now()
 	 WHERE id_equipment = $1 AND status = 2 AND NOT (id_enterprise = $2 AND id_order = $3)`
 
 const sqlOpenWindow = `INSERT INTO gold.production_orders_runtime
 	       (id_production_order, id_equipment, runtime_timerange, recalc_needed)
 	SELECT po.id_production_order, po.id_equipment, tstzrange($3, NULL), true
-	  FROM public.production_orders po
+	  FROM core.production_orders po
 	 WHERE po.id_enterprise = $1 AND po.id_order = $2
 	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime x
 	        WHERE x.id_production_order = po.id_production_order AND upper(x.runtime_timerange) IS NULL)`
 
 const sqlCloseWindowsForPO = `UPDATE gold.production_orders_runtime r
 	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $3), recalc_needed = true
-	  FROM public.production_orders po
+	  FROM core.production_orders po
 	 WHERE po.id_enterprise = $1 AND po.id_order = $2
 	   AND r.id_production_order = po.id_production_order
 	   AND upper(r.runtime_timerange) IS NULL AND lower(r.runtime_timerange) < $3`
@@ -256,37 +256,37 @@ func closeRuntimeWindow(ctx context.Context, dst *pgxpool.Pool, ent int, idOrder
 
 // ─── production_orders SQL (staging-keyed) ───
 
-const sqlInsertPOAvailable = `INSERT INTO public.production_orders (
+const sqlInsertPOAvailable = `INSERT INTO core.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order,
 		nm_production_order, production_programmed, production_ordered,
 		txt_production_order_notes, status)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,1)
 	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
 
-const sqlInsertPORunning = `INSERT INTO public.production_orders (
+const sqlInsertPORunning = `INSERT INTO core.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order,
 		nm_production_order, production_programmed, production_ordered,
 		txt_production_order_notes, status, ts_start)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,2,$9)
 	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
 
-const sqlUpdatePOStart = `UPDATE public.production_orders
+const sqlUpdatePOStart = `UPDATE core.production_orders
 	   SET status = 2, ts_start = $1, last_update = now()
 	 WHERE id_enterprise = $2 AND id_order = $3`
 
-const sqlUpdatePOStop = `UPDATE public.production_orders
+const sqlUpdatePOStop = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_real = $3, last_update = now()
 	 WHERE id_enterprise = $4 AND id_order = $5`
 
-const sqlUpdatePOTsStart = `UPDATE public.production_orders
+const sqlUpdatePOTsStart = `UPDATE core.production_orders
 	   SET ts_start = $1, last_update = now()
 	 WHERE id_enterprise = $2 AND id_order = $3`
 
-const sqlUpdatePORecalc = `UPDATE public.production_orders
+const sqlUpdatePORecalc = `UPDATE core.production_orders
 	   SET recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $1 AND id_order = $2`
 
-const sqlClosePOChanged = `UPDATE public.production_orders
+const sqlClosePOChanged = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_final = $3, recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $4 AND id_order = $5`
 
