@@ -504,3 +504,111 @@ Ordered, staging-first, each step reversible; coordinate step 0 with the analyti
 `docs/plans/analytics-clean-schema-redesign.md` (the sibling), the gateway init script +
 `refresh-hist-cutover.sql`, `configs/superset/assets/{databases,datasets}/historian_union*`,
 `services/read-api/cmd/refdata-api/historian.go`, `terraform/staging/historian.tf`.
+
+---
+
+## 9. Phase-4-prod — PROD cutover runbook (GATED · owner-executed · do NOT auto-run)
+
+> **STATUS: NOT EXECUTED.** Staging is fully cut over and hardproofed (EV + EE, gateway
+> canonical def live, read-api `/v1/historian/{production,downtime}-series` deployed +
+> proven, terraform imported). This section is the ordered, reversible prod runbook for a
+> human owner to execute later against the **prod Superset box `i-0a5c5dadd9ea5e93e`**
+> (bucket `packiot-production-historian-*`, FDW target **`packiot`@10.20.10.89** — the
+> post-analytics-rename DB name, *not* `packiot_analytics`). Prod's cold store is
+> **CPACK-only**, so every unload is small. **No read-api code change is needed** — the same
+> deployed binary serves prod once the prod gateway exposes `ev_all` / `ev_all_events` and
+> its FDW; only prod `.env` (`FDW_DB=packiot`, `FDW_HOST=10.20.10.89`) differs from staging.
+
+**Why prod ≠ staging today (what this cutover removes) — see §3.2 / §5 Phase 4 / §6:**
+1. prod `hist` carries an in-view `CASE enterprise WHEN 1 THEN 3` (CPACK footgun; makes
+   Athena `enterprise=1` and the gateway `3` disagree) → **remove**, read the F3 partition
+   key directly.
+2. prod cold files are `data-*.parquet` under `enterprise=1` → **re-key to `enterprise=3`
+   `*-legacy.parquet`** so the canonical `*-legacy` glob reads them and the daily `data-*`
+   appends stay Athena-only (invisible to `ev_all`).
+3. prod has **no EE gateway objects** and **no EE Glue table** → add, mirroring staging §8-EE.
+
+### Pre-cutover gates (ALL must be green before P4P-1)
+- **G0 — staging parity signed off.** §5 Phase 2/3 + §8-EE green on staging (DONE).
+- **G0b — decode-spike fix live.** ADR-0045 P1 confirmed on prod ingest; keep
+  `HISTORIAN_APPEND_ENABLED=false` on prod until then, else the canonical re-unload
+  re-archives totalizer spikes (see MEMORY: totalizer stale-baseline clamp).
+- **G0c — fresh prod snapshot.** EBS snapshot of the prod gateway box + an `aws s3 sync`
+  of `packiot-production-historian-*` to a dated `-precutover/` prefix (the parquet re-key
+  is destructive-in-place; the sync is the rollback source).
+- **G0d — coordinate with the analytics/medallion owner (#226)** on the prod EE hot window
+  (`min/max ts_event` of CPACK ent-3 rows in `packiot`) so `ev_events_cutover` hands the
+  overlap to exactly one side. The `hist_production_orders(_runtime)` DROP is **their**
+  `packiot_analytics`-DDL task — explicitly **out of scope** here.
+
+### Ordered steps (each: action → hardproof GATE → rollback)
+
+**P4P-1 · Baseline inventory (read-only).**
+- Action: on `i-0a5c5dadd9ea5e93e`, capture `pg_get_viewdef('hist'|'ev_all')`, `hist_cutover`,
+  `pg_foreign_server`, FDW cols; `aws s3 ls` the prod bucket; `aws glue get-table
+  --database-name packiot_historian`. Snapshot a frozen-window RLS-fenced `ev_all` row-count
+  per CPACK equipment (the parity oracle for P4P-3).
+- GATE: baseline captured + G0c sync confirmed. Rollback: n/a (read-only).
+
+**P4P-2 · Re-key prod cold EV → F3 `*-legacy` (the heavy, in-place step).**
+- Action: re-unload / rewrite prod `enterprise=1` `data-*.parquet` backfill into
+  `enterprise=3` `*-legacy.parquet` (F3 id-space on disk, canonical raw-schema §4 columns
+  incl. `speed`, no in-view CASE). Apply the prod Glue DDL widen FIRST (Athena reads by
+  name; widening up-casts, narrowing does not).
+- GATE: `duckdb DESCRIBE` a sample asserts byte/column match; `count(*)` per (enterprise,
+  year, month) parity vs the G0c pre-cutover copy; Athena `enterprise=3` count == legacy
+  `enterprise=1` count for a spot month. Rollback: restore parquet from the `-precutover/`
+  prefix (files are immutable per key; overwrite back).
+
+**P4P-3 · Flip the prod gateway to the canonical init (CREATE OR REPLACE — cheap, reversible).**
+- Action: apply `services/historian-gateway/docker-entrypoint-initdb.d/10-historian-gateway.sh`
+  (the now-canonical script) on prod with prod `.env` (`FDW_DB=packiot`,
+  `FDW_HOST=10.20.10.89`): pinned `live.equipment_values` FDW (8 cols, prune-proof), `hist`
+  reads the F3 partition key with **no CASE** + `+speed`, `ev_all`/`ev_between` surface
+  `year`/`month`. Re-run `refresh-hist-cutover.sql`; run
+  `scripts/historian-cutover-coverage-check.sh` (exit 0).
+- GATE: RLS-fenced `ev_all` row-count parity vs the P4P-1 baseline on the frozen window for
+  CPACK (one legacy-era + one live-only window); `EXPLAIN` prune gate (bounded query scans
+  the spanning partitions only, not the full archive); Prometheus gateway probe stays green.
+  Rollback: `CREATE OR REPLACE` the prior `hist`/`ev_all` defs (captured in P4P-1) — views
+  are metadata-only, instant revert.
+
+**P4P-4 · EE promotion mirror on prod (§8-EE, prod).**
+- Action: re-unload prod EE (`enterprise=1`→`3`, canonical types) into `*-legacy.parquet`;
+  add `IMPORT FOREIGN SCHEMA … (equipment_events)` for `live.equipment_events`, plus
+  `ev_events_cutover` + `ev_all_events` to the prod init; run `refresh-ee-cutover.sql`.
+- GATE: tenant-fenced daily-downtime parity for CPACK on a frozen window vs hot-only
+  (`live.equipment_events`); **double-count check** against the G0d hot window
+  (`ts_event < cutover_ts` handed to cold, `>=` to hot, no overlap); `EXPLAIN` prune gate.
+  Rollback: `DROP VIEW ev_all_events; DROP TABLE ev_events_cutover;` + restore EE parquet
+  from `-precutover/` (EE serving simply 503s / falls back until re-added — additive).
+
+**P4P-5 · Codify prod terraform (import, 0-destroy).**
+- Action: add `aws_glue_catalog_table.equipment_events` to
+  `terraform/production/historian.tf` (reuse `local.historian_ee_columns`; prod bucket +
+  `packiot_historian` Glue DB), matching the deployed prod EE table's projection ranges
+  (mirror the staging drift-fix: `enterprise 0,120` / `year 1970,2027`). `terraform import`
+  it (do NOT plain-apply — a create collides with the CLI/gateway-created table).
+- GATE: `terraform validate` + a targeted `terraform plan` shows **0 to destroy** on the EE
+  table (in-place param/column reconciliation only — Athena reads Parquet by name, so a
+  column-order diff is correctness-neutral). §7.4 retention tiering already present on prod
+  (STANDARD_IA@365d → GLACIER_IR@730d, keep-forever; **verified 2026-09-08**, no action).
+  Rollback: `terraform state rm` the imported resource (state-only, touches no AWS object).
+
+**P4P-6 · Consumer re-verify (no repoint — parity only).**
+- Action: `POST /v1/historian/production-series` and `/downtime-series` against the prod
+  read-api with the prod CPACK `X-Api-Key` for one cold-deep window + one hot window.
+- GATE: both 200; cold window returns CPACK deep-history, hot window returns recent, a
+  cross-tenant key returns `[]` (server-cid fence); Superset prod `ev_all` + `packiot_historian`
+  datasets render; Prometheus probe green. Rollback: none needed (read path).
+
+**P4P-7 · Contract (DEFERRED — not this owner).**
+- `DROP hist_production_orders(_runtime)` + their `MANIFEST.f3-target` lines is a
+  `packiot_analytics`/medallion-owner task (cross-schema DDL), gated on a zero-writer
+  log-watch per the §186 writer-audit lesson. **Explicitly out of scope for this runbook.**
+
+**Reversibility summary:** every prod step is either metadata-only (`CREATE OR REPLACE` /
+`DROP VIEW`, instant revert), state-only (`terraform state rm`), or backed by the G0c
+`-precutover/` parquet copy. The parquet re-key (P4P-2) is the only destructive-in-place
+action and is the reason G0c is a hard gate. Keep `HISTORIAN_APPEND_ENABLED=false` on prod
+throughout until P4P-6 is signed off.
