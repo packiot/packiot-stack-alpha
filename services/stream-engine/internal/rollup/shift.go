@@ -93,7 +93,7 @@ const shiftValuesSQL = `
 	           sum(ca.net_production_incr)   AS net,
 	           COALESCE(avg(COALESCE(ca.ideal_production_speed, locf.ideal_production_speed)),
 	               (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = el.id_equipment)) AS ideal_speed,
-	           avg(CASE WHEN ca.state = 6 THEN ca.speed END) AS speed
+	           avg(CASE WHEN ca.state = 6 THEN ca.sum_speed / NULLIF(ca.cnt_speed, 0) END) AS speed
 	      FROM shift_elig el
 	      JOIN %[3]s.equipment_categorical_1hour ca
 	        ON ca.id_equipment = el.id_equipment

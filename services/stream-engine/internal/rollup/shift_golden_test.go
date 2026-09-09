@@ -47,7 +47,7 @@ const shiftGoldenSchema = `
 	);
 	CREATE TABLE golden.equipment_categorical_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
-	    id_shift int, state int, speed double precision, ideal_production_speed double precision,
+	    id_shift int, state int, sum_speed double precision, cnt_speed integer DEFAULT 1, ideal_production_speed double precision,
 	    gross_production_incr double precision, net_production_incr double precision
 	);
 	CREATE TABLE golden.equipment_oee_shift (

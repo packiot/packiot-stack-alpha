@@ -118,7 +118,7 @@ const hourSpeedSQL = `
 	                    m.ideal_production_speed,
 	                    locf.ideal_production_speed,
 	                    q.production_speed) END) AS ideal_speed,
-	           avg(m.speed) AS speed
+	           avg(m.sum_speed / NULLIF(m.cnt_speed, 0)) AS speed
 	      FROM hour_elig el
 	      LEFT JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = el.id_equipment
