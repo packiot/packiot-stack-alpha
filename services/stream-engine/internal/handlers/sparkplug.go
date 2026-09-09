@@ -524,7 +524,7 @@ func (h *SparkplugHandler) routeForSource(sourceType string) route {
 		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", app: "shadow_go_port", grain: "shadow_go_port"}
 	case "refactored":
 		if h.analyticsPool != nil {
-			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", app: "app", grain: "public"}
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", app: "app", grain: "silver"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
