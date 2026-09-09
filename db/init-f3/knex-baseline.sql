@@ -88,7 +88,15 @@ INSERT INTO knex_migrations (name, batch, migration_time) VALUES
   ('20250903183451_update_equipmentevents_trigger.ts',            0, now()), -- F3 has NO update_prev trigger — re-adding it double-manages event durations = WRONG OEE
   ('20260625000001_equipment_events_trigger_bypass_forced.ts',    0, now()), -- same trigger fn (bypass variant); F3 omits it
   ('20260701000001_shadow_go_port_schema.ts',                     0, now()), -- shadow_go_port/shadow_diff = F1<->F3 comparison infra; single-flow prod has no comparator
-  ('20260702000001_shadow_go_port_operator_tables.ts',            0, now())  -- shadow_go_port operator mirror tables; comparison infra, not needed in prod
+  ('20260702000001_shadow_go_port_operator_tables.ts',            0, now()), -- shadow_go_port operator mirror tables; comparison infra, not needed in prod
+  -- F3 CARRIES the column this migration DROPS. Running the DROP would mutate
+  -- the proven F3 shape (prod-knex-f3-reconcile-check.sh `columns` reads a
+  -- dropped F3 column as a CLOBBER = an F1-rebuild signal, with no "expected
+  -- drop" escape hatch). packml_register.id_rejectcounter is dead (100% NULL,
+  -- its sparkplug-decoder reader removed 2026-08-26) but harmless to retain, so
+  -- fake it: knex skips the DROP and greenfield `public` stays == F3. Mirrors
+  -- the "re-adding/altering DIVERGES from F3" fake-set category above.
+  ('20260826000001_drop_packml_register_id_rejectcounter.ts',     0, now())  -- F3 has packml_register.id_rejectcounter; dropping it diverges from the proven F3 shape (dead col, kept for parity)
 ON CONFLICT (name) DO NOTHING;
 
 -- Everything NOT faked above runs on `db-migrate` (knex migrate:latest), all of
@@ -109,5 +117,19 @@ ON CONFLICT (name) DO NOTHING;
 --   20260630235959_create_uns_equipment_current_metrics (IF NOT EXISTS; no-op — F3 has it)
 --   20260707120000_add_operator_pw_hash_to_users        (additive col, IF NOT EXISTS; edge-api SELECTs it)
 --   20260707180000_create_idempotency_keys              (new table)
+--   20260728000001_create_client_descriptors            (new table; ADR-0045 onboarding control plane)
+--   20260807000001_add_gross_scrap_machine_to_equipments (additive cols, hasColumn-guarded; line-lead OEE)
+--   20260809000001_enterprises_api_key_integrity        (NOT NULL + partial-unique index F3 lacks; #58 P2)
+--   20260809000002_users_id_user_cognito_unique         (additive col IF NOT EXISTS + partial-unique index)
+--   20260809000003_users_id_enterprise_notnull_fk       (NOT NULL + FK F3 lacks; #58 P2)
+--   20260809000004_user_roles_super_user_notnull         (backfill + DEFAULT/NOT NULL F3 lacks; #58 P2)
+--   20260812000001_add_equipment_active_dup_guard        (partial-unique guard index F3 lacks; ADR-0047 P0)
+--   20260813000001_fix_scrap_target_on_conflict          (CREATE OR REPLACE fn, core.scrap_targets-guarded no-op on base/test)
+--   20260819000001_add_availability_policy_to_equipments (additive cols, hasColumn-guarded; ADR-0047 §1)
+--   20260820000001_seed_legacy_language_packs            (CREATE TABLE IF NOT EXISTS + ON CONFLICT seed; no-op-safe on F3)
+--   20260820000002_create_translations                   (new tables translations + tenant_translations; ADR-0048 P3)
+--   20260820000003_explode_language_packs_to_translations (data backfill, to_regclass-guarded no-op when absent)
+--   20260823000001_create_capture_observations           (new table; ADR-0045 Phase-2b live-capture evidence)
+--   20260827000001_client_descriptors_add_deployed_status (widen CHECK on client_descriptors; runs after its create)
 
 COMMIT;
