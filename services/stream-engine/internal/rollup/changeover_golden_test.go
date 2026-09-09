@@ -80,7 +80,7 @@ func runShiftPassChangeover(ctx context.Context, t *testing.T, pool *pgxpool.Poo
 		sql := st.SQL
 		if st.Name == "events-bank" {
 			// The one line under test: reclassify the ts_planned bucket.
-			sql = fmt.Sprintf(shiftEventsSQL, "golden", plannedDowntimeExpr(changeoverAvailability))
+			sql = fmtRP(shiftEventsSQL, "golden", plannedDowntimeExpr(changeoverAvailability))
 		}
 		if _, err := tx.Exec(ctx, sql, []int{}, []int{}, []int{35}); err != nil {
 			if _, e2 := tx.Exec(ctx, sql, []int{}, []int{35}); e2 != nil {
