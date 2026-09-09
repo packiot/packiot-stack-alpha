@@ -940,3 +940,192 @@ owned by #228/#233 when the rollup constants requalify). Fully reversible via `r
 the two flips first).
 
 **Remaining after P-silver: P-core (dims→core, flip RefSchema).**
+
+### Phase P-core — DONE (2026-09-09, PR #1169, deploy run 34354979922 = success)
+
+Moved the **23 dimension/reference tables `public → core`** (HIGHEST RISK — the live control-plane
+write path + the hot SparkPlug ingest router): equipments, sites, areas, enterprises, clients,
+production_orders, products, product_families, shifts, shift_hours, teams, topic_routing,
+client_descriptors, box_production_bridges, oee_targets, production_targets, scrap_targets,
+equipment_downtime_reason, equipment_scrap_reason, downtime_reason, scrap_reason,
+equipment_validation_shift, shifts_exception_period. Migrations
+`db/migrations/t237-core-schema/{01-expand,02-search-path,03-contract,rollback}.sql`.
+
+**Sequence:** `CREATE SCHEMA core` + `SET SCHEMA core` ×23 + 23 auto-updatable public shims +
+`core.packml_register` chain (atomic, lock_timeout=3s; OLD pooled conns bridged by the shims) →
+widen search_path (`core` **last, before public** → unqualified-CREATE landing stays `gold`; core
+dim names are unique so a single `core` on the path resolves them to the base) + **restart
+stack-pgbouncer-1** → flip stream-engine analytics `Dest.RefSchema` `public→core` + deploy
+(PR #1169) → GATE → contract (drop 17 non-permanent shims).
+
+**packml_register chain (medallion rename surface):** `packml_register` is a VIEW over base table
+`topic_routing`. Moving `topic_routing→core` keeps `public.packml_register` valid (OID-bound to the
+moved base — the view text `FROM topic_routing` is compiled to the OID). Minted
+`core.packml_register` (`SELECT * FROM core.topic_routing`) for stream-engine's RefSchema=core read.
+`public.topic_routing` + `public.packml_register` kept as PERMANENT compat shims.
+
+**edge-api NEEDS NO CODE CHANGE (design-proven + live-verified):** edge-api → pgbouncer →
+packiot_analytics with NO per-session `SET search_path` (relies on the DB default), and 0 hardcoded
+`public.<dim>` in `src/`. The bounce repoints it; unqualified dim reads/writes resolve to `core`
+(core before public on the path). Same for read-api / sparkplug-decoder / barcode-service /
+operator-gateway (all 0 hardcoded).
+
+**GATE — all green (PROVEN, live control-plane):**
+- **Real edge-api HTTP control write → `core.<dim>`:** POST `/api/shifts/create` (sandbox ent
+  2000003) → **HTTP 201**, row landed in `core.shifts` (verified in the core base + via the shim),
+  reverted. Repeated **post-contract** (shim dropped) → **201** into `core.shifts` (resolved purely
+  via the widened path). 
+- **Live control-plane traffic lands in core:** `core.production_orders` 74 writes / 10 min, MAX
+  last_update 46s fresh, 9 running POs touched in 5 min (edge-api PO control + analytics-sync via the
+  permanent `public.production_orders` shim, ON CONFLICT col-inference — view-safe).
+- **stream-engine RefSchema=core:** rollup/reports/events read `core.<dim>` directly; **0 relevant
+  42P01** since the restart; gold OEE **actively computing** (equipment_oee_hourly 366764→367043 —
+  proves core.equipments reads succeed).
+- **read-api 200** on `/v1/operator-entities` + `/v1/operator-po-list` (dims via OID-bound v_* views
+  → core); **Superset** reads via OID-bound `bi.*` views (follow the core base automatically).
+- **ingest healthy** (silver.equipment_values lag 4–6s — sparkplug-decoder resolves topic_routing);
+  **42P01 sweep = 0** across edge-api/stream-engine/read-api/sparkplug-decoder/analytics-sync/
+  barcode-service/operator-gateway (all healthy).
+
+**⚠ INCIDENTAL PRE-EXISTING BUG found (NOT a P-core regression, NOT rolled back):** the FIRST gate
+attempt — POST `/api/production-targets/scrap` — 500'd with *"no unique or exclusion constraint
+matching the ON CONFLICT specification"*. Root cause: the DB fn `h_piot_set_scrap_target` does
+`INSERT INTO public.scrap_targets … ON CONFLICT (id_equipment)` but the PK is
+`(id_equipment, id_site)` — a **2-column** unique. **Hardproof it is view-independent:** the SAME
+`ON CONFLICT (id_equipment)` fails identically against the `core.scrap_targets` **base table**,
+while `ON CONFLICT (id_equipment, id_site)` succeeds. So the endpoint was already broken before the
+move — the shim is not implicated. Fix (repoint fn to core + correct the arbiter to
+`(id_equipment,id_site)`) is a separate ticket. `public.scrap_targets` shim KEPT so a later fix can
+traverse it and to avoid turning the conflict-error into a 42P01.
+
+**CONTRACT — 17 droppable shims dropped, 7 kept PERMANENT.** Census basis: edge-api/src + read-api +
+sparkplug-decoder + barcode-service + operator-gateway = 0 hardcoded `public.<dim>`; only 2 DB
+functions hardcode `public.<dim>` (`h_piot_set_scrap_target`→scrap_targets [WRITE, kept],
+`serving.oee_score`→equipments [READ, kept]); **0** SET-search_path functions reference any of the 17;
+all view dependents are OID-bound. **Permanent (7):** `topic_routing` + `packml_register` (chain +
+topology.go const + serving views), `production_orders` (analytics-sync LIVE dual-DB), `equipments` +
+`sites` + `shift_hours` (stream-engine shiftresolver hardcodes literal `public.*`, NOT RefSchema; +
+mirror-worker dual-DB equipments; + serving.oee_score fn), `scrap_targets` (h_piot_set_scrap_target
+fn). **Dropped (17):** areas, enterprises, clients, products, product_families, shifts, teams,
+box_production_bridges, oee_targets, production_targets, equipment_downtime_reason,
+equipment_scrap_reason, downtime_reason, scrap_reason, client_descriptors, equipment_validation_shift,
+shifts_exception_period — all now resolve to `core` via the path (post-contract residue = 0).
+
+**CARRY-FORWARD for the eventual stream-engine shiftresolver lift + #228/#233:** the permanent
+`public.{equipments,sites,shift_hours}` shims exist because `internal/shiftresolver/resolver.go`
+hardcodes `FROM public.<dim>` (literal, not RefSchema). Lift the resolver to a schema param (→ core)
+to drop those 3. `production_orders` + `scrap_targets` shims stay until (a) the analytics-sync/
+mirror-worker dual-DB SQL is core-aware AND prod is forward-ported, (b) h_piot_set_scrap_target is
+fixed+repointed. topic_routing/packml_register are intentionally permanent.
+
+**Final `public` inventory (the reorg is COMPLETE):** 18 tables — `data_quality_event`,
+`knex_migrations(_lock)`, the 6 `h_*` SETOF carriers, 3 event side-tables
+(`equipment_events_{cpac_shadow,low_speed,man}`), `equipment_values_1min` (dead matz),
+5 debris fossils (`data_sync_enterprise_06b`, `downtime_sync_enterprise_06`,
+`production_data_sync_enterprise_06`, `v_13_overview_{partial_scrap_rate,takt}`) — exactly the §2
+STAY set; 49 views — the 14 legacy caggs (`agg_*`/`ca_*`, →#239), the medallion shim views, the 9
+P-silver grain shims (permanent SE-rollup bridge), the 7 P-core permanent shims. `core` holds 24
+relations (23 dims + `core.packml_register`). Fully reversible via `rollback.sql` (revert the
+RefSchema flip + redeploy first).
+
+**Remaining (out of task scope): #239 (`agg_*`/`ca_*` caggs off `public`), the deferred rollup
+oee/facts requalification (#228/#233), the shiftresolver lift, the h_piot_set_scrap_target fix, and
+the prod forward-port (§9: multi-schema snapshot regen + knex reclassifications + widened path +
+lifted Go pins).**
+
+---
+
+## 12. RE-TAXONOMY (task #241) — adversarial-review corrections
+
+An adversarial review of the reorg (2026-09-09, user-approved) found the layout **mixed two
+partitioning axes**: the medallion LAYER axis (bronze/silver/gold) sat next to a DOMAIN axis
+(barcode/app), and two of the domain schemas *straddled* the layer axis. Two corrections, both
+**reversible, staging-only**, sequenced AFTER P-core completes (single-owner-per-DDL). See memory
+`feedback_schema_taxonomy_one_axis_adversarial_review`.
+
+### 12.1 Fold `barcode` INTO the layers (reverses P-barcode)
+
+`barcode` held 4 tables of two different maturities — fold each into its correct layer:
+
+| table | rows (staging) | writers (bare, search_path-absorbed) | → home | why |
+|-------|----|----|----|----|
+| `box_scans` | 32 (live) | edge-api scanned-boxes DAO **+** `barcode-service` (Go) | **bronze** | immutable append-only raw scan ledger (`box_scans_no_mutate` trigger) — textbook Bronze |
+| `po_box_counter` | 3 (live) | same two writers (ON CONFLICT upsert) | **gold** | per-PO aggregate (last_label_seq / total_qty) — a computed grain |
+| `scanned_boxes` | 0 | **edge-api Samples feature** (samples-dao INSERT/UPDATE/DELETE, labels-dao read) | **public** (KEEP) | see 12.1.1 |
+| `sample_boxes` | 0 | **edge-api Samples feature** (samples-dao) | **public** (KEEP) | see 12.1.1 |
+
+Then `DROP SCHEMA barcode` (empty).
+
+**12.1.1 — HARDPROOF CORRECTION overriding the literal "retire legacy scanned_boxes/sample_boxes"
+instruction.** A writer audit (the #186 rule: empty ≠ dead) proves `scanned_boxes`/`sample_boxes`
+are **NOT** legacy duplicates of `box_scans` — they back a **separate, live feature: production
+Samples**. `ListSamplesModule` + `ListScannedBoxesModule` are both registered in edge-api
+`app.module.ts`; the samples usecases (create/edit/delete/list) actively INSERT/UPDATE/DELETE them,
+including the `box_order_number=0` companion-row logic (`edit-sample.controller` "Also updates the
+corresponding scanned_boxes record where box_order_number = 0"). They are 0-row on staging only
+because nobody has exercised sampling there yet. **Dropping them would break the Samples endpoints
+with 42P01.** → KEEP both, rehome to `public` (where their bare DAO queries resolve, and alongside
+the other transactional tables). Flag to user in the summary: the "legacy" framing was a
+misclassification; box_scans/po_box_counter ≠ scanned_boxes/sample_boxes (different features).
+
+**12.1.2 — SHIM-FREE move (sidesteps the P-core `scrap_targets` ON CONFLICT-through-view failure).**
+`bronze` and `gold` already sit on the DB search_path AHEAD of `barcode`
+(`…gold, silver, bronze, barcode, …`). Both live writers use BARE table names (verified: edge-api
+`scanned-boxes-dao.ts` + `barcode-service/scans.go`; no `barcode.`/`bronze.`/`gold.` qualifier, no
+`CREATE TABLE box_scans` in any ledger-gated knex migration → no bootstrap-shadow). So a plain
+`ALTER TABLE barcode.box_scans SET SCHEMA bronze` makes the bare name resolve `bronze` **directly**
+(bronze precedes barcode on the path) — **no public shim view needed**, which means the
+`po_box_counter` `ON CONFLICT(id_production_order)` upsert never traverses a view and cannot hit the
+arbiter-inference error the P-core `scrap_targets` shim just did. Concurrent writes queue behind the
+sub-second AccessExclusive `SET SCHEMA` lock, then resolve to the new layer. `serving.v_po_box_totals`
+(the only view dependent) + `fk_box_scans_voids` (self-ref) follow by OID. **Zero code change** in
+edge-api or barcode-service; **zero stream-engine change** (SE has 0 refs to either table). Move
+`scanned_boxes`/`sample_boxes` → public the same shim-free way (public is on the path; bare Samples
+DAO resolves). Migration dir: `db/migrations/t241-barcode-fold/` (+ rollback).
+
+### 12.2 Split `app` INTO cohesive schemas (reverses + redoes P-app)
+
+`app` was a junk drawer of 3 unrelated cohesion groups (16 tables). Split by concern:
+
+| → `auth` (4) | → `config` (7) | → `ops` (5) |
+|----|----|----|
+| users | translations | idempotency_keys |
+| user_roles | tenant_translations | function_execution_log |
+| user_screen_config | language_packs | capture_observations |
+| user_logs | pages | mirror_replay_cursor |
+| | dashboard_config | mirror_replay_dlq |
+| | labels | |
+| | label_formats | |
+
+Then `DROP SCHEMA app` (empty). New search_path replaces `app` with `auth, config, ops`:
+`"$user", gold, silver, bronze, auth, config, ops, serving, customer_reports, core, public`
+(no cross-schema name collisions among the 16 → bare resolution unambiguous).
+
+**12.2.1 — stream-engine coupling (the one real code change).** The P-stream-engine refactor peeled
+a single `AppSchema` knob that currently points BOTH `label_formats` (boxes_adapter.go) and
+`user_logs` (pocontrol setup_userlog.go + events_justify.go) at `app`. In the split these land in
+DIFFERENT schemas, so `flows.Dest.AppSchema` must split into `ConfigSchema` (→`config`, for
+`label_formats`) + `AuthSchema` (→`auth`, for `user_logs`). One Go change + one surgical
+stream-engine redeploy (mirror the P-silver STOP-move-START if a rollup lock blocks the ALTER).
+
+**12.2.2 — ON CONFLICT-through-shim risk (apply the P-core fix here).** `idempotency_keys` and
+`mirror_replay_cursor` are ON CONFLICT upserts. Unlike barcode, the app split moves tables to NEW
+schemas NOT yet on old pooled connections' search_path, so an expand-window shim IS needed for bare
+writers until pools recycle — and a naive `app.*` shim view would hit the same arbiter-inference
+error P-core just fixed on `scrap_targets`. **Resolution: reuse whatever fix the P-core agent lands**
+(likely: requalify the writer to the target schema before dropping the shim, OR route the
+ON-CONFLICT writers' Dest knob to the qualified new schema so they never traverse a view — the
+stream-engine writers already get qualified via 12.2.1; for edge-api/analytics-sync bare
+ON-CONFLICT writers, prefer a short qualified-code deploy over a shim). Migration dir:
+`db/migrations/t241-app-split/` (+ rollback).
+
+### 12.3 Final hybrid taxonomy (intentional — documented, not drift)
+- Analytics pipeline → **layer axis**: `bronze` / `silver` / `gold` (now incl. box_scans/po_box_counter).
+- Dimensions → `core` (Kimball conformed dims).
+- Application → **cohesion axis**: `auth` / `config` / `ops`.
+- Read surface → **consumer+security axis**: `serving` (invoker) / `bi` (definer).
+- Customer-facing → `customer_reports` / `customer_dashboards`.
+- `public` → transactional tables incl. Samples (scanned_boxes/sample_boxes, production_orders, …) + permanent SE-rollup shim views.
+The rule that makes the hybrid defensible: **each schema answers exactly ONE question about its
+tables** (what maturity? what bounded context? what security posture?) — a table's home is
+predictable from its role; you never ask "which axis decided this?"
