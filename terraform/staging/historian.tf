@@ -229,6 +229,112 @@ resource "aws_glue_catalog_table" "equipment_values" {
   }
 }
 
+# ── The equipment_events (EE) projection table ───────────────────────────────
+# Codifies the cold equipment_events archive (downtime / OEE-reconstruction),
+# task #227 / docs/plans/historian-clean-schema-redesign.md §8-EE. Mirrors the
+# equipment_values table pattern (partition projection, no crawler). Columns are
+# the 24 EE data columns; enterprise/year/month are PATH partition keys (the file
+# also carries enterprise/year/month copies — Hive ignores them, reading the
+# partition value from the path, exactly like the EV table).
+#
+# ID-SPACE: F3 (post scripts/historian-events-reunload.sh). Only VERIFIED-F3-
+# remapped partitions live under equipment_events/; un-promoted legacy partitions
+# are quarantined under equipment_events_legacy_unpromoted/ (their legacy ids
+# collide with real F3 tenant ids — a cross-tenant hazard) and are NOT catalogued.
+#
+# APPLY NOTE: this table was first created via CLI (pre-redesign shape). This is
+# the matching IaC — reconcile with `terraform import`, do NOT plain-apply (a
+# create would collide with the existing catalog entry):
+#   terraform import aws_glue_catalog_table.equipment_events \
+#     639178078294:packiot_historian_staging:equipment_events
+locals {
+  historian_ee_columns = [
+    { name = "id_equipment", type = "int" },
+    { name = "ts_event", type = "timestamp" },
+    { name = "ts_end", type = "timestamp" },
+    { name = "duration", type = "int" },
+    { name = "status", type = "int" },
+    { name = "planned_downtime", type = "boolean" },
+    { name = "change_over", type = "boolean" },
+    { name = "id_enterprise", type = "int" },
+    { name = "id_equipment_event", type = "bigint" },
+    { name = "cd_machine", type = "string" },
+    { name = "cd_category", type = "string" },
+    { name = "cd_subcategory", type = "string" },
+    { name = "desc_category", type = "string" },
+    { name = "desc_subcategory", type = "string" },
+    { name = "cd_category_client", type = "int" },
+    { name = "cd_subcategory_client", type = "int" },
+    { name = "txt_downtime_notes", type = "string" },
+    { name = "idle", type = "string" },
+    { name = "idle_processed", type = "boolean" },
+    { name = "forced_creation_system", type = "boolean" },
+    { name = "fault", type = "int" },
+    { name = "fault_processed", type = "boolean" },
+    { name = "ignore_cost", type = "boolean" },
+    { name = "last_update", type = "timestamp" },
+  ]
+}
+
+resource "aws_glue_catalog_table" "equipment_events" {
+  name          = "equipment_events"
+  database_name = aws_glue_catalog_database.historian.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    EXTERNAL                      = "TRUE"
+    classification                = "parquet"
+    "parquet.compression"         = "ZSTD"
+    "projection.enabled"          = "true"
+    "projection.enterprise.type"  = "integer"
+    "projection.enterprise.range" = "0,120"
+    "projection.year.type"        = "integer"
+    "projection.year.range"       = "2019,2027"
+    "projection.month.type"       = "integer"
+    "projection.month.range"      = "1,12"
+    "storage.location.template"   = "s3://${aws_s3_bucket.historian.bucket}/equipment_events/enterprise=$${enterprise}/year=$${year}/month=$${month}/"
+  }
+
+  partition_keys {
+    name = "enterprise"
+    type = "int"
+  }
+  partition_keys {
+    name = "year"
+    type = "int"
+  }
+  partition_keys {
+    name = "month"
+    type = "int"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.historian.bucket}/equipment_events/"
+    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+    }
+
+    dynamic "columns" {
+      for_each = local.historian_ee_columns
+      content {
+        name = columns.value.name
+        type = columns.value.type
+      }
+    }
+  }
+}
+
+# ── PROD counterpart (author-for-review; add when terraform/production/historian.tf
+# lands from the prod-hardening branch, Phase 4) ──────────────────────────────
+# The prod historian Glue DB (packiot_historian) currently has NO EE table. Add an
+# identical aws_glue_catalog_table.equipment_events there, referencing the prod
+# bucket + prod Glue DB, AFTER the prod EE cold archive is re-unloaded to F3 (the
+# prod cutover is a later round). Reuse local.historian_ee_columns (identical
+# schema). This staging block is the template.
+
 # ── Athena workgroup ─────────────────────────────────────────────────────────
 # Dedicated workgroup so historian queries are isolated + cost-guarded. Results
 # spill to athena-results/ (lifecycle-expired at 30 d). 10 GB per-query scan
