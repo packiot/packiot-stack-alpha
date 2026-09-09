@@ -90,7 +90,11 @@ SELECT c.relname||chr(9)||a.attname||chr(9)||format_type(a.atttypid,a.atttypmod)
   FROM pg_class c
   JOIN pg_namespace n ON n.oid=c.relnamespace
   JOIN pg_attribute a ON a.attrelid=c.oid
- WHERE n.nspname='public' AND c.relkind='r'
+ -- task #237 public→core/app/barcode reorg: census the reorg target schemas too,
+ -- else a table SET-SCHEMA'd out of public (e.g. app.mirror_replay_dlq) would
+ -- vanish from this gate. relname is emitted schema-agnostically, so a moved
+ -- table keeps its identity in the F3-target ⊆ candidate column-subset check.
+ WHERE n.nspname IN ('public','core','app','barcode') AND c.relkind='r'
    AND a.attnum>0 AND NOT a.attisdropped
    AND c.oid NOT IN (SELECT objid FROM ext_objs)
    AND c.relname NOT IN ('knex_migrations','knex_migrations_lock')
