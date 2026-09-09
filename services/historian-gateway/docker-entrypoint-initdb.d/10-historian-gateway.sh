@@ -45,11 +45,19 @@
 #     Live still fills forward: 50,594 ent3 rows exist with ts>cutover (today).
 #
 # INVARIANT (load-bearing): every enterprise present in the historian MUST have a
-# hist_cutover row, and cutover(e) MUST equal max(hist.ts_value). refresh_hist_cutover()
-# computes exactly that. RE-RUN the cutover refresh (refresh-hist-cutover.sql) after EVERY historian backfill/
-# append that extends the cold store (otherwise a stale cutover lets the newly-archived
+# hist_cutover row, and cutover(e) MUST equal max(hist.ts_value). The inline seed
+# below (and the top-level refresh-hist-cutover.sql) compute exactly that. RE-RUN the
+# cutover refresh (refresh-hist-cutover.sql) after EVERY historian backfill/append
+# that extends the cold store (otherwise a stale cutover lets the newly-archived
 # window be served by BOTH sides again). A missing row for an in-historian enterprise
 # re-introduces the double-count (LEFT JOIN NULL keeps all live AND all hist).
+#
+# DO NOT wrap this refresh in a PL/pgSQL function: pg_duckdb CANNOT execute a DuckDB
+# scan (the `hist` parquet read) inside a function body — it throws "DuckDB execution
+# is not supported inside functions", silently leaving hist_cutover stale → double
+# count. A broken `refresh_hist_cutover()` plpgsql function of exactly this shape was
+# found live on staging (never in this repo) and DROPPED 2026-09-08. The refresh MUST
+# stay a TOP-LEVEL statement (the inline seed here + refresh-hist-cutover.sql).
 #
 # ── PARTITION PRUNING (T3/T6 — added 2026-09-04) ──────────────────────────────
 # The historian is hive-partitioned enterprise=/year=/month=, one *-legacy.parquet
@@ -114,9 +122,27 @@ DROP USER MAPPING IF EXISTS FOR ${POSTGRES_USER} SERVER live_pg;
 CREATE USER MAPPING FOR ${POSTGRES_USER} SERVER live_pg
   OPTIONS (user '${FDW_USER}', password '${FDW_PASS}');
 CREATE SCHEMA IF NOT EXISTS live;
-IMPORT FOREIGN SCHEMA public LIMIT TO (equipment_values) FROM SERVER live_pg INTO live;
+-- PINNED foreign table (NOT `IMPORT FOREIGN SCHEMA`): declare ONLY the columns the
+-- gateway serves. The remote equipment_values carries ~58 cols, most of them dead
+-- (quality/faults/analogs/state/…); the analytics clean-schema cutover PRUNES those.
+-- A pinned import is prune-proof — dropping a dead column on the remote can never
+-- break this foreign table (postgres_fdw only ships referenced columns). Types match
+-- the remote (gross/net/speed = real; ids = int; ts_value = timestamptz).
+DROP FOREIGN TABLE IF EXISTS live.equipment_values;
+CREATE FOREIGN TABLE live.equipment_values (
+  ts_value              timestamptz,
+  id_enterprise         integer,
+  id_site               integer,
+  id_area               integer,
+  id_equipment          integer,
+  gross_production_incr real,
+  net_production_incr   real,
+  speed                 real
+) SERVER live_pg OPTIONS (schema_name 'public', table_name 'equipment_values');
 -- HOT equipment_events (downtime/OEE-reconstruction) — see the EE section at the
 -- bottom (ev_all_events). Imported here so live.equipment_events exists before it.
+-- NOTE: equipment_events is NOT part of the analytics clean-schema column-prune, so
+-- an IMPORT (vs a pinned table) is safe here; ev_all_events selects a fixed subset.
 IMPORT FOREIGN SCHEMA public LIMIT TO (equipment_events) FROM SERVER live_pg INTO live;
 
 -- COLD: S3 Parquet historian via pg_duckdb. Scoped read-only key (instance-role
@@ -126,6 +152,9 @@ SELECT duckdb.create_simple_secret('S3','${HIST_AWS_KEY}','${HIST_AWS_SECRET}','
 
 -- Only *-legacy.parquet == the deep-remapped legacy backfill. Surfaces the hive
 -- partition columns year/month so a bounded query can PRUNE (T3, see header).
+-- Serving surface = {gross, net, speed} (canonical, narrow — a production-series
+-- server, not a raw mirror). `speed` is present in every *-legacy.parquet on disk,
+-- so it is surfaced without a re-unload.
 CREATE OR REPLACE VIEW hist AS
 SELECT r['ts_value']::timestamp               AS ts_value,
        r['enterprise']::int                   AS id_enterprise,
@@ -133,7 +162,8 @@ SELECT r['ts_value']::timestamp               AS ts_value,
        r['month']::int                        AS month,
        r['id_equipment']::int                 AS id_equipment,
        r['gross_production_incr']::double precision AS gross_production_incr,
-       r['net_production_incr']::double precision   AS net_production_incr
+       r['net_production_incr']::double precision   AS net_production_incr,
+       r['speed']::double precision           AS speed
 FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values/*/*/*/*-legacy.parquet',
                   hive_partitioning => true) r;
 
@@ -175,9 +205,9 @@ ON CONFLICT (id_enterprise)
 -- HOT: live rows STRICTLY NEWER than this enterprise's historian coverage.
 --   LEFT JOIN so a live-only enterprise (no cutover row) keeps ALL its live rows.
 --   (If an IN-HISTORIAN enterprise is missing its cutover row, this keeps all its
---    live rows AND hist keeps all its rows -> double-count. refresh_hist_cutover()
---    at init + after each backfill upholds the "every historian enterprise has a
---    row" invariant that prevents this.)
+--    live rows AND hist keeps all its rows -> double-count. The inline cutover seed
+--    at init + refresh-hist-cutover.sql after each backfill upholds the "every
+--    historian enterprise has a row" invariant that prevents this.)
 -- COLD: the full deep-remapped historian archive (all rows are <= cutover_ts by
 --   construction, so no filter is needed and the DuckDBScan stays prunable).
 CREATE OR REPLACE VIEW ev_all AS
@@ -187,7 +217,8 @@ CREATE OR REPLACE VIEW ev_all AS
          EXTRACT(MONTH FROM lv.ts_value)::int  AS month,
          lv.id_equipment,
          lv.gross_production_incr,
-         lv.net_production_incr
+         lv.net_production_incr,
+         lv.speed
     FROM live.equipment_values lv
     LEFT JOIN hist_cutover c ON c.id_enterprise = lv.id_enterprise
    WHERE c.cutover_ts IS NULL OR lv.ts_value > c.cutover_ts
@@ -198,7 +229,8 @@ CREATE OR REPLACE VIEW ev_all AS
          h.month,
          h.id_equipment,
          h.gross_production_incr,
-         h.net_production_incr
+         h.net_production_incr,
+         h.speed
     FROM hist h;
 
 -- ── ev_between(p_start, p_end): pruning helper for read-api / tools (T3) ──────
@@ -209,20 +241,20 @@ CREATE OR REPLACE VIEW ev_all AS
 CREATE OR REPLACE FUNCTION ev_between(p_start timestamptz, p_end timestamptz)
 RETURNS TABLE (ts_value timestamp, id_enterprise int, year int, month int,
                id_equipment int, gross_production_incr double precision,
-               net_production_incr double precision)
+               net_production_incr double precision, speed double precision)
 LANGUAGE sql STABLE AS \$fn\$
   SELECT lv.ts_value,
          lv.id_enterprise,
          EXTRACT(YEAR FROM lv.ts_value)::int,
          EXTRACT(MONTH FROM lv.ts_value)::int,
-         lv.id_equipment, lv.gross_production_incr, lv.net_production_incr
+         lv.id_equipment, lv.gross_production_incr, lv.net_production_incr, lv.speed
     FROM live.equipment_values lv
     LEFT JOIN hist_cutover c ON c.id_enterprise = lv.id_enterprise
    WHERE (c.cutover_ts IS NULL OR lv.ts_value > c.cutover_ts)
      AND lv.ts_value >= p_start AND lv.ts_value < p_end
   UNION ALL
   SELECT h.ts_value, h.id_enterprise, h.year, h.month,
-         h.id_equipment, h.gross_production_incr, h.net_production_incr
+         h.id_equipment, h.gross_production_incr, h.net_production_incr, h.speed
     FROM hist h
    WHERE ( h.year >  EXTRACT(YEAR FROM p_start)::int
         OR (h.year = EXTRACT(YEAR FROM p_start)::int AND h.month >= EXTRACT(MONTH FROM p_start)::int) )

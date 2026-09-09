@@ -186,11 +186,16 @@ resource "aws_glue_catalog_table" "equipment_values" {
     classification        = "parquet"
     "parquet.compression" = "ZSTD"
     # Athena partition projection — the whole point (no crawler).
+    # Ranges MATCH the deployed Glue table (drift fix 2026-09-08: was 1,100 / 2019,2027).
+    # enterprise 0,120 covers the F3 id-space incl. the enterprise=0 legacy partition;
+    # year 1970,2027 tolerates any legacy timestamp. (Two tiny legacy oddities,
+    # enterprise=10016 and =1000000, fall outside 0,120 — they are gateway-visible via
+    # the read_parquet glob but Athena-invisible; pre-existing, left as-is.)
     "projection.enabled"          = "true"
     "projection.enterprise.type"  = "integer"
-    "projection.enterprise.range" = "1,100"
+    "projection.enterprise.range" = "0,120"
     "projection.year.type"        = "integer"
-    "projection.year.range"       = "2019,2027"
+    "projection.year.range"       = "1970,2027"
     "projection.month.type"       = "integer"
     "projection.month.range"      = "1,12"
     # $${...} escapes terraform interpolation — Athena receives literal ${...}.
@@ -289,10 +294,15 @@ resource "aws_glue_catalog_table" "equipment_events" {
     "projection.enterprise.type"  = "integer"
     "projection.enterprise.range" = "0,120"
     "projection.year.type"        = "integer"
-    "projection.year.range"       = "2019,2027"
-    "projection.month.type"       = "integer"
-    "projection.month.range"      = "1,12"
-    "storage.location.template"   = "s3://${aws_s3_bucket.historian.bucket}/equipment_events/enterprise=$${enterprise}/year=$${year}/month=$${month}/"
+    # MATCH the deployed EE Glue table (same drift-fix rationale as the EV table
+    # above): the CLI-created table was imported at 1970,2027. 1970 tolerates any
+    # legacy EE timestamp; the read-api downtime path serves via the gateway
+    # read_parquet glob (not Athena projection), so this only bounds direct
+    # Athena/Superset EE queries.
+    "projection.year.range"     = "1970,2027"
+    "projection.month.type"     = "integer"
+    "projection.month.range"    = "1,12"
+    "storage.location.template" = "s3://${aws_s3_bucket.historian.bucket}/equipment_events/enterprise=$${enterprise}/year=$${year}/month=$${month}/"
   }
 
   partition_keys {
