@@ -196,7 +196,8 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// Fail-safe: unknown source_type falls back to (main pool, public).
 	// Shadow pool nil-fallback: if source_type="refactored" but no shadow
 	// pool configured, silently downgrade to main pool. Logged.
-	pool, schema := h.routeForSource(p.SourceType)
+	r := h.routeForSource(p.SourceType)
+	pool, schema := r.pool, r.ev
 	tenant := tenantOf(p)
 
 	// Build phase — collect one Query per metric into the batch.
@@ -249,30 +250,32 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			// production values (keep-existing-else-fill COALESCE + the
 			// session-tz ts_value::date cast). The Go resolver is the sole
 			// shift writer on ALL routes now (the F1 trigger is retired).
-			q, clampEv, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
+			q, clampEv, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, r.silver)
 			if clampEv != nil {
 				clampEvents = append(clampEvents, clampEv)
 			}
 			if buildErr == nil && q != nil {
 				// Returns nil under the fold flag (skip the separate UPDATE).
-				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
+				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, r.silver)
 				// ADR-0036 B1 medallion Bronze append (flag-gated,
 				// BRONZE_RAW_APPEND). Returns nil when the flag is off, so
 				// nothing extra is queued and the batch is byte-identical.
-				// Same schema/pool as the merged UPSERT → symmetric to whatever
-				// F2/F3 destination this delivery routes to.
-				rawQ, _ = h.equipmentValues.BuildRawAppend(ctx, m, schema)
+				// t231: the raw append lands in the Bronze layer (r.bronze)
+				// while the merged fact UPSERT lands in Silver (r.silver).
+				rawQ, _ = h.equipmentValues.BuildRawAppend(ctx, m, r.bronze)
 				if p.SourceType != "" {
 					// Event mint stays shadow-only: F1's EVENT trigger
 					// remains its writer until the §6 flip.
-					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
-					eventRawQ, _ = h.equipmentValues.BuildEventMintRaw(ctx, m, schema)
+					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, r.silver)
+					eventRawQ, _ = h.equipmentValues.BuildEventMintRaw(ctx, m, r.bronze)
 				}
 			}
 		case h.unsMetrics.CanWrite(kind):
-			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
+			// t231: equipment_live_metrics is a Silver current-state fact.
+			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, r.silver)
 		case h.poParameter.CanWrite(kind):
-			q, buildErr = h.poParameter.Build(ctx, m, p.Gateway, schema)
+			// t231: PO-parameter writes land in equipment_values (Silver).
+			q, buildErr = h.poParameter.Build(ctx, m, p.Gateway, r.silver)
 		default:
 			h.skippedUnk.Add(1)
 			continue
@@ -466,31 +469,60 @@ func clampGrainSuffix(kind sparkplug.MetricKind) string {
 	}
 }
 
-// routeForSource picks the (pool, schema) tuple based on envelope
-// source_type. Whitelist-driven — see comment at handler.
+// route is the per-delivery destination: the pool plus the medallion-layer
+// schema each writer class targets. t231 (medallion schema separation) split
+// the former single `schema` string into three so one delivery can fan out to
+// the right layer per table:
+//   - silver → the merged/current-state facts: equipment_values,
+//     equipment_events, equipment_live_metrics (fact UPSERT, shift-fill,
+//     event mint, po_parameter, uns current-metrics).
+//   - bronze → the ADR-0036 immutable raw append (equipment_values_raw /
+//     equipment_events_raw), dormant unless BRONZE_RAW_APPEND.
+//   - ev     → everything that STAYS in public: data_quality_event (clamp DQ
+//     side-write) and the PO control writes (production_orders dimension +
+//     production_orders_runtime, which is served through its gold shim view).
+//     ev is also the schema the shadow-swallow check keys on.
+type route struct {
+	pool   *pgxpool.Pool
+	silver string
+	bronze string
+	ev     string
+}
+
+// routeForSource picks the destination route based on envelope source_type.
+// Whitelist-driven — see comment at handler.
 //
 // ADR-0010 Phase 3 introduced source_type="go" → shadow_go_port schema on
 // the main pool. ADR-0012 adds source_type="refactored" → shadow pool
-// (packiot_analytics DB) writing to public schema, so the entire refactored
-// schema can be exercised end-to-end from real live traffic without
-// touching the packiot production DB.
+// (packiot_analytics DB), so the entire refactored schema can be exercised
+// end-to-end from real live traffic without touching the packiot production DB.
+//
+// t231 medallion split (STAGING ONLY): the "refactored" analytics route now
+// fans facts→silver, raw→bronze, DQ/PO→public. This is reached ONLY when a
+// shadow analyticsPool is configured (staging). Prod is single-flow
+// (analyticsPool==nil, source_type="") → the default branch keeps every layer
+// on "public", so the medallion names are never referenced there until the
+// prod forward-port lands.
 //
 // If analyticsPool is nil (POSTGRES_ANALYTICS_DB_NAME unset) and source_type
 // is "refactored", we silently fall back to (main pool, public) — logged
 // as a warning. Fail-safe: never route to nil.
-func (h *SparkplugHandler) routeForSource(sourceType string) (*pgxpool.Pool, string) {
+func (h *SparkplugHandler) routeForSource(sourceType string) route {
 	switch sourceType {
 	case "go":
-		return h.pool, "shadow_go_port"
+		// Shadow comparator plane: all layers collapse to shadow_go_port so
+		// the missing-schema swallow (keyed on ev) still fires on a single-flow
+		// stack where shadow_go_port is absent.
+		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port"}
 	case "refactored":
 		if h.analyticsPool != nil {
-			return h.analyticsPool, "public"
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
-		return h.pool, "public"
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public"}
 	default:
-		return h.pool, "public"
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public"}
 	}
 }
 

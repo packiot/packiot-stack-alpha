@@ -29,42 +29,55 @@ func TestRouteForSource(t *testing.T) {
 		sourceType    string
 		analyticsPool *pgxpool.Pool
 		wantMainPool  bool // true = expect main, false = expect shadow
-		wantSchema    string
+		wantSilver    string
+		wantBronze    string
+		wantEv        string
 	}{
 		{
-			name:          "default source_type → main pool + public",
+			name:          "default source_type → main pool + all public",
 			sourceType:    "",
 			analyticsPool: analyticsPool,
 			wantMainPool:  true,
-			wantSchema:    "public",
+			wantSilver:    "public",
+			wantBronze:    "public",
+			wantEv:        "public",
 		},
 		{
-			name:          "source_type=go → main pool + shadow_go_port (ADR-0010)",
+			name:          "source_type=go → main pool + all shadow_go_port (ADR-0010)",
 			sourceType:    "go",
 			analyticsPool: analyticsPool,
 			wantMainPool:  true,
-			wantSchema:    "shadow_go_port",
+			wantSilver:    "shadow_go_port",
+			wantBronze:    "shadow_go_port",
+			wantEv:        "shadow_go_port",
 		},
 		{
-			name:          "source_type=refactored + shadow configured → shadow pool + public (ADR-0012)",
+			// t231 medallion split: facts→silver, raw→bronze, DQ/PO→public.
+			name:          "source_type=refactored + shadow configured → analytics pool + medallion layers (t231)",
 			sourceType:    "refactored",
 			analyticsPool: analyticsPool,
 			wantMainPool:  false,
-			wantSchema:    "public",
+			wantSilver:    "silver",
+			wantBronze:    "bronze",
+			wantEv:        "public",
 		},
 		{
-			name:          "source_type=refactored + shadow NOT configured → fallback main pool + public (fail-safe)",
+			name:          "source_type=refactored + shadow NOT configured → fallback main pool + all public (fail-safe)",
 			sourceType:    "refactored",
 			analyticsPool: nil,
 			wantMainPool:  true,
-			wantSchema:    "public",
+			wantSilver:    "public",
+			wantBronze:    "public",
+			wantEv:        "public",
 		},
 		{
-			name:          "unknown source_type → fail-safe fallback",
+			name:          "unknown source_type → fail-safe fallback (all public)",
 			sourceType:    "bogus",
 			analyticsPool: analyticsPool,
 			wantMainPool:  true,
-			wantSchema:    "public",
+			wantSilver:    "public",
+			wantBronze:    "public",
+			wantEv:        "public",
 		},
 	}
 
@@ -75,13 +88,19 @@ func TestRouteForSource(t *testing.T) {
 				analyticsPool: tt.analyticsPool,
 				logger:        discardLogger,
 			}
-			gotPool, gotSchema := h.routeForSource(tt.sourceType)
-			gotIsMain := gotPool == mainPool
+			r := h.routeForSource(tt.sourceType)
+			gotIsMain := r.pool == mainPool
 			if gotIsMain != tt.wantMainPool {
 				t.Errorf("pool: got main=%v, want main=%v", gotIsMain, tt.wantMainPool)
 			}
-			if gotSchema != tt.wantSchema {
-				t.Errorf("schema: got %q, want %q", gotSchema, tt.wantSchema)
+			if r.silver != tt.wantSilver {
+				t.Errorf("silver: got %q, want %q", r.silver, tt.wantSilver)
+			}
+			if r.bronze != tt.wantBronze {
+				t.Errorf("bronze: got %q, want %q", r.bronze, tt.wantBronze)
+			}
+			if r.ev != tt.wantEv {
+				t.Errorf("ev: got %q, want %q", r.ev, tt.wantEv)
 			}
 		})
 	}
