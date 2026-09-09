@@ -29,7 +29,6 @@ package rollup
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"testing"
