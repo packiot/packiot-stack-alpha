@@ -212,7 +212,10 @@ func RunEntityGrains(ctx context.Context, d flows.Dest, exclAreas []int) error {
 		if sp.Name == "site" {
 			excl = []int{} // prod excludes areas only; sites unfiltered
 		}
-		for _, st := range entityStatements(sp, d.EvSchema, d.RefSchema) {
+		// #251: entity_grains' evSchema qualifies ONLY the *_oee_daily/_shift GOLD grains
+		// (ScopePred's only schema ref is %[2]s=RefSchema=core) → feed GoldSchema, not the
+		// public shim, so the shim can drop.
+		for _, st := range entityStatements(sp, d.GoldSchema, d.RefSchema) {
 			var err error
 			if strings.Contains(st.SQL, "$1") {
 				_, err = d.Pool.Exec(ctx, st.SQL, excl)

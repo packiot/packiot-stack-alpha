@@ -10,8 +10,21 @@ import (
 // (silver_clamp_golden_test.go); these pin the SQL contract so a refactor can't
 // silently drop the clamp or start lowering gross.
 func TestSilverNetLeGrossClampShape(t *testing.T) {
-	clamp := silverClampSQL("ev", "equipment_oee_shift")
-	detect := silverDetectSQL("ev", "equipment_oee_shift", "ref", "shift")
+	clamp := silverClampSQL("gold", "equipment_oee_shift")
+	detect := silverDetectSQL("ev", "equipment_oee_shift", "ref", "shift", "gold")
+
+	// #251 de-shim: the grain the detect/clamp READ lives in gold; data_quality_event
+	// stays in the ev/public plane. Lock the split so a refactor can't re-merge them
+	// onto the (now-dropped) public shim.
+	if !strings.Contains(detect, "gold.equipment_oee_shift") {
+		t.Errorf("detect must READ the grain from GoldSchema (gold.equipment_oee_shift):\n%s", detect)
+	}
+	if !strings.Contains(detect, "ev.data_quality_event") {
+		t.Errorf("detect must WRITE data_quality_event on the ev plane (ev.data_quality_event):\n%s", detect)
+	}
+	if !strings.Contains(clamp, "gold.equipment_oee_shift") {
+		t.Errorf("clamp must target the grain in GoldSchema (gold.equipment_oee_shift):\n%s", clamp)
+	}
 
 	// The clamp lowers net to gross (folded with the non-negative clamp), and does
 	// so via one SET clause — never two SET clauses for net (which is a SQL error).
