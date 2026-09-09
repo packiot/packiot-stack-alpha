@@ -175,7 +175,7 @@ func RunInferSpeed(ctx context.Context, d flows.Dest, cfg ProvisionalSpeed, logg
 // fmtInferSpeed formats inferSpeedSQL for one dest — the single place the 7
 // positional args are bound, shared by RunInferSpeed and the golden test.
 func fmtInferSpeed(d flows.Dest, cfg ProvisionalSpeed) string {
-	return fmt.Sprintf(inferSpeedSQL, d.EvSchema, pgIntArrayLiteral(cfg.Equipments), cfg.WindowHours,
+	return fmt.Sprintf(inferSpeedSQL, d.SilverSchema, pgIntArrayLiteral(cfg.Equipments), cfg.WindowHours,
 		fmtFloat(cfg.Percentile), d.RefSchema, cfg.MinMinutes, fmtFloat(cfg.Floor))
 }
 

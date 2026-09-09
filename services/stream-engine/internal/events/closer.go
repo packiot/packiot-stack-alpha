@@ -183,7 +183,7 @@ func RunOnceClose(ctx context.Context, d Dest, cfg CloserConfig) (int64, error) 
 	// Positional args: %[1]s EvSchema, %[2]s RefSchema, %[3]s unused (kept so the
 	// shared humanTouchedPred's %[4]s row-alias lands at index 4 — same contract
 	// as fmtCPAC), %[4]s the aliased UPDATE-target row ("ev").
-	sql := fmt.Sprintf(closeStaleOpensSQL, d.EvSchema, d.RefSchema, "", "ev")
+	sql := fmt.Sprintf(closeStaleOpensSQL, d.SilverSchema, d.RefSchema, "", "ev")
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("close stale opens begin: %w", err)

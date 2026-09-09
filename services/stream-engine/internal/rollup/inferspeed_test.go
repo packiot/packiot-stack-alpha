@@ -74,7 +74,7 @@ func TestFmtFloat(t *testing.T) {
 // target — they differ on F2 (shadow_go_port / public) so a swap would read the
 // wrong flow or write the wrong reference plane.
 func TestInferSpeedSchemaBinding(t *testing.T) {
-	d := flows.Dest{Name: "shadow_go_port", EvSchema: "shadow_go_port", RefSchema: "public"}
+	d := flows.Dest{Name: "shadow_go_port", EvSchema: "shadow_go_port", RefSchema: "public", SilverSchema: "shadow_go_port", GoldSchema: "shadow_go_port", GrainSchema: "shadow_go_port"}
 	cfg := ProvisionalSpeed{Enabled: true, Equipments: []int{670, 671}, WindowHours: 72, MinMinutes: 240, Percentile: 0.95, Floor: 1.0}
 	stmt := fmtInferSpeed(d, cfg)
 	for _, m := range []string{

@@ -65,7 +65,7 @@ import (
 const hourBackfillEligibleSQL = `
 	CREATE TEMP TABLE hour_elig ON COMMIT DROP AS
 	SELECT h.id_equipment, h.ts_value, h.target_customized
-	  FROM %[1]s.equipment_oee_hourly h
+	  FROM %[4]s.equipment_oee_hourly h
 	 WHERE h.recalc_needed
 	   AND h.ts_value <  now() - interval '65 minutes'
 	   AND h.ts_value >= now() - interval '10 days'
@@ -73,7 +73,7 @@ const hourBackfillEligibleSQL = `
 	        WHERE tp_equipment > 1
 	          AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	 ORDER BY h.ts_value ASC
-	 LIMIT %[3]d`
+	 LIMIT %[6]d`
 
 // hourBackfillClearSQL settles every backfilled row. The live rollup relies on
 // re-selecting event-less hours each tick within its 65-min window; the backfill
@@ -82,7 +82,7 @@ const hourBackfillEligibleSQL = `
 // eligible batch here (after the passes have written their values) drains those
 // too. recalc_needed is an internal processing flag, not a bake-compared column.
 const hourBackfillClearSQL = `
-	UPDATE %[1]s.equipment_oee_hourly e SET recalc_needed = false
+	UPDATE %[4]s.equipment_oee_hourly e SET recalc_needed = false
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
@@ -122,7 +122,7 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	if !gotLock {
 		return 0, tx.Commit(ctx) // another backfill tick holds it — retry next tick
 	}
-	tag, err := tx.Exec(ctx, fmt.Sprintf(hourBackfillEligibleSQL, d.EvSchema, d.RefSchema, limit), exclAreas, exclEnterprises)
+	tag, err := tx.Exec(ctx, fmtRD(hourBackfillEligibleSQL, d, limit), exclAreas, exclEnterprises)
 	if err != nil {
 		return 0, fmt.Errorf("hour-backfill eligible: %w", err)
 	}
@@ -144,11 +144,11 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		return 0, fmt.Errorf("hour-backfill analyze: %w", err)
 	}
 	steps := []struct{ name, sql string }{
-		{"values", widenHourWindows(fmt.Sprintf(hourValuesSQL, d.EvSchema))},
-		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
+		{"values", widenHourWindows(fmtRD(hourValuesSQL, d))},
+		{"cascade-day", fmtRD(hourCascadeDaySQL, d)},
 		// #186: cascade-area removed (area hourly grain retired).
-		{"speed", widenHourWindows(fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema))},
-		{"events", widenHourWindows(fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability)))},
+		{"speed", widenHourWindows(fmtRD(hourSpeedSQL, d))},
+		{"events", widenHourWindows(fmtRD(hourEventsSQL, d, plannedDowntimeExpr(changeoverAvailability)))},
 	}
 	// #207: LINE-FROM-LEAD backfill. Same position as the live RunHour (after
 	// events, so it targets only the state-less tp=3 line rows the events pass left
@@ -164,11 +164,11 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
 	if ca.engagedLineLead() {
 		steps = append(steps, struct{ name, sql string }{"line-lead",
-			widenHourWindows(fmt.Sprintf(hourLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec))})
+			widenHourWindows(fmtRD(hourLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec))})
 	}
 	steps = append(steps,
-		struct{ name, sql string }{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},
-		struct{ name, sql string }{"clear", fmt.Sprintf(hourBackfillClearSQL, d.EvSchema)},
+		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(hourTargetsSQL, d))},
+		struct{ name, sql string }{"clear", fmtRD(hourBackfillClearSQL, d)},
 	)
 	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q
 	// with a last pass (canonical A·P·Q reconcile when engaged, else the legacy oee_p
@@ -180,10 +180,10 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// residual's `NOT recalc_needed` guard matches (the reconcile is guard-free).
 	if ca.engagedCanonical() {
 		steps = append(steps, struct{ name, sql string }{"oee-reconcile",
-			widenHourWindows(fmt.Sprintf(hourOeeReconcileSQL, d.EvSchema))})
+			widenHourWindows(fmtRD(hourOeeReconcileSQL, d))})
 	} else {
 		steps = append(steps, struct{ name, sql string }{"oee-p",
-			widenHourWindows(fmt.Sprintf(hourOeePSQL, d.EvSchema))})
+			widenHourWindows(fmtRD(hourOeePSQL, d))})
 	}
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {

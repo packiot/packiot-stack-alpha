@@ -61,7 +61,7 @@ import (
 const recalcSQL = `
 	WITH eligible AS (
 	    SELECT e.id_production_order
-	      FROM %[1]s.production_orders e
+	      FROM %[2]s.production_orders e
 	     WHERE e.ts_start >= now() - $1::interval
 	       AND e.recalc_needed AND e.status > 1
 	       AND NOT (e.id_enterprise = ANY($2))
@@ -75,12 +75,12 @@ const recalcSQL = `
 	           sum(ca.running_time)      AS run,
 	           sum(ca.stopped_time)      AS stop,
 	           sum(ca.planned_downtime)  AS planned
-	      FROM %[1]s.production_orders_runtime ca
+	      FROM %[4]s.production_orders_runtime ca
 	      JOIN eligible USING (id_production_order)
 	     WHERE ca.runtime_timerange && tstzrange(now() - $1::interval, now())
 	     GROUP BY ca.id_production_order
 	)
-	UPDATE %[1]s.production_orders e SET
+	UPDATE %[2]s.production_orders e SET
 	       gross_production = COALESCE(s.gross, 0),
 	       net_production   = COALESCE(s.net, 0),
 	       -- #226 item 1b CONTRACT: writer repointed to canonical oee_q/oee_a/oee_p.
@@ -116,24 +116,24 @@ const recalcSQL = `
 // The self-re-enqueue (verbatim): running POs recalc every pass;
 // finished ones keep refreshing for 48h (late operator edits).
 const reflagRunningSQL = `
-	UPDATE %[1]s.production_orders SET recalc_needed = true
+	UPDATE %[2]s.production_orders SET recalc_needed = true
 	 WHERE status = 2 AND recalc_needed = false`
 
 const reflagRecentSQL = `
-	UPDATE %[1]s.production_orders SET recalc_needed = true
+	UPDATE %[2]s.production_orders SET recalc_needed = true
 	 WHERE status = 3 AND ts_start >= now() - interval '48 hours'
 	   AND recalc_needed = false`
 
 // RunRecalc executes one pass for one destination.
 func RunRecalc(ctx context.Context, d flows.Dest, window string, exclEnterprises []int) (int64, error) {
-	tag, err := d.Pool.Exec(ctx, fmt.Sprintf(recalcSQL, d.EvSchema, d.RefSchema), window, exclEnterprises)
+	tag, err := d.Pool.Exec(ctx, fmtRD(recalcSQL, d), window, exclEnterprises)
 	if err != nil {
 		return 0, fmt.Errorf("recalc: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(reflagRunningSQL, d.EvSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(reflagRunningSQL, d)); err != nil {
 		return tag.RowsAffected(), fmt.Errorf("reflag running: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(reflagRecentSQL, d.EvSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(reflagRecentSQL, d)); err != nil {
 		return tag.RowsAffected(), fmt.Errorf("reflag recent: %w", err)
 	}
 	return tag.RowsAffected(), nil

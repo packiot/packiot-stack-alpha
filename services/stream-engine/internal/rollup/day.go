@@ -229,30 +229,30 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 	} else if !got {
 		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("day eligible: %w", err)
 	}
 	steps := []rollupStep{
-		{"rollup", fmt.Sprintf(dayRollupSQL, d.EvSchema)},
+		{"rollup", fmt.Sprintf(dayRollupSQL, d.GoldSchema)},
 	}
 	// ADR-0048 §Fault-3 canonical A·P·Q reconcile — overwrites the four oee
 	// columns factors-first (oee = a·p·q) so the identity holds by construction,
 	// exactly as hour/shift/week/month do. Inert (legacy back-solve in dayRollupSQL
 	// stands) when not engaged. Runs right after rollup, before the cascades.
 	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(dayOeeReconcileSQL, d.EvSchema)})
+		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(dayOeeReconcileSQL, d.GoldSchema)})
 	}
 	steps = append(steps,
-		rollupStep{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.EvSchema)},
-		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.EvSchema)},
-		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.EvSchema)},
+		rollupStep{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.GoldSchema)},
+		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.GoldSchema)},
+		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.GoldSchema)},
 	)
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
 			return fmt.Errorf("day %s: %w", s.name, err)
 		}
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(dayReflagSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(dayReflagSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("day reflag: %w", err)
 	}
 	return tx.Commit(ctx)
