@@ -215,7 +215,7 @@ func resolveLegacyManualTS(ctx context.Context, legacy *pgxpool.Pool, idEquipmen
 // without a window starves the compute jobs. All ids here are already
 // translated to staging.
 
-const sqlCloseWindowsForEquipment = `UPDATE public.production_orders_runtime r
+const sqlCloseWindowsForEquipment = `UPDATE gold.production_orders_runtime r
 	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $2), recalc_needed = true
 	 WHERE r.id_equipment = $1 AND upper(runtime_timerange) IS NULL AND lower(runtime_timerange) < $2`
 
@@ -223,15 +223,15 @@ const sqlSupersedeRunningPO = `UPDATE public.production_orders
 	   SET status = 3, last_update = now()
 	 WHERE id_equipment = $1 AND status = 2 AND NOT (id_enterprise = $2 AND id_order = $3)`
 
-const sqlOpenWindow = `INSERT INTO public.production_orders_runtime
+const sqlOpenWindow = `INSERT INTO gold.production_orders_runtime
 	       (id_production_order, id_equipment, runtime_timerange, recalc_needed)
 	SELECT po.id_production_order, po.id_equipment, tstzrange($3, NULL), true
 	  FROM public.production_orders po
 	 WHERE po.id_enterprise = $1 AND po.id_order = $2
-	   AND NOT EXISTS (SELECT 1 FROM public.production_orders_runtime x
+	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime x
 	        WHERE x.id_production_order = po.id_production_order AND upper(x.runtime_timerange) IS NULL)`
 
-const sqlCloseWindowsForPO = `UPDATE public.production_orders_runtime r
+const sqlCloseWindowsForPO = `UPDATE gold.production_orders_runtime r
 	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $3), recalc_needed = true
 	  FROM public.production_orders po
 	 WHERE po.id_enterprise = $1 AND po.id_order = $2

@@ -16,7 +16,7 @@ var goldenGateSQL = map[string]string{
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_oee_shift l
+	      FROM gold.equipment_oee_shift l
 	      JOIN shadow_go_port.equipment_oee_shift g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_end < now() - interval '2 hours'
@@ -25,7 +25,7 @@ var goldenGateSQL = map[string]string{
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross_production,0) - COALESCE(g.gross_production,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross_production,0)),abs(COALESCE(g.gross_production,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.production_orders_runtime l
+	      FROM gold.production_orders_runtime l
 	      JOIN shadow_go_port.production_orders_runtime g
 	        ON l.id_equipment = g.id_equipment
 	       AND lower(l.runtime_timerange) = lower(g.runtime_timerange)
@@ -35,7 +35,7 @@ var goldenGateSQL = map[string]string{
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))
 	        AND abs(COALESCE(l.running_time,0) - COALESCE(g.running_time,0)) < 120) AS ok
-	      FROM public.equipment_oee_hourly l
+	      FROM gold.equipment_oee_hourly l
 	      JOIN shadow_go_port.equipment_oee_hourly g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '2 days'
@@ -43,7 +43,7 @@ var goldenGateSQL = map[string]string{
 	"equipment_oee_daily": `
 	SELECT count(*) FILTER (WHERE NOT ok), count(*) FROM (
 	    SELECT (abs(COALESCE(l.gross,0) - COALESCE(g.gross,0)) < 1e-6 + 0.01*greatest(abs(COALESCE(l.gross,0)),abs(COALESCE(g.gross,0)))) AS ok
-	      FROM public.equipment_oee_daily l
+	      FROM gold.equipment_oee_daily l
 	      JOIN shadow_go_port.equipment_oee_daily g
 	        ON l.id_equipment = g.id_equipment AND l.ts_value = g.ts_value
 	     WHERE l.ts_value >= now() - interval '4 days'
