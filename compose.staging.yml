@@ -51,7 +51,7 @@ volumes:
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
 # .7  grafana      .8  loki          .9  promtail
 # .10 pgbouncer    .11 simulator     .12 authentik-server  .13 authentik-worker  .14 authentik-redis
-# .15 hasura-init  .16 db-migrate    .17 adminer
+# .15 hasura-init  .16 db-migrate    .17 pgweb-analytics (DB browser; ex-adminer slot)
 # .20 oeecloud-worker  .21 mirror-worker-go  .22 prometheus
 # .23 edge-transformer (ADR-0009 Phase 2; reserved, NOT yet wired — see commented service block below)
 # .24 mosquitto (ADR-0010 Phase 2 MQTT broker; ADR-0011 P0-2 durability config)
@@ -63,6 +63,7 @@ volumes:
 # .41 oeecloud-fanout (task #17 re-tenant twin fan-out CPACK→SBXCPACK; flag-gated, STAGING ONLY, health :9102)
 # .33 alloy (OTLP trace gateway :4317/:4318 → tempo; Loki-push relay :3101 for the DB-box log agent)
 # .42-.45 superset stack (superset/.42, superset-worker/.43, sparkplug-agent-shared/.44, superset-redis/.45)
+# .46 pgweb-historian (DB browser → hist-gateway:5432)
 # .6 (oeecloud Node-RED, decommissioned 2026-06-23) and .18 (mirror-worker TS, decommissioned 2026-06-24) reserved — do not reuse without confirming consumers are gone
 # (one-shot; static IP prevents IPAM race with .3)
 
@@ -1212,7 +1213,7 @@ services:
       options: {max-size: "5m", max-file: "2"}
 
   # ── oauth2-proxy (ADR-0034 §C — Cognito forward-auth, replaces Authentik) ─────
-  # Nginx `auth_request` gate for the internal admin UIs (grafana/hasura/adminer/
+  # Nginx `auth_request` gate for the internal admin UIs (grafana/hasura/pgweb/
   # rabbitmq/edge-nodered/oeecloud-nodered) and operator. Runs the OIDC
   # authorization-code flow against the shared Cognito pool (hosted UI on
   # packiot-auth.auth.us-east-1.amazoncognito.com). It never sees a password —
@@ -1263,28 +1264,48 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
-  # ── Adminer (PostgreSQL web UI) ───────────────────────────────────────────────
-  # Lightweight single-PHP-file DB browser. Connects to the packiot DB via
-  # TimescaleDB directly (bypasses pgbouncer — transaction pooling breaks Adminer's
-  # SET search_path calls). Access at adminer.staging.packiot.app behind Authentik
-  # SSO. Login: System=PostgreSQL, Server=<POSTGRES_HOST>, User=postgres,
-  # Password=<POSTGRES_PASSWORD from .env>, Database=packiot.
-  adminer:
-    build: ./adminer
-    container_name: adminer
+  # ── pgweb-analytics (PostgreSQL web browser — analytics plane) ────────────────
+  # Locked single-DB browser (sosedoff/pgweb), replaces Adminer. `--lock-session`
+  # pins it to the ONE connection string in DATABASE_URL so staff can't repoint it
+  # at arbitrary hosts. Connects to the analytics DB on the TimescaleDB EC2 DIRECTLY
+  # (${POSTGRES_HOST} = 10.10.10.89), bypassing pgbouncer — transaction pooling
+  # breaks pgweb's session-scoped features, the same reason Adminer bypassed it.
+  # Password is env-sourced (raw ${POSTGRES_PASSWORD}, exactly as postgres-exporter
+  # and the workers build their DSNs — never hardcoded). Behind the Cognito staff
+  # oauth2 gate at db.staging.packiot.app (nginx db.conf, terraform var.services).
+  pgweb-analytics:
+    image: sosedoff/pgweb:latest
+    container_name: pgweb-analytics
     restart: unless-stopped
-    env_file: [.env]
+    command: ["--bind=0.0.0.0", "--listen=8081", "--lock-session"]
     environment:
-      ADMINER_DEFAULT_SERVER: ${POSTGRES_HOST}
-      # Pre-fill the live single plane (F3), not the retired F1 `packiot`
-      # (POSTGRES_DB is still =packiot for legacy consumers). Audit 2026-08-21 M7.
-      ADMINER_DEFAULT_DB: packiot_analytics
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/packiot_analytics?sslmode=disable"
     ports:
-      - "127.0.0.1:8082:8080"
+      - "127.0.0.1:8082:8081"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.17
-    depends_on: [pgbouncer]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── pgweb-historian (PostgreSQL web browser — historian plane) ────────────────
+  # Same locked pgweb, pointed at the historian gateway (hist-gateway:5432 — the
+  # pg_duckdb hot+cold gateway from compose.historian-gateway.yml, reachable over the
+  # shared stack_packiot-net). Behind the Cognito staff oauth2 gate at
+  # histdb.staging.packiot.app (nginx histdb.conf, terraform var.services).
+  pgweb-historian:
+    image: sosedoff/pgweb:latest
+    container_name: pgweb-historian
+    restart: unless-stopped
+    command: ["--bind=0.0.0.0", "--listen=8081", "--lock-session"]
+    environment:
+      DATABASE_URL: "postgres://postgres:${HIST_GW_PASSWORD}@hist-gateway:5432/postgres?sslmode=disable"
+    ports:
+      - "127.0.0.1:8091:8081"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.46
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}

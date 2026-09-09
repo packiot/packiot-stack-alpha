@@ -187,7 +187,7 @@
     "ref": "/v1/events-timeline",
     "source": "route",
     "kind": "function",
-    "name": "h_piot_get_events_timeline3_with_event_id",
+    "name": "serving.events_timeline",
     "argc": 1
   },
   {
@@ -218,7 +218,7 @@
     "ref": "/v1/pending-downtime",
     "source": "route",
     "kind": "function",
-    "name": "h_piot_get_equipment_pending_downtime_with_event_id",
+    "name": "serving.pending_downtime",
     "argc": 1
   },
   {
@@ -338,28 +338,28 @@
     "ref": "downtimes-events",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_downtimes_events_2",
+    "name": "serving.downtime_events_v2",
     "argc": 8
   },
   {
     "ref": "downtimes-events-legacy",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_downtimes_events",
+    "name": "serving.downtime_events",
     "argc": 8
   },
   {
     "ref": "downtimes-per-category",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_downtimes_per_category",
+    "name": "serving.downtime_by_category",
     "argc": 8
   },
   {
     "ref": "downtimes-summary",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_downtimes_resumo",
+    "name": "serving.downtime_summary",
     "argc": 8
   },
   {
@@ -522,21 +522,21 @@
     "ref": "events-timeline-from-po",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_events_timeline_from_po",
+    "name": "serving.events_timeline_by_po",
     "argc": 1
   },
   {
     "ref": "events-timeline-full",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_events_timeline_full_with_filter_3",
+    "name": "serving.events_timeline_full",
     "argc": 8
   },
   {
     "ref": "home-uns",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_home_uns",
+    "name": "serving.home",
     "argc": 1
   },
   {
@@ -597,7 +597,7 @@
     "ref": "machine-speed",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_machine_speed",
+    "name": "serving.machine_speed",
     "argc": 10
   },
   {
@@ -615,21 +615,21 @@
     "ref": "mission-control",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_mission_control_uns_3",
+    "name": "serving.mission_control",
     "argc": 4
   },
   {
     "ref": "mission-control-area",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_mission_control_area_uns_2",
+    "name": "serving.mission_control_area",
     "argc": 3
   },
   {
     "ref": "mission-control-timeline",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_mission_control_timeline",
+    "name": "serving.mission_control_timeline",
     "argc": 4
   },
   {
@@ -652,21 +652,21 @@
     "ref": "oee-progress",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_oee_progress_new2",
+    "name": "serving.oee_progress",
     "argc": 12
   },
   {
     "ref": "oee-score-full",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_oee_score_full_3",
-    "argc": 10
+    "name": "serving.oee_score",
+    "argc": 3
   },
   {
     "ref": "oee-score-teams",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_oee_score_with_teams",
+    "name": "serving.oee_score_by_team",
     "argc": 11
   },
   {
@@ -701,7 +701,7 @@
     "ref": "overview-downtimes-by-category",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_downtimes_duration_by_category",
+    "name": "serving.downtime_duration_by_category",
     "argc": 1
   },
   {
@@ -714,7 +714,7 @@
     "ref": "overview-events",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_overview_i_get_events_3",
+    "name": "serving.overview_events_v3",
     "argc": 1
   },
   {
@@ -727,7 +727,7 @@
     "ref": "overview-events-legacy",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_overview_i_get_events",
+    "name": "serving.overview_events",
     "argc": 1
   },
   {
@@ -740,7 +740,7 @@
     "ref": "overview-job-info",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_overview_i_get_job_info",
+    "name": "serving.overview_job_info",
     "argc": 1
   },
   {
@@ -753,7 +753,7 @@
     "ref": "overview-production-chart",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_overview_production_chart_v6",
+    "name": "serving.production_chart",
     "argc": 1
   },
   {
@@ -766,7 +766,7 @@
     "ref": "overview-production-chart-base",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_overview_production_chart",
+    "name": "serving.production_chart_legacy",
     "argc": 1
   },
   {
@@ -779,7 +779,7 @@
     "ref": "overview-production-chart-legacy",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_overview_i_production_chart",
+    "name": "serving.overview_production_chart",
     "argc": 1
   },
   {
@@ -792,7 +792,7 @@
     "ref": "overview-production-health",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_production_health",
+    "name": "serving.production_health",
     "argc": 1
   },
   {
@@ -834,7 +834,7 @@
     "ref": "production-flow",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_production_flow",
+    "name": "serving.production_flow",
     "argc": 9
   },
   {
@@ -933,9 +933,9 @@
       "ideal_production_speed",
       "net_production",
       "oee",
-      "oee_availability",
-      "oee_performance",
-      "oee_quality",
+      "oee_a",
+      "oee_p",
+      "oee_q",
       "planned_downtime",
       "production_final",
       "production_ordered",
@@ -980,14 +980,14 @@
     "ref": "production-orders-runtimes",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_production_orders_runtimes",
+    "name": "serving.production_orders",
     "argc": 8
   },
   {
     "ref": "production-orders-with-runtimes",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_production_orders_with_runtimes4",
+    "name": "serving.production_orders_with_runtimes",
     "argc": 8
   },
   {
@@ -1090,14 +1090,14 @@
     "ref": "single-period",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_single_period_with_teams_4",
+    "name": "serving.single_period_by_team_v4",
     "argc": 10
   },
   {
     "ref": "single-period-legacy",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_single_period_with_teams_3",
+    "name": "serving.single_period_by_team",
     "argc": 10
   },
   {
@@ -1139,14 +1139,14 @@
     "ref": "targets",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_get_targets",
+    "name": "serving.targets",
     "argc": 11
   },
   {
     "ref": "total-production",
     "source": "dataset",
     "kind": "function",
-    "name": "h_piot_total_production_teams_2",
+    "name": "serving.total_production_by_team",
     "argc": 10
   },
   {

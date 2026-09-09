@@ -72,7 +72,8 @@ variable "services" {
     api      = 8080
     grafana  = 3000
     rabbitmq = 15672 # RabbitMQ management UI
-    adminer  = 8082  # PostgreSQL web UI (Adminer)
+    db       = 8082  # PostgreSQL web browser — analytics plane (pgweb-analytics; ex-adminer)
+    histdb   = 8091  # PostgreSQL web browser — historian plane (pgweb-historian → hist-gateway)
     operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
     csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
     # RETIRED vhosts (audit 2026-08-21):
@@ -104,7 +105,8 @@ variable "service_auth" {
     api      = "api"
     grafana  = "csadmin"
     rabbitmq = "csadmin"
-    adminer  = "csadmin"
+    db       = "csadmin" # pgweb-analytics — staff-only DB browser (db.staging.packiot.app)
+    histdb   = "csadmin" # pgweb-historian — staff-only DB browser (histdb.staging.packiot.app)
     operator = "any"
     csadmin  = "none-originverify"
     # hasura / edge-nodered / oeecloud-nodered retired — see `services` above.

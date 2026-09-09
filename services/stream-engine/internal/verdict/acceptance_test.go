@@ -88,8 +88,8 @@ CREATE TABLE v3.production_orders (
     status int NOT NULL, ts_start timestamptz NOT NULL,
     recalc_needed boolean NOT NULL DEFAULT false,
     gross_production double precision, net_production double precision,
-    oee double precision, oee_quality double precision,
-    oee_availability double precision, oee_performance double precision,
+    oee double precision, oee_q double precision,
+    oee_a double precision, oee_p double precision,
     speed double precision, available_time double precision,
     running_time double precision, stopped_time double precision,
     planned_downtime double precision, ideal_production_speed double precision,
@@ -334,8 +334,8 @@ func scenarioPOLifecycle(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	var gross, net, oee, q, a, p, avail, run, stop, planned float64
 	var recalc bool
 	if err := pool.QueryRow(ctx, `
-		SELECT gross_production, net_production, oee, oee_quality, oee_availability,
-		       oee_performance, available_time, running_time, stopped_time,
+		SELECT gross_production, net_production, oee, oee_q, oee_a,
+		       oee_p, available_time, running_time, stopped_time,
 		       planned_downtime, recalc_needed
 		  FROM v3.production_orders WHERE id_production_order = $1`, po).
 		Scan(&gross, &net, &oee, &q, &a, &p, &avail, &run, &stop, &planned, &recalc); err != nil {
@@ -349,10 +349,10 @@ func scenarioPOLifecycle(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	}
 	check("gross_production", gross, 6000)
 	check("net_production", net, 5400)
-	check("oee_quality", q, 0.90)
+	check("oee_q", q, 0.90)
 	check("oee", oee, 0.45)
-	check("oee_availability", a, 0.80)
-	check("oee_performance", p, 0.625)
+	check("oee_a", a, 0.80)
+	check("oee_p", p, 0.625)
 	check("available_time", avail, 7200)
 	check("running_time", run, 5760)
 	check("stopped_time", stop, 1800)

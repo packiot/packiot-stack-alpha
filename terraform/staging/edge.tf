@@ -317,7 +317,7 @@ resource "aws_cloudfront_distribution" "edge" {
   price_class     = var.cloudfront_price_class
 
   # Wildcard alias covers api/hasura/grafana/edge-nodered/oeecloud-nodered/rabbitmq/
-  # adminer/operator/auth.staging. No dash alias (dash lives on prod).
+  # db/histdb/operator/auth.staging. No dash alias (dash lives on prod).
   aliases = ["*.${var.staging_domain}"]
 
   # Single origin — the nginx host, reached over its OWN (non-fronted) hostname
