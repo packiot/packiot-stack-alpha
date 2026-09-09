@@ -737,3 +737,73 @@ they are fully functional. The split-brain is pre-existing, not introduced here.
 
 **Move phases still remaining after P-app.2: P-silver → P-views → P-core.**
 ```
+
+### Phase P-views — DONE (2026-09-09)
+
+Moved the 15 remaining public *views* to their real homes: **10 → `serving`**
+(`production_information`, `v_entities_per_user_role`, `v_entities_per_user_role_operator`,
+`v_events_2`, `v_menu_per_user_role`, `v_operator_entities_2`, `v_operator_po_details_3`,
+`v_operator_po_list_setup_4`, `v_po_box_totals`, `v_report_downtimes`) and **5 →
+`customer_reports`** (`equipment_boxes_cust_13`, `v_13_site_deb_sap_report`,
+`v_piot_production_data_sync_cust6`, `v_sap_report_data_sync_customer_13`,
+`v_sap_report_data_sync_customer_13_deb`). Reversible migrations:
+`db/migrations/t237-views-schema/{01-expand,02-search-path,03-contract,rollback}.sql`.
+
+**DEPLOY-FREE (like P-app.1) — the consumer census proves zero code change:**
+- **read-api reads all 15 UNQUALIFIED** (`main.go` v_operator_*; `datasets.go` v_entities_/
+  v_menu_/v_report_downtimes; `external*.go` v_13_/v_sap_/v_piot_) — **no `public.v_*`
+  hard-code anywhere** → fully search_path-absorbed once `serving`+`customer_reports` join the
+  path and pgbouncer recycles. read-api also has **no per-session `SET search_path`** (relies on
+  the DB default via `DB_HOST=pgbouncer`), so the bounce alone repoints it.
+- **stream-engine: 0 real SQL refs** — the only hits (`reports/boxes_*.go`, `config.go`) are
+  *comments* naming `equipment_boxes_cust_13` / the retired `upsert_equipment_boxes_cust_13`
+  function; no `FROM`/`JOIN` on any of the 15. (The stream-engine public-qualified-Dest
+  carry-forward from P-app.2 does NOT bite here — Dest only qualifies fact/dim tables, never a
+  `v_*` view.)
+- **`serving.events_timeline_full`** reads `v_events_2` **unqualified** → absorbed via the path
+  (bridged by the public shim during the recycle window; verified valid post-move).
+- **Superset**: repo datasets are all on the `bi` schema (10) + one `public.ev_all` historian
+  gateway; **no `bi` view/dataset depends on any of the 15** (pg_depend clean) → Superset
+  unaffected. No dataset schema repoint was needed.
+
+**DB-internal dependency census (all OID-bound, move together, stay valid):** the only
+inter-object deps among the 15 are intra-set — `equipment_boxes_cust_13` ← `v_sap_report_data_sync_customer_13`(+`_deb`);
+`v_operator_entities_2` ← `v_entities_per_user_role_operator`; `v_sap_..._deb` ← `v_sap_...` — all
+land in the same schema. `ALTER VIEW … SET SCHEMA` is a catalog-only OID flip; dependents' stored
+rewrite rules reference the base by OID (not the `public.` text), so they never break.
+
+**Security:** all 15 are owner=postgres, `security_invoker=off` (definer/superuser; tenant
+isolation is the read-api `WHERE id_enterprise=$1`, NOT view RLS) → plain `public.<v> AS SELECT *
+FROM <newhome>.<v>` shims match the semantics exactly.
+
+**Sequence:** expand (`SET SCHEMA` ×15 + 15 same-named auto-updatable public shim views, atomic,
+`lock_timeout=3s`) → widen db `search_path` to `"$user", gold, silver, bronze, barcode, app,
+**serving, customer_reports**, public` (both new schemas AFTER the medallion/dim schemas + BEFORE
+public → unqualified-CREATE landing stays `gold`, **no new footgun**; both are views-only schemas
+anyway) → **restart `stack-pgbouncer-1`** (transaction pooling → server conns cache the
+connect-time default) → gate → contract (drop 15 shims).
+
+**Gates — all green (canary + HTTP THROUGH the real read-api→pgbouncer path):**
+- effective `search_path` through pgbouncer carries `serving`+`customer_reports`;
+- all 15 unqualified names resolve to their new home (`relnamespace::regnamespace` = serving ×10 /
+  customer_reports ×5), shadowing the shims;
+- **real SELECT execution** (unqualified, through pgbouncer): serving views return data,
+  customer_reports SAP views return 0 rows (empty, tenant-scoped) — **zero errors**;
+- **HTTP 200 end-to-end** on `/v1/operator-entities`, `/v1/operator-po-list`,
+  `/v1/entities-per-user-role` (X-Api-Key cid 3, CPACK data returned);
+- 0 `42P01`/does-not-exist across read-api/stream-engine/analytics-sync/sparkplug-decoder/edge-api/
+  barcode-service/operator-gateway; all healthy; ingest lag 5s; stream-engine boxes tick clean.
+- **post-contract:** unqualified still resolves to serving/customer_reports (shim-free, path-only),
+  `public` residue = **0**, no shadow re-spawned, HTTP still 200.
+
+**Final state:** the 15 views live SOLELY in `serving` (10) / `customer_reports` (5); `public`
+holds none of the 15 names. Fully reversible via `rollback.sql` (+ pgbouncer restart).
+
+**DEFERRED:** none specific to P-views (no snapshot/knex reclassification — views are not knex-owned
+and are absent from the F3 fake-baseline). Note: the multi-schema snapshot capture (P0 deferred
+item) must add `--schema=serving --schema=customer_reports` at the eventual regen so greenfield is
+born with these views in place; `serving`/`customer_reports` already existed pre-P-views (serving
+~40 fns, customer_reports 4 tbl) so they are captured schemas either way.
+
+**Move phases still remaining: P-silver → P-core** (per task risk-order; the stream-engine Dest
+per-schema refactor precedes P-silver/P-core as the enabler).
