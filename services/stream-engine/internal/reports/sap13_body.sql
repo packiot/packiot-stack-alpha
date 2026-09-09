@@ -1,13 +1,17 @@
 -- sap13_body.sql — verbatim embed of prod's
 -- upsert_sap_report_data_sync_customer_13() (capture:
 -- docs/adr/reference/captures/0012-wave2-prod-writer-funcs.sql:876-1461).
--- ADR-0012 Wave 2 Family C. Three surgical transforms ONLY:
+-- ADR-0012 Wave 2 Family C. Four surgical transforms ONLY:
 --   1. write target -> customer_reports.sap_data_sync (pool)
 --   2. customer_id injected into projection (__CUSTOMER_ID__ placeholder,
 --      substituted from config -- no hardcoded tenant in new code)
 --   3. ON CONFLICT extended to the pool key
 --      (customer_id, linie, tag, shicht, auftrag_key) -- THE back4-api
 --      cutover contract (issue #223)
+--   4. labels_data box source repointed equipment_boxes_cust_13 ->
+--      customer_reports.boxes (t244c/#1180 dropped the per-tenant table +
+--      folded it into the pool), fenced on customer_id=__CUSTOMER_ID__ and
+--      label_key='Label_Neopac' -- mirrors serving.sap_report_data_sync (#247).
 -- Everything else is FROZEN legacy SQL, tenant literals included --
 -- legacy names (frozen) per docs/adr/reference/naming-ledger.md.
   INSERT INTO customer_reports.sap_data_sync (
@@ -446,8 +450,10 @@ ebc.id_equipment,
 ebc.ts_value,
 ebc.id_order,
 ebc.net_production
-from equipment_boxes_cust_13 ebc 
-where ebc.id_equipment in (select id_equipment from equipments where id_enterprise = 13 and id_site = 13 and tp_equipment = 3) 
+from customer_reports.boxes ebc -- transform #4: box source repointed off dropped equipment_boxes_cust_13 (t244c/#1180); pool fenced below
+where ebc.customer_id = __CUSTOMER_ID__
+and ebc.label_key = 'Label_Neopac'
+and ebc.id_equipment in (select id_equipment from equipments where id_enterprise = 13 and id_site = 13 and tp_equipment = 3)
 and ts_value >= now() - interval '8 day'
 order by 1,ts_value
 ), final_labels as (
