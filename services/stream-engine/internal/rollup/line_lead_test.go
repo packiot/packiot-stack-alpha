@@ -39,14 +39,20 @@ func TestEngagedLineLead(t *testing.T) {
 // %[n]s/%[n]d in the two consts must be supplied, so a formatted statement
 // never contains a `%!` error verb that would explode at Exec time.
 func TestLineLeadSQLFormatting(t *testing.T) {
-	shift := fmt.Sprintf(ShiftLineLeadSQLForParity(), "ev", "ref", pgIntArrayLiteral([]int{3, 4}), 300)
-	hour := fmt.Sprintf(HourLineLeadSQLForParity(), "ev", "ref", pgIntArrayLiteral([]int{3}), 300)
+	// #248 de-shim: canonical arg tuple ev/ref/silver/gold/grain + extras (array, timeout).
+	// Distinct schema literals verify each table lands in its RIGHT schema post-de-shim:
+	// OEE grains → gold, equipments → ref, categorical cagg → silver.
+	shift := fmt.Sprintf(ShiftLineLeadSQLForParity(), "ev", "ref", "sil", "gold", "grn", pgIntArrayLiteral([]int{3, 4}), 300)
+	hour := fmt.Sprintf(HourLineLeadSQLForParity(), "ev", "ref", "sil", "gold", "grn", pgIntArrayLiteral([]int{3}), 300)
 	for _, tc := range []struct{ name, sql string }{{"shift", shift}, {"hour", hour}} {
 		if strings.Contains(tc.sql, "%!") {
 			t.Errorf("%s SQL has an unsatisfied fmt verb (%%!): %s", tc.name, tc.sql)
 		}
-		if !strings.Contains(tc.sql, "ev.equipment_oee_") {
-			t.Errorf("%s SQL missing EvSchema-qualified target table", tc.name)
+		if !strings.Contains(tc.sql, "gold.equipment_oee_") {
+			t.Errorf("%s SQL missing GoldSchema-qualified OEE target table", tc.name)
+		}
+		if !strings.Contains(tc.sql, "sil.equipment_categorical") {
+			t.Errorf("%s SQL missing SilverSchema-qualified categorical cagg", tc.name)
 		}
 		if !strings.Contains(tc.sql, "ref.equipments") {
 			t.Errorf("%s SQL missing RefSchema-qualified equipments", tc.name)

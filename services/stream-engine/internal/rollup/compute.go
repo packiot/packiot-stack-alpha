@@ -52,7 +52,7 @@ const computeValuesSQL = `
 	WITH eligible AS (
 	    SELECT e.id_equipment, lower(e.runtime_timerange) AS lo,
 	           COALESCE(upper(e.runtime_timerange), now()) AS hi
-	      FROM %[1]s.production_orders_runtime e
+	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
 	       AND e.recalc_needed
@@ -62,13 +62,13 @@ const computeValuesSQL = `
 	           sum(ca.net_production_incr)   AS net,
 	           avg(ca.speed)                 AS speed
 	      FROM eligible el
-	      JOIN %[1]s.equipment_values ca
+	      JOIN %[3]s.equipment_values ca
 	        ON ca.id_equipment = el.id_equipment
 	       AND ca.ts_value >= now() - $1::interval
 	       AND ca.ts_value >= el.lo AND ca.ts_value < el.hi
 	     GROUP BY el.id_equipment, el.lo
 	)
-	UPDATE %[1]s.production_orders_runtime e SET
+	UPDATE %[4]s.production_orders_runtime e SET
 	       gross_production = COALESCE(s.gross, 0),
 	       net_production   = COALESCE(s.net, 0),
 	       oee_q            = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
@@ -86,7 +86,7 @@ const computeEventsSQL = `
 	    SELECT e.id_equipment, e.runtime_timerange,
 	           lower(e.runtime_timerange) AS lo,
 	           COALESCE(upper(e.runtime_timerange), now()) AS hi
-	      FROM %[1]s.production_orders_runtime e
+	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
 	       AND e.recalc_needed
@@ -99,13 +99,13 @@ const computeEventsSQL = `
 	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
 	                                 - greatest(ee.ts_event, el.lo))) END), 0) AS stopped
 	      FROM eligible el
-	      JOIN %[1]s.equipment_events ee
+	      JOIN %[3]s.equipment_events ee
 	        ON ee.id_equipment = el.id_equipment
 	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
 	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
 	     GROUP BY el.id_equipment, el.lo
 	)
-	UPDATE %[1]s.production_orders_runtime e SET
+	UPDATE %[4]s.production_orders_runtime e SET
 	       running_time = ev.running,
 	       stopped_time = ev.stopped
 	  FROM ev
@@ -121,11 +121,11 @@ const computeEventsSQL = `
 // column writes within a pass is not observable between passes.
 
 const computeReflagOpenSQL = `
-	UPDATE %[1]s.production_orders_runtime SET recalc_needed = true
+	UPDATE %[4]s.production_orders_runtime SET recalc_needed = true
 	 WHERE upper(runtime_timerange) IS NULL`
 
 const computeReflagRecentSQL = `
-	UPDATE %[1]s.production_orders_runtime SET recalc_needed = true
+	UPDATE %[4]s.production_orders_runtime SET recalc_needed = true
 	 WHERE upper(runtime_timerange) > now() - interval '48 hours'`
 
 // computeOverflowDiagSQL mirrors computeEventsSQL's eligible+ev CTEs but,
@@ -140,7 +140,7 @@ const computeOverflowDiagSQL = `
 	WITH eligible AS (
 	    SELECT e.id_equipment, e.runtime_timerange, lower(e.runtime_timerange) AS lo,
 	           COALESCE(upper(e.runtime_timerange), now()) AS hi
-	      FROM %[1]s.production_orders_runtime e
+	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now()) AND e.recalc_needed
 	), ev AS (
@@ -148,7 +148,7 @@ const computeOverflowDiagSQL = `
 	           COALESCE(sum(CASE WHEN ee.status = 6 THEN extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi) - greatest(ee.ts_event, el.lo))) END), 0) AS running,
 	           COALESCE(sum(CASE WHEN ee.status IN (5,10,11) THEN extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi) - greatest(ee.ts_event, el.lo))) END), 0) AS stopped
 	      FROM eligible el
-	      JOIN %[1]s.equipment_events ee ON ee.id_equipment = el.id_equipment
+	      JOIN %[3]s.equipment_events ee ON ee.id_equipment = el.id_equipment
 	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
 	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
 	     GROUP BY el.id_equipment, el.lo
@@ -163,7 +163,7 @@ const computeOverflowDiagSQL = `
 // Best-effort: any error here is itself logged and swallowed — this path only
 // runs after a compute failure, to add context, never to change control flow.
 func diagnoseOverflow(ctx context.Context, d flows.Dest, window string, logger *slog.Logger) {
-	rows, err := d.Pool.Query(ctx, fmt.Sprintf(computeOverflowDiagSQL, d.EvSchema, d.RefSchema), window)
+	rows, err := d.Pool.Query(ctx, fmtRD(computeOverflowDiagSQL, d), window)
 	if err != nil {
 		logger.Warn("overflow diagnosis query failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 		return
@@ -204,17 +204,17 @@ func isIntOverflow(err error) bool {
 // RunCompute executes one compute pass for one destination.
 func RunCompute(ctx context.Context, d flows.Dest, window string) (int64, error) {
 	// Phase B first (see NOTE): its eligible set must predate A's clear.
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(computeEventsSQL, d.EvSchema, d.RefSchema), window); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
 		return 0, fmt.Errorf("compute events: %w", err)
 	}
-	tag, err := d.Pool.Exec(ctx, fmt.Sprintf(computeValuesSQL, d.EvSchema, d.RefSchema), window)
+	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d), window)
 	if err != nil {
 		return 0, fmt.Errorf("compute values: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(computeReflagOpenSQL, d.EvSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(computeReflagOpenSQL, d)); err != nil {
 		return tag.RowsAffected(), fmt.Errorf("reflag open: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(computeReflagRecentSQL, d.EvSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(computeReflagRecentSQL, d)); err != nil {
 		return tag.RowsAffected(), fmt.Errorf("reflag recent: %w", err)
 	}
 	return tag.RowsAffected(), nil

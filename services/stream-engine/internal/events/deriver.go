@@ -97,13 +97,13 @@ WITH stream AS (
 )`
 
 const upsertSQL = transitionsCTE + `
-INSERT INTO %[1]s.equipment_events (ts_event, ts_end, id_equipment, status, id_enterprise, duration)
+INSERT INTO %[3]s.equipment_events (ts_event, ts_end, id_equipment, status, id_enterprise, duration)
 SELECT ts_event, ts_end, id_equipment, status, id_enterprise, duration FROM final
 ON CONFLICT (id_equipment, ts_event) DO UPDATE
    SET ts_end = EXCLUDED.ts_end, status = EXCLUDED.status, duration = EXCLUDED.duration`
 
 const correctSQL = transitionsCTE + `
-DELETE FROM %[1]s.equipment_events ev
+DELETE FROM %[3]s.equipment_events ev
  WHERE ev.ts_event > now() - interval '1 day'
    AND NOT ev.forced_creation_system
    AND ev.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
@@ -119,11 +119,11 @@ DELETE FROM %[1]s.equipment_events ev
 // derivation for the wide-row-state tenants that carry no StateCurrent leaf
 // topic — see the transitionsCTE scope note. Empty = native status_type=4 only.
 func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises, widerowEnterprises []int) (deleted, upserted int64, err error) {
-	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises, widerowEnterprises)
+	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return 0, 0, fmt.Errorf("correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises, widerowEnterprises)
+	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return del.RowsAffected(), 0, fmt.Errorf("upsert pass: %w", err)
 	}

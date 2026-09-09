@@ -61,7 +61,7 @@
 // stream stays byte-identical to the state-only rollup.
 package rollup
 
-// shiftLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[4]d=idle timeout secs.
+// shiftLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[7]d=idle timeout secs.
 const shiftLineLeadSQL = `
 	WITH lines AS (
 	    SELECT el.id_equipment AS line_id, el.ts_value,
@@ -81,7 +81,7 @@ const shiftLineLeadSQL = `
 	      FROM shift_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
-	       AND eq.id_enterprise = ANY(%[3]s)
+	       AND eq.id_enterprise = ANY(%[6]s)
 	       -- #207: was a 2-day window — the live line-lead lookback.
 	       -- RunShift drains its 30-day recalc_needed backlog oldest-first (bounded
 	       -- LIMIT), but this 2-day filter capped the line-lead pass to the recent
@@ -100,13 +100,13 @@ const shiftLineLeadSQL = `
 	    -- so each factor draws from its own source; few lines, so the lookups are cheap.
 	    -- A NULL source id ⇒ no matching rows ⇒ NULL sum ⇒ 0 downstream.
 	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.equipment_categorical_1hour cg
+	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id
 	               AND cg.ts_value >= l.ts_value AND cg.ts_value < l.bend) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[1]s.equipment_categorical_1hour cn
+	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
 	             WHERE cn.id_equipment = l.lead_id
 	               AND cn.ts_value >= l.ts_value AND cn.ts_value < l.bend) AS net,
-	           (SELECT sum(cs.scrap_incr) FROM %[1]s.equipment_categorical_1hour cs
+	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id
 	               AND cs.ts_value >= l.ts_value AND cs.ts_value < l.bend) AS scrap
 	      FROM lines l
@@ -138,7 +138,7 @@ const shiftLineLeadSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM lines l
-	      JOIN %[1]s.equipment_categorical_1min m
+	      JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = l.lead_id
 	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
 	       -- A minute is "productive" if the lead moved EITHER input (gross) or
@@ -149,19 +149,19 @@ const shiftLineLeadSQL = `
 	       AND (m.gross_production_incr > 0 OR m.net_production_incr > 0 OR m.scrap_incr > 0)
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
-	           sum(CASE WHEN gap IS NULL OR gap > %[4]d THEN 1 ELSE 0 END)
+	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
 	               OVER (PARTITION BY line_id, ts_value ORDER BY mts) AS island
 	      FROM prod_min
 	), sessions AS (
 	    SELECT line_id, ts_value,
-	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[4]d), min(bend)) - min(mts))) AS span
+	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY line_id, ts_value, island
 	), active AS (
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
 	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),
@@ -192,7 +192,7 @@ const shiftLineLeadSQL = `
 	 WHERE e.id_equipment = l.line_id AND e.ts_value = l.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
 
-// hourLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[4]d=idle timeout secs.
+// hourLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[7]d=idle timeout secs.
 // Leaves oee_p to hourOeePSQL (runs next off the just-cleared rows), matching hourCountsAvailSQL.
 const hourLineLeadSQL = `
 	WITH lines AS (
@@ -213,18 +213,18 @@ const hourLineLeadSQL = `
 	      FROM hour_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
-	       AND eq.id_enterprise = ANY(%[3]s)
+	       AND eq.id_enterprise = ANY(%[6]s)
 	), counts AS (
 	    -- Raw per-source sums: GROSS from gross_id (input machine), NET from lead_id
 	    -- (output machine), SCRAP from scrap_id (defect machine). Single-bucket lookups
 	    -- matching the hour join (ts_value = l.ts_value). A NULL source id ⇒ no matching
 	    -- rows ⇒ NULL sum ⇒ 0 downstream.
 	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[1]s.equipment_categorical_1hour cg
+	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[1]s.equipment_categorical_1hour cn
+	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
 	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = l.ts_value) AS net,
-	           (SELECT sum(cs.scrap_incr) FROM %[1]s.equipment_categorical_1hour cs
+	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = l.ts_value) AS scrap
 	      FROM lines l
 	), reconciled AS (
@@ -255,7 +255,7 @@ const hourLineLeadSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM lines l
-	      JOIN %[1]s.equipment_categorical_1min m
+	      JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = l.lead_id
 	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
 	       -- A minute is "productive" if the lead moved EITHER input (gross) or
@@ -266,19 +266,19 @@ const hourLineLeadSQL = `
 	       AND (m.gross_production_incr > 0 OR m.net_production_incr > 0 OR m.scrap_incr > 0)
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
-	           sum(CASE WHEN gap IS NULL OR gap > %[4]d THEN 1 ELSE 0 END)
+	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
 	               OVER (PARTITION BY line_id, ts_value ORDER BY mts) AS island
 	      FROM prod_min
 	), sessions AS (
 	    SELECT line_id, ts_value,
-	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[4]d), min(bend)) - min(mts))) AS span
+	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY line_id, ts_value, island
 	), active AS (
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
 	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),

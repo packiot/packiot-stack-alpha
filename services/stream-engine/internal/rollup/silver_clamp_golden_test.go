@@ -131,7 +131,7 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 		t.Fatalf("fixture: %v", err)
 	}
 
-	d := flows.Dest{Name: "test", Pool: pool, EvSchema: "silver", RefSchema: "silver"}
+	d := flows.Dest{Name: "test", Pool: pool, EvSchema: "silver", RefSchema: "silver", SilverSchema: "silver", GoldSchema: "silver", GrainSchema: "silver"}
 
 	// ── First run: clamps exactly the one violating row across all grains. ──
 	n, err := RunSilverClamp(ctx, d, true)

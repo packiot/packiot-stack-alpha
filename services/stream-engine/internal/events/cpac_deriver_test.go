@@ -49,8 +49,8 @@ func TestCPACDeriverScopeAndInput(t *testing.T) {
 // the guard is STRICTLY WIDER than deriver.go's forced_creation_system-only one.
 func TestCPACDeriverNeverClobbersHumanEdits(t *testing.T) {
 	// Assert against the FORMATTED SQL (%[4]s → "ev"), i.e. exactly what executes.
-	upsert := fmtCPAC(cpacUpsertSQL, "s", "public", "t", "ev")
-	del := fmtCPAC(cpacCorrectSQL, "s", "public", "t", "ev")
+	upsert := fmtCPAC(cpacUpsertSQL, "s", "public", "t", "ev", "s")
+	del := fmtCPAC(cpacCorrectSQL, "s", "public", "t", "ev", "s")
 
 	// (a) upsert never overwrites a human-touched conflict row.
 	if !strings.Contains(upsert, "DO UPDATE") {
@@ -112,7 +112,7 @@ func TestRunOnceCPACDefaults(t *testing.T) {
 		t.Fatal("DefaultCPACTargetTable must be non-empty")
 	}
 	// Formatting with the default table yields a valid, fully-qualified target.
-	got := fmtCPAC(cpacUpsertSQL, "public", "public", DefaultCPACTargetTable, "ev")
+	got := fmtCPAC(cpacUpsertSQL, "public", "public", DefaultCPACTargetTable, "ev", "public")
 	if !strings.Contains(got, "INTO public."+DefaultCPACTargetTable+" AS ev") {
 		t.Errorf("formatted upsert must target the default shadow table; got INTO clause missing")
 	}

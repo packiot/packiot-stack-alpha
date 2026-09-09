@@ -182,7 +182,7 @@ const grainTargetsSQL = `
 func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, ca CountersAvail) error {
 	for _, g := range grainMatrix {
 		if _, err := d.Pool.Exec(ctx,
-			fmt.Sprintf(grainRollupSQL, d.EvSchema, d.RefSchema, g.Table, g.Grain),
+			fmt.Sprintf(grainRollupSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain),
 			exclAreas, exclEnterprises); err != nil {
 			return fmt.Errorf("rollup %s: %w", g.Grain, err)
 		}
@@ -192,19 +192,19 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 		// oee_p residual runs (also on the correct table — the amber bug is gone).
 		if ca.engagedCanonical() {
 			if _, err := d.Pool.Exec(ctx,
-				fmt.Sprintf(grainOeeReconcileSQL, d.EvSchema, g.Table)); err != nil {
+				fmt.Sprintf(grainOeeReconcileSQL, d.GoldSchema, g.Table)); err != nil {
 				return fmt.Errorf("oee-reconcile %s: %w", g.Grain, err)
 			}
 		} else if _, err := d.Pool.Exec(ctx,
-			fmt.Sprintf(grainOeePSQL, d.EvSchema, g.Table)); err != nil {
+			fmt.Sprintf(grainOeePSQL, d.GoldSchema, g.Table)); err != nil {
 			return fmt.Errorf("oee_p %s: %w", g.Grain, err)
 		}
 		if _, err := d.Pool.Exec(ctx,
-			fmt.Sprintf(grainReflagSQL, d.EvSchema, d.RefSchema, g.Table, g.Grain)); err != nil {
+			fmt.Sprintf(grainReflagSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain)); err != nil {
 			return fmt.Errorf("reflag %s: %w", g.Grain, err)
 		}
 		if _, err := d.Pool.Exec(ctx,
-			fmt.Sprintf(grainTargetsSQL, d.EvSchema, d.RefSchema, g.Table, g.Grain, g.TargetCol)); err != nil {
+			fmt.Sprintf(grainTargetsSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain, g.TargetCol)); err != nil {
 			return fmt.Errorf("targets %s: %w", g.Grain, err)
 		}
 	}

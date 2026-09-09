@@ -41,10 +41,26 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 )
 
+// fmtRD formats a rollup SQL fragment with the CANONICAL schema-arg tuple (#248
+// de-shim): %[1]s=EvSchema %[2]s=RefSchema %[3]s=SilverSchema %[4]s=GoldSchema
+// %[5]s=GrainSchema, fragment-specific extras at %[6]s+. Every mixed rollup
+// fragment qualifies its tables by this fixed scheme (facts/caggs→%[3] silver,
+// OEE grains→%[4] gold, dims→%[2] ref) so the public compat shims can drop.
+func fmtRD(sql string, d flows.Dest, extra ...any) string {
+	return fmt.Sprintf(sql, append([]any{d.EvSchema, d.RefSchema, d.SilverSchema, d.GoldSchema, d.GrainSchema}, extra...)...)
+}
+
+// fmtRP is the parity/golden-harness counterpart: the parity accessors are diffed
+// against a comparator where ALL tables live in ONE schema, so every slot routes to
+// the single `schema` the caller passes (callers pass evSchema==refSchema).
+func fmtRP(sql, schema string, extra ...any) string {
+	return fmt.Sprintf(sql, append([]any{schema, schema, schema, schema, schema}, extra...)...)
+}
+
 const hourEligibleSQL = `
 	CREATE TEMP TABLE hour_elig ON COMMIT DROP AS
 	SELECT h.id_equipment, h.ts_value, h.target_customized
-	  FROM %[1]s.equipment_oee_hourly h
+	  FROM %[4]s.equipment_oee_hourly h
 	 WHERE h.ts_value >= now() - interval '65 minutes' AND h.ts_value <= now()
 	   AND h.recalc_needed
 	   AND h.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
@@ -58,13 +74,13 @@ const hourValuesSQL = `
 	           sum(ca.gross_production_incr) AS gross,
 	           sum(ca.net_production_incr)   AS net
 	      FROM hour_elig el
-	      JOIN %[1]s.equipment_categorical_1hour ca
+	      JOIN %[3]s.equipment_categorical_1hour ca
 	        ON ca.id_equipment = el.id_equipment
 	       AND ca.ts_value >= now() - interval '65 minutes'
 	       AND ca.ts_value = el.ts_value
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       gross = COALESCE(s.gross, 0),
 	       net   = COALESCE(s.net, 0),
 	       scrap = COALESCE(s.gross - s.net, 0),
@@ -75,7 +91,7 @@ const hourValuesSQL = `
 	   AND e.ts_value >= now() - interval '65 minutes'`
 
 const hourCascadeDaySQL = `
-	UPDATE %[1]s.equipment_oee_daily d SET recalc_needed = true
+	UPDATE %[4]s.equipment_oee_daily d SET recalc_needed = true
 	  FROM hour_elig el
 	 WHERE d.id_equipment = el.id_equipment
 	   AND d.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)`
@@ -104,7 +120,7 @@ const hourSpeedSQL = `
 	                    q.production_speed) END) AS ideal_speed,
 	           avg(m.speed) AS speed
 	      FROM hour_elig el
-	      LEFT JOIN %[1]s.equipment_categorical_1min m
+	      LEFT JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = el.id_equipment
 	       AND m.ts_value >= now() - interval '65 minutes'
 	       AND m.ts_value >= el.ts_value
@@ -113,7 +129,7 @@ const hourSpeedSQL = `
 	       AND m.ts_value <  el.ts_value + interval '1 hour'
 	      LEFT JOIN LATERAL (
 	           SELECT ev.ideal_production_speed
-	             FROM %[1]s.equipment_values ev
+	             FROM %[3]s.equipment_values ev
 	            WHERE ev.id_equipment = m.id_equipment
 	              AND ev.ts_value < m.ts_value + interval '1 minute'
 	              AND ev.ideal_production_speed IS NOT NULL
@@ -122,7 +138,7 @@ const hourSpeedSQL = `
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       speed       = COALESCE(sp.speed, 0),
 	       ideal_speed = COALESCE(sp.ideal_speed, 0)
 	  FROM sp
@@ -142,7 +158,7 @@ const hourEventsSQL = `
 	    -- hour; +1h (below) covers through its end. Scanned over a generous horizon
 	    -- so a line idle for a while is still bounded to its true last data, not now().
 	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
-	      FROM %[1]s.equipment_categorical_1hour m
+	      FROM %[3]s.equipment_categorical_1hour m
 	     WHERE m.id_equipment IN (SELECT id_equipment FROM hour_elig)
 	       AND m.ts_value >= now() - interval '90 days'
 	     GROUP BY m.id_equipment
@@ -179,14 +195,14 @@ const hourEventsSQL = `
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
 	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
-	      FROM %[1]s.equipment_events ee
+	      FROM %[3]s.equipment_events ee
 	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
 	     WHERE ee.id_equipment IN (SELECT id_equipment FROM hour_elig)
 	       AND ee.ts_event >= now() - interval '10 days' AND ee.ts_event < now()
 	), ev AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           extract(epoch FROM (least(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total,
-	           COALESCE(sum(CASE WHEN %[2]s THEN
+	           COALESCE(sum(CASE WHEN %[6]s THEN
 	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
 	           COALESCE(sum(CASE WHEN ee.change_over = true THEN
 	               extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_value + interval '1 hour', now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
@@ -202,7 +218,7 @@ const hourEventsSQL = `
 	       AND tstzrange(ee.ts_event, ee.ts_eff_end) && tstzrange(el.ts_value, el.ts_value + interval '1 hour')
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       -- Denominator degrades gracefully: planned-production-time can never
 	       -- exceed the bucket, so subtract LEAST(ts_planned, ts_total). With the
 	       -- ee_bounded fix ts_planned is already ≤ ts_total (inert here), but this
@@ -251,7 +267,7 @@ const hourEventsSQL = `
 // throughput can drive oee_p > 1; the GREATEST(LEAST(..,1),0) clamp keeps this
 // write inside the *_oee_bounds invariant (#663) so the tick's CHECK holds.
 const hourOeePSQL = `
-	UPDATE %[1]s.equipment_oee_hourly e
+	UPDATE %[4]s.equipment_oee_hourly e
 	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
@@ -260,7 +276,7 @@ const hourOeePSQL = `
 
 // Targets: event-hit rows only (cleared ∩ eligible — see argument).
 const hourTargetsSQL = `
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       proportional_target = COALESCE(pt.vl_day::float / 24, 0)
 	  FROM hour_elig el
 	  JOIN %[2]s.production_targets pt ON pt.id_equipment = el.id_equipment
@@ -275,14 +291,14 @@ const hourTargetsSQL = `
 // the tick's batch (hour_elig). source_watermark = LEAST(hour bucket end,
 // now()) — the latest event-time this hour row has visibility through.
 const hourStampSQL = `
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       computed_at = now(),
 	       source_watermark = LEAST(e.ts_value + interval '1 hour', now())
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
 const hourReflagSQL = `
-	UPDATE %[1]s.equipment_oee_hourly SET recalc_needed = true
+	UPDATE %[4]s.equipment_oee_hourly SET recalc_needed = true
 	 WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
 	   AND ts_value <= now()`
 
@@ -310,48 +326,48 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	} else if !got {
 		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(hourEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := tx.Exec(ctx, fmtRD(hourEligibleSQL, d), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("hour eligible: %w", err)
 	}
 	steps := []rollupStep{
-		{"values", fmt.Sprintf(hourValuesSQL, d.EvSchema)},
-		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
+		{"values", fmtRD(hourValuesSQL, d)},
+		{"cascade-day", fmtRD(hourCascadeDaySQL, d)},
 		// #186: cascade-area (flag area_oee_hourly) removed — the area/site hourly
 		// grain was retired (dead). Area day freshness is now driven by the
 		// equipment→area day-flag cascade in entity_grains.go.
-		{"speed", fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema)},
-		{"events", fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability))},
+		{"speed", fmtRD(hourSpeedSQL, d)},
+		{"events", fmtRD(hourEventsSQL, d, plannedDowntimeExpr(changeoverAvailability))},
 	}
 	// Counters-only Availability fallback — flag + opt-in gated, positioned
 	// after events / before oee-p. Inert (not appended) when not engaged, so
 	// the disabled path executes the exact original statement stream.
 	if ca.engaged() {
 		steps = append(steps, rollupStep{"counters-avail",
-			fmt.Sprintf(hourCountsAvailSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+			fmtRD(hourCountsAvailSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
 	// Line-from-lead derivation — flag + enterprise gated, after events / before
 	// oee-p (so hourOeePSQL back-solves oee_p off the just-cleared line rows).
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			fmt.Sprintf(hourLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+			fmtRD(hourLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-2: availability count-floor (see shift.go). Inert when off.
 	if ca.engagedFloor() {
 		steps = append(steps, rollupStep{"avail-floor",
-			fmt.Sprintf(hourAvailFloorSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+			fmtRD(hourAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-3: canonical A·P·Q reconcile replaces the legacy residual
 	// when engaged; otherwise the legacy oee-p runs (byte-identical).
 	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(hourOeeReconcileSQL, d.EvSchema)})
+		steps = append(steps, rollupStep{"oee-reconcile", fmtRD(hourOeeReconcileSQL, d)})
 	} else {
-		steps = append(steps, rollupStep{"oee-p", fmt.Sprintf(hourOeePSQL, d.EvSchema)})
+		steps = append(steps, rollupStep{"oee-p", fmtRD(hourOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema)},
-		rollupStep{"stamp", fmt.Sprintf(hourStampSQL, d.EvSchema)},
-		rollupStep{"reflag", fmt.Sprintf(hourReflagSQL, d.EvSchema)},
+		rollupStep{"targets", fmtRD(hourTargetsSQL, d)},
+		rollupStep{"stamp", fmtRD(hourStampSQL, d)},
+		rollupStep{"reflag", fmtRD(hourReflagSQL, d)},
 	)
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
@@ -364,16 +380,16 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 // Parity accessors (single-source emission).
 func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
 	return []struct{ Name, SQL string }{
-		{"eligible", fmt.Sprintf(hourEligibleSQL, evSchema, refSchema)},
-		{"values", fmt.Sprintf(hourValuesSQL, evSchema)},
-		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, evSchema)},
+		{"eligible", fmtRP(hourEligibleSQL, evSchema)},
+		{"values", fmtRP(hourValuesSQL, evSchema)},
+		{"cascade-day", fmtRP(hourCascadeDaySQL, evSchema)},
 		// #186: cascade-area removed (area hourly grain retired).
-		{"speed", fmt.Sprintf(hourSpeedSQL, evSchema, refSchema)},
+		{"speed", fmtRP(hourSpeedSQL, evSchema)},
 		// Parity accessor is frozen to the prod-verbatim (off) classification —
 		// it is diffed against prod (F2), which has no changeover reclassification.
-		{"events", fmt.Sprintf(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
-		{"oee-p", fmt.Sprintf(hourOeePSQL, evSchema)},
-		{"targets", fmt.Sprintf(hourTargetsSQL, evSchema, refSchema)},
-		{"reflag", fmt.Sprintf(hourReflagSQL, evSchema)},
+		{"events", fmtRP(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
+		{"oee-p", fmtRP(hourOeePSQL, evSchema)},
+		{"targets", fmtRP(hourTargetsSQL, evSchema)},
+		{"reflag", fmtRP(hourReflagSQL, evSchema)},
 	}
 }

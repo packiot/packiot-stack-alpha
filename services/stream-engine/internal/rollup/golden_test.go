@@ -12,7 +12,6 @@ package rollup
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"testing"
@@ -95,7 +94,7 @@ func TestGoldenRecalc(t *testing.T) {
 		}
 	}
 	// The verified statement, verbatim from the port (single source).
-	if _, err := pool.Exec(ctx, fmt.Sprintf(RecalcSQLForParity(), "golden", "golden"),
+	if _, err := pool.Exec(ctx, fmtRP(RecalcSQLForParity(), "golden"),
 		"1 month", []int{6}); err != nil {
 		t.Fatalf("recalc: %v", err)
 	}

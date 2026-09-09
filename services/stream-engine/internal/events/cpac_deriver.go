@@ -131,7 +131,7 @@ WITH scope AS (
            extract(epoch FROM (m.ts_value - lag(m.ts_value)
                OVER (PARTITION BY s.id_equipment ORDER BY m.ts_value))) AS gap
       FROM scope s
-      JOIN %[1]s.equipment_categorical_1min m
+      JOIN %[5]s.equipment_categorical_1min m
         ON m.id_equipment = s.id_equipment
        AND m.ts_value > now() - interval '25 hours'
        AND m.gross_production_incr > 0
@@ -222,12 +222,14 @@ DELETE FROM %[1]s.%[3]s ev
           AND ev.ts_event < COALESCE(h.ts_end, now()))
    )`
 
-// fmtCPAC formats a CPAC SQL template with the 4 positional args the templates
-// use: %[1]s EvSchema, %[2]s RefSchema, %[3]s target table, %[4]s the aliased
-// existing-row prefix ("ev" for the upsert/delete guards; "h" is baked into
-// humanCoverPred already).
-func fmtCPAC(tmpl, evSchema, refSchema, table, rowAlias string) string {
-	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias)
+// fmtCPAC formats a CPAC SQL template with the positional args the templates
+// use: %[1]s EvSchema (the DARK shadow table's home + ca_discrete residue),
+// %[2]s RefSchema, %[3]s target shadow table, %[4]s the aliased existing-row
+// prefix ("ev" for the upsert/delete guards; "h" is baked into humanCoverPred),
+// %[5]s SilverSchema (the categorical cagg's home — #248 de-shim; the shadow
+// table itself stays on %[1]s ev).
+func fmtCPAC(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string) string {
+	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema)
 }
 
 // RunOnceCPAC derives CPAC stops for one destination: correct (delete stale),
@@ -243,11 +245,11 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 	if thr <= 0 {
 		thr = 300
 	}
-	del, err := d.Pool.Exec(ctx, fmtCPAC(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev"), cfg.Enterprises, thr)
+	del, err := d.Pool.Exec(ctx, fmtCPAC(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema), cfg.Enterprises, thr)
 	if err != nil {
 		return 0, 0, fmt.Errorf("cpac correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmtCPAC(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev"), cfg.Enterprises, thr)
+	ups, err := d.Pool.Exec(ctx, fmtCPAC(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema), cfg.Enterprises, thr)
 	if err != nil {
 		return del.RowsAffected(), 0, fmt.Errorf("cpac upsert pass: %w", err)
 	}
