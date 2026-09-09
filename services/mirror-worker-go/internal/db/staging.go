@@ -245,7 +245,7 @@ func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) 
 // treats that as the healthy steady state, 0 anomalies.
 func (s *Staging) DistinctDLQSourceLogIDs(ctx context.Context, source string) ([]int64, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT source_log_id FROM mirror_replay_dlq WHERE source = $1`,
+		`SELECT DISTINCT source_log_id FROM app.mirror_replay_dlq WHERE source = $1`,
 		source,
 	)
 	if err != nil {
@@ -1392,7 +1392,7 @@ type DLQRetryRow struct {
 func (s *Staging) FetchRetriableDLQ(ctx context.Context, source string, maxAttempts, limit int) ([]DLQRetryRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, source_log_id, category, retry_attempts
-		   FROM mirror_replay_dlq
+		   FROM app.mirror_replay_dlq
 		  WHERE source = $1
 		    AND retry_attempts < $2
 		    AND (last_retry_at IS NULL
@@ -1421,7 +1421,7 @@ func (s *Staging) FetchRetriableDLQ(ctx context.Context, source string, maxAttem
 // rows, not the historical state. Run in caller's tx so it's atomic
 // with whatever the successful replay wrote.
 func DeleteDLQRow(ctx context.Context, tx pgx.Tx, id int64) error {
-	_, err := tx.Exec(ctx, `DELETE FROM mirror_replay_dlq WHERE id = $1`, id)
+	_, err := tx.Exec(ctx, `DELETE FROM app.mirror_replay_dlq WHERE id = $1`, id)
 	return err
 }
 
@@ -1430,7 +1430,7 @@ func DeleteDLQRow(ctx context.Context, tx pgx.Tx, id int64) error {
 // have rolled back — we want this UPDATE to land regardless.
 func (s *Staging) MarkDLQRetried(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE mirror_replay_dlq
+		`UPDATE app.mirror_replay_dlq
 		    SET retry_attempts = retry_attempts + 1,
 		        last_retry_at  = now()
 		  WHERE id = $1`,
@@ -1444,7 +1444,7 @@ func (s *Staging) MarkDLQRetried(ctx context.Context, id int64) error {
 func (s *Staging) CountDLQ(ctx context.Context, source string) (int64, error) {
 	var n int64
 	_, err := s.SelectOne(ctx,
-		`SELECT COUNT(*) FROM mirror_replay_dlq WHERE source = $1`,
+		`SELECT COUNT(*) FROM app.mirror_replay_dlq WHERE source = $1`,
 		[]any{source}, &n)
 	return n, err
 }
@@ -1475,11 +1475,11 @@ func (s *Staging) CountDLQ(ctx context.Context, source string) (int64, error) {
 // single tick.
 func (s *Staging) ReanimateMappableEquipmentEventDLQ(ctx context.Context, source string, maxAttempts, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx,
-		`UPDATE mirror_replay_dlq d
+		`UPDATE app.mirror_replay_dlq d
 		    SET retry_attempts = 0,
 		        last_retry_at  = NULL
 		  WHERE d.id IN (
-		    SELECT id FROM mirror_replay_dlq
+		    SELECT id FROM app.mirror_replay_dlq
 		     WHERE source = $1
 		       AND retry_attempts >= $2
 		       AND category IN ('event-justified', 'event-edited',
@@ -1526,7 +1526,7 @@ func WriteDLQ(ctx context.Context, tx pgx.Tx,
 	payload []byte, errMsg string, retryAttempts int,
 ) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO mirror_replay_dlq
+		`INSERT INTO app.mirror_replay_dlq
 		       (source, source_log_id, category, subcategory, payload, error, retry_attempts)
 		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
 		source, sourceLogID, category, subcategory, string(payload), errMsg, retryAttempts)
@@ -1543,7 +1543,7 @@ func WriteDLQ(ctx context.Context, tx pgx.Tx,
 // tx (the failed replay's tx rolled back), same as MarkDLQRetried.
 func (s *Staging) RetireDLQRow(ctx context.Context, id int64, retiredAttempts int) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE mirror_replay_dlq
+		`UPDATE app.mirror_replay_dlq
 		    SET retry_attempts = GREATEST(retry_attempts, $2),
 		        last_retry_at  = now()
 		  WHERE id = $1`,

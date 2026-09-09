@@ -298,7 +298,7 @@ func TestComparatorSQLInvariants(t *testing.T) {
 				needle string
 				why    string
 			}{
-				"SELECT DISTINCT source_log_id FROM mirror_replay_dlq WHERE source = $1",
+				"SELECT DISTINCT source_log_id FROM app.mirror_replay_dlq WHERE source = $1",
 				fname + " DistinctDLQSourceLogIDs must use DISTINCT to dedupe — the anomaly count would inflate if a single orphan source_log_id appeared on multiple DLQ rows",
 			})
 		case "../db/prod.go":
