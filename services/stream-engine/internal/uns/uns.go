@@ -61,7 +61,7 @@ const provisionMetricsSQL = `
 func Provision(ctx context.Context, d flows.Dest) error {
 	for _, m := range provisionMatrix {
 		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionSQL,
-			d.EvSchema, d.RefSchema, m.unsTable, m.idCol, m.entityTable)); err != nil {
+			d.GrainSchema, d.RefSchema, m.unsTable, m.idCol, m.entityTable)); err != nil {
 			return fmt.Errorf("provision %s: %w", m.unsTable, err)
 		}
 	}
@@ -97,7 +97,7 @@ const refreshEquipmentSQL = `
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	     GROUP BY id_equipment, date_trunc('%[3]s', ts_value)::date
 	)
-	UPDATE %[1]s.%[4]s u
+	UPDATE %[6]s.%[4]s u
 	   SET gross_production = p.gross_production_incr,
 	       net_production   = p.net_production_incr,
 	       scrap            = p.scrap_incr,
@@ -112,7 +112,7 @@ const refreshEquipmentSQL = `
 func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
 	for _, g := range equipmentGrains {
 		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshEquipmentSQL,
-			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span),
+			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span, d.GrainSchema),
 			exclAreas, exclEnterprises); err != nil {
 			return fmt.Errorf("refresh %s: %w", g.grain, err)
 		}
@@ -205,7 +205,7 @@ const refreshHourEquipmentSQL = `
 	            WHERE tp_equipment > 1
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	)
-	UPDATE %[1]s.equipment_live_hour u SET
+	UPDATE %[3]s.equipment_live_hour u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed, begin_time = p.ts_value,
 	       end_time = p.ts_value + interval '1 hour',
@@ -232,7 +232,7 @@ const refreshHourTrailEquipmentSQL = `
 	             ORDER BY id_equipment, ts_value) t
 	     GROUP BY id_equipment
 	)
-	UPDATE %[1]s.equipment_live_hour u SET last_24_hours = p.data
+	UPDATE %[3]s.equipment_live_hour u SET last_24_hours = p.data
 	  FROM prod p WHERE u.id_equipment = p.id_equipment`
 
 // entityHourSQL parameterizes the area/site hour refreshers (verbatim:
@@ -243,10 +243,10 @@ const refreshHourTrailEquipmentSQL = `
 
 // RefreshCurrentHour runs the equipment live-hour refreshers.
 func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns hour equipment: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns hour equipment trail: %w", err)
 	}
 	// #186: the area/site live-HOUR refreshers were retired — their source grains
@@ -287,7 +287,7 @@ const refreshDayEquipmentSQL = `
 	            WHERE tp_equipment > 1
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	)
-	UPDATE %[1]s.equipment_live_day u SET
+	UPDATE %[3]s.equipment_live_day u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed, begin_time = p.ts_value,
 	       end_time = (p.ts_value + interval '1 day')::date,
@@ -334,7 +334,7 @@ const refreshShiftEquipmentSQL = `
 	      JOIN ts ON v.id_equipment = ts.id_equipment
 	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
 	)
-	UPDATE %[1]s.equipment_live_shift u SET
+	UPDATE %[3]s.equipment_live_shift u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed,
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
@@ -360,10 +360,10 @@ const refreshShiftEquipmentSQL = `
 // refreshers (the grey-tile unfreeze). Same exclusion lists as the
 // hour/week/month equipment refreshers.
 func RefreshCurrentEquipmentShiftDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns day equipment: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.EvSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns shift equipment: %w", err)
 	}
 	return nil

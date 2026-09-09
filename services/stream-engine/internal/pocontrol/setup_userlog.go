@@ -51,7 +51,7 @@ type userLogPayload struct {
 	Timezone string `json:"timezone"`
 }
 
-func (h *Handler) executeSetupOrUserlog(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
+func (h *Handler) executeSetupOrUserlog(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema, appSchema, grainSchema string) error {
 	paramID := derefID((*int)(m.ID))
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
@@ -65,7 +65,7 @@ func (h *Handler) executeSetupOrUserlog(ctx context.Context, pool *pgxpool.Pool,
 		if paramID == 30862 {
 			sql = setupEnd
 		}
-		if _, err := pool.Exec(ctx, fmt.Sprintf(sql, schema), info.IDEquipment, ts); err != nil {
+		if _, err := pool.Exec(ctx, fmt.Sprintf(sql, grainSchema), info.IDEquipment, ts); err != nil {
 			return fmt.Errorf("setup %d: %w", paramID, err)
 		}
 	case 30880:
@@ -77,7 +77,7 @@ func (h *Handler) executeSetupOrUserlog(ctx context.Context, pool *pgxpool.Pool,
 		if err != nil {
 			return fmt.Errorf("30880 ts_event: %w", err)
 		}
-		if _, err := pool.Exec(ctx, fmt.Sprintf(userLog30880, schema),
+		if _, err := pool.Exec(ctx, fmt.Sprintf(userLog30880, appSchema),
 			tsEvent, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 			p.Value.User, p.Value.Category, p.Value.Subcategory, p.Value.Description, p.Value.IP); err != nil {
 			return fmt.Errorf("30880 insert: %w", err)
