@@ -1,3 +1,29 @@
+> ## ⚠️ SUPERSEDED (task #230, 2026-09-08) — DO NOT WIRE UP
+>
+> The user chose to **fold this service's logic into edge-api** rather than run it
+> as a second edge↔cloud control-plane (see
+> `docs/plans/barcode-scanned-boxes-redesign.md` §6.2 "edge-api HTTP endpoint",
+> decision gate #1). The durable gapless write now lives in the edge-api vertical
+> slice:
+>
+> - `edge-api/src/usecases/scanned-boxes/record-scan/` → **`POST /api/scanned-boxes`**
+>   (was this service's `POST /v1/scans`) — same gapless `pg_advisory_xact_lock`
+>   authority, same `scan_uuid` idempotency, same in-tx tenant fence, writing the
+>   same `box_scans` + `po_box_counter` Bronze model. Auth is edge-api's api-key
+>   (`x-api-key`) instead of a Cognito Bearer, and every write is audited via
+>   `res.locals.logData`.
+> - `edge-api/src/usecases/scanned-boxes/list-scanned-boxes/` → **`GET /api/scanned-boxes`**.
+> - The `applyScan` gapless algorithm here was ported verbatim in spirit to
+>   `edge-api/src/data/DAO/scanned-boxes/scanned-boxes-dao.ts` (pure function over a
+>   `ScanTx` seam, unit-tested with no DB — mirroring `cmd/barcode-service/scans.go`).
+>
+> **This directory is kept as the LOGIC REFERENCE** until the edge-api endpoint is
+> fully proven in production and the client (barcode-scanner-v2) is cut over. It is
+> **not deleted** and **must not be deployed/wired to any client**. If pharma
+> serialization (EPCIS / GS1 / Part-11) later needs a dedicated processor, this can
+> be revived as a downstream Silver/Gold consumer of the `box_scans` Bronze that
+> edge-api now writes (the model already supports that split).
+
 # barcode-service (Phase 0)
 
 Durable box-scan ingest with a **server-authoritative, gapless per-production-order
