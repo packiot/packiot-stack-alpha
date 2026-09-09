@@ -78,6 +78,13 @@ rollup.)
 
 ## Consequences
 
+- **The schema-level part of the naming fix was executed** (2026-09-09, migration `t247`): the
+  `auth` schema was renamed to **`identity`** — the honest name for what it holds (app identity +
+  authZ keyed to Cognito, not authN, not AWS IAM; `identity` also avoids the `iam`↔AWS-IAM
+  collision). Done via expand/contract (rename + `auth.*` compat views + widened `search_path`,
+  then drop the compat views + schema once read-api/stream-engine redeployed onto `identity.*`).
+  `serving.v_entities_per_user_role` (the hot `auth ⋈ core` authz view discussed above) followed
+  the rename by OID and still resolves. Everywhere this ADR says `auth` (schema), read `identity`.
 - **The rename `packiot_analytics` → `packiot`** is the one concrete action, and it is **gated on
   the legacy `packiot` DB being retired first** (#225) so the name is free. It is a disruptive
   cutover (connection strings across ~23 services + pgbouncer + tooling + Grafana/Superset
