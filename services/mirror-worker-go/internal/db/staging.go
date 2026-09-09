@@ -157,7 +157,7 @@ func (s *Staging) FetchAPIToken(ctx context.Context, enterpriseID int) (string, 
 func (s *Staging) ReadCursor(ctx context.Context, source string) (int64, error) {
 	var cursor int64
 	found, err := s.SelectOne(ctx,
-		`SELECT last_log_id FROM mirror_replay_cursor WHERE source = $1`,
+		`SELECT last_log_id FROM app.mirror_replay_cursor WHERE source = $1`,
 		[]any{source}, &cursor)
 	if err != nil {
 		return 0, err
@@ -173,7 +173,7 @@ func (s *Staging) ReadCursor(ctx context.Context, source string) (int64, error) 
 // the caller (tx, not pool — atomic with mapping inserts / DLQ writes).
 func AdvanceCursor(ctx context.Context, tx pgx.Tx, source string, toID int64) error {
 	_, err := tx.Exec(ctx,
-		`UPDATE mirror_replay_cursor
+		`UPDATE app.mirror_replay_cursor
 		    SET last_log_id = $1, last_run_at = now()
 		  WHERE source = $2
 		    AND last_log_id < $1`,
@@ -1282,7 +1282,7 @@ func (s *Staging) fanoutValueDelta(
 // two cursors — same table, same shape.
 func (s *Staging) EnsureEventCursor(ctx context.Context, source string) (int64, error) {
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO mirror_replay_cursor (source, last_log_id, last_run_at)
+		`INSERT INTO app.mirror_replay_cursor (source, last_log_id, last_run_at)
 		 VALUES ($1, 0, now())
 		 ON CONFLICT (source) DO NOTHING`,
 		source); err != nil {
@@ -1297,7 +1297,7 @@ func (s *Staging) EnsureEventCursor(ctx context.Context, source string) (int64, 
 // row; the cursor advances at the end of the batch).
 func (s *Staging) AdvanceCursorPool(ctx context.Context, source string, toID int64) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE mirror_replay_cursor
+		`UPDATE app.mirror_replay_cursor
 		    SET last_log_id = $1, last_run_at = now()
 		  WHERE source = $2
 		    AND last_log_id < $1`,
