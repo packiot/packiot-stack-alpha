@@ -122,7 +122,15 @@ func TestNeopacSapReportGoldenShape(t *testing.T) {
 			}
 			return externalRows{cols: []string{"id_equipment"}, rows: [][]any{{42}}}, nil
 		}
-		// The frozen v_13_site_deb_sap_report row (column order preserved). The
+		// t244: the generic serving.sap_site_report(cid, id_equipment) — assert both
+		// the function is what's read and the tenant $1 = cid, id_equipment $2 = 42.
+		if !strings.Contains(sql, "serving.sap_site_report($1, $2)") {
+			t.Errorf("expected serving.sap_site_report, got %s", sql)
+		}
+		if len(args) < 2 || args[0] != neopacOwner || args[1] != 42 {
+			t.Errorf("serving.sap_site_report must bind $1=cid(%d) $2=id_equipment(42); got %v", neopacOwner, args)
+		}
+		// The frozen serving.sap_site_report row (column order preserved). The
 		// bezeichnung carries `<A&B>` + German chars to prove no HTML-escaping;
 		// erstellt is a time.Time to prove the ISO-Z timestamp form. The numeric
 		// pins (§3c, prod-typed): job is bigint → node-pg string, deliberately
@@ -155,10 +163,16 @@ func TestNeopacSapReportGoldenShape(t *testing.T) {
 func TestNeopacSapReportSyncGoldenShape(t *testing.T) {
 	sh := shimByPath(t, "/ext/neopac/sap-report-sync")
 	reader := &scriptedReader{fn: func(sql string, args []any) (externalRows, error) {
-		// auftrag/sum_labels are bigint → node-pg strings; produktionszeit is an
-		// UNCONSTRAINED numeric carrying scale ("480.00") and geplante_ausfallzeit
-		// is a zero of the same ("0.00") — both proving the string+scale pin for
-		// the frozen customer-13 view (v_sap_report_data_sync_customer_13).
+		// t244: serving.sap_report_data_sync($1=cid) — the tenant is now an explicit
+		// param. auftrag/sum_labels are bigint → node-pg strings; produktionszeit is
+		// an UNCONSTRAINED numeric carrying scale ("480.00") and geplante_ausfallzeit
+		// is a zero of the same ("0.00") — both proving the string+scale pin.
+		if !strings.Contains(sql, "serving.sap_report_data_sync($1)") {
+			t.Errorf("expected serving.sap_report_data_sync, got %s", sql)
+		}
+		if len(args) < 1 || args[0] != neopacOwner {
+			t.Errorf("serving.sap_report_data_sync must bind $1 = cid (%d); got %v", neopacOwner, args)
+		}
 		return externalRows{
 			cols: []string{"auftrag", "sum_labels", "linie", "tag", "shicht", "shicht_nummer", "produktionszeit", "geplante_ausfallzeit", "gestartet"},
 			rows: [][]any{
@@ -203,13 +217,15 @@ func TestNeopacSapReportSyncPaginationSemantics(t *testing.T) {
 	if want := `{"page":3,"limit":25,"results":0,"data":[]}`; body != want {
 		t.Errorf("empty-result body = %s, want %s", body, want)
 	}
-	// auftrag=$1, linie=$2 (upper-cased), then LIMIT $3 OFFSET $4.
-	if !strings.Contains(gotSQL, "auftrag = $1") || !strings.Contains(gotSQL, "linie = $2") ||
-		!strings.Contains(gotSQL, "LIMIT $3 OFFSET $4") {
+	// t244: serving.sap_report_data_sync($1=cid); filters shift up one → auftrag=$2,
+	// linie=$3 (upper-cased), then LIMIT $4 OFFSET $5.
+	if !strings.Contains(gotSQL, "serving.sap_report_data_sync($1)") ||
+		!strings.Contains(gotSQL, "auftrag = $2") || !strings.Contains(gotSQL, "linie = $3") ||
+		!strings.Contains(gotSQL, "LIMIT $4 OFFSET $5") {
 		t.Errorf("pagination SQL wrong: %s", gotSQL)
 	}
-	// args: [auftrag, LINIE(upper), limit=25, offset=(3-1)*25=50]
-	wantArgs := []any{"999", "L07", 25, 50}
+	// args: [cid, auftrag, LINIE(upper), limit=25, offset=(3-1)*25=50]
+	wantArgs := []any{neopacOwner, "999", "L07", 25, 50}
 	if len(gotArgs) != len(wantArgs) {
 		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
 	}
@@ -324,29 +340,45 @@ func TestExternalShimOwnerUnsetFailsClosed(t *testing.T) {
 	}
 }
 
-// TestExternalBackingViewsAreDriftGated proves the frozen external views are
-// carried into the contract-drift extraction (existence-only), so a dropped/
-// renamed prod view blocks the flip fail-closed rather than 500ing an external
-// contract silently.
-func TestExternalBackingViewsAreDriftGated(t *testing.T) {
+// TestExternalBackingFunctionsAreDriftGated proves the generic serving.* functions
+// the NEOPAC SAP shims now read (t244 enterprise-06/13 parameterization — replacing
+// the frozen v_13_site_deb_sap_report / v_sap_report_data_sync_customer_13 views)
+// are carried into the contract-drift extraction WITH THEIR ARITY, so a dropped/
+// renamed/re-signatured prod function blocks the flip fail-closed rather than
+// 500ing an external contract silently. The arity is the load-bearing addition: the
+// boot drift gate asserts serving.sap_site_report accepts 2 args and
+// serving.sap_report_data_sync accepts 1 — the exact param counts these SQLs bind.
+func TestExternalBackingFunctionsAreDriftGated(t *testing.T) {
 	objs, err := extractContract()
 	if err != nil {
 		t.Fatalf("extractContract: %v", err)
 	}
-	want := map[string]bool{
-		"v_13_site_deb_sap_report":           false,
-		"v_sap_report_data_sync_customer_13": false,
+	type fn struct {
+		name string
+		argc int
+	}
+	want := map[fn]bool{
+		{"serving.sap_site_report", 2}:      false,
+		{"serving.sap_report_data_sync", 1}: false,
 	}
 	for _, o := range objs {
-		if o.Source == "external" {
-			if _, tracked := want[o.Name]; tracked {
-				want[o.Name] = true
+		if o.Source == "external" && o.Kind == "function" {
+			k := fn{o.Name, o.ArgC}
+			if _, tracked := want[k]; tracked {
+				want[k] = true
 			}
 		}
 	}
-	for view, found := range want {
+	for f, found := range want {
 		if !found {
-			t.Errorf("frozen external view %q not present in the drift-gate contract dump", view)
+			t.Errorf("generic serving function %q (argc %d) not present in the drift-gate contract dump — the t244 repoint would flip unguarded", f.name, f.argc)
+		}
+	}
+	// And the legacy frozen views must be GONE from the contract (the whole point of
+	// the cutover): if they reappear, a shim was left pointing at the retired object.
+	for _, o := range objs {
+		if o.Source == "external" && (o.Name == "v_13_site_deb_sap_report" || o.Name == "v_sap_report_data_sync_customer_13") {
+			t.Errorf("legacy frozen view %q still referenced by an external shim after the t244 repoint", o.Name)
 		}
 	}
 }

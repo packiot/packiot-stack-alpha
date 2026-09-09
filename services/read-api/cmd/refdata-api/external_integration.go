@@ -156,14 +156,15 @@ func integrationShiftValidationAuth(r *http.Request, keys map[string]int, owner 
 // + JobDataIntegrationRepository.dataIntegration:
 //   - post-auth validation: `!days_interval || days_interval <= 0 || days_interval
 //     > 41` → 400 "days interval must be between 1 and 41";
-//   - read the ent-06-FROZEN set-returning get_data_sync_enterprsie_06b(days), with
-//     an optional UPPER'd `site` filter (string-interpolated in back4 →
-//     parameterized here). The function is pre-scoped to enterprise 06 and takes
-//     NO id_enterprise arg, so — exactly like NEOPAC sap-report-sync — there is no
-//     $1 tenant column to fence in SQL; the ENTIRE fence is the owner binding.
+//   - read the generic serving.data_sync(p_id_enterprise, p_numdays) (t244 —
+//     replaces the ent-06-hardcoded get_data_sync_enterprsie_06b(days); the tenant
+//     is now the explicit $1 param, so there IS a $1 tenant column in SQL now,
+//     strengthening the fence beyond the owner binding). p_numdays keeps the
+//     client-supplied days_interval ($2), with an optional UPPER'd `site` filter
+//     (string-interpolated in back4 → parameterized here).
 //   - frozen `{data_integration}` envelope. back4 res.json's the rows straight (no
 //     moment/date adapter), so timestamps use the default toISOString pin.
-func runJobDataIntegration(ctx context.Context, deps shimDeps, _ int, r *http.Request) (any, *shimError) {
+func runJobDataIntegration(ctx context.Context, deps shimDeps, cid int, r *http.Request) (any, *shimError) {
 	q := r.URL.Query()
 	di := parseIntDefault(q.Get("days_interval"), 0) // absent/non-numeric ⇒ 0 ⇒ rejected (mirrors !days_interval)
 	if di <= 0 || di > 41 {
@@ -171,11 +172,12 @@ func runJobDataIntegration(ctx context.Context, deps shimDeps, _ int, r *http.Re
 	}
 	site := q.Get("site")
 	var data externalRows
+	// t244: $1 = injected cid (tenant), $2 = the client days_interval (p_numdays).
 	if site != "" {
 		data = deps.query(ctx,
-			`select * from get_data_sync_enterprsie_06b($1) where site = UPPER($2)`, di, site)
+			`select * from serving.data_sync($1, $2) where site = UPPER($3)`, cid, di, site)
 	} else {
-		data = deps.query(ctx, `select * from get_data_sync_enterprsie_06b($1)`, di)
+		data = deps.query(ctx, `select * from serving.data_sync($1, $2)`, cid, di)
 	}
 	return envDataIntegration{DataIntegration: data}, nil
 }

@@ -294,7 +294,7 @@ var datasets = map[string]dataset{
 		group: "oee", doc: "OEE score, canonical per-equipment A·P·Q (serving.oee_score)",
 		sql:      `SELECT * FROM serving.oee_score($1,$2,$3)`,
 		windowed: true, maxWindow: analyticsWindow,
-		params:   []dsParam{pEnt, pWinFrom, pWinTo},
+		params: []dsParam{pEnt, pWinFrom, pWinTo},
 	},
 	"oee-progress": {
 		group: "oee", doc: "OEE progress over time (serving.oee_progress)",
@@ -970,18 +970,26 @@ var datasets = map[string]dataset{
 	// in F3 (`packiot_analytics`) they are STUB TABLES (relkind r), not views — the object
 	// EXISTS with column-parity, which is what the read needs (front4 needs a non-Hasura
 	// path even when the result is empty). Bind anyway.
+	// t244 enterprise-06/13 parameterization: the ent-13 stub tables
+	// v_13_overview_takt / v_13_overview_partial_scrap_rate are replaced by the
+	// generic parameterized functions serving.overview_takt($1) /
+	// serving.overview_scrap_rate($1) — the tenant is now the function's explicit
+	// $1 argument. The load-bearing EXISTS(equipments … $1) ownership fence is
+	// PRESERVED (defense-in-depth): the serving param scopes the enterprise inside
+	// the function, and the EXISTS still binds the caller's tenant to the requested
+	// equipment $2 so a foreign-tenant equipment id yields zero rows.
 	"overview-takt": {
-		group: "overview-detail", doc: "Per-equipment takt/avg speed (v_13_overview_takt, ent-13 Neopac view; empty off ent 13)",
+		group: "overview-detail", doc: "Per-equipment takt/avg speed (serving.overview_takt, generic ent-parameterized fn; empty off configured tenants)",
 		sql: `SELECT v.id_equipment, v.avg_speed
-			FROM v_13_overview_takt v
+			FROM serving.overview_takt($1) v
 			WHERE v.id_equipment = $2
 			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1 AND e.active)`,
 		params: []dsParam{pEnt, pEquip},
 	},
 	"overview-scrap-rate": {
-		group: "overview-detail", doc: "Per-equipment partial scrap rate (v_13_overview_partial_scrap_rate, ent-13 Neopac view; empty off ent 13)",
+		group: "overview-detail", doc: "Per-equipment partial scrap rate (serving.overview_scrap_rate, generic ent-parameterized fn; empty off configured tenants)",
 		sql: `SELECT v.cd_equipment, v.gross, v.net, v.scrap, v.scrap_rate
-			FROM v_13_overview_partial_scrap_rate v
+			FROM serving.overview_scrap_rate($1) v
 			WHERE v.id_equipment = $2
 			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1 AND e.active)`,
 		params: []dsParam{pEnt, pEquip},
@@ -1043,6 +1051,11 @@ var datasets = map[string]dataset{
 	// F1↔F3 object parity at F3_MISSING=0. They are inert under the default f1 flow.
 	"production-orders-rich": {
 		group: "production-orders", doc: "Available POs for a set of equipment, deep-nested (production_orders + client/product/product_family/equipment/site/area, front4 GET_PRODUCTION_ORDERS)",
+		// TODO(#243): production_orders already exposes the CLEAN oee_a/oee_p/oee_q
+		// column names; the long oee_availability/oee_performance/oee_quality aliases
+		// are kept ONLY because front4's refdata adapter (and any Superset dataset)
+		// may still read the long keys. Drop the aliases (project po.oee_a/oee_p/oee_q
+		// bare) once the parent confirms no downstream consumer needs the long names.
 		sql: `SELECT po.id_production_order, po.id_order, po.id_order_text, po.id_equipment, po.id_equipment_executed,
 			po.id_product, po.id_user_operator, po.status, po.available_time, po.conversion_factor,
 			po.gross_production, po.ideal_production, po.ideal_production_speed, po.net_production,
