@@ -236,6 +236,15 @@ service creds live in the app-box compose env + Secrets Manager, not in the DB.
 
 ## 9. Path to a clean `public` (the de-shim epic — *repoint, don't drop*)
 
+> **Dead-object status (2026-09-10 maintenance window): the DB is garbage-free.** A full
+> scan (pg_stat_statements 6-day window + pg_catalog static refs + orphan/backup-name sweep)
+> found exactly **one** dead object in the entire database — `public.agg_equipment_values_10min`
+> (0 queries, 0 dependents) — now **dropped** (migration `t258a`, via a stream-engine quiesce
+> since cagg DDL contends with the ingest invalidation lock). Everything else that "looks
+> scattered" in `public` is **live** (the `h_*` tables back called functions; the caggs feed
+> read-api/reports/uns; the dim shims feed the shiftresolver) — un-migrated architecture, not
+> leftovers. So what remains below is **forward-migration**, not cleanup.
+
 `public`'s residue is **load-bearing**, not droppable cruft — an audit (2026-09-10) traced
 every object to a live consumer. So the cleanup is a **repoint-then-drop** epic, in this
 order (each phase its own deploy + soak; **plan it from the LIVE DB + deployed code, not a
