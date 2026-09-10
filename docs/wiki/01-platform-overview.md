@@ -59,20 +59,22 @@ Packiot's backend has **two orthogonal splits**. Confusing them is the #1 source
 | **Storage** | ordinary Postgres tables + FKs | TimescaleDB hypertables + continuous aggregates |
 | **Cadence** | small, mutable, hand-authored | high-volume, append + rollup |
 
-### Axis 2 — the two database *planes* (`packiot` vs `packiot_analytics`)
+### Axis 2 — one live database, separated by *schema* (`packiot_analytics`)
 
-The F1→F3 migration left the same logical schema in **two databases** on one cluster:
+The F1→F3 migration once ran the same schema in **two databases**; that two-DB shadow is
+**retired** (ADR-0056). Today there is **one** live application database,
+**`packiot_analytics`** (both prod and staging), separated by **schema** into a medallion
+(bronze/silver/gold) + domain (core/identity/config/ops) + serving (serving/bi) layout.
 
-| Plane | DB | Role |
-|---|---|---|
-| **F1** (legacy) | `packiot` | The old oeecloud engine's DB. **No longer read/written by the live pipeline** since the 2026-08-16 cutover. |
-| **F3** (live) | `packiot_analytics` (prod) / `packiot_shadow` (staging) | The refactored end-state: Go Calc, OEE math in the worker, TimescaleDB caggs. **This is where live telemetry + CS-Admin writes land today.** |
+| DB | Role |
+|---|---|
+| **`packiot_analytics`** | **the live app DB** — all telemetry + CS-Admin writes land here (Go Calc, OEE math in stream-engine, TimescaleDB caggs). |
+| `packiot` | legacy monolith — frozen (2026-08-16), out of the pipeline, #225-gated retirement. When it frees the name, `packiot_analytics` → `packiot`. |
 
-The flip was done at the **connection-string** level (`POSTGRES_DB` per service), not by
-editing 100+ DAOs. `edge-api/src/providers/database/analytics-postgres-adapter.ts`
-documents it. **Practical consequence:** when you inspect data, query the right plane —
-csadmin/onboarding writes land in **`packiot_analytics`**, and the two planes have
-drifted (columns added out-of-band on one). Never assume a column exists on both.
+**Practical consequence:** inspect data in `packiot_analytics`; use bare table names (the
+`search_path` resolves them to the real schema) and only qualify `public.X` for a compat
+shim. Columns were added out-of-band historically — check the live DB, don't assume. Full
+map in the **[DBA Guide](13-dba-guide.md)** and **[Database & Data Model](06-database.md)**.
 
 ## The services at a glance
 

@@ -16,7 +16,8 @@ claim is a proposal or differs between branches, it's flagged rather than smooth
 | 03 | [CS-Admin Forms Reference](03-csadmin-forms.md) | Every onboarding form, field by field: required vs optional, the DB column it maps to, and the gotchas (phantom `code`, week-encoding, `status_type`) |
 | 04 | [Edge & Data Ingestion](04-edge-and-ingestion.md) | PLC → Node-RED/reader → **shared multi-tenant** sparkplug-agent (`ingest:8449`, routed by `group_id`) → SparkPlug B/mTLS → cloud decode. The config-as-data descriptor model, the rawtag envelope, edge deployment, count-index |
 | 05 | [Cloud Services & OEE Compute](05-cloud-services-and-oee.md) | edge-api (control plane), refdata-api (reads), stream-engine (OEE math), RabbitMQ, auth posture |
-| 06 | [Database & Data Model](06-database.md) | The schema: hierarchy, packml_register, the OEE aggregate cascade, shifts (seconds-from-week-start), the dual plane |
+| 06 | [Database & Data Model](06-database.md) | The schema: hierarchy, `core.topic_routing`, the medallion OEE cascade (bronze→silver→gold), shifts (seconds-from-week-start), the one-DB schema planes |
+| 13 | [DBA Guide](13-dba-guide.md) | **Operate the DB:** cluster topology + access, the medallion schema map with live sizes, continuous-aggregate policies (the #196 time-bomb), retention + cold historian, backup/recovery, and DBA runbooks |
 | 07 | [Frontends, Infra & Auth](07-frontends-infra-auth.md) | front4 / operator / csadmin, the deploy pipeline, AWS infra, Cognito + oauth2-proxy + CloudFront |
 | 08 | [Concepts & Glossary](08-concepts.md) | count_index, tp_equipment, OEE = A×P×Q, PackML params, week-encoding, the descriptor, shared multi-tenant ingest — the vocabulary |
 | 09 | [Onboarding — Worked Example](09-onboarding-worked-example.md) | A real end-to-end onboarding (Bispharma): harvesting the PLC tag map from provenance, the mistakes that look right, how counts reach the shared ingest |

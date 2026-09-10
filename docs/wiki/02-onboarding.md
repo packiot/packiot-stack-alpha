@@ -223,6 +223,26 @@ descriptor-driven, so it survives a re-onboard.
 > equipments e ON e.id_equipment=r.id_equipment WHERE e.id_enterprise=<id>;` — zero rows
 > means one of the gates above is unset (start with `BAKE_ENTERPRISE_IDS`, then shifts).
 
+### Definition of done — "Bispharma-clean" (the acceptance checklist)
+
+A tenant is **onboarded** when it's wired; it's **cut over** only when it's *clean*. The
+bar is **Bispharma** — it runs with **0 clamps firing** (no totalizer-spike clamp, no
+net>gross, no OEE-factor out of range). Run the 8-gate go/no-go before declaring a tenant
+live: **`docs/clients/onboarding-acceptance-checklist.md`** (every gate has a runnable
+hardproof probe). Verdicts:
+
+- ✅ **Bispharma-clean** — all gates green, 0 clamps → **GO** (cut over).
+- 🟡 **wired-but-dirty** — identity/hierarchy/shifts/routing/barcode/historian green but
+  **Gate 5 (counters clean)** red → **NO-GO**: the PLC counter registers need mapping (the
+  CPACK case — see `docs/clients/cpack-unresolved-counter-registers.md`). Data flows but
+  isn't trustworthy.
+- 🔴 **not wired** — any of gates 1–4 red → onboarding incomplete.
+
+At scale (the packiot40 → new-stack migration, #225) this checklist is the **per-customer
+definition of done** — a customer isn't "migrated" until it signs off ✅, the way Bispharma
+does. The single biggest risk is Gate 5: a customer isn't truly cut over until its PLC
+counters are correctly mapped (0 clamps).
+
 ## Which plane / how to verify
 
 Onboarding writes go to **`packiot_analytics`**. To confirm a write landed, query that

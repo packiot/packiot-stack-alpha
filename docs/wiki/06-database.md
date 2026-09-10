@@ -1,19 +1,31 @@
 # Database & Data Model
 
-A single **PostgreSQL + TimescaleDB** cluster. There is **no `edge-api/schema.sql`** in
-this repo despite older references — the authoritative schema is
-`edge-api/migrations/*.ts` (Knex; the control-plane tables) + `edge-node-red/db/*.sql`
-(the TimescaleDB hypertables, continuous aggregates, and triggers). Where the two
-disagree, trust the live DB.
+A single **PostgreSQL 16 + TimescaleDB** cluster. There is **no `edge-api/schema.sql`** in
+this repo despite older references — the authoritative schema is `edge-api/migrations/*.ts`
+(Knex; control-plane tables) + `db/migrations/*` (medallion schema moves, caggs, triggers).
+Where they disagree, trust the live DB.
 
-## Two planes — `packiot` (F1) vs `packiot_analytics` (F3)
+> **This page is the data-model reference. For operating the DB** — topology, access,
+> continuous-aggregate policies, retention, backup, runbooks — see the
+> **[DBA Guide](13-dba-guide.md)**.
 
-The F1→F3 migration left the same logical schema in two databases. Post-cutover
-(2026-08-16) live telemetry + CS-Admin writes land in **`packiot_analytics`** (prod) /
-`packiot_shadow` (staging); `packiot` (F1) is legacy and no longer in the pipeline. The
-flip is connection-string level (`POSTGRES_DB` per service). **Drift risk:** several
-columns were added out-of-band on one plane (e.g. `users.id_user_cognito`) — never
-assume a column exists on both; check the live DB.
+## One database, schemas not planes (ADR-0056)
+
+Live app data lives in **one** database, **`packiot_analytics`**, separated by **schema**
+(a **medallion** model), NOT split across databases. The old F1/F3 two-database shadow
+(`packiot` vs `packiot_analytics`/`packiot_shadow`) is **retired** — `packiot` is the
+frozen legacy monolith, out of the pipeline (#225-gated retirement). The schema planes:
+
+| Plane | Schemas | Holds |
+|-------|---------|-------|
+| **medallion** | `bronze` → `silver` → `gold` | raw (`*_raw`, `box_scans`) → cleaned facts (`equipment_values`, events, live grains, rollup caggs) → OEE/business (`equipment_oee_*`, `production_orders_runtime`) |
+| **domain** | `core` (dims), `identity` (authZ), `config` (i18n), `ops` (plumbing) | the non-telemetry entities |
+| **serving** | `serving` (invoker/RLS), `bi` (definer), `customer_reports` | read surfaces for front4/operator/Superset/exports |
+| **public** | `public` | genuine transactional tables + **retiring compat shims** — new code must NOT target `public.*` |
+
+The DB `search_path` puts the real schemas ahead of `public`, so **bare** refs resolve to
+real tables; only a qualified `public.X` hits a shim. **Drift risk:** columns were added
+out-of-band historically (e.g. `users.id_user_cognito`) — check the live DB, don't assume.
 
 ## Hierarchy tables
 
@@ -46,38 +58,46 @@ references something that doesn't exist.
 filter `active=true`) but **not universally downstream** — don't assume it's enforced by
 stream-engine/reports until verified.
 
-## packml_register — SparkPlug topic routing
+## core.topic_routing — SparkPlug topic routing (was `packml_register`)
 
-Maps `packml_topic` (UNIQUE) → `id_equipment` so the pipeline can attribute metrics.
-CS-Admin creates all entries; **oeecloud only processes a topic when `active=true`.**
-`id_unit` (= `id_equipment` for machines) looks up PackML param 30700. Counter-role
-columns `id_infeedcounter`/`id_outfeedcounter`/`id_rejectcounter` — **collision-sensitive**
-(the Phase-9 incident: two features read these with incompatible meanings).
+Maps `packml_topic` (UNIQUE) → `id_equipment` so the pipeline can attribute metrics. Now
+`core.topic_routing` (renamed from `packml_register`; `core.packml_register` remains as a
+compat view). CS-Admin creates all entries; **the decoder/rollup only processes a topic
+when `active=true`.** `id_unit` (= `id_equipment` for machines) looks up PackML param 30700.
+Counter-role columns `id_infeedcounter`/`id_outfeedcounter` — **collision-sensitive** (the
+Phase-9 incident: several count-indices equal a real `id_equipment`, so `COUNTER_ROLES_FROM_DB`
+must stay `false` while these hold count-indices). The **reject** counter role lives at the
+**area** level (`core.areas.id_rejectscounter`), not here — many tenants leave it NULL and
+rely on co-located `ProdDefectiveCount` / `***TRIG_CS` flow-derived scrap.
 
 ## The OEE aggregate cascade (data plane)
 
 ```
-equipment_values  (raw hypertable, PK(id_equipment, ts_value), time-bounded — see "Retention & the historian cold store")
-   │ time_bucket rollups → TimescaleDB continuous aggregates (prod) / plain views (staging)
+silver.equipment_values  (raw hypertable, PK(id_equipment, ts_value), 90-day hot — see the DBA Guide)
+   │ time_bucket → TimescaleDB continuous aggregates
    ▼
-agg_equipment_values_{1min,1hour,1day,1week,1month}
-   │ worker rollup jobs
+silver.equipment_metrics_{1min,10min,1hour,1day} + silver.equipment_categorical_{1min,10min,1hour}
+   │ stream-engine rollup jobs (Go)
    ▼
-equipment_runtime_{shift,1hour}  [hypertables]   ·  _{1day,1week,1month}  [plain tables]
+gold.equipment_oee_{shift,hourly,daily,weekly,monthly}  ·  gold.area_oee_* / site_oee_*
    │  oee, oee_a/p/q, running/stopped/idle_time, gross/net/scrap, recalc_needed
-   ├─▶ production_orders_runtime  (GiST EXCLUDE: no overlapping runs per equipment)
-   │      └─▶ production_orders  (status 1/2/3/4, denormalized OEE, UNIQUE(id_enterprise,id_order))
-   └─▶ uns_equipment_current_metrics  (PK id_equipment — live "now" snapshot)
+   ├─▶ gold.production_orders_runtime  (GiST EXCLUDE: no overlapping runs per equipment)
+   │      └─▶ core.production_orders  (status 1/2/3/4, denormalized OEE, UNIQUE(id_enterprise,id_order))
+   └─▶ silver.equipment_live_* (current-state grains) → serving.production_information (live "now")
 ```
 
-- `equipment_values` pairs each metric with a `_quality` column. On prod the `agg_*` are
-  **continuous aggregates** refreshed by TimescaleDB policies + pg_cron; on **staging**
-  they're plain real-time **views** (a documented CAgg-vs-view drift).
+- `equipment_values` pairs each metric with a `_quality` column.
+- **All caggs need a refresh policy** — a policy-less cagg has a frozen watermark and the
+  rollup re-aggregates all raw every tick → eventual statement-timeout + silently stale OEE
+  (the CPACK #196 outage). Check the watermark first when OEE degrades. See the
+  [DBA Guide §3](13-dba-guide.md).
 - `recalc_needed` (partial index `WHERE recalc_needed`) is the dirty flag driving
-  incremental rollups.
-- **uns snapshot gotcha:** greyed dashboard tiles = `uns_equipment_current_metrics` went
-  stale because a worker refresher wasn't running — a live-snapshot table, not a fresh
-  aggregate.
+  incremental rollups. **Child sub-meters never compute OEE**, so a rollup asymmetry leaves
+  them permanently flagged — that backlog is *phantom* and client-invisible; measure real
+  backlog on `id_parentequipment IS NULL` equipment only.
+- **Live-snapshot gotcha:** greyed dashboard tiles usually mean the current-state grains /
+  `serving.production_information` went stale because a refresher wasn't running — a
+  live-snapshot, not a fresh aggregate.
 
 ## Retention & the historian cold store
 
@@ -91,7 +111,7 @@ analytics DB, and a **cold** Parquet historian on S3 for anything older.
 | `equipment_values` (raw hypertable) | **90 days** | TimescaleDB `policy_retention` (`drop_after`) |
 | `equipment_events`, `*_raw` | 2 years | retention policy |
 | `lab_equipment_values` | 1 year | retention policy |
-| `equipment_runtime_1hour` / `_shift`, `equipment_events_cpac_shadow` (plain derived tables) | **90 days** | UDA job `purge_analytics_plain` (a daily `add_job` procedure — these are **not** hypertables, so `drop_chunks` can't reach them) |
+| `gold.equipment_oee_hourly` / `_shift`, `equipment_events_cpac_shadow` (plain derived tables) | **90 days** | UDA job `purge_analytics_plain` (a daily `add_job` procedure — these are **not** hypertables, so `drop_chunks` can't reach them) |
 
 So staging analytics keeps **~3 months** of telemetry + derived rows. `production_orders`
 and `equipment_events_man` are deliberately **unbounded** — they're business-entity /

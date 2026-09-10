@@ -96,15 +96,16 @@ oee_p = oee / NULLIF(oee_a * oee_q, 0)                         -- PERFORMANCE (r
 
 > **Per-tenant gate:** none of these rollup passes produce anything for a tenant absent from
 > `BAKE_ENTERPRISE_IDS` — that env list drives the runtime-provision that *creates* the
-> `equipment_runtime_shift` skeleton rows the passes fill. A tenant missing from it computes
+> `gold.equipment_oee_shift` skeleton rows the passes fill. A tenant missing from it computes
 > zero OEE regardless of shifts/meters. See [Onboarding → the three tenant gates](02-onboarding.md#after-cutover-making-oee-actually-compute-the-three-tenant-gates).
 
 ### The pipeline
 
 ```
-equipment_values (raw hypertable) → agg_*_{1min,1hour,1day,1week,1month} (TimescaleDB caggs)
-   → equipment_runtime_{shift,1hour,1day,…}  → production_orders_runtime → production_orders
+silver.equipment_values (raw hypertable) → silver.equipment_metrics_*/equipment_categorical_* (TimescaleDB caggs)
+   → gold.equipment_oee_{shift,hourly,daily,…}  → gold.production_orders_runtime → core.production_orders
 ```
+(Post-medallion names; the old `equipment_runtime_*` / `agg_*` names survive only as retiring `public.*` compat shims. See [DBA Guide](13-dba-guide.md).)
 
 `recalc_needed` is a dirty flag: write-side PO events set it; the rollup passes clear it
 and re-flag the tail — incremental, bounded-per-tick work replacing "recompute on cron."
