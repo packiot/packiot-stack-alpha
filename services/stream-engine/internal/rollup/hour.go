@@ -297,10 +297,18 @@ const hourStampSQL = `
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
+// The re-flag scope MUST mirror hourEligibleSQL's equipment scope (tp_equipment
+// > 1). The hour grain only exists for lines/sectors (tp>1); machines (tp=1) are
+// rolled up at shift/day, never hourly. Flagging a tp=1 row here creates a
+// PHANTOM: the next eligibility pass (tp>1) skips it, so recalc_needed=true never
+// clears — a permanent, ever-growing backlog (measured 2026-09-10: 6,276 tp=1
+// flags, oldest 2026-08-31, 97% of all hour flags). Constraining the re-flag to
+// the eligible set makes flagged ⊆ computable, so every flag drains.
 const hourReflagSQL = `
 	UPDATE %[4]s.equipment_oee_hourly SET recalc_needed = true
 	 WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
-	   AND ts_value <= now()`
+	   AND ts_value <= now()
+	   AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE tp_equipment > 1)`
 
 // RunHour executes one hour pass for one destination — one tx,
 // prod's phase order (V → cascades → speed → E → targets → re-flag).
