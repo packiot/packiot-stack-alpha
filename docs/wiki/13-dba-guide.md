@@ -45,6 +45,23 @@ equivalent on prod.
 
 ## 2. The schema map (medallion + domain planes)
 
+> **Why four schema *families* and not one scheme?** Because a schema answers **one
+> question about one *kind* of object**, and the kinds are disjoint — so each gets the
+> axis that fits its nature, not a single axis forced onto everything:
+> - **telemetry** has a raw→cleaned→business *lifecycle* → **layer** axis (bronze/silver/gold).
+> - **entities** (enterprises, users, labels) have no lifecycle — "a bronze `enterprises`"
+>   is a category error → **domain** axis (core/identity/config/ops).
+> - **views** are a *read contract* (who reads under whose rights) — orthogonal to storage
+>   → **consumption** axis (serving=invoker/RLS, bi=definer).
+> - **`public`** is **not a design family** — it's a **shrinking transitional bucket**:
+>   genuine transactional tables + migration bookkeeping, *plus* not-yet-migrated legacy
+>   caggs and retiring compat shims. It looks "scattered" because it's mid-migration; the
+>   target is for it to hold only the genuinely-public handful (see §8 / the de-shim epic).
+>
+> The rule the design obeys: **every object has exactly one home.** Where the live DB
+> still violates it (caggs in both `silver` and `public`; live-grain shims), that's
+> *transitional debt*, not the taxonomy — tracked, not hand-waved.
+
 The database-level `search_path` is:
 
 ```
@@ -216,6 +233,21 @@ service creds live in the app-box compose env + Secrets Manager, not in the DB.
    over since-cleaned raw, not a logic bug — force-refresh one bucket to prove).
 4. `active` soft-delete is enforced in edge-api reads but not universally downstream —
    verify per consumer.
+
+## 9. Path to a clean `public` (the de-shim epic — *repoint, don't drop*)
+
+`public`'s residue is **load-bearing**, not droppable cruft — an audit (2026-09-10) traced
+every object to a live consumer. So the cleanup is a **repoint-then-drop** epic, in this
+order (each phase its own deploy + soak; **plan it from the LIVE DB + deployed code, not a
+local checkout** — the local tree drifts behind deploys):
+
+1. **Caggs → silver.** `public.agg_equipment_values_{1min,10min,1hour}` + `ca_discrete_changes_1s` + `ca_equipment_boxes_1s` are read by the **rollup engine** (`availability/hour/shift/line_lead/inferspeed/deriver/uns`) and **read-api** (`query/datasets`). Repoint to `silver.equipment_metrics_*` / `equipment_categorical_*`, prove parity, then `remove_continuous_aggregate_policy` + drop.
+2. **Dimension shims → core.** `public.{equipments,sites,shift_hours}` are still read (qualified) by the **shiftresolver** (hardcoded) and `bake/sentinel.go`. Repoint to `core.*`, then drop the shim views.
+3. **Live-grain shims.** `public.equipment_live_{hour,job,month,week}` (views) — drop once consumers use `silver.*`.
+4. **Return-type carriers.** The 5 `h_*` tables are empty but back a function's `RETURNS SETOF` — retire the **owning function** first, then the carrier.
+5. **Deliberately-kept tools** (`equipment_values_1min`, `agg_*_1min_t`) — leave until the port-parity tooling is retired (a prior audit chose to keep them).
+
+Done state: `public` holds only migration bookkeeping (`knex_*`) + the genuinely-public event tables (`data_quality_event`, `equipment_events_man/_low_speed/_cpac_shadow`). Everything else has one home.
 
 ---
 
