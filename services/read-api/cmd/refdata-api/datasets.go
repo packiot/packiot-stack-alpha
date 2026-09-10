@@ -296,6 +296,18 @@ var datasets = map[string]dataset{
 		windowed: true, maxWindow: analyticsWindow,
 		params: []dsParam{pEnt, pWinFrom, pWinTo},
 	},
+	// scrap-capability (#257) — per-equipment "can scrap be MEASURED here?" from the
+	// counter-register config the rollup itself uses (defect counter, or gross+net, or
+	// infeed+outfeed). false ⇒ single-meter line (FLEXO/SLEEVE): the engine forces
+	// gross=net so Quality=100% is an ARTIFACT — front4/operator render "no scrap data"
+	// instead of a misleading 100%. Additive, config-only (not windowed); scoped by the
+	// injected tenant inside the fn (mirrors oee-score-full's fence-in-fn shape). Does
+	// NOT touch oee_score / oee_score_row, so it can't reprise the PR #1132 break.
+	"scrap-capability": {
+		group: "oee", doc: "Per-equipment scrap-measurability flag (serving.equipment_scrap_capability)",
+		sql:    `SELECT * FROM serving.equipment_scrap_capability($1)`,
+		params: []dsParam{pEnt},
+	},
 	"oee-progress": {
 		group: "oee", doc: "OEE progress over time (serving.oee_progress)",
 		sql:      `SELECT * FROM serving.oee_progress($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,

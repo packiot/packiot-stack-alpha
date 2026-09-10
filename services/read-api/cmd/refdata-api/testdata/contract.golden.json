@@ -1029,6 +1029,13 @@
     ]
   },
   {
+    "ref": "scrap-capability",
+    "source": "dataset",
+    "kind": "function",
+    "name": "serving.equipment_scrap_capability",
+    "argc": 1
+  },
+  {
     "ref": "scrap-targets",
     "source": "dataset",
     "kind": "relation",
