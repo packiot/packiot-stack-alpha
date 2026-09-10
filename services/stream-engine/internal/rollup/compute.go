@@ -106,7 +106,14 @@ const computeEventsSQL = `
 	     GROUP BY el.id_equipment, el.lo
 	)
 	UPDATE %[4]s.production_orders_runtime e SET
-	       running_time = ev.running,
+	       -- #253: bound to the PO wall-clock span, matching hour.go/shift.go/line_lead.go
+	       -- (running_time = LEAST(running, ts_total)). ev.running SUMS status=6 event
+	       -- durations, which double-counts when a tp=3 line carries interleaved
+	       -- member-machine event streams → running_time can exceed elapsed time (the
+	       -- 34–78× overflow the F3 sentinel flags). running_time can never physically
+	       -- exceed the PO's wall-clock span; this enforces that invariant in the
+	       -- computation (NOT a DQ clamp). No-op on clean single-stream data.
+	       running_time = LEAST(ev.running, GREATEST(extract(epoch FROM (COALESCE(upper(e.runtime_timerange), now()) - lower(e.runtime_timerange))), 0)),
 	       stopped_time = ev.stopped
 	  FROM ev
 	 WHERE e.id_equipment = ev.id_equipment
