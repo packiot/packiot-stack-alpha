@@ -1751,6 +1751,18 @@ services:
       # ADR-0014 P4 — enterprise-6 sync state machine (verbatim embed).
       SYNC06_REPORT_ENABLED: "true"
       BOXES_BRIDGE_ENABLED: "true"
+      # refsync is VESTIGIAL on the new stack and is disabled. It was the ADR-0010/0012
+      # F2/F3 shadow-parity helper: sync reference dims from the legacy `packiot` main DB
+      # into the `packiot_analytics` shadow DB so the legacy Node-RED (F2) and Go (F3)
+      # engines compute against identical inputs. On the new stack BOTH the main pool and
+      # the analytics pool resolve to packiot_analytics (proven via pg_stat_activity:
+      # oeecloud-worker + oeecloud-worker-analytics both on packiot_analytics), so it
+      # degenerates to a self-sync of packiot_analytics.public → itself. It only ever
+      # logged errors (public.{clients,products,product_families,production_targets} moved
+      # to `core` in the #237 schema reorg), and dims are now authored directly in core by
+      # edge-api/CS Admin — a legacy→analytics sync would be actively wrong. Re-enable only
+      # if a genuine separate legacy-DB F2 comparison is ever re-wired.
+      REFSYNC_ENABLED: "false"
       # ADR-0014 P3c — UNS provisioner + CAgg-sourced equipment grains.
       UNS_REFRESH_ENABLED: "true"
       # uns_equipment_current_metrics deriver — the table froze at the
