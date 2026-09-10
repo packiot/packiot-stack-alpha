@@ -32,7 +32,6 @@ import (
 	logp "github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/pocontrol"
-	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/refsync"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollup"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/secrets"
@@ -52,13 +51,11 @@ func main() {
 		os.Exit(runHealthcheck())
 	}
 
-	// F2/F3 identity + int-overflow SENTINEL path (Task #21). A one-shot,
-	// SELECT-only deploy gate: connect both DB planes, run internal/bake's
-	// RunSentinel, print a PASS/FAIL report, exit non-zero on any determinism
-	// regression or overflow. Invoked in CI via
-	//   docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
-	// so it reuses the SAME creds path, pool config and schema routing as the
-	// running worker. Never starts the AMQP consumer.
+	// F3 int-overflow deploy gate (SELECT-only, one-shot). The F2/F3 comparison
+	// gates were retired with the shadow apparatus (#252); this per-plane
+	// invariant (no running_time exceeds its bucket span × 1.05 — caught the L8 P0
+	// overflow) survives, run on F3 only. Invoked in CI:
+	//   docker exec stream-engine /usr/local/bin/stream-engine --identity-sentinel
 	if len(os.Args) > 1 && os.Args[1] == "--identity-sentinel" {
 		os.Exit(runIdentitySentinel())
 	}
@@ -167,9 +164,8 @@ func main() {
 	// SHADOW_GO_PORT_ENABLED=false so the jobs target `public` (the collapsed
 	// F3-native flow) instead — otherwise every tick errors 42P01 on the absent
 	// shadow_go_port schema and nothing writes to `public` (ADR-0045 G3).
-	bgDests := flows.StandardFiltered(pool, analyticsPool, cfg.ShadowGoPortEnabled)
+	bgDests := flows.Standard(pool, analyticsPool)
 	logger.Info("background-job destinations resolved",
-		slog.Bool("shadow_go_port_enabled", cfg.ShadowGoPortEnabled),
 		slog.Int("dest_count", len(bgDests)))
 
 	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
@@ -306,12 +302,6 @@ func main() {
 			uns.RefreshCurrentJobs)
 	}
 
-	// ADR-0016 — side-by-side bake comparator (legacy F1 vs Go F2).
-	if cfg.BakeComparatorEnabled {
-		bake.Register(mx.Registry)
-		go bake.Loop(ctx, pool, analyticsPool, 10*time.Minute, config.CSVInts(cfg.BakeEnterpriseIDs), logger, jobObs)
-	}
-
 	// Shared OEE-fallback config — the live rollup AND the stranded-hour backfill
 	// must run the identical decomposition finalize (canonical A·P·Q reconcile vs
 	// legacy oee_p residual), so build it once and pass it to both.
@@ -342,13 +332,6 @@ func main() {
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			cfg.RollupBackfillLimit, countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
-	}
-
-	// F3 reference-plane sync — mirror master tables main→packiot_analytics so F3
-	// rollups read the same reference plane as F2 (F2/F3 identity requirement).
-	if analyticsPool != nil && cfg.RefSyncEnabled {
-		go refsync.Loop(ctx, pool, analyticsPool,
-			time.Duration(cfg.RefSyncIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-provision (bucket matrix). Cadence configurable;
@@ -623,19 +606,14 @@ func runHealthcheck() int {
 	return 0
 }
 
-// runIdentitySentinel is the one-shot F2/F3 identity + int-overflow deploy gate
-// (Task #21). SELECT-only. It connects the two DB planes exactly as the worker
-// does (same creds path, same pool builders), runs internal/bake.RunSentinel
-// over the configured enterprises, prints a compact PASS/FAIL report, and
-// returns a process exit code:
-//
-//	0  — every surface PASS or SKIP, no overflow (gate green)
-//	1  — a determinism regression, an overflow violation, OR the check itself
-//	     could not run (fail-closed: a sentinel that cannot execute must never
-//	     silently pass a deploy)
-//
-// SKIP (no data / one side entirely empty on a cold, unconverged stack) never
-// fails the gate — the live bake gauge tracks sustained one-sidedness.
+// runIdentitySentinel is the one-shot F3 int-overflow deploy gate (Task #21,
+// ADR-0032 Step 5). SELECT-only. The F2==F3 identity gates were retired with the
+// shadow apparatus (#252); this per-plane invariant (no row's running_time may
+// exceed its bucket wall-clock span × 1.05 — the guard that caught the L8 P0
+// overflow) survives, run on the F3 plane (public in packiot_analytics) only.
+// Returns 0 = gate green (PASS or SKIP), 1 = overflow violation OR the check
+// could not run (fail-closed: a sentinel that cannot execute must never silently
+// pass a deploy).
 func runIdentitySentinel() int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -646,7 +624,7 @@ func runIdentitySentinel() int {
 
 	if cfg.PGAnalyticsDBName == "" {
 		// No F3 plane configured → nothing to gate. Not a failure: on a plain
-		// prod-shaped deploy without the shadow DB the sentinel is a no-op.
+		// prod-shaped deploy without the analytics DB the sentinel is a no-op.
 		logger.Warn("identity-sentinel: POSTGRES_ANALYTICS_DB_NAME unset — no F3 plane to check; skipping (exit 0)")
 		return 0
 	}
@@ -659,9 +637,6 @@ func runIdentitySentinel() int {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: fetch db creds: %v\n", err)
 		return 1
 	}
-	// ADR-0032 Step 5: the F2 (shadow_go_port) plane is gone. Only the F3 plane
-	// (public in packiot_analytics) is opened; the sentinel is now the per-plane
-	// int-overflow gate on F3 (GATE 2 survived; the F2==F3 identity gates 1/3 did not).
 	f3, err := db.NewForDatabase(ctx, dbCreds, cfg.PGAnalyticsDBName, "identity-sentinel-analytics", 2, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: F3 pool: %v\n", err)
@@ -669,14 +644,12 @@ func runIdentitySentinel() int {
 	}
 	defer f3.Close()
 
-	enterprises := config.CSVInts(cfg.BakeEnterpriseIDs)
+	enterprises := config.CSVInts(cfg.SentinelEnterpriseIDs)
 	logger.Info("identity-sentinel running", slog.Any("enterprises", enterprises),
 		slog.String("f3_db", cfg.PGAnalyticsDBName))
 
 	rep, err := bake.RunSentinel(ctx, f3, enterprises)
 	if err != nil {
-		// Query-level failure: the gate could not evaluate. Fail closed — print
-		// whatever partial report we have plus the error.
 		fmt.Fprintf(os.Stderr, "identity-sentinel: check could not run (FAIL-CLOSED): %v\n", err)
 		fmt.Println(rep.String())
 		return 1

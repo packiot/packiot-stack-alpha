@@ -43,15 +43,6 @@ func TestRouteForSource(t *testing.T) {
 			wantEv:        "public",
 		},
 		{
-			name:          "source_type=go → main pool + all shadow_go_port (ADR-0010)",
-			sourceType:    "go",
-			analyticsPool: analyticsPool,
-			wantMainPool:  true,
-			wantSilver:    "shadow_go_port",
-			wantBronze:    "shadow_go_port",
-			wantEv:        "shadow_go_port",
-		},
-		{
 			// t231 medallion split: facts→silver, raw→bronze, DQ/PO→public.
 			name:          "source_type=refactored + shadow configured → analytics pool + medallion layers (t231)",
 			sourceType:    "refactored",

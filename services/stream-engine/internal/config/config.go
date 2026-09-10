@@ -97,17 +97,6 @@ type Config struct {
 	// swap on main pool) untouched.
 	PGAnalyticsDBName string
 
-	// ShadowGoPortEnabled — ADR-0045 G3. Selects the MAIN-POOL background-job
-	// flow (see flows.StandardFiltered). DEFAULT TRUE = the F2 comparator
-	// layout (staging: jobs run against the `shadow_go_port` schema alongside
-	// F1). Set FALSE on a single-flow deployment (new-prod), where the three
-	// flows have collapsed to one living in `public` on the main pool: the
-	// `shadow_go_port` schema does not exist there, so leaving it enabled makes
-	// every background rollup tick error 42P01 (and nothing writes to `public`).
-	// When false the jobs target `public` instead. Default-true keeps staging
-	// byte-identical.
-	ShadowGoPortEnabled bool
-
 	// Pool sizing. The original 5 assumed the ingest consumer runs one query
 	// at a time — but the background rollup/refresh jobs (LoopRefresh, bake,
 	// grains, uns) share the SAME pools and run concurrently. On the shadow
@@ -276,22 +265,14 @@ type Config struct {
 	// now solved: the shadow cagg scheduler self-heal made the widened join fast
 	// (53s → 0.7s), and the advisory lock is now non-blocking (pg_try_...), so
 	// the main-pool 120s timeout can't bite. On by default with the live rollup.
-	RollupBackfillEnabled bool
-	// RefSync mirrors master/reference tables (equipments, packml_register,
-	// production_targets, products, clients, …) main→packiot_analytics so F3 rollups
-	// read the same reference plane as F2 (the F2/F3 identity requirement). Runs
-	// only when the shadow DB is configured.
-	RefSyncEnabled                bool
-	RefSyncIntervalMinutes        int
+	RollupBackfillEnabled         bool
 	RollupBackfillLimit           int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
 	RollupShiftLimit              int // shift rows recomputed per live rollup tick (bounds the tx so it can't roll back wholesale under load)
-	BakeComparatorEnabled         bool
-	// BakeEnterpriseIDs — CSV of enterprises the surface-parity bake runs
-	// per tenant. The FIRST id is the frozen "gate" tenant (CPACK) whose
-	// queries run verbatim; the rest are positively scoped. Default "3"
-	// keeps behaviour byte-identical until Incoplast (4) is added: "3,4".
-	BakeEnterpriseIDs             string
+	// SentinelEnterpriseIDs — CSV of enterprises the --identity-sentinel F3
+	// int-overflow deploy gate checks (env BAKE_ENTERPRISE_IDS, kept for compat).
+	// The bake COMPARATOR was retired in #252; the per-plane overflow gate survives.
+	SentinelEnterpriseIDs         string
 	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
@@ -438,7 +419,6 @@ func Load() (*Config, error) {
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
 		PGAnalyticsDBName:                getenv("POSTGRES_ANALYTICS_DB_NAME", ""),
-		ShadowGoPortEnabled:              getenv("SHADOW_GO_PORT_ENABLED", "true") == "true",
 		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
 		PGAnalyticsMaxConns:              getenvInt("POSTGRES_ANALYTICS_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
@@ -486,13 +466,10 @@ func Load() (*Config, error) {
 		SilverClampEnabled:               getenv("SILVER_CLAMP_ENABLED", "true") == "true",
 		ChangeoverAvailabilityEnabled:    getenv("CHANGEOVER_AVAILABILITY_ENABLED", "false") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
-		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
-		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
 		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
 		RollupShiftLimit:                 getenvInt("ROLLUP_SHIFT_LIMIT", 300),
+		SentinelEnterpriseIDs:            getenv("BAKE_ENTERPRISE_IDS", "3"),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
-		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
-		BakeEnterpriseIDs:                getenv("BAKE_ENTERPRISE_IDS", "3"),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
 		RollupMachineLevelEnterprises:    getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		TenantAllowlist:                  csvLower(getenv("WORKER_TENANT_ALLOWLIST", "")),
