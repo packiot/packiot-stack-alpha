@@ -242,7 +242,16 @@ const grainGoldenFixture = `
 	    -- unaffected by the fix) → sets up a reduced available_time for the hour.
 	    (22, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) + interval '20 minutes', 5, true, false),
 	    -- the trailing open RUNNING event (last event, ts_end NULL, no successor).
-	    (22, date_trunc('hour', now()) - interval '3 hours', NULL, 6, false, false);`
+	    (22, date_trunc('hour', now()) - interval '3 hours', NULL, 6, false, false);
+	-- #256 PHANTOM-FLAG GUARD: eq 23 is a MACHINE (tp_equipment=1). Machines roll
+	-- up at shift/day, NEVER hourly (hourEligibleSQL is tp>1). Its current-hour row
+	-- starts recalc_needed=false; the hour pass must LEAVE it false — the re-flag
+	-- tail must not re-enqueue a row the eligibility pass can never compute (else a
+	-- permanent phantom backlog, measured 6,276 rows on 2026-09-10). Pre-fix the
+	-- unfiltered re-flag flipped this to true.
+	INSERT INTO golden.equipments VALUES (23,1,1,35,1,100);
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (23, date_trunc('hour', now()), date_trunc('day', now()), false);`
 
 func TestGoldenGrains(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
@@ -343,6 +352,20 @@ func TestGoldenGrains(t *testing.T) {
 	}
 	if run22 > avail22 {
 		t.Errorf("trailing-open-event: running_time=%v > available_time=%v (the masked-by-clamp defect — fix failed)", run22, avail22)
+	}
+
+	// #256 PHANTOM-FLAG GUARD (eq 23, tp_equipment=1): the machine's current-hour
+	// row started recalc_needed=false and the hour pass (eligibility tp>1) can never
+	// compute it, so the re-flag tail MUST leave it false. Pre-fix the unfiltered
+	// re-flag flipped it to true, creating a flag no pass ever clears → permanent
+	// backlog. This assertion fails if the tp>1 guard is dropped from hourReflagSQL.
+	var recalc23 bool
+	if err := pool.QueryRow(ctx, `SELECT recalc_needed FROM golden.equipment_oee_hourly
+	    WHERE id_equipment=23 AND ts_value=date_trunc('hour', now())`).Scan(&recalc23); err != nil {
+		t.Fatal(err)
+	}
+	if recalc23 {
+		t.Error("phantom-flag: eq23 (tp=1 machine) hour row was re-flagged — hour re-flag must be scoped to tp>1 (the eligible set) or it creates a permanent phantom backlog")
 	}
 
 	// day2 pass: sums the two hour rows; target_customized=true must PRESERVE 777.

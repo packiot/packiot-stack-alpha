@@ -267,6 +267,17 @@ func TestHourShape(t *testing.T) {
 	if !strings.Contains(hourTargetsSQL, "NOT e.recalc_needed") {
 		t.Error("targets must drive from event-hit (cleared) rows only")
 	}
+	// #256 durable fix: the re-flag scope MUST be ⊆ the eligible scope, else a
+	// flagged-but-never-computed row is a permanent phantom. hourEligibleSQL is
+	// tp_equipment > 1 (machines roll up at shift/day, never hourly), so the
+	// re-flag must carry the same tp>1 guard or it re-enqueues tp=1 rows the next
+	// eligibility pass will skip forever (measured: 6,276 stuck tp=1 flags).
+	if !strings.Contains(hourEligibleSQL, "tp_equipment > 1") {
+		t.Error("hour eligibility scope changed — re-flag guard below must track it")
+	}
+	if !strings.Contains(hourReflagSQL, "tp_equipment > 1") {
+		t.Error("hour re-flag must mirror eligibility's tp>1 scope (else tp=1 rows become permanent phantom flags)")
+	}
 }
 
 // Shift grain fidelity guards.
