@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -52,7 +50,6 @@ type SparkplugHandler struct {
 	buildErrors          atomic.Uint64
 	execErrors           atomic.Uint64
 	clampDQErrSample     atomic.Uint64 // samples the best-effort DQ side-write failure log
-	shadowAbsentSample   atomic.Uint64 // samples the swallowed shadow_go_port-absent log
 
 	pool            *pgxpool.Pool
 	analyticsPool   *pgxpool.Pool // may be nil — set only if POSTGRES_ANALYTICS_DB_NAME configured
@@ -91,8 +88,6 @@ func (h *SparkplugHandler) SetWriteMetric(vec *prometheus.CounterVec) { h.batchW
 // destForSource names the flow a source_type routes to, for metrics.
 func destForSource(sourceType string) string {
 	switch sourceType {
-	case "go":
-		return "f2_shadow_go_port"
 	case "refactored":
 		return "f3_packiot_analytics"
 	default:
@@ -188,14 +183,22 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		}
 	}
 
-	// ADR-0010 Phase 3 + ADR-0012 shadow-mode routing.
-	// Route both pool + schema by envelope.source_type. Whitelist-driven.
-	//   ""           → (main pool, "public")             — production
-	//   "go"         → (main pool, "shadow_go_port")     — ADR-0010 Phase 3
-	//   "refactored" → (shadow pool, "public")           — ADR-0012 Phase 3
-	// Fail-safe: unknown source_type falls back to (main pool, public).
-	// Shadow pool nil-fallback: if source_type="refactored" but no shadow
-	// pool configured, silently downgrade to main pool. Logged.
+	// #252: the F2 shadow-comparison leg is RETIRED. Producers emit only
+	// source_type="refactored" on every env (SHADOW_EMIT_GO=false,
+	// SHADOW_EMIT_PRODUCTION=false). A stray "go" (shadow_go_port) envelope from a
+	// misconfigured/old edge box is legacy noise: DROP + count (ACK, never write) —
+	// shadow_go_port no longer exists and routing it anywhere would just 42P01-poison
+	// the queue. Same "deterministic-skip, don't nack" rule as the guards above.
+	if p.SourceType == "go" {
+		h.legacyDropped.Add(1)
+		return nil
+	}
+
+	// Route pool + schema by envelope.source_type:
+	//   "refactored" → (analytics pool, medallion schemas)  — the live flow
+	//   ""/unknown   → (main pool, "public")                 — single-flow prod fallback
+	// Shadow-pool nil-fallback: if "refactored" but no analytics pool configured
+	// (single-flow prod), silently downgrade to the main pool. Logged.
 	r := h.routeForSource(p.SourceType)
 	pool, schema := r.pool, r.ev
 	tenant := tenantOf(p)
@@ -361,55 +364,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// in the batch above; this is purely to make the rejection visible.
 	h.emitClampDQ(ctx, pool, schema, clampEvents)
 
-	// Missing-shadow-schema backstop (G1). A "go" leg routes to the
-	// shadow_go_port comparator schema, which only exists on the staging
-	// dual-flow stack. On a single-flow production stack it is absent, so
-	// every write in this batch fails 42P01 (undefined_table) / 3F000
-	// (invalid_schema_name). That is EXPECTED here — not a real ingest
-	// failure — so swallow it and ACK the delivery instead of returning the
-	// error and triggering nack → DLX → redeliver forever (a poison storm
-	// that, worse, starves the real production "" legs sharing the queue).
-	// firstErr is the FIRST failing Exec, i.e. the true 42P01/3F000 (the
-	// followers report 25P02 in_failed_sql_transaction and never overwrite
-	// it), so matching its SQLSTATE is sufficient. Belt-and-braces with the
-	// decoder's SHADOW_EMIT_GO=false gate: even a stray "go" envelope can no
-	// longer wedge the queue. Only shadow_go_port qualifies — public
-	// (production/refactored) errors stay fatal and still nack+retry.
-	if shouldSwallowShadowErr(schema, firstErr) {
-		if h.shadowAbsentSample.Add(1)%64 == 1 {
-			h.logger.Warn("sparkplug: shadow_go_port schema absent — 'go' comparator leg swallowed (delivery ACKed, not retried; sampled 1/64)",
-				slog.String("schema", schema),
-				slog.String("err", firstErr.Error()),
-			)
-		}
-		return nil
-	}
-
 	return firstErr
-}
-
-// shouldSwallowShadowErr reports whether a batch error must be treated as the
-// EXPECTED "shadow_go_port comparator schema absent" case rather than a real
-// ingest failure. Only the shadow_go_port schema (the ADR-0010 "go" leg)
-// qualifies, and only for a missing-relation SQLSTATE — public
-// (production/refactored) errors always propagate so they still nack+retry.
-func shouldSwallowShadowErr(schema string, err error) bool {
-	if err == nil || schema != "shadow_go_port" {
-		return false
-	}
-	return isMissingRelation(err)
-}
-
-// isMissingRelation matches Postgres SQLSTATE 42P01 (undefined_table) and
-// 3F000 (invalid_schema_name) via pgconn.PgError — the two codes a write to a
-// nonexistent shadow_go_port.<table> produces. Structured SQLSTATE match, not
-// string matching, so a table named "...does not exist..." can't false-positive.
-func isMissingRelation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "42P01" || pgErr.Code == "3F000"
-	}
-	return false
 }
 
 // clampDQInsertSQL upserts one INVARIANT_CLAMPED_INCREMENT event into the
@@ -527,11 +482,6 @@ type route struct {
 // as a warning. Fail-safe: never route to nil.
 func (h *SparkplugHandler) routeForSource(sourceType string) route {
 	switch sourceType {
-	case "go":
-		// Shadow comparator plane: all layers collapse to shadow_go_port so
-		// the missing-schema swallow (keyed on ev) still fires on a single-flow
-		// stack where shadow_go_port is absent.
-		return route{pool: h.pool, silver: "shadow_go_port", bronze: "shadow_go_port", ev: "shadow_go_port", auth: "shadow_go_port", grain: "shadow_go_port", ref: "shadow_go_port", gold: "shadow_go_port"}
 	case "refactored":
 		if h.analyticsPool != nil {
 			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", auth: "identity", grain: "silver", ref: "core", gold: "gold"}

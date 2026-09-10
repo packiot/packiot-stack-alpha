@@ -801,7 +801,6 @@ services:
       # target it → background rollups error 42P01 AND never write OEE Gold to
       # public. false REDIRECTS the main-pool dest to `public`, so the rollups
       # (equipment_runtime_shift/1hour/…) actually compute on the live schema.
-      SHADOW_GO_PORT_ENABLED: "false"
       # Go shift resolver fills id_shift/id_shift_hour on writes (F3 has no
       # PL/pgSQL trigger — this is the sole shift-resolution path in prod).
       SHIFT_RESOLVER_ENABLED: "true"

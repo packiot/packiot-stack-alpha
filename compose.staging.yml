@@ -1577,7 +1577,6 @@ services:
       # jobs pointed at it made every tick error 42P01 (~180×/5min). false =
       # target `public` instead (flows.StandardFiltered, ADR-0045 G3). The F1
       # pg_cron rollup (oee-refresh-runtime) is inactive, so no double-write.
-      SHADOW_GO_PORT_ENABLED: "false"
       # ── ADR-0049 OEE correctness activation (see docs/adr/0049-oee-correctness.md) ──
       # Reset-heal (spike guard) defaults ON in the decoder. These two default OFF;
       # enabled here to sequence them on staging. Availability floor engages for
@@ -1751,18 +1750,11 @@ services:
       # ADR-0014 P4 — enterprise-6 sync state machine (verbatim embed).
       SYNC06_REPORT_ENABLED: "true"
       BOXES_BRIDGE_ENABLED: "true"
-      # refsync is VESTIGIAL on the new stack and is disabled. It was the ADR-0010/0012
-      # F2/F3 shadow-parity helper: sync reference dims from the legacy `packiot` main DB
-      # into the `packiot_analytics` shadow DB so the legacy Node-RED (F2) and Go (F3)
-      # engines compute against identical inputs. On the new stack BOTH the main pool and
-      # the analytics pool resolve to packiot_analytics (proven via pg_stat_activity:
-      # oeecloud-worker + oeecloud-worker-analytics both on packiot_analytics), so it
-      # degenerates to a self-sync of packiot_analytics.public → itself. It only ever
-      # logged errors (public.{clients,products,product_families,production_targets} moved
-      # to `core` in the #237 schema reorg), and dims are now authored directly in core by
-      # edge-api/CS Admin — a legacy→analytics sync would be actively wrong. Re-enable only
-      # if a genuine separate legacy-DB F2 comparison is ever re-wired.
-      REFSYNC_ENABLED: "false"
+      # NOTE: the F2/F3 shadow-comparison apparatus (refsync, bake comparator,
+      # shadow_go_port "go" leg, identity-sentinel) was fully RETIRED in #252 —
+      # staging is the one and only stack, no legacy ties. Those flags
+      # (REFSYNC_ENABLED / BAKE_COMPARATOR_ENABLED / SHADOW_GO_PORT_ENABLED / …) no
+      # longer exist in the code.
       # ADR-0014 P3c — UNS provisioner + CAgg-sourced equipment grains.
       UNS_REFRESH_ENABLED: "true"
       # uns_equipment_current_metrics deriver — the table froze at the
@@ -1792,7 +1784,6 @@ services:
       LEGACY_INGEST_ENABLED: "true"
       # ADR-0032 Step 2 (F3 collapse): comparator has served its purpose (48h
       # bake, drift 0) — silence it. Reversible: "true" + redeploy.
-      BAKE_COMPARATOR_ENABLED: "false"
       # Per-tenant surface bake (ADR-0022). First id = the frozen CPACK gate
       # (verbatim SQL, byte-identical flip signal); additional ids run scoped.
       # Incoplast (enterprise 4) validated F1<->F3 on its own series without
@@ -1803,7 +1794,6 @@ services:
       # NO OEE (no equipment_runtime_shift rows exist for the rollup to fill).
       # This is the tenant gate for the whole OEE surface; onboarding a client
       # into the analytics plane requires adding its id_enterprise here.
-      BAKE_ENTERPRISE_IDS: "3,4,5"
       # PR #600 — counters-only AVAILABILITY fallback (idle-timeout sessionization).
       # L6's counters cut over (gross production flows) but its state events did
       # not, so the events phase never touches its equipment_runtime_* rows →
