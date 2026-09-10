@@ -138,15 +138,25 @@ const shiftLineLeadSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM lines l
-	      JOIN %[3]s.equipment_categorical_1min m
-	        ON m.id_equipment = l.lead_id
-	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
-	       -- A minute is "productive" if the lead moved EITHER input (gross) or
-	       -- output (net). A split-instrumentation line's lead is the net/output
-	       -- machine and is NET-ONLY (gross=0), so a gross-only filter misses all
-	       -- its activity → oee_a=0. For single-lead leads gross and net move
-	       -- together, so this is equivalent (no change to working lines).
-	       AND (m.gross_production_incr > 0 OR m.net_production_incr > 0 OR m.scrap_incr > 0)
+	      CROSS JOIN LATERAL (
+	          -- #259 FIX: OFFSET 0 is an optimizer fence forcing PER-LINE correlated
+	          -- execution, so id_equipment is a runtime constant and the real-time cagg's
+	          -- raw scan uses the (id_equipment, ts_value) index. Without it the planner
+	          -- decorrelates this into a hash join that materializes the WHOLE real-time
+	          -- 1min aggregation of ALL machines (~1000x blowup → 300s tick rollback →
+	          -- OEE stall). Result-identical to the prior JOIN (parity-proven).
+	          SELECT mm.ts_value
+	            FROM %[3]s.equipment_categorical_1min mm
+	           WHERE mm.id_equipment = l.lead_id
+	             AND mm.ts_value >= l.ts_value AND mm.ts_value < l.bend
+	             -- A minute is "productive" if the lead moved EITHER input (gross) or
+	             -- output (net). A split-instrumentation line's lead is the net/output
+	             -- machine and is NET-ONLY (gross=0), so a gross-only filter misses all
+	             -- its activity → oee_a=0. For single-lead leads gross and net move
+	             -- together, so this is equivalent (no change to working lines).
+	             AND (mm.gross_production_incr > 0 OR mm.net_production_incr > 0 OR mm.scrap_incr > 0)
+	           OFFSET 0
+	      ) m
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
 	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
@@ -255,15 +265,25 @@ const hourLineLeadSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM lines l
-	      JOIN %[3]s.equipment_categorical_1min m
-	        ON m.id_equipment = l.lead_id
-	       AND m.ts_value >= l.ts_value AND m.ts_value < l.bend
-	       -- A minute is "productive" if the lead moved EITHER input (gross) or
-	       -- output (net). A split-instrumentation line's lead is the net/output
-	       -- machine and is NET-ONLY (gross=0), so a gross-only filter misses all
-	       -- its activity → oee_a=0. For single-lead leads gross and net move
-	       -- together, so this is equivalent (no change to working lines).
-	       AND (m.gross_production_incr > 0 OR m.net_production_incr > 0 OR m.scrap_incr > 0)
+	      CROSS JOIN LATERAL (
+	          -- #259 FIX: OFFSET 0 is an optimizer fence forcing PER-LINE correlated
+	          -- execution, so id_equipment is a runtime constant and the real-time cagg's
+	          -- raw scan uses the (id_equipment, ts_value) index. Without it the planner
+	          -- decorrelates this into a hash join that materializes the WHOLE real-time
+	          -- 1min aggregation of ALL machines (~1000x blowup → 300s tick rollback →
+	          -- OEE stall). Result-identical to the prior JOIN (parity-proven).
+	          SELECT mm.ts_value
+	            FROM %[3]s.equipment_categorical_1min mm
+	           WHERE mm.id_equipment = l.lead_id
+	             AND mm.ts_value >= l.ts_value AND mm.ts_value < l.bend
+	             -- A minute is "productive" if the lead moved EITHER input (gross) or
+	             -- output (net). A split-instrumentation line's lead is the net/output
+	             -- machine and is NET-ONLY (gross=0), so a gross-only filter misses all
+	             -- its activity → oee_a=0. For single-lead leads gross and net move
+	             -- together, so this is equivalent (no change to working lines).
+	             AND (mm.gross_production_incr > 0 OR mm.net_production_incr > 0 OR mm.scrap_incr > 0)
+	           OFFSET 0
+	      ) m
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
 	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
