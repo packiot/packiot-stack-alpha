@@ -1598,12 +1598,6 @@ services:
       # with that key 7s just makes drains more responsive. Safe to reset to "30"
       # once the dedicated-key build is confirmed draining.
       ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
-      # INCIDENT RECOVERY 2026-09-10 (#258): after a stream-engine restart the accumulated
-      # backlog made the default 300-row RunShift tx exceed the 300s kill -> whole-tick
-      # rollback -> shift OEE frozen (death spiral). Small batches commit + drain instead.
-      # Raise back toward 300 once drained + the line-lead per-row cost is addressed.
-      ROLLUP_SHIFT_LIMIT: "25"
-      ROLLUP_BACKFILL_LIMIT: "50"
       # Close stale mirror-fanned CPACK open status=6 events (ts_end NULL). CPACK is
       # status_type=0 so the deriver skips it and the cpac shadow-deriver is dark, so
       # nothing closes them → a stale open stretches to now() and fabricates ~100%
