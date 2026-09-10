@@ -953,7 +953,7 @@ const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
 	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1),
 	        (SELECT s.id_shift_hour FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1), $8
-	   FROM public.equipments e WHERE e.id_equipment = $1`
+	   FROM core.equipments e WHERE e.id_equipment = $1`
 
 // execFanout is the single fail-open executor every fan-out write
 // shares: success/missing-table(42P01)/failure land in the fan-out
@@ -1255,7 +1255,7 @@ const sqlInsertStateRow = `INSERT INTO %s.equipment_values
 	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
 	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1),
 	        (SELECT s.id_shift_hour FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1)
-	   FROM public.equipments e WHERE e.id_equipment = $1
+	   FROM core.equipments e WHERE e.id_equipment = $1
 	 ON CONFLICT (ts_value, id_equipment) DO UPDATE SET state = EXCLUDED.state`
 
 // fanoutValueDelta writes one shadow copy of the delta row. Never
