@@ -2517,8 +2517,22 @@ services:
     environment:
       DB_HOST: pgbouncer
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # ── task #264: read-api runs under the NOBYPASSRLS `readapi_ro` role ───────
+      # Was ${POSTGRES_USER} (a SUPERUSER with rolbypassrls=true), so the analytics
+      # DB's FORCE ROW LEVEL SECURITY on the tenant tables (core.equipments /
+      # production_orders / production_targets, gold.equipment_oee_* /
+      # production_orders_runtime) NEVER bit the read plane — the app-layer
+      # `WHERE id_enterprise = $1` fence was the sole isolator. readapi_ro is
+      # NOBYPASSRLS + NOSUPERUSER + read-only (db/migrations/t276), so RLS now
+      # CO-ENFORCES the tenant read-api already stamps into app.tenant_id per query
+      # (runQueryJSON) — an unfenced future dataset is RLS-scoped to the tenant
+      # instead of leaking all tenants. pgbouncer authenticates this role via its
+      # default auth_query + SCRAM pass-through (no userlist entry needed).
+      # Reversible: revert this hunk (back to ${POSTGRES_USER}/${POSTGRES_PASSWORD}),
+      # OR set READAPI_RO_USER=postgres + READAPI_RO_PASSWORD=$POSTGRES_PASSWORD in
+      # /opt/packiot/.env and restart. Creds live in /opt/packiot/.env (out-of-band).
+      DB_USER: ${READAPI_RO_USER:-readapi_ro}
+      DB_PASSWORD: ${READAPI_RO_PASSWORD}
       DB_NAME: packiot
       # ── ADR-0032 Step 1: F3 read-plane plumbing (ADDITIVE, DEFAULT F1) ────────
       # REFDATA_FLOW selects which flow's DB refdata reads through pgbouncer:
