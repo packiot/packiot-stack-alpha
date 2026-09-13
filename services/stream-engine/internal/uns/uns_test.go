@@ -7,10 +7,11 @@ import (
 )
 
 func TestProvisionMatrixFidelity(t *testing.T) {
-	// equipment×6 plain + metrics special + area×2 (day, shift). #186 retired the
-	// area live hour/week/month grains, so provisioning drops to 8; NO site provisioning.
-	if len(provisionMatrix) != 8 {
-		t.Errorf("matrix size %d != 8", len(provisionMatrix))
+	// equipment×4 plain (day/job/month/shift) + metrics special + area×2 (day, shift).
+	// #186 retired the area live hour/week/month grains; #263 retired the unread
+	// equipment live hour + week grains → provisioning drops to 6; NO site provisioning.
+	if len(provisionMatrix) != 6 {
+		t.Errorf("matrix size %d != 6", len(provisionMatrix))
 	}
 	for _, m := range provisionMatrix {
 		if strings.HasPrefix(m.unsTable, "uns_site") {
@@ -87,7 +88,7 @@ func TestEquipmentFreshnessStamp(t *testing.T) {
 	cases := []struct {
 		name, sql string
 	}{
-		{"hour", refreshHourEquipmentSQL},
+		// #263: "hour" case removed with refreshHourEquipmentSQL (equipment_live_hour unread).
 		{"week/month", refreshEquipmentSQL},
 		{"job", refreshJobsSQL},
 	}
