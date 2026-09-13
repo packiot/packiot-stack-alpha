@@ -43,6 +43,14 @@ const (
 	// DQRuleIdealSpeedNullProducing — ideal_speed IS NULL or 0 while net > 0 (P3-4).
 	// The OEE denominator collapses → oee silently 0 (or divide-by-zero-guarded loss).
 	DQRuleIdealSpeedNullProducing DQRule = "IDEAL_SPEED_NULL_WHILE_PRODUCING"
+	// DQRuleIdealSpeedTooLow — net production EXCEEDS the ideal_speed baseline
+	// (net > ideal_production), i.e. raw Performance > 1. The served oee_p is CLAMPED
+	// to [0,1] before this scan sees it, so OEE_GT_1 can NEVER fire for this case — the
+	// misconfig is otherwise INVISIBLE. Cause is almost always a too-low (mis-set)
+	// ideal_speed on the equipment. observed_value = net/ideal_production (the overshoot
+	// ratio, e.g. 2.85). warn: the served number isn't out-of-range (it's clamped), but
+	// the underlying config is wrong and the clamp is masking real production.
+	DQRuleIdealSpeedTooLow DQRule = "IDEAL_SPEED_TOO_LOW"
 	// DQRuleInvariantClampedIncrement — the ingest-time production-increment
 	// SANITY CLAMP (ADR-0037 Silver invariant) rejected a physically-impossible
 	// increment (> K · rated_speed · Δt) before it reached equipment_values /
@@ -86,6 +94,12 @@ type GrainMetrics struct {
 
 	Gross float64
 	Net   float64
+
+	// IdealProduction is the summed ideal-speed production capacity for the bucket
+	// (net > IdealProduction ⇒ raw Performance > 1 ⇒ the IDEAL_SPEED_TOO_LOW rule).
+	// Present at every grain (summed column); 0 when ideal_speed is unset (that case
+	// is the IDEAL_SPEED_NULL rule instead, not this one).
+	IdealProduction float64
 
 	// IdealSpeed is nullable in the DB (nil ⇒ SQL NULL). In the shift/hour runtime
 	// tables it defaults to 0, so the "0 while producing" branch is the common one;
@@ -189,6 +203,17 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 		emit(DQRuleIdealSpeedNullProducing, dqSevWarn, obs)
 	}
 
+	// IDEAL_SPEED_TOO_LOW — net production EXCEEDS the ideal-speed baseline
+	// (net > ideal_production ⇒ raw Performance > 1). The served oee_p was clamped to
+	// [0,1] before this scan read the row, so OEE_GT_1 can't fire — this rule is the
+	// ONLY signal that ideal_speed is mis-set (too low). Gated to the metering grains
+	// (shift/hour, IdealSpeedTracked) so the same misconfig doesn't re-fire at every
+	// rolled-up grain. observed = net/ideal_production (the overshoot ratio).
+	if m.IdealSpeedTracked && m.IdealProduction > 0 && m.Net > m.IdealProduction {
+		v := m.Net / m.IdealProduction
+		emit(DQRuleIdealSpeedTooLow, dqSevWarn, &v)
+	}
+
 	return out
 }
 
@@ -224,7 +249,7 @@ const dqScanLimit = 20000
 const dqGrainScanSQL = `
 	SELECT e.id_enterprise, r.id_equipment, r.ts_value::timestamptz,
 	       r.oee, r.oee_a, r.oee_p, r.oee_q,
-	       r.gross, r.net, %[4]s,
+	       r.gross, r.net, r.ideal_production, %[4]s,
 	       r.available_time, r.running_time, r.stopped_time,
 	       r.planned_downtime, r.downtime, r.changeover_time, r.idle_time
 	  FROM %[1]s.%[2]s r
@@ -288,7 +313,7 @@ func runDQScanGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int64, er
 		if err := rows.Scan(
 			&m.IDEnterprise, &m.IDEquipment, &m.BucketTS,
 			&m.OEE, &m.OeeA, &m.OeeP, &m.OeeQ,
-			&m.Gross, &m.Net, &m.IdealSpeed,
+			&m.Gross, &m.Net, &m.IdealProduction, &m.IdealSpeed,
 			&m.AvailableTime, &m.RunningTime, &m.StoppedTime,
 			&m.PlannedDowntime, &m.Downtime, &m.ChangeoverTime, &m.IdleTime,
 		); err != nil {

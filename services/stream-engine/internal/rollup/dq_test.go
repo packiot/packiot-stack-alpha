@@ -102,6 +102,48 @@ func TestDetectGrain_IdealSpeedNotTrackedNeverFires(t *testing.T) {
 	}
 }
 
+// net > ideal_production ⇒ raw Performance > 1 ⇒ IDEAL_SPEED_TOO_LOW (warn),
+// observed = the overshoot ratio net/ideal_production. This is the ONLY signal
+// for a too-low ideal_speed — the served oee_p is already clamped to 1.
+func TestDetectGrain_IdealSpeedTooLow(t *testing.T) {
+	got := DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 81, Grain: "hour",
+		Gross: 1200, Net: 1200, IdealProduction: 1000,
+		IdealSpeed: ptr(50), IdealSpeedTracked: true,
+	})
+	byRule := rulesOf(got)
+	e, ok := byRule[DQRuleIdealSpeedTooLow]
+	if !ok {
+		t.Fatalf("expected IDEAL_SPEED_TOO_LOW, got %v", got)
+	}
+	if e.Severity != dqSevWarn {
+		t.Errorf("severity = %q, want warn", e.Severity)
+	}
+	if e.ObservedValue == nil || *e.ObservedValue != 1.2 {
+		t.Errorf("observed = %v, want 1.2 (net/ideal_production)", e.ObservedValue)
+	}
+}
+
+// net ≤ ideal_production (Performance ≤ 1) must NOT fire IDEAL_SPEED_TOO_LOW,
+// and an untracked grain (day/week/month) must never fire it regardless.
+func TestDetectGrain_IdealSpeedTooLowBoundaries(t *testing.T) {
+	// exactly at capacity — clean
+	if got := DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 81, Grain: "shift",
+		Gross: 1000, Net: 1000, IdealProduction: 1000,
+		IdealSpeed: ptr(58), IdealSpeedTracked: true,
+	}); len(got) != 0 {
+		t.Errorf("net==ideal_production must be clean, got %v", got)
+	}
+	// overshoot but untracked grain — must not fire (no ideal_speed to blame)
+	if _, ok := rulesOf(DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 81, Grain: "day",
+		Gross: 1200, Net: 1200, IdealProduction: 1000, IdealSpeedTracked: false,
+	}))[DQRuleIdealSpeedTooLow]; ok {
+		t.Errorf("untracked grain must not fire IDEAL_SPEED_TOO_LOW")
+	}
+}
+
 // net>gross must emit NET_GT_GROSS (error), observed=overshoot.
 func TestDetectGrain_NetGtGross(t *testing.T) {
 	got := DetectGrain(GrainMetrics{
