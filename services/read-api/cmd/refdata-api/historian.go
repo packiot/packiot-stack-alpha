@@ -239,7 +239,7 @@ func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgx
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	sql := fmt.Sprintf(sqlTemplate, equipFilter, histRowLimit)
-	payload, err := runQueryJSON(ctx, histPool, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
+	payload, err := runQueryJSON(ctx, histPool, cid, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
 	if err != nil {
 		logger.Warn("historian query failed", slog.Int("cid", cid), slog.String("err", err.Error()))
 		http.Error(w, `{"error":"historian query failed"}`, http.StatusInternalServerError)

@@ -219,7 +219,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		// The DB read → JSON-array bytes. Shared verbatim by the cached and
 		// uncached paths so the served bytes are identical either way.
 		load := func(ctx context.Context) ([]byte, error) {
-			return runQueryJSON(ctx, pool, sql, args)
+			return runQueryJSON(ctx, pool, cid, sql, args)
 		}
 
 		var payload []byte
@@ -437,17 +437,43 @@ func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
 // the cached and uncached paths share ONE query+encode implementation, and so
 // the cache-aside loader can hand back ready-to-cache bytes. A DB/scan/marshal
 // error is returned (never cached); the caller maps it to a 500.
-func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []any) ([]byte, error) {
-	rows, err := pool.Query(ctx, sql, args...)
+func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]byte, error) {
+	// task #264 — defense-in-depth tenant fence. read-api connects as a NOBYPASSRLS
+	// role (readapi_ro), and the analytics DB puts FORCE ROW LEVEL SECURITY on the
+	// tenant tables (core.equipments / production_orders / production_targets,
+	// gold.equipment_oee_hourly / _shift / production_orders_runtime), keyed on the
+	// session GUC `app.tenant_id` (public.current_tenant()). The app-layer
+	// `WHERE id_enterprise = $1` fence stays the PRIMARY isolator; stamping the GUC to
+	// the SAME server-derived tenant makes Postgres RLS a CO-ENFORCER — so if a future
+	// dataset ever ships without the $1 fence, RLS scopes it to this tenant instead of
+	// leaking every tenant's rows (under the old `postgres`/BYPASSRLS connection RLS
+	// never bit, so an unfenced dataset would have leaked all tenants).
+	//
+	// set_config(..., is_local => true) is TRANSACTION-LOCAL, so it is safe under the
+	// pgbouncer transaction pooling this pool runs behind (the setting is discarded when
+	// the server connection is returned to the pool) — a plain SET would leak the tenant
+	// onto the next borrower. We therefore run the stamp + the read inside ONE explicit
+	// transaction. cid is a SERVER-DERIVED int (from the resolved credential, never the
+	// request body), so the literal interpolation carries no injection risk and sidesteps
+	// the simple-protocol parameter path this pool uses.
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT set_config('app.tenant_id', '%d', true)", cid)); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
 	cols := rows.FieldDescriptions()
 	out := make([]map[string]any, 0, 256)
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		m := make(map[string]any, len(cols))
@@ -457,6 +483,11 @@ func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []an
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return json.Marshal(out)
