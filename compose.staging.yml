@@ -1794,8 +1794,7 @@ services:
       # the legacy procedure was never scheduled here. Bake method:
       # one-shot CALL of the legacy procedure vs this job, diffed on
       # id_order (see 0012-phase4-execution-plan.md Wave 2).
-      SPEED33_REPORT_ENABLED: "true"
-      SPEED33_INTERVAL_MINUTES: "10"
+      # #263: SPEED33_* removed — enterprise-33 dead, customer_reports.speed dropped.
       # Wave 2 port #2: shift_06 delete-and-reload → customer_reports.shift
       SHIFT06_REPORT_ENABLED: "true"
       SHIFT06_INTERVAL_MINUTES: "15"

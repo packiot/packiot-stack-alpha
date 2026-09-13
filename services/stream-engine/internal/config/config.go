@@ -127,13 +127,7 @@ type Config struct {
 	// has effect when ShiftResolverEnabled is also true.
 	ShiftFillFolded bool
 
-	// Speed33ReportEnabled — ADR-0012 Wave 2 port #1: the Go-scheduled
-	// writer for customer_reports.speed (customer 33). Legacy
-	// c33_speed_per_job_insert_into_report keeps the old table on prod;
-	// on staging this is the sole writer (legacy never scheduled here).
-	Speed33ReportEnabled   bool
-	Speed33IntervalMinutes int
-	Speed33CustomerID      int
+	// #263: Speed33* removed (ent-33 dead → customer_reports.speed dead-keyed, dropped).
 	Shift06ReportEnabled   bool
 	Shift06IntervalMinutes int
 	Shift06CustomerID      int
@@ -423,9 +417,6 @@ func Load() (*Config, error) {
 		PGAnalyticsMaxConns:              getenvInt("POSTGRES_ANALYTICS_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		ShiftFillFolded:                  getenv("SHIFT_FILL_FOLDED", "false") == "true",
-		Speed33ReportEnabled:             getenv("SPEED33_REPORT_ENABLED", "false") == "true",
-		Speed33IntervalMinutes:           getenvInt("SPEED33_INTERVAL_MINUTES", 10),
-		Speed33CustomerID:                getenvInt("SPEED33_CUSTOMER_ID", 33),
 		Shift06ReportEnabled:             getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
 		Shift06IntervalMinutes:           getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
 		Shift06CustomerID:                getenvInt("SHIFT06_CUSTOMER_ID", 6),

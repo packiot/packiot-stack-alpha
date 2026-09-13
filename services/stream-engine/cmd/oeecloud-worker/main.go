@@ -270,10 +270,9 @@ func main() {
 	// One observer for every scheduled job → jobs_ticks_total{job,outcome}.
 	jobObs := func(job, outcome string) { mx.JobTicks.WithLabelValues(job, outcome).Inc() }
 
-	// ADR-0012 Wave 2 port #1 — customer_reports.speed writer (cust 33).
-	if cfg.Speed33ReportEnabled {
-		go reports.LoopSpeed33(ctx, pool, cfg.Speed33CustomerID, time.Duration(cfg.Speed33IntervalMinutes)*time.Minute, logger, jobObs)
-	}
+	// #263: the customer_reports.speed writer (cust 33) was removed — enterprise-33
+	// does not exist on the new stack (legacy Incoplast remapped to id 4, which has no
+	// speed feed); the pool + writer were dead-keyed. See db/migrations/t272.
 
 	// ADR-0012 Wave 2 port #2 — customer_reports.shift writer (cust 6).
 	if cfg.Shift06ReportEnabled {
