@@ -186,6 +186,15 @@ server {
         proxy_set_header   X-Forwarded-Proto    https;
         proxy_set_header   X-Auth-Request-User  \$auth_user;
         proxy_set_header   X-Auth-Request-Email \$auth_email;
+%{ if svc == "db" ~}
+        # CloudBeaver reverseProxy SSO: it reads the trusted user identity from
+        # X-User and team membership from X-Team. Feed it the Cognito email as the
+        # user and `admin` as the team so each staffer logs in AS THEMSELVES (not
+        # the shared @anonymous@) with admin rights. Requires the reverseProxy auth
+        # provider enabled + anonymous access OFF in CloudBeaver (workspace config).
+        proxy_set_header   X-User               \$auth_email;
+        proxy_set_header   X-Team               admin;
+%{ endif ~}
         proxy_read_timeout 300s;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           \$http_upgrade;
