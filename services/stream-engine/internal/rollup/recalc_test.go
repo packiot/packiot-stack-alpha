@@ -360,8 +360,14 @@ func TestEntityGrainShape(t *testing.T) {
 	if strings.Contains(sall, "site_oee_hourly") || strings.Contains(sall, "site_oee_weekly") || strings.Contains(sall, "site_oee_monthly") {
 		t.Error("site tier must not reference the retired hourly/weekly/monthly grains (#186)")
 	}
-	// Site day-flag re-sourced from the area day grain (tier below).
-	if !strings.Contains(sall, "area_oee_daily ad") || !strings.Contains(sall, "site_oee_daily t SET recalc_needed = true") {
-		t.Error("site day-flag cascade must re-source from area_oee_daily (#186)")
+	// #263: the site DAY grain was dropped (site_oee_daily unread — its only consumer,
+	// current_rest.go→site_live_day, was itself unread). The site tier must no longer
+	// reference site_oee_daily at all (no day-flag/day/day-oeep), but MUST still roll up
+	// site_oee_shift (serving.oee_progress; independent — rolls up area_oee_shift).
+	if strings.Contains(sall, "site_oee_daily") {
+		t.Error("site tier must not reference site_oee_daily (DAY grain dropped in #263)")
+	}
+	if !strings.Contains(sall, "site_oee_shift") {
+		t.Error("site tier must still roll up site_oee_shift (serving.oee_progress)")
 	}
 }

@@ -143,16 +143,16 @@ const refreshJobsElapsedSQL = `
 	UPDATE %[3]s.equipment_live_job u SET elapsed_time = p.duration
 	  FROM po_time p WHERE u.id_equipment = p.id_equipment`
 
-// RefreshCurrentRest runs the remaining live refreshers (day for area+site,
-// shift for area). #186: the area/site live-WEEK and live-MONTH refreshers were
-// retired — their source grains (area/site_oee_weekly/monthly) and sink tables
-// (area/site_live_week/month) had zero consumers. area/site_live_day stays LIVE
-// (front4 mission control reads it), so the DAY refresh is preserved.
+// RefreshCurrentRest runs the remaining live refreshers (day for AREA, shift for
+// area). #186: the area/site live-WEEK and live-MONTH refreshers were retired.
+// area_live_day stays LIVE (front4 mission control / serving.home reads it).
+// #263: the SITE live-day leg was removed — site_live_day had ZERO readers
+// (serving.home reads area_live_day, not site) and its source site_oee_daily is
+// likewise unread; both are dropped. Only the AREA day refresh remains.
 func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 	type ent struct{ key, rtDay, unsDay string }
 	ents := []ent{
 		{"id_area", "area_oee_daily", "area_live_day"},
-		{"id_site", "site_oee_daily", "site_live_day"},
 	}
 	for _, e := range ents {
 		steps := []struct{ name, sql string }{

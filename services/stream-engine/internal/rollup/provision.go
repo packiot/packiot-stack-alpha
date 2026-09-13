@@ -46,7 +46,7 @@ var provisionFns = []string{
 	// dead grains; only day + shift (+ all equipment grains) are provisioned now.
 	"piot_create_area_oee_daily",
 	"piot_create_area_oee_shift",
-	"piot_create_site_oee_daily",
+	// #263: piot_create_site_oee_daily removed — site_oee_daily dropped (unread). Site SHIFT kept.
 	"piot_create_site_oee_shift",
 }
 

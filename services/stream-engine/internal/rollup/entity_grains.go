@@ -57,6 +57,9 @@ type entitySpec struct {
 	DaySource   string // equipment_oee_daily  | area_oee_daily
 	ShiftSource string // equipment_oee_shift | area_oee_shift
 	ScopePred   string // join predicate template against el (uses %[2]s ref schema)
+	SkipDay     bool   // #263: site skips the DAY grain (site_oee_daily unread → dropped);
+	// its only consumer was current_rest.go→site_live_day, itself unread. Site SHIFT
+	// (serving.oee_progress) is independent (rolls up area_oee_shift) and stays.
 }
 
 var entityMatrix = []entitySpec{
@@ -69,6 +72,7 @@ var entityMatrix = []entitySpec{
 		Name: "site", Key: "id_site", DayBeginFn: "piot_get_day_begin_by_site",
 		DaySource: "area_oee_daily", ShiftSource: "area_oee_shift",
 		ScopePred: `ard.id_area IN (SELECT id_area FROM %[2]s.areas WHERE id_site = el.id_site)`,
+		SkipDay:   true, // #263: site_oee_daily unread → don't write it (shift stays)
 	},
 }
 
@@ -194,15 +198,24 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	// #186: hour/week/month retired (dead). Order preserved for the survivors:
 	// the day-flag cascade runs FIRST (flags this entity's day grain from the
 	// tier-below day grain), then the day rollup consumes those flags, then shift.
-	return []struct{ Name, SQL string }{
-		{sp.Name + "-day-flag", dayFlagCascade},
-		{sp.Name + "-day", rollup(sp.Name+"_oee_daily", sp.DaySource, sameBucket, `,
+	// #263: site skips the DAY grain (SkipDay) — site_oee_daily is unread (its only
+	// consumer, current_rest.go→site_live_day, is itself unread). Site SHIFT stays
+	// (serving.oee_progress; independent of site day — rolls up area_oee_shift).
+	stmts := []struct{ Name, SQL string }{}
+	if !sp.SkipDay {
+		stmts = append(stmts,
+			struct{ Name, SQL string }{sp.Name + "-day-flag", dayFlagCascade},
+			struct{ Name, SQL string }{sp.Name + "-day", rollup(sp.Name+"_oee_daily", sp.DaySource, sameBucket, `,
 	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 day"), monthWindow, true)},
-		{sp.Name + "-day-oeep", oeeP(sp.Name + "_oee_daily")},
-		{sp.Name + "-shift", rollup(sp.Name+"_oee_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
-		{sp.Name + "-shift-oeep", oeeP(sp.Name + "_oee_shift")},
-		{sp.Name + "-shift-tail", shiftTail},
+			struct{ Name, SQL string }{sp.Name + "-day-oeep", oeeP(sp.Name + "_oee_daily")},
+		)
 	}
+	stmts = append(stmts,
+		struct{ Name, SQL string }{sp.Name + "-shift", rollup(sp.Name+"_oee_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
+		struct{ Name, SQL string }{sp.Name + "-shift-oeep", oeeP(sp.Name + "_oee_shift")},
+		struct{ Name, SQL string }{sp.Name + "-shift-tail", shiftTail},
+	)
+	return stmts
 }
 
 // RunEntityGrains executes both entity tiers for one destination.
