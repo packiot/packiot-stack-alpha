@@ -19,7 +19,7 @@
         "auth-model": "native",
         "auth-properties": {
           "name": "cloudbeaver_ro",
-          "password": "${CLOUDBEAVER_RO_PASSWORD}"
+          "password": "@RO_PASSWORD@"
         },
         "bootstrap": {
           "autocommit": true

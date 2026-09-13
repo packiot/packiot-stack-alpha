@@ -1347,20 +1347,41 @@ services:
     image: dbeaver/cloudbeaver:26.2.0
     container_name: cloudbeaver
     restart: unless-stopped
+    # Cognito SSO: staff authenticate at the oauth2-proxy gate (db.staging), and
+    # nginx forwards their identity as X-User/X-Team headers → CloudBeaver's
+    # reverseProxy auth logs them in as themselves (anonymous OFF). See the
+    # entrypoint below for why the DB password is rendered at boot.
     environment:
-      CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED: "true"
+      CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED: "false"
       CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_ANONYMOUS_TEAM: "true"
       CLOUDBEAVER_APP_SUPPORTS_CUSTOM_CONNECTIONS: "false"
       CLOUDBEAVER_APP_RESOURCE_MANAGER_ENABLED: "false"
       CLOUDBEAVER_SYSTEM_VARIABLES_RESOLVING_ENABLED: "true"
       CLOUDBEAVER_CORE_THEMING_THEME: dark
-      # Resolved into the mounted config files (never committed).
+      # Rendered into the workspace data-sources.json by the entrypoint (never committed).
       CLOUDBEAVER_RO_PASSWORD: ${CLOUDBEAVER_RO_PASSWORD}
       CLOUDBEAVER_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD}
+    # CloudBeaver's systemVariablesResolvingEnabled resolves ${VAR} in connection
+    # PROPERTIES but NOT in the credential/password field — so a templated password
+    # never resolves, the connection has no credential, and the connect dialog falls
+    # back to the driver-default username `dbeaver` → "password authentication failed
+    # for user dbeaver". Fix: seed the template (with an @RO_PASSWORD@ placeholder) to
+    # a side path and sed the real password from the container env into the workspace
+    # copy at boot, so the connection carries working saved credentials and never
+    # prompts. Repo stays secret-free (placeholder only); the secret lives only in .env.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /opt/cloudbeaver/workspace/GlobalConfiguration/.dbeaver
+        sed "s|@RO_PASSWORD@|$$CLOUDBEAVER_RO_PASSWORD|g" \
+          /opt/cloudbeaver/seed/data-sources.json \
+          > /opt/cloudbeaver/workspace/GlobalConfiguration/.dbeaver/data-sources.json
+        exec ./launch-product.sh
     volumes:
       - cloudbeaver-workspace:/opt/cloudbeaver/workspace
       - ./configs/cloudbeaver/conf/initial-data.conf:/opt/cloudbeaver/conf/initial-data.conf:ro
-      - ./configs/cloudbeaver/data-sources.json:/opt/cloudbeaver/workspace/GlobalConfiguration/.dbeaver/data-sources.json:ro
+      - ./configs/cloudbeaver/data-sources.json:/opt/cloudbeaver/seed/data-sources.json:ro
     ports:
       - "127.0.0.1:8093:8978"
     networks:
