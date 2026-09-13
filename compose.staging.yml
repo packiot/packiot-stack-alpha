@@ -46,6 +46,7 @@ volumes:
   mosquitto-data:   # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:  # ADR-0011 P2: SQLite outbox survives container restart
   edge_transformer_agent_outbox:  # ADR-0042 P1: sparkplug-agent-cpack store-and-forward outbox
+  cloudbeaver-workspace:  # CloudBeaver metadata + user/session state (web DB IDE)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
@@ -1324,6 +1325,47 @@ services:
     networks:
       packiot-net:
         ipv4_address: 172.18.0.48
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── cloudbeaver (web DB IDE — nicer UX alternative to pgweb) ───────────────────
+  # DBeaver's web edition. Behind the same Cognito staff oauth2 gate at
+  # dbeaver.staging.packiot.app (nginx var.services + service_auth=csadmin). The gate
+  # is the ONLY authN — CloudBeaver runs with anonymous access enabled, so no second
+  # login; anonymous users get the ONE pre-seeded, READ-ONLY connection to
+  # packiot_analytics via the `cloudbeaver_ro` role (SELECT-only + BYPASSRLS: staff
+  # can browse all tenants for debugging but CANNOT write — strictly safer than
+  # pgweb's `postgres` SUPERUSER connection, which can DROP/DELETE). Custom
+  # connections are disabled so the browser stays locked to that one DB.
+  # Server settings are driven by the shipped cloudbeaver.conf's ${ENV:default}
+  # placeholders (no forked conf). Secrets (CLOUDBEAVER_RO_PASSWORD / _ADMIN_PASSWORD)
+  # come from /opt/packiot/.env and are resolved into the mounted data-sources.json /
+  # initial-data.conf via systemVariablesResolvingEnabled.
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:26.2.0
+    container_name: cloudbeaver
+    restart: unless-stopped
+    environment:
+      CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED: "true"
+      CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_ANONYMOUS_TEAM: "true"
+      CLOUDBEAVER_APP_SUPPORTS_CUSTOM_CONNECTIONS: "false"
+      CLOUDBEAVER_APP_RESOURCE_MANAGER_ENABLED: "false"
+      CLOUDBEAVER_SYSTEM_VARIABLES_RESOLVING_ENABLED: "true"
+      CLOUDBEAVER_CORE_THEMING_THEME: dark
+      # Resolved into the mounted config files (never committed).
+      CLOUDBEAVER_RO_PASSWORD: ${CLOUDBEAVER_RO_PASSWORD}
+      CLOUDBEAVER_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD}
+    volumes:
+      - cloudbeaver-workspace:/opt/cloudbeaver/workspace
+      - ./configs/cloudbeaver/conf/initial-data.conf:/opt/cloudbeaver/conf/initial-data.conf:ro
+      - ./configs/cloudbeaver/data-sources.json:/opt/cloudbeaver/workspace/GlobalConfiguration/.dbeaver/data-sources.json:ro
+    ports:
+      - "127.0.0.1:8093:8978"
+    networks:
+      - packiot-net
+    mem_limit: 1024m   # Java — needs headroom vs pgweb's ~30MB Go binary
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
