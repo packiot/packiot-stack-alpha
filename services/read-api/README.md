@@ -11,7 +11,7 @@ A single small Go binary serving two surfaces:
 2. **The composable query API** — `GET /v1/catalog` + `POST /v1/query`:
    metrics × dimensions × grain × window compiled to CAgg SQL.
    Safe-by-construction: only allowlisted metrics/dimensions/grains
-   compile; grains map to `agg_equipment_values_{1min,10min,1hour}`
+   compile; grains map to `agg_equipment_values_{1min,1hour}`
    with hard window caps (7d/30d/90d). Plus `GET/PUT /v1/screen-config`
    for operator layout persistence.
 
