@@ -91,7 +91,7 @@ const refreshEquipmentSQL = `
 	           sum(gross_production_incr) AS gross_production_incr,
 	           sum(scrap_incr)            AS scrap_incr,
 	           avg(speed)                 AS speed
-	      FROM %[1]s.agg_equipment_values_1hour v
+	      FROM %[6]s.agg_equipment_values_1hour v
 	     WHERE ts_value >= date_trunc('%[3]s', now())::date
 	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
 	            WHERE tp_equipment > 1

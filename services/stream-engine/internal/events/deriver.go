@@ -69,7 +69,7 @@ const transitionsCTE = `
 WITH stream AS (
     SELECT ca.ts_value AS ts_event, ca.id_equipment, ca.id_enterprise, ca.state,
            count(ca.state) OVER (PARTITION BY ca.id_equipment ORDER BY ca.ts_value) AS grp
-      FROM %[1]s.ca_discrete_changes_1s ca
+      FROM %[3]s.ca_discrete_changes_1s ca
       JOIN %[2]s.equipments e ON e.id_equipment = ca.id_equipment
      WHERE ca.ts_value > now() - interval '25 hours'
        AND ((e.status_type = 4 AND e.tp_equipment > 0)
