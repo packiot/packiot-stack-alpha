@@ -50,8 +50,8 @@ var recalcSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.production_orders_runtime AS
 	   SELECT r.* FROM gold.production_orders_runtime r
 	    JOIN ` + legacySchema + `.production_orders p USING (id_production_order)`,
-	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
-	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM public.sites`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM core.equipments`,
+	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM core.sites`,
 	// force every snapshot PO into the recalc set (deterministic input)
 	`UPDATE ` + legacySchema + `.production_orders SET recalc_needed = true`,
 	`CREATE TABLE ` + goSchema + `.production_orders AS SELECT * FROM ` + legacySchema + `.production_orders`,
@@ -229,8 +229,8 @@ var computeSnapshotSQL = []string{
 	`CREATE TABLE ` + legacySchema + `.production_orders_runtime AS
 	   SELECT * FROM gold.production_orders_runtime
 	    WHERE runtime_timerange && tstzrange(now() - interval '1 month', now())`,
-	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
-	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM public.sites`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM core.equipments`,
+	`CREATE TABLE ` + legacySchema + `.sites AS SELECT * FROM core.sites`,
 	`CREATE TABLE ` + legacySchema + `.equipment_values AS
 	   SELECT id_equipment, ts_value, gross_production_incr, net_production_incr,
 	          speed, ideal_production_speed
@@ -345,7 +345,7 @@ var hourSnapshotSQL = []string{
 	   SELECT * FROM public.agg_equipment_values_1min_t WHERE ts_value >= now() - interval '4 hours'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
 	   SELECT * FROM silver.equipment_events WHERE ts_event >= now() - interval '10 days'`,
-	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM core.equipments`,
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_daily AS SELECT * FROM ` + legacySchema + `.equipment_oee_daily`,
@@ -427,7 +427,7 @@ var daySnapshotSQL = []string{
 	   SELECT * FROM gold.equipment_oee_weekly WHERE ts_value >= now() - interval '40 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_oee_monthly AS
 	   SELECT * FROM gold.equipment_oee_monthly WHERE ts_value >= now() - interval '70 days'`,
-	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM core.equipments`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_daily AS SELECT * FROM ` + legacySchema + `.equipment_oee_daily`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_hourly AS SELECT * FROM ` + legacySchema + `.equipment_oee_hourly`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_weekly AS SELECT * FROM ` + legacySchema + `.equipment_oee_weekly`,
@@ -506,7 +506,7 @@ var shiftSnapshotSQL = []string{
 	   SELECT * FROM public.ca_agg_equipment_values_1hour WHERE ts_value >= now() - interval '32 days'`,
 	`CREATE TABLE ` + legacySchema + `.equipment_events AS
 	   SELECT * FROM silver.equipment_events WHERE ts_event >= now() - interval '25 days'`,
-	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM public.equipments`,
+	`CREATE TABLE ` + legacySchema + `.equipments AS SELECT * FROM core.equipments`,
 	`CREATE TABLE ` + legacySchema + `.shifts AS SELECT * FROM public.shifts`,
 	`CREATE TABLE ` + legacySchema + `.production_targets AS SELECT * FROM public.production_targets`,
 	`CREATE TABLE ` + goSchema + `.equipment_oee_shift AS SELECT * FROM ` + legacySchema + `.equipment_oee_shift`,
