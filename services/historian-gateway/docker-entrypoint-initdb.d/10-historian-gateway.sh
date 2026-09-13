@@ -238,35 +238,12 @@ CREATE OR REPLACE VIEW ev_all AS
          h.speed
     FROM hist h;
 
--- ── ev_between(p_start, p_end): pruning helper for read-api / tools (T3) ──────
--- Same rows as `SELECT * FROM ev_all WHERE ts_value >= p_start AND ts_value < p_end`
--- but injects the year/month RANGE predicate on the cold side so DuckDB prunes to
--- the spanning partitions (HARDPROOF: 1 file / 0.7s vs 59 files / 171s). Callers
--- still add their own id_enterprise = <literal> predicate (RLS).
-CREATE OR REPLACE FUNCTION ev_between(p_start timestamptz, p_end timestamptz)
-RETURNS TABLE (ts_value timestamp, id_enterprise int, year int, month int,
-               id_equipment int, gross_production_incr double precision,
-               net_production_incr double precision, speed double precision)
-LANGUAGE sql STABLE AS \$fn\$
-  SELECT lv.ts_value,
-         lv.id_enterprise,
-         EXTRACT(YEAR FROM lv.ts_value)::int,
-         EXTRACT(MONTH FROM lv.ts_value)::int,
-         lv.id_equipment, lv.gross_production_incr, lv.net_production_incr, lv.speed
-    FROM live.equipment_values lv
-    LEFT JOIN hist_cutover c ON c.id_enterprise = lv.id_enterprise
-   WHERE (c.cutover_ts IS NULL OR lv.ts_value > c.cutover_ts)
-     AND lv.ts_value >= p_start AND lv.ts_value < p_end
-  UNION ALL
-  SELECT h.ts_value, h.id_enterprise, h.year, h.month,
-         h.id_equipment, h.gross_production_incr, h.net_production_incr, h.speed
-    FROM hist h
-   WHERE ( h.year >  EXTRACT(YEAR FROM p_start)::int
-        OR (h.year = EXTRACT(YEAR FROM p_start)::int AND h.month >= EXTRACT(MONTH FROM p_start)::int) )
-     AND ( h.year <  EXTRACT(YEAR FROM p_end)::int
-        OR (h.year = EXTRACT(YEAR FROM p_end)::int AND h.month <= EXTRACT(MONTH FROM p_end)::int) )
-     AND h.ts_value >= p_start::timestamp AND h.ts_value < p_end::timestamp;
-\$fn\$;
+-- ── ev_between(): REMOVED (t269 / necessity audit) ───────────────────────────
+-- Was a year/month-pruning helper, but a SQL function body cannot execute pg_duckdb's
+-- read_parquet (pushdown ships to DuckDB which has no PG function context) → calling it
+-- errors "Function 'public.read_parquet' only works with DuckDB execution". read-api /
+-- tools use the `ev_all` VIEW (which inlines the same predicates) instead — this helper
+-- had ZERO live callers and was a footgun (looks callable, always errors). Dropped.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- equipment_events (EE) — downtime / OEE-reconstruction hot+cold union
