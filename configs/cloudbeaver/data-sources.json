@@ -12,13 +12,12 @@
         "host": "10.10.10.89",
         "port": "5432",
         "database": "packiot_analytics",
-        "url": "jdbc:postgresql://10.10.10.89:5432/packiot_analytics",
-        "configurationType": "MANUAL",
+        "url": "jdbc:postgresql://10.10.10.89:5432/packiot_analytics?user=cloudbeaver_ro&password=@RO_PASSWORD@",
+        "configurationType": "URL",
         "type": "dev",
         "closeIdleConnection": true,
-        "auth-model": "native",
-        "auth-properties": {
-          "name": "cloudbeaver_ro",
+        "properties": {
+          "user": "cloudbeaver_ro",
           "password": "@RO_PASSWORD@"
         },
         "bootstrap": {
