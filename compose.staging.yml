@@ -1256,6 +1256,23 @@ services:
       OAUTH2_PROXY_REVERSE_PROXY: "true"
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
       OAUTH2_PROXY_UPSTREAMS: static://202
+      # ── Server-side (Redis) session store ────────────────────────────────────
+      # Default store type is `cookie`: the whole Cognito session (id_token +
+      # refresh_token) is serialised INTO the cookie and chunked as
+      # _oauth2_proxy_0/_1. That made the Cookie header ~5.4 KB, and with a stale
+      # host-scoped copy coexisting alongside the parent-scoped one it doubled to
+      # ~10.9 KB — over the 8 KB cap of the CloudFront WAF managed rule
+      # AWSManagedRulesCommonRuleSet/SizeRestrictions_Cookie_HEADER, which then
+      # BLOCKed even a bare `GET /` at the edge (CloudFront 403 "Request blocked")
+      # for every *.staging.packiot.app admin UI. Redis keeps the session
+      # server-side; the cookie holds only a small ticket → permanently under the
+      # limit. Reuses the idle ADR-0035 app-redis on a SEPARATE logical DB (/1) so
+      # it never collides with edge-api's future cache-aside keyspace (/0).
+      OAUTH2_PROXY_SESSION_STORE_TYPE: redis
+      OAUTH2_PROXY_REDIS_CONNECTION_URL: redis://app-redis:6379/1
+    depends_on:
+      app-redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:4180:4180"
     networks:
