@@ -64,14 +64,17 @@ func Standard(pool, analyticsPool *pgxpool.Pool) []Dest {
 		// clients, production_orders, products, product_families, shifts, production_targets,
 		// box_production_bridges, packml_register) hit core.<dim> directly (core.packml_register
 		// is a compat view over core.topic_routing). GrainSchema is `silver` (P-silver).
-		// NOTE two paths still read `public` via PERMANENT compat shims → core: (a) the
-		// shiftresolver hardcodes public.{sites,equipments,shift_hours} (literal, not RefSchema);
-		// (b) the rollup grain UPDATE writes public.equipment_live_* (EvSchema, deferred to
-		// #228/#233). EvSchema keeps the caggs/event side-tables/data_quality_event no ticket
-		// has re-homed.
+		// EvSchema is now `silver` (P-silver): the event plane it governs has been
+		// re-homed off public — the caggs (agg_equipment_values_*, ca_discrete_changes_1s,
+		// ca_equipment_boxes_1s) in #1215/#261, and the event side-tables (data_quality_event,
+		// equipment_events_man, equipment_events_cpac_shadow, equipment_events_low_speed) in
+		// t261d/#261. Transient auto-updatable public shim views bridge the deploy and are
+		// dropped in the follow-up contract step. The flip also routes boxes_bridge's
+		// `%[EvSchema].equipment_values` write to the real silver fact (it previously pointed
+		// at a non-existent public.equipment_values — inert on staging, correct on prod).
 		return []Dest{{
 			Name: "packiot_analytics", Pool: analyticsPool,
-			EvSchema: "public", RefSchema: "core",
+			EvSchema: "silver", RefSchema: "core",
 			SilverSchema: "silver", GoldSchema: "gold",
 			GrainSchema: "silver", ConfigSchema: "config",
 		}}
