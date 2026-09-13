@@ -58,7 +58,6 @@ var grains = map[string]struct {
 	maxWindow time.Duration
 }{
 	"1min":  {"agg_equipment_values_1min", 7 * 24 * time.Hour},
-	"10min": {"agg_equipment_values_10min", 30 * 24 * time.Hour},
 	"1hour": {"agg_equipment_values_1hour", 90 * 24 * time.Hour},
 }
 
