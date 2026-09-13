@@ -38,3 +38,4 @@ monitoring/rabbitmq/definitions.json
 *service-account*.json    # GCP service-account key files
 private-key.json          # generic exported private keys
 client_secrets.json       # OAuth client secret bundles
+db/migrations/**/_ssm.json
