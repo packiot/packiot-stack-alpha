@@ -246,6 +246,15 @@ const dqScanLimit = 20000
 // RefSchema (equipments), %[4]s = the ideal_speed projection (r.ideal_speed for
 // shift/hour, NULL::float8 for day/week/month which lack the column), %[5]d =
 // LIMIT. $1 = window interval.
+//
+// `r.ts_value <= now()` is LOAD-BEARING, not cosmetic: Provision (provision.go)
+// pre-materializes a 30-DAY horizon of EMPTY future buckets (net=0, computed_at
+// NULL) so the rollup can UPDATE them in place as data arrives. Those future
+// skeletons carry the HIGHEST ts_value, so `ORDER BY ts_value DESC LIMIT N` would
+// fill the entire budget with them (200k+ on staging) and never reach a single
+// real past row — silently blinding every DQ rule. A future bucket can never hold
+// a real violation, so excluding it is both correct and the only thing that keeps
+// the most-recent-first scan pointed at actual computed data.
 const dqGrainScanSQL = `
 	SELECT e.id_enterprise, r.id_equipment, r.ts_value::timestamptz,
 	       r.oee, r.oee_a, r.oee_p, r.oee_q,
@@ -255,6 +264,7 @@ const dqGrainScanSQL = `
 	  FROM %[1]s.%[2]s r
 	  JOIN %[3]s.equipments e USING (id_equipment)
 	 WHERE r.ts_value >= now() - $1::interval
+	   AND r.ts_value <= now()
 	 ORDER BY r.ts_value DESC
 	 LIMIT %[5]d`
 
