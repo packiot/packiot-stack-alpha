@@ -7,6 +7,7 @@
       "name": "packiot_analytics (read-only)",
       "description": "Staging analytics DB — read-only staff browser (cloudbeaver_ro). SELECT-only; cannot write.",
       "read-only": true,
+      "save-password": true,
       "configuration": {
         "host": "10.10.10.89",
         "port": "5432",
