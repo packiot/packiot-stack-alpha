@@ -1,0 +1,5 @@
+-- t273 rollback — recreate the site-day chain (exact live structure captured pre-drop).
+-- A code-revert of #263 (feat/263-site-day-split) restarts the writers.
+CREATE TABLE gold.site_oee_daily (ts_value date, id_site integer, oee real, recalc_needed boolean, oee_p real, oee_a real, oee_q real, available_time integer, running_time integer, stopped_time integer, planned_downtime integer, ideal_production double precision, idle_time integer, idle_starved integer, idle_blocked integer, target double precision, gross real, net real, downtime integer, changeover_time integer, scrap real, speed real, proportional_target double precision, computed_at timestamptz, source_watermark timestamptz);
+
+CREATE TABLE silver.site_live_day (id_site integer, oee real, oee_a real, oee_p real, oee_q real, gross_production real, net_production real, scrap real, target real, begin_time date, end_time date, idle_time integer, elapsed_time integer, idle_blocked integer, idle_starved integer, running_time integer, stopped_time integer, available_time integer, planned_downtime integer, ideal_production real, proportional_target real, proportional_ideal_production real);
