@@ -7,7 +7,7 @@ package main
 // scrolls back past the hot boundary needs the COLD S3 archive too. The
 // historian-gateway (compose.historian-gateway.yml, container `hist-gateway`)
 // already unions HOT (postgres_fdw → the live timescaledb) with COLD (S3 Parquet
-// via pg_duckdb) behind equipment_values_all / ev_between, with per-partition pruning. This
+// via pg_duckdb) behind silver.equipment_values / ev_between, with per-partition pruning. This
 // endpoint is the read-api door to it.
 //
 // DESIGN — deliberately ISOLATED + ADDITIVE (nothing here touches the existing
@@ -21,7 +21,7 @@ package main
 //   - TENANT ISOLATION: the gateway view has NO RLS engine — the caller MUST carry
 //     id_enterprise. We inject it from the SERVER-RESOLVED customer_id (auth
 //     middleware), never the request body — identical rule to /v1/query.
-//   - Queries the equipment_values_all VIEW (NOT the ev_between function — pg_duckdb can't run
+//   - Queries the silver.equipment_values VIEW (NOT the ev_between function — pg_duckdb can't run
 //     read_parquet wrapped in a SQL function) and carries ev_between's year/month
 //     prune predicate inline, so the cold side reads the relevant partition files
 //     only (T3: 1/181), not the whole archive.
@@ -105,9 +105,9 @@ type histSeriesReq struct {
 }
 
 // histProductionSeriesSQL — daily gross/net per equipment over [from,to) for one
-// tenant, hot+cold via the equipment_values_all VIEW.
+// tenant, hot+cold via the silver.equipment_values VIEW.
 //
-// WHY equipment_values_all (view) and NOT ev_between (function): pg_duckdb runs the cold-side
+// WHY silver.equipment_values (view) and NOT ev_between (function): pg_duckdb runs the cold-side
 // read_parquet in DuckDB and the hot-side FDW in Postgres as ONE mixed plan when
 // the parquet scan is inline in a query/view — but wrapping it in a SQL function
 // breaks that (force-off → "read_parquet only works with DuckDB execution";
@@ -127,7 +127,7 @@ const histProductionSeriesSQL = `
          id_equipment,
          sum(gross_production_incr)               AS gross_production,
          sum(net_production_incr)                 AS net_production
-    FROM cold.equipment_values_all
+    FROM silver.equipment_values
    WHERE id_enterprise = $1
      AND ts_value >= $2 AND ts_value < $3
      %s
@@ -137,16 +137,16 @@ const histProductionSeriesSQL = `
    ORDER BY 1, 2
    LIMIT %d`
 // NOTE: the union views live in the gateway's `cold` schema (t287 — symmetric with
-// the hot `live` FDW schema); we qualify them explicitly (cold.equipment_values_all /
-// cold.equipment_events_all) so resolution never relies on the gateway's search_path.
+// the hot `live` FDW schema); we qualify them explicitly (silver.equipment_values /
+// silver.equipment_events) so resolution never relies on the gateway's search_path.
 
 // histDowntimeSeriesSQL — daily downtime per equipment over [from,to) for one
-// tenant, split by planned_downtime, hot+cold via equipment_events_all (task #227 §8-EE).
+// tenant, split by planned_downtime, hot+cold via silver.equipment_events (task #227 §8-EE).
 //
 // This is the downtime/OEE-reconstruction door: sum(duration) grouped by
 // (day, equipment, planned_downtime) is the Availability building block
 // (unplanned downtime seconds vs planned). Bounds the row count the same way the
-// production series does (days × equipment × 2). Reads equipment_events_all (the EE
+// production series does (days × equipment × 2). Reads silver.equipment_events (the EE
 // hot+cold union) — NOT a function — and carries the year/month prune predicate
 // inline, identical constraints to histProductionSeriesSQL. sum() skips NULL
 // durations (honest "no data", never a fake 0). Placeholders mirror the
@@ -158,7 +158,7 @@ const histDowntimeSeriesSQL = `
          planned_downtime,
          count(*)                                 AS event_count,
          sum(duration)                            AS downtime_seconds
-    FROM cold.equipment_events_all
+    FROM silver.equipment_events
    WHERE id_enterprise = $1
      AND ts_event >= $2 AND ts_event < $3
      %s
@@ -170,8 +170,8 @@ const histDowntimeSeriesSQL = `
 
 // registerHistorianAPI mounts the historian read endpoints. Always mounted (so
 // the routes are discoverable); each returns 503 when histPool is nil.
-//   POST /v1/historian/production-series — daily gross/net per equipment (EV, equipment_values_all)
-//   POST /v1/historian/downtime-series   — daily downtime per equipment (EE, equipment_events_all)
+//   POST /v1/historian/production-series — daily gross/net per equipment (EV, silver.equipment_values)
+//   POST /v1/historian/downtime-series   — daily downtime per equipment (EE, silver.equipment_events)
 func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
 	mux.HandleFunc("/v1/historian/production-series", func(w http.ResponseWriter, r *http.Request) {
 		serveHistWindowSeries(w, r, histPool, logger, histProductionSeriesSQL)

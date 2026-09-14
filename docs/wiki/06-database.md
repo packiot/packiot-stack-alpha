@@ -200,9 +200,9 @@ historian dataset) query plain Postgres SQL; old timestamps transparently resolv
 | `live.equipment_events` | FDW | **HOT** side of EE — window onto `silver.equipment_events` (pinned 12 cols) |
 | `cold.equipment_values` | view | **COLD** side of EV — `read_parquet(…/equipment_values/*-legacy.parquet)` |
 | `cold.equipment_events` | view | **COLD** side of EE — `read_parquet(…/equipment_events/*-legacy.parquet)` |
-| `cold.equipment_oee_shift` | view | COLD deep-OEE-history over the gold OEE-shift Parquet (PoC; not yet in a union) |
-| `cold.equipment_values_all` | view | **THE EV serving surface** — hot ∪ cold, no double-count |
-| `cold.equipment_events_all` | view | **THE EE serving surface** — hot ∪ cold |
+| `gold.equipment_oee_shift` | view | COLD deep-OEE-history over the gold OEE-shift Parquet (PoC; not yet in a union) |
+| `silver.equipment_values` | view | **THE EV serving surface** — hot ∪ cold, no double-count |
+| `silver.equipment_events` | view | **THE EE serving surface** — hot ∪ cold |
 | `cold.ev_union_boundary` | table | Per-tenant EV seam. Cold-anchored: `cutover_ts = max(cold ts_value)`; union serves cold `≤`, hot `>`. (was `hist_cutover`) |
 | `cold.ee_union_boundary` | table | Per-tenant EE seam. **Hot-anchored** (opposite): `cutover_ts = min(hot ts_event)`; cold `<`, hot `≥` — hot holds the deep event history + operator downtime notes. (was `ev_events_cutover`) |
 | `cold.promoted_enterprise` | table | Tenant-isolation **allow-list** — the cold side of each union INNER-JOINs it, so an enterprise's cold rows are served only when promoted (legacy ids collide across tenants; this is the sole cold fence) |
@@ -225,11 +225,15 @@ query layer over the same facts, so the names line up 1:1 (no drift):
 
 | Analytics (source of truth) | Historian gateway |
 |---|---|
-| `silver.equipment_values` | `live.equipment_values` (hot) + `cold.equipment_values` (archive) → `equipment_values_all` |
-| `silver.equipment_events` | `live.equipment_events` + `cold.equipment_events` → `equipment_events_all` |
-| `gold.equipment_oee_shift` | `cold.equipment_oee_shift` |
+| `silver.equipment_values` | `live.equipment_values` (hot) + `cold.equipment_values` (archive) → `silver.equipment_values` |
+| `silver.equipment_events` | `live.equipment_events` + `cold.equipment_events` → `silver.equipment_events` |
+| `gold.equipment_oee_shift` | `gold.equipment_oee_shift` |
 
-- The union views add only the `_all` suffix.
+- The serving surface uses the **identical `schema.table`** as analytics —
+  `packiot_analytics.silver.equipment_values` ↔ `packiot_historian.silver.equipment_values`.
+  No `_all` suffix, no schema drift (ADR-0057).
+- `live` (hot FDW) and `cold` (Parquet source views) are **internal physical-tier** schemas
+  holding the two halves of each `silver` union — implementation, not the consumer surface.
 - The control tables (`ev_union_boundary`, `ee_union_boundary`, `promoted_enterprise`,
   `cold_append_watermark`) are gateway-internal — no analytics equivalent, named for their role.
 - **Verdict: correlated.** The 2026-09 rename removed the last cryptic gateway names
