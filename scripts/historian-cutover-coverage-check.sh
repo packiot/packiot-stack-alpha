@@ -24,10 +24,10 @@ set -euo pipefail
 CONTAINER="${GATEWAY_CONTAINER:-hist-gateway}"
 
 # EV-promoted allow-list.
-promoted="$(docker exec -i "$CONTAINER" psql -U postgres -d postgres -tAc \
+promoted="$(docker exec -i "$CONTAINER" psql -U postgres -d packiot_historian -tAc \
   'SELECT id_enterprise FROM hist_promoted_enterprise WHERE ev_promoted ORDER BY 1' | sed '/^$/d' | sort -un)"
 # Current hist_cutover boundary set.
-cut_ents="$(docker exec -i "$CONTAINER" psql -U postgres -d postgres -tAc \
+cut_ents="$(docker exec -i "$CONTAINER" psql -U postgres -d packiot_historian -tAc \
   'SELECT id_enterprise FROM hist_cutover ORDER BY 1' | sed '/^$/d' | sort -un)"
 
 missing="$(comm -23 <(printf '%s\n' "$promoted") <(printf '%s\n' "$cut_ents") | sed '/^$/d')"  # promoted but no cutover row

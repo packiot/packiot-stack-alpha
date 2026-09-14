@@ -27,7 +27,18 @@
         "bootstrap": {
           "autocommit": true
         }
-      }
+      },
+      "filters": [
+        {
+          "id": "packiot_analytics:packiot_analytics",
+          "type": "org.jkiss.dbeaver.ext.postgresql.model.PostgreSchema",
+          "enabled": true,
+          "exclude": [
+            "_timescaledb%",
+            "timescaledb%"
+          ]
+        }
+      ]
     },
     "histdb-gateway-ro": {
       "provider": "postgresql",
@@ -44,7 +55,7 @@
         "host": "hist-gateway",
         "port": "5432",
         "database": "postgres",
-        "url": "jdbc:postgresql://hist-gateway:5432/postgres?user=cloudbeaver_histro&password=@HISTDB_RO_PASSWORD@",
+        "url": "jdbc:postgresql://hist-gateway:5432/packiot_historian?user=cloudbeaver_histro&password=@HISTDB_RO_PASSWORD@",
         "configurationType": "URL",
         "type": "dev",
         "closeIdleConnection": true,

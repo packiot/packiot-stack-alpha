@@ -21,7 +21,7 @@
 set -euo pipefail
 CONTAINER="${GATEWAY_CONTAINER:-hist-gateway}"
 MONTHS="${EE_COVERAGE_MONTHS:-3}"
-psql() { docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 "$@"; }
+psql() { docker exec -i "$CONTAINER" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 "$@"; }
 rc=0
 
 echo "== historian EE hot-coverage reconciliation =="

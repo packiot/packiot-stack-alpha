@@ -2659,7 +2659,7 @@ services:
       HIST_GW_HOST: hist-gateway
       HIST_GW_PORT: "5432"
       HIST_GW_USER: postgres
-      HIST_GW_DB: postgres
+      HIST_GW_DB: packiot_historian
       HEALTH_PORT: "9104"
       # Distributed tracing (OTLP/gRPC). Present = tracing on; a /v1 read becomes
       # one trace with its DB query time as a child span (otelpgx). Sent to the
