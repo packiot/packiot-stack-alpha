@@ -69,6 +69,13 @@ x-superset-config-mounts: &superset-config-mounts
   # Post-import dashboard RBAC hardening (runs after import-dashboards). Inert on
   # web/worker; superset-init runs it explicitly.
   - ./configs/superset/harden_dashboard_roles.py:/app/pythonpath/harden_dashboard_roles.py:ro
+  # Post-import query_context repair (runs after import-dashboards, before harden).
+  # `superset import-dashboards` drops the chart query_context (its baked numeric
+  # datasource id does not survive the UUID-keyed dataset remap), which 400s the
+  # stored-context path (GET /chart/<id>/data/, CSV/Excel export, Alerts & Reports).
+  # This re-derives it from the asset YAMLs against the live dataset ids. Inert on
+  # web/worker; superset-init runs it explicitly.
+  - ./configs/superset/normalize_query_context.py:/app/pythonpath/normalize_query_context.py:ro
   # Dashboards-as-code asset bundle + its importer. Also inert on web/worker
   # (only superset-init imports); mounted read-only on all three (same pattern as
   # bootstrap_guest_role.py above). import_bundle.py injects SUPERSET_DB_RO_PASSWORD
@@ -204,6 +211,13 @@ services:
         # no drift. Without this the metadata DB is an empty shell (0 dashboards).
         python /app/pythonpath/import_bundle.py
         superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
+        # Repair each chart's query_context (import-dashboards drops it — the baked
+        # numeric datasource id does not survive the UUID dataset remap). Re-derives it
+        # from the asset YAMLs against the live dataset ids so the stored-context path
+        # (GET /chart/<id>/data/, CSV/Excel export, Alerts & Reports) works. Idempotent;
+        # must run AFTER import (charts + datasets must exist). See
+        # configs/superset/normalize_query_context.py.
+        python /app/pythonpath/normalize_query_context.py
         # Pin explicit non-Public RBAC roles on the imported dashboards (defense in
         # depth for the anon leak). Runs LAST — dashboards must exist first. See
         # configs/superset/harden_dashboard_roles.py.
