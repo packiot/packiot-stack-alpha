@@ -71,7 +71,7 @@ func TestHistorian_WindowGuards(t *testing.T) {
 // contract so a refactor can't silently drop the isolation or the pruning.
 func TestHistorianSQLShape(t *testing.T) {
 	for _, m := range []string{
-		"FROM ev_all",                      // the VIEW (mixed hot+cold); NOT the ev_between function
+		"FROM cold.ev_all",                 // the VIEW (mixed hot+cold), t287 `cold` schema; NOT the ev_between function
 		"id_enterprise = $1",               // tenant fence on the SERVER-resolved cid
 		"ts_value >= $2 AND ts_value < $3", // exact window bound
 		"\n     %s\n",                      // optional equipment filter is an INLINE list (not a param)
@@ -121,7 +121,7 @@ func TestHistorianDowntime_Guards(t *testing.T) {
 // TestHistorianDowntimeSQLShape locks the EE tenant fence + prune + hot+cold union.
 func TestHistorianDowntimeSQLShape(t *testing.T) {
 	for _, m := range []string{
-		"FROM ev_all_events",               // the EE hot+cold union VIEW
+		"FROM cold.ev_all_events",          // the EE hot+cold union VIEW, t287 `cold` schema
 		"id_enterprise = $1",               // tenant fence on the SERVER-resolved cid
 		"ts_event >= $2 AND ts_event < $3", // exact window bound
 		"\n     %s\n",                      // optional equipment filter is an INLINE list
