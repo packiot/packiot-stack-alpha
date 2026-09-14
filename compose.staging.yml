@@ -2110,21 +2110,20 @@ services:
   # When the REAL Bispharma factory box comes back online it publishes the SAME
   # group → the SAME equipment ids. Running this twin AT THE SAME TIME as a real
   # BISPHARMASTAGING feed DOUBLE-COUNTS every totalizer (the classic two-writer
-  # bug). The twin MUST be disabled the moment a real feed is wired. Two gates
-  # keep it inert by default:
-  #   1. compose profile "bispharma-twin" — never started on a default bring-up.
-  #   2. BISPHARMA_TWIN_ENABLED (default false) — the binary no-ops + exits 0
-  #      unless explicitly true. This is the primary guard.
-  # Its distinct edge_node_id (bispharmastaging-twin) STAMPS provenance in the
-  # decoder logs (publisher "BISPHARMASTAGING/bispharmastaging-twin") so twin rows
-  # are identifiable — but that does NOT prevent the double-count; DISABLING it
-  # does. STAGING ONLY.
+  # bug). The guard is a single flag: BISPHARMA_TWIN_ENABLED (default false). When
+  # false the binary IDLES (blocks, publishes nothing); when true it feeds.
+  # DISABLE it (set false in .env) the moment a real feed is wired. Its distinct
+  # edge_node_id (bispharmastaging-twin) STAMPS provenance in the decoder logs
+  # (publisher "BISPHARMASTAGING/bispharmastaging-twin") so twin rows are
+  # identifiable — but that does NOT prevent the double-count; DISABLING does.
+  # STAGING ONLY.
   #
-  # OPT-IN — profile `bispharma-twin` + the flag:
-  #   BISPHARMA_TWIN_ENABLED=true docker compose -f compose.staging.yml \
-  #     --profile bispharma-twin up -d bispharma-twin
+  # DURABILITY — always part of the stack (NO compose profile), the oeecloud-fanout
+  # pattern: the deploy's `docker compose -p stack up -d --remove-orphans` keeps it
+  # running across every deploy instead of reaping a profile-disabled orphan. When
+  # BISPHARMA_TWIN_ENABLED is false it idles (restart:unless-stopped never
+  # crash-loops it). Enable/disable is a pure .env flip — no profile juggling.
   bispharma-twin:
-    profiles: ["bispharma-twin"]
     build:
       context: ./services/sparkplug-decoder
     container_name: bispharma-twin

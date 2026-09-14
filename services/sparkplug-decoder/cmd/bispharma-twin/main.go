@@ -47,14 +47,16 @@
 // When the real Bispharma factory box comes back online it publishes the SAME
 // group (BISPHARMASTAGING) → the SAME equipment ids. Running this twin AT THE
 // SAME TIME as the real feed DOUBLE-COUNTS every totalizer (two writers per
-// equipment, the classic two-writer bug). Therefore the twin is:
-//   - flag-gated OFF by default (BISPHARMA_TWIN_ENABLED, default false) — the
-//     process no-ops and exits 0 unless explicitly enabled, and
-//   - profile-gated in compose (profile "bispharma-twin") so a default bring-up
-//     never starts it.
-// It MUST be disabled the moment a real BISPHARMASTAGING feed is wired. Its
-// distinct edge_node_id makes twin rows identifiable but does NOT prevent the
-// double-count — disabling the twin is the guard.
+// equipment, the classic two-writer bug). The guard is a single .env flag:
+//   - BISPHARMA_TWIN_ENABLED (default false). When false the process IDLES
+//     (blocks) — it does not publish. When true it feeds.
+// The service is ALWAYS part of the stack (no compose profile — the
+// oeecloud-fanout pattern) so a normal `docker compose up -d --remove-orphans`
+// deploy keeps it running (durable across deploys) instead of reaping a
+// profile-disabled orphan; enabling/disabling is a pure .env flip.
+// It MUST be disabled (BISPHARMA_TWIN_ENABLED=false) the moment a real
+// BISPHARMASTAGING feed is wired. Its distinct edge_node_id makes twin rows
+// identifiable but does NOT prevent the double-count — disabling is the guard.
 //
 // STAGING ONLY. Never point this at a production broker.
 package main
@@ -83,13 +85,23 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	// ── Master enablement gate (default OFF) ─────────────────────────────────
-	// Belt-and-suspenders with the compose "bispharma-twin" profile: even if the
-	// container is started, it stays inert unless the flag is explicitly true.
-	// This is the primary double-source guard.
+	// One signal-scoped context for the whole process — used by the idle path
+	// (disabled) and the publish loop (enabled) alike.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// ── Master enablement gate (default OFF) — the SOLE double-source guard ───
+	// This service is ALWAYS part of the staging stack (no compose profile — the
+	// oeecloud-fanout pattern), so a normal `docker compose up -d --remove-orphans`
+	// deploy keeps it running instead of reaping a profile-disabled orphan. When
+	// disabled it IDLES (blocks until SIGTERM) rather than exiting, so
+	// restart:unless-stopped never crash-loops it. Enabling is a pure .env flip
+	// (BISPHARMA_TWIN_ENABLED=true). DISABLE it the moment a real BISPHARMASTAGING
+	// feed is wired, or every totalizer double-counts.
 	if !getenvBool("BISPHARMA_TWIN_ENABLED", false) {
-		logger.Info("bispharma-twin GATED: BISPHARMA_TWIN_ENABLED != true — no-op exit (double-source guard). " +
-			"Enable ONLY on staging AND ONLY while no real BISPHARMASTAGING feed is active.")
+		logger.Info("bispharma-twin DISABLED (BISPHARMA_TWIN_ENABLED != true) — idling (double-source guard). " +
+			"Enable is a pure .env flip on staging; disable when a real BISPHARMASTAGING feed is active.")
+		<-ctx.Done()
 		return
 	}
 
@@ -117,9 +129,6 @@ func main() {
 	}
 	logger.Info("member count-index leaves resolved",
 		"line", cfg.line, "metrics", len(metrics), "first", metrics[0].name)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	tw := &twin{cfg: cfg, logger: logger, metrics: metrics}
 	if err := tw.run(ctx); err != nil {
