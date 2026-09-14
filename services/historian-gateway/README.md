@@ -60,7 +60,7 @@ the Postgres view (`Custom Scan (DuckDBScan)`).
    max(hist.ts_value))`: COLD owns `ts <= cutover`, HOT owns `ts > cutover` (disjoint;
    live fills forward from the archive's end). Hardproof of the fix: the same day now
    returns **196,671** (HOT 0 + COLD 196,671), 1 parquet file. **Operational
-   invariant:** the cutover refresh (top-level `refresh-hist-cutover.sql`) MUST be
+   invariant:** the cutover refresh (top-level `refresh-equipment_values-cutover.sql`) MUST be
    re-run after every historian backfill/append, and every in-historian enterprise
    MUST have a `hist_cutover` row, or the double-count returns. **Never** wrap this
    refresh in a PL/pgSQL function — pg_duckdb cannot scan the `hist` parquet inside a
