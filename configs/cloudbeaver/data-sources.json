@@ -27,7 +27,18 @@
         "bootstrap": {
           "autocommit": true
         }
-      }
+      },
+      "filters": [
+        {
+          "id": "packiot_analytics:packiot_analytics",
+          "type": "org.jkiss.dbeaver.ext.postgresql.model.PostgreSchema",
+          "enabled": true,
+          "exclude": [
+            "_timescaledb%",
+            "timescaledb%"
+          ]
+        }
+      ]
     },
     "histdb-gateway-ro": {
       "provider": "postgresql",

@@ -31,11 +31,37 @@ hideVirtualModel=true` for BOTH connections. Walking the navigator tree
 identity, serving, customer_reports, bi, public); tables render directly under each
 schema (no "Tables" folder).
 
-### Known CloudBeaver-CE limitation — extension schemas
+## Hiding the TimescaleDB extension schemas (schema object-filter)
 
-CloudBeaver has **no per-schema allowlist** and `ConnectionConfig` exposes **no**
-object/schema-filter input, so the 7 TimescaleDB extension schemas
-(`_timescaledb_*`, `timescaledb_information`, `timescaledb_experimental`) cannot be
-selectively hidden from the seed — `show-system-objects=false` does not classify them
-as system. They remain visible; there is no codifiable fix in CE (`navSetFolderFilter`
-is session-only, not persisted to `data-sources.json`).
+`show-system-objects=false` hides `pg_catalog`/`information_schema`/`pg_temp_*` but does
+NOT classify the 7 TimescaleDB extension schemas (`_timescaledb_*`,
+`timescaledb_information`, `timescaledb_experimental`) as system, so they stayed visible.
+There is no per-schema *allowlist*, but a per-connection **object filter** IS
+persistable to `data-sources.json` (discovered from how CloudBeaver serializes a
+filter set via the `navSetFolderFilter` GraphQL mutation):
+
+```json
+"filters": [
+  {
+    "id": "packiot_analytics:packiot_analytics",
+    "type": "org.jkiss.dbeaver.ext.postgresql.model.PostgreSchema",
+    "enabled": true,
+    "exclude": ["_timescaledb%", "timescaledb%"]
+  }
+]
+```
+
+- `id` = `<database>:<catalog>` (postgres: db name twice); `type` = the PostgreSchema
+  model class so the filter matches schema objects; `exclude` uses **SQL LIKE** masks
+  (`%`, not glob `*` — glob silently no-ops).
+- Applied only to `packiot-analytics-ro` (that's where the TimescaleDB schemas live).
+  `histdb-gateway-ro` has just `duckdb`/`live`/`public` — no extension clutter — so no
+  filter is needed there.
+
+### Proven from a FRESH boot (workspace `data-sources.json` deleted → pure seed import)
+
+`navNodeChildren` on `packiot_analytics` returns exactly the 11 app schemas —
+`bi, bronze, config, core, customer_reports, gold, identity, ops, public, serving,
+silver` — with NO `_timescaledb*`/`timescaledb*` and NO `pg_catalog`/`information_schema`.
+`histdb-gateway-ro` → `duckdb, live, public`. So the seed importer honors both the
+navigator flags AND the `filters` block.
