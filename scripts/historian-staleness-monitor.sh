@@ -4,18 +4,18 @@
 #
 # THE INVARIANT (see 10-historian-gateway.sh): after every cold-store append, the
 # append job's post-run hook MUST re-run refresh-equipment_values-cutover.sql so
-# hist_cutover.cutover_ts = max(cold ts) for each ev_promoted enterprise. If that hook
+# ev_union_boundary.cutover_ts = max(cold ts) for each ev_promoted enterprise. If that hook
 # is skipped, the newly-archived window is served by BOTH the hot and cold branches of
 # equipment_values_all = double-count.
 #
 # TWO detectors, cheapest first:
-#   (A) TIMESTAMP (R5, metadata-only — no parquet scan): compare hist_meta.last_append_at
-#       (stamped by the append hook) vs hist_cutover.refreshed_at per ev_promoted
+#   (A) TIMESTAMP (R5, metadata-only — no parquet scan): compare cold_append_watermark.last_append_at
+#       (stamped by the append hook) vs ev_union_boundary.refreshed_at per ev_promoted
 #       enterprise. last_append_at > refreshed_at ⇒ the store grew after the last refresh.
 #   (B) AUTHORITATIVE BACKSTOP (bounded cold scan): for each ev_promoted enterprise, the
 #       cold max(ts_value) over the CURRENT + PREVIOUS month partitions (prunable to ≤2
-#       parquet files, T3) must NOT exceed hist_cutover.cutover_ts. Catches a missed hook
-#       even if hist_meta was never stamped (e.g. an uncodified manual replay).
+#       parquet files, T3) must NOT exceed ev_union_boundary.cutover_ts. Catches a missed hook
+#       even if cold_append_watermark was never stamped (e.g. an uncodified manual replay).
 #
 # Runs ON the app box (has `docker exec hist-gateway`), off-hours, from the
 # historian-integrity-monitor.timer. Exit 0 = fresh; exit 1 = staleness/double-count risk.
@@ -29,13 +29,13 @@ rc=0
 
 echo "== historian staleness monitor =="
 
-# ── (A) timestamp check — hist_meta.last_append_at vs hist_cutover.refreshed_at ──
+# ── (A) timestamp check — cold_append_watermark.last_append_at vs ev_union_boundary.refreshed_at ──
 A_VIOL="$(psql -tAc "
   SELECT string_agg(format('ent=%s append=%s > refreshed=%s',
                            p.id_enterprise, m.last_append_at, c.refreshed_at), '; ')
     FROM promoted_enterprise p
-    JOIN hist_meta     m ON m.id_enterprise = p.id_enterprise
-    JOIN hist_cutover  c ON c.id_enterprise = p.id_enterprise
+    JOIN cold_append_watermark     m ON m.id_enterprise = p.id_enterprise
+    JOIN ev_union_boundary  c ON c.id_enterprise = p.id_enterprise
    WHERE p.ev_promoted
      AND m.last_append_at > c.refreshed_at + interval '${MARGIN}';" | sed '/^$/d')"
 if [ -n "$A_VIOL" ]; then
@@ -59,7 +59,7 @@ B_VIOL="$(psql -tAc "
      GROUP BY id_enterprise)
   SELECT string_agg(format('ent=%s cold_max=%s > cutover=%s',
                            cold.id_enterprise, cold.cold_max, c.cutover_ts), '; ')
-    FROM cold JOIN hist_cutover c ON c.id_enterprise = cold.id_enterprise
+    FROM cold JOIN ev_union_boundary c ON c.id_enterprise = cold.id_enterprise
    WHERE cold.cold_max > c.cutover_ts;" | sed '/^$/d')"
 if [ -n "$B_VIOL" ]; then
   echo "STALENESS VIOLATION (B/cold-scan): cold max(ts) exceeds the recorded cutover boundary — equipment_values_all double-counting the gap:" >&2

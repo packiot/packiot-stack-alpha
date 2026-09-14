@@ -31,12 +31,12 @@
 #  regardless of how far legacy extends.)
 #
 # THE FIX — legacy-priority, per-enterprise cutover:
-#   cutover(e) = max(equipment_values.ts_value) for enterprise e   (materialized in hist_cutover)
+#   cutover(e) = max(equipment_values.ts_value) for enterprise e   (materialized in ev_union_boundary)
 #     COLD owns  ts_value <= cutover(e)   (the full verified archive)
 #     HOT  owns  ts_value >  cutover(e)   (only the live tail newer than the archive)
 # These are DISJOINT at the cutover instant, so no row is counted twice, and the
 # live tail fills forward from where the archive ends (no gap). Enterprises with
-# NO historian data (live-only new tenants) have no hist_cutover row -> the LEFT
+# NO historian data (live-only new tenants) have no ev_union_boundary row -> the LEFT
 # JOIN keeps ALL their live rows and equipment_values contributes nothing (also no dup).
 #
 #   HARDPROOF of the fix (read-only, staging, ent3 2026-09-03):
@@ -45,7 +45,7 @@
 #     Live still fills forward: 50,594 ent3 rows exist with ts>cutover (today).
 #
 # INVARIANT (load-bearing): every enterprise present in the historian MUST have a
-# hist_cutover row, and cutover(e) MUST equal max(equipment_values.ts_value). The inline seed
+# ev_union_boundary row, and cutover(e) MUST equal max(equipment_values.ts_value). The inline seed
 # below (and the top-level refresh-equipment_values-cutover.sql) compute exactly that. RE-RUN the
 # cutover refresh (refresh-equipment_values-cutover.sql) after EVERY historian backfill/append
 # that extends the cold store (otherwise a stale cutover lets the newly-archived
@@ -54,8 +54,8 @@
 #
 # DO NOT wrap this refresh in a PL/pgSQL function: pg_duckdb CANNOT execute a DuckDB
 # scan (the `equipment_values` parquet read) inside a function body — it throws "DuckDB execution
-# is not supported inside functions", silently leaving hist_cutover stale → double
-# count. A broken `refresh_hist_cutover()` plpgsql function of exactly this shape was
+# is not supported inside functions", silently leaving ev_union_boundary stale → double
+# count. A broken `refresh_ev_union_boundary()` plpgsql function of exactly this shape was
 # found live on staging (never in this repo) and DROPPED 2026-09-08. The refresh MUST
 # stay a TOP-LEVEL statement (the inline seed here + refresh-equipment_values-cutover.sql).
 #
@@ -170,12 +170,12 @@ CREATE FOREIGN TABLE live.equipment_events (
 -- ── COLD serving schema (t287) — SYMMETRIC with the hot `live` FDW schema ─────
 -- All historian serving objects (the hot∪cold union views equipment_values_all / equipment_events_all,
 -- the pg_duckdb read_parquet cold-source views equipment_values / equipment_events, the disjointness
--- boundary tables hist_cutover / ev_events_cutover, the R1 allow-list
--- promoted_enterprise and the R5 stamp hist_meta) live in `cold`, NOT public.
+-- boundary tables ev_union_boundary / ee_union_boundary, the R1 allow-list
+-- promoted_enterprise and the R5 stamp cold_append_watermark) live in `cold`, NOT public.
 -- public is left holding ONLY the pg_duckdb / postgres_fdw extension objects
 -- (read_parquet, duckdb.*, the DuckDB aggregates). We set search_path = cold, public
 -- so the objects below are CREATED in cold by their bare names AND their unqualified
--- inter-references (equipment_values, hist_cutover, …) resolve to cold at creation (then bind by
+-- inter-references (equipment_values, ev_union_boundary, …) resolve to cold at creation (then bind by
 -- OID), while read_parquet still resolves from public. The DB-level search_path also
 -- lets the gateway-internal, unqualified-name scripts (refresh-equipment_values-cutover.sql,
 -- refresh-ee-cutover.sql, stamp-equipment_values-meta.sql, the staleness/coverage monitors)
@@ -285,10 +285,10 @@ ON CONFLICT (id_enterprise) DO UPDATE
   WHERE promoted_enterprise.ev_promoted = false
     AND promoted_enterprise.ee_promoted = false;
 
--- t282/R5 — hist_meta: append-stamp table for the cheap staleness monitor (R4). The
+-- t282/R5 — cold_append_watermark: append-stamp table for the cheap staleness monitor (R4). The
 -- append post-run hook (stamp-equipment_values-meta.sql) writes last_append_at; the monitor flags a
--- missed refresh hook when last_append_at > hist_cutover.refreshed_at (no parquet scan).
-CREATE TABLE IF NOT EXISTS hist_meta (
+-- missed refresh hook when last_append_at > ev_union_boundary.refreshed_at (no parquet scan).
+CREATE TABLE IF NOT EXISTS cold_append_watermark (
   id_enterprise    int PRIMARY KEY,
   last_append_at   timestamptz NOT NULL,
   last_append_rows bigint,
@@ -296,11 +296,11 @@ CREATE TABLE IF NOT EXISTS hist_meta (
   source           text        NOT NULL DEFAULT 'historian-append',
   updated_at       timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE hist_meta IS
+COMMENT ON TABLE cold_append_watermark IS
   'Per-enterprise last-append stamp for the COLD store (mirrors the S3 _watermark). '
   'Written by the append post-run hook (stamp-equipment_values-meta.sql). Lets '
   'historian-staleness-monitor.sh flag a MISSED refresh-equipment_values-cutover hook cheaply: '
-  'last_append_at > hist_cutover.refreshed_at ⇒ cold grew after the last refresh ⇒ '
+  'last_append_at > ev_union_boundary.refreshed_at ⇒ cold grew after the last refresh ⇒ '
   'equipment_values_all double-counting the newly-archived window (sweep R4/R5).';
 
 -- ── Per-enterprise cutover boundary (T2b) ────────────────────────────────────
@@ -308,12 +308,12 @@ COMMENT ON TABLE hist_meta IS
 -- HOT owns ts > cutover_ts. Small table (one row per historian enterprise), read
 -- on the HOT side only (a pure PG join — no DuckDB involvement, so the cold scan
 -- stays a prunable DuckDBScan).
-CREATE TABLE IF NOT EXISTS hist_cutover (
+CREATE TABLE IF NOT EXISTS ev_union_boundary (
   id_enterprise int PRIMARY KEY,
   cutover_ts    timestamp NOT NULL,
   refreshed_at  timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE hist_cutover IS
+COMMENT ON TABLE ev_union_boundary IS
   'T2b legacy-priority boundary: cutover_ts = max(equipment_values.ts_value) per enterprise. '
   'COLD owns ts<=cutover_ts, HOT owns ts>cutover_ts. MUST be refreshed by '
   'the cutover refresh at init and after every historian backfill/append that '
@@ -332,7 +332,7 @@ COMMENT ON TABLE hist_cutover IS
 -- t271: seed ONLY promoted enterprises. A cutover row for a non-served (non-promoted)
 -- enterprise would wrongly clip that tenant's HOT history, so the boundary set MUST
 -- track the ev_promoted allow-list.
-INSERT INTO hist_cutover (id_enterprise, cutover_ts, refreshed_at)
+INSERT INTO ev_union_boundary (id_enterprise, cutover_ts, refreshed_at)
 SELECT h.id_enterprise, max(h.ts_value), now()
   FROM equipment_values h
   JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted
@@ -362,7 +362,7 @@ CREATE OR REPLACE VIEW equipment_values_all AS
          lv.net_production_incr,
          lv.speed
     FROM live.equipment_values lv
-    LEFT JOIN hist_cutover c ON c.id_enterprise = lv.id_enterprise
+    LEFT JOIN ev_union_boundary c ON c.id_enterprise = lv.id_enterprise
    WHERE c.cutover_ts IS NULL OR lv.ts_value > c.cutover_ts
   UNION ALL
   SELECT h.ts_value,
@@ -397,8 +397,8 @@ CREATE OR REPLACE VIEW equipment_values_all AS
 -- (scripts/historian-events-reunload.sh, "partition key IS the F3 id, no in-view
 -- CASE"), then set ee_promoted=true for that id (the reunload script does both).
 --
--- ── WHY THE EE BOUNDARY IS THE **MIRROR** OF hist_cutover ──────────────────────
--- hist_cutover (EV) is COLD-anchored: cold is the full archive, hot is the live
+-- ── WHY THE EE BOUNDARY IS THE **MIRROR** OF ev_union_boundary ──────────────────────
+-- ev_union_boundary (EV) is COLD-anchored: cold is the full archive, hot is the live
 -- tail, cutover = max(cold ts), COLD owns ts<=cutover / HOT owns ts>cutover.
 -- EE is the OPPOSITE. db/cutover/f3-phasec-history-backfill.sql loaded ~197k CPACK
 -- pre-cutover events INTO the hot F3 store (ent-3) WITH irreplaceable operator
@@ -407,7 +407,7 @@ CREATE OR REPLACE VIEW equipment_values_all AS
 -- archive OVERLAPS it. A naïve hot ∪ cold DOUBLE-COUNTS the overlap (HARDPROOF,
 -- staging ent-3, window 2026-04-01..2026-09-08: naïve=432,801 vs correct=316,688;
 -- 116,113 rows double-counted). So EE is HOT-ANCHORED:
---   ev_events_cutover.cutover_ts = min(hot ts_event) per enterprise
+--   ee_union_boundary.cutover_ts = min(hot ts_event) per enterprise
 --   COLD owns ts_event <  cutover_ts   (the pre-hot window only)
 --   HOT  owns ts_event >= cutover_ts   (its whole covered range — every hot row
 --                                        is >= its own min, so hot keeps ALL rows)
@@ -444,13 +444,13 @@ FROM read_parquet(
              's3://${HISTORIAN_BUCKET}/equipment_events_legacy_unpromoted/*/*/*/*-legacy.parquet'],
        hive_partitioning => true) r;
 
-CREATE TABLE IF NOT EXISTS ev_events_cutover (
+CREATE TABLE IF NOT EXISTS ee_union_boundary (
   id_enterprise int PRIMARY KEY,
   cutover_ts    timestamp NOT NULL,
   refreshed_at  timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE ev_events_cutover IS
-  'EE disjointness boundary. UNLIKE hist_cutover (cold-anchored: cutover=max(cold ts)), '
+COMMENT ON TABLE ee_union_boundary IS
+  'EE disjointness boundary. UNLIKE ev_union_boundary (cold-anchored: cutover=max(cold ts)), '
   'this is HOT-ANCHORED: cutover_ts = min(hot ts_event) per enterprise. COLD owns '
   'ts_event < cutover_ts, HOT owns ts_event >= cutover_ts. Refresh reads the hot FDW '
   '(a cheap PG aggregate — NOT a parquet scan), so it MAY run in a function/simple '
@@ -459,7 +459,7 @@ COMMENT ON TABLE ev_events_cutover IS
 
 -- Seed cutover = min(hot ts_event) per enterprise (reads the FDW, not parquet).
 -- t271: only ee_promoted enterprises — the cutover gates the promoted cold side only.
-INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
+INSERT INTO ee_union_boundary (id_enterprise, cutover_ts, refreshed_at)
 SELECT lv.id_enterprise, min(lv.ts_event)::timestamp, now()
   FROM live.equipment_events lv
   JOIN promoted_enterprise p ON p.id_enterprise = lv.id_enterprise AND p.ee_promoted
@@ -494,7 +494,7 @@ CREATE OR REPLACE VIEW equipment_events_all AS
          h.txt_downtime_notes
     FROM equipment_events h
     JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ee_promoted
-    LEFT JOIN ev_events_cutover c ON c.id_enterprise = h.id_enterprise
+    LEFT JOIN ee_union_boundary c ON c.id_enterprise = h.id_enterprise
    WHERE c.cutover_ts IS NULL OR h.ts_event < c.cutover_ts;
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -505,7 +505,7 @@ CREATE OR REPLACE VIEW equipment_events_all AS
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ═══════════════════════════════════════════════════════════════════ schemas
 COMMENT ON SCHEMA cold IS
-  'Historian COLD-store + hot∪cold union serving schema (t287; SYMMETRIC with `live`, the hot FDW schema). Holds the union VIEWS equipment_values_all (EV) / equipment_events_all (EE), the pg_duckdb read_parquet COLD source views equipment_values / equipment_events, the per-enterprise disjointness boundary TABLES hist_cutover / ev_events_cutover, the R1 tenant-isolation allow-list promoted_enterprise, and the R5 append-stamp hist_meta. Query surface for read-api /v1/historian (cold.equipment_values_all / cold.equipment_events_all) and the Superset equipment_values_all virtual dataset. No RLS engine here — tenant fence is a caller-supplied id_enterprise literal.';
+  'Historian COLD-store + hot∪cold union serving schema (t287; SYMMETRIC with `live`, the hot FDW schema). Holds the union VIEWS equipment_values_all (EV) / equipment_events_all (EE), the pg_duckdb read_parquet COLD source views equipment_values / equipment_events, the per-enterprise disjointness boundary TABLES ev_union_boundary / ee_union_boundary, the R1 tenant-isolation allow-list promoted_enterprise, and the R5 append-stamp cold_append_watermark. Query surface for read-api /v1/historian (cold.equipment_values_all / cold.equipment_events_all) and the Superset equipment_values_all virtual dataset. No RLS engine here — tenant fence is a caller-supplied id_enterprise literal.';
 COMMENT ON SCHEMA public IS
   'pg_duckdb + postgres_fdw EXTENSION objects only (read_parquet, duckdb.*, the DuckDB aggregates). The historian serving objects live in schema `cold` (t287). Do NOT create historian objects here.';
 COMMENT ON SCHEMA live IS
@@ -525,9 +525,9 @@ COMMENT ON COLUMN live.equipment_values.speed IS 'Instantaneous line/machine spe
 
 -- ═══════════════════════════════════════════════════════ live.equipment_events
 COMMENT ON FOREIGN TABLE live.equipment_events IS
-  'HOT side of equipment_events_all. postgres_fdw foreign table onto packiot_analytics.silver.equipment_events (downtime / OEE-reconstruction events) via server live_pg. t282/R8: PINNED to the 12 columns equipment_events_all serves (was a 26-col IMPORT) — prune-proof like live.equipment_values: a remote drop/rename of an un-served EE column cannot break this table. Also holds the CPACK Phase-C deep-history backfill (pre-cutover events loaded INTO hot with irreplaceable operator reasons) — see ev_events_cutover for why EE is hot-anchored.';
+  'HOT side of equipment_events_all. postgres_fdw foreign table onto packiot_analytics.silver.equipment_events (downtime / OEE-reconstruction events) via server live_pg. t282/R8: PINNED to the 12 columns equipment_events_all serves (was a 26-col IMPORT) — prune-proof like live.equipment_values: a remote drop/rename of an un-served EE column cannot break this table. Also holds the CPACK Phase-C deep-history backfill (pre-cutover events loaded INTO hot with irreplaceable operator reasons) — see ee_union_boundary for why EE is hot-anchored.';
 COMMENT ON COLUMN live.equipment_events.id_equipment IS 'Equipment id the event belongs to.';
-COMMENT ON COLUMN live.equipment_events.ts_event IS 'Event start timestamp (timestamptz). min(ts_event) per enterprise = the EE cutover boundary (ev_events_cutover).';
+COMMENT ON COLUMN live.equipment_events.ts_event IS 'Event start timestamp (timestamptz). min(ts_event) per enterprise = the EE cutover boundary (ee_union_boundary).';
 COMMENT ON COLUMN live.equipment_events.status IS 'Event/machine status code (e.g. running/stopped). Surfaced by equipment_events_all.';
 COMMENT ON COLUMN live.equipment_events.txt_downtime_notes IS 'Free-text operator downtime note. Irreplaceable — the reason the Phase-C history was loaded into hot rather than left cold-only.';
 COMMENT ON COLUMN live.equipment_events.cd_category IS 'Downtime category code (canonical).';
@@ -554,7 +554,7 @@ COMMENT ON COLUMN equipment_values.speed IS 'Speed (parquet, double precision). 
 -- ═══════════════════════════════════════════════════════════════════ equipment_events (COLD EE)
 COMMENT ON VIEW equipment_events IS
   'COLD side of equipment_events_all. pg_duckdb view over read_parquet(''s3://<HISTORIAN_BUCKET>/equipment_events/*/*/*/*-legacy.parquet'', hive_partitioning=>true). Only VERIFIED-F3-remapped partitions live under equipment_events/ — un-promoted legacy partitions are held under equipment_events_legacy_unpromoted/ and NOT globbed (their legacy ids collide with real F3 tenant ids ⇒ serving them would be a CROSS-TENANT LEAK). Surfaces year/month for partition pruning. Same pg_duckdb constraints as equipment_values (simple protocol, no function wrapping).';
-COMMENT ON COLUMN equipment_events.ts_event IS 'Event start timestamp (parquet). In equipment_events_all the cold side is kept only where ts_event < the enterprise cutover_ts (EE is HOT-anchored — see ev_events_cutover).';
+COMMENT ON COLUMN equipment_events.ts_event IS 'Event start timestamp (parquet). In equipment_events_all the cold side is kept only where ts_event < the enterprise cutover_ts (EE is HOT-anchored — see ee_union_boundary).';
 COMMENT ON COLUMN equipment_events.id_enterprise IS 'Tenant id from the parquet hive enterprise= partition (F3-remapped). Tenant fence + partition prune key.';
 COMMENT ON COLUMN equipment_events.year IS 'Hive partition column (year=). PRUNE key.';
 COMMENT ON COLUMN equipment_events.month IS 'Hive partition column (month=). PRUNE key.';
@@ -571,7 +571,7 @@ COMMENT ON COLUMN equipment_events.txt_downtime_notes IS 'Free-text operator dow
 
 -- ═══════════════════════════════════════════════════════════════════ equipment_values_all (EV union)
 COMMENT ON VIEW equipment_values_all IS
-  'PRUNE CONTRACT (READ FIRST, t282/R6): a bounded query MUST carry a year AND month predicate (e.g. year=2026 AND month=9) — ts_value alone does NOT prune the cold parquet (59 files/171s without vs 1 file/0.57s with). No year/month ⇒ FULL-ARCHIVE SCAN. Keep equipment_values_all OUT of Superset SQL Lab. Every query MUST also carry an id_enterprise=<literal> tenant fence (no RLS here). ── THE hot+cold EV serving surface, no double-count. LEGACY-PRIORITY (T2b): COLD (equipment_values, ev_promoted only) owns ts_value <= cutover_ts, HOT (live.equipment_values) owns ts_value > cutover_ts, cutover_ts = max(equipment_values.ts_value) per enterprise (hist_cutover). Implemented as: live LEFT JOIN hist_cutover WHERE cutover_ts IS NULL OR ts_value > cutover_ts  UNION ALL  equipment_values JOIN allow-list. Invariant: every ev_promoted enterprise MUST have a hist_cutover row. Surfaces year/month (hot via EXTRACT, cold = partition cols). read-api /v1/historian/production-series + Superset equipment_values_all virtual dataset.';
+  'PRUNE CONTRACT (READ FIRST, t282/R6): a bounded query MUST carry a year AND month predicate (e.g. year=2026 AND month=9) — ts_value alone does NOT prune the cold parquet (59 files/171s without vs 1 file/0.57s with). No year/month ⇒ FULL-ARCHIVE SCAN. Keep equipment_values_all OUT of Superset SQL Lab. Every query MUST also carry an id_enterprise=<literal> tenant fence (no RLS here). ── THE hot+cold EV serving surface, no double-count. LEGACY-PRIORITY (T2b): COLD (equipment_values, ev_promoted only) owns ts_value <= cutover_ts, HOT (live.equipment_values) owns ts_value > cutover_ts, cutover_ts = max(equipment_values.ts_value) per enterprise (ev_union_boundary). Implemented as: live LEFT JOIN ev_union_boundary WHERE cutover_ts IS NULL OR ts_value > cutover_ts  UNION ALL  equipment_values JOIN allow-list. Invariant: every ev_promoted enterprise MUST have a ev_union_boundary row. Surfaces year/month (hot via EXTRACT, cold = partition cols). read-api /v1/historian/production-series + Superset equipment_values_all virtual dataset.';
 COMMENT ON COLUMN equipment_values_all.ts_value IS 'Reading timestamp. Hot for ts_value > enterprise cutover_ts, cold for <=.';
 COMMENT ON COLUMN equipment_values_all.id_enterprise IS 'Tenant id. THE tenant fence — every consumer query MUST filter id_enterprise = <literal> (no Postgres RLS on this gateway).';
 COMMENT ON COLUMN equipment_values_all.year IS 'Reading year. Cold = hive partition column (PRUNE KEY); hot = EXTRACT(YEAR FROM ts_value). Omitting it ⇒ full cold scan.';
@@ -583,7 +583,7 @@ COMMENT ON COLUMN equipment_values_all.speed IS 'Instantaneous speed (double pre
 
 -- ═══════════════════════════════════════════════════════════════════ equipment_events_all (EE union)
 COMMENT ON VIEW equipment_events_all IS
-  'PRUNE CONTRACT (READ FIRST, t282/R6): a bounded query MUST carry a year AND month predicate — ts_event alone does NOT prune the cold parquet. No year/month ⇒ FULL-ARCHIVE SCAN. Carry an id_enterprise=<literal> tenant fence on every query (no RLS here). ── THE hot+cold EE (downtime/OEE-event) serving surface, no double-count. HOT-ANCHORED (the MIRROR of equipment_values_all/hist_cutover): the Phase-C backfill loaded deep-history events INTO the hot store, so HOT (live.equipment_events) owns its whole covered range; COLD (equipment_events, ee_promoted only) fills ONLY ts_event < cutover_ts, cutover_ts = min(hot ts_event) per enterprise (ev_events_cutover). HARDPROOF staging ent-3: union 316,688 == cold_kept 53,959 + hot_kept 262,729. Completeness caveat: the overlap window is handed to hot, so equipment cold-but-not-hot there is under-covered — guarded by scripts/historian-ee-coverage-check.sh (R7). Surfaces year/month for cold pruning.';
+  'PRUNE CONTRACT (READ FIRST, t282/R6): a bounded query MUST carry a year AND month predicate — ts_event alone does NOT prune the cold parquet. No year/month ⇒ FULL-ARCHIVE SCAN. Carry an id_enterprise=<literal> tenant fence on every query (no RLS here). ── THE hot+cold EE (downtime/OEE-event) serving surface, no double-count. HOT-ANCHORED (the MIRROR of equipment_values_all/ev_union_boundary): the Phase-C backfill loaded deep-history events INTO the hot store, so HOT (live.equipment_events) owns its whole covered range; COLD (equipment_events, ee_promoted only) fills ONLY ts_event < cutover_ts, cutover_ts = min(hot ts_event) per enterprise (ee_union_boundary). HARDPROOF staging ent-3: union 316,688 == cold_kept 53,959 + hot_kept 262,729. Completeness caveat: the overlap window is handed to hot, so equipment cold-but-not-hot there is under-covered — guarded by scripts/historian-ee-coverage-check.sh (R7). Surfaces year/month for cold pruning.';
 COMMENT ON COLUMN equipment_events_all.ts_event IS 'Event start timestamp. Hot for ts_event >= enterprise cutover_ts, cold for <.';
 COMMENT ON COLUMN equipment_events_all.id_enterprise IS 'Tenant id. THE tenant fence — every consumer query MUST filter id_enterprise = <literal>.';
 COMMENT ON COLUMN equipment_events_all.year IS 'Event year. Cold = hive partition column (PRUNE KEY); hot = EXTRACT. Omitting it ⇒ full cold scan.';
@@ -599,19 +599,19 @@ COMMENT ON COLUMN equipment_events_all.cd_subcategory IS 'Downtime subcategory c
 COMMENT ON COLUMN equipment_events_all.desc_subcategory IS 'Downtime subcategory description.';
 COMMENT ON COLUMN equipment_events_all.txt_downtime_notes IS 'Free-text operator downtime note (the irreplaceable Phase-C history).';
 
--- ═══════════════════════════════════════════════════════════════════ hist_cutover
-COMMENT ON TABLE hist_cutover IS
+-- ═══════════════════════════════════════════════════════════════════ ev_union_boundary
+COMMENT ON TABLE ev_union_boundary IS
   'T2b EV legacy-priority disjointness boundary. cutover_ts = max(equipment_values.ts_value) per enterprise; in equipment_values_all COLD owns ts_value <= cutover_ts, HOT owns ts_value > cutover_ts. Small (one row per historian enterprise), read on the hot side only (pure PG join — no DuckDB, so the cold scan stays a prunable DuckDBScan). LOAD-BEARING INVARIANT: every enterprise present in the historian MUST have a row here = max(equipment_values.ts_value). MUST be refreshed (services/historian-gateway/refresh-equipment_values-cutover.sql — a TOP-LEVEL statement, NOT a function: pg_duckdb cannot scan parquet inside a function body) after EVERY historian backfill/append that extends the cold store, else the newly-archived window is served by BOTH sides = double-count.';
-COMMENT ON COLUMN hist_cutover.id_enterprise IS 'Tenant id (PK). One row per enterprise present in the cold historian.';
-COMMENT ON COLUMN hist_cutover.cutover_ts IS 'max(equipment_values.ts_value) for the enterprise. The EV boundary: cold owns <= this, hot owns > this.';
-COMMENT ON COLUMN hist_cutover.refreshed_at IS 'When this boundary row was last recomputed (defaults now()). Stale after a cold-store append until the refresh re-runs.';
+COMMENT ON COLUMN ev_union_boundary.id_enterprise IS 'Tenant id (PK). One row per enterprise present in the cold historian.';
+COMMENT ON COLUMN ev_union_boundary.cutover_ts IS 'max(equipment_values.ts_value) for the enterprise. The EV boundary: cold owns <= this, hot owns > this.';
+COMMENT ON COLUMN ev_union_boundary.refreshed_at IS 'When this boundary row was last recomputed (defaults now()). Stale after a cold-store append until the refresh re-runs.';
 
--- ═══════════════════════════════════════════════════════════════════ ev_events_cutover
-COMMENT ON TABLE ev_events_cutover IS
-  'EE disjointness boundary. UNLIKE hist_cutover (cold-anchored: cutover=max(cold ts)), this is HOT-ANCHORED: cutover_ts = min(hot ts_event) per enterprise. The Phase-C backfill loaded CPACK deep-history events INTO the hot F3 store (with irreplaceable operator reasons), so hot owns its whole covered range and cold (equipment_events) fills only the pre-hot window. In equipment_events_all COLD owns ts_event < cutover_ts, HOT owns ts_event >= cutover_ts. Refresh (services/historian-gateway/refresh-ee-cutover.sql) reads the hot FDW (a cheap PG aggregate — NOT a parquet scan), so it MAY run in a function/simple statement. Re-run after any change to the hot EE earliest event (e.g. a further deep-history backfill).';
-COMMENT ON COLUMN ev_events_cutover.id_enterprise IS 'Tenant id (PK). One row per enterprise present in the hot EE store.';
-COMMENT ON COLUMN ev_events_cutover.cutover_ts IS 'min(hot ts_event) for the enterprise. The EE boundary: cold owns < this, hot owns >= this.';
-COMMENT ON COLUMN ev_events_cutover.refreshed_at IS 'When this boundary row was last recomputed (defaults now()).';
+-- ═══════════════════════════════════════════════════════════════════ ee_union_boundary
+COMMENT ON TABLE ee_union_boundary IS
+  'EE disjointness boundary. UNLIKE ev_union_boundary (cold-anchored: cutover=max(cold ts)), this is HOT-ANCHORED: cutover_ts = min(hot ts_event) per enterprise. The Phase-C backfill loaded CPACK deep-history events INTO the hot F3 store (with irreplaceable operator reasons), so hot owns its whole covered range and cold (equipment_events) fills only the pre-hot window. In equipment_events_all COLD owns ts_event < cutover_ts, HOT owns ts_event >= cutover_ts. Refresh (services/historian-gateway/refresh-ee-cutover.sql) reads the hot FDW (a cheap PG aggregate — NOT a parquet scan), so it MAY run in a function/simple statement. Re-run after any change to the hot EE earliest event (e.g. a further deep-history backfill).';
+COMMENT ON COLUMN ee_union_boundary.id_enterprise IS 'Tenant id (PK). One row per enterprise present in the hot EE store.';
+COMMENT ON COLUMN ee_union_boundary.cutover_ts IS 'min(hot ts_event) for the enterprise. The EE boundary: cold owns < this, hot owns >= this.';
+COMMENT ON COLUMN ee_union_boundary.refreshed_at IS 'When this boundary row was last recomputed (defaults now()).';
 SQL
 
 # ── Read-only CloudBeaver browser role (cloudbeaver_histro) ───────────────────
@@ -677,4 +677,4 @@ else
   echo "[historian-gateway] CLOUDBEAVER_HISTRO_PASSWORD unset — skipping read-only browser role"
 fi
 
-echo "[historian-gateway] init complete: equipment_values_all (EV hot+cold) + equipment_events_all (EE hot+cold), hist_cutover + ev_events_cutover seeded"
+echo "[historian-gateway] init complete: equipment_values_all (EV hot+cold) + equipment_events_all (EE hot+cold), ev_union_boundary + ee_union_boundary seeded"
