@@ -6,7 +6,7 @@
 # WHY: the cold EE archive was backfilled with LEGACY enterprise ids
 # (scripts/historian-events-backfill.sh writes enterprise=<legacy id>), but the
 # hot F3 analytics DB and the EV cold archive are F3 id-space. To union cold EE
-# with hot EE (ev_all_events) and fence it by the F3 id_enterprise a tenant
+# with hot EE (equipment_events_all) and fence it by the F3 id_enterprise a tenant
 # actually queries, the cold EE must be re-keyed to F3 on disk — the same
 # "partition-key IS the F3 id, no in-view CASE" convention the EV cold archive
 # uses (docs/plans/historian-clean-schema-redesign.md §3.2).
@@ -17,7 +17,7 @@
 #   with BOTH enterprise identifiers rewritten to $DST_ENT:
 #     - id_enterprise (int)     — the real column consumers read
 #     - enterprise    (bigint)  — the redundant file-copy of the hive path key
-#       (the EV cold files carry this too; the gateway `hist` view reads it, so it
+#       (the EV cold files carry this too; the gateway `equipment_values` view reads it, so it
 #        MUST equal the path key — verified 2026-09-08).
 #   year/month are left untouched (already correct).
 #
@@ -39,7 +39,7 @@
 # aggregates; that equipment map is NOT in tracked code, so a naive enterprise
 # relabel would leave cold events with equipment ids that do not join F3 ent-4.
 # Do NOT run this for 33→4 without the equipment-id map. (33 is also not a
-# double-count blocker — it can be excluded from ev_all_events cleanly.)
+# double-count blocker — it can be excluded from equipment_events_all cleanly.)
 #
 # Usage (on a box with the DuckDB CLI + S3 write to the historian bucket):
 #   SRC_ENT=1 DST_ENT=3 BUCKET=packiot-staging-historian-639178078294 \
@@ -105,8 +105,8 @@ log "=== EE re-unload DONE  ent $SRC_ENT -> $DST_ENT  (partitions written: ${WRO
 
 # ── PROMOTE: allow-list + EE cutover refresh (t271 + R3 #270) ────────────────────
 # Promoting a tenant writes NEW *-legacy.parquet under equipment_events/enterprise=
-# $DST_ENT/, which the gateway `hist_ee` glob serves. But ev_all_events only serves
-# a tenant's cold EE when it is ee_promoted in hist_promoted_enterprise (t271 allow-
+# $DST_ENT/, which the gateway `equipment_events` glob serves. But equipment_events_all only serves
+# a tenant's cold EE when it is ee_promoted in promoted_enterprise (t271 allow-
 # list — the SOLE cold-side tenant-isolation gate). So promotion = TWO gateway steps:
 #   1) flip ee_promoted=true for DST_ENT (this is the act of promotion — do it ONLY
 #      for a VERIFIED remap: cold id_equipment ⊆ core.equipments(DST_ENT), which the
@@ -123,7 +123,7 @@ if [ "${WROTE:-0}" -gt 0 ]; then
   log "promoting DST_ENT=$DST_ENT (ee_promoted) + refreshing ev_events_cutover on '$GW' …"
   if ! docker exec -i "$GW" psql -v ON_ERROR_STOP=1 -U "$GW_USER" -d "$GW_DB" -v dst="$DST_ENT" >>"$LOG" 2>&1 <<'PROMOTE_SQL'
 -- 1) mark the tenant EE-promoted (id-space verified by the operator per header rules)
-INSERT INTO hist_promoted_enterprise (id_enterprise, ee_promoted, provenance, note)
+INSERT INTO promoted_enterprise (id_enterprise, ee_promoted, provenance, note)
 VALUES (:dst, true, 'ee_reunload',
         'promoted by historian-events-reunload.sh — cold EE re-keyed to F3 id ' || :dst)
 ON CONFLICT (id_enterprise) DO UPDATE SET ee_promoted = true;
@@ -131,13 +131,13 @@ ON CONFLICT (id_enterprise) DO UPDATE SET ee_promoted = true;
 INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
 SELECT lv.id_enterprise, min(lv.ts_event)::timestamp, now()
   FROM live.equipment_events lv
-  JOIN hist_promoted_enterprise p ON p.id_enterprise = lv.id_enterprise AND p.ee_promoted
+  JOIN promoted_enterprise p ON p.id_enterprise = lv.id_enterprise AND p.ee_promoted
  WHERE lv.id_enterprise IS NOT NULL GROUP BY lv.id_enterprise
 ON CONFLICT (id_enterprise) DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
 PROMOTE_SQL
   then
     log "PROMOTE-FAIL: could not promote/refresh DST_ENT=$DST_ENT on the gateway."
-    log "  Its EE cold is globbed by hist_ee but NOT allow-listed/bounded => ev_all_events"
+    log "  Its EE cold is globbed by equipment_events but NOT allow-listed/bounded => equipment_events_all"
     log "  will serve nothing (safe) OR, if partially applied, could double-count. Run the"
     log "  allow-list upsert + refresh-ee-cutover.sql on the gateway before serving this tenant."
     exit 1
