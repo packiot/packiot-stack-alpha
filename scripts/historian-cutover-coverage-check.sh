@@ -3,7 +3,7 @@
 #
 # INVARIANT (t271, load-bearing — see services/historian-gateway/docker-entrypoint-initdb.d/
 # 10-historian-gateway.sh): the hist_cutover boundary set MUST equal the EV-promoted
-# allow-list (hist_promoted_enterprise WHERE ev_promoted). ev_all serves cold ONLY for
+# allow-list (promoted_enterprise WHERE ev_promoted). equipment_values_all serves cold ONLY for
 # ev_promoted enterprises (INNER JOIN the allow-list) and clips the HOT side of any
 # enterprise that has a hist_cutover row, so:
 #   * a PROMOTED enterprise MISSING its cutover row => its hot+cold overlap DOUBLE-COUNTS
@@ -25,7 +25,7 @@ CONTAINER="${GATEWAY_CONTAINER:-hist-gateway}"
 
 # EV-promoted allow-list.
 promoted="$(docker exec -i "$CONTAINER" psql -U postgres -d packiot_historian -tAc \
-  'SELECT id_enterprise FROM hist_promoted_enterprise WHERE ev_promoted ORDER BY 1' | sed '/^$/d' | sort -un)"
+  'SELECT id_enterprise FROM promoted_enterprise WHERE ev_promoted ORDER BY 1' | sed '/^$/d' | sort -un)"
 # Current hist_cutover boundary set.
 cut_ents="$(docker exec -i "$CONTAINER" psql -U postgres -d packiot_historian -tAc \
   'SELECT id_enterprise FROM hist_cutover ORDER BY 1' | sed '/^$/d' | sort -un)"
@@ -37,13 +37,13 @@ rc=0
 if [ -n "$missing" ]; then
   echo "COVERAGE VIOLATION: ev_promoted enterprise(s) with NO hist_cutover row (DOUBLE-COUNT risk):" >&2
   printf '  enterprise=%s\n' $missing >&2
-  echo "Fix: run services/historian-gateway/refresh-hist-cutover.sql on the gateway." >&2
+  echo "Fix: run services/historian-gateway/refresh-equipment_values-cutover.sql on the gateway." >&2
   rc=1
 fi
 if [ -n "$extra" ]; then
   echo "COVERAGE VIOLATION: hist_cutover row(s) for NON-ev_promoted enterprise(s) (hot-CLIP risk):" >&2
   printf '  enterprise=%s\n' $extra >&2
-  echo "Fix: DELETE FROM hist_cutover WHERE id_enterprise NOT IN (SELECT id_enterprise FROM hist_promoted_enterprise WHERE ev_promoted);" >&2
+  echo "Fix: DELETE FROM hist_cutover WHERE id_enterprise NOT IN (SELECT id_enterprise FROM promoted_enterprise WHERE ev_promoted);" >&2
   rc=1
 fi
 [ "$rc" -eq 0 ] && echo "hist_cutover coverage OK: boundary set == ev_promoted allow-list ($(printf '%s\n' "$promoted" | sed '/^$/d' | wc -l | tr -d ' ') enterprise(s))."
