@@ -73,7 +73,7 @@ variable "services" {
     grafana  = 3000
     rabbitmq = 15672 # RabbitMQ management UI
     db       = 8093  # CloudBeaver web DB IDE — analytics plane (read-only cloudbeaver_ro; replaced pgweb here). pgweb-analytics (8082) kept as an unrouted fallback in compose.
-    histdb   = 8093  # CloudBeaver web DB IDE — SAME instance as db (histdb.staging → CloudBeaver, pick the "historian gateway (read-only)" connection; replaced pgweb-historian here). pgweb-historian (8091) kept as an unrouted fallback in compose.
+    histdb   = 8093  # CONSOLIDATED into db.staging — the histdb vhost now 301-redirects to db.staging (one CloudBeaver serves both the packiot_analytics + historian-gateway connections). Port value is unused (redirect ignores it); histdb stays in this map ONLY to keep its DNS A-record (aws_route53_record.services). pgweb-historian retired.
     barcode  = 8092  # barcode-scanner-v2 SPA cloud instance (barcode-app; nginx injects SANDBOX api-key → edge-api)
     operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
     csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
