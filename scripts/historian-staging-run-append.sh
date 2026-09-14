@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Staging historian daily append wrapper — F3 staging analytics -> S3 cold store.
-# Deployed to /opt/packiot/historian/ ; invoked by historian-staging-append.timer.
+# Staging historian daily job — copies LEGACY packiot40 -> S3 COLD store, then stamps the
+# watermark + refreshes the union boundaries. Deployed to /opt/packiot/historian/ ; invoked
+# by historian-staging-append.timer.
 set -euo pipefail; export HOME="${HOME:-/root}"
-PGPW="$(docker inspect stream-engine --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^POSTGRES_PASSWORD=' | head -1 | cut -d= -f2-)"
-HISTORIAN_APPEND_ENABLED=true \
-HISTORIAN_BUCKET="${HISTORIAN_BUCKET:-packiot-staging-historian-639178078294}" \
-HISTORIAN_APPEND_ENTERPRISES="${HIST_ENTS:-3 5}" \
-HISTORIAN_OVERLAP_DAYS="${HIST_OVERLAP:-2}" \
-SRC_PGHOST=10.10.10.89 SRC_PGPORT=5432 SRC_PGUSER=postgres SRC_PGPASSWORD="$PGPW" SRC_PGDATABASE=packiot_analytics \
-/opt/packiot/historian/historian-append.sh
+# COLD = a TEMPORARY scheduled COPY of legacy packiot40, remapped legacy->F3 (validated == the
+# #167 packml-topic map) + translated to the 56-col hist schema, so COLD holds the COMPLETE
+# (all-machine) history/recent. LIVE data is served from analytics (hot FDW) — NOT copied here.
+# Retired at the #225 legacy cutover. (Was: F3-analytics -> cold append, which wrote files the
+# cold view's *-legacy.parquet glob never read; superseded by this legacy copy.)
+/opt/packiot/historian/historian-legacy-copy.sh
 
 # ── POST-RUN HOOK (R3 refresh + R5 stamp) — the pipeline that EXTENDS the cold store
 # OWNS the boundary refresh. `set -e` fails the whole job if any step errors, so a
