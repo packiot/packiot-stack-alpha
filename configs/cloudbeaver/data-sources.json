@@ -54,7 +54,7 @@
       "configuration": {
         "host": "hist-gateway",
         "port": "5432",
-        "database": "postgres",
+        "database": "packiot_historian",
         "url": "jdbc:postgresql://hist-gateway:5432/packiot_historian?user=cloudbeaver_histro&password=@HISTDB_RO_PASSWORD@",
         "configurationType": "URL",
         "type": "dev",
