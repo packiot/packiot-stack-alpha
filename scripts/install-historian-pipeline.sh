@@ -26,6 +26,7 @@ install -d -m 0755 "$DEST"
 # ── 1. scripts (executable) — appender + full wrapper + monitors ──────────────
 SCRIPTS=(
   historian-append.sh
+  historian-legacy-copy.sh
   historian-staging-run-append.sh
   historian-integrity-monitor.sh
   historian-staleness-monitor.sh
