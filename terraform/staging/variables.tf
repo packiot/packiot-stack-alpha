@@ -73,7 +73,7 @@ variable "services" {
     grafana  = 3000
     rabbitmq = 15672 # RabbitMQ management UI
     db       = 8093  # CloudBeaver web DB IDE — analytics plane (read-only cloudbeaver_ro; replaced pgweb here). pgweb-analytics (8082) kept as an unrouted fallback in compose.
-    histdb   = 8091  # PostgreSQL web browser — historian plane (pgweb-historian → hist-gateway)
+    histdb   = 8093  # CloudBeaver web DB IDE — SAME instance as db (histdb.staging → CloudBeaver, pick the "historian gateway (read-only)" connection; replaced pgweb-historian here). pgweb-historian (8091) kept as an unrouted fallback in compose.
     barcode  = 8092  # barcode-scanner-v2 SPA cloud instance (barcode-app; nginx injects SANDBOX api-key → edge-api)
     operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
     csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
@@ -107,7 +107,7 @@ variable "service_auth" {
     grafana  = "csadmin"
     rabbitmq = "csadmin"
     db       = "csadmin" # CloudBeaver (cloudbeaver_ro) — staff-only DB browser (db.staging.packiot.app)
-    histdb   = "csadmin" # pgweb-historian — staff-only DB browser (histdb.staging.packiot.app)
+    histdb   = "csadmin" # CloudBeaver (historian gateway connection) — staff-only DB browser (histdb.staging.packiot.app)
     barcode  = "csadmin" # barcode-app cloud instance — staff-only demo/test (barcode.staging.packiot.app)
     operator = "any"
     csadmin  = "none-originverify"
