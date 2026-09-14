@@ -15,6 +15,11 @@ services:
     networks: [packiot-net]
     environment:
       POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:?set in .env}
+      # Honest DB name (#274): the gateway's own DB is packiot_historian (was the
+      # default `postgres`). The init script targets $POSTGRES_DB, so a fresh boot
+      # creates + provisions packiot_historian. All consumers use HIST_GW_DB /
+      # /packiot_historian DSNs.
+      POSTGRES_DB: packiot_historian
       # live timescaledb (HOT)
       FDW_HOST: ${DB_HOST:-10.10.10.89}
       FDW_PORT: ${DB_PORT:-5432}

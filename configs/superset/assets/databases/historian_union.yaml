@@ -30,7 +30,7 @@
 #     clause, no dataset scope, applies to ev_all's id_enterprise column) or an
 #     authoring role carrying the per-tenant base-RLS rule (see the dataset asset).
 database_name: historian_union
-sqlalchemy_uri: postgresql+psycopg2://postgres:YYYYYYYYYYYY@hist-gateway:5432/postgres
+sqlalchemy_uri: postgresql+psycopg2://postgres:YYYYYYYYYYYY@hist-gateway:5432/packiot_historian
 cache_timeout: null
 expose_in_sqllab: false
 allow_run_async: true
