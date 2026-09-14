@@ -1,0 +1,9 @@
+[Unit]
+Description=Historian gateway integrity monitor (cutover-coverage R1 + staleness R4/R5 + EE-coverage R7)
+After=docker.service network-online.target
+[Service]
+Type=oneshot
+# All four checks live together under /opt/packiot/historian/ (installed from
+# scripts/ by the historian tooling installer). The aggregator finds its siblings
+# via $BASH_SOURCE, so no extra env is needed.
+ExecStart=/opt/packiot/historian/historian-integrity-monitor.sh

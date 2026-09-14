@@ -144,11 +144,28 @@ CREATE FOREIGN TABLE live.equipment_values (
 -- `ALTER FOREIGN TABLE live.equipment_values OPTIONS (SET schema_name 'silver')`.)
 ) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_values');
 -- HOT equipment_events (downtime/OEE-reconstruction) — see the EE section at the
--- bottom (ev_all_events). Imported here so live.equipment_events exists before it.
--- NOTE: equipment_events is NOT part of the analytics clean-schema column-prune, so
--- an IMPORT (vs a pinned table) is safe here; ev_all_events selects a fixed subset.
--- t231: imported from `silver` (was `public`) — the fact moved schemas.
-IMPORT FOREIGN SCHEMA silver LIMIT TO (equipment_events) FROM SERVER live_pg INTO live;
+-- bottom (ev_all_events). Declared here so live.equipment_events exists before it.
+-- t282/R8: PINNED foreign table (NOT `IMPORT FOREIGN SCHEMA`) — declare ONLY the 12
+-- columns ev_all_events serves, matching the equipment_values pattern. Prune-proof: a
+-- remote drop/rename of an un-served EE column can never break this table (postgres_fdw
+-- ships only declared columns). The remote silver.equipment_events carries ~26 cols;
+-- the other 14 (id_equipment_event/idle/fault/cd_machine/…client/last_update/…) are dead
+-- to the union. Types match the remote. t231: mounted from `silver` (was `public`).
+DROP FOREIGN TABLE IF EXISTS live.equipment_events;
+CREATE FOREIGN TABLE live.equipment_events (
+  ts_event          timestamptz,
+  id_enterprise     integer,
+  id_equipment      integer,
+  ts_end            timestamptz,
+  duration          integer,
+  status            integer,
+  planned_downtime  boolean,
+  cd_category       varchar,
+  desc_category     varchar,
+  cd_subcategory    varchar,
+  desc_subcategory  varchar,
+  txt_downtime_notes varchar
+) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_events');
 
 -- COLD: S3 Parquet historian via pg_duckdb. Scoped read-only key (instance-role
 -- credential_chain is unavailable: the DB enforces IMDSv2 and DuckDB's aws
@@ -213,6 +230,60 @@ INSERT INTO hist_promoted_enterprise (id_enterprise, ev_promoted, ee_promoted, p
 ON CONFLICT (id_enterprise) DO UPDATE
   SET ev_promoted=EXCLUDED.ev_promoted, ee_promoted=EXCLUDED.ee_promoted,
       provenance=EXCLUDED.provenance, note=EXCLUDED.note;
+
+-- t282/R2 — COLD ID-SPACE PROVENANCE (documentary; ev/ee_promoted=false ⇒ the views
+-- ignore these rows). Records EVERY id that has a cold S3 partition so
+-- `SELECT id_enterprise, provenance, ev_promoted FROM hist_promoted_enterprise` is the
+-- complete, auditable R1 collision blocklist. Provenance derived live 2026-09-14 from
+-- `aws s3 ls .../equipment_values|equipment_events*/` ⋈ core.enterprises/core.equipments.
+INSERT INTO hist_promoted_enterprise (id_enterprise, ev_promoted, ee_promoted, provenance, note) VALUES
+  (5,       false, false, 'f3_native',                'Bispharma-Staging — F3-native EV cold from the staging append. Promotion PENDING ownership verification.'),
+  (2,       false, false, 'legacy_collision_live_f3', 'Simulator Corp (live F3) — cold EV {160..184} ⊄ core.equipments(2); raw-legacy collision. Allow-list denies its cold.'),
+  (1000000, false, false, 'legacy_collision_live_f3', 'PACKIOT-ADMIN (live F3, 0 equip) — cold EV {111..113} raw-legacy. Not served.'),
+  (0,       false, false, 'legacy_passthrough',       'Raw-legacy EV cold (id 0 unassigned). No live F3 tenant. Never assign a new tenant this id.'),
+  (6,       false, false, 'legacy_passthrough',       'MONTEBELLO draft (core.equipments(6)=∅) — cold EV {134..852} raw-legacy.'),
+  (10,      false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (13,      false, false, 'legacy_passthrough',       'NEOPAC draft (core.equipments(13)=∅) — cold EV {0..865} raw-legacy.'),
+  (30,      false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (31,      false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (33,      false, false, 'legacy_passthrough',       'Raw-legacy EE-only cold (Incoplast legacy id → F3 4; EE not yet re-unloaded).'),
+  (35,      false, false, 'legacy_passthrough',       'Raw-legacy EV cold; no live F3 tenant.'),
+  (36,      false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (37,      false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (38,      false, false, 'legacy_passthrough',       'Raw-legacy EV cold; no live F3 tenant.'),
+  (99,      false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (100,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (101,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (102,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (111,     false, false, 'legacy_passthrough',       'Raw-legacy EV cold; no live F3 tenant.'),
+  (112,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (113,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (116,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (117,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (118,     false, false, 'legacy_passthrough',       'Raw-legacy EV+EE cold; no live F3 tenant.'),
+  (10016,   false, false, 'legacy_passthrough',       'Raw-legacy EV cold; no live F3 tenant.')
+ON CONFLICT (id_enterprise) DO UPDATE
+  SET provenance = EXCLUDED.provenance, note = EXCLUDED.note
+  WHERE hist_promoted_enterprise.ev_promoted = false
+    AND hist_promoted_enterprise.ee_promoted = false;
+
+-- t282/R5 — hist_meta: append-stamp table for the cheap staleness monitor (R4). The
+-- append post-run hook (stamp-hist-meta.sql) writes last_append_at; the monitor flags a
+-- missed refresh hook when last_append_at > hist_cutover.refreshed_at (no parquet scan).
+CREATE TABLE IF NOT EXISTS hist_meta (
+  id_enterprise    int PRIMARY KEY,
+  last_append_at   timestamptz NOT NULL,
+  last_append_rows bigint,
+  window_end       timestamptz,
+  source           text        NOT NULL DEFAULT 'historian-append',
+  updated_at       timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE hist_meta IS
+  'Per-enterprise last-append stamp for the COLD store (mirrors the S3 _watermark). '
+  'Written by the append post-run hook (stamp-hist-meta.sql). Lets '
+  'historian-staleness-monitor.sh flag a MISSED refresh-hist-cutover hook cheaply: '
+  'last_append_at > hist_cutover.refreshed_at ⇒ cold grew after the last refresh ⇒ '
+  'ev_all double-counting the newly-archived window (sweep R4/R5).';
 
 -- ── Per-enterprise cutover boundary (T2b) ────────────────────────────────────
 -- cutover_ts = max(hist.ts_value) for the enterprise. COLD owns ts <= cutover_ts,
@@ -434,33 +505,19 @@ COMMENT ON COLUMN live.equipment_values.speed IS 'Instantaneous line/machine spe
 
 -- ═══════════════════════════════════════════════════════ live.equipment_events
 COMMENT ON FOREIGN TABLE live.equipment_events IS
-  'HOT side of ev_all_events. postgres_fdw foreign table onto packiot_analytics.silver.equipment_events (downtime / OEE-reconstruction events) via server live_pg. IMPORT-ed (full remote column set, ~26 cols) rather than pinned — equipment_events is not part of the analytics column-prune, so a full import is safe; ev_all_events selects a fixed subset. Also holds the CPACK Phase-C deep-history backfill (pre-cutover events loaded INTO hot with irreplaceable operator reasons) — see ev_events_cutover for why EE is hot-anchored.';
+  'HOT side of ev_all_events. postgres_fdw foreign table onto packiot_analytics.silver.equipment_events (downtime / OEE-reconstruction events) via server live_pg. t282/R8: PINNED to the 12 columns ev_all_events serves (was a 26-col IMPORT) — prune-proof like live.equipment_values: a remote drop/rename of an un-served EE column cannot break this table. Also holds the CPACK Phase-C deep-history backfill (pre-cutover events loaded INTO hot with irreplaceable operator reasons) — see ev_events_cutover for why EE is hot-anchored.';
 COMMENT ON COLUMN live.equipment_events.id_equipment IS 'Equipment id the event belongs to.';
 COMMENT ON COLUMN live.equipment_events.ts_event IS 'Event start timestamp (timestamptz). min(ts_event) per enterprise = the EE cutover boundary (ev_events_cutover).';
 COMMENT ON COLUMN live.equipment_events.status IS 'Event/machine status code (e.g. running/stopped). Surfaced by ev_all_events.';
-COMMENT ON COLUMN live.equipment_events.id_equipment_event IS 'Surrogate PK of the event row on the remote.';
 COMMENT ON COLUMN live.equipment_events.txt_downtime_notes IS 'Free-text operator downtime note. Irreplaceable — the reason the Phase-C history was loaded into hot rather than left cold-only.';
-COMMENT ON COLUMN live.equipment_events.idle IS 'Idle classification marker (remote raw).';
-COMMENT ON COLUMN live.equipment_events.idle_processed IS 'Whether the idle classification has been processed.';
-COMMENT ON COLUMN live.equipment_events.forced_creation_system IS 'True when the event was system-forced rather than PLC/operator originated.';
-COMMENT ON COLUMN live.equipment_events.fault IS 'PLC fault code associated with the event.';
-COMMENT ON COLUMN live.equipment_events.fault_processed IS 'Whether the fault has been processed downstream.';
-COMMENT ON COLUMN live.equipment_events.cd_machine IS 'Machine code string.';
 COMMENT ON COLUMN live.equipment_events.cd_category IS 'Downtime category code (canonical).';
 COMMENT ON COLUMN live.equipment_events.cd_subcategory IS 'Downtime subcategory code (canonical).';
-COMMENT ON COLUMN live.equipment_events.change_over IS 'True if the event is a changeover/setup.';
 COMMENT ON COLUMN live.equipment_events.planned_downtime IS 'True if the downtime is planned (excluded from availability loss).';
 COMMENT ON COLUMN live.equipment_events.ts_end IS 'Event end timestamp; NULL/open while the event is ongoing.';
 COMMENT ON COLUMN live.equipment_events.duration IS 'Event duration in seconds.';
 COMMENT ON COLUMN live.equipment_events.id_enterprise IS 'Tenant id. THE tenant fence for the hot EE side.';
 COMMENT ON COLUMN live.equipment_events.desc_category IS 'Human-readable downtime category description.';
 COMMENT ON COLUMN live.equipment_events.desc_subcategory IS 'Human-readable downtime subcategory description.';
-COMMENT ON COLUMN live.equipment_events.cd_category_client IS 'Client-facing category code (per-tenant remap of cd_category).';
-COMMENT ON COLUMN live.equipment_events.cd_subcategory_client IS 'Client-facing subcategory code (per-tenant remap).';
-COMMENT ON COLUMN live.equipment_events.last_update IS 'Last mutation timestamp of the event row on the remote.';
-COMMENT ON COLUMN live.equipment_events.ignore_cost IS 'True if the event is excluded from cost calculations.';
-COMMENT ON COLUMN live.equipment_events.ingested_at IS 'Ingest timestamp on the live store.';
-COMMENT ON COLUMN live.equipment_events.source_seq IS 'Monotonic source sequence for ordering/dedup.';
 
 -- ═══════════════════════════════════════════════════════════════════ hist (COLD EV)
 COMMENT ON VIEW hist IS
@@ -494,11 +551,11 @@ COMMENT ON COLUMN hist_ee.txt_downtime_notes IS 'Free-text operator downtime not
 
 -- ═══════════════════════════════════════════════════════════════════ ev_all (EV union)
 COMMENT ON VIEW ev_all IS
-  'THE hot+cold EV serving surface — one row per equipment_values reading across ALL time, no double-count. LEGACY-PRIORITY (T2b): COLD (hist) owns ts_value <= cutover_ts, HOT (live.equipment_values) owns ts_value > cutover_ts, cutover_ts = max(hist.ts_value) per enterprise (hist_cutover). Implemented as: live LEFT JOIN hist_cutover WHERE cutover_ts IS NULL OR ts_value > cutover_ts  UNION ALL  full hist. A live-only tenant (no hist_cutover row) keeps ALL its live rows; an in-historian tenant MISSING its cutover row re-introduces the double-count (invariant: every historian enterprise MUST have a hist_cutover row = max(hist.ts_value)). Surfaces year/month (hot via EXTRACT, cold = partition cols) so a bounded query prunes the cold parquet. Consumers MUST carry a tenant id_enterprise literal (no RLS engine) AND a year/month predicate (else full cold scan). read-api /v1/historian/production-series + Superset ev_all virtual dataset.';
+  'PRUNE CONTRACT (READ FIRST, t282/R6): a bounded query MUST carry a year AND month predicate (e.g. year=2026 AND month=9) — ts_value alone does NOT prune the cold parquet (59 files/171s without vs 1 file/0.57s with). No year/month ⇒ FULL-ARCHIVE SCAN. Keep ev_all OUT of Superset SQL Lab. Every query MUST also carry an id_enterprise=<literal> tenant fence (no RLS here). ── THE hot+cold EV serving surface, no double-count. LEGACY-PRIORITY (T2b): COLD (hist, ev_promoted only) owns ts_value <= cutover_ts, HOT (live.equipment_values) owns ts_value > cutover_ts, cutover_ts = max(hist.ts_value) per enterprise (hist_cutover). Implemented as: live LEFT JOIN hist_cutover WHERE cutover_ts IS NULL OR ts_value > cutover_ts  UNION ALL  hist JOIN allow-list. Invariant: every ev_promoted enterprise MUST have a hist_cutover row. Surfaces year/month (hot via EXTRACT, cold = partition cols). read-api /v1/historian/production-series + Superset ev_all virtual dataset.';
 COMMENT ON COLUMN ev_all.ts_value IS 'Reading timestamp. Hot for ts_value > enterprise cutover_ts, cold for <=.';
 COMMENT ON COLUMN ev_all.id_enterprise IS 'Tenant id. THE tenant fence — every consumer query MUST filter id_enterprise = <literal> (no Postgres RLS on this gateway).';
-COMMENT ON COLUMN ev_all.year IS 'Reading year. Cold = hive partition column; hot = EXTRACT(YEAR FROM ts_value). Carry a year predicate to prune the cold scan.';
-COMMENT ON COLUMN ev_all.month IS 'Reading month. Cold = hive partition column; hot = EXTRACT(MONTH FROM ts_value). Carry a month predicate to prune the cold scan.';
+COMMENT ON COLUMN ev_all.year IS 'Reading year. Cold = hive partition column (PRUNE KEY); hot = EXTRACT(YEAR FROM ts_value). Omitting it ⇒ full cold scan.';
+COMMENT ON COLUMN ev_all.month IS 'Reading month. Cold = hive partition column (PRUNE KEY); hot = EXTRACT(MONTH FROM ts_value). Carry alongside year.';
 COMMENT ON COLUMN ev_all.id_equipment IS 'Equipment id producing the reading.';
 COMMENT ON COLUMN ev_all.gross_production_incr IS 'Gross production increment (double precision; hot real widened to match cold).';
 COMMENT ON COLUMN ev_all.net_production_incr IS 'Net (good) production increment (double precision).';
@@ -506,11 +563,11 @@ COMMENT ON COLUMN ev_all.speed IS 'Instantaneous speed (double precision).';
 
 -- ═══════════════════════════════════════════════════════════════════ ev_all_events (EE union)
 COMMENT ON VIEW ev_all_events IS
-  'THE hot+cold EE (downtime/OEE-event) serving surface — no double-count. HOT-ANCHORED (the MIRROR of ev_all/hist_cutover): because the Phase-C backfill loaded deep-history events INTO the hot store (with irreplaceable operator reasons), HOT (live.equipment_events) owns its whole covered range and keeps ALL rows; COLD (hist_ee) fills ONLY the pre-hot window (ts_event < cutover_ts), cutover_ts = min(hot ts_event) per enterprise (ev_events_cutover). Implemented as: full live.equipment_events  UNION ALL  (hist_ee LEFT JOIN ev_events_cutover WHERE cutover_ts IS NULL OR ts_event < cutover_ts). HARDPROOF staging ent-3: union 316,688 == cold_kept 53,959 + hot_kept 262,729 (naïve union double-counted 116,113). Caveat: handing the overlap to hot assumes hot fully covers it for all equipment; equipment cold-but-not-hot in that window is under-covered (conservative failure, NOT double-count). Surfaces year/month for cold pruning. Tenant fence = id_enterprise literal.';
+  'PRUNE CONTRACT (READ FIRST, t282/R6): a bounded query MUST carry a year AND month predicate — ts_event alone does NOT prune the cold parquet. No year/month ⇒ FULL-ARCHIVE SCAN. Carry an id_enterprise=<literal> tenant fence on every query (no RLS here). ── THE hot+cold EE (downtime/OEE-event) serving surface, no double-count. HOT-ANCHORED (the MIRROR of ev_all/hist_cutover): the Phase-C backfill loaded deep-history events INTO the hot store, so HOT (live.equipment_events) owns its whole covered range; COLD (hist_ee, ee_promoted only) fills ONLY ts_event < cutover_ts, cutover_ts = min(hot ts_event) per enterprise (ev_events_cutover). HARDPROOF staging ent-3: union 316,688 == cold_kept 53,959 + hot_kept 262,729. Completeness caveat: the overlap window is handed to hot, so equipment cold-but-not-hot there is under-covered — guarded by scripts/historian-ee-coverage-check.sh (R7). Surfaces year/month for cold pruning.';
 COMMENT ON COLUMN ev_all_events.ts_event IS 'Event start timestamp. Hot for ts_event >= enterprise cutover_ts, cold for <.';
 COMMENT ON COLUMN ev_all_events.id_enterprise IS 'Tenant id. THE tenant fence — every consumer query MUST filter id_enterprise = <literal>.';
-COMMENT ON COLUMN ev_all_events.year IS 'Event year. Cold = hive partition column; hot = EXTRACT. Prune key for the cold scan.';
-COMMENT ON COLUMN ev_all_events.month IS 'Event month. Cold = hive partition column; hot = EXTRACT. Prune key for the cold scan.';
+COMMENT ON COLUMN ev_all_events.year IS 'Event year. Cold = hive partition column (PRUNE KEY); hot = EXTRACT. Omitting it ⇒ full cold scan.';
+COMMENT ON COLUMN ev_all_events.month IS 'Event month. Cold = hive partition column (PRUNE KEY); hot = EXTRACT. Carry alongside year.';
 COMMENT ON COLUMN ev_all_events.id_equipment IS 'Equipment id the event belongs to.';
 COMMENT ON COLUMN ev_all_events.ts_end IS 'Event end timestamp.';
 COMMENT ON COLUMN ev_all_events.duration IS 'Event duration in seconds.';
@@ -557,9 +614,20 @@ SQL
 # in the gateway config (needs a restart) — deliberately NOT done (keeps heavy S3
 # scans off an anonymous-ish browser role).
 if [ -n "${CLOUDBEAVER_HISTRO_PASSWORD:-}" ]; then
+  # t282/R9: repoint the browser FDW identity to the least-privilege remote role
+  # histgw_ro (SELECT on the 2 silver facts only) instead of the remote postgres
+  # SUPERUSER, so a compromised browser session can't ride superuser into the
+  # analytics DB. Falls back to the FDW superuser (with a warning) if HISTGW_RO_PASS
+  # is not provisioned yet — mint it via db/migrations/t282-…/02-analytics-histgw-ro.sql.
+  if [ -n "${HISTGW_RO_PASS:-}" ]; then
+    BROWSER_FDW_USER=histgw_ro; BROWSER_FDW_PASS="${HISTGW_RO_PASS}"
+  else
+    echo "[historian-gateway] WARNING: HISTGW_RO_PASS unset — cloudbeaver_histro FDW mapping falls back to the remote superuser (sweep R9 not applied)"
+    BROWSER_FDW_USER="${FDW_USER}"; BROWSER_FDW_PASS="${FDW_PASS}"
+  fi
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
        -v histro_pw="${CLOUDBEAVER_HISTRO_PASSWORD}" \
-       -v fdw_user="${FDW_USER}" -v fdw_pass="${FDW_PASS}" <<'SQL'
+       -v fdw_user="${BROWSER_FDW_USER}" -v fdw_pass="${BROWSER_FDW_PASS}" <<'SQL'
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cloudbeaver_histro') THEN

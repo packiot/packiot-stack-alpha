@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the historian gateway integrity monitor daily (after the append + its refresh hook)
+[Timer]
+# 04:00 UTC — after historian-staging-append.timer (02:30) and its post-run cutover
+# refresh, so a missed refresh hook is caught the same night.
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target

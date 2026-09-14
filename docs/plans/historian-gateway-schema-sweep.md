@@ -9,7 +9,19 @@ the consumers (read-api `services/read-api/cmd/refdata-api/historian.go`, Supers
 `configs/superset/assets/datasets/historian_union/ev_all.yaml`). **Nothing here is
 executed** — staging only, and the redesign itself is left for a gated follow-up.
 
-Date: 2026-09-14. Author: audit pass. Status: PROPOSAL.
+Date: 2026-09-14. Author: audit pass. Status: **DONE**.
+
+> **Execution status (2026-09-14):** all recommendations landed.
+> - **R1, R3** — #1254 (`t271` promoted allow-list + `ev_promoted`-gated cutover refresh).
+> - **R2, R5, R6, R8, R9** — `db/migrations/t282-historian-gateway-glue/` (gateway + a
+>   least-privilege `histgw_ro` remote FDW role on packiot_analytics). Cold id-space
+>   provenance is now in `hist_promoted_enterprise` + `docs/audits/historian-cold-id-provenance.md`.
+> - **R4, R7** — scheduled checks: `scripts/historian-staleness-monitor.sh` (R4/R5),
+>   `scripts/historian-ee-coverage-check.sh` (R7), aggregated by
+>   `scripts/historian-integrity-monitor.sh` on the `historian-integrity-monitor.timer`
+>   (daily 04:00 UTC, app box). R5's stamp is written by the append post-run hook
+>   (`scripts/stamp-hist-meta.sql`, wired in `historian-staging-run-append.sh`).
+> - **R10** — skipped (cosmetic `cold` schema, low value).
 
 ---
 
