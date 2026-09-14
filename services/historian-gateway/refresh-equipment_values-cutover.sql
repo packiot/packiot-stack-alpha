@@ -8,7 +8,7 @@
 -- wrongly clip that tenant's HOT history, since its cold is no longer served).
 INSERT INTO ev_union_boundary (id_enterprise, cutover_ts, refreshed_at)
 SELECT h.id_enterprise, max(h.ts_value), now()
-  FROM equipment_values h
+  FROM cold.equipment_values h
   JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted
  WHERE h.id_enterprise IS NOT NULL
  GROUP BY h.id_enterprise
