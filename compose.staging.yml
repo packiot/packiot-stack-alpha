@@ -48,6 +48,7 @@ volumes:
   edge_transformer_agent_outbox:  # ADR-0042 P1: sparkplug-agent-cpack store-and-forward outbox
   cloudbeaver-workspace:  # CloudBeaver metadata + user/session state (web DB IDE)
   ollama-models:  # Ollama model blobs (llama3.2:1b) for the CloudBeaver AI assistant
+  bispharma-twin-state:  # bispharma-twin absolute totalizers — survive container restart (no reset-to-0 delta blip)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura       .3  edge-api      .4  edge-nodered   .5  rabbitmq
@@ -1957,6 +1958,24 @@ services:
       # while a real delta is ~3e-5 of the cumulative. Explicit here for auditability
       # (code default is also 0.5).
       INCREMENT_SANITY_CLAMP_SPIKE_FRACTION: "0.5"
+      # ── ADR-0036 B1 medallion Bronze dual-write (BRONZE_RAW_APPEND) ─────────
+      # Activates the immutable Bronze landing zone. When true, every merged
+      # equipment_values UPSERT (Silver) is shadowed by an append-only INSERT
+      # into bronze.equipment_values_raw, and every minted state event by an
+      # append into bronze.equipment_events_raw — full sub-second precision, NO
+      # ON CONFLICT (per-second column collisions are preserved as distinct rows
+      # via the source_seq sequence default), RAW pre-clamp values (the Silver
+      # increment-sanity clamp above is deliberately NOT applied to Bronze:
+      # corrections land as NEW appended rows, never in-place edits). The Bronze
+      # hypertables carry a no-mutate trigger (bronze_raw_no_mutate) enforcing
+      # append-only against the SUPERUSER writer, 2y retention (>= Silver's 90d)
+      # and a 7d columnstore. This makes Bronze the replayable source of truth
+      # every Silver/Gold correction can be re-derived over. Only reached on the
+      # source_type="refactored" analytics route (staging); prod is single-flow
+      # (analyticsPool==nil) so this line is a no-op there.
+      # Reversible: set to "false" + redeploy → no _raw INSERT is ever queued and
+      # the batch is byte-identical to the pre-activation writer.
+      BRONZE_RAW_APPEND: "true"
       # ── Strategy D — shared worker pool + dynamic tenant discovery ─────────
       # Periodic re-discovery of active tenants from packml_register. A client
       # added mid-run starts flowing within this interval with NO worker
@@ -2146,10 +2165,16 @@ services:
       TWIN_INTERVAL_SEC: "${BISPHARMA_TWIN_INTERVAL_SEC:-15}"
       TWIN_RATE_PER_MIN: "${BISPHARMA_TWIN_RATE_PER_MIN:-600}"
       TWIN_SCRAP_RATE: "${BISPHARMA_TWIN_SCRAP_RATE:-0.03}"
+      # Persist the absolute totalizers on the named volume below so a container
+      # restart resumes monotonically (real PLC totalizers are non-volatile)
+      # instead of resetting to 0 and minting a one-time delta blip in silver.
+      TWIN_STATE_FILE: /var/lib/bispharma-twin/totalizers.json
     volumes:
       # Same tenant config the shared agent mounts — the twin derives the line's
       # member count-index leaves from its raw_tag_map (read-only).
       - ./docs/clients/tenants:/etc/packiot/tenants:ro
+      # Durable totalizer state (survives restart) — see TWIN_STATE_FILE above.
+      - bispharma-twin-state:/var/lib/bispharma-twin
     networks:
       packiot-net:
         ipv4_address: 172.18.0.48   # free slot — .42/.43/.45/.46/.47 are the superset stack (compose.superset.yml), .44 shared-agent, .49 alloy, .50 taken
