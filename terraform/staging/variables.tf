@@ -72,8 +72,7 @@ variable "services" {
     api      = 8080
     grafana  = 3000
     rabbitmq = 15672 # RabbitMQ management UI
-    db       = 8093  # CloudBeaver web DB IDE — analytics plane (read-only cloudbeaver_ro; replaced pgweb here). pgweb-analytics (8082) kept as an unrouted fallback in compose.
-    histdb   = 8093  # CONSOLIDATED into db.staging — the histdb vhost now 301-redirects to db.staging (one CloudBeaver serves both the packiot_analytics + historian-gateway connections). Port value is unused (redirect ignores it); histdb stays in this map ONLY to keep its DNS A-record (aws_route53_record.services). pgweb-historian retired.
+    db       = 8093  # CloudBeaver web DB IDE — ONE IDE with two connections: packiot_analytics (hot, read-only cloudbeaver_ro) + historian gateway (cold, cloudbeaver_histro). Replaced both pgweb instances; pgweb-analytics (8082) kept unrouted in compose as a fallback. (histdb.staging was fully retired 2026-09-14 — vhost + DNS removed; the historian is the 2nd CloudBeaver connection here.)
     barcode  = 8092  # barcode-scanner-v2 SPA cloud instance (barcode-app; nginx injects SANDBOX api-key → edge-api)
     operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
     csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
@@ -106,8 +105,7 @@ variable "service_auth" {
     api      = "api"
     grafana  = "csadmin"
     rabbitmq = "csadmin"
-    db       = "csadmin" # CloudBeaver (cloudbeaver_ro) — staff-only DB browser (db.staging.packiot.app)
-    histdb   = "csadmin" # CloudBeaver (historian gateway connection) — staff-only DB browser (histdb.staging.packiot.app)
+    db       = "csadmin" # CloudBeaver (cloudbeaver_ro + cloudbeaver_histro) — staff-only DB browser (db.staging.packiot.app)
     barcode  = "csadmin" # barcode-app cloud instance — staff-only demo/test (barcode.staging.packiot.app)
     operator = "any"
     csadmin  = "none-originverify"
