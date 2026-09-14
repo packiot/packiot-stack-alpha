@@ -8,6 +8,10 @@
       "description": "Staging analytics DB — read-only staff browser (cloudbeaver_ro). SELECT-only; cannot write.",
       "read-only": true,
       "save-password": true,
+      "show-system-objects": false,
+      "show-utility-objects": false,
+      "navigator-hide-folders": true,
+      "navigator-hide-virtual": true,
       "configuration": {
         "host": "10.10.10.89",
         "port": "5432",
@@ -32,6 +36,10 @@
       "description": "Staging historian hot+cold gateway (hist-gateway, pg_duckdb + postgres_fdw) — read-only staff browser (cloudbeaver_histro). Hot FDW tables (live.*) + schema/cutover tables browse freely; the COLD pg_duckdb path (hist/hist_ee/ev_all cold rows) requires superuser or duckdb.postgres_role membership and will error for this NOSUPERUSER role.",
       "read-only": true,
       "save-password": true,
+      "show-system-objects": false,
+      "show-utility-objects": false,
+      "navigator-hide-folders": true,
+      "navigator-hide-virtual": true,
       "configuration": {
         "host": "hist-gateway",
         "port": "5432",
