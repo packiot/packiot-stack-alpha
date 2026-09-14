@@ -65,19 +65,25 @@ monotonic — so it never trips the physics-invariant clamps. **No** `MachSpeed`
 - **Binary:** `services/sparkplug-decoder/cmd/bispharma-twin` (built + shipped by the
   `services/sparkplug-decoder/Dockerfile`, CGo-free).
 - **Compose service:** `bispharma-twin` in `compose.staging.yml`, static IP `172.18.0.46`.
-- **Two gates, both OFF by default:**
-  1. compose profile `bispharma-twin` — never started on a default bring-up.
-  2. `BISPHARMA_TWIN_ENABLED` (default `false`) — the binary no-ops + exits 0 unless
-     explicitly `true`. **Primary guard.**
+  **Always part of the stack — no compose profile** (the `oeecloud-fanout` pattern), so the
+  deploy's `docker compose -p stack up -d --remove-orphans` keeps it running across every
+  deploy instead of reaping a profile-disabled orphan. **Durable, no manual start.**
+- **Single gate:** `BISPHARMA_TWIN_ENABLED` (default `false`). When `false` the binary
+  **idles** (blocks, publishes nothing — `restart: unless-stopped` never crash-loops it);
+  when `true` it feeds. Enable/disable is a **pure `.env` flip**.
 - **Tunables (env):** `BISPHARMA_TWIN_LINE` (L01), `BISPHARMA_TWIN_INTERVAL_SEC` (15),
   `BISPHARMA_TWIN_RATE_PER_MIN` (600), `BISPHARMA_TWIN_SCRAP_RATE` (0.03).
 
-Enable on staging:
+Enable on staging (pure `.env` flip, then let the service pick it up):
 
 ```bash
-BISPHARMA_TWIN_ENABLED=true docker compose -f compose.staging.yml \
-  --profile bispharma-twin up -d bispharma-twin
+# in /opt/packiot/.env
+BISPHARMA_TWIN_ENABLED=true
+# then, as the deploy does:
+docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d bispharma-twin
 ```
+
+Disable (double-source guard) is the same flip to `false` + recreate.
 
 ## ⚠️ DOUBLE-SOURCE GUARD — the one rule that matters
 
