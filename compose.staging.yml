@@ -1360,6 +1360,9 @@ services:
       CLOUDBEAVER_CORE_THEMING_THEME: dark
       # Rendered into the workspace data-sources.json by the entrypoint (never committed).
       CLOUDBEAVER_RO_PASSWORD: ${CLOUDBEAVER_RO_PASSWORD}
+      # Second connection: read-only browser to the historian gateway (hist-gateway),
+      # role cloudbeaver_histro. Rendered into @HISTDB_RO_PASSWORD@ by the entrypoint.
+      CLOUDBEAVER_HISTRO_PASSWORD: ${CLOUDBEAVER_HISTRO_PASSWORD}
       CLOUDBEAVER_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD}
     # CloudBeaver's systemVariablesResolvingEnabled resolves ${VAR} in connection
     # PROPERTIES but NOT in the credential/password field — so a templated password
@@ -1374,7 +1377,8 @@ services:
       - -ec
       - |
         mkdir -p /opt/cloudbeaver/workspace/GlobalConfiguration/.dbeaver
-        sed "s|@RO_PASSWORD@|$$CLOUDBEAVER_RO_PASSWORD|g" \
+        sed -e "s|@RO_PASSWORD@|$$CLOUDBEAVER_RO_PASSWORD|g" \
+            -e "s|@HISTDB_RO_PASSWORD@|$$CLOUDBEAVER_HISTRO_PASSWORD|g" \
           /opt/cloudbeaver/seed/data-sources.json \
           > /opt/cloudbeaver/workspace/GlobalConfiguration/.dbeaver/data-sources.json
         exec ./launch-product.sh
