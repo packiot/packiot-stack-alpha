@@ -32,6 +32,14 @@ services:
       # CloudBeaver "historian gateway (read-only)" connection can browse the hot FDW
       # tables + schema. Cold pg_duckdb (read_parquet) stays superuser-only by design.
       CLOUDBEAVER_HISTRO_PASSWORD: ${CLOUDBEAVER_HISTRO_PASSWORD:-}
+      # t282/R9 — least-privilege REMOTE FDW identity for cloudbeaver_histro. When set
+      # (alongside CLOUDBEAVER_HISTRO_PASSWORD, which gates the browser-role block), the
+      # first-boot init points the cloudbeaver_histro → live_pg user mapping at the
+      # NOSUPERUSER/NOBYPASSRLS `histgw_ro` role on packiot_analytics (SELECT on the two
+      # silver facts only) instead of the remote postgres superuser. Mint the role with
+      # db/migrations/t282-historian-gateway-glue/02-analytics-histgw-ro.sql; same secret
+      # here. Unset ⇒ init falls back to the FDW superuser (logs a warning).
+      HISTGW_RO_PASS: ${HISTGW_RO_PASS:-}
     volumes:
       - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
       - hist_gateway_data:/var/lib/postgresql/data
