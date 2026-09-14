@@ -1,13 +1,13 @@
-# bi historian union — equipment_values_all (hot live + cold S3 historian), VIRTUAL dataset.
-# Backed by the historian-gateway `equipment_values_all` view (services/historian-gateway/
+# bi historian union — silver.equipment_values (hot live + cold S3 historian), VIRTUAL dataset.
+# Backed by the historian-gateway `silver.equipment_values` view (services/historian-gateway/
 # docker-entrypoint-initdb.d/10-historian-gateway.sh). One row per equipment_values
 # reading across ALL time: live for ts > per-enterprise cutover, historian for
 # ts <= cutover (legacy-priority — no double-count; hardproven staging ent3).
 #
-# ── WHY A VIRTUAL (sql:) DATASET, NOT table_name: equipment_values_all ──────────────────────
+# ── WHY A VIRTUAL (sql:) DATASET, NOT table_name: silver.equipment_values ──────────────────────
 # The cold side is hive-partitioned enterprise=/year=/month=; DuckDB prunes ONLY on
 # those partition columns, NOT on ts_value (hardproof EXPLAIN: ts_value-only = 59
-# files/171s; year+month = 1 file/0.57s). A plain `table_name: equipment_values_all` dataset lets
+# files/171s; year+month = 1 file/0.57s). A plain `table_name: silver.equipment_values` dataset lets
 # Superset add ONLY its ts_value time filter -> no prune -> full historian scan.
 # This virtual dataset uses Jinja to inject the YEAR/MONTH RANGE derived from the
 # dashboard time filter ({{ from_dttm }}/{{ to_dttm }}) INSIDE the query, so the
@@ -15,12 +15,12 @@
 # literal (below) prunes further to that tenant's enterprise= partition.
 #
 # ── TENANT RLS (T4) ───────────────────────────────────────────────────────────
-# equipment_values_all exposes id_enterprise; Superset native RLS is the SOLE tenant enforcer on
+# silver.equipment_values exposes id_enterprise; Superset native RLS is the SOLE tenant enforcer on
 # this gateway (no Postgres GUC co-enforcer — see the database asset).
 #   * EMBED/GUEST path: edge-api mints a guest token with rls:[{clause:
 #     "id_enterprise = <n>"}] (superset-embed.service.ts) — NO dataset scope, so it
 #     applies to EVERY dataset in the dashboard that has an id_enterprise column,
-#     including this one, AUTOMATICALLY. Add equipment_values_all charts to the embedded OEE
+#     including this one, AUTOMATICALLY. Add silver.equipment_values charts to the embedded OEE
 #     dashboard and the existing guest token isolates them — no new wiring.
 #   * AUTHORING path (Cognito OIDC users): create a Superset base Row-Level-Security
 #     rule (Settings -> Row Level Security), Regular type, scoped to THIS dataset,
@@ -32,11 +32,11 @@
 #          WHERE username = '{{ current_username() }}')` — BUT bi.user_tenant lives
 #         on packiot_analytics, not the gateway, so Strategy A is the clean fit here.
 #   * SUPER-ADMIN: the bi.* all-tenant sentinel (app.tenant_id=-1) does NOT apply
-#     here (no Postgres RLS). For an internal Admin to see all tenants on equipment_values_all,
+#     here (no Postgres RLS). For an internal Admin to see all tenants on silver.equipment_values,
 #     give the Admin role NO base-RLS rule on this dataset (Superset applies base
 #     rules only to roles named in the rule) — Admin then sees every tenant; guests
-#     still carry their token clause. Keep equipment_values_all OUT of any public/anon dashboard.
-table_name: equipment_values_all
+#     still carry their token clause. Keep silver.equipment_values OUT of any public/anon dashboard.
+table_name: silver.equipment_values
 main_dttm_col: ts_value
 description: Hot+cold equipment production union (live FDW + S3 historian), legacy-priority, partition-pruned. Tenant-isolated by id_enterprise RLS.
 default_endpoint: null
@@ -44,7 +44,7 @@ offset: 0
 cache_timeout: 300
 catalog: null
 # t287: the union views moved to the gateway's `cold` schema (symmetric with the hot
-# `live` FDW schema). This virtual dataset addresses cold.equipment_values_all explicitly.
+# `live` FDW schema). This virtual dataset addresses cold.silver.equipment_values explicitly.
 schema: cold
 sql: |
   SELECT
@@ -55,7 +55,7 @@ sql: |
     id_equipment,
     gross_production_incr,
     net_production_incr
-  FROM cold.equipment_values_all
+  FROM silver.equipment_values
   WHERE 1=1
   {% if from_dttm is not none %}
     AND ts_value >= '{{ from_dttm }}'
