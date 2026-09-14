@@ -1,163 +1,134 @@
-# Historian cutover-leftover sweep — staging
+# Historian staging cutover — closed out (allow-list + leak closure)
 
 **Date:** 2026-09-14. **Scope:** the historian (cold-history) plane on **staging** only —
-the `hist-gateway` pg_duckdb container (`i-06c9547a2c7091ab7`), its FDW-backed app DB
+the `hist-gateway` pg_duckdb container (`i-06c9547a2c7091ab7`), its FDW app DB
 `packiot_analytics` (`10.10.10.89`), and the S3 cold store
 `packiot-staging-historian-639178078294`. **Legacy `packiot`/packiot40 was NOT touched.**
 
-**Trigger:** report that "there are still cutover tables" left over from the historian
-remap (#167) + clean-schema cutover (#214/#227). **Every claim below is backed by a live
-query / S3 listing / view definition — nothing is asserted from memory.**
+This supersedes the first-pass sweep (which concluded "nothing droppable, R1 gated"). That
+pass was correct that no gateway *object* is dead, but it deferred the real defect. This
+pass **finishes the cutover**: derives the promotion set from live, closes the cross-tenant
+leak with an enforced allow-list, resolves the EE holdout, and keeps the raw-legacy
+reference archive queryable-but-isolated. Every number below is hardproofed live.
 
 ## TL;DR
 
-**There are NO leftover/droppable cutover tables.** The historian gateway is already
-clean. The two objects whose names contain `cutover` — `hist_cutover` and
-`ev_events_cutover` — are **load-bearing union-boundary tables**, proven consumed by the
-`ev_all` / `ev_all_events` views that read-api and Superset serve. Dropping either (or any
-row) would break hot/cold disjointness and **double-count** served production numbers. The
-transitional objects a prior audit flagged (`ev_between()`, `refresh_hist_cutover()`, the
-`hist_production_orders*` PO-archives) were **already removed** in earlier necessity
-passes and are confirmed absent. The genuine open items are the **R1** (EV cold cross-tenant
-holdout parity) and **R3** (cutover-refresh ownership) hardening items from
-`docs/plans/historian-gateway-schema-sweep.md`; R3 is fixed in this PR, R1 is documented as
-gated (no safe unilateral fix).
+The staging historian gateway served the **cold** side of `ev_all`/`ev_all_events` with **no
+tenant gate** — the S3 archive is keyed by RAW-LEGACY enterprise ids that collide numerically
+with F3 tenant ids. HARDPROOF of the leak: `ev_all WHERE id_enterprise=6` for 2024-01
+returned **16,731,194** rows of a *different* company's legacy production (F3 id 6 =
+MONTEBELLO, a draft tenant with **zero** equipment). Fixed with an explicit **allow-list**
+(`hist_promoted_enterprise`) that `ev_all`/`ev_all_events` INNER JOIN on the cold side.
+Post-fix that same probe returns **0**; CPACK (the one genuinely-remapped tenant) is
+unchanged. The raw-legacy archive stays fully queryable for reference via `hist`/`hist_ee`
+(not tenant-facing). The EE `_unpromoted` path-exclusion hack is retired — isolation is now
+100% the allow-list.
 
-## 1. Full historian schema map (live, 2026-09-14)
+## 1. The promotion allow-list — DERIVED from live
 
-### Gateway Postgres (`hist-gateway`, db `postgres`) — 8 relations, ALL canonical
+Source of truth = `core.enterprises` (9 tenants) + `core.client_descriptors` +
+`core.equipments`. **Ownership test:** a cold partition `enterprise=<id>` is genuinely owned
+by the F3 tenant of that id **iff** its cold `DISTINCT id_equipment ⊆ core.equipments(id)`
+**and** `core.equipments(id)` is non-empty (a real remap, not a raw-legacy id-collision).
 
-| Schema | Object | Kind | Purpose | Consumer |
-|---|---|---|---|---|
-| `live` | `equipment_values` | foreign table | HOT side of `ev_all`; pinned 8-col FDW → `packiot_analytics.silver.equipment_values` | via `ev_all` |
-| `live` | `equipment_events` | foreign table | HOT side of `ev_all_events`; IMPORT → `silver.equipment_events` | via `ev_all_events` |
-| `public` | `hist` | view | COLD EV: `read_parquet('…/equipment_values/*/*/*/*-legacy.parquet')` | via `ev_all` |
-| `public` | `hist_ee` | view | COLD EE: `read_parquet('…/equipment_events/*/*/*/*-legacy.parquet')` | via `ev_all_events` |
-| `public` | `hist_cutover` | **table (25 rows)** | EV disjointness boundary `cutover_ts=max(cold ts)` per enterprise | **`ev_all` (LEFT JOIN)** |
-| `public` | `ev_events_cutover` | **table (4 rows)** | EE disjointness boundary `cutover_ts=min(hot ts)` per enterprise | **`ev_all_events` (LEFT JOIN)** |
-| `public` | `ev_all` | view | HOT(ts>cutover) ∪ COLD(all `hist`), legacy-priority | **read-api** `/v1/historian` production-series, **Superset** `ev_all` virtual dataset |
-| `public` | `ev_all_events` | view | HOT(all live) ∪ COLD(`hist_ee` ts<cutover), hot-anchored | **read-api** `/v1/historian` EE downtimes (#227 §8-EE) |
+| id | tenant (core) | active | cold EV equip | core.equipments(id) | verdict |
+|----|---------------|--------|---------------|---------------------|---------|
+| 3 | CPACK-Staging | t | {47..108} (62) | {47..108} (62) | **EV+EE promoted** (legacy 1→3) |
+| 4 | Incoplast-Staging | t | {990015..990018} (4) | {990015..990018} (4) | **EV promoted** (legacy 33→4); EE not (see §3) |
+| 2 | Simulator Corp | f | {160..184} (14) | {3,4,5} | reject — ⊄ (raw legacy) |
+| 6 | (MONTEBELLO draft) | — | {134..852} (327) | ∅ | reject — no equipment (raw legacy) |
+| 13 | (NEOPAC draft) | — | {0..865} (118) | ∅ | reject — no equipment (raw legacy) |
+| 1000000 | PACKIOT-ADMIN | t | {111..113} (3) | ∅ | reject — no equipment (raw legacy) |
+| 0,10,30,31,35–38,99–118,10016 | not in core.enterprises | — | (various) | n/a | reject — not F3 tenants |
 
-Functions: only pg_duckdb extension aggregates (`histogram`, …). **No app functions** —
-`ev_between()` and the broken `refresh_hist_cutover()` are absent (dropped t269 / 09-08).
-Only one gateway DB exists (`\l` = postgres/template0/template1). Everything is
-COMMENT-documented in `services/historian-gateway/docker-entrypoint-initdb.d/10-historian-gateway.sh`
-and mirrored in `db/migrations/t-histdb-object-docs/01-comments.sql`.
+The other core tenants (5 Bispharma, 119 Bisnago, 120, 2000003 SANDBOX) have **no
+`*-legacy` EV cold at all** (5 has only Athena daily appends; the rest are absent from the
+archive), so nothing to promote.
 
-### S3 cold store layout
-
-| Prefix | Contents |
-|---|---|
-| `equipment_values/enterprise=<id>/year=/month=/*-legacy.parquet` | one-shot deep-remap backfill (globbed by `hist`), **frozen — all files dated 2026-09-04** |
-| `equipment_values/…/data-YYYY-MM-DD.parquet` | daily append (ents 3,5) — **Athena/Glue only, NOT globbed by `hist`** |
-| `equipment_events/enterprise=<id>/…/*-legacy.parquet` | promoted EE (F3 id-space) — only `enterprise=3` |
-| `equipment_events_legacy_unpromoted/enterprise=<id>/` | EE holdout — un-promoted legacy ids `{1,2,6,10,13,30,31,33,36,37,99,100,101,102,112,113,116,117,118}` quarantined by path |
-| `_watermark/`, `athena-results/` | append last-run markers / Athena spill |
-
-### App DB `packiot_analytics`
-
-No historian scratch. `hist_production_orders` / `hist_production_orders_runtime`
-(PO-archives flagged in the redesign plan) are **already dropped** (0 rows in `pg_class`).
-Name-pattern sweep (`cutover|remap|_old|_bak|_tmp|_stage|_v2|hist|mirror|migrat|_shadow…`)
-returns only unrelated live objects (`ops.mirror_replay_*`, `silver.equipment_events_cpac_shadow`,
-`knex_migrations`, TimescaleDB internals).
-
-## 2. Proof the cutover tables are load-bearing (NOT leftovers)
-
-`ev_all` (from `pg_get_viewdef`):
-```sql
-FROM live.equipment_values lv
-LEFT JOIN hist_cutover c ON c.id_enterprise = lv.id_enterprise
-WHERE c.cutover_ts IS NULL OR lv.ts_value > c.cutover_ts   -- HOT filtered by hist_cutover
-UNION ALL SELECT … FROM hist h;                            -- COLD (all legacy parquet)
+**Result — `hist_promoted_enterprise` (the gate):**
 ```
-`ev_all_events`:
-```sql
-FROM live.equipment_events lv                              -- HOT (all)
-UNION ALL SELECT … FROM hist_ee h
-LEFT JOIN ev_events_cutover c ON c.id_enterprise = h.id_enterprise
-WHERE c.cutover_ts IS NULL OR h.ts_event < c.cutover_ts;   -- COLD filtered by ev_events_cutover
+ id_enterprise | ev_promoted | ee_promoted | provenance
+       3        |     t       |     t       | f3_remapped   (CPACK)
+       4        |     t       |     f       | f3_remapped   (Incoplast; EE unmapped)
 ```
-Drop `hist_cutover` (or a row) ⇒ its hot rows lose the `ts>cutover` fence ⇒ hot ∪ cold
-double-counts the archived window. Same for `ev_events_cutover` on the cold EE side. These
-tables are the disjointness mechanism, not remap scratch.
 
-### Double-count invariant — hardproof (currently HEALTHY)
-- EV enterprises with a `*-legacy.parquet` in S3 (globbed by `hist`):
-  `{0,2,3,4,6,10,13,30,31,35,36,37,38,99,100,101,102,111,112,113,116,117,118,10016,1000000}` = **25**.
-- `hist_cutover` rows: **exactly those 25**. → every cold enterprise has a boundary row →
-  **no missing row → no double-count**. (`scripts/historian-cutover-coverage-check.sh` is the
-  CI/boot detector for this.)
-- EV `data-*.parquet` daily appends (ents 3,5) are **not** globbed by `hist` (glob is
-  `*-legacy.parquet`), so daily appends cannot double-count — they feed Athena/Glue only.
-- EE: only `enterprise=3` is promoted under `equipment_events/`; the rest are held out under
-  `equipment_events_legacy_unpromoted/` (path-excluded from `hist_ee`). Holdout works.
+## 2. R1 — cross-tenant leak CLOSED (enforced, hardproofed)
 
-## 3. R1 — EV cold has no unpromoted-holdout (cross-tenant leak, latent) — GATED
+`ev_all` / `ev_all_events` now `INNER JOIN hist_promoted_enterprise` on the cold side, so a
+non-promoted id (a raw-legacy partition, or a future F3 tenant handed a colliding low id)
+gets **zero** cold rows. `hist_cutover` / `ev_events_cutover` were pruned to the promoted set
+(a boundary row for a non-served enterprise would wrongly clip its HOT history).
 
-`hist_ee` gets tenant isolation for free: un-promoted legacy EE lives under a **separate
-prefix** (`equipment_events_legacy_unpromoted/`) that the glob never matches. **EV has no
-equivalent** — `hist` globs `equipment_values/*/*/*/*-legacy.parquet` **unconditionally**,
-serving legacy-passthrough ids (`0, 2, 10016, 1000000`, plus old-`cutover_ts` `35–38,100–117`)
-alongside genuinely F3-remapped ids (e.g. `3`). The tenant fence is a caller-supplied
-`id_enterprise = <literal>` (read-api server-derived; Superset RLS), so:
+**Hardproof (same window before/after):**
 
-- **Today: benign.** Live F3 tenants are `{3,5,2000003}`; none collides with a legacy-only
-  cold id, and enterprise=3 is genuinely remapped.
-- **The trap:** assign a future F3 tenant a low id that equals a legacy-only cold partition
-  (e.g. `2`) and `ev_all` serves **another company's legacy data** as theirs. No RLS
-  co-enforcer catches it.
+| probe | before | after |
+|---|---:|---:|
+| `ev_all` id_enterprise=6, 2024-01 (LEAK) | 16,731,194 | **0** |
+| `ev_all` id_enterprise=13, 2024-01 (LEAK) | 412,533 | **0** |
+| `ev_all` id_enterprise=3, 2024-01 (KEEP=CPACK) | 6,297,560 | **6,297,560** |
+| `ev_all_events` id_enterprise=6 / 33 (LEAK) | >0 | **0** / **0** |
+| `hist` id_enterprise=6 (reference still queryable) | 16,731,194 | **16,731,194** |
 
-**Why not fixed here:** the safe fixes both need the **F3-promotion registry** (which of the
-25 EV cold ids are genuine F3 tenants vs legacy-passthrough) — data this audit cannot derive
-with certainty. Options (both reversible, gated on that registry):
-- **R1(a)** quarantine un-promoted EV partitions under `equipment_values_legacy_unpromoted/`
-  (EE parity) — requires a partition re-unload.
-- **R1(b)** add a `hist_promoted_enterprise(id_enterprise)` allow-list table and join it in
-  `hist` — additive, no data movement.
+**No double-count regression** — EE ent3 union decomposes exactly: `union 338,628 == hot_kept
+284,669 + cold_kept 53,959` (cold_kept identical to the init-header's documented 53,959; the
+delta vs the old 316,688 total is 6 days of hot growth, not my change). **Consumers green:**
+read-api `histProductionSeriesSQL` returns ent3 (promoted, hot+cold) and ent5 (onboarded,
+hot-only — correctly no legacy cold) without error; view shapes are unchanged so Superset
+`ev_all` and read-api `/v1/historian` are unaffected.
 
-**Hard rule until fixed (enforceable by inspection):** never assign a new F3 tenant an
-`id_enterprise` that appears in `hist_cutover` but is not a verified F3-remapped tenant. The
-legacy-passthrough ids are `{0, 2, 10016, 1000000}` (and the 2024-`cutover_ts` cohort).
+## 3. EE holdout — RESOLVED (no breadcrumb exclusions)
 
-## 4. R3 — cutover-refresh ownership — FIXED (EE) + status (EV)
+`hist_ee` now globs the **full** EE archive (both `equipment_events/` and the former
+`equipment_events_legacy_unpromoted/` prefix, via a `read_parquet(ARRAY[...])` list). The
+prefix is retired as a security boundary — isolation is the allow-list. Promotion status of
+every legitimately-onboarded tenant:
 
-**Finding:** `hist_cutover.refreshed_at` was uniformly `2026-09-04`. This is **not** an
-active corruption: the globbed cold set (`*-legacy.parquet`) has not changed since the
-one-shot backfill (coverage 25=25, §2), and the daily append path writes non-globbed
-`data-*.parquet`. The stale timestamp is a **process** gap — the boundary is refreshed only
-by a hoped-for manual step, not by the writer that extends the cold store.
+| tenant | cold EE? | action |
+|---|---|---|
+| 3 CPACK | yes (enterprise=3, equip {47..108} == core) | **promoted** |
+| 4 Incoplast | yes, but at **legacy-33** with **legacy** equipment (8 ids, not the F3 {990015..990018}); the legacy→F3 equipment map is not in tracked code and is **not derivable** from live (8≠4, a merge/drop) | **NOT promoted** — kept as `hist_ee` reference; promoting would attach downtimes to non-existent equipment. This is the one genuine limitation (see §5). |
+| 5 Bispharma, 119 Bisnago, 120, 2000003 SANDBOX | **none** — the EE holdout's global equipment range is {1..10021}, **zero** F3-range ids (990xxx/2000xxx/41xxx), so none of these tenants' equipment appears in any cold EE partition | **proven no cold EE** to promote |
 
-**Fix (this PR):** `scripts/historian-events-reunload.sh` (the only tracked writer that
-emits new `*-legacy.parquet`, i.e. EE tenant promotion) now **owns** its boundary refresh —
-after writing partitions it runs `refresh-ee-cutover.sql` on the gateway and **fails (exit 1)
-if it can't**, so a promotion can never silently leave a stale/absent `ev_events_cutover`
-row (which would double-count the EE overlap). The refresh reads only the hot FDW (a cheap
-PG aggregate), so it is safe to run every time.
+## 4. Reconciliation with the #169–175 "keep raw-legacy as reference" decision
 
-**Hardproof:** ran `refresh-ee-cutover.sql` live on the gateway — completed clean;
-`refreshed_at` advanced to 2026-09-14; all four `cutover_ts` values **unchanged**
-(`3→2026-05-28, 4→2026-07-22, 5→2026-08-31, 2000003→2026-06-29`), i.e. the boundary was
-already correct → **zero consumer impact**.
+The 24 raw-legacy EV partitions + 19 EE partitions are **kept on disk and fully queryable**
+via `hist` / `hist_ee` (the reference surfaces, e.g. through the CloudBeaver `histro`
+connection). They are **not** destroyed. The leak is closed not by deleting them but by
+gating the **tenant-facing** unions (`ev_all`/`ev_all_events`, the only surfaces read-api and
+Superset touch) with the allow-list. So legacy reference stays queryable *and* no F3 tenant
+can reach another company's data through its own id. The allow-list also doubles as the
+**id-reservation registry**: onboarding must never assign a new F3 tenant an id already
+serving cold, and a colliding assignment is now inert (0 cold rows) rather than a leak.
 
-**EV status:** the EV refresh (`refresh-hist-cutover.sql`) *must* stay a top-level statement
-(pg_duckdb cannot scan `hist` inside a function) and is a minutes-long full scan of the 336M-row
-CPACK partition, so it is **not** wired into the (frequent, cheap) daily append — correctly,
-since daily appends don't touch the globbed set. It only needs to run after an EV *legacy*
-re-backfill; there is no tracked EV legacy re-backfill script (the backfill was one-shot).
-The coverage-check script remains the CI/boot detector.
+## 5. The one genuine fork (needs a human call)
 
-## 5. What was dropped
+**The raw-legacy reference archive is a legacy tie.** Several partitions are **still being
+appended by the live legacy `packiot40`** (EV/EE `max(ts)` = 2026-09-04), and the ids are
+opaque (no F3 mapping doc; e.g. "legacy enterprise 6" ≠ any current tenant). On "the one and
+only stack, no legacy ties" this is the tension the #169–175 decision left open.
 
-**Nothing.** No droppable leftover exists — the gateway is already at its minimal canonical
-surface, both cutover tables are load-bearing, and the previously-flagged transitional
-objects were removed in earlier passes. This audit's deliverable is the proof of that plus
-the R3 fix and the R1 gating record.
+- **Default (implemented):** keep it as frozen, isolated, queryable reference. Zero leak,
+  nothing destroyed, Incoplast EE recoverable later if the equipment map surfaces.
+- **Recommendation:** retire the raw-legacy reference archive (EV `enterprise∉{3,4}` +
+  the entire EE holdout) at the **#225 legacy-packiot40 decommission**, when the legacy
+  source stops appending and the "reference" loses its live counterpart. Until then, keep.
+  For **Incoplast EE** specifically: leave as `hist_ee` reference; only promote if/when the
+  legacy-33→F3-4 equipment map is provided (do not guess an 8→4 mapping).
 
-## 6. What remains (gated / documented)
+## 6. What changed (all reversible, codified)
 
-| Item | Status |
-|---|---|
-| R1 — EV unpromoted-holdout / allow-list | Gated on the F3-promotion registry; hard rule recorded (§3). |
-| R3 — EV legacy re-backfill refresh ownership | No tracked writer exists; coverage-check is the detector. Wire the refresh in if an EV re-backfill script is ever added. |
-| R2/R4–R10 | See `docs/plans/historian-gateway-schema-sweep.md` (provenance doc, staleness monitor, prune COMMENT, EE reconciliation) — all LOW/MED, unchanged. |
+- `db/migrations/t271-historian-promoted-allowlist/{01-up.sql,rollback.sql}` — the allow-list
+  + view gating + cutover pruning, and a full rollback.
+- `services/historian-gateway/docker-entrypoint-initdb.d/10-historian-gateway.sh` — born with
+  the allow-list; `ev_all`/`ev_all_events` gated; `hist_ee` full-archive glob; cutover seeds
+  join the allow-list.
+- `services/historian-gateway/refresh-{hist,ee}-cutover.sql` — join the allow-list + prune.
+- `scripts/historian-events-reunload.sh` — EE promotion now flips `ee_promoted` **and**
+  refreshes the boundary (fails on error).
+- `scripts/historian-cutover-coverage-check.sh` — asserts `hist_cutover` set == the
+  `ev_promoted` allow-list (both directions), replacing the obsolete S3-archive comparison.
+
+**End state:** the staging historian is fully cut over — cold is served only for
+verified-owned tenants (CPACK EV+EE, Incoplast EV), the cross-tenant leak is closed and
+hardproofed to 0, the EE path-exclusion hack is gone, and the raw-legacy archive remains
+queryable-but-isolated pending the §5 fork.

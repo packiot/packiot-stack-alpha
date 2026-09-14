@@ -4,11 +4,17 @@
 --   docker exec hist-gateway psql -U postgres -d postgres -f /path/refresh-hist-cutover.sql
 -- A missing/stale cutover row for an in-historian enterprise re-introduces the
 -- hot/cold double-count in ev_all.
+-- t271: only ev_promoted enterprises get a cutover row (a non-promoted row would
+-- wrongly clip that tenant's HOT history, since its cold is no longer served).
 INSERT INTO hist_cutover (id_enterprise, cutover_ts, refreshed_at)
-SELECT id_enterprise, max(ts_value), now()
-  FROM hist
- WHERE id_enterprise IS NOT NULL
- GROUP BY id_enterprise
+SELECT h.id_enterprise, max(h.ts_value), now()
+  FROM hist h
+  JOIN hist_promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted
+ WHERE h.id_enterprise IS NOT NULL
+ GROUP BY h.id_enterprise
 ON CONFLICT (id_enterprise)
   DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
+-- prune any boundary row whose enterprise is no longer ev_promoted
+DELETE FROM hist_cutover
+ WHERE id_enterprise NOT IN (SELECT id_enterprise FROM hist_promoted_enterprise WHERE ev_promoted);
 SELECT id_enterprise, cutover_ts FROM hist_cutover ORDER BY id_enterprise;

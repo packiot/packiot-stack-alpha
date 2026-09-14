@@ -103,35 +103,46 @@ COPY (SELECT * REPLACE ($DST_ENT::int AS id_enterprise, $DST_ENT::bigint AS ente
 done
 log "=== EE re-unload DONE  ent $SRC_ENT -> $DST_ENT  (partitions written: ${WROTE:-0}) ==="
 
-# ── R3: OWN THE EE CUTOVER REFRESH (task #270 / historian-gateway-schema-sweep) ──
+# ── PROMOTE: allow-list + EE cutover refresh (t271 + R3 #270) ────────────────────
 # Promoting a tenant writes NEW *-legacy.parquet under equipment_events/enterprise=
-# $DST_ENT/, which the gateway `hist_ee` glob immediately serves. ev_all_events is
-# HOT-ANCHORED: cold owns ts_event < ev_events_cutover.cutover_ts. If DST_ENT has no
-# (or a stale) cutover row, the cold/hot overlap DOUBLE-COUNTS. The double-count
-# invariant must be re-established by whatever extends the cold store — so this
-# script owns the refresh and FAILS if it can't run it (a silent stale boundary is
-# a served-number-corruption risk). refresh-ee-cutover.sql reads only the hot FDW
-# (a cheap PG aggregate — no parquet scan), so it is safe to run here every time.
+# $DST_ENT/, which the gateway `hist_ee` glob serves. But ev_all_events only serves
+# a tenant's cold EE when it is ee_promoted in hist_promoted_enterprise (t271 allow-
+# list — the SOLE cold-side tenant-isolation gate). So promotion = TWO gateway steps:
+#   1) flip ee_promoted=true for DST_ENT (this is the act of promotion — do it ONLY
+#      for a VERIFIED remap: cold id_equipment ⊆ core.equipments(DST_ENT), which the
+#      operator confirms per the header rules; the script does not auto-verify).
+#   2) refresh ev_events_cutover — HOT-ANCHORED, cold owns ts_event < cutover; a
+#      missing/stale boundary DOUBLE-COUNTS the overlap. The refresh joins the allow-
+#      list, so step 1 MUST precede it or DST_ENT gets no cutover row.
+# Both read only the hot FDW / tiny tables (cheap), safe to run every time. FAIL the
+# job if either step errors (a silent partial promotion is a correctness risk).
 if [ "${WROTE:-0}" -gt 0 ]; then
   GW="${GATEWAY_CONTAINER:-hist-gateway}"
   GW_DB="${GATEWAY_DB:-postgres}"
   GW_USER="${GATEWAY_USER:-postgres}"
-  log "refreshing ev_events_cutover on gateway '$GW' (R3 double-count guard) …"
-  if ! docker exec -i "$GW" psql -v ON_ERROR_STOP=1 -U "$GW_USER" -d "$GW_DB" >>"$LOG" 2>&1 <<'REFRESH_SQL'
+  log "promoting DST_ENT=$DST_ENT (ee_promoted) + refreshing ev_events_cutover on '$GW' …"
+  if ! docker exec -i "$GW" psql -v ON_ERROR_STOP=1 -U "$GW_USER" -d "$GW_DB" -v dst="$DST_ENT" >>"$LOG" 2>&1 <<'PROMOTE_SQL'
+-- 1) mark the tenant EE-promoted (id-space verified by the operator per header rules)
+INSERT INTO hist_promoted_enterprise (id_enterprise, ee_promoted, provenance, note)
+VALUES (:dst, true, 'ee_reunload',
+        'promoted by historian-events-reunload.sh — cold EE re-keyed to F3 id ' || :dst)
+ON CONFLICT (id_enterprise) DO UPDATE SET ee_promoted = true;
+-- 2) refresh the EE boundary for now-promoted enterprises (joins the allow-list)
 INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
-SELECT id_enterprise, min(ts_event)::timestamp, now()
-  FROM live.equipment_events WHERE id_enterprise IS NOT NULL GROUP BY id_enterprise
-ON CONFLICT (id_enterprise)
-  DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
-REFRESH_SQL
+SELECT lv.id_enterprise, min(lv.ts_event)::timestamp, now()
+  FROM live.equipment_events lv
+  JOIN hist_promoted_enterprise p ON p.id_enterprise = lv.id_enterprise AND p.ee_promoted
+ WHERE lv.id_enterprise IS NOT NULL GROUP BY lv.id_enterprise
+ON CONFLICT (id_enterprise) DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
+PROMOTE_SQL
   then
-    log "REFRESH-FAIL: could not refresh ev_events_cutover — DST_ENT=$DST_ENT EE cold is"
-    log "  now globbed by hist_ee but its cutover boundary is UNSET/STALE => ev_all_events"
-    log "  DOUBLE-COUNTS the hot/cold overlap. Run refresh-ee-cutover.sql on the gateway"
-    log "  BEFORE any consumer reads this tenant's downtimes."
+    log "PROMOTE-FAIL: could not promote/refresh DST_ENT=$DST_ENT on the gateway."
+    log "  Its EE cold is globbed by hist_ee but NOT allow-listed/bounded => ev_all_events"
+    log "  will serve nothing (safe) OR, if partially applied, could double-count. Run the"
+    log "  allow-list upsert + refresh-ee-cutover.sql on the gateway before serving this tenant."
     exit 1
   fi
-  log "ev_events_cutover refreshed OK (DST_ENT=$DST_ENT boundary re-established)"
+  log "DST_ENT=$DST_ENT promoted (ee_promoted=true) + ev_events_cutover refreshed OK"
 else
-  log "no partitions written (all skipped) — ev_events_cutover refresh not required"
+  log "no partitions written (all skipped) — no promotion/refresh required"
 fi
