@@ -477,4 +477,54 @@ COMMENT ON COLUMN ev_events_cutover.cutover_ts IS 'min(hot ts_event) for the ent
 COMMENT ON COLUMN ev_events_cutover.refreshed_at IS 'When this boundary row was last recomputed (defaults now()).';
 SQL
 
-echo "[historian-gateway] init complete: ev_all (EV hot+cold) + ev_all_events (EE hot+cold), hist_cutover + ev_events_cutover seeded, ev_between() ready"
+# ── Read-only CloudBeaver browser role (cloudbeaver_histro) ───────────────────
+# OPTIONAL, env-gated. When CLOUDBEAVER_HISTRO_PASSWORD is set, create a
+# NOSUPERUSER SELECT-only role so staff can browse the gateway from CloudBeaver
+# (dbeaver.staging.packiot.app) the same way they browse packiot_analytics — WITHOUT
+# reusing the postgres superuser. It gets:
+#   * USAGE + SELECT on public (ev_all/ev_all_events/hist*/cutover tables) and live
+#     (the FDW foreign tables) + default privileges for future tables.
+#   * a live_pg FDW USER MAPPING (foreign tables need a per-role mapping; without it
+#     a hot select throws "user mapping not found"). Maps to the same remote FDW
+#     creds as the postgres mapping — the served foreign tables are pinned to 8
+#     read-only columns, so the remote identity only ever reads those.
+# CAVEAT (documented, by design): pg_duckdb gates read_parquet on superuser OR
+# membership in duckdb.postgres_role (unset here, postmaster-context). So the COLD
+# path (hist, hist_ee, and the cold rows of ev_all/ev_all_events) errors for this
+# role: "DuckDB execution is not allowed because you have not been granted the
+# duckdb.postgres_role". Hot FDW tables + schema/cutover browsing — the main goal —
+# work fully. To also grant cold reads, set duckdb.postgres_role=cloudbeaver_histro
+# in the gateway config (needs a restart) — deliberately NOT done (keeps heavy S3
+# scans off an anonymous-ish browser role).
+if [ -n "${CLOUDBEAVER_HISTRO_PASSWORD:-}" ]; then
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+       -v histro_pw="${CLOUDBEAVER_HISTRO_PASSWORD}" \
+       -v fdw_user="${FDW_USER}" -v fdw_pass="${FDW_PASS}" <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cloudbeaver_histro') THEN
+    CREATE ROLE cloudbeaver_histro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+  END IF;
+END $$;
+ALTER ROLE cloudbeaver_histro PASSWORD :'histro_pw';
+COMMENT ON ROLE cloudbeaver_histro IS
+  'Read-only CloudBeaver browser for the historian gateway. NOSUPERUSER: hot FDW '
+  '(live.*) + schema/cutover browsing only; cold pg_duckdb read_parquet '
+  '(hist/hist_ee/ev_all cold path) requires superuser or duckdb.postgres_role '
+  'membership (unset) and will error.';
+GRANT USAGE ON SCHEMA public, live TO cloudbeaver_histro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public, live TO cloudbeaver_histro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO cloudbeaver_histro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA live  GRANT SELECT ON TABLES TO cloudbeaver_histro;
+-- Foreign tables need a per-role user mapping (else "user mapping not found").
+GRANT USAGE ON FOREIGN SERVER live_pg TO cloudbeaver_histro;
+DROP USER MAPPING IF EXISTS FOR cloudbeaver_histro SERVER live_pg;
+CREATE USER MAPPING FOR cloudbeaver_histro SERVER live_pg
+  OPTIONS (user :'fdw_user', password :'fdw_pass');
+SQL
+  echo "[historian-gateway] cloudbeaver_histro read-only role + FDW mapping ready"
+else
+  echo "[historian-gateway] CLOUDBEAVER_HISTRO_PASSWORD unset — skipping read-only browser role"
+fi
+
+echo "[historian-gateway] init complete: ev_all (EV hot+cold) + ev_all_events (EE hot+cold), hist_cutover + ev_events_cutover seeded"

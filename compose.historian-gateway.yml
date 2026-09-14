@@ -26,6 +26,12 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       HIST_AWS_KEY: ${HIST_AWS_KEY:?set in .env}
       HIST_AWS_SECRET: ${HIST_AWS_SECRET:?set in .env}
+      # Read-only CloudBeaver browser role (cloudbeaver_histro). OPTIONAL: if unset,
+      # the init skips role creation (the gateway is unchanged). When set, first-boot
+      # init creates a NOSUPERUSER SELECT-only role + a live_pg FDW user mapping so the
+      # CloudBeaver "historian gateway (read-only)" connection can browse the hot FDW
+      # tables + schema. Cold pg_duckdb (read_parquet) stays superuser-only by design.
+      CLOUDBEAVER_HISTRO_PASSWORD: ${CLOUDBEAVER_HISTRO_PASSWORD:-}
     volumes:
       - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
       - hist_gateway_data:/var/lib/postgresql/data

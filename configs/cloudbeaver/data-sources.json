@@ -24,6 +24,30 @@
           "autocommit": true
         }
       }
+    },
+    "histdb-gateway-ro": {
+      "provider": "postgresql",
+      "driver": "postgres-jdbc",
+      "name": "historian gateway (read-only)",
+      "description": "Staging historian hot+cold gateway (hist-gateway, pg_duckdb + postgres_fdw) — read-only staff browser (cloudbeaver_histro). Hot FDW tables (live.*) + schema/cutover tables browse freely; the COLD pg_duckdb path (hist/hist_ee/ev_all cold rows) requires superuser or duckdb.postgres_role membership and will error for this NOSUPERUSER role.",
+      "read-only": true,
+      "save-password": true,
+      "configuration": {
+        "host": "hist-gateway",
+        "port": "5432",
+        "database": "postgres",
+        "url": "jdbc:postgresql://hist-gateway:5432/postgres?user=cloudbeaver_histro&password=@HISTDB_RO_PASSWORD@",
+        "configurationType": "URL",
+        "type": "dev",
+        "closeIdleConnection": true,
+        "properties": {
+          "user": "cloudbeaver_histro",
+          "password": "@HISTDB_RO_PASSWORD@"
+        },
+        "bootstrap": {
+          "autocommit": true
+        }
+      }
     }
   }
 }
