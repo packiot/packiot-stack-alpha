@@ -2090,6 +2090,80 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── bispharma-twin (GAP-1 codified staging TWIN producer for ent 5) ───────────
+  # Bispharma (enterprise 5, SparkPlug group BISPHARMASTAGING) has NO live feed:
+  # its factory box is offline and its silver.equipment_values froze (the
+  # production-readiness punch-list GAP-1). This is the "proper fix (a)": a
+  # durable, codified twin/replay producer — the sibling of CPACK's twin-injector
+  # (services/sparkplug-decoder/cmd/inject-counter-fixture) — that publishes
+  # synthetic, monotonically-increasing counter SparkPlug B NBIRTH/NDATA straight
+  # to the internal Mosquitto broker under group BISPHARMASTAGING, decoded by the
+  # same shared sparkplug-decoder + stream-engine path as any real tee, so ent-5
+  # gets a continuous OEE feed independent of the offline box. Counters-only
+  # (Bispharma has no state/speed; counters_only_oee=true). It emits the MEMBER
+  # count-index leaves (e.g. .../S1INFEED/.../ProdConsumedCount/168/Unit → equip
+  # 2000225), parameterized at boot from the SAME tenant config the shared agent
+  # loads (docs/clients/tenants/bispharma.yaml), so every metric name resolves to
+  # a real equipment and never drops as unmapped.
+  #
+  # ⚠️ DOUBLE-SOURCE GUARD — READ BEFORE ENABLING ⚠️
+  # When the REAL Bispharma factory box comes back online it publishes the SAME
+  # group → the SAME equipment ids. Running this twin AT THE SAME TIME as a real
+  # BISPHARMASTAGING feed DOUBLE-COUNTS every totalizer (the classic two-writer
+  # bug). The twin MUST be disabled the moment a real feed is wired. Two gates
+  # keep it inert by default:
+  #   1. compose profile "bispharma-twin" — never started on a default bring-up.
+  #   2. BISPHARMA_TWIN_ENABLED (default false) — the binary no-ops + exits 0
+  #      unless explicitly true. This is the primary guard.
+  # Its distinct edge_node_id (bispharmastaging-twin) STAMPS provenance in the
+  # decoder logs (publisher "BISPHARMASTAGING/bispharmastaging-twin") so twin rows
+  # are identifiable — but that does NOT prevent the double-count; DISABLING it
+  # does. STAGING ONLY.
+  #
+  # OPT-IN — profile `bispharma-twin` + the flag:
+  #   BISPHARMA_TWIN_ENABLED=true docker compose -f compose.staging.yml \
+  #     --profile bispharma-twin up -d bispharma-twin
+  bispharma-twin:
+    profiles: ["bispharma-twin"]
+    build:
+      context: ./services/sparkplug-decoder
+    container_name: bispharma-twin
+    entrypoint: ["/usr/local/bin/bispharma-twin"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      # Master gate — STAGING ONLY, default OFF. Flip to "true" in .env to run.
+      # Disable the moment a real BISPHARMASTAGING feed is active (double-source).
+      BISPHARMA_TWIN_ENABLED: "${BISPHARMA_TWIN_ENABLED:-false}"
+      # Publish straight to the internal Mosquitto broker (same path CPACK's
+      # inject-counter-fixture twin uses) — NOT the :8449 front-door (the app box
+      # cannot hairpin its own public ingest SG).
+      TWIN_BROKER: tcp://mosquitto:1883
+      TWIN_GROUP: BISPHARMASTAGING
+      TWIN_EDGE_NODE: bispharmastaging-twin
+      TWIN_LINE: "${BISPHARMA_TWIN_LINE:-L01}"
+      TWIN_TENANT_CONFIG: /etc/packiot/tenants/bispharma.yaml
+      TWIN_INTERVAL_SEC: "${BISPHARMA_TWIN_INTERVAL_SEC:-15}"
+      TWIN_RATE_PER_MIN: "${BISPHARMA_TWIN_RATE_PER_MIN:-600}"
+      TWIN_SCRAP_RATE: "${BISPHARMA_TWIN_SCRAP_RATE:-0.03}"
+    volumes:
+      # Same tenant config the shared agent mounts — the twin derives the line's
+      # member count-index leaves from its raw_tag_map (read-only).
+      - ./docs/clients/tenants:/etc/packiot/tenants:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.46   # next free in the /24 ledger (.42-.45 superset, .44 shared-agent)
+        aliases: ["bispharma-twin"]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    mem_limit: 64m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug) ───────────────
   # A node in Incoplast's REAL Node-RED POSTs its SparkPlug-JSON payload to
   # this shim over HTTPS (public surface, Nginx/SG-gated on :8444). The shim
