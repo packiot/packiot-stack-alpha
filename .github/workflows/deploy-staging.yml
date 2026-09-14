@@ -112,6 +112,16 @@ jobs:
         # until COMPOSE_PROFILES=superset.
         run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
 
+      - name: Codify historian pipeline (re-sync /opt/packiot/historian + systemd from repo)
+        # The historian cold-archive pipeline (daily append → stamp watermark →
+        # refresh EV/EE union boundary, + integrity monitor) runs as systemd timers
+        # off scripts installed at /opt/packiot/historian. This step re-installs them
+        # from the repo on EVERY deploy so that dir can never drift again (that drift
+        # silently left the union boundary un-refreshed + #281's file-rename half-applied).
+        # Idempotent; installs the FULL wrapper (append+stamp+refresh) as the timer
+        # ExecStart and enables the timers. See task #282 / scripts/install-historian-pipeline.sh.
+        run: sudo bash scripts/install-historian-pipeline.sh
+
       - name: Prune old images
         run: docker image prune -f
 
