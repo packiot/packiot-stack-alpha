@@ -205,7 +205,7 @@ server {
         proxy_set_header   X-Forwarded-Proto    https;
         proxy_set_header   X-Auth-Request-User  \$auth_user;
         proxy_set_header   X-Auth-Request-Email \$auth_email;
-%{ if svc == "db" ~}
+%{ if svc == "db" || svc == "histdb" ~}
         # CloudBeaver reverseProxy SSO: it reads the trusted user identity from
         # X-User and team membership from X-Team. Feed it the Cognito email as the
         # user and `admin` as the team so each staffer logs in AS THEMSELVES (not
