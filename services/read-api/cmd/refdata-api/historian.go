@@ -127,7 +127,7 @@ const histProductionSeriesSQL = `
          id_equipment,
          sum(gross_production_incr)               AS gross_production,
          sum(net_production_incr)                 AS net_production
-    FROM ev_all
+    FROM cold.ev_all
    WHERE id_enterprise = $1
      AND ts_value >= $2 AND ts_value < $3
      %s
@@ -136,6 +136,9 @@ const histProductionSeriesSQL = `
    GROUP BY 1, 2
    ORDER BY 1, 2
    LIMIT %d`
+// NOTE: the union views live in the gateway's `cold` schema (t287 — symmetric with
+// the hot `live` FDW schema); we qualify them explicitly (cold.ev_all /
+// cold.ev_all_events) so resolution never relies on the gateway's search_path.
 
 // histDowntimeSeriesSQL — daily downtime per equipment over [from,to) for one
 // tenant, split by planned_downtime, hot+cold via ev_all_events (task #227 §8-EE).
@@ -155,7 +158,7 @@ const histDowntimeSeriesSQL = `
          planned_downtime,
          count(*)                                 AS event_count,
          sum(duration)                            AS downtime_seconds
-    FROM ev_all_events
+    FROM cold.ev_all_events
    WHERE id_enterprise = $1
      AND ts_event >= $2 AND ts_event < $3
      %s

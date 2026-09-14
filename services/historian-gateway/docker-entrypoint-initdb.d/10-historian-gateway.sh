@@ -167,6 +167,24 @@ CREATE FOREIGN TABLE live.equipment_events (
   txt_downtime_notes varchar
 ) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_events');
 
+-- ── COLD serving schema (t287) — SYMMETRIC with the hot `live` FDW schema ─────
+-- All historian serving objects (the hot∪cold union views ev_all / ev_all_events,
+-- the pg_duckdb read_parquet cold-source views hist / hist_ee, the disjointness
+-- boundary tables hist_cutover / ev_events_cutover, the R1 allow-list
+-- hist_promoted_enterprise and the R5 stamp hist_meta) live in `cold`, NOT public.
+-- public is left holding ONLY the pg_duckdb / postgres_fdw extension objects
+-- (read_parquet, duckdb.*, the DuckDB aggregates). We set search_path = cold, public
+-- so the objects below are CREATED in cold by their bare names AND their unqualified
+-- inter-references (hist, hist_cutover, …) resolve to cold at creation (then bind by
+-- OID), while read_parquet still resolves from public. The DB-level search_path also
+-- lets the gateway-internal, unqualified-name scripts (refresh-hist-cutover.sql,
+-- refresh-ee-cutover.sql, stamp-hist-meta.sql, the staleness/coverage monitors)
+-- resolve cold on their own fresh psql sessions. EXTERNAL consumers (read-api,
+-- Superset) address cold.ev_all explicitly and do not rely on this GUC.
+CREATE SCHEMA IF NOT EXISTS cold;
+ALTER DATABASE "${POSTGRES_DB}" SET search_path = cold, public;
+SET search_path = cold, public;
+
 -- COLD: S3 Parquet historian via pg_duckdb. Scoped read-only key (instance-role
 -- credential_chain is unavailable: the DB enforces IMDSv2 and DuckDB's aws
 -- extension cannot fetch v2 creds through the docker hop).
@@ -486,8 +504,10 @@ CREATE OR REPLACE VIEW ev_all_events AS
 -- Keep the two in sync when a view/column changes.
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ═══════════════════════════════════════════════════════════════════ schemas
+COMMENT ON SCHEMA cold IS
+  'Historian COLD-store + hot∪cold union serving schema (t287; SYMMETRIC with `live`, the hot FDW schema). Holds the union VIEWS ev_all (EV) / ev_all_events (EE), the pg_duckdb read_parquet COLD source views hist / hist_ee, the per-enterprise disjointness boundary TABLES hist_cutover / ev_events_cutover, the R1 tenant-isolation allow-list hist_promoted_enterprise, and the R5 append-stamp hist_meta. Query surface for read-api /v1/historian (cold.ev_all / cold.ev_all_events) and the Superset ev_all virtual dataset. No RLS engine here — tenant fence is a caller-supplied id_enterprise literal.';
 COMMENT ON SCHEMA public IS
-  'historian-gateway serving schema. Holds the hot+cold union VIEWS (ev_all EV, ev_all_events EE), the pg_duckdb read_parquet COLD source views (hist, hist_ee) and the per-enterprise disjointness boundary TABLES (hist_cutover, ev_events_cutover). Query surface for read-api /v1/historian and the Superset ev_all virtual dataset. No RLS engine here — tenant fence is a caller-supplied id_enterprise literal.';
+  'pg_duckdb + postgres_fdw EXTENSION objects only (read_parquet, duckdb.*, the DuckDB aggregates). The historian serving objects live in schema `cold` (t287). Do NOT create historian objects here.';
 COMMENT ON SCHEMA live IS
   'Foreign-table schema: postgres_fdw window onto the HOT live timescaledb (server live_pg → packiot_analytics.silver on 10.10.10.89). live.equipment_values / live.equipment_events are the hot side of the ev_all / ev_all_events unions. Pinned/narrow imports — the FDW only ships referenced columns, so remote column prunes cannot break these.';
 
@@ -599,8 +619,8 @@ SQL
 # NOSUPERUSER SELECT-only role so staff can browse the gateway from CloudBeaver
 # (dbeaver.staging.packiot.app) the same way they browse packiot_analytics — WITHOUT
 # reusing the postgres superuser. It gets:
-#   * USAGE + SELECT on public (ev_all/ev_all_events/hist*/cutover tables) and live
-#     (the FDW foreign tables) + default privileges for future tables.
+#   * USAGE + SELECT on cold (ev_all/ev_all_events/hist*/cutover tables, t287) and
+#     live (the FDW foreign tables) + default privileges for future tables.
 #   * a live_pg FDW USER MAPPING (foreign tables need a per-role mapping; without it
 #     a hot select throws "user mapping not found"). Maps to the same remote FDW
 #     creds as the postgres mapping — the served foreign tables are pinned to 8
@@ -640,8 +660,10 @@ COMMENT ON ROLE cloudbeaver_histro IS
   '(live.*) + schema/cutover browsing only; cold pg_duckdb read_parquet '
   '(hist/hist_ee/ev_all cold path) requires superuser or duckdb.postgres_role '
   'membership (unset) and will error.';
-GRANT USAGE ON SCHEMA public, live TO cloudbeaver_histro;
-GRANT SELECT ON ALL TABLES IN SCHEMA public, live TO cloudbeaver_histro;
+-- t287: the historian SELECT surface moved to `cold`; grant it alongside public/live.
+GRANT USAGE ON SCHEMA cold, public, live TO cloudbeaver_histro;
+GRANT SELECT ON ALL TABLES IN SCHEMA cold, public, live TO cloudbeaver_histro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA cold GRANT SELECT ON TABLES TO cloudbeaver_histro;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO cloudbeaver_histro;
 ALTER DEFAULT PRIVILEGES IN SCHEMA live  GRANT SELECT ON TABLES TO cloudbeaver_histro;
 -- Foreign tables need a per-role user mapping (else "user mapping not found").
