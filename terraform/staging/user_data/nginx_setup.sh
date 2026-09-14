@@ -142,6 +142,20 @@ NGINX
 # (api / operator / csadmin-SPA) are emitted as explicit blocks below and are
 # deliberately skipped by this loop; the deliberately-open (mq / refdata /
 # cpack-ingest) + auth vhosts are handled separately too.
+
+# RabbitMQ mgmt SSO: after the Cognito gate, nginx injects HTTP Basic auth so a
+# staffer who passes Cognito lands straight in the mgmt UI instead of hitting
+# RabbitMQ's OWN login form. Base64 of user:pass is computed at boot from
+# /opt/packiot/.env (this script reads, never writes it) — the secret never
+# enters git. Empty if creds are absent → no header injected (RabbitMQ then shows
+# its own login, i.e. the prior behaviour), so this can't lock anyone out.
+RMQ_B64=""
+if [ -f /opt/packiot/.env ]; then
+  _ru=$(sed -n 's/^RABBITMQ_USER=//p' /opt/packiot/.env | head -1)
+  _rp=$(sed -n 's/^RABBITMQ_PASSWORD=//p' /opt/packiot/.env | head -1)
+  [ -n "$_ru" ] && RMQ_B64=$(printf '%s:%s' "$_ru" "$_rp" | base64 | tr -d '\n')
+fi
+
 %{ for svc, port in services ~}
 %{ if lookup(service_auth, svc, "csadmin") == "csadmin" ~}
 cat > /etc/nginx/conf.d/${svc}.conf <<NGINX
@@ -176,9 +190,14 @@ server {
         # several _oauth2_proxy_N cookies, ADR-0034 §C) blows past that and
         # Cowboy answers 431 Request Header Fields Too Large. The browser's
         # cookie isn't needed downstream — the auth_request gate above has
-        # already authorized the request, and RabbitMQ's own user/password
-        # auth takes it from there — so strip it before proxying.
+        # already authorized the request — so strip it before proxying.
         proxy_set_header   Cookie "";
+        # SSO auto-login: feed RabbitMQ the standard mgmt creds (Basic auth,
+        # base64 from .env at boot) so passing the Cognito gate opens the mgmt UI
+        # directly. RabbitMQ mgmt honours an injected Authorization header
+        # (verified: /api/whoami → 200 with, 401 without). Empty $RMQ_B64 ⇒ the
+        # line is inert and RabbitMQ falls back to its own login.
+        proxy_set_header   Authorization "Basic $RMQ_B64";
 %{ endif ~}
         proxy_set_header   Host                 \$host;
         proxy_set_header   X-Real-IP            \$remote_addr;
