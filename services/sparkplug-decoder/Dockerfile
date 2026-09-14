@@ -61,9 +61,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/bispharma-twin ./cmd/bispharma-twi
 # Docker's named-volume mount copies file+dir OWNERSHIP from the container
 # image if the volume is empty at first mount. Without this step, the
 # volume gets root-owned + nonroot user can't write the SQLite DB.
-# ADR-0011 P2 outbox lives here.
+# ADR-0011 P2 outbox lives here; bispharma-twin persists its totalizer
+# state file under /var/lib/bispharma-twin (same root-owned-volume trap).
 FROM alpine AS outbox-dir
-RUN mkdir -p /out/var/lib/edge-transformer && chown -R 65532:65532 /out/var/lib
+RUN mkdir -p /out/var/lib/edge-transformer /out/var/lib/bispharma-twin \
+ && chown -R 65532:65532 /out/var/lib
 
 # Distroless `static` image: binary + ca-certs + non-root user. No shell,
 # no package manager — minimal attack surface.
