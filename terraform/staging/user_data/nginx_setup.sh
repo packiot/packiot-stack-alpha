@@ -157,29 +157,6 @@ if [ -f /opt/packiot/.env ]; then
 fi
 
 %{ for svc, port in services ~}
-%{ if svc == "histdb" ~}
-cat > /etc/nginx/conf.d/histdb.conf <<NGINX
-# histdb.staging consolidated into db.staging: ONE CloudBeaver now serves BOTH
-# the packiot_analytics and historian-gateway (read-only) connections, so the
-# two URLs were redundant. histdb stays in var.services ONLY to keep its DNS
-# A-record alive (aws_route53_record.services for_each = var.services); the
-# vhost just 301-redirects to db.staging. pgweb-historian was retired with this.
-server {
-    listen 80;
-    server_name histdb.$STAGING_DOMAIN;
-    return 301 https://db.$STAGING_DOMAIN\$request_uri;
-}
-server {
-    listen 443 ssl;
-    server_name histdb.$STAGING_DOMAIN;
-    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-    return 301 https://db.$STAGING_DOMAIN\$request_uri;
-}
-NGINX
-%{ else ~}
 %{ if lookup(service_auth, svc, "csadmin") == "csadmin" ~}
 cat > /etc/nginx/conf.d/${svc}.conf <<NGINX
 server {
@@ -228,7 +205,7 @@ server {
         proxy_set_header   X-Forwarded-Proto    https;
         proxy_set_header   X-Auth-Request-User  \$auth_user;
         proxy_set_header   X-Auth-Request-Email \$auth_email;
-%{ if svc == "db" || svc == "histdb" ~}
+%{ if svc == "db" ~}
         # CloudBeaver reverseProxy SSO: it reads the trusted user identity from
         # X-User and team membership from X-Team. Feed it the Cognito email as the
         # user and `admin` as the team so each staffer logs in AS THEMSELVES (not
@@ -244,7 +221,6 @@ server {
     }
 }
 NGINX
-%{ endif ~}
 %{ endif ~}
 %{ endfor ~}
 
