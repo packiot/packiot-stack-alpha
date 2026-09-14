@@ -172,6 +172,48 @@ SELECT r['ts_value']::timestamp               AS ts_value,
 FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values/*/*/*/*-legacy.parquet',
                   hive_partitioning => true) r;
 
+-- ── Promotion ALLOW-LIST (t271) — the SOLE cold-side tenant-isolation gate ────
+-- The cold S3 archive is keyed by RAW-LEGACY enterprise ids whose numeric values
+-- COLLIDE with F3 tenant ids (e.g. legacy partition enterprise=6 holds a DIFFERENT
+-- company's data than the draft F3 tenant 6 / MONTEBELLO). The tenant fence is a
+-- caller-supplied `id_enterprise = <literal>`, so without a gate a query for a
+-- colliding id serves another company's legacy production (HARDPROOF 2026-09-14:
+-- ev_all id_enterprise=6 for 2024-01 returned 16,731,194 legacy rows).
+--
+-- FIX: an explicit allow-list. An id is promoted ONLY when the cold partition
+-- enterprise=<id> is VERIFIED to belong to the current F3 tenant of that id —
+-- cold DISTINCT id_equipment ⊆ core.equipments(id) AND core.equipments(id) is
+-- non-empty (a genuine remap, not a raw-legacy passthrough). ev_all / ev_all_events
+-- INNER JOIN this on the COLD side, so a non-promoted id (incl. a future F3 tenant
+-- given a colliding low id) gets ZERO cold rows. The full raw-legacy archive stays
+-- queryable for reference via hist / hist_ee (NOT tenant-facing). Extend ONLY via a
+-- verified promotion (scripts/historian-events-reunload.sh for EE); NEVER hand-add
+-- an unverified id. Derivation is DELIBERATELY materialized (an explicit audited
+-- list), not an auto-recomputed query, so a misfiring derivation cannot silently
+-- re-open the leak.
+CREATE TABLE IF NOT EXISTS hist_promoted_enterprise (
+  id_enterprise int PRIMARY KEY,
+  ev_promoted   boolean NOT NULL DEFAULT false,
+  ee_promoted   boolean NOT NULL DEFAULT false,
+  provenance    text    NOT NULL,
+  note          text,
+  promoted_at   timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE hist_promoted_enterprise IS
+  'Historian promotion allow-list — the SOLE tenant-isolation gate for the COLD side of ev_all (EV) and ev_all_events (EE). Promoted iff cold id_equipment ⊆ core.equipments(id) AND core.equipments(id) non-empty (verified F3 remap, not a raw-legacy id-collision). ev_all/ev_all_events INNER JOIN this on the cold side. Full raw-legacy archive stays queryable via hist/hist_ee (not tenant-facing). Extend only via a verified promotion; never hand-add an unverified id.';
+-- Seed derived live 2026-09-14 via the ownership test (cold id_equipment ⊆ core.equipments(id)):
+--   ent3 CPACK    — cold EV/EE {47..108} == core.equipments(3), legacy-1→3 → ev+ee
+--   ent4 Incoplast— cold EV {990015..990018} == core.equipments(4), legacy-33→4 → ev only
+--                   (EE still legacy-33, equipment un-remapped → not promotable without an external map)
+-- Counter-examples NOT promoted (raw-legacy id collisions): ent6 {134..852} vs core.equipments(6)=∅
+--   (MONTEBELLO draft); ent13 {0..865} vs ∅ (NEOPAC draft); ent2 {160..184} ⊄ {3,4,5}; ent1000000 vs ∅.
+INSERT INTO hist_promoted_enterprise (id_enterprise, ev_promoted, ee_promoted, provenance, note) VALUES
+  (3, true,  true,  'f3_remapped', 'CPACK — legacy 1→F3 3; cold id_equipment {47..108} == core.equipments(3)'),
+  (4, true,  false, 'f3_remapped', 'Incoplast — legacy 33→F3 4; cold EV {990015..990018} == core.equipments(4). EE not promoted (legacy-33 EE un-remapped).')
+ON CONFLICT (id_enterprise) DO UPDATE
+  SET ev_promoted=EXCLUDED.ev_promoted, ee_promoted=EXCLUDED.ee_promoted,
+      provenance=EXCLUDED.provenance, note=EXCLUDED.note;
+
 -- ── Per-enterprise cutover boundary (T2b) ────────────────────────────────────
 -- cutover_ts = max(hist.ts_value) for the enterprise. COLD owns ts <= cutover_ts,
 -- HOT owns ts > cutover_ts. Small table (one row per historian enterprise), read
@@ -198,11 +240,15 @@ COMMENT ON TABLE hist_cutover IS
 -- pg_duckdb CANNOT execute a DuckDB scan inside a PL/pgSQL function ("DuckDB
 -- execution is not supported inside functions"). So the refresh MUST be a
 -- TOP-LEVEL statement, not a function call. Seed it inline here:
+-- t271: seed ONLY promoted enterprises. A cutover row for a non-served (non-promoted)
+-- enterprise would wrongly clip that tenant's HOT history, so the boundary set MUST
+-- track the ev_promoted allow-list.
 INSERT INTO hist_cutover (id_enterprise, cutover_ts, refreshed_at)
-SELECT id_enterprise, max(ts_value), now()
-  FROM hist
- WHERE id_enterprise IS NOT NULL
- GROUP BY id_enterprise
+SELECT h.id_enterprise, max(h.ts_value), now()
+  FROM hist h
+  JOIN hist_promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted
+ WHERE h.id_enterprise IS NOT NULL
+ GROUP BY h.id_enterprise
 ON CONFLICT (id_enterprise)
   DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
 
@@ -213,8 +259,10 @@ ON CONFLICT (id_enterprise)
 --    live rows AND hist keeps all its rows -> double-count. The inline cutover seed
 --    at init + refresh-hist-cutover.sql after each backfill upholds the "every
 --    historian enterprise has a row" invariant that prevents this.)
--- COLD: the full deep-remapped historian archive (all rows are <= cutover_ts by
---   construction, so no filter is needed and the DuckDBScan stays prunable).
+-- COLD: the promoted historian archive only (t271 — INNER JOIN the allow-list so a
+--   raw-legacy / colliding id serves 0 cold rows). Promoted cold rows are all
+--   <= cutover_ts by construction, so no extra ts filter is needed and the
+--   DuckDBScan stays prunable.
 CREATE OR REPLACE VIEW ev_all AS
   SELECT lv.ts_value,
          lv.id_enterprise,
@@ -236,7 +284,8 @@ CREATE OR REPLACE VIEW ev_all AS
          h.gross_production_incr,
          h.net_production_incr,
          h.speed
-    FROM hist h;
+    FROM hist h
+    JOIN hist_promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted;
 
 -- ── ev_between(): REMOVED (t269 / necessity audit) ───────────────────────────
 -- Was a year/month-pruning helper, but a SQL function body cannot execute pg_duckdb's
@@ -249,14 +298,15 @@ CREATE OR REPLACE VIEW ev_all AS
 -- equipment_events (EE) — downtime / OEE-reconstruction hot+cold union
 --                         (task #227 / historian-clean-schema-redesign §8-EE)
 -- ═══════════════════════════════════════════════════════════════════════════
--- The EE cold archive was backfilled with LEGACY enterprise ids; it is re-keyed
--- to the F3 id-space ON DISK (scripts/historian-events-reunload.sh, same "partition
--- key IS the F3 id, no in-view CASE" convention as EV). Only VERIFIED-F3-remapped
--- partitions live under equipment_events/ — un-promoted legacy partitions are held
--- under equipment_events_legacy_unpromoted/ (their legacy ids collide numerically
--- with real F3 tenant ids, so serving them would be a CROSS-TENANT LEAK). As more
--- tenants are promoted, re-unload their partition to F3 + move it into
--- equipment_events/; no view change needed (the glob is F3-only by construction).
+-- The EE cold archive was backfilled with LEGACY enterprise ids whose values
+-- collide numerically with real F3 tenant ids, so serving them unfiltered is a
+-- CROSS-TENANT LEAK. t271: isolation is now the hist_promoted_enterprise ALLOW-LIST
+-- (ev_all_events INNER JOINs it on ee_promoted), NOT a path split. hist_ee globs the
+-- FULL archive (both equipment_events/ and the former _unpromoted/ prefix); the
+-- allow-list decides what ev_all_events serves. To promote a tenant: verify cold
+-- id_equipment ⊆ core.equipments(id), re-key its partition to the F3 id on disk
+-- (scripts/historian-events-reunload.sh, "partition key IS the F3 id, no in-view
+-- CASE"), then set ee_promoted=true for that id (the reunload script does both).
 --
 -- ── WHY THE EE BOUNDARY IS THE **MIRROR** OF hist_cutover ──────────────────────
 -- hist_cutover (EV) is COLD-anchored: cold is the full archive, hot is the live
@@ -295,8 +345,15 @@ SELECT r['ts_event']::timestamp         AS ts_event,
        r['cd_subcategory']::varchar     AS cd_subcategory,
        r['desc_subcategory']::varchar   AS desc_subcategory,
        r['txt_downtime_notes']::varchar AS txt_downtime_notes
-FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_events/*/*/*/*-legacy.parquet',
-                  hive_partitioning => true) r;
+-- t271: glob the FULL EE archive — BOTH the promoted prefix AND the former
+-- equipment_events_legacy_unpromoted/ holdout. Isolation is now the allow-list
+-- (ev_all_events INNER JOINs hist_promoted_enterprise on ee_promoted), NOT the
+-- path split. The _unpromoted prefix is retired as a security boundary and is now
+-- merely reference storage; hist_ee is the full reference surface.
+FROM read_parquet(
+       ARRAY['s3://${HISTORIAN_BUCKET}/equipment_events/*/*/*/*-legacy.parquet',
+             's3://${HISTORIAN_BUCKET}/equipment_events_legacy_unpromoted/*/*/*/*-legacy.parquet'],
+       hive_partitioning => true) r;
 
 CREATE TABLE IF NOT EXISTS ev_events_cutover (
   id_enterprise int PRIMARY KEY,
@@ -312,11 +369,13 @@ COMMENT ON TABLE ev_events_cutover IS
   'EE earliest event (e.g. a further deep-history backfill).';
 
 -- Seed cutover = min(hot ts_event) per enterprise (reads the FDW, not parquet).
+-- t271: only ee_promoted enterprises — the cutover gates the promoted cold side only.
 INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
-SELECT id_enterprise, min(ts_event)::timestamp, now()
-  FROM live.equipment_events
- WHERE id_enterprise IS NOT NULL
- GROUP BY id_enterprise
+SELECT lv.id_enterprise, min(lv.ts_event)::timestamp, now()
+  FROM live.equipment_events lv
+  JOIN hist_promoted_enterprise p ON p.id_enterprise = lv.id_enterprise AND p.ee_promoted
+ WHERE lv.id_enterprise IS NOT NULL
+ GROUP BY lv.id_enterprise
 ON CONFLICT (id_enterprise)
   DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
 
@@ -345,6 +404,7 @@ CREATE OR REPLACE VIEW ev_all_events AS
          h.cd_category, h.desc_category, h.cd_subcategory, h.desc_subcategory,
          h.txt_downtime_notes
     FROM hist_ee h
+    JOIN hist_promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ee_promoted
     LEFT JOIN ev_events_cutover c ON c.id_enterprise = h.id_enterprise
    WHERE c.cutover_ts IS NULL OR h.ts_event < c.cutover_ts;
 
