@@ -63,6 +63,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -150,6 +151,11 @@ type config struct {
 	ratePerMin   float64 // line throughput in units/min (drives the totalizer slope)
 	scrapRate    float64 // fraction of gross that becomes scrap (0..1)
 	clientID     string
+	// stateFile — path (on a named volume) where the absolute totalizers are
+	// persisted every interval and reloaded on boot, so a container restart
+	// resumes monotonically instead of resetting to 0 (real PLC totalizers are
+	// non-volatile). Empty ⇒ persistence disabled (pre-existing behaviour).
+	stateFile string
 }
 
 func loadConfig() config {
@@ -163,6 +169,7 @@ func loadConfig() config {
 		ratePerMin:   getenvFloat("TWIN_RATE_PER_MIN", 600),
 		scrapRate:    getenvFloat("TWIN_SCRAP_RATE", 0.03),
 		clientID:     getenv("TWIN_CLIENT_ID", "bispharma-twin"),
+		stateFile:    getenv("TWIN_STATE_FILE", ""),
 	}
 }
 
@@ -273,7 +280,71 @@ type twin struct {
 	client paho.Client
 }
 
+// loadState seeds the member totalizers from the persisted state file (if any)
+// BEFORE the first NBIRTH is published, so a restarted twin resumes from its last
+// absolute values instead of 0. Best-effort: a missing/corrupt file just means a
+// cold start from zero. Called once, before Connect, so no lock is needed.
+func (t *twin) loadState() {
+	if t.cfg.stateFile == "" {
+		return
+	}
+	b, err := os.ReadFile(t.cfg.stateFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			t.logger.Warn("read twin state file — cold start from zero", "file", t.cfg.stateFile, "err", err)
+		} else {
+			t.logger.Info("no twin state file yet — cold start from zero", "file", t.cfg.stateFile)
+		}
+		return
+	}
+	var saved map[string]float64
+	if err := json.Unmarshal(b, &saved); err != nil {
+		t.logger.Warn("parse twin state file — cold start from zero", "file", t.cfg.stateFile, "err", err)
+		return
+	}
+	restored := 0
+	for _, m := range t.metrics {
+		if v, ok := saved[m.name]; ok {
+			m.val = v
+			restored++
+		}
+	}
+	t.logger.Info("restored totalizers from state file",
+		"file", t.cfg.stateFile, "restored", restored, "members", len(t.metrics))
+}
+
+// saveState atomically persists the current absolute totalizers to the state
+// file (snapshot under the lock, write outside it via temp+rename). Best-effort:
+// a write failure is logged and the loop continues (the next tick retries).
+func (t *twin) saveState() {
+	if t.cfg.stateFile == "" {
+		return
+	}
+	t.mu.Lock()
+	snap := make(map[string]float64, len(t.metrics))
+	for _, m := range t.metrics {
+		snap[m.name] = m.val
+	}
+	t.mu.Unlock()
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.logger.Warn("marshal twin state", "err", err)
+		return
+	}
+	tmp := t.cfg.stateFile + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		t.logger.Warn("write twin state (tmp)", "file", tmp, "err", err)
+		return
+	}
+	if err := os.Rename(tmp, t.cfg.stateFile); err != nil {
+		t.logger.Warn("rename twin state into place", "file", t.cfg.stateFile, "err", err)
+	}
+}
+
 func (t *twin) run(ctx context.Context) error {
+	// Resume from persisted totalizers (if configured) before the first NBIRTH.
+	t.loadState()
+
 	opts := paho.NewClientOptions().
 		AddBroker(t.cfg.broker).
 		SetClientID(t.cfg.clientID + "-" + strconv.Itoa(os.Getpid())).
@@ -308,6 +379,10 @@ func (t *twin) run(ctx context.Context) error {
 		case <-tick.C:
 			t.advance()
 			t.publishData()
+			// Persist AFTER publishing so the on-disk totalizers never lead the
+			// values a downstream consumer has actually seen (a restart then
+			// replays from a value ≤ what silver already holds — monotonic, no blip).
+			t.saveState()
 		}
 	}
 }
