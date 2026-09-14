@@ -2152,7 +2152,7 @@ services:
       - ./docs/clients/tenants:/etc/packiot/tenants:ro
     networks:
       packiot-net:
-        ipv4_address: 172.18.0.46   # next free in the /24 ledger (.42-.45 superset, .44 shared-agent)
+        ipv4_address: 172.18.0.48   # free slot — .42/.43/.45/.46/.47 are the superset stack (compose.superset.yml), .44 shared-agent, .49 alloy, .50 taken
         aliases: ["bispharma-twin"]
     depends_on:
       mosquitto:
