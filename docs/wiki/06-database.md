@@ -50,6 +50,19 @@ Every level carries denormalized `id_enterprise`/`id_site`/`id_area` back-refs.
   A partial unique index blocks two active same-name-same-type rows while allowing a
   line + a single-machine member to share a name.
 
+> **Equipment config enums (resolved).** The coded integer columns on `equipments` /
+> `enterprises` / `production_orders` / `shift_hours` are decoded in the
+> **[Concepts enum reference](08-concepts.md#coded-field-values-the-enum-reference)** —
+> `scrap_calc_type` (2 = /net, 0&1 = /gross), `net_production_type` (0 = sensors,
+> 1 = scanned boxes), `status_type` (0 = instant, 5 = 5-min/CPAC — never 4),
+> `production_speed` vs `ideal_speed`, `conversion_factor` vs the unused `multiplier`,
+> and `shift_hours.day_number` (**1 = Monday … 7 = Sunday**). The legacy PLC/state
+> columns (`id_plc`, `id_equipment_type`, `id_packed_counter`, `sector_equipment_*`,
+> `id_equipment_state_*`, `id_counter_status`) are **soft references / raw indices, never
+> FKs**, and are NULL platform-wide. The live DB now carries every one of these as a
+> resolved column `COMMENT` (migration `db/migrations/t279-core-enum-column-resolve`) —
+> read them with `\d+ core.equipments`, pgweb, or CloudBeaver.
+
 **Phantom code columns:** there is **no `cd_enterprise`/`cd_site`/`cd_area`** — only
 `nm_*`. (`equipments` does have `cd_equipment`.) Code referencing those cd_ columns
 references something that doesn't exist.

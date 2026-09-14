@@ -84,17 +84,23 @@ Many columns store a bare integer. The meanings (verify option labels against
 |-------|-----------------|
 | **tp_equipment** | 1 = Machine · 2 = Sector · 3 = Line |
 | **production_orders.status** | 1 = available · 2 = running · 3 = finished · 4 = paused |
-| **status_type** (event trigger, PackML 30758) | 0 = instant · **5** = 5-min average (CPAC) · 1 = rare/unconfirmed. Real data uses **0 / 1 / 5** — the "4" older docs assumed is never used in any tenant. |
-| **net_production_type** | 0 = from sensors · 1 = from scanned boxes |
+| **status_type** (event trigger, PackML 30758) | 0 = instant (events created upstream in the pipeline) · **5** = 5-min average / CPAC (worker-derived) · 1 = rare/unconfirmed. Real data uses **0 / 1 / 5** — the "4" older docs assumed is never used in any tenant. **Drift trap:** the stream-engine native events deriver + `BuildEventMint` still gate on `status_type = 4` (`deriver.go:75`, `equipment_values.go:493`), a value no live row has, while `status_type = 0` is the CPAC/pipeline-created (CPACK) class served by `cpac_deriver.go`/`closer.go`. |
+| **net_production_type** | 0 = from sensors/counters (default) · 1 = from scanned boxes (`net_production_from_boxes`). Drives the OEE quality branch. |
+| **scrap_calc_type** (enterprise) | Scrap-% **denominator**: 2 = `(gross−net)/net` · 0 and 1 = `(gross−net)/gross` (0 and 1 are the *same* gross branch — not distinguished; 1 is the default). See `front4/src/lib/oee/scrapPercent.ts`. |
+| **production_speed vs ideal_speed** (equipment) | `production_speed` = the live configured ideal speed → PackML `MachSpeed` → the rollup ideal-speed COALESCE terminal. `equipment.ideal_speed` is a secondary optional column, **not** on the OEE performance path (NULL platform-wide). |
+| **production_orders: conversion_factor vs multiplier** | `conversion_factor` = live per-order counter→production unit factor (default 1). `production_orders.multiplier` = legacy/**unused** scalar (NULL everywhere). The PO-CSV "LINE UNIT MULTIPLIER" is a *different* per-machine map stored in `equipment_setup` JSON, not this column. |
+| **shift_hours.day_number** | **1 = Monday … 7 = Sunday** (1-based; Monday = 1, *not* 0, *not* Sunday-first). Proven by the `begin_time` seconds correlation + `csadmin/src/lib/shift-time.ts`. |
 | **id_counter_status** | **dead column** — NULL on every equipment in both DB planes, no reader anywhere; removed from the form (column kept). |
-| **scrap_calc_type** (enterprise) | 0 / 1 / 2 *(per-tenant scrap semantics)* |
+| **id_plc / id_equipment_type / id_packed_counter / sector_equipment_infeed/outfeed / id_equipment_state_{status,idle,starved,blocked,fault}** | Legacy/vestigial equipment columns — **soft references or raw PLC indices, never enforced FKs**, NULL platform-wide, no live reader. `id_plc` is superseded by the descriptor `plc:` blocks. |
 | **overview_events_type** | derived from type: line = 3 · sector = 2 · machine = 1 |
 | **client_descriptors.status** | draft → generated → captured → validated → cutover |
 | **count_index.confidence** | inferred (blocks cutover) · confirmed |
 
 > These enums are the target of the **form-readability** work — the goal is that every
 > such dropdown shows the *meaning*, never a bare number. This table is the canonical
-> source for those labels.
+> source for those labels. **The live `packiot_analytics` DB now carries the full
+> resolved meanings as column COMMENTs** (migration `db/migrations/t279-core-enum-column-resolve`)
+> — view them with `\d+ core.equipments`, pgweb, or CloudBeaver.
 
 ## lead_machine, gross_machine, scrap_machine
 
