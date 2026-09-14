@@ -43,7 +43,9 @@ default_endpoint: null
 offset: 0
 cache_timeout: 300
 catalog: null
-schema: public
+# t287: the union views moved to the gateway's `cold` schema (symmetric with the hot
+# `live` FDW schema). This virtual dataset addresses cold.ev_all explicitly.
+schema: cold
 sql: |
   SELECT
     ts_value,
@@ -53,7 +55,7 @@ sql: |
     id_equipment,
     gross_production_incr,
     net_production_incr
-  FROM ev_all
+  FROM cold.ev_all
   WHERE 1=1
   {% if from_dttm is not none %}
     AND ts_value >= '{{ from_dttm }}'
