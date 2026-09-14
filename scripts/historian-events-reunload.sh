@@ -99,5 +99,39 @@ COPY (SELECT * REPLACE ($DST_ENT::int AS id_enterprise, $DST_ENT::bigint AS ente
   fi
 
   log "OK    $Y-$Mo rows=$DN id_enterprise=$DE"
+  WROTE=$(( ${WROTE:-0} + 1 ))
 done
-log "=== EE re-unload DONE  ent $SRC_ENT -> $DST_ENT ==="
+log "=== EE re-unload DONE  ent $SRC_ENT -> $DST_ENT  (partitions written: ${WROTE:-0}) ==="
+
+# ── R3: OWN THE EE CUTOVER REFRESH (task #270 / historian-gateway-schema-sweep) ──
+# Promoting a tenant writes NEW *-legacy.parquet under equipment_events/enterprise=
+# $DST_ENT/, which the gateway `hist_ee` glob immediately serves. ev_all_events is
+# HOT-ANCHORED: cold owns ts_event < ev_events_cutover.cutover_ts. If DST_ENT has no
+# (or a stale) cutover row, the cold/hot overlap DOUBLE-COUNTS. The double-count
+# invariant must be re-established by whatever extends the cold store — so this
+# script owns the refresh and FAILS if it can't run it (a silent stale boundary is
+# a served-number-corruption risk). refresh-ee-cutover.sql reads only the hot FDW
+# (a cheap PG aggregate — no parquet scan), so it is safe to run here every time.
+if [ "${WROTE:-0}" -gt 0 ]; then
+  GW="${GATEWAY_CONTAINER:-hist-gateway}"
+  GW_DB="${GATEWAY_DB:-postgres}"
+  GW_USER="${GATEWAY_USER:-postgres}"
+  log "refreshing ev_events_cutover on gateway '$GW' (R3 double-count guard) …"
+  if ! docker exec -i "$GW" psql -v ON_ERROR_STOP=1 -U "$GW_USER" -d "$GW_DB" >>"$LOG" 2>&1 <<'REFRESH_SQL'
+INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
+SELECT id_enterprise, min(ts_event)::timestamp, now()
+  FROM live.equipment_events WHERE id_enterprise IS NOT NULL GROUP BY id_enterprise
+ON CONFLICT (id_enterprise)
+  DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
+REFRESH_SQL
+  then
+    log "REFRESH-FAIL: could not refresh ev_events_cutover — DST_ENT=$DST_ENT EE cold is"
+    log "  now globbed by hist_ee but its cutover boundary is UNSET/STALE => ev_all_events"
+    log "  DOUBLE-COUNTS the hot/cold overlap. Run refresh-ee-cutover.sql on the gateway"
+    log "  BEFORE any consumer reads this tenant's downtimes."
+    exit 1
+  fi
+  log "ev_events_cutover refreshed OK (DST_ENT=$DST_ENT boundary re-established)"
+else
+  log "no partitions written (all skipped) — ev_events_cutover refresh not required"
+fi
