@@ -3,7 +3,7 @@
 # integrity checks (run by historian-integrity-monitor.timer on the app box). Runs all
 # three and returns non-zero if ANY fails, so systemd marks the unit failed (→ alert).
 #
-#   1. historian-cutover-coverage-check.sh  — R1/t271 (HARD): hist_cutover set == ev_promoted allow-list
+#   1. historian-cutover-coverage-check.sh  — R1/t271 (HARD): ev_union_boundary set == ev_promoted allow-list
 #   2. historian-staleness-monitor.sh       — R4/R5  (HARD): no missed cutover-refresh hook (double-count risk)
 #   3. historian-ee-coverage-check.sh        — R7     (SOFT): ev_all_events hot-coverage caveat
 #

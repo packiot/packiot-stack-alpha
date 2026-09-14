@@ -44,8 +44,8 @@ for E in $EE_ENTS; do
   # HOT-owned window (equipment_events_all clips cold there). ONLY equipment with cold events
   # in THAT window that hot lacks are truly under-covered — equipment whose cold events
   # are all pre-cutover are correctly cold-served, so exclude them (precision filter).
-  CUT="$(psql -tAc "SELECT cutover_ts FROM ev_events_cutover WHERE id_enterprise=${E}" | sed '/^$/d')"
-  [ -z "$CUT" ] && { echo "  ent=${E}: no ev_events_cutover row — skipping."; continue; }
+  CUT="$(psql -tAc "SELECT cutover_ts FROM ee_union_boundary WHERE id_enterprise=${E}" | sed '/^$/d')"
+  [ -z "$CUT" ] && { echo "  ent=${E}: no ee_union_boundary row — skipping."; continue; }
   UNDER="$(psql -tAc "
     WITH cold AS (
       SELECT DISTINCT id_equipment FROM equipment_events
@@ -59,7 +59,7 @@ for E in $EE_ENTS; do
   if [ -n "$UNDER" ]; then
     echo "EE COVERAGE GAP: enterprise=${E} has cold-only equipment (present in COLD, absent in HOT) — UNDER-covered in equipment_events_all:" >&2
     echo "  id_equipment=[$UNDER]" >&2
-    echo "  Cause: partial hot deep-history backfill. Fix: extend the hot backfill for these equipment, or re-anchor ev_events_cutover." >&2
+    echo "  Cause: partial hot deep-history backfill. Fix: extend the hot backfill for these equipment, or re-anchor ee_union_boundary." >&2
     rc=1
   else
     echo "  ent=${E}: OK — every cold equipment (last ${MONTHS} mo) is present in hot."

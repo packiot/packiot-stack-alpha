@@ -111,7 +111,7 @@ log "=== EE re-unload DONE  ent $SRC_ENT -> $DST_ENT  (partitions written: ${WRO
 #   1) flip ee_promoted=true for DST_ENT (this is the act of promotion — do it ONLY
 #      for a VERIFIED remap: cold id_equipment ⊆ core.equipments(DST_ENT), which the
 #      operator confirms per the header rules; the script does not auto-verify).
-#   2) refresh ev_events_cutover — HOT-ANCHORED, cold owns ts_event < cutover; a
+#   2) refresh ee_union_boundary — HOT-ANCHORED, cold owns ts_event < cutover; a
 #      missing/stale boundary DOUBLE-COUNTS the overlap. The refresh joins the allow-
 #      list, so step 1 MUST precede it or DST_ENT gets no cutover row.
 # Both read only the hot FDW / tiny tables (cheap), safe to run every time. FAIL the
@@ -120,7 +120,7 @@ if [ "${WROTE:-0}" -gt 0 ]; then
   GW="${GATEWAY_CONTAINER:-hist-gateway}"
   GW_DB="${GATEWAY_DB:-postgres}"
   GW_USER="${GATEWAY_USER:-postgres}"
-  log "promoting DST_ENT=$DST_ENT (ee_promoted) + refreshing ev_events_cutover on '$GW' …"
+  log "promoting DST_ENT=$DST_ENT (ee_promoted) + refreshing ee_union_boundary on '$GW' …"
   if ! docker exec -i "$GW" psql -v ON_ERROR_STOP=1 -U "$GW_USER" -d "$GW_DB" -v dst="$DST_ENT" >>"$LOG" 2>&1 <<'PROMOTE_SQL'
 -- 1) mark the tenant EE-promoted (id-space verified by the operator per header rules)
 INSERT INTO promoted_enterprise (id_enterprise, ee_promoted, provenance, note)
@@ -128,7 +128,7 @@ VALUES (:dst, true, 'ee_reunload',
         'promoted by historian-events-reunload.sh — cold EE re-keyed to F3 id ' || :dst)
 ON CONFLICT (id_enterprise) DO UPDATE SET ee_promoted = true;
 -- 2) refresh the EE boundary for now-promoted enterprises (joins the allow-list)
-INSERT INTO ev_events_cutover (id_enterprise, cutover_ts, refreshed_at)
+INSERT INTO ee_union_boundary (id_enterprise, cutover_ts, refreshed_at)
 SELECT lv.id_enterprise, min(lv.ts_event)::timestamp, now()
   FROM live.equipment_events lv
   JOIN promoted_enterprise p ON p.id_enterprise = lv.id_enterprise AND p.ee_promoted
@@ -142,7 +142,7 @@ PROMOTE_SQL
     log "  allow-list upsert + refresh-ee-cutover.sql on the gateway before serving this tenant."
     exit 1
   fi
-  log "DST_ENT=$DST_ENT promoted (ee_promoted=true) + ev_events_cutover refreshed OK"
+  log "DST_ENT=$DST_ENT promoted (ee_promoted=true) + ee_union_boundary refreshed OK"
 else
   log "no partitions written (all skipped) — no promotion/refresh required"
 fi

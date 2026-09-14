@@ -14,7 +14,7 @@
 #
 # HOST: in-stack service name `hist-gateway` (compose.historian-gateway.yml,
 # container_name: hist-gateway, on stack_packiot-net). Superset shares that network.
-# dbname `postgres` (the gateway's default DB where ev_all / hist / hist_cutover live).
+# dbname `postgres` (the gateway's default DB where ev_all / hist / ev_union_boundary live).
 #
 # ── RLS IS THE SOLE ENFORCER HERE (read this) ─────────────────────────────────
 # Unlike packiot_analytics, this gateway has NO Postgres RLS co-enforcer: pg_duckdb

@@ -56,16 +56,16 @@ the Postgres view (`Custom Scan (DuckDBScan)`).
    (it is the deep-remap of the still-live legacy packiot40 source), and live also
    holds ent3 from its F3 cutover (2026-07-23) onward — so on 2026-09-03 BOTH sides
    had ent3 rows (hist 196,671 / live 155,465) and a plain `UNION ALL` returned
-   352,136 == **double-count**. Fixed with `hist_cutover(id_enterprise, cutover_ts =
+   352,136 == **double-count**. Fixed with `ev_union_boundary(id_enterprise, cutover_ts =
    max(hist.ts_value))`: COLD owns `ts <= cutover`, HOT owns `ts > cutover` (disjoint;
    live fills forward from the archive's end). Hardproof of the fix: the same day now
    returns **196,671** (HOT 0 + COLD 196,671), 1 parquet file. **Operational
    invariant:** the cutover refresh (top-level `refresh-equipment_values-cutover.sql`) MUST be
    re-run after every historian backfill/append, and every in-historian enterprise
-   MUST have a `hist_cutover` row, or the double-count returns. **Never** wrap this
+   MUST have a `ev_union_boundary` row, or the double-count returns. **Never** wrap this
    refresh in a PL/pgSQL function — pg_duckdb cannot scan the `hist` parquet inside a
    function body, so it throws and leaves the cutover silently stale (a broken
-   `refresh_hist_cutover()` fn of exactly this shape was found live on staging and
+   `refresh_ev_union_boundary()` fn of exactly this shape was found live on staging and
    dropped 2026-09-08).
    *(A naïve `live ∪ all-historian` double-counted 2026 and surfaced 99e9 gross.)*
 2. **Tenant RLS must be a LITERAL.** pg_duckdb pushes predicates into DuckDB,
