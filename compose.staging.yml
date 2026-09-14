@@ -1936,7 +1936,17 @@ services:
       # mutually exclusive PER enterprise, so different ents never collide). Prod
       # already runs line-lead for ent 3 (compose.production.yml).
       COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
-      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3,5"
+      # 2000003 = the SANDBOX-CPACK twin (ent 2000003). Its tp=3 lines were removed
+      # from COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS on 2026-09-04 "moving to line-lead"
+      # alongside CPACK's ent-3 lines — but only ent 3 was added here, so the twin
+      # fell into a gap: line-lead skipped it (ent ∉ list) AND it was no longer in the
+      # per-equipment counters-only list, leaving its tp=3 line rows on the state-only
+      # path. With state=NULL raw + no state events, that path zero-fills
+      # available_time/running_time/net → oee_a=oee=0 while gross still flows. Its lead
+      # machines (2000053…, fed by oeecloud-fanout) carry counter data byte-identical to
+      # CPACK's lead machines, so adding 2000003 makes each sandbox line compute exactly
+      # like its ent-3 source. Reversible: drop 2000003 + redeploy.
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3,5,2000003"
       # ADR-0037 Silver invariant — per-equipment production-increment SANITY
       # CLAMP. Rejects any Processed/Consumed/Defective delta exceeding
       # K · equipments.production_speed · Δt (a physically-impossible count at
