@@ -1309,26 +1309,12 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
-  # ── pgweb-historian (PostgreSQL web browser — historian plane) ────────────────
-  # Same locked pgweb, pointed at the historian gateway (hist-gateway:5432 — the
-  # pg_duckdb hot+cold gateway from compose.historian-gateway.yml, reachable over the
-  # shared stack_packiot-net). Behind the Cognito staff oauth2 gate at
-  # histdb.staging.packiot.app (nginx histdb.conf, terraform var.services).
-  pgweb-historian:
-    image: sosedoff/pgweb:latest
-    container_name: pgweb-historian
-    restart: unless-stopped
-    command: ["--bind=0.0.0.0", "--listen=8081", "--lock-session"]
-    environment:
-      DATABASE_URL: "postgres://postgres:${HIST_GW_PASSWORD}@hist-gateway:5432/postgres?sslmode=disable"
-    ports:
-      - "127.0.0.1:8091:8081"
-    networks:
-      packiot-net:
-        ipv4_address: 172.18.0.48
-    logging:
-      driver: json-file
-      options: {max-size: "5m", max-file: "2"}
+  # ── pgweb-historian — RETIRED (consolidated into CloudBeaver) ─────────────────
+  # The historian gateway is now a second connection ("historian gateway (read-only)",
+  # role cloudbeaver_histro) inside the ONE CloudBeaver at db.staging.packiot.app, so
+  # this separate pgweb UI + its histdb.staging URL were redundant. histdb.staging now
+  # 301-redirects to db.staging (nginx_setup.sh histdb special-case). Removed 2026-09-14.
+  # (IP 172.18.0.48 is now free.)
 
   # ── cloudbeaver (web DB IDE — nicer UX alternative to pgweb) ───────────────────
   # DBeaver's web edition. Behind the same Cognito staff oauth2 gate at
