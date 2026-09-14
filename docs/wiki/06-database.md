@@ -112,6 +112,32 @@ gold.equipment_oee_{shift,hourly,daily,weekly,monthly}  ·  gold.area_oee_* / si
   `serving.production_information` went stale because a refresher wasn't running — a
   live-snapshot, not a fresh aggregate.
 
+### Medallion object inventory
+
+Every object carries a DB `COMMENT` (read `\d+ <schema>.<obj>` / pgweb / CloudBeaver for
+column detail). One-liners by layer:
+
+**`bronze`** (raw, append-only):
+
+- `equipment_values_raw` / `equipment_events_raw` — ADR-0036 flag-gated **raw dual-write** (immutability-triggered; the untouched landing copy).
+- `scanned_boxes` / `box_scans` / `sample_boxes` — barcode box-scan capture (per PO + equipment).
+
+**`silver`** (cleaned facts + rollup continuous-aggregates):
+
+- `equipment_values` — the raw production-reading hypertable (PK `id_equipment,ts_value`; 90-day hot). **THE source fact.** Each metric paired with a `_quality`.
+- `equipment_events` — downtime / machine-status events (2-year hot). `equipment_events_{man,low_speed,cpac_shadow}` — manual downtimes / low-speed / CPAC shadow.
+- `machine_state` — decoded PLC state stream.
+- `agg_equipment_values_{1min,1hour}` + `equipment_categorical_{1min,1hour}` — TimescaleDB **continuous aggregates** (numeric / categorical), the rollup feedstock.
+- `equipment_metrics_1min` — per-minute derived metrics. `ca_discrete_changes_1s` — CPAC 1-s discrete-change feed. `ca_equipment_boxes_1s` — 1-s box counts.
+- `equipment_live_{metrics,job,shift,day,month}` / `area_live_{shift,day}` — **current-state ("now") grains** for live dashboards (a live snapshot, not an aggregate).
+- `data_quality_event` — DQ flags (overspeed, ideal-speed-too-low, …).
+
+**`gold`** (OEE + business):
+
+- `equipment_oee_{shift,hourly,daily,weekly,monthly}` (+ `_shift_weekly`/`_shift_monthly`) — **OEE per equipment per grain**: `oee`, `oee_a/p/q`, running/stopped/idle time, gross/net/scrap, `recalc_needed`.
+- `area_oee_{shift,daily}` / `site_oee_shift` — OEE rolled up to area/site.
+- `production_orders_runtime` — one OEE row per PO run (GiST EXCLUDE → no overlapping runs per equipment). `po_box_counter` — box counts per PO.
+
 ## Retention & the historian cold store
 
 Two layers bound how long data lives: a **hot** retention policy inside the
@@ -132,21 +158,82 @@ manual-entry tables that grow with human activity, not sample rate. (This is why
 OEE-cascade box above says "time-bounded — see here" rather than a single number: the
 bound is plane- and table-specific.)
 
-### Cold store — the S3 + Athena historian (`terraform/staging/historian.tf`)
+### Cold store — S3 Parquet (`terraform/staging/historian.tf`)
 
-A daily job unloads `equipment_values` from the analytics DB to **ZSTD Parquet on S3**,
-queried via **Athena partition projection** (no Glue crawler → $0 catalog cost).
+Anything older than the hot window lives as **ZSTD Parquet on S3**, keyed
+`s3://packiot-staging-historian-<acct>/equipment_values/enterprise=<F3-id>/year=<Y>/month=<M>/*.parquet`
+(partitions **and** `ts_value` are **UTC** — query in UTC or you drift by the offset).
+Two read paths: **Athena** (partition projection, no Glue crawler → $0 catalog) for ad-hoc
+scans, and the **historian gateway** (below) for the live hot∪cold SQL surface.
 
-- **Layout:** `s3://packiot-staging-historian-<acct>/equipment_values/enterprise=<id>/year=<Y>/month=<M>/data-<YYYY-MM-DD>.parquet`. Partitions **and** `ts_value` are **UTC** — query in UTC, not local BRT, or you drift by the offset.
-- **Append job:** `historian-staging-append.timer` (systemd, daily 02:30 UTC, `Persistent=true`) runs `scripts/historian-staging-run-append.sh` on the app box. DuckDB `postgres_query` (READ_ONLY) → a **56-column** projection matching the Glue table → `COPY TO` a **deterministic per-day S3 key**. Versioning is off, so a re-run **overwrites** (never duplicates); a 2-day trailing overlap window (`OVERLAP_DAYS`) re-heals late rows.
-- **Prune:** S3 lifecycle expires `equipment_values/` Parquet after **180 days** (staging is a *test* historian — 6-month prune) and `athena-results/` after 30 days.
-- **No-gap guarantee:** rows land in the cold store ~1 day after they occur; analytics doesn't drop a row until it's 90 days old — so every row is archived ~87–90 days *before* it would leave the hot DB. Watermark files (`_watermark/enterprise=<id>/last-append.json`) give observability; the DB→S3 row counts cross-check **exactly**.
-- **Total queryable age ≈ 6 months** — the 90-day hot window is a *subset* of the 180-day cold window, **not additive**.
+**What fills cold — TEMPORARY, until the #225 legacy cutover:** a daily job copies the
+**legacy** production DB (`packiot40`, read-only) into cold — remapped from the legacy
+id-space to the new-stack (**F3**) id-space and translated into the 56-column hist schema —
+writing one `data-<YYYY-MM>-legacy.parquet` per month (idempotent overwrite), up to a lag
+boundary that leaves the live edge to the hot side. This is `scripts/historian-legacy-copy.sh`,
+run by `historian-staging-append.timer` (02:30 UTC), which then stamps the watermark and
+refreshes the union boundaries.
+
+- **Why legacy, not analytics:** analytics only carries the machines wired to the new stack
+  so far (hardproof 2026-09: **46 of 62** CPACK machines), so the legacy copy is the only
+  **complete-history** source until the cutover. LIVE/recent data is served from analytics
+  (the hot side) — not copied here.
+- **Remap:** legacy→F3 equipment ids are recovered by joining `packml_register` on the
+  group-normalized SparkPlug topic (`C-PACK`→`CPACK`), proven identical to the original
+  onboarding remap. F3 `id_site`/`id_area` come from `core.equipments`.
+- **Prune:** S3 lifecycle expires Parquet after **180 days** (staging is a *test* historian).
 
 > **Prod differs:** `terraform/production/historian.tf` is a **keep-forever** design that
-> *tiers* to colder storage (365d/730d transitions) rather than pruning, and the prod
-> instance is currently a one-time legacy backfill pilot (ent-1 only), not an ongoing
-> append. Don't apply the staging 6-month prune to prod.
+> *tiers* to colder storage (365d/730d) rather than pruning; the prod instance is a one-time
+> legacy backfill pilot (ent-1 only), not an ongoing copy. Don't apply the staging prune to prod.
+
+## Historian gateway (`packiot_historian`) — the hot∪cold query layer
+
+A separate **pg_duckdb** container (`hist-gateway`, DB `packiot_historian`) presents ONE
+seamless SQL surface per fact that stitches **HOT** (live analytics via `postgres_fdw`) with
+**COLD** (S3 Parquet via `read_parquet`). Consumers (read-api `/v1/historian`, the Superset
+historian dataset) query plain Postgres SQL; old timestamps transparently resolve to Parquet.
+
+| `schema.object` | Kind | Purpose |
+|---|---|---|
+| `live.equipment_values` | FDW | **HOT** side of EV — window onto `packiot_analytics.silver.equipment_values` (pinned 8 cols) |
+| `live.equipment_events` | FDW | **HOT** side of EE — window onto `silver.equipment_events` (pinned 12 cols) |
+| `cold.equipment_values` | view | **COLD** side of EV — `read_parquet(…/equipment_values/*-legacy.parquet)` |
+| `cold.equipment_events` | view | **COLD** side of EE — `read_parquet(…/equipment_events/*-legacy.parquet)` |
+| `cold.equipment_oee_shift` | view | COLD deep-OEE-history over the gold OEE-shift Parquet (PoC; not yet in a union) |
+| `cold.equipment_values_all` | view | **THE EV serving surface** — hot ∪ cold, no double-count |
+| `cold.equipment_events_all` | view | **THE EE serving surface** — hot ∪ cold |
+| `cold.ev_union_boundary` | table | Per-tenant EV seam. Cold-anchored: `cutover_ts = max(cold ts_value)`; union serves cold `≤`, hot `>`. (was `hist_cutover`) |
+| `cold.ee_union_boundary` | table | Per-tenant EE seam. **Hot-anchored** (opposite): `cutover_ts = min(hot ts_event)`; cold `<`, hot `≥` — hot holds the deep event history + operator downtime notes. (was `ev_events_cutover`) |
+| `cold.promoted_enterprise` | table | Tenant-isolation **allow-list** — the cold side of each union INNER-JOINs it, so an enterprise's cold rows are served only when promoted (legacy ids collide across tenants; this is the sole cold fence) |
+| `cold.cold_append_watermark` | table | Per-tenant staleness/progress stamp for the cold copy (observability + the staleness monitor). (was `hist_meta`) |
+
+**Query contract:** every bounded query MUST carry a `year` AND `month` predicate (DuckDB
+prunes only on partition columns — `ts_value` alone = full-archive scan) **and** an
+`id_enterprise = <literal>` tenant fence (no Postgres RLS here — the literal is the fence).
+Keep the union views out of Superset SQL Lab.
+
+**EV vs EE asymmetry (the non-obvious bit):** EV is cold-anchored (cold = the big
+authoritative archive, hot = the recent tail); EE is hot-anchored (hot = the deep event
+history, cold = only the pre-hot window). That's why the two boundary tables compute
+`cutover_ts` from opposite ends.
+
+## Naming correlation: analytics ↔ historian
+
+The historian deliberately **mirrors the analytics medallion fact names** — the gateway is a
+query layer over the same facts, so the names line up 1:1 (no drift):
+
+| Analytics (source of truth) | Historian gateway |
+|---|---|
+| `silver.equipment_values` | `live.equipment_values` (hot) + `cold.equipment_values` (archive) → `equipment_values_all` |
+| `silver.equipment_events` | `live.equipment_events` + `cold.equipment_events` → `equipment_events_all` |
+| `gold.equipment_oee_shift` | `cold.equipment_oee_shift` |
+
+- The union views add only the `_all` suffix.
+- The control tables (`ev_union_boundary`, `ee_union_boundary`, `promoted_enterprise`,
+  `cold_append_watermark`) are gateway-internal — no analytics equivalent, named for their role.
+- **Verdict: correlated.** The 2026-09 rename removed the last cryptic gateway names
+  (`hist_cutover`/`ev_events_cutover`/`hist_meta` → the boundary/watermark names above).
 
 ## Shifts — the seconds-from-week-start encoding
 
