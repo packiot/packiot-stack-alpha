@@ -1,7 +1,7 @@
 {
   "uid": "v2-data-quality",
-  "title": "v2 · Data Quality (OEE invariants)",
-  "tags": ["packiot-v2", "data-quality", "oee"],
+  "title": "Data quality \u2014 OEE invariants",
+  "tags": ["packiot", "library", "data-quality", "oee"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

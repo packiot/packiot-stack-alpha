@@ -1,7 +1,7 @@
 {
   "uid": "v2-oee",
-  "title": "v2 · OEE per equipment (business)",
-  "tags": ["packiot-v2", "oee", "business"],
+  "title": "OEE \u2014 per equipment",
+  "tags": ["packiot", "library", "oee", "business"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

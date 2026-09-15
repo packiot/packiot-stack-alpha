@@ -1,7 +1,7 @@
 {
   "uid": "v2-api",
-  "title": "v2 · API RED (rate / errors / duration)",
-  "tags": ["packiot-v2", "api", "red"],
+  "title": "API \u2014 RED",
+  "tags": ["packiot", "library", "api", "red"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

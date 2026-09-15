@@ -1,7 +1,7 @@
 {
   "uid": "v2-operator",
-  "title": "v2 · Operator — adapter/shim metrics + user_logs actions",
-  "tags": ["packiot-v2", "operator", "users"],
+  "title": "Operator \u2014 actions & adapter",
+  "tags": ["packiot", "library", "operator", "users"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

@@ -41,6 +41,12 @@ PROM_URL = os.environ.get("PROM_URL", "http://localhost:9090").rstrip("/")
 EXPECT_EMPTY = [
     'result="error"',                       # ingest write errors — none yet
     "packml_unresolved_topic_total",        # unmapped topics — none yet
+    # Activity-gated counters: on idle staging they have no series yet. Verified
+    # ABSENT-because-inactive (not dead): the metric is registered, the flow just
+    # hasn't run. Each is "empty = healthy" in its panel description.
+    "operator_adapter_requests_total",      # no operator actions run on staging
+    "po_gate_degraded_total",               # PO gate never degraded = healthy
+    'route=~"/api/production-orders',       # no PO-route traffic to edge-api yet
 ]
 
 
@@ -61,10 +67,17 @@ def collect_targets(path):
             continue
         for t in p.get("targets", []):
             uid = (t.get("datasource") or {}).get("uid", "")
-            if t.get("expr"):
-                out.append((p.get("title", ""), "prom", t["expr"], uid))
-            elif t.get("rawSql"):
-                out.append((p.get("title", ""), "sql", t["rawSql"], uid))
+            q = t.get("expr") or t.get("rawSql")
+            if not q:
+                continue
+            # Kind is decided by the DATASOURCE, not by expr-vs-rawSql: Loki
+            # (LogQL) and Tempo (TraceQL) also use `expr`, and running those
+            # against Prometheus /api/v1/query would falsely fail. Only
+            # prometheus targets are hardproofed here; everything else is skipped.
+            if uid == "packiot-prometheus":
+                out.append((p.get("title", ""), "prom", q, uid))
+            else:
+                out.append((p.get("title", ""), "other", q, uid))
     return out
 
 
@@ -80,10 +93,18 @@ def main():
     fails, proven, skipped = [], 0, 0
     for f in files:
         print(f"\n=== {os.path.basename(f)} ===")
-        for title, kind, q, _ in collect_targets(f):
-            if kind == "sql":
+        for title, kind, q, uid in collect_targets(f):
+            if kind != "prom":
                 skipped += 1
-                print(f"  ~ SKIP (sql/Grafana-macro): {title!r}")
+                why = "sql/Grafana-macro" if uid.startswith("packiot-postgres") else f"non-prom ds ({uid})"
+                print(f"  ~ SKIP ({why}): {title!r}")
+                continue
+            # Grafana template/interval variables ($datname, $job, $__rate_interval,
+            # …) only expand inside Grafana's query engine. A headless query sends
+            # them literally → false EMPTY. Skip; prove these via Grafana /api/ds/query.
+            if "$" in q:
+                skipped += 1
+                print(f"  ~ SKIP (Grafana $var — prove via /api/ds/query): {title!r}")
                 continue
             try:
                 res = prom_query(q)

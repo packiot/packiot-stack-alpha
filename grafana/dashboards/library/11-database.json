@@ -1,7 +1,7 @@
 {
   "uid": "v2-database",
-  "title": "v2 · Database (Postgres / TimescaleDB)",
-  "tags": ["packiot-v2", "database"],
+  "title": "Database \u2014 Postgres / TimescaleDB",
+  "tags": ["packiot", "library", "database"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
