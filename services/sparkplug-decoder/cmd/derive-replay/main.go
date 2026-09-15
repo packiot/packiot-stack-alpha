@@ -35,7 +35,7 @@ import (
 	"os"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/clientdescriptor"
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/deriver"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/derivesim"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/tenantprofile"
 )
@@ -48,32 +48,15 @@ type sampleTag struct {
 }
 
 // Emitted is one synthesized tag the deriver produced for a given input step.
-type Emitted struct {
-	Metric   string
-	Value    any
-	TsMillis int64
-	// AfterInput is the input tag whose arrival triggered this emission.
-	AfterInput string
-}
+// Aliased to the shared derivesim type so the CLI and the /v1/onboard/simulate
+// endpoint report identical shapes.
+type Emitted = derivesim.Emitted
 
 // Replay runs samples (in order) through a deriver built from profile and returns
-// every synthesized tag, in emission order. It is the testable core of the CLI —
-// no I/O — so a hardproof can assert on the produced tags directly.
+// every synthesized tag, in emission order. Thin wrapper over the shared
+// derivesim core so the CLI and the HTTP endpoint can never drift.
 func Replay(profile *tenantprofile.Profile, samples []rawtag.RawTag) []Emitted {
-	d := deriver.New(profile)
-	var out []Emitted
-	for _, s := range samples {
-		synth, _ := d.Process([]rawtag.RawTag{s})
-		for _, e := range synth {
-			out = append(out, Emitted{
-				Metric:     e.Metric,
-				Value:      e.Value,
-				TsMillis:   e.TsMillis,
-				AfterInput: s.Metric,
-			})
-		}
-	}
-	return out
+	return derivesim.Run(profile, samples)
 }
 
 func main() {
