@@ -1,7 +1,7 @@
 {
   "uid": "v2-infra",
-  "title": "v2 · Infra — host / DB / runtime",
-  "tags": ["packiot-v2", "infra", "node-exporter", "postgres-exporter"],
+  "title": "Infra \u2014 host / DB / runtime",
+  "tags": ["packiot", "library", "infra"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

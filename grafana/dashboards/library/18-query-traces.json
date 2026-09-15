@@ -1,7 +1,7 @@
 {
   "uid": "v2-query-traces",
-  "title": "v2 · DB Query Traces (Tempo / TraceQL)",
-  "tags": ["packiot-v2", "traces", "database", "tempo"],
+  "title": "DB query traces \u2014 Tempo",
+  "tags": ["packiot", "library", "traces", "tempo"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

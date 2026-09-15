@@ -1,7 +1,7 @@
 {
   "uid": "v2-database-dbm",
-  "title": "v2 · Database DBM (deep · F3)",
-  "tags": ["packiot-v2", "database", "dbm"],
+  "title": "Database \u2014 deep (DBM)",
+  "tags": ["packiot", "library", "database", "dbm"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

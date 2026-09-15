@@ -1,7 +1,7 @@
 {
   "uid": "v2-rabbitmq",
-  "title": "v2 · Bus (RabbitMQ)",
-  "tags": ["packiot-v2", "rabbitmq", "bus"],
+  "title": "Bus \u2014 RabbitMQ",
+  "tags": ["packiot", "library", "rabbitmq", "bus"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

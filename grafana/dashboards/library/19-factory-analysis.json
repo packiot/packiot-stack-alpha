@@ -1,13 +1,7 @@
 {
   "uid": "v2-factory-analysis",
-  "title": "v2 \u00b7 Factory / OEE analysis (business)",
-  "tags": [
-    "packiot-v2",
-    "oee",
-    "business",
-    "analysis",
-    "factory"
-  ],
+  "title": "Factory / OEE analysis",
+  "tags": ["packiot", "library", "oee", "business", "analysis"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

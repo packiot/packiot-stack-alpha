@@ -1,7 +1,7 @@
 {
   "uid": "v2-po-staleness-gate",
-  "title": "v2 · PO staleness gate (bake watch)",
-  "tags": ["packiot-v2", "po", "flip", "gate", "bake"],
+  "title": "PO staleness gate",
+  "tags": ["packiot", "library", "po", "gate"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

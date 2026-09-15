@@ -1,7 +1,7 @@
 {
   "uid": "v2-uptime-containers",
-  "title": "v2 · Uptime & Containers",
-  "tags": ["packiot-v2", "uptime", "containers"],
+  "title": "Uptime & containers",
+  "tags": ["packiot", "library", "uptime", "containers"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

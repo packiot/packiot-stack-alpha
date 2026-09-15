@@ -1,7 +1,7 @@
 {
   "uid": "v2-overview",
-  "title": "v2 · Overview",
-  "tags": ["packiot-v2", "overview"],
+  "title": "Overview",
+  "tags": ["packiot", "audience", "overview"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

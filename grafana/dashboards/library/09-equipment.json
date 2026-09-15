@@ -1,7 +1,7 @@
 {
   "uid": "v2-equipment",
-  "title": "v2 · Equipment & reference data",
-  "tags": ["packiot-v2", "config", "reference"],
+  "title": "Equipment & reference data",
+  "tags": ["packiot", "library", "config", "reference"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

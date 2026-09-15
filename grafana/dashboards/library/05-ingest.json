@@ -1,7 +1,7 @@
 {
   "uid": "v2-ingest",
-  "title": "v2 · Ingest — edge-transformer (MQTT→calc→emit→outbox)",
-  "tags": ["packiot-v2", "ingest", "flow"],
+  "title": "Ingest \u2014 edge-transformer",
+  "tags": ["packiot", "library", "ingest", "flow"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
