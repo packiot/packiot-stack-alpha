@@ -440,7 +440,12 @@ func (t *twin) advance() {
 	}
 	for _, m := range t.metrics {
 		g := byMember[m.line+"/"+m.memb]
-		scrap := math.Round(g * t.cfg.scrapRate)
+		// FRACTIONAL scrap — do NOT round per tick. At low rates (e.g. 50/min → g≈12)
+		// round(g·0.03)=round(0.36)=0 would freeze the scrap totalizer forever, so
+		// net≡gross and Q pins at 1.0. m.val is a float accumulator emitted as int64,
+		// so a fractional 0.36/tick correctly rolls the emitted scrap counter over
+		// several ticks. net = gross − scrap still holds (net+scrap = gross per member).
+		scrap := g * t.cfg.scrapRate
 		switch m.kind {
 		case kindGross:
 			m.val += g
