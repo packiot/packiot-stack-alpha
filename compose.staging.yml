@@ -2214,7 +2214,6 @@ services:
       PGHOST: pgbouncer
       PGPORT: "5432"
       PGUSER: postgres
-      PGPASSWORD: "${DB_PASSWORD}"
       PGDATABASE: packiot_analytics
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -2222,6 +2221,9 @@ services:
         if [ "$${BISPHARMA_BOX_SCAN_MOCK_ENABLED}" != "true" ]; then
           echo "bispharma-box-scan-mock disabled (BISPHARMA_BOX_SCAN_MOCK_ENABLED != true) — idling"; exec sleep infinity
         fi
+        # POSTGRES_PASSWORD is the populated postgres@pgbouncer secret (DB_PASSWORD is empty
+        # in this stack); export it as PGPASSWORD for psql. Sourced from env_file (.env).
+        export PGPASSWORD="$${POSTGRES_PASSWORD}"
         echo "bispharma-box-scan-mock: appending scans every $${MOCK_INTERVAL_SEC}s"
         while true; do
           psql -v ON_ERROR_STOP=1 -q -f /mock/append.sql || echo "append tick failed (will retry)"
