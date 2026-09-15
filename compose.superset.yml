@@ -197,11 +197,11 @@ services:
           --username "$${SUPERSET_GUESTTOKEN_ADMIN_USER}" \
           --firstname guest --lastname minter --email guesttoken@packiot.app \
           --password "$${SUPERSET_GUESTTOKEN_ADMIN_PASSWORD}" || true
-        # BI security bootstrap: dedicated GuestViewer embed role + minimal
-        # GuestTokenMinter role, STRIP the anonymous Public role to zero perms (closes
-        # the anon /api/v1/dashboard/ metadata leak), and scope the minter service
-        # account off Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
-        python /app/pythonpath/bootstrap_guest_role.py
+        # Import the dashboards-as-code bundle FIRST — while the minter is STILL Admin —
+        # so it can CREATE new datasets/charts/dashboards, not merely update existing
+        # ones. bootstrap_guest_role.py (below) scopes the minter to least-privilege
+        # AFTER the import; running it before would leave the minter unable to create a
+        # new client's dataset and red the whole deploy. See the feedback memo.
         # Import the dashboards-as-code bundle (configs/superset/assets/**). IDEMPOTENT:
         # import_bundle.py stages the assets and injects SUPERSET_DB_RO_PASSWORD (from
         # .env, Secrets Manager) into the packiot_analytics connection URI — the git
@@ -218,6 +218,12 @@ services:
         # must run AFTER import (charts + datasets must exist). See
         # configs/superset/normalize_query_context.py.
         python /app/pythonpath/normalize_query_context.py
+        # BI security bootstrap — runs AFTER the import (so the minter had Admin to
+        # CREATE the assets): dedicated GuestViewer embed role + minimal GuestTokenMinter
+        # role, STRIP the anonymous Public role to zero perms (closes the anon
+        # /api/v1/dashboard/ metadata leak), and scope the minter service account off
+        # Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
+        python /app/pythonpath/bootstrap_guest_role.py
         # Pin explicit non-Public RBAC roles on the imported dashboards (defense in
         # depth for the anon leak). Runs LAST — dashboards must exist first. See
         # configs/superset/harden_dashboard_roles.py.
