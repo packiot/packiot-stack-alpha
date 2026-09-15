@@ -1,0 +1,137 @@
+{
+  "uid": "aud-data",
+  "title": "③ Pipeline · Data eng",
+  "tags": ["packiot", "audience", "data"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    { "id": 100, "type": "row", "title": "① Throughput & flow", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 1, "type": "timeseries", "title": "Worker write rate by client × result",
+      "description": "sum by(tenant,result) rate(oeecloud_worker_batch_writes_total[5m]). Rows/s committed to silver, split by client and ok/error/empty_batch. dest is always f3_packiot_analytics since the medallion collapse (single sink), so tenant is the useful cut.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant,result) (rate(oeecloud_worker_batch_writes_total[5m]))", "legendFormat": "{{tenant}} · {{result}}", "refId": "A" } ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Scheduled-job ticks by job (errors in red)",
+      "description": "sum by(exported_job,outcome) rate(oeecloud_worker_job_ticks_total[15m]). NOTE the label is exported_job — the metric's own `job` label is shadowed by Prometheus's scrape `job` and renamed. runtime-rollup / *-deriver / boxes etc. error+panic lines must stay flat 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 4, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*(error|panic).*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }, { "id": "custom.lineWidth", "value": 2 } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (exported_job,outcome) (rate(oeecloud_worker_job_ticks_total[15m]))", "legendFormat": "{{exported_job}} · {{outcome}}", "refId": "A" } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Handler p99 latency",
+      "description": "histogram_quantile(0.99, oeecloud_worker_handler_duration_seconds). Delivery received → ack/nack decision, incl. the DB write. A climb = the DB write path is slowing.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(oeecloud_worker_handler_duration_seconds_bucket[5m])))", "refId": "A" } ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "AMQP deliveries by result",
+      "description": "sum by(result) rate(oeecloud_worker_amqp_deliveries_total[5m]). acked = processed; nacked_retry / exhausted_failed should stay flat 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*(nack|fail).*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (result) (rate(oeecloud_worker_amqp_deliveries_total[5m]))", "legendFormat": "{{result}}", "refId": "A" } ]
+    },
+    { "id": 200, "type": "row", "title": "② Rollup & freshness", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 } },
+    {
+      "id": 5, "type": "timeseries", "title": "Rollup freshness — cagg refresh lag (analytics only)",
+      "description": "pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"} per continuous aggregate. Filtered to the LIVE analytics DB — the packiot(F1) caggs are a frozen corpse (~48-day lag, ADR-0032) and are intentionally excluded. A climbing silver cagg = the medallion rollup is falling behind.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 4, "showPoints": "never" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 900 }, { "color": "red", "value": 3600 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"}", "legendFormat": "{{schema}}.{{cagg}}", "refId": "A" } ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "runtime-rollup ticks / s",
+      "description": "rate of oeecloud_worker_job_ticks_total{exported_job=~\"runtime-rollup.*\"}. The rollup is self-serialized by a pg_advisory_lock, so this is the single active runner's cadence. Flat 0 for long = the rollup stalled (check the longest-query tile on the SRE board).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 3, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 0.0001 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(oeecloud_worker_job_ticks_total{exported_job=~\"runtime-rollup.*\"}[15m]))", "refId": "A" } ]
+    },
+    {
+      "id": 7, "type": "stat", "title": "TimescaleDB bg-jobs failing (analytics)",
+      "description": "count of pg_timescaledb_jobs_last_run_success == 0 on packiot_analytics — background jobs whose last run failed. 0 = healthy. Scoped to the live DB (the F1 corpse carries failing legacy jobs).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(pg_timescaledb_jobs_last_run_success{datname=\"packiot_analytics\"} == bool 0)", "refId": "A" } ]
+    },
+    {
+      "id": 8, "type": "stat", "title": "Silver cagg lag (max, analytics)",
+      "description": "max cagg refresh lag on packiot_analytics — the worst-case rollup staleness in one number.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 900 }, { "color": "red", "value": 3600 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"})", "refId": "A" } ]
+    },
+    {
+      "id": 9, "type": "stat", "title": "Outbox depth / oldest age",
+      "description": "edge-transformer outbox_depth (rows awaiting drain) — near 0 = healthy; a climb = the publish path is backing up.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 1000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(outbox_depth)", "refId": "A" } ]
+    },
+    { "id": 300, "type": "row", "title": "③ Durability, DLQ & sequencing", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 } },
+    {
+      "id": 10, "type": "timeseries", "title": "DLQ + retry rate",
+      "description": "rate of oeecloud_worker_amqp_published_to_failed_total (poison → DLQ) and _nacked_retry_total (transient → retry). Both flat 0 = clean. A DLQ climb = messages that will never process without intervention.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byName", "options": "to DLQ (failed)" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(oeecloud_worker_amqp_published_to_failed_total[15m]))", "legendFormat": "to DLQ (failed)", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(oeecloud_worker_amqp_nacked_retry_total[15m]))", "legendFormat": "nacked → retry", "refId": "B" }
+      ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "SparkPlug sequence gaps by publisher (lost messages)",
+      "description": "increase(edge_transformer_sparkplug_seq_gaps_total[1h]) by group_id/edge_node/device. A gap = the transformer saw a non-contiguous SparkPlug seq = messages were lost in transit. Sustained gaps for a client = a flaky edge link.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (group_id) (increase(edge_transformer_sparkplug_seq_gaps_total[1h]))", "legendFormat": "{{group_id}}", "refId": "A" } ]
+    },
+    { "id": 400, "type": "row", "title": "④ Data quality (correctness)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 } },
+    {
+      "id": 12, "type": "table", "title": "OEE-invariant violations by rule (last 24h)",
+      "description": "silver.data_quality_event grouped by rule — the medallion's own correctness guards (e.g. OEE_GT_1, negative increments). Empty = no invariant broke. worst = the most extreme observed value.",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "violations" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 } ] } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "violations", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "format": "table", "rawQuery": true, "rawSql": "SELECT rule, severity, count(*) AS violations, count(DISTINCT id_equipment) AS equipment, max(observed_value) AS worst, max(detected_at) AS last_seen FROM data_quality_event WHERE detected_at > now()-interval '24 hours' GROUP BY rule, severity ORDER BY violations DESC", "refId": "A" } ]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Unmapped / unresolved topics (onboarding DQ)",
+      "description": "increase(packml_unresolved_topic_total[1h]) by tenant — equipment_values arriving on a packml_topic with no active packml_register row (silently dropped). EMPTY = healthy (no unmapped topics; the CounterVec has no series until the first miss). A rising line for a client = its onboarding packml_register is incomplete.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant) (increase(packml_unresolved_topic_total[1h]))", "legendFormat": "{{tenant}}", "refId": "A" } ]
+    }
+  ]
+}

@@ -67,24 +67,24 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "Mirror cursor lag",
-      "description": "mirror_worker_cursor_lag_seconds — how far replay is behind prod.",
+      "title": "Rollup freshness (max cagg lag)",
+      "description": "max(pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"}) — worst-case staleness of the medallion rollup. Replaces the retired mirror_worker_cursor_lag_seconds tile (mirror-worker-go scrape is disabled). Analytics DB only; the F1 corpse is excluded.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 5, "w": 4, "x": 12, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 120 }, { "color": "red", "value": 600 } ] } }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 900 }, { "color": "red", "value": 3600 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(mirror_worker_cursor_lag_seconds)", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"})", "refId": "A" } ]
     },
     {
       "id": 6,
       "type": "stat",
-      "title": "DLQ depth",
-      "description": "mirror_worker_dlq_depth — replay dead-letters awaiting retry. 0 = healthy.",
+      "title": "Worker DLQ (failed msgs)",
+      "description": "sum(rabbitmq_detailed_queue_messages{queue=~\"stream-engine-q-.+-failed\"}) — poison messages across all per-tenant dead-letter queues. 0 = healthy. Replaces the retired mirror_worker_dlq_depth tile.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 5, "w": 4, "x": 16, "y": 7 },
       "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 25 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(mirror_worker_dlq_depth)", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_detailed_queue_messages{queue=~\"stream-engine-q-.+-failed\"})", "refId": "A" } ]
     },
     {
       "id": 8,

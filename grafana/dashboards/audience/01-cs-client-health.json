@@ -1,0 +1,142 @@
+{
+  "uid": "aud-cs",
+  "title": "① CS · Client health",
+  "tags": ["packiot", "audience", "cs"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "① Is each client's data arriving?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Ingest rate by client (rows/s)",
+      "description": "sum by(tenant) rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]). Rows/s the worker commits per client. A line dropping to 0 while others flow = that client stopped sending. tenant = SparkPlug group (cpack→CPACK, bispharmastaging→Bispharma, sbxcpack→sandbox).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant) (rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]))", "legendFormat": "{{tenant}}", "refId": "A" } ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Ingest ERRORS by client (rows/s) — flat 0 = healthy",
+      "description": "sum by(tenant) rate(oeecloud_worker_batch_writes_total{result=\"error\"}[5m]). A CounterVec with no error label yet reads EMPTY = healthy (no failed writes). A non-flat line = that client's writes are erroring — page the pipeline team.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant) (rate(oeecloud_worker_batch_writes_total{result=\"error\"}[5m]))", "legendFormat": "{{tenant}}", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Live data freshness by client (last 15 min)",
+      "description": "silver.equipment_values arrivals in the last 15 min, per client, with age of the newest row. age (s) climbing = data drying up. A client absent from this table sent nothing in 15 min (idle or disconnected).",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "age (s)" }, "properties": [ { "id": "unit", "value": "s" }, { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 120 }, { "color": "red", "value": 600 } ] } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "age (s)", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "format": "table", "rawQuery": true, "rawSql": "SELECT ent.nm_enterprise AS \"client\", count(*) AS \"rows/15m\", max(ev.ts_value) AS \"last message\", round(EXTRACT(EPOCH FROM now()-max(ev.ts_value)))::int AS \"age (s)\" FROM equipment_values ev JOIN enterprises ent ON ent.id_enterprise=ev.id_enterprise WHERE ev.ts_value > now()-interval '15 minutes' GROUP BY 1 ORDER BY 4 DESC", "refId": "A" } ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "② Queue isolation per client (RabbitMQ)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Queue backlog by client (ready messages)",
+      "description": "rabbitmq_detailed_queue_messages for each per-tenant live queue (stream-engine-q-<tenant>, excluding -retry-30s/-failed). Each client has its OWN queue = isolation: one client backing up does not stall another. A rising line = the worker isn't keeping up for THAT client.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_messages{queue=~\"stream-engine-q-.+\", queue!~\".*-(retry-30s|failed)\"}", "legendFormat": "{{queue}}", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Poison messages (DLQ) — all clients",
+      "description": "sum of rabbitmq_detailed_queue_messages on every stream-engine-q-<tenant>-failed queue. 0 = healthy (no message has exhausted retries). Any non-zero = messages a client sent that the worker could not process — investigate that client's config.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 25 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rabbitmq_detailed_queue_messages{queue=~\"stream-engine-q-.+-failed\"})", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Clients with a live consumer",
+      "description": "count of per-tenant live queues that have >= 1 attached consumer (rabbitmq_detailed_queue_consumers). Should equal the number of active clients. A drop = a client's queue lost its consumer (worker down / single-active-consumer failover not landed) → that client silently stops ingesting.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "count(rabbitmq_detailed_queue_consumers{queue=~\"stream-engine-q-.+\", queue!~\".*-(retry-30s|failed)\"} >= 1)", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Per-client consumer capacity (is the consumer keeping up?)",
+      "description": "rabbitmq_detailed_queue_consumer_capacity per client queue. 1.0 = the single active consumer is fully able to take messages (healthy). A value near 0 WHILE backlog > 0 = the consumer is stalled — the classic single-active-consumer failure to alert on.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "align": "auto", "cellOptions": { "type": "color-background" } }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 0.99 } ] } }, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "queue", "desc": false } ] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_consumer_capacity{queue=~\"stream-engine-q-.+\", queue!~\".*-(retry-30s|failed)\"}", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["queue", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "consumer capacity" } } } ]
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "③ OEE — business health per client",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "OEE by client (last 24h, producing shifts)",
+      "description": "gold.equipment_oee_shift averaged over shifts with running_time>0 in the last 24h, clamped to valid [0,1]. Blank OEE = a client with shifts but no production in-window (idle) — not an error. A × P × Q are the three OEE factors.",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "OEE %" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 65 } ] } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "OEE %", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "format": "table", "rawQuery": true, "rawSql": "SELECT ent.nm_enterprise AS \"client\", count(*) FILTER (WHERE r.running_time>0) AS \"producing shifts\", ROUND((AVG(r.oee) FILTER (WHERE r.running_time>0 AND r.oee BETWEEN 0 AND 1)*100)::numeric,1) AS \"OEE %\", ROUND((AVG(r.oee_a) FILTER (WHERE r.running_time>0 AND r.oee_a BETWEEN 0 AND 1)*100)::numeric,1) AS \"A %\", ROUND((AVG(r.oee_p) FILTER (WHERE r.running_time>0 AND r.oee_p BETWEEN 0 AND 1)*100)::numeric,1) AS \"P %\", ROUND((AVG(r.oee_q) FILTER (WHERE r.running_time>0 AND r.oee_q BETWEEN 0 AND 1)*100)::numeric,1) AS \"Q %\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN enterprises ent ON ent.id_enterprise=e.id_enterprise WHERE r.ts_value BETWEEN now()-interval '24 hours' AND now() GROUP BY 1 ORDER BY 3 DESC NULLS LAST", "refId": "A" } ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "OEE trend by client (hourly)",
+      "description": "Hourly mean OEE per client from gold.equipment_oee_shift, valid shifts only, r.ts_value <= now() (excludes future-dated shift-calendar rows). Follows the same guards as the library Factory-analysis board.",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "spanNulls": true } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "format": "time_series", "rawQuery": true, "rawSql": "SELECT date_trunc('hour', r.ts_value) AS time, ent.nm_enterprise AS metric, ROUND((AVG(r.oee) FILTER (WHERE r.running_time>0 AND r.oee BETWEEN 0 AND 1)*100)::numeric,1) AS oee FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN enterprises ent ON ent.id_enterprise=e.id_enterprise WHERE $__timeFilter(r.ts_value) AND r.ts_value <= now() GROUP BY 1,2 HAVING AVG(r.oee) FILTER (WHERE r.running_time>0 AND r.oee BETWEEN 0 AND 1) IS NOT NULL ORDER BY 1", "refId": "A" } ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "OEE freshness — latest completed shift by client",
+      "description": "max(ts_value) <= now() per client from gold.equipment_oee_shift, i.e. how current the computed OEE is. age (h) climbing = the rollup has stopped advancing for that client (see the Pipeline board's rollup-freshness tile). Future-dated calendar rows are excluded by the <= now() guard.",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 41 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "age (h)" }, "properties": [ { "id": "unit", "value": "h" }, { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 2 }, { "color": "red", "value": 6 } ] } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "age (h)", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "format": "table", "rawQuery": true, "rawSql": "SELECT ent.nm_enterprise AS \"client\", max(r.ts_value) AS \"latest shift\", round((EXTRACT(EPOCH FROM now()-max(r.ts_value))/3600.0)::numeric,1) AS \"age (h)\" FROM equipment_oee_shift r JOIN equipments e ON e.id_equipment=r.id_equipment JOIN enterprises ent ON ent.id_enterprise=e.id_enterprise WHERE r.ts_value <= now() GROUP BY 1 ORDER BY 3 DESC", "refId": "A" } ]
+    }
+  ]
+}
