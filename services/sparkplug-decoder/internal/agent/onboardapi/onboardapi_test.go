@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/clientdescriptor"
+	"gopkg.in/yaml.v3"
 )
 
 const testKey = "onboard-test-key"
@@ -115,6 +116,92 @@ func TestGenerate_BISPHARMA(t *testing.T) {
 	// The field must serialize as [] not null (stable shape for Phase-1b).
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"inferred_count_indices":[]`)) {
 		t.Error("inferred_count_indices did not serialize as [] (nil slice leaked as null)")
+	}
+}
+
+// postJSON drives a JSON request through the handler at the given path.
+func postJSON(t *testing.T, s *Server, path, bearer string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestSimulate_ScrapExpr is the ADR-0058 simulate-endpoint proof: POST a
+// descriptor (as a JSON object, the shape a JS client sends) + sample tags, and
+// the endpoint runs the tenant's expr rules and returns the produced tags — the
+// engine the CS-Admin simulate-before-deploy preview calls.
+func TestSimulate_ScrapExpr(t *testing.T) {
+	s := newTestServer(t)
+	// Convert the YAML example to a JSON descriptor object (what csadmin holds).
+	var descObj map[string]any
+	if err := yaml.Unmarshal(readFixture(t, "examples/derived.descriptor.yaml"), &descObj); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	descJSON, err := json.Marshal(descObj)
+	if err != nil {
+		t.Fatalf("marshal descriptor: %v", err)
+	}
+	reqBody, err := json.Marshal(map[string]any{
+		"descriptor": json.RawMessage(descJSON),
+		"samples": []map[string]any{
+			{"metric": "/L5/SCRAP/Status/DW0", "value": 100, "ts_millis": 1000},
+			{"metric": "/L5/SCRAP/Status/DW4", "value": 88, "ts_millis": 1000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := postJSON(t, s, "/v1/onboard/simulate", testKey, reqBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var resp SimulateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, rec.Body.String())
+	}
+	// The scrap = gross-net expr must have run and emitted 12.
+	var got any
+	for _, e := range resp.Emitted {
+		if e.Metric == "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit" {
+			got = e.Value
+		}
+	}
+	if got == nil {
+		t.Fatalf("no scrap tag emitted; emitted=%+v", resp.Emitted)
+	}
+	if got != float64(12) {
+		t.Fatalf("scrap = gross-net: got %v, want 12", got)
+	}
+	// The active-rules summary must include the expr rule (preview shows it before
+	// any samples are fed).
+	sawExpr := false
+	for _, r := range resp.DerivedRules {
+		if r.Kind == "expr" && r.Expr == "gross - net" {
+			sawExpr = true
+		}
+	}
+	if !sawExpr {
+		t.Errorf("derived_rules did not report the expr rule: %+v", resp.DerivedRules)
+	}
+	// Serializes as [] not null when empty (stable client shape).
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"emitted"`)) {
+		t.Error("response missing emitted field")
+	}
+}
+
+// TestSimulate_Auth: the simulate endpoint enforces the same bearer as generate.
+func TestSimulate_Auth(t *testing.T) {
+	s := newTestServer(t)
+	rec := postJSON(t, s, "/v1/onboard/simulate", "wrong-key", []byte(`{"descriptor":{},"samples":[]}`))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 
