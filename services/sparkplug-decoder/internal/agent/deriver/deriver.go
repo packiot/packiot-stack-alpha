@@ -7,6 +7,14 @@
 //     counter. The deriver integrates rate·dt into a monotonic virtual counter.
 //   - SUM (PTH class): a machine whose count is split across several registers
 //     (A+B). The deriver latches each addend and emits their sum as one count.
+//   - EXPR (ADR-0058 Tier 1): a general per-client transform — emit = f(vars),
+//     with f a sandboxed arithmetic expression (expreval) over declared sibling
+//     tags. The primitive the closed integral/sum shapes cannot express: scrap =
+//     DW0 − DW4, merge two PLCs into one tag, unit conversion, deadband. Like
+//     SUM it LATCHES each input across envelopes and (re)emits once every
+//     declared var has been seen. Inputs are NOT consumed (an input tag may also
+//     be a legitimately published metric); declare it a sum addend if it must be
+//     folded away.
 //
 // It sits in the agent ingest path exactly where DecomposeParameterSuffix sits
 // (after decode, before the resolve/allowlist gate). Its Emit suffixes are
@@ -32,6 +40,7 @@ package deriver
 import (
 	"math"
 
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/expreval"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawtag"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/tenantprofile"
 )
@@ -42,6 +51,7 @@ import (
 type Deriver struct {
 	integrals []*integralState
 	sums      []*sumState
+	exprs     []*exprState
 
 	// integralBySource routes an arriving suffix to its integral rule.
 	integralBySource map[string]*integralState
@@ -51,6 +61,13 @@ type Deriver struct {
 	// isAddend is the fast membership set the ingest uses to decide which arriving
 	// suffixes to DROP (they are folded into a sum, never republished raw).
 	isAddend map[string]bool
+	// exprBySuffix routes an arriving suffix to the expr rules that reference it as
+	// one of their vars (a suffix can feed more than one rule).
+	exprBySuffix map[string][]*exprState
+	// exprConsume is the set of arriving suffixes an expr rule folds in and the
+	// caller must DROP from raw passthrough (ADR-0058 P1.4b: synthetic
+	// reader-published derive-input sensors — never republished upstream).
+	exprConsume map[string]bool
 }
 
 type integralState struct {
@@ -75,6 +92,23 @@ type sumState struct {
 	seen   map[string]bool
 }
 
+// exprState is one compiled expr rule + its latched inputs. Like sumState it
+// holds the latest value of each var across envelopes and only emits once every
+// declared var has been seen (a partial evaluation could publish a garbage
+// count).
+type exprState struct {
+	prog *expreval.Program
+	// vars is the declared variable names, used to decide "all seen".
+	vars []string
+	// varBySuffix maps an arriving suffix to the var name(s) it binds.
+	varBySuffix map[string][]string
+	emit        []string
+	typ         string
+
+	latest map[string]float64 // var name → latest value
+	seen   map[string]bool     // var name → seen at least once
+}
+
 // New compiles a Deriver from a tenant profile's Derived rules. A nil profile or
 // one with no derived rules yields an empty Deriver whose Process is a no-op —
 // so building it unconditionally is safe (a tenant without derive rules pays
@@ -85,6 +119,8 @@ func New(prof *tenantprofile.Profile) *Deriver {
 		integralBySource: map[string]*integralState{},
 		sumByAddend:      map[string][]*sumState{},
 		isAddend:         map[string]bool{},
+		exprBySuffix:     map[string][]*exprState{},
+		exprConsume:      map[string]bool{},
 	}
 	if prof == nil {
 		return dv
@@ -115,6 +151,40 @@ func New(prof *tenantprofile.Profile) *Deriver {
 				dv.sumByAddend[a] = append(dv.sumByAddend[a], st)
 				dv.isAddend[a] = true
 			}
+		case r.Expr != nil:
+			vars := make([]string, 0, len(r.Expr.Vars))
+			varBySuffix := map[string][]string{}
+			for name, suffix := range r.Expr.Vars {
+				vars = append(vars, name)
+				varBySuffix[suffix] = append(varBySuffix[suffix], name)
+			}
+			prog, err := expreval.Compile(r.Expr.Expr, vars)
+			if err != nil {
+				// The profile is validated (compile-checked) before New, so this is
+				// unexpected. Skip the rule rather than fail the whole deriver —
+				// fault isolation: one bad rule must not disable a tenant's good ones.
+				continue
+			}
+			st := &exprState{
+				prog:        prog,
+				vars:        vars,
+				varBySuffix: varBySuffix,
+				emit:        append([]string(nil), r.Emit...),
+				typ:         r.Type,
+				latest:      map[string]float64{},
+				seen:        map[string]bool{},
+			}
+			dv.exprs = append(dv.exprs, st)
+			for suffix := range varBySuffix {
+				dv.exprBySuffix[suffix] = append(dv.exprBySuffix[suffix], st)
+			}
+			// Suffixes this rule CONSUMES (drops from passthrough) — a synthetic
+			// derive-input sensor that exists only to feed the expression.
+			for _, name := range r.Expr.Consume {
+				if suffix, ok := r.Expr.Vars[name]; ok {
+					dv.exprConsume[suffix] = true
+				}
+			}
 		}
 	}
 	return dv
@@ -123,7 +193,7 @@ func New(prof *tenantprofile.Profile) *Deriver {
 // Empty reports whether the deriver has no rules (a no-op). Callers may skip the
 // Process call entirely on an empty deriver.
 func (d *Deriver) Empty() bool {
-	return len(d.integrals) == 0 && len(d.sums) == 0
+	return len(d.integrals) == 0 && len(d.sums) == 0 && len(d.exprs) == 0
 }
 
 // Process runs the derive stage over one envelope's decoded tags. It returns:
@@ -141,7 +211,7 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 	if d.Empty() {
 		return nil, nil
 	}
-	if len(d.isAddend) > 0 {
+	if len(d.isAddend) > 0 || len(d.exprConsume) > 0 {
 		consumed = map[string]bool{}
 	}
 	for _, t := range tags {
@@ -225,6 +295,65 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 			}
 		}
 	}
+	// EXPR pass (ADR-0058): done as a SECOND pass over the batch, independent of
+	// the integral/sum routing above, so an expr var that happens to coincide with
+	// an integral source or another rule's input never steals the control flow. An
+	// expr reads MULTIPLE siblings, so we collect every var update in this batch
+	// first, then evaluate each touched rule once (the counterderive two-pass
+	// shape). Inputs are NOT added to `consumed` — an expr input may legitimately
+	// also be published raw; use a sum addend when it must be folded away.
+	if len(d.exprs) > 0 {
+		touched := map[*exprState]int64{} // rule → latest ts of an input seen this batch
+		for _, t := range tags {
+			states, ok := d.exprBySuffix[t.Metric]
+			if !ok {
+				continue
+			}
+			if consumed != nil && d.exprConsume[t.Metric] {
+				consumed[t.Metric] = true // synthetic derive-input — never republished
+			}
+			v, num := toFloat(t.Value)
+			if !num {
+				continue // a non-numeric input can't bind a float var; ignore this sample
+			}
+			for _, st := range states {
+				for _, name := range st.varBySuffix[t.Metric] {
+					st.latest[name] = v
+					st.seen[name] = true
+				}
+				if ts, ok := touched[st]; !ok || t.TsMillis > ts {
+					touched[st] = t.TsMillis
+				}
+			}
+		}
+		for st, ts := range touched {
+			if !st.warmedUp() {
+				continue // hold until every declared var has a value (partial → garbage)
+			}
+			val, err := expreval.Eval(st.prog, st.latest)
+			if err != nil || math.IsInf(val, 0) || math.IsNaN(val) {
+				// A bad expression, a non-numeric result, or a non-finite value (e.g.
+				// divide-by-zero → ±Inf) degrades to a DROPPED tag for this batch —
+				// never a crash of the shared agent, and never a garbage count on the
+				// wire (ADR-0058 fault isolation). The rule self-heals on the next
+				// batch if the condition was transient.
+				continue
+			}
+			// Count types are integers on the wire; floor like integral/sum. Analog
+			// results (double/float — a scale/deadband) keep their fractional value.
+			if st.typ == "long" || st.typ == "int" {
+				val = math.Floor(val)
+			}
+			for _, leaf := range st.emit {
+				synth = append(synth, rawtag.RawTag{
+					Metric:   leaf,
+					Value:    val,
+					TsMillis: ts,
+					Quality:  true,
+				})
+			}
+		}
+	}
 	return synth, consumed
 }
 
@@ -232,6 +361,16 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 func (s *sumState) warmedUp() bool {
 	for _, a := range s.addends {
 		if !s.seen[a] {
+			return false
+		}
+	}
+	return true
+}
+
+// warmedUp reports whether every declared expr var has been seen at least once.
+func (s *exprState) warmedUp() bool {
+	for _, v := range s.vars {
+		if !s.seen[v] {
 			return false
 		}
 	}

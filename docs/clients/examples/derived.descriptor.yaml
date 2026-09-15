@@ -17,6 +17,13 @@
 #     ProdConsumedCount. The raw A/B suffixes are CONSUMED (never republished — a
 #     partial sum would look like a totalizer drop to Calc).
 #
+#   - EXPR (SCRAP class, ADR-0058 Tier 1): a machine whose defect count is not a
+#     register but a DERIVATION — scrap = gross − net (DW0 − DW4). The agent binds
+#     each var to a RAW arriving suffix, latches them across envelopes, and emits a
+#     canonical ProdDefectiveCount once both are seen. This is the general primitive
+#     the closed integral/sum shapes cannot express. The inputs are NOT consumed
+#     (DW0/DW4 may also be published raw); declare them sum addends to fold away.
+#
 # The mechanism: each `derived` rule's `emit` leaves become the equipment's
 # canonical count suffixes, synthesized into the agent raw_tag_map allowlist
 # (SynthesizeEquipment) so the cloud sees ordinary SparkPlug counts; the runtime
@@ -86,3 +93,19 @@ equipment:
           addends:
             - "/Status/CountA"   # RAW arriving suffixes — consumed, never republished
             - "/Status/CountB"
+
+  # ── SCRAP: defect count derived as gross − net (EXPR, ADR-0058) ──────────────
+  - topic: ACME/SP/L5/SCRAP
+    id_equipment: 5003
+    tp_equipment: 1
+    id_unit: 5003
+    count_index: {value: 73, confidence: confirmed}
+    derived:
+      - type: double
+        emit:
+          - "/Admin/ProdDefectiveCount/{idx}/Unit"
+        expr:
+          expr: "gross - net"       # sandboxed arithmetic over the vars below
+          vars:
+            gross: "/Status/DW0"    # RAW arriving suffixes (segment-qualified at generate)
+            net: "/Status/DW4"

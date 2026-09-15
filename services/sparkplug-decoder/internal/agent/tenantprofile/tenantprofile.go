@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/expreval"
 	"gopkg.in/yaml.v3"
 )
 
@@ -163,6 +164,12 @@ type DerivedRule struct {
 
 	// Sum synthesizes a count by summing several register addends (PTH: A+B).
 	Sum *SumSource `yaml:"sum,omitempty"`
+
+	// Expr synthesizes a metric from a sandboxed arithmetic expression over
+	// declared sibling tags (ADR-0058 Tier 1): the general primitive for
+	// per-client math the closed integral/sum shapes cannot express — scrap =
+	// DW0 − DW4, merge two PLCs into one tag, unit conversion, deadband.
+	Expr *ExprSource `yaml:"expr,omitempty"`
 }
 
 // IntegralSource declares an analog→count time integral. In a descriptor its
@@ -196,6 +203,35 @@ type SumSource struct {
 	// Addends are the arriving suffixes to latch-and-sum, e.g.
 	// ["/L5/PTH/Status/CountA", "/L5/PTH/Status/CountB"].
 	Addends []string `yaml:"addends"`
+}
+
+// ExprSource declares a general derived metric: emit = f(vars) where f is a
+// sandboxed arithmetic expression (ADR-0058 Tier 1, evaluated by expreval).
+// Values LATCH across envelopes exactly like SumSource — inputs that arrive in
+// separate SparkPlug envelopes still combine — and the result is (re)emitted
+// whenever any input updates, once every declared var has been seen at least
+// once. In a descriptor the Vars suffixes are RELATIVE leaves (with an optional
+// {idx}); in a resolved profile they are FULL segment-qualified arriving
+// suffixes, matching how IntegralSource.Source / SumSource.Addends resolve.
+type ExprSource struct {
+	// Expr is the arithmetic expression over the Vars keys, e.g. "gross - net",
+	// "a + b", or "speed / 60". Pure (no I/O, no loops); a var not listed in Vars
+	// is a compile error, so a rule can only read tags it declared.
+	Expr string `yaml:"expr"`
+
+	// Vars maps each identifier used in Expr to the arriving suffix that binds it,
+	// e.g. {gross: "/L5/PTH/Status/DW0", net: "/L5/PTH/Status/DW4"}. Identifiers
+	// must be valid expr variable names (letters/digits/underscore); the suffixes
+	// are matched against the RAW arriving metric names (no inbound aliasing).
+	Vars map[string]string `yaml:"vars"`
+
+	// Consume lists the var names whose bound arriving suffix must be DROPPED from
+	// raw passthrough — the deriver folds them into this expression and does NOT
+	// republish them upstream (like a sum addend). Used for synthetic derive-input
+	// sensors that exist ONLY to feed the expression (ADR-0058 P1.4b: a
+	// reader-published non-member sensor). A var NOT listed here — e.g. a member's
+	// own published count — passes through raw. Every entry must be a key of Vars.
+	Consume []string `yaml:"consume,omitempty"`
 }
 
 // Rewrite is an ordered from→to string rewrite.
@@ -401,10 +437,18 @@ func (p *Profile) Validate() error {
 // DerivedMetric validation (one source of truth for "is a derive rule sane"),
 // but on the RESOLVED form (segment-qualified suffixes).
 func (r DerivedRule) validate(label string) error {
-	hasIntegral := r.Integral != nil
-	hasSum := r.Sum != nil
-	if hasIntegral == hasSum {
-		return fmt.Errorf("%s: exactly one of {integral, sum} must be set", label)
+	set := 0
+	if r.Integral != nil {
+		set++
+	}
+	if r.Sum != nil {
+		set++
+	}
+	if r.Expr != nil {
+		set++
+	}
+	if set != 1 {
+		return fmt.Errorf("%s: exactly one of {integral, sum, expr} must be set", label)
 	}
 	if len(r.Emit) == 0 {
 		return fmt.Errorf("%s: emit must list at least one canonical count suffix", label)
@@ -417,11 +461,41 @@ func (r DerivedRule) validate(label string) error {
 	if !validTypes[r.Type] {
 		return fmt.Errorf("%s: type=%q must be double|float|long|int|bool|string", label, r.Type)
 	}
-	if hasIntegral && strings.TrimSpace(r.Integral.Source) == "" {
+	if r.Integral != nil && strings.TrimSpace(r.Integral.Source) == "" {
 		return fmt.Errorf("%s: integral.source is required", label)
 	}
-	if hasSum && len(r.Sum.Addends) < 2 {
+	if r.Sum != nil && len(r.Sum.Addends) < 2 {
 		return fmt.Errorf("%s: sum.addends must list at least two suffixes (a one-addend sum is a rename)", label)
+	}
+	if r.Expr != nil {
+		if strings.TrimSpace(r.Expr.Expr) == "" {
+			return fmt.Errorf("%s: expr.expr is required", label)
+		}
+		if len(r.Expr.Vars) == 0 {
+			return fmt.Errorf("%s: expr.vars must bind at least one variable", label)
+		}
+		vars := make([]string, 0, len(r.Expr.Vars))
+		for name, suffix := range r.Expr.Vars {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("%s: expr.vars has an empty variable name", label)
+			}
+			if strings.TrimSpace(suffix) == "" {
+				return fmt.Errorf("%s: expr.vars[%q] maps to an empty suffix", label, name)
+			}
+			vars = append(vars, name)
+		}
+		// Compile-check now (fail-fast at load/generate, off the hot path). This
+		// also rejects an expression referencing an identifier not in vars — the
+		// closed-environment guarantee — so a runtime eval can only read declared
+		// tags.
+		if _, err := expreval.Compile(r.Expr.Expr, vars); err != nil {
+			return fmt.Errorf("%s: expr does not compile: %w", label, err)
+		}
+		for _, name := range r.Expr.Consume {
+			if _, ok := r.Expr.Vars[name]; !ok {
+				return fmt.Errorf("%s: expr.consume[%q] is not one of expr.vars", label, name)
+			}
+		}
 	}
 	return nil
 }

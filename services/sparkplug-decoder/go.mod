@@ -13,6 +13,14 @@ go 1.25.0
 // for tenant equipment discovery. It is used ONLY by the agent register loader
 // (internal/agent/agentcfg/register_pg.go) and dialled ONLY when
 // AGENT_TAGMAP_FROM_REGISTER=true — the default agent run stays DB-free.
+//
+// expr-lang/expr was added in ADR-0058 (declarative customization Tier 1): the
+// DERIVE stage needs a general, sandboxed arithmetic primitive for per-client
+// math the closed integral/sum shapes cannot express (scrap = DW0 − DW4, merge
+// two PLCs into one tag, unit conversion, deadband). It is a NET-NEW capability
+// no sibling worker has — so this is an addition, NOT a re-implementation of a
+// mirror-worker pattern (ADR-0009 Errata Correction 2). Confined to
+// internal/agent/expreval; pure, no I/O, no loops.
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.3
@@ -24,6 +32,7 @@ require (
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
+	github.com/expr-lang/expr v1.17.8
 	github.com/goburrow/modbus v0.1.0
 	github.com/gopcua/opcua v0.9.0
 	github.com/jackc/pgx/v5 v5.10.0

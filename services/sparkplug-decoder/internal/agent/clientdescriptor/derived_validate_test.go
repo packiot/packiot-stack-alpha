@@ -56,12 +56,12 @@ func TestDerivedMetric_Validation(t *testing.T) {
 		{
 			name:    "both integral and sum → one-of violation",
 			derived: []DerivedMetric{{Emit: []string{emit}, Type: "double", Integral: integralSrc(speed, 1, 0, 0), Sum: sumSrc("/Status/CountA", "/Status/CountB")}},
-			wantErr: "exactly one of {integral, sum}",
+			wantErr: "exactly one of {integral, sum, expr}",
 		},
 		{
 			name:    "neither integral nor sum → one-of violation",
 			derived: []DerivedMetric{{Emit: []string{emit}, Type: "double"}},
-			wantErr: "exactly one of {integral, sum}",
+			wantErr: "exactly one of {integral, sum, expr}",
 		},
 		{
 			name:    "empty emit",

@@ -50,6 +50,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/expreval"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/tenantprofile"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/clientconfig"
 )
@@ -371,10 +372,10 @@ type Equipment struct {
 }
 
 // DerivedMetric is one agent-side synthesis rule as CS Admin declares it in the
-// descriptor. Exactly one of {Integral, Sum} is set. Its leaves are RELATIVE
+// descriptor. Exactly one of {Integral, Sum, Expr} is set. Its leaves are RELATIVE
 // (equipment-local, optional {idx}); GenerateProfile resolves them to the FULL
 // segment-qualified suffixes the runtime deriver + allowlist use. The Integral /
-// Sum source types are reused verbatim from tenantprofile so the descriptor
+// Sum / Expr source types are reused verbatim from tenantprofile so the descriptor
 // expresses exactly what the profile (and thus the deriver) can hold.
 type DerivedMetric struct {
 	// Emit are the canonical count leaves this rule publishes, e.g.
@@ -395,6 +396,14 @@ type DerivedMetric struct {
 
 	// Sum latches + sums several arriving count registers (Addends, ≥2) into one.
 	Sum *tenantprofile.SumSource `yaml:"sum,omitempty"`
+
+	// Expr synthesizes a metric from a sandboxed arithmetic expression over
+	// declared sibling tags (ADR-0058 Tier 1): the general primitive for per-client
+	// math the closed integral/sum shapes cannot express — scrap = DW0 − DW4, merge
+	// two PLCs into one tag, unit conversion, deadband. Its Vars suffixes are
+	// RELATIVE here; GenerateProfile segment-qualifies + {idx}-substitutes them like
+	// Integral.Source / Sum.Addends.
+	Expr *tenantprofile.ExprSource `yaml:"expr,omitempty"`
 }
 
 // ResolvedDeviceKey returns the equipment's DECLARED device_key, or — when none is
@@ -702,13 +711,22 @@ var validTypes = map[string]bool{
 }
 
 // validateDerivedMetric enforces the DerivedMetric shape at descriptor time:
-// exactly one of {integral, sum}; emit non-empty with a valid type; sum needs
-// ≥2 addends; integral needs a source. i/topic/j give a precise error location.
+// exactly one of {integral, sum, expr}; emit non-empty with a valid type; sum
+// needs ≥2 addends; integral needs a source; expr needs a compilable expression
+// over ≥1 declared var. i/topic/j give a precise error location.
 func validateDerivedMetric(i int, topic string, j int, dm DerivedMetric) error {
-	hasIntegral := dm.Integral != nil
-	hasSum := dm.Sum != nil
-	if hasIntegral == hasSum {
-		return fmt.Errorf("equipment[%d] (%s): derived[%d] must set exactly one of {integral, sum}", i, topic, j)
+	set := 0
+	if dm.Integral != nil {
+		set++
+	}
+	if dm.Sum != nil {
+		set++
+	}
+	if dm.Expr != nil {
+		set++
+	}
+	if set != 1 {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d] must set exactly one of {integral, sum, expr}", i, topic, j)
 	}
 	if len(dm.Emit) == 0 {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].emit must list at least one canonical count leaf", i, topic, j)
@@ -721,11 +739,35 @@ func validateDerivedMetric(i int, topic string, j int, dm DerivedMetric) error {
 	if !validTypes[dm.Type] {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].type=%q must be double|float|long|int|bool|string", i, topic, j, dm.Type)
 	}
-	if hasIntegral && strings.TrimSpace(dm.Integral.Source) == "" {
+	if dm.Integral != nil && strings.TrimSpace(dm.Integral.Source) == "" {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].integral.source is required", i, topic, j)
 	}
-	if hasSum && len(dm.Sum.Addends) < 2 {
+	if dm.Sum != nil && len(dm.Sum.Addends) < 2 {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].sum.addends must list at least two suffixes (a one-addend sum is a rename)", i, topic, j)
+	}
+	if dm.Expr != nil {
+		if strings.TrimSpace(dm.Expr.Expr) == "" {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.expr is required", i, topic, j)
+		}
+		if len(dm.Expr.Vars) == 0 {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars must bind at least one variable", i, topic, j)
+		}
+		vars := make([]string, 0, len(dm.Expr.Vars))
+		for name, suffix := range dm.Expr.Vars {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars has an empty variable name", i, topic, j)
+			}
+			if strings.TrimSpace(suffix) == "" {
+				return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q] maps to an empty suffix", i, topic, j, name)
+			}
+			vars = append(vars, name)
+		}
+		// Compile-check at descriptor time (CS Admin validates BEFORE generate), so
+		// a malformed expression or a var not declared in Vars is caught with a
+		// precise location, off the hot path.
+		if _, err := expreval.Compile(dm.Expr.Expr, vars); err != nil {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr does not compile: %w", i, topic, j, err)
+		}
 	}
 	return nil
 }
@@ -835,6 +877,22 @@ func (d *Descriptor) validatePLCTypes() error {
 				if off < 0 {
 					return fmt.Errorf("plc.types[%q]: sensor_offsets[%q]=%d must be non-negative", name, key, off)
 				}
+			}
+		}
+		// derive block (ADR-0050 §4 / ADR-0058 P1.4): fail fast on an unknown role
+		// or a non-compiling expression. Sensor→member resolution needs endpoint
+		// context, so it is checked at generate (generateTypeDeriveRules) with a
+		// precise per-line error; here we guard the type declaration itself.
+		for role, exprStr := range t.Derive {
+			if _, ok := deriveRoleLeaf[strings.ToLower(strings.TrimSpace(role))]; !ok {
+				return fmt.Errorf("plc.types[%q]: derive role %q must be scrap|defective|gross|consumed|net|processed", name, role)
+			}
+			ids := exprIdentifiers(exprStr)
+			if len(ids) == 0 {
+				return fmt.Errorf("plc.types[%q]: derive[%q] expression %q references no sensors", name, role, exprStr)
+			}
+			if _, err := expreval.Compile(exprStr, ids); err != nil {
+				return fmt.Errorf("plc.types[%q]: derive[%q] expression does not compile: %w", name, role, err)
 			}
 		}
 	}

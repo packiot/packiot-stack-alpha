@@ -24,10 +24,12 @@
 # there is no hand-authored physical/canonical pair left to drift. Run through the
 # onboard generator this descriptor validates + emits a valid client.yaml.
 #
-# NOTE: bispharma's scrap is a cross-register derivation (DW0 − DW4) — that belongs
-# in the type's `derive:` block (ADR-0050 §4, not yet emitted), so SCRAP is NOT a
-# member here and no scrap tag is synthesized. Each member owns ONE count sensor →
-# its NET production leaf.
+# NOTE: bispharma's scrap is a cross-register derivation (infeed − output, i.e.
+# DW0 − DW4) — declared in the type's `derive:` block (ADR-0050 §4). As of
+# ADR-0058 P1.4 the generator EMITS it: a derived ProdDefectiveCount on the LINE,
+# computed by the agent's sandboxed expr stage from the two members' NET counts.
+# Each member still owns ONE count sensor → its NET production leaf; the scrap is
+# a line-level derivation over them (member−member, no extra reader tag).
 #
 # ids / prefix are illustrative for the staging onboarding; nothing here is secret.
 
@@ -69,9 +71,12 @@ plc:
       word: dint
       # sensor key → DB1 byte offset. A member's key (S1, S3, …) picks its offset.
       sensor_offsets: {S1: 0, S2: 4, S3: 8, S4: 12, S5: 16, S6: 20}
-      # RESERVED (ADR-0050 §4): scrap = infeed − a mid-line sensor. Declared once
-      # here; the generator does not yet emit a tag from it.
-      derive: {scrap: "S1 - S2"}
+      # ADR-0050 §4 / ADR-0058 P1.4: scrap = infeed − output = S1 − S6 (units in
+      # minus good units out). Both S1 (S1INFEED) and S6 (S6OUTPUT) are MEMBERS, so
+      # each binds to its published NET count — the generator now emits a derived
+      # ProdDefectiveCount on the LINE from this. Illustrative direction; confirm the
+      # exact per-client counters against a live tee capture before a real fire.
+      derive: {scrap: "S1 - S6"}
   # ── 16 endpoints, each ONE line, each just references the type ──
   endpoints:
     - {name: L01, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.1}
