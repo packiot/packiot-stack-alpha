@@ -279,7 +279,7 @@ const hourTargetsSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       proportional_target = COALESCE(pt.vl_day::float / 24, 0)
 	  FROM hour_elig el
-	  JOIN %[2]s.production_targets pt ON pt.id_equipment = el.id_equipment
+	  JOIN %[6]s.production_targets pt ON pt.id_equipment = el.id_equipment
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND NOT e.recalc_needed
 	   AND el.target_customized IS NOT TRUE
@@ -373,7 +373,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		steps = append(steps, rollupStep{"oee-p", fmtRD(hourOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(hourTargetsSQL, d)},
+		rollupStep{"targets", fmtRD(hourTargetsSQL, d, d.ConfigSchema)},
 		rollupStep{"stamp", fmtRD(hourStampSQL, d)},
 		rollupStep{"reflag", fmtRD(hourReflagSQL, d)},
 	)
@@ -397,7 +397,7 @@ func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL str
 		// it is diffed against prod (F2), which has no changeover reclassification.
 		{"events", fmtRP(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"oee-p", fmtRP(hourOeePSQL, evSchema)},
-		{"targets", fmtRP(hourTargetsSQL, evSchema)},
+		{"targets", fmtRP(hourTargetsSQL, evSchema, evSchema)},
 		{"reflag", fmtRP(hourReflagSQL, evSchema)},
 	}
 }

@@ -281,7 +281,7 @@ const shiftTargetsSQL = `
 	UPDATE %[4]s.equipment_oee_shift e SET
 	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
 	  FROM shift_ev ev
-	  JOIN %[2]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
+	  JOIN %[6]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
 	  LATERAL piot_get_shift_hour_begin_by_equipment(ev.id_equipment, ev.ts_value) sh
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND ev.target_customized IS NOT TRUE`
@@ -388,7 +388,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		steps = append(steps, rollupStep{"oee-p", fmtRD(shiftOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(shiftTargetsSQL, d)},
+		rollupStep{"targets", fmtRD(shiftTargetsSQL, d, d.ConfigSchema)},
 		rollupStep{"stamp", fmtRD(shiftStampSQL, d)},
 	)
 	for _, s := range steps {
@@ -424,7 +424,7 @@ func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL st
 		{"events-bank", fmtRP(shiftEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"events-update", fmtRP(shiftEventsUpdateSQL, evSchema)},
 		{"oee-p", fmtRP(shiftOeePSQL, evSchema)},
-		{"targets", fmtRP(shiftTargetsSQL, evSchema)},
+		{"targets", fmtRP(shiftTargetsSQL, evSchema, evSchema)},
 		{"reflag", fmtRP(shiftReflagSQL, evSchema)},
 	}
 }

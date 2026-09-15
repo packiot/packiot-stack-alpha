@@ -25,8 +25,11 @@ type Dest struct {
 	// search_path anchor RunProvision sets before calling the PL/pgSQL provision fns.
 	EvSchema string
 	// RefSchema — the dimension plane: equipments, sites, areas, production_orders,
-	// packml_register, shifts, shift_hours, production_targets, box_production_bridges,
-	// oee_targets, scrap_targets. t237 P-core flips this to `core`.
+	// packml_register, shifts, shift_hours, box_production_bridges. t237 P-core flips
+	// this to `core`. NOTE: t283 evicted the target tables (production_targets,
+	// oee_targets, scrap_targets) out of here → `config` (they are onboarding
+	// configuration, not domain dims); the rollup now qualifies production_targets
+	// via ConfigSchema, not RefSchema.
 	RefSchema string
 	// SilverSchema — facts + silver caggs: equipment_values, equipment_events,
 	// equipment_live_metrics, equipment_metrics_1min/_1hour, equipment_categorical_*.
@@ -37,7 +40,9 @@ type Dest struct {
 	// GrainSchema — current-state grains: equipment_live_{day,hour,job,month,shift,week},
 	// area_live_{day,shift}, site_live_day. t237 P-silver flips this to `silver`.
 	GrainSchema string
-	// ConfigSchema — the i18n/label config plane read by the boxes flow: label_formats.
+	// ConfigSchema — the onboarding-configuration plane: label_formats (boxes flow)
+	// and, since t283, the target tables (production_targets read by the OEE rollup's
+	// hour/shift/grain "targets" step; oee_targets/scrap_targets set by CS).
 	// t241 app-split moved label_formats `app → config` (user_logs, the other former
 	// AppSchema table, is threaded separately via route.auth → `auth`, since the split
 	// sends them to different schemas). Keeping this a knob lets the app shims drop.
