@@ -1,18 +1,30 @@
 apiVersion: 1
 
+# Persona-driven layout via TWO providers with explicit folders (authoritative).
+# foldersFromFilesStructure was tried first but Grafana would not re-file boards
+# already bound to the legacy "Packiot" folder on the persistent grafana-data
+# volume; explicit `folder:` per provider is deterministic. Each provider owns one
+# subdir of the mounted dashboards path:
+#   grafana/dashboards/audience/ -> folder "Audience"  (CS / SRE / Data + Overview)
+#   grafana/dashboards/library/  -> folder "Library"   (deep component boards)
+# Board uids are unchanged, so every /d/<uid> link still resolves.
+# See docs/ops/observability-persona-dashboards.md.
+
 providers:
-  # Persona-driven layout (2026-09): dashboards are grouped by AUDIENCE, not by
-  # component. `foldersFromFilesStructure: true` maps each subdirectory of the
-  # mounted dashboards path to a Grafana folder:
-  #   grafana/dashboards/audience/  → folder "audience"  (CS / SRE / Data + Overview)
-  #   grafana/dashboards/library/   → folder "library"   (the deep component boards)
-  # A CS engineer lives in `audience/`; an on-call engineer drills into `library/`.
-  # Boards keep their stable uids across the move, so all /d/<uid> links still work.
-  - name: packiot
+  - name: packiot-audience
     type: file
+    folder: Audience
     disableDeletion: false
     updateIntervalSeconds: 10
     allowUiUpdates: true
     options:
-      path: /var/lib/grafana/dashboards
-      foldersFromFilesStructure: true
+      path: /var/lib/grafana/dashboards/audience
+
+  - name: packiot-library
+    type: file
+    folder: Library
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/library
