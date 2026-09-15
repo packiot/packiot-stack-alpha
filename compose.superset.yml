@@ -57,6 +57,12 @@ x-superset-env: &superset-env
   SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-}
   SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-}
   SUPERSET_FRAME_ANCESTOR: ${SUPERSET_FRAME_ANCESTOR:-https://front.prod.packiot.app}
+  # Stable embed uuid pinned onto the client dashboard by register_embed.py (superset-init)
+  # and referenced verbatim by the edge-api broker + front4 iframe. When UNSET the embed
+  # step is a no-op (embed unconfigured). SUPERSET_EMBED_TARGET_DASHBOARD selects which
+  # dashboard's bundle-uuid gets that embed (defaulted in the init command to the current one).
+  SUPERSET_OEE_DASHBOARD_UUID: ${SUPERSET_OEE_DASHBOARD_UUID:-}
+  SUPERSET_EMBED_TARGET_DASHBOARD: ${SUPERSET_EMBED_TARGET_DASHBOARD:-}
   SUPERSET_REDIS_HOST: superset-redis
   PYTHONPATH: /app/pythonpath
 
@@ -82,6 +88,11 @@ x-superset-config-mounts: &superset-config-mounts
   # into the packiot_analytics connection at import time (git keeps a placeholder).
   - ./configs/superset/assets:/app/pythonpath/assets:ro
   - ./configs/superset/import_bundle.py:/app/pythonpath/import_bundle.py:ro
+  # Pins the STABLE embed uuid (SUPERSET_OEE_DASHBOARD_UUID) onto the client dashboard
+  # so the front4 iframe / edge-api broker keep working across metadata rebuilds
+  # (a hand-registered embed uuid does not survive one). Inert on web/worker; only
+  # superset-init runs it. See configs/superset/register_embed.py.
+  - ./configs/superset/register_embed.py:/app/pythonpath/register_embed.py:ro
 
 x-superset-logging: &superset-logging
   driver: json-file
@@ -197,11 +208,11 @@ services:
           --username "$${SUPERSET_GUESTTOKEN_ADMIN_USER}" \
           --firstname guest --lastname minter --email guesttoken@packiot.app \
           --password "$${SUPERSET_GUESTTOKEN_ADMIN_PASSWORD}" || true
-        # Import the dashboards-as-code bundle FIRST — while the minter is STILL Admin —
-        # so it can CREATE new datasets/charts/dashboards, not merely update existing
-        # ones. bootstrap_guest_role.py (below) scopes the minter to least-privilege
-        # AFTER the import; running it before would leave the minter unable to create a
-        # new client's dataset and red the whole deploy. See the feedback memo.
+        # BI security bootstrap: dedicated GuestViewer embed role + minimal
+        # GuestTokenMinter role, STRIP the anonymous Public role to zero perms (closes
+        # the anon /api/v1/dashboard/ metadata leak), and scope the minter service
+        # account off Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
+        python /app/pythonpath/bootstrap_guest_role.py
         # Import the dashboards-as-code bundle (configs/superset/assets/**). IDEMPOTENT:
         # import_bundle.py stages the assets and injects SUPERSET_DB_RO_PASSWORD (from
         # .env, Secrets Manager) into the packiot_analytics connection URI — the git
@@ -218,16 +229,18 @@ services:
         # must run AFTER import (charts + datasets must exist). See
         # configs/superset/normalize_query_context.py.
         python /app/pythonpath/normalize_query_context.py
-        # BI security bootstrap — runs AFTER the import (so the minter had Admin to
-        # CREATE the assets): dedicated GuestViewer embed role + minimal GuestTokenMinter
-        # role, STRIP the anonymous Public role to zero perms (closes the anon
-        # /api/v1/dashboard/ metadata leak), and scope the minter service account off
-        # Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
-        python /app/pythonpath/bootstrap_guest_role.py
         # Pin explicit non-Public RBAC roles on the imported dashboards (defense in
         # depth for the anon leak). Runs LAST — dashboards must exist first. See
         # configs/superset/harden_dashboard_roles.py.
         python /app/pythonpath/harden_dashboard_roles.py
+        # Pin the STABLE embed uuid onto the client dashboard so front4/edge-api keep
+        # resolving it after a metadata rebuild (hand-registered embeds don't survive).
+        # SUPERSET_EMBED_TARGET_DASHBOARD selects WHICH dashboard is embedded (by its
+        # bundle uuid); defaults here to the CURRENT (Scanned Boxes) so a deploy is a
+        # no-op — set it to the OEE Overview uuid (6c4fa4a1-…) to show the OEE report.
+        # Idempotent; no-op when SUPERSET_OEE_DASHBOARD_UUID is unset. See register_embed.py.
+        SUPERSET_EMBED_TARGET_DASHBOARD="$${SUPERSET_EMBED_TARGET_DASHBOARD:-d1000001-0a1b-4c2d-8e3f-000000000001}" \
+          python /app/pythonpath/register_embed.py
     depends_on:
       superset-db-init:
         condition: service_completed_successfully

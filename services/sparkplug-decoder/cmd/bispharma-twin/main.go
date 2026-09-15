@@ -128,8 +128,12 @@ func main() {
 			"line", cfg.line, "tenant_config", cfg.tenantConfig)
 		os.Exit(1)
 	}
+	lineSet := map[string]bool{}
+	for _, m := range metrics {
+		lineSet[m.line] = true
+	}
 	logger.Info("member count-index leaves resolved",
-		"line", cfg.line, "metrics", len(metrics), "first", metrics[0].name)
+		"line", cfg.line, "lines", len(lineSet), "metrics", len(metrics), "first", metrics[0].name)
 
 	tw := &twin{cfg: cfg, logger: logger, metrics: metrics}
 	if err := tw.run(ctx); err != nil {
@@ -192,6 +196,7 @@ type member struct {
 	name  string // full SparkPlug metric name (packml_topic + suffix)
 	alias uint64
 	memb  string // member segment (S1INFEED, S6OUTPUT, ...)
+	line  string // line the member belongs to (L01, L03, ...) — multi-line keying
 	kind  counterKind
 	val   float64 // current absolute totalizer value
 }
@@ -205,26 +210,43 @@ func buildMembers(cfg config) ([]*member, error) {
 		return nil, fmt.Errorf("load tenant config %s: %w", cfg.tenantConfig, err)
 	}
 	prefix := ac.Sparkplug.PackMLTopic // e.g. "BISPHARMASTAGING"
-	lineSeg := "/LINHAS/" + cfg.line + "/"
+
+	// TWIN_LINE=ALL (case-insensitive) mocks EVERY line present in the tenant
+	// tag-map; otherwise a comma-separated allow-list of specific lines (e.g.
+	// "L01" or "L01,L03"). Multi-line lets one twin instance produce all of a
+	// tenant's lines — a faithful mock of the real box, which feeds them all.
+	all := strings.EqualFold(strings.TrimSpace(cfg.line), "ALL")
+	want := map[string]bool{}
+	if !all {
+		for _, l := range strings.Split(cfg.line, ",") {
+			if l = strings.TrimSpace(l); l != "" {
+				want[l] = true
+			}
+		}
+	}
 
 	var out []*member
 	for _, e := range ac.RawTagMap {
 		s := e.MetricSuffix
-		// Scope to the target line's MEMBER count-index leaves only.
-		if !strings.Contains(s, lineSeg) {
-			continue
+		line := lineOf(s)
+		if line == "" {
+			continue // no /LINHAS/<line>/ segment
+		}
+		if !all && !want[line] {
+			continue // not a targeted line
 		}
 		kind, ok := classifyCountLeaf(s)
 		if !ok {
 			continue // MachSpeed / StateCurrent / Parameter → skip (counters-only)
 		}
-		memb := memberSegment(s, cfg.line)
+		memb := memberSegment(s, line)
 		if memb == "" {
 			continue // line-direct (no member segment) — twin emits member leaves
 		}
 		out = append(out, &member{
 			name: prefix + s,
 			memb: memb,
+			line: line,
 			kind: kind,
 		})
 	}
@@ -234,6 +256,18 @@ func buildMembers(cfg config) ([]*member, error) {
 		m.alias = uint64(i + 1)
 	}
 	return out, nil
+}
+
+// lineOf extracts the line segment (e.g. "L01") from a metric suffix like
+// "/SP/LINHAS/L01/S1INFEED/Admin/...". Returns "" when there is no /LINHAS/ segment.
+func lineOf(suffix string) string {
+	const marker = "/LINHAS/"
+	i := strings.Index(suffix, marker)
+	if i < 0 {
+		return ""
+	}
+	seg, _, _ := strings.Cut(suffix[i+len(marker):], "/")
+	return seg
 }
 
 // classifyCountLeaf maps a raw_tag_map suffix to a counter kind. Only the three
@@ -399,12 +433,13 @@ func (t *twin) advance() {
 	// totalizers move together (they describe the same physical unit).
 	byMember := map[string]float64{}
 	for _, m := range t.metrics {
-		if _, ok := byMember[m.memb]; !ok {
-			byMember[m.memb] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
+		key := m.line + "/" + m.memb
+		if _, ok := byMember[key]; !ok {
+			byMember[key] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
 		}
 	}
 	for _, m := range t.metrics {
-		g := byMember[m.memb]
+		g := byMember[m.line+"/"+m.memb]
 		scrap := math.Round(g * t.cfg.scrapRate)
 		switch m.kind {
 		case kindGross:
