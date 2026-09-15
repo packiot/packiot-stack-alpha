@@ -128,6 +128,15 @@ type Artifacts struct {
 	PositionSQL string `json:"position_sql"`
 	AgentYAML   string `json:"agent_yaml"`
 	TeeNodeJSON string `json:"tee_node_json"`
+	// ClientYAML is the PLC reader's client.yaml (physical addressing). Non-empty
+	// ONLY when the descriptor has a plc block; empty for a tee-only tenant.
+	ClientYAML string `json:"client_yaml,omitempty"`
+	// ReaderFlow is the Node-RED PLC-reader flow (artifact 6) — the one that hosts
+	// the tenant's authored `customizations` on its "<Tenant> customizations" tab.
+	// Previously the HTTP path dropped it (only the onboard-gen CLI emitted it), so
+	// authored customizations never reached an API consumer (ADR-0058 P2.1 / G-B).
+	// Non-empty ONLY when the descriptor has a plc block.
+	ReaderFlow string `json:"reader_flow,omitempty"`
 }
 
 // InferredIndex is one member whose count index is still inferred (not confirmed
@@ -235,6 +244,8 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			PositionSQL: art.PositionSQL,
 			AgentYAML:   string(art.AgentYAML),
 			TeeNodeJSON: string(art.TeeSnippet),
+			ClientYAML:  string(art.ClientYAML),
+			ReaderFlow:  string(art.ReaderFlow),
 		},
 		Validation: Validation{
 			InferredCountIndices: inferred,

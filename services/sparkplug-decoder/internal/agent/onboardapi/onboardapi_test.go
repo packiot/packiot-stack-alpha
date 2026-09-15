@@ -118,6 +118,34 @@ func TestGenerate_BISPHARMA(t *testing.T) {
 	}
 }
 
+// TestGenerate_ReaderFlowAndCustomizations is the ADR-0058 P2.1 proof (gap G-B):
+// the HTTP path now RETURNS the reader flow it used to drop, and an authored
+// `customizations` node is rendered onto it — so an API consumer can actually ship
+// the customization. Uses the plc-bearing example + an appended customization.
+func TestGenerate_ReaderFlowAndCustomizations(t *testing.T) {
+	s := newTestServer(t)
+	base := readFixture(t, "examples/bispharma.descriptor.yaml") // has a plc block → a reader flow
+	cust := "\ncustomizations:\n  - {id: \"cust-merge-1\", type: \"function\", name: \"merge two plc\", func: \"return msg;\", wires: [[]]}\n"
+	rec := post(t, s, testKey, append(append([]byte{}, base...), []byte(cust)...))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	resp := decodeResp(t, rec)
+	// Previously both were dropped by the HTTP wrapper; a plc descriptor must now
+	// carry them.
+	if strings.TrimSpace(resp.Artifacts.ReaderFlow) == "" {
+		t.Fatal("reader_flow is empty — the HTTP path still drops the flow (P2.1 not wired)")
+	}
+	if strings.TrimSpace(resp.Artifacts.ClientYAML) == "" {
+		t.Error("client_yaml is empty — the HTTP path still drops the reader client.yaml")
+	}
+	// The authored customization must be rendered INTO the shipped flow (proves the
+	// customization actually reaches an API consumer, not just that a flow exists).
+	if !strings.Contains(resp.Artifacts.ReaderFlow, "cust-merge-1") {
+		t.Fatalf("reader_flow does not contain the authored customization node cust-merge-1")
+	}
+}
+
 // TestGenerate_EquivalenceWithCLI proves the single-path refactor didn't drift:
 // the endpoint's four artifacts are byte-identical to what Descriptor.Generate
 // produces directly (the exact call the onboard-gen CLI makes).
