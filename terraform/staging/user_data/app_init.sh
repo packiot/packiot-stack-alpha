@@ -539,6 +539,11 @@ echo "      docker compose -f compose.staging.yml restart edge-nodered oeecloud-
 # admin account). This block re-creates it via the Admin HTTP API instead,
 # same idempotent-PUT idiom as the RabbitMQ client user below: skip cleanly if
 # the secret key is absent, safe to re-run via SSM once it's populated.
+#
+# AUTH: the Admin API is reached via the auth-proxy header (X-WEBAUTH-USER: admin),
+# NOT basic auth — GF_AUTH_BASIC_ENABLED is false on this stack, so `-u admin:pass`
+# returns 401 and the whole block silently no-ops. `admin` is the built-in server
+# admin (GF_SECURITY_ADMIN_USER), which the header resolves to.
 if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
   echo "Waiting for Grafana API..."
   for i in $(seq 1 24); do
@@ -549,7 +554,7 @@ if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
     sleep 5
   done
 
-  DEV_USER_ID=$(curl -sf -u "admin:$GRAFANA_PASS" \
+  DEV_USER_ID=$(curl -sf -H "X-WEBAUTH-USER: admin" \
     "http://127.0.0.1:3000/api/users/lookup?loginOrEmail=dev@packiot.com" \
     | jq -r '.id // empty')
 
@@ -557,7 +562,7 @@ if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
     # POST /api/admin/users creates the user + adds them to the default org
     # (id 1) at whatever role auto_assign_org_role defaults to; the PATCH
     # below normalizes that to Admin regardless.
-    DEV_USER_ID=$(curl -sf -u "admin:$GRAFANA_PASS" -X POST \
+    DEV_USER_ID=$(curl -sf -H "X-WEBAUTH-USER: admin" -X POST \
       "http://127.0.0.1:3000/api/admin/users" \
       -H "Content-Type: application/json" \
       -d "{\"name\":\"dev\",\"email\":\"dev@packiot.com\",\"login\":\"dev@packiot.com\",\"password\":\"$GRAFANA_DEV_USER_PASS\"}" \
@@ -566,7 +571,7 @@ if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
   else
     # Already exists (e.g. re-running this script on a live box) — re-sync the
     # password to whatever Secrets Manager currently holds.
-    curl -sf -u "admin:$GRAFANA_PASS" -X PUT \
+    curl -sf -H "X-WEBAUTH-USER: admin" -X PUT \
       "http://127.0.0.1:3000/api/admin/users/$DEV_USER_ID/password" \
       -H "Content-Type: application/json" \
       -d "{\"password\":\"$GRAFANA_DEV_USER_PASS\"}" > /dev/null
@@ -574,7 +579,7 @@ if [ -n "$GRAFANA_DEV_USER_PASS" ]; then
   fi
 
   if [ -n "$DEV_USER_ID" ]; then
-    curl -sf -u "admin:$GRAFANA_PASS" -X PATCH \
+    curl -sf -H "X-WEBAUTH-USER: admin" -X PATCH \
       "http://127.0.0.1:3000/api/org/users/$DEV_USER_ID" \
       -H "Content-Type: application/json" \
       -d '{"role":"Admin"}' > /dev/null
