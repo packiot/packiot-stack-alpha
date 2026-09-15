@@ -224,6 +224,14 @@ type ExprSource struct {
 	// must be valid expr variable names (letters/digits/underscore); the suffixes
 	// are matched against the RAW arriving metric names (no inbound aliasing).
 	Vars map[string]string `yaml:"vars"`
+
+	// Consume lists the var names whose bound arriving suffix must be DROPPED from
+	// raw passthrough — the deriver folds them into this expression and does NOT
+	// republish them upstream (like a sum addend). Used for synthetic derive-input
+	// sensors that exist ONLY to feed the expression (ADR-0058 P1.4b: a
+	// reader-published non-member sensor). A var NOT listed here — e.g. a member's
+	// own published count — passes through raw. Every entry must be a key of Vars.
+	Consume []string `yaml:"consume,omitempty"`
 }
 
 // Rewrite is an ordered from→to string rewrite.
@@ -482,6 +490,11 @@ func (r DerivedRule) validate(label string) error {
 		// tags.
 		if _, err := expreval.Compile(r.Expr.Expr, vars); err != nil {
 			return fmt.Errorf("%s: expr does not compile: %w", label, err)
+		}
+		for _, name := range r.Expr.Consume {
+			if _, ok := r.Expr.Vars[name]; !ok {
+				return fmt.Errorf("%s: expr.consume[%q] is not one of expr.vars", label, name)
+			}
 		}
 	}
 	return nil

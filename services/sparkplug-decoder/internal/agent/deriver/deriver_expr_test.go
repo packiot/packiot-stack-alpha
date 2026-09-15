@@ -134,6 +134,35 @@ func TestExprFaultIsolationBadRuleSkipped(t *testing.T) {
 	}
 }
 
+// TestExprConsumeDropsInput proves the ADR-0058 P1.4b consume path: a var listed
+// in Expr.Consume is folded into the expression AND dropped from raw passthrough
+// (never republished), while a non-consumed var (a real published count) passes
+// through.
+func TestExprConsumeDropsInput(t *testing.T) {
+	const a = "/L/A" // a real published count — NOT consumed
+	const b = "/L/B" // a synthetic derive-input sensor — consumed
+	const emit = "/L/Out/1/Unit"
+	d := New(&tenantprofile.Profile{
+		TenantPrefix: "T",
+		Derived: []tenantprofile.DerivedRule{{
+			Segment: "/L", Emit: []string{emit}, Type: "long",
+			Expr: &tenantprofile.ExprSource{
+				Expr: "a + b", Vars: map[string]string{"a": a, "b": b}, Consume: []string{"b"},
+			},
+		}},
+	})
+	synth, consumed := d.Process([]rawtag.RawTag{speed(a, 10, 1000), speed(b, 5, 1000)})
+	if v, ok := findEmit(synth, emit); !ok || v != 15 {
+		t.Fatalf("out = a+b: got %v ok=%v, want 15", v, ok)
+	}
+	if consumed == nil || !consumed[b] {
+		t.Fatalf("b (synthetic input) must be consumed, got consumed=%v", consumed)
+	}
+	if consumed[a] {
+		t.Fatalf("a (real published count) must NOT be consumed")
+	}
+}
+
 // TestExprValidateCompileCheck: a bad expression is rejected at profile validate
 // (fail-fast at load, off the hot path).
 func TestExprValidateCompileCheck(t *testing.T) {

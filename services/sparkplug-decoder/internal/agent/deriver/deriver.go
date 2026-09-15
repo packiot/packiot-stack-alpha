@@ -64,6 +64,10 @@ type Deriver struct {
 	// exprBySuffix routes an arriving suffix to the expr rules that reference it as
 	// one of their vars (a suffix can feed more than one rule).
 	exprBySuffix map[string][]*exprState
+	// exprConsume is the set of arriving suffixes an expr rule folds in and the
+	// caller must DROP from raw passthrough (ADR-0058 P1.4b: synthetic
+	// reader-published derive-input sensors — never republished upstream).
+	exprConsume map[string]bool
 }
 
 type integralState struct {
@@ -116,6 +120,7 @@ func New(prof *tenantprofile.Profile) *Deriver {
 		sumByAddend:      map[string][]*sumState{},
 		isAddend:         map[string]bool{},
 		exprBySuffix:     map[string][]*exprState{},
+		exprConsume:      map[string]bool{},
 	}
 	if prof == nil {
 		return dv
@@ -173,6 +178,13 @@ func New(prof *tenantprofile.Profile) *Deriver {
 			for suffix := range varBySuffix {
 				dv.exprBySuffix[suffix] = append(dv.exprBySuffix[suffix], st)
 			}
+			// Suffixes this rule CONSUMES (drops from passthrough) — a synthetic
+			// derive-input sensor that exists only to feed the expression.
+			for _, name := range r.Expr.Consume {
+				if suffix, ok := r.Expr.Vars[name]; ok {
+					dv.exprConsume[suffix] = true
+				}
+			}
 		}
 	}
 	return dv
@@ -199,7 +211,7 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 	if d.Empty() {
 		return nil, nil
 	}
-	if len(d.isAddend) > 0 {
+	if len(d.isAddend) > 0 || len(d.exprConsume) > 0 {
 		consumed = map[string]bool{}
 	}
 	for _, t := range tags {
@@ -296,6 +308,9 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 			states, ok := d.exprBySuffix[t.Metric]
 			if !ok {
 				continue
+			}
+			if consumed != nil && d.exprConsume[t.Metric] {
+				consumed[t.Metric] = true // synthetic derive-input — never republished
 			}
 			v, num := toFloat(t.Value)
 			if !num {
