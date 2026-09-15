@@ -289,6 +289,17 @@ func (d *Descriptor) generateDerivedRules(p *tenantprofile.Profile) ([]tenantpro
 				}
 				r.Sum = sum
 			}
+			if dm.Expr != nil {
+				vars := make(map[string]string, len(dm.Expr.Vars))
+				for name, leaf := range dm.Expr.Vars {
+					full, err := resolveLeaf(leaf)
+					if err != nil {
+						return nil, err
+					}
+					vars[name] = full
+				}
+				r.Expr = &tenantprofile.ExprSource{Expr: dm.Expr.Expr, Vars: vars}
+			}
 			rules = append(rules, r)
 		}
 	}
