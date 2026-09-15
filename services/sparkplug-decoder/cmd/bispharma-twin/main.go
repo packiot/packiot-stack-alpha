@@ -429,17 +429,20 @@ func (t *twin) advance() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	incr := t.cfg.ratePerMin * t.cfg.interval.Minutes()
-	// One shared stochastic increment per member segment so its gross/net/scrap
-	// totalizers move together (they describe the same physical unit).
-	byMember := map[string]float64{}
+	// One shared stochastic increment per LINE (not per member) so the whole line
+	// flows as a unit. Line-metered OEE binds a line's gross to its INFEED machine
+	// (equipments.gross_machine) and its net to its OUTFEED machine (lead_machine) —
+	// DIFFERENT machines. Independent per-member increments let outfeed net exceed
+	// infeed gross → net>gross clamps at the line. Sharing one increment per line
+	// keeps infeed gross ≥ outfeed net (net = gross − scrap) as a real line does.
+	byLine := map[string]float64{}
 	for _, m := range t.metrics {
-		key := m.line + "/" + m.memb
-		if _, ok := byMember[key]; !ok {
-			byMember[key] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
+		if _, ok := byLine[m.line]; !ok {
+			byLine[m.line] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
 		}
 	}
 	for _, m := range t.metrics {
-		g := byMember[m.line+"/"+m.memb]
+		g := byLine[m.line]
 		// FRACTIONAL scrap — do NOT round per tick. At low rates (e.g. 50/min → g≈12)
 		// round(g·0.03)=round(0.36)=0 would freeze the scrap totalizer forever, so
 		// net≡gross and Q pins at 1.0. m.val is a float accumulator emitted as int64,
