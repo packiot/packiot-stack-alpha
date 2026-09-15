@@ -817,7 +817,7 @@ services:
       # so this had pointed at a file that no longer exists since then (Grafana
       # silently falls back to its own default home, so it was a dead setting
       # rather than a boot failure — still worth pointing at a real board).
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/00-overview.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/audience/00-overview.json
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: publicDashboards
     ports:

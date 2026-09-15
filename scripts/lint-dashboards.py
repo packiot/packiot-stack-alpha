@@ -2,7 +2,7 @@
 """Lint the Grafana v2 dashboards so the bug classes fixed in the v2 rebuild
 cannot silently return.
 
-Enforces, for every grafana/dashboards-v2/*.json:
+Enforces, for every grafana/dashboards/**/*.json:
   1. Valid JSON + a non-empty `uid`; uids are unique across the folder.
   2. Every panel (except text/row dividers) pins an explicit datasource uid,
      and every target does too. (v1's #1 blank-tile bug was datasource: null →
@@ -20,7 +20,10 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DASH_DIR = os.path.join(HERE, "..", "grafana", "dashboards-v2")
+# The live, provisioned boards. Persona layout groups them into subfolders
+# (audience/ + library/), so this MUST recurse — a flat glob (the old
+# dashboards-v2/ target) linted a single stray file and guarded nothing.
+DASH_DIR = os.path.join(HERE, "..", "grafana", "dashboards")
 
 # The datasource uids provisioned in grafana/provisioning/datasources/.
 KNOWN_DS = {
@@ -122,7 +125,7 @@ def lint_file(path, seen_uids):
 
 
 def main():
-    files = sorted(glob.glob(os.path.join(DASH_DIR, "*.json")))
+    files = sorted(glob.glob(os.path.join(DASH_DIR, "**", "*.json"), recursive=True))
     if not files:
         print(f"no dashboards found in {DASH_DIR}", file=sys.stderr)
         return 1

@@ -1,12 +1,18 @@
 # Packiot dashboards v2 — build spec
 
-Reviewed, rebuilt Grafana boards. Loaded into a separate **"Packiot v2"** folder
-(provider `packiot-v2` in `provisioning/dashboards/all.yml`) so the original
-"Packiot" set stays untouched during the flip bake. v1 retires once v2 is blessed.
+> **STATUS 2026-09 — persona layout.** These boards now live in
+> `grafana/dashboards/library/` (Grafana folder "library"), with an audience tier
+> in `grafana/dashboards/audience/` on top. The single provider is `packiot` with
+> `foldersFromFilesStructure: true` (there is no `packiot-v2` provider). Canonical
+> map: `docs/ops/observability-persona-dashboards.md`. The board table + metric
+> universe below are **historical** (verified 2026-07-10, before the stream-engine
+> / medallion / SAC changes) — treat every metric name as a hypothesis and re-run
+> it live (`scripts/hardproof-dashboards.py`) before trusting it. Current live
+> prefixes are still `oeecloud_worker_*` / `edge_transformer_*` / `outbox_*`; the
+> rollup job label is `exported_job` (Prometheus shadows the metric's own `job`).
 
-Every board here is **grounded in metrics verified live** (Prometheus series
-counts checked against the running staging stack 2026-07-10) — no panel queries
-a metric that doesn't exist. The whole reason v1 accumulated blank tiles was the
+Every board here is **grounded in metrics verified live** — no panel queries a
+metric that doesn't exist. The whole reason v1 accumulated blank tiles was the
 opposite; see "Bug classes" below.
 
 ## Hard rules (these are why v1 had blank tiles)

@@ -1,14 +1,18 @@
 apiVersion: 1
 
 providers:
-  # v1 "Packiot" provider RETIRED (2026-07): v2 was blessed. The v1 set was a
-  # full duplicate of v2 that still carried dead primary-api/back4-api/hasura
-  # panels + 3-flow/bake artifacts. Boards live in the "Packiot v2" folder now.
+  # Persona-driven layout (2026-09): dashboards are grouped by AUDIENCE, not by
+  # component. `foldersFromFilesStructure: true` maps each subdirectory of the
+  # mounted dashboards path to a Grafana folder:
+  #   grafana/dashboards/audience/  → folder "audience"  (CS / SRE / Data + Overview)
+  #   grafana/dashboards/library/   → folder "library"   (the deep component boards)
+  # A CS engineer lives in `audience/`; an on-call engineer drills into `library/`.
+  # Boards keep their stable uids across the move, so all /d/<uid> links still work.
   - name: packiot
-    folder: Packiot
     type: file
     disableDeletion: false
     updateIntervalSeconds: 10
     allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

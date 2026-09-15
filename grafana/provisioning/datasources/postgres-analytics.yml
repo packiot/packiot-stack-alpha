@@ -5,7 +5,7 @@ apiVersion: 1
 datasources:
   - name: Packiot Analytics (F3)
     type: postgres
-    uid: packiot-postgres-shadow # uid left unchanged on purpose — 18 dashboards-v2/*.json panels reference it; see rename PR notes
+    uid: packiot-postgres-shadow # uid left unchanged on purpose — many grafana/dashboards/**/*.json panels reference it; see rename PR notes
     url: $POSTGRES_HOST:$POSTGRES_PORT
     user: $POSTGRES_USER
     secureJsonData:

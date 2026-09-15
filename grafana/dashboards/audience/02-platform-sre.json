@@ -1,0 +1,194 @@
+{
+  "uid": "aud-sre",
+  "title": "② Platform · SRE",
+  "tags": ["packiot", "audience", "sre"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    { "id": 100, "type": "row", "title": "① Is anything on fire?", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 1, "type": "table", "title": "Firing alerts",
+      "description": "ALERTS{alertstate=\"firing\"} from monitoring/prometheus/rules.yml. Empty = nothing firing (healthy).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 16, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "severity", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "ALERTS{alertstate=\"firing\"}", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["alertname", "severity", "job", "tenant", "queue", "Value"] } } } ]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Scrape targets DOWN",
+      "description": "sum(up == 0). 0 = every scrape target healthy. NOTE: mirror-worker-go is intentionally NOT scraped (job commented out in prometheus.yml) so it never appears here.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 4, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(up == bool 0)", "refId": "A" } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Synthetic probes OK",
+      "description": "min(probe_success) across blackbox HTTP/TCP probes (edge-api, read-api, operator, grafana, historian). 1 = all external surfaces reachable.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 4, "x": 20, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "OK", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["min"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "min(probe_success)", "refId": "A" } ]
+    },
+    { "id": 200, "type": "row", "title": "② Message bus (RabbitMQ)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 } },
+    {
+      "id": 4, "type": "stat", "title": "Broker connections",
+      "description": "rabbitmq_connections. Should stay small — one per live service (stream-engine, sparkplug-decoder, oeecloud-fanout, superset-worker). A climb = a connection leak.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 20 }, { "color": "red", "value": 50 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_connections", "refId": "A" } ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Broker memory",
+      "description": "rabbitmq_process_resident_memory_bytes. Approaching the high-watermark = publishers get flow-controlled (nacks).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 800000000 }, { "color": "red", "value": 1500000000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_process_resident_memory_bytes", "refId": "A" } ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Broker disk free",
+      "description": "rabbitmq_disk_space_available_bytes. Below the limit → the broker blocks all publishers.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 1000000000 }, { "color": "green", "value": 3000000000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_disk_space_available_bytes", "refId": "A" } ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Bus throughput (publish / deliver / ack per s)",
+      "description": "rate() of rabbitmq_global_messages_{received,delivered,acknowledged}_total. Deliver+ack tracking publish = the bus is draining as fast as it fills.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_received_total[5m]))", "legendFormat": "published", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_delivered_total[5m]))", "legendFormat": "delivered", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_acknowledged_total[5m]))", "legendFormat": "acked", "refId": "C" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Per-queue consumers (single-active-consumer health)",
+      "description": "rabbitmq_detailed_queue_consumers on each per-tenant live queue. Under single-active-consumer, exactly one active consumer per tenant queue; a queue dropping to 0 while data is published = a tenant silently stops ingesting (failover stuck). Retry/failed queues legitimately show 0.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_consumers{queue=~\"stream-engine-q-.+\", queue!~\".*-(retry-30s|failed)\"}", "legendFormat": "{{queue}}", "refId": "A" } ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Per-queue depth (all stream-engine queues)",
+      "description": "rabbitmq_detailed_queue_messages across every stream-engine queue incl. retry/failed. A rising -failed line = poison messages piling up; a rising live queue = the worker can't keep up.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_messages{queue=~\"stream-engine-q.*\"}", "legendFormat": "{{queue}}", "refId": "A" } ]
+    },
+    { "id": 300, "type": "row", "title": "③ Database (Postgres / TimescaleDB)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 } },
+    {
+      "id": 10, "type": "stat", "title": "DB connections vs max",
+      "description": "sum(pg_stat_database_numbackends) / max_connections. The shared analytics pool is the real scale ceiling — the worker tier scales on the DB, not on CPU. > 0.8 = raise max_connections or add pgbouncer headroom.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.85 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(pg_stat_database_numbackends) / scalar(pg_settings_max_connections)", "refId": "A" } ]
+    },
+    {
+      "id": 11, "type": "stat", "title": "Longest active query",
+      "description": "max(pg_longest_query_longest_active_seconds). A multi-minute query is usually a rollup or cagg refresh; a stuck one holding the runtime advisory lock is the #259 freeze class.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 5, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 60 }, { "color": "red", "value": 300 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_longest_query_longest_active_seconds)", "refId": "A" } ]
+    },
+    {
+      "id": 12, "type": "stat", "title": "Cache hit ratio",
+      "description": "min(pg_cache_hit_hit_ratio) across DBs. Should sit at ~0.99+. A sustained drop = working set spilled to disk / a cold cache after restart.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 10, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "min(pg_cache_hit_hit_ratio)", "refId": "A" } ]
+    },
+    {
+      "id": 13, "type": "stat", "title": "Locks waiting",
+      "description": "sum(pg_locks_by_mode_waiting). 0 = no blocked backends. A non-zero standing value = lock contention (a long writer blocking readers).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 15, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(pg_locks_by_mode_waiting)", "refId": "A" } ]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Connections by state",
+      "description": "pg_activity_by_state_connections. A rising 'idle in transaction' is a leaked transaction holding locks/bloat.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 19, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (state) (pg_activity_by_state_connections)", "legendFormat": "{{state}}", "refId": "A" } ]
+    },
+    { "id": 400, "type": "row", "title": "④ Host & containers", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 } },
+    {
+      "id": 15, "type": "stat", "title": "Host CPU busy",
+      "description": "100 - idle. Sustained high = the app box is CPU-bound.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "100 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))*100", "refId": "A" } ]
+    },
+    {
+      "id": 16, "type": "stat", "title": "Host memory free",
+      "description": "node_memory_MemAvailable_bytes / MemTotal. Low = OOM-kill risk for the compose services.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 5, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 20 }, { "color": "green", "value": 35 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes", "refId": "A" } ]
+    },
+    {
+      "id": 17, "type": "stat", "title": "Host disk free (min mount)",
+      "description": "min free % across real filesystems. Prometheus retention + Loki/Tempo blocks + Docker images live here — watch for the HostDiskFilling alert.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 10, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 15 }, { "color": "green", "value": 25 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "min(100*node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"}/node_filesystem_size_bytes)", "refId": "A" } ]
+    },
+    {
+      "id": 18, "type": "stat", "title": "Redis up",
+      "description": "redis_up for the app-redis (oauth2-proxy sessions + app cache). 0 = admin UIs lose their session store.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 15, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["min"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "min(redis_up)", "refId": "A" } ]
+    },
+    {
+      "id": 19, "type": "table", "title": "Container restarts (last 1h)",
+      "description": "changes(container_start_time_seconds[1h]) by container. 0 across the board = nothing crash-looping. Any non-zero = that service restarted — cross-check its logs in the library Logs board.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 5, "x": 19, "y": 31 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "restarts" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "restarts", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "topk(10, sum by (name) (changes(container_start_time_seconds{name!=\"\"}[1h])))", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [ { "id": "filterFieldsByName", "options": { "include": { "names": ["name", "Value"] } } }, { "id": "organize", "options": { "renameByName": { "Value": "restarts" } } } ]
+    }
+  ]
+}
