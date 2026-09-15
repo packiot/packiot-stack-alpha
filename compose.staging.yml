@@ -674,6 +674,7 @@ services:
       # service-name DNS on packiot-net; the shared token is internal-only
       # (broker is NOT exposed past this network) — move to Secrets Manager for prod.
       EDGE_SESSION_BROKER_WS_URL: ws://edge-session-broker:8090/shell
+      EDGE_SESSION_BROKER_HTTP_URL: http://edge-session-broker:8091
       EDGE_SESSION_BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}
     ports:
       - "127.0.0.1:8080:8080"
