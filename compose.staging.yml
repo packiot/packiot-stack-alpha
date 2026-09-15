@@ -2160,10 +2160,16 @@ services:
       TWIN_BROKER: tcp://mosquitto:1883
       TWIN_GROUP: BISPHARMASTAGING
       TWIN_EDGE_NODE: bispharmastaging-twin
-      TWIN_LINE: "${BISPHARMA_TWIN_LINE:-L01}"
+      # ALL = mock every line in the tenant tag-map (faithful mock of the real box,
+      # which feeds all 23 lines). A single line name or comma-list still works.
+      TWIN_LINE: "${BISPHARMA_TWIN_LINE:-ALL}"
       TWIN_TENANT_CONFIG: /etc/packiot/tenants/bispharma.yaml
       TWIN_INTERVAL_SEC: "${BISPHARMA_TWIN_INTERVAL_SEC:-15}"
-      TWIN_RATE_PER_MIN: "${BISPHARMA_TWIN_RATE_PER_MIN:-600}"
+      # Per-machine throughput. Kept BELOW the machines' rated production_speed
+      # (t-bispharma-mock-rated-speeds sets those to a CPACK-like 65..135/min) so
+      # Performance = actual/ideal stays in a realistic (0.3..0.9) band and the
+      # IDEAL_SPEED_TOO_LOW physics clamp does not fire on the mock feed.
+      TWIN_RATE_PER_MIN: "${BISPHARMA_TWIN_RATE_PER_MIN:-50}"
       TWIN_SCRAP_RATE: "${BISPHARMA_TWIN_SCRAP_RATE:-0.03}"
       # Persist the absolute totalizers on the named volume below so a container
       # restart resumes monotonically (real PLC totalizers are non-volatile)
