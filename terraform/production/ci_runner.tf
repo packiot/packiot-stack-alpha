@@ -90,7 +90,7 @@ resource "aws_security_group" "ci_runner" {
   # (intentionally NO ingress blocks — access is via SSM Session Manager only)
 
   egress {
-    description = "HTTPS — GitHub, ghcr/Docker Hub, npm, dnf mirrors, SSM, Secrets Manager"
+    description = "HTTPS - GitHub, ghcr/Docker Hub, npm, dnf mirrors, SSM, Secrets Manager"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -98,7 +98,7 @@ resource "aws_security_group" "ci_runner" {
   }
 
   egress {
-    description = "HTTP — package-mirror redirects / registries that 302 over http"
+    description = "HTTP - package-mirror redirects / registries that 302 over http"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -106,7 +106,7 @@ resource "aws_security_group" "ci_runner" {
   }
 
   egress {
-    description = "DNS (UDP) — resolve GitHub/registry/SSM hostnames via the VPC resolver"
+    description = "DNS (UDP) - resolve GitHub/registry/SSM hostnames via the VPC resolver"
     from_port   = 53
     to_port     = 53
     protocol    = "udp"
@@ -114,7 +114,7 @@ resource "aws_security_group" "ci_runner" {
   }
 
   egress {
-    description = "DNS (TCP) — large responses / fallback"
+    description = "DNS (TCP) - large responses / fallback"
     from_port   = 53
     to_port     = 53
     protocol    = "tcp"
@@ -122,7 +122,7 @@ resource "aws_security_group" "ci_runner" {
   }
 
   egress {
-    description = "NTP — clock sync (skewed clock breaks TLS + token exchange)"
+    description = "NTP - clock sync (skewed clock breaks TLS + token exchange)"
     from_port   = 123
     to_port     = 123
     protocol    = "udp"
@@ -150,7 +150,7 @@ resource "aws_security_group" "ci_runner" {
 resource "aws_secretsmanager_secret" "ci_runner_github_pat" {
   name                    = "packiot/production/ci-runner-github-pat"
   recovery_window_in_days = 7
-  description             = "GitHub org-scoped PAT for self-hosted CI runner registration (manage_runners:org / admin:org). Populate via put-secret-value — see docs/ci-selfhosted-runner-runbook.md."
+  description             = "GitHub org-scoped PAT for self-hosted CI runner registration (manage_runners:org / admin:org). Populate via put-secret-value - see docs/ci-selfhosted-runner-runbook.md."
 }
 
 resource "aws_secretsmanager_secret_version" "ci_runner_github_pat" {
