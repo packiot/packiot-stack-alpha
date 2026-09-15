@@ -13,16 +13,178 @@
 // already obtained. On WS close it kills the plugin; a plugin exit closes the WS.
 
 import { spawn } from 'node:child_process';
+import http from 'node:http';
+import net from 'node:net';
 import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.BROKER_PORT || 8090);
+const HTTP_PORT = Number(process.env.BROKER_HTTP_PORT || 8091);
 const BROKER_TOKEN = process.env.BROKER_TOKEN || '';
-const SSM_ENDPOINT =
-  process.env.SSM_ENDPOINT || `https://ssm.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com`;
+const REGION = process.env.AWS_REGION || 'us-east-1';
+const SSM_ENDPOINT = process.env.SSM_ENDPOINT || `https://ssm.${REGION}.amazonaws.com`;
 
 function log(...a) {
   console.log(new Date().toISOString(), '[broker]', ...a);
 }
+
+// Build the session-manager-plugin argv+env for a StartSession handle. The
+// SENSITIVE response goes via env var (never argv → not in `ps`); argv[1] is its
+// NAME, argv[4] is an empty profile, argv[5] the ORIGINAL request params.
+function pluginArgs(response, requestParams) {
+  return {
+    args: [
+      'AWS_SSM_START_SESSION_RESPONSE',
+      REGION,
+      'StartSession',
+      '',
+      JSON.stringify(requestParams),
+      SSM_ENDPOINT,
+    ],
+    env: {
+      ...process.env,
+      AWS_SSM_START_SESSION_RESPONSE: JSON.stringify(response),
+    },
+  };
+}
+
+// ── Phase 2b: HTTP reverse-proxy through a port-forward ──────────────────────
+// One port-forward per web-UI session. edge-api obtains the port-forward
+// StartSession handle (it holds the AWS role) and POSTs it here; we run the
+// plugin binding 127.0.0.1:<localPort> IN THIS container, then reverse-proxy
+// HTTP to it. edge-api reverse-proxies the browser to us. Idle forwards reaped.
+const forwards = new Map(); // sessionId -> { localPort, plugin, lastSeen }
+const FORWARD_IDLE_MS = Number(process.env.BROKER_FORWARD_IDLE_MS || 10 * 60 * 1000);
+
+function startForward({ sessionId, response, target, boxPort, localPort }) {
+  return new Promise((resolve, reject) => {
+    const requestParams = {
+      Target: target,
+      DocumentName: 'AWS-StartPortForwardingSession',
+      Parameters: {
+        portNumber: [String(boxPort)],
+        localPortNumber: [String(localPort)],
+      },
+    };
+    const { args, env } = pluginArgs(response, requestParams);
+    const plugin = spawn('session-manager-plugin', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+    plugin.stderr.on('data', (b) => log(`pf[${sessionId}] stderr: ${b}`));
+    plugin.on('exit', (c) => {
+      log(`pf[${sessionId}] plugin exit ${c}`);
+      forwards.delete(sessionId);
+    });
+    forwards.set(sessionId, { localPort, plugin, lastSeen: Date.now() });
+    // Wait until the forwarded local port is actually accepting connections.
+    let tries = 0;
+    const iv = setInterval(() => {
+      const s = net.connect(localPort, '127.0.0.1');
+      s.on('connect', () => {
+        s.destroy();
+        clearInterval(iv);
+        resolve();
+      });
+      s.on('error', () => {
+        s.destroy();
+        if (++tries > 40) {
+          clearInterval(iv);
+          try {
+            plugin.kill('SIGKILL');
+          } catch {
+            /* noop */
+          }
+          reject(new Error('port-forward did not come up'));
+        }
+      });
+    }, 250);
+  });
+}
+
+const httpSrv = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  // Control plane (edge-api only): start a port-forward.
+  if (req.method === 'POST' && url.pathname === '/forward') {
+    if (req.headers['x-broker-token'] !== BROKER_TOKEN) {
+      res.writeHead(401);
+      return res.end('unauthorized');
+    }
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      let j;
+      try {
+        j = JSON.parse(body);
+      } catch {
+        res.writeHead(400);
+        return res.end('bad json');
+      }
+      startForward(j)
+        .then(() => {
+          res.writeHead(200);
+          res.end('ok');
+        })
+        .catch((e) => {
+          log(`forward failed: ${String(e)}`);
+          res.writeHead(502);
+          res.end(String(e));
+        });
+    });
+    return;
+  }
+  // Data plane: /p/:sessionId/* → the box web UI via the forward.
+  const m = url.pathname.match(/^\/p\/([^/]+)(\/.*)?$/);
+  if (m) {
+    const f = forwards.get(m[1]);
+    if (!f) {
+      res.writeHead(404);
+      return res.end('no active forward');
+    }
+    f.lastSeen = Date.now();
+    const preq = http.request(
+      {
+        host: '127.0.0.1',
+        port: f.localPort,
+        method: req.method,
+        path: (m[2] || '/') + url.search,
+        headers: { ...req.headers, host: `127.0.0.1:${f.localPort}` },
+      },
+      (pres) => {
+        const h = { ...pres.headers };
+        // Strip framing blockers so edge-api can iframe the UI.
+        delete h['x-frame-options'];
+        delete h['content-security-policy'];
+        res.writeHead(pres.statusCode || 502, h);
+        pres.pipe(res);
+      },
+    );
+    preq.on('error', (e) => {
+      res.writeHead(502);
+      res.end(String(e));
+    });
+    req.pipe(preq);
+    return;
+  }
+  res.writeHead(404);
+  res.end('not found');
+});
+httpSrv.listen(HTTP_PORT, () => log(`http reverse-proxy on :${HTTP_PORT}`));
+
+// Reap idle port-forwards.
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, f] of forwards) {
+    if (now - f.lastSeen > FORWARD_IDLE_MS) {
+      log(`reaping idle forward ${sid}`);
+      try {
+        f.plugin.kill('SIGKILL');
+      } catch {
+        /* noop */
+      }
+      forwards.delete(sid);
+    }
+  }
+}, 60 * 1000).unref?.();
 
 const wss = new WebSocketServer({ port: PORT, path: '/shell' });
 log(`listening on :${PORT}/shell`);
