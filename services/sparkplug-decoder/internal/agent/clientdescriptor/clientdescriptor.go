@@ -879,6 +879,22 @@ func (d *Descriptor) validatePLCTypes() error {
 				}
 			}
 		}
+		// derive block (ADR-0050 §4 / ADR-0058 P1.4): fail fast on an unknown role
+		// or a non-compiling expression. Sensor→member resolution needs endpoint
+		// context, so it is checked at generate (generateTypeDeriveRules) with a
+		// precise per-line error; here we guard the type declaration itself.
+		for role, exprStr := range t.Derive {
+			if _, ok := deriveRoleLeaf[strings.ToLower(strings.TrimSpace(role))]; !ok {
+				return fmt.Errorf("plc.types[%q]: derive role %q must be scrap|defective|gross|consumed|net|processed", name, role)
+			}
+			ids := exprIdentifiers(exprStr)
+			if len(ids) == 0 {
+				return fmt.Errorf("plc.types[%q]: derive[%q] expression %q references no sensors", name, role, exprStr)
+			}
+			if _, err := expreval.Compile(exprStr, ids); err != nil {
+				return fmt.Errorf("plc.types[%q]: derive[%q] expression does not compile: %w", name, role, err)
+			}
+		}
 	}
 	return nil
 }

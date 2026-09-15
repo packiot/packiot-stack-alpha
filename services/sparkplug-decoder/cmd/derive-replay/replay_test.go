@@ -69,6 +69,47 @@ func TestReplay_ScrapExpr_EndToEnd(t *testing.T) {
 	}
 }
 
+// bispharmaDescriptor locates the shipped bispharma PLC-type example.
+func bispharmaDescriptor(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pkgDir := filepath.Dir(thisFile)
+	return filepath.Join(pkgDir, "..", "..", "..", "..",
+		"docs", "clients", "examples", "bispharma.descriptor.yaml")
+}
+
+// TestReplay_BispharmaTypeDeriveScrap is the ADR-0058 P1.4 end-to-end hardproof:
+// the shipped bispharma type-derive (scrap = S1 - S6) turns the two L01 members'
+// published NET counts into a derived line ProdDefectiveCount — through the real
+// Load → GenerateProfile → deriver path. This is the whole ADR-0050 §4 wiring
+// proven on representative data without a live box.
+func TestReplay_BispharmaTypeDeriveScrap(t *testing.T) {
+	d, err := clientdescriptor.Load(bispharmaDescriptor(t))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	profile, err := d.GenerateProfile()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	// S1INFEED (infeed/gross) = 500, S6OUTPUT (output/net) = 470 → scrap = 30.
+	samples := []rawtag.RawTag{
+		{Metric: "/LINHAS/L01/S1INFEED/Admin/ProdProcessedCount/101/Unit", Value: 500.0, TsMillis: 1000, Quality: true},
+		{Metric: "/LINHAS/L01/S6OUTPUT/Admin/ProdProcessedCount/106/Unit", Value: 470.0, TsMillis: 1000, Quality: true},
+	}
+	emitted := Replay(profile, samples)
+	v, ok := find(emitted, "/LINHAS/L01/Admin/ProdDefectiveCount/100/Unit")
+	if !ok {
+		t.Fatalf("no line scrap emitted; got %+v", emitted)
+	}
+	if v != 30.0 {
+		t.Fatalf("line scrap = infeed-output: got %v, want 30", v)
+	}
+}
+
 // TestReplay_NoEmitUntilBothInputs proves the latch: the first envelope (only
 // gross) must not emit — a partial expr is garbage until every var is seen.
 func TestReplay_NoEmitUntilBothInputs(t *testing.T) {
