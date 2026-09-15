@@ -698,6 +698,54 @@ func validateCustomizations(nodes []map[string]any) error {
 			return fmt.Errorf("customizations[%d]: duplicate node id %q (every Node-RED node id must be unique)", i, id)
 		}
 		seen[id] = true
+		// ADR-0009 governance bounds (ADR-0058 P2.3): a function node's body is the
+		// only place a customization can hide arbitrary code, so bound it here — at
+		// authoring time — rather than discover an unreviewable 800-line flow that
+		// makes network calls on the box. These are the SAME bounds ADR-0009 set for
+		// the Node-RED tee lint; enforcing them on the descriptor authoring path
+		// closes the "authored bad flow ships" gap for the customizations surface.
+		if typ == "function" {
+			code, _ := n["func"].(string)
+			if err := checkFunctionBounds(i, id, code); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// maxFunctionLines bounds a Node-RED function node's body (ADR-0009: config-not-
+// code — a customization should be a small, reviewable transform, not a program).
+const maxFunctionLines = 200
+
+// inlineNetworkRe matches an HTTP/network call made INLINE inside a function node
+// — the ADR-0009 anti-pattern. A legitimate customization that must call out uses
+// a proper `http request` NODE (config-not-code), never a hand-rolled call buried
+// in a function body where it escapes review + ret/timeout governance.
+var inlineNetworkRe = regexp.MustCompile(
+	`(?i)\b(?:require\s*\(\s*['"](?:https?|axios|node-fetch|request|net|dgram|dns)\b|fetch\s*\(|XMLHttpRequest|https?\.(?:request|get)\s*\(|WebSocket\s*\()`,
+)
+
+// unsafeEvalRe matches dynamic code execution in a function body — never allowed
+// (it defeats the whole point of bounding the body: eval'd code is unreviewable).
+var unsafeEvalRe = regexp.MustCompile(`(?i)\b(?:eval\s*\(|new\s+Function\s*\(|require\s*\(\s*['"]vm['"])`)
+
+// checkFunctionBounds enforces the ADR-0009 bounds on one function node's body.
+func checkFunctionBounds(i int, id, code string) error {
+	if n := strings.Count(code, "\n") + 1; n > maxFunctionLines {
+		return fmt.Errorf(
+			"customizations[%d] (id %q): function body is %d lines, over the %d-line limit (ADR-0009 config-not-code) — split it into smaller nodes or move the logic to a declarative derived[].expr rule",
+			i, id, n, maxFunctionLines)
+	}
+	if inlineNetworkRe.MatchString(code) {
+		return fmt.Errorf(
+			"customizations[%d] (id %q): function body makes an INLINE network/HTTP call — use a dedicated `http request` node instead (ADR-0009: no inline HTTP; keep network calls reviewable + governed)",
+			i, id)
+	}
+	if unsafeEvalRe.MatchString(code) {
+		return fmt.Errorf(
+			"customizations[%d] (id %q): function body uses eval/new Function/vm (dynamic code execution) — not allowed (ADR-0009: the body must be reviewable)",
+			i, id)
 	}
 	return nil
 }
