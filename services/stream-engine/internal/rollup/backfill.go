@@ -167,7 +167,7 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 			widenHourWindows(fmtRD(hourLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec))})
 	}
 	steps = append(steps,
-		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(hourTargetsSQL, d))},
+		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(hourTargetsSQL, d, d.ConfigSchema))},
 		struct{ name, sql string }{"clear", fmtRD(hourBackfillClearSQL, d)},
 	)
 	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q

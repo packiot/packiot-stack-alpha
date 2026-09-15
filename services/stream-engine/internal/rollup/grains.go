@@ -173,7 +173,7 @@ const grainTargetsSQL = `
 	   SET target = pt.%[5]s
 	  FROM %[2]s.equipments e
 	  JOIN %[2]s.enterprises e2 ON e.id_enterprise = e2.id_enterprise AND e2.active
-	  LEFT JOIN %[2]s.production_targets pt ON e.id_equipment = pt.id_equipment
+	  LEFT JOIN %[6]s.production_targets pt ON e.id_equipment = pt.id_equipment
 	 WHERE g.id_equipment = e.id_equipment
 	   AND g.ts_value >= date_trunc('%[4]s', now())
 	   AND g.target_customized IS NOT TRUE`
@@ -204,7 +204,7 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 			return fmt.Errorf("reflag %s: %w", g.Grain, err)
 		}
 		if _, err := d.Pool.Exec(ctx,
-			fmt.Sprintf(grainTargetsSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain, g.TargetCol)); err != nil {
+			fmt.Sprintf(grainTargetsSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain, g.TargetCol, d.ConfigSchema)); err != nil {
 			return fmt.Errorf("targets %s: %w", g.Grain, err)
 		}
 	}
