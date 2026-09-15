@@ -668,6 +668,13 @@ services:
       ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       # #159: Firebase IdP retired on the new-stack plane — edge-api trusts only
       # the Cognito issuer now (FIREBASE_ISSUER/FIREBASE_AUDIENCE removed).
+      # ── ADR-0057: platform-mediated box shells (session-broker sidecar) ───────
+      # edge-api relays a browser ws → the internal broker (which runs the
+      # session-manager-plugin edge-api's alpine image can't). Reached by
+      # service-name DNS on packiot-net; the shared token is internal-only
+      # (broker is NOT exposed past this network) — move to Secrets Manager for prod.
+      EDGE_SESSION_BROKER_WS_URL: ws://edge-session-broker:8090/shell
+      EDGE_SESSION_BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -678,6 +685,35 @@ services:
         condition: service_completed_successfully
       pgbouncer:
         condition: service_started
+      edge-session-broker:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # ── ADR-0057 session broker (SSM data-plane sidecar) ────────────────────────────
+  # Runs the AWS session-manager-plugin (a glibc binary edge-api's alpine image
+  # can't) and bridges its stdio to a WebSocket. INTERNAL ONLY — no `ports:`, so
+  # it's reachable only by edge-api on packiot-net, never from the host/ingress.
+  # Holds NO AWS credentials: the plugin authenticates with the short-lived
+  # TokenValue edge-api obtains via ssm:StartSession and hands over per session.
+  edge-session-broker:
+    build:
+      context: ./services/edge-session-broker
+    restart: unless-stopped
+    environment:
+      AWS_REGION: "us-east-1"
+      BROKER_PORT: "8090"
+      BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}
+    networks:
+      packiot-net:
+    healthcheck:
+      # ws server accepts a raw TCP connect on :8090 → liveness for the deploy gate.
+      test: ["CMD", "node", "-e", "require('net').connect(8090,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
