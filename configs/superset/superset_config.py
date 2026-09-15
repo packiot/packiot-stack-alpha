@@ -152,7 +152,16 @@ CORS_OPTIONS = {
     "resources": ["/api/*", "/embedded/*"],
 }
 WTF_CSRF_ENABLED = True
-WTF_CSRF_EXEMPT_LIST = ["superset.views.core.log"]  # keep CSRF ON for everything else
+# guest_token: the embedded-dashboard token mint. edge-api's superset-embed broker
+# calls it SERVER-TO-SERVER with a JWT Bearer (the least-priv guesttoken-svc minter) —
+# no browser session/cookie is involved, so CSRF (an anti-cookie-forgery control) does
+# not apply and its enforcement here just 400s the legit mint. Exempting ONLY this one
+# Bearer-authenticated endpoint unblocks the embed path (resolves the #210 CSRF blocker);
+# CSRF stays ON for every cookie-authenticated view.
+WTF_CSRF_EXEMPT_LIST = [
+    "superset.views.core.log",
+    "superset.security.api.guest_token",
+]
 
 # ── Authoring auth: Cognito as an OIDC/OAuth2 provider (Flask-AppBuilder) ─────
 # This is what gives each supervisor a REAL Superset account (Explore + SQL Lab)
