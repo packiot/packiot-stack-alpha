@@ -115,6 +115,48 @@ and re-flag the tail — incremental, bounded-per-tick work replacing "recompute
 `data_quality_event` without altering values; `silver.go` clamps out-of-range served
 values and emits a paired `INVARIANT_CLAMPED_*` — a clamp is always a visible tripwire.
 
+## Analytics & BI — Superset
+
+Superset is the BI/reports layer and the **replacement for PowerBI** (ADR-0057 direction).
+It reads `packiot_analytics` through curated **`bi.*` presentation views** (e.g.
+`bi.oee_shift`, `bi.downtimes`, `bi.production_targets`, and the barcode pair
+`bi.scanned_boxes` / `bi.po_box_counter`). Dashboards are **tenant-generic**; isolation is
+Postgres-enforced, NOT Superset's native RLS UI:
+
+- **Tenant fence:** every `bi.*` view is SECURITY-DEFINER-style, **owned by `bi_owner`
+  (NOSUPERUSER, NOBYPASSRLS)**, and either its base table has an RLS policy keyed on the
+  session GUC `app.tenant_id`, or it inherits isolation via an INNER JOIN to
+  `core.equipments` (which is FORCE-RLS on that GUC — this is how `bi.downtimes` and
+  `bi.scanned_boxes` fence the un-RLS-able fact tables). GUC unset ⇒ deny-all (fail closed).
+- **How the GUC is stamped:** `superset_config.py`'s `DB_CONNECTION_MUTATOR` appends
+  `-c app.tenant_id=<id>` from the caller's RLS rule (guest token) — or an all-tenant stamp
+  for admins. `superset_ro` is NOBYPASSRLS so the fence bites.
+- **Datasets/dashboards are dashboards-as-code:** `configs/superset/assets/**` imported by
+  `superset-init` (`import_bundle.py` → `superset import-dashboards` → `normalize_query_context.py`).
+  Assets carry stable UUIDs; re-import overwrites in place.
+
+**Embedded Superset in front4 (W2, replaces PowerBI reports):** front4 embeds a dashboard via
+`@superset-ui/embedded-sdk`; the RLS-scoped **guest token is minted by edge-api**
+(`POST /api/superset/guest-token`, `superset-embed` usecase) which derives `id_enterprise`
+SERVER-SIDE from the verified Cognito identity and asks Superset to mint a token carrying
+`rls:[{clause:"id_enterprise = <n>"}]` for the embed UUID in `SUPERSET_OEE_DASHBOARD_UUID`.
+No Superset secret reaches the browser; a tenant can only see its own data.
+
+**Operational gotchas (learned the hard way — see DBA guide):**
+- **NullPool:** Superset uses NullPool for the analytics DB — do NOT put
+  `pool_size`/`max_overflow`/`pool_timeout` in a database's `engine_params` (create_engine
+  raises TypeError → every chart breaks).
+- **guest_token needs a CSRF exemption:** `WTF_CSRF_EXEMPT_LIST` includes
+  `superset.security.api.guest_token` (the broker calls it server-to-server with a Bearer;
+  CSRF is N/A and would otherwise 400 the mint).
+- **`superset_config.py` is read once at boot:** a deploy refreshes the bind-mounted file but
+  does NOT recreate the container — `docker restart superset` (or force-recreate) to apply.
+- **New datasets need a privileged import:** the asset import runs BEFORE
+  `bootstrap_guest_role.py` scopes the minter down, so the minter is still Admin and can
+  CREATE (not just update) datasets. Don't reorder those.
+- **Verify a dashboard by RUNNING its chart queries** (error + rowcount), never by an HTTP
+  200 / green build / connection count.
+
 ## Messaging — RabbitMQ
 
 Replaced GCP Pub/Sub + Node-RED direct-DB-write (ADR-0041). Broker boots with
