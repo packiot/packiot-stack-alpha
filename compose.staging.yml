@@ -2194,6 +2194,52 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # ── bispharma-box-scan-mock — live ongoing box-scan feed (STAGING mock) ────────
+  # Bispharma is a box-scan-HEAVY client. The one-shot seed produced a STATIC dataset;
+  # this appends FRESH scans every tick (gapless label_seq, ts=now) against a running
+  # demo PO on L01, keeping gold.po_box_counter in lockstep — so the Superset "Scanned
+  # Boxes" dashboard shows live-growing counts, a faithful mock of a scanner on a line.
+  # Writes straight to the analytics DB (same postgres@pgbouncer path barcode-service
+  # uses) — a mock, not the audited barcode-service write path. Master gate default OFF;
+  # flip BISPHARMA_BOX_SCAN_MOCK_ENABLED=true in .env. Disable when a real feed is active.
+  # Reversible: DELETE ... WHERE id_production_order=9995010 (see the SQL header).
+  bispharma-box-scan-mock:
+    image: postgres:15-alpine
+    container_name: bispharma-box-scan-mock
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      BISPHARMA_BOX_SCAN_MOCK_ENABLED: "${BISPHARMA_BOX_SCAN_MOCK_ENABLED:-false}"
+      MOCK_INTERVAL_SEC: "${BISPHARMA_BOX_SCAN_MOCK_INTERVAL_SEC:-30}"
+      PGHOST: pgbouncer
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: "${DB_PASSWORD}"
+      PGDATABASE: packiot_analytics
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ "$${BISPHARMA_BOX_SCAN_MOCK_ENABLED}" != "true" ]; then
+          echo "bispharma-box-scan-mock disabled (BISPHARMA_BOX_SCAN_MOCK_ENABLED != true) — idling"; exec sleep infinity
+        fi
+        echo "bispharma-box-scan-mock: appending scans every $${MOCK_INTERVAL_SEC}s"
+        while true; do
+          psql -v ON_ERROR_STOP=1 -q -f /mock/append.sql || echo "append tick failed (will retry)"
+          sleep "$${MOCK_INTERVAL_SEC}"
+        done
+    volumes:
+      - ./scripts/mock-bispharma-box-scans.sql:/mock/append.sql:ro
+    networks:
+      packiot-net: {}
+    depends_on:
+      pgbouncer:
+        condition: service_started
+    mem_limit: 64m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── ingest-shim (HTTPS→RabbitMQ ingress for Incoplast SparkPlug) ───────────────
   # A node in Incoplast's REAL Node-RED POSTs its SparkPlug-JSON payload to
   # this shim over HTTPS (public surface, Nginx/SG-gated on :8444). The shim
