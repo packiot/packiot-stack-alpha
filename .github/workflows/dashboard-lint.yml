@@ -1,24 +1,29 @@
 name: dashboard-lint
 
-# Guards the Grafana v2 dashboards against the bug classes fixed in the v2
-# rebuild: a panel/target with no datasource (silently falls back to the default
-# → dead PromQL), an unknown datasource uid, a duplicate board uid, or a query
-# on a phantom metric. See scripts/lint-dashboards.py.
+# Two gates on the Grafana boards:
+#   1. structure (lint-dashboards.py) — every panel/target pins a known datasource
+#      uid, uids are unique, no query on a phantom metric. Deterministic, no live
+#      deps → GitHub-hosted.
+#   2. hardproof (hardproof-dashboards.py) — every Prometheus tile actually returns
+#      a non-empty (or allowlisted healthy-empty) series against the LIVE staging
+#      Prometheus. A rendered tile is not a proven tile. Needs the running stack →
+#      self-hosted staging runner (localhost:9090 is the live Prometheus).
 
 on:
   pull_request:
     paths:
-      - 'grafana/dashboards-v2/**'
+      - 'grafana/dashboards/**'
       - 'scripts/lint-dashboards.py'
+      - 'scripts/hardproof-dashboards.py'
       - '.github/workflows/dashboard-lint.yml'
   push:
     branches: [staging, production]
     paths:
-      - 'grafana/dashboards-v2/**'
+      - 'grafana/dashboards/**'
 
 jobs:
   lint:
-    name: lint v2 dashboards
+    name: structure (datasource pinning, no phantom metrics)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,3 +32,23 @@ jobs:
           python-version: '3.12'
       - name: Lint dashboards
         run: python3 scripts/lint-dashboards.py
+
+  hardproof:
+    name: hardproof (every prom tile returns live data)
+    # Runs ON the staging box, so PROM_URL=localhost:9090 is the live Prometheus.
+    # SQL tiles use Grafana macros ($__timeFilter) that only expand in Grafana, so
+    # they are SKIPPED here and proven in Grafana / via the SSM db path
+    # (scripts/adr0032-f3-fidelity-check.sh).
+    #
+    # SHADOW MODE (continue-on-error): a prom tile can read transiently-empty if
+    # every tenant idles past the rate window, and this job shares the live staging
+    # broker — we don't want that to block an unrelated PR. Promote to a REQUIRED
+    # check (drop continue-on-error) once it has proven stable in the checks UI.
+    runs-on: [self-hosted, staging, linux, arm64]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hardproof audience boards vs live Prometheus
+        env:
+          PROM_URL: http://localhost:9090
+        run: python3 scripts/hardproof-dashboards.py grafana/dashboards/audience
