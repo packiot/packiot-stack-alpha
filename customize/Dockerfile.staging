@@ -1,0 +1,64 @@
+# Multi-stage production image for the Packiot Customization Hub SPA.
+#
+# Architecturally a clone of csadmin/Dockerfile.staging:
+# Stage 1: build the Vite+TS SPA. VITE_* are compile-time — Vite bakes them
+#          into the bundle at `npm run build`, so every value the SPA reads must
+#          be present as a build ARG here (a runtime container-env flip does
+#          NOTHING). compose.staging.yml passes them via build.args.
+# Stage 2: nginx serves the static assets from /usr/share/nginx/html and
+#          reverse-proxies /api/* → edge-api over the docker network so the
+#          browser sees a single origin (no CORS).
+#
+# NOTE: ships a committed package-lock.json, copied here so the floating
+# `npm install` resolves against it (reproducible). A follow-up can switch to
+# `npm ci` for a strict frozen-lockfile install.
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm install --no-audit --no-fund
+
+COPY . .
+
+# ── Compile-time config (baked by Vite at build) ─────────────────────────────
+# The axios client (src/lib/api-client.ts) reads VITE_EDGE_API_URL — keep it ""
+# (same-origin) so calls resolve to customize.<env>.packiot.app/api/... where this
+# image's nginx reverse-proxies /api → edge-api (no CORS).
+ARG VITE_EDGE_API_URL=""
+ENV VITE_EDGE_API_URL=$VITE_EDGE_API_URL
+
+# Auth — COGNITO is the new-stack IdP (ADR-0033/0034); Firebase is the legacy
+# path and stays BLANK here (src/lib/firebase.ts no longer inits when blank, so
+# it won't throw auth/invalid-api-key at load). Cognito pool/client ids are a
+# PUBLIC client config (already in .env.example) — safe to bake into the bundle.
+ARG VITE_FIREBASE_API_KEY=""
+ARG VITE_FIREBASE_AUTH_DOMAIN=""
+ARG VITE_FIREBASE_PROJECT_ID=""
+ARG VITE_FIREBASE_STORAGE_BUCKET=""
+ARG VITE_FIREBASE_MESSAGING_SENDER_ID=""
+ARG VITE_FIREBASE_APP_ID=""
+ENV VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY \
+    VITE_FIREBASE_AUTH_DOMAIN=$VITE_FIREBASE_AUTH_DOMAIN \
+    VITE_FIREBASE_PROJECT_ID=$VITE_FIREBASE_PROJECT_ID \
+    VITE_FIREBASE_STORAGE_BUCKET=$VITE_FIREBASE_STORAGE_BUCKET \
+    VITE_FIREBASE_MESSAGING_SENDER_ID=$VITE_FIREBASE_MESSAGING_SENDER_ID \
+    VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID
+
+ARG VITE_AUTH_COGNITO_ENABLED="true"
+ARG VITE_COGNITO_USER_POOL_ID="us-east-1_0T9t1sTwt"
+ARG VITE_COGNITO_CLIENT_ID="2ckuoa0ov598rdpdn3uv039h6e"
+ENV VITE_AUTH_COGNITO_ENABLED=$VITE_AUTH_COGNITO_ENABLED \
+    VITE_COGNITO_USER_POOL_ID=$VITE_COGNITO_USER_POOL_ID \
+    VITE_COGNITO_CLIENT_ID=$VITE_COGNITO_CLIENT_ID
+
+# `build` = "tsc -b && vite build" → emits ./dist
+RUN npm run build
+
+FROM nginx:1.27-alpine AS production
+COPY --from=builder /app/dist /usr/share/nginx/html
+# Template — the stock nginx entrypoint envsubsts any ${VAR} present in the
+# container environment into conf.d/default.conf at startup. This template has
+# no injected secrets (it forwards the browser's Bearer token), so this is
+# effectively a static copy; kept as a *.template for parity with csadmin.
+COPY nginx.staging.conf.template /etc/nginx/templates/default.conf.template
+CMD ["nginx", "-g", "daemon off;"]

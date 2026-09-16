@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -53,9 +54,11 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/localstate"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/edgeapiclient"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/erpconnector"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/health"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/localstate"
 	logp "github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/mqtt"
@@ -74,6 +77,88 @@ var emittedByFlow = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "edge_transformer_emitted_total",
 	Help: "Envelopes enqueued to the outbox by destination flow (triple-emit).",
 }, []string{"flow"})
+
+// erpProductionOrdersDataset is the read dataset the sink forwards to edge-api.
+// Any other dataset (scrap, users, …) is observed-and-logged only until its own
+// downstream wiring lands — matching the connector's per-dataset seam.
+const erpProductionOrdersDataset = "production_orders"
+
+// newEdgeAPIClient builds the edge-api PO-upsert client from the environment,
+// or returns nil when the transformer should stay log-only. EDGE_API_URL is the
+// switch: unset → inert (the ERP read cycle still logs, no upsert). When set but
+// misconfigured (no key / bad enterprise id) we log and stay inert rather than
+// crash — the ERP link degrades independently of the tag path.
+func newEdgeAPIClient(logger *slog.Logger) *edgeapiclient.Client {
+	base := os.Getenv("EDGE_API_URL")
+	if base == "" {
+		logger.Info("erpconnector: EDGE_API_URL unset — PO upsert is log-only")
+		return nil
+	}
+	key := os.Getenv("EDGE_API_KEY")
+	if key == "" {
+		logger.Error("erpconnector: EDGE_API_URL set but EDGE_API_KEY empty — PO upsert stays log-only")
+		return nil
+	}
+	entID, err := strconv.Atoi(os.Getenv("EDGE_API_ENTERPRISE_ID"))
+	if err != nil || entID <= 0 {
+		logger.Error("erpconnector: EDGE_API_ENTERPRISE_ID missing/invalid — PO upsert stays log-only",
+			slog.String("value", os.Getenv("EDGE_API_ENTERPRISE_ID")))
+		return nil
+	}
+	logger.Info("erpconnector: edge-api PO upsert enabled",
+		slog.String("edge_api_url", base), slog.Int("enterprise_id", entID))
+	return &edgeapiclient.Client{
+		BaseURL:      base,
+		APIKey:       key,
+		EnterpriseID: entID,
+		HTTP:         &http.Client{Timeout: edgeapiclient.DefaultTimeout},
+	}
+}
+
+// newERPReadSink builds the seam that receives each erpconnector read cycle
+// (ADR-0019 G1). It always emits a structured observation so a live ERP read is
+// provable in the logs. When a client is configured (EDGE_API_URL set) and the
+// dataset is production_orders, it maps each row onto the edge-api CSV upsert
+// (idempotent on (id_enterprise, id_order)) so the customer's real POs land in
+// the platform. A row that fails the mapping is skipped-and-logged, not fatal:
+// the batch imports the good rows. A client==nil keeps the pre-P1b log-only
+// behaviour.
+func newERPReadSink(logger *slog.Logger, client *edgeapiclient.Client) func(context.Context, erpconnector.ReadResult) error {
+	return func(ctx context.Context, r erpconnector.ReadResult) error {
+		logger.Info("erpconnector read cycle",
+			slog.String("dataset", r.Dataset),
+			slog.Int("rows", len(r.Rows)),
+			slog.Time("observed_at", r.ObservedAt),
+		)
+		if client == nil || r.Dataset != erpProductionOrdersDataset {
+			return nil
+		}
+
+		orders := make([]edgeapiclient.ProductionOrder, 0, len(r.Rows))
+		for _, row := range r.Rows {
+			po, err := edgeapiclient.RowToProductionOrder(row)
+			if err != nil {
+				logger.Warn("erpconnector: skipping unmappable production_orders row",
+					slog.String("err", err.Error()))
+				continue
+			}
+			orders = append(orders, po)
+		}
+		res, err := client.UpsertProductionOrders(ctx, orders)
+		if err != nil {
+			// Surfaced (not swallowed) so a rejected atomic import is visible.
+			// Returning the error lets the manager count it against the read
+			// sink; the cadence retries on the next tick.
+			return err
+		}
+		logger.Info("erpconnector: production orders upserted via edge-api",
+			slog.Int("mapped", len(orders)),
+			slog.Int("skipped", len(r.Rows)-len(orders)),
+			slog.Int("rows_reported", res.Rows),
+		)
+		return nil
+	}
+}
 
 func main() {
 	// Docker healthcheck path. Distroless has no shell/curl/wget, so the
@@ -141,6 +226,37 @@ func main() {
 		slog.Any("tenants", tenants),
 		slog.Int("equipment_mappings", len(clientCfg.Equipments)),
 	)
+
+	// ── ADR-0019 G1 / ADR-0058: factory-DB (ERP) connector ────────────────────
+	// INERT BY CONSTRUCTION: erpconnector.New filters clientCfg.Capabilities.
+	// Integrations to Type=="database"; with none declared the Manager holds zero
+	// connectors and Start returns immediately — every tenant without an ERP is
+	// unaffected. When a tenant DOES declare one, this reads POs/scrap/users out
+	// of the customer DB on a cadence (secret-ref DSN, versioned SQL templates,
+	// declarative dedup) and hands each ReadResult to the ReadSink. P1 validates
+	// + observes the read cycle (proves live activation); P1b maps rows → edge-api
+	// PO upsert. A resolve/open failure (e.g. secret unset) logs and does NOT
+	// crash the transformer — the ERP link degrades independently of the tag path.
+	erpTemplateDir := os.Getenv("ERP_SQL_TEMPLATE_DIR")
+	if erpTemplateDir == "" {
+		erpTemplateDir = "/etc/packiot/tenant/sql"
+	}
+	erpMgr, err := erpconnector.New(erpconnector.Config{
+		Integrations: clientCfg.Capabilities.Integrations,
+		Resolver:     erpconnector.EnvSecretResolver{}, // prod wires a SecretsManagerResolver
+		Templates:    erpconnector.NewTemplateStore(erpTemplateDir),
+		ReadSink:     newERPReadSink(logger, newEdgeAPIClient(logger)),
+		Logger:       logger,
+	})
+	if err != nil {
+		logger.Error("erpconnector init failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	go func() {
+		if err := erpMgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("erpconnector stopped unexpectedly", slog.String("err", err.Error()))
+		}
+	}()
 
 	// Fetch AMQP creds from AWS Secrets Manager. No DB creds in the
 	// skeleton — the transformer doesn't touch Postgres yet.

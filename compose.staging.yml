@@ -1537,6 +1537,43 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
+  # ── Customization Hub (staging) — dedicated customization/integration SPA ─────
+  # Standalone frontend (like csadmin) served at customize.staging.packiot.app.
+  # Same-origin: its own nginx reverse-proxies /api → edge-api, so it talks to
+  # staging edge-api on this network with no per-env URL. Auth is app-level
+  # Cognito (shared pool, baked in the build) + the shared *.staging oauth2 edge
+  # gate (api-terraform var.services). Surfaces the ADR-0058/0019 customization
+  # options (derive rules, DB integrations, Node-RED) + recent customizations.
+  # Subdomain routing/DNS/CloudFront live in api-terraform (var.services
+  # customize=8086) — see docs/plans/customize-frontend-infra.md.
+  customize:
+    build:
+      context: ./customize
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_API_BASE_URL: ""
+    container_name: customize
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://localhost:80/"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 20s
+    ports:
+      - "127.0.0.1:8086:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.51
+    depends_on:
+      edge-api:
+        condition: service_started
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
   # ── Mirror Worker (TS) — DECOMMISSIONED 2026-06-24 ────────────────────────────
   # Replaced by `mirror-worker-go` (Go) below. Removal flow:
   #   1. MW-2 phase 2 shipped 18591d7 (2026-06-23) — all 10 operator eventTypes

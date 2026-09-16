@@ -1,0 +1,58 @@
+# Customization Hub container nginx config (staging).
+#
+# Cloned from csadmin/nginx.staging.conf.template. Two roles in one config:
+# 1. Serve the Vite-built SPA from /usr/share/nginx/html
+# 2. Reverse-proxy the API the SPA calls, so the browser sees a single origin
+#    (no CORS): /api/* → edge-api.
+#
+# AUTH MODEL — same as csadmin. The SPA authenticates every request with a
+# Firebase/Cognito ID token as `Authorization: Bearer <jwt>` (see
+# src/lib/api-client.ts request interceptor). nginx forwards that header
+# unchanged (it does not clear Authorization), and edge-api's CS-role auth
+# validates the JWT. So NO api-key is injected here — doing so would be wrong.
+
+server {
+    listen       80;
+    server_name  _;
+
+    # Writes + reads the SPA issues under /api/* (onboarding descriptor, equipment,
+    # enterprises, ...) go to edge-api. ^~ takes precedence over any regex location.
+    # The client's Authorization: Bearer token is forwarded as-is.
+    location ^~ /api/ {
+        proxy_pass         http://edge-api:8080;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+
+    # SPA fallback: serve index.html for any unknown path so client-side
+    # routing works on direct URLs (e.g. /app/hub, /app/customizations).
+    location / {
+        root      /usr/share/nginx/html;
+        index     index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # index.html MUST NOT be cached. It is the only file that references the
+    # content-hashed asset filenames, so a browser that reuses a stale copy keeps
+    # loading the OLD chunks after a deploy (the "still shows the old view" bug).
+    # CloudFront is CachingDisabled, so this is purely the browser's heuristic
+    # cache — no-store forces a revalidation, and the hashed assets below stay
+    # immutable-cached (safe: new build ⇒ new filenames).
+    location = /index.html {
+        root      /usr/share/nginx/html;
+        add_header Cache-Control "no-store, must-revalidate";
+    }
+
+    # Cache hashed static assets aggressively; Vite emits content-hashed
+    # filenames so invalidation is automatic on rebuild.
+    location ~* \.(?:css|js|woff2?|ttf|otf|png|jpe?g|gif|svg|ico|webp)$ {
+        root      /usr/share/nginx/html;
+        expires   30d;
+        access_log off;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+    }
+}
