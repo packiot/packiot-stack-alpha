@@ -1,0 +1,140 @@
+{
+  "uid": "aud-debug-ingest",
+  "title": "🔎 Ingest debug — why isn't a client's data arriving?",
+  "tags": ["packiot", "audience", "debug", "ingest"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "type": "query",
+        "label": "Client (tenant)",
+        "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+        "query": { "query": "label_values(oeecloud_worker_batch_writes_total, tenant)", "refId": "tenant" },
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "cpack", "value": "cpack" },
+        "sort": 1
+      }
+    ]
+  },
+  "links": [
+    { "title": "← Back to CS · Client health", "type": "link", "url": "/d/aud-cs", "icon": "dashboard", "targetBlank": false }
+  ],
+  "panels": [
+    { "id": 100, "type": "row", "title": "① Read me first — the decision tree", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 1, "type": "text", "title": "Runbook: $tenant shows no data — where did it break?",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 1 },
+      "options": { "mode": "markdown", "content": "**Read the tiles below top-to-bottom for `$tenant`. The first RED stage is where the pipeline broke.**\n\n| What you see | Where it broke | What to do |\n|---|---|---|\n| Worker **write rate > 0** (stage ④) | nothing broke end-to-end | if OEE looks wrong, it's a *compute* issue → **Pipeline · Data eng** board |\n| write = 0, **queue depth rising**, consumers = 0 | no consumer on the queue (worker down / SAC failover stuck) | check **Platform · SRE** → targets up; restart/scale stream-engine |\n| write = 0, queue depth rising, consumers = 1, **capacity ≈ 0** | the single active consumer is **stalled** | check the worker's handler errors + DB (SRE → longest query / locks) |\n| write = 0, **queue depth = 0**, consumers = 1 | nothing is *arriving* from the client | source problem → **MQTT connected?** (stage ②), **SparkPlug seq gaps?**, and **is the edge box online?** (SSM `packiot-edge` / reconnect watch) |\n| write > 0 but **silver freshness stale** (stage ⑤) | data consumed but not landing | DB write path → SRE board (pool saturation / locks) |\n| **Unmapped topics > 0** (stage ⑤) | arriving but the `packml_topic` has no active `packml_register` row | finish onboarding: add/activate the client's packml_register entries |\n\n**Tenant → enterprise:** `cpack`→CPACK (ent 3), `bispharmastaging`→Bispharma (ent 5), `sbxcpack`→sandbox (ent 2000003). The silver-freshness table (⑤) is per-enterprise; match by name.\n\nDeep dives: [Engine — stream-engine](/d/v2-engine) · [Bus — RabbitMQ](/d/v2-rabbitmq) · [Ingest — edge-transformer](/d/v2-ingest) · [Logs — Loki](/d/v2-logs)" }
+    },
+    { "id": 200, "type": "row", "title": "② Source — is anything arriving at the broker?", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 } },
+    {
+      "id": 2, "type": "stat", "title": "MQTT connected (edge-transformer)",
+      "description": "max(edge_transformer_mqtt_connected). 1 = the transformer's broker link is up. 0 = upstream ingest is down for everyone.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(edge_transformer_mqtt_connected)", "refId": "A" } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Broker receiving (msg/s, all clients)",
+      "description": "sum(rate(rabbitmq_global_messages_received_total[5m])). Broker-wide publish rate. 0 = nothing is being published at all (source-side outage).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "cps", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 0.01 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(rabbitmq_global_messages_received_total[5m]))", "refId": "A" } ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "SparkPlug sequence gaps by publisher (1h)",
+      "description": "increase(edge_transformer_sparkplug_seq_gaps_total[1h]) by group_id (UPPERCASE, e.g. CPACK). Bars = lost messages in transit for that publisher = a flaky edge link. Shows all publishers (group_id ≠ the lowercase tenant token).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (group_id) (increase(edge_transformer_sparkplug_seq_gaps_total[1h]))", "legendFormat": "{{group_id}}", "refId": "A" } ]
+    },
+    { "id": 300, "type": "row", "title": "③ Queue — is $tenant's queue being consumed?", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 } },
+    {
+      "id": 5, "type": "stat", "title": "Queue depth — $tenant",
+      "description": "rabbitmq_detailed_queue_messages on stream-engine-q-$tenant. 0 while writes flow = healthy. Rising = the worker isn't keeping up (or isn't consuming).",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 5000 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_messages{queue=\"stream-engine-q-$tenant\"}", "refId": "A" } ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Consumers — $tenant",
+      "description": "rabbitmq_detailed_queue_consumers on stream-engine-q-$tenant. 1 = a worker is attached. 0 = nobody is consuming (worker down / SAC failover stuck) → data stops.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_consumers{queue=\"stream-engine-q-$tenant\"}", "refId": "A" } ]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Consumer capacity — $tenant",
+      "description": "rabbitmq_detailed_queue_consumer_capacity on stream-engine-q-$tenant. 1.0 = the active consumer is fully keeping up. Near 0 WHILE queue depth > 0 = the consumer is stalled.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 0.99 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_consumer_capacity{queue=\"stream-engine-q-$tenant\"}", "refId": "A" } ]
+    },
+    {
+      "id": 8, "type": "stat", "title": "DLQ depth — $tenant",
+      "description": "rabbitmq_detailed_queue_messages on stream-engine-q-$tenant-failed. 0 = healthy. > 0 = poison messages this client sent that the worker couldn't process — inspect payload/config.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 25 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "rabbitmq_detailed_queue_messages{queue=\"stream-engine-q-$tenant-failed\"}", "refId": "A" } ]
+    },
+    { "id": 400, "type": "row", "title": "④ Worker — is $tenant being written?", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 } },
+    {
+      "id": 9, "type": "timeseries", "title": "Write rate by result — $tenant (THE end-to-end signal)",
+      "description": "sum by(result) rate(oeecloud_worker_batch_writes_total{tenant=\"$tenant\"}[5m]). ok > 0 = messages are arriving AND landing. Flat 0 = broken upstream of the DB write — walk stages ②/③ above. error line = writes failing.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (result) (rate(oeecloud_worker_batch_writes_total{tenant=\"$tenant\"}[5m]))", "legendFormat": "{{result}}", "refId": "A" } ]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "AMQP deliveries by result (worker, all clients)",
+      "description": "sum by(result) rate(oeecloud_worker_amqp_deliveries_total[5m]). acked = processed cleanly; nacked_retry / exhausted_failed should stay flat 0. Not per-tenant (routing_key-scoped) — a broker-wide health check.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*(nack|fail).*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (result) (rate(oeecloud_worker_amqp_deliveries_total[5m]))", "legendFormat": "{{result}}", "refId": "A" } ]
+    },
+    { "id": 500, "type": "row", "title": "⑤ Landing & mapping", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 } },
+    {
+      "id": 11, "type": "table", "title": "Silver freshness by client (last 15 min)",
+      "description": "silver.equipment_values arrivals per enterprise. Match $tenant to its enterprise (see runbook). Absent row / high age = not landing even if the worker reports writes.",
+      "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 34 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "age (s)" }, "properties": [ { "id": "unit", "value": "s" }, { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 120 }, { "color": "red", "value": 600 } ] } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "age (s)", "desc": true } ] },
+      "targets": [ { "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" }, "format": "table", "rawQuery": true, "rawSql": "SELECT ent.nm_enterprise AS \"client\", count(*) AS \"rows/15m\", max(ev.ts_value) AS \"last message\", round(EXTRACT(EPOCH FROM now()-max(ev.ts_value)))::int AS \"age (s)\" FROM equipment_values ev JOIN enterprises ent ON ent.id_enterprise=ev.id_enterprise WHERE ev.ts_value > now()-interval '15 minutes' GROUP BY 1 ORDER BY 4 DESC", "refId": "A" } ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Unmapped topics — $tenant (onboarding gap)",
+      "description": "increase(packml_unresolved_topic_total{tenant=\"$tenant\"}[1h]). EMPTY = healthy (no unmapped topics). Bars = equipment_values arriving on a packml_topic with no active packml_register row → silently dropped; finish this client's onboarding.",
+      "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 34 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum (increase(packml_unresolved_topic_total{tenant=\"$tenant\"}[1h]))", "legendFormat": "unmapped", "refId": "A" } ]
+    }
+  ]
+}
