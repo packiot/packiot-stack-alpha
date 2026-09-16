@@ -26,6 +26,7 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "NO engine job ticked in 15m — scheduler wedged (jobs.Loop) or worker half-dead"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest"
 
       - alert: IngestSilent
         expr: sum(increase(oeecloud_worker_amqp_deliveries_total[10m])) < 1
@@ -33,6 +34,7 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "no AMQP deliveries in 10m — upstream chain dark (plc-sim → mosquitto → edge-transformer → rabbitmq)"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest"
 
       - alert: WritePathDry
         expr: sum(increase(oeecloud_worker_batch_writes_total[15m])) < 1
@@ -40,6 +42,23 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "deliveries arriving but nothing written in 15m — resolver/DB path broken; see 13-database-reach board"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest"
+
+      - alert: ClientIngestStopped
+        # A client that WAS producing has gone dark: zero ok-writes in the last
+        # 15m but >100 in the prior 6h (so it's a real stop, not an idle-by-design
+        # tenant like a paused sandbox). Per-tenant → the runbook opens the
+        # ingest-debug board pre-scoped to that client. Inhibited by the global
+        # IngestSilent/WritePathDry (same incident) — see alertmanager.yml.
+        expr: |
+          (sum by (tenant) (increase(oeecloud_worker_batch_writes_total{result="ok"}[15m])) < 1)
+          and
+          (sum by (tenant) (increase(oeecloud_worker_batch_writes_total{result="ok"}[6h] offset 15m)) > 100)
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "client {{ $labels.tenant }} stopped ingesting — 0 writes in 15m (was active in the prior 6h)"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest?var-tenant={{ $labels.tenant }}"
 
   - name: packiot-flow-and-parity
     rules:
