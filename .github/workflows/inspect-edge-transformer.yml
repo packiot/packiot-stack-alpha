@@ -31,6 +31,32 @@ jobs:
         with:
           submodules: false
 
+      - name: HOST SNAPSHOT (read-only — full container + box + disk state)
+        run: |
+          echo "=== whoami / host ==="; whoami; hostname; uname -a
+          echo ""
+          echo "=== df -h / and docker root ==="; df -h / /var/lib/docker 2>/dev/null || df -h /
+          echo ""
+          echo "=== docker ps -a (ALL containers, incl. stopped box containers) ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
+          echo ""
+          echo "=== sandbox / edge box / sim containers ==="
+          docker ps -a --format '{{.Names}}\t{{.Status}}' | grep -iE 'sandbox|2000003|sbxcpack|edge-|sim-|f64eb61|node' || echo '(none)'
+          echo ""
+          echo "=== containers running amazon-ssm-agent (shadow agent hunt) ==="
+          for c in $(docker ps --format '{{.Names}}'); do
+            if docker top "$c" 2>/dev/null | grep -q 'amazon-ssm-agent\|ssm-agent'; then
+              echo "SSM-AGENT-IN: $c"
+            fi
+          done
+          echo ""
+          echo "=== 3d9068779522 (the container answering the host instance-id via SSM) ==="
+          docker inspect 3d9068779522 --format '{{.Name}} img={{.Config.Image}} started={{.State.StartedAt}} mounts={{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' 2>&1 | head -5 || echo '(not found under that id)'
+          echo ""
+          echo "=== docker networks ==="
+          docker network ls
+          echo "SNAPSHOT_DONE"
+
       - name: sparkplug-decoder container inspect
         run: |
           echo "=== docker ps ==="
