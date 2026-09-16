@@ -92,6 +92,26 @@ jobs:
           ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
           echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
 
+      - name: Materialize Alertmanager Slack webhook (optional — plug in later)
+        # Alertmanager reads the Slack incoming-webhook URL from a gitignored,
+        # deploy-mounted file (slack_api_url_file in alertmanager.yml). Build it
+        # from packiot/staging/app.slack_api_url when that key is set; otherwise
+        # write nothing — the `alerting` compose profile stays parked, so the
+        # missing file is harmless. TO GO LIVE (no code change): (1) put the
+        # webhook URL in the packiot/staging/app secret under `slack_api_url`,
+        # (2) add `alerting` to COMPOSE_PROFILES in /opt/packiot/.env. Next deploy
+        # materializes the file and starts alertmanager; Prometheus is already
+        # wired to it.
+        run: |
+          set -euo pipefail
+          URL=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app --region us-east-1 --query SecretString --output text | jq -r '.slack_api_url // ""')
+          if [ -n "$URL" ]; then
+            printf '%s' "$URL" > monitoring/alertmanager/slack_api_url
+            echo "Materialized alertmanager slack_api_url (len ${#URL})"
+          else
+            echo "SKIP: no slack_api_url in packiot/staging/app — alerting stays parked (expected until plugged in)"
+          fi
+
       - name: Build images
         # compose.superset.yml (W2 embedded BI) is a profile-gated overlay: every
         # service carries `profiles: ["superset"]`, so it is INERT unless
@@ -111,16 +131,6 @@ jobs:
         # overlay is profile-gated (see Build step) so this starts nothing extra
         # until COMPOSE_PROFILES=superset.
         run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
-
-      - name: Codify historian pipeline (re-sync /opt/packiot/historian + systemd from repo)
-        # The historian cold-archive pipeline (daily append → stamp watermark →
-        # refresh EV/EE union boundary, + integrity monitor) runs as systemd timers
-        # off scripts installed at /opt/packiot/historian. This step re-installs them
-        # from the repo on EVERY deploy so that dir can never drift again (that drift
-        # silently left the union boundary un-refreshed + #281's file-rename half-applied).
-        # Idempotent; installs the FULL wrapper (append+stamp+refresh) as the timer
-        # ExecStart and enables the timers. See task #282 / scripts/install-historian-pipeline.sh.
-        run: sudo bash scripts/install-historian-pipeline.sh
 
       - name: Prune old images
         run: docker image prune -f
