@@ -17,6 +17,12 @@ name: Inspect sparkplug-decoder (staging)
 
 on:
   workflow_dispatch:
+    inputs:
+      mutate:
+        description: 'Optional mutation. remove-rogue-ssm-hijack = rm the out-of-band sandbox-edge-2000003 recover container that hijacked the host EC2 SSM identity.'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: inspect-sparkplug-decoder
@@ -30,6 +36,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: false
+
+      - name: MUTATE — remove rogue SSM-hijacking sandbox recover container
+        if: ${{ github.event.inputs.mutate == 'remove-rogue-ssm-hijack' }}
+        run: |
+          set -x
+          echo "=== BEFORE: rogue containers ==="
+          docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep -iE 'sandbox-edge-2000003' || echo '(none)'
+          echo "=== confirming sandbox-edge-2000003 runs amazon-ssm-agent (the hijacker) ==="
+          docker top sandbox-edge-2000003 2>/dev/null | grep -i 'ssm-agent' || echo '(agent not visible / container down)'
+          echo "=== removing the out-of-band recover + broken containers (NOT stack services) ==="
+          # These are NOT part of `-p stack`; they were created ad-hoc during the
+          # 2026-09-16 incident. sandbox-recover:latest has no docker.sock, no ports,
+          # no mounts — inert except that its agent grabbed the host i- identity.
+          docker rm -f sandbox-edge-2000003 sandbox-edge-2000003-broken 2>&1 || true
+          echo "=== AFTER ==="
+          docker ps -a --format '{{.Names}}\t{{.Status}}' | grep -iE 'sandbox-edge-2000003' || echo '(gone — clean)'
+          echo "MUTATE_DONE"
 
       - name: HOST SNAPSHOT (read-only — full container + box + disk state)
         run: |
