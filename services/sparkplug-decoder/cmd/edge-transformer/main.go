@@ -241,8 +241,15 @@ func main() {
 	if erpTemplateDir == "" {
 		erpTemplateDir = "/etc/packiot/tenant/sql"
 	}
+	// Capabilities is an OPTIONAL descriptor block (`*Capabilities`, nil when the
+	// tenant declares none — e.g. CPACK). Guard the deref: a nil block simply
+	// means "no integrations", which erpconnector.New treats as inert.
+	var erpIntegrations []clientconfig.Integration
+	if clientCfg.Capabilities != nil {
+		erpIntegrations = clientCfg.Capabilities.Integrations
+	}
 	erpMgr, err := erpconnector.New(erpconnector.Config{
-		Integrations: clientCfg.Capabilities.Integrations,
+		Integrations: erpIntegrations,
 		Resolver:     erpconnector.EnvSecretResolver{}, // prod wires a SecretsManagerResolver
 		Templates:    erpconnector.NewTemplateStore(erpTemplateDir),
 		ReadSink:     newERPReadSink(logger, newEdgeAPIClient(logger)),
