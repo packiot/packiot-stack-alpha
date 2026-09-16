@@ -1,9 +1,10 @@
-import { Database, KeyRound, Loader2 } from "lucide-react";
+import { Cpu, Database, KeyRound, Loader2, Plug } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   classifyOnboardingError,
   onboardingApi,
   type DescriptorIntegration,
+  type DescriptorPlcEndpoint,
 } from "@/api/onboarding";
 import { PageHeader } from "@/components/page-header";
 import { Card } from "@/components/ui";
@@ -25,12 +26,14 @@ export function IntegrationsPage() {
 
   const [state, setState] = useState<LoadState>("loading");
   const [integrations, setIntegrations] = useState<DescriptorIntegration[]>([]);
+  const [plc, setPlc] = useState<DescriptorPlcEndpoint[]>([]);
 
   const load = useCallback(async () => {
     setState("loading");
     try {
       const row = await onboardingApi.getDescriptor();
       setIntegrations(row.descriptor?.capabilities?.integrations ?? []);
+      setPlc(row.descriptor?.plc?.endpoints ?? []);
       setState("ready");
     } catch (err) {
       const kind = classifyOnboardingError(err);
@@ -49,8 +52,8 @@ export function IntegrationsPage() {
   return (
     <div className="mx-auto max-w-4xl">
       <PageHeader
-        title="Database integrations"
-        subtitle={`Outbound ERP / database connectors declared on ${enterprise.name}'s descriptor (ADR-0019). Read-only — authoring a connector is a Go-layer change escalated to engineering.`}
+        title="Connections & integrations"
+        subtitle={`Everything ${enterprise.name} talks to — inbound PLC/reader connections the edge polls, and outbound ERP/database integrations (ADR-0019). Read-only.`}
       />
 
       {state === "loading" ? (
@@ -74,21 +77,99 @@ export function IntegrationsPage() {
             onboarded in CS Admin.
           </p>
         </Card>
-      ) : integrations.length === 0 ? (
-        <Card className="p-6">
-          <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-            <Database className="h-4 w-4" />
-            No database integrations declared on this tenant's descriptor.
-          </div>
-        </Card>
       ) : (
-        <div className="space-y-4">
-          {integrations.map((it, i) => (
-            <IntegrationCard key={i} integration={it} />
-          ))}
+        <div className="space-y-8">
+          {/* ── Inbound: PLC / reader connections (descriptor.plc.endpoints) ── */}
+          <section>
+            <div className="mb-3 flex items-center gap-2">
+              <Cpu className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-[15px] font-extrabold text-foreground">
+                PLC / reader connections
+              </h2>
+              <span className="text-[12px] text-muted-foreground">
+                {plc.length} {plc.length === 1 ? "endpoint" : "endpoints"}
+              </span>
+            </div>
+            {plc.length === 0 ? (
+              <Card className="p-6">
+                <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                  <Plug className="h-4 w-4" />
+                  No PLC endpoints on this tenant's descriptor.
+                </div>
+              </Card>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {plc.map((e, i) => (
+                  <PlcCard key={i} endpoint={e} />
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* ── Outbound: ERP / database integrations (capabilities.integrations) ── */}
+          <section>
+            <div className="mb-3 flex items-center gap-2">
+              <Database className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-[15px] font-extrabold text-foreground">
+                ERP / database integrations
+              </h2>
+              <span className="text-[12px] text-muted-foreground">
+                {integrations.length}{" "}
+                {integrations.length === 1 ? "connector" : "connectors"}
+              </span>
+            </div>
+            {integrations.length === 0 ? (
+              <Card className="p-6">
+                <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                  <Database className="h-4 w-4" />
+                  No ERP/database integrations declared on this tenant's descriptor.
+                </div>
+              </Card>
+            ) : (
+              <div className="space-y-4">
+                {integrations.map((it, i) => (
+                  <IntegrationCard key={i} integration={it} />
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       )}
     </div>
+  );
+}
+
+function PlcCard({ endpoint }: { endpoint: DescriptorPlcEndpoint }) {
+  const { name, host, port, protocol, rack, slot, hostEnv, host_ref } = endpoint;
+  const addr = [host, port].filter(Boolean).join(":");
+  return (
+    <Card className="px-5 py-4">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-tint text-primary-strong">
+          <Cpu className="h-[16px] w-[16px]" />
+        </span>
+        <div className="text-[14px] font-extrabold text-foreground">
+          {name || "PLC"}
+        </div>
+        {protocol ? (
+          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] uppercase text-muted-foreground">
+            {protocol}
+          </span>
+        ) : null}
+      </div>
+      <dl className="grid gap-x-4 gap-y-2 text-[12px] sm:grid-cols-2">
+        <Meta label="Address" value={addr} mono />
+        {rack != null || slot != null ? (
+          <Meta label="Rack / slot" value={`${rack ?? "—"} / ${slot ?? "—"}`} mono />
+        ) : null}
+        <Meta
+          label="Host (secret/env ref)"
+          value={host_ref || hostEnv}
+          mono
+          icon={<KeyRound className="h-3.5 w-3.5 text-muted-foreground" />}
+        />
+      </dl>
+    </Card>
   );
 }
 

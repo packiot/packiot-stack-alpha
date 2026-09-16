@@ -119,10 +119,34 @@ export interface DescriptorCapabilities {
  * drives and keep an index signature so unknown keys (metric_templates, agent,
  * tee, …) round-trip untouched.
  */
+/** One physical PLC/reader connection the edge reader polls (descriptor `plc.
+ *  endpoints[]`). host/port/protocol are the live connection; hostEnv/host_ref
+ *  are the deploy-time indirection (a secret/env pointer, not a value). */
+export interface DescriptorPlcEndpoint {
+  name?: string;
+  host?: string;
+  port?: number;
+  protocol?: string;
+  rack?: number;
+  slot?: number;
+  hostEnv?: string;
+  host_ref?: string;
+  [k: string]: unknown;
+}
+
+/** The tenant's inbound PLC/reader connections (descriptor `plc`). */
+export interface DescriptorPlc {
+  endpoints?: DescriptorPlcEndpoint[];
+  [k: string]: unknown;
+}
+
 export interface ClientDescriptor {
   /** ADR-0019 edge capabilities (operator mode, commands, integrations, custom
    *  flows). The Integrations page reads `capabilities.integrations`. */
   capabilities?: DescriptorCapabilities;
+  /** Inbound PLC/reader connections the edge reader polls (host/port/protocol
+   *  per line). The Connections page surfaces these. */
+  plc?: DescriptorPlc;
   tenant?: string;
   enterprise_id?: number;
   canonical?: { prefix?: string; [k: string]: unknown };
