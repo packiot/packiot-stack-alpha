@@ -80,6 +80,26 @@ jobs:
           docker network ls
           echo "SNAPSHOT_DONE"
 
+      - name: MUTATE — inspect + (re)claim host SSM identity
+        if: ${{ github.event.inputs.mutate == 'restart-host-ssm-agent' }}
+        run: |
+          set -x
+          echo "=== host systemd amazon-ssm-agent status ==="
+          systemctl is-enabled amazon-ssm-agent 2>&1 || true
+          systemctl is-active  amazon-ssm-agent 2>&1 || true
+          systemctl status amazon-ssm-agent --no-pager -l 2>&1 | head -20 || true
+          echo "=== is any container still running an ssm-agent (residual hijack)? ==="
+          for c in $(docker ps --format '{{.Names}}'); do
+            docker top "$c" 2>/dev/null | grep -q 'amazon-ssm-agent' && echo "STILL-HIJACKING: $c" || true
+          done
+          echo "=== restart host agent so it reclaims i-06c9547 ==="
+          systemctl restart amazon-ssm-agent 2>&1 || echo "restart failed rc=$?"
+          sleep 4
+          systemctl is-active amazon-ssm-agent 2>&1 || true
+          echo "=== agent registration on disk ==="
+          cat /var/lib/amazon/ssm/registration 2>/dev/null || echo '(no managed-instance registration file — EC2-identity mode)'
+          echo "HOSTAGENT_DONE"
+
       - name: sparkplug-decoder container inspect
         run: |
           echo "=== docker ps ==="
