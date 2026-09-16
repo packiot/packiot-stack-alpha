@@ -76,6 +76,7 @@ variable "services" {
     barcode  = 8092  # barcode-scanner-v2 SPA cloud instance (barcode-app; nginx injects SANDBOX api-key → edge-api)
     operator = 8083  # Dev operator SPA (Vite + nginx, container port 80)
     csadmin  = 8084  # CS-Admin SPA (staging tier; same image as prod)
+    customize = 8086 # Customization Hub SPA (Vite + nginx, container port 80) — dedicated customization/integration UI
     # RETIRED vhosts (audit 2026-08-21):
     #   hasura (8081)           — GraphQL engine retired: front4/edge-api moved off
     #                             it (0 /v1/graphql ops observed); service removed
@@ -109,6 +110,7 @@ variable "service_auth" {
     barcode  = "csadmin" # barcode-app cloud instance — staff-only demo/test (barcode.staging.packiot.app)
     operator = "any"
     csadmin  = "none-originverify"
+    customize = "none-originverify" # Customization Hub SPA owns its own Cognito login (same tier as csadmin)
     # hasura / edge-nodered / oeecloud-nodered retired — see `services` above.
   }
 }

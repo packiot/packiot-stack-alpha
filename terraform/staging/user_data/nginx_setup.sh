@@ -419,6 +419,38 @@ server {
 }
 NGINX
 
+# ── customize vhost (Customization Hub SPA — origin-verify only) ──────────────
+# Same tier as csadmin (none-originverify): the SPA owns its own Cognito login,
+# so the edge only enforces origin-verify (CloudFront→origin secret), no oauth2
+# gate. Proxies to the `customize` container on 8086.
+cat > /etc/nginx/conf.d/customize.conf <<NGINX
+server {
+    listen 80;
+    server_name customize.$STAGING_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name customize.$STAGING_DOMAIN;
+    ssl_certificate     /etc/letsencrypt/live/$STAGING_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$STAGING_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+    location / {
+        proxy_pass         http://127.0.0.1:8086;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$ws_connection;
+    }
+}
+NGINX
+
 nginx -t && nginx -s reload
 echo "oauth2-proxy forward-auth + origin-verify configured for all services"
 
