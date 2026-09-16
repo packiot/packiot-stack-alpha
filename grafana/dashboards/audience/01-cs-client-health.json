@@ -8,6 +8,9 @@
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "templating": { "list": [] },
+  "links": [
+    { "title": "🔎 Dig deeper — Ingest debug", "type": "link", "url": "/d/aud-debug-ingest", "icon": "bolt", "tooltip": "Stage-by-stage debug for 'a client's data isn't arriving'", "targetBlank": false }
+  ],
   "panels": [
     {
       "id": 100,
@@ -22,7 +25,7 @@
       "description": "sum by(tenant) rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]). Rows/s the worker commits per client. A line dropping to 0 while others flow = that client stopped sending. tenant = SparkPlug group (cpack→CPACK, bispharmastaging→Bispharma, sbxcpack→sandbox).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "wps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "wps", "links": [ { "title": "🔎 Dig deeper — ingest debug for ${__field.labels.tenant}", "url": "/d/aud-debug-ingest?var-tenant=${__field.labels.tenant}&${__url_time_range}", "targetBlank": false } ], "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum by (tenant) (rate(oeecloud_worker_batch_writes_total{result=\"ok\"}[5m]))", "legendFormat": "{{tenant}}", "refId": "A" } ]
     },
