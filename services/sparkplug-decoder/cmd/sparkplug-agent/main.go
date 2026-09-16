@@ -134,6 +134,19 @@ func main() {
 		Help: "Canonical count tags synthesized by the agent-side derive stage (integral|sum).",
 	})
 	reg.MustRegister(derivedSynth)
+	// ADR-0059 §1.1: derive-stage observability — turns the deriver's SILENT expr
+	// fault-isolation (a bad/non-finite expr drops a batch) into an operator signal,
+	// so a customization producing nothing is alertable per tenant/segment.
+	deriveErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_derive_errors_total",
+		Help: "Derive-stage expr rules that DROPPED a batch (fault isolation), by group/segment/kind (expr_eval|non_finite) — ADR-0059.",
+	}, []string{"group", "segment", "kind"})
+	reg.MustRegister(deriveErrors)
+	deriveEmitted := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "sparkplug_agent_derive_emitted_total",
+		Help: "Derive-stage expr rules that emitted a synthesized tag, by group/segment — ADR-0059.",
+	}, []string{"group", "segment"})
+	reg.MustRegister(deriveEmitted)
 	// ADR-0045 counter_derive: gross/net/scrap count tags SYNTHESIZED by the
 	// agent-side counter-derive stage (a factory that senses only some of the three).
 	counterDerivedSynth := prometheus.NewCounter(prometheus.CounterOpts{
@@ -447,6 +460,8 @@ func main() {
 			decomposed:          decomposed,
 			derivedSynth:        derivedSynth,
 			counterDerivedSynth: counterDerivedSynth,
+			deriveErrors:        deriveErrors,
+			deriveEmitted:       deriveEmitted,
 		})
 		if err != nil {
 			logger.Error("pipeline build", "err", err)
@@ -736,6 +751,23 @@ type pipelineDeps struct {
 	decomposed          *prometheus.CounterVec
 	derivedSynth        prometheus.Counter
 	counterDerivedSynth prometheus.Counter
+	deriveErrors        *prometheus.CounterVec // ADR-0059 §1.1 (nil ⇒ no derive-metrics sink)
+	deriveEmitted       *prometheus.CounterVec
+}
+
+// promDeriveSink adapts the agent's Prometheus vecs to deriver.Metrics (ADR-0059
+// §1.1), baking in this tenant's group label. Segment + kind come from the call.
+type promDeriveSink struct {
+	group string
+	errs  *prometheus.CounterVec
+	emit  *prometheus.CounterVec
+}
+
+func (s *promDeriveSink) DeriveError(segment, kind string) {
+	s.errs.WithLabelValues(s.group, segment, kind).Inc()
+}
+func (s *promDeriveSink) DeriveEmitted(segment string) {
+	s.emit.WithLabelValues(s.group, segment).Inc()
 }
 
 // buildPipeline wires one tenant's isolated resolver→tagstore→session→uplink
@@ -843,6 +875,15 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 		p.rec.Store(deps.recorder)
 	}
 	derive := deps.derive
+	// ADR-0059 §1.1: attach the derive-stage observability sink (single-file only —
+	// multi-tenant leaves derive nil). nil vecs (e.g. a test deps literal) ⇒ skip.
+	if derive != nil && deps.deriveErrors != nil && deps.deriveEmitted != nil {
+		derive.SetMetrics(&promDeriveSink{
+			group: cfg.Sparkplug.GroupID,
+			errs:  deps.deriveErrors,
+			emit:  deps.deriveEmitted,
+		})
+	}
 	// ingest is the pipeline's entry point: BOTH the HTTP front-door and (single-
 	// file only) the internal MQTT subscriber call it, so the two front-doors feed
 	// one tagstore→session→uplink path. Resolve each raw tag against THIS tenant's
