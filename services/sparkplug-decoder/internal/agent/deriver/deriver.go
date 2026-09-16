@@ -68,7 +68,27 @@ type Deriver struct {
 	// caller must DROP from raw passthrough (ADR-0058 P1.4b: synthetic
 	// reader-published derive-input sensors — never republished upstream).
 	exprConsume map[string]bool
+	// metrics is the optional observability sink (ADR-0059 §1.1); nil ⇒ no-op.
+	metrics Metrics
 }
+
+// Metrics is the optional derive-stage observability sink (ADR-0059). It turns the
+// deriver's silent expr fault-isolation (a bad expr / non-finite result is dropped)
+// into an operator signal, so a customization producing nothing is alertable — the
+// health half of ADR-0058 P3.3. Nil-safe: a Deriver without a sink does nothing.
+// One Deriver is built per tenant, so the impl labels by tenant; segment + kind
+// come from the call.
+type Metrics interface {
+	// DeriveError is called when an expr rule DROPS a batch. kind: "expr_eval"
+	// (compile-time-valid expr failed at runtime) | "non_finite" (±Inf/NaN result).
+	DeriveError(segment, kind string)
+	// DeriveEmitted is called when an expr rule emits a synthesized tag.
+	DeriveEmitted(segment string)
+}
+
+// SetMetrics attaches an observability sink (ADR-0059 §1.1). Optional; call after
+// New. Not concurrency-safe with Process (set it before the agent starts ingest).
+func (d *Deriver) SetMetrics(m Metrics) { d.metrics = m }
 
 type integralState struct {
 	source     string
@@ -98,6 +118,8 @@ type sumState struct {
 // count).
 type exprState struct {
 	prog *expreval.Program
+	// segment is the equipment local segment this rule belongs to (for metrics labels).
+	segment string
 	// vars is the declared variable names, used to decide "all seen".
 	vars []string
 	// varBySuffix maps an arriving suffix to the var name(s) it binds.
@@ -167,6 +189,7 @@ func New(prof *tenantprofile.Profile) *Deriver {
 			}
 			st := &exprState{
 				prog:        prog,
+				segment:     r.Segment,
 				vars:        vars,
 				varBySuffix: varBySuffix,
 				emit:        append([]string(nil), r.Emit...),
@@ -336,7 +359,16 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 				// divide-by-zero → ±Inf) degrades to a DROPPED tag for this batch —
 				// never a crash of the shared agent, and never a garbage count on the
 				// wire (ADR-0058 fault isolation). The rule self-heals on the next
-				// batch if the condition was transient.
+				// batch if the condition was transient. Surface it as a metric
+				// (ADR-0059 §1.1) so a silently-producing-nothing customization is
+				// alertable instead of invisible.
+				if d.metrics != nil {
+					kind := "expr_eval"
+					if err == nil {
+						kind = "non_finite"
+					}
+					d.metrics.DeriveError(st.segment, kind)
+				}
 				continue
 			}
 			// Count types are integers on the wire; floor like integral/sum. Analog
@@ -351,6 +383,9 @@ func (d *Deriver) Process(tags []rawtag.RawTag) (synth []rawtag.RawTag, consumed
 					TsMillis: ts,
 					Quality:  true,
 				})
+			}
+			if d.metrics != nil {
+				d.metrics.DeriveEmitted(st.segment)
 			}
 		}
 	}
