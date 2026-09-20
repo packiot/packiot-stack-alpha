@@ -40,24 +40,28 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
   },
   projects: [
+    // testMatch is anchored on a path separator so `operator`/`csadmin` do NOT
+    // also pick up `sandbox-operator`/`sandbox-csadmin` (an unanchored
+    // /operator\.spec\.ts/ matches "sandbox-operator.spec.ts" too → the mutating
+    // specs would run under the regular projects, against the wrong baseURL).
     {
       name: 'front4',
-      testMatch: /front4\.spec\.ts/,
+      testMatch: /[/\\]front4\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], baseURL: staging.front4 },
     },
     {
       name: 'operator',
-      testMatch: /operator\.spec\.ts/,
+      testMatch: /[/\\]operator\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], baseURL: staging.operator },
     },
     {
       name: 'csadmin',
-      testMatch: /csadmin\.spec\.ts/,
+      testMatch: /[/\\]csadmin\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], baseURL: staging.csadmin },
     },
     {
       name: 'customize',
-      testMatch: /customize\.spec\.ts/,
+      testMatch: /[/\\]customize\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], baseURL: staging.customize },
     },
     // ── Sandbox MUTATING projects (ent 2000003) — run via `npm run test:sandbox` ──

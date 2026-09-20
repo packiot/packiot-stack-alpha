@@ -1,25 +1,43 @@
 import { test, expect } from '@playwright/test';
-import { cognitoFormLogin } from '../fixtures/auth';
+import { csadminLogin } from '../fixtures/auth';
 
+/**
+ * csadmin (CS onboarding SPA) — cross-tenant admin. Auth is app-level amplify
+ * Cognito (enabled in the staging build); the cs-admin group + a users row let
+ * the token load data. These tests are READ-ONLY against a REAL tenant
+ * (CPACK-Staging, ent 3) — the mutating journeys live in sandbox-csadmin against
+ * the self-healing twin, so production config is never touched here.
+ */
 const USER = process.env.CSADMIN_USER || '';
 const PASS = process.env.CSADMIN_PASSWORD || '';
 
 test.describe('csadmin (CS onboarding SPA)', () => {
-  test('reaches the oauth2/login gate (smoke)', async ({ page }) => {
-    // csadmin sits behind oauth2-proxy (Cognito) — unauthenticated hits the gate.
+  test('serves the login shell (smoke)', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('body')).toBeVisible();
+    // With Cognito enabled the SPA renders its own sign-in form.
+    await expect(page.getByText(/sign in|welcome/i).first()).toBeVisible({ timeout: 15_000 });
   });
 
-  test('logs in and renders the Box Ops / onboarding shell', async ({ page, baseURL }) => {
+  test.describe('authenticated', () => {
     test.skip(!USER || !PASS, 'CSADMIN_USER/PASSWORD not set');
-    // oauth2-proxy → shared Cognito hosted UI → back to csadmin (cs-admin group).
-    await cognitoFormLogin(page, baseURL!, USER, PASS);
-    await expect(page.locator('body')).toBeVisible();
-    // Authenticated shell (not the login/oauth gate): the CS-Admin app chrome
-    // exposes the Enterprises/Onboarding/Box Ops surface. Assert real chrome.
-    await expect(
-      page.getByText(/Enterprise|Onboarding|Box Ops|Clients|Sites|Equipment/i).first(),
-    ).toBeVisible({ timeout: 20_000 });
+
+    test('cs-admin logs in and the enterprises list loads real tenants', async ({ page }) => {
+      await csadminLogin(page, USER, PASS);
+      await expect(page).toHaveURL(/enterprises/, { timeout: 30_000 });
+      // /api/enterprises 200 (Cognito-enable + users-row fix) — real clients show.
+      await expect(page.getByText(/CPACK-Staging/i).first()).toBeVisible({ timeout: 15_000 });
+    });
+
+    test('reads a real tenant (CPACK-Staging) equipment — cross-tenant read', async ({ page, baseURL }) => {
+      await csadminLogin(page, USER, PASS);
+      await page.getByText(/^CPACK-Staging$/i).first().click();
+      await page.waitForTimeout(1500);
+      await page.goto(baseURL! + '/app/machines');
+      await page.waitForTimeout(2500);
+      // Real CPACK config loads read-only (its machines list is non-empty).
+      await expect(page.getByRole('button', { name: /new machine|add/i }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('body')).toContainText(/Active|machine/i);
+    });
   });
 });
