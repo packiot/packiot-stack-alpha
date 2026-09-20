@@ -44,5 +44,30 @@ test.describe('customize (Customization Hub SPA)', () => {
       await page.waitForTimeout(1500);
       await expect(page.locator('body')).not.toBeEmpty();
     });
+
+    test('derive-rules authoring: add a rule + run simulation on the twin', async ({ page, baseURL }) => {
+      // The Tier-1 authoring editor (ADR-0058): expression + metric bindings + a
+      // sample-input box, with Run Simulation validating server-side. We drive the
+      // editor and assert the simulate call reaches the backend for the twin (200)
+      // — full SAVE is gated behind DSL validation the agent owns, out of E2E scope.
+      await csadminLogin(page, USER, PASS);
+      await expect(page.getByText(/SANDBOX-CPACK/i).first()).toBeVisible({ timeout: 20_000 });
+      await page.getByText(/SANDBOX-CPACK/i).first().click();
+      await page.goto(baseURL! + '/app/customizations');
+      await page.waitForTimeout(3000);
+      await page.getByRole('button', { name: /add rule/i }).click();
+      await page.waitForTimeout(800);
+      const inp = page.locator('input, textarea');
+      const G = 'SBXCPACK/SC/LINHAS/L5/RMH', N = 'SBXCPACK/SC/LINHAS/L5/TEXA';
+      await inp.nth(0).fill('gross - net');
+      await inp.nth(1).fill(`gross = ${G}\nnet = ${N}`);
+      await inp.nth(2).fill(`[{ "metric": "${G}", "value": 500 }, { "metric": "${N}", "value": 470 }]`);
+      const simulate = page.waitForResponse(
+        (r) => /onboarding\/simulate/.test(r.url()) && r.request().method() === 'POST',
+        { timeout: 20_000 },
+      );
+      await page.getByRole('button', { name: /run simulation/i }).click();
+      expect((await simulate).status()).toBe(200);
+    });
   });
 });
