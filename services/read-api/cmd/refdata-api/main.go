@@ -358,13 +358,16 @@ func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.Hand
 		// customer_id comes from the auth middleware via context, never the
 		// request. This defensive check is unreachable behind the middleware,
 		// but it guarantees a scoped query can never run without $1.
-		if ep.class == routeTenantScoped {
-			cid, ok := customerIDFromContext(r.Context())
+		scoped := ep.class == routeTenantScoped
+		var cid int
+		if scoped {
+			c, ok := customerIDFromContext(r.Context())
 			if !ok {
 				failed.Add(1)
 				http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 				return
 			}
+			cid = c
 			args = append(args, cid)
 		}
 		if ep.args != nil {
@@ -378,6 +381,27 @@ func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.Hand
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
+		// Tenant-scoped routes run inside a tx that stamps app.tenant_id (the
+		// FORCE-RLS GUC), via the shared runQueryJSON. The SETOF functions join
+		// FORCE ROW LEVEL SECURITY tables (core.equipments etc.) keyed on that GUC;
+		// without it the join yields zero rows and the route returns [] for EVERY
+		// tenant (the outer WHERE id_enterprise=$1 can't rescue rows RLS already
+		// dropped). Mirrors the /query path — $1 stays the primary fence, the GUC
+		// is the RLS co-enforcer. Global (non-scoped) routes need no tenant + run
+		// the plain path below.
+		if scoped {
+			payload, err := runQueryJSON(ctx, pool, cid, sql, args)
+			if err != nil {
+				failed.Add(1)
+				logger.Warn("query failed", slog.String("path", ep.path), slog.String("err", err.Error()))
+				http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+				return
+			}
+			served.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(payload)
+			return
+		}
 		rows, err := pool.Query(ctx, sql, args...)
 		if err != nil {
 			failed.Add(1)
