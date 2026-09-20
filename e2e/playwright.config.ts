@@ -15,6 +15,11 @@ const staging = {
   operator: process.env.OPERATOR_URL || 'https://operator.staging.packiot.app',
   csadmin: process.env.CSADMIN_URL || 'https://csadmin.staging.packiot.app',
   customize: process.env.CUSTOMIZE_URL || 'https://customize.staging.packiot.app',
+  // Sandbox twin (ent 2000003): the MUTABLE playground. operator-sbx writes land
+  // on the twin via the sandbox api-key. csadmin mutating tests target the twin
+  // cross-tenant via ?idEnterprise=2000003. These tests mess the tenant up; the
+  // globalSetup self-heals it back to an ent-3 reflection first (when E2E_SELFHEAL=1).
+  operatorSbx: process.env.OPERATOR_SBX_URL || 'https://operator-sbx.staging.packiot.app',
 };
 
 export default defineConfig({
@@ -23,6 +28,11 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: [['list'], ['html', { open: 'never' }]],
+  // When E2E_SELFHEAL=1 (set by `npm run test:sandbox`), globalSetup resets the
+  // sandbox twin to a clean ent-3 reflection BEFORE the mutating suite runs, so
+  // every run starts reproducible regardless of prior mess. No-op otherwise, so
+  // the read-only suite never triggers an SSM reset.
+  globalSetup: process.env.E2E_SELFHEAL ? './global-setup.ts' : undefined,
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
@@ -49,6 +59,20 @@ export default defineConfig({
       name: 'customize',
       testMatch: /customize\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: staging.customize },
+    },
+    // ── Sandbox MUTATING projects (ent 2000003) — run via `npm run test:sandbox` ──
+    // These write to the twin; the self-healing globalSetup + nightly cron keep
+    // the tenant reproducible. Kept as separate projects so the default `npm test`
+    // (read-only, all tenants) never mutates anything.
+    {
+      name: 'sandbox-operator',
+      testMatch: /sandbox-operator\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], baseURL: staging.operatorSbx },
+    },
+    {
+      name: 'sandbox-csadmin',
+      testMatch: /sandbox-csadmin\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], baseURL: staging.csadmin },
     },
   ],
 });

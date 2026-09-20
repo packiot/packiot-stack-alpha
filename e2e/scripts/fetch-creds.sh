@@ -24,5 +24,10 @@ json="$(aws secretsmanager get-secret-value --secret-id "$SECRET" --region "$REG
     .platform.csadmin as $p |
     "CSADMIN_USER=\($p.user)","CSADMIN_PASSWORD=\($p.password)",
     "CUSTOMIZE_USER=\($p.user)","CUSTOMIZE_PASSWORD=\($p.password)"'
+  # sandbox twin (ent 2000003) → operator-sbx MUTATING journeys (self-healing playground)
+  echo "$json" | jq -r '
+    .clients.sandbox as $s |
+    "OPERATOR_SBX_URL=\($s.operatorUrl)",
+    "SANDBOX_USER=\($s.user)","SANDBOX_PASSWORD=\($s.password)","SANDBOX_ENTERPRISE_ID=\($s.enterpriseId)"'
 } > "$OUT"
 echo "wrote $OUT ($(grep -c = "$OUT") vars) from $SECRET"
