@@ -41,6 +41,11 @@
 #                                              #   (POs/box scans) — no config re-clone.
 #   ./provision-sandbox-tenant.sh --delete     # just delete the sandbox
 #
+# QA test users: --create/--reset/--heal also SEED the dedicated E2E logins
+# (qa-sandbox-staging → ent 2000003, qa-csadmin-staging → ent 3) in BOTH the
+# packiot and packiot_analytics user tables, so a fresh environment needs no manual
+# rows (see the SQL_SEED block). The Cognito users themselves live in the pool.
+#
 # SELF-HEAL MODEL (why the sandbox is a reproducible playground): --heal makes the
 # CONFIG plane an exact deterministic mirror of ent 3 (structure + production_targets,
 # +2,000,000 id remap) and WIPES the transactional test data E2E created, so any mess
@@ -311,50 +316,89 @@ SELECT 'SANDBOX-CPACK ready: ent '||$SENT AS status,
   (SELECT (descriptor->'plc'->'s7_tag_map') IS NOT NULL FROM client_descriptors WHERE id_enterprise=$SENT) AS descriptor_has_plc;
 SQL
 
+# ── E2E/QA test-user seed ─────────────────────────────────────────────────────
+# Seed the dedicated QA logins so a FRESH environment is reproducible with no
+# manual rows: qa-sandbox-staging (ent $SENT → operator-sbx) + qa-csadmin-staging
+# (ent $SRC_ENT, cs-admin group → csadmin). Two rules make these actually work:
+#   * user_name = the EMAIL — operator's POST /session resolves the operator
+#     account by users.user_name = email (findOperatorByUserName); a display-string
+#     user_name 401s "No operator account for this identity".
+#   * id_user_cognito left NULL — the ADR-0034 link-on-login self-heal fills it
+#     from the verified token on first login (so this never hardcodes a Cognito
+#     sub, which would rot if the pool user is recreated). ON CONFLICT never
+#     clobbers an already-linked sub.
+# Seeded in BOTH planes: the operational packiot.users (edge-api: operator /session,
+# csadmin cross-tenant) and the analytics packiot_analytics.identity.users (read-api
+# refdata / front4-style resolution). id 2900001/2900002 sit outside every cloned
+# range. The Cognito USERS themselves live in the pool (see the e2e creds secret) —
+# this only seeds the DB rows that bind them to a tenant.
+read -r -d '' SQL_SEED_TMPL <<SQL || true
+INSERT INTO __TBL__ (id_user,user_email,user_name,id_enterprise,user_roles,timezone,languages,user_menu,internal_user,active)
+VALUES
+  (2900001,'qa-sandbox-staging@packiot.com','qa-sandbox-staging@packiot.com',$SENT,$SENT,'America/Sao_Paulo','en-US','{"custom_user": []}'::jsonb,true,true),
+  (2900002,'qa-csadmin-staging@packiot.com','qa-csadmin-staging@packiot.com',$SRC_ENT,$SRC_ENT,'America/Sao_Paulo','en-US','{"custom_user": []}'::jsonb,true,true)
+ON CONFLICT (id_user) DO UPDATE SET
+  user_email=EXCLUDED.user_email, user_name=EXCLUDED.user_name,
+  id_enterprise=EXCLUDED.id_enterprise, active=true;
+SQL
+SQL_SEED_PK=${SQL_SEED_TMPL//__TBL__/users}
+SQL_SEED_AN=${SQL_SEED_TMPL//__TBL__/identity.users}
+
 # ── Assemble the run per mode ─────────────────────────────────────────────────
 # Capture the sandbox's current api_key BEFORE any delete so the enterprise
 # re-clone can preserve it (see the enterprises INSERT). Empty on first --create.
 KEEP_KEY="CREATE TEMP TABLE sbx_keep AS SELECT api_key FROM enterprises WHERE id_enterprise=$SENT;"
+# SEED_QA=1 → also seed the QA users (in both DBs). Any mode that (re)builds config.
+SEED_QA=""
 case "$MODE" in
   delete)     SQL="BEGIN; $SQL_DELETE COMMIT;" ;;
-  reset)      SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE COMMIT;" ;;
-  create)     SQL="BEGIN; $KEEP_KEY $SQL_CREATE COMMIT;" ;;
-  heal)       SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_WIPE_DATA COMMIT;" ;;
+  reset)      SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ;;
+  create)     SQL="BEGIN; $KEEP_KEY $SQL_CREATE $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ;;
+  heal)       SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_WIPE_DATA $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ;;
   reset-data) SQL="BEGIN; $SQL_WIPE_DATA COMMIT;" ;;
 esac
 
 # ── Execute via SSM -> staging app box -> dockerized psql ─────────────────────
-sql_b64=$(printf '%s' "$SQL" | base64 -w0)
-remote=$(cat <<REMOTE
+# run_remote_sql <base64-sql> <db>: run the SQL (dockerized psql) on the staging
+# app box — via SSM by default, or directly (sudo bash) under SANDBOX_LOCAL. It's
+# a function so the packiot-plane run and the analytics-plane QA seed each get
+# their OWN clean invocation: a single combined remote once overran the SSM
+# command-length limit and silently dropped its tail (the analytics seed).
+# .env is sourced defensively (errexit off + noglob on) so a malformed line can't
+# abort before psql — only the POSTGRES_* vars are needed and they set regardless.
+run_remote_sql() {
+  local sqlb="$1" dbref="$2" rem
+  rem=$(cat <<REMOTE
 set -e
-# Source .env defensively: errexit OFF + noglob ON around it so a malformed line
-# (a value with unquoted glob/space chars) can't abort the run before psql — we
-# only need the POSTGRES_* vars, which set regardless. Restore -e/+f afterward.
 set +e; set -f; set -a; . /opt/packiot/.env 2>/dev/null; set +a; set +f; set -e
-tmp=\$(mktemp /tmp/sbx.XXXXXX.sql)
-trap 'rm -f "\$tmp"' EXIT
-echo $sql_b64 | base64 -d > "\$tmp"
+tmp=\$(mktemp /tmp/sbx.XXXXXX.sql); trap 'rm -f "\$tmp"' EXIT
+echo $sqlb | base64 -d > "\$tmp"
 docker run --rm -i --network stack_packiot-net -e PGPASSWORD="\$POSTGRES_PASSWORD" \
   -v "\$tmp":/q.sql:ro postgres:16-alpine \
-  psql -h "\$POSTGRES_HOST_UPSTREAM" -p 5432 -U "\$POSTGRES_USER" -d "\$POSTGRES_DB" \
+  psql -h "\$POSTGRES_HOST_UPSTREAM" -p 5432 -U "\$POSTGRES_USER" -d "$dbref" \
        -v ON_ERROR_STOP=1 -f /q.sql
 REMOTE
 )
+  if [ -n "${SANDBOX_LOCAL:-}" ]; then
+    printf '%s' "$rem" | sudo bash
+  else
+    local remb; remb=$(printf '%s' "$rem" | base64 -w0)
+    script -qec "aws ssm start-session --target $APP_INSTANCE \
+      --document-name AWS-StartNonInteractiveCommand \
+      --parameters 'command=[\"bash -c echo\${IFS}$remb|base64\${IFS}-d|sudo\${IFS}bash\"]' \
+      --region $REGION" /dev/null 2>/dev/null \
+      | tr -d '\r' | grep -av -e '^Starting session' -e '^Exiting session' || true
+  fi
+}
+
+sql_b64=$(printf '%s' "$SQL" | base64 -w0)
+seed_an_b64=$(printf '%s' "$SQL_SEED_AN" | base64 -w0)
+ANALYTICS_DB="${ANALYTICS_DB:-packiot_analytics}"
 echo "[$MODE] provisioning SANDBOX-CPACK (ent $SENT) on staging…"
-if [ -n "${SANDBOX_LOCAL:-}" ]; then
-  # LOCAL mode — already ON the staging app box (e.g. the self-hosted CI runner
-  # that the nightly self-heal cron uses): run the psql block directly, no SSM.
-  # The remote block sources /opt/packiot/.env + docker-runs psql; it needs root
-  # for the .env + docker socket, hence sudo.
-  printf '%s' "$remote" | sudo bash
-else
-  # REMOTE mode (default) — reach the box via SSM from anywhere (a laptop).
-  remote_b64=$(printf '%s' "$remote" | base64 -w0)
-  script -qec "aws ssm start-session --target $APP_INSTANCE \
-    --document-name AWS-StartNonInteractiveCommand \
-    --parameters 'command=[\"bash -c echo\${IFS}$remote_b64|base64\${IFS}-d|sudo\${IFS}bash\"]' \
-    --region $REGION" /dev/null 2>/dev/null \
-    | tr -d '\r' | grep -av -e '^Starting session' -e '^Exiting session' || true
+run_remote_sql "$sql_b64" '$POSTGRES_DB'
+if [ -n "$SEED_QA" ]; then
+  echo "[$MODE] seeding QA test users into $ANALYTICS_DB.identity.users…"
+  run_remote_sql "$seed_an_b64" "$ANALYTICS_DB"
 fi
 
 # ── RMQ topology: emit the twin's re-tenant fan-out config (task #22) ─────────
