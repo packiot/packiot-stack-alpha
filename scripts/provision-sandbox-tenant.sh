@@ -139,6 +139,27 @@ SELECT 'SANDBOX-CPACK data wiped: ent '||$SENT AS status,
   (SELECT count(*) FROM scanned_boxes    WHERE id_enterprise=$SENT) AS boxes_left;
 SQL
 
+# Analytics-plane transactional wipe (packiot_analytics). The operational wipe above
+# only clears the packiot DB, but gold.production_orders_runtime still held OPEN PO
+# windows from the legacy replay — so operator create-and-start 409'd RANGE_CONFLICT
+# (a stale window occupied the equipment even though the operator showed no running
+# PO). Clearing the twin's PO runtime here keeps BOTH planes consistently empty so a
+# fresh PO can be started. Scoped to sbx equipment (via the enterprise join / id).
+# Order: box_scans (FK to production_orders) → runtime → core POs. Analytics
+# reporting re-derives from the replay pipeline; this only clears the twin's rows.
+read -r -d '' SQL_WIPE_ANALYTICS <<SQL || true
+SET session_replication_role = replica;
+DELETE FROM box_scans b USING core.production_orders p
+  WHERE b.id_production_order = p.id_production_order AND p.id_enterprise = $SENT;
+DELETE FROM gold.production_orders_runtime r USING core.equipments e
+  WHERE r.id_equipment = e.id_equipment AND e.id_enterprise = $SENT;
+DELETE FROM core.production_orders WHERE id_enterprise = $SENT;
+SET session_replication_role = DEFAULT;
+SELECT 'SANDBOX analytics PO wipe: ent '||$SENT AS status,
+  (SELECT count(*) FROM gold.production_orders_runtime r JOIN core.equipments e USING(id_equipment)
+     WHERE e.id_enterprise=$SENT AND upper(r.runtime_timerange) IS NULL) AS open_windows_left;
+SQL
+
 # CREATE. jsonb-override clone: to_jsonb(row) || overrides, then json_populate_record
 # (portable, column-order-independent). Only the verified intra-tenant id keys are
 # offset; every other column (jsonb config, flags, NULL soft-refs) passes through.
@@ -348,15 +369,22 @@ SQL_SEED_AN=${SQL_SEED_TMPL//__TBL__/identity.users}
 # Capture the sandbox's current api_key BEFORE any delete so the enterprise
 # re-clone can preserve it (see the enterprises INSERT). Empty on first --create.
 KEEP_KEY="CREATE TEMP TABLE sbx_keep AS SELECT api_key FROM enterprises WHERE id_enterprise=$SENT;"
-# SEED_QA=1 → also seed the QA users (in both DBs). Any mode that (re)builds config.
-SEED_QA=""
+# SEED_QA=1 → seed the QA users (both DBs). WIPE_ANALYTICS=1 → also clear the twin's
+# analytics PO runtime (so operator can start a fresh PO). Both are analytics-plane
+# work, run as one extra packiot_analytics invocation below.
+SEED_QA=""; WIPE_ANALYTICS=""
 case "$MODE" in
   delete)     SQL="BEGIN; $SQL_DELETE COMMIT;" ;;
   reset)      SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ;;
   create)     SQL="BEGIN; $KEEP_KEY $SQL_CREATE $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ;;
-  heal)       SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_WIPE_DATA $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ;;
-  reset-data) SQL="BEGIN; $SQL_WIPE_DATA COMMIT;" ;;
+  heal)       SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_WIPE_DATA $SQL_SEED_PK COMMIT;" ; SEED_QA=1 ; WIPE_ANALYTICS=1 ;;
+  reset-data) SQL="BEGIN; $SQL_WIPE_DATA COMMIT;" ; WIPE_ANALYTICS=1 ;;
 esac
+# Combined analytics-plane SQL: wipe the twin's PO runtime (heal/reset-data) and/or
+# seed the QA users (create/reset/heal), in one packiot_analytics invocation.
+ANALYTICS_SQL=""
+[ -n "$WIPE_ANALYTICS" ] && ANALYTICS_SQL="$SQL_WIPE_ANALYTICS"
+[ -n "$SEED_QA" ]        && ANALYTICS_SQL="$ANALYTICS_SQL $SQL_SEED_AN"
 
 # ── Execute via SSM -> staging app box -> dockerized psql ─────────────────────
 # run_remote_sql <base64-sql> <db>: run the SQL (dockerized psql) on the staging
@@ -392,13 +420,15 @@ REMOTE
 }
 
 sql_b64=$(printf '%s' "$SQL" | base64 -w0)
-seed_an_b64=$(printf '%s' "$SQL_SEED_AN" | base64 -w0)
 ANALYTICS_DB="${ANALYTICS_DB:-packiot_analytics}"
 echo "[$MODE] provisioning SANDBOX-CPACK (ent $SENT) on staging…"
 run_remote_sql "$sql_b64" '$POSTGRES_DB'
-if [ -n "$SEED_QA" ]; then
-  echo "[$MODE] seeding QA test users into $ANALYTICS_DB.identity.users…"
-  run_remote_sql "$seed_an_b64" "$ANALYTICS_DB"
+# Analytics-plane invocation (separate SSM call): PO-runtime wipe (heal/reset-data)
+# and/or QA-user seed (create/reset/heal). Skipped when neither applies.
+if [ -n "$ANALYTICS_SQL" ]; then
+  echo "[$MODE] applying analytics-plane changes on $ANALYTICS_DB (wipe=${WIPE_ANALYTICS:-0} seed=${SEED_QA:-0})…"
+  analytics_b64=$(printf '%s' "$ANALYTICS_SQL" | base64 -w0)
+  run_remote_sql "$analytics_b64" "$ANALYTICS_DB"
 fi
 
 # ── RMQ topology: emit the twin's re-tenant fan-out config (task #22) ─────────

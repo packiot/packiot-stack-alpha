@@ -3,8 +3,9 @@ import { operatorLogin } from '../fixtures/auth';
 
 /**
  * Sandbox operator journeys (ent 2000003) — the MUTABLE twin. operator-sbx writes
- * land on the twin via the sandbox api-key; the self-healing globalSetup resets
- * the twin first, so these are safe to run repeatedly.
+ * land on the twin via the sandbox api-key; the self-healing globalSetup resets it
+ * first (config re-clone + operational wipe + analytics PO-runtime clear, so a
+ * fresh PO can be started without a stale RANGE_CONFLICT window).
  */
 const USER = process.env.SANDBOX_USER || '';
 const PASS = process.env.SANDBOX_PASSWORD || '';
@@ -12,28 +13,40 @@ const PASS = process.env.SANDBOX_PASSWORD || '';
 test.describe('sandbox operator (ent 2000003, mutable twin)', () => {
   test.skip(!USER || !PASS, 'SANDBOX_USER/PASSWORD not set');
 
-  test('logs into operator-sbx (2-stage) and reaches the shop-floor', async ({ page, baseURL }) => {
+  test('2-stage login reaches the shop-floor', async ({ page, baseURL }) => {
     await operatorLogin(page, baseURL!, USER, PASS);
     await expect(page).toHaveURL(/\/home/);
-    // Real shop-floor chrome scoped to the twin: the L5 line + the operator identity.
     await expect(page.getByRole('tab', { name: /production/i }).first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText(new RegExp(USER.replace(/[.@+]/g, '\\$&'), 'i')).first()).toBeVisible();
+    await expect(page.getByRole('tab', { name: /events?/i }).first()).toBeVisible();
   });
 
-  test('PO lifecycle: the production-order control surface is operable', async ({ page, baseURL }) => {
+  test('PO write path: create + start a production order → 201', async ({ page, baseURL }) => {
+    // The full shop-floor write path: SelectPo → "Create a Production Order" →
+    // order + quantity → CONFIRM → edge-api create-and-start (sandbox api-key →
+    // ent 2000003). We assert the write (201) + the success toast; the running-PO
+    // then appears after the pipeline sync (the toast literally says so), which is
+    // async, so we don't gate the UI refresh on it.
+    const created = page.waitForResponse(
+      (r) => /production-orders\/create-and-start/.test(r.url()) && r.request().method() === 'POST',
+      { timeout: 25_000 },
+    );
     await operatorLogin(page, baseURL!, USER, PASS);
-    await page.getByRole('tab', { name: /production/i }).first().click().catch(() => {});
     await page.waitForTimeout(1500);
-    // The PO picker + CONFIRM (start/select a production order) — the write entry point.
-    await expect(page.getByRole('button', { name: /confirm|start|change/i }).first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText(/production order/i).first()).toBeVisible();
+    await page.locator('[aria-haspopup="listbox"], [role="combobox"]').first().click();
+    await page.getByRole('option', { name: /create a production order/i }).click();
+    await page.getByPlaceholder(/number of the new production order/i).fill('990777');
+    await page.getByPlaceholder(/enter the quantity/i).fill('500');
+    await page.getByRole('button', { name: /confirm/i }).click();
+    expect((await created).status()).toBe(201);
+    await expect(page.getByText(/success/i).first()).toBeVisible({ timeout: 10_000 });
   });
 
-  test('downtimes: the Events tab renders on the twin', async ({ page, baseURL }) => {
+  test('events surface renders (downtime justification lives here)', async ({ page, baseURL }) => {
     await operatorLogin(page, baseURL!, USER, PASS);
     await page.getByRole('tab', { name: /events?/i }).first().click();
     await page.waitForTimeout(2500);
-    await expect(page.locator('body')).not.toBeEmpty();
-    await expect(page.getByRole('tab', { name: /events?/i }).first()).toBeVisible();
+    // Pending / Historic downtime sections render (empty on a freshly-healed twin
+    // until PLC events replay — justify/split are exercised once events exist).
+    await expect(page.getByText(/pending|historic|no events/i).first()).toBeVisible({ timeout: 15_000 });
   });
 });
