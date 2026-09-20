@@ -1,0 +1,36 @@
+name: Sandbox Self-Heal
+
+# Nightly reconcile of the SANDBOX-CPACK twin (ent 2000003) back to a clean
+# reflection of CPACK-Staging (ent 3): re-clone the config plane (structure +
+# production_targets, +2,000,000 id remap, api_key + qa-* test users preserved)
+# and wipe the transactional test data any daytime mutation/E2E run created. The
+# live telemetry + OEE plane re-derive on their own (fanout + legacy-replicator-sbx
+# + POReconciler). This is what keeps the sandbox a reproducible playground: mess
+# it up all day, it's a clean twin again by morning.
+#
+# On-demand equivalents: `cd e2e && npm run sandbox:heal` (full) or
+# `npm run sandbox:reset-data` (transactional wipe only); the mutating E2E suite
+# (`npm run test:sandbox`) also self-heals first via its globalSetup.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC nightly (~03:00 America/Sao_Paulo)
+  workflow_dispatch:       # manual on-demand reset
+
+concurrency:
+  group: sandbox-selfheal
+  cancel-in-progress: false
+
+jobs:
+  self-heal:
+    runs-on: [self-hosted, staging, linux, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Self-heal SANDBOX-CPACK (ent 2000003) to an ent-3 reflection
+        # SANDBOX_LOCAL=1 → run psql directly on the box (this runner IS the app
+        # box), no SSM round-trip. The script prints the parity + wipe status.
+        run: SANDBOX_LOCAL=1 bash scripts/provision-sandbox-tenant.sh --heal

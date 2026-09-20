@@ -31,9 +31,23 @@
 # Idempotent-ish: use --reset to wipe + rebuild. Bare invocation fails if the
 # sandbox already exists (so you don't silently double-insert).
 #
-#   ./provision-sandbox-tenant.sh            # create (errors if it already exists)
-#   ./provision-sandbox-tenant.sh --reset    # delete + recreate from current ent 3
-#   ./provision-sandbox-tenant.sh --delete   # just delete the sandbox
+#   ./provision-sandbox-tenant.sh              # create (errors if it already exists)
+#   ./provision-sandbox-tenant.sh --reset      # delete + recreate config from current ent 3
+#   ./provision-sandbox-tenant.sh --heal       # SELF-HEAL: re-clone config from ent 3 + wipe
+#                                              #   transactional test data → clean reflection.
+#                                              #   This is the entrypoint the nightly cron +
+#                                              #   the E2E globalSetup call.
+#   ./provision-sandbox-tenant.sh --reset-data # fast: wipe transactional test data only
+#                                              #   (POs/box scans) — no config re-clone.
+#   ./provision-sandbox-tenant.sh --delete     # just delete the sandbox
+#
+# SELF-HEAL MODEL (why the sandbox is a reproducible playground): --heal makes the
+# CONFIG plane an exact deterministic mirror of ent 3 (structure + production_targets,
+# +2,000,000 id remap) and WIPES the transactional test data E2E created, so any mess
+# is erased and the tenant returns to a clean reflection. Live TELEMETRY + OEE re-derive
+# on their own via the fanout (cpack→sbxcpack) + legacy-replicator-sbx + POReconciler
+# (all pull from the same legacy source ent 3 mirrors) — so the analytics plane is
+# eventually-consistent, not wiped. Config + operational data are point-in-time exact.
 #
 # RabbitMQ topology (task #22): stream-engine auto-declares this twin's own
 # queue (stream-engine-q-sandbox-cpack + retry/failed) from packml_register at
@@ -47,6 +61,9 @@
 #
 # Runs against the staging DB via SSM -> staging app box -> dockerized psql
 # (same path as scripts/reprovision-refactor-sandbox.sh and the stagingq helper).
+# Set SANDBOX_LOCAL=1 to run psql DIRECTLY (no SSM) when already ON the app box —
+# used by the nightly self-heal cron (.github/workflows/sandbox-selfheal.yml),
+# which runs on the self-hosted staging runner.
 set -euo pipefail
 
 APP_INSTANCE="${APP_INSTANCE:-i-06c9547a2c7091ab7}"   # packiot-staging-app
@@ -65,9 +82,11 @@ TARGET_GROUP="${TARGET_GROUP:-SBXCPACK}"
 
 MODE="create"
 case "${1:-}" in
-  --reset)  MODE="reset" ;;
-  --delete) MODE="delete" ;;
-  ""|--create) MODE="create" ;;
+  --reset)      MODE="reset" ;;
+  --delete)     MODE="delete" ;;
+  --heal)       MODE="heal" ;;         # self-heal: re-clone config from ent 3 + wipe test data
+  --reset-data) MODE="reset-data" ;;   # fast: wipe transactional test data only (no config re-clone)
+  ""|--create)  MODE="create" ;;
   -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac
@@ -78,11 +97,17 @@ esac
 # the whole tenant at once).
 read -r -d '' SQL_DELETE <<SQL || true
 SET session_replication_role = replica;
-DELETE FROM client_descriptors WHERE id_enterprise = $SENT;
+DELETE FROM client_descriptors  WHERE id_enterprise = $SENT;
+DELETE FROM production_targets   WHERE id_enterprise = $SENT;  -- FKs equipments → delete before it
 DELETE FROM shift_hours     WHERE id_enterprise = $SENT;
 DELETE FROM shifts          WHERE id_enterprise = $SENT;
 DELETE FROM packml_register WHERE id_enterprise = $SENT;
-DELETE FROM users           WHERE id_enterprise = $SENT;
+-- Preserve dedicated E2E/QA test users (qa-*@packiot.com) across a re-clone so a
+-- --heal doesn't unlink the sandbox operator test account. qa-sandbox-staging uses
+-- id_user 2900001 — outside the cloned range (ent-3 user ids +2,000,000) — and the
+-- clone SOURCE excludes qa-* too, so there is no users_pkey collision either way.
+DELETE FROM users           WHERE id_enterprise = $SENT
+                              AND (user_email IS NULL OR user_email NOT LIKE 'qa-%@packiot.com');
 DELETE FROM user_roles      WHERE id_enterprise = $SENT;
 DELETE FROM equipments      WHERE id_enterprise = $SENT;
 DELETE FROM areas           WHERE id_enterprise = $SENT;
@@ -91,16 +116,38 @@ DELETE FROM enterprises     WHERE id_enterprise = $SENT;
 SET session_replication_role = DEFAULT;
 SQL
 
+# Transactional TEST-DATA wipe — the "self-heal" reset of what E2E mutations create,
+# so the sandbox returns to a clean operational slate (a reflection of ent 3's config
+# with no leftover test POs/box scans). Scoped HARD to the sandbox enterprise. Only
+# the operational-plane tables that actually carry ent-2000003 rows in the packiot DB:
+# production_orders + scanned_boxes (downtimes/events live in packiot_analytics and
+# self-heal via the fanout + legacy-replicator-sbx + POReconciler pipeline). Runs with
+# triggers suppressed; NEVER touches config (entities/packml/shifts/targets) — that is
+# what makes a wipe fast + safe to run between test runs without a full re-clone.
+read -r -d '' SQL_WIPE_DATA <<SQL || true
+SET session_replication_role = replica;
+DELETE FROM scanned_boxes     WHERE id_enterprise = $SENT;
+DELETE FROM production_orders WHERE id_enterprise = $SENT;
+SET session_replication_role = DEFAULT;
+SELECT 'SANDBOX-CPACK data wiped: ent '||$SENT AS status,
+  (SELECT count(*) FROM production_orders WHERE id_enterprise=$SENT) AS pos_left,
+  (SELECT count(*) FROM scanned_boxes    WHERE id_enterprise=$SENT) AS boxes_left;
+SQL
+
 # CREATE. jsonb-override clone: to_jsonb(row) || overrides, then json_populate_record
 # (portable, column-order-independent). Only the verified intra-tenant id keys are
 # offset; every other column (jsonb config, flags, NULL soft-refs) passes through.
 read -r -d '' SQL_CREATE <<SQL || true
 SET session_replication_role = replica;  -- suppress the "Create packml topics" trigger
 
+-- api_key: PRESERVE the sandbox's existing key across a reset/heal (captured into
+-- pg_temp.sbx_keep before the delete) so operator-sbx's configured
+-- OPERATOR_SBX_EDGE_API_KEY stays valid — re-minting it every heal would 403 the
+-- sandbox operator. Only a true first --create (empty sbx_keep) mints a fresh uuid.
 INSERT INTO enterprises SELECT (json_populate_record(NULL::enterprises,
   (to_jsonb(e) || jsonb_build_object('id_enterprise',$SENT)
    || jsonb_build_object('nm_enterprise','SANDBOX-CPACK')
-   || jsonb_build_object('api_key', gen_random_uuid()::text))::json)).*
+   || jsonb_build_object('api_key', COALESCE((SELECT api_key FROM pg_temp.sbx_keep LIMIT 1), gen_random_uuid()::text)))::json)).*
 FROM enterprises e WHERE id_enterprise=$SRC_ENT;
 
 INSERT INTO sites SELECT (json_populate_record(NULL::sites,
@@ -144,6 +191,18 @@ INSERT INTO packml_register SELECT (json_populate_record(NULL::packml_register,
    || jsonb_build_object('active',false))::json)).*  -- mirror-fed, not live-routed
 FROM packml_register p WHERE id_enterprise=$SRC_ENT;
 
+-- production_targets: OEE target values (day/week/month/shift/hour) per equipment.
+-- Part of the CS-Admin config plane (set during onboarding), so it belongs in the
+-- clone — without it the twin's OEE has no targets and gold target-vs-actual is
+-- blank. Composite-keyed (no serial PK); only id_site/id_area/id_equipment are
+-- offset (+$OFF; NULL stays NULL for site/area-level targets), vl_* pass through.
+INSERT INTO production_targets SELECT (json_populate_record(NULL::production_targets,
+  (to_jsonb(t) || jsonb_build_object('id_enterprise',$SENT)
+   || jsonb_build_object('id_site',t.id_site+$OFF)
+   || jsonb_build_object('id_area',t.id_area+$OFF)
+   || jsonb_build_object('id_equipment',t.id_equipment+$OFF))::json)).*
+FROM production_targets t WHERE id_enterprise=$SRC_ENT;
+
 INSERT INTO shifts SELECT (json_populate_record(NULL::shifts,
   (to_jsonb(sh) || jsonb_build_object('id_shift',sh.id_shift+$OFF)
    || jsonb_build_object('id_enterprise',$SENT)
@@ -166,13 +225,18 @@ INSERT INTO user_roles SELECT (json_populate_record(NULL::user_roles,
    || jsonb_build_object('id_enterprise',$SENT))::json)).*
 FROM user_roles r WHERE id_enterprise=$SRC_ENT;
 
+-- Exclude qa-* test users from the clone SOURCE: ent 3 carries its own dedicated
+-- QA user (qa-cpack-staging, id 2000006) that must NOT be re-tenanted into the
+-- sandbox — and cloning it would also collide with the preserved qa-sandbox row.
+-- The sandbox's own QA user (qa-sandbox-staging) is preserved separately below.
 INSERT INTO users SELECT (json_populate_record(NULL::users,
   (to_jsonb(u) || jsonb_build_object('id_user',u.id_user+$OFF)
    || jsonb_build_object('id_enterprise',$SENT)
    || jsonb_build_object('user_roles',u.user_roles+$OFF)
    || jsonb_build_object('id_user_firebase','sbx-'||(u.id_user+$OFF)::text)
    || jsonb_build_object('id_user_cognito',NULL))::json)).*
-FROM users u WHERE id_enterprise=$SRC_ENT;
+FROM users u WHERE id_enterprise=$SRC_ENT
+  AND (user_email IS NULL OR user_email NOT LIKE 'qa-%@packiot.com');
 
 -- client_descriptors: deep-remapped MIRROR of the real client edge (ADR-0045).
 -- A recursive jsonb walker offsets every id_equipment/id_unit by $OFF and rewrites
@@ -242,22 +306,31 @@ SET session_replication_role = DEFAULT;
 SELECT 'SANDBOX-CPACK ready: ent '||$SENT AS status,
   (SELECT count(*) FROM equipments WHERE id_enterprise=$SENT) AS equipments,
   (SELECT count(*) FROM equipments WHERE id_enterprise=$SENT AND id_parentequipment IS NOT NULL) AS members_linked,
+  (SELECT count(*) FROM production_targets WHERE id_enterprise=$SENT) AS targets,
   (SELECT count(*) FROM users WHERE id_enterprise=$SENT) AS users,
   (SELECT (descriptor->'plc'->'s7_tag_map') IS NOT NULL FROM client_descriptors WHERE id_enterprise=$SENT) AS descriptor_has_plc;
 SQL
 
 # ── Assemble the run per mode ─────────────────────────────────────────────────
+# Capture the sandbox's current api_key BEFORE any delete so the enterprise
+# re-clone can preserve it (see the enterprises INSERT). Empty on first --create.
+KEEP_KEY="CREATE TEMP TABLE sbx_keep AS SELECT api_key FROM enterprises WHERE id_enterprise=$SENT;"
 case "$MODE" in
-  delete) SQL="BEGIN; $SQL_DELETE COMMIT;" ;;
-  reset)  SQL="BEGIN; $SQL_DELETE $SQL_CREATE COMMIT;" ;;
-  create) SQL="BEGIN; $SQL_CREATE COMMIT;" ;;
+  delete)     SQL="BEGIN; $SQL_DELETE COMMIT;" ;;
+  reset)      SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE COMMIT;" ;;
+  create)     SQL="BEGIN; $KEEP_KEY $SQL_CREATE COMMIT;" ;;
+  heal)       SQL="BEGIN; $KEEP_KEY $SQL_DELETE $SQL_CREATE $SQL_WIPE_DATA COMMIT;" ;;
+  reset-data) SQL="BEGIN; $SQL_WIPE_DATA COMMIT;" ;;
 esac
 
 # ── Execute via SSM -> staging app box -> dockerized psql ─────────────────────
 sql_b64=$(printf '%s' "$SQL" | base64 -w0)
 remote=$(cat <<REMOTE
 set -e
-set -a; . /opt/packiot/.env; set +a
+# Source .env defensively: errexit OFF + noglob ON around it so a malformed line
+# (a value with unquoted glob/space chars) can't abort the run before psql — we
+# only need the POSTGRES_* vars, which set regardless. Restore -e/+f afterward.
+set +e; set -f; set -a; . /opt/packiot/.env 2>/dev/null; set +a; set +f; set -e
 tmp=\$(mktemp /tmp/sbx.XXXXXX.sql)
 trap 'rm -f "\$tmp"' EXIT
 echo $sql_b64 | base64 -d > "\$tmp"
@@ -267,13 +340,22 @@ docker run --rm -i --network stack_packiot-net -e PGPASSWORD="\$POSTGRES_PASSWOR
        -v ON_ERROR_STOP=1 -f /q.sql
 REMOTE
 )
-remote_b64=$(printf '%s' "$remote" | base64 -w0)
 echo "[$MODE] provisioning SANDBOX-CPACK (ent $SENT) on staging…"
-script -qec "aws ssm start-session --target $APP_INSTANCE \
-  --document-name AWS-StartNonInteractiveCommand \
-  --parameters 'command=[\"bash -c echo\${IFS}$remote_b64|base64\${IFS}-d|sudo\${IFS}bash\"]' \
-  --region $REGION" /dev/null 2>/dev/null \
-  | tr -d '\r' | grep -av -e '^Starting session' -e '^Exiting session' || true
+if [ -n "${SANDBOX_LOCAL:-}" ]; then
+  # LOCAL mode — already ON the staging app box (e.g. the self-hosted CI runner
+  # that the nightly self-heal cron uses): run the psql block directly, no SSM.
+  # The remote block sources /opt/packiot/.env + docker-runs psql; it needs root
+  # for the .env + docker socket, hence sudo.
+  printf '%s' "$remote" | sudo bash
+else
+  # REMOTE mode (default) — reach the box via SSM from anywhere (a laptop).
+  remote_b64=$(printf '%s' "$remote" | base64 -w0)
+  script -qec "aws ssm start-session --target $APP_INSTANCE \
+    --document-name AWS-StartNonInteractiveCommand \
+    --parameters 'command=[\"bash -c echo\${IFS}$remote_b64|base64\${IFS}-d|sudo\${IFS}bash\"]' \
+    --region $REGION" /dev/null 2>/dev/null \
+    | tr -d '\r' | grep -av -e '^Starting session' -e '^Exiting session' || true
+fi
 
 # ── RMQ topology: emit the twin's re-tenant fan-out config (task #22) ─────────
 # stream-engine's queue for the sandbox needs no help (auto-declared from
@@ -283,7 +365,7 @@ script -qec "aws ssm start-session --target $APP_INSTANCE \
 # Pure local file generation (no SSM, no DB) — safe to run every create/reset,
 # deterministic overwrite, never touches anything that isn't this twin's own
 # generated file.
-if [ "$MODE" != "delete" ]; then
+if [ "$MODE" = "create" ] || [ "$MODE" = "reset" ] || [ "$MODE" = "heal" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   "$SCRIPT_DIR/emit-fanout-config.sh" "$SOURCE_GROUP" "$TARGET_GROUP"
 fi
