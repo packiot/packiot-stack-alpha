@@ -17,6 +17,45 @@ export async function front4Login(page: Page, email: string, password: string) {
 }
 
 /**
+ * csadmin / customize amplify login — with Cognito enabled (VITE_AUTH_COGNITO_ENABLED),
+ * these SPAs render their OWN email/password form (amplify signIn), NOT the
+ * oauth2-proxy hosted UI. On success the router leaves /login (→ /enterprises).
+ * The cs-admin user also needs a users-table row (edge-api resolves the tenant by
+ * cognito sub for no-target reads like GET /api/enterprises).
+ */
+export async function csadminLogin(page: Page, email: string, password: string) {
+  await page.goto('/login');
+  const emailField = page.locator('input[type="email"], #outlined-adornment-email, input[name="email"]').first();
+  await emailField.waitFor({ timeout: 20_000 });
+  await emailField.fill(email);
+  await page.locator('input[type="password"], #outlined-adornment-password').first().fill(password);
+  await page.getByRole('button', { name: /sign ?in|log ?in|entrar/i }).first().click();
+  await expect(page).not.toHaveURL(/\/login/, { timeout: 30_000 });
+}
+
+/**
+ * operator (+ operator-sbx) TWO-STAGE login:
+ *   1. the oauth2-proxy edge gate (shared Cognito hosted UI) — shell access.
+ *   2. operator's OWN internal login form ("Welcome Back!") — amplify cognitoSignIn
+ *      → POST /session, which resolves the operator account by users.user_name =
+ *      the email and returns the entity scope. The user therefore needs a users
+ *      row whose user_name IS the email (not a display string) or /session 401s
+ *      "No operator account for this identity".
+ * On success the router lands on /home. Same creds drive both stages.
+ */
+export async function operatorLogin(page: Page, url: string, email: string, password: string) {
+  await cognitoFormLogin(page, url, email, password);
+  // Stage 2 — operator's internal form. Username is the first text input; the
+  // password field carries the MUI id. Submit → /home once /session resolves.
+  const userField = page.locator('input[type="email"], input:not([type="password"])').first();
+  await userField.waitFor({ timeout: 20_000 });
+  await userField.fill(email);
+  await page.locator('#outlined-adornment-password, input[type="password"]').first().fill(password);
+  await page.getByRole('button', { name: /login|sign ?in|entrar/i }).first().click();
+  await expect(page).toHaveURL(/\/home/, { timeout: 30_000 });
+}
+
+/**
  * Cognito Hosted-UI login for the *.staging.packiot.app SPAs (operator, csadmin,
  * customize). These sit behind oauth2-proxy → the shared AWS Cognito managed
  * login UI at auth.staging.packiot.app (app-client "oauth2-proxy-staging", same
