@@ -223,13 +223,34 @@ const sqlSupersedeRunningPO = `UPDATE core.production_orders
 	   SET status = 3, last_update = now()
 	 WHERE id_equipment = $1 AND status = 2 AND NOT (id_enterprise = $2 AND id_order = $3)`
 
+// sqlOpenWindow inserts a [ts, ∞) runtime window for the PO, but ONLY when no
+// existing window for the SAME EQUIPMENT (open OR closed) overlaps [ts, ∞).
+//
+// The overlap guard (`&&` on tstzrange) is what makes the open safe under
+// OUT-OF-ORDER replay. The prior guard only skipped when THIS po already had
+// an OPEN window; it ignored CLOSED windows and other POs. Under a
+// non-chronological replay a CLOSED window [lo, hi) for the equipment can
+// already contain ts (lo <= ts < hi), and a later-starting still-open window
+// [lo, ∞) with lo >= ts survives sqlCloseWindowsForEquipment (it only closes
+// lower < ts). Inserting [ts, ∞) then collides with the
+// production_orders_runtime_id_equipment_runtime_timerange exclusion
+// constraint (a machine can't run two POs at once) → the event DLQs.
+//
+// With the `&&` guard, an insert that WOULD overlap matches zero rows — a
+// clean, idempotent no-op — instead of erroring. This strictly subsumes the
+// old per-PO "no open window already" guard: an existing open window for THIS
+// po always extends to ∞ and therefore overlaps [ts, ∞). Half-open range
+// semantics keep the normal forward case working: after
+// sqlCloseWindowsForEquipment turns the prior window into [lo, ts), it is
+// adjacent to — not overlapping — the new [ts, ∞).
 const sqlOpenWindow = `INSERT INTO gold.production_orders_runtime
 	       (id_production_order, id_equipment, runtime_timerange, recalc_needed)
 	SELECT po.id_production_order, po.id_equipment, tstzrange($3, NULL), true
 	  FROM core.production_orders po
 	 WHERE po.id_enterprise = $1 AND po.id_order = $2
 	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime x
-	        WHERE x.id_production_order = po.id_production_order AND upper(x.runtime_timerange) IS NULL)`
+	        WHERE x.id_equipment = po.id_equipment
+	          AND x.runtime_timerange && tstzrange($3, NULL))`
 
 const sqlCloseWindowsForPO = `UPDATE gold.production_orders_runtime r
 	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $3), recalc_needed = true
@@ -274,9 +295,17 @@ const sqlUpdatePOStart = `UPDATE core.production_orders
 	   SET status = 2, ts_start = $1, last_update = now()
 	 WHERE id_enterprise = $2 AND id_order = $3`
 
+// sqlUpdatePOStop closes a PO at ts_end=$2. The `ts_start IS NULL OR
+// ts_start <= $2` guard prevents writing an inverted [ts_start, ts_end] range
+// when an out-of-order replay delivers a stop whose ts precedes the recorded
+// start — that would trip the production_orders_ts_start_ts_end check and DLQ
+// the event. When ts_end would precede ts_start the UPDATE matches zero rows
+// (an observable no-op via execExpectingRows); a correctly-ordered stop, or
+// the PO reconciler, closes it later.
 const sqlUpdatePOStop = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_real = $3, last_update = now()
-	 WHERE id_enterprise = $4 AND id_order = $5`
+	 WHERE id_enterprise = $4 AND id_order = $5
+	   AND (ts_start IS NULL OR ts_start <= $2)`
 
 const sqlUpdatePOTsStart = `UPDATE core.production_orders
 	   SET ts_start = $1, last_update = now()
@@ -286,9 +315,13 @@ const sqlUpdatePORecalc = `UPDATE core.production_orders
 	   SET recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $1 AND id_order = $2`
 
+// sqlClosePOChanged closes the OLD PO during an order-changed step (the bulk of
+// the DLQ'd batch). Same inverted-range guard as sqlUpdatePOStop: never write
+// a ts_end that precedes ts_start under out-of-order replay.
 const sqlClosePOChanged = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_final = $3, recalc_needed = true, last_update = now()
-	 WHERE id_enterprise = $4 AND id_order = $5`
+	 WHERE id_enterprise = $4 AND id_order = $5
+	   AND (ts_start IS NULL OR ts_start <= $2)`
 
 // ─── equipment_events / _man SQL (staging-keyed) ───
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every PO lifecycle write must target the natural key (id_enterprise,
@@ -143,6 +144,143 @@ func TestEventSplittedDecodesOriginalAndIdle(t *testing.T) {
 	}
 	if p.Events[0].Idle != "no" || p.Events[0].StartTime != "2026-08-27T03:00:00.000Z" {
 		t.Errorf("segment 0 decoded wrong: %+v", p.Events[0])
+	}
+}
+
+// ─── DLQ replay regression: overlap-safe runtime-window open (bug-XXXX) ───
+//
+// Sep-9 prod DLQ: 1,374 rows failed the exclusion constraint
+// production_orders_runtime_id_equipment_runtime_timerange (1,369×) plus 5×
+// the production_orders_ts_start_ts_end check. Root cause: the batch replayed
+// order events NON-CHRONOLOGICALLY, so openRuntimeWindow tried to insert a
+// [ts, ∞) window for an equipment that ALREADY had a CLOSED window [t0, t1)
+// containing ts. The old sqlOpenWindow guard only skipped when the SAME po had
+// an OPEN window (upper IS NULL); it ignored closed windows and other POs, so
+// [ts, ∞) overlapped [t0, t1) and the constraint aborted the event → DLQ.
+//
+// gold's exclusion constraint forbids overlapping runtime_timerange per
+// id_equipment. PostgreSQL tstzrange is HALF-OPEN: [lo, hi) includes lo,
+// excludes hi. tsRange models exactly that so we can reproduce the constraint
+// and prove the fix without a live Postgres (the package has no DB harness).
+
+// tsRange is a half-open [lo, hi) tstzrange. hiOpen==true means upper is NULL
+// (the window is still running → [lo, ∞)).
+type tsRange struct {
+	lo     time.Time
+	hi     time.Time
+	hiOpen bool // true ⇒ upper is unbounded (NULL)
+}
+
+// overlaps mirrors PostgreSQL's `&&` operator on tstzrange with half-open
+// [lo, hi) bounds: two ranges overlap iff each starts strictly before the
+// other ends. An unbounded upper (hiOpen) is treated as +∞.
+func (r tsRange) overlaps(o tsRange) bool {
+	startsBeforeOtherEnds := o.hiOpen || r.lo.Before(o.hi)
+	otherStartsBeforeThisEnds := r.hiOpen || o.lo.Before(r.hi)
+	return startsBeforeOtherEnds && otherStartsBeforeThisEnds
+}
+
+// openWindowGuard models the WHERE ... NOT EXISTS (... x.runtime_timerange &&
+// tstzrange($ts, NULL)) clause of sqlOpenWindow: the [ts, ∞) window may be
+// inserted only when it overlaps NO existing window for the equipment.
+// Returns true when the insert proceeds, false when it is skipped (no-op).
+func openWindowGuard(existing []tsRange, ts time.Time) bool {
+	candidate := tsRange{lo: ts, hiOpen: true} // [ts, ∞)
+	for _, w := range existing {
+		if w.overlaps(candidate) {
+			return false // would violate the exclusion constraint → skip
+		}
+	}
+	return true
+}
+
+// TestOpenRuntimeWindowOverlapSafeReplay is the golden regression for the
+// Sep-9 DLQ batch. An equipment already carries a CLOSED window [t0, t1);
+// an order-started / order-changed event then arrives (out of order) with a
+// ts INSIDE [t0, t1). It asserts:
+//   - the constraint IS violated by a naive [ts, ∞) insert (reproduces the bug),
+//   - the shipped guard SKIPS the insert (proves the fix — clean no-op, no DLQ),
+//   - and the real sqlOpenWindow carries the equipment-scoped `&&` overlap guard
+//     (so the model tracks the actual query).
+func TestOpenRuntimeWindowOverlapSafeReplay(t *testing.T) {
+	t0 := time.Date(2026, 9, 9, 6, 0, 0, 0, time.UTC)
+	t1 := time.Date(2026, 9, 9, 14, 0, 0, 0, time.UTC)
+	closed := tsRange{lo: t0, hi: t1} // an existing CLOSED window on the equipment
+	ts := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC) // out-of-order start INSIDE [t0, t1)
+
+	// (a) Reproduce the bug: a naive [ts, ∞) insert overlaps the closed window.
+	candidate := tsRange{lo: ts, hiOpen: true}
+	if !closed.overlaps(candidate) {
+		t.Fatal("precondition: [ts, ∞) must overlap the closed [t0, t1) — else the scenario is wrong")
+	}
+
+	// (b) Prove the fix: the guard skips the insert (idempotent no-op, no error).
+	if openWindowGuard([]tsRange{closed}, ts) {
+		t.Error("fix broken: guard allowed an overlapping [ts, ∞) insert → would DLQ on the exclusion constraint")
+	}
+
+	// (c) Forward (chronological) order must still open the window. After
+	// sqlCloseWindowsForEquipment turns the prior open window into [t0, ts),
+	// it is ADJACENT to — not overlapping — the new [ts, ∞).
+	priorClosedAtTs := tsRange{lo: t0, hi: ts}
+	if !openWindowGuard([]tsRange{priorClosedAtTs}, ts) {
+		t.Error("regression: adjacent [t0, ts) must NOT block opening [ts, ∞) — half-open ranges do not overlap at the shared bound")
+	}
+
+	// (d) Idempotency: re-replaying a start for an equipment whose window is
+	// already open [ts, ∞) is a no-op (two unbounded ranges always overlap).
+	alreadyOpen := tsRange{lo: ts, hiOpen: true}
+	if openWindowGuard([]tsRange{alreadyOpen}, ts) {
+		t.Error("idempotency broken: re-opening an already-open window must be skipped, not duplicated")
+	}
+
+	// (e) The real query must carry the equipment-scoped overlap guard, so the
+	// model above reflects the shipped fix rather than drifting from it.
+	for _, want := range []string{
+		"x.id_equipment = po.id_equipment",
+		"x.runtime_timerange && tstzrange($3, NULL)",
+	} {
+		if !strings.Contains(sqlOpenWindow, want) {
+			t.Errorf("sqlOpenWindow missing overlap guard %q:\n%s", want, sqlOpenWindow)
+		}
+	}
+	// It must NOT have reverted to the old open-only, per-PO guard.
+	if strings.Contains(sqlOpenWindow, "upper(x.runtime_timerange) IS NULL") {
+		t.Errorf("sqlOpenWindow still uses the old open-only guard — closed windows would DLQ again:\n%s", sqlOpenWindow)
+	}
+}
+
+// TestStopGuardsAgainstInvertedRange covers the 5× production_orders_ts_start_ts_end
+// check failures: an out-of-order stop whose ts precedes ts_start must NOT
+// write an inverted [ts_start, ts_end] range. Both PO-closing statements carry
+// the `ts_start IS NULL OR ts_start <= $2` guard so the UPDATE matches zero
+// rows (skip + observable no-op) instead of tripping the check and DLQ'ing.
+func TestStopGuardsAgainstInvertedRange(t *testing.T) {
+	for name, sql := range map[string]string{
+		"sqlUpdatePOStop":   sqlUpdatePOStop,
+		"sqlClosePOChanged": sqlClosePOChanged,
+	} {
+		if !strings.Contains(sql, "ts_start IS NULL OR ts_start <= $2") {
+			t.Errorf("%s: missing inverted-range guard (ts_start IS NULL OR ts_start <= $2):\n%s", name, sql)
+		}
+	}
+
+	// Model the check semantics: a stop only writes ts_end when ts_start<=ts_end.
+	stopWrites := func(tsStart *time.Time, tsEnd time.Time) bool {
+		return tsStart == nil || !tsStart.After(tsEnd)
+	}
+	start := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	// Out-of-order stop BEFORE the start → must be skipped (no inverted range).
+	if stopWrites(&start, start.Add(-time.Hour)) {
+		t.Error("inverted stop (ts_end < ts_start) must be skipped, not written")
+	}
+	// Normal stop after the start → written.
+	if !stopWrites(&start, start.Add(time.Hour)) {
+		t.Error("normal stop (ts_end > ts_start) must be written")
+	}
+	// PO never started (ts_start NULL) → check passes, stop is written.
+	if !stopWrites(nil, start) {
+		t.Error("stop on a never-started PO (ts_start NULL) must be written")
 	}
 }
 
