@@ -49,4 +49,36 @@ test.describe('sandbox operator (ent 2000003, mutable twin)', () => {
     // until PLC events replay — justify/split are exercised once events exist).
     await expect(page.getByText(/pending|historic|no events/i).first()).toBeVisible({ timeout: 15_000 });
   });
+
+  test('downtime split: the split modal drives both halves (UI operable)', async ({ page, baseURL }) => {
+    test.setTimeout(70_000);
+    // Split an unjustified downtime into two justified halves. The 2-part modal
+    // requires justifying each half (machine/category/sub-category) before the
+    // submit enables — we drive it end-to-end and assert the submit becomes
+    // clickable. (The backend split has its own DTO preconditions; the justify
+    // journey above covers the successful downtime write.)
+    await operatorLogin(page, baseURL!, USER, PASS);
+    await page.getByRole('tab', { name: /events?/i }).first().click();
+    await page.waitForTimeout(4000);
+    await page.locator('[data-testid="CallSplitSharpIcon"]').first().click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+    const justifyHalf = async () => {
+      for (const i of [0, 1, 2]) {
+        await dialog.getByRole('combobox').nth(i).click().catch(() => {});
+        await page.waitForTimeout(400);
+        await page.getByRole('option').first().click().catch(() => {});
+        await page.waitForTimeout(400);
+      }
+    };
+    await justifyHalf(); // first half + the default split time
+    const next = dialog.getByRole('button', { name: /next/i });
+    await expect(next).toBeEnabled({ timeout: 10_000 });
+    await next.click();
+    await page.waitForTimeout(1000);
+    await justifyHalf(); // second half
+    const submit = dialog.getByRole('button', { name: /confirm|save|submit|^split/i }).last();
+    await expect(submit).toBeEnabled({ timeout: 10_000 });
+  });
+
 });
