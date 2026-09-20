@@ -17,17 +17,35 @@ export async function front4Login(page: Page, email: string, password: string) {
 }
 
 /**
- * Generic Cognito form login for the *.staging.packiot.app SPAs (operator etc.).
- * These sit behind oauth2-proxy → a Cognito Hosted UI, OR render their own form.
- * We try the common shapes; a project overrides this if its login differs.
+ * Cognito Hosted-UI login for the *.staging.packiot.app SPAs (operator, csadmin,
+ * customize). These sit behind oauth2-proxy → the shared AWS Cognito managed
+ * login UI at auth.staging.packiot.app (app-client "oauth2-proxy-staging", same
+ * pool as front4). Navigating to the app while unauthenticated redirects there;
+ * on success Cognito bounces back through the oauth2-proxy /callback to the app
+ * origin. We wait for that bounce (URL host == the app host) as the success gate.
  */
 export async function cognitoFormLogin(page: Page, url: string, email: string, password: string) {
+  const appHost = new URL(url).host;
   await page.goto(url);
-  // Hosted-UI or app form — match by input type, resilient to id changes.
-  const emailField = page.locator('input[type="email"], input[name="username"], #outlined-adornment-email').first();
-  const passField = page.locator('input[type="password"], input[name="password"], #outlined-adornment-password').first();
-  await emailField.waitFor({ timeout: 20_000 });
+
+  // Some oauth2-proxy configs show an interstitial "Sign in" button before the
+  // Cognito redirect — click it if present (best-effort, short timeout).
+  const proxyStart = page.getByRole('button', { name: /^sign in$/i }).or(page.getByRole('link', { name: /^sign in$/i }));
+  await proxyStart.first().click({ timeout: 3_000 }).catch(() => {});
+
+  // The Cognito classic Hosted UI renders the sign-in form TWICE (a visible copy
+  // + a hidden duplicate for the panel toggle), so scope to the :visible instance
+  // — .first() alone grabs the hidden one and hangs on fill.
+  const emailField = page.locator('input[name="username"]:visible, #signInFormUsername:visible, input[type="email"]:visible').first();
+  await emailField.waitFor({ timeout: 25_000 });
   await emailField.fill(email);
+
+  const passField = page.locator('input[name="password"]:visible, #signInFormPassword:visible, input[type="password"]:visible').first();
   await passField.fill(password);
-  await passField.press('Enter');
+
+  const submit = page.locator('input[name="signInSubmitButton"]:visible, button[type="submit"]:visible').first();
+  await submit.click().catch(() => passField.press('Enter'));
+
+  // Success = Cognito → oauth2-proxy /callback → back to the app origin.
+  await page.waitForURL((u) => u.host === appHost, { timeout: 30_000 });
 }

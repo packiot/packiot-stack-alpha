@@ -2,7 +2,7 @@
   "name": "packiot-e2e",
   "private": true,
   "version": "0.1.0",
-  "description": "Cross-frontend Playwright E2E suite — front4, operator, csadmin, customize against staging.",
+  "description": "Cross-frontend Playwright E2E suite \u2014 front4, operator, csadmin, customize against staging.",
   "scripts": {
     "test": "playwright test",
     "test:front4": "playwright test --project=front4",
@@ -10,7 +10,8 @@
     "test:csadmin": "playwright test --project=csadmin",
     "test:customize": "playwright test --project=customize",
     "report": "playwright show-report",
-    "install:browsers": "playwright install chromium"
+    "install:browsers": "playwright install chromium",
+    "creds": "bash scripts/fetch-creds.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",
