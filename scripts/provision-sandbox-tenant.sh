@@ -160,6 +160,28 @@ SELECT 'SANDBOX analytics PO wipe: ent '||$SENT AS status,
      WHERE e.id_enterprise=$SENT AND upper(r.runtime_timerange) IS NULL) AS open_windows_left;
 SQL
 
+# Seed ONE pending (unjustified) downtime on an L5 machine so the operator Events
+# tab always has something to justify after a heal — the twin's live feed produces
+# downtimes non-deterministically, so a deterministic seed is what makes the
+# operator justify E2E reliable. cd_category IS NULL = pending; ts within the last
+# 4 days + duration >= the machine's stop threshold (serving.pending_downtime's
+# filters). Idempotent: drop the prior synthetic (status=4/duration=600) first.
+# Runs in the analytics DB (silver.equipment_events is the pending-downtime source).
+read -r -d '' SQL_SEED_DOWNTIME <<SQL || true
+DELETE FROM silver.equipment_events
+ WHERE id_enterprise = $SENT AND status = 10 AND duration = 599 AND cd_category IS NULL;
+INSERT INTO silver.equipment_events (id_equipment, ts_event, ts_end, duration, id_enterprise, status, cd_category)
+SELECT e.id_equipment, now() - interval '35 minutes', now() - interval '25 minutes', 599, $SENT, 10, NULL
+  FROM core.equipments e
+  JOIN core.packml_register p ON p.id_equipment = e.id_equipment
+ WHERE e.id_enterprise = $SENT AND p.packml_topic LIKE '%/L5/%'
+ ORDER BY e.id_equipment
+ LIMIT 1;
+SELECT 'SANDBOX pending-downtime seeded: ent '||$SENT AS status,
+  (SELECT count(*) FROM silver.equipment_events
+     WHERE id_enterprise=$SENT AND status=10 AND duration=599 AND cd_category IS NULL) AS seeded;
+SQL
+
 # CREATE. jsonb-override clone: to_jsonb(row) || overrides, then json_populate_record
 # (portable, column-order-independent). Only the verified intra-tenant id keys are
 # offset; every other column (jsonb config, flags, NULL soft-refs) passes through.
@@ -383,7 +405,7 @@ esac
 # Combined analytics-plane SQL: wipe the twin's PO runtime (heal/reset-data) and/or
 # seed the QA users (create/reset/heal), in one packiot_analytics invocation.
 ANALYTICS_SQL=""
-[ -n "$WIPE_ANALYTICS" ] && ANALYTICS_SQL="$SQL_WIPE_ANALYTICS"
+[ -n "$WIPE_ANALYTICS" ] && ANALYTICS_SQL="$SQL_WIPE_ANALYTICS $SQL_SEED_DOWNTIME"
 [ -n "$SEED_QA" ]        && ANALYTICS_SQL="$ANALYTICS_SQL $SQL_SEED_AN"
 
 # ── Execute via SSM -> staging app box -> dockerized psql ─────────────────────
