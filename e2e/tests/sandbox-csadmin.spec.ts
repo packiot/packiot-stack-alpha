@@ -3,7 +3,7 @@ import { csadminLogin } from '../fixtures/auth';
 
 /**
  * Sandbox csadmin journeys — mutate the twin (ent 2000003) cross-tenant. Select
- * SANDBOX-CPACK then create entities / edit onboarding. Safe: the self-healing
+ * SANDBOX-CPACK then exercise the full entity lifecycle. Safe: the self-healing
  * globalSetup re-clones the twin from ent 3 first (and wipes anything created).
  */
 const USER = process.env.CSADMIN_USER || '';
@@ -15,29 +15,45 @@ async function selectSandbox(page: any, baseURL: string) {
   await page.getByText(/SANDBOX-CPACK/i).first().click();
   await page.waitForTimeout(1500);
 }
+// The DataTable row's action button in the SAME row as a unique name.
+const rowBtn = (page: any, name: string, title: string) =>
+  page.getByText(name, { exact: true }).first()
+    .locator(`xpath=ancestor::*[.//button[@title="${title}"]][1]//button[@title="${title}"]`);
 
 test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
   test.skip(!USER || !PASS, 'CSADMIN_USER/PASSWORD not set');
 
   test('cs-admin loads the enterprises list (incl. the sandbox twin)', async ({ page }) => {
     await csadminLogin(page, USER, PASS);
-    // /api/enterprises must return data (the Cognito-enable + users-row fix) —
-    // the sandbox twin is selectable.
     await expect(page.getByText(/SANDBOX-CPACK/i).first()).toBeVisible({ timeout: 20_000 });
   });
 
-  test('entity CRUD: create an area on the twin (real mutation)', async ({ page, baseURL }) => {
+  test('entity CRUD: create → edit → delete an area on the twin', async ({ page, baseURL }) => {
+    page.on('dialog', (d) => d.accept()); // the delete uses window.confirm
     await selectSandbox(page, baseURL!);
     await page.goto(baseURL! + '/app/area');
     await page.waitForTimeout(2500);
-    const NAME = 'E2E-AREA-SBX';
+    const NAME = 'E2E-AREA-CRUD', NAME2 = 'E2E-AREA-EDITED';
+
+    // CREATE — site/week/day default to SC/Monday.
     await page.getByRole('button', { name: /new area/i }).click();
-    await page.waitForTimeout(1200);
-    await page.getByRole('textbox').first().fill(NAME); // site/week/day default to SC/Monday
+    await page.waitForTimeout(1000);
+    await page.getByRole('textbox').first().fill(NAME);
     await page.getByRole('button', { name: /^create area/i }).click();
-    // The new area appears in the twin's area list (self-heal wipes it next run).
-    await expect(page.getByText(NAME).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(NAME, { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+
+    // EDIT — rename via the row's Edit (pencil) button → reused form → Save changes.
+    await rowBtn(page, NAME, 'Edit').click();
+    await page.waitForTimeout(1000);
+    await page.getByRole('textbox').first().fill(NAME2);
+    await page.getByRole('button', { name: /save changes/i }).click();
+    await expect(page.getByText(NAME2, { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+
+    // DELETE — the row's Delete (trash) button → window.confirm auto-accepted.
+    await rowBtn(page, NAME2, 'Delete').click();
+    await expect(page.getByText(NAME2, { exact: true })).toHaveCount(0, { timeout: 20_000 });
   });
+
 
   test('onboarding config: reach the twin onboarding surface', async ({ page, baseURL }) => {
     await selectSandbox(page, baseURL!);
