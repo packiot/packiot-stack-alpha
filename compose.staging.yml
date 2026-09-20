@@ -1514,6 +1514,15 @@ services:
       dockerfile: Dockerfile.staging
       args:
         VITE_API_BASE_URL: ""
+        # Cognito auth — the comment above says it's "baked in the build", but the
+        # enable flag + pool/client ids were missing, so COGNITO_ENABLED evaluated
+        # false → amplify never configured → NO Bearer on /api → edge-api 401'd
+        # every request (the enterprises list came back empty). Firebase is retired
+        # (#159), so Cognito is the only auth path. Shared staging pool + SPA client
+        # (public ids, not secrets; Vite bakes them at build).
+        VITE_AUTH_COGNITO_ENABLED: "true"
+        VITE_COGNITO_USER_POOL_ID: "us-east-1_0T9t1sTwt"
+        VITE_COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
     container_name: csadmin
     restart: unless-stopped
     # Container-level liveness (was health=none): the nginx SPA root must serve 200.
@@ -1552,6 +1561,11 @@ services:
       dockerfile: Dockerfile.staging
       args:
         VITE_API_BASE_URL: ""
+        # Same Cognito-enable gap as csadmin (customize is a csadmin clone): without
+        # these the SPA never configures amplify → no Bearer on /api → 401.
+        VITE_AUTH_COGNITO_ENABLED: "true"
+        VITE_COGNITO_USER_POOL_ID: "us-east-1_0T9t1sTwt"
+        VITE_COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
     container_name: customize
     restart: unless-stopped
     healthcheck:
