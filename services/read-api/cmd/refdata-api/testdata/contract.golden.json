@@ -342,7 +342,7 @@
     "ref": "downtimes-events",
     "source": "dataset",
     "kind": "function",
-    "name": "serving.downtime_events_v2",
+    "name": "serving.downtime_events_v3",
     "argc": 8
   },
   {
