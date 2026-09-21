@@ -58,6 +58,33 @@ test.describe('front4 (product SPA)', () => {
     await expect(page.locator('body')).toContainText(/Status|Job|Client|Product|Order Size/i);
   });
 
+  // Guarantees the greyed-Mission-Control fix (stack#1353 threshold /100 + backfill):
+  // the status timeline classifies again, so the page shows LIVE COLOURED status
+  // (green running / red stopped / yellow low-speed) rather than the all-grey
+  // "#808080" no-data strip that the NULL thresholds produced.
+  test('Mission Control renders live coloured status (timeline greying fix)', async ({ page }) => {
+    await front4Login(page, USER, PASS);
+    await page.goto('/mission-control');
+    await page.waitForTimeout(6000);
+    await expect(page.locator('body')).toBeVisible();
+    await expect(page.getByText(/Running Time|Downtime Reasons|Timeline|Status/i).first())
+      .toBeVisible({ timeout: 25_000 });
+    // At least one status-coloured element exists (classification works) — the
+    // all-grey regression would have only the #808080 no-data fill.
+    const hasStatusColour = await page.evaluate(() => {
+      const status = new Set([
+        'rgb(49, 143, 41)',  // running  #318F29
+        'rgb(193, 57, 57)',  // stopped  #C13939
+        'rgb(236, 188, 19)', // lowSpeed #ECBC13
+        'rgb(126, 87, 194)', // changeOver #7E57C2
+      ]);
+      return [...document.querySelectorAll('*')].some(
+        (el) => status.has(getComputedStyle(el).backgroundColor),
+      );
+    });
+    expect(hasStatusColour).toBeTruthy();
+  });
+
   test('Machine Speed page renders', async ({ page }) => {
     await front4Login(page, USER, PASS);
     await page.goto('/machine-speed');

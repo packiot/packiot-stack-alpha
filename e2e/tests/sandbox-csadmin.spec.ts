@@ -9,7 +9,7 @@ import { csadminLogin } from '../fixtures/auth';
 const USER = process.env.CSADMIN_USER || '';
 const PASS = process.env.CSADMIN_PASSWORD || '';
 
-async function selectSandbox(page: any, baseURL: string) {
+async function selectSandbox(page: any) {
   await csadminLogin(page, USER, PASS);
   await expect(page.getByText(/SANDBOX-CPACK/i).first()).toBeVisible({ timeout: 20_000 });
   await page.getByText(/SANDBOX-CPACK/i).first().click();
@@ -30,7 +30,7 @@ test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
 
   test('entity CRUD: create → edit → delete an area on the twin', async ({ page, baseURL }) => {
     page.on('dialog', (d) => d.accept()); // the delete uses window.confirm
-    await selectSandbox(page, baseURL!);
+    await selectSandbox(page);
     await page.goto(baseURL! + '/app/area');
     await page.waitForTimeout(2500);
     const NAME = 'E2E-AREA-CRUD', NAME2 = 'E2E-AREA-EDITED';
@@ -56,10 +56,57 @@ test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
 
 
   test('onboarding config: reach the twin onboarding surface', async ({ page, baseURL }) => {
-    await selectSandbox(page, baseURL!);
+    await selectSandbox(page);
     await page.goto(baseURL! + '/app/onboarding');
     await page.waitForTimeout(2500);
     await expect(page.locator('body')).not.toBeEmpty();
     await expect(page.getByText(/onboarding|factory|sensor|tag|plc/i).first()).toBeVisible({ timeout: 15_000 });
+  });
+
+  // Regression for the equipment edit-block fix (csadmin#107): a line whose
+  // overview_version is NULL was un-editable — the create-time superRefine blocked
+  // Save with a "Select an overview version" zod error. The sandbox lines are
+  // cloned from ent 3 (NULL overview_version), so opening one's edit form and
+  // attempting Save must NOT surface that structural error any more.
+  test('equipment edit: a line with no overview_version is no longer blocked (edit-block fix)', async ({ page, baseURL }) => {
+    await selectSandbox(page);
+    await page.goto(baseURL! + '/app/lines');
+    await page.waitForTimeout(2500);
+    await page.locator('button[title="Edit"]').first().click();
+    await page.waitForTimeout(1500);
+    const save = page.getByRole('button', { name: /save changes/i });
+    await expect(save).toBeVisible({ timeout: 10_000 });
+    await save.click();
+    await page.waitForTimeout(800);
+    // the create-time structural error must NOT appear (this was the block #107 removed)
+    await expect(page.getByText(/select an overview version/i)).toHaveCount(0);
+    // the form stays usable (no hard validation wall)
+    await expect(save).toBeEnabled();
+  });
+
+  // Guarantees the new Downtime Reasons editor (csadmin#108) end to end: load an
+  // equipment's taxonomy, add a category, save → the operator-readable tree persists.
+  test('downtime reasons: load, add a category, save', async ({ page, baseURL }) => {
+    await selectSandbox(page);
+    await page.goto(baseURL! + '/app/downtime-reasons');
+    await page.waitForTimeout(2000);
+    // pick an equipment (first real option) → the tree loads
+    await page.locator('select').first().selectOption({ index: 1 });
+    await page.waitForTimeout(2500);
+    // existing categories render (the sandbox is a CPACK clone with a full tree)
+    await expect(page.getByPlaceholder('Category code').first()).toBeVisible({ timeout: 15_000 });
+    // add a distinctive category
+    await page.getByRole('button', { name: /^\+ category$/i }).click();
+    const CODE = 'E2E_DTR';
+    await page.getByPlaceholder('Category code').last().fill(CODE);
+    await page.getByPlaceholder('Category name').last().fill('E2E Downtime Category');
+    // save → sonner success toast
+    const saved = page.waitForResponse(
+      (r) => /downtime-reasons/.test(r.url()) && r.request().method() === 'POST',
+      { timeout: 15_000 },
+    );
+    await page.getByRole('button', { name: /^save$/i }).click();
+    expect((await saved).status()).toBe(200);
+    await expect(page.getByText(/saved/i).first()).toBeVisible({ timeout: 10_000 });
   });
 });
