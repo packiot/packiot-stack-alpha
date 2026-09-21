@@ -85,6 +85,16 @@ test.describe('front4 (product SPA)', () => {
     expect(hasStatusColour).toBeTruthy();
   });
 
+  // Reports must load the embedded Superset dashboard, not the decommissioned
+  // PowerBI page whose embed-token endpoint 503s ("Couldn't load this report").
+  test('Reports loads the Superset embed (not the dead PowerBI page)', async ({ page }) => {
+    await front4Login(page, USER, PASS);
+    await page.goto('/reports');
+    await page.waitForTimeout(7000);
+    await expect(page.getByText(/couldn't load this report/i)).toHaveCount(0);
+    await expect(page.locator('iframe')).toHaveCount(1, { timeout: 15_000 });
+  });
+
   test('Machine Speed page renders', async ({ page }) => {
     await front4Login(page, USER, PASS);
     await page.goto('/machine-speed');
