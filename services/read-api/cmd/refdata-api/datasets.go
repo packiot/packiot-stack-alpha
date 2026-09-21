@@ -473,13 +473,16 @@ var datasets = map[string]dataset{
 			pWinFrom, pWinTo, ids("teams")},
 	},
 	"downtimes-events": {
-		group: "downtimes-analytics", doc: "Downtime event list, live generation (serving.downtime_events_v2)",
-		sql:      `SELECT * FROM serving.downtime_events_v2($1,$2,$3,$4,$5,$6,$7,$8)`,
+		group: "downtimes-analytics", doc: "Downtime event list (serving.downtime_events_v3 — reads the precomputed serving.downtime_events_resolved table; falls back to v2 for windows below coverage)",
+		// v3 is a thin reader over serving.downtime_events_resolved (refreshed every 2 min by a
+		// TimescaleDB job). It returns the SAME rows as v2 (exact set parity, gated) but reads a
+		// small indexed table instead of decompressing ~2 months of equipment_events chunks +
+		// per-candidate PO/shift lookups — so it is sub-second cold at ANY window (v2 was ~18-40s
+		// cold and 500'd the default month-to-date view). See db/migrations/t-downtime-events-materialization.
+		sql:      `SELECT * FROM serving.downtime_events_v3($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
-		// 120s (overrides the 30s group default): this is the expensive leg — sub-second
-		// warm but ~18-21s cold (see the query.go timeout note). A longer TTL keeps a
-		// cold success reusable so users rarely re-pay the cold decompression; a downtime
-		// event LIST tolerates ~2min staleness (live monitoring lives in Mission Control).
+		// Kept at 120s: harmless with the fast reader (the table itself carries ~2min freshness lag,
+		// so a 120s cache adds no material staleness), and a cheap safety margin for load spikes.
 		cacheTTL: 120 * time.Second,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("sectors"),
 			pWinFrom, pWinTo, pMicro},

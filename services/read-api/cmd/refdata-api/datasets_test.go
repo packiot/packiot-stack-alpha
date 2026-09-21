@@ -61,7 +61,9 @@ func TestDatasetCatalogCoversFront4Census(t *testing.T) {
 		"serving.production_health", "serving.downtime_duration_by_category",
 		// downtimes-analytics
 		"serving.downtime_summary", "serving.downtime_by_category",
-		"serving.downtime_events", "serving.downtime_events_v2",
+		// downtimes-events repointed to the precomputed reader v3 (v2 stays as v3's internal
+		// fallback but is no longer referenced by a dataset) — t-downtime-events-materialization.
+		"serving.downtime_events", "serving.downtime_events_v3",
 		// total-production / single-period / speed / flow
 		"serving.total_production_by_team", "serving.single_period_by_team",
 		// machine-speed CANONICAL redesign (#221): serving.machine_speed grain-aware fn
