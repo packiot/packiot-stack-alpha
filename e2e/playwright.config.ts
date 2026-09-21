@@ -34,7 +34,12 @@ export default defineConfig({
   // the read-only suite never triggers an SSM reset.
   globalSetup: process.env.E2E_SELFHEAL ? './global-setup.ts' : undefined,
   use: {
-    trace: 'on-first-retry',
+    // Trace mode is env-overridable so you can INSPECT DATA from any run, not
+    // just retries. Default `retain-on-failure` keeps a full trace (network
+    // requests + responses, DOM snapshots, console) for every failing test even
+    // locally where retries=0 — open it with `npm run report` then click the
+    // trace, or `PW_TRACE=on npm test` to capture EVERY test's trace/data.
+    trace: (process.env.PW_TRACE as 'on' | 'off' | 'retain-on-failure' | 'on-first-retry') || 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     ignoreHTTPSErrors: true,
