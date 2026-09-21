@@ -13,10 +13,9 @@
 -- (proven: Aug-17 88.4%%→14.1%%, Aug-24 88.5%%→5.0%%, healthy weeks untouched). This
 -- both cleans the existing bad data (#2) and auto-guards future sensor spikes (#3).
 --
--- NOTE: only the historical branch (equipment_oee_shift, which already joins
+-- Guards BOTH branches: the historical branch (equipment_oee_shift) and the live
 -- equipments) is guarded; the live branch (silver.equipment_categorical_1hour, no
 -- equipments join) is a smaller current-period surface — a follow-up. CREATE OR
--- REPLACE preserves owner/privs; return type unchanged. Idempotent.
 
 CREATE OR REPLACE FUNCTION serving.single_period_by_team_v4(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text DEFAULT 'DAY'::text, group_by_element text DEFAULT 'GENERAL'::text)
  RETURNS SETOF single_period_by_team_v4_row
@@ -160,6 +159,7 @@ IF UPPER(time_grain) = 'HOUR' THEN
 			silver.equipment_categorical_1hour ers
 			join production_targets pt using (id_enterprise, id_equipment)
 			join enterprises e using (id_enterprise)
+			join equipments eq_g on eq_g.id_equipment = ers.id_equipment
 			left join shifts s using (id_shift)
 			left join teams t using (id_team)
 			left join scrap_targets st on (ers.id_equipment = st.id_equipment)
@@ -171,6 +171,11 @@ IF UPPER(time_grain) = 'HOUR' THEN
 			and ers.id_site = any( ids_sites )
 			and ers.id_equipment =  any( ids_equips )
 			and ers.id_shift = any( ids_shifts )
+			-- scrap-spike guard (live branch): drop hours whose scrap exceeds ~150% of
+			-- the line's max hourly output (production_speed units/min x 60) — impossible
+			-- = a counter/sensor artifact. Mirrors the historical-branch guard.
+			and not (coalesce(ers.scrap_incr,0) > 1000
+			         and coalesce(ers.scrap_incr,0)::float8 > coalesce(eq_g.production_speed,0)::float8 * 60.0 * 1.5)
 		group by 
 			ers.id_enterprise, ts_value, scrap_calc_type,
 			case group_by_element when 'SHIFTS' then ers.id_shift else null END,
@@ -255,4 +260,3 @@ END IF;
 end
 $function$
 
-;
