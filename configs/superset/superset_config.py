@@ -120,7 +120,16 @@ FEATURE_FLAGS = {
 # front4 loads Superset in an <iframe>. We MUST allow that origin as a
 # frame-ancestor and MUST NOT emit X-Frame-Options (it has no per-origin allow
 # and would blank the iframe). Talisman owns the response security headers.
-FRONT4_ORIGIN = os.environ.get("SUPERSET_FRAME_ANCESTOR", "https://front.prod.packiot.app")
+# SUPERSET_FRAME_ANCESTOR may list MULTIPLE comma-separated origins — front4 is
+# served from more than one host (e.g. staging.packiot.com AND
+# front.staging.packiot.app). Parse into a list used for BOTH the CSP
+# frame-ancestors and the CORS allow-list, so every valid parent origin can iframe
+# Superset. (register_embed.py splits the same env for the embed allow_domain_list.)
+FRONT4_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("SUPERSET_FRAME_ANCESTOR", "https://front.prod.packiot.app").split(",")
+    if o.strip()
+]
 ENABLE_PROXY_FIX = True             # behind nginx + CloudFront — trust X-Forwarded-*
 TALISMAN_ENABLED = True
 TALISMAN_CONFIG = {
@@ -133,7 +142,7 @@ TALISMAN_CONFIG = {
         "style-src": ["'self'", "'unsafe-inline'"],
         "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
         # THE embed hinge — who may frame Superset:
-        "frame-ancestors": ["'self'", FRONT4_ORIGIN],
+        "frame-ancestors": ["'self'", *FRONT4_ORIGINS],
     },
     "force_https": False,           # TLS terminates at nginx/CloudFront
     "frame_options": None,          # do NOT set X-Frame-Options (see above)
@@ -147,7 +156,7 @@ SESSION_COOKIE_SECURE = True
 ENABLE_CORS = True
 CORS_OPTIONS = {
     "supports_credentials": True,
-    "origins": [FRONT4_ORIGIN],
+    "origins": FRONT4_ORIGINS,
     "allow_headers": ["Authorization", "Content-Type", "X-CSRFToken"],
     "resources": ["/api/*", "/embedded/*"],
 }
