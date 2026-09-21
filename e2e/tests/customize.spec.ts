@@ -4,8 +4,8 @@ import { csadminLogin } from '../fixtures/auth';
 /**
  * customize — the Customization Hub SPA (ADR-0058): declarative derive rules +
  * DB integrations + Node-RED flows per tenant. cs-admin auth (amplify Cognito,
- * enabled in the staging build). Read-only coverage here — any authoring is
- * exercised against the self-healing twin in the sandbox suites.
+ * enabled in the staging build). Authoring runs against the self-healing twin
+ * (client_descriptors re-cloned each heal), never a real tenant.
  */
 const USER = process.env.CUSTOMIZE_USER || process.env.CSADMIN_USER || '';
 const PASS = process.env.CUSTOMIZE_PASSWORD || process.env.CSADMIN_PASSWORD || '';
@@ -14,7 +14,6 @@ test.describe('customize (Customization Hub SPA)', () => {
   test('serves the SPA shell (smoke) with no-store index', async ({ page }) => {
     const resp = await page.goto('/');
     await expect(page.locator('body')).toBeVisible();
-    // index.html must be no-store (the stale-SPA fix).
     if (resp) {
       expect((resp.headers()['cache-control'] || '').toLowerCase()).toContain('no-store');
     }
@@ -27,47 +26,44 @@ test.describe('customize (Customization Hub SPA)', () => {
       await csadminLogin(page, USER, PASS);
       await expect(page).toHaveURL(/enterprises/, { timeout: 30_000 });
       await expect(page.getByText(/Select an enterprise to author/i)).toBeVisible({ timeout: 15_000 });
-      // Real tenants load (proves /api/enterprises 200 under the cs-admin token).
       await expect(page.getByText(/CPACK-Staging|SANDBOX-CPACK/i).first()).toBeVisible({ timeout: 15_000 });
     });
 
-    test('opens a tenant Hub with the three customization tiers', async ({ page, baseURL }) => {
+    test('opens a tenant Hub with the three customization tiers', async ({ page }) => {
       await csadminLogin(page, USER, PASS);
       await expect(page.getByText(/SANDBOX-CPACK/i).first()).toBeVisible({ timeout: 20_000 });
       await page.getByText(/SANDBOX-CPACK/i).first().click();
       await expect(page).toHaveURL(/\/app\/hub/, { timeout: 20_000 });
-      // The ADR-0058 tiers.
       await expect(page.getByText(/Derive rules/i).first()).toBeVisible();
       await expect(page.getByText(/Database integrations|Integrations/i).first()).toBeVisible();
-      // Derive-rules view is reachable (read-only).
       await page.getByRole('link', { name: /^Derive rules/i }).first().click().catch(() => {});
       await page.waitForTimeout(1500);
       await expect(page.locator('body')).not.toBeEmpty();
     });
 
-    test('derive-rules authoring: add a rule + run simulation on the twin', async ({ page, baseURL }) => {
-      // The Tier-1 authoring editor (ADR-0058): expression + metric bindings + a
-      // sample-input box, with Run Simulation validating server-side. We drive the
-      // editor and assert the simulate call reaches the backend for the twin (200)
-      // — full SAVE is gated behind DSL validation the agent owns, out of E2E scope.
+    test('derive-rule authoring: author a rule + SAVE persists to the descriptor', async ({ page, baseURL }) => {
+      // Full Tier-1 write path (ADR-0058): pick an equipment, write an expression +
+      // variable bindings, Add rule (→ dirty), then SAVE → onboardingApi
+      // upsertDescriptor persists it to the tenant's client_descriptor (POST
+      // /api/onboarding/descriptor → 201). On the self-healing twin.
       await csadminLogin(page, USER, PASS);
       await expect(page.getByText(/SANDBOX-CPACK/i).first()).toBeVisible({ timeout: 20_000 });
       await page.getByText(/SANDBOX-CPACK/i).first().click();
       await page.goto(baseURL! + '/app/customizations');
       await page.waitForTimeout(3000);
+      await page.locator('select').first().selectOption({ index: 1 }); // Equipment (rule target)
+      await page.getByPlaceholder('gross - net').fill('gross - net');
+      const vars = 'gross = /SC/LINHAS/L5/RMH/Admin/ProdProcessedCount/56/Unit\nnet = /SC/LINHAS/L5/TEXA/Admin/ProdProcessedCount/57/Unit';
+      await page.locator('textarea').first().fill(vars);
       await page.getByRole('button', { name: /add rule/i }).click();
-      await page.waitForTimeout(800);
-      const inp = page.locator('input, textarea');
-      const G = 'SBXCPACK/SC/LINHAS/L5/RMH', N = 'SBXCPACK/SC/LINHAS/L5/TEXA';
-      await inp.nth(0).fill('gross - net');
-      await inp.nth(1).fill(`gross = ${G}\nnet = ${N}`);
-      await inp.nth(2).fill(`[{ "metric": "${G}", "value": 500 }, { "metric": "${N}", "value": 470 }]`);
-      const simulate = page.waitForResponse(
-        (r) => /onboarding\/simulate/.test(r.url()) && r.request().method() === 'POST',
-        { timeout: 20_000 },
+      await expect(page.getByText('gross - net').first()).toBeVisible({ timeout: 10_000 });
+      const saved = page.waitForResponse(
+        (r) => /onboarding\/descriptor/.test(r.url()) && r.request().method() === 'POST',
+        { timeout: 15_000 },
       );
-      await page.getByRole('button', { name: /run simulation/i }).click();
-      expect((await simulate).status()).toBe(200);
+      await page.getByRole('button', { name: /^save$/i }).click();
+      expect((await saved).status()).toBe(201);
+      await expect(page.getByText(/saved to the descriptor/i)).toBeVisible({ timeout: 10_000 });
     });
   });
 });
