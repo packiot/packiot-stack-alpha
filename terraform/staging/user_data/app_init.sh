@@ -333,6 +333,11 @@ SUPERSET_FRAME_ANCESTOR=https://staging.packiot.com,https://front.$STAGING_DOMAI
 # edge-api superset-embed slice: in-network base URL + curated dashboard embed UUID.
 SUPERSET_BASE_URL=http://172.18.0.42:8088
 SUPERSET_OEE_DASHBOARD_UUID=$SUPERSET_OEE_DASHBOARD_UUID
+# Which dashboard the stable embed uuid resolves to (register_embed.py). MUST be the
+# real per-tenant OEE Overview, NOT the empty synthetic "Scanned Boxes" demo — set
+# explicitly so a fresh instance never lands the client Reports embed on a blank
+# dashboard. (OEE Overview bundle uuid; see configs/superset/register_embed.py.)
+SUPERSET_EMBED_TARGET_DASHBOARD=6c4fa4a1-ddd2-4b4e-b5cb-4eb56bb30937
 # Activate the profile by setting COMPOSE_PROFILES=superset (do it deliberately,
 # per the runbook — leaving it unset keeps the whole overlay dark).
 # COMPOSE_PROFILES=superset
