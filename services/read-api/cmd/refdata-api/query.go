@@ -213,7 +213,16 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			http.Error(w, `{"error":`+fmt.Sprintf("%q", err.Error())+`}`, code)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		// 40s (was 20s): the heaviest named dataset, downtimes-events
+		// (serving.downtime_events_v2), is sub-second WARM (~300-540ms) but ~18-21s
+		// COLD — it decompresses ~2 months of silver.equipment_events columnar chunks
+		// per request (the fn pads the window by ±1 month before the tstzrange overlap
+		// filter). At 20s a cold load tripped context-deadline → load() error → the
+		// front4 Downtimes submenu 500'd ("query failed"). 40s clears the cold load so
+		// it completes and populates the cache (then served in <1s). The durable fix is
+		// to make downtime_events_v2 cheap cold (early id_enterprise filter + a tighter
+		// pad + chunk-exclusion-friendly predicates) — tracked as a DB follow-up.
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 		defer cancel()
 
 		// The DB read → JSON-array bytes. Shared verbatim by the cached and
