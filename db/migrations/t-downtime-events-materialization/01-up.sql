@@ -32,6 +32,19 @@ CREATE INDEX IF NOT EXISTS dt_events_resolved_ent_ts   ON serving.downtime_event
 CREATE INDEX IF NOT EXISTS dt_events_resolved_ent_line ON serving.downtime_events_resolved (id_enterprise, id_line, ts_event desc);
 CREATE INDEX IF NOT EXISTS dt_events_resolved_tsev     ON serving.downtime_events_resolved (ts_event);
 
+-- Defense-in-depth tenant fence, matching gold.equipment_oee_shift et al: read-api reads this
+-- table via the SECURITY INVOKER v3 as readapi_ro (NOBYPASSRLS) with app.tenant_id stamped, so
+-- RLS co-enforces the app-layer `id_enterprise = in_id_enterprise` filter. The refresh job + backfill
+-- run as postgres (BYPASSRLS) so they populate all tenants. Verified: readapi_ro @ tenant 3 sees 0
+-- foreign rows. (Denormalized id_enterprise → a simple policy, no equipments EXISTS subquery needed.)
+ALTER TABLE serving.downtime_events_resolved ENABLE ROW LEVEL SECURITY;
+ALTER TABLE serving.downtime_events_resolved FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON serving.downtime_events_resolved;
+CREATE POLICY tenant_isolation ON serving.downtime_events_resolved
+    USING (is_all_tenant() OR id_enterprise = current_tenant());
+GRANT SELECT ON serving.downtime_events_resolved      TO readapi_ro;
+GRANT SELECT ON serving.downtime_events_resolved_meta TO readapi_ro;  -- non-tenant coverage row (no RLS)
+
 CREATE TABLE IF NOT EXISTS serving.downtime_events_resolved_meta (
     id int primary key default 1, coverage_from timestamptz, check (id = 1));
 INSERT INTO serving.downtime_events_resolved_meta (id, coverage_from) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING;
