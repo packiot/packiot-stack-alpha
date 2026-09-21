@@ -13,7 +13,9 @@
     "test:sandbox:noheal": "E2E_SELFHEAL=1 E2E_SELFHEAL_SKIP=1 playwright test --project=sandbox-operator --project=sandbox-csadmin",
     "sandbox:heal": "bash ../scripts/provision-sandbox-tenant.sh --heal",
     "sandbox:reset-data": "bash ../scripts/provision-sandbox-tenant.sh --reset-data",
+    "test:trace": "PW_TRACE=on playwright test",
     "report": "playwright show-report",
+    "trace": "playwright show-trace",
     "install:browsers": "playwright install chromium",
     "creds": "bash scripts/fetch-creds.sh"
   },
