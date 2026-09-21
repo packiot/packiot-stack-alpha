@@ -324,7 +324,12 @@ SUPERSET_ADMIN_PASSWORD=$SUPERSET_ADMIN_PASSWORD
 SUPERSET_COGNITO_ISSUER=$SUPERSET_COGNITO_ISSUER
 SUPERSET_COGNITO_CLIENT_ID=$SUPERSET_COGNITO_CLIENT_ID
 SUPERSET_COGNITO_CLIENT_SECRET=$SUPERSET_COGNITO_CLIENT_SECRET
-SUPERSET_FRAME_ANCESTOR=https://front.$STAGING_DOMAIN
+# front4 staging is served from BOTH staging.packiot.com (the FTP/CDN deploy target)
+# and front.$STAGING_DOMAIN. Both must be allowed to iframe Superset (CSP
+# frame-ancestors) AND appear in the embed allow_domain_list, or the embedded
+# Reports dashboard 403s. Comma-separated; parsed by superset_config.py +
+# register_embed.py.
+SUPERSET_FRAME_ANCESTOR=https://staging.packiot.com,https://front.$STAGING_DOMAIN
 # edge-api superset-embed slice: in-network base URL + curated dashboard embed UUID.
 SUPERSET_BASE_URL=http://172.18.0.42:8088
 SUPERSET_OEE_DASHBOARD_UUID=$SUPERSET_OEE_DASHBOARD_UUID

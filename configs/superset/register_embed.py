@@ -47,8 +47,11 @@ with app.app_context():
         raise SystemExit(0)
 
     target_dash_uuid = os.environ.get("SUPERSET_EMBED_TARGET_DASHBOARD", OEE_OVERVIEW_UUID).strip()
-    front4_origin = os.environ.get("SUPERSET_FRAME_ANCESTOR", "").strip()
-    allow_domains = [front4_origin] if front4_origin else []
+    # SUPERSET_FRAME_ANCESTOR may carry MULTIPLE comma-separated origins — front4 is
+    # reachable at more than one host (e.g. staging.packiot.com AND
+    # front.staging.packiot.app). Split into a clean list of origins.
+    frame_ancestor = os.environ.get("SUPERSET_FRAME_ANCESTOR", "").strip()
+    allow_domains = [o.strip() for o in frame_ancestor.split(",") if o.strip()]
 
     dash = db.session.query(Dashboard).filter(Dashboard.uuid == target_dash_uuid).one_or_none()
     if dash is None:
@@ -70,16 +73,21 @@ with app.app_context():
         print(f"register_embed: removing stale embed {e.uuid} on dashboard {dash.id}")
         db.session.delete(e)
 
+    # `allow_domain_list` is a COMMA-SEPARATED STRING (Superset's
+    # EmbeddedDashboard.allowed_domains property does `.split(",")`). It must NOT be
+    # a Python list: psycopg2 serialises a list into the Postgres array literal
+    # `{https://…}`, whose LITERAL braces then survive the split and break
+    # same_origin() → every embed request 403s (view.py referrer check). Join first.
     if existing is None:
         e = EmbeddedDashboard()
         e.uuid = embed_uuid
         e.dashboard_id = dash.id
-        e.allow_domain_list = allow_domains
+        e.allow_domain_list = ",".join(allow_domains)
         db.session.add(e)
         action = "created"
     else:
         existing.dashboard_id = dash.id
-        existing.allow_domain_list = allow_domains
+        existing.allow_domain_list = ",".join(allow_domains)
         action = "reconciled"
 
     db.session.commit()
