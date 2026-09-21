@@ -63,12 +63,13 @@ test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
     await expect(page.getByText(/onboarding|factory|sensor|tag|plc/i).first()).toBeVisible({ timeout: 15_000 });
   });
 
-  // Regression for the equipment edit-block fix (csadmin#107): a line whose
-  // overview_version is NULL was un-editable — the create-time superRefine blocked
-  // Save with a "Select an overview version" zod error. The sandbox lines are
-  // cloned from ent 3 (NULL overview_version), so opening one's edit form and
-  // attempting Save must NOT surface that structural error any more.
-  test('equipment edit: a line with no overview_version is no longer blocked (edit-block fix)', async ({ page, baseURL }) => {
+  // Regression for the equipment edit path (csadmin#107 + #109). Two migration
+  // defects made editing a line silently un-saveable: the create-time superRefine
+  // required overview_version (#107), and cd_equipment was NULL for whole tenants
+  // → mapper "" → schema min(1) failed with NO visible error and NO POST (#109).
+  // The sandbox lines are cloned from ent 3 (both NULL), so a Save here must now
+  // actually fire the edit POST and succeed.
+  test('equipment edit: a line saves (edit-block #107 + null cd_equipment #109)', async ({ page, baseURL }) => {
     await selectSandbox(page);
     await page.goto(baseURL! + '/app/lines');
     await page.waitForTimeout(2500);
@@ -76,12 +77,15 @@ test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
     await page.waitForTimeout(1500);
     const save = page.getByRole('button', { name: /save changes/i });
     await expect(save).toBeVisible({ timeout: 10_000 });
+    const edited = page.waitForResponse(
+      (r) => /\/api\/equipments\/edit/.test(r.url()) && r.request().method() === 'POST',
+      { timeout: 15_000 },
+    );
     await save.click();
-    await page.waitForTimeout(800);
-    // the create-time structural error must NOT appear (this was the block #107 removed)
+    // no create-time structural wall (#107) …
     await expect(page.getByText(/select an overview version/i)).toHaveCount(0);
-    // the form stays usable (no hard validation wall)
-    await expect(save).toBeEnabled();
+    // … and the edit POST now actually fires + succeeds (#109 unblocked the submit)
+    expect((await edited).status()).toBeLessThan(300);
   });
 
   // Guarantees the new Downtime Reasons editor (csadmin#108) end to end: load an
