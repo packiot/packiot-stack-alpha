@@ -476,6 +476,11 @@ var datasets = map[string]dataset{
 		group: "downtimes-analytics", doc: "Downtime event list, live generation (serving.downtime_events_v2)",
 		sql:      `SELECT * FROM serving.downtime_events_v2($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
+		// 120s (overrides the 30s group default): this is the expensive leg — sub-second
+		// warm but ~18-21s cold (see the query.go timeout note). A longer TTL keeps a
+		// cold success reusable so users rarely re-pay the cold decompression; a downtime
+		// event LIST tolerates ~2min staleness (live monitoring lives in Mission Control).
+		cacheTTL: 120 * time.Second,
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("sectors"),
 			pWinFrom, pWinTo, pMicro},
 	},
@@ -483,6 +488,7 @@ var datasets = map[string]dataset{
 		group: "downtimes-analytics", doc: "Downtime event list, legacy generation (serving.downtime_events)",
 		sql:      `SELECT * FROM serving.downtime_events($1,$2,$3,$4,$5,$6,$7,$8)`,
 		windowed: true, maxWindow: eventWindow,
+		cacheTTL: 120 * time.Second, // same cold-cost profile as downtimes-events (see above)
 		params: []dsParam{pEnt, ids("sites"), ids("areas"), ids("equipments"), ids("sectors"),
 			pWinFrom, pWinTo, pMicro},
 	},
