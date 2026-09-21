@@ -1,4 +1,4 @@
-slice_name: OEE (current shift)
+slice_name: OEE (turno atual)
 description: "Overall OEE gauge \u2014 front4 shiftOee total. bi.oee_shift AVG(oee)."
 certified_by: null
 certification_details: null
@@ -28,14 +28,16 @@ query_context: '{"datasource": {"id": 6, "type": "table"}, "force": false, "quer
   [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {},
   "columns": [], "metrics": ["avg_oee"], "annotation_layers": [], "row_limit": 10,
   "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data":
-  {}}], "form_data": {"datasource": "6__table", "viz_type": "gauge_chart", "metric":
+  {}, "granularity": "ts_value", "time_range": "DATEADD(DATETIME(''now''), -1, day)
+  : now"}], "form_data": {"datasource": "6__table", "viz_type": "gauge_chart", "metric":
   "avg_oee", "adhoc_filters": [], "groupby": [], "row_limit": 10, "start_angle": 225,
   "end_angle": -45, "min_val": 0, "max_val": 1, "value_formatter": "{value}", "number_format":
   ".0%", "intervals": "0.5,0.7,0.85,1", "intervals_color_indices": "1,2,3,4", "show_progress":
   true, "show_axis_tick": true, "show_pointer": true, "annotation_layers": [], "slice_id":
-  12, "force": false, "result_format": "json", "result_type": "full"}, "result_format":
+  12, "force": false, "result_format": "json", "result_type": "full", "granularity_sqla":
+  "ts_value", "time_range": "DATEADD(DATETIME(''now''), -1, day) : now"}, "result_format":
   "json", "result_type": "full"}'
 cache_timeout: null
-uuid: e12a6e1c-538a-48d6-84fe-ccb5453ff431
+uuid: e12a6e1c-538a-48d6-84fe-ccb5453ff2c8
 version: 1.0.0
 dataset_uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a

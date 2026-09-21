@@ -1,12 +1,11 @@
-dashboard_title: OEE Overview
-description: Curated OEE view replicating front4 Overview tiles over the bi.* curated
-  views.
-css: ''
-slug: oee-overview
+dashboard_title: "Vis\xE3o Geral de OEE"
+description: null
+css: null
+slug: oee-overview-pt
 certified_by: null
 certification_details: null
 published: true
-uuid: 6c4fa4a1-ddd2-4b4e-b5cb-4eb56bb30937
+uuid: a1b2c3d4-0000-4b4e-b5cb-4eb56bb30937
 position:
   DASHBOARD_VERSION_KEY: v2
   ROOT_ID:
@@ -25,7 +24,7 @@ position:
     type: HEADER
     id: HEADER_ID
     meta:
-      text: OEE Overview
+      text: "Vis\xE3o Geral de OEE"
   TABS-main:
     type: TABS
     id: TABS-main
@@ -74,11 +73,11 @@ position:
     - TAB-oee
     - ROW-kpi
     meta:
-      uuid: e12a6e1c-538a-48d6-84fe-ccb5453ff431
+      uuid: e12a6e1c-538a-48d6-84fe-ccb5453ff2c8
       width: 6
       height: 50
-      chartId: 12
-      sliceName: OEE (current shift)
+      chartId: 44
+      sliceName: OEE (turno atual)
     children: []
   CHART-1:
     type: CHART
@@ -90,11 +89,11 @@ position:
     - TAB-oee
     - ROW-kpi
     meta:
-      uuid: 9232e211-3d11-42bb-bcf4-3a8f394cc7f0
+      uuid: 9232e211-3d11-42bb-bcf4-3a8f394cc2c9
       width: 2
       height: 50
-      chartId: 1
-      sliceName: Availability
+      chartId: 45
+      sliceName: Disponibilidade
     children: []
   CHART-15:
     type: CHART
@@ -106,11 +105,11 @@ position:
     - TAB-oee
     - ROW-kpi
     meta:
-      uuid: b6f6e3fd-cc9b-4131-8d7a-4ea89968f2f8
+      uuid: b6f6e3fd-cc9b-4131-8d7a-4ea89968f2ca
       width: 2
       height: 50
-      chartId: 15
-      sliceName: Performance
+      chartId: 46
+      sliceName: Desempenho
     children: []
   CHART-25:
     type: CHART
@@ -122,11 +121,11 @@ position:
     - TAB-oee
     - ROW-kpi
     meta:
-      uuid: c7c4ebe1-5659-4283-baaf-636d61185684
+      uuid: c7c4ebe1-5659-4283-baaf-636d611852cb
       width: 2
       height: 50
-      chartId: 25
-      sliceName: Quality
+      chartId: 47
+      sliceName: Qualidade
     children: []
   ROW-oee-trend:
     type: ROW
@@ -150,11 +149,11 @@ position:
     - TAB-oee
     - ROW-oee-trend
     meta:
-      uuid: 6ec8f55b-f906-4c8a-9bbe-d80e9d40395d
+      uuid: 6ec8f55b-f906-4c8a-9bbe-d80e9d4032ce
       width: 12
       height: 50
-      chartId: 13
-      sliceName: OEE trend (hourly)
+      chartId: 50
+      sliceName: "Tend\xEAncia de OEE (hor\xE1ria)"
     children: []
   TAB-prod:
     type: TAB
@@ -164,7 +163,7 @@ position:
     - GRID_ID
     - TABS-main
     meta:
-      text: Production
+      text: "Produ\xE7\xE3o"
     children:
     - ROW-prod1
     - ROW-prod2
@@ -191,11 +190,11 @@ position:
     - TAB-prod
     - ROW-prod1
     meta:
-      uuid: e51140c4-b5da-4be7-970b-aa8ef7c742b4
+      uuid: e51140c4-b5da-4be7-970b-aa8ef7c742cc
       width: 4
       height: 50
-      chartId: 31
-      sliceName: Shift production
+      chartId: 48
+      sliceName: "Produ\xE7\xE3o do turno"
     children: []
   CHART-23:
     type: CHART
@@ -207,11 +206,11 @@ position:
     - TAB-prod
     - ROW-prod1
     meta:
-      uuid: 09c153c2-0be1-43fa-9cfe-99a6514030e0
+      uuid: 09c153c2-0be1-43fa-9cfe-99a6514032cf
       width: 8
       height: 50
-      chartId: 23
-      sliceName: Production by hour
+      chartId: 51
+      sliceName: "Produ\xE7\xE3o por hora"
     children: []
   ROW-prod2:
     type: ROW
@@ -236,11 +235,11 @@ position:
     - TAB-prod
     - ROW-prod2
     meta:
-      uuid: c06d7d16-8712-425d-9b5b-85186bf5eda3
+      uuid: c06d7d16-8712-425d-9b5b-85186bf5e2cd
       width: 4
       height: 50
-      chartId: 2
-      sliceName: Daily production (trend)
+      chartId: 49
+      sliceName: "Produ\xE7\xE3o di\xE1ria"
     children: []
   CHART-29:
     type: CHART
@@ -252,11 +251,11 @@ position:
     - TAB-prod
     - ROW-prod2
     meta:
-      uuid: 3b95c7b5-a542-4e39-9cf6-37264ac1f62b
+      uuid: 3b95c7b5-a542-4e39-9cf6-37264ac122d2
       width: 8
       height: 50
-      chartId: 29
-      sliceName: Shift breakdown
+      chartId: 54
+      sliceName: Detalhamento por turno
     children: []
   TAB-dt:
     type: TAB
@@ -266,7 +265,7 @@ position:
     - GRID_ID
     - TABS-main
     meta:
-      text: Downtimes
+      text: Paradas
     children:
     - ROW-dt1
     - ROW-dt2
@@ -292,11 +291,11 @@ position:
     - TAB-dt
     - ROW-dt1
     meta:
-      uuid: 7e15ed8e-3d2f-45bd-a996-14c48db7d881
+      uuid: 7e15ed8e-3d2f-45bd-a996-14c48db312d0
       width: 12
       height: 50
-      chartId: 3
-      sliceName: Downtime by reason
+      chartId: 52
+      sliceName: Paradas por motivo
     children: []
   ROW-dt2:
     type: ROW
@@ -320,11 +319,11 @@ position:
     - TAB-dt
     - ROW-dt2
     meta:
-      uuid: 18a6435f-64d3-440c-937e-053ebaad8d4a
+      uuid: 18a6435f-64d3-440c-937e-053ebaad82d1
       width: 12
       height: 50
-      chartId: 8
-      sliceName: Last events
+      chartId: 53
+      sliceName: "\xDAltimos eventos"
     children: []
   TAB-po:
     type: TAB
@@ -334,7 +333,7 @@ position:
     - GRID_ID
     - TABS-main
     meta:
-      text: Orders
+      text: Ordens
     children:
     - ROW-po
   ROW-po:
@@ -359,11 +358,11 @@ position:
     - TAB-po
     - ROW-po
     meta:
-      uuid: bbc7f4b9-ce5a-45a4-86a3-66c2e51101df
+      uuid: bbc7f4b9-ce5a-45a4-86a3-66c2e51102d3
       width: 12
       height: 50
-      chartId: 18
-      sliceName: Production orders OEE
+      chartId: 55
+      sliceName: "OEE por ordem de produ\xE7\xE3o"
     children: []
 metadata:
   color_scheme: supersetColors
@@ -372,11 +371,13 @@ metadata:
   label_colors: {}
   shared_label_colors: {}
   cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
   chart_configuration: {}
   global_chart_configuration: {}
   native_filter_configuration:
   - id: NATIVE_FILTER-time-range
-    name: Time range
+    name: "Per\xEDodo"
     filterType: filter_time
     type: NATIVE_FILTER
     targets:
@@ -401,17 +402,17 @@ metadata:
     - TAB-dt
     - TAB-po
     chartsInScope:
-    - 1
-    - 2
-    - 3
-    - 8
-    - 12
-    - 13
-    - 15
-    - 18
-    - 23
-    - 25
-    - 29
-    - 31
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49
+    - 50
+    - 51
+    - 52
+    - 53
+    - 54
+    - 55
     description: ''
 version: 1.0.0

@@ -1,0 +1,44 @@
+slice_name: "Ordens de produ\xE7\xE3o \u2014 produ\xE7\xE3o e qualidade"
+description: "bi.production_order_runtime per PO \u2014 OEE/A/P/Q + net/gross."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 8__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - id_production_order
+  - id_equipment
+  - ts_start
+  - ts_end
+  - running_time
+  - net_production
+  - gross_production
+  - oee_q
+  order_by_cols:
+  - '["ts_start", false]'
+  adhoc_filters: []
+  row_limit: 100
+  table_timestamp_format: smart_date
+  annotation_layers: []
+  granularity_sqla: ts_start
+  time_range: 'DATEADD(DATETIME(''now''), -1, day) : now'
+query_context: '{"datasource": {"id": 8, "type": "table"}, "force": false, "queries":
+  [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {},
+  "columns": ["id_production_order", "id_equipment", "ts_start", "ts_end", "running_time",
+  "net_production", "gross_production", "oee_q"], "orderby": [["ts_start", false]],
+  "annotation_layers": [], "row_limit": 100, "series_limit": 0, "order_desc": true,
+  "url_params": {}, "custom_params": {}, "custom_form_data": {}, "post_processing":
+  [], "time_offsets": [], "granularity": "ts_start", "time_range": "DATEADD(DATETIME(''now''),
+  -1, day) : now"}], "form_data": {"datasource": "8__table", "viz_type": "table",
+  "query_mode": "raw", "all_columns": ["id_production_order", "id_equipment", "ts_start",
+  "ts_end", "running_time", "net_production", "gross_production", "oee_q"], "order_by_cols":
+  ["[\"ts_start\", false]"], "adhoc_filters": [], "row_limit": 100, "table_timestamp_format":
+  "smart_date", "annotation_layers": [], "slice_id": 18, "force": false, "result_format":
+  "json", "result_type": "full", "granularity_sqla": "ts_start", "time_range": "DATEADD(DATETIME(''now''),
+  -1, day) : now"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: bbc7f4b9-ce5a-45a4-86a3-66c2e51102d3
+version: 1.0.0
+dataset_uuid: 2011d388-fea1-4cdc-8f9d-6e839833bd27
