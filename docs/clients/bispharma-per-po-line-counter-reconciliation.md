@@ -77,6 +77,26 @@ change (mi-0114); coordinate a window (the reader feeds the client's production 
   CPACK POs show `oee=0` with real net).
 - Shapes B (L18) and C (L90) differ — do NOT blanket-apply; see `bispharma-oee-mapping-fix.md`.
 
+## Pilot results (2026-09-22) — ⚠️ proved the concept, but the repoint alone is NOT a clean fix
+Ran the Layer-1 pilot on L01 live, then rolled back:
+- ✅ **Line got direct gross data** (16 rows/5min); member `2000225` stopped (single writer). The decoder
+  picked up the `packml_register` change on its **~5-min cache refresh** (`CountersOnlyRefreshSeconds=300`)
+  — **no decoder restart needed**.
+- ✅ **PO attribution FIXED** — a fresh PO on L01 captured `gross=161, running=188` (was `0/0/0`). Per-PO
+  production IS achievable this way.
+- ❌ **BUT it regressed line-lead OEE.** L01's line OEE computes gross from the *member*; moving
+  `gross_machine` to the line stalled it (`gross=0, computed=NULL`). **line-lead and PO-attribution want the
+  gross on DIFFERENT equipment — they conflict.** This is the blocker: the repoint fixes POs but breaks OEE.
+- ⚠️ PO `net=0` regardless (no net counter emitted — the DW4/scrap gap is unchanged by this).
+- ✅ Rolled back cleanly; downtime deriver + CPACK unaffected.
+
+**Revised conclusion:** Layer-1 alone is insufficient. A real fix must **coordinate three things**:
+(1) line-lead must compute a line's OEE from the line's *own* gross when `gross_machine` = the line
+(today it assumes gross lives on a member); (2) `lead_machine`/`ideal_speed` must resolve for the line
+(L01's lead is the empty S6OUTPUT → `ideal_speed=0` → `oee=0` even with gross); (3) the net counter must
+exist (it doesn't — scrap DW4=0). So this is an **onboarding + stream-engine project**, not a config repoint.
+Recommend NOT attempting piecemeal on a live tenant; scope it as a proper change with line-lead test coverage.
+
 ## Related
 - `bispharma-oee-mapping-fix.md` — the canonical role model (168=gross, 169=net=DW0−DW4, DW4=scrap).
 - `bispharma-twin-convergence-runbook.md` — the (superseded) synthetic-twin fallback.
