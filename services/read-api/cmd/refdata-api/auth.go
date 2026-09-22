@@ -271,13 +271,21 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 				}
 			}
 			ctx := withCustomerID(r.Context(), cid)
-			// Only stash the caller's home role when NOT escalated: a super-admin
-			// viewing ANOTHER tenant has no role there, so the two per-user-role
-			// datasets must fail closed rather than mis-apply the home role to a
-			// foreign tenant (mirrors the X-Api-Key operator path, which sets no
-			// role). Enterprise-scoped datasets (the dashboards) still resolve via
-			// the escalated customer_id.
-			if id.hasRole && !escalated {
+			// Role axis for the two per-user-role bootstrap datasets (entities/menu):
+			//  - NOT escalated: the caller's own home role (task #70).
+			//  - Escalated (verified super-admin who switched tenants): use the TARGET
+			//    tenant's enterprise-wide role, whose id_user_role == id_enterprise == cid
+			//    (the operator/admin-role convention that v_entities_per_user_role_operator
+			//    is keyed on). Without this the entity-tree datasets fail closed under the
+			//    switch → front4's filter tree is EMPTY → every dashboard renders empty for
+			//    the switched tenant (the "sandbox shows no data" bug). Using the target's
+			//    OWN role (never the home role) keeps the fence correct: it returns the whole
+			//    switched tenant — matching edge-api's findEntitiesByEnterprise switch scope —
+			//    and cid/RLS already pin every row to that tenant. Reached ONLY on the
+			//    resolveTarget-verified super-admin path, so a normal user can't cross tenants.
+			if escalated {
+				ctx = withUserRole(ctx, cid)
+			} else if id.hasRole {
 				ctx = withUserRole(ctx, id.userRole)
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
