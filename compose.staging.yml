@@ -2259,6 +2259,15 @@ services:
       # IDEAL_SPEED_TOO_LOW physics clamp does not fire on the mock feed.
       TWIN_RATE_PER_MIN: "${BISPHARMA_TWIN_RATE_PER_MIN:-50}"
       TWIN_SCRAP_RATE: "${BISPHARMA_TWIN_SCRAP_RATE:-0.03}"
+      # Stop simulation — a perpetually-running twin mints ZERO downtime events and
+      # pins availability unrealistically. Freezing a line's counters for a span of
+      # ticks is the faithful mechanism: the live OEE path derives stops from
+      # count-activity SILENCE (cpac_deriver.go), so a frozen gap mints an
+      # equipment_event and carves real running_time. Defaults: each line has a 3%
+      # chance per tick to stop, for 120–600s. Set PROB=0 to restore always-running.
+      TWIN_STOP_PROB: "${BISPHARMA_TWIN_STOP_PROB:-0.03}"
+      TWIN_STOP_MIN_SEC: "${BISPHARMA_TWIN_STOP_MIN_SEC:-120}"
+      TWIN_STOP_MAX_SEC: "${BISPHARMA_TWIN_STOP_MAX_SEC:-600}"
       # Persist the absolute totalizers on the named volume below so a container
       # restart resumes monotonically (real PLC totalizers are non-volatile)
       # instead of resetting to 0 and minting a one-time delta blip in silver.

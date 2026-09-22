@@ -27,7 +27,15 @@
 // re-births on an inbound Rebirth NCMD (decoder self-heal after a restart). It
 // is COUNTERS-ONLY — it emits ProdConsumedCount (gross) / ProdProcessedCount
 // (net) / ProdDefectiveCount (scrap) member leaves and NO MachSpeed/StateCurrent
-// (Bispharma has no state/speed signal; counters_only_oee=true).
+// (Bispharma has no state/speed signal; counters_only_oee=true). To stay faithful
+// on the counters-only path it SIMULATES STOPS by freezing a line's totalizers for
+// a span of ticks (TWIN_STOP_PROB / TWIN_STOP_MIN_SEC / TWIN_STOP_MAX_SEC): the
+// live OEE path derives downtimes from COUNT-ACTIVITY SILENCE, not from a state
+// leaf (internal/events/cpac_deriver.go — state is 100% NULL on the edge path), so
+// a frozen counter gap is exactly what mints an equipment_event and carves real
+// running_time. Without stops the twin advanced every tick forever → 0 downtime
+// events and unrealistically pinned availability. Set TWIN_STOP_PROB=0 to restore
+// the old always-running behaviour.
 //
 // ── Parameterization (config-as-data) ────────────────────────────────────────
 // The set of member count-index leaves is derived at boot from the SAME agent
@@ -154,6 +162,15 @@ type config struct {
 	interval     time.Duration
 	ratePerMin   float64 // line throughput in units/min (drives the totalizer slope)
 	scrapRate    float64 // fraction of gross that becomes scrap (0..1)
+	// stop simulation — a real line is not perpetually running; it stops
+	// (breakdowns, changeovers, starvation). stopProb is the per-line, per-tick
+	// probability of ENTERING a stop; a stop then lasts a uniform-random span in
+	// [stopMinTicks, stopMaxTicks]. stopProb=0 disables (pre-existing always-run
+	// behaviour). See advance() for WHY freezing counters (not emitting a state)
+	// is the faithful mechanism.
+	stopProb     float64
+	stopMinTicks int
+	stopMaxTicks int
 	clientID     string
 	// stateFile — path (on a named volume) where the absolute totalizers are
 	// persisted every interval and reloaded on boot, so a container restart
@@ -172,9 +189,27 @@ func loadConfig() config {
 		interval:     time.Duration(getenvInt("TWIN_INTERVAL_SEC", 15)) * time.Second,
 		ratePerMin:   getenvFloat("TWIN_RATE_PER_MIN", 600),
 		scrapRate:    getenvFloat("TWIN_SCRAP_RATE", 0.03),
+		stopProb:     getenvFloat("TWIN_STOP_PROB", 0.03),
+		stopMinTicks: ticksFor(getenvInt("TWIN_STOP_MIN_SEC", 120), getenvInt("TWIN_INTERVAL_SEC", 15)),
+		stopMaxTicks: ticksFor(getenvInt("TWIN_STOP_MAX_SEC", 600), getenvInt("TWIN_INTERVAL_SEC", 15)),
 		clientID:     getenv("TWIN_CLIENT_ID", "bispharma-twin"),
 		stateFile:    getenv("TWIN_STATE_FILE", ""),
 	}
+}
+
+// ticksFor converts a duration in seconds to a whole number of ticks at the given
+// interval, clamped to at least 1 (a stop must span ≥1 tick to freeze anything,
+// and must exceed the decoder's stop threshold to mint a downtime event — the
+// default 120–600s spans several 15s ticks, comfortably past typical thresholds).
+func ticksFor(sec, intervalSec int) int {
+	if intervalSec <= 0 {
+		intervalSec = 15
+	}
+	n := sec / intervalSec
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // ── member metric model ──────────────────────────────────────────────────────
@@ -312,6 +347,11 @@ type twin struct {
 	mu     sync.Mutex
 	seq    uint64
 	client paho.Client
+
+	// lineStop tracks, per line, how many more ticks that line stays STOPPED
+	// (counters frozen). 0/absent ⇒ running. Guarded by mu (mutated only in
+	// advance(), which holds the lock). Lazily allocated in advance().
+	lineStop map[string]int
 }
 
 // loadState seeds the member totalizers from the persisted state file (if any)
@@ -429,16 +469,57 @@ func (t *twin) advance() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	incr := t.cfg.ratePerMin * t.cfg.interval.Minutes()
-	// One shared stochastic increment per LINE (not per member) so the whole line
-	// flows as a unit. Line-metered OEE binds a line's gross to its INFEED machine
+	if t.lineStop == nil {
+		t.lineStop = map[string]int{}
+	}
+	// Per-line STOP simulation. WHY freeze counters instead of emitting a stopped
+	// StateCurrent: the live OEE path derives stops from COUNT-ACTIVITY SILENCE, not
+	// from StateCurrent (internal/events/cpac_deriver.go — state is 100% NULL on the
+	// edge path; running_time is inferred from the gaps between counter advances).
+	// So the faithful way to make the twin produce downtime events + realistic
+	// availability is to hold a line's totalizers flat for a span of ticks: the
+	// decoder sees the gap, mints an equipment_event, and running_time excludes the
+	// frozen window. A line that advances every tick forever (the old behaviour)
+	// mints 0 downtime events and pins availability unrealistically high. Stops are
+	// per-LINE (a line stops as a unit), matching how a real line halts.
+	lineStopped := map[string]bool{}
+	for _, m := range t.metrics {
+		if _, seen := lineStopped[m.line]; seen {
+			continue
+		}
+		if t.lineStop[m.line] > 0 {
+			t.lineStop[m.line]-- // still stopped this tick
+			lineStopped[m.line] = true
+		} else if t.cfg.stopProb > 0 && rand.Float64() < t.cfg.stopProb {
+			// Enter a new stop lasting [stopMinTicks, stopMaxTicks] ticks; freeze
+			// THIS tick too (the stop begins now). rand.Intn needs span ≥ 1.
+			span := t.cfg.stopMinTicks
+			if d := t.cfg.stopMaxTicks - t.cfg.stopMinTicks; d > 0 {
+				span += rand.Intn(d + 1)
+			}
+			t.lineStop[m.line] = span - 1 // this tick consumes the first
+			lineStopped[m.line] = true
+			t.logger.Info("twin line entering stop", "line", m.line, "ticks", span)
+		} else {
+			lineStopped[m.line] = false
+		}
+	}
+	// One shared stochastic increment per RUNNING line (not per member) so the whole
+	// line flows as a unit. Line-metered OEE binds a line's gross to its INFEED machine
 	// (equipments.gross_machine) and its net to its OUTFEED machine (lead_machine) —
 	// DIFFERENT machines. Independent per-member increments let outfeed net exceed
 	// infeed gross → net>gross clamps at the line. Sharing one increment per line
 	// keeps infeed gross ≥ outfeed net (net = gross − scrap) as a real line does.
+	// A STOPPED line gets increment 0 → its totalizers stay flat (the gap the
+	// deriver reads as a downtime).
 	byLine := map[string]float64{}
 	for _, m := range t.metrics {
 		if _, ok := byLine[m.line]; !ok {
-			byLine[m.line] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
+			if lineStopped[m.line] {
+				byLine[m.line] = 0
+			} else {
+				byLine[m.line] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
+			}
 		}
 	}
 	for _, m := range t.metrics {

@@ -86,7 +86,14 @@ docker run -d \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
   packiot-postgres:local \
   -c "shared_preload_libraries=timescaledb,pg_cron,pg_stat_statements" \
-  -c "cron.database_name=${db_name}"
+  -c "cron.database_name=${db_name}" \
+  -c "max_connections=200"
+# max_connections raised 50→200 (2026-09-22): staging has no server-side headroom —
+# a near-idle stack already sat at 49/50 (analytics pool 24 + Superset 14 [bypasses
+# pgbouncer] + misc 11), so any load test / new tenant hit "too many connections".
+# r7g.large has 15GiB RAM; +150 backends ≈ +1.4GiB worst-case, well within headroom.
+# Set here as a -c flag (postmaster command line) so it survives a container RECREATE,
+# not just a restart — this line overrides postgresql.conf AND postgresql.auto.conf.
 
 echo "TimescaleDB container started, waiting for PostgreSQL to accept connections..."
 until docker exec timescaledb pg_isready -U ${db_user} 2>/dev/null; do sleep 5; done
