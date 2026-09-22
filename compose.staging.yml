@@ -1785,6 +1785,22 @@ services:
       # with that key 7s just makes drains more responsive. Safe to reset to "30"
       # once the dedicated-key build is confirmed draining.
       ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
+      # Per-tick shift-rollup batch size (config default 300). LOWERED to 75
+      # after the shift `line-lead` pass (internal/rollup/line_lead.go) began
+      # blowing the runtime-rollup 300s job deadline (2026-09-22): Bispharma
+      # (ent5, 23 line-metered lines) joined COUNTERS_ONLY_LINE_LEAD_ENTERPRISES
+      # alongside CPACK(3) + sandbox(2000003) = 63 tp=3 lines, each doing a
+      # per-line real-time-cagg availability scan. At limit=300 a tick ran ~205s
+      # on line-lead alone, so shift+week+area+dq+unmetered together exceeded 300s
+      # and the WHOLE shift tx rolled back every tick — committing nothing,
+      # freezing current-shift gold OEE platform-wide (CPACK Mission Control read
+      # all-zero; Bispharma current-shift gauge blank) since ~Sep 21 18:59.
+      # A smaller batch keeps each tick inside budget so it COMMITS and the
+      # bounded backlog drains monotonically (shift.go's designed discipline).
+      # Pure row-selection — never changes a row's math, so parity is preserved.
+      # DURABLE follow-up: optimize/isolate the line-lead pass so the limit can
+      # rise again (docs: shift line-lead scales O(lines x cagg-scan)).
+      ROLLUP_SHIFT_LIMIT: "75"
       # Close stale mirror-fanned CPACK open status=6 events (ts_end NULL). CPACK is
       # status_type=0 so the deriver skips it and the cpac shadow-deriver is dark, so
       # nothing closes them → a stale open stretches to now() and fabricates ~100%
