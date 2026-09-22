@@ -62,6 +62,36 @@ func TestComputeShape(t *testing.T) {
 	}
 }
 
+// TestComputeSplitInstrumentation locks in the line-metered (split-instrumentation)
+// counter-source resolution: a tp=3 line-PO whose counters live on a gross_machine
+// MEMBER must read that member, while every self-metered equipment stays byte-identical.
+func TestComputeSplitInstrumentation(t *testing.T) {
+	// Phase A resolves the value source via COALESCE(gross_machine, id_equipment)
+	// and joins equipment_values on it — NOT on the (possibly empty) line row.
+	for _, m := range []string{
+		"COALESCE(eq.gross_machine, e.id_equipment) AS gross_src",
+		"ON ca.id_equipment = el.gross_src",
+		"COALESCE(eq.gross_machine, e.id_equipment) AS ev_src", // Phase B: events from the same member
+		"ON ee.id_equipment = el.ev_src",
+	} {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+			t.Errorf("split-instrumentation resolution lost %q", m)
+		}
+	}
+	// The net→gross reconciliation must be GATED on gross_machine IS NOT NULL, so a
+	// self-metered PO with a genuine net=0 (all-scrap) is never rewritten.
+	if !strings.Contains(computeValuesSQL, "el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0") {
+		t.Error("net→gross reconciliation must be gated on gross_machine IS NOT NULL")
+	}
+	// GUARD (the CPACK-regression tripwire): the value/event source fallback base
+	// must be id_equipment, NEVER lead_machine. CPACK lines have lead_machine SET but
+	// gross_machine NULL; a lead_machine fallback would silently redirect their
+	// working per-PO attribution off the line. Do NOT "align" this with line_lead.go.
+	if strings.Contains(computeValuesSQL, "lead_machine") || strings.Contains(computeEventsSQL, "lead_machine") {
+		t.Error("compute must NOT fall back to lead_machine — it would regress self-metered lines (CPACK)")
+	}
+}
+
 // Property tests (#4): OEE invariants hold for all inputs by
 // construction of the formulas.
 func TestOEEFormulaProperties(t *testing.T) {

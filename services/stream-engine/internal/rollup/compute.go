@@ -48,10 +48,24 @@ import (
 )
 
 // Phase A: value sums — ALWAYS updates eligible rows (see argument).
+//
+// SPLIT-INSTRUMENTATION (line-metered clients, e.g. ent5 Bispharma): a PO runs on
+// a tp=3 LINE, but the line's counters are emitted by a MEMBER machine
+// (equipments.gross_machine names it; NULL for self-metered equipment). Resolve
+// the counter source as COALESCE(gross_machine, id_equipment) so a line-PO reads
+// its member's counters instead of the (empty) line row. This MIRRORS
+// line_lead.go's gross_id resolution, but at the PO-runtime grain and with a
+// DIFFERENT fallback base: id_equipment, NOT lead_machine. This pass is
+// PO-equipment-centric — a self-metered line (gross_machine NULL, lead_machine
+// SET, incl. every CPACK line) must keep reading its OWN rows, so the COALESCE
+// must never fall through to lead_machine. It is a byte-identical NO-OP wherever
+// gross_machine IS NULL (all tp=1 machines + all self-metered lines).
 const computeValuesSQL = `
 	WITH eligible AS (
 	    SELECT e.id_equipment, lower(e.runtime_timerange) AS lo,
-	           COALESCE(upper(e.runtime_timerange), now()) AS hi
+	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
+	           eq.gross_machine,
+	           COALESCE(eq.gross_machine, e.id_equipment) AS gross_src
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
@@ -63,15 +77,24 @@ const computeValuesSQL = `
 	           avg(ca.speed)                 AS speed
 	      FROM eligible el
 	      JOIN %[3]s.equipment_values ca
-	        ON ca.id_equipment = el.id_equipment
+	        ON ca.id_equipment = el.gross_src
 	       AND ca.ts_value >= now() - $1::interval
 	       AND ca.ts_value >= el.lo AND ca.ts_value < el.hi
 	     GROUP BY el.id_equipment, el.lo
 	)
 	UPDATE %[4]s.production_orders_runtime e SET
 	       gross_production = COALESCE(s.gross, 0),
-	       net_production   = COALESCE(s.net, 0),
-	       oee_q            = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
+	       -- gross-only reconciliation (line_lead's "gross-only ⇒ net=gross"): a
+	       -- split-instrumentation member emits the input counter only (no net), so
+	       -- net falls back to gross (quality 1.0). GATED on gross_machine IS NOT NULL
+	       -- so a self-metered PO with a genuine net=0 (e.g. an all-scrap run) is
+	       -- left untouched — the reconciliation reaches ONLY line-metered lines.
+	       net_production   = CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
+	                               THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END,
+	       oee_q            = GREATEST(LEAST(COALESCE(
+	                            (CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
+	                                  THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END)
+	                            / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
 	       speed            = COALESCE(s.speed, 0),
 	       recalc_needed    = false
 	  FROM eligible el
@@ -81,11 +104,18 @@ const computeValuesSQL = `
 
 // Phase B: event overlap sums — CONDITIONAL (inner join; prod's
 // GROUP BY → FOUND false when no overlapping events).
+// ev_src mirrors Phase A's gross_src: for a split-instrumented line-PO the
+// availability events (the count-silence-derived stops, ADR-0010) land on the
+// gross_machine MEMBER, not the empty line row — so read them from there. Reading
+// a SINGLE member (not the whole line's interleaved member streams) also sidesteps
+// the double-count the LEAST clamp below guards against. NO-OP where gross_machine
+// IS NULL (self-metered lines read their own events, as before).
 const computeEventsSQL = `
 	WITH eligible AS (
 	    SELECT e.id_equipment, e.runtime_timerange,
 	           lower(e.runtime_timerange) AS lo,
-	           COALESCE(upper(e.runtime_timerange), now()) AS hi
+	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
+	           COALESCE(eq.gross_machine, e.id_equipment) AS ev_src
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
@@ -100,7 +130,7 @@ const computeEventsSQL = `
 	                                 - greatest(ee.ts_event, el.lo))) END), 0) AS stopped
 	      FROM eligible el
 	      JOIN %[3]s.equipment_events ee
-	        ON ee.id_equipment = el.id_equipment
+	        ON ee.id_equipment = el.ev_src
 	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
 	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
 	     GROUP BY el.id_equipment, el.lo
@@ -146,7 +176,8 @@ const computeReflagRecentSQL = `
 const computeOverflowDiagSQL = `
 	WITH eligible AS (
 	    SELECT e.id_equipment, e.runtime_timerange, lower(e.runtime_timerange) AS lo,
-	           COALESCE(upper(e.runtime_timerange), now()) AS hi
+	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
+	           COALESCE(eq.gross_machine, e.id_equipment) AS ev_src
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now()) AND e.recalc_needed
@@ -155,7 +186,7 @@ const computeOverflowDiagSQL = `
 	           COALESCE(sum(CASE WHEN ee.status = 6 THEN extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi) - greatest(ee.ts_event, el.lo))) END), 0) AS running,
 	           COALESCE(sum(CASE WHEN ee.status IN (5,10,11) THEN extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi) - greatest(ee.ts_event, el.lo))) END), 0) AS stopped
 	      FROM eligible el
-	      JOIN %[3]s.equipment_events ee ON ee.id_equipment = el.id_equipment
+	      JOIN %[3]s.equipment_events ee ON ee.id_equipment = el.ev_src
 	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
 	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
 	     GROUP BY el.id_equipment, el.lo
