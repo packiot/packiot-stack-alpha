@@ -231,13 +231,13 @@ groups:
         annotations:
           summary: "postgres-exporter cannot reach the DB — everything downstream is about to page"
       - alert: PostgresConnectionsHigh
-        # DB max_connections=50, so the old >150 threshold could NEVER fire.
-        # >40 = 80% of the pool — a real "approaching exhaustion" warning.
-        expr: sum(pg_stat_database_numbackends) > 40
+        # DB max_connections=200 (raised 50→200 on 2026-09-22, see db_init.sh).
+        # >160 = 80% of the pool — a real "approaching exhaustion" warning.
+        expr: sum(pg_stat_database_numbackends) > 160
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $value }} DB backends (>80% of max_connections=50) — connection leak or pgbouncer bypass growing"
+          summary: "{{ $value }} DB backends (>80% of max_connections=200) — connection leak or pgbouncer bypass growing"
       # Analytics freshness — metrics already flow from postgres-exporter
       # (queries.yaml pg_timescaledb_cagg / pg_timescaledb_jobs); these were
       # unalerted. A stale cagg or failing TS job = OEE rollups falling behind.
