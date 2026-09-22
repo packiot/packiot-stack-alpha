@@ -338,6 +338,11 @@ SUPERSET_OEE_DASHBOARD_UUID=$SUPERSET_OEE_DASHBOARD_UUID
 # explicitly so a fresh instance never lands the client Reports embed on a blank
 # dashboard. (OEE Overview bundle uuid; see configs/superset/register_embed.py.)
 SUPERSET_EMBED_TARGET_DASHBOARD=6c4fa4a1-ddd2-4b4e-b5cb-4eb56bb30937
+# pt-BR variant embed uuid. When the front4 caller's language is Portuguese the
+# edge-api broker mints the guest token for THIS dashboard (localized "Visão Geral
+# de OEE" — Produção/Paradas/Ordens) instead of the English one, so the report
+# follows the client language. Absent → English for everyone (safe default).
+SUPERSET_OEE_DASHBOARD_UUID_PT=a1b2c3d4-0000-449b-980d-10a2a07f5788
 # Activate the profile by setting COMPOSE_PROFILES=superset (do it deliberately,
 # per the runbook — leaving it unset keeps the whole overlay dark).
 # COMPOSE_PROFILES=superset
