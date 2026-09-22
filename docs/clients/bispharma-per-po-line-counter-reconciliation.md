@@ -1,6 +1,7 @@
 # Bispharma (ent5) — per-PO production: line-counter reconciliation
 
-**Status:** FOLLOW-UP / onboarding task · **Date:** 2026-09-22 · needs client-box + cloud coordination.
+**Status:** ✅ FIX IMPLEMENTED (`feat/per-po-line-counter-attribution`) — read-only hardproofed, pending
+merge + stream-engine deploy · **Date:** 2026-09-22 · attribution-layer fix, NO config/box change needed.
 
 ## Goal
 Make **per-production-order production** work for Bispharma so the Orders view shows POs
@@ -90,12 +91,36 @@ Ran the Layer-1 pilot on L01 live, then rolled back:
 - ⚠️ PO `net=0` regardless (no net counter emitted — the DW4/scrap gap is unchanged by this).
 - ✅ Rolled back cleanly; downtime deriver + CPACK unaffected.
 
-**Revised conclusion:** Layer-1 alone is insufficient. A real fix must **coordinate three things**:
-(1) line-lead must compute a line's OEE from the line's *own* gross when `gross_machine` = the line
-(today it assumes gross lives on a member); (2) `lead_machine`/`ideal_speed` must resolve for the line
-(L01's lead is the empty S6OUTPUT → `ideal_speed=0` → `oee=0` even with gross); (3) the net counter must
-exist (it doesn't — scrap DW4=0). So this is an **onboarding + stream-engine project**, not a config repoint.
-Recommend NOT attempting piecemeal on a live tenant; scope it as a proper change with line-lead test coverage.
+**Revised conclusion:** Layer-1 (the packml re-role) is the WRONG layer — it moves the gross off the
+member, which is exactly where line-lead OEE and the ADR-0010 downtime deriver read it. Don't touch the
+routing at all.
+
+## ✅ THE FIX — attribution-layer resolution (implemented, `feat/per-po-line-counter-attribution`)
+The right fix is in **`po-runtime-compute`** (`services/stream-engine/internal/rollup/compute.go`), NOT in
+config. PO attribution matched the PO's `id_equipment` *directly* to `equipment_values`; a line-PO whose
+line row is empty got nothing. Resolve the counter source instead:
+
+```sql
+COALESCE(eq.gross_machine, e.id_equipment) AS gross_src   -- Phase A (values) + Phase B (events)
+```
+so a split-instrumented line-PO reads its **member's** counters — with **no re-role**. Members keep their
+data; line-lead and the downtime deriver are untouched. Two guarantees make it safe on the shared path:
+1. **Fallback base is `id_equipment`, NOT `lead_machine`.** CPACK lines have `lead_machine` set but
+   `gross_machine` NULL — a lead_machine fallback (as line-lead uses) would redirect their *working*
+   attribution off the line. compute is PO-equipment-centric, so self-metered equipment reads itself.
+2. **Net→gross reconciliation is gated on `gross_machine IS NOT NULL`** — a self-metered PO with a genuine
+   `net=0` (all-scrap) is never rewritten. Only split lines (which emit an input counter only) get net=gross.
+
+**Read-only hardproof on staging (no mutation, no re-role):** for L01 line 2000224 the new resolution
+captures `gross=3506` from member 2000225 where the old join gets `0`; net reconciles to gross (quality 1.0).
+Provable NO-OP for all 20 CPACK lines and every non-ent5 tenant — only the 15 ent5 split lines change source.
+Data-driven (keys off `gross_machine`), no feature flag, no hardcoded ids. Test: `TestComputeSplitInstrumentation`
+(+ a CPACK-regression tripwire asserting the fallback is never `lead_machine`).
+
+**To go live for the client:** merge + deploy stream-engine → create/run a PO on any ent5 line via the Orders
+UI → it carries real gross production (net=gross, quality 100%). **Remaining, separate gaps** (unchanged by
+this): real *Quality%* needs the client PLCs to instrument scrap (DW4=0 today); per-PO *OEE%* is the
+platform-wide denominator gap (even CPACK POs show oee=0). Those are documented, not bugs in this path.
 
 ## Related
 - `bispharma-oee-mapping-fix.md` — the canonical role model (168=gross, 169=net=DW0−DW4, DW4=scrap).
