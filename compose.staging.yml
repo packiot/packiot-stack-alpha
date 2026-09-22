@@ -1816,10 +1816,12 @@ services:
       # CPACK's speed-based events are owned by the mirror fan-out. This second,
       # LIVE-targeted instance writes ent5's count-silence stops into the real
       # equipment_events. Its session threshold comes from each equipment's
-      # stop_threshold_time (set to 1800s for ent5 in migration
-      # t-ent5-counters-only-status-and-threshold — a LOSSY-FEED stopgap: the box
-      # co-tee drops ~40% of posts, so sub-30-min gaps aren't trustworthy stops;
-      # drop it back toward 300s once the feed is reliable). Empty ⇒ inert.
+      # stop_threshold_time (ent5 = 600s via migration t-ent5-downtime-threshold-
+      # reliable-feed). NOTE the earlier "lossy co-tee ⇒ 1800s stopgap" was WRONG —
+      # the box→cloud feed was VERIFIED reliable (nginx 0-reject, agent 100%-accept,
+      # 0 decoder-unmapped), so count gaps are REAL stops. 600s captures genuine
+      # ~10-min+ stops without over-flagging batch gaps; tunable per line (300s
+      # platform default for continuous lines). Empty ⇒ inert.
       CPAC_EVENT_LIVE_ENTERPRISES: "5"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
