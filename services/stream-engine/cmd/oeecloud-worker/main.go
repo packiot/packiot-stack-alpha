@@ -407,6 +407,26 @@ func main() {
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0010 §10.4 PROMOTION — LIVE minting for counters-only clients that have
+	// NO other event writer (e.g. Bispharma ent5: counters-only, no MachSpeed /
+	// StateCurrent, so nothing else mints its downtimes). A SECOND deriver instance
+	// targeting the LIVE equipment_events, gated on CPAC_EVENT_LIVE_ENTERPRISES
+	// (default empty ⇒ not scheduled). CPACK stays SHADOW above — its speed-based
+	// events are owned by the mirror fan-out, so a live CPAC write there would
+	// double-write (the #456 two-writer class). Per-equipment stop_threshold_time
+	// (set high for lossy-feed clients via migration) tunes out count-cadence false
+	// stops; the upsert is idempotent on (id_equipment, ts_event) + never clobbers
+	// an operator-touched row, so live-minting is safe as the SOLE writer.
+	if cfg.CPACEventDerivationEnabled && cfg.CPACEventLiveEnterprises != "" {
+		go events.LoopCPAC(ctx, bgDests,
+			events.CPACConfig{
+				Enterprises:     config.CSVInts(cfg.CPACEventLiveEnterprises),
+				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
+				TargetTable:     "equipment_events",
+			},
+			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
+	}
+
 	// Stale-open events closer — bounds/closes never-closed CPACK (status_type=0)
 	// open equipment_events on the LIVE table (mirror fan-out mints them but never
 	// closes them; the CPAC deriver that would bound them is still shadow-only).

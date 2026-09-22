@@ -171,6 +171,14 @@ type Config struct {
 	CPACEventDerivationEnabled bool
 	CPACEventIntervalMin       int
 	CPACEventEnterprises       string // csv int list of status_type=0 enterprises (CPACK=3); empty ⇒ inert
+	// CPACEventLiveEnterprises — ADR-0010 §10.4 promotion. csv int list of
+	// counters-only enterprises for which the deriver mints into the LIVE
+	// equipment_events (a SECOND instance, separate from the shadow one above).
+	// ONLY for enterprises with NO other event writer (e.g. Bispharma ent5,
+	// counters-only, no MachSpeed/StateCurrent) — never a speed-based client like
+	// CPACK, which the mirror fan-out already writes (that would double-write, the
+	// #456 class). Empty ⇒ inert; the live instance is not scheduled at all.
+	CPACEventLiveEnterprises string
 	// CPACStopThresholdDefaultSec — fallback stop horizon when
 	// equipments.stop_threshold_time (Parameter 30751) IS NULL/0 (it is NULL for
 	// all CPACK equipment on staging). This is THE tuning knob the comparator
@@ -432,6 +440,7 @@ func Load() (*Config, error) {
 		CPACEventDerivationEnabled:       getenv("CPAC_EVENT_DERIVATION_ENABLED", "false") == "true",
 		CPACEventIntervalMin:             getenvInt("CPAC_EVENT_DERIVATION_INTERVAL_MINUTES", 1),
 		CPACEventEnterprises:             getenv("CPAC_EVENT_ENTERPRISES", ""),
+		CPACEventLiveEnterprises:         getenv("CPAC_EVENT_LIVE_ENTERPRISES", ""),
 		CPACStopThresholdDefaultSec:      getenvInt("CPAC_STOP_THRESHOLD_DEFAULT_SEC", 300),
 		CPACEventTargetTable:             getenv("CPAC_EVENT_TARGET_TABLE", "equipment_events_cpac_shadow"),
 		EventsCloseStaleEnabled:          getenv("EVENTS_CLOSE_STALE_ENABLED", "false") == "true",
