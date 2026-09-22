@@ -1793,6 +1793,18 @@ services:
       # trailing open by count-silence after grace; skips operator-justified rows.
       EVENTS_CLOSE_STALE_ENABLED: "true"
       EVENTS_CLOSE_STALE_ENTERPRISES: "3"
+      # ADR-0010 §10.4 PROMOTION — mint LIVE downtime events for counters-only
+      # clients that have no other event writer. Bispharma (ent5) is counters-only
+      # (no MachSpeed/StateCurrent), so nothing else gives it downtimes; the shadow
+      # CPAC deriver (CPAC_EVENT_ENTERPRISES in .env, CPACK=3) stays shadow because
+      # CPACK's speed-based events are owned by the mirror fan-out. This second,
+      # LIVE-targeted instance writes ent5's count-silence stops into the real
+      # equipment_events. Its session threshold comes from each equipment's
+      # stop_threshold_time (set to 1800s for ent5 in migration
+      # t-ent5-counters-only-status-and-threshold — a LOSSY-FEED stopgap: the box
+      # co-tee drops ~40% of posts, so sub-30-min gaps aren't trustworthy stops;
+      # drop it back toward 300s once the feed is reliable). Empty ⇒ inert.
+      CPAC_EVENT_LIVE_ENTERPRISES: "5"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
