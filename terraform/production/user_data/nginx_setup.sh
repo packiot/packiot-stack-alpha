@@ -353,7 +353,7 @@ server {
         if (\$request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin  \$refdata_cors always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Packiot-Agent" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Packiot-Agent, x-operator-superadmin-token" always;
             add_header Access-Control-Max-Age 86400 always;
             add_header Vary Origin always;
             return 204;
