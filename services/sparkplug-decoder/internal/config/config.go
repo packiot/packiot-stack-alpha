@@ -117,6 +117,13 @@ type Config struct {
 	CalcMonotonicityGuard bool
 	CalcCounterRollover   bool
 
+	// CalcCounterSpikeMargin (WS1 — counter-anomaly gross guard). When > 0, a
+	// counter increment implying a derived rate above this multiple of the
+	// per-equipment IdealRate is a physically-impossible jump and is clamped to that
+	// ceiling before it reaches gross/net/scrap. Env CALC_COUNTER_SPIKE_MARGIN.
+	// Default 0 ⇒ guard INERT (per-client opt-in; seeds the WS3 OEE profile).
+	CalcCounterSpikeMargin float64
+
 	// ── SparkPlug B Rebirth request (task #31 / ADR-0042) ──────────────────
 	// When a stateful consumer (this edge-transformer) restarts, it loses its
 	// per-publisher alias table AND the refactored Calc counter baseline. An
@@ -351,8 +358,9 @@ func Load() (*Config, error) {
 		MQTTStaleThresholdSeconds: getenvInt("MQTT_STALE_THRESHOLD_SECONDS", 60),
 
 		// ADR-0037 Silver ingest-side cleaning rules (each off by default)
-		CalcMonotonicityGuard: getenvBool("CALC_MONOTONICITY_GUARD", false),
-		CalcCounterRollover:   getenvBool("CALC_COUNTER_ROLLOVER", false),
+		CalcMonotonicityGuard:  getenvBool("CALC_MONOTONICITY_GUARD", false),
+		CalcCounterRollover:    getenvBool("CALC_COUNTER_ROLLOVER", false),
+		CalcCounterSpikeMargin: getenvFloat("CALC_COUNTER_SPIKE_MARGIN", 0),
 
 		// SparkPlug B Rebirth request (task #31 — off by default; prove then enable)
 		RequestRebirthEnabled:            getenvBool("ET_REQUEST_REBIRTH_ENABLED", false),
@@ -486,4 +494,16 @@ func getenvInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvFloat(name string, fallback float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }

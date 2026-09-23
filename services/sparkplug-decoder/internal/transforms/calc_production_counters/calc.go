@@ -279,6 +279,18 @@ type Config struct {
 	// can't prove a wrap and falls back to the reset path (byte-identical).
 	// Env: CALC_COUNTER_ROLLOVER. Default false.
 	CounterRollover bool
+
+	// CounterSpikeMargin (WS1 — the counter-anomaly gross guard). When > 0 AND the
+	// message carries a positive per-equipment IdealRate (parts/min), a counter
+	// increment implying a derived rate above CounterSpikeMargin·IdealRate is a
+	// physically-impossible forward JUMP (a bad reading that is neither a reset nor a
+	// rollover — those guards don't cover it) and is CLAMPED to that ceiling before it
+	// reaches gross/net/scrap aggregates. This is what inflated CPACK eq47/L5 POs
+	// 25–73× vs legacy (a 108951-in-a-minute consumed increment on a ~100/min line).
+	// The bound is per-equipment (via IdealRate); the margin is client-configurable —
+	// the first consumer of the per-client OEE profile (WS3). Default 0 ⇒ INERT
+	// (byte-identical parity preserved), so it activates only when a client opts in.
+	CounterSpikeMargin float64
 }
 
 // Calc runs the 11-phase decision tree with EVERY ADR-0037 Silver rule OFF —
@@ -560,6 +572,36 @@ func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 		procIncr = curProcessed - prevProcessed
 		consIncr = curConsumed - prevConsumed
 		defIncr = curDefective - prevDefective
+	}
+
+	// ── WS1: counter-anomaly guard ─────────────────────────────────────────
+	// Clamp a physically-impossible forward JUMP (neither a reset nor a rollover —
+	// those are handled above) to the per-equipment plausible ceiling BEFORE the
+	// increment reaches gross/net/scrap. Uses the same sample interval as ProdSpeed
+	// so the ceiling scales with the real gap between readings. INERT unless the
+	// client configured a margin AND the message carries an IdealRate (default off ⇒
+	// byte-identical parity). The raw counter baseline is kept unchanged (persisted
+	// below), so a one-off spike is discarded and the next reading differences
+	// normally — real production is never carried away.
+	if cfg.CounterSpikeMargin > 0 && msg.IdealRate > 0 {
+		if lastSpeedTs, _ := state.TimeMs(unitTopic + "/Status/CurMachSpeed___TS"); lastSpeedTs > 0 {
+			interval := timestampMs - lastSpeedTs
+			if c, did := clampSpikeIncrement(consIncr, msg.IdealRate, interval, cfg.CounterSpikeMargin); did {
+				dec.EnrichedMsg["counter_spike_clamped_consumed"] = consIncr - c
+				consIncr = c
+			}
+			if c, _ := clampSpikeIncrement(procIncr, msg.IdealRate, interval, cfg.CounterSpikeMargin); c != procIncr {
+				procIncr = c
+			}
+			if c, _ := clampSpikeIncrement(defIncr, msg.IdealRate, interval, cfg.CounterSpikeMargin); c != defIncr {
+				defIncr = c
+			}
+			// Re-emit the (possibly clamped) increments — the debug fields above were
+			// set from the pre-clamp values.
+			dec.EnrichedMsg["ProdConsumedIncremet"] = consIncr
+			dec.EnrichedMsg["ProdProcessedIncremet"] = procIncr
+			dec.EnrichedMsg["ProdDefectiveIncremet"] = defIncr
+		}
 	}
 
 	// ── Phase 5: persist new counter values ────────────────────────────────
