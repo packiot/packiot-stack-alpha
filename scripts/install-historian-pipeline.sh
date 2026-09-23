@@ -27,6 +27,7 @@ install -d -m 0755 "$DEST"
 SCRIPTS=(
   historian-append.sh
   historian-legacy-copy.sh
+  historian-po-backfill.sh
   historian-staging-run-append.sh
   historian-integrity-monitor.sh
   historian-staleness-monitor.sh
@@ -41,6 +42,7 @@ done
 install -m 0644 "$REPO_ROOT/scripts/stamp-equipment_values-meta.sql"                    "$DEST/stamp-equipment_values-meta.sql"
 install -m 0644 "$REPO_ROOT/services/historian-gateway/refresh-equipment_values-cutover.sql" "$DEST/refresh-equipment_values-cutover.sql"
 install -m 0644 "$REPO_ROOT/services/historian-gateway/refresh-ee-cutover.sql"          "$DEST/refresh-ee-cutover.sql"
+install -m 0644 "$REPO_ROOT/services/historian-gateway/refresh-po-cutover.sql"          "$DEST/refresh-po-cutover.sql"
 
 # ── 3. remove superseded artifacts (orphan wrapper + pre-#281 SQL file names) ─
 for stale in run-staging-append.sh stamp-hist-meta.sql refresh-hist-cutover.sql; do
