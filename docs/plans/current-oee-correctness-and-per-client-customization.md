@@ -101,9 +101,45 @@ engine. The **customize** SPA (`customize.staging`, already deployed) gains an "
 The stream-engine rollup (`line_lead.go`, `compute.go`, `grains.go`) reads the resolved profile instead
 of env lists + hardcoded formulas.
 
-**Sequencing note.** Workstream 1's guard is the first consumer of a per-client knob, so implement it
-reading a **profile field with a safe default** — that seeds the OEE-profile object and proves the
-config path end-to-end before the full editor lands.
+**Key architectural finding (the delivery seam).** The descriptor framework (persisted in the
+`client_descriptors` JSONB row, served by `edge-api`) and the OEE knobs (stream-engine + decoder env
+vars) live in **separate services with no shared profile object** — neither Go service reads
+`client_descriptors` for OEE math today. WS3's spine is therefore a **config-as-data delivery path**:
+each consuming service reads its subset of `descriptor->'oee_profile'` and overlays it on the env
+default, so an absent profile is byte-identical (parity). This is the exact seam `countersrate.Watcher`
+already established for the rated-speed map — WS3 reuses that shape.
+
+### Phase 1 — DONE (this branch: `feat/ws3-per-client-oee-profile`)
+
+The plan's sequencing note said to make WS1's guard the first consumer of a per-client knob to prove
+the config path end-to-end before the full editor lands. That is now built:
+
+- **Schema** — `descriptor.oee_profile` (TS `OeeProfile` in `customize/src/api/onboarding.ts`): the full
+  knob set (`spike_margin`, `on_anomaly`, `availability_mode`, `ideal_source`, `quality_basis`,
+  `stop_threshold_sec`, `version`), every field optional (unset = platform default). Rides the existing
+  `client_descriptors` JSONB row — `edge-api`'s upsert DTO types `descriptor` as `Record<string,any>`
+  (`@IsObject`, not a nested validated class), so `whitelist:true` stores it verbatim (persistence
+  confirmed, no edge-api change).
+- **Delivery (decoder)** — new `services/sparkplug-decoder/internal/oeeprofile` package: a `Watcher`
+  mirroring `countersrate` that reloads a unit-topic→`spike_margin` map from
+  `client_descriptors.descriptor->'oee_profile'` every `OEE_PROFILE_REFRESH_SECONDS` (gated by
+  `OEE_PROFILE_FROM_DB`, default OFF, fail-open). The WS1 `CounterSpikeMargin` moved from `calc.Config`
+  onto the per-message `calc.Message`; `main.go` resolves it per message = the topic's profile margin
+  if authored, else the `CALC_COUNTER_SPIKE_MARGIN` env default. Absent profile ⇒ WS1's env behavior
+  byte-for-byte. Table-tested (deriveUnitTopic↔ParseTopic key-parity on the eq47/L5 topics).
+- **Editor (customize SPA)** — new "OEE Computation" page (`customize/src/pages/oee-profile.tsx`, nav +
+  route wired): load descriptor → edit the profile → validated Save via the existing
+  `upsertDescriptor`. `spike_margin` is badged **Live** (wired to the decoder); the rollup knobs are
+  badged **Phase 2** (authored now, consumed as migrated). A cleared profile omits `oee_profile`
+  entirely (back to defaults).
+
+### Phase 2 — remaining (each ships with its own before/after hardproof)
+
+Migrate the stream-engine rollup knobs off their env lists to read `descriptor->'oee_profile'`:
+`availability_mode` (COUNTERS_ONLY_AVAILABILITY_* / line-lead), `ideal_source` (the hour/shift COALESCE
+chain), `quality_basis`, `stop_threshold_sec` (events layer), and `on_anomaly` beyond `clamp`. Needs the
+same `client_descriptors` read-path added to `stream-engine` (which today reads only env +
+`equipments`/`packml_register`).
 
 ---
 

@@ -166,6 +166,24 @@ type Message struct {
 	// so the golden comparator and existing reset tests are untouched; the
 	// caller flips it via CALC_RESET_HEAL_ENABLED.
 	ResetHeal bool
+
+	// CounterSpikeMargin (WS1 guard, resolved PER-CLIENT by WS3). When > 0 AND
+	// this message carries a positive per-equipment IdealRate (parts/min), a
+	// counter increment implying a derived rate above CounterSpikeMargin·IdealRate
+	// is a physically-impossible forward JUMP (a bad reading that is neither a
+	// reset nor a rollover — those guards don't cover it) and is CLAMPED to that
+	// ceiling before it reaches gross/net/scrap aggregates. This is what inflated
+	// CPACK eq47/L5 POs 25–73× vs legacy (a 108951-in-a-minute consumed increment
+	// on a ~100/min line).
+	//
+	// It lives on the Message (not Config) because the margin is a PER-CLIENT OEE
+	// knob: the caller resolves it per equipment from the client's OEE profile
+	// (client_descriptors.descriptor->oee_profile->spike_margin, served by the
+	// oeeprofile.Watcher) and falls back to the CALC_COUNTER_SPIKE_MARGIN env
+	// default. The bound itself is per-equipment (via IdealRate). Default 0 ⇒
+	// INERT (byte-identical parity), so it activates only when a client opts in.
+	// This is the first consumer of the per-client OEE profile (WS3 / ADR-0058).
+	CounterSpikeMargin float64
 }
 
 // countersOnlyGuardK is the multiplier for the counters-only glitch guard:
@@ -279,18 +297,6 @@ type Config struct {
 	// can't prove a wrap and falls back to the reset path (byte-identical).
 	// Env: CALC_COUNTER_ROLLOVER. Default false.
 	CounterRollover bool
-
-	// CounterSpikeMargin (WS1 — the counter-anomaly gross guard). When > 0 AND the
-	// message carries a positive per-equipment IdealRate (parts/min), a counter
-	// increment implying a derived rate above CounterSpikeMargin·IdealRate is a
-	// physically-impossible forward JUMP (a bad reading that is neither a reset nor a
-	// rollover — those guards don't cover it) and is CLAMPED to that ceiling before it
-	// reaches gross/net/scrap aggregates. This is what inflated CPACK eq47/L5 POs
-	// 25–73× vs legacy (a 108951-in-a-minute consumed increment on a ~100/min line).
-	// The bound is per-equipment (via IdealRate); the margin is client-configurable —
-	// the first consumer of the per-client OEE profile (WS3). Default 0 ⇒ INERT
-	// (byte-identical parity preserved), so it activates only when a client opts in.
-	CounterSpikeMargin float64
 }
 
 // Calc runs the 11-phase decision tree with EVERY ADR-0037 Silver rule OFF —
@@ -583,17 +589,17 @@ func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 	// byte-identical parity). The raw counter baseline is kept unchanged (persisted
 	// below), so a one-off spike is discarded and the next reading differences
 	// normally — real production is never carried away.
-	if cfg.CounterSpikeMargin > 0 && msg.IdealRate > 0 {
+	if msg.CounterSpikeMargin > 0 && msg.IdealRate > 0 {
 		if lastSpeedTs, _ := state.TimeMs(unitTopic + "/Status/CurMachSpeed___TS"); lastSpeedTs > 0 {
 			interval := timestampMs - lastSpeedTs
-			if c, did := clampSpikeIncrement(consIncr, msg.IdealRate, interval, cfg.CounterSpikeMargin); did {
+			if c, did := clampSpikeIncrement(consIncr, msg.IdealRate, interval, msg.CounterSpikeMargin); did {
 				dec.EnrichedMsg["counter_spike_clamped_consumed"] = consIncr - c
 				consIncr = c
 			}
-			if c, _ := clampSpikeIncrement(procIncr, msg.IdealRate, interval, cfg.CounterSpikeMargin); c != procIncr {
+			if c, _ := clampSpikeIncrement(procIncr, msg.IdealRate, interval, msg.CounterSpikeMargin); c != procIncr {
 				procIncr = c
 			}
-			if c, _ := clampSpikeIncrement(defIncr, msg.IdealRate, interval, cfg.CounterSpikeMargin); c != defIncr {
+			if c, _ := clampSpikeIncrement(defIncr, msg.IdealRate, interval, msg.CounterSpikeMargin); c != defIncr {
 				defIncr = c
 			}
 			// Re-emit the (possibly clamped) increments — the debug fields above were
