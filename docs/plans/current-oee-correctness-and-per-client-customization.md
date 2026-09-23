@@ -1,6 +1,18 @@
 # Current-stack OEE correctness fixes + per-client OEE customization
 
-**Status:** PLAN · **Date:** 2026-09-23 · Target: the current medallion stack (`packiot_analytics`), NOT legacy.
+**Status:** WS1+WS2+WS3 Phase 1 MERGED + DEPLOYED to staging (2026-09-23) · Target: the current medallion
+stack (`packiot_analytics`), NOT legacy.
+
+**Deployed:** PRs #1388/#1389/#1390 (WS1)/#1391 (WS2) merged (deploy 35894750650 ✓) and #1392 (WS3 Phase 1)
+merged (deploy 35896272917 ✓). The WS1 counter-anomaly guard is LIVE at **`CALC_COUNTER_SPIKE_MARGIN=10`**
+with `OEE_PROFILE_FROM_DB=true` (WS3 per-client override path active — watcher confirmed reading
+`client_descriptors` on the running decoder). **Margin=10 is data-derived**: over 1.05M ent3 per-minute
+samples the increment/rated-speed ratio is p50=0.85 / p99=2.44 / p99.9=8.30, while the anomaly cluster is
+100–2580×; 10 sits just above the p99.9 knee, catching every impossible jump without clamping the legit
+catch-up mid-tail (spread across 38 machines). Coverage = the 7 L5/L6 counters-only topics (incl. the top
+anomalies L5-TEXA 2580× / L5-BREYER 1310×); broadening to all 42 machines needs `COUNTERS_ONLY_FROM_DB`
+(follow-up). The historical/finalized `packiot_analytics` rows were retro-corrected (0 net>gross, 0 insane,
+converged to legacy); the live guard stops new anomalies at the source.
 
 Motivated by a hardproofed CPACK current (ent3) vs legacy (`packiot40` ent1, "C-PACK") comparison,
 3-month window. Legacy is complete but has its own bugs (unclamped net `net≫gross`, OEE>1) — we do
