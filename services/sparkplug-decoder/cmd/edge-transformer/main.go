@@ -626,8 +626,9 @@ func main() {
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
 			// ADR-0037 Silver rules — off unless the env flags are set.
 			calcCfg: calc_production_counters.Config{
-				MonotonicityGuard: cfg.CalcMonotonicityGuard,
-				CounterRollover:   cfg.CalcCounterRollover,
+				MonotonicityGuard:  cfg.CalcMonotonicityGuard,
+				CounterRollover:    cfg.CalcCounterRollover,
+				CounterSpikeMargin: cfg.CalcCounterSpikeMargin,
 			},
 		}
 		if cfg.NoSpeedGuardFallbackEnabled {
