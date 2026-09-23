@@ -337,6 +337,15 @@ type Config struct {
 	// construction (identity holds). Default OFF → legacy top-down oee. Flip
 	// AFTER the availability floor, since it makes oee_a load-bearing.
 	OeeCanonicalAPQEnabled bool
+	// POAvailabilityEnabled (FU#8): write available_time + planned_downtime onto
+	// production_orders_runtime (the compute.go Phase-B2 pass) so the recalc's
+	// PO-grain oee_a = running/available and oee_p time-factor stop collapsing to
+	// 0. These columns are written by NOBODY today (the legacy engine had the
+	// assignments commented out; the Go port reproduced it), so PO-grain OEE
+	// Availability/Performance read 0 platform-wide. Default OFF → the pass is not
+	// run → available_time stays NULL → byte-identical (golden-fixture parity).
+	// Equipment/line-grain OEE is unaffected (it computes available_time already).
+	POAvailabilityEnabled bool
 
 	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
 	// When enabled, the equipment_values writer rejects any production
@@ -486,6 +495,7 @@ func Load() (*Config, error) {
 		// ADR-0049 OEE correctness (default OFF — no behavior change)
 		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
 		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
+		POAvailabilityEnabled:  getenv("PO_AVAILABILITY_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),

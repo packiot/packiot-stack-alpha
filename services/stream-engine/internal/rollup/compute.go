@@ -149,6 +149,53 @@ const computeEventsSQL = `
 	 WHERE e.id_equipment = ev.id_equipment
 	   AND lower(e.runtime_timerange) = ev.lo`
 
+// Phase B2 (FU#8): the PO-grain availability write path. available_time and
+// planned_downtime are NEVER written to production_orders_runtime by any code
+// path — the legacy PL/pgSQL had these assignments COMMENTED OUT and the Go port
+// reproduced it, so recalc.go sums NULLs and oee_a = running/available and oee_p's
+// time factor both collapse to 0 platform-wide (the Jan-2024 PO-grain A/P gap).
+//
+// This mirrors hour.go's math onto the PO grain: ts_total = the PO's own
+// runtime_timerange wall-clock span; available_time = ts_total − LEAST(planned,
+// ts_total); planned_downtime = LEAST(planned, ts_total). The planned predicate
+// (%[6]s = plannedDowntimeExpr) reads ee.planned_downtime — the PO grain uses the
+// default (no R3c changeover reclassification, matching recalc.go's scope note).
+// Events read from ev_src (gross_machine or self), identical to computeEventsSQL.
+// ideal_production is intentionally NOT written: recalc.go's oee_p recomputes the
+// ideal factor from production_orders.ideal_production_speed, not this column.
+//
+// Flag-gated (POAvailabilityEnabled, default OFF) → not run → available_time stays
+// NULL → byte-identical to today (golden-fixture parity). Flip to activate.
+const computeAvailabilitySQL = `
+	WITH eligible AS (
+	    SELECT e.id_equipment, e.runtime_timerange,
+	           lower(e.runtime_timerange) AS lo,
+	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
+	           COALESCE(eq.gross_machine, e.id_equipment) AS ev_src
+	      FROM %[4]s.production_orders_runtime e
+	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
+	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
+	       AND e.recalc_needed
+	), ev AS (
+	    SELECT el.id_equipment, el.lo,
+	           GREATEST(extract(epoch FROM (el.hi - el.lo)), 0) AS ts_total,
+	           COALESCE(sum(CASE WHEN %[6]s THEN
+	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
+	                                 - greatest(ee.ts_event, el.lo))) END), 0) AS planned
+	      FROM eligible el
+	      JOIN %[3]s.equipment_events ee
+	        ON ee.id_equipment = el.ev_src
+	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
+	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
+	     GROUP BY el.id_equipment, el.lo, el.hi
+	)
+	UPDATE %[4]s.production_orders_runtime e SET
+	       available_time   = GREATEST(ev.ts_total - LEAST(ev.planned, ev.ts_total), 0)::int,
+	       planned_downtime = LEAST(ev.planned, ev.ts_total)::int
+	  FROM ev
+	 WHERE e.id_equipment = ev.id_equipment
+	   AND lower(e.runtime_timerange) = ev.lo`
+
 // NOTE (phase order): prod runs phase A (which CLEARS recalc_needed)
 // before phase B reads its own eligible set — but prod's loop
 // evaluates BOTH phases per row from the SAME loop selection. The
@@ -239,11 +286,20 @@ func isIntOverflow(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "22003"
 }
 
-// RunCompute executes one compute pass for one destination.
-func RunCompute(ctx context.Context, d flows.Dest, window string) (int64, error) {
+// RunCompute executes one compute pass for one destination. poAvail (FU#8) gates
+// the PO-grain availability write path; default false ⇒ byte-identical parity.
+func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool) (int64, error) {
 	// Phase B first (see NOTE): its eligible set must predate A's clear.
 	if _, err := d.Pool.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
 		return 0, fmt.Errorf("compute events: %w", err)
+	}
+	// Phase B2 (FU#8): the availability write path — MUST run before Phase A
+	// clears recalc_needed (its eligible set reads recalc_needed, like Phase B).
+	// Off ⇒ skipped ⇒ available_time/planned_downtime stay NULL (parity).
+	if poAvail {
+		if _, err := d.Pool.Exec(ctx, fmtRD(computeAvailabilitySQL, d, plannedDowntimeExpr(false)), window); err != nil {
+			return 0, fmt.Errorf("compute availability: %w", err)
+		}
 	}
 	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d), window)
 	if err != nil {
@@ -260,12 +316,12 @@ func RunCompute(ctx context.Context, d flows.Dest, window string) (int64, error)
 
 // LoopRefresh = the dispatcher (ledger: po-runtime-refresh): compute
 // then recalc, ordered, drop-per-step (prod's fail-soft blocks).
-func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
-	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)")
+func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, every time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
+	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)", slog.Bool("po_availability", poAvail))
 	jobs.Loop(ctx, jobs.Job{Name: "po-runtime-refresh", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			if _, err := RunCompute(ctx, d, window); err != nil {
+			if _, err := RunCompute(ctx, d, window, poAvail); err != nil {
 				logger.Warn("po-runtime-compute failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				// An int-overflow (SQLSTATE 22003) here is an opaque,
 				// intermittent failure — dump the offending PO row so it's
