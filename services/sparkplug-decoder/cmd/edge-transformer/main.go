@@ -1414,8 +1414,13 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 				// on counters-only machines (IdealRate>0), so resolving it here —
 				// where IdealRate was just set — covers exactly the machines it
 				// can act on. Absent profile ⇒ the env default stays (parity).
-				if m, ok := h.spikeMargins()[unitTopic]; ok && m > 0 {
-					msg.CounterSpikeMargin = m
+				// nil-guarded: main.go always sets spikeMargins, but a hooks
+				// value built elsewhere (e.g. a unit test that only exercises the
+				// counters-only path) may leave it nil — treat that as "no profile".
+				if h.spikeMargins != nil {
+					if m, ok := h.spikeMargins()[unitTopic]; ok && m > 0 {
+						msg.CounterSpikeMargin = m
+					}
 				}
 			}
 		}
