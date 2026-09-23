@@ -31,6 +31,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/oeeprofile"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollup"
@@ -304,12 +305,30 @@ func main() {
 	// Shared OEE-fallback config — the live rollup AND the stranded-hour backfill
 	// must run the identical decomposition finalize (canonical A·P·Q reconcile vs
 	// legacy oee_p residual), so build it once and pass it to both.
+	// WS3 Phase 2a (FU#4): union the env line-lead enterprises with those a client
+	// authored in its OEE profile (availability_mode=count_silence / ideal_source=
+	// lead_machine). Env stays the floor; a profile only ADDS its enterprise; no
+	// profiles ⇒ exactly the env set (parity). Boot-time load against the medallion
+	// pool (client_descriptors lives in analytics), fail-open to env on any error.
+	lineLeadEnts := config.CSVInts(cfg.CountersOnlyLineLeadEnterprises)
+	profileDB := analyticsPool
+	if profileDB == nil {
+		profileDB = pool
+	}
+	if sets, err := oeeprofile.Load(ctx, profileDB); err != nil {
+		logger.Warn("oee-profile: boot load failed — using env line-lead set only", slog.String("err", err.Error()))
+	} else if len(sets.LineLeadEnterprises) > 0 {
+		before := len(lineLeadEnts)
+		lineLeadEnts = oeeprofile.UnionInts(lineLeadEnts, sets.LineLeadEnterprises)
+		logger.Info("oee-profile: line-lead enterprises unioned from client descriptors (WS3 Phase 2)",
+			slog.Int("env", before), slog.Int("profile", len(sets.LineLeadEnterprises)), slog.Int("total", len(lineLeadEnts)))
+	}
 	countersAvail := rollup.CountersAvail{
 		Enabled:             cfg.CountersOnlyAvailEnabled,
 		Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
 		IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
 		LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
-		LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
+		LineLeadEnterprises: lineLeadEnts,
 		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
 		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
 	}
