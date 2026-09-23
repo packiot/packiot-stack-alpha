@@ -1996,7 +1996,7 @@ services:
       # Availability/Performance read 0 platform-wide since Jan-2024. Equipment/
       # line-grain OEE is unaffected (it computes available_time already).
       # Reversible: set back to "false" + redeploy → available_time stays NULL.
-      PO_AVAILABILITY_ENABLED: "false"
+      PO_AVAILABILITY_ENABLED: "true"
       RUNTIME_PROVISION_ENABLED: "true"
       RUNTIME_ROLLUP_ENABLED: "true"
       # 10.9: nodered legacy leg retired (plc-sim triple-emit feeds F1)
