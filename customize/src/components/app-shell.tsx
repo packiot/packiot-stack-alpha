@@ -1,4 +1,4 @@
-import { Braces, Database, LayoutGrid, LogOut, Repeat } from "lucide-react";
+import { Braces, Database, Gauge, LayoutGrid, LogOut, Repeat } from "lucide-react";
 import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/auth-context";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
@@ -13,6 +13,7 @@ type NavLeaf = { to: string; label: string; icon: typeof LayoutGrid };
 const NAV: NavLeaf[] = [
   { to: "/app/hub", label: "Hub", icon: LayoutGrid },
   { to: "/app/customizations", label: "Derive rules", icon: Braces },
+  { to: "/app/oee-profile", label: "OEE Computation", icon: Gauge },
   { to: "/app/integrations", label: "Integrations", icon: Database },
 ];
 

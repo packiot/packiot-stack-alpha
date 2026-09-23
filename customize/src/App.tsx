@@ -6,6 +6,7 @@ import { LoginPage } from "@/pages/login";
 import { EnterprisesPage } from "@/pages/enterprises";
 import { HubPage } from "@/pages/hub";
 import { CustomizationsPage } from "@/pages/customizations";
+import { OeeProfilePage } from "@/pages/oee-profile";
 import { IntegrationsPage } from "@/pages/integrations";
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -37,6 +38,7 @@ export default function App() {
         <Route index element={<Navigate to="/app/hub" replace />} />
         <Route path="hub" element={<HubPage />} />
         <Route path="customizations" element={<CustomizationsPage />} />
+        <Route path="oee-profile" element={<OeeProfilePage />} />
         <Route path="integrations" element={<IntegrationsPage />} />
       </Route>
 

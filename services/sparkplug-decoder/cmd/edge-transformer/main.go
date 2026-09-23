@@ -54,6 +54,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/oeeprofile"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/edgeapiclient"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/erpconnector"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
@@ -598,6 +599,29 @@ func main() {
 			)
 		}
 
+		// WS3 per-client OEE profile (ADR-0058): the WS1 spike-guard margin
+		// becomes a per-client, CS-Admin-editable knob. When OEE_PROFILE_FROM_DB
+		// is on, a Watcher owns a periodically-reloaded unit-topic→spike_margin
+		// map sourced from client_descriptors.descriptor->oee_profile. Default
+		// OFF → spikeMargins returns an empty map, so every topic keeps the env
+		// default (CALC_COUNTER_SPIKE_MARGIN) and the guard behaves exactly as it
+		// did before WS3 (parity). Fail-open like the rates watcher: a DB error on
+		// reload keeps the previous snapshot, so the env default is the floor.
+		spikeMargins := func() map[string]float64 { return map[string]float64{} }
+		if cfg.OeeProfileFromDB {
+			oeeProfileWatcher := oeeprofile.NewWatcher(
+				time.Duration(cfg.OeeProfileRefreshSeconds)*time.Second,
+				logger,
+			)
+			oeeProfileWatcher.Start(ctx)
+			spikeMargins = oeeProfileWatcher.Margins
+			logger.Info("per-client OEE profile: DB watcher started (config-as-data)",
+				slog.Int("refresh_seconds", cfg.OeeProfileRefreshSeconds),
+				slog.Int("tenants", oeeProfileWatcher.Tenants()),
+				slog.Int("margin_entries", len(oeeProfileWatcher.Margins())),
+			)
+		}
+
 		// LINE_TRACE_TENANTS (comma-separated, lowercase GroupIDs, e.g.
 		// "cpack") turns on INFO-level per-counter drop tracing for the listed
 		// tenants ONLY. Empty (default) → zero extra logs. Purpose: pin a
@@ -621,14 +645,18 @@ func main() {
 			countersOnlyEnabled:    countersOnlyEnabled,
 			countersOnlyAutoFromDB: countersOnlyAutoFromDB,
 			idealRates:             idealRates,
+			spikeMarginDefault:     cfg.CalcCounterSpikeMargin,
+			spikeMargins:           spikeMargins,
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
-			// ADR-0037 Silver rules — off unless the env flags are set.
+			// ADR-0037 Silver rules — off unless the env flags are set. The WS1
+			// spike-guard margin is NOT here: it is resolved per-message from the
+			// client OEE profile (spikeMargins) with cfg.CalcCounterSpikeMargin as
+			// the env default (see spikeMarginDefault above).
 			calcCfg: calc_production_counters.Config{
-				MonotonicityGuard:  cfg.CalcMonotonicityGuard,
-				CounterRollover:    cfg.CalcCounterRollover,
-				CounterSpikeMargin: cfg.CalcCounterSpikeMargin,
+				MonotonicityGuard: cfg.CalcMonotonicityGuard,
+				CounterRollover:   cfg.CalcCounterRollover,
 			},
 		}
 		if cfg.NoSpeedGuardFallbackEnabled {
@@ -1015,6 +1043,18 @@ type calcHooks struct {
 	countersOnlyAutoFromDB bool
 	idealRates             func() map[string]float64
 
+	// spikeMarginDefault / spikeMargins — the per-client OEE-profile seam (WS3 /
+	// ADR-0058). spikeMarginDefault is the global env fallback
+	// (CALC_COUNTER_SPIKE_MARGIN); spikeMargins is a live ACCESSOR returning the
+	// unit-topic→margin map an oeeprofile.Watcher keeps fresh from
+	// client_descriptors.descriptor->oee_profile->spike_margin. Per message the
+	// resolved margin is: the topic's profile value if present and > 0, else the
+	// env default. Absent profile ⇒ the env default governs every topic, i.e. the
+	// WS1 behavior byte-for-byte (parity). spikeMargins is never nil (main.go sets
+	// it to a closure returning an empty map when the DB watcher is off).
+	spikeMarginDefault float64
+	spikeMargins       func() map[string]float64
+
 	// resetHeal (ADR-0048 count-spike guard) — when true, Calc re-seeds a
 	// genuine totalizer reset instead of emitting the whole-totalizer
 	// delta-from-zero reset spike. Sourced from CALC_RESET_HEAL_ENABLED
@@ -1348,6 +1388,11 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	// use the rated-speed glitch guard instead of the absent MachSpeed
 	// guard. Auto-selection (machSpeed==0) still happens inside Calc, so a
 	// machine that DOES report speed is unaffected even when opted in.
+	// WS3: seed the WS1 spike-guard margin with the global env default; the
+	// counters-only block below overrides it per topic from the client's OEE
+	// profile when one is authored. Set here (before the block) so the override
+	// wins. Zero default + no profile ⇒ the guard stays inert (parity).
+	msg.CounterSpikeMargin = h.spikeMarginDefault
 	rates := h.idealRates()
 	countersOnly := h.countersOnlyEnabled || (h.countersOnlyAutoFromDB && len(rates) > 0)
 	if countersOnly {
@@ -1363,6 +1408,15 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 			if rate, ok := rates[unitTopic]; ok && rate > 0 {
 				msg.CountersOnly = true
 				msg.IdealRate = rate
+				// WS3 per-client OEE profile: the WS1 spike guard's margin is a
+				// per-client knob. Override the env default with this topic's
+				// authored margin when the client set one; the guard only fires
+				// on counters-only machines (IdealRate>0), so resolving it here —
+				// where IdealRate was just set — covers exactly the machines it
+				// can act on. Absent profile ⇒ the env default stays (parity).
+				if m, ok := h.spikeMargins()[unitTopic]; ok && m > 0 {
+					msg.CounterSpikeMargin = m
+				}
 			}
 		}
 	}

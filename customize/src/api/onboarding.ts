@@ -174,7 +174,68 @@ export interface ClientDescriptor {
    * ⇒ the customizations tab is emitted empty (historical behavior).
    */
   customizations?: NodeRedNode[];
+  /**
+   * Per-client OEE computation profile (WS3 / ADR-0058). The durable, editable
+   * home for the fact that different clients compute OEE differently. Stored as
+   * config-as-data on the descriptor JSONB; the decoder + rollup engine read the
+   * knobs they consume (Phase 1: the decoder reads `spike_margin`). Absent ⇒
+   * every knob uses its platform default (env), i.e. byte-identical behavior.
+   */
+  oee_profile?: OeeProfile;
   [k: string]: unknown;
+}
+
+/**
+ * The per-client OEE computation profile (WS3). Declarative, versioned, edited
+ * in the OEE Computation page and round-tripped through the descriptor JSONB.
+ * Only `spike_margin` is wired to code today (the decoder's WS1 counter-anomaly
+ * guard); the remaining knobs are authored now and consumed as each rollup
+ * seam is migrated off its env list (Phase 2 — see the plan doc). Every field is
+ * optional: an unset field means "use the platform default", so a partial
+ * profile never changes an un-migrated knob.
+ */
+export interface OeeProfile {
+  /** Schema version — bumped when a knob's meaning changes. */
+  version?: number;
+  /**
+   * WS1 counter-anomaly gross guard margin. A counter increment implying a rate
+   * above `spike_margin × ideal_speed` is a physically-impossible jump and is
+   * clamped. Per-equipment bound (via ideal_speed); this multiple is the client
+   * knob. Unset / 0 ⇒ the CALC_COUNTER_SPIKE_MARGIN env default (guard inert
+   * unless the platform set one). Typical: 3–5. WIRED (decoder).
+   */
+  spike_margin?: number;
+  /**
+   * What the guard does on an anomalous increment. Only `clamp` is implemented
+   * today; `reject`/`flag` are Phase 2. Unset ⇒ clamp.
+   */
+  on_anomaly?: "clamp" | "reject" | "flag";
+  /**
+   * Availability derivation. `state` = from StateCurrent/downtime events;
+   * `count_silence` = infer running/stopped from counter activity (for
+   * state-less counters-only machines). Unset ⇒ platform default (today the
+   * COUNTERS_ONLY_AVAILABILITY_* env lists). Phase 2 (rollup).
+   */
+  availability_mode?: "state" | "count_silence";
+  /**
+   * Ideal-speed source for Performance. `lead_machine` = the line lead's
+   * production_speed; `nameplate` = the equipment's own production_speed;
+   * `inferred` = the provisional-speed estimator. Unset ⇒ the rollup COALESCE
+   * chain. Phase 2 (rollup).
+   */
+  ideal_source?: "lead_machine" | "nameplate" | "inferred";
+  /**
+   * Quality basis. `net_gross` = net/gross (good/total, the platform default);
+   * `good_total` reserved for clients that meter good + total separately. Unset
+   * ⇒ net_gross. Phase 2 (rollup).
+   */
+  quality_basis?: "net_gross" | "good_total";
+  /**
+   * Stop-detection horizon in seconds (SparkPlug param 30751): a machine idle
+   * longer than this is a stop. Unset ⇒ per-equipment stop_threshold_time, then
+   * the CPAC_STOP_THRESHOLD_DEFAULT_SEC env default. Phase 2 (events).
+   */
+  stop_threshold_sec?: number;
 }
 
 /** One raw Node-RED node (a "Export" object). Kept opaque — the generator + the

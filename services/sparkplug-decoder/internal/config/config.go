@@ -122,7 +122,23 @@ type Config struct {
 	// per-equipment IdealRate is a physically-impossible jump and is clamped to that
 	// ceiling before it reaches gross/net/scrap. Env CALC_COUNTER_SPIKE_MARGIN.
 	// Default 0 ⇒ guard INERT (per-client opt-in; seeds the WS3 OEE profile).
+	// This is the GLOBAL FALLBACK margin; WS3 (OeeProfileFromDB) lets a client
+	// override it per equipment from its OEE profile — see oeeprofile.Watcher.
 	CalcCounterSpikeMargin float64
+
+	// ── WS3 per-client OEE profile (ADR-0058) ─────────────────────────────
+	// OeeProfileFromDB turns the WS1 spike-guard margin into a per-client,
+	// CS-Admin-editable knob: a Watcher reloads a unit-topic→spike_margin map
+	// from client_descriptors.descriptor->oee_profile so a margin authored in
+	// the customize SPA takes effect without an edge redeploy — the same
+	// config-as-data seam CountersOnlyFromDB gives the rated-speed map. Default
+	// OFF → the map is empty and every topic keeps CalcCounterSpikeMargin
+	// (parity). Env OEE_PROFILE_FROM_DB. Fail-open on any DB error.
+	OeeProfileFromDB bool
+	// OeeProfileRefreshSeconds is the periodic-reload interval for the OEE-profile
+	// margin map once OeeProfileFromDB is on. Default 300s, matching the
+	// counters-only rates watcher. Env OEE_PROFILE_REFRESH_SECONDS.
+	OeeProfileRefreshSeconds int
 
 	// ── SparkPlug B Rebirth request (task #31 / ADR-0042) ──────────────────
 	// When a stateful consumer (this edge-transformer) restarts, it loses its
@@ -378,6 +394,8 @@ func Load() (*Config, error) {
 		CountersOnlyIdealRates:     getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
 		CountersOnlyFromDB:         getenvBool("COUNTERS_ONLY_FROM_DB", false),
 		CountersOnlyRefreshSeconds: getenvInt("COUNTERS_ONLY_REFRESH_SECONDS", 300),
+		OeeProfileFromDB:           getenvBool("OEE_PROFILE_FROM_DB", false),
+		OeeProfileRefreshSeconds:   getenvInt("OEE_PROFILE_REFRESH_SECONDS", 300),
 
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),
