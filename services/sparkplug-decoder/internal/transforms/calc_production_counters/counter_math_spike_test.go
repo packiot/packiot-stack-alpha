@@ -43,3 +43,26 @@ func TestClampSpikeIncrement(t *testing.T) {
 		})
 	}
 }
+
+// TestSpikeGuardRate covers FU#3 — the guard's rated-speed bound selection that
+// decouples coverage from counters-only mode. IdealRate wins when set (counters-
+// only topics); otherwise the per-equipment production_speed (GuardRatedSpeed)
+// is used so sensored lines — 96% of CPACK's anomaly-minutes — are still guarded.
+func TestSpikeGuardRate(t *testing.T) {
+	cases := []struct {
+		name       string
+		idealRate  float64
+		ratedSpeed float64
+		want       float64
+	}{
+		{"counters-only IdealRate wins", 147, 100, 147},
+		{"no IdealRate falls back to rated speed", 0, 100, 100},
+		{"neither set → inert (0)", 0, 0, 0},
+		{"IdealRate preferred even if rated higher", 90, 200, 90},
+	}
+	for _, c := range cases {
+		if got := spikeGuardRate(c.idealRate, c.ratedSpeed); got != c.want {
+			t.Errorf("%s: spikeGuardRate(%g,%g)=%g want %g", c.name, c.idealRate, c.ratedSpeed, got, c.want)
+		}
+	}
+}

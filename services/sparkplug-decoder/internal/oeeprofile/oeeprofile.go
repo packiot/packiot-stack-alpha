@@ -65,7 +65,8 @@ const marginsQuery = `
 	SELECT DISTINCT ON (e.id_equipment)
 	       cd.id_enterprise,
 	       pr.packml_topic,
-	       (cd.descriptor->'oee_profile'->>'spike_margin')::float8 AS spike_margin
+	       (cd.descriptor->'oee_profile'->>'spike_margin')::float8 AS spike_margin,
+	       COALESCE(e.production_speed, 0)::float8 AS rated_speed
 	  FROM client_descriptors cd
 	  JOIN sites s            ON s.id_enterprise = cd.id_enterprise
 	  JOIN areas a            ON a.id_site       = s.id_site
@@ -80,11 +81,21 @@ const marginsQuery = `
 	          pr.id_packml_register ASC
 `
 
-// Result is the boot-time DB load: the unit-topic→spike-margin map plus the
-// distinct tenant count, for the startup summary log.
+// Result is the boot-time DB load: the unit-topic→spike-margin map, the
+// unit-topic→rated-speed map, plus the distinct tenant count for the startup log.
+//
+// RatedSpeeds decouples the WS1 spike guard from counters-only mode (FU#3). The
+// guard's plausibility bound is margin × rated-speed; historically the rated
+// speed was msg.IdealRate, set ONLY for counters-only-mapped topics (a handful
+// of lines), so 96% of a tenant's counter anomalies — on lines that DO report
+// MachSpeed or aren't in the ideal-rates map — went unguarded. Sourcing the
+// rated speed from equipments.production_speed for EVERY topic of a profiled
+// tenant lets the guard cover the whole tenant when they author a margin, with
+// no change to any OEE computation (guard-only).
 type Result struct {
-	Margins map[string]float64 // unit topic → oee_profile.spike_margin
-	Tenants int                // distinct enterprises that authored a margin
+	Margins     map[string]float64 // unit topic → oee_profile.spike_margin
+	RatedSpeeds map[string]float64 // unit topic → equipments.production_speed (guard bound)
+	Tenants     int                // distinct enterprises that authored a margin
 }
 
 // LoadDBMargins opens its OWN short-lived pool (the decoder holds no DB pool),
@@ -121,14 +132,16 @@ func FetchMargins(ctx context.Context, pool *pgxpool.Pool) (*Result, error) {
 	defer rows.Close()
 
 	margins := map[string]float64{}
+	rated := map[string]float64{}
 	tenants := map[int]struct{}{}
 	for rows.Next() {
 		var (
 			enterpriseID int
 			topic        string
 			margin       float64
+			ratedSpeed   float64
 		)
-		if err := rows.Scan(&enterpriseID, &topic, &margin); err != nil {
+		if err := rows.Scan(&enterpriseID, &topic, &margin, &ratedSpeed); err != nil {
 			return nil, fmt.Errorf("oee-profile: scan margin row: %w", err)
 		}
 		unit := deriveUnitTopic(topic)
@@ -136,12 +149,15 @@ func FetchMargins(ctx context.Context, pool *pgxpool.Pool) (*Result, error) {
 			continue
 		}
 		margins[unit] = margin
+		if ratedSpeed > 0 {
+			rated[unit] = ratedSpeed
+		}
 		tenants[enterpriseID] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("oee-profile: iterate margin rows: %w", err)
 	}
-	return &Result{Margins: margins, Tenants: len(tenants)}, nil
+	return &Result{Margins: margins, RatedSpeeds: rated, Tenants: len(tenants)}, nil
 }
 
 // deriveUnitTopic maps a Sparkplug counter/equipment topic to the unit-topic key
@@ -224,6 +240,7 @@ type Watcher struct {
 
 	mu      sync.RWMutex
 	margins map[string]float64
+	rated   map[string]float64
 	tenants int
 }
 
@@ -239,6 +256,7 @@ func NewWatcher(interval time.Duration, logger *slog.Logger) *Watcher {
 		logger:   logger,
 		interval: interval,
 		margins:  map[string]float64{},
+		rated:    map[string]float64{},
 	}
 }
 
@@ -271,6 +289,15 @@ func (w *Watcher) Margins() map[string]float64 {
 	return w.margins
 }
 
+// RatedSpeeds returns the current unit-topic→rated-speed map (the WS1 guard's
+// plausibility bound, decoupled from counters-only mode — FU#3). Same read-only
+// / fresh-map-swap contract as Margins.
+func (w *Watcher) RatedSpeeds() map[string]float64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.rated
+}
+
 // Tenants reports the distinct profile-authoring tenant count from the most
 // recent successful reload — for boot/health logging, not routing decisions.
 func (w *Watcher) Tenants() int {
@@ -288,10 +315,12 @@ func (w *Watcher) reload(ctx context.Context) {
 	}
 	w.mu.Lock()
 	w.margins = res.Margins
+	w.rated = res.RatedSpeeds
 	w.tenants = res.Tenants
 	w.mu.Unlock()
 	w.logger.Info("oee-profile margins reloaded from DB",
 		slog.Int("tenants", res.Tenants),
 		slog.Int("margin_entries", len(res.Margins)),
+		slog.Int("rated_speed_entries", len(res.RatedSpeeds)),
 	)
 }

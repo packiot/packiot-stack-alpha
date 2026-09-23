@@ -608,6 +608,7 @@ func main() {
 		// did before WS3 (parity). Fail-open like the rates watcher: a DB error on
 		// reload keeps the previous snapshot, so the env default is the floor.
 		spikeMargins := func() map[string]float64 { return map[string]float64{} }
+		spikeRatedSpeeds := func() map[string]float64 { return map[string]float64{} }
 		if cfg.OeeProfileFromDB {
 			oeeProfileWatcher := oeeprofile.NewWatcher(
 				time.Duration(cfg.OeeProfileRefreshSeconds)*time.Second,
@@ -615,10 +616,12 @@ func main() {
 			)
 			oeeProfileWatcher.Start(ctx)
 			spikeMargins = oeeProfileWatcher.Margins
+			spikeRatedSpeeds = oeeProfileWatcher.RatedSpeeds
 			logger.Info("per-client OEE profile: DB watcher started (config-as-data)",
 				slog.Int("refresh_seconds", cfg.OeeProfileRefreshSeconds),
 				slog.Int("tenants", oeeProfileWatcher.Tenants()),
 				slog.Int("margin_entries", len(oeeProfileWatcher.Margins())),
+				slog.Int("rated_speed_entries", len(oeeProfileWatcher.RatedSpeeds())),
 			)
 		}
 
@@ -647,6 +650,7 @@ func main() {
 			idealRates:             idealRates,
 			spikeMarginDefault:     cfg.CalcCounterSpikeMargin,
 			spikeMargins:           spikeMargins,
+			spikeRatedSpeeds:       spikeRatedSpeeds,
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
@@ -1054,6 +1058,10 @@ type calcHooks struct {
 	// it to a closure returning an empty map when the DB watcher is off).
 	spikeMarginDefault float64
 	spikeMargins       func() map[string]float64
+	// spikeRatedSpeeds (FU#3) — unit-topic→rated-speed accessor for the WS1 guard
+	// bound on non-counters-only topics (production_speed from the client OEE
+	// profile). Never nil (main.go sets it to an empty-map closure when off).
+	spikeRatedSpeeds func() map[string]float64
 
 	// resetHeal (ADR-0048 count-spike guard) — when true, Calc re-seeds a
 	// genuine totalizer reset instead of emitting the whole-totalizer
@@ -1395,33 +1403,37 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	msg.CounterSpikeMargin = h.spikeMarginDefault
 	rates := h.idealRates()
 	countersOnly := h.countersOnlyEnabled || (h.countersOnlyAutoFromDB && len(rates) > 0)
-	if countersOnly {
-		// ParseTopic requires the "***"-delimited counter topic shape; the
-		// bare metric.Name has no "***" so it would ALWAYS error, leaving the
-		// opt-in inert. msg.Topic (metric.Name + "***TRIG", built just above)
-		// is the form ParseTopic expects and yields the 5-seg unit topic key.
-		// A role-override message's Topic has no matching Prod*Count
-		// substring, so ParseTopic errors for it too — counters-only mode
-		// doesn't apply to role-mapped counters (that guard exists for the
-		// ABSENT MachSpeed sensor case, orthogonal to role mapping).
-		if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
+	// ParseTopic requires the "***"-delimited counter topic shape; the bare
+	// metric.Name has no "***" so it would ALWAYS error. msg.Topic (metric.Name +
+	// "***TRIG", built just above) is the form ParseTopic expects and yields the
+	// 5-seg unit topic key. A role-override message's Topic has no matching
+	// Prod*Count substring, so ParseTopic errors for it too.
+	if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
+		// WS3 per-client OEE profile: resolve the WS1 spike-guard knobs for THIS
+		// topic. The margin overrides the env default when the client authored one.
+		// The rated speed (FU#3) is the guard's plausibility bound for topics that
+		// are NOT counters-only-mapped (IdealRate stays 0 for them) — so a tenant
+		// that authors a margin gets the guard on its WHOLE fleet, not just the
+		// handful of counters-only lines. Both are nil-guarded: main.go always sets
+		// them, but a hooks value built in a test may leave them nil (no profile).
+		if h.spikeMargins != nil {
+			if m, ok := h.spikeMargins()[unitTopic]; ok && m > 0 {
+				msg.CounterSpikeMargin = m
+			}
+		}
+		if h.spikeRatedSpeeds != nil {
+			if rs, ok := h.spikeRatedSpeeds()[unitTopic]; ok && rs > 0 {
+				msg.GuardRatedSpeed = rs
+			}
+		}
+		// Counters-only opt-in: only for topics with a configured rated speed in
+		// the ideal-rates map (the ABSENT-MachSpeed guard swap). Auto-selection
+		// (machSpeed==0) still happens inside Calc, so a machine that reports speed
+		// is unaffected even when opted in.
+		if countersOnly {
 			if rate, ok := rates[unitTopic]; ok && rate > 0 {
 				msg.CountersOnly = true
 				msg.IdealRate = rate
-				// WS3 per-client OEE profile: the WS1 spike guard's margin is a
-				// per-client knob. Override the env default with this topic's
-				// authored margin when the client set one; the guard only fires
-				// on counters-only machines (IdealRate>0), so resolving it here —
-				// where IdealRate was just set — covers exactly the machines it
-				// can act on. Absent profile ⇒ the env default stays (parity).
-				// nil-guarded: main.go always sets spikeMargins, but a hooks
-				// value built elsewhere (e.g. a unit test that only exercises the
-				// counters-only path) may leave it nil — treat that as "no profile".
-				if h.spikeMargins != nil {
-					if m, ok := h.spikeMargins()[unitTopic]; ok && m > 0 {
-						msg.CounterSpikeMargin = m
-					}
-				}
 			}
 		}
 	}

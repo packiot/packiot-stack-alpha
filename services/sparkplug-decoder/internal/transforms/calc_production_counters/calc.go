@@ -184,6 +184,18 @@ type Message struct {
 	// INERT (byte-identical parity), so it activates only when a client opts in.
 	// This is the first consumer of the per-client OEE profile (WS3 / ADR-0058).
 	CounterSpikeMargin float64
+
+	// GuardRatedSpeed (FU#3) decouples the spike guard's plausibility bound from
+	// counters-only mode. The bound is CounterSpikeMargin × ratedSpeed × interval;
+	// the rated speed used to be IdealRate, which the caller sets ONLY for
+	// counters-only-mapped topics — so a tenant's counter anomalies on lines that
+	// report MachSpeed (or aren't in the ideal-rates map) went unguarded (measured:
+	// 96% of CPACK's >10× anomaly-minutes). When IdealRate is 0 the guard falls
+	// back to this per-equipment rated speed (equipments.production_speed, resolved
+	// from the client's OEE profile), so authoring a spike_margin guards the WHOLE
+	// tenant — with no change to any OEE computation (guard-only). Default 0 ⇒ the
+	// guard only fires where IdealRate is set (the pre-FU#3 behavior, parity).
+	GuardRatedSpeed float64
 }
 
 // countersOnlyGuardK is the multiplier for the counters-only glitch guard:
@@ -589,17 +601,22 @@ func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 	// byte-identical parity). The raw counter baseline is kept unchanged (persisted
 	// below), so a one-off spike is discarded and the next reading differences
 	// normally — real production is never carried away.
-	if msg.CounterSpikeMargin > 0 && msg.IdealRate > 0 {
+	// FU#3: the guard's rated-speed bound is IdealRate for counters-only topics,
+	// else the per-equipment GuardRatedSpeed (production_speed) so the guard
+	// covers every topic of a tenant that authored a margin, not just the
+	// counters-only-mapped ones.
+	guardRate := spikeGuardRate(msg.IdealRate, msg.GuardRatedSpeed)
+	if msg.CounterSpikeMargin > 0 && guardRate > 0 {
 		if lastSpeedTs, _ := state.TimeMs(unitTopic + "/Status/CurMachSpeed___TS"); lastSpeedTs > 0 {
 			interval := timestampMs - lastSpeedTs
-			if c, did := clampSpikeIncrement(consIncr, msg.IdealRate, interval, msg.CounterSpikeMargin); did {
+			if c, did := clampSpikeIncrement(consIncr, guardRate, interval, msg.CounterSpikeMargin); did {
 				dec.EnrichedMsg["counter_spike_clamped_consumed"] = consIncr - c
 				consIncr = c
 			}
-			if c, _ := clampSpikeIncrement(procIncr, msg.IdealRate, interval, msg.CounterSpikeMargin); c != procIncr {
+			if c, _ := clampSpikeIncrement(procIncr, guardRate, interval, msg.CounterSpikeMargin); c != procIncr {
 				procIncr = c
 			}
-			if c, _ := clampSpikeIncrement(defIncr, msg.IdealRate, interval, msg.CounterSpikeMargin); c != defIncr {
+			if c, _ := clampSpikeIncrement(defIncr, guardRate, interval, msg.CounterSpikeMargin); c != defIncr {
 				defIncr = c
 			}
 			// Re-emit the (possibly clamped) increments — the debug fields above were

@@ -71,6 +71,22 @@ func clampSpikeIncrement(incr int64, idealRate float64, intervalMs int64, margin
 	return incr, false
 }
 
+// spikeGuardRate picks the rated-speed bound for the WS1 spike guard (FU#3):
+// the counters-only IdealRate when it is set (>0), otherwise the per-equipment
+// GuardRatedSpeed (equipments.production_speed, from the client OEE profile).
+// This decouples guard COVERAGE from counters-only MODE: a tenant that reports
+// MachSpeed (IdealRate stays 0) still gets its counter anomalies bounded by its
+// nameplate speed. Returns 0 when neither is set ⇒ the guard stays inert.
+func spikeGuardRate(idealRate, guardRatedSpeed float64) float64 {
+	if idealRate > 0 {
+		return idealRate
+	}
+	if guardRatedSpeed > 0 {
+		return guardRatedSpeed
+	}
+	return 0
+}
+
 // applyTrigCorrections implements Phase 4 — the ***TRIG_* suffix corrections.
 // Ordering matters: the JS's `count_zeros` gate makes TRIG_CS and TRIG_CI
 // exclusive (only one fires per message even if both suffixes present, which
