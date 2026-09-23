@@ -815,7 +815,14 @@ func OrderCreated(logger *slog.Logger) Handler {
 		}
 		eq, ok := r.ResolveEquipment(p.IDEquipment)
 		if !ok {
-			return ErrSkip
+			// Not ErrSkip: a silent skip here DROPS THE WHOLE PO (the CPACK count
+			// gap — 491 legacy POs absent from current, hardproofed). The resolver
+			// is built once at startup, so a legacy equipment that maps later (e.g.
+			// its packml_register / staging twin arrives after replay reached this
+			// row) would be lost forever. Return an error → DLQ + bounded retry, so a
+			// transient mapping gap self-heals and a genuinely-unmappable equipment
+			// stays VISIBLE in the DLQ instead of vanishing.
+			return fmt.Errorf("order-created: unresolved equipment %d (mapping incomplete at replay) — DLQ for retry", p.IDEquipment)
 		}
 		_, err := dst.Exec(ctx, sqlInsertPOAvailable,
 			eq.IDEnterprise, eq.IDSite, eq.IDArea, eq.IDEquipment, p.IDOrder.Int64(),
@@ -848,7 +855,8 @@ func OrderCreatedStarted(logger *slog.Logger) Handler {
 		}
 		eq, ok := r.ResolveEquipment(p.IDEquipment)
 		if !ok {
-			return ErrSkip
+			// See OrderCreated: DLQ (retryable) rather than silently dropping the PO.
+			return fmt.Errorf("order-created-started: unresolved equipment %d (mapping incomplete at replay) — DLQ for retry", p.IDEquipment)
 		}
 		if err := openRuntimeWindow(ctx, dst, eq.IDEnterprise, p.IDOrder.Int64(), eq.IDEquipment, tsStart, u.ID, logger); err != nil {
 			return err
