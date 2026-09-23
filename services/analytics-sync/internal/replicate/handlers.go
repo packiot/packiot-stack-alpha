@@ -295,6 +295,12 @@ const sqlUpdatePOStart = `UPDATE core.production_orders
 	   SET status = 2, ts_start = $1, last_update = now()
 	 WHERE id_enterprise = $2 AND id_order = $3`
 
+// sqlPOEquipment reads the PO's own current equipment (set at create). Used to open
+// the runtime window on a start replay without depending on the start payload's
+// legacy equipment resolving — see OrderStarted.
+const sqlPOEquipment = `SELECT COALESCE(id_equipment, 0) FROM core.production_orders
+	 WHERE id_enterprise = $1 AND id_order = $2`
+
 // sqlUpdatePOStop closes a PO at ts_end=$2. The `ts_start IS NULL OR
 // ts_start <= $2` guard prevents writing an inverted [ts_start, ts_end] range
 // when an out-of-order replay delivers a stop whose ts precedes the recorded
@@ -888,10 +894,25 @@ func OrderStarted(logger *slog.Logger) Handler {
 		if err := execExpectingRows(ctx, dst, "production_orders", u.ID, logger, sqlUpdatePOStart, tsStart, ent, idOrder); err != nil {
 			return err
 		}
-		if eq, ok := r.ResolveEquipment(p.IDEquipment); ok {
-			return openRuntimeWindow(ctx, dst, ent, idOrder, eq.IDEquipment, tsStart, u.ID, logger)
+		// Open the runtime window using the PO's OWN equipment, resolved from the PO
+		// record — NOT gated on the start payload's legacy equipment resolving.
+		//
+		// The prior code skipped openRuntimeWindow (silent `return nil`) whenever
+		// r.ResolveEquipment(p.IDEquipment) missed, even though the PO already carries
+		// a valid current id_equipment (set at create) and sqlOpenWindow inserts using
+		// po.id_equipment anyway. That gate silently dropped the runtime window for
+		// ~58% of replayed CPACK POs: they got ts_start but no runtime row, so
+		// compute.go had nothing to attribute and the raw production (present in
+		// silver/historian) never reached any aggregate. Resolving from the PO removes
+		// the payload-equipment dependency entirely.
+		var idEquipment int
+		if err := dst.QueryRow(ctx, sqlPOEquipment, ent, idOrder).Scan(&idEquipment); err != nil {
+			return failOpenIfMissing(err, "production_orders_runtime", u.ID, logger)
 		}
-		return nil
+		if idEquipment == 0 {
+			return nil // started PO with no equipment on record — nothing to open
+		}
+		return openRuntimeWindow(ctx, dst, ent, idOrder, idEquipment, tsStart, u.ID, logger)
 	}
 }
 
