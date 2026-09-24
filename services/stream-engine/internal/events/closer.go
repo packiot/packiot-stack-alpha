@@ -117,7 +117,7 @@ WITH scope AS (
        AND m.gross_production_incr > 0
      GROUP BY s.id_equipment, s.thr
 ), open_ev AS (
-    SELECT ev.id_equipment_event, ev.id_equipment, ev.ts_event,
+    SELECT ev.id_equipment_event, ev.id_equipment, ev.ts_event, ev.status,
            lead(ev.ts_event) OVER (PARTITION BY ev.id_equipment
                ORDER BY ev.ts_event, ev.id_equipment_event) AS next_ts
       FROM %[1]s.equipment_events ev
@@ -140,7 +140,15 @@ WITH scope AS (
       FROM open_ev o
       LEFT JOIN lastcount lc ON lc.id_equipment = o.id_equipment
      WHERE o.next_ts IS NOT NULL
-        OR (lc.last_ts IS NOT NULL AND lc.last_ts + make_interval(secs => lc.thr) < now())
+        -- TRAILING count-silence close is for RUNNING rows ONLY (status 6): an open run
+        -- stretched to now() fabricates availability. An open STOP is ongoing downtime —
+        -- the truth — and its last count PRECEDES it, so greatest(ts_event, last+thr)
+        -- ended it at (or ≤thr after) its own start. Because only ts_end IS NULL rows are
+        -- ever touched, that truncation was PERMANENT even after the machine restarted:
+        -- measured 2026-09-24, CPACK 955/3791 stops truncated (1,328 downtime-hours in 7 d)
+        -- + 253 zero-length. Open stops now stay open until the next transition bounds
+        -- them (the next_ts branch above).
+        OR (o.status = 6 AND lc.last_ts IS NOT NULL AND lc.last_ts + make_interval(secs => lc.thr) < now())
 )
 UPDATE %[1]s.equipment_events ev
    SET ts_end   = p.new_end,
