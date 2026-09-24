@@ -55,7 +55,7 @@ CREATE TEMP TABLE map AS SELECT DISTINCT l.id_equipment AS leg_id, f.id_equipmen
 CREATE TEMP TABLE eqdim AS SELECT * FROM postgres_query('an','SELECT id_equipment,id_site,id_area FROM core.equipments WHERE id_enterprise=${F3ENT}');
 COPY (
   SELECT lpo.ts_start, lpo.ts_end, ${F3ENT} AS id_enterprise, eq.id_site, eq.id_area, map.f3_id AS id_equipment,
-    lpo.id_order, lpo.status,
+    lpo.id_order, lpo.id_product, lpo.status,
     lpo.gross_production,
     -- current-stack clamps: net can never exceed gross; quality = net/gross bounded [0,1];
     -- availability/performance bounded [0,1]. Keeps the archive at least as correct as analytics.
@@ -68,7 +68,7 @@ COPY (
     lpo.running_time, lpo.stopped_time, lpo.available_time, lpo.planned_downtime,
     lpo.production_programmed, lpo.production_ordered, lpo.production_real, lpo.production_final,
     ${F3ENT} AS enterprise, ${Y} AS year, ${M} AS month
-  FROM (SELECT * FROM postgres_query('leg','SELECT id_order, id_equipment, status, ts_start, ts_end, gross_production, net_production, oee_availability, oee_performance, running_time, stopped_time, available_time, planned_downtime, production_programmed, production_ordered, production_real, production_final FROM production_orders WHERE id_enterprise=${LEGENT} AND ts_start>=''${MSTART}'' AND ts_start<''${EFF_END}'' AND id_order IS NOT NULL')) lpo
+  FROM (SELECT * FROM postgres_query('leg','SELECT id_order, id_product, id_equipment, status, ts_start, ts_end, gross_production, net_production, oee_availability, oee_performance, running_time, stopped_time, available_time, planned_downtime, production_programmed, production_ordered, production_real, production_final FROM production_orders WHERE id_enterprise=${LEGENT} AND COALESCE(ts_start, ts_creation)>=''${MSTART}'' AND COALESCE(ts_start, ts_creation)<''${EFF_END}'' AND id_order IS NOT NULL')) lpo
   JOIN map ON map.leg_id = lpo.id_equipment
   JOIN eqdim eq ON eq.id_equipment = map.f3_id
 ) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, OVERWRITE_OR_IGNORE);

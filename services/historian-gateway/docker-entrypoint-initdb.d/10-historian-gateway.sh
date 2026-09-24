@@ -402,6 +402,7 @@ CREATE FOREIGN TABLE live.production_orders (
   id_enterprise     integer,
   id_equipment      integer,
   id_order          bigint,
+  id_product        bigint,
   status            integer,
   gross_production  double precision,
   net_production    double precision,
@@ -425,6 +426,7 @@ SELECT r['ts_start']::timestamp               AS ts_start,
        r['month']::int                        AS month,
        r['id_equipment']::int                 AS id_equipment,
        r['id_order']::bigint                  AS id_order,
+       r['id_product']::bigint                AS id_product,
        r['status']::int                       AS status,
        r['gross_production']::double precision AS gross_production,
        r['net_production']::double precision  AS net_production,
@@ -471,7 +473,7 @@ CREATE OR REPLACE VIEW silver.production_orders AS
   SELECT lp.ts_start, lp.ts_end, lp.id_enterprise,
          EXTRACT(YEAR  FROM lp.ts_start)::int AS year,
          EXTRACT(MONTH FROM lp.ts_start)::int AS month,
-         lp.id_equipment, lp.id_order, lp.status,
+         lp.id_equipment, lp.id_order, lp.id_product, lp.status,
          lp.gross_production, lp.net_production, lp.oee_a, lp.oee_p, lp.oee_q, lp.oee,
          lp.running_time, lp.stopped_time, lp.available_time, lp.planned_downtime
     FROM live.production_orders lp
@@ -479,7 +481,7 @@ CREATE OR REPLACE VIEW silver.production_orders AS
    WHERE c.cutover_ts IS NULL OR lp.ts_start > c.cutover_ts
   UNION ALL
   SELECT h.ts_start, h.ts_end, h.id_enterprise, h.year, h.month,
-         h.id_equipment, h.id_order, h.status,
+         h.id_equipment, h.id_order, h.id_product, h.status,
          h.gross_production, h.net_production, h.oee_a, h.oee_p, h.oee_q, h.oee,
          h.running_time, h.stopped_time, h.available_time, h.planned_downtime
     FROM cold.production_orders h

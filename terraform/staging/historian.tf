@@ -370,6 +370,7 @@ locals {
     { name = "id_area", type = "int" },
     { name = "id_equipment", type = "int" },
     { name = "id_order", type = "bigint" },
+    { name = "id_product", type = "bigint" },
     { name = "status", type = "int" },
     { name = "gross_production", type = "double" },
     { name = "net_production", type = "double" },
