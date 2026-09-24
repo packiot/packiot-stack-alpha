@@ -134,21 +134,41 @@ boundary.
 
 ## 4. Retention & the cold historian
 
-Two layers bound data lifetime:
+**Single source of truth: `ops.retention_policy`** (migration `t-retention-catalog`,
+2026-09-23). One row per time-series relation: `kind` (hypertable/cagg/plain),
+`time_expr`, `keep` (NULL = forever), `tier`, `purge_order`, `cold_copy`, `rationale`.
 
-- **Hot (in `packiot_analytics`, staging):** `silver.equipment_values` retained **90 days**
-  (TimescaleDB `drop_after`); `equipment_events`/`*_raw` 2 years; derived plain tables
-  (`gold.equipment_oee_hourly/_shift`) purged at 90 days by a daily UDA job (`drop_chunks`
-  can't reach non-hypertables). `production_orders` + `equipment_events_man` are
-  deliberately **unbounded** (business/manual data).
-- **Cold (S3 + Athena/DuckDB historian):** a daily job unloads `equipment_values` →
-  **ZSTD Parquet** partitioned `enterprise=/year=/month=` (UTC!), queried via Athena
-  partition projection ($0 catalog) and exposed to read-api/Superset through the
-  **hist-gateway** (`ev_all` union view). Staging prunes cold at 180 days → **~6 months
-  total queryable**; **prod tiers/keeps-forever** — do not apply the staging prune to prod.
+- `CALL ops.apply_retention()` reconciles Timescale retention policies to the catalog
+  (changes only diffs). `SELECT * FROM ops.retention_drift` → want **0 rows**
+  (alerted: `RetentionPolicyDrift`).
+- Plain tables are purged by job 1033 `public.purge_analytics_plain`, now catalog-driven,
+  per-relation fault-isolated, logged to `ops.retention_run` (alerted: `RetentionPurgeErrors`).
+- **Never** `add_retention_policy`/`remove_retention_policy` by hand — edit the catalog
+  (or apply a profile) and call `ops.apply_retention()`.
+- **Environment profiles**: `db/retention/profiles/production.sql` (seeded by the
+  migration) and `staging-capped.sql` (3 months everything — apply only after prod
+  promotion).
 
-The hot 90-day window is a *subset* of the 180-day cold window (not additive); a row is
-archived ~87–90 days before it leaves the hot DB → no gap.
+Production profile (grain-tiered — resolution decays with age):
+
+| Tier | Relations | keep |
+|---|---|---|
+| hot_raw | `silver.equipment_values`, `bronze.*_raw`, 1 s / 1 min caggs | 90 days |
+| hot_agg | hourly caggs, `gold.equipment_oee_hourly` | 13 months |
+| hot_agg | gold shift/daily/weekly/monthly/area/site OEE | forever |
+| hot_agg | `silver.equipment_events` (downtimes) | 5 years |
+| business | POs, PO runtime, box scans, manual events | forever |
+| ops | `cpac_shadow` 90 d, `ops.retention_run` 13 months | |
+
+Timescale trap: a cagg refresh over a range whose raw was dropped DELETES the
+aggregated rows. Every refresh policy's `start_offset` is ≤3 days (safe); never run
+`refresh_continuous_aggregate(..., NULL, NULL)` across dropped raw.
+
+**Cold (historian):** S3 Parquet `enterprise=/year=/month=` + `hist-gateway`
+(pg_duckdb ∪ FDW). Raw/events/POs/shift-OEE 2021→now, daily-maintained.
+S3 lifecycle only TIERS (intelligent-tiering at 30 d) — it never expires data
+prefixes: lifecycle expiration counts OBJECT age (upload time), not data age, so a
+data-age cap must prune partitions by key + refresh the `*_union_boundary` tables.
 
 ---
 

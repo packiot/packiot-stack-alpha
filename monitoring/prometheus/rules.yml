@@ -218,12 +218,42 @@ groups:
   # CAgg-invalidation/queue-depth backlog items land).
   - name: packiot-host-and-db
     rules:
+      # Both boxes: instance="node-exporter:9100" = app EC2, instance="db-box" = DB
+      # EC2 (pushed via the Alloy relay; before 2026-09-23 the DB disk was unmonitored
+      # and reached 79%). Warning at 80% used gives days of runway; critical at 85%.
       - alert: HostDiskFilling
         expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.15
         for: 15m
         labels: {severity: critical}
         annotations:
-          summary: "app EC2 root filesystem <15% free — the 2026-06-22 incident class; prune + snapshot check"
+          summary: "{{ $labels.instance }} root filesystem <15% free — the 2026-06-22 incident class; prune + snapshot check"
+      - alert: HostDiskHigh
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.20
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }} root filesystem >80% used — plan a resize or check ops.retention_policy (db-box)"
+      - alert: DbBoxMetricsMissing
+        expr: absent(node_filesystem_avail_bytes{instance="db-box"})
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "No host metrics from the DB box — alloy-db agent or the 3102 relay is down, so DB disk is unmonitored again"
+      # Retention catalog (ops.retention_policy, migration t-retention-catalog):
+      # live Timescale policies must equal the catalog, and the catalog-driven purge
+      # must not be erroring. Drift = someone changed a policy outside the catalog.
+      - alert: RetentionPolicyDrift
+        expr: pg_retention_drift_rows > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "ops.retention_drift has {{ $value }} rows — live retention differs from the catalog; SELECT * FROM ops.retention_drift"
+      - alert: RetentionPurgeErrors
+        expr: pg_retention_purge_errors_24h > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "catalog purge (job 1033) logged {{ $value }} errors in 24h — SELECT * FROM ops.retention_run WHERE error IS NOT NULL"
       - alert: PostgresDown
         expr: pg_up == 0
         for: 2m
