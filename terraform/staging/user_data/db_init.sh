@@ -74,9 +74,15 @@ rm -rf /tmp/packiot-stack
 # (top/slow-query panels); it is a lightweight in-memory query-stats collector.
 mkdir -p /var/lib/postgresql/data
 
+# LOG ROTATION (2026-09-24): the container ran with an unbounded json-file log —
+# log_min_duration_statement=3000 + auto_explain grew it to 28.8 GB (more than half the
+# disk's "used" 51 GB), and the DB-box Alloy agent re-reading it pegged a CPU on this
+# 2-vCPU box. 5 × 200 MB caps it at 1 GB; slow-query history lives in Loki (relay).
+# Like every flag here, it applies on container RECREATE (maintenance window).
 docker run -d \
   --name timescaledb \
   --restart unless-stopped \
+  --log-driver json-file --log-opt max-size=200m --log-opt max-file=5 \
   --platform linux/arm64 \
   -p 0.0.0.0:5432:5432 \
   -e POSTGRES_PASSWORD="$DB_PASS" \
