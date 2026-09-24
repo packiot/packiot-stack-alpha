@@ -381,6 +381,110 @@ CREATE OR REPLACE VIEW silver.equipment_values AS
     FROM cold.equipment_values h
     JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted;
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- production_orders (PO) — per-PO OEE headline hot+cold union (historian PO archive).
+--   Analytics keeps ~3 months of POs; the full history (legacy 2021-12 →) is archived
+--   to cold by scripts/historian-po-backfill.sh (legacy->F3 remap). COLD-anchored
+--   (EV-style): legacy holds the deep history, analytics (hot FDW) the recent tail.
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Promotion gate: reuse promoted_enterprise (the SOLE cold-side tenant fence). Add a
+-- po_promoted flag (idempotent for both fresh init and an already-running gateway).
+ALTER TABLE promoted_enterprise ADD COLUMN IF NOT EXISTS po_promoted boolean NOT NULL DEFAULT false;
+-- CPACK (ent3) cold POs are the legacy 1->3 remap (id_equipment {47..108} == core.equipments(3)),
+-- the same verified ownership as ev/ee_promoted. Promote it for PO.
+UPDATE promoted_enterprise SET po_promoted = true WHERE id_enterprise = 3;
+
+-- HOT PO: PINNED foreign table (only the served PO fields) from analytics core.production_orders.
+DROP FOREIGN TABLE IF EXISTS live.production_orders;
+CREATE FOREIGN TABLE live.production_orders (
+  ts_start          timestamptz,
+  ts_end            timestamptz,
+  id_enterprise     integer,
+  id_equipment      integer,
+  id_order          bigint,
+  status            integer,
+  gross_production  double precision,
+  net_production    double precision,
+  oee_a             double precision,
+  oee_p             double precision,
+  oee_q             double precision,
+  oee               double precision,
+  running_time      integer,
+  stopped_time      integer,
+  available_time    integer,
+  planned_downtime  integer
+) SERVER live_pg OPTIONS (schema_name 'core', table_name 'production_orders');
+
+-- COLD PO: S3 Parquet (only *-legacy.parquet == the deep-remapped legacy backfill), surfacing
+-- the hive partition columns year/month so a bounded query can PRUNE (T3).
+CREATE OR REPLACE VIEW production_orders AS
+SELECT r['ts_start']::timestamp               AS ts_start,
+       r['ts_end']::timestamp                 AS ts_end,
+       r['enterprise']::int                   AS id_enterprise,
+       r['year']::int                         AS year,
+       r['month']::int                        AS month,
+       r['id_equipment']::int                 AS id_equipment,
+       r['id_order']::bigint                  AS id_order,
+       r['status']::int                       AS status,
+       r['gross_production']::double precision AS gross_production,
+       r['net_production']::double precision  AS net_production,
+       r['oee_a']::double precision           AS oee_a,
+       r['oee_p']::double precision           AS oee_p,
+       r['oee_q']::double precision           AS oee_q,
+       r['oee']::double precision             AS oee,
+       r['running_time']::int                 AS running_time,
+       r['stopped_time']::int                 AS stopped_time,
+       r['available_time']::int               AS available_time,
+       r['planned_downtime']::int             AS planned_downtime
+FROM read_parquet('s3://${HISTORIAN_BUCKET}/production_orders/*/*/*/*-legacy.parquet',
+                  hive_partitioning => true) r;
+
+-- Per-enterprise cutover boundary (cold-anchored): cutover_ts = max(cold.production_orders.ts_start).
+-- COLD owns ts_start <= cutover, HOT owns ts_start > cutover. Read on the HOT side only (pure PG
+-- join, no DuckDB — keeps the cold scan a prunable DuckDBScan). MUST be refreshed by
+-- refresh-po-cutover.sql at init and after every PO backfill, else the newly-archived window
+-- double-counts. Seed inline here (a TOP-LEVEL parquet scan — never a function).
+CREATE TABLE IF NOT EXISTS po_union_boundary (
+  id_enterprise int PRIMARY KEY,
+  cutover_ts    timestamp NOT NULL,
+  refreshed_at  timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE po_union_boundary IS
+  'Cold-anchored PO boundary: cutover_ts = max(production_orders.ts_start) per enterprise. '
+  'COLD owns ts_start<=cutover_ts, HOT owns >. MUST be refreshed (refresh-po-cutover.sql) at '
+  'init and after every PO backfill that extends the cold store, else silver.production_orders '
+  'double-counts the newly-archived window. Only po_promoted enterprises get a row.';
+INSERT INTO po_union_boundary (id_enterprise, cutover_ts, refreshed_at)
+SELECT h.id_enterprise, max(h.ts_start), now()
+  FROM production_orders h
+  JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.po_promoted
+ WHERE h.id_enterprise IS NOT NULL
+ GROUP BY h.id_enterprise
+ON CONFLICT (id_enterprise)
+  DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
+
+-- Unified hot+cold, LEGACY-PRIORITY (cold-anchored) + partition columns.
+-- HOT: live POs strictly newer than this enterprise's historian coverage (LEFT JOIN so a
+--   live-only enterprise with no cutover row keeps all its live POs).
+-- COLD: promoted historian archive only (INNER JOIN po_promoted); all <= cutover by construction.
+CREATE OR REPLACE VIEW silver.production_orders AS
+  SELECT lp.ts_start, lp.ts_end, lp.id_enterprise,
+         EXTRACT(YEAR  FROM lp.ts_start)::int AS year,
+         EXTRACT(MONTH FROM lp.ts_start)::int AS month,
+         lp.id_equipment, lp.id_order, lp.status,
+         lp.gross_production, lp.net_production, lp.oee_a, lp.oee_p, lp.oee_q, lp.oee,
+         lp.running_time, lp.stopped_time, lp.available_time, lp.planned_downtime
+    FROM live.production_orders lp
+    LEFT JOIN po_union_boundary c ON c.id_enterprise = lp.id_enterprise
+   WHERE c.cutover_ts IS NULL OR lp.ts_start > c.cutover_ts
+  UNION ALL
+  SELECT h.ts_start, h.ts_end, h.id_enterprise, h.year, h.month,
+         h.id_equipment, h.id_order, h.status,
+         h.gross_production, h.net_production, h.oee_a, h.oee_p, h.oee_q, h.oee,
+         h.running_time, h.stopped_time, h.available_time, h.planned_downtime
+    FROM cold.production_orders h
+    JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.po_promoted;
+
 -- ── ev_between(): REMOVED (t269 / necessity audit) ───────────────────────────
 -- Was a year/month-pruning helper, but a SQL function body cannot execute pg_duckdb's
 -- read_parquet (pushdown ships to DuckDB which has no PG function context) → calling it

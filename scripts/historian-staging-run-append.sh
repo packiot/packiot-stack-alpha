@@ -10,6 +10,11 @@ set -euo pipefail; export HOME="${HOME:-/root}"
 # cold view's *-legacy.parquet glob never read; superseded by this legacy copy.)
 /opt/packiot/historian/historian-legacy-copy.sh
 
+# production_orders cold archive — incremental (current + previous month), same legacy->F3 remap.
+# The one-time deep backfill to 2021 is a manual run with PO_COPY_MONTHS_BACK=60; the daily job
+# keeps the recent tail archived so silver.production_orders stays continuous across the cutover.
+PO_COPY_MONTHS_BACK="${PO_COPY_MONTHS_BACK:-1}" /opt/packiot/historian/historian-po-backfill.sh
+
 # ── POST-RUN HOOK (R3 refresh + R5 stamp) — the pipeline that EXTENDS the cold store
 # OWNS the boundary refresh. `set -e` fails the whole job if any step errors, so a
 # broken refresh can never silently leave equipment_values_all double-counting. Order matters:
@@ -20,4 +25,5 @@ echo "[historian-append] post-run: stamp cold_append_watermark (R5) + refresh cu
 docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < /opt/packiot/historian/stamp-equipment_values-meta.sql
 docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < /opt/packiot/historian/refresh-equipment_values-cutover.sql
 docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < /opt/packiot/historian/refresh-ee-cutover.sql
-echo "[historian-append] post-run hook complete (cold_append_watermark stamped, cutover boundaries refreshed)"
+docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < /opt/packiot/historian/refresh-po-cutover.sql
+echo "[historian-append] post-run hook complete (cold_append_watermark stamped, cutover boundaries refreshed: EV+EE+PO)"

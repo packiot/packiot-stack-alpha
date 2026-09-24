@@ -345,6 +345,100 @@ resource "aws_glue_catalog_table" "equipment_events" {
 # prod cutover is a later round). Reuse local.historian_ee_columns (identical
 # schema). This staging block is the template.
 
+# ── The production_orders (PO) projection table ──────────────────────────────
+# Codifies the cold production_orders archive (per-PO OEE headline), mirroring the
+# equipment_values / equipment_events pattern (partition projection, no crawler).
+# Analytics keeps only ~3 months of POs; the full history (legacy 2021-12 →) is
+# archived here by scripts/historian-po-backfill.sh (legacy->F3 remap). Columns are
+# the served PO fields; enterprise/year/month are PATH partition keys (files also
+# carry copies — Hive reads the path value, as with EV/EE).
+#
+# ID-SPACE: F3 (legacy id_equipment remapped via packml_register). Only VERIFIED-F3
+# partitions are served (the po_promoted gate in the gateway); the raw archive is
+# never tenant-facing without promotion.
+#
+# APPLY NOTE: reconcile with `terraform import` after the first backfill creates the
+# S3 prefix, do NOT plain-apply if the catalog entry already exists:
+#   terraform import aws_glue_catalog_table.production_orders \
+#     639178078294:packiot_historian_staging:production_orders
+locals {
+  historian_po_columns = [
+    { name = "ts_start", type = "timestamp" },
+    { name = "ts_end", type = "timestamp" },
+    { name = "id_enterprise", type = "int" },
+    { name = "id_site", type = "int" },
+    { name = "id_area", type = "int" },
+    { name = "id_equipment", type = "int" },
+    { name = "id_order", type = "bigint" },
+    { name = "status", type = "int" },
+    { name = "gross_production", type = "double" },
+    { name = "net_production", type = "double" },
+    { name = "oee_a", type = "double" },
+    { name = "oee_p", type = "double" },
+    { name = "oee_q", type = "double" },
+    { name = "oee", type = "double" },
+    { name = "running_time", type = "int" },
+    { name = "stopped_time", type = "int" },
+    { name = "available_time", type = "int" },
+    { name = "planned_downtime", type = "int" },
+    { name = "production_programmed", type = "bigint" },
+    { name = "production_ordered", type = "bigint" },
+    { name = "production_real", type = "bigint" },
+    { name = "production_final", type = "bigint" },
+  ]
+}
+
+resource "aws_glue_catalog_table" "production_orders" {
+  name          = "production_orders"
+  database_name = aws_glue_catalog_database.historian.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    EXTERNAL                      = "TRUE"
+    classification                = "parquet"
+    "parquet.compression"         = "ZSTD"
+    "projection.enabled"          = "true"
+    "projection.enterprise.type"  = "integer"
+    "projection.enterprise.range" = "0,120"
+    "projection.year.type"        = "integer"
+    "projection.year.range"       = "1970,2027"
+    "projection.month.type"       = "integer"
+    "projection.month.range"      = "1,12"
+    "storage.location.template"   = "s3://${aws_s3_bucket.historian.bucket}/production_orders/enterprise=$${enterprise}/year=$${year}/month=$${month}/"
+  }
+
+  partition_keys {
+    name = "enterprise"
+    type = "int"
+  }
+  partition_keys {
+    name = "year"
+    type = "int"
+  }
+  partition_keys {
+    name = "month"
+    type = "int"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.historian.bucket}/production_orders/"
+    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+    }
+
+    dynamic "columns" {
+      for_each = local.historian_po_columns
+      content {
+        name = columns.value.name
+        type = columns.value.type
+      }
+    }
+  }
+}
+
 # ── Athena workgroup ─────────────────────────────────────────────────────────
 # Dedicated workgroup so historian queries are isolated + cost-guarded. Results
 # spill to athena-results/ (lifecycle-expired at 30 d). 10 GB per-query scan
