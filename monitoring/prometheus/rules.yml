@@ -277,8 +277,12 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "cagg {{ $labels.cagg }} stale >15m — OEE rollup plane falling behind"
+      # `and total_runs > 0`: the exporter maps "no status" to 0, so a job that has NEVER
+      # run (policy_telemetry — timescaledb.telemetry_level=off) read as "failing"
+      # (false positive surfaced 2026-09-24 when the exporter finally loaded current
+      # queries, #1406). Live-checked: excludes only that job; all 28 jobs that run stay covered.
       - alert: AnalyticsTimescaleJobFailing
-        expr: pg_timescaledb_jobs_last_run_success{datname="packiot_analytics"} == 0
+        expr: pg_timescaledb_jobs_last_run_success{datname="packiot_analytics"} == 0 and pg_timescaledb_jobs_total_runs{datname="packiot_analytics"} > 0
         for: 15m
         labels: {severity: warning}
         annotations:
