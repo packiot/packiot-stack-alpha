@@ -84,7 +84,11 @@ variable "waf_managed_rules_mode" {
     is a generous DoS guard, not a content filter).
   EOT
   type        = string
-  default     = "count"
+  # ENFORCING LIVE (staging) — flipped at runbook step (e) via `-var` but never codified,
+  # so a plain `terraform apply` would have silently downgraded all 4 managed groups to
+  # observe-only (found by plan review 2026-09-24). Rollout toggles must land in code
+  # the moment they go live (same as edge_cutover above).
+  default = "block"
 
   validation {
     condition     = contains(["count", "block"], var.waf_managed_rules_mode)
