@@ -671,3 +671,97 @@ func TestGoldenLineLeadGrossOnly(t *testing.T) {
 		t.Errorf("gross-only line oee_a = %v, MUST be in (0,1)", oeeA)
 	}
 }
+
+// TestGoldenHourLineLeadAfterEvents — regression for the hourly-vs-shift mismatch
+// (2026-09-24). In RunHour the events step runs BEFORE line-lead and clears
+// recalc_needed on every row with an overlapping event. Once line-lead lines carry
+// their own events, a `recalc_needed = true` guard on the hour pass skipped every
+// closed hour, leaving net at the values step's 0 (the line has no counters) while
+// the shift grain (unguarded) showed the lead's full count — CPACK hourly line net
+// ran ~40 pct below shift. This fixture is that exact state: a line hour row the
+// events step already settled (recalc_needed=false, net=0), a lead with 1000 units.
+//
+//	→ the hour line-lead pass must still write net == gross == 1000 (single writer,
+//	  like shiftLineLeadSQL), and availability from the lead's productive minutes.
+func TestGoldenHourLineLeadAfterEvents(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	const hourSchema = `
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		CREATE TABLE golden.equipment_oee_hourly (
+		    id_equipment int, ts_value timestamptz, recalc_needed boolean DEFAULT false,
+		    gross double precision, net double precision, scrap double precision,
+		    ideal_speed double precision, available_time double precision,
+		    running_time double precision, stopped_time double precision,
+		    planned_downtime double precision, ideal_production double precision,
+		    downtime double precision, changeover_time double precision,
+		    oee double precision, oee_a double precision, oee_p double precision, oee_q double precision
+		);
+		CREATE TABLE golden.equipment_categorical_1hour (
+		    id_equipment int, ts_value timestamptz,
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
+		);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);`
+	for _, s := range []string{goldenSchema, hourSchema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	const fixture = `
+		SET search_path TO golden, public;
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine)
+		VALUES (900,1,1,3,3,NULL,901), (901,1,1,3,1,100,NULL);
+		CREATE TEMP TABLE hour_elig (id_equipment int, ts_value timestamptz);
+		INSERT INTO hour_elig VALUES (900, date_trunc('hour', now()) - interval '2 hours');
+		-- the state the events step leaves: flag cleared, availability from events, net 0
+		INSERT INTO golden.equipment_oee_hourly
+		    (id_equipment, ts_value, recalc_needed, gross, net, scrap, ideal_speed,
+		     available_time, running_time, stopped_time, downtime, oee, oee_a, oee_q)
+		VALUES (900, date_trunc('hour', now()) - interval '2 hours', false, 0, 0, 0, 0,
+		        3600, 1800, 1800, 1800, 0, 0.5, 0);
+		INSERT INTO golden.equipment_categorical_1hour (id_equipment, ts_value, gross_production_incr, net_production_incr, scrap_incr)
+		VALUES (901, date_trunc('hour', now()) - interval '2 hours', 1000, 1000, 0);
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '2 hours' + make_interval(mins => m), 20, 20
+		  FROM generate_series(0,49) m;`
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	stmt := fmtRP(HourLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
+	if _, err := conn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("hour line-lead: %v", err)
+	}
+	var gross, net, running, oeeQ float64
+	var recalc bool
+	if err := conn.QueryRow(ctx, `SELECT gross, net, running_time, oee_q, recalc_needed
+	    FROM golden.equipment_oee_hourly WHERE id_equipment = 900`).Scan(&gross, &net, &running, &oeeQ, &recalc); err != nil {
+		t.Fatal(err)
+	}
+	if net != 1000 || gross != 1000 {
+		t.Errorf("line hour after events: gross=%v net=%v, want 1000/1000 from the lead (a recalc_needed guard leaves 0)", gross, net)
+	}
+	// productive minutes 0..49, idle timeout 300 s → one session 0 → 49+5 = 54 min, clipped to the hour.
+	if math.Abs(running-54*60) > 1 {
+		t.Errorf("running_time = %v, want %v (lead sessionization overrides the events step, like the shift pass)", running, 54*60)
+	}
+	if oeeQ != 1 || recalc {
+		t.Errorf("oee_q=%v recalc_needed=%v, want 1/false", oeeQ, recalc)
+	}
+}
