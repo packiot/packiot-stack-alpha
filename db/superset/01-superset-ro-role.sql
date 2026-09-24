@@ -201,24 +201,18 @@ JOIN equipments eq ON eq.id_equipment = por.id_equipment;  -- id_enterprise sour
 -- gives every stop a legible label even before the operator is live to justify it
 -- on new-prod (desc_category is NULL until then) — NULL → 'Unjustified' (or 'Planned'
 -- / 'Changeover' from the flags). status_label and equipment_label are display aids.
+-- LINE attribution branch: see db/migrations/t-line-downtime-from-lead-machine.
+-- Requires equipments.downtime_from_lead_machine (added by that migration).
+ALTER TABLE equipments ADD COLUMN IF NOT EXISTS downtime_from_lead_machine boolean NOT NULL DEFAULT false;
 CREATE OR REPLACE VIEW bi.downtimes AS
 SELECT
-    eq.id_enterprise,               -- tenant key from the RLS-protected dimension
+    eq.id_enterprise,
     ev.id_equipment_event AS id_downtime,
     ev.id_equipment,
     eq.nm_equipment,
-    ev.cd_category,
-    ev.cd_subcategory,
-    ev.desc_category,
-    ev.desc_subcategory,
-    ev.ts_event AS ts_value,
-    ev.ts_end,
-    ev.duration,
-    ev.planned_downtime,
-    ev.change_over,
-    ev.status,
-    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
-         ELSE ev.status::text END AS status_label,
+    ev.cd_category, ev.cd_subcategory, ev.desc_category, ev.desc_subcategory,
+    ev.ts_event AS ts_value, ev.ts_end, ev.duration, ev.planned_downtime, ev.change_over, ev.status,
+    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped' ELSE ev.status::text END AS status_label,
     COALESCE(ev.desc_category,
              CASE WHEN ev.planned_downtime THEN 'Planned'
                   WHEN ev.change_over      THEN 'Changeover'
@@ -228,7 +222,26 @@ SELECT
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_events ev
 JOIN equipments eq ON eq.id_equipment = ev.id_equipment
-WHERE ev.status <> 6;               -- Downtimes = non-running events (exclude Running=6)
+WHERE ev.status <> 6
+UNION ALL
+-- line attribution of lead-machine stops (flagged lines only)
+SELECT
+    ln.id_enterprise,
+    ev.id_equipment_event AS id_downtime,
+    ln.id_equipment,
+    ln.nm_equipment,
+    ev.cd_category, ev.cd_subcategory, ev.desc_category, ev.desc_subcategory,
+    ev.ts_event AS ts_value, ev.ts_end, ev.duration, ev.planned_downtime, ev.change_over, ev.status,
+    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped' ELSE ev.status::text END AS status_label,
+    COALESCE(ev.desc_category,
+             CASE WHEN ev.planned_downtime THEN 'Planned'
+                  WHEN ev.change_over      THEN 'Changeover'
+                  ELSE 'Unjustified' END) AS reason,
+    ln.nm_equipment || ' (line)' AS equipment_label
+FROM equipments ln
+JOIN equipment_events ev ON ev.id_equipment = ln.lead_machine
+WHERE ln.tp_equipment = 3 AND ln.downtime_from_lead_machine
+  AND ev.status <> 6;
 
 -- Equipment dimension (for joins/filters in the authoring UI). Active only.
 CREATE OR REPLACE VIEW bi.equipments AS
