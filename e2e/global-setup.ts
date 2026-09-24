@@ -26,7 +26,7 @@ export default async function globalSetup() {
     const out = execFileSync('bash', [script, '--heal'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 180_000,
+      timeout: 600_000, // analytics reflection ~2-3 min (config + 14d events + all POs/manual events)
     });
     // Surface the parity + wipe status lines the script prints.
     out
