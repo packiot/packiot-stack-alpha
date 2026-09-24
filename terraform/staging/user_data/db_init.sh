@@ -79,10 +79,15 @@ mkdir -p /var/lib/postgresql/data
 # disk's "used" 51 GB), and the DB-box Alloy agent re-reading it pegged a CPU on this
 # 2-vCPU box. 5 × 200 MB caps it at 1 GB; slow-query history lives in Loki (relay).
 # Like every flag here, it applies on container RECREATE (maintenance window).
+# SHM (2026-09-24): Docker's default /dev/shm is 64 MB; Postgres parallel workers
+# allocate dynamic shared memory there → "could not resize shared memory segment …
+# No space left on device" on large parallel hash joins. 1 GB (≈ the parallel-query
+# working set on this 15 GB box).
 docker run -d \
   --name timescaledb \
   --restart unless-stopped \
   --log-driver json-file --log-opt max-size=200m --log-opt max-file=5 \
+  --shm-size=1g \
   --platform linux/arm64 \
   -p 0.0.0.0:5432:5432 \
   -e POSTGRES_PASSWORD="$DB_PASS" \

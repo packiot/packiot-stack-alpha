@@ -139,25 +139,24 @@ SELECT 'SANDBOX-CPACK data wiped: ent '||$SENT AS status,
   (SELECT count(*) FROM scanned_boxes    WHERE id_enterprise=$SENT) AS boxes_left;
 SQL
 
-# Analytics-plane transactional wipe (packiot_analytics). The operational wipe above
-# only clears the packiot DB, but gold.production_orders_runtime still held OPEN PO
-# windows from the legacy replay — so operator create-and-start 409'd RANGE_CONFLICT
-# (a stale window occupied the equipment even though the operator showed no running
-# PO). Clearing the twin's PO runtime here keeps BOTH planes consistently empty so a
-# fresh PO can be started. Scoped to sbx equipment (via the enterprise join / id).
-# Order: box_scans (FK to production_orders) → runtime → core POs. Analytics
-# reporting re-derives from the replay pipeline; this only clears the twin's rows.
+# Analytics-plane RESET = REFLECTION (packiot_analytics — where every frontend reads and
+# writes via edge-api/read-api). The config clone above only touches the `packiot` DB, so
+# on its own it never reset E2E mutations (2026-09-24: 14 leftover E2E areas, 0 downtime
+# reasons → operator justify had nothing to pick, 903 accumulated manual events). The
+# procedure (db/migrations/t-sandbox-reflection) makes the twin an exact, id-remapped
+# reflection of ent 3: config upsert + extras deleted; events in the last 14 days
+# restored from their CPACK twin (undoes justify/split); ALL manual events + POs +
+# runtimes reflected; then the resolved-downtime window is re-materialized. History
+# (years) is filled once by `CALL ops.sandbox_reflect(..., true)` and kept thereafter.
+# statement_timeout must be set BEFORE the CALL (armed at top-level statement start).
 read -r -d '' SQL_WIPE_ANALYTICS <<SQL || true
-SET session_replication_role = replica;
-DELETE FROM box_scans b USING core.production_orders p
-  WHERE b.id_production_order = p.id_production_order AND p.id_enterprise = $SENT;
-DELETE FROM gold.production_orders_runtime r USING core.equipments e
-  WHERE r.id_equipment = e.id_equipment AND e.id_enterprise = $SENT;
-DELETE FROM core.production_orders WHERE id_enterprise = $SENT;
-SET session_replication_role = DEFAULT;
-SELECT 'SANDBOX analytics PO wipe: ent '||$SENT AS status,
-  (SELECT count(*) FROM gold.production_orders_runtime r JOIN core.equipments e USING(id_equipment)
-     WHERE e.id_enterprise=$SENT AND upper(r.runtime_timerange) IS NULL) AS open_windows_left;
+SET statement_timeout = '20min';
+CALL ops.sandbox_reflect($SRC_ENT, $SENT, $OFF, interval '14 days', false);
+SELECT 'SANDBOX analytics reflected: ent '||$SENT AS status,
+  serving.refresh_downtime_events_resolved(now() - interval '15 days', now()) AS resolved_rows,
+  (SELECT count(*) FROM core.production_orders WHERE id_enterprise=$SENT) AS pos,
+  (SELECT count(*) FROM core.areas a JOIN core.sites s USING (id_site) WHERE s.id_enterprise=$SENT) AS areas,
+  (SELECT count(*) FROM core.downtime_reason WHERE id_enterprise=$SENT) AS reasons;
 SQL
 
 # CREATE. jsonb-override clone: to_jsonb(row) || overrides, then json_populate_record
