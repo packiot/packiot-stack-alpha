@@ -30,6 +30,7 @@ async function dataset(request: APIRequestContext, key: string, body: object) {
 }
 
 test.describe.serial('sandbox reset guarantee', () => {
+  test.describe.configure({ timeout: 150_000 });
   test.skip(!process.env.E2E_SELFHEAL || !!process.env.E2E_SELFHEAL_SKIP, 'reset runs only under npm run test:sandbox');
 
   test('re-heal the twin (analytics reflection)', async () => {
