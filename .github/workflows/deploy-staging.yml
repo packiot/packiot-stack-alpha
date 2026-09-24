@@ -169,6 +169,41 @@ jobs:
           done
           echo "  reload not confirmed after 10 attempts — config will load on next restart"
 
+      - name: Reload Alloy gateway config (dir-mount + /-/reload, same as Prometheus)
+        # gateway.alloy is read via a DIRECTORY bind mount; Alloy re-reads it on
+        # POST /-/reload (its HTTP server, :12345). Reached over its own netns.
+        continue-on-error: true
+        run: |
+          set +e
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:alloy curlimages/curl:latest \
+                 -sf -X POST http://localhost:12345/-/reload >/dev/null 2>&1; then
+              echo "  alloy config reloaded (attempt $i)"; exit 0
+            fi
+            sleep 3
+          done
+          echo "  alloy reload not confirmed — config loads on next restart"
+
+      - name: Restart postgres-exporter when its queries changed (no hot-reload)
+        # Same inode-trap family as #39/#41: queries.yaml is now read via a
+        # DIRECTORY bind mount, but postgres-exporter only parses
+        # PG_EXPORTER_EXTEND_QUERY_PATH at startup and has no reload endpoint.
+        # Restart only when this push touched monitoring/postgres-exporter/ (or
+        # always on workflow_dispatch / unknown 'before', where we can't diff).
+        # Stateless exporter → one missed scrape, nothing lost.
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set +e
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             && git diff --quiet "$BEFORE" HEAD -- monitoring/postgres-exporter/; then
+            echo "postgres-exporter queries unchanged — no restart"
+          else
+            docker restart postgres-exporter && echo "postgres-exporter restarted to load queries"
+          fi
+
       - name: Reload Alertmanager config (dir-mount makes new file content visible; reload re-reads it)
         # Task #41 — same inode trap as #39/#40, now on the NOTIFICATION path.
         # monitoring/alertmanager is now a DIRECTORY bind mount, so a git checkout
