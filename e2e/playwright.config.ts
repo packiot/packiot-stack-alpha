@@ -77,6 +77,12 @@ export default defineConfig({
     // parity on the CLEAN reflection → mutating suites → sandbox-reset (re-heal +
     // parity). Running parity in parallel with the mutators raced them (it saw the
     // operator's own justify/split as "drift").
+    // Bispharma (ent 5) demo rehearsal — read-only client view in pt-BR (npm run demo:bispharma).
+    {
+      name: 'bispharma-demo',
+      testMatch: /bispharma-demo\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
     {
       name: 'sandbox-operator',
       testMatch: /sandbox-operator\.spec\.ts/,

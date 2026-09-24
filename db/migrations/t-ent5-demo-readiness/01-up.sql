@@ -172,4 +172,14 @@ UPDATE gold.equipment_oee_hourly o SET recalc_needed = true FROM core.equipments
  WHERE o.id_equipment = e.id_equipment AND e.id_enterprise = 5 AND e.tp_equipment = 3
    AND o.ts_value > now() - interval '24 hours' AND o.ts_value <= now();
 
+-- (5) shift TARGET column: stamped when shift rows are PRE-PROVISIONED (days ahead), not by
+-- the shift rollup (its targets step only sets proportional_target). After the ×60 fix,
+-- 671 current/future ent5 line rows still carried the old tiny target (L01 413) → Mission
+-- Control "% of goal" wrong. Align current + future rows (operator-customized ones kept).
+UPDATE gold.equipment_oee_shift o SET target = t.vl_shift
+  FROM core.equipments e, config.production_targets t
+ WHERE o.id_equipment = e.id_equipment AND t.id_equipment = o.id_equipment
+   AND e.id_enterprise = 5 AND e.tp_equipment = 3 AND o.ts_value > now() - interval '12 hours'
+   AND o.target_customized IS NOT TRUE AND o.target IS DISTINCT FROM t.vl_shift;
+
 COMMIT;
