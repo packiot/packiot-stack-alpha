@@ -53,11 +53,15 @@ test.describe('sandbox front4 (ent 2000003) — reflection of CPACK', () => {
   });
 
   test.describe('parity via read-api (sandbox key vs CPACK key)', () => {
-    // a year of POs / OEE through read-api can take well over the 30 s default
-    test.describe.configure({ timeout: 150_000 });
+    // a year of POs / OEE through read-api can take well over the 30 s default. SERIAL and
+    // one key at a time: a year of production-orders-with-runtimes is ~23-25 s per call, and
+    // firing 2 keys × 3 tests at once pushed one past read-api's 40 s timeout (500) — the
+    // test contending with itself, not a parity failure (2026-09-24: 2,685 = 2,685 serially).
+    test.describe.configure({ mode: 'serial', timeout: 150_000 });
     test('history: 2023 OEE score is identical (history reflection)', async ({ request }) => {
       const body = { dataset: 'oee-score-full', window: { from: '2023-03-01T00:00:00Z', to: '2023-04-01T00:00:00Z' } };
-      const [c, s] = await Promise.all([dataset(request, KEY_CPACK, body), dataset(request, KEY_SBX, body)]);
+      const c = await dataset(request, KEY_CPACK, body);
+      const s = await dataset(request, KEY_SBX, body);
       expect(c.length, 'CPACK has 2023 history').toBeGreaterThan(0);
       expect(s.length).toBe(c.length);
       const avg = (rows: any[]) => rows.reduce((a, r) => a + Number(r.oee ?? r.oee_score ?? 0), 0) / rows.length;
@@ -66,7 +70,8 @@ test.describe('sandbox front4 (ent 2000003) — reflection of CPACK', () => {
 
     test('history: 2023 production orders are identical', async ({ request }) => {
       const body = { dataset: 'production-orders-with-runtimes', window: { from: '2023-01-01T00:00:00Z', to: '2024-01-01T00:00:00Z' } };
-      const [c, s] = await Promise.all([dataset(request, KEY_CPACK, body), dataset(request, KEY_SBX, body)]);
+      const c = await dataset(request, KEY_CPACK, body);
+      const s = await dataset(request, KEY_SBX, body);
       expect(c.length).toBeGreaterThan(1000);
       expect(s.length).toBe(c.length);
       const orders = (rows: any[]) => rows.map((r) => String(r.id_order)).sort().join(',');
@@ -77,7 +82,8 @@ test.describe('sandbox front4 (ent 2000003) — reflection of CPACK', () => {
       const to = new Date(Date.now() - 30 * 60_000); // leave the still-open tail out
       const from = new Date(to.getTime() - 3 * 86_400_000);
       const body = { dataset: 'downtimes-events', window: { from: from.toISOString(), to: to.toISOString() } };
-      const [c, s] = await Promise.all([dataset(request, KEY_CPACK, body), dataset(request, KEY_SBX, body)]);
+      const c = await dataset(request, KEY_CPACK, body);
+      const s = await dataset(request, KEY_SBX, body);
       expect(c.length).toBeGreaterThan(0);
       const sig = (rows: any[]) =>
         rows.map((r) => `${r.ts_event}|${r.duration}|${r.cd_category ?? ''}|${r.cd_subcategory ?? ''}`).sort();
