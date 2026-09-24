@@ -15,6 +15,11 @@ set -euo pipefail; export HOME="${HOME:-/root}"
 # keeps the recent tail archived so silver.production_orders stays continuous across the cutover.
 PO_COPY_MONTHS_BACK="${PO_COPY_MONTHS_BACK:-1}" /opt/packiot/historian/historian-po-backfill.sh
 
+# equipment_oee_shift cold archive — incremental (current + previous month), legacy-copy of legacy's
+# still-live shift-OEE. Keeps the cold shift grain continuous to now (legacy computes CPACK shift
+# post-cutover; the historian's gold.equipment_oee_shift view is cold-only, so this is its only feed).
+SHIFT_COPY_MONTHS_BACK="${SHIFT_COPY_MONTHS_BACK:-1}" /opt/packiot/historian/historian-oee-shift-backfill.sh
+
 # ── POST-RUN HOOK (R3 refresh + R5 stamp) — the pipeline that EXTENDS the cold store
 # OWNS the boundary refresh. `set -e` fails the whole job if any step errors, so a
 # broken refresh can never silently leave equipment_values_all double-counting. Order matters:
