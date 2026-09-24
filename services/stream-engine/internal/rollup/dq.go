@@ -247,6 +247,14 @@ const dqScanLimit = 20000
 // shift/hour, NULL::float8 for day/week/month which lack the column), %[5]d =
 // LIMIT. $1 = window interval.
 //
+// `num_nulls(<counters>) = 0` — same contract as the NULLABLE OEE factors above: a NULL
+// counter means "no reading" (skip), NEVER 0. The counters scan into plain float64, so
+// before this guard ONE NULL-counter row in a grain's window aborted the WHOLE scan
+// ("cannot scan NULL into *float64") and failed every runtime-rollup tick (2026-09-24:
+// T1's backfilled LEGACY monthly rows — legacy left counters uncomputed — entered the
+// 365-day month window; the rollups themselves were unaffected, only the DQ side-read).
+// Rows that scanned before are unchanged (they had no NULL counters).
+//
 // `r.ts_value <= now()` is LOAD-BEARING, not cosmetic: Provision (provision.go)
 // pre-materializes a 30-DAY horizon of EMPTY future buckets (net=0, computed_at
 // NULL) so the rollup can UPDATE them in place as data arrives. Those future
@@ -265,6 +273,8 @@ const dqGrainScanSQL = `
 	  JOIN %[3]s.equipments e USING (id_equipment)
 	 WHERE r.ts_value >= now() - $1::interval
 	   AND r.ts_value <= now()
+	   AND num_nulls(r.gross, r.net, r.ideal_production, r.available_time, r.running_time,
+	                 r.stopped_time, r.planned_downtime, r.downtime, r.changeover_time, r.idle_time) = 0
 	 ORDER BY r.ts_value DESC
 	 LIMIT %[5]d`
 
