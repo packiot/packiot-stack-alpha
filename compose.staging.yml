@@ -995,8 +995,14 @@ services:
       # sizes. Cluster-wide queries are master:true so auto-discover doesn't
       # duplicate them per-DB. Consumed by the "Database" v2 Grafana board.
       PG_EXPORTER_EXTEND_QUERY_PATH: /etc/pgexporter/queries.yaml
+    # DIRECTORY bind mount (same inode trap as prometheus #39 / alertmanager #41):
+    # a single-FILE bind pins the inode at create, and git checkout replaces the
+    # file with a new inode — so queries.yaml edits NEVER reached this container
+    # (running since 2026-08-27 on the old file; pg_retention from #1404 was
+    # invisible). The exporter reads queries only at startup, so deploy-staging.yml
+    # restarts it when monitoring/postgres-exporter/ changed.
     volumes:
-      - ./monitoring/postgres-exporter/queries.yaml:/etc/pgexporter/queries.yaml:ro
+      - ./monitoring/postgres-exporter:/etc/pgexporter:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.28
@@ -1088,7 +1094,10 @@ services:
       - --storage.path=/var/lib/alloy/data
       - /etc/alloy/gateway.alloy
     volumes:
-      - ./monitoring/alloy/gateway.alloy:/etc/alloy/gateway.alloy:ro
+      # DIRECTORY bind mount (inode trap #39/#41): a single-file bind pinned the old
+      # inode, so gateway.alloy edits only landed when something else forced a
+      # recreate. deploy-staging.yml POSTs /-/reload after up -d.
+      - ./monitoring/alloy:/etc/alloy:ro
       - alloy-data:/var/lib/alloy/data
     ports:
       # Loki-push endpoint for the cross-box DB log agent. Bound to the private
