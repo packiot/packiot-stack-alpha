@@ -13,6 +13,13 @@
 #   DB_INSTANCE=i-... APP_PRIVATE_IP=10.x.x.x scripts/deploy-db-agent.sh
 #
 # Idempotent: rewrites /opt/alloy/db-agent.alloy and recreates the container.
+#
+# --cpus 0.3: the DB box has 2 vCPUs shared with Postgres; an agent catching up on a
+#   large log must never compete with the database (2026-09-24: it held ~0.5 core).
+# alloy-db-data volume: persists Alloy's positions (--storage.path). Without it EVERY
+#   recreate re-tails the timescaledb container log FROM THE START (it was 28.8 GB).
+#   ⚠ The FIRST recreate with this volume still re-reads once — do it AFTER the
+#   timescaledb log is rotated/truncated (db_init.sh log opts, maintenance window).
 # Verify afterwards (app box): absent(node_filesystem_avail_bytes{instance="db-box"}) == empty.
 set -euo pipefail
 
@@ -31,6 +38,8 @@ docker pull -q $IMAGE >/dev/null
 docker rm -f alloy-db >/dev/null 2>&1 || true
 docker run -d --name alloy-db --restart unless-stopped \\
   --pid host \\
+  --cpus 0.3 \\
+  -v alloy-db-data:/var/lib/alloy/data \\
   -e ALLOY_LOKI_GATEWAY=http://$APP_PRIVATE_IP:3101/loki/api/v1/push \\
   -e ALLOY_PROM_GATEWAY=http://$APP_PRIVATE_IP:3102/api/v1/metrics/write \\
   -e ALLOY_DEPLOY_MODE=docker \\
