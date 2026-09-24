@@ -155,6 +155,26 @@ same `client_descriptors` read-path added to `stream-engine` (which today reads 
 
 ---
 
+## 4b. Follow-ups (2026-09-23) — two misdiagnoses caught by hardproof-before-change
+
+- **FU#3 — WS1 guard coverage (DONE + LIVE, PR #1394).** WS1 only fired where IdealRate>0 (counters-only
+  L5/L6) = 37 of 850 (>10× rated) anomaly-minutes; **813 (96%) on other lines went unguarded.** (The "11
+  sensorless machines" red herring: they have raw_gross=0 — no counts — so OEE=0 is line-lead design, not a
+  gap.) Fix decouples the guard's rated-speed bound from counters-only mode (`spikeGuardRate(IdealRate,
+  GuardRatedSpeed)`; the oeeprofile.Watcher now also loads production_speed per topic). Activated by authoring
+  CPACK `oee_profile.spike_margin=10` → watcher loads 62/62 topics → all 27 anomaly-emitters covered.
+- **FU#8 — PO-grain A/P=0 (PR #1395 + flip #1397).** A **structural gap, not the ADR-0049 flags** (which only
+  touch the equipment grain — already on, yet PO A/P still 0). `available_time`/`planned_downtime` were written
+  by nobody (legacy commented out, Go port reproduced). Fix = compute.go Phase-B2 availability pass mirroring
+  hour.go onto the PO grain, flag-gated `PO_AVAILABILITY_ENABLED` (default-off parity, golden-fixture validated).
+  Line/equipment-grain OEE was always correct; only the PO headline. Known + worked-around since Jan-2024.
+- **FU#4 — WS3 Phase 2a (PR #1396).** stream-engine gains its first client_descriptors reader
+  (internal/oeeprofile, mirrors the decoder loader + shiftresolver): unions line-lead enterprises from the
+  profile onto the env set at boot. Phase 2b = per-equipment availability + quality_basis (new SQL, 5 sites) +
+  stop_threshold. Env=floor, profile adds, parity when none.
+- **FU#6** not a bug (PO_RECALC_WINDOW env-configurable; backfills self-heal via a wider catch-up pass).
+  **FU#7** DLQ empty. **FU#9** FLEXO legacy same-day-PO overlaps. **FU#10** prod N/A until CPACK migrates.
+
 ## 5. Sequencing
 
 1. **WS1 (guard)** — highest correctness value; ship with a per-equipment bound + a client-default
