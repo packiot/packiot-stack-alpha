@@ -1825,7 +1825,13 @@ services:
       # events-close-stale job (60s) bounds non-latest opens by lead(ts_event) and the
       # trailing open by count-silence after grace; skips operator-justified rows.
       EVENTS_CLOSE_STALE_ENABLED: "true"
-      EVENTS_CLOSE_STALE_ENTERPRISES: "3"
+      # ent5 (2026-09-24): #1384 made Bispharma LIVE-derived (CPAC_EVENT_LIVE_ENTERPRISES=5,
+      # status_type=0) but this list stayed "3" → every ent5 event since 09-23 sat OPEN
+      # (ts_end NULL, e.g. a 15:36 stop followed by a 15:39 run never closed at 15:39):
+      # operator/front4 showed ~1-min stops with no end, and open rows stretch to now() in
+      # the rollup (the fabricated-availability class this job exists for). RULE: any
+      # enterprise added to a CPAC deriver list must be added here too.
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3,5"
       # ADR-0010 §10.4 PROMOTION — mint LIVE downtime events for counters-only
       # clients that have no other event writer. Bispharma (ent5) is counters-only
       # (no MachSpeed/StateCurrent), so nothing else gives it downtimes; the shadow
