@@ -1,6 +1,6 @@
 # Unified hot+cold serving — grain-tiered retention (design)
 
-Status: **APPROVED 2026-09-23. T0 DONE (live).** Proposed ADR: ADR-0060.
+Status: **APPROVED 2026-09-23. T0–T4 DONE + LIVE on staging; T5 repo-side done (no prod promotion yet — user decision 2026-09-24).** Proposed ADR: ADR-0060.
 Requirement (user): "Our service stack needs to query data from right now and from several years ago
 seamlessly. Mainly Superset and frontends." Big-company maturity: codified, observable, least-privilege,
 prod-parity.
@@ -160,10 +160,11 @@ profile while we build and prove this. When done:
 2. After prod is verified serving, cap staging to 3 months (cost/storage):
    - analytics: `psql -d packiot_analytics -f db/retention/profiles/staging-capped.sql`
      (next purge run deletes >3 mo, FK-ordered by `purge_order`).
-   - historian: `scripts/historian-prune-by-data-age.sh` (TODO, T3) — delete
-     `enterprise=/year=/month=` prefixes older than 3 months, then re-run every
-     `refresh-*-cutover.sql` so hot∪cold neither double-counts nor gaps. **Not** an S3
-     lifecycle rule: lifecycle expires by upload age, not data age.
+   - historian: `scripts/historian-prune-by-data-age.sh` (WRITTEN, dry-run tested
+     2026-09-24: would delete 1,417 objects / ~9.7 GB) — deletes `year=/month=` partitions
+     older than 3 months, then re-runs the `refresh-*-cutover.sql`s. Guards: dry-run default,
+     refuses non-staging buckets / ENVIRONMENT=production, APPLY needs
+     CONFIRM=delete-staging-history. **Not** an S3 lifecycle rule (object age ≠ data age).
 
 ## 8. T0 execution log (2026-09-23)
 
@@ -181,3 +182,47 @@ profile while we build and prove this. When done:
   Prometheus remote-write; alerts HostDiskHigh(80%)/DbBoxMetricsMissing/
   RetentionPolicyDrift/RetentionPurgeErrors. `scripts/deploy-db-agent.sh` codifies the
   previously hand-run agent.
+
+## 9. Execution log T1–T5 (2026-09-24, overnight, user-authorized "go through all phases")
+
+| Phase | PR | Live result |
+|---|---|---|
+| T1 legacy history → analytics | #1410 | shift 322,722 / hourly 495,504 (13 mo) / daily / weekly / monthly / area / site; POs 17,534 + runtimes 17,787; events 1.40 M + manual 5,639; resolved downtimes 2021-12→2026-07 — per-year == legacy. front4 Orders 2023 = 2,685 POs; Downtimes 2023-03 = 11,624 events in 3.3 s (was 120 s timeout) |
+| T1 fix | #1410 | `serving.production_orders` failed on EVERY call (row type missed t281 int8) |
+| T2 honest windows | #1407 | `X-Data-Hot-Floor` / `X-Data-Truncated` / `Warning: 299` derived from the retention catalog (18 bounded datasets); composer 422 before floor |
+| T3 least privilege | #1408 | read-api + Superset on NOSUPERUSER `historian_svc` (duckdb.postgres_role, per-role S3 mapping, histgw_ro RLS/-1) |
+| T4 Superset | #1411 | historian_union was NEVER imported (dashboard-dependency-only import) → `sync_databases.py`; `bi.*` serve 2021→ under RLS (tenant 5 sees 0) |
+| T5 prod parity | this PR | Superset analytics URI env-templated (was hardcoded STAGING); prune script; promotion checklist |
+| ops | #1409 | timescaledb log 28.8 GB unbounded → rotation codified; DB agent CPU cap |
+
+**Honest limit:** history fidelity = legacy's computation. Legacy never populated
+`running_time` for 2021 and only ~15 % of 2024–25 shift rows; `bi.oee_shift` (filters
+`running_time>0` by design) is therefore sparse there — identical to legacy column for column.
+
+## 10. Production promotion checklist (NOT executed — for promotion day)
+
+1. Prod DB: apply migrations `t-retention-catalog` (production profile), `t-analytics-history-backfill`,
+   `t-historian-svc-hardening` — each with a rolled-back dry run first; `SELECT * FROM ops.retention_drift` = 0.
+2. Prod `.env`: `SUPERSET_ANALYTICS_DB=packiot` (T5 templating; host comes from `POSTGRES_HOST_UPSTREAM`);
+   `HIST_GW_SVC_PASSWORD` from a prod secret; verify superset-init logs `superset_ro@10.20.10.89:5432/packiot`.
+3. Prod historian gateway: apply-hardening.sh; prod keeps history FOREVER (lifecycle = tiering only).
+4. Prod history: CPACK prod IS legacy ent1 — decide whether prod analytics backfills like staging (T1 tooling
+   is tenant-parameterized: LEG_ENT / F3_ENT).
+5. After prod verified serving: cap STAGING — `staging-capped.sql` + `historian-prune-by-data-age.sh`
+   (APPLY=1 CONFIRM=delete-staging-history).
+
+## 11. PINNED open items (found during T0–T5; deliberately NOT fixed unattended)
+
+| # | Item | Why pinned |
+|---|---|---|
+| P1 | **SECURITY: historian S3 key printed in a session transcript** (my masking sed missed the `simple_s3_secret` mapping) | Rotate; then re-seed gateway DuckDB secret + re-run `apply-hardening.sh` (historian_svc mapping is a clone). Needs attended window |
+| P2 | **SECURITY: `dev@packiot.com` is a SUPERUSER login on the historian gateway**, and its password sits in plaintext in a memory file | Someone created it; remove/rotate is a human decision; memory file must be scrubbed |
+| P3 | SECURITY: app SG allows SSH 22 from 0.0.0.0/0 | SSM exists; closing it is a policy decision |
+| P4 | Alertmanager parked → every alert (incl. the new disk/retention ones) notifies nobody | Needs a Slack webhook / on-call target |
+| P5 | timescaledb container log 28.8 GB; rotation codified (#1409) but needs container RECREATE | DB restart = maintenance window; then recreate alloy-db with positions volume |
+| P6 | Pre-existing TF drift: historian bucket tags, db_init S3 object | Unrelated to this work; review before any apply |
+| P7 | Superset web/worker single-FILE config mounts (inode trap #39/#41 class) | Dir mount would shadow image /app/pythonpath — needs care |
+| P8 | History fidelity bounded by legacy (running_time) | Recompute OEE from archived raw = separate project |
+| P9 | front4: read `X-Data-Truncated` → "archive" badge; consider raising `analyticsWindow` (400 d) for multi-year aggregate charts | UI/product decision |
+| P10 | Raw archive has a `year=1970` EV partition (bad timestamps) | DQ cleanup |
+| P11 | Only CPACK had legacy history; other tenants start at their onboarding | Expected; note for sales/CS |
