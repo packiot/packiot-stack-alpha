@@ -1,20 +1,19 @@
--- t-serving-hour-grain-production-day — single-period / targets HOUR grain returned the wrong day.
+-- t-serving-hour-grain-production-day — single-period / targets HOUR: day-aligned production-day
+-- bounds with an INCLUSIVE end (same semantics as the DAY grain and total_production_by_team).
 --
 -- APPLY AFTER t-serving-group-by-case-insensitive (#1437), which applies after #1436.
 --
--- SYMPTOM (read-api, CPACK, 2026-09-24): time_grain=hour for "today" (09-24T03:00Z..09-25T02:59Z)
--- returned 0 rows from single-period, single-period-legacy and targets; "yesterday" returned TODAY.
--- ROOT CAUSE (same as total_production_by_team, fixed in #1436): the HOUR branch of the
--- min/max_ts_prod lookups compares the production DATE with date_trunc('hour', in_begin_time).
--- read-api sends UTC instants (BRT midnight = 03:00Z), so the date's midnight < 03:00 drops the
--- first day, and the max lookup's `<=` end pulls in the next.
--- FIX: in the HOUR branches only, date_trunc('day', …) and an exclusive end (`<`) in the max
--- lookup. DAY/WEEK/MONTH branches untouched.
--- PROOF (staging): non-HOUR md5 identical 72/72 (3 fns × day/week/month × none/shifts/teams ×
--- CPACK+Bispharma × windows). HOUR: yesterday / 09-11 → 24 rows, sum == silver
--- equipment_categorical_1hour net for that production date (1,064,542 / 978,901 exact); today →
--- today's hours. Known + unchanged: targets HOUR takes min from the categorical view but max from
--- gold.equipment_oee_hourly (a deliberate legacy choice), so it spans 26 rows.
+-- HONEST SCOPE: this PR first "fixed" an hour off-by-one that was an artifact of UTC-instant test
+-- windows (09-24T03:00Z). front4 sends NAIVE LOCAL windows ('2026-09-24 00:00'..'2026-09-24 23:59';
+-- read-api keeps the wall clock), for which the original hour-truncated bounds were already right —
+-- and that first revision's exclusive end dropped "today" for front4 (live ~30 min, corrected).
+-- What this migration now does: HOUR bounds = date_trunc('day', begin) .. date_trunc('day', end)
+-- inclusive. For front4's windows that is IDENTICAL to the original (proof below); it additionally
+-- keeps a start that is not at midnight (custom range, UTC-instant caller) on the right day.
+-- PROOF (staging, front4-style windows): HOUR md5 == pre-change originals 72/72 (3 fns × 4 windows
+-- incl. multi-day × none/shifts/teams × CPACK+Bispharma); non-HOUR md5 == live 48/48.
+-- Known + unchanged: targets HOUR takes min from the categorical view but max from
+-- gold.equipment_oee_hourly (deliberate legacy choice) → spans 26 rows.
 BEGIN;
 CREATE OR REPLACE FUNCTION serving.single_period_by_team_v4(in_id_enterprise integer, in_id_sites text, in_id_areas text, in_id_equipments text, in_id_shifts text, in_id_teams text, in_begin_time timestamp with time zone, in_end_time timestamp with time zone, time_grain text DEFAULT 'DAY'::text, group_by_element text DEFAULT 'GENERAL'::text)
  RETURNS SETOF single_period_by_team_v4_row
@@ -79,15 +78,15 @@ declare
 						 		when cardinality(in_id_teams::int[]) = 0 then true
 						 		else id_team = any( in_id_teams::int[])
 						 	 end);
-	-- HOUR branches: production-day bounds are DAY-truncated with an exclusive end. read-api sends
-	-- UTC instants (local midnight = 03:00Z); `ts_value_production (date) >= date_trunc('hour', 03:00Z)`
-	-- dropped the first day and `<=` the end added the next → "today" returned 0 rows and
-	-- "yesterday" returned today. Same fix as total_production_by_team (#1436).
+	-- HOUR branches: production-day bounds are DAY-truncated with an INCLUSIVE end, like the DAY
+	-- grain. front4 sends naive local windows ('2026-09-24 00:00' .. '2026-09-24 23:59'); for those
+	-- this equals the original hour-truncated form exactly, and it also keeps a start that is not
+	-- at midnight (or a UTC-instant caller, 03:00Z) on the correct production day.
 	min_ts_prod timestamptz := (select case UPPER(time_grain)
 									when 'HOUR' then
 										(select min(ts_value + interval '0') from silver.equipment_categorical_1hour ev
 											where (ev.ts_value_production >= date_trunc('day', in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc('day', in_begin_time::timestamptz))::date - 1 
-											and ev.ts_value_production < date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
+											and ev.ts_value_production <= date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
 											and ev.id_enterprise = in_id_enterprise
 											and ev.id_area = any( ids_areas)
 											and ev.id_site = any( ids_sites )
@@ -110,7 +109,7 @@ declare
 									when 'HOUR' then
 										(select max(ts_value + interval '0') from silver.equipment_categorical_1hour ev
 										where (ev.ts_value_production >= date_trunc('day', in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc('day', in_begin_time::timestamptz))::date - 1 
-										and ev.ts_value_production < date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
+										and ev.ts_value_production <= date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
 										and ev.id_enterprise = in_id_enterprise
 										and ev.id_area = any( ids_areas)
 										and ev.id_site = any( ids_sites )
@@ -335,15 +334,15 @@ declare
 						 		when cardinality(in_id_teams::int[]) = 0 then true
 						 		else id_team = any( in_id_teams::int[])
 						 	 end);
-	-- HOUR branches: production-day bounds are DAY-truncated with an exclusive end. read-api sends
-	-- UTC instants (local midnight = 03:00Z); `ts_value_production (date) >= date_trunc('hour', 03:00Z)`
-	-- dropped the first day and `<=` the end added the next → "today" returned 0 rows and
-	-- "yesterday" returned today. Same fix as total_production_by_team (#1436).
+	-- HOUR branches: production-day bounds are DAY-truncated with an INCLUSIVE end, like the DAY
+	-- grain. front4 sends naive local windows ('2026-09-24 00:00' .. '2026-09-24 23:59'); for those
+	-- this equals the original hour-truncated form exactly, and it also keeps a start that is not
+	-- at midnight (or a UTC-instant caller, 03:00Z) on the correct production day.
 	min_ts_prod timestamptz := (select case UPPER(time_grain)
 									when 'HOUR' then
 										(select min(ts_value + interval '0') from silver.equipment_categorical_1hour ev
 											where (ev.ts_value_production >= date_trunc('day', in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc('day', in_begin_time::timestamptz))::date - 1 
-											and ev.ts_value_production < date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
+											and ev.ts_value_production <= date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
 											and ev.id_enterprise = in_id_enterprise
 											and ev.id_area = any( ids_areas)
 											and ev.id_site = any( ids_sites )
@@ -366,7 +365,7 @@ declare
 									when 'HOUR' then
 										(select max(ts_value + interval '0') from silver.equipment_categorical_1hour ev
 										where (ev.ts_value_production >= date_trunc('day', in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc('day', in_begin_time::timestamptz))::date - 1 
-										and ev.ts_value_production < date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
+										and ev.ts_value_production <= date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
 										and ev.id_enterprise = in_id_enterprise
 										and ev.id_area = any( ids_areas)
 										and ev.id_site = any( ids_sites )
@@ -550,15 +549,15 @@ declare
 						 		when cardinality(in_id_teams::int[]) = 0 then true
 						 		else id_team = any( in_id_teams::int[])
 						 	 end);
-	-- HOUR branches: production-day bounds are DAY-truncated with an exclusive end. read-api sends
-	-- UTC instants (local midnight = 03:00Z); `ts_value_production (date) >= date_trunc('hour', 03:00Z)`
-	-- dropped the first day and `<=` the end added the next → "today" returned 0 rows and
-	-- "yesterday" returned today. Same fix as total_production_by_team (#1436).
+	-- HOUR branches: production-day bounds are DAY-truncated with an INCLUSIVE end, like the DAY
+	-- grain. front4 sends naive local windows ('2026-09-24 00:00' .. '2026-09-24 23:59'); for those
+	-- this equals the original hour-truncated form exactly, and it also keeps a start that is not
+	-- at midnight (or a UTC-instant caller, 03:00Z) on the correct production day.
 	min_ts_prod timestamptz := (select case UPPER(time_grain)
 									when 'HOUR' then
 										(select min(ts_value + interval '0') from silver.equipment_categorical_1hour ev
 											where (ev.ts_value_production >= date_trunc('day', in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc('day', in_begin_time::timestamptz))::date - 1 
-											and ev.ts_value_production < date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
+											and ev.ts_value_production <= date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
 											and ev.id_enterprise = in_id_enterprise
 											and ev.id_area = any( ids_areas)
 											and ev.id_site = any( ids_sites )
@@ -584,7 +583,7 @@ declare
 --										from silver.equipment_categorical_1hour ev
 										from equipment_oee_hourly ev
 										where (ev.ts_value_production >= date_trunc('day', in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc('day', in_begin_time::timestamptz))::date - 1 
-										and ev.ts_value_production < date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
+										and ev.ts_value_production <= date_trunc('day', in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc('day', in_end_time::timestamptz))::date + 1) 
 --										and ev.id_enterprise = in_id_enterprise
 --										and ev.id_area = any( ids_areas)
 --										and ev.id_site = any( ids_sites )
