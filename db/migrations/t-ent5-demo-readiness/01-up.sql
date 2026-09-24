@@ -1,4 +1,6 @@
 -- t-ent5-demo-readiness — make Bispharma (ent 5) presentable to the client (2026-09-24).
+-- STAGING-ONLY (BDR values are computed from staging data). Applied manually 2026-09-24.
+-- Re-running is safe (idempotent updates; guards pass on an empty order set).
 --
 -- (1) RATED SPEED = BEST DEMONSTRATED RATE (BDR), replacing the MOCK speeds.
 --     t-bispharma-mock-rated-speeds gave every ent5 machine a HASHED placeholder (65–135/min)
@@ -28,8 +30,7 @@
 --     Deleted with their runtimes / box rows. Guarded: aborts if any ent5 order does NOT
 --     match the test-name patterns. The demo starts a real order live in operator.
 --
--- (4) Recompute: line OEE (shift + daily) flagged for 14 days, hourly for 7 days, machine
---     shifts for 3 days.
+-- (4) Recompute: see step (4) below (bounded — the first, unbounded version stalled the rollup).
 --
 -- BACKUP: ops._bkp_ent5_demo_20260924 (speeds, targets, orders, runtimes as jsonb).
 -- ROLLBACK: rollback.sql restores speeds + targets + orders from the backup.
@@ -156,15 +157,19 @@ DELETE FROM gold.po_box_counter WHERE id_production_order IN (SELECT id_producti
 DELETE FROM gold.production_orders_runtime WHERE id_production_order IN (SELECT id_production_order FROM core.production_orders WHERE id_enterprise = 5);
 DELETE FROM core.production_orders WHERE id_enterprise = 5;
 
--- (4) recompute with the new speeds
+-- (4) recompute with the new speeds — ONLY the last 2 days of LINE shifts + 24 h of line hours.
+-- LESSON (2026-09-24, applied live): the first version flagged 14 d of line shifts, 3 d of
+-- MACHINE shifts and 7 d of line hours. (a) A 75-row batch of counters-only line shifts blew
+-- the shift job deadline ("events-bank: timeout") → the WHOLE shift tx rolled back every tick
+-- → current-shift OEE stalled for EVERY tenant. (b) Machine (tp=1) shift rows are only
+-- computed for ROLLUP_MACHINE_LEVEL_ENTERPRISES (=6) → ent5 tp=1 flags are PHANTOM (never
+-- cleared). (c) 200-row hour-backfill batches of line hours timed out every tick. Older
+-- history is recomputed one day per tick by scripts/ops/refill-shift-history.sh.
 UPDATE gold.equipment_oee_shift o SET recalc_needed = true FROM core.equipments e
- WHERE o.id_equipment = e.id_equipment AND e.id_enterprise = 5 AND o.ts_value <= now()
-   AND o.ts_value > now() - CASE WHEN e.tp_equipment = 3 THEN interval '14 days' ELSE interval '3 days' END;
-UPDATE gold.equipment_oee_daily o SET recalc_needed = true FROM core.equipments e
  WHERE o.id_equipment = e.id_equipment AND e.id_enterprise = 5 AND e.tp_equipment = 3
-   AND o.ts_value > now() - interval '14 days' AND o.ts_value <= now();
+   AND o.ts_value > now() - interval '2 days' AND o.ts_value <= now();
 UPDATE gold.equipment_oee_hourly o SET recalc_needed = true FROM core.equipments e
  WHERE o.id_equipment = e.id_equipment AND e.id_enterprise = 5 AND e.tp_equipment = 3
-   AND o.ts_value > now() - interval '7 days' AND o.ts_value <= now();
+   AND o.ts_value > now() - interval '24 hours' AND o.ts_value <= now();
 
 COMMIT;
