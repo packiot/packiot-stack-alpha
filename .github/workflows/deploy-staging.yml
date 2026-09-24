@@ -170,8 +170,14 @@ jobs:
         # until COMPOSE_PROFILES=superset.
         run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
 
-      - name: Prune old images
-        run: docker image prune -f
+      - name: Prune old images + build cache
+        # `docker image prune` never touches the BUILD CACHE, which grows every deploy:
+        # it reached 15.4 GB (0 active) and pushed the 64 GB app disk to 94% on
+        # 2026-09-24 (HostDiskFilling) — the second time after the 22 GB incident.
+        # --keep-storage keeps the most recent 5 GB so builds stay warm.
+        run: |
+          docker image prune -f
+          docker builder prune -f --keep-storage 5GB | tail -1
 
       - name: Reload Prometheus config (dir-mount makes new file content visible; reload re-reads it)
         # Task #39. prometheus.yml/rules.yml are now a DIRECTORY bind mount, so a
