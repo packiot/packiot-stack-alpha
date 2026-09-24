@@ -204,6 +204,7 @@ const shiftLineLeadSQL = `
 
 // hourLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[7]d=idle timeout secs.
 // Leaves oee_p to hourOeePSQL (runs next off the just-cleared rows), matching hourCountsAvailSQL.
+// Overwrites the events step's availability for these lines, exactly like the shift pass.
 const hourLineLeadSQL = `
 	WITH lines AS (
 	    SELECT el.id_equipment AS line_id, el.ts_value,
@@ -322,7 +323,13 @@ const hourLineLeadSQL = `
 	  LEFT JOIN reconciled r ON r.line_id = l.line_id AND r.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
 	 WHERE e.id_equipment = l.line_id AND e.ts_value = l.ts_value
-	   AND e.recalc_needed = true
+	   -- NO recalc_needed guard (mirrors shiftLineLeadSQL): this pass is the SINGLE
+	   -- WRITER of a line-lead line's row. The events step runs first and clears
+	   -- recalc_needed on every row with an overlapping event; once lines carry their
+	   -- own events (lead-machine attribution, since ~2026-09-05) a 'recalc_needed =
+	   -- true' guard skipped every CLOSED hour → net stayed at the values step's 0
+	   -- (the line has no counters) while the open hour looked right. Hourly line net
+	   -- ran ~40 pct below the shift grain. Scope is still hour_elig (the tick's batch).
 	   AND e.ts_value >= now() - interval '6 hour'`
 
 // Test/parity accessors — single-source emission. Deliberately NOT part of the

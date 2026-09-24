@@ -65,9 +65,10 @@ func TestBackfillOeeFinalize_widened(t *testing.T) {
 
 // #207: the backfill now runs the line-from-lead pass so an outage OLDER than the
 // live 6h line-lead lookback still backfills tp=3 LINE hour grains. widen must
-// stretch ONLY the 6h UPDATE guard — never the recalc_needed guard (which scopes
-// the pass to the state-less line rows the events pass left flagged), the tp=3
-// selector, or the per-row lead-machine math.
+// stretch ONLY the 6h UPDATE guard — never the tp=3 selector or the per-row
+// lead-machine math. The pass must NOT carry a recalc_needed guard: the events
+// step clears the flag on every line row with an event, and a guarded line-lead
+// then left closed hours at net 0 (see line_lead.go).
 func TestBackfillLineLead_widened(t *testing.T) {
 	got := widenHourWindows(fmtRP(hourLineLeadSQL, "public", pgIntArrayLiteral([]int{3}), 300))
 	if strings.Contains(got, "interval '6 hour'") {
@@ -76,8 +77,10 @@ func TestBackfillLineLead_widened(t *testing.T) {
 	if !strings.Contains(got, "now() - interval '10 days'") {
 		t.Error("expected the widened 10-day horizon on the line-lead pass")
 	}
+	if strings.Contains(got, "e.recalc_needed = true") {
+		t.Error("line-lead must not be gated on recalc_needed — the events step clears it on every line row with an event")
+	}
 	for _, must := range []string{
-		"e.recalc_needed = true",          // only the state-less line rows
 		"eq.tp_equipment = 3",             // lines only
 		"COALESCE(eq.lead_machine,0) > 0", // must have a designated lead machine
 		"eq.id_enterprise = ANY('{3}'::bigint[])", // opted-in enterprise

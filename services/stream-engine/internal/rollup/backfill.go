@@ -151,9 +151,8 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		{"events", widenHourWindows(fmtRD(hourEventsSQL, d, plannedDowntimeExpr(changeoverAvailability)))},
 	}
 	// #207: LINE-FROM-LEAD backfill. Same position as the live RunHour (after
-	// events, so it targets only the state-less tp=3 line rows the events pass left
-	// flagged) and BEFORE "clear" (its `e.recalc_needed = true` guard needs the flag
-	// still set — clear settles the whole batch). WIDENED to the 10-day horizon:
+	// events, which it overrides for line-lead lines — single writer, like the
+	// shift pass) and BEFORE "clear". WIDENED to the 10-day horizon:
 	// hourLineLeadSQL's live UPDATE guard is `e.ts_value >= now()-6 hour`, so an
 	// outage older than that lookback (e.g. the #196 Sept 1–5 CPACK gap) never had
 	// its tp=3 LINE hour grains recomputed by the backfill — they stayed 0/stranded.
