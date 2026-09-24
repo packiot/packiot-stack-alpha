@@ -69,6 +69,7 @@ type CloserConfig struct {
 	Enterprises     []int // status_type=0 enterprise ids to close (CPACK=3); empty ⇒ no-op
 	ThresholdDefSec int   // trailing-close grace when equipments.stop_threshold_time IS NULL/0
 	HorizonHours    int   // only reconcile opens with ts_event >= now()-horizon (steady-state tail)
+	LongHorizonDays int   // long-open pass: open rows older than the horizon, within this many days
 }
 
 // humanJustifiedPred is the NULL-SAFE human-edit guard for the LIVE
@@ -163,6 +164,45 @@ UPDATE %[1]s.equipment_events ev
    -- missing ts_end at the physically-correct boundary — so it bypasses the guard.
    AND (p.bounded_by_next OR NOT ` + humanJustifiedPred + `)`
 
+// closeLongOpensSQL — the LONG-OPEN pass. closeStaleOpensSQL only sees events with
+// ts_event >= now()-horizon (72 h) and computes lead() inside that window, so an open
+// STOP that outlives the horizon falls out of scope: when its successor arrives days
+// later the stop is never bounded. Measured 2026-09-24: CPACK orphans of 4–52 days
+// (oldest 2024-06-03) shown as open-ended stops in every Events-tab window.
+// This pass takes ONLY open rows older than the horizon (few) within LongHorizonDays and
+// finds each one's successor with a PK-ordered LIMIT 1 lookup (no window over all
+// events), closing it at the successor's ts_event — the same unconditional
+// "bounded-by-next" rule as the main pass (a successor provably ends the interval;
+// category/notes untouched). Rows without a successor stay open. Updates by the true
+// PK (id_equipment, ts_event): id_equipment_event is not unique.
+// %[1]s EvSchema, %[2]s RefSchema. $1 enterprises, $2 horizon hours, $3 long-horizon days.
+const closeLongOpensSQL = `
+WITH scope AS (
+    SELECT e.id_equipment
+      FROM %[2]s.equipments e
+     WHERE e.status_type = 0
+       AND e.tp_equipment IN (1, 3)
+       AND e.id_enterprise = ANY($1)
+), lo AS (
+    SELECT ev.id_equipment, ev.ts_event, nx.ts_event AS next_ts
+      FROM %[1]s.equipment_events ev
+      JOIN scope s ON s.id_equipment = ev.id_equipment
+     CROSS JOIN LATERAL (
+           SELECT n.ts_event FROM %[1]s.equipment_events n
+            WHERE n.id_equipment = ev.id_equipment AND n.ts_event > ev.ts_event
+            ORDER BY n.ts_event LIMIT 1) nx
+     WHERE ev.ts_end IS NULL
+       AND ev.ts_event <  now() - make_interval(hours => $2)
+       AND ev.ts_event >= now() - make_interval(days => $3)
+)
+UPDATE %[1]s.equipment_events ev
+   SET ts_end      = lo.next_ts,
+       duration    = extract(epoch FROM (lo.next_ts - ev.ts_event))::int,
+       last_update = now()
+  FROM lo
+ WHERE ev.id_equipment = lo.id_equipment AND ev.ts_event = lo.ts_event
+   AND ev.ts_end IS NULL`
+
 // defaultInt returns v when it is positive, else def — the inert-safe fallback
 // for a zero-valued CloserConfig knob.
 func defaultInt(v, def int) int {
@@ -206,10 +246,15 @@ func RunOnceClose(ctx context.Context, d Dest, cfg CloserConfig) (int64, error) 
 	if err != nil {
 		return 0, fmt.Errorf("close stale opens: %w", err)
 	}
+	longTag, err := tx.Exec(ctx, fmt.Sprintf(closeLongOpensSQL, d.SilverSchema, d.RefSchema),
+		cfg.Enterprises, horizon, defaultInt(cfg.LongHorizonDays, 60))
+	if err != nil {
+		return 0, fmt.Errorf("close long opens: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("close stale opens commit: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	return tag.RowsAffected() + longTag.RowsAffected(), nil
 }
 
 // LoopClose runs the stale-open closer on a fixed cadence for every destination.

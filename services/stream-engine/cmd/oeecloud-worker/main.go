@@ -458,6 +458,7 @@ func main() {
 				Enterprises:     config.CSVInts(cfg.EventsCloseStaleEnterprises),
 				ThresholdDefSec: cfg.EventsCloseStaleThresholdSec,
 				HorizonHours:    cfg.EventsCloseStaleHorizonHours,
+				LongHorizonDays: cfg.EventsCloseStaleLongHorizonDays,
 			},
 			time.Duration(cfg.EventsCloseStaleIntervalSec)*time.Second, logger, jobObs)
 	}
