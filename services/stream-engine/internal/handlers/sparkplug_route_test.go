@@ -43,14 +43,16 @@ func TestRouteForSource(t *testing.T) {
 			wantEv:        "public",
 		},
 		{
-			// t231 medallion split: facts→silver, raw→bronze, DQ/PO→public.
+			// t231 medallion split: facts→silver, raw→bronze. ev (data_quality_event,
+			// equipment_events_man) is silver too: those tables have no public shim
+			// on packiot_analytics — ev="public" dropped every clamp DQ row silently.
 			name:          "source_type=refactored + shadow configured → analytics pool + medallion layers (t231)",
 			sourceType:    "refactored",
 			analyticsPool: analyticsPool,
 			wantMainPool:  false,
 			wantSilver:    "silver",
 			wantBronze:    "bronze",
-			wantEv:        "public",
+			wantEv:        "silver",
 		},
 		{
 			name:          "source_type=refactored + shadow NOT configured → fallback main pool + all public (fail-safe)",
