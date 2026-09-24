@@ -1837,7 +1837,11 @@ services:
       # operator/front4 showed ~1-min stops with no end, and open rows stretch to now() in
       # the rollup (the fabricated-availability class this job exists for). RULE: any
       # enterprise added to a CPAC deriver list must be added here too.
-      EVENTS_CLOSE_STALE_ENTERPRISES: "3,5"
+      # ent4 (Incoplast-Staging) + 2000003 (SANDBOX-CPACK twin) added 2026-09-24: both are
+      # status_type=0 with no other closer → 8 + ~14.5k never-closed stops (sandbox mostly
+      # Jun–Aug twin-generator era) showed as open-ended in the Events tab. Backlog was
+      # drained in weekly batches first (ops._bkp_orphan_open_stops) so the first tick is light.
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3,4,5,2000003"
       # ADR-0010 §10.4 PROMOTION — mint LIVE downtime events for counters-only
       # clients that have no other event writer. Bispharma (ent5) is counters-only
       # (no MachSpeed/StateCurrent), so nothing else gives it downtimes; the shadow
