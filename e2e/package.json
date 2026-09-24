@@ -17,7 +17,8 @@
     "report": "playwright show-report",
     "trace": "playwright show-trace",
     "install:browsers": "playwright install chromium",
-    "creds": "bash scripts/fetch-creds.sh"
+    "creds": "bash scripts/fetch-creds.sh",
+    "demo:bispharma": "playwright test --project=bispharma-demo"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

@@ -2916,7 +2916,7 @@ services:
       # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
       # keys only; production keys move to Secrets Manager at P3
       # hardening. customer_id is NEVER client-supplied.
-      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4,stg-sbxcpack-key:2000003"
+      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4,stg-sbxcpack-key:2000003,stg-bispharma-key:5"
       # ── ADR-0034: dual-accept IdP cutover (Firebase OR Cognito) ───────────────
       # refdata is now a relying party for the staging Cognito user pool
       # ALONGSIDE Firebase — a front4 session carrying EITHER token resolves its
@@ -3461,6 +3461,48 @@ services:
       REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:-stg-sbxcpack-key}
     ports:
       - "127.0.0.1:8085:80"
+    networks:
+      # No static ipv4_address: nginx proxies to 127.0.0.1:8085 (host port), not the
+      # container IP, so a pin is unneeded — and static IPs on this bridge collide
+      # (172.18.0.42 = superset, .39 = oauth2-proxy). Let Docker auto-assign.
+      - packiot-net
+    depends_on:
+      edge-api:
+        condition: service_started
+      read-api:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── operator-bispharma — Bispharma (ent 5) operator SPA ─────────────────────────
+  # Same image as `operator` / `operator-sbx` (identical build stanza → one image); only
+  # the injected enterprise api-key differs. vhost operator-bispharma.$STAGING_DOMAIN →
+  # 127.0.0.1:8087 (terraform/staging/user_data/nginx_setup.sh).
+  operator-bispharma:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_PO_WRITE_QUEUE_ENABLED: "true"
+        # Cognito auth (public pool + app-client ids, NOT secrets). Vite bakes
+        # them at build; the operator Dockerfile.staging declares the ARGs.
+        VITE_COGNITO_USER_POOL_ID: "us-east-1_0T9t1sTwt"
+        VITE_COGNITO_USER_POOL_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
+    container_name: operator-bispharma
+    restart: unless-stopped
+    environment:
+      # BISPHARMA enterprise api-key (enterprises.api_key WHERE id_enterprise=5). Lives in
+      # /opt/packiot/.env as OPERATOR_BISPHARMA_EDGE_API_KEY (copied DB→.env on the box,
+      # never printed). Empty default = fail-closed (edge-api 401s) if unset. Without its
+      # own operator a Bispharma user on the CPACK operator writes AS CPACK → the tenant
+      # fence 404s every PO/justify write (found 2026-09-24, demo rehearsal).
+      EDGE_API_KEY: ${OPERATOR_BISPHARMA_EDGE_API_KEY:-}
+      REFDATA_API_KEY: ${OPERATOR_BISPHARMA_REFDATA_API_KEY:-stg-bispharma-key}
+    ports:
+      - "127.0.0.1:8087:80"
     networks:
       # No static ipv4_address: nginx proxies to 127.0.0.1:8085 (host port), not the
       # container IP, so a pin is unneeded — and static IPs on this bridge collide
