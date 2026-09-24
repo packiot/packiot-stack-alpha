@@ -200,6 +200,10 @@ type Config struct {
 	EventsCloseStaleEnterprises  string // csv status_type=0 enterprise ids (CPACK=3); empty ⇒ inert
 	EventsCloseStaleThresholdSec int    // trailing-close grace when stop_threshold_time IS NULL/0
 	EventsCloseStaleHorizonHours int    // only reconcile opens with ts_event >= now()-horizon
+	// Long-open pass: open rows OLDER than the horizon but within this many days are
+	// closed at their successor's ts_event (a stop outliving the horizon was never
+	// closed — CPACK orphans of 4–52 days). 0 ⇒ default 60.
+	EventsCloseStaleLongHorizonDays int
 
 	// Sync06ReportEnabled — ADR-0014 P4 / t244: enterprise production
 	// data sync (embedded state machine). Reads serving.data_sync and
@@ -457,6 +461,7 @@ func Load() (*Config, error) {
 		EventsCloseStaleEnterprises:      getenv("EVENTS_CLOSE_STALE_ENTERPRISES", ""),
 		EventsCloseStaleThresholdSec:     getenvInt("EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC", 300),
 		EventsCloseStaleHorizonHours:     getenvInt("EVENTS_CLOSE_STALE_HORIZON_HOURS", 72),
+		EventsCloseStaleLongHorizonDays:  getenvInt("EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS", 60),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
