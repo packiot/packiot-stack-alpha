@@ -75,6 +75,9 @@ x-superset-config-mounts: &superset-config-mounts
   # Post-import dashboard RBAC hardening (runs after import-dashboards). Inert on
   # web/worker; superset-init runs it explicitly.
   - ./configs/superset/harden_dashboard_roles.py:/app/pythonpath/harden_dashboard_roles.py:ro
+  # Database-asset sync (runs after import-dashboards): import-dashboards only imports a
+  # DB as a dashboard DEPENDENCY, so a connection no dashboard uses was never applied.
+  - ./configs/superset/sync_databases.py:/app/pythonpath/sync_databases.py:ro
   # Post-import query_context repair (runs after import-dashboards, before harden).
   # `superset import-dashboards` drops the chart query_context (its baked numeric
   # datasource id does not survive the UUID-keyed dataset remap), which 400s the
@@ -222,6 +225,9 @@ services:
         # no drift. Without this the metadata DB is an empty shell (0 dashboards).
         python /app/pythonpath/import_bundle.py
         superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
+        # Apply EVERY database asset (URI + safety flags), dashboard-referenced or not —
+        # see configs/superset/sync_databases.py (historian_union was never imported).
+        python /app/pythonpath/sync_databases.py
         # Repair each chart's query_context (import-dashboards drops it — the baked
         # numeric datasource id does not survive the UUID dataset remap). Re-derives it
         # from the asset YAMLs against the live dataset ids so the stored-context path

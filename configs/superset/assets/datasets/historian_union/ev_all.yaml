@@ -45,7 +45,7 @@ cache_timeout: 300
 catalog: null
 # t287: the union views moved to the gateway's `cold` schema (symmetric with the hot
 # `live` FDW schema). This virtual dataset addresses cold.silver.equipment_values explicitly.
-schema: cold
+schema: silver
 sql: |
   SELECT
     ts_value,
