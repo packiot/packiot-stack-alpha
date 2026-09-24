@@ -449,10 +449,12 @@ func clampGrainSuffix(kind sparkplug.MetricKind) string {
 //     event mint, po_parameter, uns current-metrics).
 //   - bronze → the ADR-0036 immutable raw append (equipment_values_raw /
 //     equipment_events_raw), dormant unless BRONZE_RAW_APPEND.
-//   - ev     → everything that STAYS in public: data_quality_event (clamp DQ
-//     side-write) and the PO control writes (production_orders dimension +
-//     production_orders_runtime, which is served through its gold shim view).
-//     ev is also the schema the shadow-swallow check keys on.
+//   - ev     → the residual flow schema: data_quality_event (clamp DQ
+//     side-write) and pocontrol's manual-justify equipment_events_man writes.
+//     Both tables live in SILVER on packiot_analytics (their public shims were
+//     dropped ~2026-09-13), matching flows.Dest.EvSchema = "silver" for the same
+//     dest. With ev = "public" both writes failed silently (clamp DQ is
+//     best-effort/swallowed): no INVARIANT_CLAMPED_INCREMENT row after 09-13.
 type route struct {
 	pool   *pgxpool.Pool
 	silver string
@@ -498,7 +500,7 @@ func (h *SparkplugHandler) routeForSource(sourceType string) route {
 	switch sourceType {
 	case "refactored":
 		if h.analyticsPool != nil {
-			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", auth: "identity", grain: "silver", ref: "core", gold: "gold"}
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "silver", auth: "identity", grain: "silver", ref: "core", gold: "gold"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
