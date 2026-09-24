@@ -202,8 +202,8 @@ JOIN equipments eq ON eq.id_equipment = por.id_equipment;  -- id_enterprise sour
 -- on new-prod (desc_category is NULL until then) — NULL → 'Unjustified' (or 'Planned'
 -- / 'Changeover' from the flags). status_label and equipment_label are display aids.
 -- LINE attribution branch: see db/migrations/t-line-downtime-from-lead-machine.
--- Requires core.equipments.downtime_from_lead_machine (added by that migration).
-ALTER TABLE core.equipments ADD COLUMN IF NOT EXISTS downtime_from_lead_machine boolean NOT NULL DEFAULT false;
+-- Requires equipments.downtime_from_lead_machine (added by that migration).
+ALTER TABLE equipments ADD COLUMN IF NOT EXISTS downtime_from_lead_machine boolean NOT NULL DEFAULT false;
 CREATE OR REPLACE VIEW bi.downtimes AS
 SELECT
     eq.id_enterprise,
@@ -220,8 +220,8 @@ SELECT
     eq.nm_equipment || CASE eq.tp_equipment
              WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
-FROM silver.equipment_events ev
-JOIN core.equipments eq ON eq.id_equipment = ev.id_equipment
+FROM equipment_events ev
+JOIN equipments eq ON eq.id_equipment = ev.id_equipment
 WHERE ev.status <> 6
 UNION ALL
 -- line attribution of lead-machine stops (flagged lines only)
@@ -238,8 +238,8 @@ SELECT
                   WHEN ev.change_over      THEN 'Changeover'
                   ELSE 'Unjustified' END) AS reason,
     ln.nm_equipment || ' (line)' AS equipment_label
-FROM core.equipments ln
-JOIN silver.equipment_events ev ON ev.id_equipment = ln.lead_machine
+FROM equipments ln
+JOIN equipment_events ev ON ev.id_equipment = ln.lead_machine
 WHERE ln.tp_equipment = 3 AND ln.downtime_from_lead_machine
   AND ev.status <> 6;
 
