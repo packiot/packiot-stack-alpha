@@ -2885,9 +2885,14 @@ services:
       # the 90-day hot window. HIST_GW_PASSWORD comes from env_file (.env); if it is
       # absent or the gateway is unreachable at boot, the pool is nil and the
       # endpoint returns 503 — read-api is otherwise unchanged (nil-safe, additive).
+      # T3 least privilege: the NOSUPERUSER service identity historian_svc (cold via
+      # duckdb.postgres_role=historian_readers, hot via FDW → remote histgw_ro), NOT the
+      # gateway superuser. Password: Secrets Manager packiot/staging/historian-svc,
+      # mirrored into .env by deploy-staging.yml ("Ensure HIST_GW_SVC_PASSWORD").
       HIST_GW_HOST: hist-gateway
       HIST_GW_PORT: "5432"
-      HIST_GW_USER: postgres
+      HIST_GW_USER: historian_svc
+      HIST_GW_PASSWORD: ${HIST_GW_SVC_PASSWORD:-}
       HIST_GW_DB: packiot_historian
       HEALTH_PORT: "9104"
       # Distributed tracing (OTLP/gRPC). Present = tracing on; a /v1 read becomes

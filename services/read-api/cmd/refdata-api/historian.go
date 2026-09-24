@@ -64,8 +64,10 @@ func newHistPool(ctx context.Context, logger *slog.Logger) *pgxpool.Pool {
 	}
 	host := getenv("HIST_GW_HOST", "hist-gateway")
 	port := getenv("HIST_GW_PORT", "5432")
-	user := getenv("HIST_GW_USER", "postgres")
-	db := getenv("HIST_GW_DB", "postgres")
+	// Defaults = the T3 least-privilege service identity + the gateway's real DB
+	// (was postgres/postgres: the superuser and a DB renamed in #274).
+	user := getenv("HIST_GW_USER", "historian_svc")
+	db := getenv("HIST_GW_DB", "packiot_historian")
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s", host, port, user, pass, db)
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
