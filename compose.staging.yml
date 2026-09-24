@@ -1802,6 +1802,12 @@ services:
       # with that key 7s just makes drains more responsive. Safe to reset to "30"
       # once the dedicated-key build is confirmed draining.
       ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
+      # Per-tick HOUR backfill batch (config default 200). LOWERED to 50 (2026-09-24):
+      # 200 counters-only LINE hours (Bispharma, 23 lines) through the hour line-lead pass
+      # blew the 5-min job deadline every tick ("hour-backfill line-lead: timeout" → tick
+      # killed → nothing drains). 50 finishes well inside it; the backlog is normally tiny,
+      # so the lower batch only matters after a bulk re-flag (speed/target changes).
+      ROLLUP_BACKFILL_LIMIT: "50"
       # Per-tick shift-rollup batch size (config default 300). LOWERED to 75
       # after the shift `line-lead` pass (internal/rollup/line_lead.go) began
       # blowing the runtime-rollup 300s job deadline (2026-09-22): Bispharma

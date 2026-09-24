@@ -29,5 +29,9 @@ json="$(aws secretsmanager get-secret-value --secret-id "$SECRET" --region "$REG
     .clients.sandbox as $s |
     "OPERATOR_SBX_URL=\($s.operatorUrl)",
     "SANDBOX_USER=\($s.user)","SANDBOX_PASSWORD=\($s.password)","SANDBOX_ENTERPRISE_ID=\($s.enterpriseId)"'
+  # Bispharma client view (ent 5, pt-BR) → demo-rehearsal spec (read-only)
+  echo "$json" | jq -r '
+    (.clients.bispharma // empty) as $b |
+    "BISPHARMA_USER=\($b.user)","BISPHARMA_PASSWORD=\($b.password)","BISPHARMA_ENTERPRISE_ID=\($b.enterpriseId)"'
 } > "$OUT"
 echo "wrote $OUT ($(grep -c = "$OUT") vars) from $SECRET"
