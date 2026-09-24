@@ -194,6 +194,8 @@ profile while we build and prove this. When done:
 | T4 Superset | #1411 | historian_union was NEVER imported (dashboard-dependency-only import) → `sync_databases.py`; `bi.*` serve 2021→ under RLS (tenant 5 sees 0) |
 | T5 prod parity | this PR | Superset analytics URI env-templated (was hardcoded STAGING); prune script; promotion checklist |
 | ops | #1409 | timescaledb log 28.8 GB unbounded → rotation codified; DB agent CPU cap |
+| **regression (mine)** | #1414 | T1's legacy monthly rows (NULL counters) entered the 365-day DQ window → every runtime-rollup tick failed its DQ side-read (`cannot scan NULL into *float64`; rollups themselves unaffected). Fix: scan skips NULL-counter rows (NULL = no reading, never 0) |
+| post-sweep | #1415 #1416 #1417 | app disk 94% (build cache 15.4 GB; deploy now prunes, keep 5 GB) · `AnalyticsTimescaleJobFailing` false positive on never-run telemetry job · cagg lag alert relative to schedule. End state 06:03 UTC: **0 alerts firing** |
 
 **Honest limit:** history fidelity = legacy's computation. Legacy never populated
 `running_time` for 2021 and only ~15 % of 2024–25 shift rows; `bi.oee_shift` (filters
@@ -226,3 +228,4 @@ profile while we build and prove this. When done:
 | P9 | front4: read `X-Data-Truncated` → "archive" badge; consider raising `analyticsWindow` (400 d) for multi-year aggregate charts | UI/product decision |
 | P10 | Raw archive has a `year=1970` EV partition (bad timestamps) | DQ cleanup |
 | P11 | Only CPACK had legacy history; other tenants start at their onboarding | Expected; note for sales/CS |
+| P12 | stream-engine `hour reflag: deadlock detected (40P01)` ~1–2×/hour (pre-existing; seen before T1) | Transient (next tick retries); root-cause the lock order between hour reflag and concurrent writers |
