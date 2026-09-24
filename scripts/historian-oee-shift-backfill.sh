@@ -26,10 +26,11 @@ BUCKET="${HISTORIAN_BUCKET:-packiot-staging-historian-639178078294}"
 TENANTS="${SHIFT_COPY_TENANTS:-1:3}"
 LAG_DAYS="${SHIFT_COPY_LAG_DAYS:-1}"
 MONTHS_BACK="${SHIFT_COPY_MONTHS_BACK:-60}"    # ~60 reaches 2021; idempotent
-# END caps the newest month written. DEFAULT = 2026-01-01 so this backfill covers ONLY the
-# 2021-2025 GAP and never overlaps the existing ad-hoc equipment_oee_shift/year=2026 files
-# (the cold view globs *.parquet, so a -legacy file in a 2026 partition would double that month).
-END="${SHIFT_COPY_END:-2026-01-01}"
+# END caps the newest month. Legacy still computes CPACK shift-OEE to now (post-F3-cutover), so
+# legacy-copy keeps the cold archive CONTINUOUS to `now`, like EV/PO — no hot union needed.
+# (The original ad-hoc equipment_oee_shift/year=2026/month=8/data-2026-08.parquet was REMOVED and
+# replaced by the fuller data-2026-08-legacy.parquet, so a to-now END no longer double-writes 2026.)
+END="${SHIFT_COPY_END:-$(date -u -d "today -${LAG_DAYS} days" +%Y-%m-%d)}"
 for pair in $TENANTS; do
   LEGENT="${pair%%:*}"; F3ENT="${pair##*:}"
   for k in $(seq 0 "$MONTHS_BACK"); do

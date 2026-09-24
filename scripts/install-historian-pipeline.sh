@@ -28,6 +28,7 @@ SCRIPTS=(
   historian-append.sh
   historian-legacy-copy.sh
   historian-po-backfill.sh
+  historian-oee-shift-backfill.sh
   historian-staging-run-append.sh
   historian-integrity-monitor.sh
   historian-staleness-monitor.sh
