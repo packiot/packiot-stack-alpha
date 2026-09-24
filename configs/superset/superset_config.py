@@ -147,6 +147,11 @@ TALISMAN_CONFIG = {
     "force_https": False,           # TLS terminates at nginx/CloudFront
     "frame_options": None,          # do NOT set X-Frame-Options (see above)
     "session_cookie_secure": True,
+    # Talisman's init_app OVERWRITES app.config["SESSION_COOKIE_SAMESITE"] with this
+    # (default "Lax") — so SESSION_COOKIE_SAMESITE below was dead config and the
+    # session cookie shipped Lax: never sent in a cross-SITE iframe (staging.packiot.com
+    # → bi.staging.packiot.app) → CSRF 400 on every chart. Must be set HERE.
+    "session_cookie_samesite": "None",
 }
 # Cross-site iframe → the Superset session cookie must be SameSite=None; Secure.
 SESSION_COOKIE_SAMESITE = "None"
