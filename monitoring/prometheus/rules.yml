@@ -271,8 +271,12 @@ groups:
       # Analytics freshness — metrics already flow from postgres-exporter
       # (queries.yaml pg_timescaledb_cagg / pg_timescaledb_jobs); these were
       # unalerted. A stale cagg or failing TS job = OEE rollups falling behind.
+      # Staleness RELATIVE to each cagg's own schedule: > 2× its refresh interval, floor
+      # 15m. A flat 900s fired every cycle on the 30-min hourly caggs (agg_1hour,
+      # categorical_1hour) — structural noise, surfaced 2026-09-24 once the exporter
+      # loaded current queries (#1406). Same query row ⇒ identical labels ⇒ exact match.
       - alert: AnalyticsCaggRefreshLag
-        expr: max by (datname,cagg) (pg_timescaledb_cagg_seconds_since_last_success{datname="packiot_analytics"}) > 900
+        expr: max by (datname,cagg) (pg_timescaledb_cagg_seconds_since_last_success{datname="packiot_analytics"} > clamp_min(2 * pg_timescaledb_cagg_schedule_seconds{datname="packiot_analytics"}, 900))
         for: 10m
         labels: {severity: warning}
         annotations:
