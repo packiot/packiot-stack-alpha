@@ -216,7 +216,7 @@ profile while we build and prove this. When done:
 | # | Item | Why pinned |
 |---|---|---|
 | P1 | **SECURITY: historian S3 key printed in a session transcript** (my masking sed missed the `simple_s3_secret` mapping) | Rotate; then re-seed gateway DuckDB secret + re-run `apply-hardening.sh` (historian_svc mapping is a clone). Needs attended window |
-| P2 | **SECURITY: `dev@packiot.com` is a SUPERUSER login on the historian gateway**, and its password sits in plaintext in a memory file | Someone created it; remove/rotate is a human decision; memory file must be scrubbed |
+| P2 | **SECURITY: one SHARED dev credential (`dev@packiot.com`) is a cluster-global SUPERUSER on the analytics DB (10.10.10.89) AND on the historian gateway**, and the same password is reused for Grafana, CloudBeaver and operator logins (also recorded in plaintext in the operator's private assistant notes) | Rotate + split into per-system credentials; drop SUPERUSER where a read role suffices (T3's `historian_svc` / `readapi_ro` pattern). Human decision — the role is in active use |
 | P3 | SECURITY: app SG allows SSH 22 from 0.0.0.0/0 | SSM exists; closing it is a policy decision |
 | P4 | Alertmanager parked → every alert (incl. the new disk/retention ones) notifies nobody | Needs a Slack webhook / on-call target |
 | P5 | timescaledb container log 28.8 GB; rotation codified (#1409) but needs container RECREATE | DB restart = maintenance window; then recreate alloy-db with positions volume |
