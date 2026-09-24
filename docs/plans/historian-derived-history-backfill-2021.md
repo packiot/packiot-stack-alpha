@@ -1,6 +1,6 @@
 # Historian derived-history backfill to 2021 (POs + OEE-shift grain)
 
-**Status:** PLAN · **Date:** 2026-09-23 · Scope: CPACK (ent3, legacy ent1)
+**Status:** DONE (both items executed on staging 2026-09-23) · **Date:** 2026-09-23 · Scope: CPACK (ent3, legacy ent1)
 
 Driven by: "analytics is 3-month by design; the historian is the everything store —
 backfill POs/runtimes/downtimes to 2021." Validated the historian's real
