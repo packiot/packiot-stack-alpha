@@ -27,12 +27,13 @@
 -- B. BUG: read-api `total-production` time_grain=hour → HTTP 500 since the analytics cutover:
 --    its HOUR branch calls public.piot_get_shift_hour_by_equipment_fixed, which existed only in the
 --    legacy packiot DB (both legacy h_piot_total_production_teams[_2] call it). Ported VERBATIM.
---    With the 500 gone the HOUR result was still wrong: read-api sends UTC instants (local midnight =
---    03:00Z) and `ts_value_production (date) >= date_trunc('hour', 03:00Z)` excluded the first day,
---    while the max lookup's `<=` pulled in the next → "today" returned 24 EMPTY future hours. HOUR
---    now uses day-truncated production-day bounds with an exclusive end (DAY/WEEK/MONTH untouched,
---    md5-identical). Verified: 24 hourly rows per production day, sum == gold.equipment_oee_hourly
---    net for that day (today/yesterday/09-11: 596,928 / 843,391 / 753,083 exact).
+--    HOUR production-day bounds are day-truncated with an INCLUSIVE end (like the DAY grain).
+--    front4 sends naive local windows ('D 00:00'..'D 23:59', read-api keeps the wall clock), for
+--    which this selects exactly production day D; a start that isn't at midnight no longer skips D.
+--    (An earlier revision used an exclusive end, tuned for UTC-instant test windows; it dropped
+--    "today" for front4's real windows and was corrected before merge.) DAY/WEEK/MONTH untouched,
+--    md5-identical. Verified with front4-style windows: 24 hourly rows per production day, sum ==
+--    gold.equipment_oee_hourly net for that day (09-24/09-23/09-11: 744,618 / 843,391 / 753,083).
 --
 -- Indexes: applied live with CREATE INDEX CONCURRENTLY; plain IF NOT EXISTS here (runner is
 -- transactional) — a no-op where they exist.
@@ -147,14 +148,13 @@ declare
 						 		when cardinality(in_id_teams::int[]) = 0 then true
 						 		else id_team = any( in_id_teams::int[])
 						 	 end);
-		-- Production-day bounds. HOUR is day-truncated like DAY: read-api sends UTC instants (local
-	-- midnight = 03:00Z), and `ts_value_production (date) >= date_trunc('hour', 03:00Z)` dropped the
-	-- first day → "today" returned tomorrow's (empty) hours. Now: the hours of the same production
-	-- days the DAY grain shows.
+		-- Production-day bounds. HOUR is day-truncated with an INCLUSIVE end, like the DAY grain: the
+	-- hours of the same production days the DAY grain shows. front4 sends naive local windows
+	-- ('D 00:00' .. 'D 23:59') → production day D; a UTC-instant start (03:00Z) also lands on D.
 	prod_day_grain text := case when upper(time_grain) = 'HOUR' then 'day' else time_grain::text end;
 	min_ts_prod timestamptz := (select case when UPPER(time_grain) = 'HOUR' then min(ts_value + interval '0') else min(ts_value_production) end from equipment_oee_hourly ev join equipments e using (id_equipment)
 								where (ev.ts_value_production >= date_trunc(prod_day_grain, in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc(prod_day_grain, in_begin_time::timestamptz))::date - 1 
-								and ev.ts_value_production < date_trunc(prod_day_grain, in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc(prod_day_grain, in_end_time::timestamptz))::date + 1) 
+								and ev.ts_value_production < date_trunc(prod_day_grain, in_end_time::timestamptz) + case when upper(time_grain) = 'HOUR' then interval '1 day' else interval '0' end and ev.ts_value_production <= (date_trunc(prod_day_grain, in_end_time::timestamptz))::date + 1) 
 								and ev.id_equipment = any( ids_equips )
 								and e.id_area = any( ids_areas )
 								and e.id_site = any( ids_sites )
@@ -165,9 +165,6 @@ declare
 								and ev.id_equipment = any( ids_equips )
 								and e.id_area = any( ids_areas )
 								and e.id_site = any( ids_sites )
-								-- HOUR: end is exclusive (read-api `to` = next local midnight − 1 s → that day's
-								-- production date must not be included), matching the min lookup's `<`.
-								and (upper(time_grain) <> 'HOUR' or ev.ts_value_production < date_trunc('day', in_end_time::timestamptz))
 								);
 begin 
 IF UPPER(time_grain) = 'HOUR' THEN 
