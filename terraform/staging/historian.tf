@@ -74,32 +74,51 @@ resource "aws_s3_bucket_versioning" "historian" {
   }
 }
 
-# Lifecycle:
-#   * equipment_values/ — tier COLD data down (it is a historian; recent months
-#     are hit most). Standard → Standard-IA at 1 yr → Glacier Instant Retrieval
-#     at 2 yr. GIR still serves Athena with ms latency at ~$0.004/GB-mo. We do NOT
-#     use Deep Archive (would break interactive Athena). Don't over-engineer — no
-#     intelligent-tiering, the access pattern is predictable (recent = hot).
-#   * athena-results/ — query-result spill is disposable; expire at 30 days.
+# Lifecycle — codified FROM LIVE on 2026-09-23 (T0, docs/plans/unified-hot-cold-
+# serving-grain-tiered-retention.md). The repo previously declared
+# `expiration { days = 180 }` on equipment_values/ while live had been switched to
+# intelligent-tiering; an apply would have re-armed deletion of the archive.
+#
+# NO EXPIRATION on data prefixes, by design:
+#   S3 lifecycle expiration counts OBJECT age (upload time), NOT the age of the data
+#   inside. A 2021 partition backfilled yesterday is a 1-day-old object; a partition
+#   rewritten daily never expires. So lifecycle CANNOT implement a data-age cap.
+#   The staging 3-month cap (post-prod-promotion) = scripts/historian-prune-by-data-
+#   age.sh (deletes enterprise=/year=/month= prefixes by partition KEY, then refreshes
+#   the *_union_boundary tables so hot∪cold never double-counts or gaps).
+#   * equipment_values/, equipment_events/ — Standard → INTELLIGENT_TIERING at 30 d
+#     (auto-moves untouched objects to IA/archive-instant tiers; no retrieval fees).
+#   * production_orders/, equipment_oee_shift/ — tiny (~6 MB); left Standard (IT's
+#     per-object monitoring fee + 128 KB minimum outweigh savings).
+#   * athena-results/ — disposable query spill; expire at 30 days.
 resource "aws_s3_bucket_lifecycle_configuration" "historian" {
   bucket = aws_s3_bucket.historian.id
   rule {
-    id     = "prune-equipment-values-180d"
+    id     = "expire-athena-results-30d"
+    status = "Enabled"
+    filter { prefix = "athena-results/" }
+    expiration { days = 30 }
+  }
+  rule {
+    id     = "tier-equipment-values-intelligent"
     status = "Enabled"
     filter { prefix = "equipment_values/" }
-    # STAGING is a TEST historian: PRUNE raw Parquet after 6 months. (Production
-    # instead KEEPS forever and only tiers to colder storage — see
-    # terraform/production/historian.tf's 365d/730d transitions.)
-    expiration { days = 180 }
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
     }
   }
   rule {
-    id     = "expire-athena-results"
+    id     = "tier-equipment-events-intelligent"
     status = "Enabled"
-    filter { prefix = "athena-results/" }
-    expiration { days = 30 }
+    filter { prefix = "equipment_events/" }
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
   }
 }
 

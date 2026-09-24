@@ -62,4 +62,24 @@ loki.write "local" {
   }
 }
 
+// ── DB-box HOST METRICS relay (T0 grain-tiered retention, 2026-09-23) ──────────
+// The DB box's disk was never monitored (node-exporter runs only on the app box)
+// and silently reached 79%. The DB-box agent now runs prometheus.exporter.unix and
+// remote-writes here; we forward to Prometheus' remote-write receiver on the
+// internal network. Same push-only posture as the 3101 Loki relay: the DB box
+// accepts no inbound connections.
+prometheus.receive_http "db_metrics" {
+  http {
+    listen_address = "0.0.0.0"
+    listen_port    = 3102
+  }
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
 // Alloy's own UI/metrics on :12345 (health = GET /-/ready).

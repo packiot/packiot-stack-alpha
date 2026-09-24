@@ -85,6 +85,26 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["179.162.112.58/32"]
   }
 
+  # DB-box observability push (DB box → app-box Alloy gateway). The DB box accepts
+  # no inbound; it PUSHES. 3101 = Loki log relay (added live earlier, codified here
+  # 2026-09-23 — it was missing, so an apply would have REVOKED it and silently cut
+  # DB slow-query logs). 3102 = Prometheus remote-write relay for DB host metrics
+  # (disk/cpu/mem; T0 grain-tiered retention). Source = DB SG only.
+  ingress {
+    description     = "Alloy Loki-push from DB-box log agent (staging observability)"
+    from_port       = 3101
+    to_port         = 3101
+    protocol        = "tcp"
+    security_groups = [aws_security_group.db.id]
+  }
+  ingress {
+    description     = "Alloy Prometheus remote-write from DB-box agent (host metrics)"
+    from_port       = 3102
+    to_port         = 3102
+    protocol        = "tcp"
+    security_groups = [aws_security_group.db.id]
+  }
+
   # Shared multi-tenant ingest front-door (ingest.staging:8449) → sparkplug-agent-shared.
   # NOT world-open: admits each onboarded client's box egress /32. As clients are
   # added, append their /32 here (bispharma SP = 200.153.25.2). A key-only public
@@ -116,13 +136,11 @@ resource "aws_security_group" "db" {
   name   = "packiot-staging-db"
   vpc_id = aws_vpc.staging.id
 
-  ingress {
-    description     = "PostgreSQL from App EC2 only"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
-  }
+  # PostgreSQL-from-app ingress is a STANDALONE rule below (not inline): the app SG
+  # now references this SG (DB-box observability push, 3101/3102), and two inline
+  # cross-references form a Terraform dependency cycle. With NO inline ingress
+  # blocks here, this SG's ingress is not authoritative, so the standalone rule is
+  # never revoked. (Egress stays inline.)
 
   egress {
     description = "OS updates and SSM via fck-nat"
@@ -133,4 +151,21 @@ resource "aws_security_group" "db" {
   }
 
   tags = { Name = "packiot-staging-db-sg" }
+}
+
+# PostgreSQL from the App EC2 only — standalone to break the app<->db SG cycle
+# (see aws_security_group.db). Adopts the EXISTING live rule via import (no
+# revoke/recreate, no connection blip) on the next apply.
+import {
+  to = aws_vpc_security_group_ingress_rule.db_postgres_from_app
+  id = "sgr-032604d5e315a1ebf"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_postgres_from_app" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "PostgreSQL from App EC2 only"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.app.id
 }

@@ -50,3 +50,45 @@ loki.write "gateway" {
     url = env("ALLOY_LOKI_GATEWAY")   // http://<app-box-private-ip>:3101/loki/api/v1/push
   }
 }
+
+// ── HOST METRICS (T0 grain-tiered retention, 2026-09-23) ───────────────────────
+// node_exporter-equivalent collectors for the DB box, pushed to the app-box
+// gateway (ALLOY_PROM_GATEWAY = http://<app-box-private-ip>:3102/api/v1/metrics/write).
+// The container must mount the host root at /host/root (read-only) so filesystem
+// metrics describe the HOST disk, not the container overlay — see
+// scripts/deploy-db-agent.sh. instance="db-box" keeps it distinct from the app
+// box's node-exporter in every alert and panel.
+prometheus.exporter.unix "host" {
+  rootfs_path = "/host/root"
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  set_collectors = ["filesystem", "cpu", "meminfo", "loadavg", "diskstats", "netdev", "uname"]
+  filesystem {
+    fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs|vfat)$"
+    mount_points_exclude = "^/(dev|proc|sys|run|var/lib/docker/.+)($|/)"
+  }
+}
+
+discovery.relabel "host" {
+  targets = prometheus.exporter.unix.host.targets
+  rule {
+    target_label = "instance"
+    replacement  = "db-box"
+  }
+  rule {
+    target_label = "job"
+    replacement  = "node-exporter-db"
+  }
+}
+
+prometheus.scrape "host" {
+  targets         = discovery.relabel.host.output
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.gateway.receiver]
+}
+
+prometheus.remote_write "gateway" {
+  endpoint {
+    url = env("ALLOY_PROM_GATEWAY")
+  }
+}
