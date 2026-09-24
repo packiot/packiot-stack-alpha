@@ -79,14 +79,13 @@ declare
 						 		when cardinality(in_id_teams::int[]) = 0 then true
 						 		else id_team = any( in_id_teams::int[])
 						 	 end);
-		-- Production-day bounds. HOUR is day-truncated like DAY: read-api sends UTC instants (local
-	-- midnight = 03:00Z), and `ts_value_production (date) >= date_trunc('hour', 03:00Z)` dropped the
-	-- first day → "today" returned tomorrow's (empty) hours. Now: the hours of the same production
-	-- days the DAY grain shows.
+		-- Production-day bounds. HOUR is day-truncated with an INCLUSIVE end, like the DAY grain: the
+	-- hours of the same production days the DAY grain shows. front4 sends naive local windows
+	-- ('D 00:00' .. 'D 23:59') → production day D; a UTC-instant start (03:00Z) also lands on D.
 	prod_day_grain text := case when upper(time_grain) = 'HOUR' then 'day' else time_grain::text end;
 	min_ts_prod timestamptz := (select case when UPPER(time_grain) = 'HOUR' then min(ts_value + interval '0') else min(ts_value_production) end from equipment_oee_hourly ev join equipments e using (id_equipment)
 								where (ev.ts_value_production >= date_trunc(prod_day_grain, in_begin_time::timestamptz) and ev.ts_value_production >= (date_trunc(prod_day_grain, in_begin_time::timestamptz))::date - 1 
-								and ev.ts_value_production < date_trunc(prod_day_grain, in_end_time::timestamptz) and ev.ts_value_production <= (date_trunc(prod_day_grain, in_end_time::timestamptz))::date + 1) 
+								and ev.ts_value_production < date_trunc(prod_day_grain, in_end_time::timestamptz) + case when upper(time_grain) = 'HOUR' then interval '1 day' else interval '0' end and ev.ts_value_production <= (date_trunc(prod_day_grain, in_end_time::timestamptz))::date + 1) 
 								and ev.id_equipment = any( ids_equips )
 								and e.id_area = any( ids_areas )
 								and e.id_site = any( ids_sites )
@@ -97,9 +96,6 @@ declare
 								and ev.id_equipment = any( ids_equips )
 								and e.id_area = any( ids_areas )
 								and e.id_site = any( ids_sites )
-								-- HOUR: end is exclusive (read-api `to` = next local midnight − 1 s → that day's
-								-- production date must not be included), matching the min lookup's `<`.
-								and (upper(time_grain) <> 'HOUR' or ev.ts_value_production < date_trunc('day', in_end_time::timestamptz))
 								);
 begin 
 	-- read-api lowercases enum filters ('shifts'); every comparison below is against the
