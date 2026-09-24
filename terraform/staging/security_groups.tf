@@ -1,30 +1,15 @@
 # ── App EC2 SG ────────────────────────────────────────────────────────────────
 # HTTP/HTTPS open to internet — Nginx basic auth is the access control layer.
-# SSH kept open for emergency ops access (key pair only, no password auth).
+# No SSH ingress — access via SSM Session Manager (see below).
 
 resource "aws_security_group" "app" {
   name   = "packiot-staging-app"
   vpc_id = aws_vpc.staging.id
 
-  # SSH is intentionally world-open as codified emergency access, and it is
-  # hardened at the sshd layer (password auth OFF, key-only). Kept as-is.
-  #
-  # RECOMMENDATION (infra audit 2026-08-23, not applied — behaviour change):
-  # if the team runs an ops bastion / VPN with a stable egress, tighten this to
-  # that CIDR (or an AWS-managed prefix list) instead of 0.0.0.0/0. Day-to-day
-  # box access already goes through SSM Session Manager (no inbound :22 needed),
-  # so restricting :22 to an ops CIDR loses nothing operationally while removing
-  # the internet-wide brute-force surface. Suggested shape (default preserves
-  # today's behaviour):
-  #   variable "ops_ssh_cidrs" { type = list(string)  default = ["0.0.0.0/0"] }
-  #   cidr_blocks = var.ops_ssh_cidrs
-  ingress {
-    description = "SSH - emergency/debug access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # NO SSH (closed 2026-09-24). Box access = SSM Session Manager only (no inbound port;
+  # IAM-authorized, CloudTrail-audited). Evidence at closing: 0 accepted SSH logins in 30
+  # days vs 4,429 failed/brute-force attempts — :22 served only attackers. Break-glass if
+  # SSM itself is down: add a TEMPORARY rule for your /32, never 0.0.0.0/0.
 
   ingress {
     description = "HTTP (redirected to HTTPS by Nginx)"
