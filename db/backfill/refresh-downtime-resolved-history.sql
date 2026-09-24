@@ -20,3 +20,12 @@ SELECT format('SELECT %L AS month, serving.refresh_downtime_events_resolved(%L::
                        :'to'::timestamptz - interval '1 second', interval '1 month') m
  ORDER BY m
 \gexec
+
+-- Coverage watermark: serving.downtime_events_v3 serves ONLY windows whose 1-month pad
+-- is >= downtime_events_resolved_meta.coverage_from; below it, v3 falls back to the slow
+-- v2 (a 2023 window then hit the 120s statement timeout → front4 Downtimes error).
+-- Materializing history is not done until the watermark says so. Only ever LOWERS it.
+UPDATE serving.downtime_events_resolved_meta
+   SET coverage_from = LEAST(coverage_from, :'from'::timestamptz)
+ WHERE id = 1;
+SELECT 'coverage_from' AS meta, coverage_from FROM serving.downtime_events_resolved_meta WHERE id = 1;
