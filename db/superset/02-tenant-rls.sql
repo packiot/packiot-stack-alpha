@@ -118,6 +118,14 @@ LANGUAGE sql STABLE AS $$
   SELECT public.current_tenant() = -1
 $$;
 
+-- ── RLS PERFORMANCE SHAPE (2026-09-24) ─────────────────────────────────────────
+-- Every policy wraps the tenant helpers in scalar subqueries — (SELECT current_tenant()) —
+-- so the planner evaluates them ONCE per query as InitPlans. The reached-via-equipments
+-- policies use `id_equipment = ANY (ARRAY(SELECT … equipments …))` (the tenant's equipment
+-- ids, computed once) instead of a correlated EXISTS evaluated for EVERY row. Same
+-- semantics (an id is in the tenant's set ⇔ EXISTS a tenant equipment with that id; unset
+-- GUC → empty set → fail-closed), but index-friendly: measured as readapi_ro,
+-- serving.downtime_by_category(CPACK, month) 61 s → see t-rls-initplan-policies.
 -- ── Native-id tables (id_enterprise is a real column) — cheap policy ─────────
 -- equipments carries id_enterprise natively (and is the dimension the reached-via
 -- policies below join through — protect it directly too).
@@ -125,7 +133,7 @@ ALTER TABLE equipments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipments FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipments;
 CREATE POLICY tenant_isolation ON equipments
-    USING (is_all_tenant() OR id_enterprise = current_tenant());
+    USING ((SELECT is_all_tenant()) OR id_enterprise = (SELECT current_tenant()));
 
 -- equipment_events (the F3 downtime source — there is NO `downtimes` table) carries
 -- id_enterprise natively, BUT on the live analytics DB it is a COMPRESSED TimescaleDB
@@ -157,7 +165,7 @@ BEGIN
     EXECUTE 'ALTER TABLE equipment_events ENABLE ROW LEVEL SECURITY';
     EXECUTE 'ALTER TABLE equipment_events FORCE ROW LEVEL SECURITY';
     EXECUTE 'DROP POLICY IF EXISTS tenant_isolation ON equipment_events';
-    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING (is_all_tenant() OR id_enterprise = current_tenant())';
+    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_events USING ((SELECT is_all_tenant()) OR id_enterprise = (SELECT current_tenant()))';
   END IF;
 END$$;
 
@@ -168,30 +176,27 @@ ALTER TABLE production_orders_runtime ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_orders_runtime FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON production_orders_runtime;
 CREATE POLICY tenant_isolation ON production_orders_runtime
-    USING (is_all_tenant() OR EXISTS (
-        SELECT 1 FROM equipments e
-        WHERE e.id_equipment = production_orders_runtime.id_equipment
-          AND e.id_enterprise = current_tenant()));
+    USING ((SELECT is_all_tenant()) OR id_equipment = ANY (ARRAY(
+        SELECT e.id_equipment FROM equipments e
+        WHERE e.id_enterprise = (SELECT current_tenant()))));
 
 -- equipment_runtime_shift → equipments for the tenant key.
 ALTER TABLE equipment_runtime_shift ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_shift FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_shift;
 CREATE POLICY tenant_isolation ON equipment_runtime_shift
-    USING (is_all_tenant() OR EXISTS (
-        SELECT 1 FROM equipments e
-        WHERE e.id_equipment = equipment_runtime_shift.id_equipment
-          AND e.id_enterprise = current_tenant()));
+    USING ((SELECT is_all_tenant()) OR id_equipment = ANY (ARRAY(
+        SELECT e.id_equipment FROM equipments e
+        WHERE e.id_enterprise = (SELECT current_tenant()))));
 
 -- equipment_runtime_1hour → equipments.
 ALTER TABLE equipment_runtime_1hour ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_runtime_1hour FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_1hour;
 CREATE POLICY tenant_isolation ON equipment_runtime_1hour
-    USING (is_all_tenant() OR EXISTS (
-        SELECT 1 FROM equipments e
-        WHERE e.id_equipment = equipment_runtime_1hour.id_equipment
-          AND e.id_enterprise = current_tenant()));
+    USING ((SELECT is_all_tenant()) OR id_equipment = ANY (ARRAY(
+        SELECT e.id_equipment FROM equipments e
+        WHERE e.id_enterprise = (SELECT current_tenant()))));
 
 -- ── GAP-view base tables (W3 dashboards) ─────────────────────────────────────
 -- equipment_values (source for bi.equipment_speed / bi.live_status /
@@ -215,7 +220,7 @@ BEGIN
     EXECUTE 'ALTER TABLE equipment_values ENABLE ROW LEVEL SECURITY';
     EXECUTE 'ALTER TABLE equipment_values FORCE ROW LEVEL SECURITY';
     EXECUTE 'DROP POLICY IF EXISTS tenant_isolation ON equipment_values';
-    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_values USING (public.is_all_tenant() OR id_enterprise = public.current_tenant())';
+    EXECUTE 'CREATE POLICY tenant_isolation ON equipment_values USING ((SELECT public.is_all_tenant()) OR id_enterprise = (SELECT public.current_tenant()))';
   END IF;
 END$$;
 
@@ -226,7 +231,7 @@ ALTER TABLE production_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_orders FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON production_orders;
 CREATE POLICY tenant_isolation ON production_orders
-    USING (public.is_all_tenant() OR id_enterprise = public.current_tenant());
+    USING ((SELECT public.is_all_tenant()) OR id_enterprise = (SELECT public.current_tenant()));
 
 -- production_targets (source for bi.production_targets) carries id_enterprise
 -- natively → cheap direct policy.
@@ -234,7 +239,7 @@ ALTER TABLE production_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_targets FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON production_targets;
 CREATE POLICY tenant_isolation ON production_targets
-    USING (public.is_all_tenant() OR id_enterprise = public.current_tenant());
+    USING ((SELECT public.is_all_tenant()) OR id_enterprise = (SELECT public.current_tenant()));
 
 -- (The F3 downtime source equipment_events is handled above with a native-id
 -- policy — there is no `downtimes` table to protect.)
