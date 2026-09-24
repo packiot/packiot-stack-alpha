@@ -18,7 +18,10 @@ import { mkdirSync } from 'node:fs';
  * shift change (SP 05:00/13:30/22:00, BISNAGO 06:00/14:20/22:35 BRT) or it reads 0.
  */
 const FRONT4 = 'https://front.staging.packiot.app';
-const OPERATOR = process.env.OPERATOR_URL || 'https://operator.staging.packiot.app';
+// Bispharma's OWN operator (injects ent 5's api-key). The staging `operator` is CPACK's:
+// a Bispharma user there reads CPACK-scoped data (no Bispharma stops) and every write is
+// fenced ("Equipment not found") — found 2026-09-24.
+const OPERATOR = process.env.BISPHARMA_OPERATOR_URL || 'https://operator-bispharma.staging.packiot.app';
 const USER = process.env.BISPHARMA_USER || '';
 const PASS = process.env.BISPHARMA_PASSWORD || '';
 const SHOTS = 'demo-shots/bispharma';
@@ -93,10 +96,14 @@ test.describe.serial('Bispharma demo rehearsal (pt-BR, read-only)', () => {
     await shot(page, '5-reports');
   });
 
-  test('6. Operator: Bispharma user logs in and sees its lines (no writes)', async ({ page }) => {
+  test('6. Operator (Bispharma host): lines load and the stops are there to justify (no writes)', async ({ page }) => {
     await operatorLogin(page, OPERATOR, USER, PASS);
-    await expect(page.locator('body')).toContainText(/L0\d|L1\d|L5\d|L7\d|BISNAGO|LINHAS/i, { timeout: 30_000 });
+    await expect(page.getByText(/Escolha uma Ordem de Produção|Sem OP selecionada|OP /i).first()).toBeVisible({ timeout: 40_000 });
     await shot(page, '6-operator');
+    await page.getByRole('tab', { name: /eventos/i }).first().click();
+    await expect(page.getByText(/Pendentes/i).first()).toBeVisible({ timeout: 25_000 });
+    await expect(page.locator('body')).not.toContainText(/Pendentes\s*Sem eventos/i);
+    await shot(page, '6b-operator-events');
   });
 
   test('7. Justify dialog: machine → pt-BR category → subcategory, EDITAR enabled (cancelled, no write)', async ({ page }) => {
