@@ -53,6 +53,8 @@ test.describe('sandbox front4 (ent 2000003) — reflection of CPACK', () => {
   });
 
   test.describe('parity via read-api (sandbox key vs CPACK key)', () => {
+    // a year of POs / OEE through read-api can take well over the 30 s default
+    test.describe.configure({ timeout: 150_000 });
     test('history: 2023 OEE score is identical (history reflection)', async ({ request }) => {
       const body = { dataset: 'oee-score-full', window: { from: '2023-03-01T00:00:00Z', to: '2023-04-01T00:00:00Z' } };
       const [c, s] = await Promise.all([dataset(request, KEY_CPACK, body), dataset(request, KEY_SBX, body)]);

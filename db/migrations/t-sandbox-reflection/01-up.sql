@@ -291,23 +291,48 @@ BEGIN
     -- events older than the reflected window, month by month: REPLACE, not fill — drop
     -- sandbox-only rows (the twin's early never-closed junk: 14,906 open events Jun–Aug
     -- 2026) then fill from CPACK.
+    -- Month bounds are inlined as LITERALS (format %L), not PL/pgSQL variables: a variable
+    -- makes the statement parameterized → generic plan → NO plan-time chunk exclusion →
+    -- every month opened + locked ALL ~312 event chunks (1,366 locks, ~60 s/month). Same
+    -- trap as serving.events_timeline (t-events-timeline-bound/02).
     FOR m IN SELECT generate_series(date_trunc('month', (SELECT min(ts_event) FROM silver.equipment_events WHERE id_enterprise = p_src)),
                                     date_trunc('month', w_from), interval '1 month')::date LOOP
-      DELETE FROM silver.equipment_events s
-       WHERE s.id_enterprise = p_dst AND s.ts_event >= m AND s.ts_event < least(m + interval '1 month', w_from)
-         AND NOT EXISTS (SELECT 1 FROM silver.equipment_events c
-                          WHERE c.id_enterprise = p_src AND c.id_equipment = s.id_equipment - p_off AND c.ts_event = s.ts_event);
-      INSERT INTO silver.equipment_events
-      SELECT (jsonb_populate_record(NULL::silver.equipment_events, to_jsonb(x) || jsonb_build_object(
-              'id_equipment', x.id_equipment + p_off, 'id_enterprise', p_dst))).*
-        FROM silver.equipment_events x
-       WHERE x.id_enterprise = p_src AND x.ts_event >= m AND x.ts_event < least(m + interval '1 month', w_from)
-      ON CONFLICT DO NOTHING;
-      GET DIAGNOSTICS n = ROW_COUNT;
+      EXECUTE format($q$
+        DELETE FROM silver.equipment_events s
+         WHERE s.id_enterprise = %1$s AND s.ts_event >= %3$L AND s.ts_event < %4$L
+           AND NOT EXISTS (SELECT 1 FROM silver.equipment_events c
+                            WHERE c.id_enterprise = %2$s AND c.ts_event >= %3$L AND c.ts_event < %4$L
+                              AND c.id_equipment = s.id_equipment - %5$s AND c.ts_event = s.ts_event) $q$,
+        p_dst, p_src, m::timestamptz, least(m + interval '1 month', w_from), p_off);
+      -- After the DELETE the sandbox month is a SUBSET of CPACK's (remapped, same pk) → equal
+      -- counts ⇒ identical sets → skip. Otherwise pre-filter with NOT EXISTS: letting
+      -- ON CONFLICT discover "already there" costs ~35 s/month on compressed chunks (each
+      -- conflict check decompresses batches); ON CONFLICT stays only as a safety net.
+      EXECUTE format($q$SELECT (SELECT count(*) FROM silver.equipment_events WHERE id_enterprise = %1$s AND ts_event >= %3$L AND ts_event < %4$L)
+                             - (SELECT count(*) FROM silver.equipment_events WHERE id_enterprise = %2$s AND ts_event >= %3$L AND ts_event < %4$L) $q$,
+        p_src, p_dst, m::timestamptz, least(m + interval '1 month', w_from)) INTO n;
+      IF n <> 0 THEN
+        EXECUTE format($q$
+          INSERT INTO silver.equipment_events
+          SELECT (jsonb_populate_record(NULL::silver.equipment_events, to_jsonb(x) || jsonb_build_object(
+                  'id_equipment', x.id_equipment + %5$s, 'id_enterprise', %1$s))).*
+            FROM silver.equipment_events x
+           WHERE x.id_enterprise = %2$s AND x.ts_event >= %3$L AND x.ts_event < %4$L
+             AND NOT EXISTS (SELECT 1 FROM silver.equipment_events d
+                              WHERE d.id_enterprise = %1$s AND d.ts_event >= %3$L AND d.ts_event < %4$L
+                                AND d.id_equipment = x.id_equipment + %5$s AND d.ts_event = x.ts_event)
+          ON CONFLICT DO NOTHING $q$,
+          p_dst, p_src, m::timestamptz, least(m + interval '1 month', w_from), p_off);
+        GET DIAGNOSTICS n = ROW_COUNT;
+      END IF;
       IF n > 0 THEN RAISE NOTICE 'history events % filled %', to_char(m, 'YYYY-MM'), n; END IF;
       IF p_commit THEN COMMIT; SET LOCAL session_replication_role = replica; SET LOCAL work_mem = '32MB'; END IF;
     END LOOP;
 
+    -- NOTE id_runtime_shift: its DEFAULT is nextval('equipment_oee_shift_id_seq') but the
+    -- sequence lives in `public` (the t231 medallion move took the table to gold, not the
+    -- sequence) and is NOT owned by the column → pg_get_serial_sequence() returns NULL →
+    -- nextval(NULL) = NULL → not-null violation. Name it explicitly.
     -- gold grains keyed by equipment: bounded below the sandbox's earliest row per grain,
     -- one MONTH per statement + commit
     FOR g IN SELECT * FROM (VALUES ('gold.equipment_oee_shift', true), ('gold.equipment_oee_hourly', false),
@@ -321,12 +346,12 @@ BEGIN
           INSERT INTO %1$s SELECT (jsonb_populate_record(NULL::%1$s, to_jsonb(x) || jsonb_build_object(
                  'id_equipment', x.id_equipment + $1 %2$s))).*
             FROM %1$s x JOIN core.equipments e USING (id_equipment)
-           WHERE e.id_enterprise = $2 AND x.ts_value >= $4 AND x.ts_value < $4 + interval '1 month'
-             AND ($3::timestamptz IS NULL OR x.ts_value < $3)
+           WHERE e.id_enterprise = $2 AND x.ts_value >= %3$L AND x.ts_value < %4$L
           ON CONFLICT DO NOTHING $q$, g.tbl,
           CASE WHEN g.is_shift THEN $x$, 'id_shift', x.id_shift + $1, 'id_shift_hour', x.id_shift_hour + $1,
-               'id_runtime_shift', nextval(pg_get_serial_sequence('gold.equipment_oee_shift', 'id_runtime_shift'))$x$ ELSE '' END)
-          USING p_off, p_src, b, m;
+               'id_runtime_shift', nextval('public.equipment_oee_shift_id_seq')$x$ ELSE '' END,
+          m::timestamptz, least(m + interval '1 month', coalesce(b, 'infinity')))  -- literal bounds: plan-time chunk exclusion
+          USING p_off, p_src;
         IF p_commit THEN COMMIT; SET LOCAL session_replication_role = replica; SET LOCAL work_mem = '32MB'; END IF;
       END LOOP;
       RAISE NOTICE 'history % filled (below %)', g.tbl, coalesce(b::text, 'no sandbox rows');
@@ -354,15 +379,19 @@ BEGIN
     -- resolved downtimes older than the window: copy CPACK's materialized rows, month by month
     FOR m IN SELECT generate_series(date_trunc('month', (SELECT min(ts_event) FROM serving.downtime_events_resolved WHERE id_enterprise = p_src)),
                                     date_trunc('month', w_from), interval '1 month')::date LOOP
-      INSERT INTO serving.downtime_events_resolved
-      SELECT (jsonb_populate_record(NULL::serving.downtime_events_resolved, to_jsonb(x) || jsonb_build_object(
-              'id_equipment', x.id_equipment + p_off, 'id_sector', x.id_sector + p_off, 'id_line', x.id_line + p_off,
-              'id_area', x.id_area + p_off, 'id_site', x.id_site + p_off, 'id_parentequipment', x.id_parentequipment + p_off,
-              'id_shift', x.id_shift + p_off, 'id_enterprise', p_dst))).*
-        FROM serving.downtime_events_resolved x
-       WHERE x.id_enterprise = p_src AND x.ts_event >= m AND x.ts_event < least(m + interval '1 month', w_from)
-         AND NOT EXISTS (SELECT 1 FROM serving.downtime_events_resolved d
-                          WHERE d.id_enterprise = p_dst AND d.ts_event = x.ts_event AND d.id_equipment = x.id_equipment + p_off);
+      EXECUTE format($q$
+        INSERT INTO serving.downtime_events_resolved
+        SELECT (jsonb_populate_record(NULL::serving.downtime_events_resolved, to_jsonb(x) || jsonb_build_object(
+                'id_equipment', x.id_equipment + $1, 'id_sector', x.id_sector + $1, 'id_line', x.id_line + $1,
+                'id_area', x.id_area + $1, 'id_site', x.id_site + $1, 'id_parentequipment', x.id_parentequipment + $1,
+                'id_shift', x.id_shift + $1, 'id_enterprise', $3))).*
+          FROM serving.downtime_events_resolved x
+         WHERE x.id_enterprise = $2 AND x.ts_event >= %1$L AND x.ts_event < %2$L
+           AND NOT EXISTS (SELECT 1 FROM serving.downtime_events_resolved d
+                            WHERE d.id_enterprise = $3 AND d.ts_event >= %1$L AND d.ts_event < %2$L
+                              AND d.ts_event = x.ts_event AND d.id_equipment = x.id_equipment + $1) $q$,
+        m::timestamptz, least(m + interval '1 month', w_from))
+        USING p_off, p_src, p_dst;
       IF p_commit THEN COMMIT; SET LOCAL session_replication_role = replica; END IF;
     END LOOP;
     RAISE NOTICE 'history resolved downtimes filled';

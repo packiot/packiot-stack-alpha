@@ -73,19 +73,26 @@ export default defineConfig({
     // These write to the twin; the self-healing globalSetup + nightly cron keep
     // the tenant reproducible. Kept as separate projects so the default `npm test`
     // (read-only, all tenants) never mutates anything.
+    // ORDER (Playwright project dependencies): heal (globalSetup) → sandbox-front4
+    // parity on the CLEAN reflection → mutating suites → sandbox-reset (re-heal +
+    // parity). Running parity in parallel with the mutators raced them (it saw the
+    // operator's own justify/split as "drift").
     {
       name: 'sandbox-operator',
       testMatch: /sandbox-operator\.spec\.ts/,
+      dependencies: ['sandbox-front4'],
       use: { ...devices['Desktop Chrome'], baseURL: staging.operatorSbx },
     },
     {
       name: 'sandbox-csadmin',
       testMatch: /sandbox-csadmin\.spec\.ts/,
+      dependencies: ['sandbox-front4'],
       use: { ...devices['Desktop Chrome'], baseURL: staging.csadmin },
     },
     {
       name: 'sandbox-customize',
       testMatch: /sandbox-customize\.spec\.ts/,
+      dependencies: ['sandbox-front4'],
       use: { ...devices['Desktop Chrome'], baseURL: staging.customize },
     },
     // Read-only on the twin: UI + read-api PARITY with CPACK (history + live mirror).
