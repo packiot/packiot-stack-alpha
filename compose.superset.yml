@@ -67,35 +67,21 @@ x-superset-env: &superset-env
   PYTHONPATH: /app/pythonpath
 
 x-superset-config-mounts: &superset-config-mounts
-  - ./configs/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
-  - ./configs/superset/custom_sso_security_manager.py:/app/pythonpath/custom_sso_security_manager.py:ro
-  # Guest/embed-role permission bootstrap. Inert on web/worker (only
-  # superset_config.py is auto-imported); superset-init runs it explicitly.
-  - ./configs/superset/bootstrap_guest_role.py:/app/pythonpath/bootstrap_guest_role.py:ro
-  # Post-import dashboard RBAC hardening (runs after import-dashboards). Inert on
-  # web/worker; superset-init runs it explicitly.
-  - ./configs/superset/harden_dashboard_roles.py:/app/pythonpath/harden_dashboard_roles.py:ro
-  # Database-asset sync (runs after import-dashboards): import-dashboards only imports a
-  # DB as a dashboard DEPENDENCY, so a connection no dashboard uses was never applied.
-  - ./configs/superset/sync_databases.py:/app/pythonpath/sync_databases.py:ro
-  # Post-import query_context repair (runs after import-dashboards, before harden).
-  # `superset import-dashboards` drops the chart query_context (its baked numeric
-  # datasource id does not survive the UUID-keyed dataset remap), which 400s the
-  # stored-context path (GET /chart/<id>/data/, CSV/Excel export, Alerts & Reports).
-  # This re-derives it from the asset YAMLs against the live dataset ids. Inert on
-  # web/worker; superset-init runs it explicitly.
-  - ./configs/superset/normalize_query_context.py:/app/pythonpath/normalize_query_context.py:ro
-  # Dashboards-as-code asset bundle + its importer. Also inert on web/worker
-  # (only superset-init imports); mounted read-only on all three (same pattern as
-  # bootstrap_guest_role.py above). import_bundle.py injects SUPERSET_DB_RO_PASSWORD
-  # into the packiot_analytics connection at import time (git keeps a placeholder).
-  - ./configs/superset/assets:/app/pythonpath/assets:ro
-  - ./configs/superset/import_bundle.py:/app/pythonpath/import_bundle.py:ro
-  # Pins the STABLE embed uuid (SUPERSET_OEE_DASHBOARD_UUID) onto the client dashboard
-  # so the front4 iframe / edge-api broker keep working across metadata rebuilds
-  # (a hand-registered embed uuid does not survive one). Inert on web/worker; only
-  # superset-init runs it. See configs/superset/register_embed.py.
-  - ./configs/superset/register_embed.py:/app/pythonpath/register_embed.py:ro
+  # ONE directory mount (P7, 2026-09-24) — replaces 9 single-FILE binds. A single-file
+  # bind pins the host file's INODE at container start: git pull / editors replace the
+  # file (new inode), so the container kept serving the OLD config until a recreate —
+  # the inode trap behind #39/#41 and the stale-mount Superset incident. A directory
+  # bind follows the directory, so updates show up immediately. Safe to mount the whole
+  # dir here: the image's /app/pythonpath is EMPTY (verified: `ls -la` in
+  # packiot/superset:4.1.1-w2), so nothing is shadowed.
+  # Contents (only superset_config.py is auto-imported by web/worker; the rest are run
+  # explicitly by superset-init): superset_config.py + custom_sso_security_manager.py,
+  # bootstrap_guest_role.py (guest/embed role), import_bundle.py + assets/ (dashboards
+  # as code; injects SUPERSET_DB_RO_PASSWORD at import), sync_databases.py (DB assets
+  # no dashboard depends on), normalize_query_context.py (re-derives query_context lost
+  # by import-dashboards), harden_dashboard_roles.py (RBAC), register_embed.py (stable
+  # embed uuid). :ro — Python just skips writing __pycache__.
+  - ./configs/superset:/app/pythonpath:ro
 
 x-superset-logging: &superset-logging
   driver: json-file

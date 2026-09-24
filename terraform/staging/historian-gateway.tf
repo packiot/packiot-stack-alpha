@@ -8,9 +8,12 @@
 #
 # The user + inline policy below were created manually for the staging PoC and
 # should be ADOPTED via `import` blocks (terraform >= 1.5) rather than recreated.
-# The access key cannot be imported (secret is unretrievable); on first apply,
-# generate a fresh key here and delete the manual one (AKIAZJUP3PBLCNSGTG7B),
-# then wire HIST_AWS_KEY / HIST_AWS_SECRET into the gateway .env / secret store.
+# The ACCESS KEY is deliberately NOT a Terraform resource: an aws_iam_access_key puts
+# the secret in plaintext in TF state. It lives in Secrets Manager
+# packiot/staging/historian-gateway-s3 ({key_id, secret}) and is rotated with
+# scripts/rotate-historian-s3-key.sh (create → SM → box .env.historian-gateway +
+# pg_duckdb mappings → verify → deactivate old → verify → delete old).
+# Rotated 2026-09-24 (P1: the previous key was exposed in a session transcript).
 
 variable "historian_bucket" {
   type    = string
@@ -43,18 +46,6 @@ resource "aws_iam_user_policy" "historian_gateway_ro" {
       },
     ]
   })
-}
-
-resource "aws_iam_access_key" "historian_gateway" {
-  user = aws_iam_user.historian_gateway.name
-}
-
-output "historian_gateway_access_key_id" {
-  value = aws_iam_access_key.historian_gateway.id
-}
-output "historian_gateway_secret_access_key" {
-  value     = aws_iam_access_key.historian_gateway.secret
-  sensitive = true
 }
 
 # Adopt the manually-created user + policy instead of recreating (terraform >=1.5):

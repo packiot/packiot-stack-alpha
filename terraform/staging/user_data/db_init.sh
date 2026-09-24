@@ -73,6 +73,19 @@ rm -rf /tmp/packiot-stack
 # pg_stat_statements is preloaded for the DB observability dashboard
 # (top/slow-query panels); it is a lightweight in-memory query-stats collector.
 mkdir -p /var/lib/postgresql/data
+# MEMORY OVERCOMMIT (2026-09-24): strict accounting (PostgreSQL docs "Linux Memory
+# Overcommit"). With the default heuristic mode a runaway backend (7 GB chunk-wise
+# aggregate, 11:23 incident) was SIGKILLed by the kernel OOM-killer → postmaster must
+# reset ALL sessions + crash-recover. Mode 2 makes that backend get "out of memory" and
+# only its query fails. Ratio 90 → CommitLimit = swap + 90% RAM (~16.5 GB on r7g.large);
+# the default 50 (~10.1 GB) sits BELOW normal Committed_AS (~9.6 GB) and would refuse
+# ordinary allocations.
+cat > /etc/sysctl.d/60-postgres-overcommit.conf <<'SYSCTL'
+vm.overcommit_memory = 2
+vm.overcommit_ratio = 90
+SYSCTL
+sysctl -q -p /etc/sysctl.d/60-postgres-overcommit.conf
+
 
 # LOG ROTATION (2026-09-24): the container ran with an unbounded json-file log —
 # log_min_duration_statement=3000 + auto_explain grew it to 28.8 GB (more than half the
@@ -96,9 +109,19 @@ docker run -d \
   -e TIMESCALEDB_TELEMETRY=off \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
   packiot-postgres:local \
-  -c "shared_preload_libraries=timescaledb,pg_cron,pg_stat_statements" \
+  -c "shared_preload_libraries=timescaledb,pg_cron,pg_stat_statements,auto_explain" \
   -c "cron.database_name=${db_name}" \
-  -c "max_connections=200"
+  -c "max_connections=200" \
+  -c "pg_stat_statements.max=10000" -c "pg_stat_statements.track=all" \
+  -c "auto_explain.log_min_duration=3000" -c "auto_explain.log_analyze=on" \
+  -c "auto_explain.log_nested_statements=on" \
+  -c "log_min_duration_statement=3000" -c "track_io_timing=on" -c "log_checkpoints=on" \
+  -c "log_lock_waits=on" -c "log_autovacuum_min_duration=0" \
+  -c "log_line_prefix=%m [%p] %u@%d %a "
+# The observability flags above (auto_explain, pg_stat_statements.track=all, lock-wait /
+# checkpoint / autovacuum logging) were LIVE-only until the 2026-09-24 recreate — codified
+# here so a rebuilt box keeps the slow-query + nested-statement visibility the DB dashboards
+# and incident work rely on (track=all is what exposes statements inside procedures).
 # max_connections raised 50→200 (2026-09-22): staging has no server-side headroom —
 # a near-idle stack already sat at 49/50 (analytics pool 24 + Superset 14 [bypasses
 # pgbouncer] + misc 11), so any load test / new tenant hit "too many connections".
