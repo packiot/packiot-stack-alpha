@@ -461,3 +461,26 @@ output "edge_origin_verify_secret" {
   value       = random_password.origin_verify.result
   sensitive   = true
 }
+
+# Per-tenant operator SPA hosts (operator-sbx = sandbox ent 2000003, operator-bispharma =
+# Bispharma ent 5). Like `bi`, they are NOT in var.services — each has a bespoke nginx vhost
+# (nginx_setup.sh) that injects its tenant's api-key — so they need their own CloudFront
+# ALIAS records. operator-sbx's record was created by hand (drift) → adopted via import.
+resource "aws_route53_record" "operator_tenant_edge" {
+  for_each = var.edge_cutover ? toset(["operator-sbx", "operator-bispharma"]) : toset([])
+
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "${each.key}.${var.staging_domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.edge.domain_name
+    zone_id                = "Z2FDTNDATAQYW2"
+    evaluate_target_health = false
+  }
+}
+
+import {
+  to = aws_route53_record.operator_tenant_edge["operator-sbx"]
+  id = "Z00659693KWZJDVBAEBOT_operator-sbx.staging.packiot.app_A"
+}
