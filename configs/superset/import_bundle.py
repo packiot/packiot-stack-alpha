@@ -34,10 +34,11 @@ DB_ASSET = ("databases", "packiot_analytics.yaml")
 
 # Per-DB-asset password injections: (asset_path, env_var, placeholder).
 #   * packiot_analytics — the bi.* read-only superset_ro credential.
-#   * historian_union   — the hist-gateway (pg_duckdb) HIST_GW_PASSWORD.
+#   * historian_union   — the hist-gateway NOSUPERUSER service login historian_svc (T3):
+#     HIST_GW_SVC_PASSWORD (Secrets Manager packiot/staging/historian-svc via .env).
 DB_INJECTIONS = [
     (("databases", "packiot_analytics.yaml"), "SUPERSET_DB_RO_PASSWORD", "XXXXXXXXXXXX"),
-    (("databases", "historian_union.yaml"), "HIST_GW_PASSWORD", "YYYYYYYYYYYY"),
+    (("databases", "historian_union.yaml"), "HIST_GW_SVC_PASSWORD", "YYYYYYYYYYYY"),
 ]
 
 

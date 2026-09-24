@@ -45,6 +45,9 @@ services:
       # db/migrations/t282-historian-gateway-glue/02-analytics-histgw-ro.sql; same secret
       # here. Unset ⇒ init falls back to the FDW superuser (logs a warning).
       HISTGW_RO_PASS: ${HISTGW_RO_PASS:-}
+      # T3 — historian_svc service login (read-api + Superset). Fresh-volume init creates
+      # it; a RUNNING gateway is brought to the same state by apply-hardening.sh.
+      HIST_GW_SVC_PASSWORD: ${HIST_GW_SVC_PASSWORD:-}
     volumes:
       - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
       - hist_gateway_data:/var/lib/postgresql/data

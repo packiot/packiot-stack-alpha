@@ -75,6 +75,25 @@ jobs:
             echo "ALLOY_GATEWAY_BIND already set: $(grep -E '^ALLOY_GATEWAY_BIND=' /opt/packiot/.env | cut -d= -f2)"
           fi
 
+      - name: Ensure HIST_GW_SVC_PASSWORD (historian least-privilege service login)
+        # T3: read-api + Superset reach the historian gateway as the NOSUPERUSER
+        # historian_svc. Source of truth = Secrets Manager packiot/staging/historian-svc;
+        # mirror it into .env when absent (app_init.sh never regenerates an existing
+        # .env — the same self-heal pattern as ALLOY_GATEWAY_BIND). Missing secret ⇒
+        # warn only: read-api's historian pool is nil-safe (503) and Superset skips.
+        run: |
+          if ! grep -qE '^HIST_GW_SVC_PASSWORD=.+' /opt/packiot/.env; then
+            P=$(aws secretsmanager get-secret-value --region us-east-1 --secret-id packiot/staging/historian-svc --query SecretString --output text 2>/dev/null | jq -r '.password // empty')
+            if [ -n "$P" ]; then
+              printf '\n# historian_svc gateway login (set by deploy-staging.yml from packiot/staging/historian-svc)\nHIST_GW_SVC_PASSWORD=%s\n' "$P" >> /opt/packiot/.env
+              echo "HIST_GW_SVC_PASSWORD mirrored from Secrets Manager"
+            else
+              echo "::warning::packiot/staging/historian-svc not readable — historian consumers stay disabled"
+            fi
+          else
+            echo "HIST_GW_SVC_PASSWORD present"
+          fi
+
       - name: Generate RabbitMQ definitions (durable least-priv users)
         # rabbitmq.conf sets load_definitions, which re-imports users/perms on
         # every broker boot so a container recreate can't lose the least-priv

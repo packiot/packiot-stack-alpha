@@ -788,4 +788,34 @@ else
   echo "[historian-gateway] CLOUDBEAVER_HISTRO_PASSWORD unset — skipping read-only browser role"
 fi
 
+# ── T3: historian_svc — least-privilege SERVICE identity for read-api + Superset ────
+# Fresh-volume twin of services/historian-gateway/apply-hardening.sh (which brings a
+# RUNNING gateway to this state). NOSUPERUSER; cold read_parquet via duckdb.postgres_role
+# = historian_readers (ALTER SYSTEM → postgresql.auto.conf, applied when the real server
+# starts right after initdb); hot via the live_pg FDW → remote least-privilege histgw_ro;
+# its own simple_s3_secret mapping (pg_duckdb S3 secrets are PER-ROLE user mappings).
+# cloudbeaver_histro is deliberately NOT in historian_readers (t282 decision stands).
+if [ -n "${HIST_GW_SVC_PASSWORD:-}" ] && [ -n "${HISTGW_RO_PASS:-}" ]; then
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+       -v svc_pw="${HIST_GW_SVC_PASSWORD}" -v ro_pass="${HISTGW_RO_PASS}" \
+       -v s3_key="${HIST_AWS_KEY}" -v s3_secret="${HIST_AWS_SECRET}" <<'SQL'
+CREATE ROLE historian_readers NOLOGIN;
+CREATE ROLE historian_svc LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT PASSWORD :'svc_pw';
+GRANT historian_readers TO historian_svc;
+GRANT USAGE ON SCHEMA silver, gold, cold, live, public TO historian_svc;
+GRANT SELECT ON ALL TABLES IN SCHEMA silver, gold, cold, live, public TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gold   GRANT SELECT ON TABLES TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA cold   GRANT SELECT ON TABLES TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA live   GRANT SELECT ON TABLES TO historian_svc;
+GRANT USAGE ON FOREIGN SERVER live_pg TO historian_svc;
+CREATE USER MAPPING FOR historian_svc SERVER live_pg OPTIONS (user 'histgw_ro', password :'ro_pass');
+CREATE USER MAPPING FOR historian_svc SERVER simple_s3_secret OPTIONS (key_id :'s3_key', secret :'s3_secret');
+ALTER SYSTEM SET duckdb.postgres_role = 'historian_readers';
+SQL
+  echo "[historian-gateway] historian_svc service role + duckdb.postgres_role=historian_readers ready"
+else
+  echo "[historian-gateway] HIST_GW_SVC_PASSWORD/HISTGW_RO_PASS unset — skipping historian_svc (consumers fall back to 503/skip)"
+fi
+
 echo "[historian-gateway] init complete: silver.equipment_values (EV hot+cold) + silver.equipment_events (EE hot+cold), ev_union_boundary + ee_union_boundary seeded"
