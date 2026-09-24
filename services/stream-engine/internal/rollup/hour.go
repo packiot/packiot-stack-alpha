@@ -96,6 +96,21 @@ const hourCascadeDaySQL = `
 	 WHERE d.id_equipment = el.id_equipment
 	   AND d.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)`
 
+// hourCascadeDayLiveSQL — the LIVE hour path's cascade (P12 deadlock fix, see
+// hourReflagSQL): skip daily rows another tx holds and rows already flagged. Safe ONLY
+// on the live path: the day rollup shares the live "<dest>:runtime" advisory lock, so
+// the only possible concurrent holder here is the backfill, which sets the same TRUE.
+// The backfill keeps the BLOCKING hourCascadeDaySQL — its concurrent holder can be the
+// day rollup mid-recompute, and skipping there could lose a needed recompute.
+const hourCascadeDayLiveSQL = `
+	UPDATE %[4]s.equipment_oee_daily d SET recalc_needed = true
+	  FROM (SELECT d2.id_equipment, d2.ts_value FROM %[4]s.equipment_oee_daily d2
+	          JOIN hour_elig el ON d2.id_equipment = el.id_equipment
+	           AND d2.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)
+	         WHERE d2.recalc_needed IS NOT TRUE
+	         FOR UPDATE OF d2 SKIP LOCKED) r
+	 WHERE d.id_equipment = r.id_equipment AND d.ts_value = r.ts_value`
+
 // #186: hourCascadeAreaSQL removed — it flagged the retired area_oee_hourly grain.
 
 // Speed pass from the 1min tier — always-FOUND → always-update.
@@ -304,11 +319,28 @@ const hourStampSQL = `
 // clears — a permanent, ever-growing backlog (measured 2026-09-10: 6,276 tp=1
 // flags, oldest 2026-08-31, 97% of all hour flags). Constraining the re-flag to
 // the eligible set makes flagged ⊆ computable, so every flag drains.
+//
+// DEADLOCK FIX (P12, 2026-09-24): ~1–2×/h `hour reflag: deadlock detected (40P01)`.
+// The reflag band (trailing 2–3 h) OVERLAPS the hour backfill's slice (< now-65min),
+// and the backfill takes its own advisory key, so the two run concurrently:
+//
+//	backfill: hourly rows (its slice) → cascade-day (daily)       … waits on live
+//	live:     cascade-day (daily)     → reflag (hourly, overlap)  … waits on backfill
+//
+// A lock-order inversion across two tables. "Idempotent" writes (both only set
+// recalc_needed = true) still take row locks until commit. So the LIVE path never
+// waits on the backfill: rows already flagged are not touched, and a row locked by
+// another tx (the backfill recomputing it right now) is SKIPPED — the next 60 s tick
+// re-flags it, since this band re-covers the trailing 2–3 h every tick.
 const hourReflagSQL = `
-	UPDATE %[4]s.equipment_oee_hourly SET recalc_needed = true
-	 WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
-	   AND ts_value <= now()
-	   AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE tp_equipment > 1)`
+	UPDATE %[4]s.equipment_oee_hourly h SET recalc_needed = true
+	  FROM (SELECT id_equipment, ts_value FROM %[4]s.equipment_oee_hourly
+	         WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
+	           AND ts_value <= now()
+	           AND recalc_needed IS NOT TRUE
+	           AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE tp_equipment > 1)
+	         FOR UPDATE SKIP LOCKED) r
+	 WHERE h.id_equipment = r.id_equipment AND h.ts_value = r.ts_value`
 
 // RunHour executes one hour pass for one destination — one tx,
 // prod's phase order (V → cascades → speed → E → targets → re-flag).
@@ -339,7 +371,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	}
 	steps := []rollupStep{
 		{"values", fmtRD(hourValuesSQL, d)},
-		{"cascade-day", fmtRD(hourCascadeDaySQL, d)},
+		{"cascade-day", fmtRD(hourCascadeDayLiveSQL, d)},
 		// #186: cascade-area (flag area_oee_hourly) removed — the area/site hourly
 		// grain was retired (dead). Area day freshness is now driven by the
 		// equipment→area day-flag cascade in entity_grains.go.
