@@ -56,6 +56,25 @@ jobs:
         # Symlinking makes it available as .env so Docker Compose picks it up.
         run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
 
+      - name: Ensure ALLOY_GATEWAY_BIND (DB-box observability relays)
+        # The Alloy gateway's 3101 (Loki) / 3102 (Prometheus remote-write) relays
+        # for the DB-box agent bind to ${ALLOY_GATEWAY_BIND:-127.0.0.1}. The key was
+        # never in .env (app_init.sh skips regeneration when .env exists), so every
+        # recreate bound LOOPBACK and the DB box's pushes were silently refused —
+        # DB slow-query logs missing from Loki since ≥2026-09-14. Self-heal: set it
+        # to this box's private IP if absent (source IP of the default route — exact
+        # even with docker bridges present; no IMDS dependency).
+        # Private IP only: the SG admits 3101/3102 from the DB SG, never the world.
+        run: |
+          if ! grep -qE '^ALLOY_GATEWAY_BIND=.+' /opt/packiot/.env; then
+            IP=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+            case "$IP" in 10.*) ;; *) echo "::error::unexpected VPC private IP '$IP' (staging VPC is 10.10.0.0/16)"; exit 1 ;; esac
+            printf '\n# DB-box observability relay bind (set by deploy-staging.yml)\nALLOY_GATEWAY_BIND=%s\n' "$IP" >> /opt/packiot/.env
+            echo "ALLOY_GATEWAY_BIND set to $IP"
+          else
+            echo "ALLOY_GATEWAY_BIND already set: $(grep -E '^ALLOY_GATEWAY_BIND=' /opt/packiot/.env | cut -d= -f2)"
+          fi
+
       - name: Generate RabbitMQ definitions (durable least-priv users)
         # rabbitmq.conf sets load_definitions, which re-imports users/perms on
         # every broker boot so a container recreate can't lose the least-priv
