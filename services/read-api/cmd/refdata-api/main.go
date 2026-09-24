@@ -250,6 +250,9 @@ func main() {
 	ensureSchema(pool)                     // startup migrations (P2 screen-config table)
 	registerQueryAPI(mux, pool, qcache)    // ADR-0015 P1-P3 + ADR-0035 cache-aside
 	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
+
+	// T2 honest windows: dataset coverage floors from ops.retention_policy (fail-open).
+	go covIdx.run(context.Background(), pool, logger)
 	// T6 (#176): optional reach into the hot+cold historian gateway for long
 	// time-range reads past the 90-day hot window. nil-safe — histPool is nil (and
 	// the endpoint 503s) unless HIST_GW_PASSWORD is set and the gateway answers.
