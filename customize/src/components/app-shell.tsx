@@ -1,6 +1,9 @@
-import { Braces, Database, Gauge, LayoutGrid, LogOut, Repeat } from "lucide-react";
+import {
+  Braces, Database, Gauge, LayoutGrid, LogOut, Repeat, Workflow, Cable,
+} from "lucide-react";
 import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/auth-context";
+import { useEnterpriseFromUrl } from "@/hooks/use-enterprise-from-url";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
@@ -14,7 +17,9 @@ const NAV: NavLeaf[] = [
   { to: "/app/hub", label: "Hub", icon: LayoutGrid },
   { to: "/app/customizations", label: "Derive rules", icon: Braces },
   { to: "/app/oee-profile", label: "OEE Computation", icon: Gauge },
+  { to: "/app/node-red", label: "Node-RED flows", icon: Workflow },
   { to: "/app/integrations", label: "Integrations", icon: Database },
+  { to: "/app/plc-connections", label: "PLC connections", icon: Cable },
 ];
 
 const leafClass = ({ isActive }: { isActive: boolean }) =>
@@ -37,7 +42,13 @@ export function AppShell() {
   const { signOut } = useAuth();
   const enterprise = useEnterpriseStore((s) => s.selected);
   const clear = useEnterpriseStore((s) => s.clear);
+  // Tenant hand-off from CS Admin (?idEnterprise=N) — select it before the
+  // no-selection redirect below would drop the param.
+  const handoff = useEnterpriseFromUrl();
 
+  if (handoff === "loading") {
+    return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Opening tenant…</div>;
+  }
   if (!enterprise) return <Navigate to="/enterprises" replace />;
 
   async function handleSignOut() {
