@@ -4,3 +4,14 @@ After=docker.service network-online.target
 [Service]
 Type=oneshot
 ExecStart=/opt/packiot/historian/historian-staging-run-append.sh
+# Contain the job (2026-09-25 incident: unbounded DuckDB exhausted the shared 8 GB app host at 02:30
+# and thrashed it ~1.5 h). A misbehaving run is now throttled / OOM-killed inside its own cgroup;
+# the host, the stack and the rollups never pay for it.
+MemoryHigh=1400M
+MemoryMax=1800M
+MemorySwapMax=0
+CPUQuota=60%
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=2h

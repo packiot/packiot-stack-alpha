@@ -40,7 +40,13 @@ for pair in $TENANTS; do
     { [ "$MSTART" \> "$EFF_END" ] || [ "$MSTART" = "$EFF_END" ]; } && { log "ent=$LEGENT $Y-$M below lag boundary, skip"; continue; }
     DEST="s3://${BUCKET}/equipment_oee_shift/enterprise=${F3ENT}/year=${Y}/month=${M}/data-${Y}-$(printf %02d "$M")-legacy.parquet"
     log "ent=$LEGENT->F3 $F3ENT month=$Y-$M window=[$MSTART,$EFF_END) -> $DEST"
+    # Bounded DuckDB (2026-09-25): unbounded, DuckDB defaults to 80 pct of RAM (~6.4 GB on the 8 GB app
+    # host shared with ~45 containers). The first nightly run (02:30) exhausted memory and thrashed the host
+    # for ~1.5 h (read-api/operator/csadmin down, rollups stalled). Now it spills to temp_directory instead.
+    mkdir -p "${DUCKDB_TMP:-/var/tmp/historian-duckdb}"
     "$DUCKDB" <<SQL
+SET memory_limit='${DUCKDB_MEMORY_LIMIT:-1200MB}'; SET threads=${DUCKDB_THREADS:-1}; SET s3_uploader_thread_limit=${DUCKDB_S3_UPLOAD_THREADS:-2};
+SET temp_directory='${DUCKDB_TMP:-/var/tmp/historian-duckdb}'; SET preserve_insertion_order=false;
 INSTALL httpfs; LOAD httpfs; INSTALL postgres; LOAD postgres;
 CREATE SECRET s3sec (TYPE S3, PROVIDER credential_chain, REGION 'us-east-1');
 ATTACH 'host=${LEG_HOST} port=5432 dbname=${LEG_DB} user=${LEG_USER} password=${LPW}' AS leg (TYPE postgres, READ_ONLY);
@@ -62,7 +68,7 @@ COPY (
     ${F3ENT} AS id_enterprise, ${F3ENT} AS enterprise, ${Y} AS year, ${M} AS month
   FROM (SELECT * FROM postgres_query('leg','SELECT * FROM equipment_runtime_shift WHERE ts_value>=''${MSTART}'' AND ts_value<''${EFF_END}''')) s
   JOIN map ON map.leg_id = s.id_equipment
-) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, OVERWRITE_OR_IGNORE);
+) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, ROW_GROUP_SIZE ${DUCKDB_ROW_GROUP_SIZE:-20000}, OVERWRITE_OR_IGNORE);
 SQL
   done
 done

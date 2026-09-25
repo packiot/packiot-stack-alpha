@@ -42,7 +42,13 @@ for pair in $TENANTS; do
     { [ "$MSTART" \> "$EFF_END" ] || [ "$MSTART" = "$EFF_END" ]; } && { log "ent=$LEGENT $Y-$M below lag boundary, skip"; continue; }
     DEST="s3://${BUCKET}/production_orders/enterprise=${F3ENT}/year=${Y}/month=${M}/data-${Y}-$(printf %02d "$M")-legacy.parquet"
     log "ent=$LEGENT->F3 $F3ENT month=$Y-$M window=[$MSTART,$EFF_END) -> $DEST"
+    # Bounded DuckDB (2026-09-25): unbounded, DuckDB defaults to 80 pct of RAM (~6.4 GB on the 8 GB app
+    # host shared with ~45 containers). The first nightly run (02:30) exhausted memory and thrashed the host
+    # for ~1.5 h (read-api/operator/csadmin down, rollups stalled). Now it spills to temp_directory instead.
+    mkdir -p "${DUCKDB_TMP:-/var/tmp/historian-duckdb}"
     "$DUCKDB" <<SQL
+SET memory_limit='${DUCKDB_MEMORY_LIMIT:-1200MB}'; SET threads=${DUCKDB_THREADS:-1}; SET s3_uploader_thread_limit=${DUCKDB_S3_UPLOAD_THREADS:-2};
+SET temp_directory='${DUCKDB_TMP:-/var/tmp/historian-duckdb}'; SET preserve_insertion_order=false;
 INSTALL httpfs; LOAD httpfs; INSTALL postgres; LOAD postgres;
 CREATE SECRET s3sec (TYPE S3, PROVIDER credential_chain, REGION 'us-east-1');
 ATTACH 'host=${LEG_HOST} port=5432 dbname=${LEG_DB} user=${LEG_USER} password=${LPW}' AS leg (TYPE postgres, READ_ONLY);
@@ -71,7 +77,7 @@ COPY (
   FROM (SELECT * FROM postgres_query('leg','SELECT id_order, id_product, id_equipment, status, ts_start, ts_end, gross_production, net_production, oee_availability, oee_performance, running_time, stopped_time, available_time, planned_downtime, production_programmed, production_ordered, production_real, production_final FROM production_orders WHERE id_enterprise=${LEGENT} AND COALESCE(ts_start, ts_creation)>=''${MSTART}'' AND COALESCE(ts_start, ts_creation)<''${EFF_END}'' AND id_order IS NOT NULL')) lpo
   JOIN map ON map.leg_id = lpo.id_equipment
   JOIN eqdim eq ON eq.id_equipment = map.f3_id
-) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, OVERWRITE_OR_IGNORE);
+) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, ROW_GROUP_SIZE ${DUCKDB_ROW_GROUP_SIZE:-20000}, OVERWRITE_OR_IGNORE);
 SQL
   done
 done
