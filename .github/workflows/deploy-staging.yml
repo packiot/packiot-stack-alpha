@@ -104,6 +104,7 @@ jobs:
         # would stop rabbitmq booting since load_definitions references it.
         run: |
           set -euo pipefail
+          install -d -m 0755 /opt/packiot/rabbitmq
           AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
           AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
           # rename S1+S2 (oeecloud-worker -> stream-engine): MANUAL PRE-REQ —
@@ -127,8 +128,15 @@ jobs:
               elif .name=="sparkplug-decoder" then .password=$sdp
               else . end) |
             .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
-          ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
-          echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
+          ' monitoring/rabbitmq/definitions.template.json > /opt/packiot/rabbitmq/definitions.json.tmp
+          # Durable path OUTSIDE the runner workspace (2026-09-25): rendered into
+          # monitoring/rabbitmq/ it was gitignored, so any later job's checkout on this
+          # self-hosted runner cleaned it; the running broker didn't care (inode already
+          # mounted), but the next host reboot found the path missing, dockerd created a
+          # DIRECTORY there, and rabbitmq exited 127 ("not a directory") → ingest down.
+          chmod 0644 /opt/packiot/rabbitmq/definitions.json.tmp
+          mv -f /opt/packiot/rabbitmq/definitions.json.tmp /opt/packiot/rabbitmq/definitions.json
+          echo "Generated definitions.json: $(jq '.users|length' /opt/packiot/rabbitmq/definitions.json) users, $(jq '.permissions|length' /opt/packiot/rabbitmq/definitions.json) permission sets"
 
       - name: Materialize Alertmanager Slack webhook (optional — plug in later)
         # Alertmanager reads the Slack incoming-webhook URL from a gitignored,
