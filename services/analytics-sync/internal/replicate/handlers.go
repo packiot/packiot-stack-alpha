@@ -335,10 +335,19 @@ const sqlClosePOChanged = `UPDATE core.production_orders
 // with no default on staging, so we synthesise a deterministic value from
 // (ts_ms, id_equipment) — it carries no cross-flow meaning (no unique index
 // on it); the natural key is (id_equipment, ts_event).
+//
+// forced_creation_system=FALSE: this is the PLC's own event. In legacy the flag
+// is false for PLC events and true only for rows a person created (manual
+// events, split segments, edits) — 41 of 4,660 CPACK events over 3 days.
+// Writing true here made every replicated CPACK event look human-created, and
+// the operator's PO downtime (serving.v_operator_po_details_3, which sums only
+// fcs=false events, like legacy) read 0 on every line. CPACK equipment is
+// status_type 0 and outside the wide-row list, so deriver.go's correct pass
+// (which deletes unmatched fcs=false rows in ITS scope) never touches these.
 const sqlInsertEquipmentEvent = `INSERT INTO silver.equipment_events (
 		id_equipment, ts_event, status, id_equipment_event, id_enterprise,
 		forced_creation_system, last_update)
-	VALUES ($1,$2,$3,$4,$5,true,now())
+	VALUES ($1,$2,$3,$4,$5,false,now())
 	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
 const sqlUpdateEventClassification = `UPDATE silver.equipment_events
