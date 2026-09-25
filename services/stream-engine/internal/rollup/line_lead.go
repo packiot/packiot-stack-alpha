@@ -110,7 +110,12 @@ const shiftLineLeadSQL = `
 	             WHERE cs.id_equipment = l.scrap_id
 	               AND cs.ts_value >= l.ts_value AND cs.ts_value < l.bend) AS scrap
 	      FROM lines l
-	), reconciled AS (
+	), reconciled AS MATERIALIZED (
+	    -- MATERIALIZED (and active below): each is referenced ONCE, so PG12+ inlines it into
+	    -- the UPDATE's LEFT JOIN and re-runs the per-line counter subqueries for every outer
+	    -- row: O(N^2). Measured 2026-09-24: 75-row shift batch 104-111 s -> 5-8 s, 50-row
+	    -- hour backfill 22-58 s -> 7-9 s, output identical (the long line-lead ticks that
+	    -- held equipment_oee_daily row locks and stalled the shift rollup).
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount). Reconcile whichever pair of the
 	    -- three counters a line actually reports, filling the missing one:
@@ -167,7 +172,7 @@ const shiftLineLeadSQL = `
 	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY line_id, ts_value, island
-	), active AS (
+	), active AS MATERIALIZED (
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
@@ -238,7 +243,12 @@ const hourLineLeadSQL = `
 	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = l.ts_value) AS scrap
 	      FROM lines l
-	), reconciled AS (
+	), reconciled AS MATERIALIZED (
+	    -- MATERIALIZED (and active below): each is referenced ONCE, so PG12+ inlines it into
+	    -- the UPDATE's LEFT JOIN and re-runs the per-line counter subqueries for every outer
+	    -- row: O(N^2). Measured 2026-09-24: 75-row shift batch 104-111 s -> 5-8 s, 50-row
+	    -- hour backfill 22-58 s -> 7-9 s, output identical (the long line-lead ticks that
+	    -- held equipment_oee_daily row locks and stalled the shift rollup).
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount). Reconcile whichever pair of the
 	    -- three counters a line actually reports, filling the missing one:
@@ -295,7 +305,7 @@ const hourLineLeadSQL = `
 	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY line_id, ts_value, island
-	), active AS (
+	), active AS MATERIALIZED (
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
