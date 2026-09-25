@@ -231,7 +231,10 @@ type dqGrainScan struct {
 
 var dqGrainMatrix = []dqGrainScan{
 	{"shift", "equipment_oee_shift", "30 days", true},
-	{"hour", "equipment_oee_hourly", "7 days", true},
+	// 10 days = the hour BACKFILL horizon (backfill.go): a backfill may rewrite any hour row
+	// up to 10 days old, and a 7-day window left the 7–10-day band never re-clamped
+	// (measured 2026-09-24: 202 repaired line hours with net > gross served unclamped).
+	{"hour", "equipment_oee_hourly", "10 days", true},
 	{"day", "equipment_oee_daily", "30 days", false},
 	{"week", "equipment_oee_weekly", "180 days", false},
 	{"month", "equipment_oee_monthly", "365 days", false},
