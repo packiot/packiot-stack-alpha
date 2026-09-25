@@ -3351,6 +3351,14 @@ services:
       RECONCILE_PO_ENABLED: "true"
       RECONCILE_PO_INTERVAL_SEC: "300"
       RECONCILE_PO_WINDOW_DAYS: "14"
+      # Product/client enrich — same pass as the ent-3 replicator. Dimensions
+      # resolve by (enterprise, name) to the sandbox's OWN cloned rows (+2M ids).
+      # KEEP_LEGACY_IDS=false: a dimension missing here gets a sequence id, never
+      # a raw legacy id (that would break the +2M convention and move the shared
+      # sequence for ent 3). --heal wipes POs, so enrichment simply re-fills.
+      RECONCILE_PO_ENRICH_ENABLED: "true"
+      RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS: "false"
     networks:
       packiot-net:
     healthcheck:

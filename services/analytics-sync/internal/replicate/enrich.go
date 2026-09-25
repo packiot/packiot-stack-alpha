@@ -131,6 +131,7 @@ func buildEnrichBatch(rows []enrichRow) (orders []int64, products, clients []*in
 type dimResolver struct {
 	rc       *POReconciler
 	ent      int
+	keepIDs  bool // create missing dims with legacy's id when free
 	products map[string]*int64
 	families map[string]*int64
 	clients  map[string]*int64
@@ -154,7 +155,7 @@ func (rc *POReconciler) runEnrich(ctx context.Context) {
 		return
 	}
 
-	res := &dimResolver{rc: rc, ent: ent,
+	res := &dimResolver{rc: rc, ent: ent, keepIDs: rc.cfg.ReconcileEnrichKeepLegacyIDs,
 		products: map[string]*int64{}, families: map[string]*int64{}, clients: map[string]*int64{}}
 	rows := make([]enrichRow, 0, len(links))
 	for _, l := range links {
@@ -271,8 +272,13 @@ func (d *dimResolver) product(ctx context.Context, l legacyLink) *int64 {
 		if ferr != nil || fam == nil {
 			return d.skip("family_unresolved", l, ferr)
 		}
-		ct, ierr := d.rc.dest.Exec(ctx, sqlEnrichInsertProductKeepID, *l.productID, name, l.productCode, *fam, d.ent)
-		if ierr == nil && ct.RowsAffected() > 0 {
+		kept := false
+		var ierr error
+		if d.keepIDs {
+			ct, err := d.rc.dest.Exec(ctx, sqlEnrichInsertProductKeepID, *l.productID, name, l.productCode, *fam, d.ent)
+			ierr, kept = err, err == nil && ct.RowsAffected() > 0
+		}
+		if ierr == nil && kept {
 			_, ierr = d.rc.dest.Exec(ctx, sqlEnrichBumpProductSeq, *l.productID)
 		} else if ierr == nil {
 			_, ierr = d.rc.dest.Exec(ctx, sqlEnrichInsertProduct, name, l.productCode, *fam, d.ent)
@@ -302,8 +308,13 @@ func (d *dimResolver) client(ctx context.Context, l legacyLink) *int64 {
 		return d.skip("client_lookup_error", l, err)
 	}
 	if id == nil {
-		ct, ierr := d.rc.dest.Exec(ctx, sqlEnrichInsertClientKeepID, *l.clientID, name, d.ent)
-		if ierr == nil && ct.RowsAffected() > 0 {
+		kept := false
+		var ierr error
+		if d.keepIDs {
+			ct, err := d.rc.dest.Exec(ctx, sqlEnrichInsertClientKeepID, *l.clientID, name, d.ent)
+			ierr, kept = err, err == nil && ct.RowsAffected() > 0
+		}
+		if ierr == nil && kept {
 			_, ierr = d.rc.dest.Exec(ctx, sqlEnrichBumpClientSeq, *l.clientID)
 		} else if ierr == nil {
 			_, ierr = d.rc.dest.Exec(ctx, sqlEnrichInsertClient, name, d.ent)
