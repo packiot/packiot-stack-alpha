@@ -65,7 +65,10 @@ const computeValuesSQL = `
 	    SELECT e.id_equipment, lower(e.runtime_timerange) AS lo,
 	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
 	           eq.gross_machine,
-	           COALESCE(eq.gross_machine, e.id_equipment) AS gross_src
+	           COALESCE(eq.gross_machine, e.id_equipment) AS gross_src,
+	           -- line-lead line in an opted-in enterprise: its counters are written by
+	           -- computeLineLeadValuesSQL (lead-sourced, per-minute reconciled) — leave them.
+	           (eq.tp_equipment = 3 AND COALESCE(eq.lead_machine, 0) > 0 AND eq.id_enterprise = ANY($2::int[])) AS line_lead
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
@@ -83,24 +86,101 @@ const computeValuesSQL = `
 	     GROUP BY el.id_equipment, el.lo
 	)
 	UPDATE %[4]s.production_orders_runtime e SET
-	       gross_production = COALESCE(s.gross, 0),
+	       gross_production = CASE WHEN el.line_lead THEN e.gross_production ELSE COALESCE(s.gross, 0) END,
 	       -- gross-only reconciliation (line_lead's "gross-only ⇒ net=gross"): a
 	       -- split-instrumentation member emits the input counter only (no net), so
 	       -- net falls back to gross (quality 1.0). GATED on gross_machine IS NOT NULL
 	       -- so a self-metered PO with a genuine net=0 (e.g. an all-scrap run) is
 	       -- left untouched — the reconciliation reaches ONLY line-metered lines.
-	       net_production   = CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
+	       net_production   = CASE WHEN el.line_lead THEN e.net_production
+	                               WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
 	                               THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END,
-	       oee_q            = GREATEST(LEAST(COALESCE(
+	       oee_q            = CASE WHEN el.line_lead THEN e.oee_q ELSE GREATEST(LEAST(COALESCE(
 	                            (CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
 	                                  THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END)
-	                            / NULLIF(s.gross, 0), 0), 1), 0), -- ADR-0037 clamp (net≤gross)
+	                            / NULLIF(s.gross, 0), 0), 1), 0) END, -- ADR-0037 clamp (net≤gross)
 	       speed            = COALESCE(s.speed, 0),
 	       recalc_needed    = false
 	  FROM eligible el
 	  LEFT JOIN sums s ON s.id_equipment = el.id_equipment AND s.lo = el.lo
 	 WHERE e.id_equipment = el.id_equipment
 	   AND lower(e.runtime_timerange) = el.lo`
+
+// Phase A2: LINE-LEAD PO counters (2026-09-25). A PO on a line-lead line used to read the
+// line's OWN counters — for CPACK lines those are often gross-only (L4/L5: net 0 ⇒ the operator
+// showed everything as SCRAP), net-only (CER400/SLEEVE: gross 0 ⇒ negative scrap) or absent
+// (L3/L8: 0 production), while the hour/shift grains of the SAME line (line_lead.go) read the
+// LEAD machine with the counter-role reconciliation. Here the PO grain does the same: per MINUTE
+// bucket (POs start/stop mid-hour), gross/net/scrap from gross_machine/lead_machine/scrap_machine,
+// reconciled like line_lead.go, net ≤ gross per bucket, summed over the runtime. Measured on
+// staging (6 h, all CPACK lines): per-minute reconcile == the served hourly net exactly on 14/15
+// producing lines, within ±4 pct on the rest. MUST run before Phase A (reads recalc_needed).
+// $1 = window, $2 = line-lead enterprises.
+const computeLineLeadValuesSQL = `
+	WITH eligible AS (
+	    SELECT e.id_equipment, lower(e.runtime_timerange) AS lo,
+	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
+	           eq.lead_machine AS lead_id,
+	           COALESCE(eq.gross_machine, eq.lead_machine) AS gross_id,
+	           eq.scrap_machine AS scrap_id
+	      FROM %[4]s.production_orders_runtime e
+	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
+	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
+	       AND e.recalc_needed
+	       AND eq.tp_equipment = 3 AND COALESCE(eq.lead_machine, 0) > 0
+	       AND eq.id_enterprise = ANY($2::int[])
+	), bucket_counts AS (
+	    -- Per-PO, per-source LATERALs with OFFSET 0 (the line_lead.go #259 lesson): the 1min
+	    -- cagg is a REAL-TIME view; joining it on a non-constant id list keeps the planner from
+	    -- pushing id_equipment into its raw branch (a 16-PO run did not finish in 240 s). As
+	    -- correlated per-source scans each id is a runtime constant → index range scans.
+	    SELECT el.id_equipment, el.lo, x.ts_value AS b,
+	           sum(x.g) AS gross, sum(x.n) AS net, sum(x.s) AS scrap
+	      FROM eligible el
+	      CROSS JOIN LATERAL (
+	          SELECT cg.ts_value, cg.gross_production_incr AS g, NULL::double precision AS n, NULL::double precision AS s
+	            FROM %[3]s.equipment_categorical_1min cg
+	           WHERE cg.id_equipment = el.gross_id
+	             AND cg.ts_value >= date_trunc('minute', el.lo) AND cg.ts_value < el.hi
+	          UNION ALL
+	          SELECT cn.ts_value, NULL, cn.net_production_incr, NULL
+	            FROM %[3]s.equipment_categorical_1min cn
+	           WHERE cn.id_equipment = el.lead_id
+	             AND cn.ts_value >= date_trunc('minute', el.lo) AND cn.ts_value < el.hi
+	          UNION ALL
+	          SELECT cs.ts_value, NULL, NULL, cs.scrap_incr
+	            FROM %[3]s.equipment_categorical_1min cs
+	           WHERE cs.id_equipment = el.scrap_id
+	             AND cs.ts_value >= date_trunc('minute', el.lo) AND cs.ts_value < el.hi
+	          OFFSET 0
+	      ) x
+	     GROUP BY el.id_equipment, el.lo, x.ts_value
+	), reconciled AS MATERIALIZED (
+	    SELECT id_equipment, lo,
+	           CASE WHEN COALESCE(gross,0) > 0 THEN COALESCE(gross,0)
+	                WHEN COALESCE(net,0) > 0 AND COALESCE(scrap,0) > 0 THEN COALESCE(net,0) + COALESCE(scrap,0)
+	                WHEN COALESCE(net,0) > 0 THEN COALESCE(net,0)
+	                ELSE 0 END AS eff_gross,
+	           CASE WHEN COALESCE(net,0) > 0 THEN COALESCE(net,0)
+	                WHEN COALESCE(gross,0) > 0 AND COALESCE(scrap,0) > 0 THEN COALESCE(gross,0) - COALESCE(scrap,0)
+	                WHEN COALESCE(gross,0) > 0 THEN COALESCE(gross,0)
+	                ELSE 0 END AS eff_net
+	      FROM bucket_counts
+	), totals AS MATERIALIZED (
+	    SELECT el.id_equipment, el.lo,
+	           COALESCE(sum(r.eff_gross), 0) AS gross,
+	           COALESCE(sum(LEAST(r.eff_net, r.eff_gross)), 0) AS net
+	      FROM eligible el
+	      LEFT JOIN reconciled r ON r.id_equipment = el.id_equipment AND r.lo = el.lo
+	     GROUP BY el.id_equipment, el.lo
+	)
+	UPDATE %[4]s.production_orders_runtime e SET
+	       gross_production = t.gross,
+	       net_production   = t.net,
+	       oee_q            = GREATEST(LEAST(COALESCE(t.net / NULLIF(t.gross, 0), 0), 1), 0)
+	  FROM totals t
+	 WHERE e.id_equipment = t.id_equipment
+	   AND lower(e.runtime_timerange) = t.lo`
 
 // Phase B: event overlap sums — CONDITIONAL (inner join; prod's
 // GROUP BY → FOUND false when no overlapping events).
@@ -288,7 +368,7 @@ func isIntOverflow(err error) bool {
 
 // RunCompute executes one compute pass for one destination. poAvail (FU#8) gates
 // the PO-grain availability write path; default false ⇒ byte-identical parity.
-func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool) (int64, error) {
+func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, lineLeadEnterprises []int) (int64, error) {
 	// Phase B first (see NOTE): its eligible set must predate A's clear.
 	if _, err := d.Pool.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
 		return 0, fmt.Errorf("compute events: %w", err)
@@ -301,7 +381,17 @@ func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool) 
 			return 0, fmt.Errorf("compute availability: %w", err)
 		}
 	}
-	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d), window)
+	// Phase A2 (line-lead PO counters) — before Phase A clears recalc_needed.
+	ll := lineLeadEnterprises
+	if ll == nil {
+		ll = []int{}
+	}
+	if len(ll) > 0 {
+		if _, err := d.Pool.Exec(ctx, fmtRD(computeLineLeadValuesSQL, d), window, ll); err != nil {
+			return 0, fmt.Errorf("compute line-lead values: %w", err)
+		}
+	}
+	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d), window, ll)
 	if err != nil {
 		return 0, fmt.Errorf("compute values: %w", err)
 	}
@@ -316,12 +406,12 @@ func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool) 
 
 // LoopRefresh = the dispatcher (ledger: po-runtime-refresh): compute
 // then recalc, ordered, drop-per-step (prod's fail-soft blocks).
-func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, every time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
+func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, lineLeadEnterprises []int, every time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
 	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)", slog.Bool("po_availability", poAvail))
 	jobs.Loop(ctx, jobs.Job{Name: "po-runtime-refresh", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			if _, err := RunCompute(ctx, d, window, poAvail); err != nil {
+			if _, err := RunCompute(ctx, d, window, poAvail, lineLeadEnterprises); err != nil {
 				logger.Warn("po-runtime-compute failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				// An int-overflow (SQLSTATE 22003) here is an opaque,
 				// intermittent failure — dump the offending PO row so it's

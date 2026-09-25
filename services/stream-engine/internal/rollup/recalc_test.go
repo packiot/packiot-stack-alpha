@@ -83,12 +83,24 @@ func TestComputeSplitInstrumentation(t *testing.T) {
 	if !strings.Contains(computeValuesSQL, "el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0") {
 		t.Error("net→gross reconciliation must be gated on gross_machine IS NOT NULL")
 	}
-	// GUARD (the CPACK-regression tripwire): the value/event source fallback base
-	// must be id_equipment, NEVER lead_machine. CPACK lines have lead_machine SET but
-	// gross_machine NULL; a lead_machine fallback would silently redirect their
-	// working per-PO attribution off the line. Do NOT "align" this with line_lead.go.
-	if strings.Contains(computeValuesSQL, "lead_machine") || strings.Contains(computeEventsSQL, "lead_machine") {
-		t.Error("compute must NOT fall back to lead_machine — it would regress self-metered lines (CPACK)")
+	// GUARD: Phase A's own-counter source base stays id_equipment — it never FALLS BACK to
+	// lead_machine. (2026-09-25) Line-lead lines are no longer read here at all: their PO
+	// counters come from the explicit, separately-gated computeLineLeadValuesSQL (the same
+	// lead-sourced model as the hour/shift grains), because their own counters were gross-only
+	// (L4/L5 → PO shown as all scrap), net-only (negative scrap) or absent (L3/L8 → 0).
+	if !strings.Contains(computeValuesSQL, "COALESCE(eq.gross_machine, e.id_equipment) AS gross_src") {
+		t.Error("Phase A source must stay COALESCE(gross_machine, id_equipment)")
+	}
+	if strings.Contains(computeEventsSQL, "lead_machine") {
+		t.Error("the events pass must not read lead_machine")
+	}
+	if !strings.Contains(computeValuesSQL, "WHEN el.line_lead THEN e.net_production") {
+		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
+	}
+	for _, must := range []string{"eq.tp_equipment = 3", "COALESCE(eq.lead_machine, 0) > 0", "eq.id_enterprise = ANY($2::int[])", "LEAST(r.eff_net, r.eff_gross)"} {
+		if !strings.Contains(computeLineLeadValuesSQL, must) {
+			t.Errorf("line-lead PO pass missing gate/invariant %q", must)
+		}
 	}
 }
 
