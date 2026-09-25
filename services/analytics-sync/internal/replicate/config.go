@@ -100,6 +100,12 @@ type Config struct {
 	// without widening the reconciler's insert window.
 	ReconcileEnrichEnabled    bool
 	ReconcileEnrichWindowDays int
+	// When a dimension is missing in the twin, create it with legacy's id if
+	// that id is free (and move the shared sequence past it). Right for CPACK
+	// ent 3, whose ids mirror legacy. Must be false for an id-offset tenant
+	// (the +2M sandbox): a raw legacy id would break its offset convention and
+	// push the SHARED sequence for another tenant's sake.
+	ReconcileEnrichKeepLegacyIDs bool
 
 	// Event interval-overlap matcher (handlers.go). event-justified / -edited
 	// and event-splitted first try an EXACT (id_equipment, ts_event) match
@@ -163,8 +169,9 @@ func Load() *Config {
 		ReconcileIntervalSec: getenvInt("RECONCILE_PO_INTERVAL_SEC", 300),
 		ReconcileWindowDays:  getenvInt("RECONCILE_PO_WINDOW_DAYS", 14),
 
-		ReconcileEnrichEnabled:    getenv("RECONCILE_PO_ENRICH_ENABLED", "false") == "true",
-		ReconcileEnrichWindowDays: getenvInt("RECONCILE_PO_ENRICH_WINDOW_DAYS", 14),
+		ReconcileEnrichEnabled:       getenv("RECONCILE_PO_ENRICH_ENABLED", "false") == "true",
+		ReconcileEnrichWindowDays:    getenvInt("RECONCILE_PO_ENRICH_WINDOW_DAYS", 14),
+		ReconcileEnrichKeepLegacyIDs: getenv("RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS", "true") == "true",
 
 		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
 		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),
