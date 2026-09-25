@@ -8,6 +8,8 @@ import { HubPage } from "@/pages/hub";
 import { CustomizationsPage } from "@/pages/customizations";
 import { OeeProfilePage } from "@/pages/oee-profile";
 import { IntegrationsPage } from "@/pages/integrations";
+import { NodeRedPage } from "@/pages/node-red";
+import { PlcConnectionsPage } from "@/pages/plc-connections";
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -40,6 +42,8 @@ export default function App() {
         <Route path="customizations" element={<CustomizationsPage />} />
         <Route path="oee-profile" element={<OeeProfilePage />} />
         <Route path="integrations" element={<IntegrationsPage />} />
+        <Route path="node-red" element={<NodeRedPage />} />
+        <Route path="plc-connections" element={<PlcConnectionsPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/login" replace />} />

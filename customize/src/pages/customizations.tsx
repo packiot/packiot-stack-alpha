@@ -1,6 +1,5 @@
 import { Braces, Loader2, Plus, Rocket, Save, Wrench } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   classifyOnboardingError,
@@ -12,6 +11,7 @@ import { equipmentApi } from "@/api/equipment";
 import { PageHeader } from "@/components/page-header";
 import { Button, Card, Input } from "@/components/ui";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
+import { csadminUrl } from "@/lib/sibling-apps";
 import {
   addDeriveRule,
   buildDeriveRule,
@@ -220,9 +220,9 @@ export function CustomizationsPage() {
           <p className="text-[13px] text-muted-foreground">
             This tenant has no descriptor yet — there is nothing to customize until
             it is onboarded in{" "}
-            <Link className="text-primary hover:underline" to="/app/hub">
-              CS Admin
-            </Link>
+            <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", enterprise.id_enterprise)} target="_blank" rel="noreferrer">
+              CS Admin ↗
+            </a>
             , where you can author derive rules inline during Review. Once onboarded,
             they show up here for editing.
           </p>
