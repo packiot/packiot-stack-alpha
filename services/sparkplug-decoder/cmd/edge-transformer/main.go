@@ -538,10 +538,14 @@ func main() {
 		// oeecloud-worker dispatch writes into shadow_go_port.* schema.
 		if localDecodeOnly {
 			logger.Info("LOCAL_DECODE_ONLY=true: on-prem decode→localstate only; no cloud AMQP publisher, no outbox (ADR-0053 B-minimal)")
-		} else if analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger); shadowErr != nil {
-			logger.Error("analyticspub: failed to open channel — MQTT disabled",
+		} else if analyticsPub, shadowErr = analyticspub.NewWithRetry(ctx, amqpCreds.URL(), "oee", logger, 3*time.Minute); shadowErr != nil {
+			// Was: log + analyticsPub=nil + keep running → after a host reboot (decoder up
+			// before RabbitMQ) the process decoded MQTT but published NOTHING and disabled the
+			// outbox, until someone restarted it by hand (2026-09-25). A broker that stays
+			// unreachable past the retry window is fatal: exit so the restart policy recycles us.
+			logger.Error("analyticspub: broker unreachable after startup retries — exiting for restart",
 				slog.String("err", shadowErr.Error()))
-			analyticsPub = nil
+			os.Exit(1)
 		} else {
 			// #91 emit-liveness: fail /healthz if emit stalls (dead channel /
 			// failing reconnect) so orchestration recycles instead of a silent

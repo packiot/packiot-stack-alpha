@@ -164,7 +164,10 @@ services:
       # a broker recreate — the 2026-07-10 trap). definitions.json is generated
       # at deploy from the template + Secrets Manager (gitignored — has secrets).
       - ./monitoring/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-      - ./monitoring/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      # Rendered by deploy-staging.yml to a durable host path OUTSIDE the CI runner
+      # workspace (a later job's checkout cleaned the gitignored in-repo copy → reboot
+      # found it missing → dockerd created a directory → rabbitmq exit 127, 2026-09-25).
+      - /opt/packiot/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.5
