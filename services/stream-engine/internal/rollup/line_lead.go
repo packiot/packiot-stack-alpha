@@ -18,7 +18,11 @@
 //     and equipments.scrap_machine the scrap/defect source, while lead_machine stays
 //     the net/output + availability source. When gross_machine/scrap_machine are
 //     NULL, gross_id COALESCEs to lead_id and scrap_id is NULL (⇒ 0), so behaviour
-//     is byte-identical to the single-lead pass.
+//     is byte-identical to the single-lead pass. equipments.net_machine moves only
+//     the NET source off the lead (net_id = COALESCE(net_machine, lead_machine)): a
+//     line whose lead is its INFEED (CPACK: availability and live status follow the
+//     first machine) but whose output is counted on the last machine (TEXA) sets it,
+//     so gross = infeed and net = outfeed, as legacy meters the line.
 //     COUNTER-ROLE MATRIX. The three counters obey the identity
 //     gross = net + scrap (ProdConsumedCount = ProdProcessedCount +
 //     ProdDefectiveCount). The reconciled CTE fills whichever counter a line does
@@ -72,6 +76,10 @@ const shiftLineLeadSQL = `
 	           -- net. gross_machine names the input/gross source; NULL ⇒ single-lead
 	           -- (gross_id == lead_id) so the COALESCE is a no-op for legacy lines.
 	           COALESCE(eq.gross_machine, eq.lead_machine) AS gross_id,
+	           -- NET source. net_machine names the output machine when it is NOT the
+	           -- lead (CPACK: lead = infeed for availability, net on the outfeed TEXA).
+	           -- NULL ⇒ net from lead_machine, byte-identical to before.
+	           COALESCE(eq.net_machine, eq.lead_machine) AS net_id,
 	           -- SCRAP source. scrap_machine names the machine whose ProdDefectiveCount
 	           -- is this line's scrap/defect source. NULL (the default) ⇒ no scrap
 	           -- counter ⇒ the scrap subquery returns NULL ⇒ s=0, so the reconciliation
@@ -107,14 +115,14 @@ const shiftLineLeadSQL = `
 	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = b.bts) AS gross,
 	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
-	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = b.bts) AS net,
+	             WHERE cn.id_equipment = l.net_id AND cn.ts_value = b.bts) AS net,
 	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = b.bts) AS scrap
 	      FROM lines l
 	      CROSS JOIN LATERAL (
 	          SELECT DISTINCT c.ts_value AS bts
 	            FROM %[3]s.equipment_categorical_1hour c
-	           WHERE c.id_equipment IN (l.gross_id, l.lead_id, l.scrap_id)
+	           WHERE c.id_equipment IN (l.gross_id, l.lead_id, l.net_id, l.scrap_id)
 	             AND c.ts_value >= l.ts_value AND c.ts_value < l.bend
 	           OFFSET 0
 	      ) b
@@ -236,6 +244,10 @@ const hourLineLeadSQL = `
 	           -- net. gross_machine names the input/gross source; NULL ⇒ single-lead
 	           -- (gross_id == lead_id) so the COALESCE is a no-op for legacy lines.
 	           COALESCE(eq.gross_machine, eq.lead_machine) AS gross_id,
+	           -- NET source. net_machine names the output machine when it is NOT the
+	           -- lead (CPACK: lead = infeed for availability, net on the outfeed TEXA).
+	           -- NULL ⇒ net from lead_machine, byte-identical to before.
+	           COALESCE(eq.net_machine, eq.lead_machine) AS net_id,
 	           -- SCRAP source. scrap_machine names the machine whose ProdDefectiveCount
 	           -- is this line's scrap/defect source. NULL (the default) ⇒ no scrap
 	           -- counter ⇒ the scrap subquery returns NULL ⇒ s=0, so the reconciliation
@@ -247,15 +259,15 @@ const hourLineLeadSQL = `
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
 	       AND eq.id_enterprise = ANY(%[6]s)
 	), counts AS (
-	    -- Raw per-source sums: GROSS from gross_id (input machine), NET from lead_id
-	    -- (output machine), SCRAP from scrap_id (defect machine). Single-bucket lookups
+	    -- Raw per-source sums: GROSS from gross_id (input machine), NET from net_id
+	    -- (output machine: net_machine, else lead_id), SCRAP from scrap_id (defect machine). Single-bucket lookups
 	    -- matching the hour join (ts_value = l.ts_value). A NULL source id ⇒ no matching
 	    -- rows ⇒ NULL sum ⇒ 0 downstream.
 	    SELECT l.line_id, l.ts_value,
 	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
 	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
-	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = l.ts_value) AS net,
+	             WHERE cn.id_equipment = l.net_id AND cn.ts_value = l.ts_value) AS net,
 	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = l.ts_value) AS scrap
 	      FROM lines l

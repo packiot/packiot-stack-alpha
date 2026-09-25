@@ -48,6 +48,7 @@ func TestGoldenLineLead(t *testing.T) {
 		-- single-lead fixture exercises the COALESCE(gross_machine, lead_machine)
 		-- no-op path (gross_id == lead_id ⇒ behaviour identical to pre-split).
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
@@ -216,6 +217,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 	const splitSchema = `
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
@@ -377,6 +379,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 	const netOnlySchema = `
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
@@ -487,6 +490,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 const counterMatrixSchema = `
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 	CREATE TABLE golden.equipment_oee_shift (
 	    id_equipment int, ts_value timestamptz, ts_end timestamptz,
@@ -698,6 +702,7 @@ func TestGoldenHourLineLeadAfterEvents(t *testing.T) {
 	const hourSchema = `
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
 		CREATE TABLE golden.equipment_oee_hourly (
 		    id_equipment int, ts_value timestamptz, recalc_needed boolean DEFAULT false,
@@ -824,5 +829,126 @@ func TestGoldenShiftLineLeadPerBucketReconcile(t *testing.T) {
 	}
 	if gross != 230 || net != 220 || scrap != 10 {
 		t.Errorf("per-bucket reconcile: gross=%v net=%v scrap=%v, want 230/220/10 (shift-sum logic gives 150/230)", gross, net, scrap)
+	}
+}
+
+// TestGoldenLineLeadNetMachine — the CPACK shape. The lead is the line's INFEED
+// (BREYER: availability and live status follow it) and carries gross only; the
+// line's output is counted on a DIFFERENT, last machine (TEXA). Legacy meters such
+// a line as gross = first machine, net = last machine. net_machine names that
+// output source; gross stays on the lead (gross_machine NULL), so PO events and
+// values keep reading the line itself (compute.go's COALESCE(gross_machine, self)).
+//
+//	line 900:  tp=3, lead_machine 901 (infeed: gross + availability), net_machine 902
+//	mach 901:  1hour gross 1000, net 0; productive minutes drive availability
+//	mach 902:  1hour net 950, gross 0
+//	→ line gross 1000 (from 901), net 950 (from 902), oee_q = 0.95.
+// Without net_machine the pass would read net off the gross-only lead (0) and the
+// gross-only reconciliation would report net = gross (quality 1.0).
+func TestGoldenLineLeadNetMachine(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	const schema = `
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		CREATE TABLE golden.equipment_oee_shift (
+		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
+		    ts_value_production timestamptz, id_shift int, cd_shift text,
+		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
+		    gross double precision, net double precision, scrap double precision,
+		    speed double precision, ideal_speed double precision,
+		    available_time double precision, running_time double precision,
+		    stopped_time double precision, planned_downtime double precision,
+		    ideal_production double precision, downtime double precision,
+		    changeover_time double precision, oee double precision,
+		    oee_a double precision, oee_p double precision, oee_q double precision,
+		    target double precision, proportional_target double precision,
+		    computed_at timestamptz, source_watermark timestamptz
+		);
+		CREATE TABLE golden.equipment_categorical_1hour (
+		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
+		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
+		);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
+		SET search_path TO golden, public;`
+	for _, s := range []string{goldenSchema, schema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+
+	const fixture = `
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,net_machine)
+		VALUES (900,1,1,3,3,NULL,901,NULL,902),  -- the LINE: gross+avail from 901, net from 902
+		       (901,1,1,3,1,100,NULL,NULL,NULL), -- infeed lead (rated speed 100)
+		       (902,1,1,3,1,NULL,NULL,NULL,NULL);-- outfeed
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig
+		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
+		            date_trunc('hour', now()) - interval '2 hours';
+		INSERT INTO golden.equipment_oee_shift
+		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
+		             date_trunc('hour', now()) - interval '2 hours',
+		             date_trunc('day', now()), 1, true, 0);
+		INSERT INTO golden.equipment_categorical_1hour
+		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 1000, 0),
+		       (902, date_trunc('hour', now()) - interval '3 hours', 0, 950);
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10, 0
+		  FROM generate_series(0,9) m
+		UNION ALL
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10, 0
+		  FROM generate_series(40,59) m;`
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET search_path TO golden, public`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
+	if _, err := conn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+
+	var gross, net, running, oeeQ float64
+	if err := conn.QueryRow(ctx,
+		`SELECT gross, net, running_time, oee_q FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
+		Scan(&gross, &net, &running, &oeeQ); err != nil {
+		t.Fatal(err)
+	}
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	if !approx(gross, 1000) {
+		t.Errorf("line gross = %v, want 1000 (from the infeed lead 901)", gross)
+	}
+	if !approx(net, 950) {
+		t.Errorf("line net = %v, want 950 (from net_machine 902, NOT net = gross)", net)
+	}
+	if !approx(oeeQ, 0.95) {
+		t.Errorf("line oee_q = %v, want 0.95", oeeQ)
+	}
+	if !approx(running, 2040) {
+		t.Errorf("line running_time = %v, want 2040 (availability stays on the lead 901)", running)
 	}
 }
