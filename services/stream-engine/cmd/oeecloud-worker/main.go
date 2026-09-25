@@ -293,16 +293,6 @@ func main() {
 		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
-	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
-	// closes the loop pocontrol opens).
-	if cfg.PORecalcEnabled {
-		go rollup.LoopRefresh(ctx, bgDests,
-			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
-			cfg.POAvailabilityEnabled,
-			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
-			uns.RefreshCurrentJobs)
-	}
-
 	// Shared OEE-fallback config — the live rollup AND the stranded-hour backfill
 	// must run the identical decomposition finalize (canonical A·P·Q reconcile vs
 	// legacy oee_p residual), so build it once and pass it to both.
@@ -333,6 +323,21 @@ func main() {
 		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
 		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
 	}
+	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
+	// closes the loop pocontrol opens). Started after the line-lead set is built:
+	// PO counters on line-lead lines are lead-sourced like the hour/shift grains.
+	if cfg.PORecalcEnabled {
+		var poLineLead []int
+		if cfg.CountersOnlyLineLeadEnabled {
+			poLineLead = lineLeadEnts
+		}
+		go rollup.LoopRefresh(ctx, bgDests,
+			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
+			cfg.POAvailabilityEnabled, poLineLead,
+			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
+			uns.RefreshCurrentJobs)
+	}
+
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, bgDests,
