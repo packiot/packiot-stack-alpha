@@ -94,40 +94,40 @@ const shiftLineLeadSQL = `
 	       -- still bounded by shift_elig + the LIMIT, so live ticks are unaffected
 	       -- (no old rows are flagged in steady state). Not in the parity accessors.
 	       AND el.ts_value >= now() - interval '25 day'
-	), counts AS (
-	    -- Raw per-source sums: GROSS from gross_id (input machine), NET from lead_id
-	    -- (output machine), SCRAP from scrap_id (defect machine). Correlated subqueries
-	    -- so each factor draws from its own source; few lines, so the lookups are cheap.
-	    -- A NULL source id ⇒ no matching rows ⇒ NULL sum ⇒ 0 downstream.
-	    SELECT l.line_id, l.ts_value,
+	), bucket_counts AS (
+	    -- PER-HOUR counter sums (2026-09-25). Each hour bucket the shift covers (same
+	    -- selection as before: ts_value in [shift start, bend)) gets its own GROSS/NET/
+	    -- SCRAP from its own source machines. The counter-role reconciliation below then
+	    -- runs PER BUCKET — like the hour grain — instead of on shift-level sums: when a
+	    -- source reports only intermittently (Bispharma leads with gross in 4 of 11 hours,
+	    -- net in 11 of 11) the shift sums read "G+N present" with net far above the
+	    -- sparse gross, so net was clamped to that gross and the shift UNDERCOUNTED the
+	    -- hours that only reported net (09-15 Bispharma: shift 1.18 M vs hourly 1.38 M).
+	    SELECT l.line_id, l.ts_value, b.bts,
 	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
-	             WHERE cg.id_equipment = l.gross_id
-	               AND cg.ts_value >= l.ts_value AND cg.ts_value < l.bend) AS gross,
+	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = b.bts) AS gross,
 	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
-	             WHERE cn.id_equipment = l.lead_id
-	               AND cn.ts_value >= l.ts_value AND cn.ts_value < l.bend) AS net,
+	             WHERE cn.id_equipment = l.lead_id AND cn.ts_value = b.bts) AS net,
 	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
-	             WHERE cs.id_equipment = l.scrap_id
-	               AND cs.ts_value >= l.ts_value AND cs.ts_value < l.bend) AS scrap
+	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = b.bts) AS scrap
 	      FROM lines l
-	), reconciled AS MATERIALIZED (
-	    -- MATERIALIZED (and active below): each is referenced ONCE, so PG12+ inlines it into
-	    -- the UPDATE's LEFT JOIN and re-runs the per-line counter subqueries for every outer
-	    -- row: O(N^2). Measured 2026-09-24: 75-row shift batch 104-111 s -> 5-8 s, 50-row
-	    -- hour backfill 22-58 s -> 7-9 s, output identical (the long line-lead ticks that
-	    -- held equipment_oee_daily row locks and stalled the shift rollup).
+	      CROSS JOIN LATERAL (
+	          SELECT DISTINCT c.ts_value AS bts
+	            FROM %[3]s.equipment_categorical_1hour c
+	           WHERE c.id_equipment IN (l.gross_id, l.lead_id, l.scrap_id)
+	             AND c.ts_value >= l.ts_value AND c.ts_value < l.bend
+	           OFFSET 0
+	      ) b
+	), bucket_reconciled AS (
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
-	    -- = ProdProcessedCount + ProdDefectiveCount). Reconcile whichever pair of the
-	    -- three counters a line actually reports, filling the missing one:
+	    -- = ProdProcessedCount + ProdDefectiveCount), PER BUCKET. Reconcile whichever
+	    -- pair of the three counters the bucket reports, filling the missing one:
 	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact).
 	    --   N+S  (no G): gross absent, net+scrap present ⇒ gross = net + scrap.
 	    --   G+S  (no N): net absent, gross+scrap present ⇒ net = gross - scrap.
 	    --   net-only    : only net ⇒ gross = net (quality 1.0, legacy convention).
 	    --   gross-only  : only gross ⇒ net = gross (quality 1.0).
-	    -- With s=0 (no scrap counter) the CASEs collapse to the pre-scrap G+N /
-	    -- net-only logic byte-for-byte. eff_gross/eff_net feed every OEE term below so
-	    -- gross, scrap and oee_q stay mutually consistent. (Keep this const free of any
-	    -- literal percent sign: it is a fmt.Sprintf format string.)
+	    -- (Keep this const free of any literal percent sign: fmt.Sprintf format string.)
 	    SELECT c.line_id, c.ts_value,
 	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
@@ -137,7 +137,23 @@ const shiftLineLeadSQL = `
 	                WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.gross,0) - COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                ELSE 0 END AS eff_net
-	      FROM counts c
+	      FROM bucket_counts c
+	), reconciled AS MATERIALIZED (
+	    -- MATERIALIZED (and active below): each is referenced ONCE, so PG12+ inlines it into
+	    -- the UPDATE's LEFT JOIN and re-runs the per-line counter subqueries for every outer
+	    -- row: O(N^2). Measured 2026-09-24: 75-row shift batch 104-111 s -> 5-8 s, 50-row
+	    -- hour backfill 22-58 s -> 7-9 s, output identical (the long line-lead ticks that
+	    -- held equipment_oee_daily row locks and stalled the shift rollup).
+	    -- Shift totals = SUM of the per-bucket reconciled values, with net <= gross applied
+	    -- PER BUCKET (the ADR-0036 invariant the silver clamp enforces on each served hour
+	    -- row, which records the INVARIANT_CLAMPED event there) → shift == sum of its
+	    -- served hour rows. LEFT JOIN keeps a line with no buckets at 0 (as before).
+	    SELECT l.line_id, l.ts_value,
+	           COALESCE(sum(br.eff_gross), 0) AS eff_gross,
+	           COALESCE(sum(LEAST(br.eff_net, br.eff_gross)), 0) AS eff_net
+	      FROM lines l
+	      LEFT JOIN bucket_reconciled br ON br.line_id = l.line_id AND br.ts_value = l.ts_value
+	     GROUP BY l.line_id, l.ts_value
 	), prod_min AS (
 	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (

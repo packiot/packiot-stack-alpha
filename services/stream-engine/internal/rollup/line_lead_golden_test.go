@@ -765,3 +765,64 @@ func TestGoldenHourLineLeadAfterEvents(t *testing.T) {
 		t.Errorf("oee_q=%v recalc_needed=%v, want 1/false", oeeQ, recalc)
 	}
 }
+
+// TestGoldenShiftLineLeadPerBucketReconcile — regression for the Bispharma shift
+// undercount (2026-09-25). A lead whose GROSS counter reports only in some hours:
+// reconciling the counter roles on SHIFT sums saw "G+N present" with net far above the
+// sparse gross (→ net clamped to that gross downstream); reconciling PER HOUR BUCKET
+// (like the hour grain) keeps each hour's own story, with net ≤ gross applied per bucket.
+//
+//	h1: gross 100, net 90   → (100, 90)
+//	h2: net 80 only         → (80, 80)   net-only ⇒ gross = net
+//	h3: gross 50, net 60    → (50, 50)   net ≤ gross per bucket
+//	shift → gross 230, net 220, scrap 10   (old shift-sum logic: gross 150, net 230)
+func TestGoldenShiftLineLeadPerBucketReconcile(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, s := range []string{goldenSchema, counterMatrixSchema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	const fixture = `
+		SET search_path TO golden, public;
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,scrap_machine)
+		VALUES (900,1,1,3,3,NULL,901,NULL,NULL), (901,1,1,3,1,100,NULL,NULL,NULL);
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig SELECT 900, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) - interval '1 hour';
+		INSERT INTO golden.equipment_oee_shift (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		VALUES (900, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) - interval '1 hour', date_trunc('day', now()), 1, true, 0);
+		INSERT INTO golden.equipment_categorical_1hour (id_equipment, ts_value, gross_production_incr, net_production_incr, scrap_incr) VALUES
+		  (901, date_trunc('hour', now()) - interval '4 hours', 100, 90, 0),
+		  (901, date_trunc('hour', now()) - interval '3 hours', NULL, 80, 0),
+		  (901, date_trunc('hour', now()) - interval '2 hours', 50, 60, 0);
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '4 hours' + make_interval(mins => m), 1, 1 FROM generate_series(0,179) m;`
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	if _, err := conn.Exec(ctx, fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+	var gross, net, scrap float64
+	if err := conn.QueryRow(ctx, `SELECT gross, net, scrap FROM golden.equipment_oee_shift WHERE id_equipment = 900`).Scan(&gross, &net, &scrap); err != nil {
+		t.Fatal(err)
+	}
+	if gross != 230 || net != 220 || scrap != 10 {
+		t.Errorf("per-bucket reconcile: gross=%v net=%v scrap=%v, want 230/220/10 (shift-sum logic gives 150/230)", gross, net, scrap)
+	}
+}
