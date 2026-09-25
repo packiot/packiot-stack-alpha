@@ -52,13 +52,17 @@ type ReconcileMetrics interface {
 	IncReconcileInserted()
 	IncReconcileFinished()
 	IncReconcileUnresolved()
+	AddReconcileEnriched(n int)
+	IncReconcileEnrichSkip(reason string)
 }
 
 type noopReconcileMetrics struct{}
 
-func (noopReconcileMetrics) IncReconcileInserted()   {}
-func (noopReconcileMetrics) IncReconcileFinished()   {}
-func (noopReconcileMetrics) IncReconcileUnresolved() {}
+func (noopReconcileMetrics) IncReconcileInserted()         {}
+func (noopReconcileMetrics) IncReconcileFinished()         {}
+func (noopReconcileMetrics) IncReconcileUnresolved()       {}
+func (noopReconcileMetrics) AddReconcileEnriched(int)      {}
+func (noopReconcileMetrics) IncReconcileEnrichSkip(string) {}
 
 type POReconciler struct {
 	legacy *pgxpool.Pool
@@ -235,6 +239,10 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 		slog.Int("finished", finished),
 		slog.Int("unresolved", unresolved),
 		slog.Int("skipped_running_conflict", skippedRunning))
+
+	if rc.cfg.ReconcileEnrichEnabled {
+		rc.runEnrich(ctx)
+	}
 }
 
 // nullX helpers turn database/sql Null wrappers into interface{} args pgx

@@ -3255,6 +3255,15 @@ services:
       RECONCILE_PO_ENABLED: "true"
       RECONCILE_PO_INTERVAL_SEC: "300"
       RECONCILE_PO_WINDOW_DAYS: "14"
+      # Product/client enrich (enrich.go): fills NULL id_product/id_client on
+      # twin POs from legacy, resolving dimensions by (enterprise, name) and
+      # never overwriting. Neither the user_logs replay nor the reconciler
+      # INSERT carries them, so every PO since the cutover had none (Overview
+      # "Client / Product" blank). 120d = drains the backlog since the June
+      # cutover and keeps catching late ERP assignments; one read-only legacy
+      # query per tick. Rollback: "false" + redeploy (filled values stay).
+      RECONCILE_PO_ENRICH_ENABLED: "true"
+      RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
     networks:
       packiot-net:
     healthcheck:
