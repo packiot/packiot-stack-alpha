@@ -605,10 +605,24 @@ func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 	// else the per-equipment GuardRatedSpeed (production_speed) so the guard
 	// covers every topic of a tenant that authored a margin, not just the
 	// counters-only-mapped ones.
+	//
+	// The ceiling's time window is the gap since THIS counter's previous reading
+	// (its own ___GUARD_TS), not since the unit's last CurMachSpeed update. A
+	// machine that publishes Consumed and Processed in separate messages (CPACK
+	// L6-TEXA: ~0.6 s apart) refreshes CurMachSpeed___TS on the Consumed message,
+	// so the Processed message saw a ~0.6 s window instead of its real ~15 s and
+	// every net increment was clamped to ~14 (2026-09-23 → 09-27).
 	guardRate := spikeGuardRate(msg.IdealRate, msg.GuardRatedSpeed)
-	if msg.CounterSpikeMargin > 0 && guardRate > 0 {
-		if lastSpeedTs, _ := state.TimeMs(unitTopic + "/Status/CurMachSpeed___TS"); lastSpeedTs > 0 {
-			interval := timestampMs - lastSpeedTs
+	if msg.CounterSpikeMargin > 0 && guardRate > 0 && curTopic != "" {
+		guardTsKey := curTopic + "___GUARD_TS"
+		prevCounterTs, _ := state.TimeMs(guardTsKey)
+		guardTsKeyCopy, guardTsCopy := guardTsKey, timestampMs
+		dec.StateUpdates = append(dec.StateUpdates, StateMutation{
+			Kind: "counter.guard_ts", Key: guardTsKeyCopy, TimeMs: guardTsCopy,
+			Setter: func(s State) error { return s.SetTimeMs(guardTsKeyCopy, guardTsCopy) },
+		})
+		if prevCounterTs > 0 && timestampMs > prevCounterTs {
+			interval := timestampMs - prevCounterTs
 			if c, did := clampSpikeIncrement(consIncr, guardRate, interval, msg.CounterSpikeMargin); did {
 				dec.EnrichedMsg["counter_spike_clamped_consumed"] = consIncr - c
 				consIncr = c
