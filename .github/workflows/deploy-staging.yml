@@ -468,6 +468,9 @@ jobs:
         # so we can prove the Calc port ran. Runs BEFORE inspect so the
         # inspect step's /metrics output reflects the inject.
         # continue-on-error so an inject hiccup doesn't fail the deploy.
+        # The fixture publishes under the synthetic E2EFIXTURE group (no tenant
+        # registers it). It must never use a real tenant group: this broker
+        # carries CPACK's live feed (main_test.go enforces it).
         continue-on-error: true
         run: |
           set -x
