@@ -74,16 +74,26 @@ const computeValuesSQL = `
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
 	       AND e.recalc_needed
 	), sums AS (
-	    SELECT el.id_equipment, el.lo,
-	           sum(ca.gross_production_incr) AS gross,
-	           sum(ca.net_production_incr)   AS net,
-	           avg(ca.speed)                 AS speed
+	    -- Per-PO LATERAL with OFFSET 0 (the line_lead.go #259 lesson): joining the
+	    -- equipment_values hypertable on a non-constant id list keeps the planner from
+	    -- pushing id_equipment + ts into each chunk, so every tick scanned a month of
+	    -- raw rows (mean 23 s/tick, 11 pct of all DB time on 2026-09-27). As a
+	    -- correlated scan each id is a runtime constant → an index range scan per PO
+	    -- (same sums, 40.5 s → 1.0 s measured). n > 0 keeps the inner-join semantics.
+	    SELECT el.id_equipment, el.lo, s.gross, s.net, s.speed
 	      FROM eligible el
-	      JOIN %[3]s.equipment_values ca
-	        ON ca.id_equipment = el.gross_src
-	       AND ca.ts_value >= now() - $1::interval
-	       AND ca.ts_value >= el.lo AND ca.ts_value < el.hi
-	     GROUP BY el.id_equipment, el.lo
+	      CROSS JOIN LATERAL (
+	          SELECT sum(ca.gross_production_incr) AS gross,
+	                 sum(ca.net_production_incr)   AS net,
+	                 avg(ca.speed)                 AS speed,
+	                 count(*)                      AS n
+	            FROM %[3]s.equipment_values ca
+	           WHERE ca.id_equipment = el.gross_src
+	             AND ca.ts_value >= now() - $1::interval
+	             AND ca.ts_value >= el.lo AND ca.ts_value < el.hi
+	          OFFSET 0
+	      ) s
+	     WHERE s.n > 0
 	)
 	UPDATE %[4]s.production_orders_runtime e SET
 	       gross_production = CASE WHEN el.line_lead THEN e.gross_production ELSE COALESCE(s.gross, 0) END,
@@ -204,19 +214,26 @@ const computeEventsSQL = `
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
 	       AND e.recalc_needed
 	), ev AS (
-	    SELECT el.id_equipment, el.lo,
-	           COALESCE(sum(CASE WHEN ee.status = 6 THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
-	                                 - greatest(ee.ts_event, el.lo))) END), 0) AS running,
-	           COALESCE(sum(CASE WHEN ee.status IN (5, 10, 11) THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
-	                                 - greatest(ee.ts_event, el.lo))) END), 0) AS stopped
+	    -- Per-PO LATERAL + OFFSET 0 (see computeValuesSQL): index range scan per PO on
+	    -- the equipment_events hypertable. n > 0 keeps the inner-join semantics (a PO
+	    -- with no overlapping event is not updated).
+	    SELECT el.id_equipment, el.lo, x.running, x.stopped
 	      FROM eligible el
-	      JOIN %[3]s.equipment_events ee
-	        ON ee.id_equipment = el.ev_src
-	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
-	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
-	     GROUP BY el.id_equipment, el.lo
+	      CROSS JOIN LATERAL (
+	          SELECT COALESCE(sum(CASE WHEN ee.status = 6 THEN
+	                     extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
+	                                       - greatest(ee.ts_event, el.lo))) END), 0) AS running,
+	                 COALESCE(sum(CASE WHEN ee.status IN (5, 10, 11) THEN
+	                     extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
+	                                       - greatest(ee.ts_event, el.lo))) END), 0) AS stopped,
+	                 count(*) AS n
+	            FROM %[3]s.equipment_events ee
+	           WHERE ee.id_equipment = el.ev_src
+	             AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
+	             AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
+	          OFFSET 0
+	      ) x
+	     WHERE x.n > 0
 	)
 	UPDATE %[4]s.production_orders_runtime e SET
 	       -- #253: bound to the PO wall-clock span, matching hour.go/shift.go/line_lead.go
@@ -260,17 +277,23 @@ const computeAvailabilitySQL = `
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
 	       AND e.recalc_needed
 	), ev AS (
+	    -- Per-PO LATERAL + OFFSET 0 (see computeValuesSQL); n > 0 = inner-join semantics.
 	    SELECT el.id_equipment, el.lo,
 	           GREATEST(extract(epoch FROM (el.hi - el.lo)), 0) AS ts_total,
-	           COALESCE(sum(CASE WHEN %[6]s THEN
-	               extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
-	                                 - greatest(ee.ts_event, el.lo))) END), 0) AS planned
+	           x.planned
 	      FROM eligible el
-	      JOIN %[3]s.equipment_events ee
-	        ON ee.id_equipment = el.ev_src
-	       AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
-	       AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
-	     GROUP BY el.id_equipment, el.lo, el.hi
+	      CROSS JOIN LATERAL (
+	          SELECT COALESCE(sum(CASE WHEN %[6]s THEN
+	                     extract(epoch FROM (least(COALESCE(ee.ts_end, now()), el.hi)
+	                                       - greatest(ee.ts_event, el.lo))) END), 0) AS planned,
+	                 count(*) AS n
+	            FROM %[3]s.equipment_events ee
+	           WHERE ee.id_equipment = el.ev_src
+	             AND tstzrange(ee.ts_event, COALESCE(ee.ts_end, now())) && el.runtime_timerange
+	             AND ee.ts_event >= now() - $1::interval AND ee.ts_event < now()
+	          OFFSET 0
+	      ) x
+	     WHERE x.n > 0
 	)
 	UPDATE %[4]s.production_orders_runtime e SET
 	       available_time   = GREATEST(ev.ts_total - LEAST(ev.planned, ev.ts_total), 0)::int,
