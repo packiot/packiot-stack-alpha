@@ -183,6 +183,11 @@ SELECT f.ts_event, f.ts_end, f.id_equipment, f.status, f.id_enterprise, f.durati
         SELECT 1 FROM %[1]s.%[3]s h
          WHERE h.id_equipment = f.id_equipment
            AND ` + humanCoverPred + `
+           -- chunk-exclusion bound: without a lower bound on h.ts_event every probe
+           -- scanned the tenant's whole event history (live ent5: 4.2 s → 0.4 s per
+           -- tick, same rows). 60 d = the stale-event closer's long horizon: nothing
+           -- older can still be open and cover the 25 h window.
+           AND h.ts_event >= now() - interval '60 days'
            AND f.ts_event >= h.ts_event
            AND f.ts_event < COALESCE(h.ts_end, now()))
 ON CONFLICT (id_equipment, ts_event) DO UPDATE
@@ -218,6 +223,7 @@ DELETE FROM %[1]s.%[3]s ev
         WHERE h.id_equipment = ev.id_equipment
           AND h.ts_event <> ev.ts_event
           AND ` + humanCoverPred + `
+          AND h.ts_event >= now() - interval '60 days'
           AND ev.ts_event >= h.ts_event
           AND ev.ts_event < COALESCE(h.ts_end, now()))
    )`
