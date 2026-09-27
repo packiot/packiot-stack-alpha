@@ -117,3 +117,14 @@ func TestRunOnceCPACDefaults(t *testing.T) {
 		t.Errorf("formatted upsert must target the default shadow table; got INTO clause missing")
 	}
 }
+
+// The human-cover probes must carry a lower bound on h.ts_event so TimescaleDB can
+// exclude chunks; unbounded, each probe scanned the tenant's whole event history
+// (live ent5 upsert 4.2 s per tick).
+func TestCPACHumanCoverProbeIsTimeBounded(t *testing.T) {
+	for name, sql := range map[string]string{"upsert": cpacUpsertSQL, "correct": cpacCorrectSQL} {
+		if !strings.Contains(sql, "h.ts_event >= now() - interval '60 days'") {
+			t.Errorf("%s: human-cover probe lost its h.ts_event lower bound", name)
+		}
+	}
+}

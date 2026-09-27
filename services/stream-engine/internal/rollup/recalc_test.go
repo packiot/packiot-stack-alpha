@@ -70,9 +70,9 @@ func TestComputeSplitInstrumentation(t *testing.T) {
 	// and joins equipment_values on it — NOT on the (possibly empty) line row.
 	for _, m := range []string{
 		"COALESCE(eq.gross_machine, e.id_equipment) AS gross_src",
-		"ON ca.id_equipment = el.gross_src",
+		"WHERE ca.id_equipment = el.gross_src",
 		"COALESCE(eq.gross_machine, e.id_equipment) AS ev_src", // Phase B: events from the same member
-		"ON ee.id_equipment = el.ev_src",
+		"WHERE ee.id_equipment = el.ev_src",
 	} {
 		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
 			t.Errorf("split-instrumentation resolution lost %q", m)
