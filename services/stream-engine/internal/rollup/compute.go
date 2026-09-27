@@ -122,6 +122,7 @@ const computeLineLeadValuesSQL = `
 	           COALESCE(upper(e.runtime_timerange), now()) AS hi,
 	           eq.lead_machine AS lead_id,
 	           COALESCE(eq.gross_machine, eq.lead_machine) AS gross_id,
+	           COALESCE(eq.net_machine, eq.lead_machine) AS net_id,
 	           eq.scrap_machine AS scrap_id
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
@@ -145,7 +146,7 @@ const computeLineLeadValuesSQL = `
 	          UNION ALL
 	          SELECT cn.ts_value, NULL, cn.net_production_incr, NULL
 	            FROM %[3]s.equipment_categorical_1min cn
-	           WHERE cn.id_equipment = el.lead_id
+	           WHERE cn.id_equipment = el.net_id
 	             AND cn.ts_value >= date_trunc('minute', el.lo) AND cn.ts_value < el.hi
 	          UNION ALL
 	          SELECT cs.ts_value, NULL, NULL, cs.scrap_incr
