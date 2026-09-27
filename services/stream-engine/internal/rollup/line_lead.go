@@ -80,6 +80,12 @@ const shiftLineLeadSQL = `
 	           -- lead (CPACK: lead = infeed for availability, net on the outfeed TEXA).
 	           -- NULL ⇒ net from lead_machine, byte-identical to before.
 	           COALESCE(eq.net_machine, eq.lead_machine) AS net_id,
+	           -- COUNTER ROLES. Which counter to read on the gross / net machine. NULL ⇒
+	           -- gross from ProdConsumedCount, net from ProdProcessedCount (as before).
+	           -- CPACK L3 counts the line's input as BREYER's PROCESSED counter and its
+	           -- output as TEXA's CONSUMED counter, so it sets processed / consumed.
+	           eq.gross_counter AS gross_ctr,
+	           eq.net_counter AS net_ctr,
 	           -- SCRAP source. scrap_machine names the machine whose ProdDefectiveCount
 	           -- is this line's scrap/defect source. NULL (the default) ⇒ no scrap
 	           -- counter ⇒ the scrap subquery returns NULL ⇒ s=0, so the reconciliation
@@ -112,9 +118,9 @@ const shiftLineLeadSQL = `
 	    -- sparse gross, so net was clamped to that gross and the shift UNDERCOUNTED the
 	    -- hours that only reported net (09-15 Bispharma: shift 1.18 M vs hourly 1.38 M).
 	    SELECT l.line_id, l.ts_value, b.bts,
-	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
+	           (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN cg.net_production_incr ELSE cg.gross_production_incr END) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = b.bts) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
+	           (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN cn.gross_production_incr ELSE cn.net_production_incr END) FROM %[3]s.equipment_categorical_1hour cn
 	             WHERE cn.id_equipment = l.net_id AND cn.ts_value = b.bts) AS net,
 	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = b.bts) AS scrap
@@ -248,6 +254,12 @@ const hourLineLeadSQL = `
 	           -- lead (CPACK: lead = infeed for availability, net on the outfeed TEXA).
 	           -- NULL ⇒ net from lead_machine, byte-identical to before.
 	           COALESCE(eq.net_machine, eq.lead_machine) AS net_id,
+	           -- COUNTER ROLES. Which counter to read on the gross / net machine. NULL ⇒
+	           -- gross from ProdConsumedCount, net from ProdProcessedCount (as before).
+	           -- CPACK L3 counts the line's input as BREYER's PROCESSED counter and its
+	           -- output as TEXA's CONSUMED counter, so it sets processed / consumed.
+	           eq.gross_counter AS gross_ctr,
+	           eq.net_counter AS net_ctr,
 	           -- SCRAP source. scrap_machine names the machine whose ProdDefectiveCount
 	           -- is this line's scrap/defect source. NULL (the default) ⇒ no scrap
 	           -- counter ⇒ the scrap subquery returns NULL ⇒ s=0, so the reconciliation
@@ -264,9 +276,9 @@ const hourLineLeadSQL = `
 	    -- matching the hour join (ts_value = l.ts_value). A NULL source id ⇒ no matching
 	    -- rows ⇒ NULL sum ⇒ 0 downstream.
 	    SELECT l.line_id, l.ts_value,
-	           (SELECT sum(cg.gross_production_incr) FROM %[3]s.equipment_categorical_1hour cg
+	           (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN cg.net_production_incr ELSE cg.gross_production_incr END) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
-	           (SELECT sum(cn.net_production_incr) FROM %[3]s.equipment_categorical_1hour cn
+	           (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN cn.gross_production_incr ELSE cn.net_production_incr END) FROM %[3]s.equipment_categorical_1hour cn
 	             WHERE cn.id_equipment = l.net_id AND cn.ts_value = l.ts_value) AS net,
 	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
 	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = l.ts_value) AS scrap
