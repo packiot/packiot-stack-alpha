@@ -113,6 +113,14 @@ const shiftValuesSQL = `
 	            WHERE ev.id_equipment = ca.id_equipment
 	              AND ev.ts_value < ca.ts_value + interval '1 hour'
 	              AND ev.ideal_production_speed IS NOT NULL
+	              -- Bounded look-back (2026-09-28). Unbounded, this walked the whole
+	              -- retained history (compressed chunks) whenever no value existed —
+	              -- per minute per row. Measured live: NO equipment has ever reported a
+	              -- non-null ideal_production_speed here, so every lookup scanned
+	              -- everything and returned NULL (→ production_speed fallback); one
+	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
+	              -- across short silences if 30701 starts arriving.
+	              AND ev.ts_value >= ca.ts_value - interval '7 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON ca.ideal_production_speed IS NULL
 	     GROUP BY el.id_equipment, el.ts_value
