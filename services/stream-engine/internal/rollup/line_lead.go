@@ -138,14 +138,22 @@ const shiftLineLeadSQL = `
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount), PER BUCKET. Reconcile whichever
 	    -- pair of the three counters the bucket reports, filling the missing one:
-	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact).
+	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact)
+	    --                when gross >= net; gross < net ⇒ gross = net + scrap (meter undercounts).
 	    --   N+S  (no G): gross absent, net+scrap present ⇒ gross = net + scrap.
 	    --   G+S  (no N): net absent, gross+scrap present ⇒ net = gross - scrap.
 	    --   net-only    : only net ⇒ gross = net (quality 1.0, legacy convention).
 	    --   gross-only  : only gross ⇒ net = gross (quality 1.0).
 	    -- (Keep this const free of any literal percent sign: fmt.Sprintf format string.)
 	    SELECT c.line_id, c.ts_value,
-	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
+	           -- A gross meter reading BELOW net cannot be right (good output never
+	           -- exceeds input): it undercounts (a reader/register issue, e.g.
+	           -- CPACK POLYTYPE1/2 since ~09-21). Treat it like a missing gross meter:
+	           -- gross = net + scrap, keeping the measured net (as legacy does).
+	           -- Clamping net down to gross instead discarded real good output
+	           -- (~87k on POLYTYPE2 in 7 d). gross >= net is taken as reported.
+	           CASE WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.gross,0) >= COALESCE(c.net,0) THEN COALESCE(c.gross,0)
+	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
 	                ELSE 0 END AS eff_gross,
@@ -329,7 +337,8 @@ const hourLineLeadSQL = `
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount). Reconcile whichever pair of the
 	    -- three counters a line actually reports, filling the missing one:
-	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact).
+	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact)
+	    --                when gross >= net; gross < net ⇒ gross = net + scrap (meter undercounts).
 	    --   N+S  (no G): gross absent, net+scrap present ⇒ gross = net + scrap.
 	    --   G+S  (no N): net absent, gross+scrap present ⇒ net = gross - scrap.
 	    --   net-only    : only net ⇒ gross = net (quality 1.0, legacy convention).
@@ -339,7 +348,14 @@ const hourLineLeadSQL = `
 	    -- gross, scrap and oee_q stay mutually consistent. (Keep this const free of any
 	    -- literal percent sign: it is a fmt.Sprintf format string.)
 	    SELECT c.line_id, c.ts_value,
-	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
+	           -- A gross meter reading BELOW net cannot be right (good output never
+	           -- exceeds input): it undercounts (a reader/register issue, e.g.
+	           -- CPACK POLYTYPE1/2 since ~09-21). Treat it like a missing gross meter:
+	           -- gross = net + scrap, keeping the measured net (as legacy does).
+	           -- Clamping net down to gross instead discarded real good output
+	           -- (~87k on POLYTYPE2 in 7 d). gross >= net is taken as reported.
+	           CASE WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.gross,0) >= COALESCE(c.net,0) THEN COALESCE(c.gross,0)
+	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
 	                ELSE 0 END AS eff_gross,
