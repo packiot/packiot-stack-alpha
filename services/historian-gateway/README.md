@@ -95,6 +95,41 @@ the Postgres view (`Custom Scan (DuckDBScan)`).
 | old-timestamp lookup | 1/181 files scanned |
 | via Superset (SQL Lab + engine) | `2022→242 (cold)`, `2026→17281 (hot)` |
 
+## Serving rules (2026-09-28 audit: t-historian-serving-guards)
+
+**1. Never bound a `live.*` query with `now()`.** postgres_fdw only ships immutable
+expressions to the remote, and `now()` is stable, so a `ts_value > now() - interval '2h'`
+filter is evaluated locally after pulling the WHOLE remote table: measured 173 s vs 59 ms
+with a literal timestamp. Pass literal bounds (read-api binds literals through the simple
+protocol). Check with `EXPLAIN (VERBOSE)`: the `Remote SQL:` line must carry the time filter.
+
+**2. Long windows read daily rollups, never per-second rows.** Re-aggregating the cold
+archive at query time costs about 25 s per 30 days (a CPACK month is 6-8 M rows), and a
+mixed pg_duckdb + FDW plan loses the FDW pushdown. read-api (`historian_split.go`) runs
+hot and cold as separate statements and merges them:
+
+| Endpoint | Cold (pure DuckDB) | Hot (pure Postgres/FDW) |
+|---|---|---|
+| production-series, > 31 days | `cold.equipment_values_daily`, days < `ev_daily_watermark.covered_until` | `live.equipment_values_1hour` (analytics hourly rollup), days ≥ watermark |
+| production-series, ≤ 31 days | unchanged: the `silver.equipment_values` union (exact window edges) | |
+| downtime-series, any window | `cold.equipment_events`, only for EE-promoted tenants and only before `ee_union_boundary` | `live.equipment_events`, aggregated per UTC day |
+
+The daily rollup is written by `scripts/historian-ev-daily-rollup.sh` (nightly, from the
+append job, current + previous month; `FULL=1` rebuilds everything and is required once on a
+new bucket).
+
+**3. Cold increments are spike-guarded.** `cold.equipment_values` (and the daily rollup)
+NULL an increment that is negative, or at least half the machine's lifetime totalizer AND
+above 10,000 in one row: legacy stored the totalizer in the increment column in places
+(POLYTYPE net 2022-10..2023-09, the 2024-07-22 counter replay, 2026-08). Clean months are
+byte-identical. 2022-08 is a known gap: legacy itself has NULL gross/net/speed for the
+whole month.
+
+**4. Memory.** The container is capped at 2560 MB and DuckDB at 1024 MB / 2 threads per
+backend (`command:` in `compose.historian-gateway.yml`; `-c` settings override both config
+files). pg_duckdb's defaults (4 GB per backend, one thread per core) let a few wide cold
+scans ask for more than the whole shared app host.
+
 ## Deploy
 
 Set in `.env`: `HIST_GW_PASSWORD`, `DB_HOST/PORT/NAME/USER/DB_PASSWORD`,

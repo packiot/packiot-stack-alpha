@@ -166,6 +166,18 @@ CREATE FOREIGN TABLE live.equipment_events (
   desc_subcategory  varchar,
   txt_downtime_notes varchar
 ) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_events');
+-- HOT hourly rollup (analytics silver.equipment_categorical_1hour, 13-month retention): the hot
+-- side of read-api's long-window production path. Sums equal the raw live sums. Needs the
+-- remote grant in db/migrations/t-historian-serving-guards/01-analytics-histgw-ro-hourly.sql.
+-- Query it with LITERAL time bounds only: postgres_fdw never ships now().
+DROP FOREIGN TABLE IF EXISTS live.equipment_values_1hour;
+CREATE FOREIGN TABLE live.equipment_values_1hour (
+  ts_value              timestamptz,
+  id_enterprise         integer,
+  id_equipment          integer,
+  gross_production_incr double precision,
+  net_production_incr   double precision
+) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_categorical_1hour');
 
 -- ── COLD serving schema (t287) — SYMMETRIC with the hot `live` FDW schema ─────
 -- All historian serving objects (the hot∪cold union views silver.equipment_values / silver.equipment_events,
@@ -200,16 +212,45 @@ SELECT duckdb.create_simple_secret('S3','${HIST_AWS_KEY}','${HIST_AWS_SECRET}','
 -- Serving surface = {gross, net, speed} (canonical, narrow — a production-series
 -- server, not a raw mirror). `speed` is present in every *-legacy.parquet on disk,
 -- so it is surfaced without a re-unload.
+-- SPIKE GUARD (t-historian-serving-guards, 2026-09-28): legacy wrote the lifetime totalizer
+-- into the increment column in places (POLYTYPE net 2022-10..2023-09 ~1e12/month, the
+-- 2024-07-22 counter replay, 2026-08 gross ~3e10). An increment is NULLed when negative, or
+-- at least half the totalizer AND above 10,000 in one row; clean months are byte-identical.
+-- Same rule as scripts/historian-ev-daily-rollup.sh. The parquet itself is untouched.
 CREATE OR REPLACE VIEW equipment_values AS
 SELECT r['ts_value']::timestamp               AS ts_value,
        r['enterprise']::int                   AS id_enterprise,
        r['year']::int                         AS year,
        r['month']::int                        AS month,
        r['id_equipment']::int                 AS id_equipment,
-       r['gross_production_incr']::double precision AS gross_production_incr,
-       r['net_production_incr']::double precision   AS net_production_incr,
+       CASE WHEN r['gross_production_incr']::double precision < 0
+              OR (r['gross_production_val']::double precision > 0
+                  AND r['gross_production_incr']::double precision >= 0.5 * r['gross_production_val']::double precision
+                  AND r['gross_production_incr']::double precision > 10000)
+            THEN NULL ELSE r['gross_production_incr']::double precision END AS gross_production_incr,
+       CASE WHEN r['net_production_incr']::double precision < 0
+              OR (r['net_production_val']::double precision > 0
+                  AND r['net_production_incr']::double precision >= 0.5 * r['net_production_val']::double precision
+                  AND r['net_production_incr']::double precision > 10000)
+            THEN NULL ELSE r['net_production_incr']::double precision END   AS net_production_incr,
        r['speed']::double precision           AS speed
 FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values/*/*/*/*-legacy.parquet',
+                  hive_partitioning => true) r;
+
+-- DAILY rollup of the cold archive (scripts/historian-ev-daily-rollup.sh): one row per
+-- (UTC day, equipment), spike-guarded, covering whole days < ev_daily_watermark.covered_until.
+-- read-api serves production windows > 31 days from it (historian_split.go). On a brand-new
+-- bucket, run the rollup with FULL=1 before the first long-window query.
+CREATE OR REPLACE VIEW equipment_values_daily AS
+SELECT r['day']::date                           AS day,
+       r['enterprise']::int                     AS id_enterprise,
+       r['year']::int                           AS year,
+       r['month']::int                          AS month,
+       r['id_equipment']::int                   AS id_equipment,
+       r['gross_production']::double precision  AS gross_production,
+       r['net_production']::double precision    AS net_production,
+       r['n_rows']::bigint                      AS n_rows
+FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values_daily/*/*/*/*.parquet',
                   hive_partitioning => true) r;
 
 -- ── Promotion ALLOW-LIST (t271) — the SOLE cold-side tenant-isolation gate ────
@@ -313,6 +354,14 @@ COMMENT ON TABLE cold_append_watermark IS
 -- HOT owns ts > cutover_ts. Small table (one row per historian enterprise), read
 -- on the HOT side only (a pure PG join — no DuckDB involvement, so the cold scan
 -- stays a prunable DuckDBScan).
+CREATE TABLE IF NOT EXISTS ev_daily_watermark (
+  id_enterprise int PRIMARY KEY,
+  covered_until date NOT NULL,
+  refreshed_at  timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE ev_daily_watermark IS
+  'Per enterprise: equipment_values_daily holds every whole UTC day strictly before covered_until (scripts/historian-ev-daily-rollup.sh). read-api serves days before it from the rollup and later days from live.equipment_values_1hour.';
+
 CREATE TABLE IF NOT EXISTS ev_union_boundary (
   id_enterprise int PRIMARY KEY,
   cutover_ts    timestamp NOT NULL,
