@@ -218,3 +218,77 @@ func TestGoldenShiftProportionalTarget(t *testing.T) {
 		t.Errorf("OEE waterfall broken: oee=%v but a*p*q=%v (a=%v p=%v q=%v) — must satisfy oee = a·p·q", oee, a*p*q, a, p, q)
 	}
 }
+
+// Batch fairness (2026-09-28 regression). shiftReflagSQL re-flags every shift row
+// in [now-12h, now+18h] on EVERY tick, so that recurring set is always eligible.
+// Once it outgrew ROLLUP_SHIFT_LIMIT (127 rows vs 75: Bispharma's 63 lines joined
+// CPACK + sandbox), oldest-first selection picked the same 75 already-finished
+// rows every tick and the LIVE shift was never selected until hours after it
+// ended: current-shift OEE read 0 all day. Least-recently-computed first
+// (computed_at NULLS FIRST) is round-robin: never-computed rows (the live shift,
+// an old backlog) go first, then whatever was recomputed longest ago.
+func TestGoldenShiftBatchFairness(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	const fixture = `
+		INSERT INTO golden.equipments VALUES
+		    (40,1,1,35,3,100),(41,1,1,35,3,100),(42,1,1,35,3,100),(43,1,1,35,3,100);
+		INSERT INTO golden.shifts VALUES (1,'S1');
+		INSERT INTO golden.equipment_oee_shift
+		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, computed_at)
+		VALUES
+		    -- finished shifts inside the reflag window, recomputed a minute ago
+		    (40, now()-interval '10 hours', now()-interval '2 hours', date_trunc('day',now()), 1, true, now()-interval '1 minute'),
+		    (41, now()-interval '9 hours',  now()-interval '1 hour',  date_trunc('day',now()), 1, true, now()-interval '1 minute'),
+		    -- the LIVE shift, never computed
+		    (42, now()-interval '1 hour',   now()+interval '7 hours', date_trunc('day',now()), 1, true, NULL),
+		    -- an old never-computed backlog row (a manual reflag, a replay)
+		    (43, now()-interval '20 days',  now()-interval '20 days'+interval '8 hours', date_trunc('day',now()-interval '20 days'), 1, true, NULL);`
+	for _, s := range []string{goldenSchema, shiftGoldenSchema, fixture} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	// LIMIT 2 < the 4 flagged rows: exactly the production shape (limit < recurring set).
+	if _, err := tx.Exec(ctx, fmtRP(shiftEligibleSQL, "golden", 2), []int{}, []int{}, []int{}); err != nil {
+		t.Fatalf("eligible: %v", err)
+	}
+	picked := map[int]bool{}
+	rows, err := tx.Query(ctx, `SELECT id_equipment FROM shift_elig`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		picked[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !picked[42] {
+		t.Errorf("LIVE never-computed shift (eq42) not selected: picked=%v — oldest-first starves the current shift once the reflag set exceeds the limit", picked)
+	}
+	if !picked[43] {
+		t.Errorf("old never-computed backlog row (eq43) not selected: picked=%v — the backlog must still drain", picked)
+	}
+	if picked[40] || picked[41] {
+		t.Errorf("recently recomputed rows took a slot ahead of never-computed ones: picked=%v", picked)
+	}
+}

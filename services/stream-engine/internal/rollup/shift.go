@@ -51,10 +51,16 @@ import (
 // never reaching the stale rows). LIMIT makes every tick commit a bounded slice, so
 // the backlog drains monotonically over ticks (same discipline as backfill.go).
 //
-// ORDER BY ts_value ASC (oldest-first): the recent tail is re-flagged EVERY tick by
-// shiftReflagSQL, so newest-first would let that fresh reflag perpetually crowd out
-// the old backlog and it would never drain. Oldest-first drains the backlog to zero;
-// once drained, only the small recent set remains and each tick clears it promptly.
+// ORDER BY computed_at NULLS FIRST, ts_value (least-recently-computed first). The
+// recent tail is re-flagged EVERY tick by shiftReflagSQL, so the eligible set never
+// drops below that recurring [now-12h, now] set. Newest-first would let it crowd out
+// the old backlog forever. Plain oldest-first (the previous order) starves the other
+// end: once the recurring set outgrew LIMIT (2026-09-28: 127 rows vs 75), every tick
+// re-picked the same finished rows and the LIVE shift was never computed until hours
+// after it ended. computed_at ordering is round-robin: never-computed rows (the live
+// shift, a fresh backlog) go first, oldest first among them, then whatever was
+// recomputed longest ago, so every flagged row gets a turn. Reflag does not touch
+// computed_at, so it cannot jump the queue.
 // LIMIT is pure row-selection — it never changes HOW a selected row is computed, so
 // parity with prod's per-row math is preserved (ShiftStatementsForParity passes an
 // effectively-unbounded limit to compare the full set).
@@ -74,7 +80,7 @@ const shiftEligibleSQL = `
 	       UNION ALL
 	       SELECT id_equipment FROM %[2]s.equipments
 	        WHERE tp_equipment = 1 AND id_enterprise = ANY($3))
-	 ORDER BY e.ts_value ASC
+	 ORDER BY e.computed_at ASC NULLS FIRST, e.ts_value ASC
 	 LIMIT %[6]d`
 
 // IDEAL-SPEED SOURCE (line-OEE fix, same mechanism as hour.go):
