@@ -6,6 +6,9 @@ package rollup
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -84,5 +87,34 @@ func TestShiftLineLeadWindow_widened(t *testing.T) {
 	hour := HourLineLeadSQLForParity()
 	if strings.Contains(hour, "interval '2 days'") || strings.Contains(hour, "interval '25 day'") {
 		t.Error("hour line-lead unexpectedly gained a lines-CTE ts_value window")
+	}
+}
+
+// TestLineLeadSQLAlwaysGetsPlannedPred guards the 2026-09-28 hotfix: the hour
+// backfill formatted hourLineLeadSQL without withPlannedPred, leaving a bare
+// "WHERE /*PLANNED_PRED*/" (a syntax error) in the live SQL. Every non-test use of
+// the raw line-lead constants must go through withPlannedPred.
+func TestLineLeadSQLAlwaysGetsPlannedPred(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`fmtR[DP]\(\s*(shift|hour)LineLeadSQL\b`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllString(string(src), -1) {
+			t.Errorf("%s: %q formats a raw line-lead SQL; wrap it in withPlannedPred(...)", f, m)
+		}
+	}
+	for name, sql := range map[string]string{"shift": ShiftLineLeadSQLForParity(), "hour": HourLineLeadSQLForParity()} {
+		if strings.Contains(sql, plannedPredToken) {
+			t.Errorf("%s line-lead parity SQL still contains the %s token", name, plannedPredToken)
+		}
 	}
 }
