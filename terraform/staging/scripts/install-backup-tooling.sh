@@ -62,6 +62,9 @@ AWS_REGION=$AWS_REGION
 POSTGRES_CONTAINER=timescaledb
 POSTGRES_USER=$DB_USER
 POSTGRES_DB=$DB_NAME
+# Back up the legacy DB and the live new-stack DB (2026-09-28).
+POSTGRES_DBS="${POSTGRES_DBS:-packiot packiot_analytics}"
+DUMP_DIR=/var/lib/packiot-backup
 RETAIN_DAILY=14
 RETAIN_WEEKLY=4
 RETAIN_MONTHLY=3
