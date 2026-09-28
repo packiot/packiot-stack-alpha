@@ -148,6 +148,14 @@ const hourSpeedSQL = `
 	            WHERE ev.id_equipment = m.id_equipment
 	              AND ev.ts_value < m.ts_value + interval '1 minute'
 	              AND ev.ideal_production_speed IS NOT NULL
+	              -- Bounded look-back (2026-09-28). Unbounded, this walked the whole
+	              -- retained history (compressed chunks) whenever no value existed —
+	              -- per minute per row. Measured live: NO equipment has ever reported a
+	              -- non-null ideal_production_speed here, so every lookup scanned
+	              -- everything and returned NULL (→ production_speed fallback); one
+	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
+	              -- across short silences if 30701 starts arriving.
+	              AND ev.ts_value >= m.ts_value - interval '7 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON m.ideal_production_speed IS NULL
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
