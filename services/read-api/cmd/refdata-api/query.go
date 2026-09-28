@@ -471,6 +471,17 @@ func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
 // the cache-aside loader can hand back ready-to-cache bytes. A DB/scan/marshal
 // error is returned (never cached); the caller maps it to a 500.
 func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]byte, error) {
+	out, err := runQueryRows(ctx, pool, cid, sql, args)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(out)
+}
+
+// runQueryRows is runQueryJSON without the final marshal: the tenant-stamped read,
+// returned as one map per row keyed by column name (the historian split path merges
+// two such result sets before serializing).
+func runQueryRows(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]map[string]any, error) {
 	// task #264 — defense-in-depth tenant fence. read-api connects as a NOBYPASSRLS
 	// role (readapi_ro), and the analytics DB puts FORCE ROW LEVEL SECURITY on the
 	// tenant tables (core.equipments / production_orders / production_targets,
@@ -523,7 +534,7 @@ func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return json.Marshal(out)
+	return out, nil
 }
 
 func keysOf[V any](m map[string]V) []string {

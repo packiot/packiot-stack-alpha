@@ -32,3 +32,9 @@ docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f
 docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < /opt/packiot/historian/refresh-ee-cutover.sql
 docker exec -i "$GW" psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < /opt/packiot/historian/refresh-po-cutover.sql
 echo "[historian-append] post-run hook complete (cold_append_watermark stamped, cutover boundaries refreshed: EV+EE+PO)"
+
+# Daily rollup of the cold EV archive (current + previous month) and its watermark. AFTER the
+# EV cutover refresh: the rollup covers whole days before date(cutover_ts), so it must see the
+# boundary this run just advanced. read-api's long-window production path reads it.
+/opt/packiot/historian/historian-ev-daily-rollup.sh
+echo "[historian-append] ev daily rollup refreshed"

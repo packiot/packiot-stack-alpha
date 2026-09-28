@@ -30,6 +30,7 @@ SCRIPTS=(
   historian-po-backfill.sh
   historian-oee-shift-backfill.sh
   historian-staging-run-append.sh
+  historian-ev-daily-rollup.sh
   historian-integrity-monitor.sh
   historian-staleness-monitor.sh
   historian-cutover-coverage-check.sh
