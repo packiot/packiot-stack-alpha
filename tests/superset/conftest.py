@@ -97,7 +97,7 @@ CREATE TABLE equipments (
     production_speed int,   -- CSAdmin rated/ideal speed; bi.equipment_speed surfaces it
     active        boolean NOT NULL DEFAULT true
 );
-CREATE TABLE equipment_runtime_shift (
+CREATE TABLE equipment_oee_shift (
     id_equipment int NOT NULL,
     id_shift     int NOT NULL,
     cd_shift     text,
@@ -106,7 +106,7 @@ CREATE TABLE equipment_runtime_shift (
     oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
     gross numeric, net numeric, running_time numeric
 );
-CREATE TABLE equipment_runtime_1hour (
+CREATE TABLE equipment_oee_hourly (
     id_equipment int NOT NULL,
     ts_value     timestamptz NOT NULL,
     oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
@@ -181,12 +181,12 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
             (ent, eq, f"EQ-{eq}", ent, eq),
         )
         cur.execute(
-            "INSERT INTO equipment_runtime_shift (id_equipment,id_shift,cd_shift,ts_value,ts_end,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
+            "INSERT INTO equipment_oee_shift (id_equipment,id_shift,cd_shift,ts_value,ts_end,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
             " VALUES (%s,1,'T1',now()-interval '8h',now(),0.8,0.9,0.95,0.93,110,100,7.2)",
             (eq,),
         )
         cur.execute(
-            "INSERT INTO equipment_runtime_1hour (id_equipment,ts_value,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
+            "INSERT INTO equipment_oee_hourly (id_equipment,ts_value,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
             " VALUES (%s,date_trunc('hour',now()),0.8,0.9,0.95,0.93,22,20,0.9)",
             (eq,),
         )
@@ -272,7 +272,7 @@ def applied_db(superuser_dsn):
         # Clean slate (in case an external DSN carries prior state).
         cur.execute("DROP SCHEMA IF EXISTS bi CASCADE;")
         _drop_roles(cur)
-        for tbl in ("equipments", "equipment_runtime_shift", "equipment_runtime_1hour",
+        for tbl in ("equipments", "equipment_oee_shift", "equipment_oee_hourly",
                     "production_orders_runtime", "equipment_events",
                     "equipment_values", "production_orders", "production_targets"):
             cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE;")

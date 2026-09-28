@@ -180,20 +180,20 @@ CREATE POLICY tenant_isolation ON production_orders_runtime
         SELECT e.id_equipment FROM equipments e
         WHERE e.id_enterprise = (SELECT current_tenant()))));
 
--- equipment_runtime_shift → equipments for the tenant key.
-ALTER TABLE equipment_runtime_shift ENABLE ROW LEVEL SECURITY;
-ALTER TABLE equipment_runtime_shift FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_shift;
-CREATE POLICY tenant_isolation ON equipment_runtime_shift
+-- equipment_oee_shift → equipments for the tenant key.
+ALTER TABLE equipment_oee_shift ENABLE ROW LEVEL SECURITY;
+ALTER TABLE equipment_oee_shift FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON equipment_oee_shift;
+CREATE POLICY tenant_isolation ON equipment_oee_shift
     USING ((SELECT is_all_tenant()) OR id_equipment = ANY (ARRAY(
         SELECT e.id_equipment FROM equipments e
         WHERE e.id_enterprise = (SELECT current_tenant()))));
 
--- equipment_runtime_1hour → equipments.
-ALTER TABLE equipment_runtime_1hour ENABLE ROW LEVEL SECURITY;
-ALTER TABLE equipment_runtime_1hour FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON equipment_runtime_1hour;
-CREATE POLICY tenant_isolation ON equipment_runtime_1hour
+-- equipment_oee_hourly → equipments.
+ALTER TABLE equipment_oee_hourly ENABLE ROW LEVEL SECURITY;
+ALTER TABLE equipment_oee_hourly FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON equipment_oee_hourly;
+CREATE POLICY tenant_isolation ON equipment_oee_hourly
     USING ((SELECT is_all_tenant()) OR id_equipment = ANY (ARRAY(
         SELECT e.id_equipment FROM equipments e
         WHERE e.id_enterprise = (SELECT current_tenant()))));
@@ -244,7 +244,7 @@ CREATE POLICY tenant_isolation ON production_targets
 -- (The F3 downtime source equipment_events is handled above with a native-id
 -- policy — there is no `downtimes` table to protect.)
 
--- PERFORMANCE NOTE (TimescaleDB): equipment_runtime_1hour / _shift are hypertable-
+-- PERFORMANCE NOTE (TimescaleDB): equipment_oee_hourly / _shift are hypertable-
 -- backed; an EXISTS-join RLS predicate is pushed per-chunk and can defeat chunk
 -- exclusion / add a per-row subplan. If ad-hoc self-service query latency bites,
 -- DENORMALIZE id_enterprise onto these rollups (the OEE writer already knows the
