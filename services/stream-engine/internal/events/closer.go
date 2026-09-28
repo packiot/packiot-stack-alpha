@@ -125,7 +125,7 @@ WITH scope AS (
       JOIN scope s ON s.id_equipment = ev.id_equipment
      WHERE ev.ts_event >= now() - make_interval(hours => $3)
 ), plan AS (
-    SELECT o.id_equipment_event,
+    SELECT o.id_equipment_event, o.id_equipment, o.ts_event,
            CASE
              WHEN o.next_ts IS NOT NULL THEN o.next_ts
              ELSE greatest(o.ts_event, lc.last_ts + make_interval(secs => lc.thr))
@@ -156,8 +156,19 @@ UPDATE %[1]s.equipment_events ev
        duration = extract(epoch FROM (p.new_end - ev.ts_event))::int,
        last_update = now()
   FROM plan p
- WHERE ev.id_equipment_event = p.id_equipment_event
-   AND ev.ts_end IS NULL
+ -- True PK (id_equipment, ts_event): id_equipment_event is NOT unique (the
+ -- sandbox twin reuses CPACK's ids), so matching on it could write one
+ -- tenant's end onto another tenant's row.
+ WHERE ev.id_equipment = p.id_equipment AND ev.ts_event = p.ts_event
+   AND (ev.ts_end IS NULL
+        -- REBIND (2026-09-28): once a successor exists, the interval ends at the
+        -- successor's start (legacy semantics) even if the row was already
+        -- closed. The count-silence close runs before late or out-of-order
+        -- events arrive, so it could end a row at its own start (zero-length
+        -- when the row arrived late) or past its successor (overlap), and the
+        -- IS NULL guard made that permanent. Audit: ~350 h of CPACK downtime
+        -- lost in 14 days.
+        OR (p.bounded_by_next AND ev.ts_end IS DISTINCT FROM p.new_end))
    -- Human-edit guard applies ONLY to the TRAILING close (count-silence), where
    -- auto-closing an operator's genuinely-ongoing downtime would clobber intent.
    -- A next-event-bounded close never destroys the category — it only fills the

@@ -138,3 +138,70 @@ func TestGoldenCloserLongOpenStops(t *testing.T) {
 		t.Errorf("trailing open STOP was closed at %v", e)
 	}
 }
+
+// TestGoldenCloserRebindsClosedRows pins the 2026-09-28 rebind. The count-silence
+// close runs before late or out-of-order events arrive, so a row could be closed at
+// its own start (zero-length) or past its successor (overlap); the old IS NULL guard
+// made that permanent (~350 h of CPACK downtime lost in 14 days). Once a successor
+// exists the row must end at the successor's start. Also pins the true-PK match: a
+// row on another tenant that shares a (non-unique) id_equipment_event is untouched.
+func TestGoldenCloserRebindsClosedRows(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	const fixture = `
+	DROP SCHEMA IF EXISTS gcl CASCADE; CREATE SCHEMA gcl;
+	CREATE TABLE gcl.equipments (id_equipment int PRIMARY KEY, id_enterprise int, tp_equipment int,
+	    status_type int, stop_threshold_time int);
+	CREATE TABLE gcl.equipment_categorical_1min (id_equipment int, ts_value timestamptz, gross_production_incr double precision);
+	CREATE TABLE gcl.equipment_events (id_equipment_event bigint, id_equipment int, ts_event timestamptz,
+	    ts_end timestamptz, duration int, status int, last_update timestamptz,
+	    cd_category text, cd_subcategory text, cd_machine text, txt_downtime_notes text,
+	    planned_downtime boolean, change_over boolean, idle boolean,
+	    PRIMARY KEY (id_equipment, ts_event));
+	INSERT INTO gcl.equipments VALUES (4,7,1,0,300),(5,7,1,0,300),(6,8,1,0,300);
+	INSERT INTO gcl.equipment_events (id_equipment_event,id_equipment,ts_event,ts_end,status,cd_category) VALUES
+	  -- RUN closed zero-length at its own start (arrived late); successor at -40m
+	  (401,4, now()-interval '55 minutes', now()-interval '55 minutes', 6, NULL),
+	  (403,4, now()-interval '40 minutes', NULL, 10, NULL),
+	  -- operator-justified STOP closed PAST its successor (overlap): ended -5m, successor -15m
+	  (404,5, now()-interval '30 minutes', now()-interval '5 minutes', 10, 'PRG-01'),
+	  (405,5, now()-interval '15 minutes', NULL, 6, NULL),
+	  -- another tenant's row sharing id 401 (ent 8, out of scope): must stay untouched
+	  (401,6, now()-interval '55 minutes', now()-interval '54 minutes', 6, NULL);`
+	if _, err := pool.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	sql := fmt.Sprintf(closeStaleOpensSQL, "gcl", "gcl", "", "ev")
+	if _, err := pool.Exec(ctx, sql, []int{7}, 300, 72); err != nil {
+		t.Fatalf("closer: %v", err)
+	}
+	endAgo := func(eq, ev int) float64 {
+		var end time.Time
+		if err := pool.QueryRow(ctx, `SELECT ts_end FROM gcl.equipment_events WHERE id_equipment=$1 AND id_equipment_event=$2`, eq, ev).Scan(&end); err != nil {
+			t.Fatal(err)
+		}
+		return time.Since(end).Minutes()
+	}
+	if m := endAgo(4, 401); m < 39.5 || m > 40.5 {
+		t.Errorf("zero-length RUN with a later successor ended %.1f min ago, want the successor's start (~40)", m)
+	}
+	if m := endAgo(5, 404); m < 14.5 || m > 15.5 {
+		t.Errorf("STOP closed past its successor ended %.1f min ago, want the successor's start (~15)", m)
+	}
+	var cat string
+	if err := pool.QueryRow(ctx, `SELECT cd_category FROM gcl.equipment_events WHERE id_equipment=5 AND id_equipment_event=404`).Scan(&cat); err != nil || cat != "PRG-01" {
+		t.Errorf("rebind must keep the operator's category, got %q (%v)", cat, err)
+	}
+	if m := endAgo(6, 401); m < 53.5 || m > 54.5 {
+		t.Errorf("out-of-scope row sharing a non-unique id changed: ended %.1f min ago, want untouched (~54)", m)
+	}
+}
