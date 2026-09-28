@@ -121,6 +121,12 @@ const shiftValuesSQL = `
 	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
 	              -- across short silences if 30701 starts arriving.
 	              AND ev.ts_value >= ca.ts_value - interval '7 days'
+	              -- STABLE copy of the bound (2026-09-28): the per-row bound above depends
+	              -- on the outer row, so TimescaleDB cannot exclude chunks at startup and
+	              -- re-checks EVERY chunk per lookup (~40 ms x ~1,100 lookups = 45 s per
+	              -- hour tick, measured). A now()-based bound is applied once at startup.
+	              -- It never narrows the per-row bound: shift rows are at most 30 days old, so row - 7 days >= now() - 37 days.
+	              AND ev.ts_value >= now() - interval '37 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON ca.ideal_production_speed IS NULL
 	     GROUP BY el.id_equipment, el.ts_value
