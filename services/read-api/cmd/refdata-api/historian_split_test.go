@@ -1,9 +1,12 @@
 package main
 
 import (
+	"math/big"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func d(s string) time.Time {
@@ -118,5 +121,17 @@ func TestSplitSQL_TenantFencedAndNeverNow(t *testing.T) {
 		if !strings.Contains(sql, "year >  $4") || !strings.Contains(sql, "year <  $6") {
 			t.Errorf("%s: missing the year/month partition prune", name)
 		}
+	}
+}
+
+func TestMergeDaily_NumericFromDuckDB(t *testing.T) {
+	// DuckDB returns sum(integer) as HUGEINT -> pgx numeric; it must add up, not vanish to null.
+	num := pgtype.Numeric{Int: big.NewInt(3600), Exp: 0, Valid: true}
+	out := mergeDaily([][]map[string]any{
+		{{"day": d("2021-12-01T00:00:00Z"), "id_equipment": int32(47), "planned_downtime": false, "event_count": int64(2), "downtime_seconds": num}},
+		{{"day": d("2021-12-01T00:00:00Z"), "id_equipment": int32(47), "planned_downtime": false, "event_count": int64(1), "downtime_seconds": int64(600)}},
+	}, []string{"day", "id_equipment", "planned_downtime"}, []string{"event_count", "downtime_seconds"}, 10)
+	if len(out) != 1 || out[0]["downtime_seconds"] != 4200.0 || out[0]["event_count"] != 3.0 {
+		t.Fatalf("got %v, want one row with 4200 s / 3 events", out)
 	}
 }

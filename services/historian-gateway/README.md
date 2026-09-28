@@ -106,24 +106,29 @@ protocol). Check with `EXPLAIN (VERBOSE)`: the `Remote SQL:` line must carry the
 **2. Long windows read daily rollups, never per-second rows.** Re-aggregating the cold
 archive at query time costs about 25 s per 30 days (a CPACK month is 6-8 M rows), and a
 mixed pg_duckdb + FDW plan loses the FDW pushdown. read-api (`historian_split.go`) runs
-hot and cold as separate statements and merges them:
+hot and cold as separate statements and merges them (production is served at whole-UTC-day
+resolution; the per-second `silver.equipment_values` union stays for Superset/raw use):
 
 | Endpoint | Cold (pure DuckDB) | Hot (pure Postgres/FDW) |
 |---|---|---|
-| production-series, > 31 days | `cold.equipment_values_daily`, days < `ev_daily_watermark.covered_until` | `live.equipment_values_1hour` (analytics hourly rollup), days ≥ watermark |
-| production-series, ≤ 31 days | unchanged: the `silver.equipment_values` union (exact window edges) | |
+| production-series, any window | `cold.equipment_values_daily`, days < `ev_daily_watermark.covered_until` | `live.equipment_values_1hour` (analytics hourly rollup), days ≥ watermark |
 | downtime-series, any window | `cold.equipment_events`, only for EE-promoted tenants and only before `ee_union_boundary` | `live.equipment_events`, aggregated per UTC day |
 
 The daily rollup is written by `scripts/historian-ev-daily-rollup.sh` (nightly, from the
 append job, current + previous month; `FULL=1` rebuilds everything and is required once on a
 new bucket).
 
-**3. Cold increments are spike-guarded.** `cold.equipment_values` (and the daily rollup)
-NULL an increment that is negative, or at least half the machine's lifetime totalizer AND
-above 10,000 in one row: legacy stored the totalizer in the increment column in places
-(POLYTYPE net 2022-10..2023-09, the 2024-07-22 counter replay, 2026-08). Clean months are
-byte-identical. 2022-08 is a known gap: legacy itself has NULL gross/net/speed for the
-whole month.
+**3. Cold increments are spike-guarded.** `cold.equipment_values` and the daily rollup NULL
+an increment that is physically impossible: negative; > 10,000 and at least half the
+lifetime totalizer (legacy stored the totalizer in the increment column: POLYTYPE net
+2022-10..2023-09, ~1e12/month); > 10,000 and not backed by totalizer movement since the
+previous row (the 2024-07-22 replay, +74,367 every ~40 s with a frozen totalizer); or
+> 1,000 at over 5,000 units/min when the machine has ≥ 3 such rows in the same hour (a
+sustained burst; a lone fast row is a reconnect catch-up and is kept). Measured on 10 CPACK
+months: 2022-05, 2025-03, 2025-09, 2026-05 are byte-identical; 2024-07-22 drops from 79 M to
+4.4 M gross (a normal day is ~3.8 M). The guard uses window functions partitioned by
+enterprise/year/month, so the year/month filter still prunes (~20 s per month scanned).
+2022-08 is a known gap: legacy itself has NULL gross/net/speed for the whole month.
 
 **4. Memory.** The container is capped at 2560 MB and DuckDB at 1024 MB / 2 threads per
 backend (`command:` in `compose.historian-gateway.yml`; `-c` settings override both config
@@ -132,11 +137,13 @@ scans ask for more than the whole shared app host.
 
 ## Deploy
 
-Set in `.env`: `HIST_GW_PASSWORD`, `DB_HOST/PORT/NAME/USER/DB_PASSWORD`,
-`HISTORIAN_BUCKET`, `HIST_AWS_KEY`, `HIST_AWS_SECRET`, `AWS_REGION`. Then:
+On the staging app host the gateway's variables live in `/opt/packiot/.env.historian-gateway`
+(`HIST_GW_PASSWORD`, `DB_HOST/PORT/NAME/USER/DB_PASSWORD`, `HISTORIAN_BUCKET`,
+`HIST_AWS_KEY`, `HIST_AWS_SECRET`, `AWS_REGION`), NOT the main `.env`, and the deploy
+workflow does not manage this container. Recreate it by hand:
 
 ```
-docker compose -f compose.historian-gateway.yml up -d
+cd /opt/packiot && docker compose -p packiot --env-file .env.historian-gateway -f compose.historian-gateway.yml up -d historian-gateway
 ```
 
 Register in Superset as database `historian_union`

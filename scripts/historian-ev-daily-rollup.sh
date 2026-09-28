@@ -14,10 +14,18 @@
 # retained 13 months), so the boundary is day-aligned and exact: no partial day is split.
 #
 # SPIKE GUARD: the same rule as the cold.equipment_values view (t-historian-serving-guards). An
-# increment is dropped when it is negative, or when it is at least half the machine's lifetime
-# totalizer AND above 10,000 in a single row — the signature of legacy writing the totalizer
-# into the increment column (POLYTYPE 2022-10..2023-09 ~1e12, the 2024-07-22 replay, 2026-08).
-# A counter reset keeps its (small) first increment because of the 10,000 floor.
+# increment is dropped when it is physically impossible:
+#   * negative;
+#   * > 10,000 and at least half the machine's lifetime totalizer (legacy wrote the totalizer
+#     into the increment column: POLYTYPE net 2022-10..2023-09, ~1e12/month);
+#   * > 10,000 and not backed by totalizer movement since the previous row (the 2024-07-22
+#     replay: +74,367 every ~40 s with the totalizer frozen); a counter reset keeps its
+#     increment when it does not exceed the new totalizer;
+#   * > 1,000 at more than 5,000 units/min, when the machine has >= 3 such rows in the same
+#     hour (a sustained burst). A single fast row is a reconnect catch-up (real production
+#     stamped at once) and is kept.
+# Measured on 10 CPACK months: 2022-05, 2025-03, 2025-09, 2026-05 are byte-identical; the
+# garbage months drop back to normal (2024-07-22: 79 M -> 4.4 M; 2023-01 net 5.7e10 -> 9.6e7).
 #
 # MODES: default = incremental (current + MONTHS_BACK previous months, idempotent overwrite);
 #        FULL=1 = every month present in the cold archive (one-time backfill / rebuild).
@@ -63,14 +71,35 @@ SET memory_limit='${DUCKDB_MEMORY_LIMIT:-1000MB}'; SET threads=${DUCKDB_THREADS:
 SET preserve_insertion_order=false; SET TimeZone='UTC';
 INSTALL httpfs; LOAD httpfs; INSTALL icu; LOAD icu;
 CREATE SECRET s3sec (TYPE S3, PROVIDER credential_chain, REGION 'us-east-1');
-CREATE MACRO bad(i, v) AS (i < 0 OR (v > 0 AND i >= 0.5 * v AND i > 10000));
 COPY (
+  WITH l AS (
+    SELECT ts_value, id_equipment, gross_production_incr AS gi, gross_production_val AS gv,
+           net_production_incr AS ni, net_production_val AS nv,
+           lag(gross_production_val) OVER wp AS pgv, lag(net_production_val) OVER wp AS pnv,
+           epoch(ts_value) - epoch(lag(ts_value) OVER wp) AS dt
+      FROM read_parquet('$SRC')
+     WHERE CAST(ts_value AS DATE) < DATE '$CUT'
+    WINDOW wp AS (PARTITION BY id_equipment ORDER BY ts_value)
+  ), f AS (
+    SELECT *, (gi > 1000 AND gi * 60.0 / greatest(coalesce(dt, 60), 1) > 5000) AS g_fast,
+              (ni > 1000 AND ni * 60.0 / greatest(coalesce(dt, 60), 1) > 5000) AS n_fast
+      FROM l
+  ), h AS (
+    SELECT *, count(*) FILTER (WHERE g_fast) OVER wh AS g_fast_h, count(*) FILTER (WHERE n_fast) OVER wh AS n_fast_h
+      FROM f
+    WINDOW wh AS (PARTITION BY id_equipment, date_trunc('hour', ts_value))
+  )
   SELECT CAST(ts_value AS DATE) AS day, $E AS enterprise, $Y AS year, $M AS month, id_equipment,
-         sum(CASE WHEN bad(gross_production_incr, gross_production_val) THEN NULL ELSE gross_production_incr END) AS gross_production,
-         sum(CASE WHEN bad(net_production_incr, net_production_val) THEN NULL ELSE net_production_incr END)       AS net_production,
+         sum(CASE WHEN gi < 0 OR (gi > 10000 AND gv > 0 AND gi >= 0.5 * gv)
+                    OR (gi > 10000 AND pgv IS NOT NULL AND CASE WHEN gv < pgv THEN gi > gv + 1 ELSE (gv - pgv) < 0.5 * gi END)
+                    OR (g_fast AND g_fast_h >= 3)
+                  THEN NULL ELSE gi END) AS gross_production,
+         sum(CASE WHEN ni < 0 OR (ni > 10000 AND nv > 0 AND ni >= 0.5 * nv)
+                    OR (ni > 10000 AND pnv IS NOT NULL AND CASE WHEN nv < pnv THEN ni > nv + 1 ELSE (nv - pnv) < 0.5 * ni END)
+                    OR (n_fast AND n_fast_h >= 3)
+                  THEN NULL ELSE ni END) AS net_production,
          count(*) AS n_rows
-    FROM read_parquet('$SRC')
-   WHERE CAST(ts_value AS DATE) < DATE '$CUT'
+    FROM h
    GROUP BY 1, 5
 ) TO '$DEST' (FORMAT PARQUET);
 SQL

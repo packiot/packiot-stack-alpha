@@ -9,7 +9,7 @@ package main
 // side needs (the 7-day downtime query took ~24 s). So we run the two sides as SEPARATE
 // statements — pure DuckDB for cold, pure Postgres/FDW for hot — and merge in Go:
 //
-//   production-series, window > histDailyThreshold:
+//   production-series, every window:
 //     cold  = cold.equipment_values_daily (pre-aggregated parquet, spike-guarded), days < W
 //     hot   = live.equipment_values_1hour (analytics hourly rollup via FDW),       days >= W
 //     W     = cold.ev_daily_watermark.covered_until for an EV-promoted tenant (none ⇒ all hot,
@@ -30,12 +30,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// histDailyThreshold: production windows longer than this are served from the daily rollups.
-// ≤ 31 days keeps the exact per-second union path (sub-day window edges honored).
-const histDailyThreshold = 31 * 24 * time.Hour
 
 const histEVWatermarkSQL = `
   SELECT w.covered_until::text AS covered_until
@@ -207,6 +204,10 @@ func asFloat(v any) (float64, bool) {
 	case json.Number:
 		f, err := n.Float64()
 		return f, err == nil
+	case pgtype.Numeric:
+		// DuckDB sum() over an integer column is a HUGEINT, which pgx decodes as numeric.
+		f, err := n.Float64Value()
+		return f.Float64, err == nil && f.Valid
 	case fmt.Stringer:
 		var f float64
 		_, err := fmt.Sscan(n.String(), &f)

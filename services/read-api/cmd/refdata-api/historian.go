@@ -258,8 +258,10 @@ func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgx
 		if rows, err = serveEESplit(ctx, histPool, cid, q, equipFilter); err == nil {
 			payload, err = json.Marshal(rows)
 		}
-	case q.To.Sub(q.From) > histDailyThreshold:
-		// Long production window: pre-aggregated daily rollups (whole UTC days).
+	case kind == histKindProduction:
+		// Always the split: cold daily rollup + hot hourly rollup (whole UTC days). The
+		// per-second union view now carries the windowed spike guard (~20 s per month
+		// scanned), so even a 7-day window crossing a month would press the 60 s budget.
 		var rows []map[string]any
 		if rows, err = serveEVDaily(ctx, histPool, cid, q, equipFilter); err == nil {
 			payload, err = json.Marshal(rows)

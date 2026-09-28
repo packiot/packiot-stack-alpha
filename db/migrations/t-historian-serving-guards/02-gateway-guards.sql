@@ -3,32 +3,66 @@
 --   docker exec -i hist-gateway psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < 02-gateway-guards.sql
 -- Idempotent. Rollback: rollback-02-gateway-guards.sql.
 
--- (1) Spike guard on the COLD raw view (2026-09-28 audit). Legacy wrote the machine's
--- lifetime totalizer into the increment column in places (POLYTYPE net 2022-10..2023-09,
--- monthly sums ~1e12; the 2024-07-22 counter replay; 2026-08 gross ~3e10). An increment is
--- NULLed when it is negative, or at least half the totalizer AND above 10,000 in one row
--- (a counter reset keeps its small first increment). The parquet stays untouched. Checked
--- on 16 CPACK months: the 5 clean months are byte-identical; the garbage months drop back
--- to 90-140 M/month. Same rule as scripts/historian-ev-daily-rollup.sh.
+-- (1) Spike guard on the COLD raw view (2026-09-28 audit). The parquet stays untouched; the
+-- view NULLs an increment that is physically impossible (same rule as
+-- scripts/historian-ev-daily-rollup.sh):
+--   * negative;
+--   * > 10,000 and at least half the machine's lifetime totalizer (legacy wrote the totalizer
+--     into the increment column: POLYTYPE net 2022-10..2023-09, ~1e12/month);
+--   * > 10,000 and not backed by totalizer movement since the previous row (the 2024-07-22
+--     replay: +74,367 every ~40 s, totalizer frozen); a counter reset keeps its increment
+--     when it does not exceed the new totalizer;
+--   * > 1,000 at more than 5,000 units/min when the machine has >= 3 such rows in the same
+--     hour (sustained burst). A single fast row is a reconnect catch-up and is kept.
+-- Windows partition by (enterprise, year, month, equipment[, hour]), so a year/month filter
+-- still prunes the parquet (a day in a month: ~20 s). Measured on 10 CPACK months:
+-- 2022-05, 2025-03, 2025-09, 2026-05 byte-identical; 2024-07-22 79 M -> 4.4 M gross.
 CREATE OR REPLACE VIEW cold.equipment_values AS
-SELECT r['ts_value']::timestamp               AS ts_value,
-       r['enterprise']::int                   AS id_enterprise,
-       r['year']::int                         AS year,
-       r['month']::int                        AS month,
-       r['id_equipment']::int                 AS id_equipment,
-       CASE WHEN r['gross_production_incr']::double precision < 0
-              OR (r['gross_production_val']::double precision > 0
-                  AND r['gross_production_incr']::double precision >= 0.5 * r['gross_production_val']::double precision
-                  AND r['gross_production_incr']::double precision > 10000)
-            THEN NULL ELSE r['gross_production_incr']::double precision END AS gross_production_incr,
-       CASE WHEN r['net_production_incr']::double precision < 0
-              OR (r['net_production_val']::double precision > 0
-                  AND r['net_production_incr']::double precision >= 0.5 * r['net_production_val']::double precision
-                  AND r['net_production_incr']::double precision > 10000)
-            THEN NULL ELSE r['net_production_incr']::double precision END   AS net_production_incr,
-       r['speed']::double precision           AS speed
-FROM read_parquet('s3://packiot-staging-historian-639178078294/equipment_values/*/*/*/*-legacy.parquet',
-                  hive_partitioning => true) r;
+WITH b AS (
+  SELECT r['ts_value']::timestamp                     AS ts_value,
+         r['enterprise']::int                         AS id_enterprise,
+         r['year']::int                               AS year,
+         r['month']::int                              AS month,
+         r['id_equipment']::int                       AS id_equipment,
+         r['gross_production_incr']::double precision AS gi,
+         r['gross_production_val']::double precision  AS gv,
+         r['net_production_incr']::double precision   AS ni,
+         r['net_production_val']::double precision    AS nv,
+         r['speed']::double precision                 AS speed
+    FROM read_parquet('s3://packiot-staging-historian-639178078294/equipment_values/*/*/*/*-legacy.parquet',
+                      hive_partitioning => true) r
+), l AS (
+  SELECT b.*,
+         lag(gv) OVER wp AS pgv,
+         lag(nv) OVER wp AS pnv,
+         extract(epoch FROM ts_value - lag(ts_value) OVER wp) AS dt
+    FROM b
+  WINDOW wp AS (PARTITION BY id_enterprise, year, month, id_equipment ORDER BY ts_value)
+), f AS (
+  SELECT l.*,
+         (gi > 1000 AND gi * 60.0 / greatest(coalesce(dt, 60), 1) > 5000) AS g_fast,
+         (ni > 1000 AND ni * 60.0 / greatest(coalesce(dt, 60), 1) > 5000) AS n_fast
+    FROM l
+), h AS (
+  SELECT f.*,
+         count(*) FILTER (WHERE g_fast) OVER wh AS g_fast_h,
+         count(*) FILTER (WHERE n_fast) OVER wh AS n_fast_h
+    FROM f
+  WINDOW wh AS (PARTITION BY id_enterprise, year, month, id_equipment, date_trunc('hour', ts_value))
+)
+SELECT ts_value, id_enterprise, year, month, id_equipment,
+       CASE WHEN gi < 0
+              OR (gi > 10000 AND gv > 0 AND gi >= 0.5 * gv)
+              OR (gi > 10000 AND pgv IS NOT NULL AND CASE WHEN gv < pgv THEN gi > gv + 1 ELSE (gv - pgv) < 0.5 * gi END)
+              OR (g_fast AND g_fast_h >= 3)
+            THEN NULL ELSE gi END AS gross_production_incr,
+       CASE WHEN ni < 0
+              OR (ni > 10000 AND nv > 0 AND ni >= 0.5 * nv)
+              OR (ni > 10000 AND pnv IS NOT NULL AND CASE WHEN nv < pnv THEN ni > nv + 1 ELSE (nv - pnv) < 0.5 * ni END)
+              OR (n_fast AND n_fast_h >= 3)
+            THEN NULL ELSE ni END AS net_production_incr,
+       speed
+  FROM h;
 
 -- (2) Daily-rollup watermark: cold.equipment_values_daily covers whole UTC days < covered_until.
 CREATE TABLE IF NOT EXISTS cold.ev_daily_watermark (
