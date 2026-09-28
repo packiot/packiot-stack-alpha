@@ -8,11 +8,8 @@
 # nav + search + theme, which keeps CI trivial.
 #
 # docs_dir points at a build-staging tree that scripts/build-wiki.sh assembles
-# from TWO sources that live in different git trees:
-#   - docs/wiki/*   (the commissioned stack wiki, on origin/staging)
-#   - docs/guide/*  (the polished guide, on the mainline branch)
-# plus docs/adr/* (copied in so the guide's ../adr cross-refs resolve) and the
-# generated onboarding page. Paths below are relative to THIS file (wiki/).
+# from the layered wiki tree docs/wiki/ (+ docs/adr/*.md under /adr).
+# Writing rules and page templates: docs/WIKI-STYLE.md.
 
 site_name: Packiot Stack Docs
 site_description: >-
@@ -84,53 +81,87 @@ markdown_extensions:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
-# The guide references a handful of files outside the two doc sets
-# (../README.md, ../BUSINESS-RULES.md, ../clients/_schema.yaml, ../audits/).
-# We intentionally do NOT vendor the whole docs tree, so warn (don't fail) on
-# those unresolved links. Internal links WITHIN the two sets + ADRs must resolve.
+# Internal links must resolve (CI builds with --strict, so any warning fails).
 validation:
   omitted_files: warn
   absolute_links: warn
   unrecognized_links: warn
+  anchors: warn
   nav:
-    omitted_files: info
+    omitted_files: warn
+    not_found: warn
 
-# ADRs are copied into the staging tree so the guide's ../adr cross-refs resolve
-# to real pages, but they are not primary nav content — keep them out of the nav
-# without triggering "page exists but not in nav" warnings.
+# ADRs are copied to /adr so reference/adr-index.md can link them; they are not
+# primary nav content.
 not_in_nav: |
   /adr/**
 
 nav:
   - Home: index.md
-  - Onboarding:
-      - First-Time Edge Box Setup: onboarding/first-time-box-setup.md
-  - Stack Wiki:
-      - Overview: wiki/README.md
-      - Platform Overview: wiki/01-platform-overview.md
-      - Onboarding a Client: wiki/02-onboarding.md
-      - Onboarding — Worked Example: wiki/09-onboarding-worked-example.md
-      - CS-Admin Forms Reference: wiki/03-csadmin-forms.md
-      - Edge & Data Ingestion: wiki/04-edge-and-ingestion.md
-      - Cloud Services & OEE Compute: wiki/05-cloud-services-and-oee.md
-      - Database & Data Model: wiki/06-database.md
-      - Frontends, Infra & Auth: wiki/07-frontends-infra-auth.md
-      - Outage Resilience & Offline: wiki/10-outage-resilience-and-offline.md
-      - On-Prem Offline Operation: wiki/11-on-prem-offline-operation.md
-      - The Edge-Operator: wiki/12-edge-operator.md
-      - Concepts & Glossary: wiki/08-concepts.md
-      - Onboarding — Worked Example: wiki/09-onboarding-worked-example.md
-  - Guide:
-      - What Packiot Is: guide/01-what-packiot-is.md
-      - Architecture at a Glance: guide/02-architecture-at-a-glance.md
-      - The Edge: guide/03-the-edge.md
-      - The Engine: guide/04-the-engine.md
-      - The Database: guide/05-the-database.md
-      - APIs and the Operator: guide/06-apis-and-operator.md
-      - Customizations & Real Factories: guide/07-customizations-and-real-factories.md
-      - Observability: guide/08-observability.md
-      - The Endgame: guide/09-the-endgame.md
-      - Decision Log: guide/10-decision-log.md
-      - Service Catalog: guide/11-service-catalog.md
-      - Glossary: guide/glossary.md
-      - Staging URLs: guide/staging-urls.md
+  - Glossary: glossary.md
+  - "1 · Architecture":
+      - Overview: architecture/overview.md
+      - A counter's journey: architecture/data-journey.md
+      - Domain model: architecture/domain-model.md
+      - Tenancy & security: architecture/tenancy-and-security.md
+      - Environments: architecture/environments.md
+  - "2 · Subsystems":
+      - Edge: subsystems/edge.md
+      - Ingestion: subsystems/ingestion.md
+      - Compute: subsystems/compute.md
+      - Analytics DB: subsystems/analytics-db.md
+      - Historian: subsystems/historian.md
+      - Legacy bridge: subsystems/legacy-bridge.md
+      - Serving & APIs: subsystems/serving-apis.md
+      - Frontends: subsystems/frontends.md
+      - Identity: subsystems/identity.md
+      - Platform & operations: subsystems/platform.md
+  - "3 · Components":
+      - Edge:
+          - PLC readers: components/plc-readers.md
+          - Sparkplug agent: components/sparkplug-agent.md
+          - Edge box: components/edge-box.md
+          - Edge Node-RED: components/edge-node-red.md
+          - Edge session broker: components/edge-session-broker.md
+          - Simulators & twins: components/simulators-and-twins.md
+      - Ingestion & compute:
+          - Brokers: components/brokers.md
+          - sparkplug-decoder: components/sparkplug-decoder.md
+          - ingest-shim & fanout: components/ingest-shim-and-fanout.md
+          - stream-engine: components/stream-engine.md
+          - stream-engine rollup internals: components/stream-engine-rollup-internals.md
+      - Data:
+          - Analytics DB schemas: components/analytics-db-schemas.md
+          - Timescale jobs & retention: components/timescale-jobs-and-retention.md
+          - Historian gateway: components/historian-gateway.md
+          - Superset: components/superset.md
+      - Legacy bridge & APIs:
+          - analytics-sync: components/analytics-sync.md
+          - mirror-worker: components/mirror-worker.md
+          - read-api: components/read-api.md
+          - edge-api: components/edge-api.md
+          - operator-gateway: components/operator-gateway.md
+          - barcode-service: components/barcode-service.md
+      - Frontends & identity:
+          - front4: components/front4.md
+          - Operator app: components/operator-app.md
+          - CS Admin: components/csadmin.md
+          - Customization Hub: components/customize.md
+          - Barcode app: components/barcode-app.md
+          - oauth2-proxy & Cognito: components/oauth2-proxy-and-cognito.md
+      - Platform:
+          - Compose topology: components/compose-topology.md
+          - CI/CD: components/ci-cd.md
+          - Terraform: components/terraform.md
+          - Observability: components/observability.md
+          - Wiki pipeline: components/wiki-pipeline.md
+  - "4 · Reference":
+      - Database reference: reference/database-reference.md
+      - API endpoints: reference/api-endpoints.md
+      - Configuration: reference/configuration.md
+      - ADR index: reference/adr-index.md
+  - "4 · Operations":
+      - Runbooks: operations/runbooks.md
+      - Onboarding a client: operations/onboarding-a-client.md
+      - First-time edge box setup: operations/first-time-box-setup.md
+      - DBA guide: operations/dba-guide.md

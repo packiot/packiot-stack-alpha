@@ -127,6 +127,6 @@ inherits bespoke cutover machinery gladly).
 ## References
 
 - ADR-0036 (medallion data architecture), ADR-0050 (F3→analytics rename), ADR-0056 (single app DB).
-- `docs/wiki/06-database.md` (historian gateway object reference + naming correlation).
+- `docs/wiki/subsystems/historian.md` (historian gateway object reference + naming correlation).
 - Tasks #274–#282 (historian gateway rename, codified install, legacy copier).
 - Apache Iceberg (Netflix), Apache Hudi (Uber), Delta Lake (Databricks).

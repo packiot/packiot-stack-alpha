@@ -37,7 +37,7 @@ There is no public Postgres port. Reach it three ways:
 - **pgweb (browse):** `db.staging.packiot.app` (analytics) / `histdb.staging.packiot.app` (historian gateway), behind the cs-admin oauth2 gate.
 - **services:** via `stack-pgbouncer-1` on the app box (pooled) or direct for the few that need it.
 
-A cluster-global **superuser** `dev@packiot.com` / `Packiot2026!` exists **staging-only**
+A cluster-global **superuser** `dev@packiot.com` exists **staging-only** (password redacted 2026-09-28; rotate it)
 (weak password by design; it did NOT change the `postgres` master). Do not create its
 equivalent on prod.
 

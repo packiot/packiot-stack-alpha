@@ -5,14 +5,14 @@ name: build-wiki
 # built site to S3 — the enrolled box pulls from there on a timer (pull model),
 # which is how the site reaches /var/www/wiki despite aws_instance.app having
 # ignore_changes=[user_data] (the box never rebuilds from user_data). See
-# docs/wiki-deploy.md for the one-time operator wiring.
+# docs/wiki/components/wiki-pipeline.md for the one-time operator wiring.
 
 on:
   push:
     branches: [staging, production]
     paths:
       - 'docs/wiki/**'
-      - 'docs/guide/**'
+      - 'docs/WIKI-STYLE.md'
       - 'docs/adr/**'
       - 'wiki/**'
       - 'scripts/build-wiki.sh'
@@ -20,7 +20,7 @@ on:
   pull_request:
     paths:
       - 'docs/wiki/**'
-      - 'docs/guide/**'
+      - 'docs/WIKI-STYLE.md'
       - 'docs/adr/**'
       - 'wiki/**'
       - 'scripts/build-wiki.sh'
@@ -50,11 +50,11 @@ jobs:
 
       - name: Build site
         # NO_VENV=1: mkdocs is already on PATH from the pip install above, so the
-        # script must not spin up its own venv. WIKI_REF points at the Stack Wiki
-        # source when it isn't in this branch's working tree.
+        # script must not spin up its own venv. STRICT=1: any broken link or
+        # warning fails the build.
         env:
           NO_VENV: '1'
-          WIKI_REF: origin/staging
+          STRICT: '1'
         run: scripts/build-wiki.sh
 
       - name: Upload site artifact
@@ -69,7 +69,7 @@ jobs:
     name: sync site to S3 (box pulls from there)
     needs: build
     # Only on push to the doc branches, never on PRs. No-ops cleanly until the
-    # operator sets the WIKI_S3_BUCKET var + AWS_ROLE_ARN secret (see docs/wiki-deploy.md).
+    # operator sets the WIKI_S3_BUCKET var + AWS_ROLE_ARN secret (see docs/wiki/components/wiki-pipeline.md).
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -83,7 +83,7 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::WIKI_S3_BUCKET var and/or AWS_ROLE_ARN secret not set — skipping S3 sync. See docs/wiki-deploy.md."
+            echo "::notice::WIKI_S3_BUCKET var and/or AWS_ROLE_ARN secret not set — skipping S3 sync. See docs/wiki/components/wiki-pipeline.md."
           fi
 
       - name: Download site artifact

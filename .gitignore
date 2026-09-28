@@ -39,3 +39,7 @@ monitoring/rabbitmq/definitions.json
 private-key.json          # generic exported private keys
 client_secrets.json       # OAuth client secret bundles
 db/migrations/**/_ssm.json
+
+# wiki build outputs (scripts/build-wiki.sh)
+wiki/build/
+dist/
