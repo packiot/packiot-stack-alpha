@@ -107,3 +107,16 @@ func TestHourBackfillEligible_shape(t *testing.T) {
 		}
 	}
 }
+
+// The stable LOCF chunk bound in hourSpeedSQL must widen with the backfill
+// horizon, or backfilled rows (up to 10 days old) would lose their 7-day
+// look-back (2026-09-28).
+func TestWidenHourWindowsWidensLOCFChunkBound(t *testing.T) {
+	if !strings.Contains(hourSpeedSQL, "now() - interval '8 days'") {
+		t.Fatal("hourSpeedSQL lost its stable LOCF chunk bound")
+	}
+	w := widenHourWindows(hourSpeedSQL)
+	if strings.Contains(w, "now() - interval '8 days'") || !strings.Contains(w, "now() - interval '17 days'") {
+		t.Fatal("widenHourWindows must map the 8-day LOCF chunk bound to 17 days")
+	}
+}

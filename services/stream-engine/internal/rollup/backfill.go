@@ -96,6 +96,10 @@ func widenHourWindows(sql string) string {
 	return strings.NewReplacer(
 		"now() - interval '65 minutes'", "now() - interval '10 days'",
 		"now() - interval '6 hour'", "now() - interval '10 days'",
+		// hourSpeedSQL's stable LOCF chunk bound: live rows are <= 65 min old
+		// (8 days = 7-day look-back + slack); backfilled rows are up to 10 days
+		// old, so the look-back needs 17 days to stay a no-op widening.
+		"now() - interval '8 days'", "now() - interval '17 days'",
 	).Replace(sql)
 }
 

@@ -156,6 +156,12 @@ const hourSpeedSQL = `
 	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
 	              -- across short silences if 30701 starts arriving.
 	              AND ev.ts_value >= m.ts_value - interval '7 days'
+	              -- STABLE copy of the bound (2026-09-28): the per-row bound above depends
+	              -- on the outer row, so TimescaleDB cannot exclude chunks at startup and
+	              -- re-checks EVERY chunk per lookup (~40 ms x ~1,100 lookups = 45 s per
+	              -- hour tick, measured). A now()-based bound is applied once at startup.
+	              -- It never narrows the per-row bound: live rows are at most 65 min old, so row - 7 days >= now() - 8 days. The hour backfill widens this to 17 days (10-day horizon + 7) in widenHourWindows.
+	              AND ev.ts_value >= now() - interval '8 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON m.ideal_production_speed IS NULL
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
