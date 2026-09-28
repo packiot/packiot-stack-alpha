@@ -85,8 +85,8 @@ GRANT USAGE ON SCHEMA public TO bi_owner;
 --     production_orders (PO metadata), production_targets (reference lines).
 GRANT SELECT ON
     equipments,
-    equipment_runtime_shift,
-    equipment_runtime_1hour,
+    equipment_oee_shift,
+    equipment_oee_hourly,
     production_orders_runtime,
     equipment_events,
     equipment_values,
@@ -98,10 +98,13 @@ GRANT SELECT ON
 GRANT USAGE ON SCHEMA bi TO superset_ro;
 
 -- ── 3. Curated views (every row carries id_enterprise) ───────────────────────
+-- RENAMED 2026-09-28: equipment_runtime_shift/_1hour → equipment_oee_shift/_hourly
+-- (live: gold.*, resolved via the DB search_path like every other base table here;
+-- the old names no longer exist, so a fresh apply failed with 42P01).
 -- SCHEMA-RECONCILED to the live F3 analytics schema (2026-08): OEE ratio columns
 -- are oee_a/oee_p/oee_q (NOT oee_availability/…); time bounds are ts_value/ts_end
 -- (NOT begin_time/end_time); counts are gross/net (there is NO `count` column);
--- equipment_runtime_1hour buckets on ts_value (NOT `bucket`); production_orders_runtime
+-- equipment_oee_hourly buckets on ts_value (NOT `bucket`); production_orders_runtime
 -- has NO id_enterprise (derived via the equipments dimension) and bounds its run with
 -- runtime_timerange (a tstzrange); the downtimes table does not exist (source is
 -- equipment_events). Every view still GUARANTEES an id_enterprise column (the RLS key).
@@ -110,7 +113,7 @@ GRANT USAGE ON SCHEMA bi TO superset_ro;
 -- equipments dimension) so both isolation layers have a tenant key.
 --
 -- ⚠ DATA-CORRECTNESS FILTER (audit F1/F2/F3, 2026-08-10). The shift-calendar
--- pre-expands FUTURE, zero-activity buckets (equipment_runtime_shift ranges a
+-- pre-expands FUTURE, zero-activity buckets (equipment_oee_shift ranges a
 -- MONTH into the future — 5 518 of 7 750 rows). The KPI charts AVG(oee) with no
 -- time filter, so those empty buckets dragged a real ~60% OEE down to ~2%. Two
 -- guards make every consumer honest without per-chart config:
@@ -137,7 +140,7 @@ SELECT
     eq.nm_equipment || CASE eq.tp_equipment
              WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
-FROM equipment_runtime_shift rs
+FROM equipment_oee_shift rs
 JOIN equipments eq ON eq.id_equipment = rs.id_equipment  -- id_enterprise source
 WHERE rs.ts_value <= now()      -- F3: never expose future calendar buckets
   AND rs.running_time > 0;      -- F1/F2: only shifts that actually operated
@@ -160,7 +163,7 @@ SELECT
     eq.nm_equipment || CASE eq.tp_equipment
              WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
-FROM equipment_runtime_1hour rh
+FROM equipment_oee_hourly rh
 JOIN equipments eq ON eq.id_equipment = rh.id_equipment
 WHERE rh.ts_value <= now()      -- F3: never expose future calendar buckets
   AND rh.running_time > 0;      -- F1/F2: only hours that actually operated
