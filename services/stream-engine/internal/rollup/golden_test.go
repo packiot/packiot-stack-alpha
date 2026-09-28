@@ -40,6 +40,11 @@ const goldenSchema = `
 	    ideal_production_speed double precision,
 	    last_update timestamptz
 	);
+	-- Line-lead reads planned events from here (planned-downtime fix).
+	CREATE TABLE golden.equipment_events (
+	    id_equipment int, ts_event timestamptz, ts_end timestamptz,
+	    status int, planned_downtime boolean, change_over boolean
+	);
 	CREATE TABLE golden.equipments (
 	    id_equipment int PRIMARY KEY,
 	    id_site int, id_area int, id_enterprise int, tp_equipment int,
@@ -168,7 +173,7 @@ const grainGoldenSchema = `
 	CREATE TABLE golden.equipment_values (
 	    id_equipment int, ts_value timestamptz, ideal_production_speed double precision
 	);
-	CREATE TABLE golden.equipment_events (
+	CREATE TABLE IF NOT EXISTS golden.equipment_events (
 	    id_equipment int, ts_event timestamptz, ts_end timestamptz,
 	    status int, planned_downtime boolean, change_over boolean
 	);

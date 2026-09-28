@@ -188,6 +188,162 @@ func TestGoldenLineLead(t *testing.T) {
 	}
 }
 
+func TestGoldenLineLeadPlannedDowntime(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	// DDL: goldenSchema (enterprise/equipments) + lead_machine column + the
+	// shift-grain + cagg tables the line-lead pass reads and writes.
+	const lineLeadSchema = `
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
+		-- gross_machine referenced by the split-source SQL; left NULL here so this
+		-- single-lead fixture exercises the COALESCE(gross_machine, lead_machine)
+		-- no-op path (gross_id == lead_id ⇒ behaviour identical to pre-split).
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		CREATE TABLE golden.equipment_oee_shift (
+		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
+		    ts_value_production timestamptz, id_shift int, cd_shift text,
+		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
+		    gross double precision, net double precision, scrap double precision,
+		    speed double precision, ideal_speed double precision,
+		    available_time double precision, running_time double precision,
+		    stopped_time double precision, planned_downtime double precision,
+		    ideal_production double precision, downtime double precision,
+		    changeover_time double precision, oee double precision,
+		    oee_a double precision, oee_p double precision, oee_q double precision,
+		    target double precision, proportional_target double precision,
+		    computed_at timestamptz, source_watermark timestamptz
+		);
+		CREATE TABLE golden.equipment_categorical_1hour (
+		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
+		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
+		);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
+		SET search_path TO golden, public;`
+	for _, s := range []string{goldenSchema, lineLeadSchema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+
+	// Fixture: enterprise 3, one tp=3 LINE (900) whose lead_machine is the tp=1
+	// MACHINE (901, production_speed 100). The line has NO cagg of its own; the
+	// lead does. The bucket is a complete hour 3h in the past (ts_total = 3600).
+	//   lead 901 1hour cagg: gross 1000 / net 950 → line oee_q = 0.95.
+	//   lead 901 1min productive minutes: 0-9 and 40-59 (a 31-min gap ≫ the
+	//     300s idle timeout → the gap is stopped). Expected running = session A
+	//     [0m .. 9m+300s→14m] = 840s + session B [40m .. min(59m+300s,60m)=60m]
+	//     = 1200s → 2040s → Availability 0.5667 (< 1, idle penalty).
+	const fixture = `
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine)
+		VALUES (900,1,1,3,3,NULL,901),   -- the LINE (no rated speed of its own)
+		       (901,1,1,3,1,100,NULL);   -- its lead MACHINE (rated speed 100)
+		-- controlled eligibility set: one shift bucket for the line, a complete
+		-- hour 3h old (ts_total = 3600, within the 25-day update guard).
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig
+		SELECT 900, date_trunc('hour', now()) - interval '3 hours',
+		            date_trunc('hour', now()) - interval '2 hours';
+		INSERT INTO golden.equipment_oee_shift
+		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		VALUES (900, date_trunc('hour', now()) - interval '3 hours',
+		             date_trunc('hour', now()) - interval '2 hours',
+		             date_trunc('day', now()), 1, true, 0);
+		-- lead's 1hour cagg (gross/net for the line)
+		INSERT INTO golden.equipment_categorical_1hour
+		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 1000, 950);
+		-- lead's 1min productive minutes: 0-9 and 40-59 (idle gap between)
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
+		  FROM generate_series(0,9) m
+		UNION ALL
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10
+		  FROM generate_series(40,59) m;
+		-- The LINE's own events: a 15-min PLANNED stop at minute 20 (inside the
+		-- idle gap), ended by the next event at minute 35. Its ts_end is a
+		-- truncated closer stamp (20m01s) that must NOT win over the next event.
+		INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
+		VALUES (900, date_trunc('hour', now()) - interval '3 hours' + interval '20 minutes',
+		             date_trunc('hour', now()) - interval '3 hours' + interval '20 minutes 1 second', 5, true, false),
+		       (900, date_trunc('hour', now()) - interval '3 hours' + interval '35 minutes', NULL, 6, false, false);`
+
+	// TEMP tables are connection-scoped; acquire ONE conn for fixture + pass.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET search_path TO golden, public`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	// The line-lead pass, verbatim from line_lead.go (single source): enterprise
+	// 3 opted in, 300s idle timeout. %[1]s=EvSchema, %[2]s=RefSchema.
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
+	if _, err := conn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+
+	var r struct {
+		gross, net, avail, running, stopped, ideal, oee, oeeA, oeeP, oeeQ float64
+		recalc                                                            bool
+	}
+	if err := conn.QueryRow(ctx,
+		`SELECT gross, net, available_time, running_time, stopped_time, ideal_speed,
+		        oee, oee_a, oee_p, oee_q, recalc_needed
+		   FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
+		Scan(&r.gross, &r.net, &r.avail, &r.running, &r.stopped, &r.ideal,
+			&r.oee, &r.oeeA, &r.oeeP, &r.oeeQ, &r.recalc); err != nil {
+		t.Fatal(err)
+	}
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	var planned float64
+	if err := conn.QueryRow(ctx, `SELECT planned_downtime FROM golden.equipment_oee_shift WHERE id_equipment = 900`).Scan(&planned); err != nil {
+		t.Fatal(err)
+	}
+	// Regression 2026-09-28: line-lead hard-coded planned_downtime = 0 and
+	// available_time = the whole bucket, so planned stops counted as downtime.
+	if !approx(planned, 900) {
+		t.Errorf("planned_downtime = %v, want 900 (15-min planned stop, ended by the NEXT event, not the truncated ts_end)", planned)
+	}
+	if !approx(r.avail, 2700) {
+		t.Errorf("available_time = %v, want 2700 (3600 - 900 planned)", r.avail)
+	}
+	if !approx(r.running, 2040) {
+		t.Errorf("running_time = %v, want 2040 (counter sessions, all outside the planned stop)", r.running)
+	}
+	if !approx(r.stopped, 660) {
+		t.Errorf("stopped_time = %v, want 660 (2700 available - 2040 running)", r.stopped)
+	}
+	if !approx(r.oeeA, 2040.0/2700.0) {
+		t.Errorf("oee_a = %v, want %v (running / planned production time)", r.oeeA, 2040.0/2700.0)
+	}
+	if !approx(r.oee, 950.0/((2700.0/60.0)*100.0)) {
+		t.Errorf("oee = %v, want %v (net / ideal over planned production time)", r.oee, 950.0/((2700.0/60.0)*100.0))
+	}
+	if math.Abs(r.oee-r.oeeA*r.oeeP*r.oeeQ) > 1e-6 {
+		t.Errorf("OEE waterfall broken: oee=%v a*p*q=%v", r.oee, r.oeeA*r.oeeP*r.oeeQ)
+	}
+}
+
 // TestGoldenLineLeadSplit — the SPLIT-INSTRUMENTATION line. Here the line's GROSS
 // counter lives on a DIFFERENT machine than its NET counter, so no single machine
 // carries both and the plain single-lead pass would zero one factor (quality → 0,

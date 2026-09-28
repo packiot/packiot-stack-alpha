@@ -65,6 +65,8 @@
 // stream stays byte-identical to the state-only rollup.
 package rollup
 
+import "strings"
+
 // shiftLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[7]d=idle timeout secs.
 const shiftLineLeadSQL = `
 	WITH lines AS (
@@ -206,32 +208,67 @@ const shiftLineLeadSQL = `
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
+	-- PLANNED DOWNTIME (regression fix 2026-09-28). This pass is the single writer
+	-- of a line-lead row and used to hard-code planned_downtime = 0 and
+	-- available_time = the whole bucket, discarding the planned stops the events
+	-- step had just classified. Since CPACK moved onto line-lead (~2026-08-31)
+	-- every planned stop counted as downtime and line OEE ran 10-50 pct low vs
+	-- legacy. Planned time is the overlap of the LINE's planned events with the
+	-- bucket. An event lasts until the NEXT event starts (legacy semantics);
+	-- ts_end is only a fallback because the closer can truncate it.
+	, planned_ev AS MATERIALIZED (
+	    SELECT ee.id_equipment, ee.ts_event, ee.ts_eff_end
+	      FROM (
+	        SELECT x.id_equipment, x.ts_event, x.planned_downtime, x.change_over,
+	               LEAST(COALESCE(lead(x.ts_event) OVER (PARTITION BY x.id_equipment ORDER BY x.ts_event),
+	                              x.ts_end, now()), now()) AS ts_eff_end
+	          FROM %[1]s.equipment_events x
+	         WHERE x.id_equipment IN (SELECT line_id FROM lines)
+	           AND x.ts_event >= (SELECT min(ts_value) FROM lines) - interval '10 days'
+	           AND x.ts_event < now()
+	      ) ee
+	     WHERE ` + plannedPredToken + `
+	), planned AS (
+	    SELECT l.line_id, l.ts_value,
+	           LEAST(COALESCE(sum(extract(epoch FROM (LEAST(p.ts_eff_end, l.bend) - GREATEST(p.ts_event, l.ts_value)))), 0), l.ts_total) AS ts_planned
+	      FROM lines l
+	      JOIN planned_ev p ON p.id_equipment = l.line_id AND p.ts_event < l.bend AND p.ts_eff_end > l.ts_value
+	     GROUP BY l.line_id, l.ts_value, l.ts_total
+	), lines_p AS (
+	    -- ts_avail = planned production time (bucket minus planned stops): the
+	    -- Availability denominator and the ideal-production basis, as in legacy.
+	    SELECT l.*, COALESCE(p.ts_planned, 0) AS ts_planned,
+	           l.ts_total - COALESCE(p.ts_planned, 0) AS ts_avail
+	      FROM lines l
+	      LEFT JOIN planned p ON p.line_id = l.line_id AND p.ts_value = l.ts_value
+	)
+
 	UPDATE %[4]s.equipment_oee_shift e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
 	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),
-	       available_time   = l.ts_total,
-	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_total),
-	       stopped_time     = l.ts_total - LEAST(COALESCE(a.raw_running, 0), l.ts_total),
-	       planned_downtime = 0,
-	       downtime         = l.ts_total - LEAST(COALESCE(a.raw_running, 0), l.ts_total),
+	       available_time   = l.ts_avail,
+	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
+	       stopped_time     = l.ts_avail - LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
+	       planned_downtime = l.ts_planned,
+	       downtime         = l.ts_avail - LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
 	       changeover_time  = 0,
 	       ideal_speed      = COALESCE(l.lead_ideal, e.ideal_speed, 0),
-	       ideal_production = COALESCE((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
+	       ideal_production = COALESCE((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
 	       recalc_needed    = false,
 	       -- ADR-0037 *_oee_bounds clamp (#663): counter-only line throughput can
 	       -- exceed the rated-speed estimate, so net/ideal (and the back-solved
 	       -- oee_p) can top 1 and violate the BETWEEN 0 AND 1 CHECK. Clamp each
 	       -- served factor; no-op on in-range data.
-	       oee   = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
-	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0), 1), 0),
+	       oee   = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_avail) / NULLIF(l.ts_avail, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 1), 0),
 	       oee_p = GREATEST(LEAST(COALESCE(
-	             COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0)
+	             COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0)
 	             / NULLIF(
-	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0)
+	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_avail) / NULLIF(l.ts_avail, 0), 0)
 	                 * COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 0), 0), 1), 0)
-	  FROM lines l
+	  FROM lines_p l
 	  LEFT JOIN reconciled r ON r.line_id = l.line_id AND r.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
 	 WHERE e.id_equipment = l.line_id AND e.ts_value = l.ts_value
@@ -349,27 +386,62 @@ const hourLineLeadSQL = `
 	    SELECT line_id, ts_value, sum(span) AS raw_running
 	      FROM sessions GROUP BY line_id, ts_value
 	)
+	-- PLANNED DOWNTIME (regression fix 2026-09-28). This pass is the single writer
+	-- of a line-lead row and used to hard-code planned_downtime = 0 and
+	-- available_time = the whole bucket, discarding the planned stops the events
+	-- step had just classified. Since CPACK moved onto line-lead (~2026-08-31)
+	-- every planned stop counted as downtime and line OEE ran 10-50 pct low vs
+	-- legacy. Planned time is the overlap of the LINE's planned events with the
+	-- bucket. An event lasts until the NEXT event starts (legacy semantics);
+	-- ts_end is only a fallback because the closer can truncate it.
+	, planned_ev AS MATERIALIZED (
+	    SELECT ee.id_equipment, ee.ts_event, ee.ts_eff_end
+	      FROM (
+	        SELECT x.id_equipment, x.ts_event, x.planned_downtime, x.change_over,
+	               LEAST(COALESCE(lead(x.ts_event) OVER (PARTITION BY x.id_equipment ORDER BY x.ts_event),
+	                              x.ts_end, now()), now()) AS ts_eff_end
+	          FROM %[1]s.equipment_events x
+	         WHERE x.id_equipment IN (SELECT line_id FROM lines)
+	           AND x.ts_event >= (SELECT min(ts_value) FROM lines) - interval '10 days'
+	           AND x.ts_event < now()
+	      ) ee
+	     WHERE ` + plannedPredToken + `
+	), planned AS (
+	    SELECT l.line_id, l.ts_value,
+	           LEAST(COALESCE(sum(extract(epoch FROM (LEAST(p.ts_eff_end, l.bend) - GREATEST(p.ts_event, l.ts_value)))), 0), l.ts_total) AS ts_planned
+	      FROM lines l
+	      JOIN planned_ev p ON p.id_equipment = l.line_id AND p.ts_event < l.bend AND p.ts_eff_end > l.ts_value
+	     GROUP BY l.line_id, l.ts_value, l.ts_total
+	), lines_p AS (
+	    -- ts_avail = planned production time (bucket minus planned stops): the
+	    -- Availability denominator and the ideal-production basis, as in legacy.
+	    SELECT l.*, COALESCE(p.ts_planned, 0) AS ts_planned,
+	           l.ts_total - COALESCE(p.ts_planned, 0) AS ts_avail
+	      FROM lines l
+	      LEFT JOIN planned p ON p.line_id = l.line_id AND p.ts_value = l.ts_value
+	)
+
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
 	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),
-	       available_time   = l.ts_total,
-	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_total),
-	       stopped_time     = l.ts_total - LEAST(COALESCE(a.raw_running, 0), l.ts_total),
-	       planned_downtime = 0,
-	       downtime         = l.ts_total - LEAST(COALESCE(a.raw_running, 0), l.ts_total),
+	       available_time   = l.ts_avail,
+	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
+	       stopped_time     = l.ts_avail - LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
+	       planned_downtime = l.ts_planned,
+	       downtime         = l.ts_avail - LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
 	       changeover_time  = 0,
 	       ideal_speed      = COALESCE(l.lead_ideal, e.ideal_speed, 0),
-	       ideal_production = COALESCE((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
+	       ideal_production = COALESCE((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
 	       recalc_needed    = false,
 	       -- ADR-0037 *_oee_bounds clamp (#663): counter-only line throughput can
 	       -- exceed the rated-speed estimate → net/ideal > 1 violates the CHECK.
 	       -- Clamp each served factor; no-op on in-range data. oee_p is left to
 	       -- hourOeePSQL (itself clamped) off the just-cleared rows.
-	       oee   = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_total / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
-	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_total) / NULLIF(l.ts_total, 0), 0), 1), 0),
+	       oee   = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_avail) / NULLIF(l.ts_avail, 0), 0), 1), 0),
 	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 1), 0)
-	  FROM lines l
+	  FROM lines_p l
 	  LEFT JOIN reconciled r ON r.line_id = l.line_id AND r.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
 	 WHERE e.id_equipment = l.line_id AND e.ts_value = l.ts_value
@@ -386,5 +458,14 @@ const hourLineLeadSQL = `
 // Shift/Hour *ForParity sets (those diff against the prod engine, which has no
 // line-from-lead pass). The golden test drives these against a hand-built
 // line-metered fixture.
-func ShiftLineLeadSQLForParity() string { return shiftLineLeadSQL }
-func HourLineLeadSQLForParity() string  { return hourLineLeadSQL }
+func ShiftLineLeadSQLForParity() string { return withPlannedPred(shiftLineLeadSQL, false) }
+func HourLineLeadSQLForParity() string  { return withPlannedPred(hourLineLeadSQL, false) }
+
+// plannedPredToken marks where the planned-downtime classification predicate
+// goes (plannedDowntimeExpr, flag-dependent). A text token rather than a new
+// fmt verb so every caller keeps its argument list.
+const plannedPredToken = "/*PLANNED_PRED*/"
+
+func withPlannedPred(sql string, changeoverAvailability bool) string {
+	return strings.Replace(sql, plannedPredToken, plannedDowntimeExpr(changeoverAvailability), 1)
+}
