@@ -375,7 +375,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(shiftLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+			fmtRD(withPlannedPred(shiftLineLeadSQL, changeoverAvailability), d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
 	// count-active time for opted-in equipment where the state stream had gaps.

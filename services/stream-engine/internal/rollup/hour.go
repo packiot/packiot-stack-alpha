@@ -390,7 +390,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(hourLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+			fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-2: availability count-floor (see shift.go). Inert when off.
 	if ca.engagedFloor() {
