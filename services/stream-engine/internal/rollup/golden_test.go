@@ -29,6 +29,7 @@ const goldenSchema = `
 	    id_equipment int NOT NULL,
 	    status int NOT NULL,
 	    ts_start timestamptz NOT NULL,
+	    ts_end timestamptz,
 	    recalc_needed boolean NOT NULL DEFAULT false,
 	    gross_production double precision,
 	    net_production double precision,

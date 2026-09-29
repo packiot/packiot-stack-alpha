@@ -290,9 +290,9 @@ func retireDLQ(ctx context.Context, dst *pgxpool.Pool, id int64, cap int) error 
 func FetchUserLogByID(ctx context.Context, legacy *pgxpool.Pool, srcEnterprise int, id int64) (*UserLog, bool, error) {
 	var u UserLog
 	err := legacy.QueryRow(ctx,
-		`SELECT id_user_logs, category, COALESCE(id_equipment,0), payload
+		`SELECT id_user_logs, category, COALESCE(id_equipment,0), payload, COALESCE(ts_log, 'epoch'::timestamptz)
 		   FROM user_logs WHERE id_user_logs = $1 AND id_enterprise = $2`,
-		id, srcEnterprise).Scan(&u.ID, &u.Category, &u.IDEquipment, &u.Payload)
+		id, srcEnterprise).Scan(&u.ID, &u.Category, &u.IDEquipment, &u.Payload, &u.TsLog)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}

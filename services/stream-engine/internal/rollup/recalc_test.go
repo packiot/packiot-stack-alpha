@@ -31,8 +31,13 @@ func TestReflagSemantics(t *testing.T) {
 	if !strings.Contains(reflagRunningSQL, "status = 2") {
 		t.Error("running POs must re-enqueue every pass")
 	}
-	if !strings.Contains(reflagRecentSQL, "interval '48 hours'") || !strings.Contains(reflagRecentSQL, "status = 3") {
+	if !strings.Contains(reflagRecentSQL, "interval '48 hours'") || !strings.Contains(reflagRecentSQL, "status IN (3, 4)") {
 		t.Error("finished POs must keep refreshing for 48h")
+	}
+	// The 48 h tail is keyed on the END (2026-09-29): keyed on ts_start, a PO that ran
+	// longer than 48 h was never re-summed after it closed.
+	if !strings.Contains(reflagRecentSQL, "COALESCE(ts_end, ts_start) >= now() - interval '48 hours'") {
+		t.Error("the finished-PO tail must be keyed on ts_end")
 	}
 }
 
