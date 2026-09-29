@@ -89,14 +89,23 @@ fi
 
 mkdir -p "$DUMP_DIR"
 LOCAL_DUMP="$DUMP_DIR/restore-${DB}-$(date +%s).dump.gz"
-trap 'rm -f "$LOCAL_DUMP"' EXIT
+trap 'rm -f "$LOCAL_DUMP" "$DUMP_DIR/restore-${DB}.toc"' EXIT
 log "Downloading $S3_URI → $LOCAL_DUMP"
 aws s3 cp "$S3_URI" "$LOCAL_DUMP" --region "$AWS_REGION" --no-progress
 gzip -t "$LOCAL_DUMP" || { log "ERROR: dump is not a valid gzip"; exit 1; }
 
+# SIGPIPE traps (both hit in the 2026-09-29 drill): `pg_restore --list` reads only
+# the TOC at the head of the dump and exits, and `grep -q` exits at the first match;
+# either way gunzip upstream dies of SIGPIPE and, under pipefail, the pipeline
+# "fails" — once TimescaleDB went undetected (no pre_restore → hypertable COPY
+# errors), once `set -e` killed the script silently. So: the upstream gunzip is
+# allowed to die, pg_restore's status still counts, the TOC must be non-empty,
+# and the grep reads a file.
+TOC="$DUMP_DIR/restore-${DB}.toc"
+{ gunzip -c "$LOCAL_DUMP" 2>/dev/null || true; } | docker exec -i "$POSTGRES_CONTAINER" pg_restore --list > "$TOC"
+[ -s "$TOC" ] || { log "ERROR: could not read the dump's table of contents"; exit 1; }
 IS_TSDB=0
-gunzip -c "$LOCAL_DUMP" | docker exec -i "$POSTGRES_CONTAINER" pg_restore --list 2>/dev/null \
-    | grep -q 'EXTENSION - timescaledb' && IS_TSDB=1
+grep -q 'EXTENSION - timescaledb' "$TOC" && IS_TSDB=1
 log "TimescaleDB dump: $IS_TSDB"
 
 log "Creating side database $SIDE"
@@ -171,7 +180,10 @@ POST-RESTORE CHECKLIST:
      Check the RLS fence: views owned by a non-superuser should be > 0:
        SELECT count(*) FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner
         WHERE c.relkind='v' AND NOT r.rolsuper;
-  2. pg_cron: SELECT * FROM cron.job;  (restart the container if jobs don't fire)
+  2. RESTART the postgres container: TimescaleDB (compression / retention / cagg
+     jobs) and pg_cron background workers stay bound to the renamed database
+     until then (Postgres warns "manually restart any running background workers").
+       docker restart $POSTGRES_CONTAINER   then: SELECT * FROM timescaledb_information.job_stats;
   3. Watch stream-engine / edge-api / read-api logs for reconnection errors.
   4. When satisfied: DROP DATABASE "$OLD";
 EOF
