@@ -62,7 +62,12 @@ prometheus.exporter.unix "host" {
   rootfs_path = "/host/root"
   procfs_path = "/host/proc"
   sysfs_path  = "/host/sys"
-  set_collectors = ["filesystem", "cpu", "meminfo", "loadavg", "diskstats", "netdev", "uname"]
+  set_collectors = ["filesystem", "cpu", "meminfo", "loadavg", "diskstats", "netdev", "uname", "textfile"]
+  // Nightly pg_dump results (terraform/staging/scripts/backup-db.sh writes
+  // backup_<db>.prom there) → BackupStale / BackupShrank alerts.
+  textfile {
+    directory = "/host/root/var/lib/packiot-backup/metrics"
+  }
   filesystem {
     fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs|vfat)$"
     mount_points_exclude = "^/(dev|proc|sys|run|var/lib/docker/.+)($|/)"

@@ -261,10 +261,13 @@ BEGIN
     FROM gold.production_orders_runtime x JOIN core.production_orders p USING (id_production_order)
    WHERE p.id_enterprise = p_src;
   -- fast swap
-  DELETE FROM gold.po_box_counter b USING core.production_orders p
-   WHERE b.id_production_order = p.id_production_order AND p.id_enterprise = p_dst;
-  DELETE FROM bronze.box_scans b USING core.production_orders p
-   WHERE b.id_production_order = p.id_production_order AND p.id_enterprise = p_dst;
+  -- Children are wiped by THEIR OWN tenant column, not by joining the parent PO:
+  -- this runs with FK triggers off (replica), so a counter/scan whose PO is already
+  -- gone can't be reached through the join and survives as an orphan. Four such
+  -- po_box_counter orphans made every pg_restore of packiot_analytics fail its
+  -- fk_po_box_counter_production_order (found by the 2026-09-29 restore drill).
+  DELETE FROM gold.po_box_counter WHERE id_enterprise = p_dst;
+  DELETE FROM bronze.box_scans    WHERE id_enterprise = p_dst;
   DELETE FROM gold.production_orders_runtime r USING core.equipments e
    WHERE r.id_equipment = e.id_equipment AND e.id_enterprise = p_dst;
   DELETE FROM core.production_orders WHERE id_enterprise = p_dst;
