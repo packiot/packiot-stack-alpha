@@ -52,6 +52,52 @@ export function parseVarLines(
   return out;
 }
 
+/**
+ * The equipment's local segment: its topic minus the tenant canonical prefix —
+ * exactly what the generator (clientdescriptor.resolveDerived) prepends to EVERY
+ * var and emit leaf (`seg + leaf`).
+ */
+export function localSegment(topic: string, prefix: string | undefined): string {
+  if (prefix && topic.startsWith(prefix)) return topic.slice(prefix.length);
+  return topic;
+}
+
+/**
+ * Vars must be RELATIVE to the equipment (`/Admin/ProdProcessedCount/{idx}/Unit`):
+ * the generator always resolves `segment + var`. A var typed as the full path
+ * (`/LINHAS/L01/S1/Admin/…`, what the old placeholder taught) resolved to
+ * `/LINHAS/L01/S1/LINHAS/L01/S1/Admin/…` and the rule silently never fired. Strip
+ * the equipment's own segment when present; report vars pointing at a DIFFERENT
+ * equipment (cross-equipment vars aren't resolvable on this path).
+ */
+export function relativizeVars(
+  vars: Record<string, string>,
+  segment: string,
+): { vars: Record<string, string>; stripped: string[] } | { error: string } {
+  const out: Record<string, string> = {};
+  const stripped: string[] = [];
+  for (const [name, leaf] of Object.entries(vars)) {
+    if (segment && leaf.startsWith(`${segment}/`)) {
+      out[name] = leaf.slice(segment.length);
+      stripped.push(name);
+    } else if (!leaf.startsWith("/Admin/") && !leaf.startsWith("/Status/") && leaf.split("/").length > 5) {
+      return {
+        error: `"${name}" (${leaf}) looks like another equipment's tag — a rule can only read tags of the equipment it is on; put the rule on that equipment or use the line's plc type derive.`,
+      };
+    } else {
+      out[name] = leaf;
+    }
+  }
+  return { vars: out, stripped };
+}
+
+/** The exact arriving metrics an expr rule waits for (for the simulate hint). */
+export function ruleInputs(rule: DescriptorDerived, segment: string, idx: number | undefined): string[] {
+  return Object.values(rule.expr?.vars ?? {}).map(
+    (leaf) => segment + (idx != null ? leaf.replaceAll("{idx}", String(idx)) : leaf),
+  );
+}
+
 /** Build the DescriptorDerived `expr` rule from op-builder inputs. */
 export function buildDeriveRule(
   role: DeriveRole,

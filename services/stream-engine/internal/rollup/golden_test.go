@@ -224,6 +224,22 @@ const grainGoldenFixture = `
 	INSERT INTO golden.equipment_values VALUES (21, now() - interval '3 hours', 120);
 	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
 	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);
+	-- THE BOUNDED-LOCF CASE (2026-09-28): eq 29 is eq 21 with its only 30701 report
+	-- 10 DAYS old and a configured production_speed of 90. The look-back is bounded
+	-- to 7 days (unbounded, it scanned the whole retained history per minute), so the
+	-- stale 120 is NOT carried forward and ideal_speed falls back to 90.
+	INSERT INTO golden.equipments VALUES (29,1,1,35,3,90);
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (29, date_trunc('hour', now()), date_trunc('day', now()), true);
+	INSERT INTO golden.equipment_categorical_1hour
+	    (id_equipment, ts_value, ts_value_production, state, sum_speed, net_production_incr, gross_production_incr)
+	VALUES (29, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
+	INSERT INTO golden.equipment_categorical_1min
+	    (id_equipment, ts_value, state, sum_speed, ideal_production_speed)
+	VALUES (29, date_trunc('hour', now()), 6, 40, NULL);
+	INSERT INTO golden.equipment_values VALUES (29, now() - interval '10 days', 120);
+	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
+	VALUES (29, date_trunc('hour', now()), NULL, 6, false, false);
 	-- THE TRAILING-OPEN-EVENT CASE (CPACK status_type=0, ADR trailing-event fix).
 	-- eq 22 is an idle line whose telemetry stopped 2h ago (its last 1-hour cagg
 	-- bucket is at now()-2h) but still carries a TRAILING open RUNNING event
@@ -338,6 +354,17 @@ func TestGoldenGrains(t *testing.T) {
 	}
 	if oee21 <= 0 {
 		t.Errorf("line oee: %v (must be > 0 — net 45 against LOCF'd ideal)", oee21)
+	}
+
+	// THE BOUNDED-LOCF SEMANTIC (eq 29): a 10-day-old 30701 report is outside the
+	// 7-day look-back, so ideal_speed falls back to production_speed (90), not 120.
+	var ideal29 float64
+	if err := pool.QueryRow(ctx, `SELECT ideal_speed FROM golden.equipment_oee_hourly
+	    WHERE id_equipment=29 AND ts_value=date_trunc('hour', now())`).Scan(&ideal29); err != nil {
+		t.Fatal(err)
+	}
+	if ideal29 != 90 {
+		t.Errorf("bounded LOCF ideal_speed: %v (want 90 = production_speed; the 10-day-old 120 is out of the 7-day look-back)", ideal29)
 	}
 
 	// THE TRAILING-OPEN-EVENT SEMANTIC (eq 22): the idle line's last telemetry was
@@ -474,8 +501,9 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 		}
 		seen++
 		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
-			if v < 0 || v > 1 {
-				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			// Uncapped since 2026-09-29: every factor >= 0, only availability <= 1.
+			if v < 0 || (name == "oee_a" && v > 1) {
+				t.Errorf("eq %d: %s=%v out of range (>=0; oee_a <= 1)", id, name, v)
 			}
 		}
 		// THE IDENTITY: oee is the product of the three factors (last step). Tolerance
@@ -563,8 +591,9 @@ func TestGoldenDayOeeReconcile(t *testing.T) {
 			t.Fatal(err)
 		}
 		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
-			if v < 0 || v > 1 {
-				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			// Uncapped since 2026-09-29: every factor >= 0, only availability <= 1.
+			if v < 0 || (name == "oee_a" && v > 1) {
+				t.Errorf("eq %d: %s=%v out of range (>=0; oee_a <= 1)", id, name, v)
 			}
 		}
 		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 { // identity (last step)

@@ -79,7 +79,10 @@ const (
 )
 
 // clampNegCols is the non-negative count/duration set clamped on every equipment
-// grain (GREATEST(x,0)). All are present on all five equipment_runtime_* tables
+// grain (GREATEST(x,0)). SCRAP IS NOT IN IT since 2026-09-29: scrap = gross - net
+// is SIGNED — a negative hour is units in transit between the infeed and outfeed
+// sensors (a fact), and flooring it inflated scrap over every period. The history
+// below explains why scrap used to be here. All are present on all five equipment_runtime_* tables
 // (dq.go reads them from each; the entity/grain sum-lists write them).
 //
 // `scrap` is IN this set (a non-negative count), NOT enforced as scrap==gross-net.
@@ -94,7 +97,7 @@ const (
 // still enforced by the oee_q [0,1] clamp (oee_q=net/gross capped at 1) and the
 // raw net>gross condition stays visible via RunDQScan's NET_GT_GROSS detector.
 var clampNegCols = []string{
-	"gross", "net", "scrap", "available_time", "running_time", "stopped_time",
+	"gross", "net", "available_time", "running_time", "stopped_time",
 	"planned_downtime", "downtime", "changeover_time", "idle_time",
 	"idle_starved", "idle_blocked", "ideal_production",
 }
@@ -104,8 +107,17 @@ var clampNegCols = []string{
 // row "not metered", and the clamp must keep that NULL (a NULL is not a violation).
 var silverFactorCols = []string{"oee", "oee_a", "oee_p", "oee_q"}
 
-// factorClamp is the in-bounds form of a factor column: LEAST(GREATEST(x,0),1).
-func factorClamp(a, c string) string { return fmt.Sprintf("LEAST(GREATEST(%s.%s, 0), 1)", a, c) }
+// factorClamp is the in-bounds form of a factor column. Since 2026-09-29 only the
+// LOWER bound is enforced (a negative ratio is not a measurement): P > 1 means the
+// configured ideal speed is too low and hourly Q > 1 means units in transit — the
+// data keeps them and the UI decides how to show them. AVAILABILITY keeps [0,1]
+// (running time cannot exceed the available time; *_oee_bounds still enforces it).
+func factorClamp(a, c string) string {
+	if c == "oee_a" {
+		return fmt.Sprintf("LEAST(GREATEST(%s.%s, 0), 1)", a, c)
+	}
+	return fmt.Sprintf("GREATEST(%s.%s, 0)", a, c)
+}
 
 // silverNegLeast is LEAST over the non-negative set — the most-negative observed
 // value recorded on the NEGATIVE event (mirrors dq.go's minNeg semantics).
@@ -139,10 +151,12 @@ func silverPredicates(a string) (factors []string, negs []string, netGtGross str
 	for i, c := range clampNegCols {
 		negs[i] = fmt.Sprintf("%s.%s < 0", a, c)
 	}
-	// net>gross: the clamp lowers net to gross, so this is both the detect
-	// predicate and the "clamp would change net" idempotency test (after net=gross
-	// it is false → the row is never re-selected).
-	netGtGross = fmt.Sprintf("%[1]s.net > %[1]s.gross", a)
+	// net>gross is NO LONGER clamped (2026-09-29): lowering net to gross threw away
+	// real good output (transit within an hour; an undercounting infeed meter over a
+	// shift). The predicate stays in the SQL shape as a constant false so the
+	// detect/clamp statements keep their structure; RunDQScan's NET_GT_GROSS still
+	// DETECTS the condition without changing anything.
+	netGtGross = "false"
 	return factors, negs, netGtGross
 }
 
@@ -207,16 +221,6 @@ func silverClampSQL(goldSchema, table string) string {
 		sets = append(sets, fmt.Sprintf("%[1]s = CASE WHEN r.%[1]s IS NULL THEN NULL ELSE %[2]s END", c, factorClamp("r", c)))
 	}
 	for _, c := range clampNegCols {
-		if c == "net" {
-			// net carries BOTH invariants: non-negative AND net ≤ gross. One SET
-			// clause per column, so fold them: GREATEST(LEAST(net,gross),0). All
-			// terms read the OLD row (a single UPDATE), so gross here is pre-clamp;
-			// if gross itself is negative its own GREATEST(gross,0) drives net to 0
-			// too, keeping net ≤ gross. Idempotent: once net ≤ gross and ≥ 0 this is
-			// a fixed point.
-			sets = append(sets, "net = GREATEST(LEAST(r.net, r.gross), 0)")
-			continue
-		}
 		sets = append(sets, fmt.Sprintf("%[1]s = GREATEST(r.%[1]s, 0)", c))
 	}
 	set := "\n\t       " + strings.Join(sets, ",\n\t       ")

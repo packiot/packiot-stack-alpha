@@ -1,8 +1,9 @@
-import { Braces, Loader2, Plus, Rocket, Save, Wrench } from "lucide-react";
+import { Braces, Info, Loader2, Plus, Save, Wrench } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   classifyOnboardingError,
+  isStaleSave,
   onboardingApi,
   type ClientDescriptor,
   type SimulateResponse,
@@ -17,8 +18,11 @@ import {
   buildDeriveRule,
   listDeriveRules,
   parseSamples,
+  localSegment,
   parseVarLines,
+  relativizeVars,
   removeDeriveRule,
+  ruleInputs,
   ROLE_LABEL,
   type DeriveRole,
 } from "@/lib/derive-rules";
@@ -30,15 +34,19 @@ type LoadState = "loading" | "ready" | "none" | "error";
  * declarative `expr` derive rules on an ALREADY-onboarded client (the same
  * op-builder that lives in the onboarding wizard's Review step, but for a live
  * tenant's stored descriptor). Load → add/remove rules → Simulate against sample
- * tags → Save (optionally regenerate to deploy). Tier-2 (arbitrary Node-RED
- * logic) is the embedded editor on the Box Ops page.
+ * tags → Save. Tier-2 (arbitrary Node-RED logic) is the Node-RED page.
+ *
+ * Save is FIELD-SCOPED (only equipment[].derived that changed) and a
+ * compare-and-swap on the loaded version — see onboardingApi.updateCustomizations.
  */
 export function CustomizationsPage() {
   const enterprise = useEnterpriseStore((s) => s.selected)!;
   const idEnterprise = enterprise.id_enterprise;
 
   const [state, setState] = useState<LoadState>("loading");
-  const [tenantCode, setTenantCode] = useState<string>("");
+  const [version, setVersion] = useState(0);
+  // The descriptor as loaded — the baseline a save diffs against.
+  const [baseline, setBaseline] = useState<ClientDescriptor | null>(null);
   const [descriptor, setDescriptor] = useState<ClientDescriptor | null>(null);
   const [dirty, setDirty] = useState(false);
 
@@ -71,7 +79,8 @@ export function CustomizationsPage() {
       for (const e of eq as Array<{ id_equipment: number; cd_equipment?: string }>)
         m.set(e.id_equipment, e.cd_equipment ?? "");
       setNameById(m);
-      setTenantCode(row.tenant_code);
+      setVersion(row.version);
+      setBaseline(row.descriptor ?? {});
       setDescriptor(row.descriptor ?? {});
       setState("ready");
     } catch (err) {
@@ -138,7 +147,15 @@ export function CustomizationsPage() {
       return;
     }
     const id = deriveTarget;
-    const rule = buildDeriveRule(deriveRole, deriveExpr.trim(), vars);
+    const seg = localSegment(topicById.get(id) ?? "", descriptor.canonical?.prefix);
+    const rel = relativizeVars(vars, seg);
+    if ("error" in rel) {
+      toast.error(rel.error);
+      return;
+    }
+    if (rel.stripped.length)
+      toast.message(`Made ${rel.stripped.join(", ")} relative to the equipment (${seg}).`);
+    const rule = buildDeriveRule(deriveRole, deriveExpr.trim(), rel.vars);
     const tp = pickable.find((p) => p.id === id)?.tp;
     setDescriptor((prev) =>
       prev ? addDeriveRule(prev, id, topicById.get(id) ?? "", tp, rule) : prev,
@@ -175,20 +192,32 @@ export function CustomizationsPage() {
     }
   }
 
-  async function save(regenerate: boolean) {
-    if (!descriptor) return;
+  async function save() {
+    if (!descriptor || !baseline) return;
+    // Send ONLY the equipment whose rule list changed, so a concurrent edit to
+    // another equipment (or any non-rule key) is never overwritten.
+    const before = new Map((baseline.equipment ?? []).map((e) => [e.id_equipment, JSON.stringify(e.derived ?? [])]));
+    const derived = (descriptor.equipment ?? [])
+      .filter((e) => e.id_equipment != null && before.get(e.id_equipment) !== JSON.stringify(e.derived ?? []))
+      .map((e) => ({ id_equipment: e.id_equipment!, derived: e.derived ?? [] }));
+    if (derived.length === 0) {
+      setDirty(false);
+      return;
+    }
     setSaving(true);
     try {
-      await onboardingApi.upsertDescriptor(tenantCode, descriptor);
-      if (regenerate) {
-        await onboardingApi.generate();
-        toast.success("Saved + regenerated — the new config will deploy to the box.");
-      } else {
-        toast.success("Customizations saved to the descriptor.");
-      }
+      const row = await onboardingApi.updateCustomizations(version, { derived });
+      setVersion(row.version);
+      setBaseline(row.descriptor);
+      setDescriptor(row.descriptor);
+      toast.success(`Derive rules saved (descriptor v${row.version}).`);
       setDirty(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Save failed");
+      if (isStaleSave(e)) {
+        toast.error("Someone saved this descriptor after you loaded it — reload, then re-add your rule.");
+      } else {
+        toast.error(e instanceof Error ? e.message : "Save failed");
+      }
     } finally {
       setSaving(false);
     }
@@ -198,7 +227,7 @@ export function CustomizationsPage() {
     <div className="mx-auto max-w-4xl">
       <PageHeader
         title="Customizations"
-        subtitle={`Author declarative derive rules (Tier 1) for ${enterprise.name}. For arbitrary Node-RED logic (Tier 2), use the embedded editor on Box Ops.`}
+        subtitle={`Author declarative derive rules (Tier 1) for ${enterprise.name}. For arbitrary Node-RED logic (Tier 2), use the Node-RED page.`}
       />
 
       {state === "loading" ? (
@@ -254,7 +283,7 @@ export function CustomizationsPage() {
                     </span>
                     <button
                       type="button"
-                      className="text-destructive hover:underline"
+                      className="text-danger hover:underline"
                       onClick={() => onRemoveRule(r.id, r.idx)}
                     >
                       remove
@@ -312,12 +341,13 @@ export function CustomizationsPage() {
             </label>
             <label className="mt-3 block text-[13px]">
               <span className="mb-1 block font-semibold text-foreground">
-                Variables — one <code className="font-mono">name = /arriving/suffix</code> per line
+                Variables — one <code className="font-mono">name = /Admin/…/Unit</code> per line, relative to the
+                equipment (<code className="font-mono">{"{idx}"}</code> = its count index)
               </span>
               <textarea
                 className="h-24 w-full rounded-md border border-border bg-background p-3 font-mono text-[12px]"
                 spellCheck={false}
-                placeholder={`gross = /LINHAS/L01/S1INFEED/Admin/ProdProcessedCount/101/Unit\nnet = /LINHAS/L01/S6OUTPUT/Admin/ProdProcessedCount/106/Unit`}
+                placeholder={`gross = /Admin/ProdProcessedCount/{idx}/Unit\nnet = /Admin/ProdCount/{idx}/Unit`}
                 value={deriveVarsText}
                 onChange={(e) => setDeriveVarsText(e.target.value)}
               />
@@ -392,10 +422,16 @@ export function CustomizationsPage() {
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-[13px] text-muted-foreground">
-                      No tags produced — an expr may still be waiting for all its inputs
-                      (feed every referenced tag at least once).
-                    </p>
+                    <div className="text-[13px] text-muted-foreground">
+                      <p>No tags produced — every rule waits until each of its inputs has arrived once. Expected inputs:</p>
+                      <ul className="mt-1 space-y-0.5 font-mono text-[11px]">
+                        {rules.flatMap((r) => {
+                          const eq = descriptor?.equipment?.find((e) => e.id_equipment === r.id);
+                          const seg = localSegment(eq?.topic ?? "", descriptor?.canonical?.prefix);
+                          return ruleInputs(r.rule, seg, eq?.count_index?.value).map((m) => <li key={`${r.id}:${r.idx}:${m}`}>{m}</li>);
+                        })}
+                      </ul>
+                    </div>
                   )}
                 </div>
               </div>
@@ -403,20 +439,26 @@ export function CustomizationsPage() {
           </Card>
 
           {/* ── save ── */}
-          <div className="mb-8 flex items-center gap-3">
-            <Button onClick={() => void save(false)} disabled={saving || !dirty}>
+          <div className="mb-4 flex items-center gap-3">
+            <Button onClick={() => void save()} disabled={saving || !dirty}>
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
               Save
             </Button>
-            <Button variant="ghost" onClick={() => void save(true)} disabled={saving || !dirty}>
-              <Rocket className="mr-2 h-4 w-4" />
-              Save &amp; regenerate
-            </Button>
             <span className="text-[12px] text-muted-foreground">
-              {dirty ? "Unsaved changes." : "All changes saved."} Regenerate rebuilds
-              the bundle so the rules deploy to the box.
+              {dirty ? "Unsaved changes." : `All changes saved (v${version}).`}
             </span>
           </div>
+          <Card className="mb-8 flex gap-3 px-5 py-4 text-[12px] text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              <span className="font-semibold text-foreground">Where these rules run.</span> Saving stores them
+              on the descriptor (the onboarding status is untouched). They take effect only in an
+              agent built from this descriptor&apos;s generated profile — today, a client-edge bundle
+              (the &ldquo;Generate client bundle&rdquo; workflow → edge deploy). The shared cloud agent does{" "}
+              <span className="font-semibold">not</span> run derive rules yet, and Box Ops deploys do not
+              ship the profile. Simulate shows what the rules would produce.
+            </p>
+          </Card>
         </>
       )}
     </div>

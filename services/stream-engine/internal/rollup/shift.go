@@ -113,6 +113,20 @@ const shiftValuesSQL = `
 	            WHERE ev.id_equipment = ca.id_equipment
 	              AND ev.ts_value < ca.ts_value + interval '1 hour'
 	              AND ev.ideal_production_speed IS NOT NULL
+	              -- Bounded look-back (2026-09-28). Unbounded, this walked the whole
+	              -- retained history (compressed chunks) whenever no value existed —
+	              -- per minute per row. Measured live: NO equipment has ever reported a
+	              -- non-null ideal_production_speed here, so every lookup scanned
+	              -- everything and returned NULL (→ production_speed fallback); one
+	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
+	              -- across short silences if 30701 starts arriving.
+	              AND ev.ts_value >= ca.ts_value - interval '7 days'
+	              -- STABLE copy of the bound (2026-09-28): the per-row bound above depends
+	              -- on the outer row, so TimescaleDB cannot exclude chunks at startup and
+	              -- re-checks EVERY chunk per lookup (~40 ms x ~1,100 lookups = 45 s per
+	              -- hour tick, measured). A now()-based bound is applied once at startup.
+	              -- It never narrows the per-row bound: shift rows are at most 30 days old, so row - 7 days >= now() - 37 days.
+	              AND ev.ts_value >= now() - interval '37 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON ca.ideal_production_speed IS NULL
 	     GROUP BY el.id_equipment, el.ts_value
@@ -234,13 +248,13 @@ const shiftEventsUpdateSQL = `
 	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
 	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
-	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp [0,1]
+	       oee = GREATEST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp [0,1]
 	       -- ADR-0037 C: write the OEE waterfall (A×P×Q), not just composite oee.
 	       -- Availability = running / planned-production-time ; Quality = net /
 	       -- gross ; Performance back-solved by shiftOeePSQL so oee = a·p·q
 	       -- (same shape as grains.go / legacy pg engine). Was: A/P/Q all 0.
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0), 0), 1), 0), -- ADR-0037 clamp [0,1] (now INERT: ee_bounded makes ts_planned physical, so A lands in (0,1] not floored to 0); LEAST() denom degrades gracefully
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
@@ -249,7 +263,7 @@ const shiftEventsUpdateSQL = `
 // shift rows the events update just persisted (see hourOeePSQL for rationale).
 const shiftOeePSQL = `
 	UPDATE %[4]s.equipment_oee_shift e
-	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
+	   SET oee_p = GREATEST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`

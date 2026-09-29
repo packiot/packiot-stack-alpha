@@ -305,6 +305,19 @@ export interface ClientDescriptorRow {
   updated_by: string | null;
 }
 
+/** The hub-owned descriptor keys (see onboardingApi.updateCustomizations). */
+export interface CustomizationsPatch {
+  customizations?: NodeRedNode[] | null;
+  oeeProfile?: OeeProfile | null;
+  /** Full derived[] per equipment ([] clears that equipment's rules). */
+  derived?: { id_equipment: number; derived: DescriptorDerived[] }[];
+}
+
+/** 409 from a compare-and-swap save: someone else saved first. */
+export function isStaleSave(err: unknown): boolean {
+  return isAxiosError(err) && err.response?.status === 409;
+}
+
 export interface GenerateResponse {
   tenant: string;
   artifacts: OnboardingArtifacts;
@@ -503,6 +516,23 @@ export const onboardingApi = {
   upsertDescriptor: (tenantCode: string, descriptor: ClientDescriptor) =>
     apiClient
       .post<ClientDescriptorRow>(DESCRIPTOR, { tenantCode, descriptor })
+      .then((r) => r.data),
+
+  /**
+   * PUT /api/onboarding/descriptor/customizations — the hub's FIELD-SCOPED save.
+   * Use this, never upsertDescriptor, from the hub: upsert resets status → draft
+   * and nulls the generated artifacts (a live cutover tenant rolled back that way
+   * on 2026-09-16) and replaces the whole descriptor (lost update). This merges
+   * only the given keys server-side, validates through the generator, and is a
+   * compare-and-swap on `expectedVersion` → 409 when another save landed first.
+   * Absent key = untouched; null / [] = clear.
+   */
+  updateCustomizations: (expectedVersion: number, patch: CustomizationsPatch) =>
+    apiClient
+      .put<ClientDescriptorRow>("/api/onboarding/descriptor/customizations", {
+        expectedVersion,
+        ...patch,
+      })
       .then((r) => r.data),
 
   generate: () =>

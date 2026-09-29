@@ -239,6 +239,28 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "No host metrics from the DB box — alloy-db agent or the 3102 relay is down, so DB disk is unmonitored again"
+      # Nightly logical backups (backup-db.sh, 02:00 UTC). A green systemd unit is not
+      # proof: on 2026-09-28 it had been dumping only the frozen legacy DB for weeks.
+      # Alert on AGE (timer died / every run failing) and on SIZE (dumping the wrong
+      # or an emptied DB). absent() covers "the metric never existed".
+      - alert: BackupStale
+        expr: time() - packiot_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "No successful {{ $labels.db }} backup for {{ $value | humanizeDuration }} — journalctl -u packiot-db-backup on the DB box"
+      - alert: BackupMetricsMissing
+        expr: absent(packiot_backup_last_success_timestamp_seconds{db="packiot_analytics"})
+        for: 30h
+        labels: {severity: warning}
+        annotations:
+          summary: "No backup metrics for packiot_analytics — backup-db.sh not writing /var/lib/packiot-backup/metrics or alloy-db textfile collector off"
+      - alert: BackupShrank
+        expr: packiot_backup_size_bytes < 0.5 * max_over_time(packiot_backup_size_bytes[8d])
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.db }} backup is under half its 8-day max — wrong DB, dropped data, or a truncated dump"
       # Retention catalog (ops.retention_policy, migration t-retention-catalog):
       # live Timescale policies must equal the catalog, and the catalog-driven purge
       # must not be erroring. Drift = someone changed a policy outside the catalog.
