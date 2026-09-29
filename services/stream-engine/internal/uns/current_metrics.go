@@ -136,7 +136,10 @@ const currentMetricsSQL = `
 	    SELECT m.*,
 	           la.ts_value AS updated_at,
 	           ls.state, ls.ts_value AS state_since,
-	           lp.speed
+	           -- A source with counts but NO speed register (CPACK L3's lead L3-BREYER)
+	           -- never has a speed row → the card read 0/min on a producing line.
+	           -- Only then, its count rate over the last 5 minutes stands in (2026-09-29).
+	           COALESCE(lp.speed, lr.rate) AS speed
 	      FROM machines m
 	      JOIN LATERAL (
 	          SELECT v.ts_value FROM %[1]s.equipment_values v
@@ -153,6 +156,12 @@ const currentMetricsSQL = `
 	           WHERE v.id_equipment = m.sig_id AND v.speed IS NOT NULL
 	             AND v.ts_value >= now() - interval '7 days'
 	           ORDER BY v.ts_value DESC LIMIT 1) lp ON true
+	      LEFT JOIN LATERAL (
+	          SELECT greatest(sum(v.gross_production_incr), sum(v.net_production_incr)) / 5.0 AS rate
+	            FROM %[1]s.equipment_values v
+	           WHERE lp.speed IS NULL
+	             AND v.id_equipment = m.sig_id
+	             AND v.ts_value >= now() - interval '5 minutes') lr ON true
 	), open_event AS (
 	    -- keyed by the ENTITY (m.id_equipment) but sourced from the
 	    -- signal equipment's events (m.sig_id) so a line inherits its
