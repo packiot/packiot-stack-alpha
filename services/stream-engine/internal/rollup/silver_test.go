@@ -52,7 +52,10 @@ func TestSilverNetLeGrossClampShape(t *testing.T) {
 	}
 	// Factors keep only the LOWER bound (P>1 = ideal speed too low; hourly Q>1 =
 	// transit) — no LEAST(...,1) anywhere in the factor clamp.
-	if strings.Contains(clamp, ", 1)") {
-		t.Errorf("factor clamp must not cap at 1:\n%s", clamp)
+	if n := strings.Count(clamp, ", 1)"); n != 2 { // oee_a: its SET + its WHERE term
+		t.Errorf("only oee_a may be capped at 1 (want 2 occurrences, got %d):\n%s", n, clamp)
+	}
+	if !strings.Contains(clamp, "oee_a = CASE WHEN r.oee_a IS NULL THEN NULL ELSE LEAST(GREATEST(r.oee_a, 0), 1) END") {
+		t.Errorf("availability must keep its [0,1] clamp:\n%s", clamp)
 	}
 }

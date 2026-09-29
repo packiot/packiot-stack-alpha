@@ -501,8 +501,9 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 		}
 		seen++
 		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
-			if v < 0 || v > 1 {
-				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			// Uncapped since 2026-09-29: every factor >= 0, only availability <= 1.
+			if v < 0 || (name == "oee_a" && v > 1) {
+				t.Errorf("eq %d: %s=%v out of range (>=0; oee_a <= 1)", id, name, v)
 			}
 		}
 		// THE IDENTITY: oee is the product of the three factors (last step). Tolerance
@@ -590,8 +591,9 @@ func TestGoldenDayOeeReconcile(t *testing.T) {
 			t.Fatal(err)
 		}
 		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
-			if v < 0 || v > 1 {
-				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			// Uncapped since 2026-09-29: every factor >= 0, only availability <= 1.
+			if v < 0 || (name == "oee_a" && v > 1) {
+				t.Errorf("eq %d: %s=%v out of range (>=0; oee_a <= 1)", id, name, v)
 			}
 		}
 		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 { // identity (last step)

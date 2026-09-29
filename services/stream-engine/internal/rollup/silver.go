@@ -110,9 +110,14 @@ var silverFactorCols = []string{"oee", "oee_a", "oee_p", "oee_q"}
 // factorClamp is the in-bounds form of a factor column. Since 2026-09-29 only the
 // LOWER bound is enforced (a negative ratio is not a measurement): P > 1 means the
 // configured ideal speed is too low and hourly Q > 1 means units in transit — the
-// data keeps them and the UI decides how to show them. Availability is bounded by
-// its writers (running time is capped at the available time), not here.
-func factorClamp(a, c string) string { return fmt.Sprintf("GREATEST(%s.%s, 0)", a, c) }
+// data keeps them and the UI decides how to show them. AVAILABILITY keeps [0,1]
+// (running time cannot exceed the available time; *_oee_bounds still enforces it).
+func factorClamp(a, c string) string {
+	if c == "oee_a" {
+		return fmt.Sprintf("LEAST(GREATEST(%s.%s, 0), 1)", a, c)
+	}
+	return fmt.Sprintf("GREATEST(%s.%s, 0)", a, c)
+}
 
 // silverNegLeast is LEAST over the non-negative set — the most-negative observed
 // value recorded on the NEGATIVE event (mirrors dq.go's minNeg semantics).
