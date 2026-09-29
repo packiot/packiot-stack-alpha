@@ -9,6 +9,17 @@ last_verified: 2026-09-28
 > **Layer 0 · Start here.** Terms used across the wiki, with a link to where each is
 > explained in depth. Up: [Home](index.md)
 
+## Customizing a client (plain words)
+
+| Term | Meaning | More |
+|---|---|---|
+| **Factory box** | The small computer we install at the client. It reads the PLCs and sends the values to Packiot. | [Setting up a new client](guide/setting-up-a-client.md) |
+| **Data collector** | The program that receives the values from the factory boxes and runs the calculations. "Apply now" restarts it for a few seconds. | [Calculations](guide/customize/calculations.md) |
+| **Lead machine** | The main machine of a line — the one whose counter says what the line produced. | [OEE settings](guide/customize/oee-settings.md) |
+| **Calculation** | A new counter made from existing ones with a formula (e.g. scrap = what went in − good parts). | [Calculations](guide/customize/calculations.md) |
+| **Connection point** | A place on the factory box's PLC reader where a Node-RED flow can receive a copy of the data, or send extra values. | [Node-RED flows](guide/customize/node-red-flows.md) |
+| **Node-RED** | A visual tool where you build logic by connecting boxes ("nodes") with wires. | [Node-RED flows](guide/customize/node-red-flows.md) |
+
 ## Manufacturing and OEE
 
 | Term | Meaning | More |

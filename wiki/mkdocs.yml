@@ -97,71 +97,80 @@ not_in_nav: |
   /adr/**
 
 nav:
-  - Home: index.md
+  - Start here: index.md
+  - Setting up a new client: guide/setting-up-a-client.md
+  - Customizing a client:
+      - guide/customize/index.md
+      - Calculations: guide/customize/calculations.md
+      - OEE settings: guide/customize/oee-settings.md
+      - Node-RED flows: guide/customize/node-red-flows.md
+      - Connecting to an ERP or other systems: guide/customize/connecting-other-systems.md
   - Glossary: glossary.md
-  - "1 · Architecture":
-      - Overview: architecture/overview.md
-      - A counter's journey: architecture/data-journey.md
-      - Domain model: architecture/domain-model.md
-      - Tenancy & security: architecture/tenancy-and-security.md
-      - Environments: architecture/environments.md
-  - "2 · Subsystems":
-      - Edge: subsystems/edge.md
-      - Ingestion: subsystems/ingestion.md
-      - Compute: subsystems/compute.md
-      - Analytics DB: subsystems/analytics-db.md
-      - Historian: subsystems/historian.md
-      - Legacy bridge: subsystems/legacy-bridge.md
-      - Serving & APIs: subsystems/serving-apis.md
-      - Frontends: subsystems/frontends.md
-      - Identity: subsystems/identity.md
-      - Platform & operations: subsystems/platform.md
-  - "3 · Components":
-      - Edge:
-          - PLC readers: components/plc-readers.md
-          - Sparkplug agent: components/sparkplug-agent.md
-          - Edge box: components/edge-box.md
-          - Edge Node-RED: components/edge-node-red.md
-          - Edge session broker: components/edge-session-broker.md
-          - Simulators & twins: components/simulators-and-twins.md
-      - Ingestion & compute:
-          - Brokers: components/brokers.md
-          - sparkplug-decoder: components/sparkplug-decoder.md
-          - ingest-shim & fanout: components/ingest-shim-and-fanout.md
-          - stream-engine: components/stream-engine.md
-          - stream-engine rollup internals: components/stream-engine-rollup-internals.md
-      - Data:
-          - Analytics DB schemas: components/analytics-db-schemas.md
-          - Timescale jobs & retention: components/timescale-jobs-and-retention.md
-          - Historian gateway: components/historian-gateway.md
-          - Superset: components/superset.md
-      - Legacy bridge & APIs:
-          - analytics-sync: components/analytics-sync.md
-          - mirror-worker: components/mirror-worker.md
-          - read-api: components/read-api.md
-          - edge-api: components/edge-api.md
-          - operator-gateway: components/operator-gateway.md
-          - barcode-service: components/barcode-service.md
-      - Frontends & identity:
-          - front4: components/front4.md
-          - Operator app: components/operator-app.md
-          - CS Admin: components/csadmin.md
-          - Customization Hub: components/customize.md
-          - Barcode app: components/barcode-app.md
-          - oauth2-proxy & Cognito: components/oauth2-proxy-and-cognito.md
-      - Platform:
-          - Compose topology: components/compose-topology.md
-          - CI/CD: components/ci-cd.md
-          - Terraform: components/terraform.md
-          - Observability: components/observability.md
-          - Wiki pipeline: components/wiki-pipeline.md
-  - "4 · Reference":
-      - Database reference: reference/database-reference.md
-      - API endpoints: reference/api-endpoints.md
-      - Configuration: reference/configuration.md
-      - ADR index: reference/adr-index.md
-  - "4 · Operations":
-      - Runbooks: operations/runbooks.md
-      - Onboarding a client: operations/onboarding-a-client.md
-      - First-time edge box setup: operations/first-time-box-setup.md
-      - DBA guide: operations/dba-guide.md
+  - For engineers:
+      - for-engineers.md
+      - "1 · Architecture":
+          - Overview: architecture/overview.md
+          - A counter's journey: architecture/data-journey.md
+          - Domain model: architecture/domain-model.md
+          - Tenancy & security: architecture/tenancy-and-security.md
+          - Environments: architecture/environments.md
+      - "2 · Subsystems":
+          - Edge: subsystems/edge.md
+          - Ingestion: subsystems/ingestion.md
+          - Compute: subsystems/compute.md
+          - Analytics DB: subsystems/analytics-db.md
+          - Historian: subsystems/historian.md
+          - Legacy bridge: subsystems/legacy-bridge.md
+          - Serving & APIs: subsystems/serving-apis.md
+          - Frontends: subsystems/frontends.md
+          - Identity: subsystems/identity.md
+          - Platform & operations: subsystems/platform.md
+      - "3 · Components":
+          - Edge:
+              - PLC readers: components/plc-readers.md
+              - Sparkplug agent: components/sparkplug-agent.md
+              - Edge box: components/edge-box.md
+              - Edge Node-RED: components/edge-node-red.md
+              - Edge session broker: components/edge-session-broker.md
+              - Simulators & twins: components/simulators-and-twins.md
+          - Ingestion & compute:
+              - Brokers: components/brokers.md
+              - sparkplug-decoder: components/sparkplug-decoder.md
+              - ingest-shim & fanout: components/ingest-shim-and-fanout.md
+              - stream-engine: components/stream-engine.md
+              - stream-engine rollup internals: components/stream-engine-rollup-internals.md
+          - Data:
+              - Analytics DB schemas: components/analytics-db-schemas.md
+              - Timescale jobs & retention: components/timescale-jobs-and-retention.md
+              - Historian gateway: components/historian-gateway.md
+              - Superset: components/superset.md
+          - Legacy bridge & APIs:
+              - analytics-sync: components/analytics-sync.md
+              - mirror-worker: components/mirror-worker.md
+              - read-api: components/read-api.md
+              - edge-api: components/edge-api.md
+              - operator-gateway: components/operator-gateway.md
+              - barcode-service: components/barcode-service.md
+          - Frontends & identity:
+              - front4: components/front4.md
+              - Operator app: components/operator-app.md
+              - CS Admin: components/csadmin.md
+              - Customization Hub: components/customize.md
+              - Barcode app: components/barcode-app.md
+              - oauth2-proxy & Cognito: components/oauth2-proxy-and-cognito.md
+          - Platform:
+              - Compose topology: components/compose-topology.md
+              - CI/CD: components/ci-cd.md
+              - Terraform: components/terraform.md
+              - Observability: components/observability.md
+              - Wiki pipeline: components/wiki-pipeline.md
+      - "4 · Reference":
+          - Database reference: reference/database-reference.md
+          - API endpoints: reference/api-endpoints.md
+          - Configuration: reference/configuration.md
+          - ADR index: reference/adr-index.md
+      - "4 · Operations":
+          - Runbooks: operations/runbooks.md
+          - Onboarding a client: operations/onboarding-a-client.md
+          - First-time edge box setup: operations/first-time-box-setup.md
+          - DBA guide: operations/dba-guide.md

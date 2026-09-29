@@ -1,72 +1,67 @@
 ---
-title: Packiot engineering wiki
-layer: 0
+title: Start here
+layer: guide
 owner_area: platform
-last_verified: 2026-09-28
+last_verified: 2026-09-29
 ---
-# Packiot engineering wiki
+# Start here
 
-> **Layer 0 · Start here.** What Packiot is, how this wiki is organised, and what to read
-> first for your role.
+> For the **automation team** and **Customer Success**. No programming knowledge needed.
+> Engineers: the technical pages are under [For engineers](for-engineers.md).
 
-## What Packiot is
+## What Packiot does, in five sentences
 
-Packiot is an **industrial IoT / OEE platform** for manufacturing. It reads counters, speed
-and state from the PLCs that run factory machines, turns that raw signal into **OEE**
-(Overall Equipment Effectiveness = Availability × Performance × Quality), and serves it to
-three audiences: plant managers (dashboards and reports), machine operators (the shop-floor
-app where they start production orders and justify downtime) and Packiot's Customer
-Success team (the admin tools that onboard a new factory).
+1. A factory has **machines** grouped into **production lines**, and each machine has a
+   small computer called a **PLC** that counts what goes in and what comes out.
+2. A **factory box** (a small computer we install at the client) reads those counts from the
+   PLCs every few seconds and sends them to the Packiot cloud.
+3. The cloud turns the counts into **OEE**, one number that says how well the factory is
+   running: **Availability × Performance × Quality**.
+4. Plant managers see OEE and its details on dashboards, and operators on the factory floor
+   use a tablet app to start production orders and say why a machine stopped.
+5. Our team sets up each new client once, and then adjusts the numbers to fit how that
+   factory works.
 
-Two platforms exist side by side today:
+## OEE in one example
 
-| | New stack (this repo) | Legacy platform |
+OEE answers: "Of the time we planned to produce, how much did we turn into good parts at full
+speed?" It is three percentages multiplied together.
+
+A line works one **8-hour shift** (480 minutes). Its rated speed is **100 parts per minute**.
+
+| Factor | Question it answers | In this shift | Result |
+|---|---|---|---|
+| **Availability** | Was the line running? | Stopped for 60 min, so it ran 420 of 480 min | 420 ÷ 480 = **87.5 %** |
+| **Performance** | When running, was it at full speed? | In 420 min at 100/min it could make 42,000. It made 37,800 | 37,800 ÷ 42,000 = **90 %** |
+| **Quality** | Were the parts good? | Of 37,800 parts, 36,288 were good (1,512 scrap) | 36,288 ÷ 37,800 = **96 %** |
+| **OEE** | All together | 0.875 × 0.90 × 0.96 | **75.6 %** |
+
+Check: at full speed for the whole shift the line could make 48,000 good parts. It made
+36,288. 36,288 ÷ 48,000 = 75.6 %. Same answer.
+
+!!! tip "If a number looks too high"
+    If Performance shows more than 100 %, the rated speed configured for that line is lower
+    than what the line really does. Packiot shows the real number instead of hiding it at
+    100 %, so you can fix the setting.
+
+## Who uses which app
+
+| App | Who uses it | What for |
 |---|---|---|
-| Where | Staging on AWS EC2 (Docker Compose), historian on S3 | Production (`packiot40`, a.k.a. tsp12) |
-| Compute | Go services (`sparkplug-decoder`, `stream-engine`) | Node-RED `oeecloud` + PostgreSQL triggers/procedures |
-| Storage | TimescaleDB `packiot_analytics` + historian (DuckDB over S3 Parquet) | PostgreSQL + Hasura |
-| Status | Receives real client data (CPACK, Bispharma) in parallel; not yet the system of record for most clients | Serves production clients |
+| **front4** (the dashboards) | Client managers, and our team to check a client | OEE by line, shift, day; downtimes; production; reports |
+| **Operator app** | Machine operators, on a tablet next to the line | Start and finish production orders, give the reason for each stop |
+| **CS Admin** | Customer Success | Set up a new client: factory structure, shifts, PLC connections, the factory box, go live. See [Setting up a new client](guide/setting-up-a-client.md) |
+| **Customize** | The automation team | Adjust a client that is already set up: calculations, Node-RED flows, OEE settings. See [Customizing a client](guide/customize/index.md) |
 
-The legacy platform is the **reference** ("oracle") the new stack is validated against, and
-the source it replicates from during the migration. See
-[Architecture overview](architecture/overview.md#where-the-migration-stands).
+There is also a **barcode app** for factories that scan the boxes they pack.
 
-## How this wiki is layered
+## Where to go next
 
-Each layer answers a different question and links down for detail. You can stop at any
-layer and still have a correct picture.
-
-```text
- Layer 0  Start here           what is it, where do I begin              (this page, glossary)
-    │
- Layer 1  Architecture         how the whole system fits together        architecture/
-    │
- Layer 2  Subsystems           what each part owns, how parts talk       subsystems/
-    │
- Layer 3  Components           how one service works, to the last knob   components/
-    │
- Layer 4  Reference & ops      look it up · do the task                  reference/  operations/
-```
-
-## Reading paths
-
-| You are… | Read, in order |
+| I want to… | Read |
 |---|---|
-| **New engineer** | [Architecture overview](architecture/overview.md) → [A counter's journey](architecture/data-journey.md) → [Domain model](architecture/domain-model.md) → the subsystem you'll work on → its component pages |
-| **Customer Success** | [Domain model](architecture/domain-model.md) → [Onboarding a client](operations/onboarding-a-client.md) → [Edge subsystem](subsystems/edge.md) |
-| **Data / DBA** | [Analytics DB](subsystems/analytics-db.md) → [Database reference](reference/database-reference.md) → [DBA guide](operations/dba-guide.md) → [Historian](subsystems/historian.md) |
-| **On call / ops** | [Environments](architecture/environments.md) → [Platform](subsystems/platform.md) → [Runbooks](operations/runbooks.md) → [Observability](components/observability.md) |
-| **Frontend** | [Frontends](subsystems/frontends.md) → [Identity](subsystems/identity.md) → [Serving & APIs](subsystems/serving-apis.md) → [API endpoints](reference/api-endpoints.md) |
-| **Security review** | [Tenancy & security](architecture/tenancy-and-security.md) → [Identity](subsystems/identity.md) → [edge-api](components/edge-api.md) |
-
-## The map
-
-| Layer 1 · Architecture | Layer 2 · Subsystems |
-|---|---|
-| [Overview](architecture/overview.md) | [Edge](subsystems/edge.md) · [Ingestion](subsystems/ingestion.md) · [Compute](subsystems/compute.md) |
-| [A counter's journey](architecture/data-journey.md) | [Analytics DB](subsystems/analytics-db.md) · [Historian](subsystems/historian.md) · [Legacy bridge](subsystems/legacy-bridge.md) |
-| [Domain model](architecture/domain-model.md) | [Serving & APIs](subsystems/serving-apis.md) · [Frontends](subsystems/frontends.md) · [Identity](subsystems/identity.md) |
-| [Tenancy & security](architecture/tenancy-and-security.md) · [Environments](architecture/environments.md) | [Platform & operations](subsystems/platform.md) |
-
-Terms you don't know are in the [glossary](glossary.md). How to write for this wiki:
-`docs/WIKI-STYLE.md` in the repo.
+| Set up a new client from zero | [Setting up a new client](guide/setting-up-a-client.md) |
+| Make a new value from counters (scrap, line totals) | [Calculations](guide/customize/calculations.md) |
+| Add logic on the factory box (alerts, extra processing) | [Node-RED flows](guide/customize/node-red-flows.md) |
+| Send production data to an ERP, a database or another system | [Connecting to an ERP / other systems](guide/customize/connecting-other-systems.md) |
+| Understand a word | [Glossary](glossary.md) |
+| See how the system is built | [For engineers](for-engineers.md) |

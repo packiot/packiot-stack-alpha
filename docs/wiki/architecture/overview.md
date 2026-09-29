@@ -8,7 +8,7 @@ last_verified: 2026-09-28
 
 > **Layer 1 · Architecture.** The whole Packiot system on one page: the planes, the main
 > data path, the control path, and how the new stack relates to the legacy platform.
-> Up: [Home](../index.md)
+> Up: [For engineers](../for-engineers.md)
 
 ## The system in one picture
 
