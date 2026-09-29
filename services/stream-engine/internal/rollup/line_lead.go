@@ -68,7 +68,7 @@ package rollup
 import "strings"
 
 // shiftLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[7]d=idle timeout secs.
-const shiftLineLeadSQL = `
+var shiftLineLeadSQL = `
 	WITH lines AS (
 	    SELECT el.id_equipment AS line_id, el.ts_value,
 	           LEAST(el.ts_end, now()) AS bend,
@@ -241,16 +241,17 @@ const shiftLineLeadSQL = `
 	-- legacy. Planned time is the overlap of the LINE's planned events with the
 	-- bucket. An event lasts until the NEXT event starts (legacy semantics);
 	-- ts_end is only a fallback because the closer can truncate it.
+	-- The event IN EFFECT at the scan bound is always included (see
+	-- eventsInEffectSQL): an idle line's planned stop that began weeks before
+	-- the batch still covers this bucket.
 	, planned_ev AS MATERIALIZED (
 	    SELECT ee.id_equipment, ee.ts_event, ee.ts_eff_end
 	      FROM (
 	        SELECT x.id_equipment, x.ts_event, x.planned_downtime, x.change_over,
 	               LEAST(COALESCE(lead(x.ts_event) OVER (PARTITION BY x.id_equipment ORDER BY x.ts_event),
 	                              x.ts_end, now()), now()) AS ts_eff_end
-	          FROM %[1]s.equipment_events x
-	         WHERE x.id_equipment IN (SELECT line_id FROM lines)
-	           AND x.ts_event >= (SELECT min(ts_value) FROM lines) - interval '10 days'
-	           AND x.ts_event < now()
+	          FROM ` + eventsInEffectSQL("%[1]s", "SELECT DISTINCT line_id FROM lines",
+	"(SELECT min(ts_value) FROM lines) - interval '10 days'") + ` x
 	      ) ee
 	     WHERE ` + plannedPredToken + `
 	), planned AS (
@@ -302,7 +303,7 @@ const shiftLineLeadSQL = `
 // hourLineLeadSQL — %[1]s=EvSchema, %[2]s=RefSchema, %[3]s=enterprise bigint[] literal, %[7]d=idle timeout secs.
 // Leaves oee_p to hourOeePSQL (runs next off the just-cleared rows), matching hourCountsAvailSQL.
 // Overwrites the events step's availability for these lines, exactly like the shift pass.
-const hourLineLeadSQL = `
+var hourLineLeadSQL = `
 	WITH lines AS (
 	    SELECT el.id_equipment AS line_id, el.ts_value,
 	           LEAST(el.ts_value + interval '1 hour', now()) AS bend,
@@ -444,16 +445,17 @@ const hourLineLeadSQL = `
 	-- legacy. Planned time is the overlap of the LINE's planned events with the
 	-- bucket. An event lasts until the NEXT event starts (legacy semantics);
 	-- ts_end is only a fallback because the closer can truncate it.
+	-- The event IN EFFECT at the scan bound is always included (see
+	-- eventsInEffectSQL): an idle line's planned stop that began weeks before
+	-- the batch still covers this bucket.
 	, planned_ev AS MATERIALIZED (
 	    SELECT ee.id_equipment, ee.ts_event, ee.ts_eff_end
 	      FROM (
 	        SELECT x.id_equipment, x.ts_event, x.planned_downtime, x.change_over,
 	               LEAST(COALESCE(lead(x.ts_event) OVER (PARTITION BY x.id_equipment ORDER BY x.ts_event),
 	                              x.ts_end, now()), now()) AS ts_eff_end
-	          FROM %[1]s.equipment_events x
-	         WHERE x.id_equipment IN (SELECT line_id FROM lines)
-	           AND x.ts_event >= (SELECT min(ts_value) FROM lines) - interval '10 days'
-	           AND x.ts_event < now()
+	          FROM ` + eventsInEffectSQL("%[1]s", "SELECT DISTINCT line_id FROM lines",
+	"(SELECT min(ts_value) FROM lines) - interval '10 days'") + ` x
 	      ) ee
 	     WHERE ` + plannedPredToken + `
 	), planned AS (
@@ -508,6 +510,48 @@ const hourLineLeadSQL = `
 // line-metered fixture.
 func ShiftLineLeadSQLForParity() string { return withPlannedPred(shiftLineLeadSQL, false) }
 func HourLineLeadSQLForParity() string  { return withPlannedPred(hourLineLeadSQL, false) }
+
+// eventsInEffectSQL returns a parenthesized row source over <evSchema>.equipment_events
+// (columns id_equipment, ts_event, ts_end, status, planned_downtime, change_over) for
+// the equipments `ids` selects (one column), holding:
+//
+//   - every event with ts_event in [bound, now())  — the bounded range scan, and
+//   - PER EQUIPMENT, the latest event with ts_event < bound — the event IN EFFECT at
+//     the bound.
+//
+// WHY (2026-09-29). Events are open-ended state markers: one lasts until the NEXT
+// event starts. The passes used to scan only [bound, now()), so a stop that STARTED
+// before the bound and was still running at the bucket was silently dropped — the
+// bucket read as having no event at all. CPACK: DUBUIT1 idle (planned) since 07-27
+// and DUBUIT2 08-01→09-21 were booked as unplanned downtime; SLEEVE2's planned stop
+// from 08-23 disappeared from its shifts exactly 10 days after it began. Adding the
+// one event in effect at the bound restores it; lead(ts_event) over the union still
+// closes that event at the first in-range event, so ts_eff_end is unchanged for every
+// other event.
+//
+// INDEX-FRIENDLY: the seed is a per-equipment LATERAL ORDER BY ts_event DESC LIMIT 1
+// on the (id_equipment, ts_event) primary key — one backward index probe per
+// equipment (TimescaleDB ordered-append walks chunks newest-first and stops at the
+// first hit). The two halves are disjoint (< bound vs >= bound), so UNION ALL is exact.
+// The range half keeps alias `ee` and its original predicate text.
+func eventsInEffectSQL(evSchema, ids, bound string) string {
+	return `(
+	        SELECT ee.id_equipment, ee.ts_event, ee.ts_end, ee.status, ee.planned_downtime, ee.change_over
+	          FROM ` + evSchema + `.equipment_events ee
+	         WHERE ee.id_equipment IN (` + ids + `)
+	           AND ee.ts_event >= ` + bound + ` AND ee.ts_event < now()
+	        UNION ALL
+	        SELECT s.id_equipment, s.ts_event, s.ts_end, s.status, s.planned_downtime, s.change_over
+	          FROM (` + ids + `) AS q (id_equipment)
+	          CROSS JOIN LATERAL (
+	              SELECT p.id_equipment, p.ts_event, p.ts_end, p.status, p.planned_downtime, p.change_over
+	                FROM ` + evSchema + `.equipment_events p
+	               WHERE p.id_equipment = q.id_equipment
+	                 AND p.ts_event < ` + bound + `
+	               ORDER BY p.ts_event DESC
+	               LIMIT 1) s
+	      )`
+}
 
 // plannedPredToken marks where the planned-downtime classification predicate
 // goes (plannedDowntimeExpr, flag-dependent). A text token rather than a new

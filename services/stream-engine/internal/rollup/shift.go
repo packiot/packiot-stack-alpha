@@ -169,7 +169,7 @@ const shiftCascadeAreaSQL = `
 // (plannedDowntimeExpr) — ADR-0037 (c): off = "ee.planned_downtime = true"
 // (prod-verbatim); on = changeover excluded from the planned bucket so it
 // stays inside (ts_total − ts_planned) and depresses Availability.
-const shiftEventsSQL = `
+var shiftEventsSQL = `
 	CREATE TEMP TABLE shift_ev ON COMMIT DROP AS
 	WITH last_seen AS (
 	    -- LAST OBSERVED DATA per equipment (see hour.go) — the physical bound for a
@@ -205,10 +205,11 @@ const shiftEventsSQL = `
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
 	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
-	      FROM %[3]s.equipment_events ee
+	      -- Range scan + the event IN EFFECT at the bound (eventsInEffectSQL): a
+	      -- stop that began before the lookback and still covers the bucket.
+	      FROM ` + eventsInEffectSQL("%[3]s", "SELECT DISTINCT id_equipment FROM shift_elig",
+	"now() - interval '25 days'") + ` ee
 	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
-	     WHERE ee.id_equipment IN (SELECT id_equipment FROM shift_elig)
-	       AND ee.ts_event >= now() - interval '25 days' AND ee.ts_event < now()
 	)
 	SELECT el.id_equipment, el.ts_value, el.ts_end, el.target_customized,
 	       extract(epoch FROM (least(el.ts_end, now()) - el.ts_value)) AS ts_total,
