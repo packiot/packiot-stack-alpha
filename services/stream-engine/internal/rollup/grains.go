@@ -97,12 +97,12 @@ const grainRollupSQL = `
 	       recalc_needed   = false,
 	       -- ADR-0037 output-invariant clamp (#576 extended): bound every served
 	       -- OEE factor to [0,1] (week/month grain summed raw before).
-	       oee   = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1), 0),
+	       oee   = GREATEST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 0),
 	       -- ::float: running_time/total_time are BIGINT here (see grainOeeReconcileSQL);
 	       -- without the cast this is integer division → oee_a collapses to 0 on every
 	       -- producing line (matches entity_grains.go s.running_time::float).
 	       oee_a = GREATEST(LEAST(COALESCE(s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 0),
 	       -- ADR-0036 §5A lineage stamp (T0-2). Folded directly here (grains
 	       -- has no ForParity accessor, so this never reaches the prod
 	       -- comparator). ts_value is DATE → cast; %[4]s is the grain unit
@@ -120,7 +120,7 @@ const grainRollupSQL = `
 // oee_p; the canonical reconcile below is the correctness path.
 const grainOeePSQL = `
 	UPDATE %[1]s.%[2]s e
-	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
+	   SET oee_p = GREATEST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	  FROM (SELECT d.id_equipment, d.ts_value FROM %[1]s.%[2]s d
 	         WHERE d.recalc_needed = false
 	           AND d.ts_value >= now() - interval '1 year') el
@@ -154,11 +154,11 @@ const grainOeePSQL = `
 const grainOeeReconcileSQL = `
 	UPDATE %[1]s.%[2]s e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM (SELECT d.id_equipment, d.ts_value FROM %[1]s.%[2]s d
 	         WHERE d.recalc_needed = false
 	           AND d.ts_value >= now() - interval '1 year') el

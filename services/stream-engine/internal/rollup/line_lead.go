@@ -138,22 +138,21 @@ const shiftLineLeadSQL = `
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount), PER BUCKET. Reconcile whichever
 	    -- pair of the three counters the bucket reports, filling the missing one:
-	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact)
-	    --                when gross >= net; gross < net ⇒ gross = net + scrap (meter undercounts).
+	    --   G+N (+/- S): gross+net present ⇒ take both as measured (S ignored), even
+	    --                when gross < net (transit / undercounting meter — shown, not fixed).
 	    --   N+S  (no G): gross absent, net+scrap present ⇒ gross = net + scrap.
 	    --   G+S  (no N): net absent, gross+scrap present ⇒ net = gross - scrap.
 	    --   net-only    : only net ⇒ gross = net (quality 1.0, legacy convention).
 	    --   gross-only  : only gross ⇒ net = gross (quality 1.0).
 	    -- (Keep this const free of any literal percent sign: fmt.Sprintf format string.)
 	    SELECT c.line_id, c.ts_value,
-	           -- A gross meter reading BELOW net cannot be right (good output never
-	           -- exceeds input): it undercounts (a reader/register issue, e.g.
-	           -- CPACK POLYTYPE1/2 since ~09-21). Treat it like a missing gross meter:
-	           -- gross = net + scrap, keeping the measured net (as legacy does).
-	           -- Clamping net down to gross instead discarded real good output
-	           -- (~87k on POLYTYPE2 in 7 d). gross >= net is taken as reported.
-	           CASE WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.gross,0) >= COALESCE(c.net,0) THEN COALESCE(c.gross,0)
-	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
+	           -- A MEASURED gross is stored as measured, also when it is below net
+	           -- (2026-09-29, "no clamps distorting data"): within an hour that is
+	           -- units in transit between the infeed and outfeed sensors, and over a
+	           -- shift/day it exposes a meter that undercounts — both are facts the
+	           -- data must show, not repair. (Replaces #1472's gross = net + scrap.)
+	           -- Only a MISSING meter is filled, per the identity below.
+	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
 	                ELSE 0 END AS eff_gross,
@@ -168,20 +167,18 @@ const shiftLineLeadSQL = `
 	    -- row: O(N^2). Measured 2026-09-24: 75-row shift batch 104-111 s -> 5-8 s, 50-row
 	    -- hour backfill 22-58 s -> 7-9 s, output identical (the long line-lead ticks that
 	    -- held equipment_oee_daily row locks and stalled the shift rollup).
-	    -- Shift totals = SUM of the per-bucket reconciled values, with net <= gross applied
-	    -- PER BUCKET (the ADR-0036 invariant the silver clamp enforces on each served hour
-	    -- row, which records the INVARIANT_CLAMPED event there) → shift == sum of its
-	    -- served hour rows. LEFT JOIN keeps a line with no buckets at 0 (as before).
+	    -- Shift totals = SUM of the per-bucket reconciled values (no per-bucket net<=gross
+	    -- clamp since 2026-09-29: it inflated gross and scrap over any period, because
+	    -- transit only ever got corrected in one direction) → shift == sum of its served
+	    -- hour rows. LEFT JOIN keeps a line with no buckets at 0 (as before).
 	    SELECT l.line_id, l.ts_value,
 	           COALESCE(sum(br.eff_gross), 0) AS eff_gross,
-	           COALESCE(sum(LEAST(br.eff_net, br.eff_gross)), 0) AS eff_net
+	           COALESCE(sum(br.eff_net), 0) AS eff_net
 	      FROM lines l
 	      LEFT JOIN bucket_reconciled br ON br.line_id = l.line_id AND br.ts_value = l.ts_value
 	     GROUP BY l.line_id, l.ts_value
-	), prod_min AS (
-	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
-	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
-	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
+	), prod_raw AS (
+	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts, m.is_lead
 	      FROM lines l
 	      CROSS JOIN LATERAL (
 	          -- #259 FIX: OFFSET 0 is an optimizer fence forcing PER-LINE correlated
@@ -190,9 +187,11 @@ const shiftLineLeadSQL = `
 	          -- decorrelates this into a hash join that materializes the WHOLE real-time
 	          -- 1min aggregation of ALL machines (~1000x blowup → 300s tick rollback →
 	          -- OEE stall). Result-identical to the prior JOIN (parity-proven).
-	          SELECT mm.ts_value
+	          -- Candidate productive minutes from the lead AND the line's gross/net
+	          -- machines (same id for single-machine lines ⇒ same rows as before).
+	          SELECT mm.ts_value, (mm.id_equipment = l.lead_id) AS is_lead
 	            FROM %[3]s.equipment_categorical_1min mm
-	           WHERE mm.id_equipment = l.lead_id
+	           WHERE mm.id_equipment IN (l.lead_id, l.gross_id, l.net_id)
 	             AND mm.ts_value >= l.ts_value AND mm.ts_value < l.bend
 	             -- A minute is "productive" if the lead moved EITHER input (gross) or
 	             -- output (net). A split-instrumentation line's lead is the net/output
@@ -202,6 +201,24 @@ const shiftLineLeadSQL = `
 	             AND (mm.gross_production_incr > 0 OR mm.net_production_incr > 0 OR mm.scrap_incr > 0)
 	           OFFSET 0
 	      ) m
+	), prod_sel AS (
+	    -- LEAD-SILENT FALLBACK (2026-09-29). Running time follows the LEAD machine,
+	    -- but when the lead has NO productive minute in an hour while the line's
+	    -- gross/net machine is counting, the lead is dark (not the line stopped):
+	    -- CPACK L5's lead BREYER published nothing real 09-15..09-23 while TEXA
+	    -- counted ~600k → 18 shifts with production and running_time = 0. In such
+	    -- hours only, the gross/net machines' productive minutes stand in. Hours
+	    -- where the lead is active use the lead alone, exactly as before.
+	    SELECT DISTINCT line_id, ts_value, bend, mts
+	      FROM (SELECT p.*, bool_or(p.is_lead) OVER (
+	                   PARTITION BY p.line_id, p.ts_value, date_trunc('hour', p.mts)) AS lead_hour
+	              FROM prod_raw p) z
+	     WHERE z.is_lead OR NOT z.lead_hour
+	), prod_min AS (
+	    SELECT line_id, ts_value, bend, mts,
+	           extract(epoch FROM (mts - lag(mts) OVER (
+	               PARTITION BY line_id, ts_value ORDER BY mts))) AS gap
+	      FROM prod_sel
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
 	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
@@ -254,7 +271,7 @@ const shiftLineLeadSQL = `
 	UPDATE %[4]s.equipment_oee_shift e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
-	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),
+	       scrap            = COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0),  -- signed: negative = transit
 	       available_time   = l.ts_avail,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
 	       stopped_time     = l.ts_avail - LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
@@ -264,18 +281,18 @@ const shiftLineLeadSQL = `
 	       ideal_speed      = COALESCE(l.lead_ideal, e.ideal_speed, 0),
 	       ideal_production = COALESCE((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
 	       recalc_needed    = false,
-	       -- ADR-0037 *_oee_bounds clamp (#663): counter-only line throughput can
-	       -- exceed the rated-speed estimate, so net/ideal (and the back-solved
-	       -- oee_p) can top 1 and violate the BETWEEN 0 AND 1 CHECK. Clamp each
-	       -- served factor; no-op on in-range data.
-	       oee   = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
+	       -- UNCAPPED since 2026-09-29 (*_oee_bounds now only lower-bounds oee/oee_p/
+	       -- oee_q): P > 1 means the configured ideal speed is too low, hourly Q > 1
+	       -- means units in transit — facts the UI shows. oee_a keeps [0,1] (running
+	       -- time is already capped at the available time).
+	       oee   = GREATEST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_avail) / NULLIF(l.ts_avail, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(
+	       oee_q = GREATEST(COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(
 	             COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0)
 	             / NULLIF(
 	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_avail) / NULLIF(l.ts_avail, 0), 0)
-	                 * COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 0), 0), 1), 0)
+	                 * COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 0), 0), 0)
 	  FROM lines_p l
 	  LEFT JOIN reconciled r ON r.line_id = l.line_id AND r.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
@@ -337,8 +354,8 @@ const hourLineLeadSQL = `
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount). Reconcile whichever pair of the
 	    -- three counters a line actually reports, filling the missing one:
-	    --   G+N (+/- S): gross+net present ⇒ take both as-is (S ignored, kept exact)
-	    --                when gross >= net; gross < net ⇒ gross = net + scrap (meter undercounts).
+	    --   G+N (+/- S): gross+net present ⇒ take both as measured (S ignored), even
+	    --                when gross < net (transit / undercounting meter — shown, not fixed).
 	    --   N+S  (no G): gross absent, net+scrap present ⇒ gross = net + scrap.
 	    --   G+S  (no N): net absent, gross+scrap present ⇒ net = gross - scrap.
 	    --   net-only    : only net ⇒ gross = net (quality 1.0, legacy convention).
@@ -348,14 +365,13 @@ const hourLineLeadSQL = `
 	    -- gross, scrap and oee_q stay mutually consistent. (Keep this const free of any
 	    -- literal percent sign: it is a fmt.Sprintf format string.)
 	    SELECT c.line_id, c.ts_value,
-	           -- A gross meter reading BELOW net cannot be right (good output never
-	           -- exceeds input): it undercounts (a reader/register issue, e.g.
-	           -- CPACK POLYTYPE1/2 since ~09-21). Treat it like a missing gross meter:
-	           -- gross = net + scrap, keeping the measured net (as legacy does).
-	           -- Clamping net down to gross instead discarded real good output
-	           -- (~87k on POLYTYPE2 in 7 d). gross >= net is taken as reported.
-	           CASE WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.gross,0) >= COALESCE(c.net,0) THEN COALESCE(c.gross,0)
-	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
+	           -- A MEASURED gross is stored as measured, also when it is below net
+	           -- (2026-09-29, "no clamps distorting data"): within an hour that is
+	           -- units in transit between the infeed and outfeed sensors, and over a
+	           -- shift/day it exposes a meter that undercounts — both are facts the
+	           -- data must show, not repair. (Replaces #1472's gross = net + scrap.)
+	           -- Only a MISSING meter is filled, per the identity below.
+	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
 	                ELSE 0 END AS eff_gross,
@@ -364,10 +380,8 @@ const hourLineLeadSQL = `
 	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                ELSE 0 END AS eff_net
 	      FROM counts c
-	), prod_min AS (
-	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts,
-	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
-	               PARTITION BY l.line_id, l.ts_value ORDER BY m.ts_value))) AS gap
+	), prod_raw AS (
+	    SELECT l.line_id, l.ts_value, l.bend, m.ts_value AS mts, m.is_lead
 	      FROM lines l
 	      CROSS JOIN LATERAL (
 	          -- #259 FIX: OFFSET 0 is an optimizer fence forcing PER-LINE correlated
@@ -376,9 +390,11 @@ const hourLineLeadSQL = `
 	          -- decorrelates this into a hash join that materializes the WHOLE real-time
 	          -- 1min aggregation of ALL machines (~1000x blowup → 300s tick rollback →
 	          -- OEE stall). Result-identical to the prior JOIN (parity-proven).
-	          SELECT mm.ts_value
+	          -- Candidate productive minutes from the lead AND the line's gross/net
+	          -- machines (same id for single-machine lines ⇒ same rows as before).
+	          SELECT mm.ts_value, (mm.id_equipment = l.lead_id) AS is_lead
 	            FROM %[3]s.equipment_categorical_1min mm
-	           WHERE mm.id_equipment = l.lead_id
+	           WHERE mm.id_equipment IN (l.lead_id, l.gross_id, l.net_id)
 	             AND mm.ts_value >= l.ts_value AND mm.ts_value < l.bend
 	             -- A minute is "productive" if the lead moved EITHER input (gross) or
 	             -- output (net). A split-instrumentation line's lead is the net/output
@@ -388,6 +404,24 @@ const hourLineLeadSQL = `
 	             AND (mm.gross_production_incr > 0 OR mm.net_production_incr > 0 OR mm.scrap_incr > 0)
 	           OFFSET 0
 	      ) m
+	), prod_sel AS (
+	    -- LEAD-SILENT FALLBACK (2026-09-29). Running time follows the LEAD machine,
+	    -- but when the lead has NO productive minute in an hour while the line's
+	    -- gross/net machine is counting, the lead is dark (not the line stopped):
+	    -- CPACK L5's lead BREYER published nothing real 09-15..09-23 while TEXA
+	    -- counted ~600k → 18 shifts with production and running_time = 0. In such
+	    -- hours only, the gross/net machines' productive minutes stand in. Hours
+	    -- where the lead is active use the lead alone, exactly as before.
+	    SELECT DISTINCT line_id, ts_value, bend, mts
+	      FROM (SELECT p.*, bool_or(p.is_lead) OVER (
+	                   PARTITION BY p.line_id, p.ts_value, date_trunc('hour', p.mts)) AS lead_hour
+	              FROM prod_raw p) z
+	     WHERE z.is_lead OR NOT z.lead_hour
+	), prod_min AS (
+	    SELECT line_id, ts_value, bend, mts,
+	           extract(epoch FROM (mts - lag(mts) OVER (
+	               PARTITION BY line_id, ts_value ORDER BY mts))) AS gap
+	      FROM prod_sel
 	), islanded AS (
 	    SELECT line_id, ts_value, bend, mts,
 	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
@@ -440,7 +474,7 @@ const hourLineLeadSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       gross            = COALESCE(r.eff_gross, 0),
 	       net              = COALESCE(r.eff_net, 0),
-	       scrap            = GREATEST(COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0), 0),
+	       scrap            = COALESCE(r.eff_gross, 0) - COALESCE(r.eff_net, 0),  -- signed: negative = transit
 	       available_time   = l.ts_avail,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
 	       stopped_time     = l.ts_avail - LEAST(COALESCE(a.raw_running, 0), l.ts_avail),
@@ -450,13 +484,11 @@ const hourLineLeadSQL = `
 	       ideal_speed      = COALESCE(l.lead_ideal, e.ideal_speed, 0),
 	       ideal_production = COALESCE((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0),
 	       recalc_needed    = false,
-	       -- ADR-0037 *_oee_bounds clamp (#663): counter-only line throughput can
-	       -- exceed the rated-speed estimate → net/ideal > 1 violates the CHECK.
-	       -- Clamp each served factor; no-op on in-range data. oee_p is left to
-	       -- hourOeePSQL (itself clamped) off the just-cleared rows.
-	       oee   = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 1), 0),
+	       -- UNCAPPED since 2026-09-29 (see shiftLineLeadSQL). oee_p is left to
+	       -- hourOeePSQL off the just-cleared rows.
+	       oee   = GREATEST(COALESCE(COALESCE(r.eff_net,0) / NULLIF((l.ts_avail / 60.0) * NULLIF(COALESCE(l.lead_ideal, e.ideal_speed), 0), 0), 0), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), l.ts_avail) / NULLIF(l.ts_avail, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(COALESCE(r.eff_net,0) / NULLIF(r.eff_gross, 0), 0), 0)
 	  FROM lines_p l
 	  LEFT JOIN reconciled r ON r.line_id = l.line_id AND r.ts_value = l.ts_value
 	  LEFT JOIN active a ON a.line_id = l.line_id AND a.ts_value = l.ts_value
