@@ -109,6 +109,15 @@ export const edgeSsmApi = {
         { skipErrorToast: true },
       )
       .then((r) => r.data),
+  /** Restart the shared data collector so it loads the client's saved calculations. */
+  applyCalculations: (idEnterprise: number) =>
+    apiClient
+      .post<{ commandId: string; mock?: boolean; mockMessage?: string }>(
+        `${BASE}/apply-calculations`,
+        { idEnterprise },
+        { skipErrorToast: true },
+      )
+      .then((r) => r.data),
   openWebUi: (idEnterprise: number) =>
     apiClient
       .post<EdgeWebUi>(`${BASE}/webui`, { idEnterprise }, { skipErrorToast: true })

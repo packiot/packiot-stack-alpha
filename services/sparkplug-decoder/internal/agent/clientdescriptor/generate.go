@@ -302,6 +302,12 @@ func (d *Descriptor) generateDerivedRules(p *tenantprofile.Profile) ([]tenantpro
 			if dm.Expr != nil {
 				vars := make(map[string]string, len(dm.Expr.Vars))
 				for name, leaf := range dm.Expr.Vars {
+					if !strings.HasPrefix(leaf, "/") {
+						// ABSOLUTE var (another machine's full topic, validated to be a
+						// mapped equipment): resolve as-is, never under this segment.
+						vars[name] = d.localSegment(leaf)
+						continue
+					}
 					full, err := resolveLeaf(leaf)
 					if err != nil {
 						return nil, err
