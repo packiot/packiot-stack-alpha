@@ -53,6 +53,39 @@ export interface EdgeConnect {
   webUiLabel?: string;
 }
 
+/** One node the Node-RED plan would add/update/remove on the box. */
+export interface NodeRedChange {
+  id: string;
+  type: string;
+  name?: string;
+  z?: string;
+}
+
+export type NodeRedApplyScope = "customizations" | "full";
+
+/** GET /node-red/plan — dry-run diff of the SAVED descriptor vs the box. */
+export interface NodeRedPlan {
+  scope: NodeRedApplyScope;
+  add: NodeRedChange[];
+  update: NodeRedChange[];
+  remove: NodeRedChange[];
+  /** Nodes on a descriptor-owned tab that the saved descriptor doesn't render —
+   *  hand-added in the box editor or removed from the descriptor. Full objects,
+   *  so they can be adopted before an apply deletes them. */
+  notInDescriptor: Record<string, unknown>[];
+  unchanged: number;
+  missingTypes: string[];
+  blockers: string[];
+  rev: string;
+  descriptorVersion: number;
+}
+
+export interface NodeRedApplyResult extends NodeRedPlan {
+  applied: boolean;
+  mock?: boolean;
+  mockMessage?: string;
+}
+
 export const edgeSsmApi = {
   status: (idEnterprise: number) =>
     apiClient
@@ -61,6 +94,20 @@ export const edgeSsmApi = {
   connect: (idEnterprise: number) =>
     apiClient
       .get<EdgeConnect>(`${BASE}/connect`, { params: { idEnterprise }, skipErrorToast: true })
+      .then((r) => r.data),
+  /** Read-only dry run over a short-lived port-forward to the box's Node-RED. */
+  nodeRedPlan: (idEnterprise: number, scope: NodeRedApplyScope) =>
+    apiClient
+      .get<NodeRedPlan>(`${BASE}/node-red/plan`, { params: { idEnterprise, scope }, skipErrorToast: true })
+      .then((r) => r.data),
+  /** Apply exactly what was planned (rev + descriptorVersion echo → 409 if either moved). */
+  nodeRedApply: (idEnterprise: number, plan: Pick<NodeRedPlan, "rev" | "descriptorVersion" | "scope">) =>
+    apiClient
+      .post<NodeRedApplyResult>(
+        `${BASE}/node-red/apply`,
+        { idEnterprise, rev: plan.rev, descriptorVersion: plan.descriptorVersion, scope: plan.scope },
+        { skipErrorToast: true },
+      )
       .then((r) => r.data),
   openWebUi: (idEnterprise: number) =>
     apiClient
