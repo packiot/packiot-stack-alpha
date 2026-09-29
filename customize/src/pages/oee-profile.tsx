@@ -1,15 +1,16 @@
 import { Gauge, Loader2, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   classifyOnboardingError,
+  isStaleSave,
   onboardingApi,
   type ClientDescriptor,
   type OeeProfile,
 } from "@/api/onboarding";
 import { PageHeader } from "@/components/page-header";
 import { Button, Card, Input, Select } from "@/components/ui";
+import { csadminUrl } from "@/lib/sibling-apps";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
 
 type LoadState = "loading" | "ready" | "none" | "error";
@@ -33,7 +34,7 @@ export function OeeProfilePage() {
   const enterprise = useEnterpriseStore((s) => s.selected)!;
 
   const [state, setState] = useState<LoadState>("loading");
-  const [tenantCode, setTenantCode] = useState<string>("");
+  const [version, setVersion] = useState(0);
   const [descriptor, setDescriptor] = useState<ClientDescriptor | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -61,7 +62,7 @@ export function OeeProfilePage() {
     setDirty(false);
     try {
       const row = await onboardingApi.getDescriptor();
-      setTenantCode(row.tenant_code);
+      setVersion(row.version);
       setDescriptor(row.descriptor ?? {});
       hydrate((row.descriptor ?? {}).oee_profile);
       setState("ready");
@@ -134,14 +135,11 @@ export function OeeProfilePage() {
     }
     setSaving(true);
     try {
-      // Load-modify-save the whole descriptor (same pattern as the derive-rule
-      // editor). Omit oee_profile entirely when empty so an untouched tenant
-      // stays byte-identical.
-      const next: ClientDescriptor = { ...descriptor };
-      if (profile) next.oee_profile = profile;
-      else delete next.oee_profile;
-      await onboardingApi.upsertDescriptor(tenantCode, next);
-      setDescriptor(next);
+      // Field-scoped compare-and-swap: only oee_profile is written (null clears
+      // it, so an untouched tenant stays byte-identical); status is untouched.
+      const row = await onboardingApi.updateCustomizations(version, { oeeProfile: profile });
+      setVersion(row.version);
+      setDescriptor(row.descriptor);
       setDirty(false);
       toast.success(
         profile
@@ -149,7 +147,13 @@ export function OeeProfilePage() {
           : "OEE profile cleared — this tenant is back on platform defaults.",
       );
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Save failed");
+      toast.error(
+        isStaleSave(e)
+          ? "Someone saved this descriptor after you loaded it — reload, then re-apply your change."
+          : e instanceof Error
+            ? e.message
+            : "Save failed",
+      );
     } finally {
       setSaving(false);
     }
@@ -181,9 +185,9 @@ export function OeeProfilePage() {
           <p className="text-[13px] text-muted-foreground">
             This tenant has no descriptor yet — there is nothing to configure until it
             is onboarded in{" "}
-            <Link className="text-primary hover:underline" to="/app/hub">
-              CS Admin
-            </Link>
+            <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", enterprise.id_enterprise)} target="_blank" rel="noreferrer">
+              CS Admin ↗
+            </a>
             . Once onboarded, its OEE profile is editable here.
           </p>
         </Card>

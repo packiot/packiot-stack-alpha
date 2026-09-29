@@ -383,6 +383,8 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 		)
 	}
 
+	nodes = appendReaderSpots(nodes, p, tabID, fnID, httpID, switchID, midY)
+
 	// Render the per-client customizations onto the customizations tab. Each entry
 	// is a raw Node-RED node (a CS engineer's "Export" from Node-RED). This is what
 	// makes the customization surface DESCRIPTOR-SOURCED + versioned (ADR-0045 G3):
@@ -392,15 +394,32 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 	//
 	//   - A FLOW node (one carrying a "z" tab reference) is re-homed onto the
 	//     customizations tab so it lands there regardless of which tab it was
-	//     exported from; a CONFIG node (no "z", tab-less) passes through untouched.
+	//     exported from — UNLESS its "z" names a tab or subflow that the
+	//     customizations themselves declare: then it stays put (re-homing a
+	//     subflow's internal nodes would tear the subflow apart, and a declared
+	//     tab is the author asking for its own tab). A CONFIG node (no "z",
+	//     tab-less) passes through untouched.
 	//   - A customization id colliding with a GENERATED reader node id is a
 	//     fail-closed error: Node-RED silently breaks a flow with duplicate ids.
+	//   - A customization `link in` whose "links" names a TAP spot subscribes to
+	//     it: the spot's `link out` gains the link-in id (Node-RED's runtime routes
+	//     on the link-out side). A customization `link out` naming the PUBLISH spot
+	//     is mirrored onto the spot's `link in` so the editor draws the wire.
 	reserved := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
 		if id, ok := n["id"].(string); ok {
 			reserved[id] = true
 		}
 	}
+	declared := map[string]bool{}
+	for _, cn := range d.Customizations {
+		if t, _ := cn["type"].(string); t == "tab" || t == "subflow" {
+			if id, _ := cn["id"].(string); id != "" {
+				declared[id] = true
+			}
+		}
+	}
+	spots := readerSpotIndex(nodes, p)
 	for i, cn := range d.Customizations {
 		// Shallow-copy so re-homing "z" never mutates the descriptor's own map.
 		node := make(map[string]any, len(cn))
@@ -413,10 +432,19 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 				"— rename it (the '%s PLC reader' tab owns that id)", i, id, d.Tenant)
 		}
 		reserved[id] = true
-		if _, isFlowNode := node["z"]; isFlowNode {
-			node["z"] = custTabID
+		if z, isFlowNode := node["z"]; isFlowNode {
+			if zs, _ := z.(string); !declared[zs] {
+				node["z"] = custTabID
+			}
+		}
+		if err := subscribeSpots(spots, node, i, p); err != nil {
+			return nil, err
 		}
 		nodes = append(nodes, node)
+	}
+	for _, s := range spots {
+		sort.Slice(s.links, func(a, b int) bool { return s.links[a].(string) < s.links[b].(string) })
+		s.node["links"] = s.links
 	}
 
 	out, err := json.MarshalIndent(nodes, "", "  ")

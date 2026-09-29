@@ -1,33 +1,42 @@
-import { useCallback, useEffect, useState } from "react";
-import { Workflow } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Loader2, Save, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
-import { onboardingApi, type ClientDescriptorRow } from "@/api/onboarding";
+import { classifyOnboardingError, isStaleSave, onboardingApi } from "@/api/onboarding";
 import { edgeSsmApi, type EdgeConnect } from "@/api/edge-ssm";
 import { BoxWebUi } from "@/components/edge/box-webui";
+import { BoxApply } from "@/components/node-red/box-apply";
+import { CustomizationList } from "@/components/node-red/customization-list";
+import { FlowInserter } from "@/components/node-red/flow-inserter";
 import { PageHeader } from "@/components/page-header";
 import { Button, Card } from "@/components/ui";
 import { csadminUrl } from "@/lib/sibling-apps";
-import { parseCustomizations } from "@/lib/node-red-customizations";
+import { stableNodesJson } from "@/lib/node-red-customizations";
+import type { Node } from "@/lib/node-red-import";
+import { tenantPrefix } from "@/lib/node-red-spots";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
 
 /**
- * Node-RED flows — ADR-0058 Tier-2 customization. Two surfaces, both here (CS
- * Admin no longer authors customizations):
+ * Node-RED flows — ADR-0058 Tier 2 customization, end to end:
  *
- *  1. Descriptor flows — the per-client Node-RED nodes stored on the descriptor
- *     (`customizations`, ADR-0045 §G3) and rendered onto the generated reader
- *     flow's customizations tab. Versioned with the descriptor; this is the
- *     durable way to customize. Moved here from CS Admin's onboarding Review.
- *  2. Live editor — the box's own Node-RED UI through the platform (ADR-0057),
- *     for boxes that run Node-RED. The box itself (deploy/restart/logs) is CS
- *     Admin's Box Ops.
+ *  1. Insert — paste any Node-RED export, analyze + lint it, optionally re-id it
+ *     and wire it to a reader SPOT (a named attach point on the generated PLC
+ *     reader: raw reads, normalized tags, agent response/errors, or publish).
+ *  2. Descriptor — the customizations stored on the tenant descriptor (the
+ *     versioned source of truth), grouped by tab; Save is field-scoped + CAS.
+ *  3. Apply — preview/apply the SAVED set onto the running box's Node-RED via its
+ *     Admin API (the box seeds flows on first boot only, so this is how a later
+ *     change lands). Box enrollment/restart/logs stay in CS Admin's Box Ops.
+ *  4. Live editor — the box's own Node-RED UI through the platform (ADR-0057).
  */
 export function NodeRedPage() {
   const enterprise = useEnterpriseStore((s) => s.selected)!;
   const id = enterprise.id_enterprise;
-  const [row, setRow] = useState<ClientDescriptorRow | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "none" | "error">("loading");
-  const [text, setText] = useState("");
+  const [version, setVersion] = useState(0);
+  const [tenant, setTenant] = useState<string | undefined>();
+  const [hasPlc, setHasPlc] = useState(false);
+  const [saved, setSaved] = useState<Node[]>([]);
+  const [nodes, setNodes] = useState<Node[]>([]);
   const [saving, setSaving] = useState(false);
   const [connect, setConnect] = useState<EdgeConnect | null | "unavailable">(null);
 
@@ -35,40 +44,51 @@ export function NodeRedPage() {
     setState("loading");
     try {
       const r = await onboardingApi.getDescriptor();
-      setRow(r);
-      const nodes = r.descriptor?.customizations ?? [];
-      setText(nodes.length ? JSON.stringify(nodes, null, 2) : "");
+      const list = (r.descriptor?.customizations ?? []) as Node[];
+      setVersion(r.version);
+      setTenant(r.descriptor?.tenant);
+      setHasPlc(!!r.descriptor?.plc);
+      setSaved(list);
+      setNodes(list);
       setState("ready");
     } catch (e) {
-      const status = (e as { response?: { status?: number } })?.response?.status;
-      setState(status === 404 ? "none" : "error");
+      const kind = classifyOnboardingError(e);
+      setState(kind === "not-found" || kind === "disabled" ? "none" : "error");
     }
   }, []);
 
   useEffect(() => {
     void load();
-    edgeSsmApi.connect(id).then(setConnect).catch(() => setConnect("unavailable"));
+    let alive = true;
+    edgeSsmApi
+      .connect(id)
+      .then((c) => alive && setConnect(c))
+      .catch(() => alive && setConnect("unavailable"));
+    return () => {
+      alive = false;
+    };
   }, [load, id]);
 
+  const prefix = tenantPrefix(tenant);
+  const dirty = useMemo(() => stableNodesJson(nodes) !== stableNodesJson(saved), [nodes, saved]);
+
   async function save() {
-    const parsed = parseCustomizations(text);
-    if ("error" in parsed) {
-      toast.error(`Fix the Node-RED JSON: ${parsed.error}`);
-      return;
-    }
     setSaving(true);
     try {
-      // Re-read and replace ONLY `customizations`, so a concurrent onboarding or
-      // hub edit to any other part of the descriptor is never overwritten.
-      const latest = await onboardingApi.getDescriptor();
-      const next = { ...latest.descriptor };
-      if (parsed.nodes.length) next.customizations = parsed.nodes;
-      else delete next.customizations;
-      await onboardingApi.upsertDescriptor(latest.tenant_code, next);
-      toast.success(`Saved ${parsed.nodes.length} Node-RED node(s) — they ship with the next generate/deploy`);
-      await load();
+      const row = await onboardingApi.updateCustomizations(version, { customizations: nodes.length ? nodes : null });
+      const list = (row.descriptor?.customizations ?? []) as Node[];
+      setVersion(row.version);
+      setSaved(list);
+      setNodes(list);
+      toast.success(`Saved ${list.length} node(s) to the descriptor (v${row.version}). Preview + apply to push them to the box.`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not save");
+      toast.error(
+        isStaleSave(e)
+          ? "Someone saved this descriptor after you loaded it — reload (your unsaved nodes are lost on reload; copy them via Edit JSON first)."
+          : e instanceof Error
+            ? e.message
+            : "Could not save",
+      );
     } finally {
       setSaving(false);
     }
@@ -76,55 +96,87 @@ export function NodeRedPage() {
 
   const isNodeRedBox = connect && connect !== "unavailable" && (connect.webUiPort ?? 1880) === 1880;
 
+  if (state !== "ready") {
+    return (
+      <>
+        <PageHeader title="Node-RED flows" subtitle={`Per-client Node-RED logic for ${enterprise.name}.`} />
+        <Card className="px-7 py-6 text-sm text-muted-foreground">
+          {state === "loading" && (
+            <>
+              <Loader2 className="mr-2 inline h-4 w-4 animate-spin" /> Loading the descriptor…
+            </>
+          )}
+          {state === "error" && (
+            <span className="text-danger">
+              Couldn&apos;t load the descriptor.{" "}
+              <button className="underline" onClick={() => void load()}>
+                Retry
+              </button>
+            </span>
+          )}
+          {state === "none" && (
+            <>
+              {enterprise.name} has no descriptor yet — onboard it first in{" "}
+              <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", id)} target="_blank" rel="noreferrer">
+                CS Admin ↗
+              </a>
+              .
+            </>
+          )}
+        </Card>
+      </>
+    );
+  }
+
   return (
     <>
-      <PageHeader title="Node-RED flows" subtitle={`Per-client Node-RED logic for ${enterprise.name} (ADR-0058 Tier 2).`} />
+      <PageHeader
+        title="Node-RED flows"
+        subtitle={`Paste, wire and ship per-client Node-RED logic for ${enterprise.name} (ADR-0058 Tier 2).`}
+      />
 
-      <Card className="mb-5 px-7 py-6">
-        <div className="mb-1 flex items-center gap-2">
-          <Workflow className="h-4 w-4 text-primary" />
-          <span className="text-[15px] font-extrabold text-foreground">Descriptor flows</span>
-        </div>
-        <p className="mb-3 max-w-[680px] text-[13px] text-muted-foreground">
-          A Node-RED export (JSON array of nodes) rendered onto the generated reader flow&apos;s{" "}
-          <span className="font-mono">customizations</span> tab — versioned with the descriptor and shipped on the
-          next generate/deploy (Box Ops in CS Admin). Leave empty for none.
-        </p>
-        {state === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
-        {state === "error" && <p className="text-sm text-danger">Couldn&apos;t load the descriptor.</p>}
-        {state === "none" && (
-          <p className="text-sm text-muted-foreground">
-            {enterprise.name} has no descriptor yet — onboard it first in{" "}
-            <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", id)} target="_blank" rel="noreferrer">
-              CS Admin ↗
-            </a>
-            .
-          </p>
-        )}
-        {state === "ready" && row && (
-          <>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              spellCheck={false}
-              placeholder={'[\n  { "id": "my-integration", "type": "function", "z": "customizations", "name": "example", "func": "return msg;" }\n]'}
-              className="h-[260px] w-full rounded-md border border-border bg-chrome p-3 font-mono text-[12px] leading-[1.55] text-chrome-foreground outline-none focus:border-primary"
-            />
-            <div className="mt-3 flex justify-end">
-              <Button onClick={() => void save()} disabled={saving}>
-                {saving ? "Saving…" : "Save flows"}
-              </Button>
-            </div>
-          </>
-        )}
-      </Card>
+      {!hasPlc && (
+        <Card className="mb-5 flex gap-2 border-warning-border bg-warning-tint px-5 py-3 text-[13px] text-warning-strong">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          This descriptor has no <span className="font-mono">plc</span> block, so no Node-RED reader flow is generated
+          for it — customizations are stored but have nowhere to render until the PLC connection is onboarded.
+        </Card>
+      )}
+
+      <FlowInserter prefix={prefix} existing={nodes} onInsert={(added) => setNodes((cur) => [...cur, ...added])} />
+
+      <CustomizationList prefix={prefix} nodes={nodes} onChange={setNodes} />
+
+      <div className="mb-6 flex items-center gap-3">
+        <Button onClick={() => void save()} disabled={saving || !dirty}>
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          Save to descriptor
+        </Button>
+        <span className="text-[12px] text-muted-foreground">
+          {dirty ? "Unsaved changes." : `Saved · descriptor v${version}.`} Saving validates the flow through the generator
+          and never changes the onboarding status.
+        </span>
+      </div>
+
+      {isNodeRedBox ? (
+        <BoxApply
+          idEnterprise={id}
+          dirty={dirty}
+          onAdopt={(found) =>
+            setNodes((cur) => {
+              const have = new Set(cur.map((n) => n.id));
+              return [...cur, ...found.filter((n) => !have.has(n.id))];
+            })
+          }
+        />
+      ) : null}
 
       <Card className="px-7 py-6">
         <p className="mb-1 text-[15px] font-extrabold text-foreground">Live editor on the box</p>
         {connect === null && <p className="text-sm text-muted-foreground">Checking the box…</p>}
         {connect === "unavailable" && (
           <p className="text-sm text-muted-foreground">
-            No reachable box for {enterprise.name}. Box enrollment and health are in{" "}
+            No reachable box for {enterprise.name}, so there is nothing to apply to live. Box enrollment and health are in{" "}
             <a className="text-primary hover:underline" href={csadminUrl("/app/box", id)} target="_blank" rel="noreferrer">
               CS Admin → Box Ops ↗
             </a>
@@ -133,10 +185,18 @@ export function NodeRedPage() {
         )}
         {connect && connect !== "unavailable" && !isNodeRedBox && (
           <p className="text-sm text-muted-foreground">
-            This box runs the {connect.webUiLabel ?? "edge dashboard"} (no Node-RED editor). Use the descriptor flows above.
+            This box runs the {connect.webUiLabel ?? "edge dashboard"}, not Node-RED — customizations are stored on the
+            descriptor but there is no live Node-RED to apply them to.
           </p>
         )}
-        {isNodeRedBox && <BoxWebUi idEnterprise={id} />}
+        {isNodeRedBox && (
+          <>
+            <p className="mb-2 text-[12px] text-muted-foreground">
+              Edits made here are NOT in the descriptor — the next preview lists them so you can adopt them.
+            </p>
+            <BoxWebUi idEnterprise={id} />
+          </>
+        )}
       </Card>
     </>
   );
