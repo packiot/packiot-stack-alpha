@@ -18,8 +18,11 @@ import {
   buildDeriveRule,
   listDeriveRules,
   parseSamples,
+  localSegment,
   parseVarLines,
+  relativizeVars,
   removeDeriveRule,
+  ruleInputs,
   ROLE_LABEL,
   type DeriveRole,
 } from "@/lib/derive-rules";
@@ -144,7 +147,15 @@ export function CustomizationsPage() {
       return;
     }
     const id = deriveTarget;
-    const rule = buildDeriveRule(deriveRole, deriveExpr.trim(), vars);
+    const seg = localSegment(topicById.get(id) ?? "", descriptor.canonical?.prefix);
+    const rel = relativizeVars(vars, seg);
+    if ("error" in rel) {
+      toast.error(rel.error);
+      return;
+    }
+    if (rel.stripped.length)
+      toast.message(`Made ${rel.stripped.join(", ")} relative to the equipment (${seg}).`);
+    const rule = buildDeriveRule(deriveRole, deriveExpr.trim(), rel.vars);
     const tp = pickable.find((p) => p.id === id)?.tp;
     setDescriptor((prev) =>
       prev ? addDeriveRule(prev, id, topicById.get(id) ?? "", tp, rule) : prev,
@@ -330,12 +341,13 @@ export function CustomizationsPage() {
             </label>
             <label className="mt-3 block text-[13px]">
               <span className="mb-1 block font-semibold text-foreground">
-                Variables — one <code className="font-mono">name = /arriving/suffix</code> per line
+                Variables — one <code className="font-mono">name = /Admin/…/Unit</code> per line, relative to the
+                equipment (<code className="font-mono">{"{idx}"}</code> = its count index)
               </span>
               <textarea
                 className="h-24 w-full rounded-md border border-border bg-background p-3 font-mono text-[12px]"
                 spellCheck={false}
-                placeholder={`gross = /LINHAS/L01/S1INFEED/Admin/ProdProcessedCount/101/Unit\nnet = /LINHAS/L01/S6OUTPUT/Admin/ProdProcessedCount/106/Unit`}
+                placeholder={`gross = /Admin/ProdProcessedCount/{idx}/Unit\nnet = /Admin/ProdCount/{idx}/Unit`}
                 value={deriveVarsText}
                 onChange={(e) => setDeriveVarsText(e.target.value)}
               />
@@ -410,10 +422,16 @@ export function CustomizationsPage() {
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-[13px] text-muted-foreground">
-                      No tags produced — an expr may still be waiting for all its inputs
-                      (feed every referenced tag at least once).
-                    </p>
+                    <div className="text-[13px] text-muted-foreground">
+                      <p>No tags produced — every rule waits until each of its inputs has arrived once. Expected inputs:</p>
+                      <ul className="mt-1 space-y-0.5 font-mono text-[11px]">
+                        {rules.flatMap((r) => {
+                          const eq = descriptor?.equipment?.find((e) => e.id_equipment === r.id);
+                          const seg = localSegment(eq?.topic ?? "", descriptor?.canonical?.prefix);
+                          return ruleInputs(r.rule, seg, eq?.count_index?.value).map((m) => <li key={`${r.id}:${r.idx}:${m}`}>{m}</li>);
+                        })}
+                      </ul>
+                    </div>
                   )}
                 </div>
               </div>
