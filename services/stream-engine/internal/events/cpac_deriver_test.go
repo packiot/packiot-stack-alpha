@@ -134,7 +134,7 @@ func TestCPACHumanCoverProbeIsTimeBounded(t *testing.T) {
 
 // TestCPACGrossOnlySQLPinned pins the gross-only statements (the CPACK shadow
 // instance and every LeadActivity=false caller) and proves they differ from the
-// pre-PR statements (origin/staging 35453b1f) by EXACTLY the two deliberate bug
+// pre-PR statements (origin/staging 6dd6a9a0) by EXACTLY the two deliberate bug
 // fixes and nothing else:
 //   - NULL-safe human guards (`IS TRUE` on forced_creation_system /
 //     planned_downtime / change_over) — the correct pass and DO UPDATE were dead;
