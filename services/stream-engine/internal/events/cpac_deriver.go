@@ -143,10 +143,18 @@ const DefaultCPACTargetTable = "equipment_events_cpac_shadow"
 // cd_machine / txt_downtime_notes), or a classification toggle
 // (planned_downtime / change_over / idle). Referenced by BOTH the upsert guard
 // and the delete guard so the detector can only ADD in untouched time.
-const humanTouchedPred = `(%[4]s.forced_creation_system
+//
+// NULL-SAFE (fix 2026-09-29): forced_creation_system / planned_downtime /
+// change_over are nullable with NO default, and the deriver's own INSERT leaves
+// planned_downtime/change_over NULL. The old bare `OR ev.planned_downtime` made
+// the predicate NULL for EVERY derived row, so `NOT (...)` was NULL: the correct
+// pass never deleted a row and the DO UPDATE never refreshed one (the deriver
+// was append-only; staging: corrected=0 on every tick). `IS TRUE` collapses the
+// three-valued logic, the same fix closer.go's humanJustifiedPred already carries.
+const humanTouchedPred = `(%[4]s.forced_creation_system IS TRUE
         OR %[4]s.cd_category IS NOT NULL OR %[4]s.cd_subcategory IS NOT NULL
         OR %[4]s.cd_machine IS NOT NULL OR %[4]s.txt_downtime_notes IS NOT NULL
-        OR %[4]s.planned_downtime OR %[4]s.change_over OR %[4]s.idle IS NOT NULL)`
+        OR %[4]s.planned_downtime IS TRUE OR %[4]s.change_over IS TRUE OR %[4]s.idle IS NOT NULL)`
 
 // cpacTransitionsCTE recomputes the alternating running/stopped transition
 // stream from count-activity sessionization over the last 25 hours.
@@ -169,7 +177,17 @@ WITH scope AS (
       FROM scope s
       JOIN %[5]s.equipment_categorical_1min m
         ON m.id_equipment = s.id_equipment
-       AND m.ts_value > now() - interval '25 hours'
+       -- LOOK-BACK (fix 2026-09-29): read thr + 60s BEFORE the 25h window so the
+       -- first in-window minute gets its real gap. Without it that minute always
+       -- had gap NULL => a session start => a phantom RUNNING row at the window's
+       -- trailing edge on EVERY tick (~1 per productive minute per equipment,
+       -- never cleaned: it is older than the 1-day correct pass). Transitions
+       -- that fall in the look-back are still dropped by final's window filter.
+       -- Any prior minute within thr of an in-window minute is inside the
+       -- look-back, so an in-window gap > thr (a real stop) still opens a session.
+       AND m.ts_value > now() - interval '25 hours' - make_interval(secs => s.thr + 60)
+       -- constant bound for chunk exclusion (thresholds are minutes, never ~a day)
+       AND m.ts_value > now() - interval '2 days'
        AND %[7]s
 ), marked AS (
     SELECT id_equipment, id_enterprise, thr, ts,
@@ -232,10 +250,12 @@ ON CONFLICT (id_equipment, ts_event) DO UPDATE
 
 // humanCoverPred (aliased `h` = %[4]s at format time) — a human-protected event
 // used by the append-only NOT EXISTS. Same touched-columns as humanTouchedPred.
-const humanCoverPred = `(h.forced_creation_system
+// NULL-safe for the same reason as humanTouchedPred (inside EXISTS a NULL
+// already acted as false, so this one is a clarity change, not a behaviour one).
+const humanCoverPred = `(h.forced_creation_system IS TRUE
         OR h.cd_category IS NOT NULL OR h.cd_subcategory IS NOT NULL
         OR h.cd_machine IS NOT NULL OR h.txt_downtime_notes IS NOT NULL
-        OR h.planned_downtime OR h.change_over OR h.idle IS NOT NULL)`
+        OR h.planned_downtime IS TRUE OR h.change_over IS TRUE OR h.idle IS NOT NULL)`
 
 // cpacCorrectSQL removes stale DERIVED rows (last 1 day) that the recomputed
 // stream no longer supports — but NEVER a human-touched row (the guard is a

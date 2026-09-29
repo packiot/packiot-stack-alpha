@@ -55,10 +55,14 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 		`CREATE TABLE ` + schema + `.equipment_events_cpac_shadow (
 			id_equipment int, ts_event timestamptz, ts_end timestamptz,
 			status int, id_enterprise int, duration int,
-			forced_creation_system boolean DEFAULT false,
+			-- NO defaults: matches silver.equipment_events on staging, where these
+			-- booleans are nullable without defaults and the deriver's INSERT leaves
+			-- planned_downtime/change_over NULL (a DEFAULT false here once masked the
+			-- NULL-unsafe guard that made the correct pass + DO UPDATE dead).
+			forced_creation_system boolean,
 			cd_category varchar, cd_subcategory varchar, cd_machine varchar,
-			txt_downtime_notes varchar, planned_downtime boolean DEFAULT false,
-			change_over boolean DEFAULT false, idle varchar,
+			txt_downtime_notes varchar, planned_downtime boolean,
+			change_over boolean, idle varchar,
 			UNIQUE (id_equipment, ts_event))`,
 	}
 	for _, s := range ddl {
@@ -354,5 +358,111 @@ func TestCPACLeadActivityNetOnlyLead(t *testing.T) {
 		if again[i].Eq != onRows[i].Eq || !again[i].TsEvent.Equal(onRows[i].TsEvent) || again[i].Status != onRows[i].Status {
 			t.Errorf("lead-activity idempotency broken at row %d: %+v vs %+v", i, onRows[i], again[i])
 		}
+	}
+}
+
+func countStatus(t *testing.T, pool *pgxpool.Pool, eq, status int) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM `+schema+`.equipment_events_cpac_shadow WHERE id_equipment=$1 AND status=$2`,
+		eq, status).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestCPACWindowEdgeNoPhantomRunning: a CONTINUOUS run that crosses the 25h
+// window's trailing edge must not mint a RUNNING row at the first in-window
+// minute. Time passing is simulated by shifting the seeded minutes 3 min into
+// the past between ticks. Pre-fix (verified by running this test against the
+// old deriver): a phantom status-6 row at the first in-window minute (in
+// production a NEW one every tick, since the edge moves with now(); here the
+// seeded minutes move instead, so it re-lands on the same key) plus 3 stops,
+// because the NULL-unsafe guard kept every superseded stop.
+func TestCPACWindowEdgeNoPhantomRunning(t *testing.T) {
+	pool := mustPool(t)
+	defer pool.Close()
+	setupSchema(t, pool)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO `+schema+`.equipments VALUES (4000, 999, 0, 1, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	// one productive minute every minute from now-27h to now-23h
+	start := time.Now().UTC().Add(-27 * time.Hour).Truncate(time.Minute)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO `+schema+`.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
+		 SELECT 4000, g, 5 FROM generate_series($1::timestamptz, $1::timestamptz + interval '4 hours', interval '1 minute') g`,
+		start); err != nil {
+		t.Fatal(err)
+	}
+	for tick := 0; tick < 3; tick++ {
+		if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE `+schema+`.equipment_categorical_1min SET ts_value = ts_value - interval '3 minutes' WHERE id_equipment = 4000`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countStatus(t, pool, 4000, 6); n != 0 {
+		t.Errorf("window-edge phantom RUNNING rows: got %d status-6 rows, want 0 (the run started before the window)", n)
+	}
+	if n := countStatus(t, pool, 4000, 10); n != 1 {
+		t.Errorf("want exactly 1 stop (the run's end; superseded stops removed by the correct pass), got %d", n)
+	}
+}
+
+// TestCPACCorrectPassRemovesSupersededStop: late counts fill a silence the
+// deriver already booked as a stop. With planned_downtime/change_over NULL (as
+// the deriver inserts them) the next tick must DELETE the stale stop and
+// re-chain the running row (DO UPDATE). Pre-fix the NULL guard kept both stale.
+func TestCPACCorrectPassRemovesSupersededStop(t *testing.T) {
+	pool := mustPool(t)
+	defer pool.Close()
+	setupSchema(t, pool)
+	ctx := context.Background()
+	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := countStatus(t, pool, 1000, 10); n < 1 {
+		t.Fatalf("setup: expected the silence to be booked as a stop, got %d", n)
+	}
+	// late data: the 25-min silence was actually productive
+	base := time.Now().UTC().Add(-3 * time.Hour)
+	for i := 10; i < 35; i++ {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO `+schema+`.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr) VALUES (1000, $1, 5)`,
+			base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+		t.Fatal(err)
+	}
+	var closedStops, runs int
+	var runEnd *time.Time
+	var tailStop time.Time
+	for _, r := range dump(t, pool) {
+		if r.Eq != 1000 {
+			continue
+		}
+		switch r.Status {
+		case 10:
+			if r.TsEnd != nil {
+				closedStops++
+			} else {
+				tailStop = r.TsEvent
+			}
+		case 6:
+			runs++
+			runEnd = r.TsEnd
+		}
+	}
+	if closedStops != 0 || runs != 1 {
+		t.Errorf("superseded stop not corrected: closed stops=%d runs=%d (want 0 and 1)", closedStops, runs)
+	}
+	if runEnd == nil || !runEnd.Equal(tailStop) {
+		t.Errorf("the surviving run must be re-chained to the trailing stop %s (DO UPDATE), got ts_end %v", tailStop, runEnd)
 	}
 }

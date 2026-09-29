@@ -132,26 +132,77 @@ func TestCPACHumanCoverProbeIsTimeBounded(t *testing.T) {
 	}
 }
 
-// TestCPACGrossOnlySQLByteIdentical pins the gross-only statements (the CPACK
-// shadow instance and every LeadActivity=false caller) to the exact SHA-256 of
-// what executed BEFORE LeadActivity existed (computed on origin/staging 35453b1f's
-// cpac_deriver.go). If this fails, CPACK's executed SQL changed.
-func TestCPACGrossOnlySQLByteIdentical(t *testing.T) {
-	for name, c := range map[string]struct{ tmpl, want string }{
-		"correct": {cpacCorrectSQL, "074b10e1426f84a37663453747cc9bf31357eb630c61d6ef81170a890360f93c"},
-		"upsert":  {cpacUpsertSQL, "45e8d7246109a9a3f4326550cc0e5bf7ed458709e31a637f286e3b3296e6f394"},
+// TestCPACGrossOnlySQLPinned pins the gross-only statements (the CPACK shadow
+// instance and every LeadActivity=false caller) and proves they differ from the
+// pre-PR statements (origin/staging 35453b1f) by EXACTLY the two deliberate bug
+// fixes and nothing else:
+//   - NULL-safe human guards (`IS TRUE` on forced_creation_system /
+//     planned_downtime / change_over) — the correct pass and DO UPDATE were dead;
+//   - the thr+60s look-back before the 25h window — the phantom RUNNING rows.
+//
+// Reverting just those two edits textually must reproduce the old SHA-256; the
+// new SHA-256 is pinned so any further change to CPACK's SQL is deliberate.
+func TestCPACGrossOnlySQLPinned(t *testing.T) {
+	const lookback = `       -- LOOK-BACK`
+	const window = `       AND m.ts_value > now() - interval '25 hours'
+`
+	revert := func(sql string) string {
+		for _, c := range []string{"forced_creation_system", "planned_downtime", "change_over"} {
+			sql = strings.ReplaceAll(sql, c+" IS TRUE", c)
+		}
+		i := strings.Index(sql, lookback)
+		j := strings.Index(sql, "interval '2 days'\n")
+		if i < 0 || j < 0 {
+			t.Fatal("look-back block not found")
+		}
+		return sql[:i] + window + sql[j+len("interval '2 days'\n"):]
+	}
+	for name, c := range map[string]struct{ tmpl, old, now string }{
+		"correct": {cpacCorrectSQL,
+			"074b10e1426f84a37663453747cc9bf31357eb630c61d6ef81170a890360f93c",
+			"25a8189f17814e8396600edae1f1971d0758f2a95b86c86403bad40800d6879a"},
+		"upsert": {cpacUpsertSQL,
+			"45e8d7246109a9a3f4326550cc0e5bf7ed458709e31a637f286e3b3296e6f394",
+			"89ef41c0564c7885a203b3192796691ea6bc384911b7da150b6f82c82c60a151"},
 	} {
 		for _, got := range []string{
 			fmtCPAC(c.tmpl, "silver", "core", "equipment_events_cpac_shadow", "ev", "silver"),
 			fmtCPACMode(c.tmpl, "silver", "core", "equipment_events_cpac_shadow", "ev", "silver", false),
 		} {
-			if h := fmt.Sprintf("%x", sha256.Sum256([]byte(got))); h != c.want {
-				t.Errorf("%s: gross-only SQL changed (sha256 %s, want %s)", name, h, c.want)
+			if h := fmt.Sprintf("%x", sha256.Sum256([]byte(got))); h != c.now {
+				t.Errorf("%s: gross-only SQL changed (sha256 %s, pinned %s)", name, h, c.now)
+			}
+			if h := fmt.Sprintf("%x", sha256.Sum256([]byte(revert(got)))); h != c.old {
+				t.Errorf("%s: gross-only SQL differs from pre-PR by more than the two bug fixes (reverted sha256 %s, want %s)", name, h, c.old)
 			}
 			if strings.Contains(got, "leads") || strings.Contains(got, "net_production_incr") {
 				t.Errorf("%s: gross-only SQL must not reference leads/net", name)
 			}
 		}
+	}
+}
+
+// TestCPACHumanGuardsNullSafe: every nullable boolean in the human guards is
+// wrapped in IS TRUE (a bare boolean makes the whole OR NULL for a derived row
+// whose planned_downtime/change_over are NULL, and NOT NULL filters it out).
+func TestCPACHumanGuardsNullSafe(t *testing.T) {
+	for name, p := range map[string]string{"touched": humanTouchedPred, "cover": humanCoverPred} {
+		for _, c := range []string{"forced_creation_system", "planned_downtime", "change_over"} {
+			if !strings.Contains(p, c+" IS TRUE") {
+				t.Errorf("%s guard: %s must be `IS TRUE` (NULL-safe)", name, c)
+			}
+		}
+	}
+}
+
+// TestCPACWindowLookback: the first in-window minute must get its real gap.
+func TestCPACWindowLookback(t *testing.T) {
+	got := fmtCPAC(cpacUpsertSQL, "s", "public", "t", "ev", "s")
+	if !strings.Contains(got, "m.ts_value > now() - interval '25 hours' - make_interval(secs => s.thr + 60)") {
+		t.Error("counts must read thr+60s before the 25h window (phantom RUNNING-row fix)")
+	}
+	if !strings.Contains(got, "WHERE ts_event >= now() - interval '25 hours' + interval '10 seconds'") {
+		t.Error("final must still drop transitions that fall in the look-back")
 	}
 }
 
