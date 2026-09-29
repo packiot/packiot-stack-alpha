@@ -107,6 +107,21 @@ type Config struct {
 	// push the SHARED sequence for another tenant's sake.
 	ReconcileEnrichKeepLegacyIDs bool
 
+	// MANUAL downtime-event reconciler (manual_reconcile.go). Mirrors legacy
+	// equipment_events_man -> silver.equipment_events_man for the mirrored
+	// enterprise within a lookback window: upsert by (id_equipment, ts_event),
+	// propagate edits (all columns, including a moved ts_event), resolve legacy
+	// duplicates deterministically, and delete ONLY rows this pass owns
+	// (ops.legacy_manual_event_link) that no longer exist in legacy. Ships INERT
+	// (RECONCILE_MANUAL_EVENTS_ENABLED=false). When enabled it is the SOLE writer
+	// of mirrored manual events: the manual-event-created/-edited user_logs
+	// handlers stand down so every mirrored row carries provenance.
+	ReconcileManualEnabled        bool
+	ReconcileManualIntervalSec    int
+	ReconcileManualLookbackDays   int
+	ReconcileManualMaxDeletes     int
+	ReconcileManualRefreshServing bool
+
 	// Event interval-overlap matcher (handlers.go). event-justified / -edited
 	// and event-splitted first try an EXACT (id_equipment, ts_event) match
 	// against the twin base event; if that misses (the twin event came from
@@ -172,6 +187,12 @@ func Load() *Config {
 		ReconcileEnrichEnabled:       getenv("RECONCILE_PO_ENRICH_ENABLED", "false") == "true",
 		ReconcileEnrichWindowDays:    getenvInt("RECONCILE_PO_ENRICH_WINDOW_DAYS", 14),
 		ReconcileEnrichKeepLegacyIDs: getenv("RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS", "true") == "true",
+
+		ReconcileManualEnabled:        getenv("RECONCILE_MANUAL_EVENTS_ENABLED", "false") == "true",
+		ReconcileManualIntervalSec:    getenvInt("RECONCILE_MANUAL_EVENTS_INTERVAL_SEC", 300),
+		ReconcileManualLookbackDays:   getenvInt("RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS", 35),
+		ReconcileManualMaxDeletes:     getenvInt("RECONCILE_MANUAL_EVENTS_MAX_DELETES", 50),
+		ReconcileManualRefreshServing: getenv("RECONCILE_MANUAL_EVENTS_REFRESH_SERVING", "true") == "true",
 
 		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
 		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),

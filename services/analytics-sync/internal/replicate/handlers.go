@@ -430,10 +430,13 @@ const sqlUpdateEventClassification = `UPDATE silver.equipment_events
 	       change_over = $7, idle = $8, planned_downtime = $9, last_update = now()
 	 WHERE id_equipment = $10 AND ts_event = $11`
 
-// equipment_events_man: id_equipment_event is a staging IDENTITY serial —
+// equipment_events_man lives in silver since #261 (t261e dropped the public
+// shim 2026-09-13; the old public.* name made these writes 42P01 → fail-open,
+// silently dropping every manual event after 2026-09-12). Schema-qualify.
+// id_equipment_event is a staging IDENTITY serial —
 // deliberately OMITTED from the column list (the coordinator's warning: do
 // not copy the legacy serial). Idempotent via the ts_event unique key.
-const sqlInsertManualEvent = `INSERT INTO public.equipment_events_man (
+const sqlInsertManualEvent = `INSERT INTO silver.equipment_events_man (
 		id_equipment, id_enterprise, ts_event, ts_end, duration,
 		cd_machine, cd_category, cd_subcategory, desc_category, desc_subcategory,
 		change_over, planned_downtime, txt_downtime_notes,
@@ -441,7 +444,7 @@ const sqlInsertManualEvent = `INSERT INTO public.equipment_events_man (
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,now())
 	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
-const sqlUpdateManualEvent = `UPDATE public.equipment_events_man
+const sqlUpdateManualEvent = `UPDATE silver.equipment_events_man
 	   SET ts_event = COALESCE($1, ts_event), ts_end = COALESCE($2, ts_end),
 	       cd_machine = $3, cd_category = $4, cd_subcategory = $5,
 	       desc_category = $6, desc_subcategory = $7,

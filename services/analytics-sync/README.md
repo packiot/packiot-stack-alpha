@@ -120,3 +120,35 @@ Three replay-fidelity residuals closed (`internal/replicate`):
    event in place (located exact-then-overlap); segments 1..N-1 are inserted as
    new forced auto events. Historical mis-inserted `_man` rows are NOT deleted
    (a documented reversible cleanup is proposed separately).
+
+### legacy-replicator manual downtime-event reconciler (2026-09-29)
+
+`internal/replicate/manual_reconcile.go` — mirrors legacy `equipment_events_man`
+into `silver.equipment_events_man` for the mirrored enterprise, every
+`RECONCILE_MANUAL_EVENTS_INTERVAL_SEC` (300), over `ts_event >= now -
+RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS` (35). Flag `RECONCILE_MANUAL_EVENTS_ENABLED`
+(default `false`).
+
+- **Why**: the replay handlers wrote `public.equipment_events_man`; t261e dropped
+  that shim on 2026-09-13 and `failOpenIfMissing` swallowed the 42P01, so every
+  manual event after 2026-09-12 13:48 was silently lost. The replay also can't
+  mirror moved start times, deletes or legacy duplicates. (Handlers now write
+  `silver.` too, for the flag-off path.)
+- **Key**: `(id_equipment, ts_event)` — the analytics UNIQUE constraint. Legacy
+  has no such constraint; duplicates collapse to the latest `last_update`, then
+  the highest legacy id. Equipment maps via the resolver (packml base topic).
+- **Edits**: all 20 non-key columns are compared and copied (incl. `last_update`,
+  `forced_creation_system`); a moved start time moves the owned row in place.
+- **Provenance / delete safety**: `ops.legacy_manual_event_link` (analytics id →
+  legacy id). Only linked rows are ever deleted; rows authored in the new stack
+  (edge-api / stream-engine) are never touched unless they sit exactly on a
+  legacy key (then they ARE that event and get adopted). A linked row whose
+  legacy row still exists outside the lookback is kept. Guards: legacy window
+  empty ⇒ no deletes; more than `RECONCILE_MANUAL_EVENTS_MAX_DELETES` (50) ⇒ no
+  deletes. Replay-era orphans are seeded by `db/migrations/t-replicate-manual-events`.
+- **Single writer**: with the flag on, `manual-event-created/-edited` replay
+  handlers are not registered.
+- **Serving**: after a commit, `serving.refresh_downtime_events_resolved` runs for
+  every touched UTC day (`RECONCILE_MANUAL_EVENTS_REFRESH_SERVING`, default on) —
+  its 2-minute job only re-derives the last 3 days.
+- **Metric**: `legacy_replicator_manual_events_total{action}`.
