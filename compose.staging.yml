@@ -3264,6 +3264,21 @@ services:
       # query per tick. Rollback: "false" + redeploy (filled values stay).
       RECONCILE_PO_ENRICH_ENABLED: "true"
       RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      # Manual downtime-event reconciler (manual_reconcile.go): mirrors legacy
+      # equipment_events_man -> silver.equipment_events_man within the lookback —
+      # inserts, edits (incl. moved start times), legacy-duplicate collapse, and
+      # deletes of rows it OWNS (ops.legacy_manual_event_link; new-stack-authored
+      # rows are never deleted). When on, the manual-event-created/-edited replay
+      # handlers stand down (single writer). Refreshes serving.downtime_events_resolved
+      # for touched days (its job only re-derives the last 3). First run backfills
+      # everything missed since the 2026-09-12 #261 shim drop. Apply
+      # db/migrations/t-replicate-manual-events/01-up.sql BEFORE enabling (seeds
+      # replay-era orphan provenance). Rollback: "false" + redeploy.
+      RECONCILE_MANUAL_EVENTS_ENABLED: "true"
+      RECONCILE_MANUAL_EVENTS_INTERVAL_SEC: "300"
+      RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "35"
+      RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
+      RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
     networks:
       packiot-net:
     healthcheck:
@@ -3359,6 +3374,13 @@ services:
       RECONCILE_PO_ENRICH_ENABLED: "true"
       RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
       RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS: "false"
+      # Manual-event reconciler — same pass as the ent-3 replicator, into the
+      # sandbox tenant (its seeded provenance is in the same migration).
+      RECONCILE_MANUAL_EVENTS_ENABLED: "true"
+      RECONCILE_MANUAL_EVENTS_INTERVAL_SEC: "300"
+      RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "35"
+      RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
+      RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
     networks:
       packiot-net:
     healthcheck:
