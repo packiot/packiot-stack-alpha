@@ -105,10 +105,10 @@ const computeValuesSQL = `
 	       net_production   = CASE WHEN el.line_lead THEN e.net_production
 	                               WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
 	                               THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END,
-	       oee_q            = CASE WHEN el.line_lead THEN e.oee_q ELSE GREATEST(LEAST(COALESCE(
+	       oee_q            = CASE WHEN el.line_lead THEN e.oee_q ELSE GREATEST(COALESCE(
 	                            (CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
 	                                  THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END)
-	                            / NULLIF(s.gross, 0), 0), 1), 0) END, -- ADR-0037 clamp (net≤gross)
+	                            / NULLIF(s.gross, 0), 0), 0) END, -- uncapped since 2026-09-29
 	       speed            = COALESCE(s.speed, 0),
 	       recalc_needed    = false
 	  FROM eligible el
@@ -182,7 +182,7 @@ const computeLineLeadValuesSQL = `
 	), totals AS MATERIALIZED (
 	    SELECT el.id_equipment, el.lo,
 	           COALESCE(sum(r.eff_gross), 0) AS gross,
-	           COALESCE(sum(LEAST(r.eff_net, r.eff_gross)), 0) AS net
+	           COALESCE(sum(r.eff_net), 0) AS net  -- no per-minute net<=gross clamp (2026-09-29): transit is real
 	      FROM eligible el
 	      LEFT JOIN reconciled r ON r.id_equipment = el.id_equipment AND r.lo = el.lo
 	     GROUP BY el.id_equipment, el.lo
@@ -190,7 +190,7 @@ const computeLineLeadValuesSQL = `
 	UPDATE %[4]s.production_orders_runtime e SET
 	       gross_production = t.gross,
 	       net_production   = t.net,
-	       oee_q            = GREATEST(LEAST(COALESCE(t.net / NULLIF(t.gross, 0), 0), 1), 0)
+	       oee_q            = GREATEST(COALESCE(t.net / NULLIF(t.gross, 0), 0), 0)
 	  FROM totals t
 	 WHERE e.id_equipment = t.id_equipment
 	   AND lower(e.runtime_timerange) = t.lo`

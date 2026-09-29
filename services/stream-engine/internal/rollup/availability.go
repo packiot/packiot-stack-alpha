@@ -185,9 +185,9 @@ const hourCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
+	       oee   = GREATEST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0), 1), 0), -- ADR-0037 clamp (#663)
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
@@ -247,14 +247,14 @@ const shiftCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
+	       oee   = GREATEST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0), 1), 0), -- ADR-0037 clamp (#663)
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(
 	             COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
 	             / NULLIF(
 	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0)
-	                 * COALESCE(e.net / NULLIF(e.gross, 0), 0), 0), 0), 1), 0) -- ADR-0037 clamp (#663)
+	                 * COALESCE(e.net / NULLIF(e.gross, 0), 0), 0), 0), 0) -- ADR-0037 clamp (#663)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
@@ -377,11 +377,11 @@ const hourAvailFloorSQL = `
 const shiftOeeReconcileSQL = `
 	UPDATE %[4]s.equipment_oee_shift e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM shift_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
@@ -389,11 +389,11 @@ const shiftOeeReconcileSQL = `
 const hourOeeReconcileSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '6 hour'`

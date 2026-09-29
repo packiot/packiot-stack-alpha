@@ -276,14 +276,14 @@ const hourEventsSQL = `
 	       -- the already-fixed unclosed-event class) + net>gross would otherwise
 	       -- surface as oee=13918 / oee_q>1 at this grain. Clamp only the derived
 	       -- oee* ratios; raw net/gross/running columns stay as the lineage truth.
-	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0),
+	       oee = GREATEST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0),
 	       -- ADR-0037 C: the OEE waterfall (A×P×Q) was never written at this
 	       -- grain — only the composite oee. Populate Availability + Quality
 	       -- directly (running / planned-production-time ; net / gross); the
 	       -- companion hourOeePSQL back-solves Performance so oee = a·p·q holds,
 	       -- matching the week/month grain (grains.go) and the legacy pg engine.
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0), 0), 1), 0), -- ADR-0037 clamp [0,1] (now INERT: ee_bounded makes ts_planned physical, so A lands in (0,1] not floored to 0); LEAST() denom degrades gracefully
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '6 hour'`
@@ -293,11 +293,11 @@ const hourEventsSQL = `
 // Runs after the events update has persisted oee / oee_a / oee_q on the
 // event-hit rows (recalc_needed just cleared). NULLIF guards a 0 A or Q.
 // Also runs after the counter-only line-lead pass (line_lead.go), whose
-// throughput can drive oee_p > 1; the GREATEST(LEAST(..,1),0) clamp keeps this
+// throughput can drive oee_p > 1; the GREATEST(.., 0) clamp keeps this
 // write inside the *_oee_bounds invariant (#663) so the tick's CHECK holds.
 const hourOeePSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e
-	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
+	   SET oee_p = GREATEST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND NOT e.recalc_needed

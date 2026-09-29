@@ -308,18 +308,18 @@ func TestGoldenLineLeadGrossBelowNet(t *testing.T) {
 		t.Fatal(err)
 	}
 	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
-	// 2026-09-28: a gross reading BELOW net (POLYTYPE1/2 register undercount) used to
-	// clamp net DOWN to gross (950 -> 800, real good output lost). Now the gross
-	// meter is treated as untrustworthy: gross = net + scrap (no scrap meter -> 950),
-	// net kept.
+	// A gross reading BELOW net (POLYTYPE1/2 register undercount). 2026-09-28 used to
+	// clamp net DOWN to gross (real good output lost); 09-28's fix then REWROTE gross
+	// to net + scrap. Since 2026-09-29 both measurements are stored as measured: the
+	// undercounting meter is visible as Q > 1 instead of being repaired away.
 	if !approx(r.net, 950) {
 		t.Errorf("net = %v, want 950 (measured good output must be kept)", r.net)
 	}
-	if !approx(r.gross, 950) {
-		t.Errorf("gross = %v, want 950 (gross < net -> gross = net + scrap)", r.gross)
+	if !approx(r.gross, 800) {
+		t.Errorf("gross = %v, want 800 (measured gross is stored as measured)", r.gross)
 	}
-	if !approx(r.oeeQ, 1) {
-		t.Errorf("oee_q = %v, want 1 (no measured scrap)", r.oeeQ)
+	if !approx(r.oeeQ, 950.0/800.0) {
+		t.Errorf("oee_q = %v, want 1.1875 (uncapped net/gross)", r.oeeQ)
 	}
 }
 
@@ -1083,7 +1083,7 @@ func TestGoldenHourLineLeadAfterEvents(t *testing.T) {
 //	h3: gross 50, net 60    → (60, 60)   gross < net ⇒ the gross meter undercounts:
 //	                                     gross = net + scrap, net kept (2026-09-28;
 //	                                     previously net was clamped down to 50)
-//	shift → gross 240, net 230, scrap 10   (old shift-sum logic: gross 150, net 230)
+//	shift → gross 230, net 230, scrap 0    (measured gross kept, 2026-09-29; old shift-sum logic: gross 150, net 230)
 func TestGoldenShiftLineLeadPerBucketReconcile(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
@@ -1130,8 +1130,123 @@ func TestGoldenShiftLineLeadPerBucketReconcile(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT gross, net, scrap FROM golden.equipment_oee_shift WHERE id_equipment = 900`).Scan(&gross, &net, &scrap); err != nil {
 		t.Fatal(err)
 	}
-	if gross != 240 || net != 230 || scrap != 10 {
-		t.Errorf("per-bucket reconcile: gross=%v net=%v scrap=%v, want 240/230/10 (shift-sum logic gives 150/230)", gross, net, scrap)
+	// Buckets (gross,net): (100,90) as measured; (NULL,80) net-only -> gross=net=80;
+	// (50,60) MEASURED gross kept (transit, since 2026-09-29) -> 230/230, scrap 0.
+	if gross != 230 || net != 230 || scrap != 0 {
+		t.Errorf("per-bucket reconcile: gross=%v net=%v scrap=%v, want 230/230/0 (shift-sum logic gives 150/230)", gross, net, scrap)
+	}
+}
+
+// TestGoldenLineLeadLeadSilentFallback — CPACK L5, 2026-09-15..23: the lead (infeed
+// BREYER) published nothing while the net machine (TEXA) kept counting, and every
+// such shift got production with running_time = 0. The fallback counts the gross/
+// net machines' productive minutes ONLY in hours where the lead has none.
+//
+//	hour A (lead silent):  net machine 902 productive 0..59   → counted (fallback)
+//	hour B (lead active):  lead 901 0..29, net machine 0..59  → lead only
+//	→ one island 0..89 min + 300 s idle grace = 94 min = 5640 s
+//	old SQL (lead only): 30..? → lead minutes 60..89 + grace = 34 min = 2040 s
+//	a leaky fallback (net machine counted in hour B too): capped at the 2 h shift = 7200 s
+func TestGoldenLineLeadLeadSilentFallback(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	const schema = `
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS lead_machine int;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		CREATE TABLE golden.equipment_oee_shift (
+		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
+		    ts_value_production timestamptz, id_shift int, cd_shift text,
+		    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
+		    gross double precision, net double precision, scrap double precision,
+		    speed double precision, ideal_speed double precision,
+		    available_time double precision, running_time double precision,
+		    stopped_time double precision, planned_downtime double precision,
+		    ideal_production double precision, downtime double precision,
+		    changeover_time double precision, oee double precision,
+		    oee_a double precision, oee_p double precision, oee_q double precision,
+		    target double precision, proportional_target double precision,
+		    computed_at timestamptz, source_watermark timestamptz
+		);
+		CREATE TABLE golden.equipment_categorical_1hour (
+		    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
+		    id_shift int, state int, speed double precision, ideal_production_speed double precision,
+		    gross_production_incr double precision, net_production_incr double precision,
+		    scrap_incr double precision
+		);
+		CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
+		SET search_path TO golden, public;`
+	for _, s := range []string{goldenSchema, schema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+
+	const fixture = `
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,net_machine)
+		VALUES (900,1,1,3,3,NULL,901,NULL,902),  -- the LINE: lead 901, net from 902
+		       (901,1,1,3,1,100,NULL,NULL,NULL), -- infeed lead
+		       (902,1,1,3,1,NULL,NULL,NULL,NULL);-- outfeed (net machine)
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig
+		SELECT 900, date_trunc('hour', now()) - interval '4 hours',
+		            date_trunc('hour', now()) - interval '2 hours';
+		INSERT INTO golden.equipment_oee_shift
+		    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		VALUES (900, date_trunc('hour', now()) - interval '4 hours',
+		             date_trunc('hour', now()) - interval '2 hours',
+		             date_trunc('day', now()), 1, true, 0);
+		INSERT INTO golden.equipment_categorical_1hour
+		    (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		VALUES (901, date_trunc('hour', now()) - interval '3 hours', 300, 0),
+		       (902, date_trunc('hour', now()) - interval '4 hours', 0, 600),
+		       (902, date_trunc('hour', now()) - interval '3 hours', 0, 590);
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 902, date_trunc('hour', now()) - interval '4 hours' + make_interval(mins => m), 0, 10
+		  FROM generate_series(0,119) m               -- net machine: both hours
+		UNION ALL
+		SELECT 901, date_trunc('hour', now()) - interval '3 hours' + make_interval(mins => m), 10, 0
+		  FROM generate_series(0,29) m;               -- lead: hour B only, first half`
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET search_path TO golden, public`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)
+	if _, err := conn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+	var running, net float64
+	if err := conn.QueryRow(ctx,
+		`SELECT running_time, net FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
+		Scan(&running, &net); err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(running-5640) > 1e-6 {
+		t.Errorf("line running_time = %v, want 5640 (lead-silent hour from the net machine; lead-active hour from the lead only). 2040 = no fallback, 7200 = fallback leaked into the lead-active hour", running)
+	}
+	if math.Abs(net-1190) > 1e-6 {
+		t.Errorf("line net = %v, want 1190 (net machine, both hours)", net)
 	}
 }
 

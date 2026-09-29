@@ -208,8 +208,10 @@ func TestClamp_DeltaFromZeroSpikeRejectedWithRate(t *testing.T) {
 // The real leak was NOT incr==val: it was a delta from a small STALE baseline,
 // so incr < val by the baseline and the old `value >= absolute` catch missed it
 // on the rate-less / first-sample paths. Exact observed numbers (equip 53):
-//   near-zero baseline: incr 920090 vs val 920390 (ratio 0.9997, baseline ~300)
-//   partial baseline:   incr 479222 vs val 558076 (ratio 0.859,  baseline ~78k)
+//
+//	near-zero baseline: incr 920090 vs val 920390 (ratio 0.9997, baseline ~300)
+//	partial baseline:   incr 479222 vs val 558076 (ratio 0.859,  baseline ~78k)
+//
 // Both are impossible real production (a steady delta is ~3e-5 of the cumulative)
 // and MUST clamp now that the catch uses value >= absolute·spikeFraction (0.5).
 func TestClamp_StaleBaselineNearZeroSpikeRejected(t *testing.T) {
@@ -304,5 +306,77 @@ func TestEvalSpeed_RatelessFailsOpenOnBound(t *testing.T) {
 	// Non-positive speed never rejects.
 	if reject, _ := c.evalSpeed(false, 147, 0); reject {
 		t.Errorf("zero speed must not be voided")
+	}
+}
+
+// ── Totalizer-delta replacement (2026-09-29 clamp audit) ─────────────────────
+// A rejected increment is replaced by the PLC totalizer's own movement when that
+// movement is physically plausible, instead of discarding the interval's real
+// production. Cases mirror live staging rows.
+
+// Rate arm: the upstream increment is bogus (lost baseline) but the totalizer
+// moved 30 parts in 60 s on a 147/min machine → write 30, still record the event.
+func TestClamp_RateRejectUsesTotalizerDelta(t *testing.T) {
+	c := newTestClamp()
+	const cons = sparkplug.KindProdConsumedCount
+	c.eval(47, 3, cons, t0, 147, 20, 945_503)
+	v, ev := c.eval(47, 3, cons, t0+60_000, 147, 900_000, 945_533)
+	if ev == nil || v != 30 || ev.Replacement != 30 || ev.Observed != 900_000 {
+		t.Fatalf("got v=%v ev=%+v, want v=30 (totalizer delta) with event", v, ev)
+	}
+}
+
+// Spike arm with no rated speed (line-lead path): increment ≈ whole totalizer,
+// but the totalizer itself advanced 40 → write 40 (live eq 47, 2026-09-08).
+func TestClamp_SpikeRejectUsesTotalizerDelta(t *testing.T) {
+	c := realFloorClamp()
+	const cons = sparkplug.KindProdConsumedCount
+	c.eval(47, 3, cons, t0, 0, 20, 945_503)
+	v, ev := c.eval(47, 3, cons, t0+30_000, 0, 945_243, 945_543)
+	if ev == nil || v != 40 {
+		t.Fatalf("got v=%v ev=%+v, want 40 from the totalizer", v, ev)
+	}
+}
+
+// The clamp's original target — two publishers with totalizer origins ~828k
+// apart — must still write 0: the totalizer delta is itself a spike.
+func TestClamp_DoublePublisherPhantomStillZero(t *testing.T) {
+	c := realFloorClamp()
+	const cons = sparkplug.KindProdConsumedCount
+	c.eval(57, 1, cons, t0, 147, 5, 1_900)
+	v, ev := c.eval(57, 1, cons, t0+5_000, 147, 828_100, 830_000)
+	if ev == nil || v != 0 || ev.Replacement != 0 {
+		t.Fatalf("phantom: got v=%v ev=%+v, want 0", v, ev)
+	}
+}
+
+// First sample after a restart: no previous totalizer → unknown → 0.
+func TestClamp_NoPreviousTotalizerZero(t *testing.T) {
+	c := realFloorClamp()
+	const cons = sparkplug.KindProdConsumedCount
+	if v, ev := c.eval(47, 3, cons, t0, 0, 770_248, 770_248); v != 0 || ev == nil {
+		t.Fatalf("got (%v,%v), want (0,event)", v, ev)
+	}
+}
+
+// Counter reset (totalizer dropped): the delta is negative → 0.
+func TestClamp_TotalizerDroppedZero(t *testing.T) {
+	c := newTestClamp()
+	const cons = sparkplug.KindProdConsumedCount
+	c.eval(47, 3, cons, t0, 147, 10, 50_000)
+	if v, ev := c.eval(47, 3, cons, t0+60_000, 147, 9_000, 120); v != 0 || ev == nil {
+		t.Fatalf("got (%v,%v), want (0,event)", v, ev)
+	}
+}
+
+// A totalizer delta that itself exceeds K·rate·Δt is as impossible as the
+// increment → 0.
+func TestClamp_ImplausibleTotalizerDeltaZero(t *testing.T) {
+	c := newTestClamp()
+	const cons = sparkplug.KindProdConsumedCount
+	c.eval(47, 3, cons, t0, 147, 10, 100_000)
+	// bound = 4*147*1min = 588; totalizer moved 5,000 in 60 s → impossible.
+	if v, ev := c.eval(47, 3, cons, t0+60_000, 147, 9_000, 105_000); v != 0 || ev == nil {
+		t.Fatalf("got (%v,%v), want (0,event)", v, ev)
 	}
 }

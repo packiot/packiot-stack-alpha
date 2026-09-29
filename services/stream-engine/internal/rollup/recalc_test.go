@@ -97,10 +97,14 @@ func TestComputeSplitInstrumentation(t *testing.T) {
 	if !strings.Contains(computeValuesSQL, "WHEN el.line_lead THEN e.net_production") {
 		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
 	}
-	for _, must := range []string{"eq.tp_equipment = 3", "COALESCE(eq.lead_machine, 0) > 0", "eq.id_enterprise = ANY($2::int[])", "LEAST(r.eff_net, r.eff_gross)"} {
+	for _, must := range []string{"eq.tp_equipment = 3", "COALESCE(eq.lead_machine, 0) > 0", "eq.id_enterprise = ANY($2::int[])", "COALESCE(sum(r.eff_net), 0) AS net"} {
 		if !strings.Contains(computeLineLeadValuesSQL, must) {
 			t.Errorf("line-lead PO pass missing gate/invariant %q", must)
 		}
+	}
+	// 2026-09-29: net is never lowered to gross per minute (transit is real output).
+	if strings.Contains(computeLineLeadValuesSQL, "LEAST(r.eff_net, r.eff_gross)") {
+		t.Error("line-lead PO pass must not clamp net to gross per minute")
 	}
 }
 
@@ -144,7 +148,7 @@ func TestGrainMatrix(t *testing.T) {
 	// ideal_production (grain has no ideal_speed column).
 	for _, m := range []string{
 		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)",        // A ∈ [0,1], ::float or bigint div → 0
-		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                                // Q ∈ [0,1]
+		"oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)",                                // Q ≥ 0, uncapped since 2026-09-29
 		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                            // P derived from ideal_production
 	} {
 		if !strings.Contains(grainOeeReconcileSQL, m) {
@@ -160,11 +164,15 @@ func TestGrainMatrix(t *testing.T) {
 	if !strings.Contains(grainRollupSQL, "s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0)") {
 		t.Error("grainRollupSQL oee_a must cast ::float (bigint columns → integer division → oee_a=0)")
 	}
-	// oee must be the PRODUCT of exactly the three clamped factors (two '*' joining
-	// three GREATEST(LEAST(...)) terms after the `oee =`).
+	// oee must be the PRODUCT of the three factors: A bounded to [0,1] (one
+	// GREATEST(LEAST( term), P and Q uncapped since 2026-09-29 (GREATEST(x, 0)).
 	oeeAssign := grainOeeReconcileSQL[strings.Index(grainOeeReconcileSQL, "oee   ="):]
-	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
-		t.Errorf("canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	oeeExpr := oeeAssign[:strings.Index(oeeAssign, "FROM")]
+	if n := strings.Count(oeeExpr, "GREATEST(LEAST("); n != 1 {
+		t.Errorf("canonical oee: only Availability may be capped, found %d GREATEST(LEAST( terms", n)
+	}
+	if n := strings.Count(oeeExpr, "GREATEST("); n != 3 {
+		t.Errorf("canonical oee must be the product of 3 factors, found %d GREATEST( terms", n)
 	}
 	for _, m := range []string{
 		"s.net / NULLIF(s.ideal_production, 0)",                                // oee (grain variant, pre-reconcile top-down)
@@ -187,7 +195,7 @@ func TestGrainMatrix(t *testing.T) {
 func TestDayCanonicalReconcile(t *testing.T) {
 	for _, m := range []string{
 		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)", // A ∈ [0,1], ::float
-		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                          // Q ∈ [0,1]; net=0/gross=0 → 0 (never 1)
+		"oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)",                          // Q ≥ 0, uncapped (hour transit Q>1 is data); net=0/gross=0 → 0
 		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                      // P from ideal_production (no ideal_speed on day)
 	} {
 		if !strings.Contains(dayOeeReconcileSQL, m) {
@@ -198,10 +206,14 @@ func TestDayCanonicalReconcile(t *testing.T) {
 	if !strings.Contains(dayOeeReconcileSQL, "e.running_time::float / NULLIF(e.available_time, 0)") {
 		t.Error("day reconcile Availability must cast ::float (integer columns → integer division → oee_a=0)")
 	}
-	// oee must be the PRODUCT of exactly the three clamped factors (not back-solved).
+	// oee must be the PRODUCT of the three factors (not back-solved): A capped to
+	// [0,1], P and Q uncapped since 2026-09-29.
 	oeeAssign := dayOeeReconcileSQL[strings.Index(dayOeeReconcileSQL, "oee   ="):]
-	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
-		t.Errorf("day canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 1 {
+		t.Errorf("day canonical oee: only Availability may be capped, found %d GREATEST(LEAST( terms", n)
+	}
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST("); n != 3 {
+		t.Errorf("day canonical oee must be the product of 3 factors, found %d GREATEST( terms", n)
 	}
 	if strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "oee /") || strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "e.oee /") {
 		t.Error("day canonical oee must be a·p·q, not back-solved from oee")

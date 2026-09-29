@@ -26,36 +26,36 @@ func TestSilverNetLeGrossClampShape(t *testing.T) {
 		t.Errorf("clamp must target the grain in GoldSchema (gold.equipment_oee_shift):\n%s", clamp)
 	}
 
-	// The clamp lowers net to gross (folded with the non-negative clamp), and does
-	// so via one SET clause — never two SET clauses for net (which is a SQL error).
-	if !strings.Contains(clamp, "net = GREATEST(LEAST(r.net, r.gross), 0)") {
-		t.Errorf("clamp missing net≤gross fold `net = GREATEST(LEAST(r.net, r.gross), 0)`:\n%s", clamp)
+	// Since 2026-09-29 ("no clamps distorting data") the clamp NEVER lowers net to
+	// gross: within an hour net>gross is units in transit, over a shift a meter that
+	// disagrees — facts, recorded by RunDQScan's detect-only NET_GT_GROSS. net keeps
+	// only its non-negative floor.
+	if strings.Contains(clamp, "LEAST(r.net, r.gross)") {
+		t.Errorf("clamp must not lower net to gross:\n%s", clamp)
 	}
-	if strings.Contains(clamp, "net = GREATEST(r.net, 0)") {
-		t.Errorf("clamp still has the plain non-negative net clamp — the fold must REPLACE it, not add a second SET:\n%s", clamp)
+	if !strings.Contains(clamp, "net = GREATEST(r.net, 0)") {
+		t.Errorf("clamp lost the net non-negative floor:\n%s", clamp)
 	}
-
-	// GROSS must NOT be lowered — it is the comparator identity column. Only its
-	// non-negative clamp is allowed.
+	if strings.Contains(clamp, "r.net > r.gross") || strings.Contains(detect, "r.net > r.gross") {
+		t.Errorf("net>gross must not select rows for clamping:\n%s", clamp)
+	}
+	// GROSS must NOT be lowered either — only its non-negative floor.
 	if !strings.Contains(clamp, "gross = GREATEST(r.gross, 0)") {
 		t.Errorf("clamp lost the gross non-negative clamp:\n%s", clamp)
 	}
 	if strings.Contains(clamp, "gross = GREATEST(LEAST") || strings.Contains(clamp, "gross = LEAST") {
 		t.Errorf("clamp must NEVER lower gross (comparator column):\n%s", clamp)
 	}
-
-	// net>gross is in the WHERE (so a net-only violation is selected) and is the
-	// idempotency key: after net=gross it is false and the row is not re-selected.
-	if !strings.Contains(clamp, "r.net > r.gross") {
-		t.Errorf("clamp WHERE lost the net>gross selector:\n%s", clamp)
+	// scrap is SIGNED (negative = transit): it must not be floored.
+	if strings.Contains(clamp, "scrap = GREATEST(r.scrap, 0)") || strings.Contains(clamp, "r.scrap < 0") {
+		t.Errorf("scrap must not be floored at 0:\n%s", clamp)
 	}
-
-	// The detector emits the dedicated NET_GT_GROSS rule (never silent), carrying
-	// the pre-clamp net (r.net) as observed_value.
-	if !strings.Contains(detect, string(DQRuleInvariantClampedNetGtGross)) {
-		t.Errorf("detect SQL missing INVARIANT_CLAMPED_NET_GT_GROSS rule:\n%s", detect)
+	// Factors keep only the LOWER bound (P>1 = ideal speed too low; hourly Q>1 =
+	// transit) — no LEAST(...,1) anywhere in the factor clamp.
+	if n := strings.Count(clamp, ", 1)"); n != 2 { // oee_a: its SET + its WHERE term
+		t.Errorf("only oee_a may be capped at 1 (want 2 occurrences, got %d):\n%s", n, clamp)
 	}
-	if !strings.Contains(detect, "r.net > r.gross") {
-		t.Errorf("detect SQL missing the net>gross predicate:\n%s", detect)
+	if !strings.Contains(clamp, "oee_a = CASE WHEN r.oee_a IS NULL THEN NULL ELSE LEAST(GREATEST(r.oee_a, 0), 1) END") {
+		t.Errorf("availability must keep its [0,1] clamp:\n%s", clamp)
 	}
 }

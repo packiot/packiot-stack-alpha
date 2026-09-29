@@ -116,9 +116,9 @@ const entityFillList = `
 	       -- summed raw — so a historical corrupt running_time (billions) or
 	       -- net>gross on ONE contributor surfaced as oee_a=38316 / oee_q>1 here.
 	       -- Bound every served factor to [0,1]; raw summed columns untouched.
-	       oee   = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 1), 0),
+	       oee   = GREATEST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 1), 0)`
+	       oee_q = GREATEST(COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 0)`
 
 // entityStatements builds the ordered SQL for one entity tier.
 // KEY = spec key column, TBL = grain table, SRC = source table,
@@ -160,7 +160,7 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	oeeP := func(tbl string) string {
 		return `
 	UPDATE ` + evSchema + `.` + tbl + ` e
-	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee::float / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
+	   SET oee_p = GREATEST(COALESCE(e.oee::float / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	 WHERE NOT e.recalc_needed AND e.ts_value >= now() - interval '1 month'`
 	}
 	monthWindow := `d.ts_value >= now() - interval '1 month' AND d.ts_value <= now()`

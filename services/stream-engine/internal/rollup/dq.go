@@ -133,6 +133,11 @@ type DQEvent struct {
 	Severity      string
 }
 
+// oeeFactorAbsurd — above this an OEE factor is corrupt, not a mis-set ideal speed
+// (the worst real ideal-speed error seen is ~2-3x; the outlier that motivated
+// OEE_GT_1 was 8.2e18).
+const oeeFactorAbsurd = 10.0
+
 // DetectGrain applies every data-quality rule to one computed grain row and
 // returns the events that fired (empty for a clean row). PURE — the single
 // source of truth for the predicates, exercised directly by the unit tests.
@@ -148,11 +153,13 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 		})
 	}
 
-	// OEE_GT_1 — any of the four factors above 1.0 (100%). Report the WORST so the
-	// observed_value carries the magnitude of the outlier (the 8.2e18 case). NULL
+	// OEE_GT_1 — an IMPOSSIBLE factor. Since 2026-09-29 the data is uncapped: P > 1
+	// (ideal speed set too low → IDEAL_SPEED_TOO_LOW) and hourly Q > 1 (units in
+	// transit) are legitimate stored values, so this rule fires only on
+	// availability > 1 (running beyond available time) or an absurd magnitude on
+	// any factor (the 8.2e18 case it was written for). Report the WORST. NULL
 	// factors are "no reading" (line-metered machines nulled by RunUnmetered): they
-	// are SKIPPED, never treated as 0, and a row whose factors are ALL NULL simply
-	// does not fire this rule.
+	// are SKIPPED, never treated as 0.
 	worst := 0.0
 	haveFactor := false
 	for _, f := range []sql.NullFloat64{m.OEE, m.OeeA, m.OeeP, m.OeeQ} {
@@ -161,13 +168,16 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 			haveFactor = true
 		}
 	}
-	if haveFactor && worst > 1.0 {
+	if haveFactor && (worst > oeeFactorAbsurd || (m.OeeA.Valid && m.OeeA.Float64 > 1.0)) {
 		v := worst
 		emit(DQRuleOEEGt1, dqSevError, &v)
 	}
 
-	// NET_GT_GROSS — quality > 1 is physically impossible. observed = the overshoot.
-	if m.Net > m.Gross {
+	// NET_GT_GROSS — output above input. At the HOUR grain that is units in transit
+	// between the infeed and outfeed sensors (stored as-is since 2026-09-29), so it is
+	// not flagged there; from the shift grain up it means a meter disagrees (e.g. an
+	// undercounting infeed). observed = the overshoot.
+	if m.Net > m.Gross && m.Grain != "hour" {
 		v := m.Net - m.Gross
 		emit(DQRuleNetGtGross, dqSevError, &v)
 	}
@@ -204,9 +214,8 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 	}
 
 	// IDEAL_SPEED_TOO_LOW — net production EXCEEDS the ideal-speed baseline
-	// (net > ideal_production ⇒ raw Performance > 1). The served oee_p was clamped to
-	// [0,1] before this scan read the row, so OEE_GT_1 can't fire — this rule is the
-	// ONLY signal that ideal_speed is mis-set (too low). Gated to the metering grains
+	// (net > ideal_production ⇒ raw Performance > 1). oee_p is stored uncapped since
+	// 2026-09-29, and this rule is THE signal that ideal_speed is mis-set (too low). Gated to the metering grains
 	// (shift/hour, IdealSpeedTracked) so the same misconfig doesn't re-fire at every
 	// rolled-up grain. observed = net/ideal_production (the overshoot ratio).
 	if m.IdealSpeedTracked && m.IdealProduction > 0 && m.Net > m.IdealProduction {

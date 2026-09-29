@@ -88,25 +88,25 @@ const recalcSQL = `
 	       -- dual-write trigger, gated on UPDATE OF those cols) are dropped in
 	       -- migration 02; setting only the new cols makes that trigger inert
 	       -- (never fires on a new-col-only UPDATE) — no clobber during rollout.
-	       oee_q            = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0),
+	       oee_q            = GREATEST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 0),
 	       speed            = COALESCE(s.speed, 0),
 	       available_time   = COALESCE(s.avail, 0),
 	       running_time     = COALESCE(s.run, 0),
 	       stopped_time     = COALESCE(s.stop, 0),
 	       planned_downtime = COALESCE(s.planned, 0),
 	       -- ADR-0037 output-invariant clamp (#576 extended): PO OEE factors to [0,1].
-	       oee = GREATEST(LEAST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
+	       oee = GREATEST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	             NULLIF(COALESCE(e.ideal_production_speed,
 	                 (SELECT q.production_speed FROM %[2]s.equipments q
-	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 1), 0),
+	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1), 0),
-	       oee_p  = GREATEST(LEAST(COALESCE(
+	       oee_p  = GREATEST(COALESCE(
 	             COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	                 NULLIF(COALESCE(e.ideal_production_speed,
 	                     (SELECT q.production_speed FROM %[2]s.equipments q
 	                       WHERE q.id_equipment = e.id_equipment)), 0), 0), 0)
 	             / NULLIF(COALESCE(s.run / NULLIF(s.avail, 0), 0) *
-	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 1), 0),
+	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 0),
 	       recalc_needed = false,
 	       last_update   = now()
 	  FROM eligible el
