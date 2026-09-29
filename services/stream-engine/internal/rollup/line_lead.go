@@ -97,7 +97,7 @@ const shiftLineLeadSQL = `
 	      FROM shift_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
-	       AND eq.id_enterprise = ANY(%[6]s)
+	       AND %[6]s
 	       -- #207: was a 2-day window — the live line-lead lookback.
 	       -- RunShift drains its 30-day recalc_needed backlog oldest-first (bounded
 	       -- LIMIT), but this 2-day filter capped the line-lead pass to the recent
@@ -331,7 +331,7 @@ const hourLineLeadSQL = `
 	      FROM hour_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
 	     WHERE eq.tp_equipment = 3 AND COALESCE(eq.lead_machine,0) > 0
-	       AND eq.id_enterprise = ANY(%[6]s)
+	       AND %[6]s
 	), counts AS (
 	    -- Raw per-source sums: GROSS from gross_id (input machine), NET from net_id
 	    -- (output machine: net_machine, else lead_id), SCRAP from scrap_id (defect machine). Single-bucket lookups
@@ -506,8 +506,15 @@ const hourLineLeadSQL = `
 // Shift/Hour *ForParity sets (those diff against the prod engine, which has no
 // line-from-lead pass). The golden test drives these against a hand-built
 // line-metered fixture.
-func ShiftLineLeadSQLForParity() string { return withPlannedPred(shiftLineLeadSQL, false) }
-func HourLineLeadSQLForParity() string  { return withPlannedPred(hourLineLeadSQL, false) }
+// The parity/golden accessors keep their historical contract — %[6]s is the
+// enterprise array LITERAL — by re-expanding the scope placeholder to the
+// enterprise-only predicate (exactly the pre-override text).
+func ShiftLineLeadSQLForParity() string { return entOnlyScope(withPlannedPred(shiftLineLeadSQL, false)) }
+func HourLineLeadSQLForParity() string  { return entOnlyScope(withPlannedPred(hourLineLeadSQL, false)) }
+
+func entOnlyScope(sql string) string {
+	return strings.Replace(sql, "AND %[6]s", "AND eq.id_enterprise = ANY(%[6]s)", 1)
+}
 
 // plannedPredToken marks where the planned-downtime classification predicate
 // goes (plannedDowntimeExpr, flag-dependent). A text token rather than a new

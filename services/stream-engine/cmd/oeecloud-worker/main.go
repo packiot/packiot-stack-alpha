@@ -302,17 +302,27 @@ func main() {
 	// profiles ⇒ exactly the env set (parity). Boot-time load against the medallion
 	// pool (client_descriptors lives in analytics), fail-open to env on any error.
 	lineLeadEnts := config.CSVInts(cfg.CountersOnlyLineLeadEnterprises)
+	var lineOptIn, lineOptOut []int
 	profileDB := analyticsPool
 	if profileDB == nil {
 		profileDB = pool
 	}
 	if sets, err := oeeprofile.Load(ctx, profileDB); err != nil {
 		logger.Warn("oee-profile: boot load failed — using env line-lead set only", slog.String("err", err.Error()))
-	} else if len(sets.LineLeadEnterprises) > 0 {
-		before := len(lineLeadEnts)
-		lineLeadEnts = oeeprofile.UnionInts(lineLeadEnts, sets.LineLeadEnterprises)
-		logger.Info("oee-profile: line-lead enterprises unioned from client descriptors (WS3 Phase 2)",
-			slog.Int("env", before), slog.Int("profile", len(sets.LineLeadEnterprises)), slog.Int("total", len(lineLeadEnts)))
+	} else {
+		if len(sets.LineLeadEnterprises) > 0 {
+			before := len(lineLeadEnts)
+			lineLeadEnts = oeeprofile.UnionInts(lineLeadEnts, sets.LineLeadEnterprises)
+			logger.Info("oee-profile: line-lead enterprises unioned from client descriptors (WS3 Phase 2)",
+				slog.Int("env", before), slog.Int("profile", len(sets.LineLeadEnterprises)), slog.Int("total", len(lineLeadEnts)))
+		}
+		// Per-line overrides (oee_profile.lines) — empty for every tenant without
+		// them, which keeps the rendered rollup SQL byte-identical.
+		lineOptIn, lineOptOut = sets.LineLeadOptIn, sets.LineLeadOptOut
+		if len(lineOptIn)+len(lineOptOut) > 0 {
+			logger.Info("oee-profile: per-line overrides loaded",
+				slog.Int("opt_in_lines", len(lineOptIn)), slog.Int("opt_out_lines", len(lineOptOut)))
+		}
 	}
 	countersAvail := rollup.CountersAvail{
 		Enabled:             cfg.CountersOnlyAvailEnabled,
@@ -320,6 +330,8 @@ func main() {
 		IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
 		LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
 		LineLeadEnterprises: lineLeadEnts,
+		LineLeadOptIn:       lineOptIn,
+		LineLeadOptOut:      lineOptOut,
 		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
 		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
 	}
@@ -327,9 +339,9 @@ func main() {
 	// closes the loop pocontrol opens). Started after the line-lead set is built:
 	// PO counters on line-lead lines are lead-sourced like the hour/shift grains.
 	if cfg.PORecalcEnabled {
-		var poLineLead []int
+		var poLineLead rollup.LineLeadScope
 		if cfg.CountersOnlyLineLeadEnabled {
-			poLineLead = lineLeadEnts
+			poLineLead = countersAvail.LineLead()
 		}
 		go rollup.LoopRefresh(ctx, bgDests,
 			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),

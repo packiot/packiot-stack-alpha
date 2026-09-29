@@ -70,7 +70,7 @@ func TestBackfillOeeFinalize_widened(t *testing.T) {
 // step clears the flag on every line row with an event, and a guarded line-lead
 // then left closed hours at net 0 (see line_lead.go).
 func TestBackfillLineLead_widened(t *testing.T) {
-	got := widenHourWindows(fmtRP(hourLineLeadSQL, "public", pgIntArrayLiteral([]int{3}), 300))
+	got := widenHourWindows(fmtRP(hourLineLeadSQL, "public", LineLeadScope{Enterprises: []int{3}}.Predicate(pgIntArrayLiteral([]int{3})), 300))
 	if strings.Contains(got, "interval '6 hour'") {
 		t.Error("line-lead 6h UPDATE guard not widened — outage-old line hours would be skipped")
 	}

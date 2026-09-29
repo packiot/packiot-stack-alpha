@@ -118,6 +118,11 @@ export const edgeSsmApi = {
         { skipErrorToast: true },
       )
       .then((r) => r.data),
+  /** Restart the OEE calculator so it loads the client's saved OEE settings. */
+  applyOeeSettings: (idEnterprise: number) =>
+    apiClient
+      .post<{ commandId: string; mock?: boolean }>(`${BASE}/apply-oee-settings`, { idEnterprise }, { skipErrorToast: true })
+      .then((r) => r.data),
   openWebUi: (idEnterprise: number) =>
     apiClient
       .post<EdgeWebUi>(`${BASE}/webui`, { idEnterprise }, { skipErrorToast: true })
