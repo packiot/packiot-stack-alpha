@@ -118,3 +118,28 @@ func TestLineLeadSQLAlwaysGetsPlannedPred(t *testing.T) {
 		}
 	}
 }
+
+// Lookback regression (2026-09-29): every pass that turns events into time-in-state
+// must include the event IN EFFECT at its scan bound, not only events that started
+// inside the lookback — else a stop begun before the bound silently disappears.
+func TestEventPassesIncludeEventInEffect(t *testing.T) {
+	for name, sql := range map[string]string{
+		"shiftLineLead": shiftLineLeadSQL, "hourLineLead": hourLineLeadSQL,
+		"hourEvents": hourEventsSQL, "shiftEvents": shiftEventsSQL,
+	} {
+		if strings.Count(sql, "ORDER BY p.ts_event DESC") != 1 || !strings.Contains(sql, "CROSS JOIN LATERAL") {
+			t.Errorf("%s: missing the per-equipment latest-event-before-bound seed", name)
+		}
+	}
+}
+
+// The week/month re-flag must mirror the rollup eligibility (tp > 1), else tp=1
+// rows get flags nothing ever clears; and the rollup must write scrap.
+func TestGrainReflagScopeAndScrap(t *testing.T) {
+	if !strings.Contains(grainReflagSQL, "tp_equipment > 1") {
+		t.Error("grainReflagSQL must be scoped to tp_equipment > 1 (the eligibility)")
+	}
+	if !strings.Contains(grainRollupSQL, "scrap           = COALESCE(s.scrap, 0)") {
+		t.Error("grainRollupSQL must write scrap = Σ daily scrap")
+	}
+}

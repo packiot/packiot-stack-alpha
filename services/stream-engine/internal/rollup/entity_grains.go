@@ -118,7 +118,14 @@ const entityFillList = `
 	       -- Bound every served factor to [0,1]; raw summed columns untouched.
 	       oee   = GREATEST(COALESCE(s.net / NULLIF(s.ideal_production, 0), 0), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1), 0),
-	       oee_q = GREATEST(COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 0)`
+	       oee_q = GREATEST(COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 0),
+	       -- Performance residual INLINE (was only the separate *-oeep statement, which
+	       -- is bounded to the last month): a row drained from the wider eligibility
+	       -- window below gets its oee_p here. Same formula as the oeep statement.
+	       oee_p = GREATEST(COALESCE(
+	               COALESCE(s.net / NULLIF(s.ideal_production, 0), 0)
+	             / NULLIF(LEAST(COALESCE(s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0), 0), 1)
+	                    * COALESCE(s.net::float / NULLIF(s.gross, 0), 0), 0), 0), 0)`
 
 // entityStatements builds the ordered SQL for one entity tier.
 // KEY = spec key column, TBL = grain table, SRC = source table,
@@ -163,7 +170,14 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	   SET oee_p = GREATEST(COALESCE(e.oee::float / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	 WHERE NOT e.recalc_needed AND e.ts_value >= now() - interval '1 month'`
 	}
-	monthWindow := `d.ts_value >= now() - interval '1 month' AND d.ts_value <= now()`
+	// ELIGIBILITY WINDOW (2026-09-29): was 1 month, so a row flagged after it aged
+	// past a month (a bulk re-flag, a recompute runner, the equipment shift grain's
+	// 30-day backlog landing late) could never drain — 511 area_oee_daily rows
+	// (07-04..08-06) and 208 area_oee_shift rows (07-23..08-28) sat flagged forever
+	// on staging. Only FLAGGED rows are selected and nothing flags old rows in steady
+	// state (the flag sources are all ≤ 1 month), so widening the window to the
+	// grain tier's 1-year horizon costs nothing live and lets such backlogs drain.
+	eligWindow := `d.ts_value >= now() - interval '1 year' AND d.ts_value <= now()`
 	sameBucket := `ard.ts_value = el.ts_value`
 
 	// #186 DAY-flag cascade — replaces the retired hour→day cascade. The removed
@@ -189,6 +203,28 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	   AND t.id_site = a.id_site AND t.ts_value = ad.ts_value`
 	}
 
+	// SITE SHIFT FRESHNESS CASCADE (2026-09-29). Nothing flagged a past site shift:
+	// the only flag source was shiftTail (the CURRENT production day), so a site row
+	// was computed during its own day and never again, while its areas kept being
+	// recomputed afterwards (area shifts are flagged by shiftCascadeAreaSQL whenever a
+	// line shift is recomputed — late line-lead fixes, the planned-downtime fix, the
+	// uncapped-data rewrite). CPACK site 6: 87/90 recent shifts computed before 09-28,
+	// planned_downtime 0 on 72/90 while its areas carry it, Σgross 52.6M vs Σareas 31.4M.
+	// Flag a site shift whenever one of its areas' same-bucket rows was computed after
+	// it (or it was never computed). Mirrors the area day-flag cascade; no loop — the
+	// site rollup stamps computed_at in a later statement than the area rollup.
+	siteShiftFlag := `
+	UPDATE ` + evSchema + `.site_oee_shift t SET recalc_needed = true
+	  FROM (SELECT a.id_site, x.ts_value, max(x.computed_at) AS area_computed_at
+	          FROM ` + evSchema + `.area_oee_shift x
+	          JOIN ` + refSchema + `.areas a ON a.id_area = x.id_area
+	         WHERE x.computed_at IS NOT NULL
+	           AND x.ts_value >= now() - interval '1 year' AND x.ts_value <= now()
+	         GROUP BY 1, 2) ax
+	 WHERE t.id_site = ax.id_site AND t.ts_value = ax.ts_value
+	   AND NOT t.recalc_needed
+	   AND (t.computed_at IS NULL OR t.computed_at < ax.area_computed_at)`
+
 	// Shift tail: prod leaks the loop variable — per-row intent restore.
 	shiftTail := `
 	UPDATE ` + evSchema + `.` + sp.Name + `_oee_shift e SET recalc_needed = true
@@ -206,12 +242,15 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 		stmts = append(stmts,
 			struct{ Name, SQL string }{sp.Name + "-day-flag", dayFlagCascade},
 			struct{ Name, SQL string }{sp.Name + "-day", rollup(sp.Name+"_oee_daily", sp.DaySource, sameBucket, `,
-	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 day"), monthWindow, true)},
+	       proportional_target = COALESCE(s.proportional_target, 0)`+stamp("1 day"), eligWindow, true)},
 			struct{ Name, SQL string }{sp.Name + "-day-oeep", oeeP(sp.Name + "_oee_daily")},
 		)
 	}
+	if sp.Name == "site" {
+		stmts = append(stmts, struct{ Name, SQL string }{"site-shift-flag", siteShiftFlag})
+	}
 	stmts = append(stmts,
-		struct{ Name, SQL string }{sp.Name + "-shift", rollup(sp.Name+"_oee_shift", sp.ShiftSource, sameBucket, stamp("1 day"), monthWindow, true)},
+		struct{ Name, SQL string }{sp.Name + "-shift", rollup(sp.Name+"_oee_shift", sp.ShiftSource, sameBucket, stamp("1 day"), eligWindow, true)},
 		struct{ Name, SQL string }{sp.Name + "-shift-oeep", oeeP(sp.Name + "_oee_shift")},
 		struct{ Name, SQL string }{sp.Name + "-shift-tail", shiftTail},
 	)

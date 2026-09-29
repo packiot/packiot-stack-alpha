@@ -179,7 +179,7 @@ const hourSpeedSQL = `
 // (plannedDowntimeExpr) — ADR-0037 (c): off = "ee.planned_downtime = true"
 // (prod-verbatim); on = changeover excluded from the planned bucket so it
 // stays inside (ts_total − ts_planned) and depresses Availability.
-const hourEventsSQL = `
+var hourEventsSQL = `
 	WITH last_seen AS (
 	    -- LAST OBSERVED DATA per equipment — the physical bound for a TRAILING open
 	    -- event (see ee_bounded). The 1-hour cagg carries a bucket for every hour
@@ -224,10 +224,11 @@ const hourEventsSQL = `
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
 	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
-	      FROM %[3]s.equipment_events ee
+	      -- Range scan + the event IN EFFECT at the bound (eventsInEffectSQL): a
+	      -- stop that began before the lookback and still covers the bucket.
+	      FROM ` + eventsInEffectSQL("%[3]s", "SELECT DISTINCT id_equipment FROM hour_elig",
+	"now() - interval '10 days'") + ` ee
 	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
-	     WHERE ee.id_equipment IN (SELECT id_equipment FROM hour_elig)
-	       AND ee.ts_event >= now() - interval '10 days' AND ee.ts_event < now()
 	), ev AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           extract(epoch FROM (least(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total,
@@ -404,7 +405,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+			fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-2: availability count-floor (see shift.go). Inert when off.
 	if ca.engagedFloor() {

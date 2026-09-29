@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -68,7 +69,7 @@ const computeValuesSQL = `
 	           COALESCE(eq.gross_machine, e.id_equipment) AS gross_src,
 	           -- line-lead line in an opted-in enterprise: its counters are written by
 	           -- computeLineLeadValuesSQL (lead-sourced, per-minute reconciled) — leave them.
-	           (eq.tp_equipment = 3 AND COALESCE(eq.lead_machine, 0) > 0 AND eq.id_enterprise = ANY($2::int[])) AS line_lead
+	           (eq.tp_equipment = 3 AND COALESCE(eq.lead_machine, 0) > 0 AND %[6]s) AS line_lead
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
@@ -150,7 +151,7 @@ const computeLineLeadValuesSQL = `
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
 	       AND e.recalc_needed
 	       AND eq.tp_equipment = 3 AND COALESCE(eq.lead_machine, 0) > 0
-	       AND eq.id_enterprise = ANY($2::int[])
+	       AND %[6]s
 	), bucket_counts AS (
 	    -- Per-PO, per-source LATERALs with OFFSET 0 (the line_lead.go #259 lesson): the 1min
 	    -- cagg is a REAL-TIME view; joining it on a non-constant id list keeps the planner from
@@ -445,7 +446,7 @@ func isIntOverflow(err error) bool {
 
 // RunCompute executes one compute pass for one destination. poAvail (FU#8) gates
 // the PO-grain availability write path; default false ⇒ byte-identical parity.
-func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, lineLeadEnterprises []int) (int64, error) {
+func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, scope LineLeadScope) (int64, error) {
 	// Phase B first (see NOTE): its eligible set must predate A's clear.
 	if _, err := d.Pool.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
 		return 0, fmt.Errorf("compute events: %w", err)
@@ -459,16 +460,17 @@ func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, 
 		}
 	}
 	// Phase A2 (line-lead PO counters) — before Phase A clears recalc_needed.
-	ll := lineLeadEnterprises
+	ll := scope.Enterprises
 	if ll == nil {
 		ll = []int{}
 	}
-	if len(ll) > 0 {
-		if _, err := d.Pool.Exec(ctx, fmtRD(computeLineLeadValuesSQL, d), window, ll); err != nil {
+	pred := scope.Predicate("$2::int[]")
+	if scope.Any() {
+		if _, err := d.Pool.Exec(ctx, fmtRD(computeLineLeadValuesSQL, d, pred), window, ll); err != nil {
 			return 0, fmt.Errorf("compute line-lead values: %w", err)
 		}
 	}
-	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d), window, ll)
+	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d, pred), window, ll)
 	if err != nil {
 		return 0, fmt.Errorf("compute values: %w", err)
 	}
@@ -553,7 +555,7 @@ func (s *sweepScheduler) due(now time.Time) []int64 {
 // LoopRefresh = the dispatcher (ledger: po-runtime-refresh): header propagation,
 // compute, recalc, then the closed-row sweep — ordered, drop-per-step (prod's
 // fail-soft blocks). sweepPeriod 0 disables the sweep.
-func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, lineLeadEnterprises []int, every, sweepPeriod time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
+func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, lineLead LineLeadScope, every, sweepPeriod time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
 	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)", slog.Bool("po_availability", poAvail),
 		slog.Duration("closed_row_sweep", sweepPeriod))
 	sweep := newSweepScheduler(sweepPeriod, every)
@@ -567,7 +569,7 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 					firstErr = err
 				}
 			}
-			if _, err := RunCompute(ctx, d, window, poAvail, lineLeadEnterprises); err != nil {
+			if _, err := RunCompute(ctx, d, window, poAvail, lineLead); err != nil {
 				logger.Warn("po-runtime-compute failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				// An int-overflow (SQLSTATE 22003) here is an opaque,
 				// intermittent failure — dump the offending PO row so it's
@@ -608,7 +610,9 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 }
 
 // Parity accessors (single-source emission).
-func ComputeValuesSQLForParity() string        { return computeValuesSQL }
+func ComputeValuesSQLForParity() string {
+	return strings.Replace(computeValuesSQL, "%[6]s", LineLeadScope{}.Predicate("$2::int[]"), 1)
+}
 func ComputeEventsSQLForParity() string        { return computeEventsSQL }
 func ComputeReflagOpenForParity() string       { return computeReflagOpenSQL }
 func ComputeReflagRecentForParity() string     { return computeReflagRecentSQL }

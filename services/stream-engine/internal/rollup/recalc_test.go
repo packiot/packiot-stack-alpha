@@ -102,8 +102,11 @@ func TestComputeSplitInstrumentation(t *testing.T) {
 	if !strings.Contains(computeValuesSQL, "WHEN el.line_lead THEN e.net_production") {
 		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
 	}
+	// The enterprise gate is rendered from LineLeadScope; with no per-line overrides
+	// it must be exactly the historical predicate.
+	renderedLL := strings.Replace(computeLineLeadValuesSQL, "%[6]s", LineLeadScope{}.Predicate("$2::int[]"), 1)
 	for _, must := range []string{"eq.tp_equipment = 3", "COALESCE(eq.lead_machine, 0) > 0", "eq.id_enterprise = ANY($2::int[])", "COALESCE(sum(r.eff_net), 0) AS net"} {
-		if !strings.Contains(computeLineLeadValuesSQL, must) {
+		if !strings.Contains(renderedLL, must) {
 			t.Errorf("line-lead PO pass missing gate/invariant %q", must)
 		}
 	}

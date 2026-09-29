@@ -53,7 +53,28 @@ type Sets struct {
 	// availability (availability_mode=count_silence OR ideal_source=lead_machine).
 	// UNIONed onto CountersOnlyLineLeadEnterprises in main.go.
 	LineLeadEnterprises []int
+	// Per-LINE overrides (oee_profile.lines, keyed by the line's id_equipment):
+	// a line whose override selects line-metered availability is opted IN even
+	// if its client isn't; a line whose override sets a NON-line-lead mode is
+	// opted OUT even if its client is. Only tp=3 lines OF THAT CLIENT count (the
+	// query joins equipments on the descriptor's own enterprise — no cross-tenant
+	// reach).
+	LineLeadOptIn  []int
+	LineLeadOptOut []int
 }
+
+// linesQuery reads per-line overrides, restricted to the client's own tp=3 lines.
+const linesQuery = `
+	SELECT l.key::int AS id_line,
+	       l.value->>'availability_mode' AS availability_mode,
+	       l.value->>'ideal_source'      AS ideal_source
+	  FROM client_descriptors cd
+	 CROSS JOIN LATERAL jsonb_each(cd.descriptor->'oee_profile'->'lines') l
+	  JOIN equipments e ON e.id_equipment = l.key::int
+	                   AND e.id_enterprise = cd.id_enterprise
+	                   AND e.tp_equipment = 3
+	 WHERE jsonb_typeof(cd.descriptor->'oee_profile'->'lines') = 'object'
+	   AND l.key ~ '^[0-9]+$'`
 
 // Load runs the query against an existing pool and folds the rows into Sets.
 // Split out so tests can drive it with a pool directly.
@@ -85,7 +106,32 @@ func Load(ctx context.Context, pool *pgxpool.Pool) (*Sets, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("oee-profile: iterate: %w", err)
 	}
-	return &Sets{LineLeadEnterprises: lineLead}, nil
+	out := &Sets{LineLeadEnterprises: lineLead}
+	lrows, err := pool.Query(ctx, linesQuery)
+	if err != nil {
+		return nil, fmt.Errorf("oee-profile: lines query: %w", err)
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var (
+			line     int
+			availMod *string
+			idealSrc *string
+		)
+		if err := lrows.Scan(&line, &availMod, &idealSrc); err != nil {
+			return nil, fmt.Errorf("oee-profile: lines scan: %w", err)
+		}
+		switch lineOverride(availMod, idealSrc) {
+		case overrideIn:
+			out.LineLeadOptIn = append(out.LineLeadOptIn, line)
+		case overrideOut:
+			out.LineLeadOptOut = append(out.LineLeadOptOut, line)
+		}
+	}
+	if err := lrows.Err(); err != nil {
+		return nil, fmt.Errorf("oee-profile: lines iterate: %w", err)
+	}
+	return out, nil
 }
 
 // UnionInts returns the set union of a and b (order-stable on a, then b's
@@ -167,4 +213,25 @@ func (r *Resolver) ensureFresh(ctx context.Context) {
 	}
 	r.sets = *sets
 	r.loadedAt = time.Now()
+}
+
+type override int
+
+const (
+	overrideNone override = iota // the line inherits its client's setting
+	overrideIn                   // this line derives from its lead machine
+	overrideOut                  // this line does NOT, whatever its client says
+)
+
+// lineOverride classifies one line's override. A line that sets neither knob
+// inherits; one that selects line-metered availability opts in; one that sets
+// a knob to anything else explicitly opts out. Pure (unit-tested).
+func lineOverride(availabilityMode, idealSource *string) override {
+	if availabilityMode == nil && idealSource == nil {
+		return overrideNone
+	}
+	if wantsLineLead(availabilityMode, idealSource) {
+		return overrideIn
+	}
+	return overrideOut
 }

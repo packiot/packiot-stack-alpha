@@ -66,6 +66,12 @@ type CountersAvail struct {
 	// lead_machine's cagg. See line_lead.go.
 	LineLeadEnabled     bool
 	LineLeadEnterprises []int // enterprises whose tp=3 lines derive from lead_machine
+	// Per-LINE overrides from the client's OEE settings (oee_profile.lines):
+	// LineLeadOptIn lines derive from their lead even when their enterprise is
+	// not opted in; LineLeadOptOut lines do NOT even when it is. Both empty ⇒
+	// the rendered SQL is byte-identical to the enterprise-only predicate.
+	LineLeadOptIn  []int
+	LineLeadOptOut []int
 
 	// ── ADR-0048 §Fault-2: availability count-floor ────────────────────────
 	// The state/downtime stream has GAPS: stretches with NO event where the
@@ -106,7 +112,7 @@ func (c CountersAvail) engaged() bool {
 
 // engagedLineLead reports whether the line-from-lead derivation pass should run.
 func (c CountersAvail) engagedLineLead() bool {
-	return c.LineLeadEnabled && len(c.LineLeadEnterprises) > 0 && c.IdleTimeoutSec > 0
+	return c.LineLeadEnabled && c.LineLead().Any() && c.IdleTimeoutSec > 0
 }
 
 // engagedFloor reports whether the availability count-floor pass should run.
@@ -463,4 +469,34 @@ func plannedDowntimeExpr(changeoverAvailability bool) string {
 		return "ee.planned_downtime = true AND ee.change_over IS DISTINCT FROM true"
 	}
 	return "ee.planned_downtime = true"
+}
+
+// LineLeadScope is WHICH lines derive their counters/availability from their
+// lead machine: every line of an opted-in enterprise, minus per-line opt-outs,
+// plus per-line opt-ins (the client's per-line OEE settings).
+type LineLeadScope struct {
+	Enterprises []int
+	OptIn       []int
+	OptOut      []int
+}
+
+// LineLead returns this config's line-lead scope.
+func (c CountersAvail) LineLead() LineLeadScope {
+	return LineLeadScope{Enterprises: c.LineLeadEnterprises, OptIn: c.LineLeadOptIn, OptOut: c.LineLeadOptOut}
+}
+
+// Any reports whether at least one line can be in scope.
+func (s LineLeadScope) Any() bool { return len(s.Enterprises) > 0 || len(s.OptIn) > 0 }
+
+// Predicate renders the scope over the equipments alias "eq". entExpr is the
+// enterprise array expression (a literal or a bind like $2::int[]). With no
+// per-line overrides it is EXACTLY "eq.id_enterprise = ANY(<entExpr>)" — the
+// pre-override SQL, byte for byte — so tenants without overrides are unchanged.
+func (s LineLeadScope) Predicate(entExpr string) string {
+	base := "eq.id_enterprise = ANY(" + entExpr + ")"
+	if len(s.OptIn) == 0 && len(s.OptOut) == 0 {
+		return base
+	}
+	return "((" + base + " AND NOT eq.id_equipment = ANY(" + pgIntArrayLiteral(s.OptOut) +
+		")) OR eq.id_equipment = ANY(" + pgIntArrayLiteral(s.OptIn) + "))"
 }
