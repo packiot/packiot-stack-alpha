@@ -196,6 +196,42 @@ type Message struct {
 	// tenant — with no change to any OEE computation (guard-only). Default 0 ⇒ the
 	// guard only fires where IdealRate is set (the pre-FU#3 behavior, parity).
 	GuardRatedSpeed float64
+
+	// Uint16Counter marks this counter as an UNSIGNED 16-bit PLC register that
+	// the edge read through a SIGNED 16-bit path (S7 `type: int` = INT, int16).
+	// The PLC counts 0..65535 and wraps to 0, but a signed read shows the upper
+	// half as -32768..-1, so every sample above 32767 arrived negative. Without
+	// this flag the calc treats 32767 → -32768 as a genuine counter DROP (reset)
+	// and the Phase-8 `cur >= 0` gate refuses every negative sample, so ~half of
+	// each 65536-count cycle was lost (CPACK L8-PTH / L10-PTH, 2026-09).
+	//
+	// When true, a payload in [-32768, -1] is reinterpreted as payload+65536
+	// (the same bits read unsigned) BEFORE any phase runs, so the stream is the
+	// true 0..65535 sawtooth and the existing isUint16Rollover rule credits the
+	// 65535 → 0 wrap. A value below -32768 is NOT in int16 range, so it cannot be
+	// a signed-read artifact and is left untouched.
+	//
+	// It is PER-TOPIC config, never a heuristic: the caller sets it only for a
+	// counter metric the client descriptor declares as an S7 `type: int` tag
+	// (oeeprofile.Watcher.Uint16Counters). A blanket "negative counter ⇒ +65536"
+	// rule would turn a 32-bit counter's -1 sentinel/glitch into a +60k phantom.
+	// Default false ⇒ byte-identical.
+	Uint16Counter bool
+}
+
+// int16Span is the size of the 16-bit value space; a signed read of an
+// unsigned 16-bit register differs from the true value by exactly this much
+// whenever the register's top bit is set.
+const int16Span = 1 << 16
+
+// normalizeUint16 reinterprets a signed-16-bit read of an unsigned 16-bit
+// register: [-32768, -1] → [32768, 65535]. Values outside int16's negative
+// half are returned unchanged (already non-negative, or not a 16-bit read).
+func normalizeUint16(v int64) (int64, bool) {
+	if v >= math.MinInt16 && v < 0 {
+		return v + int16Span, true
+	}
+	return v, false
 }
 
 // countersOnlyGuardK is the multiplier for the counters-only glitch guard:
@@ -330,6 +366,17 @@ func Calc(msg Message, state State) (Decision, error) {
 func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 	dec := Decision{
 		EnrichedMsg: map[string]any{},
+	}
+
+	// ── Phase 0: unsigned-16-bit reinterpretation (per-topic config) ───────
+	// Must run before EVERY phase: the first-observation seed, the drop/reset
+	// classifier and the Phase-8 `cur >= 0` gate all read msg.Payload. See
+	// Message.Uint16Counter.
+	if msg.Uint16Counter {
+		if v, ok := normalizeUint16(msg.Payload); ok {
+			dec.EnrichedMsg["uint16_signed_read"] = msg.Payload
+			msg.Payload = v
+		}
 	}
 
 	// ── Phase 1: parse timestamp + SETUP-mode guard ────────────────────────

@@ -613,6 +613,7 @@ func main() {
 		// reload keeps the previous snapshot, so the env default is the floor.
 		spikeMargins := func() map[string]float64 { return map[string]float64{} }
 		spikeRatedSpeeds := func() map[string]float64 { return map[string]float64{} }
+		uint16Counters := func() map[string]struct{} { return map[string]struct{}{} }
 		if cfg.OeeProfileFromDB {
 			oeeProfileWatcher := oeeprofile.NewWatcher(
 				time.Duration(cfg.OeeProfileRefreshSeconds)*time.Second,
@@ -621,11 +622,13 @@ func main() {
 			oeeProfileWatcher.Start(ctx)
 			spikeMargins = oeeProfileWatcher.Margins
 			spikeRatedSpeeds = oeeProfileWatcher.RatedSpeeds
+			uint16Counters = oeeProfileWatcher.Uint16Counters
 			logger.Info("per-client OEE profile: DB watcher started (config-as-data)",
 				slog.Int("refresh_seconds", cfg.OeeProfileRefreshSeconds),
 				slog.Int("tenants", oeeProfileWatcher.Tenants()),
 				slog.Int("margin_entries", len(oeeProfileWatcher.Margins())),
 				slog.Int("rated_speed_entries", len(oeeProfileWatcher.RatedSpeeds())),
+				slog.Int("uint16_counter_entries", len(oeeProfileWatcher.Uint16Counters())),
 			)
 		}
 
@@ -655,6 +658,7 @@ func main() {
 			spikeMarginDefault:     cfg.CalcCounterSpikeMargin,
 			spikeMargins:           spikeMargins,
 			spikeRatedSpeeds:       spikeRatedSpeeds,
+			uint16Counters:         uint16Counters,
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
@@ -1066,6 +1070,13 @@ type calcHooks struct {
 	// bound on non-counters-only topics (production_speed from the client OEE
 	// profile). Never nil (main.go sets it to an empty-map closure when off).
 	spikeRatedSpeeds func() map[string]float64
+	// uint16Counters — accessor for the set of full counter metric names the
+	// client descriptor declares as S7 `type: int` (an unsigned 16-bit PLC
+	// register the edge reads signed). Calc reinterprets their negative reads
+	// as +65536 so the uint16 rollover rule credits the wrap instead of the
+	// upper half of every cycle being dropped (CPACK L8/L10-PTH). May be nil in
+	// tests (⇒ no topic flagged).
+	uint16Counters func() map[string]struct{}
 
 	// resetHeal (ADR-0048 count-spike guard) — when true, Calc re-seeds a
 	// genuine totalizer reset instead of emitting the whole-totalizer
@@ -1440,6 +1451,9 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 				msg.IdealRate = rate
 			}
 		}
+	}
+	if h.uint16Counters != nil {
+		_, msg.Uint16Counter = h.uint16Counters()[metric.Name]
 	}
 	msg.ResetHeal = h.resetHeal
 	msg.NoSpeedGuardFallback = h.noSpeedGuardFallback

@@ -240,6 +240,41 @@ func TestRunShadowCountersOnlyAutoFromDB(t *testing.T) {
 	}
 }
 
+// TestRunShadowUint16CounterFromDescriptor proves the wiring from the
+// descriptor-derived uint16 set to Calc: CPACK L8-PTH's S7 INT counter arrives
+// as a SparkPlug Double (internal/s7.Poller) holding the SIGNED read -32768 for
+// the register value 32768. Flagged, it differences +1 from the seeded 32767;
+// unflagged (pre-fix), the negative read is a "reset" and nothing is emitted.
+func TestRunShadowUint16CounterFromDescriptor(t *testing.T) {
+	const name = "CPACK/SC/LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit"
+	for _, flagged := range []bool{true, false} {
+		hooks := newTestCalcHooks(t)
+		hooks.noSpeedGuardFallback = true // L8-PTH reports no MachSpeed (staging flag on)
+		hooks.resetHeal = true
+		if flagged {
+			hooks.uint16Counters = func() map[string]struct{} {
+				return map[string]struct{}{name: {}}
+			}
+		}
+		_ = hooks.state.SetInt(name, 32767)
+		m := sparkplug.ResolvedMetric{Name: name, Value: float64(-32768)}
+		got := hooks.runShadow(context.Background(), "cpack", m, time.Now(), testLogger())
+		var inc int64
+		for _, g := range got {
+			if g.Name == name {
+				inc = g.Value
+			}
+		}
+		want := int64(0)
+		if flagged {
+			want = 1
+		}
+		if inc != want {
+			t.Errorf("flagged=%v: consumed increment = %d, want %d (got %+v)", flagged, inc, want, got)
+		}
+	}
+}
+
 // TestRunShadowNonCounterReturnsNil — seeding metrics (MachSpeed etc.) and
 // non-counter topics contribute nothing to the cutover envelope's Calc set;
 // they ride through as pass-through instead.
