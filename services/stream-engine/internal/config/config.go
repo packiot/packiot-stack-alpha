@@ -231,10 +231,15 @@ type Config struct {
 	UnsCurrentMetricsIntervalMinutes int
 
 	// PO-runtime refresh dispatcher (P3b: compute → recalc, ordered).
-	PORecalcEnabled               bool
-	PORecalcIntervalMinutes       int
-	PORecalcWindow                string // prod: '1 month'
-	PORecalcExcludedEnterprises   string // prod: 6 (owned by its sync chain)
+	PORecalcEnabled             bool
+	PORecalcIntervalMinutes     int
+	PORecalcWindow              string // prod: '1 month'
+	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
+	// PORecomputeSweepHours — every CLOSED runtime row inside PORecalcWindow is
+	// re-flagged for one recompute per this period (spread evenly over the ticks),
+	// so a closed PO picks up late data, a code fix or a data repair instead of
+	// keeping whatever the pipeline computed in its last 48 h. 0 disables.
+	PORecomputeSweepHours         int
 	RuntimeProvisionEnabled       bool
 	RuntimeProvisionIntervalHours int // provision cadence; 30-day horizon makes hourly wasteful (default 6)
 	RuntimeRollupEnabled          bool
@@ -473,6 +478,7 @@ func Load() (*Config, error) {
 		PORecalcIntervalMinutes:          getenvInt("PO_RECALC_INTERVAL_MINUTES", 1),
 		PORecalcWindow:                   getenv("PO_RECALC_WINDOW", "1 month"),
 		PORecalcExcludedEnterprises:      getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
+		PORecomputeSweepHours:            getenvInt("PO_RECOMPUTE_SWEEP_HOURS", 24),
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeProvisionIntervalHours:    getenvInt("RUNTIME_PROVISION_INTERVAL_HOURS", 6),
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",

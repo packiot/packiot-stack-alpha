@@ -346,7 +346,8 @@ func main() {
 		go rollup.LoopRefresh(ctx, bgDests,
 			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
 			cfg.POAvailabilityEnabled, poLineLead,
-			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
+			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute,
+			time.Duration(cfg.PORecomputeSweepHours)*time.Hour, logger, jobObs,
 			uns.RefreshCurrentJobs)
 	}
 

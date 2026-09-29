@@ -97,13 +97,17 @@ type UserLog struct {
 	Category    string
 	IDEquipment int
 	Payload     json.RawMessage
+	// TsLog is when legacy recorded the action. Only order-replaced needs it: its
+	// payload carries no timestamp, and "the runtime running when the operator
+	// replaced it" is the one to reassign. Zero when unknown.
+	TsLog time.Time
 }
 
 // FetchBatch reads up to limit legacy rows for the polled enterprise with
 // id_user_logs > cursor, ascending. Read-only against packiot40.
 func FetchBatch(ctx context.Context, legacyPool *pgxpool.Pool, srcEnterprise int, cursor int64, limit int) ([]UserLog, error) {
 	rows, err := legacyPool.Query(ctx,
-		`SELECT id_user_logs, category, COALESCE(id_equipment,0), payload
+		`SELECT id_user_logs, category, COALESCE(id_equipment,0), payload, COALESCE(ts_log, 'epoch'::timestamptz)
 		   FROM user_logs
 		  WHERE id_enterprise = $1 AND id_user_logs > $2
 		  ORDER BY id_user_logs ASC
@@ -116,7 +120,7 @@ func FetchBatch(ctx context.Context, legacyPool *pgxpool.Pool, srcEnterprise int
 	out := make([]UserLog, 0, limit)
 	for rows.Next() {
 		var u UserLog
-		if err := rows.Scan(&u.ID, &u.Category, &u.IDEquipment, &u.Payload); err != nil {
+		if err := rows.Scan(&u.ID, &u.Category, &u.IDEquipment, &u.Payload, &u.TsLog); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

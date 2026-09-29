@@ -121,11 +121,20 @@ const computeValuesSQL = `
 // line's OWN counters — for CPACK lines those are often gross-only (L4/L5: net 0 ⇒ the operator
 // showed everything as SCRAP), net-only (CER400/SLEEVE: gross 0 ⇒ negative scrap) or absent
 // (L3/L8: 0 production), while the hour/shift grains of the SAME line (line_lead.go) read the
-// LEAD machine with the counter-role reconciliation. Here the PO grain does the same: per MINUTE
-// bucket (POs start/stop mid-hour), gross/net/scrap from gross_machine/lead_machine/scrap_machine,
-// reconciled like line_lead.go, net ≤ gross per bucket, summed over the runtime. Measured on
-// staging (6 h, all CPACK lines): per-minute reconcile == the served hourly net exactly on 14/15
-// producing lines, within ±4 pct on the rest. MUST run before Phase A (reads recalc_needed).
+// LEAD machine with the counter-role reconciliation. Here the PO grain does the same:
+// gross/net/scrap from gross_machine/net_machine/scrap_machine, reconciled like line_lead.go,
+// summed over the runtime. MUST run before Phase A (reads recalc_needed).
+//
+// RECONCILE GRAIN = the HOUR, like the hour and shift grains (2026-09-29). The minutes
+// are first cut to the PO's runtime (a PO that starts mid-hour gets only its own
+// minutes), then grouped per clock hour and reconciled per hour. It used to reconcile
+// per MINUTE: a minute in which the infeed counted but the outfeed did not (units in
+// transit, an outfeed that reports every few minutes) read as "net meter missing", so
+// the identity fill set net = gross for that minute, while the next minute's outfeed
+// count was taken as measured — the same units counted twice. The per-minute
+// net <= gross clamp hid most of it; with the clamp gone (store raw, 2026-09-29) a
+// recompute read L3/L4/L6 PO net 5-13 pct above the line's own hourly net. A meter is
+// "missing" only when it is silent for the whole bucket the grains agree on: the hour.
 // $1 = window, $2 = line-lead enterprises.
 const computeLineLeadValuesSQL = `
 	WITH eligible AS (
@@ -148,7 +157,7 @@ const computeLineLeadValuesSQL = `
 	    -- cagg is a REAL-TIME view; joining it on a non-constant id list keeps the planner from
 	    -- pushing id_equipment into its raw branch (a 16-PO run did not finish in 240 s). As
 	    -- correlated per-source scans each id is a runtime constant → index range scans.
-	    SELECT el.id_equipment, el.lo, x.ts_value AS b,
+	    SELECT el.id_equipment, el.lo, date_trunc('hour', x.ts_value) AS b,
 	           sum(x.g) AS gross, sum(x.n) AS net, sum(x.s) AS scrap
 	      FROM eligible el
 	      CROSS JOIN LATERAL (
@@ -168,7 +177,7 @@ const computeLineLeadValuesSQL = `
 	             AND cs.ts_value >= date_trunc('minute', el.lo) AND cs.ts_value < el.hi
 	          OFFSET 0
 	      ) x
-	     GROUP BY el.id_equipment, el.lo, x.ts_value
+	     GROUP BY el.id_equipment, el.lo, date_trunc('hour', x.ts_value)
 	), reconciled AS MATERIALIZED (
 	    SELECT id_equipment, lo,
 	           CASE WHEN COALESCE(gross,0) > 0 THEN COALESCE(gross,0)
@@ -183,7 +192,7 @@ const computeLineLeadValuesSQL = `
 	), totals AS MATERIALIZED (
 	    SELECT el.id_equipment, el.lo,
 	           COALESCE(sum(r.eff_gross), 0) AS gross,
-	           COALESCE(sum(r.eff_net), 0) AS net  -- no per-minute net<=gross clamp (2026-09-29): transit is real
+	           COALESCE(sum(r.eff_net), 0) AS net  -- no net<=gross clamp (2026-09-29): transit is real
 	      FROM eligible el
 	      LEFT JOIN reconciled r ON r.id_equipment = el.id_equipment AND r.lo = el.lo
 	     GROUP BY el.id_equipment, el.lo
@@ -319,6 +328,48 @@ const computeReflagRecentSQL = `
 	UPDATE %[4]s.production_orders_runtime SET recalc_needed = true
 	 WHERE upper(runtime_timerange) > now() - interval '48 hours'`
 
+// computePropagateHeadersSQL — a PO header is the SUM of its runtime rows
+// (recalc.go), so whenever a runtime row is about to be recomputed its header
+// must be re-summed AFTER it. Runs first in the refresh pass, while the runtime
+// rows still carry recalc_needed (Phase A clears it); recalc runs after compute in
+// the same pass, so the header sees the fresh values.
+//
+// Why (2026-09-29, CPACK PO audit): the header is re-flagged only while running
+// (status 2) or for 48 h after ts_START (recalc.go) — a runtime row recomputed any
+// other way (a re-flag after a fix, a window closed late by the replicator or the
+// reconciler, the sweep below) updated gold but left core.production_orders with
+// the stale sum. Excluded enterprises (recalc's own list) are never touched: their
+// header is owned by another chain. $1 = window, $2 = excluded enterprises.
+const computePropagateHeadersSQL = `
+	UPDATE %[2]s.production_orders p SET recalc_needed = true
+	 WHERE NOT p.recalc_needed AND p.status > 1
+	   AND NOT (p.id_enterprise = ANY($2::int[]))
+	   AND p.id_production_order IN (
+	       SELECT e.id_production_order FROM %[4]s.production_orders_runtime e
+	        WHERE e.recalc_needed
+	          AND e.runtime_timerange && tstzrange(now() - $1::interval, now()))`
+
+// computeSweepSQL — the CLOSED-row recompute sweep. The compute pass only sees a
+// runtime row while it is flagged, and it is flagged only while open or for 48 h
+// after it closed (the two re-flags above). Everything computed before that is
+// frozen: when the code that computed it was wrong, the data it read was late, or a
+// repair script edited it, a closed PO kept the bad number forever — the audit found
+// 43 CPACK POs (SLEEVE1/2, CER400, ISIMAT: runtime net 0 while the line's hourly
+// matched legacy) whose rows had been computed from the line's own counters before
+// the line-lead pass existed, then zeroed by a one-off net<=gross clamp, and never
+// recomputed by the code that would get them right.
+//
+// Each tick re-flags the closed rows of a few SLICES (id modulo $2), so every
+// closed row inside the window is recomputed once per sweep period, spread evenly
+// (~ rows/slices per tick) instead of one burst. $1 = window, $2 = slice count,
+// $3 = the slices due this tick.
+const computeSweepSQL = `
+	UPDATE %[4]s.production_orders_runtime SET recalc_needed = true
+	 WHERE NOT recalc_needed
+	   AND upper(runtime_timerange) IS NOT NULL
+	   AND runtime_timerange && tstzrange(now() - $1::interval, now())
+	   AND (id_production_order_runtime %% $2::bigint) = ANY($3::bigint[])`
+
 // computeOverflowDiagSQL mirrors computeEventsSQL's eligible+ev CTEs but,
 // instead of updating, RETURNS the eligible rows whose computed running/
 // stopped exceed a 32-bit integer — i.e. the exact rows that make the UPDATE
@@ -432,13 +483,92 @@ func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, 
 	return tag.RowsAffected(), nil
 }
 
-// LoopRefresh = the dispatcher (ledger: po-runtime-refresh): compute
-// then recalc, ordered, drop-per-step (prod's fail-soft blocks).
-func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, lineLead LineLeadScope, every time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
-	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)", slog.Bool("po_availability", poAvail))
+// RunPropagateHeaders flags the header of every runtime row the next compute
+// pass will recompute (computePropagateHeadersSQL). Call it BEFORE RunCompute.
+func RunPropagateHeaders(ctx context.Context, d flows.Dest, window string, exclEnterprises []int) (int64, error) {
+	if exclEnterprises == nil {
+		exclEnterprises = []int{}
+	}
+	tag, err := d.Pool.Exec(ctx, fmtRD(computePropagateHeadersSQL, d), window, exclEnterprises)
+	if err != nil {
+		return 0, fmt.Errorf("propagate headers: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// RunSweep re-flags the closed runtime rows of the given slices (computeSweepSQL).
+// A no-op when slices is empty or slicesTotal < 1.
+func RunSweep(ctx context.Context, d flows.Dest, window string, slicesTotal int64, slices []int64) (int64, error) {
+	if slicesTotal < 1 || len(slices) == 0 {
+		return 0, nil
+	}
+	tag, err := d.Pool.Exec(ctx, fmtRD(computeSweepSQL, d), window, slicesTotal, slices)
+	if err != nil {
+		return 0, fmt.Errorf("sweep: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// sweepScheduler hands out the slices due at each tick: slice = tick number modulo
+// the slice count, where a tick is one `every` interval of wall-clock time. Ticks
+// that were skipped (a pass that ran longer than `every`) are caught up on the next
+// call, capped at one full cycle, so no slice is starved by a regular overrun.
+type sweepScheduler struct {
+	total int64 // slices per sweep period (period / every), 0 = disabled
+	every time.Duration
+	last  int64 // last tick handed out; 0 = none yet
+}
+
+func newSweepScheduler(period, every time.Duration) *sweepScheduler {
+	if period <= 0 || every <= 0 {
+		return &sweepScheduler{}
+	}
+	n := int64(period / every)
+	if n < 1 {
+		n = 1
+	}
+	return &sweepScheduler{total: n, every: every}
+}
+
+func (s *sweepScheduler) due(now time.Time) []int64 {
+	if s.total == 0 {
+		return nil
+	}
+	cur := now.UnixNano() / int64(s.every)
+	from := cur
+	if s.last > 0 && s.last < cur {
+		from = s.last + 1
+		if cur-from+1 > s.total {
+			from = cur - s.total + 1
+		}
+	} else if s.last >= cur {
+		return nil // same tick already handed out
+	}
+	s.last = cur
+	out := make([]int64, 0, cur-from+1)
+	for t := from; t <= cur; t++ {
+		out = append(out, t%s.total)
+	}
+	return out
+}
+
+// LoopRefresh = the dispatcher (ledger: po-runtime-refresh): header propagation,
+// compute, recalc, then the closed-row sweep — ordered, drop-per-step (prod's
+// fail-soft blocks). sweepPeriod 0 disables the sweep.
+func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnterprises []int, poAvail bool, lineLead LineLeadScope, every, sweepPeriod time.Duration, logger *slog.Logger, obs jobs.Observer, extra func(context.Context, flows.Dest) error) {
+	logger.Info("po-runtime-refresh started (P3b dispatcher: compute → recalc)", slog.Bool("po_availability", poAvail),
+		slog.Duration("closed_row_sweep", sweepPeriod))
+	sweep := newSweepScheduler(sweepPeriod, every)
 	jobs.Loop(ctx, jobs.Job{Name: "po-runtime-refresh", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
+		slices := sweep.due(time.Now())
 		for _, d := range dests {
+			if _, err := RunPropagateHeaders(ctx, d, window, exclEnterprises); err != nil {
+				logger.Warn("po-runtime-propagate failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 			if _, err := RunCompute(ctx, d, window, poAvail, lineLead); err != nil {
 				logger.Warn("po-runtime-compute failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				// An int-overflow (SQLSTATE 22003) here is an opaque,
@@ -453,6 +583,14 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 			}
 			if _, err := RunRecalc(ctx, d, window, exclEnterprises); err != nil {
 				logger.Warn("po-runtime-recalc failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			// Closed-row sweep: flags rows for the NEXT pass, whose propagation step
+			// then flags their headers before compute, so recalc re-sums fresh values.
+			if _, err := RunSweep(ctx, d, window, sweep.total, slices); err != nil {
+				logger.Warn("po-runtime-sweep failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -475,6 +613,8 @@ func LoopRefresh(ctx context.Context, dests []flows.Dest, window string, exclEnt
 func ComputeValuesSQLForParity() string {
 	return strings.Replace(computeValuesSQL, "%[6]s", LineLeadScope{}.Predicate("$2::int[]"), 1)
 }
-func ComputeEventsSQLForParity() string    { return computeEventsSQL }
-func ComputeReflagOpenForParity() string   { return computeReflagOpenSQL }
-func ComputeReflagRecentForParity() string { return computeReflagRecentSQL }
+func ComputeEventsSQLForParity() string        { return computeEventsSQL }
+func ComputeReflagOpenForParity() string       { return computeReflagOpenSQL }
+func ComputeReflagRecentForParity() string     { return computeReflagRecentSQL }
+func ComputeSweepSQLForParity() string         { return computeSweepSQL }
+func ComputePropagateHeadersForParity() string { return computePropagateHeadersSQL }

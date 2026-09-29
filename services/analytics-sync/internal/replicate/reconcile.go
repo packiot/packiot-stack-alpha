@@ -89,10 +89,25 @@ const sqlReconcileInsertPO = `INSERT INTO core.production_orders (
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)
 	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
 
+// Finishes a twin PO that legacy has finished/paused LATER than the twin knows:
+// a zombie still running (status 2), or — since 2026-09-29 — a PO the twin holds
+// as PAUSED (status 4) with an earlier end while legacy resumed and finished it
+// (FLEXO 894815/896297/8962980…: legacy 3, twin 4 with the pause's ts_end: the
+// resume was never replayed and a late pause replay rolled the finish back).
+// Monotonic: only ever moves the end FORWARD, never below ts_start.
 const sqlReconcileFinishPO = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_final = COALESCE($3, production_final),
 	       recalc_needed = true, last_update = now()
-	 WHERE id_enterprise = $4 AND id_order = $5 AND status = 2`
+	 WHERE id_enterprise = $4 AND id_order = $5 AND status IN (2, 4)
+	   AND (ts_end IS NULL OR ts_end < $2)
+	   AND (ts_start IS NULL OR ts_start <= $2)`
+
+// Fills a twin PO's missing ts_start from legacy (an order-replaced or a
+// pre-existing-PO start the replay missed left it NULL; 13 CPACK POs 08-08..09-29).
+const sqlReconcileFillStart = `UPDATE core.production_orders
+	   SET ts_start = $1, recalc_needed = true, last_update = now()
+	 WHERE id_enterprise = $2 AND id_order = $3 AND ts_start IS NULL
+	   AND (ts_end IS NULL OR ts_end >= $1)`
 
 type legacyPO struct {
 	idOrder              int64
@@ -179,7 +194,7 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 		}
 		var twinStatus int
 		err := rc.dest.QueryRow(ctx,
-			`SELECT status FROM production_orders WHERE id_enterprise = $1 AND id_order = $2`,
+			`SELECT status FROM core.production_orders WHERE id_enterprise = $1 AND id_order = $2`,
 			ent, p.idOrder).Scan(&twinStatus)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -215,21 +230,32 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 				slog.Int64("id_order", p.idOrder), slog.String("err", err.Error()))
 			continue
 		default:
-			// Present on the twin. Finish it if legacy has moved to
-			// finished/paused but the twin is stuck running (zombie PO).
-			if twinStatus == 2 && (p.status == 3 || p.status == 4) && p.tsEnd.Valid {
+			// Present on the twin. A start the replay missed leaves ts_start NULL:
+			// take legacy's.
+			if p.tsStart.Valid {
+				if _, e := rc.dest.Exec(ctx, sqlReconcileFillStart, p.tsStart.Time, ent, p.idOrder); e != nil {
+					rc.logger.Warn("PO reconcile: fill start failed",
+						slog.Int64("id_order", p.idOrder), slog.String("err", e.Error()))
+				}
+			}
+			// Finish it if legacy has finished/paused it later than the twin knows
+			// (a zombie still running, or a paused twin legacy resumed and finished).
+			if (twinStatus == 2 || twinStatus == 4) && (p.status == 3 || p.status == 4) && p.tsEnd.Valid {
 				if e := closeRuntimeWindow(ctx, rc.dest, ent, p.idOrder, p.tsEnd.Time, 0, rc.logger); e != nil {
 					rc.logger.Warn("PO reconcile: close window failed",
 						slog.Int64("id_order", p.idOrder), slog.String("err", e.Error()))
 				}
-				if _, e := rc.dest.Exec(ctx, sqlReconcileFinishPO,
-					p.status, p.tsEnd.Time, nullIntArg(p.productionFinal), ent, p.idOrder); e != nil {
+				ct, e := rc.dest.Exec(ctx, sqlReconcileFinishPO,
+					p.status, p.tsEnd.Time, nullIntArg(p.productionFinal), ent, p.idOrder)
+				if e != nil {
 					rc.logger.Warn("PO reconcile: finish failed",
 						slog.Int64("id_order", p.idOrder), slog.String("err", e.Error()))
 					continue
 				}
-				finished++
-				rc.m.IncReconcileFinished()
+				if ct.RowsAffected() > 0 {
+					finished++
+					rc.m.IncReconcileFinished()
+				}
 			}
 		}
 	}

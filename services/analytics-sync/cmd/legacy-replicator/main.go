@@ -88,7 +88,7 @@ func main() {
 	d.Register("order-started", replicate.OrderStarted(logger))
 	d.Register("order-stopped", replicate.OrderStopped(logger))
 	d.Register("order-time-changed", replicate.OrderTimeChanged(logger))
-	d.Register("order-replaced", replicate.OrderRecalc(logger))
+	d.Register("order-replaced", replicate.OrderReplaced(logger))
 	d.Register("order-status-changed", replicate.OrderRecalc(logger))
 	d.Register("order-changed", replicate.OrderChanged(logger))
 
