@@ -166,8 +166,12 @@ func TestReaderSpotsFailClosed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
-			if _, err := d.GeneratePlcReaderFlow(); err == nil {
+			_, err = d.GeneratePlcReaderFlow()
+			if err == nil {
 				t.Fatal("want a generate error, got nil")
+			}
+			if !IsAuthoringError(err) {
+				t.Errorf("want an AuthoringError (→ HTTP 400), got %T: %v", err, err)
 			}
 		})
 	}

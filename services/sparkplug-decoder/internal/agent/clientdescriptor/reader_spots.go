@@ -1,9 +1,26 @@
 package clientdescriptor
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// AuthoringError marks a generate-time failure caused by what the descriptor's
+// AUTHOR wrote (a customization id colliding with a generated node, a typo'd or
+// wrong-direction spot link) — as opposed to a generator fault. Validate() cannot
+// see these (they need the rendered reader's reserved ids), so they surface at
+// Generate; callers use IsAuthoringError to answer 4xx, not 5xx.
+type AuthoringError struct{ Err error }
+
+func (e *AuthoringError) Error() string { return e.Err.Error() }
+func (e *AuthoringError) Unwrap() error { return e.Err }
+
+// IsAuthoringError reports whether err (possibly wrapped) is an AuthoringError.
+func IsAuthoringError(err error) bool {
+	var a *AuthoringError
+	return errors.As(err, &a)
+}
 
 // Reader SPOTS — the named attach points the generated reader tab exposes to the
 // customizations (ADR-0058 Tier 2). Before spots, a pasted Node-RED flow landed on

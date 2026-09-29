@@ -428,8 +428,8 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 		}
 		id, _ := node["id"].(string)
 		if reserved[id] {
-			return nil, fmt.Errorf("customizations[%d]: node id %q collides with a generated reader node id "+
-				"— rename it (the '%s PLC reader' tab owns that id)", i, id, d.Tenant)
+			return nil, &AuthoringError{fmt.Errorf("customizations[%d]: node id %q collides with a generated reader node id "+
+				"— rename it (the '%s PLC reader' tab owns that id)", i, id, d.Tenant)}
 		}
 		reserved[id] = true
 		if z, isFlowNode := node["z"]; isFlowNode {
@@ -438,7 +438,7 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 			}
 		}
 		if err := subscribeSpots(spots, node, i, p); err != nil {
-			return nil, err
+			return nil, &AuthoringError{err}
 		}
 		nodes = append(nodes, node)
 	}
