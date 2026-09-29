@@ -148,9 +148,15 @@ var endpoints = []endpoint{
 		class: routeGlobalRef, args: nil},
 	// downtime-reasons: equipments already carries id_enterprise; add the
 	// tenant predicate and move the topic vector to $2. Same projected columns.
+	// LINE-ONLY reasons: a member of a downtime_from_lead_machine line gets the
+	// LINE's tree (same rule as the equipment-downtime-reasons dataset).
 	{path: "/v1/downtime-reasons",
-		sql: `SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
+		sql: `SELECT e.id_equipment, r.downtime_reasons, e.scrap_reasons, p.packml_topic
 	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment AND p.id_unit = e.id_equipment
+	   LEFT JOIN equipments l ON l.id_equipment = e.id_parentequipment
+	        AND l.id_enterprise = e.id_enterprise AND l.tp_equipment = 3
+	        AND l.downtime_from_lead_machine AND l.active
+	   JOIN equipments r ON r.id_equipment = COALESCE(l.id_equipment, e.id_equipment)
 	  WHERE p.packml_topic = ANY($2) AND p.active AND e.id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 }
