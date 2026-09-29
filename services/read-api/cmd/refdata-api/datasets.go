@@ -798,10 +798,28 @@ var datasets = map[string]dataset{
 	// downtime_reasons JSON by equipment id (Hasura scopes the enterprise by
 	// permission). We scope enterprise as $1 and take the equipment id as the
 	// client filter ($2), same ownership shape as the overview-detail group.
+	//
+	// LINE-ONLY reasons: when the equipment's parent LINE is flagged
+	// downtime_from_lead_machine (its stops are minted on member machines and
+	// attributed to the line — Bispharma ent 5), the reason taxonomy is the
+	// LINE's tree (one entry per member station), not the member's own. The
+	// justify/split dialogs look reasons up by the event's id_equipment (the
+	// lead machine), so resolving here gives every consumer the line tree with
+	// no client change. Unflagged lines (CPACK) are byte-identical: the LEFT JOIN
+	// matches nothing and the equipment's own tree is returned.
+	// downtime_reasons_source = the equipment whose tree was returned, so an
+	// editor can write back to the row it actually displays.
 	"equipment-downtime-reasons": {
-		group: "settings", doc: "Per-equipment downtime reasons config (equipments.downtime_reasons)",
-		sql: `SELECT id_equipment, nm_equipment, downtime_reasons FROM equipments
-			WHERE id_enterprise = $1 AND id_equipment = $2 AND active`,
+		group: "settings", doc: "Per-equipment downtime reasons config (equipments.downtime_reasons; the parent line's tree when the line is downtime_from_lead_machine)",
+		// l = the flagged parent line (if any); r = the row whose tree is served.
+		sql: `SELECT e.id_equipment, e.nm_equipment, r.downtime_reasons,
+				r.id_equipment AS downtime_reasons_source
+			FROM equipments e
+			LEFT JOIN equipments l ON l.id_equipment = e.id_parentequipment
+				AND l.id_enterprise = e.id_enterprise AND l.tp_equipment = 3
+				AND l.downtime_from_lead_machine AND l.active
+			JOIN equipments r ON r.id_equipment = COALESCE(l.id_equipment, e.id_equipment)
+			WHERE e.id_enterprise = $1 AND e.id_equipment = $2 AND e.active`,
 		params: []dsParam{pEnt, pEquip},
 	},
 
