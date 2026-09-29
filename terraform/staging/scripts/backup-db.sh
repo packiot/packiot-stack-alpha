@@ -16,6 +16,7 @@
 #   weekly/YYYY-Www.dump.gz            (Sundays) kept for 4 weeks
 #   monthly/YYYY-MM.dump.gz            (1st of month) kept for 3 months
 #   [<db>/]latest -> alias key updated each run to point at the freshest daily
+#   globals/daily/YYYY-MM-DD.sql.gz, globals/latest.sql.gz   roles (no passwords)
 #
 # Restoring a TimescaleDB database (packiot_analytics): run
 #   SELECT timescaledb_pre_restore();  before pg_restore and
@@ -45,9 +46,31 @@ set -euo pipefail
 : "${RETAIN_WEEKLY:=4}"
 : "${RETAIN_MONTHLY:=3}"
 
-LOG_TAG="packiot-db-backup"
+# Prometheus textfile collector dir, read by the alloy-db agent
+# (monitoring/alloy/db-agent.alloy) and alerted on in monitoring/prometheus/rules.yml
+# (BackupStale / BackupShrank). Empty = don't write metrics.
+: "${METRICS_DIR:=/var/lib/packiot-backup/metrics}"
 
-log() { echo "[$(date -u +%FT%TZ)] $*" | logger -t "$LOG_TAG" -s 2>&1; }
+# stdout only: under systemd it lands in the journal once (journalctl -u
+# packiot-db-backup). `logger -s` used to write it twice (syslog + stderr).
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+
+# write_metrics <db> <bytes>: atomic rename so the collector never reads a
+# half-written file. One file per DB; last_success only moves on success.
+write_metrics() {
+    [ -n "$METRICS_DIR" ] || return 0
+    mkdir -p "$METRICS_DIR"
+    local f="$METRICS_DIR/backup_$1.prom"
+    cat > "$f.tmp" <<PROM
+# HELP packiot_backup_last_success_timestamp_seconds Unix time of the last successful upload.
+# TYPE packiot_backup_last_success_timestamp_seconds gauge
+packiot_backup_last_success_timestamp_seconds{db="$1"} $(date +%s)
+# HELP packiot_backup_size_bytes Size of the last uploaded dump (gzipped).
+# TYPE packiot_backup_size_bytes gauge
+packiot_backup_size_bytes{db="$1"} $2
+PROM
+    mv "$f.tmp" "$f"
+}
 
 # ── Compute today's classification ────────────────────────────────────────────
 TODAY=$(date -u +%F)                       # YYYY-MM-DD
@@ -98,10 +121,13 @@ backup_one() {
     log "Starting backup: db=$db container=$POSTGRES_CONTAINER bucket=$BACKUP_BUCKET prefix=${prefix:-<root>}"
 
     # --format=custom: portable, parallelizable on restore via pg_restore -j.
-    # --no-owner --no-privileges: portable across clusters with different roles.
+    # Owners + GRANTs are KEPT (restore the globals/ roles file first). Until
+    # 2026-09-29 this used --no-owner --no-privileges: a restore then made every
+    # object superuser-owned with no grants — and packiot_analytics' RLS definer
+    # views owned by a superuser BYPASS RLS (tenant fence silently gone).
     # --compress=0: gzip externally so the .dump.gz extension is honest.
     docker exec -e "PGUSER=$POSTGRES_USER" "$POSTGRES_CONTAINER" \
-        pg_dump --format=custom --no-owner --no-privileges --compress=0 \
+        pg_dump --format=custom --compress=0 \
                 --dbname="$db" \
       | gzip -6 > "$dump_file"
 
@@ -137,12 +163,32 @@ backup_one() {
     prune_prefix "${prefix}daily/"   "$RETAIN_DAILY"
     prune_prefix "${prefix}weekly/"  "$RETAIN_WEEKLY"
     prune_prefix "${prefix}monthly/" "$RETAIN_MONTHLY"
+    write_metrics "$db" "$dump_bytes"
     log "Backup complete: db=$db"
+}
+
+# backup_roles: cluster-wide roles (pg_dumpall --roles-only). Owners and grants
+# inside the per-DB dumps reference these; restore-db.sh applies it first.
+# --no-role-passwords: no hashes in S3 — after a disaster restore, reset LOGIN
+# passwords from Secrets Manager / the compose .env.
+backup_roles() {
+    local f="$DUMP_DIR/globals-${TODAY}.sql.gz"
+    docker exec -e "PGUSER=$POSTGRES_USER" "$POSTGRES_CONTAINER" \
+        pg_dumpall --roles-only --no-role-passwords | gzip -6 > "$f"
+    log "roles dump: $(zcat "$f" | grep -c '^CREATE ROLE') roles"
+    aws s3 cp "$f" "s3://$BACKUP_BUCKET/globals/daily/${TODAY}.sql.gz" --region "$AWS_REGION" --no-progress
+    aws s3 cp "$f" "s3://$BACKUP_BUCKET/globals/latest.sql.gz" --region "$AWS_REGION" --no-progress
+    rm -f "$f"
+    prune_prefix "globals/daily/" "$RETAIN_DAILY"
 }
 
 # One DB failing must not skip the others, but the run still exits non-zero so
 # systemd records the failure.
 failed=0
+if ! ( set -euo pipefail; backup_roles ); then
+    log "ERROR: roles backup failed"
+    failed=1
+fi
 for db in $POSTGRES_DBS; do
     if ! ( set -euo pipefail; backup_one "$db" ); then
         log "ERROR: backup of $db failed"
