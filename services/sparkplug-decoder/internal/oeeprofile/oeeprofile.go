@@ -81,6 +81,30 @@ const marginsQuery = `
 	          pr.id_packml_register ASC
 `
 
+// uint16CountersQuery lists every production-counter metric a client descriptor
+// declares as an S7 `type: int` tag — a 16-bit register the edge reads SIGNED
+// (int16, internal/s7.GetInt). Production counters are never negative, so such
+// a register is an UNSIGNED 0..65535 totalizer whose upper half arrives as
+// -32768..-1; the decoder's Calc reinterprets those reads for exactly these
+// metrics (calc_production_counters.Message.Uint16Counter).
+//
+// The full SparkPlug metric name is <packml_topic><tag.metric> — the same
+// composition internal/s7.TagsForEndpoint uses on the box, so the key matches
+// the live ResolvedMetric.Name byte-for-byte. Lax jsonpath: a descriptor with
+// no plc.s7_tag_map (Modbus/OPC-UA-only clients) simply contributes no rows.
+// Not gated on oee_profile — the declared register width is a fact about the
+// PLC, independent of whether the client authored a spike margin.
+const uint16CountersQuery = `
+	SELECT DISTINCT cd.id_enterprise,
+	       (m->>'packml_topic') || (t->>'metric') AS metric
+	  FROM client_descriptors cd,
+	       jsonb_path_query(cd.descriptor, '$.plc.s7_tag_map[*]') m,
+	       jsonb_path_query(m, '$.tags[*]') t
+	 WHERE t->>'type' = 'int'
+	   AND t->>'metric' ~ 'Prod(Processed|Consumed|Defective)Count'
+	   AND coalesce(m->>'packml_topic', '') <> ''
+`
+
 // Result is the boot-time DB load: the unit-topic→spike-margin map, the
 // unit-topic→rated-speed map, plus the distinct tenant count for the startup log.
 //
@@ -96,6 +120,10 @@ type Result struct {
 	Margins     map[string]float64 // unit topic → oee_profile.spike_margin
 	RatedSpeeds map[string]float64 // unit topic → equipments.production_speed (guard bound)
 	Tenants     int                // distinct enterprises that authored a margin
+	// Uint16Counters is the set of full counter metric names declared as S7
+	// `type: int` (unsigned 16-bit registers read signed) — see
+	// uint16CountersQuery.
+	Uint16Counters map[string]struct{}
 }
 
 // LoadDBMargins opens its OWN short-lived pool (the decoder holds no DB pool),
@@ -157,7 +185,38 @@ func FetchMargins(ctx context.Context, pool *pgxpool.Pool) (*Result, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("oee-profile: iterate margin rows: %w", err)
 	}
-	return &Result{Margins: margins, RatedSpeeds: rated, Tenants: len(tenants)}, nil
+	u16, err := fetchUint16Counters(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	return &Result{Margins: margins, RatedSpeeds: rated, Tenants: len(tenants), Uint16Counters: u16}, nil
+}
+
+// fetchUint16Counters runs uint16CountersQuery and folds it into a set keyed by
+// the full metric name (no ***trigger suffix).
+func fetchUint16Counters(ctx context.Context, pool *pgxpool.Pool) (map[string]struct{}, error) {
+	rows, err := pool.Query(ctx, uint16CountersQuery)
+	if err != nil {
+		return nil, fmt.Errorf("oee-profile: query uint16 counters: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			enterpriseID int
+			metric       string
+		)
+		if err := rows.Scan(&enterpriseID, &metric); err != nil {
+			return nil, fmt.Errorf("oee-profile: scan uint16 counter row: %w", err)
+		}
+		if metric != "" {
+			out[metric] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("oee-profile: iterate uint16 counter rows: %w", err)
+	}
+	return out, nil
 }
 
 // deriveUnitTopic maps a Sparkplug counter/equipment topic to the unit-topic key
@@ -241,6 +300,7 @@ type Watcher struct {
 	mu      sync.RWMutex
 	margins map[string]float64
 	rated   map[string]float64
+	uint16  map[string]struct{}
 	tenants int
 }
 
@@ -257,6 +317,7 @@ func NewWatcher(interval time.Duration, logger *slog.Logger) *Watcher {
 		interval: interval,
 		margins:  map[string]float64{},
 		rated:    map[string]float64{},
+		uint16:   map[string]struct{}{},
 	}
 }
 
@@ -298,6 +359,15 @@ func (w *Watcher) RatedSpeeds() map[string]float64 {
 	return w.rated
 }
 
+// Uint16Counters returns the current set of counter metric names declared as
+// unsigned 16-bit registers read signed (S7 `type: int`). Same read-only /
+// fresh-map-swap contract as Margins.
+func (w *Watcher) Uint16Counters() map[string]struct{} {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.uint16
+}
+
 // Tenants reports the distinct profile-authoring tenant count from the most
 // recent successful reload — for boot/health logging, not routing decisions.
 func (w *Watcher) Tenants() int {
@@ -316,11 +386,17 @@ func (w *Watcher) reload(ctx context.Context) {
 	w.mu.Lock()
 	w.margins = res.Margins
 	w.rated = res.RatedSpeeds
+	if res.Uint16Counters != nil {
+		w.uint16 = res.Uint16Counters
+	} else {
+		w.uint16 = map[string]struct{}{}
+	}
 	w.tenants = res.Tenants
 	w.mu.Unlock()
 	w.logger.Info("oee-profile margins reloaded from DB",
 		slog.Int("tenants", res.Tenants),
 		slog.Int("margin_entries", len(res.Margins)),
 		slog.Int("rated_speed_entries", len(res.RatedSpeeds)),
+		slog.Int("uint16_counter_entries", len(res.Uint16Counters)),
 	)
 }

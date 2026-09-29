@@ -223,7 +223,7 @@ plc:
       id_equipment: 61
       tags:
         - { metric: /Admin/ProdConsumedCount/81/Unit, db: 1, offset: 4, type: dint }
-        - { metric: /Admin/ProdProcessedCount/81/Unit, db: 1, offset: 32, type: int, counter_derive: scrap_derived }
+        - { metric: /Admin/ProdProcessedCount/81/Unit, db: 1, offset: 32, type: int, counter_derive: scrap_derived }   # UNSIGNED 16-bit PLC counter (0..65535, wraps) read via signed S7 INT: values >32767 arrive as -32768..-1. The cloud Calc reinterprets them (+65536) for every `type: int` counter in this map (oeeprofile uint16 set) — keep `type: int` until the edge S7 path gains a `uint16` type.
     - endpoint: PLC L3
       packml_topic: CPACK/SC/LINHAS/L3/RMH
       id_equipment: 59
@@ -249,7 +249,7 @@ plc:
       id_equipment: 64
       tags:
         - { metric: /Admin/ProdConsumedCount/8/Unit, db: 1, offset: 4, type: dint }
-        - { metric: /Admin/ProdProcessedCount/8/Unit, db: 1, offset: 32, type: int, counter_derive: scrap_derived }
+        - { metric: /Admin/ProdProcessedCount/8/Unit, db: 1, offset: 32, type: int, counter_derive: scrap_derived }   # UNSIGNED 16-bit PLC counter (0..65535, wraps) read via signed S7 INT: values >32767 arrive as -32768..-1. The cloud Calc reinterprets them (+65536) for every `type: int` counter in this map (oeeprofile uint16 set) — keep `type: int` until the edge S7 path gains a `uint16` type.
     - endpoint: PLC L4
       packml_topic: CPACK/SC/LINHAS/L4/RMH
       id_equipment: 65
@@ -335,7 +335,7 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L10/PTH
       id_equipment: 78
       tags:
-        - { metric: /Admin/ProdConsumedCount/565/Unit, db: 1, offset: 32, type: int, counter_derive: outfeed_only }
+        - { metric: /Admin/ProdConsumedCount/565/Unit, db: 1, offset: 32, type: int, counter_derive: outfeed_only }   # UNSIGNED 16-bit PLC counter (0..65535, wraps) read via signed S7 INT: values >32767 arrive as -32768..-1. The cloud Calc reinterprets them (+65536) for every `type: int` counter in this map (oeeprofile uint16 set) — keep `type: int` until the edge S7 path gains a `uint16` type.
     - endpoint: S7 L10
       packml_topic: CPACK/SC/LINHAS/L10/TCX
       id_equipment: 79
@@ -382,7 +382,7 @@ plc:
       packml_topic: CPACK/SC/LINHAS/L8/PTH
       id_equipment: 74
       tags:
-        - { metric: /Admin/ProdConsumedCount/220/Unit, db: 1, offset: 32, type: int, counter_derive: outfeed_only }
+        - { metric: /Admin/ProdConsumedCount/220/Unit, db: 1, offset: 32, type: int, counter_derive: outfeed_only }   # UNSIGNED 16-bit PLC counter (0..65535, wraps) read via signed S7 INT: values >32767 arrive as -32768..-1. The cloud Calc reinterprets them (+65536) for every `type: int` counter in this map (oeeprofile uint16 set) — keep `type: int` until the edge S7 path gains a `uint16` type.
     - endpoint: S7 S8
       packml_topic: CPACK/SC/LINHAS/L8/TCX
       id_equipment: 75

@@ -69,6 +69,9 @@ func TestWatcherZeroValueBeforeStart(t *testing.T) {
 	if got := w.Tenants(); got != 0 {
 		t.Errorf("Tenants() before Start() = %d, want 0", got)
 	}
+	if got := w.Uint16Counters(); got == nil || len(got) != 0 {
+		t.Errorf("Uint16Counters() before Start() = %v, want empty non-nil set", got)
+	}
 }
 
 // TestNewWatcherDefaultsInterval proves a non-positive interval falls back to
