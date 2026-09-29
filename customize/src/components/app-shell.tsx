@@ -16,7 +16,7 @@ type NavLeaf = { to: string; label: string; icon: typeof LayoutGrid };
 const NAV: NavLeaf[] = [
   { to: "/app/hub", label: "Hub", icon: LayoutGrid },
   { to: "/app/customizations", label: "Calculations", icon: Braces },
-  { to: "/app/oee-profile", label: "OEE Computation", icon: Gauge },
+  { to: "/app/oee-profile", label: "OEE settings", icon: Gauge },
   { to: "/app/node-red", label: "Node-RED flows", icon: Workflow },
   { to: "/app/integrations", label: "Integrations", icon: Database },
   { to: "/app/plc-connections", label: "PLC connections", icon: Cable },

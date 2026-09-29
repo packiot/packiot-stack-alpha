@@ -236,6 +236,15 @@ export interface OeeProfile {
    * the CPAC_STOP_THRESHOLD_DEFAULT_SEC env default. Phase 2 (events).
    */
   stop_threshold_sec?: number;
+  /**
+   * Per-LINE overrides, keyed by the line's id_equipment. A line not listed
+   * inherits the client-level setting. Only the line-lead choice is wired:
+   * { availability_mode: "count_silence", ideal_source: "lead_machine" } = the
+   * line takes its counts/availability from its lead machine; { availability_mode:
+   * "state" } = from its own signals. Applies going forward (past periods keep
+   * their values unless recomputed).
+   */
+  lines?: Record<string, { availability_mode?: "state" | "count_silence"; ideal_source?: "lead_machine" | "nameplate" | "inferred" }>;
 }
 
 /** One raw Node-RED node (a "Export" object). Kept opaque — the generator + the

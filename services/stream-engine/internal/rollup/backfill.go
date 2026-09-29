@@ -167,7 +167,7 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
 	if ca.engagedLineLead() {
 		steps = append(steps, struct{ name, sql string }{"line-lead",
-			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec))})
+			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))})
 	}
 	steps = append(steps,
 		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(hourTargetsSQL, d, d.ConfigSchema))},
