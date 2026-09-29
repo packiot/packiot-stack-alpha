@@ -73,6 +73,9 @@ const grainRollupSQL = `
 	           sum(ard.idle_blocked)   AS idle_blocked,
 	           sum(ard.gross)          AS gross,
 	           sum(ard.net)            AS net,
+	           -- SIGNED sum of the children's scrap (negative = units in transit /
+	           -- an undercounting infeed meter — stored raw, never clamped).
+	           sum(ard.scrap)          AS scrap,
 	           sum(ard.downtime)       AS downtime,
 	           sum(ard.changeover_time) AS changeover_time
 	      FROM eligible el
@@ -91,6 +94,10 @@ const grainRollupSQL = `
 	       idle_blocked    = COALESCE(s.idle_blocked, 0),
 	       gross           = COALESCE(s.gross, 0),
 	       net             = COALESCE(s.net, 0),
+	       -- WEEK/MONTH SCRAP (2026-09-29): scrap was never in this SET list, so the
+	       -- column kept its provisioned 0 while gross != net (52/100 recent CPACK
+	       -- line weeks). It is the plain Σ of the daily scrap, like gross and net.
+	       scrap           = COALESCE(s.scrap, 0),
 	       ideal_production = COALESCE(s.ideal_production, 0),
 	       downtime        = COALESCE(s.downtime, 0),
 	       changeover_time = COALESCE(s.changeover_time, 0),
@@ -164,9 +171,46 @@ const grainOeeReconcileSQL = `
 	           AND d.ts_value >= now() - interval '1 year') el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
+// The re-flag scope MUST mirror grainRollupSQL's eligibility (tp_equipment > 1 +
+// the area/enterprise exclusions), exactly like hourReflagSQL (#256): the old
+// unscoped form re-flagged every tp=1 MACHINE's current week/month too, which the
+// eligibility never selects — so each such flag stayed true forever (1,320
+// non-future weekly rows on staging 2026-09-29, all tp=1) and the
+// "recalc_needed backlog" never drained.
 const grainReflagSQL = `
 	UPDATE %[1]s.%[3]s SET recalc_needed = true
-	 WHERE ts_value >= date_trunc('%[4]s', now())`
+	 WHERE ts_value >= date_trunc('%[4]s', now())
+	   AND NOT recalc_needed
+	   AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	        WHERE tp_equipment > 1
+	          AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))`
+
+// grainStaleFlagSQL — FRESHNESS CASCADE (2026-09-29). The only thing that flags a
+// past week/month is dayCascadeWeekSQL/MonthSQL, which fires when RunDay recomputes
+// a day. Any OTHER writer of equipment_oee_daily (the 2026-09-24 grain-tiered
+// retention/recompute runner rewrote 3,700 CPACK line days 2026-01-19..07-22) never
+// cascades, and RunDay itself only reaches the last month — so 539 CPACK line
+// weeks 2026-01-19..07-20 stayed all-zero with computed_at NULL although their days
+// carry data. Flag every in-scope week/month (1-year rollup window, not future)
+// whose newest contributing day was computed AFTER the grain row (or the grain row
+// was never computed). No loop: the grain rollup stamps computed_at = now() in a
+// later statement than any day write it read, so a recomputed row is fresh.
+// Legacy-copied days (computed_at NULL) never trigger it. ~18k daily rows/yr.
+const grainStaleFlagSQL = `
+	UPDATE %[1]s.%[3]s w SET recalc_needed = true
+	  FROM (SELECT d.id_equipment, date_trunc('%[4]s', d.ts_value)::date AS bucket,
+	               max(d.computed_at) AS day_computed_at
+	          FROM %[1]s.equipment_oee_daily d
+	         WHERE d.computed_at IS NOT NULL
+	           AND d.ts_value >= date_trunc('%[4]s', now() - interval '1 year')::date
+	           AND d.id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
+	                WHERE tp_equipment > 1
+	                  AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	         GROUP BY 1, 2) d
+	 WHERE w.id_equipment = d.id_equipment AND w.ts_value = d.bucket
+	   AND NOT w.recalc_needed
+	   AND (w.computed_at IS NULL OR w.computed_at < d.day_computed_at)
+	   AND w.ts_value >= now() - interval '1 year' AND w.ts_value <= now()`
 
 const grainTargetsSQL = `
 	UPDATE %[1]s.%[3]s g
@@ -181,6 +225,11 @@ const grainTargetsSQL = `
 // RunGrains executes the week+month cascade for one destination.
 func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int, ca CountersAvail) error {
 	for _, g := range grainMatrix {
+		if _, err := d.Pool.Exec(ctx,
+			fmt.Sprintf(grainStaleFlagSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain),
+			exclAreas, exclEnterprises); err != nil {
+			return fmt.Errorf("stale-flag %s: %w", g.Grain, err)
+		}
 		if _, err := d.Pool.Exec(ctx,
 			fmt.Sprintf(grainRollupSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain),
 			exclAreas, exclEnterprises); err != nil {
@@ -200,7 +249,8 @@ func RunGrains(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []i
 			return fmt.Errorf("oee_p %s: %w", g.Grain, err)
 		}
 		if _, err := d.Pool.Exec(ctx,
-			fmt.Sprintf(grainReflagSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain)); err != nil {
+			fmt.Sprintf(grainReflagSQL, d.GoldSchema, d.RefSchema, g.Table, g.Grain),
+			exclAreas, exclEnterprises); err != nil {
 			return fmt.Errorf("reflag %s: %w", g.Grain, err)
 		}
 		if _, err := d.Pool.Exec(ctx,
