@@ -95,7 +95,41 @@ type CPACConfig struct {
 	Enterprises     []int  // status_type=0 enterprise ids to derive (CPACK=3); empty ⇒ no-op
 	ThresholdDefSec int    // fallback when equipments.stop_threshold_time IS NULL/0
 	TargetTable     string // shadow comparison table in EvSchema; default equipment_events_cpac_shadow
+	// LeadActivity widens the productive-minute signal FOR A LINE'S LEAD MACHINE
+	// ONLY (lines with downtime_from_lead_machine) from gross-only to the
+	// line-lead OEE model's rule: gross OR net OR scrap moved (a missing gross
+	// meter is filled by identity, gross = net). Every other member keeps the
+	// gross-only rule. false ⇒ the executed SQL is byte-identical to before
+	// (pinned by TestCPACGrossOnlySQLByteIdentical). Set only on the LIVE
+	// counters-only instance (CPAC_EVENT_LIVE_ENTERPRISES); the CPACK shadow
+	// instance leaves it false.
+	LeadActivity bool
 }
+
+// cpacGrossActivity is the original productive-minute predicate: the member's
+// own consumed (gross) counter moved.
+const cpacGrossActivity = `m.gross_production_incr > 0`
+
+// cpacLeadsCTE (%[1]s = RefSchema) names every line's lead_machine for lines
+// whose downtime is attributed from the lead (downtime_from_lead_machine) —
+// the member bi.downtimes' line branch and the line-lead availability read.
+const cpacLeadsCTE = `), leads AS (
+    SELECT DISTINCT ln.lead_machine AS id_equipment
+      FROM %[1]s.equipments ln
+     WHERE ln.tp_equipment = 3
+       AND ln.downtime_from_lead_machine
+       AND COALESCE(ln.lead_machine, 0) > 0
+       AND ln.id_enterprise = ANY($1)
+`
+
+// cpacLeadActivity is the line-lead OEE model's productive minute (line_lead.go
+// prod_raw: gross OR net OR scrap > 0) applied to lead machines only. A lead
+// that carries ONLY a net/output counter (Bispharma L18 TAMPADEIRA, the BISNAGO
+// M67x/M68x leads, L90 S2OUTPUT) was invisible to the gross-only rule, so those
+// lines got zero downtime events while their Availability (line-lead) was real.
+const cpacLeadActivity = `(m.gross_production_incr > 0
+            OR (s.id_equipment IN (SELECT id_equipment FROM leads)
+                AND (m.net_production_incr > 0 OR m.scrap_incr > 0)))`
 
 // DefaultCPACTargetTable is the DARK-mode shadow table the derivation writes to
 // so the live equipment_events (owned by the mirror fan-out for CPACK, and by
@@ -117,6 +151,8 @@ const humanTouchedPred = `(%[4]s.forced_creation_system
 // cpacTransitionsCTE recomputes the alternating running/stopped transition
 // stream from count-activity sessionization over the last 25 hours.
 // %[1]s = EvSchema (flow tables), %[2]s = RefSchema (equipments/packml).
+// %[6]s = optional extra CTE (the `leads` set; "" in gross-only mode), %[7]s =
+// the productive-minute predicate (see cpacGrossActivity / cpacLeadActivity).
 // $1 = enterprise-id int[] scope, $2 = default threshold seconds.
 const cpacTransitionsCTE = `
 WITH scope AS (
@@ -126,7 +162,7 @@ WITH scope AS (
      WHERE e.status_type = 0
        AND e.tp_equipment IN (1, 3)
        AND e.id_enterprise = ANY($1)
-), counts AS (
+%[6]s), counts AS (
     SELECT s.id_equipment, s.id_enterprise, s.thr, m.ts_value AS ts,
            extract(epoch FROM (m.ts_value - lag(m.ts_value)
                OVER (PARTITION BY s.id_equipment ORDER BY m.ts_value))) AS gap
@@ -134,7 +170,7 @@ WITH scope AS (
       JOIN %[5]s.equipment_categorical_1min m
         ON m.id_equipment = s.id_equipment
        AND m.ts_value > now() - interval '25 hours'
-       AND m.gross_production_incr > 0
+       AND %[7]s
 ), marked AS (
     SELECT id_equipment, id_enterprise, thr, ts,
            sum(CASE WHEN gap IS NULL OR gap > thr THEN 1 ELSE 0 END)
@@ -235,7 +271,18 @@ DELETE FROM %[1]s.%[3]s ev
 // %[5]s SilverSchema (the categorical cagg's home — #248 de-shim; the shadow
 // table itself stays on %[1]s ev).
 func fmtCPAC(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string) string {
-	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema)
+	return fmtCPACMode(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, false)
+}
+
+// fmtCPACMode is fmtCPAC plus the activity mode: %[6]s = the leads CTE (or ""),
+// %[7]s = the productive-minute predicate. leadActivity=false renders the exact
+// pre-LeadActivity statement.
+func fmtCPACMode(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string, leadActivity bool) string {
+	leads, act := "", cpacGrossActivity
+	if leadActivity {
+		leads, act = fmt.Sprintf(cpacLeadsCTE, refSchema), cpacLeadActivity
+	}
+	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leads, act)
 }
 
 // RunOnceCPAC derives CPAC stops for one destination: correct (delete stale),
@@ -251,11 +298,11 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 	if thr <= 0 {
 		thr = 300
 	}
-	del, err := d.Pool.Exec(ctx, fmtCPAC(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema), cfg.Enterprises, thr)
+	del, err := d.Pool.Exec(ctx, fmtCPACMode(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity), cfg.Enterprises, thr)
 	if err != nil {
 		return 0, 0, fmt.Errorf("cpac correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmtCPAC(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema), cfg.Enterprises, thr)
+	ups, err := d.Pool.Exec(ctx, fmtCPACMode(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity), cfg.Enterprises, thr)
 	if err != nil {
 		return del.RowsAffected(), 0, fmt.Errorf("cpac upsert pass: %w", err)
 	}
@@ -267,7 +314,8 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 func LoopCPAC(ctx context.Context, dests []Dest, cfg CPACConfig, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("CPAC stop deriver started (ADR-0010 §10.4, DARK)",
 		slog.Int("destinations", len(dests)), slog.Int("enterprises", len(cfg.Enterprises)),
-		slog.Int("threshold_default_sec", cfg.ThresholdDefSec), slog.String("target_table", cfg.TargetTable))
+		slog.Int("threshold_default_sec", cfg.ThresholdDefSec), slog.String("target_table", cfg.TargetTable),
+		slog.Bool("lead_activity", cfg.LeadActivity))
 	jobs.Loop(ctx, jobs.Job{Name: "cpac-events-deriver", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {

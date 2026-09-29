@@ -448,6 +448,11 @@ func main() {
 				Enterprises:     config.CSVInts(cfg.CPACEventLiveEnterprises),
 				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
 				TargetTable:     "equipment_events",
+				// A net-only lead (Bispharma L18 + BISNAGO leads) has no gross
+				// increments, so the gross-only rule minted NOTHING for those lines.
+				// Use the line-lead OEE model's activity (gross|net|scrap) for the
+				// lead machine only. The CPACK shadow instance above stays gross-only.
+				LeadActivity: true,
 			},
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}

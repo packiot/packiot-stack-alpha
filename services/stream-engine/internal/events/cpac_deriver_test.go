@@ -1,6 +1,8 @@
 package events
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -11,10 +13,11 @@ import (
 // over COUNT ACTIVITY (equipment_categorical_1min.gross_production_incr), NOT
 // state (CPACK's live `state` is NULL).
 func TestCPACDeriverScopeAndInput(t *testing.T) {
-	both := cpacUpsertSQL + cpacCorrectSQL
+	// Formatted gross-only statements (the activity predicate is a format arg).
+	both := fmtCPAC(cpacUpsertSQL, "s", "public", "t", "ev", "s") + fmtCPAC(cpacCorrectSQL, "s", "public", "t", "ev", "s")
 	for _, m := range []string{
 		"status_type = 0",                       // parallel path, not the 4-only gate
-		"equipment_categorical_1min",          // count source, not the state stream
+		"equipment_categorical_1min",            // count source, not the state stream
 		"gross_production_incr > 0",             // heartbeat = a productive minute
 		"COALESCE(NULLIF(e.stop_threshold_time", // per-equipment threshold, default fallback
 		"make_interval(secs => thr)",            // grace before declaring a stop
@@ -125,6 +128,67 @@ func TestCPACHumanCoverProbeIsTimeBounded(t *testing.T) {
 	for name, sql := range map[string]string{"upsert": cpacUpsertSQL, "correct": cpacCorrectSQL} {
 		if !strings.Contains(sql, "h.ts_event >= now() - interval '60 days'") {
 			t.Errorf("%s: human-cover probe lost its h.ts_event lower bound", name)
+		}
+	}
+}
+
+// TestCPACGrossOnlySQLByteIdentical pins the gross-only statements (the CPACK
+// shadow instance and every LeadActivity=false caller) to the exact SHA-256 of
+// what executed BEFORE LeadActivity existed (computed on origin/staging 35453b1f's
+// cpac_deriver.go). If this fails, CPACK's executed SQL changed.
+func TestCPACGrossOnlySQLByteIdentical(t *testing.T) {
+	for name, c := range map[string]struct{ tmpl, want string }{
+		"correct": {cpacCorrectSQL, "074b10e1426f84a37663453747cc9bf31357eb630c61d6ef81170a890360f93c"},
+		"upsert":  {cpacUpsertSQL, "45e8d7246109a9a3f4326550cc0e5bf7ed458709e31a637f286e3b3296e6f394"},
+	} {
+		for _, got := range []string{
+			fmtCPAC(c.tmpl, "silver", "core", "equipment_events_cpac_shadow", "ev", "silver"),
+			fmtCPACMode(c.tmpl, "silver", "core", "equipment_events_cpac_shadow", "ev", "silver", false),
+		} {
+			if h := fmt.Sprintf("%x", sha256.Sum256([]byte(got))); h != c.want {
+				t.Errorf("%s: gross-only SQL changed (sha256 %s, want %s)", name, h, c.want)
+			}
+			if strings.Contains(got, "leads") || strings.Contains(got, "net_production_incr") {
+				t.Errorf("%s: gross-only SQL must not reference leads/net", name)
+			}
+		}
+	}
+}
+
+// TestCPACLeadActivityNetOnlyLeadSQL — the net-only lead case (Bispharma L18 +
+// BISNAGO leads carry ONLY net_production_incr). In LeadActivity mode both
+// passes (minter + co-scoped cleaner) must: define the leads set from
+// downtime_from_lead_machine lines in the $1 scope, count net/scrap minutes for
+// those leads only, and keep gross as the rule for every other member.
+func TestCPACLeadActivityNetOnlyLeadSQL(t *testing.T) {
+	for name, tmpl := range map[string]string{"correct": cpacCorrectSQL, "upsert": cpacUpsertSQL} {
+		got := fmtCPACMode(tmpl, "silver", "core", "equipment_events", "ev", "silver", true)
+		if strings.Contains(got, "%!") || strings.Contains(got, "%[") {
+			t.Fatalf("%s: unformatted verb in lead-activity SQL", name)
+		}
+		for _, m := range []string{
+			"), leads AS (",
+			"FROM core.equipments ln",         // RefSchema substituted inside the fragment
+			"ln.downtime_from_lead_machine",   // per-line config gate
+			"ln.lead_machine AS id_equipment", // events land on the lead machine
+			"ln.id_enterprise = ANY($1)",      // same enterprise scope as the passes
+			"m.gross_production_incr > 0",     // gross stays the rule for everyone
+			"s.id_equipment IN (SELECT id_equipment FROM leads)",
+			"m.net_production_incr > 0 OR m.scrap_incr > 0", // identity: net-only lead ⇒ gross = net
+			"), counts AS (",
+		} {
+			if !strings.Contains(got, m) {
+				t.Errorf("%s: lead-activity SQL missing %q", name, m)
+			}
+		}
+		// The net/scrap widening must be conditioned on lead membership, never a
+		// bare OR (which would mint events on every net-only intermediate station).
+		if strings.Contains(got, "> 0 OR m.net_production_incr") {
+			t.Errorf("%s: net activity must be gated on the leads set", name)
+		}
+		// The leads CTE sits between scope and counts, not after counts.
+		if strings.Index(got, "), leads AS (") > strings.Index(got, "), counts AS (") {
+			t.Errorf("%s: leads CTE must precede counts", name)
 		}
 	}
 }

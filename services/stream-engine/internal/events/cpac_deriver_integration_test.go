@@ -46,9 +46,11 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 		`CREATE SCHEMA ` + schema,
 		`CREATE TABLE ` + schema + `.equipments (
 			id_equipment int PRIMARY KEY, id_enterprise int, status_type int,
-			tp_equipment int, stop_threshold_time int)`,
+			tp_equipment int, stop_threshold_time int,
+			lead_machine int, downtime_from_lead_machine boolean)`,
 		`CREATE TABLE ` + schema + `.equipment_categorical_1min (
-			id_equipment int, ts_value timestamptz, gross_production_incr numeric)`,
+			id_equipment int, ts_value timestamptz, gross_production_incr numeric,
+			net_production_incr numeric, scrap_incr numeric)`,
 		// full-enough clone of equipment_events for the guard columns + key
 		`CREATE TABLE ` + schema + `.equipment_events_cpac_shadow (
 			id_equipment int, ts_event timestamptz, ts_end timestamptz,
@@ -86,7 +88,7 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 }
 
 func dest(pool *pgxpool.Pool) Dest {
-	return Dest{Name: "it", Pool: pool, EvSchema: schema, RefSchema: schema}
+	return Dest{Name: "it", Pool: pool, EvSchema: schema, RefSchema: schema, SilverSchema: schema}
 }
 
 var itCfg = CPACConfig{Enterprises: []int{999}, ThresholdDefSec: 300, TargetTable: "equipment_events_cpac_shadow"}
@@ -181,8 +183,9 @@ func TestCPACNeverClobbersJustifiedEvent(t *testing.T) {
 	setupSchema(t, pool)
 	ctx := context.Background()
 
-	// Place a justified stop covering the silence gap region.
-	base := time.Now().UTC().Add(-3 * time.Hour)
+	// Place a justified stop covering the silence gap region. Truncated to µs
+	// (timestamptz precision) so the round-tripped ts_end compares equal.
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Microsecond)
 	jStart := base.Add(9 * time.Minute) // inside/around the derived stop region
 	jEnd := base.Add(34 * time.Minute)
 	if _, err := pool.Exec(ctx,
@@ -224,4 +227,132 @@ func TestCPACNeverClobbersJustifiedEvent(t *testing.T) {
 		t.Errorf("append-only violated: %d derived rows minted inside the justified span", covering)
 	}
 	fmt.Fprintln(os.Stderr, "no-clobber + append-only: OK")
+}
+
+// seedNetOnlyLines adds the Bispharma net-only-lead shape next to the gross
+// machine 1000 from setupSchema:
+//   - line 2000 (downtime_from_lead_machine) whose lead 2001 reports ONLY net
+//     (L18 TAMPADEIRA / BISNAGO M67x), plus a non-lead net-only member 2002 (an
+//     intermediate station like S3/S4/S5 — must stay event-free);
+//   - line 3000 with downtime_from_lead_machine=false whose net-only lead 3001
+//     must stay event-free (the per-line gate).
+//
+// Each net-only member gets the same run -> 25-min silence -> run pattern.
+func seedNetOnlyLines(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO ` + schema + `.equipments VALUES (2000, 999, 0, 3, NULL, 2001, true)`,
+		`INSERT INTO ` + schema + `.equipments VALUES (2001, 999, 0, 1, NULL, NULL, NULL)`,
+		`INSERT INTO ` + schema + `.equipments VALUES (2002, 999, 0, 1, NULL, NULL, NULL)`,
+		`INSERT INTO ` + schema + `.equipments VALUES (3000, 999, 0, 3, NULL, 3001, false)`,
+		`INSERT INTO ` + schema + `.equipments VALUES (3001, 999, 0, 1, NULL, NULL, NULL)`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().UTC().Add(-3 * time.Hour)
+	for _, eq := range []int{2001, 2002, 3001} {
+		for _, start := range []time.Time{base, base.Add(35 * time.Minute)} {
+			for i := 0; i < 10; i++ {
+				if _, err := pool.Exec(ctx,
+					`INSERT INTO `+schema+`.equipment_categorical_1min
+					   (id_equipment, ts_value, gross_production_incr, net_production_incr)
+					 VALUES ($1, $2, 0, 5)`, eq, start.Add(time.Duration(i)*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
+func byEq(rows []evRow) map[int][]evRow {
+	out := map[int][]evRow{}
+	for _, r := range rows {
+		out[r.Eq] = append(out[r.Eq], r)
+	}
+	return out
+}
+
+// TestCPACLeadActivityNetOnlyLead: a line whose lead reports only NET got zero
+// events under the gross-only rule (the Bispharma 8-line gap). With LeadActivity
+// the lead gets the run/stop/run stream; a non-lead net-only member and a lead of
+// a downtime_from_lead_machine=false line stay event-free; the gross machine's
+// stream is identical in both modes.
+func TestCPACLeadActivityNetOnlyLead(t *testing.T) {
+	pool := mustPool(t)
+	defer pool.Close()
+	setupSchema(t, pool)
+	seedNetOnlyLines(t, pool)
+	ctx := context.Background()
+
+	// Gross-only (the CPACK shadow / pre-fix behaviour): reproduces the bug.
+	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+		t.Fatalf("gross-only run: %v", err)
+	}
+	off := byEq(dump(t, pool))
+	for _, eq := range []int{2001, 2002, 3001} {
+		if len(off[eq]) != 0 {
+			t.Errorf("gross-only mode must mint nothing for net-only member %d, got %d rows", eq, len(off[eq]))
+		}
+	}
+	if len(off[1000]) == 0 {
+		t.Fatal("gross machine 1000 must have events in gross-only mode")
+	}
+
+	// Lead-activity mode (the live counters-only instance).
+	cfg := itCfg
+	cfg.LeadActivity = true
+	if _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
+		t.Fatalf("lead-activity run: %v", err)
+	}
+	onRows := dump(t, pool)
+	on := byEq(onRows)
+	var stops, runs int
+	for _, r := range on[2001] {
+		switch r.Status {
+		case 10:
+			if r.TsEnd != nil {
+				stops++
+			}
+		case 6:
+			runs++
+		}
+	}
+	if stops != 1 || runs != 2 {
+		t.Errorf("net-only lead 2001: want 1 closed stop + 2 runs, got stops=%d runs=%d (%d rows)", stops, runs, len(on[2001]))
+	}
+	if len(on[2002]) != 0 {
+		t.Errorf("non-lead net-only member 2002 must stay event-free, got %d rows", len(on[2002]))
+	}
+	if len(on[3001]) != 0 {
+		t.Errorf("lead of a downtime_from_lead_machine=false line must stay event-free, got %d rows", len(on[3001]))
+	}
+	if len(on[2000]) != 0 || len(on[3000]) != 0 {
+		t.Errorf("lines themselves must not get events (no own counters)")
+	}
+	if len(on[1000]) != len(off[1000]) {
+		t.Fatalf("gross machine stream changed: %d vs %d rows", len(off[1000]), len(on[1000]))
+	}
+	for i := range off[1000] {
+		a, b := off[1000][i], on[1000][i]
+		if !a.TsEvent.Equal(b.TsEvent) || a.Status != b.Status {
+			t.Errorf("gross machine row %d changed: %+v vs %+v", i, a, b)
+		}
+	}
+
+	// Idempotent in lead mode too.
+	if _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
+		t.Fatalf("lead-activity run 2: %v", err)
+	}
+	again := dump(t, pool)
+	if len(again) != len(onRows) {
+		t.Fatalf("lead-activity pass not idempotent: %d rows then %d", len(onRows), len(again))
+	}
+	for i := range again {
+		if again[i].Eq != onRows[i].Eq || !again[i].TsEvent.Equal(onRows[i].TsEvent) || again[i].Status != onRows[i].Status {
+			t.Errorf("lead-activity idempotency broken at row %d: %+v vs %+v", i, onRows[i], again[i])
+		}
+	}
 }
