@@ -35,6 +35,8 @@ export function NodeRedPage() {
   const [version, setVersion] = useState(0);
   const [tenant, setTenant] = useState<string | undefined>();
   const [hasPlc, setHasPlc] = useState(false);
+  const [helperOn, setHelperOn] = useState(false);
+  const [turningOn, setTurningOn] = useState(false);
   const [saved, setSaved] = useState<Node[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [saving, setSaving] = useState(false);
@@ -48,6 +50,7 @@ export function NodeRedPage() {
       setVersion(r.version);
       setTenant(r.descriptor?.tenant);
       setHasPlc(!!r.descriptor?.plc);
+      setHelperOn(r.descriptor?.nodered_helper === true);
       setSaved(list);
       setNodes(list);
       setState("ready");
@@ -94,7 +97,25 @@ export function NodeRedPage() {
     }
   }
 
-  const isNodeRedBox = connect && connect !== "unavailable" && (connect.webUiPort ?? 1880) === 1880;
+  // A box has Node-RED if it lists it among its screens (newer servers), or its
+  // main screen is Node-RED (older servers).
+  const isNodeRedBox =
+    connect && connect !== "unavailable" &&
+    (connect.webUis ? connect.webUis.some((w) => w.kind === "nodered") : (connect.webUiPort ?? 1880) === 1880);
+
+  async function turnOnHelper() {
+    setTurningOn(true);
+    try {
+      const row = await onboardingApi.updateCustomizations(version, { noderedHelper: true });
+      setVersion(row.version);
+      setHelperOn(true);
+      toast.success("Node-RED helper turned on. Install the factory setup again to add it to the box.");
+    } catch (e) {
+      toast.error(isStaleSave(e) ? "Someone else saved first — reload the page and try again." : "Could not turn it on");
+    } finally {
+      setTurningOn(false);
+    }
+  }
 
   if (state !== "ready") {
     return (
@@ -184,17 +205,37 @@ export function NodeRedPage() {
           </p>
         )}
         {connect && connect !== "unavailable" && !isNodeRedBox && (
-          <p className="text-sm text-muted-foreground">
-            This box runs the {connect.webUiLabel ?? "edge dashboard"}, not Node-RED — customizations are stored on the
-            descriptor but there is no live Node-RED to apply them to.
-          </p>
+          helperOn ? (
+            <p className="text-sm text-muted-foreground">
+              The Node-RED helper is turned on for {enterprise.name} but isn&apos;t on the box yet. Install the factory setup
+              again in{" "}
+              <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", id)} target="_blank" rel="noreferrer">
+                CS Admin → Install on the factory box ↗
+              </a>{" "}
+              — it adds Node-RED next to the PLC reader. The reader and the data are not interrupted.
+            </p>
+          ) : (
+            <div className="grid gap-3 text-sm text-muted-foreground">
+              <p>
+                This box reads its PLCs with the Python reader, so it has no Node-RED yet. Turn on the{" "}
+                <b className="text-foreground">Node-RED helper</b> to run your flows next to it: it receives a copy of every
+                batch the reader sends (connection point <span className="font-mono">tags</span>) and can send extra values
+                (<span className="font-mono">publish</span>). If the helper breaks, the reader and the data are not affected.
+              </p>
+              <div>
+                <Button onClick={() => void turnOnHelper()} disabled={turningOn}>
+                  {turningOn ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Turn on the Node-RED helper
+                </Button>
+              </div>
+            </div>
+          )
         )}
         {isNodeRedBox && (
           <>
             <p className="mb-2 text-[12px] text-muted-foreground">
               Edits made here are NOT in the descriptor — the next preview lists them so you can adopt them.
             </p>
-            <BoxWebUi idEnterprise={id} />
+            <BoxWebUi idEnterprise={id} target="nodered" />
           </>
         )}
       </Card>
