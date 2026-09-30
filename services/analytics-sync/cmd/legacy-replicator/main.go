@@ -118,6 +118,11 @@ func main() {
 	// closes the gap the user_logs replay structurally can't (POs started via
 	// order-changed's non-create branch + PLC-created POs never hit user_logs).
 	// Ships INERT (RECONCILE_PO_ENABLED=false); runs in its own goroutine.
+	// Sandbox grace-period gate (SANDBOX_HOLD_ENABLED, twin replicators only).
+	if cfg.SandboxHoldEnabled {
+		cfg.Hold = replicate.NewHold(destPool, cfg.DstEnterprise, 10*time.Second, logger)
+		logger.Info("sandbox hold gate enabled", slog.Int("dst_enterprise", cfg.DstEnterprise))
+	}
 	poRecon := replicate.NewPOReconciler(legacyPool, destPool, resolver, cfg, m, logger)
 	go func() {
 		if err := poRecon.RunForever(ctx); err != nil && ctx.Err() == nil {

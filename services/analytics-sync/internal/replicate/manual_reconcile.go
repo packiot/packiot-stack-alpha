@@ -543,6 +543,9 @@ func (mr *ManualReconciler) RunForever(ctx context.Context) error {
 }
 
 func (mr *ManualReconciler) runOnce(ctx context.Context) {
+	if mr.cfg.Hold.Held(ctx) {
+		return // sandbox hands-on session — the grace-period heal restores manual events
+	}
 	since := time.Now().AddDate(0, 0, -mr.cfg.ReconcileManualLookbackDays)
 	if err := mr.pass(ctx, since); err != nil {
 		mr.logger.Warn("manual-event reconcile pass failed", slog.String("err", err.Error()))

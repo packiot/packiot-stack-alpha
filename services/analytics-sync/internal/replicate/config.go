@@ -116,6 +116,12 @@ type Config struct {
 	// (RECONCILE_MANUAL_EVENTS_ENABLED=false). When enabled it is the SOLE writer
 	// of mirrored manual events: the manual-event-created/-edited user_logs
 	// handlers stand down so every mirrored row carries provenance.
+	// SANDBOX grace-period hold (hold.go, t-sandbox-grace-hold). Set ONLY on a sandbox
+	// twin's replicator: while ops.sandbox_held(DST_ENTERPRISE) is true every writer here
+	// stands down. Hold is the runtime gate main builds from it (nil = never held).
+	SandboxHoldEnabled bool
+	Hold               *Hold
+
 	ReconcileManualEnabled        bool
 	ReconcileManualIntervalSec    int
 	ReconcileManualLookbackDays   int
@@ -187,6 +193,8 @@ func Load() *Config {
 		ReconcileEnrichEnabled:       getenv("RECONCILE_PO_ENRICH_ENABLED", "false") == "true",
 		ReconcileEnrichWindowDays:    getenvInt("RECONCILE_PO_ENRICH_WINDOW_DAYS", 14),
 		ReconcileEnrichKeepLegacyIDs: getenv("RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS", "true") == "true",
+
+		SandboxHoldEnabled: getenv("SANDBOX_HOLD_ENABLED", "false") == "true",
 
 		ReconcileManualEnabled:        getenv("RECONCILE_MANUAL_EVENTS_ENABLED", "false") == "true",
 		ReconcileManualIntervalSec:    getenvInt("RECONCILE_MANUAL_EVENTS_INTERVAL_SEC", 300),

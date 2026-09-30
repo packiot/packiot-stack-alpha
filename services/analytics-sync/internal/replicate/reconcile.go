@@ -152,6 +152,9 @@ func (rc *POReconciler) RunForever(ctx context.Context) error {
 }
 
 func (rc *POReconciler) runOnce(ctx context.Context) {
+	if rc.cfg.Hold.Held(ctx) {
+		return // sandbox hands-on session — the grace-period heal restores POs
+	}
 	since := time.Now().AddDate(0, 0, -rc.cfg.ReconcileWindowDays)
 	rows, err := rc.legacy.Query(ctx,
 		`SELECT id_order, id_equipment, status, ts_start, ts_end,

@@ -3373,6 +3373,10 @@ services:
       # Own health port so both replicator instances can co-exist on the box.
       HEALTH_PORT: "9114"
       HEALTHCHECK_MAX_AGE_SEC: "600"
+      # Hands-on session hold (t-sandbox-grace-hold): while someone changes the
+      # sandbox, stop replaying CPACK's actions into it (cursor still advances); the
+      # grace-period heal restores CPACK's current state, then mirroring resumes.
+      SANDBOX_HOLD_ENABLED: "true"
       # PO reconciler — backfills/finishes POs the user_logs replay structurally
       # misses, keeping the sandbox PO set current (matches the ent-3 replicator).
       RECONCILE_PO_ENABLED: "true"
