@@ -8,6 +8,8 @@
 # "packiot"). Since 2026-09-28 staging backs up BOTH the frozen legacy
 # `packiot` and the live new-stack `packiot_analytics` — until then only
 # `packiot` was dumped and the live system of record had no logical backup.
+# Since 2026-09-30 also `superset` (Superset metadata). The historian (app box)
+# is backed up by backup-historian.sh, which reuses this script.
 #
 # Layout in S3 (under s3://$BACKUP_BUCKET/). `packiot` keeps the original
 # root layout (restore-db.sh and existing tooling read it); every other DB
@@ -16,7 +18,9 @@
 #   weekly/YYYY-Www.dump.gz            (Sundays) kept for 4 weeks
 #   monthly/YYYY-MM.dump.gz            (1st of month) kept for 3 months
 #   [<db>/]latest -> alias key updated each run to point at the freshest daily
+#   [<db>/]db-settings/{YYYY-MM-DD,latest}.sql  ALTER DATABASE … SET (not in pg_dump)
 #   globals/daily/YYYY-MM-DD.sql.gz, globals/latest.sql.gz   roles (no passwords)
+#     (GLOBALS_PREFIX; the hist-gateway cluster uses packiot_historian/globals/)
 #
 # Restoring a TimescaleDB database (packiot_analytics): run
 #   SELECT timescaledb_pre_restore();  before pg_restore and
@@ -50,6 +54,22 @@ set -euo pipefail
 # (monitoring/alloy/db-agent.alloy) and alerted on in monitoring/prometheus/rules.yml
 # (BackupStale / BackupShrank). Empty = don't write metrics.
 : "${METRICS_DIR:=/var/lib/packiot-backup/metrics}"
+
+# Where the cluster-roles file goes. The DB box's timescaledb cluster keeps the
+# historical `globals/`; a second cluster (the app box's hist-gateway, see
+# backup-historian.sh) sets its own prefix so the two never overwrite each other.
+: "${GLOBALS_PREFIX:=globals/}"
+# PRUNE=0: skip the retention prune (needs s3:DeleteObject). The app box's
+# historian job runs with a put-only IAM grant on purpose — a compromised app box
+# must not be able to delete backups — and relies on the bucket's 90-day
+# lifecycle cap instead.
+: "${PRUNE:=1}"
+# Dumps under this size are treated as a failed/empty dump and not uploaded.
+# 1 MB suits the DB box; the hist-gateway catalog is mostly views (~tens of KB).
+: "${MIN_DUMP_BYTES:=1048576}"
+# Optional key prefix inside the bucket (e.g. "_backup/" when the target bucket
+# also holds other data — see backup-historian.sh). Default: bucket root.
+: "${BACKUP_KEY_PREFIX:=}"
 
 # stdout only: under systemd it lands in the journal once (journalctl -u
 # packiot-db-backup). `logger -s` used to write it twice (syslog + stderr).
@@ -87,6 +107,7 @@ mkdir -p "$DUMP_DIR"
 prune_prefix() {
     local prefix="$1"
     local keep="$2"
+    [ "$PRUNE" = 1 ] || { log "PRUNE=0: not pruning $prefix (bucket lifecycle caps age)"; return 0; }
     log "Pruning $prefix: keep most recent $keep"
 
     # JMESPath's sort_by() raises when Contents is null (empty prefix), and
@@ -114,8 +135,8 @@ prune_prefix() {
 # backup_one <db>: dump → gzip → S3 (daily/weekly/monthly/latest) → prune.
 backup_one() {
     local db="$1"
-    local prefix=""
-    [ "$db" != "packiot" ] && prefix="$db/"
+    local prefix="$BACKUP_KEY_PREFIX"
+    [ "$db" != "packiot" ] && prefix="$BACKUP_KEY_PREFIX$db/"
     local dump_file="$DUMP_DIR/${db}-${TODAY}.dump.gz"
 
     log "Starting backup: db=$db container=$POSTGRES_CONTAINER bucket=$BACKUP_BUCKET prefix=${prefix:-<root>}"
@@ -134,8 +155,8 @@ backup_one() {
     local dump_bytes
     dump_bytes=$(stat -c %s "$dump_file")
     log "pg_dump complete: db=$db ${dump_bytes} bytes (gzipped)"
-    if [ "$dump_bytes" -lt 1048576 ]; then
-        log "ERROR: dump of $db suspiciously small (<1 MB); aborting its upload"
+    if [ "$dump_bytes" -lt "$MIN_DUMP_BYTES" ]; then
+        log "ERROR: dump of $db suspiciously small (<$MIN_DUMP_BYTES bytes); aborting its upload"
         rm -f "$dump_file"
         return 1
     fi
@@ -160,7 +181,34 @@ backup_one() {
 
     rm -f "$dump_file"
 
+    # Database-level settings (ALTER DATABASE … SET, ALTER ROLE … IN DATABASE … SET)
+    # live in the cluster catalog pg_db_role_setting, keyed by database OID: a
+    # plain pg_dump does NOT carry them and pg_dumpall --roles-only neither. The
+    # 2026-09-30 drill found packiot_analytics' search_path (gold, silver, identity,
+    # config, …) and packiot_historian's (cold, public) there — a restored DB
+    # without them breaks every bare-name query. Saved as SQL with a
+    # __TARGET_DB__ placeholder; restore-db.sh applies it to the side DB.
+    local settings_file="$DUMP_DIR/${db}-settings.sql"
+    docker exec -i -e "PGUSER=$POSTGRES_USER" "$POSTGRES_CONTAINER" psql -d postgres -At -v ON_ERROR_STOP=1 -v db="$db" \
+        > "$settings_file" <<'SQL'
+SELECT CASE WHEN s.setrole = 0 THEN 'ALTER DATABASE __TARGET_DB__ SET '
+            ELSE format('ALTER ROLE %I IN DATABASE __TARGET_DB__ SET ', r.rolname) END
+    || quote_ident(split_part(c, '=', 1)) || ' TO '
+    -- list GUCs (pg_dump's variable_is_guc_list_quote) keep their raw list syntax
+    || CASE WHEN split_part(c, '=', 1) IN ('search_path', 'temp_tablespaces', 'session_preload_libraries',
+                                           'local_preload_libraries', 'shared_preload_libraries')
+            THEN substr(c, strpos(c, '=') + 1) ELSE quote_literal(substr(c, strpos(c, '=') + 1)) END || ';'
+FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase
+LEFT JOIN pg_roles r ON r.oid = s.setrole, unnest(s.setconfig) AS c
+WHERE d.datname = :'db' ORDER BY 1;
+SQL
+    log "db-level settings of $db: $(wc -l < "$settings_file") statement(s)"
+    aws s3 cp "$settings_file" "s3://$BACKUP_BUCKET/${prefix}db-settings/${TODAY}.sql" --region "$AWS_REGION" --no-progress
+    aws s3 cp "$settings_file" "s3://$BACKUP_BUCKET/${prefix}db-settings/latest.sql" --region "$AWS_REGION" --no-progress
+    rm -f "$settings_file"
+
     prune_prefix "${prefix}daily/"   "$RETAIN_DAILY"
+    prune_prefix "${prefix}db-settings/2" "$RETAIN_DAILY"
     prune_prefix "${prefix}weekly/"  "$RETAIN_WEEKLY"
     prune_prefix "${prefix}monthly/" "$RETAIN_MONTHLY"
     write_metrics "$db" "$dump_bytes"
@@ -176,10 +224,10 @@ backup_roles() {
     docker exec -e "PGUSER=$POSTGRES_USER" "$POSTGRES_CONTAINER" \
         pg_dumpall --roles-only --no-role-passwords | gzip -6 > "$f"
     log "roles dump: $(zcat "$f" | grep -c '^CREATE ROLE') roles"
-    aws s3 cp "$f" "s3://$BACKUP_BUCKET/globals/daily/${TODAY}.sql.gz" --region "$AWS_REGION" --no-progress
-    aws s3 cp "$f" "s3://$BACKUP_BUCKET/globals/latest.sql.gz" --region "$AWS_REGION" --no-progress
+    aws s3 cp "$f" "s3://$BACKUP_BUCKET/${GLOBALS_PREFIX}daily/${TODAY}.sql.gz" --region "$AWS_REGION" --no-progress
+    aws s3 cp "$f" "s3://$BACKUP_BUCKET/${GLOBALS_PREFIX}latest.sql.gz" --region "$AWS_REGION" --no-progress
     rm -f "$f"
-    prune_prefix "globals/daily/" "$RETAIN_DAILY"
+    prune_prefix "${GLOBALS_PREFIX}daily/" "$RETAIN_DAILY"
 }
 
 # One DB failing must not skip the others, but the run still exits non-zero so

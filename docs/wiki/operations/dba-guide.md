@@ -254,16 +254,19 @@ re-flagging, as above. See
 | Layer | What | Where / schedule | Retention |
 |---|---|---|---|
 | Row backups before repairs | `ops._bkp_*` tables | in the analytics DB, by hand | until dropped by hand |
-| Nightly logical dump | `pg_dump --format=custom` → gzip → S3 | `terraform/staging/scripts/backup-db.sh`, systemd timer on the DB host at 02:00 UTC, bucket `packiot-staging-db-backups-<account>` (`terraform/staging/backups.tf`) | 14 daily, 4 weekly, 3 monthly; S3 lifecycle hard cap 90 days |
+| Nightly logical dump (DB box) | `pg_dump --format=custom` (owners + grants kept) → gzip → S3, plus cluster roles and each DB's `ALTER DATABASE … SET` settings | `terraform/staging/scripts/backup-db.sh`, `packiot-db-backup.timer` 02:00 UTC; DBs `packiot packiot_analytics superset` (`/etc/packiot/backup.env`); bucket `packiot-staging-db-backups-<account>` | 14 daily, 4 weekly, 3 monthly; S3 lifecycle hard cap 90 days |
+| Nightly historian backup (app box) | hist-gateway catalog DB `packiot_historian` dump (same script) | `backup-historian.sh`, `packiot-historian-backup.timer` 04:30 UTC; interim target `s3://packiot-staging-historian-<account>/_backup/` | 14 daily, 4 weekly, 3 monthly |
 | EBS snapshots | before risky operations, by hand (for example `snap-0f535e3c42d4e2ae0` before the 2026-09-23 resize) | AWS console / CLI | manual |
-| AWS Backup plan | daily snapshots, 7-day retention | **app host only** (`terraform/staging/snapshots.tf`, tag `packiot-staging-app`); the DB host is not in the plan | 7 days |
-| Historian archive | Parquet on S3 | versioning **off** | the archive itself is the long-term copy of raw data |
+| AWS Backup plan | daily snapshots, 7-day retention | app host (covers the hist-gateway volume); DB host selection is in `snapshots.tf` but **not applied** | 7 days |
+| Historian archive | Parquet on S3 (the only copy of raw data older than 90 days) | versioning **off**; no copy until `app_backup_ops` (backups.tf) is applied and the app box runs `MODE=target` | the archive itself |
 
-!!! warning "Unverified: which database the nightly dump covers"
-    `backup-db.sh` defaults to `POSTGRES_DB=packiot` (the frozen F1 database). Whether the
-    installed timer overrides it to `packiot_analytics` was not verified in this pass. Check
-    the unit's environment on the DB host and the object sizes in the bucket before relying on
-    it for a restore.
+Verified 2026-09-30 (restore drills in isolated `--network none` containers): analytics
+0 `pg_restore` errors, RLS policies / forced-RLS tables / non-superuser view owners identical to
+live, ~15 min to restore on one CPU; historian catalog 0 errors, all state tables byte-identical.
+Restore = `docs/runbooks/emergency-db-restore.md` (GitHub button
+"EMERGENCY – restore database" or `restore-db.sh` by hand). **A plain `pg_dump` does not carry
+`ALTER DATABASE … SET search_path`** — `backup-db.sh` saves it to `<db>/db-settings/` and
+`restore-db.sh` re-applies it.
 
 `ops._bkp_*` tables present on 2026-09-28 (about 280 MB together): `_bkp_closer_rebind_20260928`,
 `_bkp_po_header_reflag_20260928`, `_bkp_po_runtime_gross0_20260928`,

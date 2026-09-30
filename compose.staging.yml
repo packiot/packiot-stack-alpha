@@ -1031,6 +1031,9 @@ services:
       - --path.sysfs=/host/sys
       - --path.rootfs=/rootfs
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)
+      # Historian backup results (terraform/staging/scripts/backup-historian.sh
+      # writes backup_<db>.prom here) → BackupStale / BackupMetricsMissing alerts.
+      - --collector.textfile.directory=/rootfs/var/lib/packiot-backup/metrics
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro

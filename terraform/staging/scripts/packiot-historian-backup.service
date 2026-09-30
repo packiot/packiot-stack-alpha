@@ -1,0 +1,15 @@
+[Unit]
+Description=Packiot staging HISTORIAN nightly backup (hist-gateway pg_dump + cold Parquet mirror → S3)
+Documentation=https://github.com/packiot/packiot-stack-alpha/blob/staging/terraform/staging/scripts/backup-historian.sh
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/packiot/historian-backup.env
+ExecStart=/opt/packiot/scripts/backup-historian.sh
+StandardOutput=journal
+StandardError=journal
+# The first mirror copies ~11 GB server-side; later runs copy only changed objects.
+TimeoutStartSec=3600
