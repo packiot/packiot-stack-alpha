@@ -166,7 +166,10 @@ jobs:
         # the Deploy step's --remove-orphans never reaps a running Superset — the
         # whole overlay stays dark until the profile is deliberately enabled per
         # docs/superset-golive-runbook.md.
-        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack build
+        # --profile shared-tee: the shared multi-tenant agent (every client's cloud
+        # ingest) is profile-gated, so without it the deploy never rebuilt it —
+        # staging ran a 2026-09-01 agent image until 2026-09-29.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack --profile shared-tee build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
@@ -176,7 +179,9 @@ jobs:
         # whole project — no other stack co-tenants on the host. The superset
         # overlay is profile-gated (see Build step) so this starts nothing extra
         # until COMPOSE_PROFILES=superset.
-        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
+        # --profile shared-tee recreates the shared agent when its image changed
+        # (seconds; readers retry/spool) so merged agent code actually goes live.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack --profile shared-tee up -d --remove-orphans
 
       - name: Prune old images + build cache
         # `docker image prune` never touches the BUILD CACHE, which grows every deploy:
