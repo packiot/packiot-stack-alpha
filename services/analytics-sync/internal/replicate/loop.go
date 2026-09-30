@@ -86,6 +86,13 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 			return ctx.Err()
 		default:
 		}
+		// Sandbox heal running: PAUSE — no fetch, no advance. Actions arriving mid-heal are
+		// replayed on top of the fresh reflection once it ends (hold.go).
+		if cfg.Hold.Mode(ctx) == HoldHealing {
+			beat()
+			sleepCtx(ctx, pollInterval)
+			continue
+		}
 		batch, err := FetchBatch(ctx, legacyPool, cfg.SrcEnterprise, cursor, cfg.BatchSize)
 		if err != nil {
 			// Source unreachable/errored: do NOT beat — a sustained source
@@ -103,7 +110,7 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 		// Sandbox hands-on session: advance past the batch without applying it. The
 		// heal at the end of the grace period reflects the source's current state,
 		// which already contains these actions (hold.go).
-		if cfg.Hold.Held(ctx) {
+		if cfg.Hold.Mode(ctx) == HoldSession {
 			for i := range batch {
 				m.IncSkipped("sandbox-hold")
 				cursor = batch[i].ID
