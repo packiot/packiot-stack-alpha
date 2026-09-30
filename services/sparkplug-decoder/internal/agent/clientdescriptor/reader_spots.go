@@ -3,6 +3,7 @@ package clientdescriptor
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -196,8 +197,8 @@ func subscribeSpots(spots map[string]*spotRef, node map[string]any, i int, p str
 		s, ok := spots[rid]
 		switch {
 		case !ok:
-			return fmt.Errorf("customizations[%d] (id %q): links to unknown reader spot %q — valid spots: %s",
-				i, id, rid, spotIDList(p))
+			return fmt.Errorf("customizations[%d] (id %q): links to unknown reader spot %q — valid spots here: %s",
+				i, id, rid, presentSpots(spots))
 		case typ == "link in" && s.kind != SpotTap:
 			return fmt.Errorf("customizations[%d] (id %q): a `link in` can only subscribe to a tap spot, not %q", i, id, rid)
 		case typ == "link out" && s.kind != SpotEntry:
@@ -208,10 +209,11 @@ func subscribeSpots(spots map[string]*spotRef, node map[string]any, i int, p str
 	return nil
 }
 
-func spotIDList(p string) string {
-	ids := make([]string, 0, len(ReaderSpots))
-	for _, s := range ReaderSpots {
-		ids = append(ids, SpotID(p, s.Key))
+func presentSpots(spots map[string]*spotRef) string {
+	ids := make([]string, 0, len(spots))
+	for id := range spots {
+		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return strings.Join(ids, ", ")
 }

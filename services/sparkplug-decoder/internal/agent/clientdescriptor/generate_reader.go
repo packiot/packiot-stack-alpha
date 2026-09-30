@@ -86,6 +86,7 @@ type ReaderFlowOptions struct {
 //     not just a reader; keeping customizations on their own tab means regenerating
 //     the reader tab never clobbers them.
 func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, error) {
+	d = d.activePLC()
 	if d.PLC == nil {
 		return nil, fmt.Errorf("descriptor has no plc block — nothing to generate for the reader flow")
 	}
@@ -384,67 +385,9 @@ func (d *Descriptor) GeneratePlcReaderFlow(opts ...ReaderFlowOptions) ([]byte, e
 	}
 
 	nodes = appendReaderSpots(nodes, p, tabID, fnID, httpID, switchID, midY)
-
-	// Render the per-client customizations onto the customizations tab. Each entry
-	// is a raw Node-RED node (a CS engineer's "Export" from Node-RED). This is what
-	// makes the customization surface DESCRIPTOR-SOURCED + versioned (ADR-0045 G3):
-	// the tab is no longer emitted empty with integrations hand-added on the box
-	// (invisible to CS-Admin, clobbered on redeploy) — they ride the descriptor and
-	// re-emit on every regeneration.
-	//
-	//   - A FLOW node (one carrying a "z" tab reference) is re-homed onto the
-	//     customizations tab so it lands there regardless of which tab it was
-	//     exported from — UNLESS its "z" names a tab or subflow that the
-	//     customizations themselves declare: then it stays put (re-homing a
-	//     subflow's internal nodes would tear the subflow apart, and a declared
-	//     tab is the author asking for its own tab). A CONFIG node (no "z",
-	//     tab-less) passes through untouched.
-	//   - A customization id colliding with a GENERATED reader node id is a
-	//     fail-closed error: Node-RED silently breaks a flow with duplicate ids.
-	//   - A customization `link in` whose "links" names a TAP spot subscribes to
-	//     it: the spot's `link out` gains the link-in id (Node-RED's runtime routes
-	//     on the link-out side). A customization `link out` naming the PUBLISH spot
-	//     is mirrored onto the spot's `link in` so the editor draws the wire.
-	reserved := make(map[string]bool, len(nodes))
-	for _, n := range nodes {
-		if id, ok := n["id"].(string); ok {
-			reserved[id] = true
-		}
-	}
-	declared := map[string]bool{}
-	for _, cn := range d.Customizations {
-		if t, _ := cn["type"].(string); t == "tab" || t == "subflow" {
-			if id, _ := cn["id"].(string); id != "" {
-				declared[id] = true
-			}
-		}
-	}
-	spots := readerSpotIndex(nodes, p)
-	for i, cn := range d.Customizations {
-		// Shallow-copy so re-homing "z" never mutates the descriptor's own map.
-		node := make(map[string]any, len(cn))
-		for k, v := range cn {
-			node[k] = v
-		}
-		id, _ := node["id"].(string)
-		if reserved[id] {
-			return nil, &AuthoringError{fmt.Errorf("customizations[%d]: node id %q collides with a generated reader node id "+
-				"— rename it (the '%s PLC reader' tab owns that id)", i, id, d.Tenant)}
-		}
-		reserved[id] = true
-		if z, isFlowNode := node["z"]; isFlowNode {
-			if zs, _ := z.(string); !declared[zs] {
-				node["z"] = custTabID
-			}
-		}
-		if err := subscribeSpots(spots, node, i, p); err != nil {
-			return nil, &AuthoringError{err}
-		}
-		nodes = append(nodes, node)
-	}
-	for _, s := range spots {
-		sort.Slice(s.links, func(a, b int) bool { return s.links[a].(string) < s.links[b].(string) })
-		s.node["links"] = s.links
+	nodes, err = d.renderCustomizations(nodes, p, custTabID)
+	if err != nil {
+		return nil, err
 	}
 
 	out, err := json.MarshalIndent(nodes, "", "  ")
@@ -752,4 +695,73 @@ func intOr(p *int, def int) int {
 		return *p
 	}
 	return def
+}
+
+// renderCustomizations appends the descriptor's customization nodes onto an
+// already-built generated flow (reader or helper) — shared so both flows get the
+// same re-homing, collision and spot-subscription rules.
+func (d *Descriptor) renderCustomizations(nodes []map[string]any, p, custTabID string) ([]map[string]any, error) {
+
+	// Render the per-client customizations onto the customizations tab. Each entry
+	// is a raw Node-RED node (a CS engineer's "Export" from Node-RED). This is what
+	// makes the customization surface DESCRIPTOR-SOURCED + versioned (ADR-0045 G3):
+	// the tab is no longer emitted empty with integrations hand-added on the box
+	// (invisible to CS-Admin, clobbered on redeploy) — they ride the descriptor and
+	// re-emit on every regeneration.
+	//
+	//   - A FLOW node (one carrying a "z" tab reference) is re-homed onto the
+	//     customizations tab so it lands there regardless of which tab it was
+	//     exported from — UNLESS its "z" names a tab or subflow that the
+	//     customizations themselves declare: then it stays put (re-homing a
+	//     subflow's internal nodes would tear the subflow apart, and a declared
+	//     tab is the author asking for its own tab). A CONFIG node (no "z",
+	//     tab-less) passes through untouched.
+	//   - A customization id colliding with a GENERATED reader node id is a
+	//     fail-closed error: Node-RED silently breaks a flow with duplicate ids.
+	//   - A customization `link in` whose "links" names a TAP spot subscribes to
+	//     it: the spot's `link out` gains the link-in id (Node-RED's runtime routes
+	//     on the link-out side). A customization `link out` naming the PUBLISH spot
+	//     is mirrored onto the spot's `link in` so the editor draws the wire.
+	reserved := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if id, ok := n["id"].(string); ok {
+			reserved[id] = true
+		}
+	}
+	declared := map[string]bool{}
+	for _, cn := range d.Customizations {
+		if t, _ := cn["type"].(string); t == "tab" || t == "subflow" {
+			if id, _ := cn["id"].(string); id != "" {
+				declared[id] = true
+			}
+		}
+	}
+	spots := readerSpotIndex(nodes, p)
+	for i, cn := range d.Customizations {
+		// Shallow-copy so re-homing "z" never mutates the descriptor's own map.
+		node := make(map[string]any, len(cn))
+		for k, v := range cn {
+			node[k] = v
+		}
+		id, _ := node["id"].(string)
+		if reserved[id] {
+			return nil, &AuthoringError{fmt.Errorf("customizations[%d]: node id %q collides with a generated reader node id "+
+				"— rename it (the '%s PLC reader' tab owns that id)", i, id, d.Tenant)}
+		}
+		reserved[id] = true
+		if z, isFlowNode := node["z"]; isFlowNode {
+			if zs, _ := z.(string); !declared[zs] {
+				node["z"] = custTabID
+			}
+		}
+		if err := subscribeSpots(spots, node, i, p); err != nil {
+			return nil, &AuthoringError{err}
+		}
+		nodes = append(nodes, node)
+	}
+	for _, s := range spots {
+		sort.Slice(s.links, func(a, b int) bool { return s.links[a].(string) < s.links[b].(string) })
+		s.node["links"] = s.links
+	}
+	return nodes, nil
 }
