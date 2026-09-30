@@ -42,6 +42,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
@@ -447,15 +448,29 @@ func isIntOverflow(err error) bool {
 // RunCompute executes one compute pass for one destination. poAvail (FU#8) gates
 // the PO-grain availability write path; default false ⇒ byte-identical parity.
 func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, scope LineLeadScope) (int64, error) {
+	// ONE SNAPSHOT for every phase (2026-09-30). Each phase builds its own eligible
+	// set from recalc_needed; as separate autocommit statements (READ COMMITTED =
+	// a fresh snapshot per statement) a row flagged by another writer AFTER Phase A2
+	// read the set but BEFORE Phase A did was cleared by A with no line-lead values —
+	// a silently lost recompute (5 repaired CPACK POs left NULL, 2026-09-30).
+	// REPEATABLE READ gives all phases the same set: a row flagged mid-pass is not
+	// in the snapshot, keeps its flag and is computed next tick. A writer that
+	// changes a row this pass also updates makes the pass fail with 40001 — the
+	// whole pass rolls back and the next tick retries; nothing is lost either way.
+	tx, err := d.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return 0, fmt.Errorf("compute begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
 	// Phase B first (see NOTE): its eligible set must predate A's clear.
-	if _, err := d.Pool.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
+	if _, err := tx.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
 		return 0, fmt.Errorf("compute events: %w", err)
 	}
 	// Phase B2 (FU#8): the availability write path — MUST run before Phase A
 	// clears recalc_needed (its eligible set reads recalc_needed, like Phase B).
 	// Off ⇒ skipped ⇒ available_time/planned_downtime stay NULL (parity).
 	if poAvail {
-		if _, err := d.Pool.Exec(ctx, fmtRD(computeAvailabilitySQL, d, plannedDowntimeExpr(false)), window); err != nil {
+		if _, err := tx.Exec(ctx, fmtRD(computeAvailabilitySQL, d, plannedDowntimeExpr(false)), window); err != nil {
 			return 0, fmt.Errorf("compute availability: %w", err)
 		}
 	}
@@ -466,22 +481,33 @@ func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail bool, 
 	}
 	pred := scope.Predicate("$2::int[]")
 	if scope.Any() {
-		if _, err := d.Pool.Exec(ctx, fmtRD(computeLineLeadValuesSQL, d, pred), window, ll); err != nil {
+		if _, err := tx.Exec(ctx, fmtRD(computeLineLeadValuesSQL, d, pred), window, ll); err != nil {
 			return 0, fmt.Errorf("compute line-lead values: %w", err)
 		}
 	}
-	tag, err := d.Pool.Exec(ctx, fmtRD(computeValuesSQL, d, pred), window, ll)
+	if computeBetweenPhasesHook != nil {
+		computeBetweenPhasesHook(ctx)
+	}
+	tag, err := tx.Exec(ctx, fmtRD(computeValuesSQL, d, pred), window, ll)
 	if err != nil {
 		return 0, fmt.Errorf("compute values: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmtRD(computeReflagOpenSQL, d)); err != nil {
-		return tag.RowsAffected(), fmt.Errorf("reflag open: %w", err)
+	if _, err := tx.Exec(ctx, fmtRD(computeReflagOpenSQL, d)); err != nil {
+		return 0, fmt.Errorf("reflag open: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmtRD(computeReflagRecentSQL, d)); err != nil {
-		return tag.RowsAffected(), fmt.Errorf("reflag recent: %w", err)
+	if _, err := tx.Exec(ctx, fmtRD(computeReflagRecentSQL, d)); err != nil {
+		return 0, fmt.Errorf("reflag recent: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("compute commit: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
+
+// computeBetweenPhasesHook is a test seam: nil in production. The golden test sets
+// it to flag a row from ANOTHER connection between Phase A2 and Phase A — the exact
+// interleaving that lost recomputes before RunCompute ran in one snapshot.
+var computeBetweenPhasesHook func(ctx context.Context)
 
 // RunPropagateHeaders flags the header of every runtime row the next compute
 // pass will recompute (computePropagateHeadersSQL). Call it BEFORE RunCompute.

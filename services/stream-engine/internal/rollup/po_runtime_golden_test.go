@@ -265,3 +265,78 @@ func TestGoldenPORuntimeReconcilesPerHour(t *testing.T) {
 		t.Errorf("PO 20 gross/net = %v/%v, want 600/600 (per-hour reconcile; per-minute gives net 900)", gross, net)
 	}
 }
+
+// TestGoldenPORuntimeFlagMidPassIsNotLost pins the ONE-SNAPSHOT rule of RunCompute
+// (2026-09-30). PO 31's runtime row is flagged by ANOTHER connection between the
+// line-lead phase (A2) and the phase that clears flags (A) — what a repair script or
+// the replicator does when its commit lands mid-pass. As separate autocommit
+// statements, A saw the new flag and cleared it without A2's values: the row ended
+// flag=false, gross/net NULL, and nothing would ever recompute it (closed > 48 h ago,
+// outside every re-flag tail). In one REPEATABLE READ snapshot the row keeps its flag
+// and the next pass computes it (600/600).
+func TestGoldenPORuntimeFlagMidPassIsNotLost(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	const fixture = `
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,net_machine)
+		VALUES (930,1,1,3,3,10,931,931,931), (931,1,1,3,1,10,NULL,NULL,NULL);
+		-- PO 30: flagged, closed 3 days ago; PO 31: NOT flagged yet, closed 4 days ago.
+		INSERT INTO golden.production_orders (id_production_order,id_enterprise,id_equipment,status,ts_start,ts_end,recalc_needed) VALUES
+		  (30,3,930,3, date_trunc('hour', now()) - interval '3 days 1 hour', date_trunc('hour', now()) - interval '3 days', true),
+		  (31,3,930,3, date_trunc('hour', now()) - interval '4 days 1 hour', date_trunc('hour', now()) - interval '4 days', false);
+		INSERT INTO golden.production_orders_runtime (id_production_order,id_equipment,runtime_timerange,recalc_needed) VALUES
+		  (30,930, tstzrange(date_trunc('hour', now()) - interval '3 days 1 hour', date_trunc('hour', now()) - interval '3 days'), true),
+		  (31,930, tstzrange(date_trunc('hour', now()) - interval '4 days 1 hour', date_trunc('hour', now()) - interval '4 days'), false);
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 931, b + make_interval(mins => m), 10, 10
+		  FROM generate_series(0,59) m,
+		       (VALUES (date_trunc('hour', now()) - interval '3 days 1 hour'), (date_trunc('hour', now()) - interval '4 days 1 hour')) v(b);`
+	for _, s := range []string{poRuntimeSchema, fixture} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+	}
+	d := flows.Dest{Name: "golden", Pool: pool, EvSchema: "golden", RefSchema: "golden",
+		SilverSchema: "golden", GoldSchema: "golden", GrainSchema: "golden"}
+	scope := LineLeadScope{Enterprises: []int{3}}
+
+	computeBetweenPhasesHook = func(ctx context.Context) {
+		// A different pooled connection (RunCompute's tx holds its own): commits at once.
+		if _, err := pool.Exec(ctx, `UPDATE golden.production_orders_runtime SET recalc_needed = true WHERE id_production_order = 31`); err != nil {
+			t.Errorf("mid-pass flag: %v", err)
+		}
+	}
+	_, err = RunCompute(ctx, d, "1 month", false, scope)
+	computeBetweenPhasesHook = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flagged bool
+	if err := pool.QueryRow(ctx, `SELECT recalc_needed FROM golden.production_orders_runtime WHERE id_production_order = 31`).Scan(&flagged); err != nil {
+		t.Fatal(err)
+	}
+	if !flagged {
+		t.Fatalf("PO 31 flag was cleared by the pass that never computed it (lost recompute)")
+	}
+	if _, err := RunCompute(ctx, d, "1 month", false, scope); err != nil {
+		t.Fatal(err)
+	}
+	for _, po := range []int{30, 31} {
+		var gross, net *float64
+		if err := pool.QueryRow(ctx, `SELECT gross_production, net_production FROM golden.production_orders_runtime WHERE id_production_order = $1`, po).Scan(&gross, &net); err != nil {
+			t.Fatal(err)
+		}
+		if gross == nil || net == nil || math.Abs(*gross-600) > 1e-9 || math.Abs(*net-600) > 1e-9 {
+			t.Errorf("PO %d gross/net = %v/%v, want 600/600", po, gross, net)
+		}
+	}
+}
