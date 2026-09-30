@@ -150,9 +150,16 @@ var endpoints = []endpoint{
 	// tenant predicate and move the topic vector to $2. Same projected columns.
 	// LINE-ONLY reasons: a member of a downtime_from_lead_machine line gets the
 	// LINE's tree (same rule as the equipment-downtime-reasons dataset).
+	// LINE topics: a line's own register row has id_unit NULL (id_unit = id_equipment
+	// holds for machines only), so the machine-only join dropped every line. The
+	// operator asks for its LINE topic (+ children) and prefers the row whose topic is
+	// the line's, so on lines that keep the tree on the line and are not
+	// downtime_from_lead_machine (CPACK: 20 line trees, 41 of 42 members NULL) it fell
+	// through to a member's empty tree — "No downtime reasons configured".
 	{path: "/v1/downtime-reasons",
 		sql: `SELECT e.id_equipment, r.downtime_reasons, e.scrap_reasons, p.packml_topic
-	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment AND p.id_unit = e.id_equipment
+	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment
+	        AND (p.id_unit = e.id_equipment OR (p.id_unit IS NULL AND e.tp_equipment = 3))
 	   LEFT JOIN equipments l ON l.id_equipment = e.id_parentequipment
 	        AND l.id_enterprise = e.id_enterprise AND l.tp_equipment = 3
 	        AND l.downtime_from_lead_machine AND l.active
