@@ -19,6 +19,13 @@
 #
 # Deploy: docker compose -f compose.staging.yml up -d --build
 
+# Pin the project identity to the file (as compose.production.yml does): without
+# it, `docker compose` run from the runner checkout resolves to the directory
+# name `packiot-stack-alpha` instead of `stack`, so the edge-api app-box
+# recreates (apply-agent-config / apply-calculations / apply-oee-settings)
+# collided with the running containers' fixed container_name (2026-09-29).
+name: stack
+
 networks:
   packiot-net:
     driver: bridge
