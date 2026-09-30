@@ -2746,7 +2746,12 @@ services:
       # guard is interval-aware so a legit long-interval read scales its ceiling.
       # This is the GLOBAL DEFAULT; WS3 (OEE_PROFILE_FROM_DB) lets a client
       # override it per equipment from its OEE profile.
-      CALC_COUNTER_SPIKE_MARGIN: "10"
+      # 2026-09-30: DISABLED ("0" = guard inert). It CLAMPED an impossible jump to
+      # margin×ideal×Δt — a fabricated value, unrecorded — and once discarded real
+      # production (09-23→27). Policy is "no clamps distorting data": the stream-engine
+      # ingest check (INCREMENT_SANITY_CLAMP_*, K=4, every equipment) already REJECTS
+      # the same 100–2580× phantoms and records a data_quality_event for each.
+      CALC_COUNTER_SPIKE_MARGIN: "0"
       # ── WS3 per-client OEE profile (config-as-data) ─────────────────────
       # When true the decoder reloads a unit-topic→spike_margin map from
       # client_descriptors.descriptor->oee_profile (authored in the customize

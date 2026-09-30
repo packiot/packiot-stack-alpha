@@ -5,9 +5,10 @@ import { classifyOnboardingError, isStaleSave, onboardingApi, type OeeProfile } 
 import { edgeSsmApi } from "@/api/edge-ssm";
 import { equipmentApi } from "@/api/equipment";
 import { PageHeader } from "@/components/page-header";
-import { Button, Card, Input, Select } from "@/components/ui";
+import { Button, Card, Select } from "@/components/ui";
 import { csadminUrl } from "@/lib/sibling-apps";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
+import { stableJson } from "@/lib/node-red-customizations";
 
 type LoadState = "loading" | "ready" | "none" | "error";
 
@@ -46,7 +47,6 @@ export function OeeProfilePage() {
   const [lines, setLines] = useState<Line[]>([]);
   const [clientSource, setClientSource] = useState<Exclude<Source, "inherit">>("own");
   const [perLine, setPerLine] = useState<Record<string, Source>>({});
-  const [spike, setSpike] = useState("");
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
 
@@ -54,7 +54,6 @@ export function OeeProfilePage() {
     setSaved(p);
     setClientSource(sourceOfProfile(p) === "lead" ? "lead" : "own");
     setPerLine(Object.fromEntries(Object.entries(p?.lines ?? {}).map(([k, v]) => [k, sourceOfProfile(v)])));
-    setSpike(p?.spike_margin != null ? String(p.spike_margin) : "");
   }, []);
 
   const load = useCallback(async () => {
@@ -102,12 +101,9 @@ export function OeeProfilePage() {
     }
     if (Object.keys(lineMap).length) p.lines = lineMap;
     else delete p.lines;
-    if (spike.trim() === "") delete p.spike_margin;
-    else {
-      const m = Number(spike);
-      if (!Number.isFinite(m) || m < 1.5 || m > 1000) throw new Error("Use a number between 1.5 and 1000 (typical: 3 to 5), or leave it empty.");
-      p.spike_margin = m;
-    }
+    // The per-client spike clamp is retired (it wrote made-up values; the platform
+    // ingest check rejects impossible jumps and records them). Saving drops it.
+    delete p.spike_margin;
     const keys = Object.keys(p).filter((k) => k !== "version");
     if (!keys.length) return null;
     p.version = 1;
@@ -116,13 +112,21 @@ export function OeeProfilePage() {
 
   const current = useMemo(() => {
     try {
-      return JSON.stringify(build());
+      return stableJson(build());
     } catch {
       return "invalid";
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientSource, perLine, spike, saved]);
-  const dirty = current !== JSON.stringify(saved ?? null);
+  }, [clientSource, perLine, saved]);
+  // Compare against what's stored MINUS the retired spike clamp, so a profile that
+  // still carries it doesn't open as "unsaved changes".
+  const storedComparable = useMemo(() => {
+    if (!saved) return null;
+    const c: OeeProfile = { ...saved };
+    delete c.spike_margin;
+    return Object.keys(c).some((k) => k !== "version") ? c : null;
+  }, [saved]);
+  const dirty = current !== stableJson(storedComparable);
 
   async function save() {
     let profile: OeeProfile | null;
@@ -253,19 +257,6 @@ export function OeeProfilePage() {
                 )}
               </div>
             )}
-          </Card>
-
-          <Card className="mb-5 grid gap-3 px-7 py-6 text-[13px]">
-            <span className="text-[15px] font-extrabold text-foreground">Ignore impossible counter jumps</span>
-            <p className="text-muted-foreground">
-              Sometimes a counter jumps (a PLC restart, a reset). If a jump would mean the machine ran more than{" "}
-              <b className="text-foreground">X times its ideal speed</b>, it is treated as a glitch. Leave empty to use the platform
-              default. Typical: 3 to 5.
-            </p>
-            <label className="flex items-center gap-2">
-              <span className="font-semibold text-foreground">X =</span>
-              <Input id="oee-spike" className="h-[34px] w-28" inputMode="decimal" placeholder="default" value={spike} onChange={(e) => setSpike(e.target.value)} />
-            </label>
           </Card>
 
           <Card className="mb-8 grid gap-3 px-7 py-5 text-[13px]">

@@ -1,11 +1,11 @@
 import type { NodeRedNode } from "@/api/onboarding";
 
 /**
- * Order-sensitive but key-order-independent JSON of a node list — the dirty
- * check for the customizations editor (a node round-tripped through the server
- * may come back with its keys reordered by JSONB; that is not an edit).
+ * Key-order-independent JSON — the dirty check for editors whose values
+ * round-trip through the server (JSONB may return keys reordered; that is not
+ * an edit).
  */
-export function stableNodesJson(nodes: NodeRedNode[]): string {
+export function stableJson(value: unknown): string {
   const norm = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(norm);
     if (v && typeof v === "object") {
@@ -17,5 +17,10 @@ export function stableNodesJson(nodes: NodeRedNode[]): string {
     }
     return v;
   };
-  return JSON.stringify(norm(nodes));
+  return JSON.stringify(norm(value));
+}
+
+/** stableJson for a Node-RED node list (order of nodes still matters). */
+export function stableNodesJson(nodes: NodeRedNode[]): string {
+  return stableJson(nodes);
 }
