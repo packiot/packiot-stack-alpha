@@ -243,18 +243,32 @@ groups:
       # proof: on 2026-09-28 it had been dumping only the frozen legacy DB for weeks.
       # Alert on AGE (timer died / every run failing) and on SIZE (dumping the wrong
       # or an emptied DB). absent() covers "the metric never existed".
+      # DB box (packiot-db-backup, 02:00): packiot, packiot_analytics, superset.
+      # App box (packiot-historian-backup, 04:30): packiot_historian (hist-gateway
+      # catalog) and historian_parquet (cold-store mirror; absent until the app
+      # role's backup grant is applied — that absence IS the "no copy" signal).
       - alert: BackupStale
         expr: time() - packiot_backup_last_success_timestamp_seconds > 26 * 3600
         for: 30m
         labels: {severity: critical}
         annotations:
-          summary: "No successful {{ $labels.db }} backup for {{ $value | humanizeDuration }} — journalctl -u packiot-db-backup on the DB box"
+          summary: "No successful {{ $labels.db }} backup for {{ $value | humanizeDuration }} — journalctl -u packiot-db-backup (DB box) / -u packiot-historian-backup (app box)"
       - alert: BackupMetricsMissing
-        expr: absent(packiot_backup_last_success_timestamp_seconds{db="packiot_analytics"})
+        expr: |
+          absent(packiot_backup_last_success_timestamp_seconds{db="packiot_analytics"})
+          or absent(packiot_backup_last_success_timestamp_seconds{db="superset"})
+          or absent(packiot_backup_last_success_timestamp_seconds{db="packiot_historian"})
+          or absent(packiot_backup_last_success_timestamp_seconds{db="historian_parquet"})
         for: 30h
         labels: {severity: warning}
         annotations:
-          summary: "No backup metrics for packiot_analytics — backup-db.sh not writing /var/lib/packiot-backup/metrics or alloy-db textfile collector off"
+          summary: "No backup metrics for {{ $labels.db }} — its backup job is not running/writing /var/lib/packiot-backup/metrics, or the textfile collector (alloy-db / node-exporter) is off"
+      - alert: BackupMirrorIncomplete
+        expr: packiot_backup_mirror_missing_objects > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} historian Parquet objects are missing from the backup mirror — journalctl -u packiot-historian-backup on the app box"
       - alert: BackupShrank
         expr: packiot_backup_size_bytes < 0.5 * max_over_time(packiot_backup_size_bytes[8d])
         for: 1h

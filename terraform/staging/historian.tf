@@ -65,12 +65,17 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "historian" {
   }
 }
 
-# Versioning off — Parquet objects are immutable per (tenant, day) keys; a re-run
-# of a day intentionally overwrites exactly that object (idempotent backfill).
+# Versioning ON (2026-09-30 backup audit; NOT YET APPLIED — live is unversioned).
+# Raw telemetry older than the analytics 90-day hot window exists ONLY in this
+# bucket, and our own jobs overwrite (historian-append, cold re-unloads) and
+# delete (historian-prune-by-data-age.sh) objects in it. Re-runs still overwrite
+# the same (tenant, day) key idempotently — the previous version just stays
+# recoverable for 30 days (noncurrent rule below). The nightly mirror to the
+# backup bucket (scripts/backup-historian.sh) covers deletes but not overwrites.
 resource "aws_s3_bucket_versioning" "historian" {
   bucket = aws_s3_bucket.historian.id
   versioning_configuration {
-    status = "Disabled"
+    status = "Enabled"
   }
 }
 
@@ -109,6 +114,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "historian" {
     }
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
+    }
+  }
+  rule {
+    id     = "expire-noncurrent-versions-30d"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = 30
     }
   }
   rule {

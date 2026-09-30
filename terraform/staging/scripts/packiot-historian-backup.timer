@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly trigger for packiot-historian-backup.service
+Documentation=https://github.com/packiot/packiot-stack-alpha/blob/staging/terraform/staging/scripts/backup-historian.sh
+
+[Timer]
+# 04:30 UTC: after historian-staging-append (02:30, rewrites Parquet + watermarks)
+# and historian-integrity-monitor (04:00), so the snapshot is of a checked state.
+OnCalendar=*-*-* 04:30:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

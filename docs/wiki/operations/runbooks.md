@@ -30,6 +30,7 @@ last_verified: 2026-09-28
 | `docs/ci-selfhosted-runner-runbook.md` | register the org CI runner (`packiot-ci`) and wire repos to it |
 | `docs/guides/backup-restore-runbook.md` | DB backup decision memo and point-in-time-restore drill |
 | `terraform/staging/scripts/backup-db.sh`, `restore-db.sh` | DB-host dump to S3 and restore (driven by `packiot-db-backup.timer`) |
+| `docs/runbooks/emergency-db-restore.md` | EMERGENCY restore button (GitHub workflow): drill or restore analytics / historian / superset, rollback, manual fallback |
 | `docs/ingestion/cpack-tee-golive-runbook.md` | swap staging's synthetic CPACK source for the real CPACK Mode-A tee (ADR-0042 P1) |
 | `docs/clients/cpack-controlled-edge-deploy-runbook.md` | deploy a parallel Node-RED + sparkplug-agent at the CPACK site (read-only co-tee) |
 | `docs/clients/cpack-newprod-seed-runbook.md` | seed CPACK ready-but-empty on new-stack production |
