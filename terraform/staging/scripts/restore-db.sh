@@ -95,7 +95,10 @@ PREFIX="$BACKUP_KEY_PREFIX"; [ "$DB" != "packiot" ] && PREFIX="$BACKUP_KEY_PREFI
 SIDE="${DB}__restoring"
 T_START=$(date +%s)
 log() { echo "[$(date -u +%FT%TZ)] $*"; }
-psql_c() { docker exec -i -e "PGUSER=$POSTGRES_USER" "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -At "$@"; }
+# statement_timeout=0: the staging cluster sets statement_timeout=120s in
+# postgresql.conf, and ANALYZE of a freshly restored 18 GB DB takes longer (drill
+# 2026-09-30 died there). pg_restore itself already sets it to 0.
+psql_c() { docker exec -i -e "PGUSER=$POSTGRES_USER" -e "PGOPTIONS=-c statement_timeout=0" "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -At "$@"; }
 db_exists() { [ "$(psql_c -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$1'")" = 1 ]; }
 
 # catalog <db>: the invariants a faithful restore must reproduce exactly
