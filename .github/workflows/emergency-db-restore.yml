@@ -123,7 +123,7 @@ jobs:
                  --targets "Key=tag:Name,Values=$DB_BOX_TAG" --max-concurrency 1 --max-errors 0 \
                  --comment "emergency-db-restore run $GITHUB_RUN_ID $step" \
                  --parameters "$params" --query Command.CommandId --output text) || {
-            echo "::error::ssm:SendCommand to the DB box was refused. The app role needs aws_iam_role_policy.app_backup_ops (terraform/staging/backups.tf): terraform apply -target=aws_iam_role_policy.app_backup_ops — or use the manual commands in docs/runbooks/emergency-db-restore.md"
+            echo "::error::ssm:SendCommand to the DB box was refused. The app role needs aws_iam_role_policy.app_backup_ops (terraform/staging/backups.tf): terraform apply -target=aws_iam_role_policy.app_backup_ops — or use the manual commands in docs/runbooks/emergency-db-restore.md" >&2
             exit 1; }
           echo "SSM command $id"
           inst=""
@@ -131,7 +131,7 @@ jobs:
             inst=$(aws ssm list-command-invocations --region "$AWS_REGION" --command-id "$id" --query 'CommandInvocations[].InstanceId' --output text)
             [ -n "$inst" ] && [ "$inst" != None ] && break; sleep 2
           done
-          [ "$(wc -w <<<"$inst")" = 1 ] || { echo "::error::expected exactly one DB box, got '$inst'"; exit 1; }
+          [ "$(wc -w <<<"$inst")" = 1 ] || { echo "::error::expected exactly one DB box, got '$inst'" >&2; exit 1; }
           while :; do
             st=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$id" --instance-id "$inst" --query Status --output text 2>/dev/null || echo Pending)
             case "$st" in Success|Failed|Cancelled|TimedOut) break ;; esac
