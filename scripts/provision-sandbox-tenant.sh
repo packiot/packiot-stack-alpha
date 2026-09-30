@@ -385,6 +385,24 @@ ANALYTICS_SQL=""
 [ -n "$WIPE_ANALYTICS" ] && ANALYTICS_SQL="$SQL_WIPE_ANALYTICS"
 [ -n "$SEED_QA" ]        && ANALYTICS_SQL="$ANALYTICS_SQL $SQL_SEED_AN"
 
+# ── Hands-on session guard (db/migrations/t-sandbox-grace-hold) ───────────────
+# heal / reset-data WIPE the twin back to CPACK. While someone is working in it (a
+# change newer than the last heal, still inside its grace period) that would destroy
+# their session, so ops.sandbox_heal_begin refuses unless the hold is due or
+# SANDBOX_HEAL_FORCE=1 (scripts/sandbox-session.sh heal-now). A successful run records
+# the heal (ops.sandbox_heal_end), which releases the hold. Both are no-ops on a DB
+# without the migration.
+HEAL_GUARD_SQL=""
+if [ -n "$WIPE_ANALYTICS" ]; then
+  _force=false; [ "${SANDBOX_HEAL_FORCE:-0}" = "1" ] && _force=true
+  HEAL_GUARD_SQL="DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_heal_begin(integer,boolean)') IS NOT NULL THEN
+    PERFORM ops.sandbox_heal_begin($SENT, $_force); END IF; END \$\$;"
+  ANALYTICS_SQL="$ANALYTICS_SQL DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_heal_end(integer,boolean,text)') IS NOT NULL THEN
+    PERFORM ops.sandbox_heal_end($SENT, true, '$MODE'); END IF; END \$\$;"
+fi
+
+ANALYTICS_DB="${ANALYTICS_DB:-packiot_analytics}"
+
 # ── Execute via SSM -> staging app box -> dockerized psql ─────────────────────
 # run_remote_sql <base64-sql> <db>: run the SQL (dockerized psql) on the staging
 # app box — via SSM by default, or directly (sudo bash) under SANDBOX_LOCAL. It's
@@ -419,7 +437,15 @@ REMOTE
 }
 
 sql_b64=$(printf '%s' "$SQL" | base64 -w0)
-ANALYTICS_DB="${ANALYTICS_DB:-packiot_analytics}"
+if [ -n "$HEAL_GUARD_SQL" ]; then
+  echo "[$MODE] checking the hands-on session hold (force=${SANDBOX_HEAL_FORCE:-0})…"
+  guard_out=$(run_remote_sql "$(printf '%s' "$HEAL_GUARD_SQL" | base64 -w0)" "$ANALYTICS_DB" 2>&1) || guard_rc=$?
+  printf '%s\n' "$guard_out"
+  if [ -n "${guard_rc:-}" ] || printf '%s' "$guard_out" | grep -q 'ERROR:'; then
+    echo "[$MODE] REFUSED: the sandbox is held by a hands-on session (see above). Nothing was changed." >&2
+    exit 4
+  fi
+fi
 echo "[$MODE] provisioning SANDBOX-CPACK (ent $SENT) on staging…"
 run_remote_sql "$sql_b64" '$POSTGRES_DB'
 # Analytics-plane invocation (separate SSM call): PO-runtime wipe (heal/reset-data)
@@ -438,7 +464,9 @@ fi
 # Pure local file generation (no SSM, no DB) — safe to run every create/reset,
 # deterministic overwrite, never touches anything that isn't this twin's own
 # generated file.
-if [ "$MODE" = "create" ] || [ "$MODE" = "reset" ] || [ "$MODE" = "heal" ]; then
+# SKIP_FANOUT_EMIT=1: the installed copy (/opt/packiot/sandbox, the grace-heal timer)
+# has no checkout to write the static fan-out config into — nothing to re-emit there.
+if [ -z "${SKIP_FANOUT_EMIT:-}" ] && { [ "$MODE" = "create" ] || [ "$MODE" = "reset" ] || [ "$MODE" = "heal" ]; }; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   "$SCRIPT_DIR/emit-fanout-config.sh" "$SOURCE_GROUP" "$TARGET_GROUP"
 fi

@@ -196,6 +196,9 @@ func (rt *DLQRetrier) RunForever(ctx context.Context) error {
 }
 
 func (rt *DLQRetrier) runOnce(ctx context.Context) {
+	if rt.cfg.Hold.Held(ctx) {
+		return // sandbox hands-on session — retried after the grace-period heal
+	}
 	if n, err := countDLQ(ctx, rt.dst, rt.cfg.CursorSource); err == nil {
 		rt.m.SetDLQDepth(n)
 	}

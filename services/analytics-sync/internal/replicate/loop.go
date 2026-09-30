@@ -100,6 +100,20 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 			sleepCtx(ctx, pollInterval)
 			continue
 		}
+		// Sandbox hands-on session: advance past the batch without applying it. The
+		// heal at the end of the grace period reflects the source's current state,
+		// which already contains these actions (hold.go).
+		if cfg.Hold.Held(ctx) {
+			for i := range batch {
+				m.IncSkipped("sandbox-hold")
+				cursor = batch[i].ID
+			}
+			if err := AdvanceCursor(ctx, destPool, cfg.CursorSource, cursor); err != nil {
+				logger.Warn("advance cursor failed", slog.Int64("cursor", cursor), slog.String("err", err.Error()))
+			}
+			m.SetCursor(cursor)
+			continue
+		}
 		for i := range batch {
 			u := &batch[i]
 			skipped, err := d.Dispatch(ctx, legacyPool, destPool, r, u)
