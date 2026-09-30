@@ -151,7 +151,17 @@ SQL
 # statement_timeout must be set BEFORE the CALL (armed at top-level statement start).
 read -r -d '' SQL_WIPE_ANALYTICS <<SQL || true
 SET statement_timeout = '20min';
+-- twin-native clients/products/families would fail the reflect's catalog upsert on a
+-- same-name row (t-sandbox-reflect-catalog-extras); no-op on a DB without it.
+DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_drop_catalog_extras(integer,integer,integer)') IS NOT NULL THEN
+  RAISE NOTICE '%', ops.sandbox_drop_catalog_extras($SRC_ENT, $SENT, $OFF); END IF; END \$\$;
 CALL ops.sandbox_reflect($SRC_ENT, $SENT, $OFF, interval '14 days', false);
+-- legacy-era gold history: replace every month whose fingerprint differs from CPACK's, so a
+-- repair of CPACK's history reaches the twin (t-sandbox-reflect-catalog-extras/02). A CALL
+-- (it commits per month) — guarded by existence so an older DB just skips it.
+SELECT CASE WHEN to_regprocedure('ops.sandbox_resync_gold_history(integer,integer,integer,date,boolean)') IS NOT NULL
+            THEN 'CALL ops.sandbox_resync_gold_history($SRC_ENT, $SENT, $OFF, ''2026-09-01'')' ELSE 'SELECT 1' END AS sbx_resync \\gset
+:sbx_resync;
 SELECT 'SANDBOX analytics reflected: ent '||$SENT AS status,
   serving.refresh_downtime_events_resolved(now() - interval '15 days', now()) AS resolved_rows,
   (SELECT count(*) FROM core.production_orders WHERE id_enterprise=$SENT) AS pos,
