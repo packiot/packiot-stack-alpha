@@ -151,6 +151,10 @@ SQL
 # statement_timeout must be set BEFORE the CALL (armed at top-level statement start).
 read -r -d '' SQL_WIPE_ANALYTICS <<SQL || true
 SET statement_timeout = '20min';
+-- twin-native clients/products/families would fail the reflect's catalog upsert on a
+-- same-name row (t-sandbox-reflect-catalog-extras); no-op on a DB without it.
+DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_drop_catalog_extras(integer,integer,integer)') IS NOT NULL THEN
+  RAISE NOTICE '%', ops.sandbox_drop_catalog_extras($SRC_ENT, $SENT, $OFF); END IF; END \$\$;
 CALL ops.sandbox_reflect($SRC_ENT, $SENT, $OFF, interval '14 days', false);
 SELECT 'SANDBOX analytics reflected: ent '||$SENT AS status,
   serving.refresh_downtime_events_resolved(now() - interval '15 days', now()) AS resolved_rows,
