@@ -7,6 +7,10 @@
 -- before 2026-09-01 read 216.7M (CPACK) vs 222.7M (twin), avg OEE 0.376 vs 0.342, and the
 -- sandbox-front4 parity gate ("2023 OEE score is identical") failed.
 --
+-- FINGERPRINT SUMS ARE ::numeric: gross/net/oee are `real`, and sum(real) returns real —
+-- at ~1e8 its step is 8, so IDENTICAL rows summed in a different physical order differed by
+-- 8/16/24 and 48 of 56 already-equal months were "different" (the first catch-up re-ran).
+-- numeric sums are exact and order-independent.
 -- WHAT: for every gold grain, compare per-MONTH fingerprints (rows, Σgross, Σnet, Σoee,
 -- Σrunning_time, Σavailable_time) of source vs twin for months before p_before (the engine
 -- boundary: before it, gold is the legacy replay and no engine pass ever rewrites it). A month
@@ -48,13 +52,13 @@ BEGIN
           || CASE WHEN g.has_shift THEN ', ''id_shift'', x.id_shift + $1, ''id_shift_hour'', x.id_shift_hour + $1' ELSE '' END
           || CASE WHEN g.runtime_seq THEN ', ''id_runtime_shift'', nextval(''public.equipment_oee_shift_id_seq'')' ELSE '' END;
     FOR m IN EXECUTE format($q$
-        WITH c AS (SELECT date_trunc('month', x.ts_value)::date AS mo, count(*) n, round(sum(coalesce(x.gross,0))) g,
-                          round(sum(coalesce(x.net,0))) t, round(sum(coalesce(x.oee,0))*1000) o,
-                          round(sum(coalesce(x.running_time,0))) r, round(sum(coalesce(x.available_time,0))) a
+        WITH c AS (SELECT date_trunc('month', x.ts_value)::date AS mo, count(*) n, round(sum(coalesce(x.gross,0)::numeric)) g,
+                          round(sum(coalesce(x.net,0)::numeric)) t, round(sum(coalesce(x.oee,0)::numeric)*1000) o,
+                          round(sum(coalesce(x.running_time,0)::numeric)) r, round(sum(coalesce(x.available_time,0)::numeric)) a
                      FROM %1$s x WHERE %2$s AND x.ts_value < %4$L GROUP BY 1),
-             s AS (SELECT date_trunc('month', x.ts_value)::date AS mo, count(*) n, round(sum(coalesce(x.gross,0))) g,
-                          round(sum(coalesce(x.net,0))) t, round(sum(coalesce(x.oee,0))*1000) o,
-                          round(sum(coalesce(x.running_time,0))) r, round(sum(coalesce(x.available_time,0))) a
+             s AS (SELECT date_trunc('month', x.ts_value)::date AS mo, count(*) n, round(sum(coalesce(x.gross,0)::numeric)) g,
+                          round(sum(coalesce(x.net,0)::numeric)) t, round(sum(coalesce(x.oee,0)::numeric)*1000) o,
+                          round(sum(coalesce(x.running_time,0)::numeric)) r, round(sum(coalesce(x.available_time,0)::numeric)) a
                      FROM %1$s x WHERE %3$s AND x.ts_value < %4$L GROUP BY 1)
         SELECT coalesce(c.mo, s.mo) AS mo
           FROM c FULL JOIN s USING (mo)
