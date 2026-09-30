@@ -1,32 +1,27 @@
 #!/usr/bin/env bash
 #
-# build-wiki.sh — assemble the two Packiot doc sets into one static site.
+# build-wiki.sh — build the layered Packiot wiki into one static site.
 #
 # WHAT IT DOES
-#   1. Assembles a build-staging tree (wiki/build/staging/docs) from TWO sources
-#      that live in different git trees:
-#        - docs/guide/*   (the polished Guide, on the mainline branch / working tree)
-#        - docs/wiki/*    (the commissioned Stack Wiki; on origin/staging when not
-#                          present in the working tree)
-#      plus docs/adr/**   (copied so the Guide's ../adr cross-refs resolve)
-#      plus the generated Home + Onboarding pages under wiki/pages/.
+#   1. Copies the layered wiki tree docs/wiki/ (index, glossary, architecture/,
+#      subsystems/, components/, reference/, operations/) into a build-staging
+#      tree (wiki/build/staging/docs), plus docs/adr/*.md into /adr so
+#      reference/adr-index.md links resolve. Writing rules: docs/WIKI-STYLE.md.
 #   2. Runs mkdocs-material against wiki/mkdocs.yml.
-#   3. Emits self-contained static HTML to dist/wiki/  (this is what gets synced
-#      to /var/www/wiki on the box).
+#   3. Emits self-contained static HTML to dist/wiki/ (synced to /var/www/wiki
+#      on the box; see docs/wiki/components/wiki-pipeline.md).
 #
 # IDEMPOTENT: the staging + dist dirs are wiped and rebuilt each run.
-# NETWORK: none needed at serve time. The only network use is (a) `git fetch`
-#   of the wiki ref if it isn't available locally, and (b) a one-time `pip install`
-#   into a local venv if mkdocs isn't already on PATH.
+# NETWORK: none at serve time; a one-time `pip install` into a local venv if
+#   mkdocs isn't already on PATH.
 #
 # USAGE
-#   scripts/build-wiki.sh              # build using $WIKI_REF (default origin/staging)
-#   WIKI_REF=staging scripts/build-wiki.sh
+#   scripts/build-wiki.sh
+#   STRICT=1 scripts/build-wiki.sh     # fail on any warning (broken links etc.)
 #
 # ENV
-#   WIKI_REF   git ref that carries docs/wiki when it's not in the working tree
-#              (default: origin/staging)
 #   NO_VENV=1  do not auto-create a venv; require mkdocs already on PATH (CI uses this)
+#   STRICT=1   pass --strict to mkdocs
 
 set -euo pipefail
 
@@ -35,7 +30,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
-WIKI_REF="${WIKI_REF:-origin/staging}"
 STAGING="$ROOT/wiki/build/staging/docs"
 DIST="$ROOT/dist/wiki"
 MKDOCS_CFG="$ROOT/wiki/mkdocs.yml"
@@ -45,54 +39,27 @@ log() { printf '\033[1;34m[build-wiki]\033[0m %s\n' "$*"; }
 # --- 1. clean + create the staging tree -----------------------------------
 log "resetting staging tree: $STAGING"
 rm -rf "$ROOT/wiki/build/staging"
-mkdir -p "$STAGING/guide" "$STAGING/wiki" "$STAGING/adr" "$STAGING/onboarding"
+mkdir -p "$STAGING/adr"
 
-# --- 2. Home + Onboarding pages (committed, generated content) -------------
-log "copying assembled pages (Home + Onboarding)"
-cp "$ROOT/wiki/pages/index.md"                "$STAGING/index.md"
-cp "$ROOT/wiki/pages/first-time-box-setup.md" "$STAGING/onboarding/first-time-box-setup.md"
-
-# --- 3. Guide (always from the working tree) -------------------------------
-if [ ! -d "$ROOT/docs/guide" ]; then
-  echo "ERROR: docs/guide not found in the working tree" >&2
+# The wiki is ONE layered tree (docs/wiki/: index, glossary, architecture/,
+# subsystems/, components/, reference/, operations/) — see docs/WIKI-STYLE.md.
+# It replaced the two flat sets (old numbered Stack Wiki + Guide), now archived
+# under docs/archive/wiki-v1/ and not published.
+if [ ! -f "$ROOT/docs/wiki/index.md" ]; then
+  echo "ERROR: docs/wiki/index.md not found in the working tree" >&2
   exit 1
 fi
-log "copying Guide from docs/guide/"
-cp "$ROOT"/docs/guide/*.md "$STAGING/guide/"
+log "copying the layered wiki tree from docs/wiki/"
+cp -R "$ROOT"/docs/wiki/. "$STAGING/"
 
-# --- 4. Stack Wiki (working tree if present, else from $WIKI_REF) ----------
-if [ -d "$ROOT/docs/wiki" ] && ls "$ROOT"/docs/wiki/*.md >/dev/null 2>&1; then
-  log "copying Stack Wiki from working tree docs/wiki/"
-  cp "$ROOT"/docs/wiki/*.md "$STAGING/wiki/"
-else
-  log "docs/wiki not in working tree — extracting from $WIKI_REF"
-  if ! git rev-parse --verify --quiet "$WIKI_REF" >/dev/null; then
-    # e.g. origin/staging not fetched yet
-    remote="${WIKI_REF%%/*}"; branch="${WIKI_REF#*/}"
-    log "ref $WIKI_REF unavailable locally — git fetch $remote $branch"
-    git fetch --depth=1 "$remote" "$branch"
-  fi
-  # list + extract every markdown file under docs/wiki at that ref
-  git ls-tree -r --name-only "$WIKI_REF" -- docs/wiki/ \
-    | grep '\.md$' \
-    | while read -r f; do
-        git show "$WIKI_REF:$f" > "$STAGING/wiki/$(basename "$f")"
-      done
-fi
-
-# sanity: the wiki README is the section landing — it must be present
-if [ ! -f "$STAGING/wiki/README.md" ]; then
-  echo "ERROR: Stack Wiki README.md missing after assembly (check WIKI_REF=$WIKI_REF)" >&2
-  exit 1
-fi
-
-# --- 5. ADRs (for the Guide's ../adr cross-refs) ---------------------------
-# Only the top-level NNNN-*.md ADRs — those are what the Guide's Decision Log
-# indexes. The adr/reference/ subtree is intentionally NOT vendored (it carries
+# --- 5. ADRs (linked from reference/adr-index.md) --------------------------
+# Only the top-level NNNN-*.md ADRs. The adr/reference/ subtree is intentionally NOT vendored (it carries
 # its own cross-refs to non-doc paths). Not in nav; link-resolution only.
 if compgen -G "$ROOT/docs/adr/*.md" >/dev/null; then
   log "copying top-level ADRs from docs/adr/ (link-resolution only, not in nav)"
   cp "$ROOT"/docs/adr/*.md "$STAGING/adr/"
+  # ADRs link to repo files outside the site; point those at GitHub so --strict passes.
+  python3 "$ROOT/scripts/wiki-rewrite-adr-links.py" "$STAGING/adr" "$ROOT"
 fi
 
 # --- 6. resolve mkdocs (venv bootstrap if needed) --------------------------
@@ -115,8 +82,8 @@ fi
 # --- 7. build ---------------------------------------------------------------
 log "building site → $DIST"
 rm -rf "$DIST"
-"$MKDOCS" build --config-file "$MKDOCS_CFG" --clean
+"$MKDOCS" build --config-file "$MKDOCS_CFG" --clean ${STRICT:+--strict}
 
 log "done. Static site at: $DIST"
 log "  entry:  $DIST/index.html"
-log "  sync to box:  aws s3 sync '$DIST/' s3://<bucket>/wiki/  (see docs/wiki-deploy.md)"
+log "  sync to box:  aws s3 sync '$DIST/' s3://<bucket>/wiki/  (see docs/wiki/components/wiki-pipeline.md)"

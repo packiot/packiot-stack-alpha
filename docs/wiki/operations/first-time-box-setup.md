@@ -1,3 +1,9 @@
+---
+title: First-Time Edge Box Setup
+layer: 4
+owner_area: edge
+last_verified: 2026-09-28
+---
 # First-Time Edge Box Setup
 
 Enrolling the client's on-site edge box is the **first step** of onboarding a new factory (csadmin onboarding wizard, step 1: "Set up the client box"). Nothing else edge-side — deploying the reader/agent bundle, probing PLCs, capturing counts — can happen until this is done, because the cloud has no route into the factory network.
