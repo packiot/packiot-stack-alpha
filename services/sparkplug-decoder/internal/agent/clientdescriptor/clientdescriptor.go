@@ -180,6 +180,13 @@ type Descriptor struct {
 	// customizations tab (their "z" is rewritten) so an exported node lands there
 	// regardless of the tab id it was exported from.
 	Customizations []map[string]any `yaml:"customizations,omitempty"`
+
+	// NodeRedHelper: the box reads PLCs with the Python reader, and a Node-RED
+	// "helper" beside it runs the customizations. The reader tees every batch to
+	// the helper (best-effort); the helper's generated tab exposes the same spot
+	// ids (tags in, publish out). When true, Generate emits the HELPER flow as the
+	// reader_flow artifact, so live apply and the inserter work unchanged.
+	NodeRedHelper bool `yaml:"nodered_helper,omitempty"`
 }
 
 // DescriptorPLC is the descriptor's PLC-connectivity + tag-map section. It maps
@@ -264,6 +271,10 @@ type PLCType struct {
 // — all pointers/omitempty so "absent" is distinguishable from a zero value.
 type DescriptorPLCEndpoint struct {
 	Name string `yaml:"name"`
+	// Enabled switches a PLC connection off WITHOUT deleting it (CS Admin's per-PLC
+	// on/off switch). nil or true ⇒ read; false ⇒ every generator skips it and its
+	// tag maps (see activePLC), while the configuration stays saved.
+	Enabled *bool `yaml:"enabled,omitempty"`
 	// Protocol ∈ {s7, modbus_tcp, opcua}. Selects the reader + gates which tag
 	// map may reference this endpoint. OPTIONAL when Type is set — an endpoint that
 	// references a plc type inherits the type's protocol (and rack/slot).

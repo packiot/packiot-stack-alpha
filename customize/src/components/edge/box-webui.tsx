@@ -11,7 +11,7 @@ import { Button } from "@/components/ui";
  * proxies (via the edge-session-broker's port-forward) to the box, injecting a
  * <base> + a fetch/XHR shim so the UI's absolute paths resolve under the mount.
  */
-export function BoxWebUi({ idEnterprise }: { idEnterprise: number }) {
+export function BoxWebUi({ idEnterprise, target }: { idEnterprise: number; target?: "nodered" | "dashboard" }) {
   const [src, setSrc] = useState<string | null>(null);
   const [label, setLabel] = useState<string>("web UI");
   const [status, setStatus] = useState<string>("idle");
@@ -19,7 +19,7 @@ export function BoxWebUi({ idEnterprise }: { idEnterprise: number }) {
   async function open() {
     setStatus("opening…");
     try {
-      const r = await edgeSsmApi.openWebUi(idEnterprise);
+      const r = await edgeSsmApi.openWebUi(idEnterprise, target);
       setLabel(r.webUiLabel);
       setSrc(webUiEmbedUrl(r.sessionId, r.ticket));
       setStatus("connected");

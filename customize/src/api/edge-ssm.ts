@@ -51,6 +51,8 @@ export interface EdgeConnect {
   webUiPort?: number;
   /** Label for the UI the forward reaches: "Edge dashboard" | "Node-RED". */
   webUiLabel?: string;
+  /** Every screen the box offers (dashboard and/or Node-RED). Older servers omit it. */
+  webUis?: { kind: "nodered" | "dashboard"; port: number; label: string }[];
 }
 
 /** One node the Node-RED plan would add/update/remove on the box. */
@@ -123,9 +125,9 @@ export const edgeSsmApi = {
     apiClient
       .post<{ commandId: string; mock?: boolean }>(`${BASE}/apply-oee-settings`, { idEnterprise }, { skipErrorToast: true })
       .then((r) => r.data),
-  openWebUi: (idEnterprise: number) =>
+  openWebUi: (idEnterprise: number, target?: "nodered" | "dashboard") =>
     apiClient
-      .post<EdgeWebUi>(`${BASE}/webui`, { idEnterprise }, { skipErrorToast: true })
+      .post<EdgeWebUi>(`${BASE}/webui`, { idEnterprise, ...(target ? { target } : {}) }, { skipErrorToast: true })
       .then((r) => r.data),
 };
 

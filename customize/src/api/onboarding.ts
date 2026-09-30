@@ -317,6 +317,8 @@ export interface ClientDescriptorRow {
 /** The hub-owned descriptor keys (see onboardingApi.updateCustomizations). */
 export interface CustomizationsPatch {
   customizations?: NodeRedNode[] | null;
+  /** Run a Node-RED helper next to the Python PLC reader on the factory box. */
+  noderedHelper?: boolean;
   oeeProfile?: OeeProfile | null;
   /** Full derived[] per equipment ([] clears that equipment's rules). */
   derived?: { id_equipment: number; derived: DescriptorDerived[] }[];
