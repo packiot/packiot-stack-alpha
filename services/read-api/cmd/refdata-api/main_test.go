@@ -62,3 +62,21 @@ func TestArgParsers(t *testing.T) {
 	// parser (topicEnterpriseArg) is gone. The route now scopes to the key's
 	// customer_id, verified by the isolation gate (tenancy_isolation_test.go).
 }
+
+// /v1/downtime-reasons must admit a LINE's own register row. A line's row has
+// id_unit NULL (id_unit = id_equipment holds for machines only); the machine-only
+// join dropped every line, so the operator — which asks for its line topic and
+// prefers that row — got a member's empty tree on CPACK (2026-09-30).
+func TestDowntimeReasonsRouteAdmitsLineTopics(t *testing.T) {
+	for _, ep := range endpoints {
+		if ep.path != "/v1/downtime-reasons" {
+			continue
+		}
+		sql := strings.Join(strings.Fields(ep.sql), " ")
+		if !strings.Contains(sql, "p.id_unit IS NULL AND e.tp_equipment = 3") {
+			t.Errorf("downtime-reasons no longer admits line register rows:\n%s", sql)
+		}
+		return
+	}
+	t.Fatal("/v1/downtime-reasons route not found")
+}
