@@ -65,7 +65,8 @@ set -euo pipefail
 # lifecycle cap instead.
 : "${PRUNE:=1}"
 # Dumps under this size are treated as a failed/empty dump and not uploaded.
-# 1 MB suits the DB box; the hist-gateway catalog is mostly views (~tens of KB).
+# 1 MB suits the big DBs; override per DB with MIN_DUMP_BYTES_<db> (superset's
+# metadata dump is ~600 KB, the hist-gateway catalog ~13 KB).
 : "${MIN_DUMP_BYTES:=1048576}"
 # Optional key prefix inside the bucket (e.g. "_backup/" when the target bucket
 # also holds other data — see backup-historian.sh). Default: bucket root.
@@ -155,8 +156,10 @@ backup_one() {
     local dump_bytes
     dump_bytes=$(stat -c %s "$dump_file")
     log "pg_dump complete: db=$db ${dump_bytes} bytes (gzipped)"
-    if [ "$dump_bytes" -lt "$MIN_DUMP_BYTES" ]; then
-        log "ERROR: dump of $db suspiciously small (<$MIN_DUMP_BYTES bytes); aborting its upload"
+    local min_var="MIN_DUMP_BYTES_$db"
+    local min_bytes="${!min_var:-$MIN_DUMP_BYTES}"
+    if [ "$dump_bytes" -lt "$min_bytes" ]; then
+        log "ERROR: dump of $db suspiciously small (<$min_bytes bytes); aborting its upload"
         rm -f "$dump_file"
         return 1
     fi
