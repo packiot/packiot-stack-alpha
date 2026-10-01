@@ -325,15 +325,16 @@ func main() {
 		}
 	}
 	countersAvail := rollup.CountersAvail{
-		Enabled:             cfg.CountersOnlyAvailEnabled,
-		Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
-		IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
-		LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
-		LineLeadEnterprises: lineLeadEnts,
-		LineLeadOptIn:       lineOptIn,
-		LineLeadOptOut:      lineOptOut,
-		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
-		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
+		Enabled:                cfg.CountersOnlyAvailEnabled,
+		Equipments:             config.CSVInts(cfg.CountersOnlyAvailEquipments),
+		IdleTimeoutSec:         cfg.CountersOnlyAvailIdleTimeoutSec,
+		LineLeadEnabled:        cfg.CountersOnlyLineLeadEnabled,
+		LineLeadEnterprises:    lineLeadEnts,
+		LineLeadOptIn:          lineOptIn,
+		LineLeadOptOut:         lineOptOut,
+		AvailFloorEnabled:      cfg.OeeAvailFloorEnabled,
+		OeeCanonicalAPQ:        cfg.OeeCanonicalAPQEnabled,
+		AvailabilityExclusions: cfg.AvailabilityExclusionsEnabled,
 	}
 	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
 	// closes the loop pocontrol opens). Started after the line-lead set is built:

@@ -32,6 +32,7 @@ import (
 
 const cascadeGrainCols = `
 	    recalc_needed boolean DEFAULT false, target_customized boolean DEFAULT false,
+	    no_data_time integer NOT NULL DEFAULT 0, out_of_service_time integer NOT NULL DEFAULT 0,
 	    available_time double precision, running_time double precision,
 	    stopped_time double precision, planned_downtime double precision,
 	    ideal_production double precision, idle_time double precision,

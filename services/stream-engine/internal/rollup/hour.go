@@ -307,7 +307,7 @@ const hourOeePSQL = `
 // Targets: event-hit rows only (cleared ∩ eligible — see argument).
 const hourTargetsSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e SET
-	       proportional_target = COALESCE(pt.vl_day::float / 24, 0)
+	       proportional_target = COALESCE(pt.vl_day::float / 24/*OOS_TARGET*/, 0)
 	  FROM hour_elig el
 	  JOIN %[6]s.production_targets pt ON pt.id_equipment = el.id_equipment
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
@@ -412,6 +412,11 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		steps = append(steps, rollupStep{"avail-floor",
 			fmtRD(hourAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
+	// Availability exclusions (out of service + PLC no data) — after EVERY
+	// available_time writer, before the finalize. Inert when off.
+	if ca.engagedExclusions() {
+		steps = append(steps, rollupStep{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
+	}
 	// ADR-0048 §Fault-3: canonical A·P·Q reconcile replaces the legacy residual
 	// when engaged; otherwise the legacy oee-p runs (byte-identical).
 	if ca.engagedCanonical() {
@@ -420,7 +425,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		steps = append(steps, rollupStep{"oee-p", fmtRD(hourOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(hourTargetsSQL, d, d.ConfigSchema)},
+		rollupStep{"targets", fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema)},
 		rollupStep{"stamp", fmtRD(hourStampSQL, d)},
 		rollupStep{"reflag", fmtRD(hourReflagSQL, d)},
 	)
@@ -444,7 +449,7 @@ func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL str
 		// it is diffed against prod (F2), which has no changeover reclassification.
 		{"events", fmtRP(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"oee-p", fmtRP(hourOeePSQL, evSchema)},
-		{"targets", fmtRP(hourTargetsSQL, evSchema, evSchema)},
+		{"targets", fmtRP(withOosTarget(hourTargetsSQL, false, ""), evSchema, evSchema)},
 		{"reflag", fmtRP(hourReflagSQL, evSchema)},
 	}
 }

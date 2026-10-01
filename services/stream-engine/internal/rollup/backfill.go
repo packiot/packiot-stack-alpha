@@ -169,8 +169,11 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		steps = append(steps, struct{ name, sql string }{"line-lead",
 			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))})
 	}
+	if ca.engagedExclusions() {
+		steps = append(steps, struct{ name, sql string }{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
+	}
 	steps = append(steps,
-		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(hourTargetsSQL, d, d.ConfigSchema))},
+		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema))},
 		struct{ name, sql string }{"clear", fmtRD(hourBackfillClearSQL, d)},
 	)
 	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q

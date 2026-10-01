@@ -300,7 +300,7 @@ const shiftOeePSQL = `
 //	  no longer referenced now that proration is elapsed-based.
 const shiftTargetsSQL = `
 	UPDATE %[4]s.equipment_oee_shift e SET
-	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
+	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned/*OOS_TARGET*/) / (3600 * 24)), 0)
 	  FROM shift_ev ev
 	  JOIN %[6]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
 	  LATERAL piot_get_shift_hour_begin_by_equipment(ev.id_equipment, ev.ts_value) sh
@@ -400,6 +400,11 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		steps = append(steps, rollupStep{"avail-floor",
 			fmtRD(shiftAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
+	// Availability exclusions (out of service + PLC no data) — after EVERY
+	// available_time writer, before the finalize. Inert when off.
+	if ca.engagedExclusions() {
+		steps = append(steps, rollupStep{"exclusions", fmtRD(shiftExclusionsSQL, d, d.ConfigSchema)})
+	}
 	// ADR-0048 §Fault-3: canonical A·P·Q reconcile (whole batch) REPLACES the
 	// legacy event-row-scoped oee-p residual when engaged; otherwise the legacy
 	// residual runs (byte-identical). Either way targets + stamp follow.
@@ -409,7 +414,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		steps = append(steps, rollupStep{"oee-p", fmtRD(shiftOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(shiftTargetsSQL, d, d.ConfigSchema)},
+		rollupStep{"targets", fmtRD(withOosTarget(shiftTargetsSQL, ca.engagedExclusions(), shiftOosTargetTerm), d, d.ConfigSchema)},
 		rollupStep{"stamp", fmtRD(shiftStampSQL, d)},
 	)
 	for _, s := range steps {
@@ -445,7 +450,7 @@ func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL st
 		{"events-bank", fmtRP(shiftEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"events-update", fmtRP(shiftEventsUpdateSQL, evSchema)},
 		{"oee-p", fmtRP(shiftOeePSQL, evSchema)},
-		{"targets", fmtRP(shiftTargetsSQL, evSchema, evSchema)},
+		{"targets", fmtRP(withOosTarget(shiftTargetsSQL, false, ""), evSchema, evSchema)},
 		{"reflag", fmtRP(shiftReflagSQL, evSchema)},
 	}
 }

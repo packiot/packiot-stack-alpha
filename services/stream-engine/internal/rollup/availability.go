@@ -100,6 +100,10 @@ type CountersAvail struct {
 	// OFF → byte-identical (legacy top-down oee + residual oee_p). Load-bearing
 	// on availability, so sequence it AFTER AvailFloorEnabled. See oee.go.
 	OeeCanonicalAPQ bool
+	// AvailabilityExclusions (2026-10-01): subtract out-of-service windows and
+	// PLC no-data time from available_time after every writer (see
+	// availability_exclusions.go). Inert without windows / status-20 events.
+	AvailabilityExclusions bool
 }
 
 // engaged reports whether the fallback pass should run this tick. Requires the
@@ -125,6 +129,9 @@ func (c CountersAvail) engagedFloor() bool {
 // the legacy top-down oee / residual oee_p. Purely a master flag — it reshapes
 // how every batch row's oee is stored, independent of the equipment opt-in.
 func (c CountersAvail) engagedCanonical() bool { return c.OeeCanonicalAPQ }
+
+// engagedExclusions reports whether the availability-exclusions step runs.
+func (c CountersAvail) engagedExclusions() bool { return c.AvailabilityExclusions }
 
 // pgIntArrayLiteral renders a []int as a Postgres bigint[] literal, e.g.
 // {91,92,93}. The ids come from config (config.CSVInts of an env var), never

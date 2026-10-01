@@ -93,10 +93,14 @@ const entitySumList = `
 	           sum(ard.downtime)       AS downtime,
 	           sum(ard.changeover_time) AS changeover_time,
 	           sum(ard.scrap)          AS scrap,
-	           sum(ard.proportional_target) AS proportional_target`
+	           sum(ard.proportional_target) AS proportional_target,
+	           sum(ard.no_data_time)        AS no_data_time,
+	           sum(ard.out_of_service_time) AS out_of_service_time`
 
 const entityFillList = `
 	       available_time  = COALESCE(s.available_time, 0),
+	       no_data_time        = COALESCE(s.no_data_time, 0),
+	       out_of_service_time = COALESCE(s.out_of_service_time, 0),
 	       running_time    = COALESCE(s.running_time, 0),
 	       stopped_time    = COALESCE(s.stopped_time, 0),
 	       planned_downtime = COALESCE(s.planned_downtime, 0),
