@@ -352,6 +352,21 @@ func main() {
 			uns.RefreshCurrentJobs)
 	}
 
+	// Stranded-flag sweep (2026-10-01): flags no consumer can ever drain (PO rows
+	// closed before the window, shift > 30 d or out of scope, hour > backfill
+	// horizon or tp=1) are cleared hourly with a WARN, so a stranded repair is seen.
+	if cfg.StrandedFlagSweepEnabled && (cfg.PORecalcEnabled || cfg.RuntimeRollupEnabled) {
+		hourHorizon := ""
+		if cfg.RollupBackfillEnabled {
+			hourHorizon = "10 days"
+		}
+		go rollup.LoopStrandedSweep(ctx, bgDests, rollup.StrandedScope{
+			POWindow:                cfg.PORecalcWindow,
+			MachineLevelEnterprises: config.CSVInts(cfg.RollupMachineLevelEnterprises),
+			HourHorizon:             hourHorizon,
+		}, logger, jobObs)
+	}
+
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, bgDests,
