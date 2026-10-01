@@ -43,17 +43,35 @@ CREATE POLICY tenant_isolation ON config.equipment_out_of_service
     USING ((SELECT is_all_tenant()) OR id_enterprise = (SELECT current_tenant()));
 GRANT SELECT ON config.equipment_out_of_service TO readapi_ro, bi_owner, cloudbeaver_ro;
 
-DO $$
-DECLARE t text;
-BEGIN
-  FOREACH t IN ARRAY ARRAY['equipment_oee_hourly', 'equipment_oee_shift', 'equipment_oee_daily',
-                           'equipment_oee_weekly', 'equipment_oee_monthly',
-                           'area_oee_daily', 'area_oee_shift', 'site_oee_shift'] LOOP
-    EXECUTE format('ALTER TABLE gold.%I ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0', t);
-    EXECUTE format('ALTER TABLE gold.%I ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0', t);
-    EXECUTE format($c$COMMENT ON COLUMN gold.%I.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).'$c$, t);
-    EXECUTE format($c$COMMENT ON COLUMN gold.%I.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.'$c$, t);
-  END LOOP;
-END $$;
-
 COMMIT;
+
+-- The column adds run ONE TABLE PER TRANSACTION with a short lock_timeout: a single
+-- transaction over all 8 gold tables DEADLOCKED with the live rollup on staging
+-- (2026-10-01 — it locks them in another order). Each add is metadata-only and
+-- idempotent: if one times out, re-run this file until verify.sql reports 16.
+SET lock_timeout = '3s';
+ALTER TABLE gold.equipment_oee_hourly ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.equipment_oee_hourly.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.equipment_oee_hourly.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.equipment_oee_shift ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.equipment_oee_shift.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.equipment_oee_shift.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.equipment_oee_daily ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.equipment_oee_daily.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.equipment_oee_daily.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.equipment_oee_weekly ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.equipment_oee_weekly.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.equipment_oee_weekly.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.equipment_oee_monthly ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.equipment_oee_monthly.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.equipment_oee_monthly.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.area_oee_daily ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.area_oee_daily.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.area_oee_daily.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.area_oee_shift ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.area_oee_shift.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.area_oee_shift.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+ALTER TABLE gold.site_oee_shift ADD COLUMN IF NOT EXISTS no_data_time integer NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS out_of_service_time integer NOT NULL DEFAULT 0;
+COMMENT ON COLUMN gold.site_oee_shift.no_data_time IS 'Seconds the PLC could not be read (no data): excluded from available_time, kept in the target. Coverage = 1 - no_data_time / (available_time + planned_downtime + no_data_time).';
+COMMENT ON COLUMN gold.site_oee_shift.out_of_service_time IS 'Seconds inside an out-of-service window (config.equipment_out_of_service): excluded from available_time and from the target.';
+
