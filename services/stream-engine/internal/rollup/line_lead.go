@@ -93,6 +93,13 @@ var shiftLineLeadSQL = `
 	           -- counter ⇒ the scrap subquery returns NULL ⇒ s=0, so the reconciliation
 	           -- CASEs reduce to the pre-scrap G+N / net-only behaviour byte-for-byte.
 	           eq.scrap_machine AS scrap_id,
+	           -- METER FILL (2026-10-01). NULL/true: a meter silent for a whole hour is
+	           -- "missing" and filled from the other (identity below). false: the line's
+	           -- meters are report-by-exception TOTALIZERS — a silent hour's units arrive
+	           -- in the next report's delta, so filling counts them twice (Bispharma L90
+	           -- 09-01..09-30: infeed 677k, outfeed 640k, filled gross 758k). Such lines
+	           -- take each meter as measured, 0 when silent.
+	           COALESCE(eq.fill_missing_meter, true) AS fill_missing,
 	           (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = eq.lead_machine) AS lead_ideal
 	      FROM shift_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
@@ -119,7 +126,7 @@ var shiftLineLeadSQL = `
 	    -- net in 11 of 11) the shift sums read "G+N present" with net far above the
 	    -- sparse gross, so net was clamped to that gross and the shift UNDERCOUNTED the
 	    -- hours that only reported net (09-15 Bispharma: shift 1.18 M vs hourly 1.38 M).
-	    SELECT l.line_id, l.ts_value, b.bts,
+	    SELECT l.line_id, l.ts_value, b.bts, l.fill_missing,
 	           (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN cg.net_production_incr ELSE cg.gross_production_incr END) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = b.bts) AS gross,
 	           (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN cn.gross_production_incr ELSE cn.net_production_incr END) FROM %[3]s.equipment_categorical_1hour cn
@@ -153,10 +160,12 @@ var shiftLineLeadSQL = `
 	           -- data must show, not repair. (Replaces #1472's gross = net + scrap.)
 	           -- Only a MISSING meter is filled, per the identity below.
 	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
+	                WHEN NOT c.fill_missing THEN 0
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
 	                ELSE 0 END AS eff_gross,
 	           CASE WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
+	                WHEN NOT c.fill_missing THEN 0
 	                WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.gross,0) - COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                ELSE 0 END AS eff_net
@@ -328,6 +337,13 @@ var hourLineLeadSQL = `
 	           -- counter ⇒ the scrap subquery returns NULL ⇒ s=0, so the reconciliation
 	           -- CASEs reduce to the pre-scrap G+N / net-only behaviour byte-for-byte.
 	           eq.scrap_machine AS scrap_id,
+	           -- METER FILL (2026-10-01). NULL/true: a meter silent for a whole hour is
+	           -- "missing" and filled from the other (identity below). false: the line's
+	           -- meters are report-by-exception TOTALIZERS — a silent hour's units arrive
+	           -- in the next report's delta, so filling counts them twice (Bispharma L90
+	           -- 09-01..09-30: infeed 677k, outfeed 640k, filled gross 758k). Such lines
+	           -- take each meter as measured, 0 when silent.
+	           COALESCE(eq.fill_missing_meter, true) AS fill_missing,
 	           (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = eq.lead_machine) AS lead_ideal
 	      FROM hour_elig el
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = el.id_equipment
@@ -338,7 +354,7 @@ var hourLineLeadSQL = `
 	    -- (output machine: net_machine, else lead_id), SCRAP from scrap_id (defect machine). Single-bucket lookups
 	    -- matching the hour join (ts_value = l.ts_value). A NULL source id ⇒ no matching
 	    -- rows ⇒ NULL sum ⇒ 0 downstream.
-	    SELECT l.line_id, l.ts_value,
+	    SELECT l.line_id, l.ts_value, l.fill_missing,
 	           (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN cg.net_production_incr ELSE cg.gross_production_incr END) FROM %[3]s.equipment_categorical_1hour cg
 	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = l.ts_value) AS gross,
 	           (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN cn.gross_production_incr ELSE cn.net_production_incr END) FROM %[3]s.equipment_categorical_1hour cn
@@ -373,10 +389,12 @@ var hourLineLeadSQL = `
 	           -- data must show, not repair. (Replaces #1472's gross = net + scrap.)
 	           -- Only a MISSING meter is filled, per the identity below.
 	           CASE WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
+	                WHEN NOT c.fill_missing THEN 0
 	                WHEN COALESCE(c.net,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.net,0) + COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
 	                ELSE 0 END AS eff_gross,
 	           CASE WHEN COALESCE(c.net,0) > 0 THEN COALESCE(c.net,0)
+	                WHEN NOT c.fill_missing THEN 0
 	                WHEN COALESCE(c.gross,0) > 0 AND COALESCE(c.scrap,0) > 0 THEN COALESCE(c.gross,0) - COALESCE(c.scrap,0)
 	                WHEN COALESCE(c.gross,0) > 0 THEN COALESCE(c.gross,0)
 	                ELSE 0 END AS eff_net

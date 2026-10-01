@@ -30,6 +30,7 @@ const lookbackSchema = `
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 	CREATE TABLE golden.equipment_oee_shift (
 	    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 	    ts_value_production timestamptz, id_shift int, cd_shift text,

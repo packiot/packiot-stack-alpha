@@ -74,12 +74,12 @@ const cascadeSchema = `
 	INSERT INTO golden.equipment_oee_daily (id_equipment, ts_value, gross, net, scrap, available_time, running_time, planned_downtime, ideal_production, computed_at)
 	VALUES (30, (date_trunc('week', now()) - interval '7 days')::date,                     100, 105, -5, 3600, 1800, 0, 200, now() - interval '1 hour'),
 	       (30, (date_trunc('week', now()) - interval '7 days' + interval '1 day')::date,  50,  38, 12, 3600, 1800, 0, 200, now() - interval '1 hour');
-	-- same for a month (3 months back), flagged.
+	-- same for a month (6 months back: 3 months collided with the -70-day stale-week day on some dates, e.g. 2026-10-01), flagged.
 	INSERT INTO golden.equipment_oee_monthly (id_equipment, ts_value, recalc_needed, gross, net, scrap)
-	VALUES (30, date_trunc('month', now() - interval '3 months')::date, true, 0, 0, 0);
+	VALUES (30, date_trunc('month', now() - interval '6 months')::date, true, 0, 0, 0);
 	INSERT INTO golden.equipment_oee_daily (id_equipment, ts_value, gross, net, scrap, available_time, running_time, planned_downtime, ideal_production, computed_at)
-	VALUES (30, date_trunc('month', now() - interval '3 months')::date,                    100, 105, -5, 3600, 1800, 0, 200, now() - interval '1 hour'),
-	       (30, (date_trunc('month', now() - interval '3 months') + interval '1 day')::date, 50, 38, 12, 3600, 1800, 0, 200, now() - interval '1 hour');
+	VALUES (30, date_trunc('month', now() - interval '6 months')::date,                    100, 105, -5, 3600, 1800, 0, 200, now() - interval '1 hour'),
+	       (30, (date_trunc('month', now() - interval '6 months') + interval '1 day')::date, 50, 38, 12, 3600, 1800, 0, 200, now() - interval '1 hour');
 
 	-- STALE week (10 weeks back): never computed, NOT flagged, its day has data.
 	INSERT INTO golden.equipment_oee_weekly (id_equipment, ts_value, recalc_needed, gross, net, scrap, computed_at)
@@ -162,7 +162,7 @@ func TestGoldenCascadeGrains(t *testing.T) {
 	if s := f(`SELECT scrap FROM golden.equipment_oee_weekly WHERE id_equipment=30 AND ts_value=(date_trunc('week', now()) - interval '7 days')::date`); s != 7 {
 		t.Errorf("weekly scrap = %v, want 7 (Σ daily scrap -5 + 12; old code never wrote scrap → 0)", s)
 	}
-	if s := f(`SELECT scrap FROM golden.equipment_oee_monthly WHERE id_equipment=30 AND ts_value=date_trunc('month', now() - interval '3 months')::date`); s != 7 {
+	if s := f(`SELECT scrap FROM golden.equipment_oee_monthly WHERE id_equipment=30 AND ts_value=date_trunc('month', now() - interval '6 months')::date`); s != 7 {
 		t.Errorf("monthly scrap = %v, want 7", s)
 	}
 

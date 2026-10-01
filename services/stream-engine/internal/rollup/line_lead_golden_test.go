@@ -52,6 +52,7 @@ func TestGoldenLineLead(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -213,6 +214,7 @@ func TestGoldenLineLeadGrossBelowNet(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -348,6 +350,7 @@ func TestGoldenLineLeadPlannedDowntime(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -514,6 +517,7 @@ func TestGoldenLineLeadSplit(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -678,6 +682,7 @@ func TestGoldenLineLeadNetOnly(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -791,6 +796,7 @@ const counterMatrixSchema = `
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+	ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 	CREATE TABLE golden.equipment_oee_shift (
 	    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 	    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -1005,6 +1011,7 @@ func TestGoldenHourLineLeadAfterEvents(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_hourly (
 		    id_equipment int, ts_value timestamptz, recalc_needed boolean DEFAULT false,
 		    gross double precision, net double precision, scrap double precision,
@@ -1167,6 +1174,7 @@ func TestGoldenLineLeadLeadSilentFallback(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -1283,6 +1291,7 @@ func TestGoldenLineLeadNetMachine(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -1404,6 +1413,7 @@ func TestGoldenLineLeadCounterRoles(t *testing.T) {
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS gross_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS net_counter text;
 		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS scrap_machine bigint;
+		ALTER TABLE golden.equipments ADD COLUMN IF NOT EXISTS fill_missing_meter boolean;
 		CREATE TABLE golden.equipment_oee_shift (
 		    id_equipment int, ts_value timestamptz, ts_end timestamptz,
 		    ts_value_production timestamptz, id_shift int, cd_shift text,
@@ -1491,5 +1501,88 @@ func TestGoldenLineLeadCounterRoles(t *testing.T) {
 	}
 	if !approx(running, 2040) {
 		t.Errorf("line running_time = %v, want 2040 (availability stays on the lead 901)", running)
+	}
+}
+
+// TestGoldenLineLeadNoFillTotalizer — fill_missing_meter=false (2026-10-01). Split
+// line 900: infeed 902 = gross, outfeed lead 901 = net. The infeed is a
+// report-by-exception TOTALIZER: silent in hour 1, its next delta (hour 2) carries
+// hour 1's units too. Default (NULL ⇒ fill) reads hour 1's gross as missing and fills
+// it from net, so the caught-up units count twice; false takes both meters as
+// measured. (Bispharma L90 09-01..09-30: infeed 677k, outfeed 640k, filled gross 758k.)
+//
+//	hour 1: gross 0 (silent), net 100 ; hour 2: gross 210 (catch-up), net 100
+//	→ fill:    gross 100+210 = 310, net 200
+//	→ no fill: gross 0+210   = 210, net 200, oee_q = 200/210
+func TestGoldenLineLeadNoFillTotalizer(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	approx := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	for _, tc := range []struct {
+		fill               string
+		wantGross, wantNet float64
+	}{
+		{"NULL", 310, 200},
+		{"false", 210, 200},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		pool, err := pgxpool.New(ctx, url)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		for _, s := range []string{goldenSchema, counterMatrixSchema} {
+			if _, err := pool.Exec(ctx, s); err != nil {
+				t.Fatalf("ddl: %v", err)
+			}
+		}
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture := fmt.Sprintf(`
+			SET search_path TO golden, public;
+			INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,fill_missing_meter)
+			VALUES (900,1,1,5,3,NULL,901,902,%s),
+			       (901,1,1,5,1,100,NULL,NULL,NULL),
+			       (902,1,1,5,1,100,NULL,NULL,NULL);
+			CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+			INSERT INTO shift_elig SELECT 900, date_trunc('hour', now()) - interval '4 hours',
+			                                   date_trunc('hour', now()) - interval '2 hours';
+			INSERT INTO golden.equipment_oee_shift
+			    (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+			VALUES (900, date_trunc('hour', now()) - interval '4 hours',
+			             date_trunc('hour', now()) - interval '2 hours', date_trunc('day', now()), 1, true, 0);
+			INSERT INTO golden.equipment_categorical_1hour (id_equipment, ts_value, gross_production_incr, net_production_incr, scrap_incr)
+			VALUES (901, date_trunc('hour', now()) - interval '4 hours', 0, 100, 0),
+			       (901, date_trunc('hour', now()) - interval '3 hours', 0, 100, 0),
+			       (902, date_trunc('hour', now()) - interval '3 hours', 210, 0, 0);
+			INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+			SELECT 901, date_trunc('hour', now()) - interval '4 hours' + make_interval(mins => m), 0, 5
+			  FROM generate_series(0,119) m;`, tc.fill)
+		if _, err := conn.Exec(ctx, fixture); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+		stmt := fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{5}), 300)
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			t.Fatalf("line-lead: %v", err)
+		}
+		var gross, net, oeeQ float64
+		if err := conn.QueryRow(ctx,
+			`SELECT gross, net, oee_q FROM golden.equipment_oee_shift WHERE id_equipment = 900`).
+			Scan(&gross, &net, &oeeQ); err != nil {
+			t.Fatal(err)
+		}
+		if !approx(gross, tc.wantGross) || !approx(net, tc.wantNet) {
+			t.Errorf("fill_missing_meter=%s: gross/net = %v/%v, want %v/%v", tc.fill, gross, net, tc.wantGross, tc.wantNet)
+		}
+		if !approx(oeeQ, tc.wantNet/tc.wantGross) {
+			t.Errorf("fill_missing_meter=%s: oee_q = %v, want %v", tc.fill, oeeQ, tc.wantNet/tc.wantGross)
+		}
+		conn.Release()
+		pool.Close()
+		cancel()
 	}
 }
