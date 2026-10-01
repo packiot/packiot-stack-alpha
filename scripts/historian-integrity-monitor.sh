@@ -41,4 +41,13 @@ if [ "$overall" -eq 0 ]; then
 else
   echo "historian integrity: HARD CHECK FAILED — double-count or cross-tenant-leak risk" >&2
 fi
+# Record the outcome as a data invariant (t-data-invariants) so a failure ALERTS
+# (Prometheus DataInvariantCritical → Slack) instead of only marking the unit failed,
+# which nothing watched. Best-effort: a recording failure never changes the exit code.
+REC="${INVARIANT_RECORD:-/opt/packiot/ops/invariant-record.sh}"
+if [ -x "$REC" ]; then
+  ok=$([ "$overall" -eq 0 ] && echo true || echo false)
+  printf '{"check_id":"H1_historian_integrity","dimension":"consistency","layer":"historian","severity":"critical","observed":%s,"expected":"0","ok":%s,"detail":"historian-integrity-monitor (R1 cross-tenant / R4-R5 double-count)","source":"historian-monitor"}\n' "$overall" "$ok" \
+    | "$REC" || echo "invariant record failed (ignored)" >&2
+fi
 exit "$overall"

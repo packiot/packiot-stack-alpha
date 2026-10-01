@@ -82,26 +82,6 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Worker batch statements erroring"
-      - alert: BakeSurfacePersisting
-        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
-        expr: bake_surface_mismatches > 0
-        for: 24h
-        labels: {severity: warning}
-        annotations:
-          summary: "Bake surface {{ $labels.surface }} (enterprise {{ $labels.enterprise }}) mismatched for 24h — past every documented expiry class"
-      - alert: IdentityBrokenPersisting
-        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
-        expr: bake_identity_mismatch > 0
-        for: 12h
-        labels: {severity: critical}
-        annotations:
-          summary: "F2/F3 identity fingerprint {{ $labels.surface }} diverged for 12h — same-engine flows MUST be equal"
-      - alert: MirrorDLQNotEmpty
-        expr: mirror_worker_dlq_depth > 0
-        for: 30m
-        labels: {severity: warning}
-        annotations:
-          summary: "Mirror DLQ has rows for 30m — replay failures need eyes"
       - alert: MQTTDisconnected
         expr: edge_transformer_mqtt_connected == 0
         for: 5m
@@ -181,18 +161,6 @@ groups:
           summary: "SparkPlug sequence gaps streaming ({{ $value }} in 30m) — message loss upstream of the transformer"
       # Mirror replay falling behind prod: staging stops being a
       # faithful test bed silently.
-      - alert: MirrorCursorLag
-        expr: mirror_worker_cursor_lag_seconds > 900
-        for: 15m
-        labels: {severity: warning}
-        annotations:
-          summary: "mirror-worker replay cursor >15min behind prod user_logs (board 07)"
-      - alert: MirrorOeeDivergence
-        expr: mirror_worker_comparator_oee_divergence_pct > 5
-        for: 30m
-        labels: {severity: warning}
-        annotations:
-          summary: "mirror comparator: staging OEE diverges >5% from prod for 30m (board 07)"
       # shadow-mirror retires at flip (R1); until then its failures are
       # control-plane parity holes in the bake evidence.
       - alert: ShadowMirrorFailures
@@ -311,6 +279,34 @@ groups:
       # 15m. A flat 900s fired every cycle on the 30-min hourly caggs (agg_1hour,
       # categorical_1hour) — structural noise, surfaced 2026-09-24 once the exporter
       # loaded current queries (#1406). Same query row ⇒ identical labels ⇒ exact match.
+      # ── Standing data invariants (t-data-invariants). Each check is a hardproofed
+      # audit query (freshness, completeness, cross-grain consistency, accuracy vs raw /
+      # legacy oracle, provenance, stranded flags, tenant isolation). SELECT * FROM
+      # ops.data_invariant_latest WHERE NOT ok — detail names the equipment. ──
+      # REMOVED 2026-10-01 (proven dead — zero live series, no emitter): BakeSurfacePersisting,
+      # IdentityBrokenPersisting, TenantNotFlipReady (bake_* metrics are emitted by nothing in the
+      # repo) and MirrorDLQNotEmpty, MirrorCursorLag, MirrorOeeDivergence (mirror-worker-go is
+      # retired and its scrape job is commented out in prometheus.yml). A rule that can never
+      # fire reads as coverage it does not give; data correctness is now covered by the
+      # DataInvariant* rules. Restore the mirror ones together with the scrape job.
+      - alert: DataInvariantCritical
+        expr: pg_data_invariant_ok{severity="critical"} == 0
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "data invariant {{ $labels.check_id }} failing for enterprise {{ $labels.ent }} (observed {{ with printf `pg_data_invariant_observed{check_id=\"%s\",ent=\"%s\"}` $labels.check_id $labels.ent | query }}{{ . | first | value }}{{ end }}) — SELECT * FROM ops.data_invariant_latest WHERE NOT ok"
+      - alert: DataInvariantWarn
+        expr: pg_data_invariant_ok{severity="warn"} == 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "data invariant {{ $labels.check_id }} failing for enterprise {{ $labels.ent }} — SELECT * FROM ops.data_invariant_latest WHERE NOT ok"
+      - alert: DataInvariantsStale
+        expr: pg_data_invariant_run_age_seconds{datname="packiot_analytics"} > 5400 or absent(pg_data_invariant_run_age_seconds{datname="packiot_analytics"})
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "the data-invariant job has not completed for >90 min (Timescale job ops.job_data_invariants) — the invariants are blind"
       - alert: AnalyticsCaggRefreshLag
         expr: max by (datname,cagg) (pg_timescaledb_cagg_seconds_since_last_success{datname="packiot_analytics"} > clamp_min(2 * pg_timescaledb_cagg_schedule_seconds{datname="packiot_analytics"}, 900))
         for: 10m
@@ -371,14 +367,6 @@ groups:
       # "ready to flip" is the explicit event of this alert RESOLVING for
       # that enterprise. Not a failure — an informational gate. The
       # flip-critical failure alert stays BakeSurfacePersisting (24h).
-      - alert: TenantNotFlipReady
-        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
-        expr: bake_tenant_converged == 0
-        for: 10m
-        labels: {severity: info}
-        annotations:
-          summary: "Tenant enterprise {{ $labels.enterprise }} NOT converged — not flip-ready (a bake surface mismatches or has no compared rows). Ready-to-flip = this alert resolved for the tenant."
-
   # Task #32 Phase-3 — the PO-staleness-gate bake watch. The gate rejects a
   # PO write ONLY on STALE_HEAD / RANGE_CONFLICT / BEYOND_HORIZON, and a
   # rejection surfaces as an HTTP 409 on /api/production-orders/*. During the
