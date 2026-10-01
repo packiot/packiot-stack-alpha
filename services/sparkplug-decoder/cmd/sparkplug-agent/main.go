@@ -73,6 +73,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/counterderive"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/deriver"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/httpingest"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/linkhealth"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/numeric"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawmqtt"
@@ -286,7 +287,7 @@ func main() {
 		// would be a single sink feeding ALL tenants with no group routing. All
 		// tenant routing happens at the HTTP front-door on the envelope group.
 		// (Per-tenant rawmqtt subscribers are a v2 concern.)
-		ingestSrv = buildMultiIngestServer(cancel, routes, reg, logger)
+		ingestSrv = buildMultiIngestServer(cancel, routes, startLinkHealth(ctx, reg, logger), reg, logger)
 		logger.Info("sparkplug-agent starting (multi-tenant)", "tenants", len(ps), "tenants_dir", tenantsDir)
 	} else {
 		// ── SINGLE-FILE (AGENT_CONFIG / --config) — byte-identical behavior ────
@@ -626,6 +627,7 @@ func main() {
 				MaxBodyBytes:    int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
 				Numeric:         translator,
 				NumericUnmapped: numericUnmapped,
+				Link:            startLinkHealth(ctx, reg, logger),
 			}, p.ingest, ingestOutcomes, logger)
 			ingestAddr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 			ingestSrv = &http.Server{Addr: ingestAddr, Handler: hi.Handler()}
@@ -1249,7 +1251,7 @@ func sanitizeGroup(g string) string {
 // deploy with AGENT_HTTP_INGEST_ENABLED unset or no key is a fatal misconfig
 // (the agent would have no way to receive data). Auth discipline mirrors the
 // single-file front-door (enabled-but-keyless fails closed).
-func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httpingest.Sink, reg *prometheus.Registry, logger *slog.Logger) *http.Server {
+func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httpingest.Sink, link func(string, rawtag.Link), reg *prometheus.Registry, logger *slog.Logger) *http.Server {
 	if !getenvBool("AGENT_HTTP_INGEST_ENABLED", false) {
 		logger.Error("AGENT_TENANTS_DIR is set (multi-tenant) but AGENT_HTTP_INGEST_ENABLED is not true — multi-tenant mode has no other ingest front-door (rawmqtt is single-tenant/no-op)")
 		os.Exit(1)
@@ -1267,6 +1269,7 @@ func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httping
 	hi := httpingest.NewRouter(httpingest.Config{
 		APIKey:       key,
 		MaxBodyBytes: int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
+		Link:         link,
 	}, routes, ingestOutcomes, logger)
 	addr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 	srv := &http.Server{Addr: addr, Handler: hi.Handler()}
@@ -1942,4 +1945,45 @@ func getenvBool(k string, d bool) bool {
 	default:
 		return d
 	}
+}
+
+// startLinkHealth wires PLC link-health recording (silver.plc_link_minutes) for
+// the /v1/tags `link` field. Best-effort like capture: no DSN, an unreachable
+// DB or AGENT_LINK_HEALTH_ENABLED=false ⇒ nil (link reports ignored, ingest
+// unaffected). The returned func only enqueues — it never blocks ingest.
+func startLinkHealth(ctx context.Context, reg *prometheus.Registry, logger *slog.Logger) func(string, rawtag.Link) {
+	if !getenvBool("AGENT_LINK_HEALTH_ENABLED", true) {
+		logger.Info("plc link health recording disabled (AGENT_LINK_HEALTH_ENABLED=false)")
+		return nil
+	}
+	dsn, err := registerDSN()
+	if err != nil {
+		logger.Warn("no DB DSN for plc link health — recording OFF", "err", err)
+		return nil
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		logger.Warn("could not open the DB pool for plc link health — recording OFF", "err", err)
+		return nil
+	}
+	pctx, pcancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pcancel()
+	if err := pool.Ping(pctx); err != nil {
+		pool.Close()
+		logger.Warn("DB unreachable for plc link health — recording OFF", "err", err)
+		return nil
+	}
+	dropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_link_health_dropped_total",
+		Help: "PLC link reports dropped because the link-health queue was full.",
+	})
+	failed := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_link_health_flush_failed_total",
+		Help: "Failed flushes of PLC link health to silver.plc_link_minutes (rows are kept and retried).",
+	})
+	reg.MustRegister(dropped, failed)
+	rec := linkhealth.New(linkhealth.NewPGSink(pool), 15*time.Second, dropped, failed, logger)
+	go rec.Run(ctx)
+	logger.Info("plc link health recording ON (silver.plc_link_minutes)")
+	return rec.Observe
 }
