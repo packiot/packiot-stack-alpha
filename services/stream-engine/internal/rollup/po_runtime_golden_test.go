@@ -130,7 +130,7 @@ func TestGoldenPORuntimeClosedRowRecompute(t *testing.T) {
 		if _, err := RunPropagateHeaders(ctx, d, window, excl); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := RunCompute(ctx, d, window, false, LineLeadScope{Enterprises: ll}); err != nil {
+		if _, err := RunCompute(ctx, d, window, false, false, LineLeadScope{Enterprises: ll}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := RunRecalc(ctx, d, window, excl); err != nil {
@@ -254,7 +254,7 @@ func TestGoldenPORuntimeReconcilesPerHour(t *testing.T) {
 	}
 	d := flows.Dest{Name: "golden", Pool: pool, EvSchema: "golden", RefSchema: "golden",
 		SilverSchema: "golden", GoldSchema: "golden", GrainSchema: "golden"}
-	if _, err := RunCompute(ctx, d, "1 month", false, LineLeadScope{Enterprises: []int{3}}); err != nil {
+	if _, err := RunCompute(ctx, d, "1 month", false, false, LineLeadScope{Enterprises: []int{3}}); err != nil {
 		t.Fatal(err)
 	}
 	var gross, net float64
@@ -315,7 +315,7 @@ func TestGoldenPORuntimeFlagMidPassIsNotLost(t *testing.T) {
 			t.Errorf("mid-pass flag: %v", err)
 		}
 	}
-	_, err = RunCompute(ctx, d, "1 month", false, scope)
+	_, err = RunCompute(ctx, d, "1 month", false, false, scope)
 	computeBetweenPhasesHook = nil
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +327,7 @@ func TestGoldenPORuntimeFlagMidPassIsNotLost(t *testing.T) {
 	if !flagged {
 		t.Fatalf("PO 31 flag was cleared by the pass that never computed it (lost recompute)")
 	}
-	if _, err := RunCompute(ctx, d, "1 month", false, scope); err != nil {
+	if _, err := RunCompute(ctx, d, "1 month", false, false, scope); err != nil {
 		t.Fatal(err)
 	}
 	for _, po := range []int{30, 31} {
