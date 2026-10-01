@@ -31,7 +31,7 @@ const poRuntimeSchema = `
 	    id_equipment int PRIMARY KEY, id_site int, id_area int, id_enterprise int,
 	    tp_equipment int, production_speed double precision, lead_machine int,
 	    gross_machine int, net_machine int, gross_counter text, net_counter text,
-	    scrap_machine int
+	    scrap_machine int, fill_missing_meter boolean
 	);
 	CREATE TABLE golden.production_orders (
 	    id_production_order bigint PRIMARY KEY, id_enterprise int NOT NULL,

@@ -146,7 +146,9 @@ const computeLineLeadValuesSQL = `
 	           COALESCE(eq.net_machine, eq.lead_machine) AS net_id,
 	           eq.gross_counter AS gross_ctr,
 	           eq.net_counter AS net_ctr,
-	           eq.scrap_machine AS scrap_id
+	           eq.scrap_machine AS scrap_id,
+	           -- false ⇒ report-by-exception totalizers: no identity fill (line_lead.go).
+	           COALESCE(eq.fill_missing_meter, true) AS fill_missing
 	      FROM %[4]s.production_orders_runtime e
 	      JOIN %[2]s.equipments eq ON eq.id_equipment = e.id_equipment AND eq.id_site IS NOT NULL
 	     WHERE e.runtime_timerange && tstzrange(now() - $1::interval, now())
@@ -158,7 +160,7 @@ const computeLineLeadValuesSQL = `
 	    -- cagg is a REAL-TIME view; joining it on a non-constant id list keeps the planner from
 	    -- pushing id_equipment into its raw branch (a 16-PO run did not finish in 240 s). As
 	    -- correlated per-source scans each id is a runtime constant → index range scans.
-	    SELECT el.id_equipment, el.lo, date_trunc('hour', x.ts_value) AS b,
+	    SELECT el.id_equipment, el.lo, el.fill_missing, date_trunc('hour', x.ts_value) AS b,
 	           sum(x.g) AS gross, sum(x.n) AS net, sum(x.s) AS scrap
 	      FROM eligible el
 	      CROSS JOIN LATERAL (
@@ -178,14 +180,16 @@ const computeLineLeadValuesSQL = `
 	             AND cs.ts_value >= date_trunc('minute', el.lo) AND cs.ts_value < el.hi
 	          OFFSET 0
 	      ) x
-	     GROUP BY el.id_equipment, el.lo, date_trunc('hour', x.ts_value)
+	     GROUP BY el.id_equipment, el.lo, el.fill_missing, date_trunc('hour', x.ts_value)
 	), reconciled AS MATERIALIZED (
 	    SELECT id_equipment, lo,
 	           CASE WHEN COALESCE(gross,0) > 0 THEN COALESCE(gross,0)
+	                WHEN NOT fill_missing THEN 0
 	                WHEN COALESCE(net,0) > 0 AND COALESCE(scrap,0) > 0 THEN COALESCE(net,0) + COALESCE(scrap,0)
 	                WHEN COALESCE(net,0) > 0 THEN COALESCE(net,0)
 	                ELSE 0 END AS eff_gross,
 	           CASE WHEN COALESCE(net,0) > 0 THEN COALESCE(net,0)
+	                WHEN NOT fill_missing THEN 0
 	                WHEN COALESCE(gross,0) > 0 AND COALESCE(scrap,0) > 0 THEN COALESCE(gross,0) - COALESCE(scrap,0)
 	                WHEN COALESCE(gross,0) > 0 THEN COALESCE(gross,0)
 	                ELSE 0 END AS eff_net
