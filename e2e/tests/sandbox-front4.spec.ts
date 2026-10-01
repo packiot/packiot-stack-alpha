@@ -85,8 +85,16 @@ test.describe('sandbox front4 (ent 2000003) — reflection of CPACK', () => {
       const c = await dataset(request, KEY_CPACK, body);
       const s = await dataset(request, KEY_SBX, body);
       expect(c.length).toBeGreaterThan(0);
+      // LIVE EDGE: the reader shifts the window by the site's day_begin, so events up to "now" come
+      // back despite `to = now - 30 min`, and near now the two tenants legitimately differ for a few
+      // minutes (a stop that just closed in CPACK closes in the twin on its own pipeline's next pass —
+      // measured 2026-09-30: converged within ~10 min, 0 orphans after). Compare everything older
+      // than 1 h before the newest event either side returned (tz-independent: same clock labels).
+      const newest = Math.max(...[...c, ...s].map((r) => Date.parse(r.ts_event)));
+      const settled = (rows: any[]) => rows.filter((r) => Date.parse(r.ts_event) < newest - 3_600_000);
       const sig = (rows: any[]) =>
-        rows.map((r) => `${r.ts_event}|${r.duration}|${r.cd_category ?? ''}|${r.cd_subcategory ?? ''}`).sort();
+        settled(rows).map((r) => `${r.ts_event}|${r.duration}|${r.cd_category ?? ''}|${r.cd_subcategory ?? ''}`).sort();
+      expect(settled(c).length, 'settled CPACK events to compare').toBeGreaterThan(100);
       // exact multiset equality of (start, duration, category, sub-category)
       expect(sig(s)).toEqual(sig(c));
     });
