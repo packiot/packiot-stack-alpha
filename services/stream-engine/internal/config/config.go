@@ -350,6 +350,9 @@ type Config struct {
 	// and PLC no-data time from available_time (rollup/availability_exclusions.go).
 	// Default ON: inert without windows or status-20 events.
 	AvailabilityExclusionsEnabled bool
+	// StrandedFlagSweepEnabled (2026-10-01): hourly job clearing recalc_needed
+	// flags no consumer can ever drain (rollup/stranded.go), with a WARN per table.
+	StrandedFlagSweepEnabled bool
 	// POAvailabilityEnabled (FU#8): write available_time + planned_downtime onto
 	// production_orders_runtime (the compute.go Phase-B2 pass) so the recalc's
 	// PO-grain oee_a = running/available and oee_p time-factor stop collapsing to
@@ -511,6 +514,7 @@ func Load() (*Config, error) {
 		OeeAvailFloorEnabled:          getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
 		OeeCanonicalAPQEnabled:        getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
 		AvailabilityExclusionsEnabled: getenv("AVAILABILITY_EXCLUSIONS_ENABLED", "true") == "true",
+		StrandedFlagSweepEnabled:      getenv("STRANDED_FLAG_SWEEP_ENABLED", "true") == "true",
 		POAvailabilityEnabled:         getenv("PO_AVAILABILITY_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
