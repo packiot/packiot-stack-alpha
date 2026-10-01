@@ -248,6 +248,17 @@ func main() {
 		cfg.IncrementSanityClampSpikeFraction,
 	)
 	if cfg.IncrementSanityClampEnabled {
+		// Seed the counter-movement catch from the database once per stream, so the
+		// first sample after a restart is covered too. "public" lives on the main
+		// pool; the medallion schemas on the analytics pool (when configured).
+		equipmentValuesWriter.SetTotalizerSeeder(writers.PGTotalizerSeeder(func(schema string) *pgxpool.Pool {
+			if schema == "public" || analyticsPool == nil {
+				return pool
+			}
+			return analyticsPool
+		}, logger))
+	}
+	if cfg.IncrementSanityClampEnabled {
 		logger.Info("increment sanity clamp ENABLED (ADR-0037/ADR-0045 P1) — K·rated_speed·Δt bound + delta-from-zero spike floor",
 			slog.Float64("k", cfg.IncrementSanityClampK),
 			slog.Int("min_dt_seconds", cfg.IncrementSanityClampMinDtSec),

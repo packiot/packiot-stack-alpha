@@ -101,6 +101,7 @@ type incrementClamp struct {
 	mu      sync.Mutex
 	last    map[clampKey]int64   // stream → last sample ts (unix ms)
 	lastAbs map[clampKey]float64 // stream → last positive absolute totalizer seen
+	seeded  map[clampKey]bool    // stream → database seed already attempted
 }
 
 // eval applies the clamp to one counter increment. It returns the value to
@@ -156,6 +157,43 @@ func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsM
 		}
 	}
 
+	// ── Counter-movement catch (2026-10-01, rate-independent, gap-proof) ──
+	// An increment is the production between two readings of the SAME
+	// totalizer, so it can never be much larger than how far that totalizer
+	// moved. The rate·Δt bound grows with the gap (a 20 h silence allows
+	// K·rate·20 h) and the spike catch needs half the whole totalizer, so a
+	// stale upstream baseline after a long gap slipped through both: Bispharma
+	// M673 2026-09-25 wrote 263,098 while its counter moved 4 (0.40 of the
+	// totalizer); 13 machines on 09-18 wrote 5k–14k each against a few hundred.
+	// The thresholds come from 14 days of live silver: CPACK's sparse counter
+	// lags its increments by <100 units in 99.99% of mismatches (summing to the
+	// totalizer over time), so only an UNBACKED part of ≥ unbackedFloor that is
+	// also most of the increment is a phantom. The previous totalizer comes
+	// from memory, or from the database once per stream after a restart (seed).
+	if hadAbs && absolute > 0 && absolute >= prevAbs {
+		d := absolute - prevAbs
+		if unbacked := value - d; unbacked >= unbackedFloor && unbacked*2 > value {
+			if c.logger != nil {
+				c.logger.Warn("increment sanity clamp REJECTED increment not backed by the totalizer (stale upstream baseline)",
+					slog.Int("id_equipment", eq),
+					slog.String("kind", kind.String()),
+					slog.Float64("observed", value),
+					slog.Float64("totalizer_delta", d),
+					slog.Float64("absolute", absolute),
+				)
+			}
+			return d, &ClampEvent{
+				IDEnterprise: enterprise,
+				IDEquipment:  eq,
+				Kind:         kind,
+				BucketTS:     time.UnixMilli(tsMs).Truncate(time.Second).UTC(),
+				Observed:     value,
+				Bound:        d + unbackedFloor,
+				Replacement:  d,
+			}
+		}
+	}
+
 	// The rate·Δt bound needs a configured rated speed; without one, fail open
 	// (the spike catch above is the only defense for rate-less streams).
 	if ratePerMin <= 0 {
@@ -196,6 +234,47 @@ func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsM
 		Observed:     value,
 		Bound:        bound,
 		Replacement:  repl,
+	}
+}
+
+// unbackedFloor is the smallest unbacked increment (increment − totalizer
+// movement) the counter-movement catch acts on. Below it, a sparse or lagging
+// counter explains the gap (CPACK: <100 in 99.99% of live mismatches).
+const unbackedFloor = 100.0
+
+// NeedsSeed reports whether the stream has no remembered totalizer and no seed
+// attempt yet — the caller then looks the last stored one up once (SeedAbs).
+func (c *incrementClamp) NeedsSeed(eq int, kind sparkplug.MetricKind) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := clampKey{eq, kind}
+	if _, ok := c.lastAbs[key]; ok {
+		return false
+	}
+	if c.seeded == nil {
+		c.seeded = make(map[clampKey]bool)
+	}
+	if c.seeded[key] {
+		return false
+	}
+	c.seeded[key] = true
+	return true
+}
+
+// SeedAbs installs the last stored totalizer for a stream (from the database),
+// unless a live reading got there first.
+func (c *incrementClamp) SeedAbs(eq int, kind sparkplug.MetricKind, abs float64) {
+	if abs <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastAbs == nil {
+		c.lastAbs = make(map[clampKey]float64)
+	}
+	key := clampKey{eq, kind}
+	if _, ok := c.lastAbs[key]; !ok {
+		c.lastAbs[key] = abs
 	}
 }
 

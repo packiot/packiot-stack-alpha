@@ -57,6 +57,11 @@ type EquipmentValues struct {
 	// behaves byte-for-byte as before. Set via SetIncrementClamp.
 	clamp *incrementClamp
 
+	// clampSeed looks up a stream's last stored totalizer once after a restart,
+	// so the clamp's counter-movement catch also covers the first sample after a
+	// worker restart (the in-memory totalizer is empty then). nil = no seeding.
+	clampSeed TotalizerSeeder
+
 	// bronzeRaw — ADR-0036 B1 medallion dual-write flag (BRONZE_RAW_APPEND).
 	// false (default) ⇒ BuildRawAppend / BuildEventMintRaw return nil and no
 	// _raw INSERT is ever queued, so the writer is byte-for-byte the old
@@ -98,6 +103,14 @@ func tenantFromTopic(name string) string {
 	}
 	return "unknown"
 }
+
+// TotalizerSeeder returns the last stored totalizer (net/gross/scrap _val by
+// kind) for an equipment before tsMs, in schema. ok=false when none is found or
+// the lookup failed; the clamp then fails open exactly as before.
+type TotalizerSeeder func(ctx context.Context, schema string, idEquipment int, kind sparkplug.MetricKind, tsMs int64) (abs float64, ok bool)
+
+// SetTotalizerSeeder installs the clamp's one-time database seed (see clampSeed).
+func (w *EquipmentValues) SetTotalizerSeeder(f TotalizerSeeder) { w.clampSeed = f }
 
 // SetIncrementClamp enables the production-increment sanity clamp
 // (INCREMENT_SANITY_CLAMP_ENABLED). k is the plausibility factor
@@ -348,6 +361,11 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 			var absolute float64
 			if m.Counter != nil {
 				absolute = float64(*m.Counter)
+			}
+			if w.clampSeed != nil && absolute > 0 && value > 0 && w.clamp.NeedsSeed(info.IDEquipment, kind) {
+				if abs, ok := w.clampSeed(ctx, schema, info.IDEquipment, kind, m.Timestamp); ok {
+					w.clamp.SeedAbs(info.IDEquipment, kind, abs)
+				}
 			}
 			value, clampEv = w.clamp.eval(info.IDEquipment, info.IDEnterprise, kind, m.Timestamp, rate, value, absolute)
 		}
