@@ -197,14 +197,22 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	  FROM ` + evSchema + `.equipment_oee_daily ed
 	  JOIN ` + refSchema + `.equipments q ON q.id_equipment = ed.id_equipment AND q.tp_equipment = 3
 	 WHERE ed.recalc_needed = false AND ed.ts_value >= now() - interval '1 month'
-	   AND t.id_area = q.id_area AND t.ts_value = ed.ts_value`
+	   AND t.id_area = q.id_area AND t.ts_value = ed.ts_value
+	   -- CHANGE-DRIVEN (2026-10-01): only when a line day was recomputed AFTER the area
+	   -- day. Without it every computed line day re-flagged its area day on EVERY tick,
+	   -- so the whole last month of area days (~400 rows) was recomputed every minute
+	   -- (measured live). Same guard as the site-shift cascade below.
+	   AND NOT t.recalc_needed
+	   AND (t.computed_at IS NULL OR t.computed_at < ed.computed_at)`
 	} else {
 		dayFlagCascade = `
 	UPDATE ` + evSchema + `.site_oee_daily t SET recalc_needed = true
 	  FROM ` + evSchema + `.area_oee_daily ad
 	  JOIN ` + refSchema + `.areas a ON a.id_area = ad.id_area
 	 WHERE ad.recalc_needed = false AND ad.ts_value >= now() - interval '1 month'
-	   AND t.id_site = a.id_site AND t.ts_value = ad.ts_value`
+	   AND t.id_site = a.id_site AND t.ts_value = ad.ts_value
+	   AND NOT t.recalc_needed
+	   AND (t.computed_at IS NULL OR t.computed_at < ad.computed_at)`
 	}
 
 	// SITE SHIFT FRESHNESS CASCADE (2026-09-29). Nothing flagged a past site shift:

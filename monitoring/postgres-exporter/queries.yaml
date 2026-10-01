@@ -321,3 +321,34 @@ pg_retention:
     - datname: { usage: LABEL, description: "Database" }
     - drift_rows: { usage: GAUGE, description: "Rows in ops.retention_drift (want 0)" }
     - purge_errors_24h: { usage: GAUGE, description: "Catalog purge errors in the last 24h (want 0)" }
+
+# ── Standing data invariants (ops.data_invariant_latest; migration t-data-invariants).
+# One series per check × tenant: ok (1/0) and observed. Written every 30 min by the
+# Timescale job ops.job_data_invariants and by scripts/ops/data-oracle-check.sh.
+# query_to_xml (forest mode, wrapped in <r>, so an EMPTY view parses to zero rows)
+# + XMLTABLE defer parsing so other auto-discovered DBs (no ops schema) emit NO row. ent = -1 for platform-wide checks. ──
+pg_data_invariant:
+  query: |
+    SELECT current_database() AS datname, x.check_id, x.ent::text AS ent, x.severity, x.ok, x.observed
+      FROM (SELECT xmlelement(name r, query_to_xml($$SELECT check_id, coalesce(id_enterprise, -1) AS ent, severity, ok::int AS ok, coalesce(observed, 0)::float8 AS observed
+                                   FROM ops.data_invariant_latest$$, true, true, '')) AS q
+              FROM (SELECT 1) one WHERE to_regclass('ops.data_invariant_latest') IS NOT NULL) s,
+           XMLTABLE('/r/row' PASSING s.q
+                    COLUMNS check_id text PATH 'check_id', ent int PATH 'ent', severity text PATH 'severity',
+                            ok int PATH 'ok', observed float8 PATH 'observed') x
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - check_id: { usage: LABEL, description: "Invariant id (see migration t-data-invariants)" }
+    - ent: { usage: LABEL, description: "Enterprise (-1 = platform-wide)" }
+    - severity: { usage: LABEL, description: "critical | warn | info" }
+    - ok: { usage: GAUGE, description: "1 = invariant holds, 0 = violated" }
+    - observed: { usage: GAUGE, description: "Observed value of the check" }
+
+pg_data_invariant_run:
+  query: |
+    SELECT current_database() AS datname,
+           (xpath('/row/a/text()', query_to_xml($$SELECT coalesce(extract(epoch FROM now() - max(run_at)), 999999)::int AS a FROM ops.data_invariant_result WHERE check_id = 'Z_invariants_run'$$, false, true, '')))[1]::text::int AS age_seconds
+      FROM (SELECT 1) one WHERE to_regclass('ops.data_invariant_result') IS NOT NULL
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - age_seconds: { usage: GAUGE, description: "Seconds since the in-DB invariant job last completed" }
