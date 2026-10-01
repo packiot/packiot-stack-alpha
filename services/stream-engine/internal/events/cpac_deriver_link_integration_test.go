@@ -135,3 +135,21 @@ func TestCPACLinkShortBlipIgnored(t *testing.T) {
 	runLink(t, pool)
 	expectStream(t, dump(t, pool), base, []tr{{0, 6}, {14, 10}, {35, 6}, {49, 10}})
 }
+
+// A LINE (tp=3) whose lead machine is link-monitored gets NO link-derived rows:
+// it has no counters of its own, so a resume-stop would never close.
+func TestCPACLinkLineNotInherited(t *testing.T) {
+	pool := mustPool(t)
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Minute)
+	setupLinkSchema(t, pool, base, [][2]int{{0, 10}}, 12, 34)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO `+schema+`.equipments VALUES (2000, 999, 0, 3, NULL, 1000, true)`); err != nil {
+		t.Fatal(err)
+	}
+	runLink(t, pool)
+	for _, r := range dump(t, pool) {
+		if r.Eq == 2000 {
+			t.Fatalf("line got a link-derived row: %+v", r)
+		}
+	}
+}

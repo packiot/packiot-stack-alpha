@@ -146,19 +146,20 @@ const cpacLeadActivity = `(m.gross_production_incr > 0
             OR (s.id_equipment IN (SELECT id_equipment FROM leads)
                 AND (m.net_production_incr > 0 OR m.scrap_incr > 0)))`
 
-// cpacLinkCTE (%[2]s = RefSchema, %[5]s = SilverSchema) — the PLC-link
+// cpacLinkCTE (%[5]s = SilverSchema) — the PLC-link
 // no-data islands per scoped equipment. Appended after scope (like cpacLeadsCTE),
 // it only reads tables the link-health migration created. An endpoint that has
 // never reported a link status contributes nothing (pre-rollout history and
 // tenants without a link-reporting reader are untouched).
 const cpacLinkCTE = `), linkeq AS (
-    -- each scoped equipment's reader endpoint; a LINE inherits its lead machine's
+    -- each scoped equipment's reader endpoint — ONLY equipment the descriptor
+    -- maps to a PLC directly. A line must NOT inherit its lead's endpoint: a line
+    -- without counters of its own has no sessions, so every gap would end in a
+    -- "stop" that never closes (the phantom-stop class this mode removes).
     SELECT s.id_equipment, s.id_enterprise, s.thr, pe.endpoint
       FROM scope s
-      JOIN %[2]s.equipments e ON e.id_equipment = s.id_equipment
       JOIN %[5]s.plc_endpoint_equipment pe
-        ON pe.id_enterprise = s.id_enterprise
-       AND pe.id_equipment = CASE WHEN e.tp_equipment = 3 THEN e.lead_machine ELSE e.id_equipment END
+        ON pe.id_enterprise = s.id_enterprise AND pe.id_equipment = s.id_equipment
 ), link_ep AS (
     SELECT DISTINCT le.id_enterprise, le.endpoint, f.since
       FROM linkeq le
