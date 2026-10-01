@@ -158,7 +158,9 @@ const grainGoldenSchema = `
 	    target double precision, proportional_target double precision,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
 	    -- ADR-0036 §5A lineage columns (T0-2) — mirror the migrated prod schema.
-	    computed_at timestamptz, source_watermark timestamptz
+	    computed_at timestamptz, source_watermark timestamptz,
+	    -- t-availability-exclusions (2026-10-01)
+	    no_data_time integer NOT NULL DEFAULT 0, out_of_service_time integer NOT NULL DEFAULT 0
 	);
 	-- 1day/1week/1month inherit oee_a/oee_p/oee_q + computed_at/source_watermark via LIKE (they now live on 1hour too — ADR-0037 C).
 	CREATE TABLE golden.equipment_oee_daily (LIKE golden.equipment_oee_hourly INCLUDING ALL);

@@ -123,7 +123,9 @@ const dayRollupSQL = `
 	           sum(hr.changeover_time)  AS changeover_time,
 	           sum(hr.scrap)            AS scrap,
 	           avg(hr.speed)            AS speed,
-	           sum(hr.proportional_target) AS proportional_target
+	           sum(hr.proportional_target) AS proportional_target,
+	           sum(hr.no_data_time)        AS no_data_time,
+	           sum(hr.out_of_service_time) AS out_of_service_time
 	      FROM day_elig el
 	      JOIN %[1]s.equipment_oee_hourly hr
 	        ON hr.id_equipment = el.id_equipment
@@ -137,6 +139,8 @@ const dayRollupSQL = `
 	       oee_q            = COALESCE(s.oee_q, 0),
 	       oee_p            = GREATEST(COALESCE(s.oee / NULLIF(s.oee_a * s.oee_q, 0), 0), 0),
 	       available_time   = COALESCE(s.available_time, 0),
+	       no_data_time        = COALESCE(s.no_data_time, 0),
+	       out_of_service_time = COALESCE(s.out_of_service_time, 0),
 	       running_time     = COALESCE(s.running_time, 0),
 	       stopped_time     = COALESCE(s.stopped_time, 0),
 	       planned_downtime = COALESCE(s.planned_downtime, 0),

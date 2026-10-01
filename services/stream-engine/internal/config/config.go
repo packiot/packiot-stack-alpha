@@ -346,6 +346,10 @@ type Config struct {
 	// construction (identity holds). Default OFF → legacy top-down oee. Flip
 	// AFTER the availability floor, since it makes oee_a load-bearing.
 	OeeCanonicalAPQEnabled bool
+	// AvailabilityExclusionsEnabled (2026-10-01): subtract out-of-service windows
+	// and PLC no-data time from available_time (rollup/availability_exclusions.go).
+	// Default ON: inert without windows or status-20 events.
+	AvailabilityExclusionsEnabled bool
 	// POAvailabilityEnabled (FU#8): write available_time + planned_downtime onto
 	// production_orders_runtime (the compute.go Phase-B2 pass) so the recalc's
 	// PO-grain oee_a = running/available and oee_p time-factor stop collapsing to
@@ -504,9 +508,10 @@ func Load() (*Config, error) {
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
 		// ADR-0049 OEE correctness (default OFF — no behavior change)
-		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
-		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
-		POAvailabilityEnabled:  getenv("PO_AVAILABILITY_ENABLED", "false") == "true",
+		OeeAvailFloorEnabled:          getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
+		OeeCanonicalAPQEnabled:        getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
+		AvailabilityExclusionsEnabled: getenv("AVAILABILITY_EXCLUSIONS_ENABLED", "true") == "true",
+		POAvailabilityEnabled:         getenv("PO_AVAILABILITY_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),

@@ -357,7 +357,7 @@ func TestShiftShape(t *testing.T) {
 		"(ev.ts_total - ev.ts_planned) / (3600 * 24)", // ELAPSED-prorated proportional formula (#80/ADR-0029 D5)
 		"now() + interval '18 hour'",                    // forward re-flag
 	} {
-		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+shiftTargetsSQL+shiftReflagSQL, m) {
+		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+withOosTarget(shiftTargetsSQL, false, "")+shiftReflagSQL, m) {
 			t.Errorf("shift lost %q", m)
 		}
 	}
