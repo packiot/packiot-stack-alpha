@@ -466,6 +466,10 @@ func main() {
 				// Use the line-lead OEE model's activity (gross|net|scrap) for the
 				// lead machine only. The CPACK shadow instance above stays gross-only.
 				LeadActivity: true,
+				// PLC-link aware (2026-10-01): silence while the reader could not
+				// read the PLC (silver.plc_link_minutes) is NO DATA (status 20),
+				// not a stop. Inert until an endpoint reports link health.
+				LinkHealth: true,
 			},
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}
