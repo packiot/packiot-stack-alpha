@@ -15,10 +15,24 @@ groups:
           summary: "{{ $labels.job }} not scrapeable for 5m (crashed or wedged)"
 
       - alert: EngineJobErrorStreak
-        expr: sum by (job) (increase(oeecloud_worker_job_ticks_total{outcome="error"}[15m])) > 2
+        # exported_job: the engine's own "job" label collides with the scrape label and is
+        # renamed by Prometheus; grouping by job named the scrape target, not the failing job.
+        expr: sum by (exported_job) (increase(oeecloud_worker_job_ticks_total{outcome="error"}[15m])) > 2
         labels: {severity: page}
         annotations:
-          summary: "engine job {{ $labels.job }} failed >2 ticks in 15m — check oeecloud-worker logs"
+          summary: "engine job {{ $labels.exported_job }} failed >2 ticks in 15m — check oeecloud-worker logs"
+
+      # Per-job liveness for the frequent loops (every ≤ 5 min). EngineStalled only catches ALL
+      # jobs stopping; a single loop can stop alone (2026-10-02: replaces the DB check
+      # O1_po_last_compute_min, whose signal — PO last_update — is quiet for hours by design).
+      - alert: StreamEngineJobStalled
+        expr: |
+          sum by (exported_job) (increase(oeecloud_worker_job_ticks_total{outcome="ok",
+            exported_job=~"po-runtime-refresh|runtime-rollup|runtime-rollup-hour-backfill|events-deriver|cpac-events-deriver|events-close-stale|uns-current-metrics|boxes-bridge"}[15m])) < 1
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "engine job {{ $labels.exported_job }} had no successful tick in 15m"
 
       - alert: EngineStalled
         expr: sum(increase(oeecloud_worker_job_ticks_total[15m])) < 1
