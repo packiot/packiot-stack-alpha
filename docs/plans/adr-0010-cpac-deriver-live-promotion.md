@@ -1,8 +1,23 @@
 # ADR-0010 §10.4 — promote the CPAC count-silence deriver to LIVE for counters-only clients
 
-**Status:** PLAN. Motivated by the Bispharma (ent5) demo-readiness review (2026-09-22):
-counters-only clients have **no downtime events** and there is no non-synthetic way to
-give them one today.
+**Status:** IMPLEMENTED — live on staging for ent5 since 2026-09-22 (#1384). Motivated by the
+Bispharma (ent5) demo-readiness review (2026-09-22): counters-only clients had **no downtime
+events** and no non-synthetic way to get them. The plan below is kept as written; the
+implementation log follows directly.
+
+## Implementation log (as of 2026-10-02)
+
+| Date | PR / commit | What changed |
+|------|-------------|--------------|
+| 09-22 | #1384 | Second, LIVE deriver instance (`CPAC_EVENT_LIVE_ENTERPRISES=5`, `compose.staging.yml`); CPACK stays shadow-only |
+| 09-22 | `0e7a959a` | ent5 stop threshold 1800 → 600 s once the box→staging feed was verified reliable (`t-ent5-downtime-threshold-reliable-feed`) |
+| 09-29 | #1486 | Deriver sees **net-only** line leads (8 Bispharma lines had zero downtimes); phantom RUNNING row minted every tick fixed; `humanTouchedPred` made NULL-safe (`IS TRUE`) — the correct pass had never deleted anything |
+| 09-29 | migrations | `t-ent5-lead-event-display`, `t-deriver-phantom-running-cleanup` (98,767 live + 834,053 shadow phantom status-6 rows removed), lead-event backfill (2,101 rows) |
+| 10-01 | #1532 | PLC-link-aware: a gap ≥ threshold with no OK scans mints **status 20 NO DATA** instead of a stop (live ent5 instance only; CPACK shadow byte-identical) |
+| 10-01 | #1534 | Availability excludes out-of-service + no-data time (three states: running / stopped / no data) |
+
+Remaining risk: a lossy feed still looks like silence on machines whose PLC link is not
+reported; the no-data path covers only PLC-link-aware boxes.
 
 ## Problem
 
