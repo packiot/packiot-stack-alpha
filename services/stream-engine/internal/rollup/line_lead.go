@@ -126,20 +126,47 @@ var shiftLineLeadSQL = `
 	    -- net in 11 of 11) the shift sums read "G+N present" with net far above the
 	    -- sparse gross, so net was clamped to that gross and the shift UNDERCOUNTED the
 	    -- hours that only reported net (09-15 Bispharma: shift 1.18 M vs hourly 1.38 M).
+	    --
+	    -- BOUNDARY HOURS (2026-10-01). A shift that does not start/end on the hour (CPACK
+	    -- 02:10 / 09:30, Bispharma 17:20) used to take every hour bucket STARTING inside
+	    -- [shift start, bend): the whole 02:00 hour went to the shift ending 02:10 and none
+	    -- of it to the shift starting 02:10 (measured: CPACK shifts off 10.2 pct on average
+	    -- vs the lead's own silver; day totals unchanged). Now every bucket OVERLAPPING the
+	    -- shift is taken; a bucket fully inside reads the hourly cagg as before, a partial
+	    -- one reads the 1-min cagg clipped to the shift window (at most two per shift).
 	    SELECT l.line_id, l.ts_value, b.bts, l.fill_missing,
-	           (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN cg.net_production_incr ELSE cg.gross_production_incr END) FROM %[3]s.equipment_categorical_1hour cg
-	             WHERE cg.id_equipment = l.gross_id AND cg.ts_value = b.bts) AS gross,
-	           (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN cn.gross_production_incr ELSE cn.net_production_incr END) FROM %[3]s.equipment_categorical_1hour cn
-	             WHERE cn.id_equipment = l.net_id AND cn.ts_value = b.bts) AS net,
-	           (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
-	             WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = b.bts) AS scrap
+	           CASE WHEN b.full THEN
+	               (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN cg.net_production_incr ELSE cg.gross_production_incr END) FROM %[3]s.equipment_categorical_1hour cg
+	                 WHERE cg.id_equipment = l.gross_id AND cg.ts_value = b.bts)
+	           ELSE
+	               (SELECT sum(CASE WHEN l.gross_ctr = 'processed' THEN mg.net_production_incr ELSE mg.gross_production_incr END) FROM %[3]s.equipment_categorical_1min mg
+	                 WHERE mg.id_equipment = l.gross_id AND mg.ts_value >= b.cfrom AND mg.ts_value < b.cto)
+	           END AS gross,
+	           CASE WHEN b.full THEN
+	               (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN cn.gross_production_incr ELSE cn.net_production_incr END) FROM %[3]s.equipment_categorical_1hour cn
+	                 WHERE cn.id_equipment = l.net_id AND cn.ts_value = b.bts)
+	           ELSE
+	               (SELECT sum(CASE WHEN l.net_ctr = 'consumed' THEN mn.gross_production_incr ELSE mn.net_production_incr END) FROM %[3]s.equipment_categorical_1min mn
+	                 WHERE mn.id_equipment = l.net_id AND mn.ts_value >= b.cfrom AND mn.ts_value < b.cto)
+	           END AS net,
+	           CASE WHEN b.full THEN
+	               (SELECT sum(cs.scrap_incr) FROM %[3]s.equipment_categorical_1hour cs
+	                 WHERE cs.id_equipment = l.scrap_id AND cs.ts_value = b.bts)
+	           ELSE
+	               (SELECT sum(ms.scrap_incr) FROM %[3]s.equipment_categorical_1min ms
+	                 WHERE ms.id_equipment = l.scrap_id AND ms.ts_value >= b.cfrom AND ms.ts_value < b.cto)
+	           END AS scrap
 	      FROM lines l
 	      CROSS JOIN LATERAL (
-	          SELECT DISTINCT c.ts_value AS bts
-	            FROM %[3]s.equipment_categorical_1hour c
-	           WHERE c.id_equipment IN (l.gross_id, l.lead_id, l.net_id, l.scrap_id)
-	             AND c.ts_value >= l.ts_value AND c.ts_value < l.bend
-	           OFFSET 0
+	          SELECT h.bts,
+	                 (h.bts >= l.ts_value AND h.bts + interval '1 hour' <= l.bend) AS full,
+	                 GREATEST(h.bts, l.ts_value) AS cfrom,
+	                 LEAST(h.bts + interval '1 hour', l.bend) AS cto
+	            FROM (SELECT DISTINCT c.ts_value AS bts
+	                    FROM %[3]s.equipment_categorical_1hour c
+	                   WHERE c.id_equipment IN (l.gross_id, l.lead_id, l.net_id, l.scrap_id)
+	                     AND c.ts_value > l.ts_value - interval '1 hour' AND c.ts_value < l.bend
+	                  OFFSET 0) h
 	      ) b
 	), bucket_reconciled AS (
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
