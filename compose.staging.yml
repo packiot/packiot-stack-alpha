@@ -1493,6 +1493,9 @@ services:
   # IMAGE (not build:): barcode-scanner-v2 is a separate repo (NOT a stack submodule),
   # so the image is pre-built on the box and referenced by tag — a `build:` context
   # whose source is absent from the CI checkout would break the next full deploy.
+  # Once packiot/staging/ghcr-read exists, deploy-staging.yml pulls the CI-built
+  # ghcr.io/packiot/barcode-edge:staging and retags it as barcode-app:staging, so the
+  # manual rebuild below is only the fallback.
   # Rebuild: on the box, from a checkout of barcode-scanner-v2 @ the deployed branch
   #   docker build -f Dockerfile.edge \
   #     --build-arg VITE_STATION_EQUIPMENT_ID=2000047 -t barcode-app:staging .

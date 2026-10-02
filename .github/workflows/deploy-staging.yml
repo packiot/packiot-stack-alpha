@@ -158,6 +158,33 @@ jobs:
             echo "SKIP: no slack_api_url in packiot/staging/app — alerting stays parked (expected until plugged in)"
           fi
 
+      - name: Pull barcode-app from GHCR (optional — inert until the secret exists)
+        # barcode-scanner-v2 is a separate repo; its CI publishes the station-agnostic
+        # ghcr.io/packiot/barcode-edge:staging (station chosen at runtime). The box had no
+        # GHCR login, so barcode-app:staging was hand-built on the host. With the secret
+        # packiot/staging/ghcr-read = {"username":"<github user>","token":"<classic PAT,
+        # ONLY read:packages>"} (fine-grained tokens cannot pull from GHCR), this pulls the
+        # CI image and retags it as barcode-app:staging; the Deploy step's `up -d` then
+        # recreates the container because the tag now points at a new image id.
+        # The app role already reads packiot/staging/* (terraform/staging/ec2.tf). Absent
+        # secret or failed pull → SKIP, the hand-built image keeps running.
+        run: |
+          set -uo pipefail
+          S=$(aws secretsmanager get-secret-value --secret-id packiot/staging/ghcr-read --region us-east-1 --query SecretString --output text 2>/dev/null || true)
+          U=$(printf '%s' "$S" | jq -r '.username // empty' 2>/dev/null || true)
+          T=$(printf '%s' "$S" | jq -r '.token // empty' 2>/dev/null || true)
+          if [ -z "$U" ] || [ -z "$T" ]; then
+            echo "SKIP: no packiot/staging/ghcr-read {username,token} — barcode-app keeps the hand-built image"; exit 0
+          fi
+          if printf '%s' "$T" | docker login ghcr.io -u "$U" --password-stdin >/dev/null 2>&1 \
+             && docker pull -q ghcr.io/packiot/barcode-edge:staging; then
+            docker tag ghcr.io/packiot/barcode-edge:staging barcode-app:staging
+            echo "barcode-app:staging <- $(docker image inspect -f '{{index .RepoDigests 0}}' ghcr.io/packiot/barcode-edge:staging)"
+          else
+            echo "::warning::GHCR login/pull failed — barcode-app keeps the previous image (check the token has read:packages)"
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true  # don't leave the token in ~/.docker/config.json
+
       - name: Build images
         # compose.superset.yml (W2 embedded BI) is a profile-gated overlay: every
         # service carries `profiles: ["superset"]`, so it is INERT unless
