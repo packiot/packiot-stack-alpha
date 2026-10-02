@@ -57,8 +57,9 @@ B_VIOL="$(psql -tAc "
      WHERE ((year=${Y} AND month=${M}) OR (year=${PY} AND month=${PM}))
        AND id_enterprise IN (SELECT id_enterprise FROM promoted_enterprise WHERE ev_promoted)
      GROUP BY id_enterprise)
-  SELECT string_agg(format('ent=%s cold_max=%s > cutover=%s',
-                           cold.id_enterprise, cold.cold_max, c.cutover_ts), '; ')
+  -- concat(), not format(): this statement runs in DuckDB (it reads equipment_values), whose
+  -- format() takes {} placeholders, so '%s' printed literally (seen 2026-10-02).
+  SELECT string_agg(concat('ent=', cold.id_enterprise, ' cold_max=', cold.cold_max, ' > cutover=', c.cutover_ts), '; ')
     FROM cold JOIN ev_union_boundary c ON c.id_enterprise = cold.id_enterprise
    WHERE cold.cold_max > c.cutover_ts;" | sed '/^$/d')"
 if [ -n "$B_VIOL" ]; then
