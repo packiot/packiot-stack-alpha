@@ -295,3 +295,46 @@ func TestGoldenLifecycleReconcileFinishesPausedAndFillsStart(t *testing.T) {
 		t.Errorf("896974 start = %v, want 08:00", p.start)
 	}
 }
+
+// Reconciler window backfill (2026-10-02): from 09-29 most CPACK starts reached the
+// replay before the PO existed on the twin (the start failed open), the reconciler
+// inserted the header later, and the PO ran with NO runtime row → computed 0
+// (L10 897587: legacy 72,208 net, twin 0). Every started PO without a window gets
+// one from its own header; an overlapping neighbour blocks it (no constraint error)
+// until the neighbour's window is closed, and a re-run never duplicates.
+func TestGoldenLifecycleReconcileBackfillsMissingWindows(t *testing.T) {
+	f := newLifecycleFixture(t)
+	rc := NewPOReconciler(nil, f.pool, f.r, &Config{}, nil, f.log)
+	if _, err := f.pool.Exec(f.ctx, `INSERT INTO core.production_orders (id_enterprise, id_equipment, id_order, status, ts_start, ts_end) VALUES
+		(3, 52, 897586, 3, '2026-09-05 02:30Z', '2026-09-05 06:20Z'),  -- finished, no window (L10)
+		(3, 52, 897587, 2, '2026-09-05 06:20Z', NULL),                 -- running, no window (L10)
+		(3, 51, 895801, 1, NULL, NULL),                                -- never started (L8)
+		(3, 99, 896879, 2, '2026-09-05 08:00Z', NULL),                 -- BREYER2 stale open neighbour…
+		(3, 99, 896880, 3, '2026-09-05 10:00Z', '2026-09-05 12:00Z')   -- …blocks this one`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `INSERT INTO gold.production_orders_runtime (id_production_order, id_equipment, runtime_timerange)
+		SELECT id_production_order, 99, tstzrange('2026-09-05 08:00Z', NULL) FROM core.production_orders WHERE id_order = 896879`); err != nil {
+		t.Fatal(err)
+	}
+	check := func(idOrder int64, wantOpened, wantMissing bool, want ...string) {
+		t.Helper()
+		opened, missing := rc.ensureWindow(f.ctx, 3, idOrder)
+		if opened != wantOpened || missing != wantMissing {
+			t.Errorf("%d: opened=%v missing=%v, want %v/%v", idOrder, opened, missing, wantOpened, wantMissing)
+		}
+		if p := f.po(idOrder); !eqWindows(p.windows, want...) {
+			t.Errorf("%d windows = %v, want %v", idOrder, p.windows, want)
+		}
+	}
+	check(897586, true, false, "52:02:30-06:20")
+	check(897587, true, false, "52:06:20-open")
+	check(895801, false, false)                   // no start → no window, not a gap
+	check(896880, false, true)                    // overlaps the stale open 08:00-∞ → blocked, reported
+	check(897586, false, false, "52:02:30-06:20") // idempotent: never a second window
+	// the neighbour's finish closes its window (reconciler finish path) → next pass heals
+	if err := closeRuntimeWindow(f.ctx, f.pool, 3, 896879, ts("10:00"), 0, f.log); err != nil {
+		t.Fatal(err)
+	}
+	check(896880, true, false, "99:10:00-12:00")
+}
