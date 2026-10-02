@@ -34,6 +34,16 @@ query_range:
         enabled: true
         max_size_mb: 100
 
+# retention_period is ENFORCED ONLY by the compactor with retention_enabled: true. Without
+# this block (until 2026-10-02) the 72h was a no-op: chunks piled up since the volume was
+# created (9.2 GB on 10-02, the app host root disk at 88%).
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: filesystem
+
 limits_config:
   retention_period: 72h
   ingestion_rate_mb: 8
