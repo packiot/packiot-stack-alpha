@@ -372,6 +372,25 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	if _, err := tx.Exec(ctx, `ANALYZE shift_elig`); err != nil {
 		return 0, fmt.Errorf("shift elig analyze: %w", err)
 	}
+	for _, s := range shiftSteps(d, ca, changeoverAvailability) {
+		if _, err := tx.Exec(ctx, s.sql); err != nil {
+			return 0, fmt.Errorf("shift %s: %w", s.name, err)
+		}
+	}
+	// Reflag runs EVERY tick (even when the batch was empty) so the recent tail
+	// stays live — it is a small [now−12h, now+18h] window, independent of the
+	// bounded batch above.
+	if _, err := tx.Exec(ctx, fmtRD(shiftReflagSQL, d),
+		exclEnterprises, machineLevelEnterprises); err != nil {
+		return 0, fmt.Errorf("shift reflag: %w", err)
+	}
+	return n, tx.Commit(ctx)
+}
+
+// shiftSteps is the ordered statement list RunShift executes after shift_elig is
+// built (the reflag that follows is NOT a step — it re-flags the live tail).
+// Shared with the history-recompute renderer (history.go).
+func shiftSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
 	steps := []rollupStep{
 		{"values", fmtRD(shiftValuesSQL, d)},
 		{"cascade-area", fmtRD(shiftCascadeAreaSQL, d)},
@@ -417,19 +436,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		rollupStep{"targets", fmtRD(withOosTarget(shiftTargetsSQL, ca.engagedExclusions(), shiftOosTargetTerm), d, d.ConfigSchema)},
 		rollupStep{"stamp", fmtRD(shiftStampSQL, d)},
 	)
-	for _, s := range steps {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
-			return 0, fmt.Errorf("shift %s: %w", s.name, err)
-		}
-	}
-	// Reflag runs EVERY tick (even when the batch was empty) so the recent tail
-	// stays live — it is a small [now−12h, now+18h] window, independent of the
-	// bounded batch above.
-	if _, err := tx.Exec(ctx, fmtRD(shiftReflagSQL, d),
-		exclEnterprises, machineLevelEnterprises); err != nil {
-		return 0, fmt.Errorf("shift reflag: %w", err)
-	}
-	return n, tx.Commit(ctx)
+	return steps
 }
 
 // parityShiftLimit keeps the parity emission effectively unbounded: the port

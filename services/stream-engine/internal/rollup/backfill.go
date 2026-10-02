@@ -147,7 +147,22 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	if _, err := tx.Exec(ctx, `ANALYZE hour_elig`); err != nil {
 		return 0, fmt.Errorf("hour-backfill analyze: %w", err)
 	}
-	steps := []struct{ name, sql string }{
+	for _, s := range hourBackfillSteps(d, ca, changeoverAvailability) {
+		if _, err := tx.Exec(ctx, s.sql); err != nil {
+			return 0, fmt.Errorf("hour-backfill %s: %w", s.name, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// hourBackfillSteps is the ordered statement list RunHourBackfill executes after
+// hour_elig is built. Split out so the history-recompute renderer (history.go)
+// emits exactly the passes the engine runs — never a hand-maintained copy.
+func hourBackfillSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
+	steps := []rollupStep{
 		{"values", widenHourWindows(fmtRD(hourValuesSQL, d))},
 		{"cascade-day", fmtRD(hourCascadeDaySQL, d)},
 		// #186: cascade-area removed (area hourly grain retired).
@@ -166,15 +181,15 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// sums the hour grain over a 1-month window — never stranded). Inert (not
 	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
 	if ca.engagedLineLead() {
-		steps = append(steps, struct{ name, sql string }{"line-lead",
+		steps = append(steps, rollupStep{"line-lead",
 			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))})
 	}
 	if ca.engagedExclusions() {
-		steps = append(steps, struct{ name, sql string }{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
+		steps = append(steps, rollupStep{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
 	}
 	steps = append(steps,
-		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema))},
-		struct{ name, sql string }{"clear", fmtRD(hourBackfillClearSQL, d)},
+		rollupStep{"targets", widenHourWindows(fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema))},
+		rollupStep{"clear", fmtRD(hourBackfillClearSQL, d)},
 	)
 	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q
 	// with a last pass (canonical A·P·Q reconcile when engaged, else the legacy oee_p
@@ -185,21 +200,13 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// runs, widened to the backfill's 10-day horizon and AFTER the clear so the legacy
 	// residual's `NOT recalc_needed` guard matches (the reconcile is guard-free).
 	if ca.engagedCanonical() {
-		steps = append(steps, struct{ name, sql string }{"oee-reconcile",
+		steps = append(steps, rollupStep{"oee-reconcile",
 			widenHourWindows(fmtRD(hourOeeReconcileSQL, d))})
 	} else {
-		steps = append(steps, struct{ name, sql string }{"oee-p",
+		steps = append(steps, rollupStep{"oee-p",
 			widenHourWindows(fmtRD(hourOeePSQL, d))})
 	}
-	for _, s := range steps {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
-			return 0, fmt.Errorf("hour-backfill %s: %w", s.name, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
-	return n, nil
+	return steps
 }
 
 // LoopHourBackfill drains the stranded-hour backlog in bounded batches until it

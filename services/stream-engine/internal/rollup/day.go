@@ -236,6 +236,20 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("day eligible: %w", err)
 	}
+	for _, s := range daySteps(d, ca) {
+		if _, err := tx.Exec(ctx, s.sql); err != nil {
+			return fmt.Errorf("day %s: %w", s.name, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf(dayReflagSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("day reflag: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// daySteps is the ordered statement list RunDay executes after day_elig is built.
+// Shared with the history-recompute renderer (history.go).
+func daySteps(d flows.Dest, ca CountersAvail) []rollupStep {
 	steps := []rollupStep{
 		{"rollup", fmt.Sprintf(dayRollupSQL, d.GoldSchema)},
 	}
@@ -251,15 +265,7 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.GoldSchema)},
 		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.GoldSchema)},
 	)
-	for _, s := range steps {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
-			return fmt.Errorf("day %s: %w", s.name, err)
-		}
-	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(dayReflagSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
-		return fmt.Errorf("day reflag: %w", err)
-	}
-	return tx.Commit(ctx)
+	return steps
 }
 
 // Parity accessors (single-source emission).
