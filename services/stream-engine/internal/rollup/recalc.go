@@ -62,7 +62,10 @@ const recalcSQL = `
 	WITH eligible AS (
 	    SELECT e.id_production_order
 	      FROM %[2]s.production_orders e
-	     WHERE e.ts_start >= now() - $1::interval
+	     -- A PO that STARTED before the window but ENDED inside it (a long run, or a
+	     -- NULL ts_start the replicator never filled) is still a live header: prod's
+	     -- ts_start-only test left it with whatever sum it had while running (2026-09-29).
+	     WHERE (e.ts_start >= now() - $1::interval OR e.ts_end >= now() - $1::interval)
 	       AND e.recalc_needed AND e.status > 1
 	       AND NOT (e.id_enterprise = ANY($2))
 	), sums AS (
@@ -88,40 +91,46 @@ const recalcSQL = `
 	       -- dual-write trigger, gated on UPDATE OF those cols) are dropped in
 	       -- migration 02; setting only the new cols makes that trigger inert
 	       -- (never fires on a new-col-only UPDATE) — no clobber during rollout.
-	       oee_q            = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0),
+	       oee_q            = GREATEST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 0),
 	       speed            = COALESCE(s.speed, 0),
 	       available_time   = COALESCE(s.avail, 0),
 	       running_time     = COALESCE(s.run, 0),
 	       stopped_time     = COALESCE(s.stop, 0),
 	       planned_downtime = COALESCE(s.planned, 0),
 	       -- ADR-0037 output-invariant clamp (#576 extended): PO OEE factors to [0,1].
-	       oee = GREATEST(LEAST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
+	       oee = GREATEST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	             NULLIF(COALESCE(e.ideal_production_speed,
 	                 (SELECT q.production_speed FROM %[2]s.equipments q
-	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 1), 0),
+	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 0),
 	       oee_a = GREATEST(LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1), 0),
-	       oee_p  = GREATEST(LEAST(COALESCE(
+	       oee_p  = GREATEST(COALESCE(
 	             COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	                 NULLIF(COALESCE(e.ideal_production_speed,
 	                     (SELECT q.production_speed FROM %[2]s.equipments q
 	                       WHERE q.id_equipment = e.id_equipment)), 0), 0), 0)
 	             / NULLIF(COALESCE(s.run / NULLIF(s.avail, 0), 0) *
-	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 1), 0),
+	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 0),
 	       recalc_needed = false,
 	       last_update   = now()
 	  FROM eligible el
 	  LEFT JOIN sums s USING (id_production_order)
 	 WHERE e.id_production_order = el.id_production_order`
 
-// The self-re-enqueue (verbatim): running POs recalc every pass;
-// finished ones keep refreshing for 48h (late operator edits).
+// The self-re-enqueue: running POs recalc every pass; finished (or paused) ones
+// keep refreshing for 48h after they ENDED (late operator edits, late data).
+//
+// DIVERGENCE from prod (2026-09-29): prod keyed the 48 h tail on ts_START, so a PO
+// that ran longer than 48 h was never re-summed after it closed — its header kept
+// the last running-pass sum, missing the tail. Keyed on the end instead (falling
+// back to the start when there is no end), matching compute.go's runtime tail
+// (upper(range) > now()-48h).
 const reflagRunningSQL = `
 	UPDATE %[2]s.production_orders SET recalc_needed = true
 	 WHERE status = 2 AND recalc_needed = false`
 
 const reflagRecentSQL = `
 	UPDATE %[2]s.production_orders SET recalc_needed = true
-	 WHERE status = 3 AND ts_start >= now() - interval '48 hours'
+	 WHERE status IN (3, 4) AND COALESCE(ts_end, ts_start) >= now() - interval '48 hours'
 	   AND recalc_needed = false`
 
 // RunRecalc executes one pass for one destination.

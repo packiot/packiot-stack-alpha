@@ -99,4 +99,4 @@ jobs:
       - name: golden fixture tests
         env:
           DATABASE_URL: postgres://postgres:golden@localhost:5432/golden?sslmode=disable
-        run: go test -tags golden -run Golden ./internal/rollup/
+        run: go test -tags golden -run Golden ./internal/rollup/ ./internal/events/

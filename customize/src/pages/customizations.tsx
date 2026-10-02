@@ -1,89 +1,79 @@
-import { Braces, Loader2, Plus, Rocket, Save, Wrench } from "lucide-react";
+import { Calculator, FlaskConical, Info, Loader2, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import {
-  classifyOnboardingError,
-  onboardingApi,
-  type ClientDescriptor,
-  type SimulateResponse,
-} from "@/api/onboarding";
+import { classifyOnboardingError, isStaleSave, onboardingApi, type ClientDescriptor } from "@/api/onboarding";
+import { edgeSsmApi } from "@/api/edge-ssm";
 import { equipmentApi } from "@/api/equipment";
 import { PageHeader } from "@/components/page-header";
-import { Button, Card, Input } from "@/components/ui";
+import { Button, Card, Input, Select } from "@/components/ui";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
+import { csadminUrl } from "@/lib/sibling-apps";
+import { addDeriveRule, listDeriveRules, removeDeriveRule } from "@/lib/derive-rules";
 import {
-  addDeriveRule,
-  buildDeriveRule,
-  listDeriveRules,
-  parseSamples,
-  parseVarLines,
-  removeDeriveRule,
-  ROLE_LABEL,
-  type DeriveRole,
-} from "@/lib/derive-rules";
+  COUNTERS,
+  FORMULA_EXAMPLES,
+  RESULTS,
+  buildRule,
+  checkFormula,
+  describeInput,
+  describeRule,
+  inputPath,
+  machinesOf,
+  samplesFor,
+  type Input as CalcInput,
+  type Machine,
+} from "@/lib/calc-builder";
 
 type LoadState = "loading" | "ready" | "none" | "error";
+const LETTERS = ["a", "b", "c", "d", "e", "f"];
 
 /**
- * ADR-0058 Tier-1 customizations editor — the standalone home for authoring
- * declarative `expr` derive rules on an ALREADY-onboarded client (the same
- * op-builder that lives in the onboarding wizard's Review step, but for a live
- * tenant's stored descriptor). Load → add/remove rules → Simulate against sample
- * tags → Save (optionally regenerate to deploy). Tier-2 (arbitrary Node-RED
- * logic) is the embedded editor on the Box Ops page.
+ * Calculations — create a new value from counters the machines already send
+ * (e.g. scrap = what went in − good parts, or a line total = machine A + machine
+ * B). Written for the automation team: pick from lists, try it with example
+ * numbers, save, then apply. Saving is field-scoped + version-checked (see
+ * onboardingApi.updateCustomizations); applying restarts the shared data
+ * collector, which reads the saved rules at start-up.
  */
 export function CustomizationsPage() {
   const enterprise = useEnterpriseStore((s) => s.selected)!;
   const idEnterprise = enterprise.id_enterprise;
 
   const [state, setState] = useState<LoadState>("loading");
-  const [tenantCode, setTenantCode] = useState<string>("");
+  const [version, setVersion] = useState(0);
+  const [baseline, setBaseline] = useState<ClientDescriptor | null>(null);
   const [descriptor, setDescriptor] = useState<ClientDescriptor | null>(null);
-  const [dirty, setDirty] = useState(false);
-
-  // id_equipment → display name (cd_equipment), for a friendlier picker/list.
-  const [nameById, setNameById] = useState<Map<number, string>>(new Map());
-
-  // op-builder inputs
-  const [deriveTarget, setDeriveTarget] = useState<number | "">("");
-  const [deriveRole, setDeriveRole] = useState<DeriveRole>("scrap");
-  const [deriveExpr, setDeriveExpr] = useState("");
-  const [deriveVarsText, setDeriveVarsText] = useState("");
-
-  // simulate
-  const [samplesText, setSamplesText] = useState("");
-  const [simBusy, setSimBusy] = useState(false);
-  const [simResult, setSimResult] = useState<SimulateResponse | null>(null);
-
+  const [names, setNames] = useState<Map<number, string>>(new Map());
   const [saving, setSaving] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  // builder
+  const [targetId, setTargetId] = useState<number | "">("");
+  const [result, setResult] = useState(RESULTS[0].leaf);
+  const [inputs, setInputs] = useState<CalcInput[]>([]);
+  const [formula, setFormula] = useState("");
+  const [tryValues, setTryValues] = useState<Record<string, string>>({});
+  const [tryOut, setTryOut] = useState<string | null>(null);
+  const [trying, setTrying] = useState(false);
 
   const load = useCallback(async () => {
     setState("loading");
-    setDirty(false);
-    setSimResult(null);
     try {
       const [row, eq] = await Promise.all([
         onboardingApi.getDescriptor(),
         equipmentApi.list({ idEnterprise }).catch(() => []),
       ]);
       const m = new Map<number, string>();
-      for (const e of eq as Array<{ id_equipment: number; cd_equipment?: string }>)
-        m.set(e.id_equipment, e.cd_equipment ?? "");
-      setNameById(m);
-      setTenantCode(row.tenant_code);
+      for (const e of eq as Array<{ id_equipment: number; nm_equipment?: string; cd_equipment?: string }>)
+        m.set(e.id_equipment, e.nm_equipment || e.cd_equipment || "");
+      setNames(m);
+      setVersion(row.version);
+      setBaseline(row.descriptor ?? {});
       setDescriptor(row.descriptor ?? {});
       setState("ready");
     } catch (err) {
-      // A fresh tenant (not-found) or a dark onboarding feature (disabled) simply
-      // has no descriptor to edit — that is a "nothing to customize yet" state,
-      // not an error. Only a real failure ("other") is an error.
       const kind = classifyOnboardingError(err);
-      if (kind === "not-found" || kind === "disabled") {
-        setState("none");
-        return;
-      }
-      setState("error");
+      setState(kind === "not-found" || kind === "disabled" ? "none" : "error");
     }
   }, [idEnterprise]);
 
@@ -91,332 +81,350 @@ export function CustomizationsPage() {
     void load();
   }, [load]);
 
-  // topic per equipment, straight off the stored descriptor (guaranteed present
-  // for mapped equipment — the set customizations attach to).
-  const topicById = useMemo(() => {
-    const m = new Map<number, string>();
-    for (const e of descriptor?.equipment ?? [])
-      if (e.id_equipment != null) m.set(e.id_equipment, e.topic ?? "");
-    return m;
-  }, [descriptor]);
-
-  const pickable = useMemo(
-    () =>
-      (descriptor?.equipment ?? [])
-        .filter((e) => e.id_equipment != null)
-        .map((e) => ({
-          id: e.id_equipment!,
-          topic: e.topic ?? "",
-          tp: e.tp_equipment,
-          name: nameById.get(e.id_equipment!) ?? "",
-        })),
-    [descriptor, nameById],
+  const machines = useMemo(() => (descriptor ? machinesOf(descriptor, names) : []), [descriptor, names]);
+  const target = machines.find((m) => m.id === targetId);
+  const rules = useMemo(() => (descriptor ? listDeriveRules(descriptor, () => undefined) : []), [descriptor]);
+  const dirty = useMemo(
+    () => JSON.stringify(baseline?.equipment ?? []) !== JSON.stringify(descriptor?.equipment ?? []),
+    [baseline, descriptor],
   );
+  const formulaError = inputs.length ? checkFormula(formula, inputs.map((i) => i.letter)) : null;
 
-  const rules = useMemo(
-    () => (descriptor ? listDeriveRules(descriptor, (id) => topicById.get(id)) : []),
-    [descriptor, topicById],
-  );
-
-  function onAddRule() {
-    if (!descriptor) return;
-    if (deriveTarget === "") {
-      toast.error("Pick an equipment for the rule.");
-      return;
-    }
-    if (deriveExpr.trim() === "") {
-      toast.error("Enter an expression (e.g. gross - net).");
-      return;
-    }
-    const vars = parseVarLines(deriveVarsText);
-    if ("error" in vars) {
-      toast.error(`Fix the variables: ${vars.error}`);
-      return;
-    }
-    if (Object.keys(vars).length === 0) {
-      toast.error("Add at least one variable (name = /suffix).");
-      return;
-    }
-    const id = deriveTarget;
-    const rule = buildDeriveRule(deriveRole, deriveExpr.trim(), vars);
-    const tp = pickable.find((p) => p.id === id)?.tp;
-    setDescriptor((prev) =>
-      prev ? addDeriveRule(prev, id, topicById.get(id) ?? "", tp, rule) : prev,
-    );
-    setDeriveExpr("");
-    setDeriveVarsText("");
-    setDirty(true);
-    toast.success("Rule added — Simulate to preview, then Save to persist.");
+  function pickTarget(id: number | "") {
+    setTargetId(id);
+    setInputs(id === "" ? [] : [{ letter: "a", machineId: id, counter: "ProdConsumedCount" }, { letter: "b", machineId: id, counter: "ProdProcessedCount" }]);
+    setFormula("a - b");
+    setTryValues({ a: "500", b: "470" });
+    setTryOut(null);
   }
 
-  function onRemoveRule(id: number, idx: number) {
-    setDescriptor((prev) => (prev ? removeDeriveRule(prev, id, idx) : prev));
-    setDirty(true);
+  function setInput(i: number, patch: Partial<CalcInput>) {
+    setInputs((cur) => cur.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+    setTryOut(null);
   }
 
-  async function runSimulation() {
-    if (!descriptor) return;
-    const samples = parseSamples(samplesText);
-    if ("error" in samples) {
-      toast.error(`Fix the samples JSON: ${samples.error}`);
-      return;
+  function resolvedVars(): Record<string, string> | string {
+    if (!target) return "Choose where the result goes first.";
+    const vars: Record<string, string> = {};
+    for (const inp of inputs) {
+      const src = machines.find((m) => m.id === inp.machineId);
+      if (!src) return `Value ${inp.letter}: choose a machine.`;
+      const p = inputPath(target, src, inp.counter);
+      if ("error" in p) return p.error;
+      vars[inp.letter] = p.path;
     }
-    setSimBusy(true);
+    return vars;
+  }
+
+  function draftWithRule(): ClientDescriptor | string {
+    if (!descriptor || !target) return "Choose where the result goes first.";
+    const vars = resolvedVars();
+    if (typeof vars === "string") return vars;
+    if (formulaError) return formulaError;
+    return addDeriveRule(descriptor, target.id, target.topic, undefined, buildRule(result, formula, vars));
+  }
+
+  async function tryIt() {
+    const draft = draftWithRule();
+    if (typeof draft === "string") return toast.error(draft);
+    const values = Object.fromEntries(inputs.map((i) => [i.letter, Number(tryValues[i.letter] ?? 0)]));
+    setTrying(true);
     try {
-      const res = await onboardingApi.simulate(descriptor, samples);
-      setSimResult(res);
-      toast.success(
-        `Simulated ${res.derived_rules.length} rule(s) → ${res.emitted.length} tag(s)`,
-      );
+      const res = await onboardingApi.simulate(draft, samplesFor(target!, inputs, values, machines, descriptor?.canonical?.prefix));
+      const want = `${target!.topic.slice((descriptor?.canonical?.prefix ?? "").length)}/Admin/${result}/`;
+      const hit = res.emitted.find((e) => e.metric.startsWith(want));
+      setTryOut(hit ? String(hit.value) : "no result — check that every value has a number");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Simulation failed");
+      setTryOut(null);
+      toast.error(e instanceof Error ? e.message : "Could not try the calculation");
     } finally {
-      setSimBusy(false);
+      setTrying(false);
     }
   }
 
-  async function save(regenerate: boolean) {
-    if (!descriptor) return;
+  function addToList() {
+    const draft = draftWithRule();
+    if (typeof draft === "string") return toast.error(draft);
+    setDescriptor(draft);
+    pickTarget("");
+    toast.success("Added. Press Save to keep it.");
+  }
+
+  async function save() {
+    if (!descriptor || !baseline) return;
+    const before = new Map((baseline.equipment ?? []).map((e) => [e.id_equipment, JSON.stringify(e.derived ?? [])]));
+    const derived = (descriptor.equipment ?? [])
+      .filter((e) => e.id_equipment != null && before.get(e.id_equipment) !== JSON.stringify(e.derived ?? []))
+      .map((e) => ({ id_equipment: e.id_equipment!, derived: e.derived ?? [] }));
+    if (!derived.length) return;
     setSaving(true);
     try {
-      await onboardingApi.upsertDescriptor(tenantCode, descriptor);
-      if (regenerate) {
-        await onboardingApi.generate();
-        toast.success("Saved + regenerated — the new config will deploy to the box.");
-      } else {
-        toast.success("Customizations saved to the descriptor.");
-      }
-      setDirty(false);
+      const row = await onboardingApi.updateCustomizations(version, { derived });
+      setVersion(row.version);
+      setBaseline(row.descriptor);
+      setDescriptor(row.descriptor);
+      toast.success("Saved. Press “Apply now” to start using it.");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Save failed");
+      toast.error(
+        isStaleSave(e)
+          ? "Someone else saved changes while you were editing. Reload the page and add yours again."
+          : e instanceof Error
+            ? e.message
+            : "Could not save",
+      );
     } finally {
       setSaving(false);
     }
   }
 
+  async function applyNow() {
+    setApplying(true);
+    try {
+      const r = await edgeSsmApi.applyCalculations(idEnterprise);
+      toast.success(r.mock ? "Test client — nothing was restarted." : "Applying… the data collector restarts in a few seconds.");
+    } catch {
+      toast.error("Could not apply right now. Try again in a minute, or ask the platform team.");
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  const machineName = (m: Machine) => `${m.name}${m.kind === "line" ? " (line)" : ""}`;
+
   return (
     <div className="mx-auto max-w-4xl">
       <PageHeader
-        title="Customizations"
-        subtitle={`Author declarative derive rules (Tier 1) for ${enterprise.name}. For arbitrary Node-RED logic (Tier 2), use the embedded editor on Box Ops.`}
+        title="Calculations"
+        subtitle={`Create a new value from the counters ${enterprise.name}'s machines already send.`}
       />
 
       {state === "loading" ? (
         <Card className="p-6 text-[13px] text-muted-foreground">
-          <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-          Loading this tenant's descriptor…
+          <Loader2 className="mr-2 inline h-4 w-4 animate-spin" /> Loading…
         </Card>
       ) : state === "error" ? (
-        <Card className="p-6">
-          <p className="text-[13px] text-muted-foreground">
-            Could not load the descriptor.{" "}
-            <button className="text-primary hover:underline" onClick={() => void load()}>
-              Retry
-            </button>
-          </p>
+        <Card className="p-6 text-[13px] text-muted-foreground">
+          Couldn&apos;t load this client.{" "}
+          <button className="text-primary hover:underline" onClick={() => void load()}>
+            Try again
+          </button>
         </Card>
       ) : state === "none" ? (
-        <Card className="p-6">
-          <p className="text-[13px] text-muted-foreground">
-            This tenant has no descriptor yet — there is nothing to customize until
-            it is onboarded in{" "}
-            <Link className="text-primary hover:underline" to="/app/hub">
-              CS Admin
-            </Link>
-            , where you can author derive rules inline during Review. Once onboarded,
-            they show up here for editing.
-          </p>
+        <Card className="p-6 text-[13px] text-muted-foreground">
+          {enterprise.name} isn&apos;t set up yet. Set it up in{" "}
+          <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", idEnterprise)} target="_blank" rel="noreferrer">
+            CS Admin ↗
+          </a>{" "}
+          first.
         </Card>
       ) : (
         <>
-          {/* ── existing rules + op-builder ── */}
-          <Card className="mb-5 px-7 py-6">
-            <div className="mb-2 flex items-center gap-2">
-              <Braces className="h-4 w-4 text-muted-foreground" />
-              <span className="text-[15px] font-extrabold text-foreground">Derive rules</span>
-            </div>
-            <p className="mb-3 text-[13px] text-muted-foreground">
-              Author a declarative transform — <code className="font-mono">scrap = gross - net</code>,
-              merge two PLCs, a unit conversion — on an equipment, without hand-editing JSON.
-              The result is a canonical count the agent synthesizes; preview it in Simulate below.
+          <Card className="mb-5 flex gap-3 px-5 py-4 text-[13px] text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p>
+              <span className="font-semibold text-foreground">Example:</span> a line only counts what goes in and what
+              comes out. Scrap = <span className="font-mono">what went in − good parts</span>. Or: a line has two
+              packing machines, and the line total = <span className="font-mono">machine A + machine B</span>. The
+              result is saved like a real counter, so OEE and the dashboards use it.
             </p>
+          </Card>
 
-            {rules.length > 0 ? (
-              <ul className="mb-4 space-y-1 text-[12px]">
-                {rules.map((r) => (
-                  <li key={`${r.id}:${r.idx}`} className="flex items-center gap-2 font-mono">
-                    <span className="text-muted-foreground">
-                      {nameById.get(r.id) || r.topic || `#${r.id}`}
-                    </span>
-                    <span className="text-foreground">
-                      {r.rule.emit[0]}
-                      {r.rule.expr ? ` = ${r.rule.expr.expr}` : ""}
-                    </span>
-                    <button
-                      type="button"
-                      className="text-destructive hover:underline"
-                      onClick={() => onRemoveRule(r.id, r.idx)}
-                    >
-                      remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          {/* existing calculations */}
+          <Card className="mb-5 px-7 py-6">
+            <p className="mb-3 text-[15px] font-extrabold text-foreground">Your calculations</p>
+            {rules.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground">None yet — create one below.</p>
             ) : (
-              <p className="mb-4 text-[12px] text-muted-foreground">
-                No derive rules authored yet.
-              </p>
+              <ul className="divide-y divide-border rounded-md border border-border">
+                {rules.map((r) => {
+                  const owner = machines.find((m) => m.id === r.id);
+                  return (
+                    <li key={`${r.id}:${r.idx}`} className="flex items-start gap-3 px-4 py-3 text-[13px]">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-foreground">
+                          {owner ? machineName(owner) : `#${r.id}`} · {describeRule(r.rule)}
+                        </p>
+                        <p className="mt-0.5 text-[12px] text-muted-foreground">
+                          {Object.entries(r.rule.expr?.vars ?? {}).map(([k, v]) => (
+                            <span key={k} className="mr-3">
+                              <span className="font-mono">{k}</span> = {owner ? describeInput(v, owner, machines) : v}
+                            </span>
+                          ))}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Remove calculation"
+                        onClick={() => setDescriptor((d) => (d ? removeDeriveRule(d, r.id, r.idx) : d))}
+                      >
+                        <Trash2 className="h-4 w-4 text-muted-foreground hover:text-danger" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
+          </Card>
+
+          {/* builder */}
+          <Card className="mb-5 grid gap-5 px-7 py-6">
+            <div className="flex items-center gap-2">
+              <Calculator className="h-4 w-4 text-primary" />
+              <span className="text-[15px] font-extrabold text-foreground">New calculation</span>
+            </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-[13px]">
-                <span className="mb-1 block font-semibold text-foreground">Equipment</span>
-                <select
-                  className="w-full rounded-md border border-border bg-background p-2 text-[13px]"
-                  value={deriveTarget}
-                  onChange={(e) =>
-                    setDeriveTarget(e.target.value === "" ? "" : Number(e.target.value))
-                  }
-                >
-                  <option value="">Select…</option>
-                  {pickable.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name ? `${e.name} — ` : ""}
-                      {e.topic || `#${e.id}`}
+                <span className="mb-1 block font-semibold text-foreground">1. Where does the result go?</span>
+                <Select id="calc-target" value={targetId} onChange={(e) => pickTarget(e.target.value === "" ? "" : Number(e.target.value))}>
+                  <option value="">Choose a line or machine…</option>
+                  {machines.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {machineName(m)}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label className="text-[13px]">
-                <span className="mb-1 block font-semibold text-foreground">Emits (role)</span>
-                <select
-                  className="w-full rounded-md border border-border bg-background p-2 text-[13px]"
-                  value={deriveRole}
-                  onChange={(e) => setDeriveRole(e.target.value as DeriveRole)}
-                >
-                  {(Object.keys(ROLE_LABEL) as DeriveRole[]).map((role) => (
-                    <option key={role} value={role}>
-                      {ROLE_LABEL[role]}
+                <span className="mb-1 block font-semibold text-foreground">What is the result?</span>
+                <Select id="calc-result" value={result} onChange={(e) => setResult(e.target.value)} disabled={!target}>
+                  {RESULTS.map((r) => (
+                    <option key={r.leaf} value={r.leaf}>
+                      {r.label} (e.g. {r.example})
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
             </div>
-            <label className="mt-3 block text-[13px]">
-              <span className="mb-1 block font-semibold text-foreground">Expression</span>
-              <Input
-                placeholder="gross - net"
-                value={deriveExpr}
-                onChange={(e) => setDeriveExpr(e.target.value)}
-              />
-            </label>
-            <label className="mt-3 block text-[13px]">
-              <span className="mb-1 block font-semibold text-foreground">
-                Variables — one <code className="font-mono">name = /arriving/suffix</code> per line
-              </span>
-              <textarea
-                className="h-24 w-full rounded-md border border-border bg-background p-3 font-mono text-[12px]"
-                spellCheck={false}
-                placeholder={`gross = /LINHAS/L01/S1INFEED/Admin/ProdProcessedCount/101/Unit\nnet = /LINHAS/L01/S6OUTPUT/Admin/ProdProcessedCount/106/Unit`}
-                value={deriveVarsText}
-                onChange={(e) => setDeriveVarsText(e.target.value)}
-              />
-            </label>
-            <div className="mt-3">
-              <Button variant="ghost" onClick={onAddRule}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add rule
-              </Button>
-            </div>
-          </Card>
 
-          {/* ── simulate ── */}
-          <Card className="mb-5 px-7 py-6">
-            <div className="mb-2 flex items-center gap-2">
-              <Wrench className="h-4 w-4 text-muted-foreground" />
-              <span className="text-[15px] font-extrabold text-foreground">
-                Simulate customizations
-              </span>
-            </div>
-            <p className="mb-3 text-[13px] text-muted-foreground">
-              Feed sample tags to this plant's derive/expr rules and preview the tags
-              they would produce — no live box needed. One JSON array of{" "}
-              <code className="font-mono">{`{ "metric", "value", "ts_millis?" }`}</code>.
-            </p>
-            <textarea
-              className="mb-3 h-32 w-full rounded-md border border-border bg-background p-3 font-mono text-[12px]"
-              spellCheck={false}
-              placeholder={`[\n  { "metric": "/LINHAS/L01/S1INFEED/Admin/ProdProcessedCount/101/Unit", "value": 500 },\n  { "metric": "/LINHAS/L01/S6OUTPUT/Admin/ProdProcessedCount/106/Unit", "value": 470 }\n]`}
-              value={samplesText}
-              onChange={(e) => setSamplesText(e.target.value)}
-            />
-            <div className="flex items-center gap-3">
-              <Button variant="ghost" onClick={runSimulation} disabled={simBusy}>
-                {simBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                {simBusy ? "Simulating…" : "Run simulation"}
-              </Button>
-              {simResult ? (
-                <span className="text-[13px] text-muted-foreground">
-                  {simResult.derived_rules.length} rule(s) · {simResult.emitted.length} tag(s) produced
-                </span>
-              ) : null}
-            </div>
-            {simResult ? (
-              <div className="mt-4 space-y-4">
-                {simResult.derived_rules.length > 0 ? (
-                  <div>
-                    <p className="mb-1 text-[13px] font-extrabold text-foreground">Active rules</p>
-                    <ul className="space-y-1 text-[12px]">
-                      {simResult.derived_rules.map((r, i) => (
-                        <li key={i} className="font-mono text-muted-foreground">
-                          [{r.kind}] {r.emit.join(", ")}
-                          {r.expr ? <span className="text-foreground"> = {r.expr}</span> : null}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <p className="text-[13px] text-muted-foreground">
-                    No derive/expr rules on this descriptor — nothing to simulate.
-                  </p>
-                )}
-                <div>
-                  <p className="mb-1 text-[13px] font-extrabold text-foreground">Produced tags</p>
-                  {simResult.emitted.length > 0 ? (
-                    <ul className="space-y-1 text-[12px]">
-                      {simResult.emitted.map((e, i) => (
-                        <li key={i} className="font-mono">
-                          <span className="text-foreground">{e.metric}</span>
-                          <span className="text-muted-foreground"> = {String(e.value)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-[13px] text-muted-foreground">
-                      No tags produced — an expr may still be waiting for all its inputs
-                      (feed every referenced tag at least once).
-                    </p>
+            {target && (
+              <>
+                <div className="grid gap-2 text-[13px]">
+                  <span className="font-semibold text-foreground">2. Which values does it use?</span>
+                  {inputs.map((inp, i) => (
+                    <div key={inp.letter} className="flex flex-wrap items-center gap-2">
+                      <span className="w-6 font-mono text-[15px] font-bold text-primary">{inp.letter}</span>
+                      <Select
+                        id={`calc-in-${inp.letter}-machine`}
+                        className="min-w-[180px] flex-1"
+                        value={inp.machineId}
+                        onChange={(e) => setInput(i, { machineId: Number(e.target.value) })}
+                      >
+                        {machines.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id === target.id ? `${machineName(m)} — this one` : machineName(m)}
+                          </option>
+                        ))}
+                      </Select>
+                      <Select
+                        id={`calc-in-${inp.letter}-counter`}
+                        className="min-w-[180px] flex-1"
+                        value={inp.counter}
+                        onChange={(e) => setInput(i, { counter: e.target.value })}
+                      >
+                        {COUNTERS.map((c) => (
+                          <option key={c.leaf} value={c.leaf}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </Select>
+                      {inputs.length > 1 && (
+                        <button type="button" aria-label={`Remove value ${inp.letter}`} onClick={() => setInputs((cur) => cur.filter((_, j) => j !== i))}>
+                          <Trash2 className="h-4 w-4 text-muted-foreground hover:text-danger" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {inputs.length < LETTERS.length && (
+                    <div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setInputs((cur) => [
+                            ...cur,
+                            { letter: LETTERS.find((l) => !cur.some((c) => c.letter === l))!, machineId: target.id, counter: "ProdProcessedCount" },
+                          ])
+                        }
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Add a value
+                      </Button>
+                    </div>
                   )}
                 </div>
-              </div>
-            ) : null}
+
+                <label className="text-[13px]">
+                  <span className="mb-1 block font-semibold text-foreground">3. Formula</span>
+                  <Input id="calc-formula" value={formula} onChange={(e) => { setFormula(e.target.value); setTryOut(null); }} className="font-mono" />
+                  <span className="mt-1.5 flex flex-wrap gap-1.5">
+                    {FORMULA_EXAMPLES.map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        onClick={() => setFormula(f)}
+                        className="rounded border border-border bg-muted px-2 py-0.5 font-mono text-[12px] text-foreground hover:bg-muted-hover"
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </span>
+                  {formulaError && <span className="mt-1 block text-danger">{formulaError}</span>}
+                </label>
+
+                <div className="grid gap-2 rounded-md border border-border bg-muted/40 p-4 text-[13px]">
+                  <span className="flex items-center gap-2 font-semibold text-foreground">
+                    <FlaskConical className="h-4 w-4" /> 4. Try it with example numbers
+                  </span>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {inputs.map((inp) => (
+                      <label key={inp.letter} className="flex items-center gap-1.5">
+                        <span className="font-mono font-bold">{inp.letter} =</span>
+                        <Input
+                          id={`calc-try-${inp.letter}`}
+                          className="h-[34px] w-24"
+                          inputMode="decimal"
+                          value={tryValues[inp.letter] ?? ""}
+                          onChange={(e) => setTryValues((v) => ({ ...v, [inp.letter]: e.target.value }))}
+                        />
+                      </label>
+                    ))}
+                    <Button variant="ghost" size="sm" onClick={() => void tryIt()} disabled={trying || !!formulaError}>
+                      {trying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Try
+                    </Button>
+                    {tryOut != null && (
+                      <span className="text-[14px]">
+                        Result: <span className="font-mono font-bold text-foreground">{tryOut}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <Button onClick={addToList} disabled={!!formulaError}>
+                    <Plus className="h-4 w-4" /> Add calculation
+                  </Button>
+                </div>
+              </>
+            )}
           </Card>
 
-          {/* ── save ── */}
-          <div className="mb-8 flex items-center gap-3">
-            <Button onClick={() => void save(false)} disabled={saving || !dirty}>
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-              Save
-            </Button>
-            <Button variant="ghost" onClick={() => void save(true)} disabled={saving || !dirty}>
-              <Rocket className="mr-2 h-4 w-4" />
-              Save &amp; regenerate
-            </Button>
-            <span className="text-[12px] text-muted-foreground">
-              {dirty ? "Unsaved changes." : "All changes saved."} Regenerate rebuilds
-              the bundle so the rules deploy to the box.
-            </span>
-          </div>
+          {/* save + apply */}
+          <Card className="mb-8 grid gap-3 px-7 py-5 text-[13px]">
+            <div className="flex flex-wrap items-center gap-3">
+              <Button onClick={() => void save()} disabled={saving || !dirty}>
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
+              </Button>
+              <Button variant="ghost" onClick={() => void applyNow()} disabled={applying || dirty}>
+                {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Apply now
+              </Button>
+              <span className="text-muted-foreground">{dirty ? "You have unsaved changes." : "Everything is saved."}</span>
+            </div>
+            <p className="text-muted-foreground">
+              <b className="text-foreground">Save</b> stores your calculations. <b className="text-foreground">Apply now</b>{" "}
+              restarts the data collector so it starts using them (takes a few seconds; no data is lost). New results
+              appear from that moment on — past data is not changed.
+            </p>
+          </Card>
         </>
       )}
     </div>

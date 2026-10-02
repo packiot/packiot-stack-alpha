@@ -295,3 +295,16 @@ func TestDowntimeEventDecodesEpochMillis(t *testing.T) {
 		t.Errorf("decoded wrong: %+v", p)
 	}
 }
+
+// A replicated base PLC event is the PLC's own event: forced_creation_system
+// must be false (legacy parity). true made the operator's PO downtime — which
+// sums only fcs=false events — read 0 on every CPACK line. Human-created rows
+// (manual events, split segments) stay true.
+func TestBaseEventIsNotForcedCreation(t *testing.T) {
+	if !strings.Contains(sqlInsertEquipmentEvent, "VALUES ($1,$2,$3,$4,$5,false,now())") {
+		t.Fatalf("base PLC event must insert forced_creation_system=false: %s", sqlInsertEquipmentEvent)
+	}
+	if !strings.Contains(sqlInsertManualEvent, ",true,now())") {
+		t.Fatalf("manual events must stay forced_creation_system=true: %s", sqlInsertManualEvent)
+	}
+}

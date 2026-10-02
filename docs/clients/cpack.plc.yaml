@@ -94,7 +94,7 @@ plc:
       - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
       - { name: PTH_COUNT_A, address: "DB1,DINT8" }
       - { name: PTH_COUNT_B, address: "DB1,DINT12" }
-      - { name: "C-PACK/SC/LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit***TRIG_C=O", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit***TRIG_C=O", address: "DB1,INT32" }   # UNSIGNED 16-bit counter (wraps 65535→0); INT read is signed — legacy accumulates across wraps, new stack reinterprets in the cloud Calc
       - { name: "C-PACK/SC/LINHAS/L8/TCX/Admin/ProdProcessedCount/221/Unit***TRIG_C=I", address: "DB1,DINT16" }
       - { name: "C-PACK/SC/LINHAS/L8/TEXA/Admin/ProdProcessedCount/222/Unit***TRIG_C=I", address: "DB1,DINT20" }
       - { name: VERSION, address: "DB1,INT48" }
@@ -119,7 +119,7 @@ plc:
       - { name: PTH_COUNT_OK, address: "DB1,DINT4" }
       - { name: PTH_COUNT_A, address: "DB1,DINT8" }
       - { name: PTH_COUNT_B, address: "DB1,DINT12" }
-      - { name: "C-PACK/SC/LINHAS/L10/PTH/Admin/ProdConsumedCount/565/Unit***TRIG_C=O", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L10/PTH/Admin/ProdConsumedCount/565/Unit***TRIG_C=O", address: "DB1,INT32" }   # UNSIGNED 16-bit counter (wraps 65535→0); INT read is signed — legacy accumulates across wraps, new stack reinterprets in the cloud Calc
       - { name: "C-PACK/SC/LINHAS/L10/TCX/Admin/ProdProcessedCount/566/Unit***TRIG_C=I", address: "DB1,DINT16" }
       - { name: "C-PACK/SC/LINHAS/L10/TEXA/Admin/ProdProcessedCount/567/Unit***TRIG_C=I", address: "DB1,DINT20" }
       - { name: VERSION, address: "DB1,INT48" }
@@ -139,7 +139,7 @@ plc:
       - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
       - { name: PTH_COUNT_A, address: "DB1,DINT12" }
       - { name: PTH_COUNT_B, address: "DB1,DINT16" }
-      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/8/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L4/PTH/Admin/ProdProcessedCount/8/Unit***TRIG_CS", address: "DB1,INT32" }   # UNSIGNED 16-bit counter (wraps 65535→0); INT read is signed — legacy accumulates across wraps, new stack reinterprets in the cloud Calc
       - { name: "C-PACK/SC/LINHAS/L4/POLYTYPE/Admin/ProdConsumedCount/7/Unit***TRIG_C=O", address: "DB1,DINT20" }
       - { name: "C-PACK/SC/LINHAS/L4/RMH/Admin/ProdConsumedCount/9/Unit***TRIG_C=O", address: "DB1,DINT24" }
       - { name: "C-PACK/SC/LINHAS/L4/TEXA/Admin/ProdProcessedCount/10/Unit***TRIG_C=I", address: "DB1,DINT28" }
@@ -163,7 +163,7 @@ plc:
       - { name: PTH_COUNT_SUM, address: "DB1,DINT8" }
       - { name: PTH_COUNT_A, address: "DB1,DINT12" }
       - { name: PTH_COUNT_B, address: "DB1,DINT16" }
-      - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit***TRIG_CS", address: "DB1,INT32" }
+      - { name: "C-PACK/SC/LINHAS/L3/PTH/Admin/ProdProcessedCount/81/Unit***TRIG_CS", address: "DB1,INT32" }   # UNSIGNED 16-bit counter (wraps 65535→0); INT read is signed — legacy accumulates across wraps, new stack reinterprets in the cloud Calc
       - { name: "C-PACK/SC/LINHAS/L3/POLYTYPE/Admin/ProdConsumedCount/82/Unit***TRIG_C=O", address: "DB1,DINT20" }
       - { name: "C-PACK/SC/LINHAS/L3/RMH/Admin/ProdConsumedCount/79/Unit***TRIG_C=O", address: "DB1,DINT24" }
       - { name: "C-PACK/SC/LINHAS/L3/TEXA/Admin/ProdConsumedCount/80/Unit***TRIG_C=O", address: "DB1,DINT28" }  # 2026-08-26 reverted #909 flip (was ProdProcessedCount/80)

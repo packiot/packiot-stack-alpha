@@ -163,23 +163,25 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 		return r
 	}
 
-	// (a) eq81 clamped to bounds. GROSS is NOT lowered (comparator identity column),
-	// but NET (200) IS lowered to gross (100) — the net≤gross invariant. scrap→0.
+	// (a) eq81 under the 2026-09-29 policy ("no clamps distorting data"): only the
+	// IMPOSSIBLE is corrected — availability above 1 and a negative duration. P, Q and
+	// OEE above 1, net above gross and a negative scrap are stored as measured
+	// (RunDQScan's detect-only rules flag the absurd OEE 8142 separately).
 	r81 := get(81)
-	if r81.oee != 1 || r81.oeeA != 1 || r81.oeeP != 1 || r81.oeeQ != 1 {
-		t.Errorf("eq81 oee factors not clamped to 1: %+v", r81)
+	if r81.oeeA != 1 {
+		t.Errorf("eq81 oee_a = %v, want 1 (availability keeps [0,1])", r81.oeeA)
+	}
+	if r81.oee != 8142 || r81.oeeP != 3 || r81.oeeQ != 2 {
+		t.Errorf("eq81 oee/oee_p/oee_q must be stored uncapped: %+v", r81)
 	}
 	if r81.running != 0 {
-		t.Errorf("eq81 running_time = %v, want 0 (negative clamped)", r81.running)
+		t.Errorf("eq81 running_time = %v, want 0 (negative duration floored)", r81.running)
 	}
-	if r81.scrap != 0 {
-		t.Errorf("eq81 scrap = %v, want 0 (GREATEST(scrap,0))", r81.scrap)
+	if r81.scrap != -100 {
+		t.Errorf("eq81 scrap = %v, want -100 (scrap is signed: transit)", r81.scrap)
 	}
-	if r81.gross != 100 {
-		t.Errorf("eq81 gross = %v, want 100 — clamp must NOT lower gross (comparator column)", r81.gross)
-	}
-	if r81.net != 100 {
-		t.Errorf("eq81 net = %v, want 100 — net must be lowered to gross (net≤gross invariant)", r81.net)
+	if r81.gross != 100 || r81.net != 200 {
+		t.Errorf("eq81 gross/net = %v/%v, want 100/200 — neither is ever lowered", r81.gross, r81.net)
 	}
 
 	// (b) eq82 byte-identical.
@@ -193,18 +195,12 @@ func TestGoldenSilverInvariantClamp(t *testing.T) {
 		t.Errorf("eq83 oee = %v, want NULL preserved (not-metered row must not be clamped)", r83.oee)
 	}
 
-	// (d) DQ events: exactly the six INVARIANT_CLAMPED_* rules for eq81, none for
-	// 82/83. net>gross (200>100) now fires its OWN rule (NET_GT_GROSS, observed =
-	// pre-clamp net = 200) AND surfaces as OEE_Q clamped to 1 (net/gross=2 → 1);
-	// scrap starts negative (-100) → caught by the NEGATIVE rule, whose observed is
-	// the most-negative of {scrap=-100, running_time=-3600} = -3600.
+	// (d) DQ events: exactly the two clamps that still exist, for eq81 only —
+	// OEE_A (1.5 → 1) and NEGATIVE (observed = most-negative of the floored set:
+	// running_time = -3600; scrap is no longer in that set).
 	wantRules := map[string]float64{
-		"INVARIANT_CLAMPED_OEE":          8142,
-		"INVARIANT_CLAMPED_OEE_A":        1.5,
-		"INVARIANT_CLAMPED_OEE_P":        3.0,
-		"INVARIANT_CLAMPED_OEE_Q":        2.0,
-		"INVARIANT_CLAMPED_NEGATIVE":     -3600,
-		"INVARIANT_CLAMPED_NET_GT_GROSS": 200,
+		"INVARIANT_CLAMPED_OEE_A":    1.5,
+		"INVARIANT_CLAMPED_NEGATIVE": -3600,
 	}
 	rows, err := pool.Query(ctx, `
 		SELECT id_equipment, rule, observed_value, severity

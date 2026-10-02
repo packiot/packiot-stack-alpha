@@ -1,30 +1,15 @@
 # ── App EC2 SG ────────────────────────────────────────────────────────────────
 # HTTP/HTTPS open to internet — Nginx basic auth is the access control layer.
-# SSH kept open for emergency ops access (key pair only, no password auth).
+# No SSH ingress — access via SSM Session Manager (see below).
 
 resource "aws_security_group" "app" {
   name   = "packiot-staging-app"
   vpc_id = aws_vpc.staging.id
 
-  # SSH is intentionally world-open as codified emergency access, and it is
-  # hardened at the sshd layer (password auth OFF, key-only). Kept as-is.
-  #
-  # RECOMMENDATION (infra audit 2026-08-23, not applied — behaviour change):
-  # if the team runs an ops bastion / VPN with a stable egress, tighten this to
-  # that CIDR (or an AWS-managed prefix list) instead of 0.0.0.0/0. Day-to-day
-  # box access already goes through SSM Session Manager (no inbound :22 needed),
-  # so restricting :22 to an ops CIDR loses nothing operationally while removing
-  # the internet-wide brute-force surface. Suggested shape (default preserves
-  # today's behaviour):
-  #   variable "ops_ssh_cidrs" { type = list(string)  default = ["0.0.0.0/0"] }
-  #   cidr_blocks = var.ops_ssh_cidrs
-  ingress {
-    description = "SSH - emergency/debug access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # NO SSH (closed 2026-09-24). Box access = SSM Session Manager only (no inbound port;
+  # IAM-authorized, CloudTrail-audited). Evidence at closing: 0 accepted SSH logins in 30
+  # days vs 4,429 failed/brute-force attempts — :22 served only attackers. Break-glass if
+  # SSM itself is down: add a TEMPORARY rule for your /32, never 0.0.0.0/0.
 
   ingress {
     description = "HTTP (redirected to HTTPS by Nginx)"
@@ -85,6 +70,26 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["179.162.112.58/32"]
   }
 
+  # DB-box observability push (DB box → app-box Alloy gateway). The DB box accepts
+  # no inbound; it PUSHES. 3101 = Loki log relay (added live earlier, codified here
+  # 2026-09-23 — it was missing, so an apply would have REVOKED it and silently cut
+  # DB slow-query logs). 3102 = Prometheus remote-write relay for DB host metrics
+  # (disk/cpu/mem; T0 grain-tiered retention). Source = DB SG only.
+  ingress {
+    description     = "Alloy Loki-push from DB-box log agent (staging observability)"
+    from_port       = 3101
+    to_port         = 3101
+    protocol        = "tcp"
+    security_groups = [aws_security_group.db.id]
+  }
+  ingress {
+    description     = "Alloy Prometheus remote-write from DB-box agent (host metrics)"
+    from_port       = 3102
+    to_port         = 3102
+    protocol        = "tcp"
+    security_groups = [aws_security_group.db.id]
+  }
+
   # Shared multi-tenant ingest front-door (ingest.staging:8449) → sparkplug-agent-shared.
   # NOT world-open: admits each onboarded client's box egress /32. As clients are
   # added, append their /32 here (bispharma SP = 200.153.25.2). A key-only public
@@ -116,13 +121,11 @@ resource "aws_security_group" "db" {
   name   = "packiot-staging-db"
   vpc_id = aws_vpc.staging.id
 
-  ingress {
-    description     = "PostgreSQL from App EC2 only"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
-  }
+  # PostgreSQL-from-app ingress is a STANDALONE rule below (not inline): the app SG
+  # now references this SG (DB-box observability push, 3101/3102), and two inline
+  # cross-references form a Terraform dependency cycle. With NO inline ingress
+  # blocks here, this SG's ingress is not authoritative, so the standalone rule is
+  # never revoked. (Egress stays inline.)
 
   egress {
     description = "OS updates and SSM via fck-nat"
@@ -133,4 +136,21 @@ resource "aws_security_group" "db" {
   }
 
   tags = { Name = "packiot-staging-db-sg" }
+}
+
+# PostgreSQL from the App EC2 only — standalone to break the app<->db SG cycle
+# (see aws_security_group.db). Adopts the EXISTING live rule via import (no
+# revoke/recreate, no connection blip) on the next apply.
+import {
+  to = aws_vpc_security_group_ingress_rule.db_postgres_from_app
+  id = "sgr-032604d5e315a1ebf"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_postgres_from_app" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "PostgreSQL from App EC2 only"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.app.id
 }

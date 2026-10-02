@@ -148,9 +148,22 @@ var endpoints = []endpoint{
 		class: routeGlobalRef, args: nil},
 	// downtime-reasons: equipments already carries id_enterprise; add the
 	// tenant predicate and move the topic vector to $2. Same projected columns.
+	// LINE-ONLY reasons: a member of a downtime_from_lead_machine line gets the
+	// LINE's tree (same rule as the equipment-downtime-reasons dataset).
+	// LINE topics: a line's own register row has id_unit NULL (id_unit = id_equipment
+	// holds for machines only), so the machine-only join dropped every line. The
+	// operator asks for its LINE topic (+ children) and prefers the row whose topic is
+	// the line's, so on lines that keep the tree on the line and are not
+	// downtime_from_lead_machine (CPACK: 20 line trees, 41 of 42 members NULL) it fell
+	// through to a member's empty tree — "No downtime reasons configured".
 	{path: "/v1/downtime-reasons",
-		sql: `SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
-	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment AND p.id_unit = e.id_equipment
+		sql: `SELECT e.id_equipment, r.downtime_reasons, e.scrap_reasons, p.packml_topic
+	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment
+	        AND (p.id_unit = e.id_equipment OR (p.id_unit IS NULL AND e.tp_equipment = 3))
+	   LEFT JOIN equipments l ON l.id_equipment = e.id_parentequipment
+	        AND l.id_enterprise = e.id_enterprise AND l.tp_equipment = 3
+	        AND l.downtime_from_lead_machine AND l.active
+	   JOIN equipments r ON r.id_equipment = COALESCE(l.id_equipment, e.id_equipment)
 	  WHERE p.packml_topic = ANY($2) AND p.active AND e.id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 }
@@ -250,6 +263,9 @@ func main() {
 	ensureSchema(pool)                     // startup migrations (P2 screen-config table)
 	registerQueryAPI(mux, pool, qcache)    // ADR-0015 P1-P3 + ADR-0035 cache-aside
 	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
+
+	// T2 honest windows: dataset coverage floors from ops.retention_policy (fail-open).
+	go covIdx.run(context.Background(), pool, logger)
 	// T6 (#176): optional reach into the hot+cold historian gateway for long
 	// time-range reads past the 90-day hot window. nil-safe — histPool is nil (and
 	// the endpoint 503s) unless HIST_GW_PASSWORD is set and the gateway answers.

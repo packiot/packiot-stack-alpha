@@ -1,0 +1,12 @@
+-- Fix: serving.production_orders(...) failed on EVERY call —
+--   "structure of query does not match function result type:
+--    Returned type bigint does not match expected type integer in column 3"
+-- Root cause: t281 (gold-poid-int8-fk) widened production_orders.id_production_order
+-- to bigint, and the sibling row types serving.events_timeline_row /
+-- serving.production_orders_with_runtimes_row were moved to bigint, but
+-- serving.production_orders_row was missed. PL/pgSQL RETURN QUERY checks the
+-- row shape strictly, so the function errored for any window.
+-- Blast radius: read-api dataset `production-orders-runtimes` (no current front4 /
+-- operator caller — front4 Orders uses production-orders-with-runtimes, unaffected).
+-- Found by T1 serving-function sweep, 2026-09-24.
+ALTER TYPE serving.production_orders_row ALTER ATTRIBUTE id_production_order TYPE bigint;

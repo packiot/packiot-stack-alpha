@@ -60,6 +60,23 @@ type SparkplugHandler struct {
 	logger          *slog.Logger
 }
 
+// minPlausibleTsMs — metric timestamps before this (2015-01-01 UTC) are treated as
+// missing: no Packiot device predates it, so anything earlier is an unset device clock.
+const minPlausibleTsMs int64 = 1420070400000
+
+// normalizeMetricTimestamps applies the fallback chain per metric: own timestamp →
+// payload timestamp → now, where "missing" = below minPlausibleTsMs (0 included).
+func normalizeMetricTimestamps(p *sparkplug.Payload, nowMs int64) {
+	for i := range p.Metrics {
+		if p.Metrics[i].Timestamp < minPlausibleTsMs {
+			p.Metrics[i].Timestamp = p.Timestamp
+		}
+		if p.Metrics[i].Timestamp < minPlausibleTsMs {
+			p.Metrics[i].Timestamp = nowMs
+		}
+	}
+}
+
 func NewSparkplugHandler(
 	pool *pgxpool.Pool,
 	analyticsPool *pgxpool.Pool,
@@ -173,15 +190,12 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// without their own timestamp (only payload-level required). Without
 	// this, writers' time.UnixMilli(0).Truncate(...) lands rows at
 	// 1970-01-01. Mirrors Node-RED's fallback chain.
-	nowMs := time.Now().UnixMilli()
-	for i := range p.Metrics {
-		if p.Metrics[i].Timestamp == 0 {
-			p.Metrics[i].Timestamp = p.Timestamp
-		}
-		if p.Metrics[i].Timestamp == 0 {
-			p.Metrics[i].Timestamp = nowMs
-		}
-	}
+	//
+	// "Missing" includes IMPLAUSIBLY OLD (< minPlausibleTsMs): a device that boots
+	// with its clock unset sends epoch-relative stamps (the historian archive held a
+	// year=1970 partition of exactly that — 6 quality-only heartbeats at
+	// 1970-01-01 00:09:16, P10 2026-09-24). Non-zero, so the ==0 check let them through.
+	normalizeMetricTimestamps(p, time.Now().UnixMilli())
 
 	// #252: the F2 shadow-comparison leg is RETIRED. Producers emit only
 	// source_type="refactored" on every env (SHADOW_EMIT_GO=false,
@@ -435,10 +449,12 @@ func clampGrainSuffix(kind sparkplug.MetricKind) string {
 //     event mint, po_parameter, uns current-metrics).
 //   - bronze → the ADR-0036 immutable raw append (equipment_values_raw /
 //     equipment_events_raw), dormant unless BRONZE_RAW_APPEND.
-//   - ev     → everything that STAYS in public: data_quality_event (clamp DQ
-//     side-write) and the PO control writes (production_orders dimension +
-//     production_orders_runtime, which is served through its gold shim view).
-//     ev is also the schema the shadow-swallow check keys on.
+//   - ev     → the residual flow schema: data_quality_event (clamp DQ
+//     side-write) and pocontrol's manual-justify equipment_events_man writes.
+//     Both tables live in SILVER on packiot_analytics (their public shims were
+//     dropped ~2026-09-13), matching flows.Dest.EvSchema = "silver" for the same
+//     dest. With ev = "public" both writes failed silently (clamp DQ is
+//     best-effort/swallowed): no INVARIANT_CLAMPED_INCREMENT row after 09-13.
 type route struct {
 	pool   *pgxpool.Pool
 	silver string
@@ -484,7 +500,7 @@ func (h *SparkplugHandler) routeForSource(sourceType string) route {
 	switch sourceType {
 	case "refactored":
 		if h.analyticsPool != nil {
-			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "public", auth: "identity", grain: "silver", ref: "core", gold: "gold"}
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "silver", auth: "identity", grain: "silver", ref: "core", gold: "gold"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))

@@ -1,9 +1,13 @@
 # Superset "database" = the historian-gateway (pg_duckdb) connection.
 # This is the HOT+COLD union gateway (services/historian-gateway/), SEPARATE from
-# the packiot_analytics bi.* connection. Consumers query the single relation
-# `ev_all` (live timescaledb via postgres_fdw UNION S3 Parquet historian) with
-# plain SQL; old timestamps transparently resolve to S3 and prune to the relevant
-# partition file.
+# the packiot_analytics bi.* connection. Consumers query the union relations
+# silver.equipment_values / silver.equipment_events / silver.production_orders and the
+# cold-only gold.equipment_oee_shift (ADR-0057 medallion names) with plain SQL; old
+# timestamps transparently resolve to S3 and prune to the relevant partition file.
+#
+# LOGIN (T3): historian_svc — NOSUPERUSER service identity (cold via
+# duckdb.postgres_role=historian_readers; hot via FDW → remote histgw_ro), NOT the
+# gateway superuser `postgres`. Password injected from HIST_GW_SVC_PASSWORD.
 #
 # ── LIVE-FILL REQUIRED (password) ─────────────────────────────────────────────
 # sqlalchemy_uri password is a PLACEHOLDER (YYYYYYYYYYYY — DISTINCT from the
@@ -14,7 +18,7 @@
 #
 # HOST: in-stack service name `hist-gateway` (compose.historian-gateway.yml,
 # container_name: hist-gateway, on stack_packiot-net). Superset shares that network.
-# dbname `postgres` (the gateway's default DB where ev_all / hist / ev_union_boundary live).
+# dbname `packiot_historian` (renamed from `postgres` in #274).
 #
 # ── RLS IS THE SOLE ENFORCER HERE (read this) ─────────────────────────────────
 # Unlike packiot_analytics, this gateway has NO Postgres RLS co-enforcer: pg_duckdb
@@ -30,7 +34,7 @@
 #     clause, no dataset scope, applies to ev_all's id_enterprise column) or an
 #     authoring role carrying the per-tenant base-RLS rule (see the dataset asset).
 database_name: historian_union
-sqlalchemy_uri: postgresql+psycopg2://postgres:YYYYYYYYYYYY@hist-gateway:5432/packiot_historian
+sqlalchemy_uri: postgresql+psycopg2://historian_svc:YYYYYYYYYYYY@hist-gateway:5432/packiot_historian
 cache_timeout: null
 expose_in_sqllab: false
 allow_run_async: true

@@ -219,9 +219,16 @@ const sqlCloseWindowsForEquipment = `UPDATE gold.production_orders_runtime r
 	   SET runtime_timerange = tstzrange(lower(runtime_timerange), $2), recalc_needed = true
 	 WHERE r.id_equipment = $1 AND upper(runtime_timerange) IS NULL AND lower(runtime_timerange) < $2`
 
+// sqlSupersedeRunningPO finishes any OTHER PO still running on the equipment when
+// a new one opens there. It used to set status = 3 only, leaving ts_end NULL and
+// the header un-flagged: a finished PO with no end (PO 7627570 on L5, "status 3,
+// ts_end NULL", and every order-replaced ghost). Its window was just closed at $4
+// by sqlCloseWindowsForEquipment, so the PO ends there too. The ts_start guard
+// keeps the production_orders_ts_start_ts_end check (an out-of-order replay).
 const sqlSupersedeRunningPO = `UPDATE core.production_orders
-	   SET status = 3, last_update = now()
-	 WHERE id_equipment = $1 AND status = 2 AND NOT (id_enterprise = $2 AND id_order = $3)`
+	   SET status = 3, ts_end = $4, recalc_needed = true, last_update = now()
+	 WHERE id_equipment = $1 AND status = 2 AND NOT (id_enterprise = $2 AND id_order = $3)
+	   AND (ts_start IS NULL OR ts_start <= $4)`
 
 // sqlOpenWindow inserts a [ts, ∞) runtime window for the PO, but ONLY when no
 // existing window for the SAME EQUIPMENT (open OR closed) overlaps [ts, ∞).
@@ -263,7 +270,7 @@ func openRuntimeWindow(ctx context.Context, dst *pgxpool.Pool, ent int, idOrder 
 	if _, err := dst.Exec(ctx, sqlCloseWindowsForEquipment, idEquipment, ts); err != nil {
 		return failOpenIfMissing(err, "production_orders_runtime", userLogID, logger)
 	}
-	if _, err := dst.Exec(ctx, sqlSupersedeRunningPO, idEquipment, ent, idOrder); err != nil {
+	if _, err := dst.Exec(ctx, sqlSupersedeRunningPO, idEquipment, ent, idOrder, ts); err != nil {
 		return failOpenIfMissing(err, "production_orders", userLogID, logger)
 	}
 	_, err := dst.Exec(ctx, sqlOpenWindow, ent, idOrder, ts)
@@ -273,6 +280,58 @@ func openRuntimeWindow(ctx context.Context, dst *pgxpool.Pool, ent int, idOrder 
 func closeRuntimeWindow(ctx context.Context, dst *pgxpool.Pool, ent int, idOrder int64, ts time.Time, userLogID int64, logger *slog.Logger) error {
 	_, err := dst.Exec(ctx, sqlCloseWindowsForPO, ent, idOrder, ts)
 	return failOpenIfMissing(err, "production_orders_runtime", userLogID, logger)
+}
+
+// ─── starting a PO that already exists (2026-09-29) ───
+//
+// Legacy starts an EXISTING PO in three ways the replay used to ignore:
+//   - order-changed with shouldCreatePo=false, shouldOpenNewPo=true: the operator
+//     finishes the running PO and starts a PRE-EXISTING one (ERP-planned, or a
+//     paused one being resumed). OrderChanged returned before opening it, so the
+//     PO never got status 2, a ts_start or a runtime window: it later closed with
+//     no window (CPACK 896880/896933/896862/896488…: runtime net 0 while the line
+//     produced) and every resume segment of a paused PO was lost (FLEXO 894815,
+//     BREYER2 896879).
+//   - order-changed / order-created-started with shouldCreatePo=true for an id_order
+//     the twin already holds as AVAILABLE (status 1, never ran): the insert is
+//     ON CONFLICT DO NOTHING, so the row stayed status 1 on its OLD equipment and
+//     the window opened on that old equipment (PO 895874: L10 in legacy, L8 here).
+//   - order-replaced (OrderReplaced below).
+
+// sqlMoveAvailablePO re-homes a PO that never ran (status 1, no runtime rows) onto
+// the equipment it is being started on. A PO that has run is never moved.
+const sqlMoveAvailablePO = `UPDATE core.production_orders po
+	   SET id_equipment = $1, id_site = $2, id_area = $3, last_update = now()
+	 WHERE po.id_enterprise = $4 AND po.id_order = $5 AND po.status = 1
+	   AND po.id_equipment IS DISTINCT FROM $1
+	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime r
+	                    WHERE r.id_production_order = po.id_production_order)`
+
+// sqlStartExistingPO marks the PO running from $1. ts_start keeps the FIRST start
+// (a resume does not move it — legacy keeps the original start, e.g. FLEXO 894815);
+// ts_end is cleared. Monotonic: a start older than the PO's recorded end (an
+// out-of-order or DLQ-retried replay) is a no-op, so it can never reopen a PO that
+// finished later.
+const sqlStartExistingPO = `UPDATE core.production_orders
+	   SET status = 2, ts_start = COALESCE(ts_start, $1), ts_end = NULL,
+	       recalc_needed = true, last_update = now()
+	 WHERE id_enterprise = $2 AND id_order = $3
+	   AND (ts_end IS NULL OR ts_end <= $1)
+	   AND (ts_start IS NULL OR ts_start <= $1)`
+
+// startExistingPO: move-if-never-ran, open the runtime window (which closes and
+// supersedes whatever else runs on the equipment — so the running-PO unique index
+// holds), then mark the PO running.
+func startExistingPO(ctx context.Context, dst *pgxpool.Pool, eq StagingEquip, ent int, idOrder int64, ts time.Time, userLogID int64, logger *slog.Logger) error {
+	if _, err := dst.Exec(ctx, sqlMoveAvailablePO, eq.IDEquipment, eq.IDSite, eq.IDArea, ent, idOrder); err != nil {
+		if e := failOpenIfMissing(err, "production_orders", userLogID, logger); e != nil {
+			return e
+		}
+	}
+	if err := openRuntimeWindow(ctx, dst, ent, idOrder, eq.IDEquipment, ts, userLogID, logger); err != nil {
+		return err
+	}
+	return execExpectingRows(ctx, dst, "production_orders", userLogID, logger, sqlStartExistingPO, ts, ent, idOrder)
 }
 
 // ─── production_orders SQL (staging-keyed) ───
@@ -291,9 +350,20 @@ const sqlInsertPORunning = `INSERT INTO core.production_orders (
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,2,$9)
 	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
 
+// order-started of a paused PO is a RESUME: keep its first start, clear its end
+// (was: ts_start overwritten with the resume time, ts_end left at the pause).
+// Monotonic like sqlStartExistingPO.
 const sqlUpdatePOStart = `UPDATE core.production_orders
-	   SET status = 2, ts_start = $1, last_update = now()
-	 WHERE id_enterprise = $2 AND id_order = $3`
+	   SET status = 2, ts_start = COALESCE(ts_start, $1), ts_end = NULL, recalc_needed = true, last_update = now()
+	 WHERE id_enterprise = $2 AND id_order = $3
+	   AND (ts_end IS NULL OR ts_end <= $1)
+	   AND (ts_start IS NULL OR ts_start <= $1)`
+
+// sqlPOEquipment reads the PO's own current equipment (set at create). Used to open
+// the runtime window on a start replay without depending on the start payload's
+// legacy equipment resolving — see OrderStarted.
+const sqlPOEquipment = `SELECT COALESCE(id_equipment, 0) FROM core.production_orders
+	 WHERE id_enterprise = $1 AND id_order = $2`
 
 // sqlUpdatePOStop closes a PO at ts_end=$2. The `ts_start IS NULL OR
 // ts_start <= $2` guard prevents writing an inverted [ts_start, ts_end] range
@@ -302,10 +372,18 @@ const sqlUpdatePOStart = `UPDATE core.production_orders
 // the event. When ts_end would precede ts_start the UPDATE matches zero rows
 // (an observable no-op via execExpectingRows); a correctly-ordered stop, or
 // the PO reconciler, closes it later.
+//
+// The `ts_end IS NULL OR ts_end <= $2` guard (2026-09-29) makes a close MONOTONIC:
+// it never moves a PO's end backwards. Without it a close replayed late — the DLQ
+// retrier re-drives old rows after newer ones applied — overwrote a later finish:
+// FLEXO 896297 was finished on 09-11 22:01, then its 09-05 pause (DLQ'd on the
+// window-overlap bug, retried on 09-20) set it back to status 4 / ts_end 09-05.
+// Also flags the header: the stop changes what recalc must sum.
 const sqlUpdatePOStop = `UPDATE core.production_orders
-	   SET status = $1, ts_end = $2, production_real = $3, last_update = now()
+	   SET status = $1, ts_end = $2, production_real = $3, recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $4 AND id_order = $5
-	   AND (ts_start IS NULL OR ts_start <= $2)`
+	   AND (ts_start IS NULL OR ts_start <= $2)
+	   AND (ts_end IS NULL OR ts_end <= $2)`
 
 const sqlUpdatePOTsStart = `UPDATE core.production_orders
 	   SET ts_start = $1, last_update = now()
@@ -318,10 +396,12 @@ const sqlUpdatePORecalc = `UPDATE core.production_orders
 // sqlClosePOChanged closes the OLD PO during an order-changed step (the bulk of
 // the DLQ'd batch). Same inverted-range guard as sqlUpdatePOStop: never write
 // a ts_end that precedes ts_start under out-of-order replay.
+// Monotonic like sqlUpdatePOStop (never moves the end backwards).
 const sqlClosePOChanged = `UPDATE core.production_orders
 	   SET status = $1, ts_end = $2, production_final = $3, recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $4 AND id_order = $5
-	   AND (ts_start IS NULL OR ts_start <= $2)`
+	   AND (ts_start IS NULL OR ts_start <= $2)
+	   AND (ts_end IS NULL OR ts_end <= $2)`
 
 // ─── equipment_events / _man SQL (staging-keyed) ───
 
@@ -329,10 +409,19 @@ const sqlClosePOChanged = `UPDATE core.production_orders
 // with no default on staging, so we synthesise a deterministic value from
 // (ts_ms, id_equipment) — it carries no cross-flow meaning (no unique index
 // on it); the natural key is (id_equipment, ts_event).
+//
+// forced_creation_system=FALSE: this is the PLC's own event. In legacy the flag
+// is false for PLC events and true only for rows a person created (manual
+// events, split segments, edits) — 41 of 4,660 CPACK events over 3 days.
+// Writing true here made every replicated CPACK event look human-created, and
+// the operator's PO downtime (serving.v_operator_po_details_3, which sums only
+// fcs=false events, like legacy) read 0 on every line. CPACK equipment is
+// status_type 0 and outside the wide-row list, so deriver.go's correct pass
+// (which deletes unmatched fcs=false rows in ITS scope) never touches these.
 const sqlInsertEquipmentEvent = `INSERT INTO silver.equipment_events (
 		id_equipment, ts_event, status, id_equipment_event, id_enterprise,
 		forced_creation_system, last_update)
-	VALUES ($1,$2,$3,$4,$5,true,now())
+	VALUES ($1,$2,$3,$4,$5,false,now())
 	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
 const sqlUpdateEventClassification = `UPDATE silver.equipment_events
@@ -341,10 +430,13 @@ const sqlUpdateEventClassification = `UPDATE silver.equipment_events
 	       change_over = $7, idle = $8, planned_downtime = $9, last_update = now()
 	 WHERE id_equipment = $10 AND ts_event = $11`
 
-// equipment_events_man: id_equipment_event is a staging IDENTITY serial —
+// equipment_events_man lives in silver since #261 (t261e dropped the public
+// shim 2026-09-13; the old public.* name made these writes 42P01 → fail-open,
+// silently dropping every manual event after 2026-09-12). Schema-qualify.
+// id_equipment_event is a staging IDENTITY serial —
 // deliberately OMITTED from the column list (the coordinator's warning: do
 // not copy the legacy serial). Idempotent via the ts_event unique key.
-const sqlInsertManualEvent = `INSERT INTO public.equipment_events_man (
+const sqlInsertManualEvent = `INSERT INTO silver.equipment_events_man (
 		id_equipment, id_enterprise, ts_event, ts_end, duration,
 		cd_machine, cd_category, cd_subcategory, desc_category, desc_subcategory,
 		change_over, planned_downtime, txt_downtime_notes,
@@ -352,7 +444,7 @@ const sqlInsertManualEvent = `INSERT INTO public.equipment_events_man (
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,now())
 	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
-const sqlUpdateManualEvent = `UPDATE public.equipment_events_man
+const sqlUpdateManualEvent = `UPDATE silver.equipment_events_man
 	   SET ts_event = COALESCE($1, ts_event), ts_end = COALESCE($2, ts_end),
 	       cd_machine = $3, cd_category = $4, cd_subcategory = $5,
 	       desc_category = $6, desc_subcategory = $7,
@@ -809,7 +901,14 @@ func OrderCreated(logger *slog.Logger) Handler {
 		}
 		eq, ok := r.ResolveEquipment(p.IDEquipment)
 		if !ok {
-			return ErrSkip
+			// Not ErrSkip: a silent skip here DROPS THE WHOLE PO (the CPACK count
+			// gap — 491 legacy POs absent from current, hardproofed). The resolver
+			// is built once at startup, so a legacy equipment that maps later (e.g.
+			// its packml_register / staging twin arrives after replay reached this
+			// row) would be lost forever. Return an error → DLQ + bounded retry, so a
+			// transient mapping gap self-heals and a genuinely-unmappable equipment
+			// stays VISIBLE in the DLQ instead of vanishing.
+			return fmt.Errorf("order-created: unresolved equipment %d (mapping incomplete at replay) — DLQ for retry", p.IDEquipment)
 		}
 		_, err := dst.Exec(ctx, sqlInsertPOAvailable,
 			eq.IDEnterprise, eq.IDSite, eq.IDArea, eq.IDEquipment, p.IDOrder.Int64(),
@@ -842,7 +941,8 @@ func OrderCreatedStarted(logger *slog.Logger) Handler {
 		}
 		eq, ok := r.ResolveEquipment(p.IDEquipment)
 		if !ok {
-			return ErrSkip
+			// See OrderCreated: DLQ (retryable) rather than silently dropping the PO.
+			return fmt.Errorf("order-created-started: unresolved equipment %d (mapping incomplete at replay) — DLQ for retry", p.IDEquipment)
 		}
 		if err := openRuntimeWindow(ctx, dst, eq.IDEnterprise, p.IDOrder.Int64(), eq.IDEquipment, tsStart, u.ID, logger); err != nil {
 			return err
@@ -854,7 +954,9 @@ func OrderCreatedStarted(logger *slog.Logger) Handler {
 				return e
 			}
 		}
-		return openRuntimeWindow(ctx, dst, eq.IDEnterprise, p.IDOrder.Int64(), eq.IDEquipment, tsStart, u.ID, logger)
+		// The id_order may already exist (created earlier as AVAILABLE, possibly on
+		// another line): the insert above was then a no-op — start that row.
+		return startExistingPO(ctx, dst, eq, eq.IDEnterprise, p.IDOrder.Int64(), tsStart, u.ID, logger)
 	}
 }
 
@@ -888,10 +990,25 @@ func OrderStarted(logger *slog.Logger) Handler {
 		if err := execExpectingRows(ctx, dst, "production_orders", u.ID, logger, sqlUpdatePOStart, tsStart, ent, idOrder); err != nil {
 			return err
 		}
-		if eq, ok := r.ResolveEquipment(p.IDEquipment); ok {
-			return openRuntimeWindow(ctx, dst, ent, idOrder, eq.IDEquipment, tsStart, u.ID, logger)
+		// Open the runtime window using the PO's OWN equipment, resolved from the PO
+		// record — NOT gated on the start payload's legacy equipment resolving.
+		//
+		// The prior code skipped openRuntimeWindow (silent `return nil`) whenever
+		// r.ResolveEquipment(p.IDEquipment) missed, even though the PO already carries
+		// a valid current id_equipment (set at create) and sqlOpenWindow inserts using
+		// po.id_equipment anyway. That gate silently dropped the runtime window for
+		// ~58% of replayed CPACK POs: they got ts_start but no runtime row, so
+		// compute.go had nothing to attribute and the raw production (present in
+		// silver/historian) never reached any aggregate. Resolving from the PO removes
+		// the payload-equipment dependency entirely.
+		var idEquipment int
+		if err := dst.QueryRow(ctx, sqlPOEquipment, ent, idOrder).Scan(&idEquipment); err != nil {
+			return failOpenIfMissing(err, "production_orders_runtime", u.ID, logger)
 		}
-		return nil
+		if idEquipment == 0 {
+			return nil // started PO with no equipment on record — nothing to open
+		}
+		return openRuntimeWindow(ctx, dst, ent, idOrder, idEquipment, tsStart, u.ID, logger)
 	}
 }
 
@@ -991,11 +1108,16 @@ func OrderRecalc(logger *slog.Logger) Handler {
 }
 
 type orderChangedPayload struct {
-	IDOrder                     flexInt64 `json:"idOrder"`
-	StopType                    string    `json:"stopType"`
-	Timestamp                   string    `json:"timestamp"`
-	IDEquipment                 int       `json:"idEquipment"`
-	ShouldCreatePo              bool      `json:"shouldCreatePo"`
+	IDOrder         flexInt64 `json:"idOrder"`
+	StopType        string    `json:"stopType"`
+	Timestamp       string    `json:"timestamp"`
+	IDEquipment     int       `json:"idEquipment"`
+	ShouldCreatePo  bool      `json:"shouldCreatePo"`
+	ShouldOpenNewPo bool      `json:"shouldOpenNewPo"`
+	// IDProductionOrder: with shouldCreatePo=false it is the LEGACY surrogate of the
+	// pre-existing PO being started; with shouldCreatePo=true legacy puts the new
+	// id_order (as a string) here.
+	IDProductionOrder           flexInt64 `json:"idProductionOrder"`
 	OldIDProductionOrder        int64     `json:"oldIdProductionOrder"`
 	ProductionOrderQuantity     flexInt64 `json:"productionOrderQuantity"`
 	OldProductionOrderProdFinal flexInt64 `json:"oldProductionOrderProdFinal"`
@@ -1035,12 +1157,40 @@ func OrderChanged(logger *slog.Logger) Handler {
 			status, ts, p.OldProductionOrderProdFinal.Int64(), ent, oldOrder); err != nil {
 			return err
 		}
-		if !p.ShouldCreatePo || p.IDOrder == 0 {
-			return nil
+		if !p.ShouldCreatePo && !p.ShouldOpenNewPo {
+			return nil // finish/pause only
 		}
 		eq, ok := r.ResolveEquipment(p.IDEquipment)
 		if !ok {
 			return nil
+		}
+		if !p.ShouldCreatePo {
+			// Start a PRE-EXISTING PO (shouldOpenNewPo=true, shouldCreatePo=false):
+			// resolve it by its legacy surrogate; the payload's idOrder is the fallback.
+			newOrder := p.IDOrder.Int64()
+			if p.IDProductionOrder > 0 {
+				o, found, err := resolveLegacyOrder(ctx, legacy, p.IDProductionOrder.Int64(), r.srcEnterprise)
+				if err != nil {
+					return fmt.Errorf("resolve new legacy order: %w", err)
+				}
+				if found {
+					newOrder = o
+				}
+			}
+			if newOrder == 0 {
+				return nil
+			}
+			return startExistingPO(ctx, dst, eq, ent, newOrder, ts, u.ID, logger)
+		}
+		if p.IDOrder == 0 {
+			return nil
+		}
+		// A re-create of an id_order the twin holds as AVAILABLE on another line moves
+		// it here before the window opens (else the window opens on the old line).
+		if _, err := dst.Exec(ctx, sqlMoveAvailablePO, eq.IDEquipment, eq.IDSite, eq.IDArea, ent, p.IDOrder.Int64()); err != nil {
+			if e := failOpenIfMissing(err, "production_orders", u.ID, logger); e != nil {
+				return e
+			}
 		}
 		if err := openRuntimeWindow(ctx, dst, ent, p.IDOrder.Int64(), eq.IDEquipment, ts, u.ID, logger); err != nil {
 			return err
@@ -1051,6 +1201,135 @@ func OrderChanged(logger *slog.Logger) Handler {
 		if err := failOpenIfMissing(err, "production_orders", u.ID, logger); err != nil {
 			return err
 		}
-		return openRuntimeWindow(ctx, dst, ent, p.IDOrder.Int64(), eq.IDEquipment, ts, u.ID, logger)
+		return startExistingPO(ctx, dst, eq, ent, p.IDOrder.Int64(), ts, u.ID, logger)
+	}
+}
+
+// ─── order-replaced ───
+//
+// Legacy edge-api "replace": the operator re-assigns the runtime that is running on
+// an equipment to another PO — typically right after creating the PO with the
+// right number, to fix a mistyped one (CPACK: 897159→8971590, 89511→895711,
+// 896947→896974, 896799→896802), or to hand a runtime back (L8 895874→1676210).
+// The runtime row changes owner; the new PO takes that runtime's span (status 2
+// while it is open); the old PO is re-derived from what it has left (status 4 with
+// its remaining span, or status 1 with no times when nothing is left).
+//
+// The replay only flagged the PO for recalc, so the new PO never got a ts_start or
+// a runtime (13 CPACK POs closed with a NULL ts_start, 0 production) while the
+// mistyped "ghost" kept the window, the production, and — once superseded — status
+// 3 with no end.
+//
+// Which runtime: the legacy payload names none (the current edge-api sends
+// runtimeToReplace, a LEGACY runtime id we cannot use directly), so it is the
+// runtime on the equipment that was running when legacy logged the action
+// (lower <= ts_log, latest). Keyed on ts_log, not "latest now", so a late replay
+// or a DLQ retry can never grab a runtime that started afterwards; idempotent
+// (a runtime already owned by the new PO is left alone).
+type orderReplacedPayload struct {
+	IDEquipment          int       `json:"idEquipment"`
+	IDProductionOrder    flexInt64 `json:"idProductionOrder"`    // legacy (pre-2026-08) contract
+	NewIDProductionOrder flexInt64 `json:"newIdProductionOrder"` // current edge-api contract
+}
+
+const sqlReplaceRuntime = `WITH tgt AS (
+	    SELECT r.id_production_order_runtime AS rid, r.id_production_order AS src
+	      FROM gold.production_orders_runtime r
+	     WHERE r.id_equipment = $1 AND lower(r.runtime_timerange) <= $2
+	     ORDER BY lower(r.runtime_timerange) DESC
+	     LIMIT 1
+	), newpo AS (
+	    SELECT id_production_order AS dst FROM core.production_orders
+	     WHERE id_enterprise = $3 AND id_order = $4
+	)
+	UPDATE gold.production_orders_runtime r
+	   SET id_production_order = newpo.dst, recalc_needed = true
+	  FROM tgt, newpo
+	 WHERE r.id_production_order_runtime = tgt.rid AND tgt.src <> newpo.dst
+	RETURNING tgt.src, newpo.dst`
+
+// sqlRederiveReplacedPO: the old owner keeps what it has left — status 4 over its
+// remaining span, or back to AVAILABLE (status 1, no times, no counters) when it
+// has nothing left (edge-api production-order-database.ts replace()).
+const sqlRederiveReplacedPO = `UPDATE core.production_orders po
+	   SET ts_start = s.lo,
+	       ts_end = CASE WHEN s.n > 0 THEN s.hi END,
+	       status = CASE WHEN s.n > 0 THEN 4 ELSE 1 END,
+	       gross_production = CASE WHEN s.n > 0 THEN po.gross_production END,
+	       net_production = CASE WHEN s.n > 0 THEN po.net_production END,
+	       recalc_needed = true, last_update = now()
+	  FROM (SELECT count(*) AS n, min(lower(r.runtime_timerange)) AS lo,
+	               CASE WHEN bool_or(upper(r.runtime_timerange) IS NULL) THEN NULL
+	                    ELSE max(upper(r.runtime_timerange)) END AS hi
+	          FROM gold.production_orders_runtime r WHERE r.id_production_order = $1) s
+	 WHERE po.id_production_order = $1`
+
+// sqlDeriveReplacingPO: the new owner spans its runtimes; running while one is open.
+const sqlDeriveReplacingPO = `UPDATE core.production_orders po
+	   SET ts_start = s.lo, ts_end = s.hi,
+	       status = CASE WHEN s.hi IS NULL THEN 2 ELSE 3 END,
+	       recalc_needed = true, last_update = now()
+	  FROM (SELECT min(lower(r.runtime_timerange)) AS lo,
+	               CASE WHEN bool_or(upper(r.runtime_timerange) IS NULL) THEN NULL
+	                    ELSE max(upper(r.runtime_timerange)) END AS hi
+	          FROM gold.production_orders_runtime r WHERE r.id_production_order = $1) s
+	 WHERE po.id_production_order = $1 AND s.lo IS NOT NULL`
+
+func OrderReplaced(logger *slog.Logger) Handler {
+	return func(ctx context.Context, legacy, dst *pgxpool.Pool, r *Resolver, u *UserLog) error {
+		var p orderReplacedPayload
+		if err := json.Unmarshal(u.Payload, &p); err != nil {
+			return ErrSkip
+		}
+		legacyPO := p.NewIDProductionOrder.Int64()
+		if legacyPO == 0 {
+			legacyPO = p.IDProductionOrder.Int64()
+		}
+		if legacyPO == 0 || p.IDEquipment == 0 {
+			return ErrSkip
+		}
+		idOrder, found, err := resolveLegacyOrder(ctx, legacy, legacyPO, r.srcEnterprise)
+		if err != nil {
+			return fmt.Errorf("resolve legacy order: %w", err)
+		}
+		if !found {
+			return ErrSkip
+		}
+		eq, ok := r.ResolveEquipment(p.IDEquipment)
+		if !ok {
+			return fmt.Errorf("order-replaced: unresolved equipment %d — DLQ for retry", p.IDEquipment)
+		}
+		at := u.TsLog
+		if at.IsZero() || at.Unix() <= 0 {
+			at = time.Now()
+		}
+		ent := r.DstEnterprise()
+		tx, err := dst.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+		var src, dstPO int64
+		err = tx.QueryRow(ctx, sqlReplaceRuntime, eq.IDEquipment, at, ent, idOrder).Scan(&src, &dstPO)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// nothing to move (no runtime on the equipment, PO missing, or already
+			// replaced): keep the old behaviour — flag the PO for recalc.
+			if err := tx.Rollback(ctx); err != nil {
+				return err
+			}
+			return execExpectingRows(ctx, dst, "production_orders", u.ID, logger, sqlUpdatePORecalc, ent, idOrder)
+		}
+		if err != nil {
+			return failOpenIfMissing(err, "production_orders_runtime", u.ID, logger)
+		}
+		// Old owner first: it may be the equipment's running PO, and the running-PO
+		// unique index allows only one.
+		if _, err := tx.Exec(ctx, sqlRederiveReplacedPO, src); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, sqlDeriveReplacingPO, dstPO); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 }

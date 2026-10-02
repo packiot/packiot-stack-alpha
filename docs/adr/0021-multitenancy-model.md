@@ -138,5 +138,5 @@ mechanisms:
 ADR-0012 (data multi-tenancy — the pools) · ADR-0019 (edge capabilities — the
 `capabilities` this model makes declarative) · ADR-0020 (Incoplast tenant — the
 validation) · ADR-0009 (customization governance) ·
-`docs/guide/07-customizations-and-real-factories.md` ·
+`docs/archive/wiki-v1/guide/07-customizations-and-real-factories.md` ·
 `docs/clients/incoplast-migration-assessment.md`.

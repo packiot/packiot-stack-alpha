@@ -80,15 +80,21 @@ func main() {
 	d.Register("downtime-event-created", replicate.DowntimeEventCreated(logger, cfg.ReplicateBaseEvents))
 	d.Register("event-justified", replicate.EventClassified(logger, cfg))
 	d.Register("event-edited", replicate.EventClassified(logger, cfg))
-	d.Register("manual-event-created", replicate.ManualEventCreated(logger))
-	d.Register("manual-event-edited", replicate.ManualEventEdited(logger))
+	// Manual events: when the manual-event reconciler is on it is the SOLE
+	// writer of mirrored rows (every row it writes carries provenance in
+	// ops.legacy_manual_event_link, which is what makes its deletes safe), so
+	// the user_logs handlers stand down (unregistered category = skip).
+	if !cfg.ReconcileManualEnabled {
+		d.Register("manual-event-created", replicate.ManualEventCreated(logger))
+		d.Register("manual-event-edited", replicate.ManualEventEdited(logger))
+	}
 	d.Register("event-splitted", replicate.EventSplitted(logger, cfg))
 	d.Register("order-created", replicate.OrderCreated(logger))
 	d.Register("order-created-started", replicate.OrderCreatedStarted(logger))
 	d.Register("order-started", replicate.OrderStarted(logger))
 	d.Register("order-stopped", replicate.OrderStopped(logger))
 	d.Register("order-time-changed", replicate.OrderTimeChanged(logger))
-	d.Register("order-replaced", replicate.OrderRecalc(logger))
+	d.Register("order-replaced", replicate.OrderReplaced(logger))
 	d.Register("order-status-changed", replicate.OrderRecalc(logger))
 	d.Register("order-changed", replicate.OrderChanged(logger))
 
@@ -112,10 +118,25 @@ func main() {
 	// closes the gap the user_logs replay structurally can't (POs started via
 	// order-changed's non-create branch + PLC-created POs never hit user_logs).
 	// Ships INERT (RECONCILE_PO_ENABLED=false); runs in its own goroutine.
+	// Sandbox grace-period gate (SANDBOX_HOLD_ENABLED, twin replicators only).
+	if cfg.SandboxHoldEnabled {
+		cfg.Hold = replicate.NewHold(destPool, cfg.DstEnterprise, 10*time.Second, logger)
+		logger.Info("sandbox hold gate enabled", slog.Int("dst_enterprise", cfg.DstEnterprise))
+	}
 	poRecon := replicate.NewPOReconciler(legacyPool, destPool, resolver, cfg, m, logger)
 	go func() {
 		if err := poRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("PO reconciler terminated with error", slog.String("err", err.Error()))
+		}
+	}()
+
+	// Manual downtime-event reconciler — mirrors legacy equipment_events_man
+	// (inserts, edits incl. moved start times, deletes of rows it owns) within a
+	// lookback. Ships INERT (RECONCILE_MANUAL_EVENTS_ENABLED=false).
+	manualRecon := replicate.NewManualReconciler(legacyPool, destPool, resolver, cfg, m, logger)
+	go func() {
+		if err := manualRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("manual-event reconciler terminated with error", slog.String("err", err.Error()))
 		}
 	}()
 

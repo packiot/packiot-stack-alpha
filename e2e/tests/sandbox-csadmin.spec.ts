@@ -94,13 +94,18 @@ test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
     await selectSandbox(page);
     await page.goto(baseURL! + '/app/downtime-reasons');
     await page.waitForTimeout(2000);
-    // pick an equipment (first real option) → the tree loads
-    await page.locator('select').first().selectOption({ index: 1 });
+    // pick a LINE → its tree loads. CPACK keeps the reason tree on the LINE (legacy parity,
+    // t-cpack-reason-catalog); member machines have none, so the first option (a machine)
+    // is legitimately empty.
+    const picker = page.locator('select').first();
+    const lineLabel = (await picker.locator('option').allInnerTexts()).find((t) => /\(line\)/i.test(t));
+    expect(lineLabel, 'a line is listed in the equipment picker').toBeTruthy();
+    await picker.selectOption({ label: lineLabel! });
     await page.waitForTimeout(2500);
     // existing categories render (the sandbox is a CPACK clone with a full tree)
     await expect(page.getByPlaceholder('Category code').first()).toBeVisible({ timeout: 15_000 });
     // add a distinctive category
-    await page.getByRole('button', { name: /^\+ category$/i }).click();
+    await page.getByRole('button', { name: /add category/i }).click();
     const CODE = 'E2E_DTR';
     await page.getByPlaceholder('Category code').last().fill(CODE);
     await page.getByPlaceholder('Category name').last().fill('E2E Downtime Category');
@@ -109,7 +114,7 @@ test.describe('sandbox csadmin (mutate ent 2000003 cross-tenant)', () => {
       (r) => /downtime-reasons/.test(r.url()) && r.request().method() === 'POST',
       { timeout: 15_000 },
     );
-    await page.getByRole('button', { name: /^save$/i }).click();
+    await page.getByRole('button', { name: /^save( reasons)?$/i }).click();
     expect((await saved).status()).toBe(200);
     await expect(page.getByText(/saved/i).first()).toBeVisible({ timeout: 10_000 });
   });

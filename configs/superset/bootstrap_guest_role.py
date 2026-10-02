@@ -58,6 +58,9 @@ GUEST_EMBED_PERMS = [
     ("can_explore", "Superset"),
     ("can_explore_json", "Superset"),
     ("can_read", "EmbeddedDashboard"),
+    # Read-only helper the embedded filter bar calls to render a time-range label
+    # (GET /api/v1/time_range/); without it every embed logged a 403 (cosmetic).
+    ("can_time_range", "Api"),
     ("all_datasource_access", "all_datasource_access"),
 ]
 

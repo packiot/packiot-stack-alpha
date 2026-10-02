@@ -304,6 +304,11 @@ const refreshShiftEquipmentSQL = `
 	       prev1_end_time = p1.ts_end, prev1_id_shift = p1.id_shift,
 	       prev1_id_shift_hour = p1.id_shift_hour, prev1_duration = p1.duration,
 	       elapsed_time = extract(epoch FROM (now() - p.ts_value))::int,
+	       -- shift labels (2026-09-24): never set before → front4 Mission Control printed
+	       -- the literal "null" next to every current/previous shift, for EVERY tenant.
+	       -- core.shifts carries only the code (cd_shift: T1/T2/…), which is the label.
+	       shift_name = (SELECT s.cd_shift FROM %[2]s.shifts s WHERE s.id_shift = p.id_shift),
+	       prev1_shift_name = (SELECT s.cd_shift FROM %[2]s.shifts s WHERE s.id_shift = p1.id_shift),
 	       last_updated = now()
 	  FROM prod p LEFT JOIN prod1 p1 ON p.id_equipment = p1.id_equipment
 	 WHERE u.id_equipment = p.id_equipment`

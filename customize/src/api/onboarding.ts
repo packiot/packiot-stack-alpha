@@ -174,7 +174,77 @@ export interface ClientDescriptor {
    * ⇒ the customizations tab is emitted empty (historical behavior).
    */
   customizations?: NodeRedNode[];
+  /**
+   * Per-client OEE computation profile (WS3 / ADR-0058). The durable, editable
+   * home for the fact that different clients compute OEE differently. Stored as
+   * config-as-data on the descriptor JSONB; the decoder + rollup engine read the
+   * knobs they consume (Phase 1: the decoder reads `spike_margin`). Absent ⇒
+   * every knob uses its platform default (env), i.e. byte-identical behavior.
+   */
+  oee_profile?: OeeProfile;
   [k: string]: unknown;
+}
+
+/**
+ * The per-client OEE computation profile (WS3). Declarative, versioned, edited
+ * in the OEE Computation page and round-tripped through the descriptor JSONB.
+ * Only `spike_margin` is wired to code today (the decoder's WS1 counter-anomaly
+ * guard); the remaining knobs are authored now and consumed as each rollup
+ * seam is migrated off its env list (Phase 2 — see the plan doc). Every field is
+ * optional: an unset field means "use the platform default", so a partial
+ * profile never changes an un-migrated knob.
+ */
+export interface OeeProfile {
+  /** Schema version — bumped when a knob's meaning changes. */
+  version?: number;
+  /**
+   * WS1 counter-anomaly gross guard margin. A counter increment implying a rate
+   * above `spike_margin × ideal_speed` is a physically-impossible jump and is
+   * clamped. Per-equipment bound (via ideal_speed); this multiple is the client
+   * knob. Unset / 0 ⇒ the CALC_COUNTER_SPIKE_MARGIN env default (guard inert
+   * unless the platform set one). Typical: 3–5. WIRED (decoder).
+   */
+  spike_margin?: number;
+  /**
+   * What the guard does on an anomalous increment. Only `clamp` is implemented
+   * today; `reject`/`flag` are Phase 2. Unset ⇒ clamp.
+   */
+  on_anomaly?: "clamp" | "reject" | "flag";
+  /**
+   * Availability derivation. `state` = from StateCurrent/downtime events;
+   * `count_silence` = infer running/stopped from counter activity (for
+   * state-less counters-only machines). Unset ⇒ platform default (today the
+   * COUNTERS_ONLY_AVAILABILITY_* env lists). Phase 2 (rollup).
+   */
+  availability_mode?: "state" | "count_silence";
+  /**
+   * Ideal-speed source for Performance. `lead_machine` = the line lead's
+   * production_speed; `nameplate` = the equipment's own production_speed;
+   * `inferred` = the provisional-speed estimator. Unset ⇒ the rollup COALESCE
+   * chain. Phase 2 (rollup).
+   */
+  ideal_source?: "lead_machine" | "nameplate" | "inferred";
+  /**
+   * Quality basis. `net_gross` = net/gross (good/total, the platform default);
+   * `good_total` reserved for clients that meter good + total separately. Unset
+   * ⇒ net_gross. Phase 2 (rollup).
+   */
+  quality_basis?: "net_gross" | "good_total";
+  /**
+   * Stop-detection horizon in seconds (SparkPlug param 30751): a machine idle
+   * longer than this is a stop. Unset ⇒ per-equipment stop_threshold_time, then
+   * the CPAC_STOP_THRESHOLD_DEFAULT_SEC env default. Phase 2 (events).
+   */
+  stop_threshold_sec?: number;
+  /**
+   * Per-LINE overrides, keyed by the line's id_equipment. A line not listed
+   * inherits the client-level setting. Only the line-lead choice is wired:
+   * { availability_mode: "count_silence", ideal_source: "lead_machine" } = the
+   * line takes its counts/availability from its lead machine; { availability_mode:
+   * "state" } = from its own signals. Applies going forward (past periods keep
+   * their values unless recomputed).
+   */
+  lines?: Record<string, { availability_mode?: "state" | "count_silence"; ideal_source?: "lead_machine" | "nameplate" | "inferred" }>;
 }
 
 /** One raw Node-RED node (a "Export" object). Kept opaque — the generator + the
@@ -242,6 +312,21 @@ export interface ClientDescriptorRow {
   updated_at: string;
   created_by: string | null;
   updated_by: string | null;
+}
+
+/** The hub-owned descriptor keys (see onboardingApi.updateCustomizations). */
+export interface CustomizationsPatch {
+  customizations?: NodeRedNode[] | null;
+  /** Run a Node-RED helper next to the Python PLC reader on the factory box. */
+  noderedHelper?: boolean;
+  oeeProfile?: OeeProfile | null;
+  /** Full derived[] per equipment ([] clears that equipment's rules). */
+  derived?: { id_equipment: number; derived: DescriptorDerived[] }[];
+}
+
+/** 409 from a compare-and-swap save: someone else saved first. */
+export function isStaleSave(err: unknown): boolean {
+  return isAxiosError(err) && err.response?.status === 409;
 }
 
 export interface GenerateResponse {
@@ -442,6 +527,23 @@ export const onboardingApi = {
   upsertDescriptor: (tenantCode: string, descriptor: ClientDescriptor) =>
     apiClient
       .post<ClientDescriptorRow>(DESCRIPTOR, { tenantCode, descriptor })
+      .then((r) => r.data),
+
+  /**
+   * PUT /api/onboarding/descriptor/customizations — the hub's FIELD-SCOPED save.
+   * Use this, never upsertDescriptor, from the hub: upsert resets status → draft
+   * and nulls the generated artifacts (a live cutover tenant rolled back that way
+   * on 2026-09-16) and replaces the whole descriptor (lost update). This merges
+   * only the given keys server-side, validates through the generator, and is a
+   * compare-and-swap on `expectedVersion` → 409 when another save landed first.
+   * Absent key = untouched; null / [] = clear.
+   */
+  updateCustomizations: (expectedVersion: number, patch: CustomizationsPatch) =>
+    apiClient
+      .put<ClientDescriptorRow>("/api/onboarding/descriptor/customizations", {
+        expectedVersion,
+        ...patch,
+      })
       .then((r) => r.data),
 
   generate: () =>

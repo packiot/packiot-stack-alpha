@@ -73,14 +73,46 @@ export default defineConfig({
     // These write to the twin; the self-healing globalSetup + nightly cron keep
     // the tenant reproducible. Kept as separate projects so the default `npm test`
     // (read-only, all tenants) never mutates anything.
+    // ORDER (Playwright project dependencies): heal (globalSetup) → sandbox-front4
+    // parity on the CLEAN reflection → mutating suites → sandbox-reset (re-heal +
+    // parity). Running parity in parallel with the mutators raced them (it saw the
+    // operator's own justify/split as "drift").
+    // Bispharma (ent 5) demo rehearsal — read-only client view in pt-BR (npm run demo:bispharma).
+    {
+      name: 'bispharma-demo',
+      testMatch: /bispharma-demo\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
     {
       name: 'sandbox-operator',
       testMatch: /sandbox-operator\.spec\.ts/,
+      dependencies: ['sandbox-front4'],
       use: { ...devices['Desktop Chrome'], baseURL: staging.operatorSbx },
     },
     {
       name: 'sandbox-csadmin',
       testMatch: /sandbox-csadmin\.spec\.ts/,
+      dependencies: ['sandbox-front4'],
+      use: { ...devices['Desktop Chrome'], baseURL: staging.csadmin },
+    },
+    {
+      name: 'sandbox-customize',
+      testMatch: /sandbox-customize\.spec\.ts/,
+      dependencies: ['sandbox-front4'],
+      use: { ...devices['Desktop Chrome'], baseURL: staging.customize },
+    },
+    // Read-only on the twin: UI + read-api PARITY with CPACK (history + live mirror).
+    {
+      name: 'sandbox-front4',
+      testMatch: /sandbox-front4\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], baseURL: staging.front4 },
+    },
+    // Runs LAST (after every mutating project): re-heal the twin, then prove every
+    // mutation above is gone (parity with CPACK again) — the reset guarantee itself.
+    {
+      name: 'sandbox-reset',
+      testMatch: /sandbox-reset\.spec\.ts/,
+      dependencies: ['sandbox-operator', 'sandbox-csadmin', 'sandbox-customize'],
       use: { ...devices['Desktop Chrome'], baseURL: staging.csadmin },
     },
   ],

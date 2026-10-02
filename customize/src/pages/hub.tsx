@@ -1,12 +1,4 @@
-import {
-  Braces,
-  Clock,
-  Database,
-  Loader2,
-  ServerCog,
-  Workflow,
-  type LucideIcon,
-} from "lucide-react";
+import { Braces, Clock, Database, Loader2, ServerCog, Workflow, type LucideIcon, Cable } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -18,14 +10,11 @@ import { equipmentApi } from "@/api/equipment";
 import { PageHeader } from "@/components/page-header";
 import { Card } from "@/components/ui";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
+import { csadminUrl } from "@/lib/sibling-apps";
 import { listDeriveRules } from "@/lib/derive-rules";
 
 type LoadState = "loading" | "ready" | "none" | "error";
 
-// Box Ops (Tier-2 Node-RED editor) lives in CS Admin for now — the Hub links out
-// to it rather than embedding it. Kept as a constant so the target is a one-line
-// change when/if Box Ops moves into this app.
-const CSADMIN_BOX_OPS_URL = "https://csadmin.staging.packiot.app/app/box";
 
 /**
  * The Customization Hub landing page — the centerpiece. For the selected
@@ -122,8 +111,11 @@ export function HubPage() {
         <Card className="p-6">
           <p className="text-[13px] text-muted-foreground">
             This tenant has no descriptor yet — there is nothing to customize until
-            it is onboarded in CS Admin. Once a descriptor exists, its derive rules
-            and integrations show up here.
+            it is onboarded in{" "}
+            <a className="text-primary hover:underline" href={csadminUrl("/app/onboarding", enterprise.id_enterprise)} target="_blank" rel="noreferrer">
+              CS Admin ↗
+            </a>
+            . Once a descriptor exists, its derive rules and integrations show up here.
           </p>
         </Card>
       ) : (
@@ -149,13 +141,20 @@ export function HubPage() {
               description="Outbound ERP / database connectors this tenant's edge stack stands up. Read-only view of type, driver, reads, writes and dedup key."
             />
             <OptionCard
-              href={CSADMIN_BOX_OPS_URL}
+              to="/app/node-red"
               icon={Workflow}
               title="Node-RED flows"
               badge="Tier 2"
               count={flowsCount}
               countLabel={flowsCount === 1 ? "flow node" : "flow nodes"}
-              description="Arbitrary per-client Node-RED logic. Authored in the embedded editor on Box Ops — which lives in CS Admin for now (opens in a new tab)."
+              description="Arbitrary per-client Node-RED logic — descriptor-versioned flows, plus the live editor on the box when it runs Node-RED."
+            />
+            <OptionCard
+              to="/app/plc-connections"
+              icon={Cable}
+              title="PLC connections"
+              badge="Read-only"
+              description="The PLC connection your customizations build on — box and per-PLC live status. Set up and operated in CS Admin."
             />
           </div>
 
@@ -227,8 +226,8 @@ function OptionCard({
   icon: LucideIcon;
   title: string;
   badge: string;
-  count: number;
-  countLabel: string;
+  count?: number;
+  countLabel?: string;
   description: string;
 }) {
   const body = (
@@ -243,9 +242,11 @@ function OptionCard({
       </div>
       <div className="mb-1 flex items-baseline gap-2">
         <span className="text-[15px] font-extrabold text-foreground">{title}</span>
-        <span className="text-[12px] font-bold text-primary">
-          {count} {countLabel}
-        </span>
+        {count != null && (
+          <span className="text-[12px] font-bold text-primary">
+            {count} {countLabel}
+          </span>
+        )}
       </div>
       <p className="text-[13px] leading-snug text-muted-foreground">{description}</p>
     </>

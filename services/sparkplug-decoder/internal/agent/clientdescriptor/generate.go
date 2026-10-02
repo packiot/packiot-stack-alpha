@@ -302,6 +302,12 @@ func (d *Descriptor) generateDerivedRules(p *tenantprofile.Profile) ([]tenantpro
 			if dm.Expr != nil {
 				vars := make(map[string]string, len(dm.Expr.Vars))
 				for name, leaf := range dm.Expr.Vars {
+					if !strings.HasPrefix(leaf, "/") {
+						// ABSOLUTE var (another machine's full topic, validated to be a
+						// mapped equipment): resolve as-is, never under this segment.
+						vars[name] = d.localSegment(leaf)
+						continue
+					}
 					full, err := resolveLeaf(leaf)
 					if err != nil {
 						return nil, err
@@ -920,6 +926,7 @@ func teeFunctionBody(tenant, gateway, keyEnv string) string {
 //  2. the client⇄agent consistency invariant holds (checkClientAgentConsistency);
 //  3. it marshals to YAML.
 func (d *Descriptor) GenerateClientYAML() (string, error) {
+	d = d.activePLC()
 	if d.PLC == nil {
 		return "", fmt.Errorf("descriptor has no plc block — nothing to generate for client.yaml")
 	}
@@ -1262,6 +1269,7 @@ func (d *Descriptor) checkClientAgentConsistency(cfg *clientconfig.Config) error
 // cutover gate. It is the one entry point a caller (CLI / CS-Admin surface)
 // should use.
 func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
+	d = d.activePLC() // PLC connections switched off in CS Admin are not generated
 	if opts.Cutover {
 		if inferred := d.InferredMembers(); len(inferred) > 0 {
 			return nil, fmt.Errorf(
@@ -1308,7 +1316,12 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		}
 		clientYAML = []byte(s)
 
-		rf, err := d.GeneratePlcReaderFlow(ReaderFlowOptions{StagingTee: opts.StagingTee})
+		var rf []byte
+		if d.NodeRedHelper {
+			rf, err = d.GenerateHelperFlow()
+		} else {
+			rf, err = d.GeneratePlcReaderFlow(ReaderFlowOptions{StagingTee: opts.StagingTee})
+		}
 		if err != nil {
 			return nil, fmt.Errorf("generate plc reader flow: %w", err)
 		}

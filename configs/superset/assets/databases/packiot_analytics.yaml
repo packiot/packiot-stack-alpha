@@ -31,8 +31,14 @@
 # bypass-pgbouncer pattern above). `db/superset/01-superset-ro-role.sql` (the
 # `bi.*` views + superset_ro role) must be applied against THAT database for
 # these datasets to resolve.
+# ENV-TEMPLATED (T5 prod parity, 2026-09-24): host + dbname are resolved at import by
+# import_bundle.py — __ANALYTICS_HOST__ ← POSTGRES_HOST_UPSTREAM (staging 10.10.10.89,
+# prod 10.20.10.89), __ANALYTICS_DB__ ← SUPERSET_ANALYTICS_DB (default packiot_analytics;
+# prod MUST set packiot). Previously hardcoded to STAGING — promoting unchanged would
+# have pointed prod Superset at the staging DB. superset-init's sync_databases.py logs
+# the resolved user@host/db on every deploy.
 database_name: packiot_analytics
-sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@10.10.10.89:5432/packiot_analytics
+sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@__ANALYTICS_HOST__:5432/__ANALYTICS_DB__
 cache_timeout: null
 # HARDENING: authors get NO native SQL against the analytics DB. RLS rewrites
 # DATASET queries only; a SQL-Lab user could SELECT straight off a base table and

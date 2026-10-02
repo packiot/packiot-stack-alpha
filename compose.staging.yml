@@ -19,6 +19,13 @@
 #
 # Deploy: docker compose -f compose.staging.yml up -d --build
 
+# Pin the project identity to the file (as compose.production.yml does): without
+# it, `docker compose` run from the runner checkout resolves to the directory
+# name `packiot-stack-alpha` instead of `stack`, so the edge-api app-box
+# recreates (apply-agent-config / apply-calculations / apply-oee-settings)
+# collided with the running containers' fixed container_name (2026-09-29).
+name: stack
+
 networks:
   packiot-net:
     driver: bridge
@@ -164,7 +171,10 @@ services:
       # a broker recreate — the 2026-07-10 trap). definitions.json is generated
       # at deploy from the template + Secrets Manager (gitignored — has secrets).
       - ./monitoring/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-      - ./monitoring/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      # Rendered by deploy-staging.yml to a durable host path OUTSIDE the CI runner
+      # workspace (a later job's checkout cleaned the gitignored in-repo copy → reboot
+      # found it missing → dockerd created a directory → rabbitmq exit 127, 2026-09-25).
+      - /opt/packiot/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.5
@@ -923,6 +933,12 @@ services:
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
       - --web.enable-lifecycle
+      # Accept Prometheus remote-write (POST /api/v1/write) from the app-box Alloy
+      # gateway, which relays the DB box's host metrics (disk/cpu/mem) pushed by
+      # the DB-box Alloy agent. The DB box accepts NO inbound connections; it pushes
+      # out, same design as the 3101 Loki relay. (T0, 2026-09-23 — the DB disk hit
+      # 79% unmonitored.) Command change → needs a force-recreate, not a reload.
+      - --web.enable-remote-write-receiver
       # Exemplar storage: lets Prometheus retain per-sample exemplars (a
       # trace_id label carried alongside a histogram observation). Grafana's
       # Prometheus datasource then renders them as clickable dots on latency
@@ -989,8 +1005,14 @@ services:
       # sizes. Cluster-wide queries are master:true so auto-discover doesn't
       # duplicate them per-DB. Consumed by the "Database" v2 Grafana board.
       PG_EXPORTER_EXTEND_QUERY_PATH: /etc/pgexporter/queries.yaml
+    # DIRECTORY bind mount (same inode trap as prometheus #39 / alertmanager #41):
+    # a single-FILE bind pins the inode at create, and git checkout replaces the
+    # file with a new inode — so queries.yaml edits NEVER reached this container
+    # (running since 2026-08-27 on the old file; pg_retention from #1404 was
+    # invisible). The exporter reads queries only at startup, so deploy-staging.yml
+    # restarts it when monitoring/postgres-exporter/ changed.
     volumes:
-      - ./monitoring/postgres-exporter/queries.yaml:/etc/pgexporter/queries.yaml:ro
+      - ./monitoring/postgres-exporter:/etc/pgexporter:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.28
@@ -1009,6 +1031,9 @@ services:
       - --path.sysfs=/host/sys
       - --path.rootfs=/rootfs
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)
+      # Historian backup results (terraform/staging/scripts/backup-historian.sh
+      # writes backup_<db>.prom here) → BackupStale / BackupMetricsMissing alerts.
+      - --collector.textfile.directory=/rootfs/var/lib/packiot-backup/metrics
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
@@ -1082,13 +1107,18 @@ services:
       - --storage.path=/var/lib/alloy/data
       - /etc/alloy/gateway.alloy
     volumes:
-      - ./monitoring/alloy/gateway.alloy:/etc/alloy/gateway.alloy:ro
+      # DIRECTORY bind mount (inode trap #39/#41): a single-file bind pinned the old
+      # inode, so gateway.alloy edits only landed when something else forced a
+      # recreate. deploy-staging.yml POSTs /-/reload after up -d.
+      - ./monitoring/alloy:/etc/alloy:ro
       - alloy-data:/var/lib/alloy/data
     ports:
       # Loki-push endpoint for the cross-box DB log agent. Bound to the private
       # IP (ALLOY_GATEWAY_BIND) so it is reachable from the DB box over the VPC
       # but never world-exposed; defaults to loopback when unset (safe no-op).
       - "${ALLOY_GATEWAY_BIND:-127.0.0.1}:3101:3101"
+      # Prometheus remote-write relay for the DB-box agent's host metrics (T0).
+      - "${ALLOY_GATEWAY_BIND:-127.0.0.1}:3102:3102"
     networks:
       packiot-net:
         ipv4_address: 172.18.0.49
@@ -1785,6 +1815,28 @@ services:
       # with that key 7s just makes drains more responsive. Safe to reset to "30"
       # once the dedicated-key build is confirmed draining.
       ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
+      # Per-tick HOUR backfill batch (config default 200). LOWERED to 50 (2026-09-24):
+      # 200 counters-only LINE hours (Bispharma, 23 lines) through the hour line-lead pass
+      # blew the 5-min job deadline every tick ("hour-backfill line-lead: timeout" → tick
+      # killed → nothing drains). 50 finishes well inside it; the backlog is normally tiny,
+      # so the lower batch only matters after a bulk re-flag (speed/target changes).
+      ROLLUP_BACKFILL_LIMIT: "50"
+      # Per-tick shift-rollup batch size (config default 300). LOWERED to 75
+      # after the shift `line-lead` pass (internal/rollup/line_lead.go) began
+      # blowing the runtime-rollup 300s job deadline (2026-09-22): Bispharma
+      # (ent5, 23 line-metered lines) joined COUNTERS_ONLY_LINE_LEAD_ENTERPRISES
+      # alongside CPACK(3) + sandbox(2000003) = 63 tp=3 lines, each doing a
+      # per-line real-time-cagg availability scan. At limit=300 a tick ran ~205s
+      # on line-lead alone, so shift+week+area+dq+unmetered together exceeded 300s
+      # and the WHOLE shift tx rolled back every tick — committing nothing,
+      # freezing current-shift gold OEE platform-wide (CPACK Mission Control read
+      # all-zero; Bispharma current-shift gauge blank) since ~Sep 21 18:59.
+      # A smaller batch keeps each tick inside budget so it COMMITS and the
+      # bounded backlog drains monotonically (shift.go's designed discipline).
+      # Pure row-selection — never changes a row's math, so parity is preserved.
+      # DURABLE follow-up: optimize/isolate the line-lead pass so the limit can
+      # rise again (docs: shift line-lead scales O(lines x cagg-scan)).
+      ROLLUP_SHIFT_LIMIT: "75"
       # Close stale mirror-fanned CPACK open status=6 events (ts_end NULL). CPACK is
       # status_type=0 so the deriver skips it and the cpac shadow-deriver is dark, so
       # nothing closes them → a stale open stretches to now() and fabricates ~100%
@@ -1792,7 +1844,31 @@ services:
       # events-close-stale job (60s) bounds non-latest opens by lead(ts_event) and the
       # trailing open by count-silence after grace; skips operator-justified rows.
       EVENTS_CLOSE_STALE_ENABLED: "true"
-      EVENTS_CLOSE_STALE_ENTERPRISES: "3"
+      # ent5 (2026-09-24): #1384 made Bispharma LIVE-derived (CPAC_EVENT_LIVE_ENTERPRISES=5,
+      # status_type=0) but this list stayed "3" → every ent5 event since 09-23 sat OPEN
+      # (ts_end NULL, e.g. a 15:36 stop followed by a 15:39 run never closed at 15:39):
+      # operator/front4 showed ~1-min stops with no end, and open rows stretch to now() in
+      # the rollup (the fabricated-availability class this job exists for). RULE: any
+      # enterprise added to a CPAC deriver list must be added here too.
+      # ent4 (Incoplast-Staging) + 2000003 (SANDBOX-CPACK twin) added 2026-09-24: both are
+      # status_type=0 with no other closer → 8 + ~14.5k never-closed stops (sandbox mostly
+      # Jun–Aug twin-generator era) showed as open-ended in the Events tab. Backlog was
+      # drained in weekly batches first (ops._bkp_orphan_open_stops) so the first tick is light.
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3,4,5,2000003"
+      # ADR-0010 §10.4 PROMOTION — mint LIVE downtime events for counters-only
+      # clients that have no other event writer. Bispharma (ent5) is counters-only
+      # (no MachSpeed/StateCurrent), so nothing else gives it downtimes; the shadow
+      # CPAC deriver (CPAC_EVENT_ENTERPRISES in .env, CPACK=3) stays shadow because
+      # CPACK's speed-based events are owned by the mirror fan-out. This second,
+      # LIVE-targeted instance writes ent5's count-silence stops into the real
+      # equipment_events. Its session threshold comes from each equipment's
+      # stop_threshold_time (ent5 = 600s via migration t-ent5-downtime-threshold-
+      # reliable-feed). NOTE the earlier "lossy co-tee ⇒ 1800s stopgap" was WRONG —
+      # the box→cloud feed was VERIFIED reliable (nginx 0-reject, agent 100%-accept,
+      # 0 decoder-unmapped), so count gaps are REAL stops. 600s captures genuine
+      # ~10-min+ stops without over-flagging batch gaps; tunable per line (300s
+      # platform default for continuous lines). Empty ⇒ inert.
+      CPAC_EVENT_LIVE_ENTERPRISES: "5"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on. The
       # consumer extracts the traceparent the publisher injected into the AMQP
       # headers, so a message is one trace: publish → consume → DB (otelpgx).
@@ -1958,6 +2034,15 @@ services:
       UNS_CURRENT_METRICS_ENABLED: "true"
       # ADR-0014 P3b — po-runtime-recalc (shadow flows).
       PO_RECALC_ENABLED: "true"
+      # FU#8 — PO-grain availability write path. Populates available_time +
+      # planned_downtime on production_orders_runtime (compute.go Phase-B2), so the
+      # recalc's PO-grain oee_a = running/available and oee_p time-factor stop
+      # reading NULL → 0. These columns were written by NOBODY (legacy had the
+      # assignments commented out; the Go port reproduced it), so PO-headline OEE
+      # Availability/Performance read 0 platform-wide since Jan-2024. Equipment/
+      # line-grain OEE is unaffected (it computes available_time already).
+      # Reversible: set back to "false" + redeploy → available_time stays NULL.
+      PO_AVAILABILITY_ENABLED: "true"
       RUNTIME_PROVISION_ENABLED: "true"
       RUNTIME_ROLLUP_ENABLED: "true"
       # 10.9: nodered legacy leg retired (plc-sim triple-emit feeds F1)
@@ -2649,6 +2734,33 @@ services:
       # eq 57 (same as L6). This PREPARES the agent-only cutover; it does NOT
       # perform the plc-sim L5/TEXA drop (a separate coordinated step).
       COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147,"CPACK/SC/LINHAS/L5/TEXA":147}'
+      # ── WS1 counter-anomaly gross guard (platform default) ──────────────
+      # An increment implying a per-minute rate above MARGIN × the equipment's
+      # IdealRate (the counters-only rated speed above) is a physically-impossible
+      # totalizer JUMP (a stuck/rolled counter or double-source) and is clamped
+      # before it reaches gross/net — the fix for CPACK L5-TEXA inflating gross
+      # 25–73× vs legacy (a 379219-in-a-minute increment on a 147/min line).
+      #
+      # MARGIN=10 is DATA-DERIVED: over 1.05M ent3 per-minute samples the
+      # increment/rated-speed ratio is p50=0.85, p99=2.44, p99.9=8.30, but the
+      # anomaly cluster is 100–2580×. 10 sits just above the p99.9 knee, so it
+      # never clamps legitimate catch-up bursts (spread across 38 machines) yet
+      # catches every impossible jump. Per-equipment bound (via IdealRate); the
+      # guard is interval-aware so a legit long-interval read scales its ceiling.
+      # This is the GLOBAL DEFAULT; WS3 (OEE_PROFILE_FROM_DB) lets a client
+      # override it per equipment from its OEE profile.
+      # 2026-09-30: DISABLED ("0" = guard inert). It CLAMPED an impossible jump to
+      # margin×ideal×Δt — a fabricated value, unrecorded — and once discarded real
+      # production (09-23→27). Policy is "no clamps distorting data": the stream-engine
+      # ingest check (INCREMENT_SANITY_CLAMP_*, K=4, every equipment) already REJECTS
+      # the same 100–2580× phantoms and records a data_quality_event for each.
+      CALC_COUNTER_SPIKE_MARGIN: "0"
+      # ── WS3 per-client OEE profile (config-as-data) ─────────────────────
+      # When true the decoder reloads a unit-topic→spike_margin map from
+      # client_descriptors.descriptor->oee_profile (authored in the customize
+      # "OEE Computation" page) and overrides CALC_COUNTER_SPIKE_MARGIN per
+      # equipment. Empty profile ⇒ the env default above governs (parity).
+      OEE_PROFILE_FROM_DB: "true"
       # ── ADR-0019 C1 edge command channel (machine-write path) ─────────
       # The RETURN path: an operator action writes a value DOWN to the PLC
       # (SparkPlug DCMD). This is the ONLY machine-write path in the stack,
@@ -2807,9 +2919,14 @@ services:
       # the 90-day hot window. HIST_GW_PASSWORD comes from env_file (.env); if it is
       # absent or the gateway is unreachable at boot, the pool is nil and the
       # endpoint returns 503 — read-api is otherwise unchanged (nil-safe, additive).
+      # T3 least privilege: the NOSUPERUSER service identity historian_svc (cold via
+      # duckdb.postgres_role=historian_readers, hot via FDW → remote histgw_ro), NOT the
+      # gateway superuser. Password: Secrets Manager packiot/staging/historian-svc,
+      # mirrored into .env by deploy-staging.yml ("Ensure HIST_GW_SVC_PASSWORD").
       HIST_GW_HOST: hist-gateway
       HIST_GW_PORT: "5432"
-      HIST_GW_USER: postgres
+      HIST_GW_USER: historian_svc
+      HIST_GW_PASSWORD: ${HIST_GW_SVC_PASSWORD:-}
       HIST_GW_DB: packiot_historian
       HEALTH_PORT: "9104"
       # Distributed tracing (OTLP/gRPC). Present = tracing on; a /v1 read becomes
@@ -2821,7 +2938,7 @@ services:
       # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
       # keys only; production keys move to Secrets Manager at P3
       # hardening. customer_id is NEVER client-supplied.
-      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4,stg-sbxcpack-key:2000003"
+      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4,stg-sbxcpack-key:2000003,stg-bispharma-key:5"
       # ── ADR-0034: dual-accept IdP cutover (Firebase OR Cognito) ───────────────
       # refdata is now a relying party for the staging Cognito user pool
       # ALONGSIDE Firebase — a front4 session carrying EITHER token resolves its
@@ -3153,6 +3270,30 @@ services:
       RECONCILE_PO_ENABLED: "true"
       RECONCILE_PO_INTERVAL_SEC: "300"
       RECONCILE_PO_WINDOW_DAYS: "14"
+      # Product/client enrich (enrich.go): fills NULL id_product/id_client on
+      # twin POs from legacy, resolving dimensions by (enterprise, name) and
+      # never overwriting. Neither the user_logs replay nor the reconciler
+      # INSERT carries them, so every PO since the cutover had none (Overview
+      # "Client / Product" blank). 120d = drains the backlog since the June
+      # cutover and keeps catching late ERP assignments; one read-only legacy
+      # query per tick. Rollback: "false" + redeploy (filled values stay).
+      RECONCILE_PO_ENRICH_ENABLED: "true"
+      RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      # Manual downtime-event reconciler (manual_reconcile.go): mirrors legacy
+      # equipment_events_man -> silver.equipment_events_man within the lookback —
+      # inserts, edits (incl. moved start times), legacy-duplicate collapse, and
+      # deletes of rows it OWNS (ops.legacy_manual_event_link; new-stack-authored
+      # rows are never deleted). When on, the manual-event-created/-edited replay
+      # handlers stand down (single writer). Refreshes serving.downtime_events_resolved
+      # for touched days (its job only re-derives the last 3). First run backfills
+      # everything missed since the 2026-09-12 #261 shim drop. Apply
+      # db/migrations/t-replicate-manual-events/01-up.sql BEFORE enabling (seeds
+      # replay-era orphan provenance). Rollback: "false" + redeploy.
+      RECONCILE_MANUAL_EVENTS_ENABLED: "true"
+      RECONCILE_MANUAL_EVENTS_INTERVAL_SEC: "300"
+      RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "35"
+      RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
+      RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
     networks:
       packiot-net:
     healthcheck:
@@ -3235,11 +3376,30 @@ services:
       # Own health port so both replicator instances can co-exist on the box.
       HEALTH_PORT: "9114"
       HEALTHCHECK_MAX_AGE_SEC: "600"
+      # Hands-on session hold (t-sandbox-grace-hold): while someone changes the
+      # sandbox, stop replaying CPACK's actions into it (cursor still advances); the
+      # grace-period heal restores CPACK's current state, then mirroring resumes.
+      SANDBOX_HOLD_ENABLED: "true"
       # PO reconciler — backfills/finishes POs the user_logs replay structurally
       # misses, keeping the sandbox PO set current (matches the ent-3 replicator).
       RECONCILE_PO_ENABLED: "true"
       RECONCILE_PO_INTERVAL_SEC: "300"
       RECONCILE_PO_WINDOW_DAYS: "14"
+      # Product/client enrich — same pass as the ent-3 replicator. Dimensions
+      # resolve by (enterprise, name) to the sandbox's OWN cloned rows (+2M ids).
+      # KEEP_LEGACY_IDS=false: a dimension missing here gets a sequence id, never
+      # a raw legacy id (that would break the +2M convention and move the shared
+      # sequence for ent 3). --heal wipes POs, so enrichment simply re-fills.
+      RECONCILE_PO_ENRICH_ENABLED: "true"
+      RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS: "false"
+      # Manual-event reconciler — same pass as the ent-3 replicator, into the
+      # sandbox tenant (its seeded provenance is in the same migration).
+      RECONCILE_MANUAL_EVENTS_ENABLED: "true"
+      RECONCILE_MANUAL_EVENTS_INTERVAL_SEC: "300"
+      RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "35"
+      RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
+      RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
     networks:
       packiot-net:
     healthcheck:
@@ -3366,6 +3526,48 @@ services:
       REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:-stg-sbxcpack-key}
     ports:
       - "127.0.0.1:8085:80"
+    networks:
+      # No static ipv4_address: nginx proxies to 127.0.0.1:8085 (host port), not the
+      # container IP, so a pin is unneeded — and static IPs on this bridge collide
+      # (172.18.0.42 = superset, .39 = oauth2-proxy). Let Docker auto-assign.
+      - packiot-net
+    depends_on:
+      edge-api:
+        condition: service_started
+      read-api:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── operator-bispharma — Bispharma (ent 5) operator SPA ─────────────────────────
+  # Same image as `operator` / `operator-sbx` (identical build stanza → one image); only
+  # the injected enterprise api-key differs. vhost operator-bispharma.$STAGING_DOMAIN →
+  # 127.0.0.1:8087 (terraform/staging/user_data/nginx_setup.sh).
+  operator-bispharma:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_PO_WRITE_QUEUE_ENABLED: "true"
+        # Cognito auth (public pool + app-client ids, NOT secrets). Vite bakes
+        # them at build; the operator Dockerfile.staging declares the ARGs.
+        VITE_COGNITO_USER_POOL_ID: "us-east-1_0T9t1sTwt"
+        VITE_COGNITO_USER_POOL_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
+    container_name: operator-bispharma
+    restart: unless-stopped
+    environment:
+      # BISPHARMA enterprise api-key (enterprises.api_key WHERE id_enterprise=5). Lives in
+      # /opt/packiot/.env as OPERATOR_BISPHARMA_EDGE_API_KEY (copied DB→.env on the box,
+      # never printed). Empty default = fail-closed (edge-api 401s) if unset. Without its
+      # own operator a Bispharma user on the CPACK operator writes AS CPACK → the tenant
+      # fence 404s every PO/justify write (found 2026-09-24, demo rehearsal).
+      EDGE_API_KEY: ${OPERATOR_BISPHARMA_EDGE_API_KEY:-}
+      REFDATA_API_KEY: ${OPERATOR_BISPHARMA_REFDATA_API_KEY:-stg-bispharma-key}
+    ports:
+      - "127.0.0.1:8087:80"
     networks:
       # No static ipv4_address: nginx proxies to 127.0.0.1:8085 (host port), not the
       # container IP, so a pin is unneeded — and static IPs on this bridge collide

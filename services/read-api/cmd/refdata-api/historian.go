@@ -64,8 +64,10 @@ func newHistPool(ctx context.Context, logger *slog.Logger) *pgxpool.Pool {
 	}
 	host := getenv("HIST_GW_HOST", "hist-gateway")
 	port := getenv("HIST_GW_PORT", "5432")
-	user := getenv("HIST_GW_USER", "postgres")
-	db := getenv("HIST_GW_DB", "postgres")
+	// Defaults = the T3 least-privilege service identity + the gateway's real DB
+	// (was postgres/postgres: the superuser and a DB renamed in #274).
+	user := getenv("HIST_GW_USER", "historian_svc")
+	db := getenv("HIST_GW_DB", "packiot_historian")
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s", host, port, user, pass, db)
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -174,10 +176,10 @@ const histDowntimeSeriesSQL = `
 //   POST /v1/historian/downtime-series   — daily downtime per equipment (EE, silver.equipment_events)
 func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
 	mux.HandleFunc("/v1/historian/production-series", func(w http.ResponseWriter, r *http.Request) {
-		serveHistWindowSeries(w, r, histPool, logger, histProductionSeriesSQL)
+		serveHistWindowSeries(w, r, histPool, logger, histProductionSeriesSQL, histKindProduction)
 	})
 	mux.HandleFunc("/v1/historian/downtime-series", func(w http.ResponseWriter, r *http.Request) {
-		serveHistWindowSeries(w, r, histPool, logger, histDowntimeSeriesSQL)
+		serveHistWindowSeries(w, r, histPool, logger, histDowntimeSeriesSQL, histKindDowntime)
 	})
 }
 
@@ -187,7 +189,14 @@ func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *sl
 // differing only in the aggregation SQL. sqlTemplate MUST take (%s equipFilter,
 // %d rowLimit) and bind $1=cid $2=from $3=to $4=fromYear $5=fromMonth $6=toYear
 // $7=toMonth (see the two *SQL consts).
-func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgxpool.Pool, logger *slog.Logger, sqlTemplate string) {
+type histKind int
+
+const (
+	histKindProduction histKind = iota
+	histKindDowntime
+)
+
+func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgxpool.Pool, logger *slog.Logger, sqlTemplate string, kind histKind) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 		return
@@ -241,8 +250,26 @@ func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgx
 	// A cold duckdb scan can be slow even pruned; give it room but bound it.
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	sql := fmt.Sprintf(sqlTemplate, equipFilter, histRowLimit)
-	payload, err := runQueryJSON(ctx, histPool, cid, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
+	var payload []byte
+	switch {
+	case kind == histKindDowntime:
+		// Hot/cold split (historian_split.go): the mixed union plan loses FDW pushdown.
+		var rows []map[string]any
+		if rows, err = serveEESplit(ctx, histPool, cid, q, equipFilter); err == nil {
+			payload, err = json.Marshal(rows)
+		}
+	case kind == histKindProduction:
+		// Always the split: cold daily rollup + hot hourly rollup (whole UTC days). The
+		// per-second union view now carries the windowed spike guard (~20 s per month
+		// scanned), so even a 7-day window crossing a month would press the 60 s budget.
+		var rows []map[string]any
+		if rows, err = serveEVDaily(ctx, histPool, cid, q, equipFilter); err == nil {
+			payload, err = json.Marshal(rows)
+		}
+	default:
+		sql := fmt.Sprintf(sqlTemplate, equipFilter, histRowLimit)
+		payload, err = runQueryJSON(ctx, histPool, cid, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
+	}
 	if err != nil {
 		logger.Warn("historian query failed", slog.Int("cid", cid), slog.String("err", err.Error()))
 		http.Error(w, `{"error":"historian query failed"}`, http.StatusInternalServerError)

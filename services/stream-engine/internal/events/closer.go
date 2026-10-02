@@ -69,6 +69,7 @@ type CloserConfig struct {
 	Enterprises     []int // status_type=0 enterprise ids to close (CPACK=3); empty ⇒ no-op
 	ThresholdDefSec int   // trailing-close grace when equipments.stop_threshold_time IS NULL/0
 	HorizonHours    int   // only reconcile opens with ts_event >= now()-horizon (steady-state tail)
+	LongHorizonDays int   // long-open pass: open rows older than the horizon, within this many days
 }
 
 // humanJustifiedPred is the NULL-SAFE human-edit guard for the LIVE
@@ -117,14 +118,14 @@ WITH scope AS (
        AND m.gross_production_incr > 0
      GROUP BY s.id_equipment, s.thr
 ), open_ev AS (
-    SELECT ev.id_equipment_event, ev.id_equipment, ev.ts_event,
+    SELECT ev.id_equipment_event, ev.id_equipment, ev.ts_event, ev.status,
            lead(ev.ts_event) OVER (PARTITION BY ev.id_equipment
                ORDER BY ev.ts_event, ev.id_equipment_event) AS next_ts
       FROM %[1]s.equipment_events ev
       JOIN scope s ON s.id_equipment = ev.id_equipment
      WHERE ev.ts_event >= now() - make_interval(hours => $3)
 ), plan AS (
-    SELECT o.id_equipment_event,
+    SELECT o.id_equipment_event, o.id_equipment, o.ts_event,
            CASE
              WHEN o.next_ts IS NOT NULL THEN o.next_ts
              ELSE greatest(o.ts_event, lc.last_ts + make_interval(secs => lc.thr))
@@ -140,20 +141,78 @@ WITH scope AS (
       FROM open_ev o
       LEFT JOIN lastcount lc ON lc.id_equipment = o.id_equipment
      WHERE o.next_ts IS NOT NULL
-        OR (lc.last_ts IS NOT NULL AND lc.last_ts + make_interval(secs => lc.thr) < now())
+        -- TRAILING count-silence close is for RUNNING rows ONLY (status 6): an open run
+        -- stretched to now() fabricates availability. An open STOP is ongoing downtime —
+        -- the truth — and its last count PRECEDES it, so greatest(ts_event, last+thr)
+        -- ended it at (or ≤thr after) its own start. Because only ts_end IS NULL rows are
+        -- ever touched, that truncation was PERMANENT even after the machine restarted:
+        -- measured 2026-09-24, CPACK 955/3791 stops truncated (1,328 downtime-hours in 7 d)
+        -- + 253 zero-length. Open stops now stay open until the next transition bounds
+        -- them (the next_ts branch above).
+        OR (o.status = 6 AND lc.last_ts IS NOT NULL AND lc.last_ts + make_interval(secs => lc.thr) < now())
 )
 UPDATE %[1]s.equipment_events ev
    SET ts_end   = p.new_end,
        duration = extract(epoch FROM (p.new_end - ev.ts_event))::int,
        last_update = now()
   FROM plan p
- WHERE ev.id_equipment_event = p.id_equipment_event
-   AND ev.ts_end IS NULL
+ -- True PK (id_equipment, ts_event): id_equipment_event is NOT unique (the
+ -- sandbox twin reuses CPACK's ids), so matching on it could write one
+ -- tenant's end onto another tenant's row.
+ WHERE ev.id_equipment = p.id_equipment AND ev.ts_event = p.ts_event
+   AND (ev.ts_end IS NULL
+        -- REBIND (2026-09-28): once a successor exists, the interval ends at the
+        -- successor's start (legacy semantics) even if the row was already
+        -- closed. The count-silence close runs before late or out-of-order
+        -- events arrive, so it could end a row at its own start (zero-length
+        -- when the row arrived late) or past its successor (overlap), and the
+        -- IS NULL guard made that permanent. Audit: ~350 h of CPACK downtime
+        -- lost in 14 days.
+        OR (p.bounded_by_next AND ev.ts_end IS DISTINCT FROM p.new_end))
    -- Human-edit guard applies ONLY to the TRAILING close (count-silence), where
    -- auto-closing an operator's genuinely-ongoing downtime would clobber intent.
    -- A next-event-bounded close never destroys the category — it only fills the
    -- missing ts_end at the physically-correct boundary — so it bypasses the guard.
    AND (p.bounded_by_next OR NOT ` + humanJustifiedPred + `)`
+
+// closeLongOpensSQL — the LONG-OPEN pass. closeStaleOpensSQL only sees events with
+// ts_event >= now()-horizon (72 h) and computes lead() inside that window, so an open
+// STOP that outlives the horizon falls out of scope: when its successor arrives days
+// later the stop is never bounded. Measured 2026-09-24: CPACK orphans of 4–52 days
+// (oldest 2024-06-03) shown as open-ended stops in every Events-tab window.
+// This pass takes ONLY open rows older than the horizon (few) within LongHorizonDays and
+// finds each one's successor with a PK-ordered LIMIT 1 lookup (no window over all
+// events), closing it at the successor's ts_event — the same unconditional
+// "bounded-by-next" rule as the main pass (a successor provably ends the interval;
+// category/notes untouched). Rows without a successor stay open. Updates by the true
+// PK (id_equipment, ts_event): id_equipment_event is not unique.
+// %[1]s EvSchema, %[2]s RefSchema. $1 enterprises, $2 horizon hours, $3 long-horizon days.
+const closeLongOpensSQL = `
+WITH scope AS (
+    SELECT e.id_equipment
+      FROM %[2]s.equipments e
+     WHERE e.status_type = 0
+       AND e.tp_equipment IN (1, 3)
+       AND e.id_enterprise = ANY($1)
+), lo AS (
+    SELECT ev.id_equipment, ev.ts_event, nx.ts_event AS next_ts
+      FROM %[1]s.equipment_events ev
+      JOIN scope s ON s.id_equipment = ev.id_equipment
+     CROSS JOIN LATERAL (
+           SELECT n.ts_event FROM %[1]s.equipment_events n
+            WHERE n.id_equipment = ev.id_equipment AND n.ts_event > ev.ts_event
+            ORDER BY n.ts_event LIMIT 1) nx
+     WHERE ev.ts_end IS NULL
+       AND ev.ts_event <  now() - make_interval(hours => $2)
+       AND ev.ts_event >= now() - make_interval(days => $3)
+)
+UPDATE %[1]s.equipment_events ev
+   SET ts_end      = lo.next_ts,
+       duration    = extract(epoch FROM (lo.next_ts - ev.ts_event))::int,
+       last_update = now()
+  FROM lo
+ WHERE ev.id_equipment = lo.id_equipment AND ev.ts_event = lo.ts_event
+   AND ev.ts_end IS NULL`
 
 // defaultInt returns v when it is positive, else def — the inert-safe fallback
 // for a zero-valued CloserConfig knob.
@@ -198,10 +257,15 @@ func RunOnceClose(ctx context.Context, d Dest, cfg CloserConfig) (int64, error) 
 	if err != nil {
 		return 0, fmt.Errorf("close stale opens: %w", err)
 	}
+	longTag, err := tx.Exec(ctx, fmt.Sprintf(closeLongOpensSQL, d.SilverSchema, d.RefSchema),
+		cfg.Enterprises, horizon, defaultInt(cfg.LongHorizonDays, 60))
+	if err != nil {
+		return 0, fmt.Errorf("close long opens: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("close stale opens commit: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	return tag.RowsAffected() + longTag.RowsAffected(), nil
 }
 
 // LoopClose runs the stale-open closer on a fixed cadence for every destination.

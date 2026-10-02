@@ -31,7 +31,25 @@ for pair in $TENANTS; do
     [ "$MSTART" \> "$EFF_END" ] || [ "$MSTART" = "$EFF_END" ] && { log "ent=$LEGENT $Y-$M below lag boundary, skip"; continue; }
     DEST="s3://${BUCKET}/equipment_values/enterprise=${F3ENT}/year=${Y}/month=${M}/data-${Y}-$(printf %02d "$M")-legacy.parquet"
     log "ent=$LEGENT->F3 $F3ENT month=$Y-$M window=[$MSTART,$EFF_END) -> $DEST"
-    "$DUCKDB" <<SQL
+    # Bounded DuckDB (2026-09-25): unbounded, DuckDB defaults to 80 pct of RAM (~6.4 GB on the 8 GB app
+    # host shared with ~45 containers). The first nightly run (02:30) exhausted memory and thrashed the host
+    # for ~1.5 h (read-api/operator/csadmin down, rollups stalled). Now it spills to temp_directory instead.
+    mkdir -p "${DUCKDB_TMP:-/var/tmp/historian-duckdb}"
+    # Stage the month DAY BY DAY into a file-backed DuckDB table (spills to disk) instead of one
+    # month-wide postgres_query, which materializes ~4.7 M wide rows in memory and cannot fit the
+    # bounded 1.2 GB budget. Output is unchanged: the same single monthly parquet at $DEST.
+    STAGE_DB="${DUCKDB_TMP:-/var/tmp/historian-duckdb}/legacy-stage-${F3ENT}-${Y}-${M}.duckdb"
+    rm -f "$STAGE_DB" "$STAGE_DB.wal"
+    DAY_INSERTS=""; D="$MSTART"
+    while [ "$D" \< "$EFF_END" ]; do
+      DN="$(date -u -d "$D +1 day" +%Y-%m-%d)"; [ "$DN" \> "$EFF_END" ] && DN="$EFF_END"
+      DAY_INSERTS="${DAY_INSERTS}INSERT INTO lev SELECT * FROM postgres_query('leg','SELECT * FROM equipment_values WHERE id_enterprise=${LEGENT} AND ts_value>=''${D}'' AND ts_value<''${DN}''');
+"
+      D="$DN"
+    done
+    "$DUCKDB" "$STAGE_DB" <<SQL
+SET memory_limit='${DUCKDB_MEMORY_LIMIT:-1200MB}'; SET threads=${DUCKDB_THREADS:-1}; SET s3_uploader_thread_limit=${DUCKDB_S3_UPLOAD_THREADS:-2};
+SET temp_directory='${DUCKDB_TMP:-/var/tmp/historian-duckdb}'; SET preserve_insertion_order=false;
 INSTALL httpfs; LOAD httpfs; INSTALL postgres; LOAD postgres;
 CREATE SECRET s3sec (TYPE S3, PROVIDER credential_chain, REGION 'us-east-1');
 ATTACH 'host=${LEG_HOST} port=5432 dbname=${LEG_DB} user=${LEG_USER} password=${LPW}' AS leg (TYPE postgres, READ_ONLY);
@@ -41,6 +59,8 @@ CREATE TEMP TABLE map AS SELECT DISTINCT l.id_equipment AS leg_id, f.id_equipmen
  JOIN postgres_query('an','SELECT DISTINCT id_equipment, packml_topic FROM core.packml_register WHERE id_enterprise=${F3ENT} AND active=true AND id_equipment IS NOT NULL') f
    ON replace(l.packml_topic,'C-PACK','CPACK')=f.packml_topic;
 CREATE TEMP TABLE eqdim AS SELECT * FROM postgres_query('an','SELECT id_equipment,id_site,id_area FROM core.equipments WHERE id_enterprise=${F3ENT}');
+CREATE TABLE lev AS SELECT * FROM postgres_query('leg','SELECT * FROM equipment_values WHERE false');
+${DAY_INSERTS}
 COPY (
   SELECT lev.ts_value, ${F3ENT} AS id_enterprise, eq.id_site, eq.id_area, map.f3_id AS id_equipment,
     lev.net_production_incr, lev.gross_production_incr, lev.scrap_incr, lev.speed, lev.id_order, lev.conversion_factor,
@@ -54,14 +74,15 @@ COPY (
     lev.is_equipment_line_infeed, lev.is_equipment_line_outfeed, lev.process_scrap_incr, lev.process_scrap_val,
     lev.process_scrap_incr_quality, lev.process_scrap_val_quality, lev.tp_equipment, lev.sub_mode, lev.ideal_production_speed,
     lev.check_number, ${F3ENT} AS enterprise, ${Y} AS year, ${M} AS month
-  FROM (SELECT * FROM postgres_query('leg','SELECT * FROM equipment_values WHERE id_enterprise=${LEGENT} AND ts_value>=''${MSTART}'' AND ts_value<''${EFF_END}''')) lev
+  FROM lev
   JOIN map ON map.leg_id = lev.id_equipment
   JOIN eqdim eq ON eq.id_equipment = map.f3_id
   LEFT JOIN map mi ON mi.leg_id = lev.id_equipment_line_infeed
   LEFT JOIN map mo ON mo.leg_id = lev.id_equipment_line_outfeed
   LEFT JOIN map mc ON mc.leg_id = lev.id_equipment_line_connected
-) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, OVERWRITE_OR_IGNORE);
+) TO '${DEST}' (FORMAT parquet, COMPRESSION ZSTD, ROW_GROUP_SIZE ${DUCKDB_ROW_GROUP_SIZE:-20000}, OVERWRITE_OR_IGNORE);
 SQL
+    rm -f "$STAGE_DB" "$STAGE_DB.wal"
   done
 done
 log "done tenants=[${TENANTS}] end<${END}"

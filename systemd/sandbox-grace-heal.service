@@ -1,0 +1,10 @@
+[Unit]
+Description=Sandbox twin grace-period self-heal (heals SANDBOX-CPACK back to CPACK staging when a hands-on session's grace period ends)
+After=docker.service network-online.target
+[Service]
+Type=oneshot
+# Installed by scripts/install-sandbox-grace-heal.sh. tick = heal only when due
+# (ops.sandbox_hold_status.heal_due); otherwise a no-op that prints "nothing due".
+Environment=SANDBOX_LOCAL=1 SKIP_FANOUT_EMIT=1
+ExecStart=/opt/packiot/sandbox/sandbox-session.sh tick
+TimeoutStartSec=45min

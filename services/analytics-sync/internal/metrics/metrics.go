@@ -18,9 +18,15 @@ type Metrics struct {
 	Cursor     prometheus.Gauge       // current cursor id_user_logs
 
 	// PO reconciler (reconcile.go) outcomes.
-	ReconcileInserted   prometheus.Counter // missing legacy POs backfilled into the twin
-	ReconcileFinished   prometheus.Counter // zombie status=2 twin POs closed to match legacy
-	ReconcileUnresolved prometheus.Counter // legacy POs whose equipment had no staging twin
+	ReconcileInserted   prometheus.Counter     // missing legacy POs backfilled into the twin
+	ReconcileFinished   prometheus.Counter     // zombie status=2 twin POs closed to match legacy
+	ReconcileUnresolved prometheus.Counter     // legacy POs whose equipment had no staging twin
+	ReconcileEnriched   prometheus.Counter     // twin POs whose NULL id_product/id_client were filled from legacy
+	ReconcileEnrichSkip *prometheus.CounterVec // enrich refusals, by reason
+
+	// Manual downtime-event reconciler (manual_reconcile.go), by action:
+	// insert|update|move|delete|link|unresolved|delete_guarded.
+	ManualEvents *prometheus.CounterVec
 
 	// DLQ (dlq.go).
 	DLQRetried *prometheus.CounterVec // by outcome — DLQ rows re-driven by the retrier
@@ -63,6 +69,18 @@ func New() *Metrics {
 			Name: "legacy_replicator_reconcile_unresolved_total",
 			Help: "legacy POs skipped by the reconciler — equipment had no staging twin",
 		}),
+		ReconcileEnriched: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "legacy_replicator_reconcile_enriched_total",
+			Help: "twin POs whose NULL id_product/id_client were filled from legacy by the enrich pass",
+		}),
+		ReconcileEnrichSkip: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "legacy_replicator_reconcile_enrich_skipped_total",
+			Help: "product/client links the enrich pass refused to make, by reason",
+		}, []string{"reason"}),
+		ManualEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "legacy_replicator_manual_events_total",
+			Help: "manual downtime events reconciled from legacy equipment_events_man, by action",
+		}, []string{"action"}),
 		DLQRetried: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "legacy_replicator_dlq_retried_total",
 			Help: "DLQ rows re-driven by the retrier, by outcome (succeeded|failed|gone)",
@@ -74,6 +92,7 @@ func New() *Metrics {
 	}
 	reg.MustRegister(m.Dispatched, m.Skipped, m.Failed, m.UpdateNoop, m.Cursor,
 		m.ReconcileInserted, m.ReconcileFinished, m.ReconcileUnresolved,
+		m.ReconcileEnriched, m.ReconcileEnrichSkip, m.ManualEvents,
 		m.DLQRetried, m.DLQDepth)
 	return m
 }
@@ -86,9 +105,19 @@ func (m *Metrics) IncUpdateNoop(schema, table string) {
 }
 func (m *Metrics) SetCursor(id int64) { m.Cursor.Set(float64(id)) }
 
-func (m *Metrics) IncReconcileInserted()   { m.ReconcileInserted.Inc() }
-func (m *Metrics) IncReconcileFinished()   { m.ReconcileFinished.Inc() }
-func (m *Metrics) IncReconcileUnresolved() { m.ReconcileUnresolved.Inc() }
+func (m *Metrics) IncReconcileInserted()      { m.ReconcileInserted.Inc() }
+func (m *Metrics) IncReconcileFinished()      { m.ReconcileFinished.Inc() }
+func (m *Metrics) IncReconcileUnresolved()    { m.ReconcileUnresolved.Inc() }
+func (m *Metrics) AddReconcileEnriched(n int) { m.ReconcileEnriched.Add(float64(n)) }
+func (m *Metrics) IncReconcileEnrichSkip(reason string) {
+	m.ReconcileEnrichSkip.WithLabelValues(reason).Inc()
+}
+
+func (m *Metrics) AddManualEvents(action string, n int) {
+	if n > 0 {
+		m.ManualEvents.WithLabelValues(action).Add(float64(n))
+	}
+}
 
 func (m *Metrics) IncDLQRetried(outcome string) { m.DLQRetried.WithLabelValues(outcome).Inc() }
 func (m *Metrics) SetDLQDepth(n int64)          { m.DLQDepth.Set(float64(n)) }

@@ -65,41 +65,73 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "historian" {
   }
 }
 
-# Versioning off — Parquet objects are immutable per (tenant, day) keys; a re-run
-# of a day intentionally overwrites exactly that object (idempotent backfill).
+# Versioning ON (2026-09-30 backup audit; NOT YET APPLIED — live is unversioned).
+# Raw telemetry older than the analytics 90-day hot window exists ONLY in this
+# bucket, and our own jobs overwrite (historian-append, cold re-unloads) and
+# delete (historian-prune-by-data-age.sh) objects in it. Re-runs still overwrite
+# the same (tenant, day) key idempotently — the previous version just stays
+# recoverable for 30 days (noncurrent rule below). The nightly mirror to the
+# backup bucket (scripts/backup-historian.sh) covers deletes but not overwrites.
 resource "aws_s3_bucket_versioning" "historian" {
   bucket = aws_s3_bucket.historian.id
   versioning_configuration {
-    status = "Disabled"
+    status = "Enabled"
   }
 }
 
-# Lifecycle:
-#   * equipment_values/ — tier COLD data down (it is a historian; recent months
-#     are hit most). Standard → Standard-IA at 1 yr → Glacier Instant Retrieval
-#     at 2 yr. GIR still serves Athena with ms latency at ~$0.004/GB-mo. We do NOT
-#     use Deep Archive (would break interactive Athena). Don't over-engineer — no
-#     intelligent-tiering, the access pattern is predictable (recent = hot).
-#   * athena-results/ — query-result spill is disposable; expire at 30 days.
+# Lifecycle — codified FROM LIVE on 2026-09-23 (T0, docs/plans/unified-hot-cold-
+# serving-grain-tiered-retention.md). The repo previously declared
+# `expiration { days = 180 }` on equipment_values/ while live had been switched to
+# intelligent-tiering; an apply would have re-armed deletion of the archive.
+#
+# NO EXPIRATION on data prefixes, by design:
+#   S3 lifecycle expiration counts OBJECT age (upload time), NOT the age of the data
+#   inside. A 2021 partition backfilled yesterday is a 1-day-old object; a partition
+#   rewritten daily never expires. So lifecycle CANNOT implement a data-age cap.
+#   The staging 3-month cap (post-prod-promotion) = scripts/historian-prune-by-data-
+#   age.sh (deletes enterprise=/year=/month= prefixes by partition KEY, then refreshes
+#   the *_union_boundary tables so hot∪cold never double-counts or gaps).
+#   * equipment_values/, equipment_events/ — Standard → INTELLIGENT_TIERING at 30 d
+#     (auto-moves untouched objects to IA/archive-instant tiers; no retrieval fees).
+#   * production_orders/, equipment_oee_shift/ — tiny (~6 MB); left Standard (IT's
+#     per-object monitoring fee + 128 KB minimum outweigh savings).
+#   * athena-results/ — disposable query spill; expire at 30 days.
 resource "aws_s3_bucket_lifecycle_configuration" "historian" {
   bucket = aws_s3_bucket.historian.id
   rule {
-    id     = "prune-equipment-values-180d"
+    id     = "expire-athena-results-30d"
+    status = "Enabled"
+    filter { prefix = "athena-results/" }
+    expiration { days = 30 }
+  }
+  rule {
+    id     = "tier-equipment-values-intelligent"
     status = "Enabled"
     filter { prefix = "equipment_values/" }
-    # STAGING is a TEST historian: PRUNE raw Parquet after 6 months. (Production
-    # instead KEEPS forever and only tiers to colder storage — see
-    # terraform/production/historian.tf's 365d/730d transitions.)
-    expiration { days = 180 }
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
     }
   }
   rule {
-    id     = "expire-athena-results"
+    id     = "expire-noncurrent-versions-30d"
     status = "Enabled"
-    filter { prefix = "athena-results/" }
-    expiration { days = 30 }
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+  rule {
+    id     = "tier-equipment-events-intelligent"
+    status = "Enabled"
+    filter { prefix = "equipment_events/" }
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
   }
 }
 
@@ -344,6 +376,101 @@ resource "aws_glue_catalog_table" "equipment_events" {
 # bucket + prod Glue DB, AFTER the prod EE cold archive is re-unloaded to F3 (the
 # prod cutover is a later round). Reuse local.historian_ee_columns (identical
 # schema). This staging block is the template.
+
+# ── The production_orders (PO) projection table ──────────────────────────────
+# Codifies the cold production_orders archive (per-PO OEE headline), mirroring the
+# equipment_values / equipment_events pattern (partition projection, no crawler).
+# Analytics keeps only ~3 months of POs; the full history (legacy 2021-12 →) is
+# archived here by scripts/historian-po-backfill.sh (legacy->F3 remap). Columns are
+# the served PO fields; enterprise/year/month are PATH partition keys (files also
+# carry copies — Hive reads the path value, as with EV/EE).
+#
+# ID-SPACE: F3 (legacy id_equipment remapped via packml_register). Only VERIFIED-F3
+# partitions are served (the po_promoted gate in the gateway); the raw archive is
+# never tenant-facing without promotion.
+#
+# APPLY NOTE: reconcile with `terraform import` after the first backfill creates the
+# S3 prefix, do NOT plain-apply if the catalog entry already exists:
+#   terraform import aws_glue_catalog_table.production_orders \
+#     639178078294:packiot_historian_staging:production_orders
+locals {
+  historian_po_columns = [
+    { name = "ts_start", type = "timestamp" },
+    { name = "ts_end", type = "timestamp" },
+    { name = "id_enterprise", type = "int" },
+    { name = "id_site", type = "int" },
+    { name = "id_area", type = "int" },
+    { name = "id_equipment", type = "int" },
+    { name = "id_order", type = "bigint" },
+    { name = "id_product", type = "bigint" },
+    { name = "status", type = "int" },
+    { name = "gross_production", type = "double" },
+    { name = "net_production", type = "double" },
+    { name = "oee_a", type = "double" },
+    { name = "oee_p", type = "double" },
+    { name = "oee_q", type = "double" },
+    { name = "oee", type = "double" },
+    { name = "running_time", type = "int" },
+    { name = "stopped_time", type = "int" },
+    { name = "available_time", type = "int" },
+    { name = "planned_downtime", type = "int" },
+    { name = "production_programmed", type = "bigint" },
+    { name = "production_ordered", type = "bigint" },
+    { name = "production_real", type = "bigint" },
+    { name = "production_final", type = "bigint" },
+  ]
+}
+
+resource "aws_glue_catalog_table" "production_orders" {
+  name          = "production_orders"
+  database_name = aws_glue_catalog_database.historian.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    EXTERNAL                      = "TRUE"
+    classification                = "parquet"
+    "parquet.compression"         = "ZSTD"
+    "projection.enabled"          = "true"
+    "projection.enterprise.type"  = "integer"
+    "projection.enterprise.range" = "0,120"
+    "projection.year.type"        = "integer"
+    "projection.year.range"       = "1970,2027"
+    "projection.month.type"       = "integer"
+    "projection.month.range"      = "1,12"
+    "storage.location.template"   = "s3://${aws_s3_bucket.historian.bucket}/production_orders/enterprise=$${enterprise}/year=$${year}/month=$${month}/"
+  }
+
+  partition_keys {
+    name = "enterprise"
+    type = "int"
+  }
+  partition_keys {
+    name = "year"
+    type = "int"
+  }
+  partition_keys {
+    name = "month"
+    type = "int"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.historian.bucket}/production_orders/"
+    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+    }
+
+    dynamic "columns" {
+      for_each = local.historian_po_columns
+      content {
+        name = columns.value.name
+        type = columns.value.type
+      }
+    }
+  }
+}
 
 # ── Athena workgroup ─────────────────────────────────────────────────────────
 # Dedicated workgroup so historian queries are isolated + cost-guarded. Results

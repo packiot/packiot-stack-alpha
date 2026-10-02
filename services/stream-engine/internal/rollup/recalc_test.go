@@ -31,8 +31,13 @@ func TestReflagSemantics(t *testing.T) {
 	if !strings.Contains(reflagRunningSQL, "status = 2") {
 		t.Error("running POs must re-enqueue every pass")
 	}
-	if !strings.Contains(reflagRecentSQL, "interval '48 hours'") || !strings.Contains(reflagRecentSQL, "status = 3") {
+	if !strings.Contains(reflagRecentSQL, "interval '48 hours'") || !strings.Contains(reflagRecentSQL, "status IN (3, 4)") {
 		t.Error("finished POs must keep refreshing for 48h")
+	}
+	// The 48 h tail is keyed on the END (2026-09-29): keyed on ts_start, a PO that ran
+	// longer than 48 h was never re-summed after it closed.
+	if !strings.Contains(reflagRecentSQL, "COALESCE(ts_end, ts_start) >= now() - interval '48 hours'") {
+		t.Error("the finished-PO tail must be keyed on ts_end")
 	}
 }
 
@@ -59,6 +64,55 @@ func TestComputeShape(t *testing.T) {
 	}
 	if !strings.Contains(computeReflagOpenSQL, "upper(runtime_timerange) IS NULL") {
 		t.Error("open-range reflag lost")
+	}
+}
+
+// TestComputeSplitInstrumentation locks in the line-metered (split-instrumentation)
+// counter-source resolution: a tp=3 line-PO whose counters live on a gross_machine
+// MEMBER must read that member, while every self-metered equipment stays byte-identical.
+func TestComputeSplitInstrumentation(t *testing.T) {
+	// Phase A resolves the value source via COALESCE(gross_machine, id_equipment)
+	// and joins equipment_values on it — NOT on the (possibly empty) line row.
+	for _, m := range []string{
+		"COALESCE(eq.gross_machine, e.id_equipment) AS gross_src",
+		"WHERE ca.id_equipment = el.gross_src",
+		"COALESCE(eq.gross_machine, e.id_equipment) AS ev_src", // Phase B: events from the same member
+		"WHERE ee.id_equipment = el.ev_src",
+	} {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+			t.Errorf("split-instrumentation resolution lost %q", m)
+		}
+	}
+	// The net→gross reconciliation must be GATED on gross_machine IS NOT NULL, so a
+	// self-metered PO with a genuine net=0 (all-scrap) is never rewritten.
+	if !strings.Contains(computeValuesSQL, "el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0") {
+		t.Error("net→gross reconciliation must be gated on gross_machine IS NOT NULL")
+	}
+	// GUARD: Phase A's own-counter source base stays id_equipment — it never FALLS BACK to
+	// lead_machine. (2026-09-25) Line-lead lines are no longer read here at all: their PO
+	// counters come from the explicit, separately-gated computeLineLeadValuesSQL (the same
+	// lead-sourced model as the hour/shift grains), because their own counters were gross-only
+	// (L4/L5 → PO shown as all scrap), net-only (negative scrap) or absent (L3/L8 → 0).
+	if !strings.Contains(computeValuesSQL, "COALESCE(eq.gross_machine, e.id_equipment) AS gross_src") {
+		t.Error("Phase A source must stay COALESCE(gross_machine, id_equipment)")
+	}
+	if strings.Contains(computeEventsSQL, "lead_machine") {
+		t.Error("the events pass must not read lead_machine")
+	}
+	if !strings.Contains(computeValuesSQL, "WHEN el.line_lead THEN e.net_production") {
+		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
+	}
+	// The enterprise gate is rendered from LineLeadScope; with no per-line overrides
+	// it must be exactly the historical predicate.
+	renderedLL := strings.Replace(computeLineLeadValuesSQL, "%[6]s", LineLeadScope{}.Predicate("$2::int[]"), 1)
+	for _, must := range []string{"eq.tp_equipment = 3", "COALESCE(eq.lead_machine, 0) > 0", "eq.id_enterprise = ANY($2::int[])", "COALESCE(sum(r.eff_net), 0) AS net"} {
+		if !strings.Contains(renderedLL, must) {
+			t.Errorf("line-lead PO pass missing gate/invariant %q", must)
+		}
+	}
+	// 2026-09-29: net is never lowered to gross per minute (transit is real output).
+	if strings.Contains(computeLineLeadValuesSQL, "LEAST(r.eff_net, r.eff_gross)") {
+		t.Error("line-lead PO pass must not clamp net to gross per minute")
 	}
 }
 
@@ -102,7 +156,7 @@ func TestGrainMatrix(t *testing.T) {
 	// ideal_production (grain has no ideal_speed column).
 	for _, m := range []string{
 		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)",        // A ∈ [0,1], ::float or bigint div → 0
-		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                                // Q ∈ [0,1]
+		"oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)",                                // Q ≥ 0, uncapped since 2026-09-29
 		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                            // P derived from ideal_production
 	} {
 		if !strings.Contains(grainOeeReconcileSQL, m) {
@@ -118,11 +172,15 @@ func TestGrainMatrix(t *testing.T) {
 	if !strings.Contains(grainRollupSQL, "s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0)") {
 		t.Error("grainRollupSQL oee_a must cast ::float (bigint columns → integer division → oee_a=0)")
 	}
-	// oee must be the PRODUCT of exactly the three clamped factors (two '*' joining
-	// three GREATEST(LEAST(...)) terms after the `oee =`).
+	// oee must be the PRODUCT of the three factors: A bounded to [0,1] (one
+	// GREATEST(LEAST( term), P and Q uncapped since 2026-09-29 (GREATEST(x, 0)).
 	oeeAssign := grainOeeReconcileSQL[strings.Index(grainOeeReconcileSQL, "oee   ="):]
-	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
-		t.Errorf("canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	oeeExpr := oeeAssign[:strings.Index(oeeAssign, "FROM")]
+	if n := strings.Count(oeeExpr, "GREATEST(LEAST("); n != 1 {
+		t.Errorf("canonical oee: only Availability may be capped, found %d GREATEST(LEAST( terms", n)
+	}
+	if n := strings.Count(oeeExpr, "GREATEST("); n != 3 {
+		t.Errorf("canonical oee must be the product of 3 factors, found %d GREATEST( terms", n)
 	}
 	for _, m := range []string{
 		"s.net / NULLIF(s.ideal_production, 0)",                                // oee (grain variant, pre-reconcile top-down)
@@ -145,7 +203,7 @@ func TestGrainMatrix(t *testing.T) {
 func TestDayCanonicalReconcile(t *testing.T) {
 	for _, m := range []string{
 		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)", // A ∈ [0,1], ::float
-		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                          // Q ∈ [0,1]; net=0/gross=0 → 0 (never 1)
+		"oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)",                          // Q ≥ 0, uncapped (hour transit Q>1 is data); net=0/gross=0 → 0
 		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                      // P from ideal_production (no ideal_speed on day)
 	} {
 		if !strings.Contains(dayOeeReconcileSQL, m) {
@@ -156,10 +214,14 @@ func TestDayCanonicalReconcile(t *testing.T) {
 	if !strings.Contains(dayOeeReconcileSQL, "e.running_time::float / NULLIF(e.available_time, 0)") {
 		t.Error("day reconcile Availability must cast ::float (integer columns → integer division → oee_a=0)")
 	}
-	// oee must be the PRODUCT of exactly the three clamped factors (not back-solved).
+	// oee must be the PRODUCT of the three factors (not back-solved): A capped to
+	// [0,1], P and Q uncapped since 2026-09-29.
 	oeeAssign := dayOeeReconcileSQL[strings.Index(dayOeeReconcileSQL, "oee   ="):]
-	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
-		t.Errorf("day canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 1 {
+		t.Errorf("day canonical oee: only Availability may be capped, found %d GREATEST(LEAST( terms", n)
+	}
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST("); n != 3 {
+		t.Errorf("day canonical oee must be the product of 3 factors, found %d GREATEST( terms", n)
 	}
 	if strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "oee /") || strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "e.oee /") {
 		t.Error("day canonical oee must be a·p·q, not back-solved from oee")
@@ -295,7 +357,7 @@ func TestShiftShape(t *testing.T) {
 		"(ev.ts_total - ev.ts_planned) / (3600 * 24)", // ELAPSED-prorated proportional formula (#80/ADR-0029 D5)
 		"now() + interval '18 hour'",                    // forward re-flag
 	} {
-		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+shiftTargetsSQL+shiftReflagSQL, m) {
+		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+withOosTarget(shiftTargetsSQL, false, "")+shiftReflagSQL, m) {
 			t.Errorf("shift lost %q", m)
 		}
 	}

@@ -26,7 +26,7 @@ export default async function globalSetup() {
     const out = execFileSync('bash', [script, '--heal'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 180_000,
+      timeout: 600_000, // analytics reflection ~2-3 min (config + 14d events + all POs/manual events)
     });
     // Surface the parity + wipe status lines the script prints.
     out
@@ -35,6 +35,13 @@ export default async function globalSetup() {
       .forEach((l) => console.log('[sandbox self-heal]', l.trim()));
     console.log('[sandbox self-heal] done — twin reset to ent-3 reflection.');
   } catch (err: any) {
+    if (err?.status === 4) {
+      // t-sandbox-grace-hold: a person is working in the twin (changes within the grace period).
+      // Deliberately NOT forced — the suite must not wipe their session.
+      console.error('[sandbox self-heal] REFUSED — the sandbox is HELD by a hands-on session.');
+      console.error('  Wait for its grace period, or release it: scripts/sandbox-session.sh heal-now');
+      console.error('  (or GitHub → Sandbox Self-Heal → heal-now). Status: scripts/sandbox-session.sh status');
+    }
     console.error('[sandbox self-heal] FAILED — mutating tests may be non-reproducible.');
     console.error(err?.stdout?.toString?.() || err?.message || err);
     throw err; // fail fast: a non-reset sandbox invalidates the run's premise

@@ -104,3 +104,15 @@ func TestRunOnceCloseDefaults(t *testing.T) {
 		t.Errorf("horizon default = %d, want 72", got)
 	}
 }
+
+// The trailing count-silence close must be RUNNING-only: applied to an open STOP it
+// ended the stop at (or ≤thr after) its own start and — since only ts_end IS NULL rows
+// are touched — permanently (2026-09-24: 955/3791 CPACK stops truncated in 7 days).
+func TestCloserTrailingCloseIsRunningOnly(t *testing.T) {
+	if !strings.Contains(closeStaleOpensSQL, "o.status = 6 AND lc.last_ts IS NOT NULL") {
+		t.Fatal("trailing count-silence close must be restricted to status 6 (running); an open stop is ongoing downtime")
+	}
+	if !strings.Contains(closeStaleOpensSQL, "WHEN o.next_ts IS NOT NULL THEN o.next_ts") {
+		t.Fatal("next-transition bound must still apply to every status (it is what closes stops)")
+	}
+}

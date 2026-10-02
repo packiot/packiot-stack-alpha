@@ -6,6 +6,9 @@ package rollup
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -84,5 +87,59 @@ func TestShiftLineLeadWindow_widened(t *testing.T) {
 	hour := HourLineLeadSQLForParity()
 	if strings.Contains(hour, "interval '2 days'") || strings.Contains(hour, "interval '25 day'") {
 		t.Error("hour line-lead unexpectedly gained a lines-CTE ts_value window")
+	}
+}
+
+// TestLineLeadSQLAlwaysGetsPlannedPred guards the 2026-09-28 hotfix: the hour
+// backfill formatted hourLineLeadSQL without withPlannedPred, leaving a bare
+// "WHERE /*PLANNED_PRED*/" (a syntax error) in the live SQL. Every non-test use of
+// the raw line-lead constants must go through withPlannedPred.
+func TestLineLeadSQLAlwaysGetsPlannedPred(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`fmtR[DP]\(\s*(shift|hour)LineLeadSQL\b`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllString(string(src), -1) {
+			t.Errorf("%s: %q formats a raw line-lead SQL; wrap it in withPlannedPred(...)", f, m)
+		}
+	}
+	for name, sql := range map[string]string{"shift": ShiftLineLeadSQLForParity(), "hour": HourLineLeadSQLForParity()} {
+		if strings.Contains(sql, plannedPredToken) {
+			t.Errorf("%s line-lead parity SQL still contains the %s token", name, plannedPredToken)
+		}
+	}
+}
+
+// Lookback regression (2026-09-29): every pass that turns events into time-in-state
+// must include the event IN EFFECT at its scan bound, not only events that started
+// inside the lookback — else a stop begun before the bound silently disappears.
+func TestEventPassesIncludeEventInEffect(t *testing.T) {
+	for name, sql := range map[string]string{
+		"shiftLineLead": shiftLineLeadSQL, "hourLineLead": hourLineLeadSQL,
+		"hourEvents": hourEventsSQL, "shiftEvents": shiftEventsSQL,
+	} {
+		if strings.Count(sql, "ORDER BY p.ts_event DESC") != 1 || !strings.Contains(sql, "CROSS JOIN LATERAL") {
+			t.Errorf("%s: missing the per-equipment latest-event-before-bound seed", name)
+		}
+	}
+}
+
+// The week/month re-flag must mirror the rollup eligibility (tp > 1), else tp=1
+// rows get flags nothing ever clears; and the rollup must write scrap.
+func TestGrainReflagScopeAndScrap(t *testing.T) {
+	if !strings.Contains(grainReflagSQL, "tp_equipment > 1") {
+		t.Error("grainReflagSQL must be scoped to tp_equipment > 1 (the eligibility)")
+	}
+	if !strings.Contains(grainRollupSQL, "scrap           = COALESCE(s.scrap, 0)") {
+		t.Error("grainRollupSQL must write scrap = Σ daily scrap")
 	}
 }

@@ -233,6 +233,22 @@ func TestGenerate_ReaderFlowAndCustomizations(t *testing.T) {
 	}
 }
 
+// TestGenerate_AuthoringErrorIs400 proves a render-time AUTHORING mistake (a
+// typo'd reader spot) answers 400 with the reason — not 500 "generation failed",
+// which edge-api surfaced to the CS engineer as a 503 upstream error.
+func TestGenerate_AuthoringErrorIs400(t *testing.T) {
+	s := newTestServer(t)
+	base := readFixture(t, "examples/bispharma.descriptor.yaml")
+	cust := "\ncustomizations:\n  - {id: sub, type: \"link in\", z: t, links: [bispharma_spot_tagz], wires: [[]]}\n"
+	rec := post(t, s, testKey, append(append([]byte{}, base...), []byte(cust)...))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown reader spot") {
+		t.Errorf("body should name the bad spot: %s", rec.Body.String())
+	}
+}
+
 // TestGenerate_EquivalenceWithCLI proves the single-path refactor didn't drift:
 // the endpoint's four artifacts are byte-identical to what Descriptor.Generate
 // produces directly (the exact call the onboard-gen CLI makes).

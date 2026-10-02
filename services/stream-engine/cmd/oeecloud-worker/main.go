@@ -31,6 +31,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/oeeprofile"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollup"
@@ -247,6 +248,17 @@ func main() {
 		cfg.IncrementSanityClampSpikeFraction,
 	)
 	if cfg.IncrementSanityClampEnabled {
+		// Seed the counter-movement catch from the database once per stream, so the
+		// first sample after a restart is covered too. "public" lives on the main
+		// pool; the medallion schemas on the analytics pool (when configured).
+		equipmentValuesWriter.SetTotalizerSeeder(writers.PGTotalizerSeeder(func(schema string) *pgxpool.Pool {
+			if schema == "public" || analyticsPool == nil {
+				return pool
+			}
+			return analyticsPool
+		}, logger))
+	}
+	if cfg.IncrementSanityClampEnabled {
 		logger.Info("increment sanity clamp ENABLED (ADR-0037/ADR-0045 P1) — K·rated_speed·Δt bound + delta-from-zero spike floor",
 			slog.Float64("k", cfg.IncrementSanityClampK),
 			slog.Int("min_dt_seconds", cfg.IncrementSanityClampMinDtSec),
@@ -292,27 +304,80 @@ func main() {
 		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
-	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
-	// closes the loop pocontrol opens).
-	if cfg.PORecalcEnabled {
-		go rollup.LoopRefresh(ctx, bgDests,
-			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
-			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
-			uns.RefreshCurrentJobs)
-	}
-
 	// Shared OEE-fallback config — the live rollup AND the stranded-hour backfill
 	// must run the identical decomposition finalize (canonical A·P·Q reconcile vs
 	// legacy oee_p residual), so build it once and pass it to both.
-	countersAvail := rollup.CountersAvail{
-		Enabled:             cfg.CountersOnlyAvailEnabled,
-		Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
-		IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
-		LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
-		LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
-		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
-		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
+	// WS3 Phase 2a (FU#4): union the env line-lead enterprises with those a client
+	// authored in its OEE profile (availability_mode=count_silence / ideal_source=
+	// lead_machine). Env stays the floor; a profile only ADDS its enterprise; no
+	// profiles ⇒ exactly the env set (parity). Boot-time load against the medallion
+	// pool (client_descriptors lives in analytics), fail-open to env on any error.
+	lineLeadEnts := config.CSVInts(cfg.CountersOnlyLineLeadEnterprises)
+	var lineOptIn, lineOptOut []int
+	profileDB := analyticsPool
+	if profileDB == nil {
+		profileDB = pool
 	}
+	if sets, err := oeeprofile.Load(ctx, profileDB); err != nil {
+		logger.Warn("oee-profile: boot load failed — using env line-lead set only", slog.String("err", err.Error()))
+	} else {
+		if len(sets.LineLeadEnterprises) > 0 {
+			before := len(lineLeadEnts)
+			lineLeadEnts = oeeprofile.UnionInts(lineLeadEnts, sets.LineLeadEnterprises)
+			logger.Info("oee-profile: line-lead enterprises unioned from client descriptors (WS3 Phase 2)",
+				slog.Int("env", before), slog.Int("profile", len(sets.LineLeadEnterprises)), slog.Int("total", len(lineLeadEnts)))
+		}
+		// Per-line overrides (oee_profile.lines) — empty for every tenant without
+		// them, which keeps the rendered rollup SQL byte-identical.
+		lineOptIn, lineOptOut = sets.LineLeadOptIn, sets.LineLeadOptOut
+		if len(lineOptIn)+len(lineOptOut) > 0 {
+			logger.Info("oee-profile: per-line overrides loaded",
+				slog.Int("opt_in_lines", len(lineOptIn)), slog.Int("opt_out_lines", len(lineOptOut)))
+		}
+	}
+	countersAvail := rollup.CountersAvail{
+		Enabled:                cfg.CountersOnlyAvailEnabled,
+		Equipments:             config.CSVInts(cfg.CountersOnlyAvailEquipments),
+		IdleTimeoutSec:         cfg.CountersOnlyAvailIdleTimeoutSec,
+		LineLeadEnabled:        cfg.CountersOnlyLineLeadEnabled,
+		LineLeadEnterprises:    lineLeadEnts,
+		LineLeadOptIn:          lineOptIn,
+		LineLeadOptOut:         lineOptOut,
+		AvailFloorEnabled:      cfg.OeeAvailFloorEnabled,
+		OeeCanonicalAPQ:        cfg.OeeCanonicalAPQEnabled,
+		AvailabilityExclusions: cfg.AvailabilityExclusionsEnabled,
+	}
+	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
+	// closes the loop pocontrol opens). Started after the line-lead set is built:
+	// PO counters on line-lead lines are lead-sourced like the hour/shift grains.
+	if cfg.PORecalcEnabled {
+		var poLineLead rollup.LineLeadScope
+		if cfg.CountersOnlyLineLeadEnabled {
+			poLineLead = countersAvail.LineLead()
+		}
+		go rollup.LoopRefresh(ctx, bgDests,
+			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
+			cfg.POAvailabilityEnabled, cfg.AvailabilityExclusionsEnabled, poLineLead,
+			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute,
+			time.Duration(cfg.PORecomputeSweepHours)*time.Hour, logger, jobObs,
+			uns.RefreshCurrentJobs)
+	}
+
+	// Stranded-flag sweep (2026-10-01): flags no consumer can ever drain (PO rows
+	// closed before the window, shift > 30 d or out of scope, hour > backfill
+	// horizon or tp=1) are cleared hourly with a WARN, so a stranded repair is seen.
+	if cfg.StrandedFlagSweepEnabled && (cfg.PORecalcEnabled || cfg.RuntimeRollupEnabled) {
+		hourHorizon := ""
+		if cfg.RollupBackfillEnabled {
+			hourHorizon = "10 days"
+		}
+		go rollup.LoopStrandedSweep(ctx, bgDests, rollup.StrandedScope{
+			POWindow:                cfg.PORecalcWindow,
+			MachineLevelEnterprises: config.CSVInts(cfg.RollupMachineLevelEnterprises),
+			HourHorizon:             hourHorizon,
+		}, logger, jobObs)
+	}
+
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, bgDests,
@@ -407,6 +472,35 @@ func main() {
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0010 §10.4 PROMOTION — LIVE minting for counters-only clients that have
+	// NO other event writer (e.g. Bispharma ent5: counters-only, no MachSpeed /
+	// StateCurrent, so nothing else mints its downtimes). A SECOND deriver instance
+	// targeting the LIVE equipment_events, gated on CPAC_EVENT_LIVE_ENTERPRISES
+	// (default empty ⇒ not scheduled). CPACK stays SHADOW above — its speed-based
+	// events are owned by the mirror fan-out, so a live CPAC write there would
+	// double-write (the #456 two-writer class). Per-equipment stop_threshold_time
+	// (set high for lossy-feed clients via migration) tunes out count-cadence false
+	// stops; the upsert is idempotent on (id_equipment, ts_event) + never clobbers
+	// an operator-touched row, so live-minting is safe as the SOLE writer.
+	if cfg.CPACEventDerivationEnabled && cfg.CPACEventLiveEnterprises != "" {
+		go events.LoopCPAC(ctx, bgDests,
+			events.CPACConfig{
+				Enterprises:     config.CSVInts(cfg.CPACEventLiveEnterprises),
+				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
+				TargetTable:     "equipment_events",
+				// A net-only lead (Bispharma L18 + BISNAGO leads) has no gross
+				// increments, so the gross-only rule minted NOTHING for those lines.
+				// Use the line-lead OEE model's activity (gross|net|scrap) for the
+				// lead machine only. The CPACK shadow instance above stays gross-only.
+				LeadActivity: true,
+				// PLC-link aware (2026-10-01): silence while the reader could not
+				// read the PLC (silver.plc_link_minutes) is NO DATA (status 20),
+				// not a stop. Inert until an endpoint reports link health.
+				LinkHealth: true,
+			},
+			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
+	}
+
 	// Stale-open events closer — bounds/closes never-closed CPACK (status_type=0)
 	// open equipment_events on the LIVE table (mirror fan-out mints them but never
 	// closes them; the CPAC deriver that would bound them is still shadow-only).
@@ -418,6 +512,7 @@ func main() {
 				Enterprises:     config.CSVInts(cfg.EventsCloseStaleEnterprises),
 				ThresholdDefSec: cfg.EventsCloseStaleThresholdSec,
 				HorizonHours:    cfg.EventsCloseStaleHorizonHours,
+				LongHorizonDays: cfg.EventsCloseStaleLongHorizonDays,
 			},
 			time.Duration(cfg.EventsCloseStaleIntervalSec)*time.Second, logger, jobObs)
 	}

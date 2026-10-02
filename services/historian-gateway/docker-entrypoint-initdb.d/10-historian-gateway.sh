@@ -166,6 +166,18 @@ CREATE FOREIGN TABLE live.equipment_events (
   desc_subcategory  varchar,
   txt_downtime_notes varchar
 ) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_events');
+-- HOT hourly rollup (analytics silver.equipment_categorical_1hour, 13-month retention): the hot
+-- side of read-api's long-window production path. Sums equal the raw live sums. Needs the
+-- remote grant in db/migrations/t-historian-serving-guards/01-analytics-histgw-ro-hourly.sql.
+-- Query it with LITERAL time bounds only: postgres_fdw never ships now().
+DROP FOREIGN TABLE IF EXISTS live.equipment_values_1hour;
+CREATE FOREIGN TABLE live.equipment_values_1hour (
+  ts_value              timestamptz,
+  id_enterprise         integer,
+  id_equipment          integer,
+  gross_production_incr double precision,
+  net_production_incr   double precision
+) SERVER live_pg OPTIONS (schema_name 'silver', table_name 'equipment_categorical_1hour');
 
 -- ── COLD serving schema (t287) — SYMMETRIC with the hot `live` FDW schema ─────
 -- All historian serving objects (the hot∪cold union views silver.equipment_values / silver.equipment_events,
@@ -200,16 +212,81 @@ SELECT duckdb.create_simple_secret('S3','${HIST_AWS_KEY}','${HIST_AWS_SECRET}','
 -- Serving surface = {gross, net, speed} (canonical, narrow — a production-series
 -- server, not a raw mirror). `speed` is present in every *-legacy.parquet on disk,
 -- so it is surfaced without a re-unload.
+-- SPIKE GUARD (t-historian-serving-guards, 2026-09-28 audit). The parquet stays untouched; the
+-- view NULLs an increment that is physically impossible (same rule as
+-- scripts/historian-ev-daily-rollup.sh):
+--   * negative;
+--   * > 10,000 and at least half the machine's lifetime totalizer (legacy wrote the totalizer
+--     into the increment column: POLYTYPE net 2022-10..2023-09, ~1e12/month);
+--   * > 10,000 and not backed by totalizer movement since the previous row (the 2024-07-22
+--     replay: +74,367 every ~40 s, totalizer frozen); a counter reset keeps its increment
+--     when it does not exceed the new totalizer;
+--   * > 1,000 at more than 5,000 units/min when the machine has >= 3 such rows in the same
+--     hour (sustained burst). A single fast row is a reconnect catch-up and is kept.
+-- Windows partition by (enterprise, year, month, equipment[, hour]), so a year/month filter
+-- still prunes the parquet (a day in a month: ~20 s). Measured on 10 CPACK months:
+-- 2022-05, 2025-03, 2025-09, 2026-05 byte-identical; 2024-07-22 79 M -> 4.4 M gross.
 CREATE OR REPLACE VIEW equipment_values AS
-SELECT r['ts_value']::timestamp               AS ts_value,
-       r['enterprise']::int                   AS id_enterprise,
-       r['year']::int                         AS year,
-       r['month']::int                        AS month,
-       r['id_equipment']::int                 AS id_equipment,
-       r['gross_production_incr']::double precision AS gross_production_incr,
-       r['net_production_incr']::double precision   AS net_production_incr,
-       r['speed']::double precision           AS speed
-FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values/*/*/*/*-legacy.parquet',
+WITH b AS (
+  SELECT r['ts_value']::timestamp                     AS ts_value,
+         r['enterprise']::int                         AS id_enterprise,
+         r['year']::int                               AS year,
+         r['month']::int                              AS month,
+         r['id_equipment']::int                       AS id_equipment,
+         r['gross_production_incr']::double precision AS gi,
+         r['gross_production_val']::double precision  AS gv,
+         r['net_production_incr']::double precision   AS ni,
+         r['net_production_val']::double precision    AS nv,
+         r['speed']::double precision                 AS speed
+    FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values/*/*/*/*-legacy.parquet',
+                      hive_partitioning => true) r
+), l AS (
+  SELECT b.*,
+         lag(gv) OVER wp AS pgv,
+         lag(nv) OVER wp AS pnv,
+         extract(epoch FROM ts_value - lag(ts_value) OVER wp) AS dt
+    FROM b
+  WINDOW wp AS (PARTITION BY id_enterprise, year, month, id_equipment ORDER BY ts_value)
+), f AS (
+  SELECT l.*,
+         (gi > 1000 AND gi * 60.0 / greatest(coalesce(dt, 60), 1) > 5000) AS g_fast,
+         (ni > 1000 AND ni * 60.0 / greatest(coalesce(dt, 60), 1) > 5000) AS n_fast
+    FROM l
+), h AS (
+  SELECT f.*,
+         count(*) FILTER (WHERE g_fast) OVER wh AS g_fast_h,
+         count(*) FILTER (WHERE n_fast) OVER wh AS n_fast_h
+    FROM f
+  WINDOW wh AS (PARTITION BY id_enterprise, year, month, id_equipment, date_trunc('hour', ts_value))
+)
+SELECT ts_value, id_enterprise, year, month, id_equipment,
+       CASE WHEN gi < 0
+              OR (gi > 10000 AND gv > 0 AND gi >= 0.5 * gv)
+              OR (gi > 10000 AND pgv IS NOT NULL AND CASE WHEN gv < pgv THEN gi > gv + 1 ELSE (gv - pgv) < 0.5 * gi END)
+              OR (g_fast AND g_fast_h >= 3)
+            THEN NULL ELSE gi END AS gross_production_incr,
+       CASE WHEN ni < 0
+              OR (ni > 10000 AND nv > 0 AND ni >= 0.5 * nv)
+              OR (ni > 10000 AND pnv IS NOT NULL AND CASE WHEN nv < pnv THEN ni > nv + 1 ELSE (nv - pnv) < 0.5 * ni END)
+              OR (n_fast AND n_fast_h >= 3)
+            THEN NULL ELSE ni END AS net_production_incr,
+       speed
+  FROM h;
+
+-- DAILY rollup of the cold archive (scripts/historian-ev-daily-rollup.sh): one row per
+-- (UTC day, equipment), spike-guarded, covering whole days < ev_daily_watermark.covered_until.
+-- read-api serves production windows > 31 days from it (historian_split.go). On a brand-new
+-- bucket, run the rollup with FULL=1 before the first long-window query.
+CREATE OR REPLACE VIEW equipment_values_daily AS
+SELECT r['day']::date                           AS day,
+       r['enterprise']::int                     AS id_enterprise,
+       r['year']::int                           AS year,
+       r['month']::int                          AS month,
+       r['id_equipment']::int                   AS id_equipment,
+       r['gross_production']::double precision  AS gross_production,
+       r['net_production']::double precision    AS net_production,
+       r['n_rows']::bigint                      AS n_rows
+FROM read_parquet('s3://${HISTORIAN_BUCKET}/equipment_values_daily/*/*/*/*.parquet',
                   hive_partitioning => true) r;
 
 -- ── Promotion ALLOW-LIST (t271) — the SOLE cold-side tenant-isolation gate ────
@@ -313,6 +390,14 @@ COMMENT ON TABLE cold_append_watermark IS
 -- HOT owns ts > cutover_ts. Small table (one row per historian enterprise), read
 -- on the HOT side only (a pure PG join — no DuckDB involvement, so the cold scan
 -- stays a prunable DuckDBScan).
+CREATE TABLE IF NOT EXISTS ev_daily_watermark (
+  id_enterprise int PRIMARY KEY,
+  covered_until date NOT NULL,
+  refreshed_at  timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE ev_daily_watermark IS
+  'Per enterprise: equipment_values_daily holds every whole UTC day strictly before covered_until (scripts/historian-ev-daily-rollup.sh). read-api serves days before it from the rollup and later days from live.equipment_values_1hour.';
+
 CREATE TABLE IF NOT EXISTS ev_union_boundary (
   id_enterprise int PRIMARY KEY,
   cutover_ts    timestamp NOT NULL,
@@ -380,6 +465,112 @@ CREATE OR REPLACE VIEW silver.equipment_values AS
          h.speed
     FROM cold.equipment_values h
     JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.ev_promoted;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- production_orders (PO) — per-PO OEE headline hot+cold union (historian PO archive).
+--   Analytics keeps ~3 months of POs; the full history (legacy 2021-12 →) is archived
+--   to cold by scripts/historian-po-backfill.sh (legacy->F3 remap). COLD-anchored
+--   (EV-style): legacy holds the deep history, analytics (hot FDW) the recent tail.
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Promotion gate: reuse promoted_enterprise (the SOLE cold-side tenant fence). Add a
+-- po_promoted flag (idempotent for both fresh init and an already-running gateway).
+ALTER TABLE promoted_enterprise ADD COLUMN IF NOT EXISTS po_promoted boolean NOT NULL DEFAULT false;
+-- CPACK (ent3) cold POs are the legacy 1->3 remap (id_equipment {47..108} == core.equipments(3)),
+-- the same verified ownership as ev/ee_promoted. Promote it for PO.
+UPDATE promoted_enterprise SET po_promoted = true WHERE id_enterprise = 3;
+
+-- HOT PO: PINNED foreign table (only the served PO fields) from analytics core.production_orders.
+DROP FOREIGN TABLE IF EXISTS live.production_orders;
+CREATE FOREIGN TABLE live.production_orders (
+  ts_start          timestamptz,
+  ts_end            timestamptz,
+  id_enterprise     integer,
+  id_equipment      integer,
+  id_order          bigint,
+  id_product        bigint,
+  status            integer,
+  gross_production  double precision,
+  net_production    double precision,
+  oee_a             double precision,
+  oee_p             double precision,
+  oee_q             double precision,
+  oee               double precision,
+  running_time      integer,
+  stopped_time      integer,
+  available_time    integer,
+  planned_downtime  integer
+) SERVER live_pg OPTIONS (schema_name 'core', table_name 'production_orders');
+
+-- COLD PO: S3 Parquet (only *-legacy.parquet == the deep-remapped legacy backfill), surfacing
+-- the hive partition columns year/month so a bounded query can PRUNE (T3).
+CREATE OR REPLACE VIEW production_orders AS
+SELECT r['ts_start']::timestamp               AS ts_start,
+       r['ts_end']::timestamp                 AS ts_end,
+       r['enterprise']::int                   AS id_enterprise,
+       r['year']::int                         AS year,
+       r['month']::int                        AS month,
+       r['id_equipment']::int                 AS id_equipment,
+       r['id_order']::bigint                  AS id_order,
+       r['id_product']::bigint                AS id_product,
+       r['status']::int                       AS status,
+       r['gross_production']::double precision AS gross_production,
+       r['net_production']::double precision  AS net_production,
+       r['oee_a']::double precision           AS oee_a,
+       r['oee_p']::double precision           AS oee_p,
+       r['oee_q']::double precision           AS oee_q,
+       r['oee']::double precision             AS oee,
+       r['running_time']::int                 AS running_time,
+       r['stopped_time']::int                 AS stopped_time,
+       r['available_time']::int               AS available_time,
+       r['planned_downtime']::int             AS planned_downtime
+FROM read_parquet('s3://${HISTORIAN_BUCKET}/production_orders/*/*/*/*-legacy.parquet',
+                  hive_partitioning => true) r;
+
+-- Per-enterprise cutover boundary (cold-anchored): cutover_ts = max(cold.production_orders.ts_start).
+-- COLD owns ts_start <= cutover, HOT owns ts_start > cutover. Read on the HOT side only (pure PG
+-- join, no DuckDB — keeps the cold scan a prunable DuckDBScan). MUST be refreshed by
+-- refresh-po-cutover.sql at init and after every PO backfill, else the newly-archived window
+-- double-counts. Seed inline here (a TOP-LEVEL parquet scan — never a function).
+CREATE TABLE IF NOT EXISTS po_union_boundary (
+  id_enterprise int PRIMARY KEY,
+  cutover_ts    timestamp NOT NULL,
+  refreshed_at  timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE po_union_boundary IS
+  'Cold-anchored PO boundary: cutover_ts = max(production_orders.ts_start) per enterprise. '
+  'COLD owns ts_start<=cutover_ts, HOT owns >. MUST be refreshed (refresh-po-cutover.sql) at '
+  'init and after every PO backfill that extends the cold store, else silver.production_orders '
+  'double-counts the newly-archived window. Only po_promoted enterprises get a row.';
+INSERT INTO po_union_boundary (id_enterprise, cutover_ts, refreshed_at)
+SELECT h.id_enterprise, max(h.ts_start), now()
+  FROM production_orders h
+  JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.po_promoted
+ WHERE h.id_enterprise IS NOT NULL
+ GROUP BY h.id_enterprise
+ON CONFLICT (id_enterprise)
+  DO UPDATE SET cutover_ts = EXCLUDED.cutover_ts, refreshed_at = now();
+
+-- Unified hot+cold, LEGACY-PRIORITY (cold-anchored) + partition columns.
+-- HOT: live POs strictly newer than this enterprise's historian coverage (LEFT JOIN so a
+--   live-only enterprise with no cutover row keeps all its live POs).
+-- COLD: promoted historian archive only (INNER JOIN po_promoted); all <= cutover by construction.
+CREATE OR REPLACE VIEW silver.production_orders AS
+  SELECT lp.ts_start, lp.ts_end, lp.id_enterprise,
+         EXTRACT(YEAR  FROM lp.ts_start)::int AS year,
+         EXTRACT(MONTH FROM lp.ts_start)::int AS month,
+         lp.id_equipment, lp.id_order, lp.id_product, lp.status,
+         lp.gross_production, lp.net_production, lp.oee_a, lp.oee_p, lp.oee_q, lp.oee,
+         lp.running_time, lp.stopped_time, lp.available_time, lp.planned_downtime
+    FROM live.production_orders lp
+    LEFT JOIN po_union_boundary c ON c.id_enterprise = lp.id_enterprise
+   WHERE c.cutover_ts IS NULL OR lp.ts_start > c.cutover_ts
+  UNION ALL
+  SELECT h.ts_start, h.ts_end, h.id_enterprise, h.year, h.month,
+         h.id_equipment, h.id_order, h.id_product, h.status,
+         h.gross_production, h.net_production, h.oee_a, h.oee_p, h.oee_q, h.oee,
+         h.running_time, h.stopped_time, h.available_time, h.planned_downtime
+    FROM cold.production_orders h
+    JOIN promoted_enterprise p ON p.id_enterprise = h.id_enterprise AND p.po_promoted;
 
 -- ── ev_between(): REMOVED (t269 / necessity audit) ───────────────────────────
 -- Was a year/month-pruning helper, but a SQL function body cannot execute pg_duckdb's
@@ -680,6 +871,36 @@ SQL
   echo "[historian-gateway] cloudbeaver_histro read-only role + FDW mapping ready"
 else
   echo "[historian-gateway] CLOUDBEAVER_HISTRO_PASSWORD unset — skipping read-only browser role"
+fi
+
+# ── T3: historian_svc — least-privilege SERVICE identity for read-api + Superset ────
+# Fresh-volume twin of services/historian-gateway/apply-hardening.sh (which brings a
+# RUNNING gateway to this state). NOSUPERUSER; cold read_parquet via duckdb.postgres_role
+# = historian_readers (ALTER SYSTEM → postgresql.auto.conf, applied when the real server
+# starts right after initdb); hot via the live_pg FDW → remote least-privilege histgw_ro;
+# its own simple_s3_secret mapping (pg_duckdb S3 secrets are PER-ROLE user mappings).
+# cloudbeaver_histro is deliberately NOT in historian_readers (t282 decision stands).
+if [ -n "${HIST_GW_SVC_PASSWORD:-}" ] && [ -n "${HISTGW_RO_PASS:-}" ]; then
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+       -v svc_pw="${HIST_GW_SVC_PASSWORD}" -v ro_pass="${HISTGW_RO_PASS}" \
+       -v s3_key="${HIST_AWS_KEY}" -v s3_secret="${HIST_AWS_SECRET}" <<'SQL'
+CREATE ROLE historian_readers NOLOGIN;
+CREATE ROLE historian_svc LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT PASSWORD :'svc_pw';
+GRANT historian_readers TO historian_svc;
+GRANT USAGE ON SCHEMA silver, gold, cold, live, public TO historian_svc;
+GRANT SELECT ON ALL TABLES IN SCHEMA silver, gold, cold, live, public TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gold   GRANT SELECT ON TABLES TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA cold   GRANT SELECT ON TABLES TO historian_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA live   GRANT SELECT ON TABLES TO historian_svc;
+GRANT USAGE ON FOREIGN SERVER live_pg TO historian_svc;
+CREATE USER MAPPING FOR historian_svc SERVER live_pg OPTIONS (user 'histgw_ro', password :'ro_pass');
+CREATE USER MAPPING FOR historian_svc SERVER simple_s3_secret OPTIONS (key_id :'s3_key', secret :'s3_secret');
+ALTER SYSTEM SET duckdb.postgres_role = 'historian_readers';
+SQL
+  echo "[historian-gateway] historian_svc service role + duckdb.postgres_role=historian_readers ready"
+else
+  echo "[historian-gateway] HIST_GW_SVC_PASSWORD/HISTGW_RO_PASS unset — skipping historian_svc (consumers fall back to 503/skip)"
 fi
 
 echo "[historian-gateway] init complete: silver.equipment_values (EV hot+cold) + silver.equipment_events (EE hot+cold), ev_union_boundary + ee_union_boundary seeded"

@@ -171,6 +171,14 @@ type Config struct {
 	CPACEventDerivationEnabled bool
 	CPACEventIntervalMin       int
 	CPACEventEnterprises       string // csv int list of status_type=0 enterprises (CPACK=3); empty ⇒ inert
+	// CPACEventLiveEnterprises — ADR-0010 §10.4 promotion. csv int list of
+	// counters-only enterprises for which the deriver mints into the LIVE
+	// equipment_events (a SECOND instance, separate from the shadow one above).
+	// ONLY for enterprises with NO other event writer (e.g. Bispharma ent5,
+	// counters-only, no MachSpeed/StateCurrent) — never a speed-based client like
+	// CPACK, which the mirror fan-out already writes (that would double-write, the
+	// #456 class). Empty ⇒ inert; the live instance is not scheduled at all.
+	CPACEventLiveEnterprises string
 	// CPACStopThresholdDefaultSec — fallback stop horizon when
 	// equipments.stop_threshold_time (Parameter 30751) IS NULL/0 (it is NULL for
 	// all CPACK equipment on staging). This is THE tuning knob the comparator
@@ -192,6 +200,10 @@ type Config struct {
 	EventsCloseStaleEnterprises  string // csv status_type=0 enterprise ids (CPACK=3); empty ⇒ inert
 	EventsCloseStaleThresholdSec int    // trailing-close grace when stop_threshold_time IS NULL/0
 	EventsCloseStaleHorizonHours int    // only reconcile opens with ts_event >= now()-horizon
+	// Long-open pass: open rows OLDER than the horizon but within this many days are
+	// closed at their successor's ts_event (a stop outliving the horizon was never
+	// closed — CPACK orphans of 4–52 days). 0 ⇒ default 60.
+	EventsCloseStaleLongHorizonDays int
 
 	// Sync06ReportEnabled — ADR-0014 P4 / t244: enterprise production
 	// data sync (embedded state machine). Reads serving.data_sync and
@@ -219,10 +231,15 @@ type Config struct {
 	UnsCurrentMetricsIntervalMinutes int
 
 	// PO-runtime refresh dispatcher (P3b: compute → recalc, ordered).
-	PORecalcEnabled               bool
-	PORecalcIntervalMinutes       int
-	PORecalcWindow                string // prod: '1 month'
-	PORecalcExcludedEnterprises   string // prod: 6 (owned by its sync chain)
+	PORecalcEnabled             bool
+	PORecalcIntervalMinutes     int
+	PORecalcWindow              string // prod: '1 month'
+	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
+	// PORecomputeSweepHours — every CLOSED runtime row inside PORecalcWindow is
+	// re-flagged for one recompute per this period (spread evenly over the ticks),
+	// so a closed PO picks up late data, a code fix or a data repair instead of
+	// keeping whatever the pipeline computed in its last 48 h. 0 disables.
+	PORecomputeSweepHours         int
 	RuntimeProvisionEnabled       bool
 	RuntimeProvisionIntervalHours int // provision cadence; 30-day horizon makes hourly wasteful (default 6)
 	RuntimeRollupEnabled          bool
@@ -329,6 +346,22 @@ type Config struct {
 	// construction (identity holds). Default OFF → legacy top-down oee. Flip
 	// AFTER the availability floor, since it makes oee_a load-bearing.
 	OeeCanonicalAPQEnabled bool
+	// AvailabilityExclusionsEnabled (2026-10-01): subtract out-of-service windows
+	// and PLC no-data time from available_time (rollup/availability_exclusions.go).
+	// Default ON: inert without windows or status-20 events.
+	AvailabilityExclusionsEnabled bool
+	// StrandedFlagSweepEnabled (2026-10-01): hourly job clearing recalc_needed
+	// flags no consumer can ever drain (rollup/stranded.go), with a WARN per table.
+	StrandedFlagSweepEnabled bool
+	// POAvailabilityEnabled (FU#8): write available_time + planned_downtime onto
+	// production_orders_runtime (the compute.go Phase-B2 pass) so the recalc's
+	// PO-grain oee_a = running/available and oee_p time-factor stop collapsing to
+	// 0. These columns are written by NOBODY today (the legacy engine had the
+	// assignments commented out; the Go port reproduced it), so PO-grain OEE
+	// Availability/Performance read 0 platform-wide. Default OFF → the pass is not
+	// run → available_time stays NULL → byte-identical (golden-fixture parity).
+	// Equipment/line-grain OEE is unaffected (it computes available_time already).
+	POAvailabilityEnabled bool
 
 	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
 	// When enabled, the equipment_values writer rejects any production
@@ -432,6 +465,7 @@ func Load() (*Config, error) {
 		CPACEventDerivationEnabled:       getenv("CPAC_EVENT_DERIVATION_ENABLED", "false") == "true",
 		CPACEventIntervalMin:             getenvInt("CPAC_EVENT_DERIVATION_INTERVAL_MINUTES", 1),
 		CPACEventEnterprises:             getenv("CPAC_EVENT_ENTERPRISES", ""),
+		CPACEventLiveEnterprises:         getenv("CPAC_EVENT_LIVE_ENTERPRISES", ""),
 		CPACStopThresholdDefaultSec:      getenvInt("CPAC_STOP_THRESHOLD_DEFAULT_SEC", 300),
 		CPACEventTargetTable:             getenv("CPAC_EVENT_TARGET_TABLE", "equipment_events_cpac_shadow"),
 		EventsCloseStaleEnabled:          getenv("EVENTS_CLOSE_STALE_ENABLED", "false") == "true",
@@ -439,6 +473,7 @@ func Load() (*Config, error) {
 		EventsCloseStaleEnterprises:      getenv("EVENTS_CLOSE_STALE_ENTERPRISES", ""),
 		EventsCloseStaleThresholdSec:     getenvInt("EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC", 300),
 		EventsCloseStaleHorizonHours:     getenvInt("EVENTS_CLOSE_STALE_HORIZON_HOURS", 72),
+		EventsCloseStaleLongHorizonDays:  getenvInt("EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS", 60),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
@@ -450,6 +485,7 @@ func Load() (*Config, error) {
 		PORecalcIntervalMinutes:          getenvInt("PO_RECALC_INTERVAL_MINUTES", 1),
 		PORecalcWindow:                   getenv("PO_RECALC_WINDOW", "1 month"),
 		PORecalcExcludedEnterprises:      getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
+		PORecomputeSweepHours:            getenvInt("PO_RECOMPUTE_SWEEP_HOURS", 24),
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeProvisionIntervalHours:    getenvInt("RUNTIME_PROVISION_INTERVAL_HOURS", 6),
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
@@ -475,8 +511,11 @@ func Load() (*Config, error) {
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
 		// ADR-0049 OEE correctness (default OFF — no behavior change)
-		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
-		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
+		OeeAvailFloorEnabled:          getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
+		OeeCanonicalAPQEnabled:        getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
+		AvailabilityExclusionsEnabled: getenv("AVAILABILITY_EXCLUSIONS_ENABLED", "true") == "true",
+		StrandedFlagSweepEnabled:      getenv("STRANDED_FLAG_SWEEP_ENABLED", "true") == "true",
+		POAvailabilityEnabled:         getenv("PO_AVAILABILITY_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),

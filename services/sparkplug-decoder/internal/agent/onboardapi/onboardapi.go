@@ -213,8 +213,14 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	//    (print everything; report inferred indices to stderr).
 	art, err := d.Generate(clientdescriptor.GenerateOptions{Cutover: false})
 	if err != nil {
-		// A descriptor that Validate() accepted should always Generate; a failure
-		// here is an internal generator fault, not a bad request → 500.
+		// An AUTHORING error only detectable at render time (customization id
+		// collision, bad spot link) is the caller's to fix → 400 with the reason.
+		if clientdescriptor.IsAuthoringError(err) {
+			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, err.Error(), int64(len(body)))
+			return
+		}
+		// Anything else, for a descriptor Validate() accepted, is an internal
+		// generator fault, not a bad request → 500.
 		s.inc(OutcomeError)
 		s.logger.Error("onboard generate failed after validation", slog.String("err", err.Error()))
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "generation failed: " + err.Error()})

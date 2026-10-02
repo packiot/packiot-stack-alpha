@@ -85,6 +85,14 @@ scrape_configs:
     static_configs:
       - targets: ['edge-transformer:9102']
 
+  # sparkplug-agent-shared — the multi-tenant cloud agent (every client's HTTPS
+  # ingest front door, profile shared-tee). Health + metrics on HEALTH_PORT 9103
+  # (not 9102). NEVER SCRAPED until 2026-09-30: http_ingest_total, derive
+  # (calculation) errors/emitted, capture observations were invisible.
+  - job_name: sparkplug-agent-shared
+    static_configs:
+      - targets: ['sparkplug-agent-shared:9103']
+
   # analytics-sync (was shadow-mirror) — operator-action replay (ADR-0013).
   # Exposes shadow_mirror_{dispatched,failed,skipped,update_noop}_total +
   # shadow_mirror_cursor on :9103 — metric NAMES kept as-is (app-defined,

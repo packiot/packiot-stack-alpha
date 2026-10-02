@@ -181,6 +181,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		}
 		var sql string
 		var args []any
+		var windowFrom time.Time     // T2 coverage: the requested window start (dataset path)
 		datasetName := probe.Dataset // "" ⇒ legacy composer path (never cached)
 		if probe.Dataset != "" {
 			var dq datasetReq
@@ -194,6 +195,9 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			// (errRoleDatasetNeedsUser → 403 below). NEVER from the request body.
 			roleID, roleOK := userRoleFromContext(r.Context())
 			sql, args, err = compileDataset(dq, cid, callerRole{id: roleID, present: roleOK})
+			if dq.Window != nil {
+				windowFrom = dq.Window.From
+			}
 		} else {
 			var q queryReq
 			if err := json.Unmarshal(body, &q); err != nil {
@@ -201,6 +205,21 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 				return
 			}
 			sql, args, err = compile(q, cid)
+			// T2 honest windows: the composer reads ONE cagg whose lifetime is declared
+			// in ops.retention_policy. A window starting before that floor used to return
+			// a silently SHORT series; now it is an explicit 422 pointing at the archive.
+			if err == nil {
+				if g, ok := grains[q.Grain]; ok {
+					if keep, ok := covIdx.relationKeep(g.table); ok {
+						if floor := time.Now().Add(-keep); q.From.Before(floor) {
+							msg := fmt.Sprintf("window starts before %s: %s keeps %s; for older data use /v1/historian/production-series",
+								floor.UTC().Format(time.RFC3339), g.table, humanDuration(keep))
+							http.Error(w, `{"error":`+fmt.Sprintf("%q", msg)+`}`, http.StatusUnprocessableEntity)
+							return
+						}
+					}
+				}
+			}
 		}
 		if err != nil {
 			// task #70: a role dataset invoked without user context is
@@ -249,6 +268,11 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			return
 		}
 		served.Add(1)
+		if datasetName != "" {
+			if cov, ok := covIdx.dataset(datasetName); ok {
+				setCoverageHeaders(w.Header(), cov, windowFrom, time.Now())
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(payload)
 	})
@@ -447,6 +471,17 @@ func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
 // the cache-aside loader can hand back ready-to-cache bytes. A DB/scan/marshal
 // error is returned (never cached); the caller maps it to a 500.
 func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]byte, error) {
+	out, err := runQueryRows(ctx, pool, cid, sql, args)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(out)
+}
+
+// runQueryRows is runQueryJSON without the final marshal: the tenant-stamped read,
+// returned as one map per row keyed by column name (the historian split path merges
+// two such result sets before serializing).
+func runQueryRows(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]map[string]any, error) {
 	// task #264 — defense-in-depth tenant fence. read-api connects as a NOBYPASSRLS
 	// role (readapi_ro), and the analytics DB puts FORCE ROW LEVEL SECURITY on the
 	// tenant tables (core.equipments / production_orders / production_targets,
@@ -499,7 +534,7 @@ func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return json.Marshal(out)
+	return out, nil
 }
 
 func keysOf[V any](m map[string]V) []string {

@@ -56,6 +56,44 @@ jobs:
         # Symlinking makes it available as .env so Docker Compose picks it up.
         run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
 
+      - name: Ensure ALLOY_GATEWAY_BIND (DB-box observability relays)
+        # The Alloy gateway's 3101 (Loki) / 3102 (Prometheus remote-write) relays
+        # for the DB-box agent bind to ${ALLOY_GATEWAY_BIND:-127.0.0.1}. The key was
+        # never in .env (app_init.sh skips regeneration when .env exists), so every
+        # recreate bound LOOPBACK and the DB box's pushes were silently refused —
+        # DB slow-query logs missing from Loki since ≥2026-09-14. Self-heal: set it
+        # to this box's private IP if absent (source IP of the default route — exact
+        # even with docker bridges present; no IMDS dependency).
+        # Private IP only: the SG admits 3101/3102 from the DB SG, never the world.
+        run: |
+          if ! grep -qE '^ALLOY_GATEWAY_BIND=.+' /opt/packiot/.env; then
+            IP=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+            case "$IP" in 10.*) ;; *) echo "::error::unexpected VPC private IP '$IP' (staging VPC is 10.10.0.0/16)"; exit 1 ;; esac
+            printf '\n# DB-box observability relay bind (set by deploy-staging.yml)\nALLOY_GATEWAY_BIND=%s\n' "$IP" >> /opt/packiot/.env
+            echo "ALLOY_GATEWAY_BIND set to $IP"
+          else
+            echo "ALLOY_GATEWAY_BIND already set: $(grep -E '^ALLOY_GATEWAY_BIND=' /opt/packiot/.env | cut -d= -f2)"
+          fi
+
+      - name: Ensure HIST_GW_SVC_PASSWORD (historian least-privilege service login)
+        # T3: read-api + Superset reach the historian gateway as the NOSUPERUSER
+        # historian_svc. Source of truth = Secrets Manager packiot/staging/historian-svc;
+        # mirror it into .env when absent (app_init.sh never regenerates an existing
+        # .env — the same self-heal pattern as ALLOY_GATEWAY_BIND). Missing secret ⇒
+        # warn only: read-api's historian pool is nil-safe (503) and Superset skips.
+        run: |
+          if ! grep -qE '^HIST_GW_SVC_PASSWORD=.+' /opt/packiot/.env; then
+            P=$(aws secretsmanager get-secret-value --region us-east-1 --secret-id packiot/staging/historian-svc --query SecretString --output text 2>/dev/null | jq -r '.password // empty')
+            if [ -n "$P" ]; then
+              printf '\n# historian_svc gateway login (set by deploy-staging.yml from packiot/staging/historian-svc)\nHIST_GW_SVC_PASSWORD=%s\n' "$P" >> /opt/packiot/.env
+              echo "HIST_GW_SVC_PASSWORD mirrored from Secrets Manager"
+            else
+              echo "::warning::packiot/staging/historian-svc not readable — historian consumers stay disabled"
+            fi
+          else
+            echo "HIST_GW_SVC_PASSWORD present"
+          fi
+
       - name: Generate RabbitMQ definitions (durable least-priv users)
         # rabbitmq.conf sets load_definitions, which re-imports users/perms on
         # every broker boot so a container recreate can't lose the least-priv
@@ -66,6 +104,7 @@ jobs:
         # would stop rabbitmq booting since load_definitions references it.
         run: |
           set -euo pipefail
+          install -d -m 0755 /opt/packiot/rabbitmq
           AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
           AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
           # rename S1+S2 (oeecloud-worker -> stream-engine): MANUAL PRE-REQ —
@@ -89,8 +128,15 @@ jobs:
               elif .name=="sparkplug-decoder" then .password=$sdp
               else . end) |
             .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
-          ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
-          echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
+          ' monitoring/rabbitmq/definitions.template.json > /opt/packiot/rabbitmq/definitions.json.tmp
+          # Durable path OUTSIDE the runner workspace (2026-09-25): rendered into
+          # monitoring/rabbitmq/ it was gitignored, so any later job's checkout on this
+          # self-hosted runner cleaned it; the running broker didn't care (inode already
+          # mounted), but the next host reboot found the path missing, dockerd created a
+          # DIRECTORY there, and rabbitmq exited 127 ("not a directory") → ingest down.
+          chmod 0644 /opt/packiot/rabbitmq/definitions.json.tmp
+          mv -f /opt/packiot/rabbitmq/definitions.json.tmp /opt/packiot/rabbitmq/definitions.json
+          echo "Generated definitions.json: $(jq '.users|length' /opt/packiot/rabbitmq/definitions.json) users, $(jq '.permissions|length' /opt/packiot/rabbitmq/definitions.json) permission sets"
 
       - name: Materialize Alertmanager Slack webhook (optional — plug in later)
         # Alertmanager reads the Slack incoming-webhook URL from a gitignored,
@@ -120,7 +166,10 @@ jobs:
         # the Deploy step's --remove-orphans never reaps a running Superset — the
         # whole overlay stays dark until the profile is deliberately enabled per
         # docs/superset-golive-runbook.md.
-        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack build
+        # --profile shared-tee: the shared multi-tenant agent (every client's cloud
+        # ingest) is profile-gated, so without it the deploy never rebuilt it —
+        # staging ran a 2026-09-01 agent image until 2026-09-29.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack --profile shared-tee build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
@@ -130,10 +179,18 @@ jobs:
         # whole project — no other stack co-tenants on the host. The superset
         # overlay is profile-gated (see Build step) so this starts nothing extra
         # until COMPOSE_PROFILES=superset.
-        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
+        # --profile shared-tee recreates the shared agent when its image changed
+        # (seconds; readers retry/spool) so merged agent code actually goes live.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack --profile shared-tee up -d --remove-orphans
 
-      - name: Prune old images
-        run: docker image prune -f
+      - name: Prune old images + build cache
+        # `docker image prune` never touches the BUILD CACHE, which grows every deploy:
+        # it reached 15.4 GB (0 active) and pushed the 64 GB app disk to 94% on
+        # 2026-09-24 (HostDiskFilling) — the second time after the 22 GB incident.
+        # --keep-storage keeps the most recent 5 GB so builds stay warm.
+        run: |
+          docker image prune -f
+          docker builder prune -f --keep-storage 5GB | tail -1
 
       - name: Reload Prometheus config (dir-mount makes new file content visible; reload re-reads it)
         # Task #39. prometheus.yml/rules.yml are now a DIRECTORY bind mount, so a
@@ -168,6 +225,41 @@ jobs:
             sleep 3
           done
           echo "  reload not confirmed after 10 attempts — config will load on next restart"
+
+      - name: Reload Alloy gateway config (dir-mount + /-/reload, same as Prometheus)
+        # gateway.alloy is read via a DIRECTORY bind mount; Alloy re-reads it on
+        # POST /-/reload (its HTTP server, :12345). Reached over its own netns.
+        continue-on-error: true
+        run: |
+          set +e
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:alloy curlimages/curl:latest \
+                 -sf -X POST http://localhost:12345/-/reload >/dev/null 2>&1; then
+              echo "  alloy config reloaded (attempt $i)"; exit 0
+            fi
+            sleep 3
+          done
+          echo "  alloy reload not confirmed — config loads on next restart"
+
+      - name: Restart postgres-exporter when its queries changed (no hot-reload)
+        # Same inode-trap family as #39/#41: queries.yaml is now read via a
+        # DIRECTORY bind mount, but postgres-exporter only parses
+        # PG_EXPORTER_EXTEND_QUERY_PATH at startup and has no reload endpoint.
+        # Restart only when this push touched monitoring/postgres-exporter/ (or
+        # always on workflow_dispatch / unknown 'before', where we can't diff).
+        # Stateless exporter → one missed scrape, nothing lost.
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set +e
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             && git diff --quiet "$BEFORE" HEAD -- monitoring/postgres-exporter/; then
+            echo "postgres-exporter queries unchanged — no restart"
+          else
+            docker restart postgres-exporter && echo "postgres-exporter restarted to load queries"
+          fi
 
       - name: Reload Alertmanager config (dir-mount makes new file content visible; reload re-reads it)
         # Task #41 — same inode trap as #39/#40, now on the NOTIFICATION path.
@@ -381,6 +473,9 @@ jobs:
         # so we can prove the Calc port ran. Runs BEFORE inspect so the
         # inspect step's /metrics output reflects the inject.
         # continue-on-error so an inject hiccup doesn't fail the deploy.
+        # The fixture publishes under the synthetic E2EFIXTURE group (no tenant
+        # registers it). It must never use a real tenant group: this broker
+        # carries CPACK's live feed (main_test.go enforces it).
         continue-on-error: true
         run: |
           set -x

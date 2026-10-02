@@ -96,6 +96,21 @@ const hourCascadeDaySQL = `
 	 WHERE d.id_equipment = el.id_equipment
 	   AND d.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)`
 
+// hourCascadeDayLiveSQL — the LIVE hour path's cascade (P12 deadlock fix, see
+// hourReflagSQL): skip daily rows another tx holds and rows already flagged. Safe ONLY
+// on the live path: the day rollup shares the live "<dest>:runtime" advisory lock, so
+// the only possible concurrent holder here is the backfill, which sets the same TRUE.
+// The backfill keeps the BLOCKING hourCascadeDaySQL — its concurrent holder can be the
+// day rollup mid-recompute, and skipping there could lose a needed recompute.
+const hourCascadeDayLiveSQL = `
+	UPDATE %[4]s.equipment_oee_daily d SET recalc_needed = true
+	  FROM (SELECT d2.id_equipment, d2.ts_value FROM %[4]s.equipment_oee_daily d2
+	          JOIN hour_elig el ON d2.id_equipment = el.id_equipment
+	           AND d2.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)
+	         WHERE d2.recalc_needed IS NOT TRUE
+	         FOR UPDATE OF d2 SKIP LOCKED) r
+	 WHERE d.id_equipment = r.id_equipment AND d.ts_value = r.ts_value`
+
 // #186: hourCascadeAreaSQL removed — it flagged the retired area_oee_hourly grain.
 
 // Speed pass from the 1min tier — always-FOUND → always-update.
@@ -133,6 +148,20 @@ const hourSpeedSQL = `
 	            WHERE ev.id_equipment = m.id_equipment
 	              AND ev.ts_value < m.ts_value + interval '1 minute'
 	              AND ev.ideal_production_speed IS NOT NULL
+	              -- Bounded look-back (2026-09-28). Unbounded, this walked the whole
+	              -- retained history (compressed chunks) whenever no value existed —
+	              -- per minute per row. Measured live: NO equipment has ever reported a
+	              -- non-null ideal_production_speed here, so every lookup scanned
+	              -- everything and returned NULL (→ production_speed fallback); one
+	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
+	              -- across short silences if 30701 starts arriving.
+	              AND ev.ts_value >= m.ts_value - interval '7 days'
+	              -- STABLE copy of the bound (2026-09-28): the per-row bound above depends
+	              -- on the outer row, so TimescaleDB cannot exclude chunks at startup and
+	              -- re-checks EVERY chunk per lookup (~40 ms x ~1,100 lookups = 45 s per
+	              -- hour tick, measured). A now()-based bound is applied once at startup.
+	              -- It never narrows the per-row bound: live rows are at most 65 min old, so row - 7 days >= now() - 8 days. The hour backfill widens this to 17 days (10-day horizon + 7) in widenHourWindows.
+	              AND ev.ts_value >= now() - interval '8 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON m.ideal_production_speed IS NULL
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
@@ -150,7 +179,7 @@ const hourSpeedSQL = `
 // (plannedDowntimeExpr) — ADR-0037 (c): off = "ee.planned_downtime = true"
 // (prod-verbatim); on = changeover excluded from the planned bucket so it
 // stays inside (ts_total − ts_planned) and depresses Availability.
-const hourEventsSQL = `
+var hourEventsSQL = `
 	WITH last_seen AS (
 	    -- LAST OBSERVED DATA per equipment — the physical bound for a TRAILING open
 	    -- event (see ee_bounded). The 1-hour cagg carries a bucket for every hour
@@ -195,10 +224,11 @@ const hourEventsSQL = `
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
 	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
-	      FROM %[3]s.equipment_events ee
+	      -- Range scan + the event IN EFFECT at the bound (eventsInEffectSQL): a
+	      -- stop that began before the lookback and still covers the bucket.
+	      FROM ` + eventsInEffectSQL("%[3]s", "SELECT DISTINCT id_equipment FROM hour_elig",
+	"now() - interval '10 days'") + ` ee
 	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
-	     WHERE ee.id_equipment IN (SELECT id_equipment FROM hour_elig)
-	       AND ee.ts_event >= now() - interval '10 days' AND ee.ts_event < now()
 	), ev AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           extract(epoch FROM (least(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total,
@@ -247,14 +277,14 @@ const hourEventsSQL = `
 	       -- the already-fixed unclosed-event class) + net>gross would otherwise
 	       -- surface as oee=13918 / oee_q>1 at this grain. Clamp only the derived
 	       -- oee* ratios; raw net/gross/running columns stay as the lineage truth.
-	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0),
+	       oee = GREATEST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0),
 	       -- ADR-0037 C: the OEE waterfall (A×P×Q) was never written at this
 	       -- grain — only the composite oee. Populate Availability + Quality
 	       -- directly (running / planned-production-time ; net / gross); the
 	       -- companion hourOeePSQL back-solves Performance so oee = a·p·q holds,
 	       -- matching the week/month grain (grains.go) and the legacy pg engine.
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0), 0), 1), 0), -- ADR-0037 clamp [0,1] (now INERT: ee_bounded makes ts_planned physical, so A lands in (0,1] not floored to 0); LEAST() denom degrades gracefully
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '6 hour'`
@@ -264,11 +294,11 @@ const hourEventsSQL = `
 // Runs after the events update has persisted oee / oee_a / oee_q on the
 // event-hit rows (recalc_needed just cleared). NULLIF guards a 0 A or Q.
 // Also runs after the counter-only line-lead pass (line_lead.go), whose
-// throughput can drive oee_p > 1; the GREATEST(LEAST(..,1),0) clamp keeps this
+// throughput can drive oee_p > 1; the GREATEST(.., 0) clamp keeps this
 // write inside the *_oee_bounds invariant (#663) so the tick's CHECK holds.
 const hourOeePSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e
-	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
+	   SET oee_p = GREATEST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND NOT e.recalc_needed
@@ -277,7 +307,7 @@ const hourOeePSQL = `
 // Targets: event-hit rows only (cleared ∩ eligible — see argument).
 const hourTargetsSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e SET
-	       proportional_target = COALESCE(pt.vl_day::float / 24, 0)
+	       proportional_target = COALESCE(pt.vl_day::float / 24/*OOS_TARGET*/, 0)
 	  FROM hour_elig el
 	  JOIN %[6]s.production_targets pt ON pt.id_equipment = el.id_equipment
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
@@ -304,11 +334,28 @@ const hourStampSQL = `
 // clears — a permanent, ever-growing backlog (measured 2026-09-10: 6,276 tp=1
 // flags, oldest 2026-08-31, 97% of all hour flags). Constraining the re-flag to
 // the eligible set makes flagged ⊆ computable, so every flag drains.
+//
+// DEADLOCK FIX (P12, 2026-09-24): ~1–2×/h `hour reflag: deadlock detected (40P01)`.
+// The reflag band (trailing 2–3 h) OVERLAPS the hour backfill's slice (< now-65min),
+// and the backfill takes its own advisory key, so the two run concurrently:
+//
+//	backfill: hourly rows (its slice) → cascade-day (daily)       … waits on live
+//	live:     cascade-day (daily)     → reflag (hourly, overlap)  … waits on backfill
+//
+// A lock-order inversion across two tables. "Idempotent" writes (both only set
+// recalc_needed = true) still take row locks until commit. So the LIVE path never
+// waits on the backfill: rows already flagged are not touched, and a row locked by
+// another tx (the backfill recomputing it right now) is SKIPPED — the next 60 s tick
+// re-flags it, since this band re-covers the trailing 2–3 h every tick.
 const hourReflagSQL = `
-	UPDATE %[4]s.equipment_oee_hourly SET recalc_needed = true
-	 WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
-	   AND ts_value <= now()
-	   AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE tp_equipment > 1)`
+	UPDATE %[4]s.equipment_oee_hourly h SET recalc_needed = true
+	  FROM (SELECT id_equipment, ts_value FROM %[4]s.equipment_oee_hourly
+	         WHERE ts_value >= date_trunc('hour', now() - interval '2 hour')::timestamptz
+	           AND ts_value <= now()
+	           AND recalc_needed IS NOT TRUE
+	           AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments WHERE tp_equipment > 1)
+	         FOR UPDATE SKIP LOCKED) r
+	 WHERE h.id_equipment = r.id_equipment AND h.ts_value = r.ts_value`
 
 // RunHour executes one hour pass for one destination — one tx,
 // prod's phase order (V → cascades → speed → E → targets → re-flag).
@@ -339,7 +386,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	}
 	steps := []rollupStep{
 		{"values", fmtRD(hourValuesSQL, d)},
-		{"cascade-day", fmtRD(hourCascadeDaySQL, d)},
+		{"cascade-day", fmtRD(hourCascadeDayLiveSQL, d)},
 		// #186: cascade-area (flag area_oee_hourly) removed — the area/site hourly
 		// grain was retired (dead). Area day freshness is now driven by the
 		// equipment→area day-flag cascade in entity_grains.go.
@@ -358,12 +405,17 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(hourLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
+			fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-2: availability count-floor (see shift.go). Inert when off.
 	if ca.engagedFloor() {
 		steps = append(steps, rollupStep{"avail-floor",
 			fmtRD(hourAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	// Availability exclusions (out of service + PLC no data) — after EVERY
+	// available_time writer, before the finalize. Inert when off.
+	if ca.engagedExclusions() {
+		steps = append(steps, rollupStep{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
 	}
 	// ADR-0048 §Fault-3: canonical A·P·Q reconcile replaces the legacy residual
 	// when engaged; otherwise the legacy oee-p runs (byte-identical).
@@ -373,7 +425,7 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 		steps = append(steps, rollupStep{"oee-p", fmtRD(hourOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(hourTargetsSQL, d, d.ConfigSchema)},
+		rollupStep{"targets", fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema)},
 		rollupStep{"stamp", fmtRD(hourStampSQL, d)},
 		rollupStep{"reflag", fmtRD(hourReflagSQL, d)},
 	)
@@ -397,7 +449,7 @@ func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL str
 		// it is diffed against prod (F2), which has no changeover reclassification.
 		{"events", fmtRP(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
 		{"oee-p", fmtRP(hourOeePSQL, evSchema)},
-		{"targets", fmtRP(hourTargetsSQL, evSchema, evSchema)},
+		{"targets", fmtRP(withOosTarget(hourTargetsSQL, false, ""), evSchema, evSchema)},
 		{"reflag", fmtRP(hourReflagSQL, evSchema)},
 	}
 }

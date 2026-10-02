@@ -83,6 +83,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
@@ -95,7 +96,139 @@ type CPACConfig struct {
 	Enterprises     []int  // status_type=0 enterprise ids to derive (CPACK=3); empty ⇒ no-op
 	ThresholdDefSec int    // fallback when equipments.stop_threshold_time IS NULL/0
 	TargetTable     string // shadow comparison table in EvSchema; default equipment_events_cpac_shadow
+	// LeadActivity widens the productive-minute signal FOR A LINE'S LEAD MACHINE
+	// ONLY (lines with downtime_from_lead_machine) from gross-only to the
+	// line-lead OEE model's rule: gross OR net OR scrap moved (a missing gross
+	// meter is filled by identity, gross = net). Every other member keeps the
+	// gross-only rule. false ⇒ the executed SQL is byte-identical to before
+	// (pinned by TestCPACGrossOnlySQLByteIdentical). Set only on the LIVE
+	// counters-only instance (CPAC_EVENT_LIVE_ENTERPRISES); the CPACK shadow
+	// instance leaves it false.
+	LeadActivity bool
+	// LinkHealth makes the derivation PLC-link aware (2026-10-01, availability
+	// three-state policy). Silence while the reader could NOT read the PLC
+	// (silver.plc_link_minutes: no ok scan in the minute, or no report at all
+	// once the endpoint has reported once) is NO DATA, not a stop: the stop the
+	// count-silence rule would mint inside such a gap is suppressed and a
+	// status-20 (no data) transition opens at the gap's first minute; when data
+	// resumes without production a stop opens at the resume minute (connected
+	// but silent IS a stop). Gaps shorter than the stop threshold are ignored.
+	// false ⇒ byte-identical SQL (the CPACK shadow instance).
+	LinkHealth bool
 }
+
+// NoDataStatus is the equipment_events status for a span with no PLC data
+// (silver.machine_state 20). Neither running (6) nor stopped (5/10/11).
+const NoDataStatus = 20
+
+// cpacGrossActivity is the original productive-minute predicate: the member's
+// own consumed (gross) counter moved.
+const cpacGrossActivity = `m.gross_production_incr > 0`
+
+// cpacLeadsCTE (%[1]s = RefSchema) names every line's lead_machine for lines
+// whose downtime is attributed from the lead (downtime_from_lead_machine) —
+// the member bi.downtimes' line branch and the line-lead availability read.
+const cpacLeadsCTE = `), leads AS (
+    SELECT DISTINCT ln.lead_machine AS id_equipment
+      FROM %[1]s.equipments ln
+     WHERE ln.tp_equipment = 3
+       AND ln.downtime_from_lead_machine
+       AND COALESCE(ln.lead_machine, 0) > 0
+       AND ln.id_enterprise = ANY($1)
+`
+
+// cpacLeadActivity is the line-lead OEE model's productive minute (line_lead.go
+// prod_raw: gross OR net OR scrap > 0) applied to lead machines only. A lead
+// that carries ONLY a net/output counter (Bispharma L18 TAMPADEIRA, the BISNAGO
+// M67x/M68x leads, L90 S2OUTPUT) was invisible to the gross-only rule, so those
+// lines got zero downtime events while their Availability (line-lead) was real.
+const cpacLeadActivity = `(m.gross_production_incr > 0
+            OR (s.id_equipment IN (SELECT id_equipment FROM leads)
+                AND (m.net_production_incr > 0 OR m.scrap_incr > 0)))`
+
+// cpacLinkCTE (%[5]s = SilverSchema) — the PLC-link
+// no-data islands per scoped equipment. Appended after scope (like cpacLeadsCTE),
+// it only reads tables the link-health migration created. An endpoint that has
+// never reported a link status contributes nothing (pre-rollout history and
+// tenants without a link-reporting reader are untouched).
+const cpacLinkCTE = `), linkeq AS (
+    -- each scoped equipment's reader endpoint — ONLY equipment the descriptor
+    -- maps to a PLC directly. A line must NOT inherit its lead's endpoint: a line
+    -- without counters of its own has no sessions, so every gap would end in a
+    -- "stop" that never closes (the phantom-stop class this mode removes).
+    SELECT s.id_equipment, s.id_enterprise, s.thr, pe.endpoint
+      FROM scope s
+      JOIN %[5]s.plc_endpoint_equipment pe
+        ON pe.id_enterprise = s.id_enterprise AND pe.id_equipment = s.id_equipment
+), link_ep AS (
+    SELECT DISTINCT le.id_enterprise, le.endpoint, f.since
+      FROM linkeq le
+     CROSS JOIN LATERAL (SELECT min(pl.ts_minute) AS since FROM %[5]s.plc_link_minutes pl
+                          WHERE pl.id_enterprise = le.id_enterprise AND pl.endpoint = le.endpoint) f
+     WHERE f.since IS NOT NULL
+), link_active AS (
+    -- minutes in which data DID arrive from the endpoint (any member's counter
+    -- row) are never no-data, even if the link recorder missed them. Per-member
+    -- LATERAL + OFFSET 0: the 1min cagg is real-time (the #259 lesson).
+    SELECT DISTINCT pe.id_enterprise, pe.endpoint, a.ts_value AS minute
+      FROM link_ep le
+      JOIN %[5]s.plc_endpoint_equipment pe ON pe.id_enterprise = le.id_enterprise AND pe.endpoint = le.endpoint
+     CROSS JOIN LATERAL (SELECT m.ts_value FROM %[5]s.equipment_categorical_1min m
+                          WHERE m.id_equipment = pe.id_equipment
+                            AND m.ts_value > now() - interval '27 hours' OFFSET 0) a
+), nodata_min AS (
+    -- the last 2 minutes stay undecided (the agent flushes link rows every 15 s)
+    SELECT le.id_enterprise, le.endpoint, g.minute
+      FROM link_ep le
+     CROSS JOIN LATERAL generate_series(
+               date_trunc('minute', greatest(le.since, now() - interval '27 hours')),
+               date_trunc('minute', now()) - interval '3 minutes', interval '1 minute') AS g(minute)
+     WHERE NOT EXISTS (SELECT 1 FROM %[5]s.plc_link_minutes pl
+                        WHERE pl.id_enterprise = le.id_enterprise AND pl.endpoint = le.endpoint
+                          AND pl.ts_minute = g.minute AND pl.ok_ticks > 0)
+       AND NOT EXISTS (SELECT 1 FROM link_active a
+                        WHERE a.id_enterprise = le.id_enterprise AND a.endpoint = le.endpoint
+                          AND a.minute = g.minute)
+), nodata_isl AS (
+    SELECT id_enterprise, endpoint, min(minute) AS nd_start, max(minute) + interval '1 minute' AS nd_last
+      FROM (SELECT id_enterprise, endpoint, minute,
+                   minute - make_interval(mins => (row_number() OVER (
+                       PARTITION BY id_enterprise, endpoint ORDER BY minute))::int) AS grp
+              FROM nodata_min) z
+     GROUP BY id_enterprise, endpoint, grp
+), nodata AS (
+    -- islands at least the stop threshold long (a short link blip is neither a
+    -- stop nor a gap); one reaching the undecided edge is ONGOING (nd_end NULL)
+    SELECT le.id_equipment, le.id_enterprise, le.thr, i.nd_start,
+           CASE WHEN i.nd_last >= date_trunc('minute', now()) - interval '2 minutes'
+                THEN NULL ELSE i.nd_last END AS nd_end
+      FROM nodata_isl i
+      JOIN linkeq le ON le.id_enterprise = i.id_enterprise AND le.endpoint = i.endpoint
+     WHERE i.nd_last - i.nd_start >= make_interval(secs => le.thr)
+`
+
+// cpacLinkStopGuard (appended to the STOPPED arm's WHERE): a count-silence stop
+// that would begin inside a no-data island is not a stop — the island's
+// status-20 transition covers it.
+const cpacLinkStopGuard = `
+       AND NOT EXISTS (SELECT 1 FROM nodata n
+                        WHERE n.id_equipment = sessions.id_equipment
+                          AND sessions.run_last + make_interval(secs => sessions.thr) >= n.nd_start
+                          AND (n.nd_end IS NULL
+                               OR sessions.run_last + make_interval(secs => sessions.thr) < n.nd_end))`
+
+// cpacLinkArms — the extra transition arms: NO DATA at each island's start, and
+// STOPPED at its end when production does not restart within the grace.
+const cpacLinkArms = `    UNION ALL
+    SELECT id_equipment, id_enterprise, nd_start, 20 FROM nodata
+    UNION ALL
+    SELECT n.id_equipment, n.id_enterprise, n.nd_end, 10 FROM nodata n
+     WHERE n.nd_end IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM sessions s
+                        WHERE s.id_equipment = n.id_equipment
+                          AND s.run_start >= n.nd_start
+                          AND s.run_start <= n.nd_end + make_interval(secs => n.thr))
+`
 
 // DefaultCPACTargetTable is the DARK-mode shadow table the derivation writes to
 // so the live equipment_events (owned by the mirror fan-out for CPACK, and by
@@ -109,14 +242,24 @@ const DefaultCPACTargetTable = "equipment_events_cpac_shadow"
 // cd_machine / txt_downtime_notes), or a classification toggle
 // (planned_downtime / change_over / idle). Referenced by BOTH the upsert guard
 // and the delete guard so the detector can only ADD in untouched time.
-const humanTouchedPred = `(%[4]s.forced_creation_system
+//
+// NULL-SAFE (fix 2026-09-29): forced_creation_system / planned_downtime /
+// change_over are nullable with NO default, and the deriver's own INSERT leaves
+// planned_downtime/change_over NULL. The old bare `OR ev.planned_downtime` made
+// the predicate NULL for EVERY derived row, so `NOT (...)` was NULL: the correct
+// pass never deleted a row and the DO UPDATE never refreshed one (the deriver
+// was append-only; staging: corrected=0 on every tick). `IS TRUE` collapses the
+// three-valued logic, the same fix closer.go's humanJustifiedPred already carries.
+const humanTouchedPred = `(%[4]s.forced_creation_system IS TRUE
         OR %[4]s.cd_category IS NOT NULL OR %[4]s.cd_subcategory IS NOT NULL
         OR %[4]s.cd_machine IS NOT NULL OR %[4]s.txt_downtime_notes IS NOT NULL
-        OR %[4]s.planned_downtime OR %[4]s.change_over OR %[4]s.idle IS NOT NULL)`
+        OR %[4]s.planned_downtime IS TRUE OR %[4]s.change_over IS TRUE OR %[4]s.idle IS NOT NULL)`
 
 // cpacTransitionsCTE recomputes the alternating running/stopped transition
 // stream from count-activity sessionization over the last 25 hours.
 // %[1]s = EvSchema (flow tables), %[2]s = RefSchema (equipments/packml).
+// %[6]s = optional extra CTE (the `leads` set; "" in gross-only mode), %[7]s =
+// the productive-minute predicate (see cpacGrossActivity / cpacLeadActivity).
 // $1 = enterprise-id int[] scope, $2 = default threshold seconds.
 const cpacTransitionsCTE = `
 WITH scope AS (
@@ -126,15 +269,25 @@ WITH scope AS (
      WHERE e.status_type = 0
        AND e.tp_equipment IN (1, 3)
        AND e.id_enterprise = ANY($1)
-), counts AS (
+%[6]s%[8]s), counts AS (
     SELECT s.id_equipment, s.id_enterprise, s.thr, m.ts_value AS ts,
            extract(epoch FROM (m.ts_value - lag(m.ts_value)
                OVER (PARTITION BY s.id_equipment ORDER BY m.ts_value))) AS gap
       FROM scope s
       JOIN %[5]s.equipment_categorical_1min m
         ON m.id_equipment = s.id_equipment
-       AND m.ts_value > now() - interval '25 hours'
-       AND m.gross_production_incr > 0
+       -- LOOK-BACK (fix 2026-09-29): read thr + 60s BEFORE the 25h window so the
+       -- first in-window minute gets its real gap. Without it that minute always
+       -- had gap NULL => a session start => a phantom RUNNING row at the window's
+       -- trailing edge on EVERY tick (~1 per productive minute per equipment,
+       -- never cleaned: it is older than the 1-day correct pass). Transitions
+       -- that fall in the look-back are still dropped by final's window filter.
+       -- Any prior minute within thr of an in-window minute is inside the
+       -- look-back, so an in-window gap > thr (a real stop) still opens a session.
+       AND m.ts_value > now() - interval '25 hours' - make_interval(secs => s.thr + 60)
+       -- constant bound for chunk exclusion (thresholds are minutes, never ~a day)
+       AND m.ts_value > now() - interval '2 days'
+       AND %[7]s
 ), marked AS (
     SELECT id_equipment, id_enterprise, thr, ts,
            sum(CASE WHEN gap IS NULL OR gap > thr THEN 1 ELSE 0 END)
@@ -155,8 +308,8 @@ WITH scope AS (
     SELECT id_equipment, id_enterprise,
            run_last + make_interval(secs => thr) AS ts_event, 10 AS status
       FROM sessions
-     WHERE run_last + make_interval(secs => thr) < now()
-), final AS (
+     WHERE run_last + make_interval(secs => thr) < now()%[9]s
+%[10]s), final AS (
     SELECT ts_event,
            lead(ts_event) OVER (PARTITION BY id_equipment ORDER BY ts_event) AS ts_end,
            id_equipment, status, id_enterprise,
@@ -183,6 +336,11 @@ SELECT f.ts_event, f.ts_end, f.id_equipment, f.status, f.id_enterprise, f.durati
         SELECT 1 FROM %[1]s.%[3]s h
          WHERE h.id_equipment = f.id_equipment
            AND ` + humanCoverPred + `
+           -- chunk-exclusion bound: without a lower bound on h.ts_event every probe
+           -- scanned the tenant's whole event history (live ent5: 4.2 s → 0.4 s per
+           -- tick, same rows). 60 d = the stale-event closer's long horizon: nothing
+           -- older can still be open and cover the 25 h window.
+           AND h.ts_event >= now() - interval '60 days'
            AND f.ts_event >= h.ts_event
            AND f.ts_event < COALESCE(h.ts_end, now()))
 ON CONFLICT (id_equipment, ts_event) DO UPDATE
@@ -191,10 +349,12 @@ ON CONFLICT (id_equipment, ts_event) DO UPDATE
 
 // humanCoverPred (aliased `h` = %[4]s at format time) — a human-protected event
 // used by the append-only NOT EXISTS. Same touched-columns as humanTouchedPred.
-const humanCoverPred = `(h.forced_creation_system
+// NULL-safe for the same reason as humanTouchedPred (inside EXISTS a NULL
+// already acted as false, so this one is a clarity change, not a behaviour one).
+const humanCoverPred = `(h.forced_creation_system IS TRUE
         OR h.cd_category IS NOT NULL OR h.cd_subcategory IS NOT NULL
         OR h.cd_machine IS NOT NULL OR h.txt_downtime_notes IS NOT NULL
-        OR h.planned_downtime OR h.change_over OR h.idle IS NOT NULL)`
+        OR h.planned_downtime IS TRUE OR h.change_over IS TRUE OR h.idle IS NOT NULL)`
 
 // cpacCorrectSQL removes stale DERIVED rows (last 1 day) that the recomputed
 // stream no longer supports — but NEVER a human-touched row (the guard is a
@@ -218,6 +378,7 @@ DELETE FROM %[1]s.%[3]s ev
         WHERE h.id_equipment = ev.id_equipment
           AND h.ts_event <> ev.ts_event
           AND ` + humanCoverPred + `
+          AND h.ts_event >= now() - interval '60 days'
           AND ev.ts_event >= h.ts_event
           AND ev.ts_event < COALESCE(h.ts_end, now()))
    )`
@@ -229,7 +390,30 @@ DELETE FROM %[1]s.%[3]s ev
 // %[5]s SilverSchema (the categorical cagg's home — #248 de-shim; the shadow
 // table itself stays on %[1]s ev).
 func fmtCPAC(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string) string {
-	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema)
+	return fmtCPACMode(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, false)
+}
+
+// fmtCPACMode is fmtCPAC plus the activity mode: %[6]s = the leads CTE (or ""),
+// %[7]s = the productive-minute predicate. leadActivity=false renders the exact
+// pre-LeadActivity statement.
+func fmtCPACMode(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string, leadActivity bool) string {
+	return fmtCPACFull(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leadActivity, false)
+}
+
+// fmtCPACFull adds the PLC-link mode: %[8]s = the link CTEs, %[9]s = the stop
+// guard, %[10]s = the extra transition arms. linkHealth=false renders all three
+// empty ⇒ the exact pre-LinkHealth statement.
+func fmtCPACFull(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string, leadActivity, linkHealth bool) string {
+	leads, act := "", cpacGrossActivity
+	if leadActivity {
+		leads, act = fmt.Sprintf(cpacLeadsCTE, refSchema), cpacLeadActivity
+	}
+	link, guard, arms := "", "", ""
+	if linkHealth {
+		link = strings.NewReplacer("%[2]s", refSchema, "%[5]s", silverSchema).Replace(cpacLinkCTE)
+		guard, arms = cpacLinkStopGuard, cpacLinkArms
+	}
+	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leads, act, link, guard, arms)
 }
 
 // RunOnceCPAC derives CPAC stops for one destination: correct (delete stale),
@@ -245,11 +429,11 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 	if thr <= 0 {
 		thr = 300
 	}
-	del, err := d.Pool.Exec(ctx, fmtCPAC(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema), cfg.Enterprises, thr)
+	del, err := d.Pool.Exec(ctx, fmtCPACFull(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth), cfg.Enterprises, thr)
 	if err != nil {
 		return 0, 0, fmt.Errorf("cpac correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmtCPAC(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema), cfg.Enterprises, thr)
+	ups, err := d.Pool.Exec(ctx, fmtCPACFull(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth), cfg.Enterprises, thr)
 	if err != nil {
 		return del.RowsAffected(), 0, fmt.Errorf("cpac upsert pass: %w", err)
 	}
@@ -261,7 +445,8 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 func LoopCPAC(ctx context.Context, dests []Dest, cfg CPACConfig, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("CPAC stop deriver started (ADR-0010 §10.4, DARK)",
 		slog.Int("destinations", len(dests)), slog.Int("enterprises", len(cfg.Enterprises)),
-		slog.Int("threshold_default_sec", cfg.ThresholdDefSec), slog.String("target_table", cfg.TargetTable))
+		slog.Int("threshold_default_sec", cfg.ThresholdDefSec), slog.String("target_table", cfg.TargetTable),
+		slog.Bool("lead_activity", cfg.LeadActivity), slog.Bool("link_health", cfg.LinkHealth))
 	jobs.Loop(ctx, jobs.Job{Name: "cpac-events-deriver", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {

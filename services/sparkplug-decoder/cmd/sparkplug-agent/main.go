@@ -73,6 +73,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/counterderive"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/deriver"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/httpingest"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/linkhealth"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/numeric"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/onboardapi"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawmqtt"
@@ -197,7 +198,30 @@ func main() {
 
 	if tenantsDir := getenv("AGENT_TENANTS_DIR", ""); tenantsDir != "" {
 		// ── MULTI-TENANT (AGENT_TENANTS_DIR) ──────────────────────────────────
+		// Per-tenant derive rules (customer "calculations"): the profiles dir is the
+		// same one live-capture reads. AGENT_MULTI_DERIVE_ENABLED=false is the ops
+		// kill switch; with no rules in any profile the stage never builds.
+		var tenantProfiles map[string]*tenantprofile.Profile
+		if dir := getenv("AGENT_TENANTS_PROFILE_DIR", ""); dir != "" && getenvBool("AGENT_MULTI_DERIVE_ENABLED", true) {
+			tenantProfiles = loadTenantProfiles(dir, logger)
+		}
+		// Saved rules from the DB (boot read; a rule change applies on restart).
+		// Unreachable DB ⇒ nil ⇒ file profiles only.
+		var tenantRules tenantRulesFunc
+		var rulesPool *pgxpool.Pool
+		if getenvBool("AGENT_MULTI_DERIVE_ENABLED", true) {
+			if dsn, err := registerDSN(); err == nil {
+				if pool, err := pgxpool.New(ctx, dsn); err == nil {
+					rulesPool = pool
+					tenantRules = descriptorRules(pool)
+				}
+			}
+		}
 		ps, err := buildTenantPipelines(tenantsDir, buildDeps{
+			tenantRules:         tenantRules,
+			profiles:            tenantProfiles,
+			deriveErrors:        deriveErrors,
+			deriveEmitted:       deriveEmitted,
 			logger:              logger,
 			dropped:             dropped,
 			unmappedTags:        unmappedTags,
@@ -206,6 +230,9 @@ func main() {
 			counterDerivedSynth: counterDerivedSynth,
 			tenantLoadFailed:    tenantLoadFailed,
 		})
+		if rulesPool != nil {
+			rulesPool.Close() // boot-only read
+		}
 		if err != nil {
 			// Reaching here now means an INFRASTRUCTURE failure (tenants dir
 			// unreadable, outbox uncreatable, or every single file was bad so there
@@ -260,7 +287,7 @@ func main() {
 		// would be a single sink feeding ALL tenants with no group routing. All
 		// tenant routing happens at the HTTP front-door on the envelope group.
 		// (Per-tenant rawmqtt subscribers are a v2 concern.)
-		ingestSrv = buildMultiIngestServer(cancel, routes, reg, logger)
+		ingestSrv = buildMultiIngestServer(cancel, routes, startLinkHealth(ctx, reg, logger), reg, logger)
 		logger.Info("sparkplug-agent starting (multi-tenant)", "tenants", len(ps), "tenants_dir", tenantsDir)
 	} else {
 		// ── SINGLE-FILE (AGENT_CONFIG / --config) — byte-identical behavior ────
@@ -600,6 +627,7 @@ func main() {
 				MaxBodyBytes:    int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
 				Numeric:         translator,
 				NumericUnmapped: numericUnmapped,
+				Link:            startLinkHealth(ctx, reg, logger),
 			}, p.ingest, ingestOutcomes, logger)
 			ingestAddr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 			ingestSrv = &http.Server{Addr: ingestAddr, Handler: hi.Handler()}
@@ -745,7 +773,7 @@ type pipelineDeps struct {
 	tls                 *tls.Config            // nil ⇒ Mode-A plaintext uplink
 	decomposer          *tenantprofile.Profile // nil ⇒ no parameter decomposition
 	recorder            *capture.Recorder      // nil ⇒ no live-capture (Observe is nil-safe)
-	derive              *deriver.Deriver       // nil ⇒ no analog/sum derive stage (single-file only)
+	derive              *deriver.Deriver       // nil ⇒ no derive stage (multi: only tenants whose profile has rules)
 	dropped             *prometheus.CounterVec
 	unmappedTags        *prometheus.CounterVec
 	decomposed          *prometheus.CounterVec
@@ -875,8 +903,9 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 		p.rec.Store(deps.recorder)
 	}
 	derive := deps.derive
-	// ADR-0059 §1.1: attach the derive-stage observability sink (single-file only —
-	// multi-tenant leaves derive nil). nil vecs (e.g. a test deps literal) ⇒ skip.
+	// ADR-0059 §1.1: attach the derive-stage observability sink (both modes; the
+	// multi-tenant path sets derive only for a tenant whose profile has rules).
+	// nil vecs (e.g. a test deps literal) ⇒ skip.
 	if derive != nil && deps.deriveErrors != nil && deps.deriveEmitted != nil {
 		derive.SetMetrics(&promDeriveSink{
 			group: cfg.Sparkplug.GroupID,
@@ -1037,6 +1066,14 @@ type buildDeps struct {
 	// footgun where one malformed wizard descriptor must NOT crash-loop the whole
 	// shared process and take cpack ingest down with it. Labeled by file + reason.
 	tenantLoadFailed *prometheus.CounterVec
+	// profiles (upper(tenant) → profile, from AGENT_TENANTS_PROFILE_DIR) feed the
+	// per-tenant DERIVE stage. nil/empty ⇒ no tenant derives (the historical
+	// multi-tenant behavior). A tenant whose profile has no derived rules also gets
+	// no deriver, so adding this wiring is a no-op until a rule is authored.
+	profiles      map[string]*tenantprofile.Profile
+	tenantRules   tenantRulesFunc // nil ⇒ file profiles only
+	deriveErrors  *prometheus.CounterVec
+	deriveEmitted *prometheus.CounterVec
 }
 
 // buildTenantPipelines loads EVERY *.yaml/*.yml in dir as an agentcfg.Config
@@ -1120,13 +1157,49 @@ func buildTenantPipelines(dir string, deps buildDeps) ([]*pipeline, error) {
 				"group_id", cfg.Sparkplug.GroupID, "broker", cfg.Sparkplug.UplinkBroker)
 		}
 
+		// Per-tenant DERIVE stage (the customer's "calculations"). Rules come from
+		// the SAVED descriptor when the DB is reachable (source "saved"), else from
+		// the profiles dir (source "file"). No rules ⇒ nil ⇒ byte-identical to the
+		// historical path. Any DB/generate error falls back to the file — logged,
+		// never fatal (a bad descriptor must not take the shared agent down).
+		var derive *deriver.Deriver
+		key := strings.ToUpper(strings.TrimSpace(cfg.Sparkplug.GroupID))
+		var rules []tenantprofile.DerivedRule
+		source := "none"
+		if prof := deps.profiles[key]; prof != nil && len(prof.Derived) > 0 {
+			rules, source = prof.Derived, "file"
+		}
+		if deps.tenantRules != nil {
+			if saved, found, err := deps.tenantRules(context.Background(), key); err != nil {
+				deps.logger.Warn("could not load saved calculation rules — using the profiles dir",
+					"group_id", cfg.Sparkplug.GroupID, "err", err)
+			} else if found {
+				rules, source = saved, "saved"
+			}
+		}
+		if len(rules) > 0 {
+			if d := deriver.New(&tenantprofile.Profile{Tenant: key, Derived: rules}); !d.Empty() {
+				added, err := allowlistEmits(cfg, rules)
+				if err != nil {
+					deps.logger.Error("calculation rules produce tags the tag map rejects — derive OFF for this tenant",
+						"group_id", cfg.Sparkplug.GroupID, "err", err)
+				} else {
+					derive = d
+					deps.logger.Info("tenant derive stage enabled", "group_id", cfg.Sparkplug.GroupID,
+						"derived_rules", len(rules), "source", source, "allowlisted_emits", added)
+				}
+			}
+		}
+
 		p, err := buildPipeline(cfg, pipelineDeps{
 			logger:              deps.logger,
 			outboxPath:          filepath.Join(outboxDir, sanitizeGroup(cfg.Sparkplug.GroupID)+".db"),
 			tls:                 nil,
 			decomposer:          nil,
 			recorder:            nil,
-			derive:              nil,
+			derive:              derive,
+			deriveErrors:        deps.deriveErrors,
+			deriveEmitted:       deps.deriveEmitted,
 			dropped:             deps.dropped,
 			unmappedTags:        deps.unmappedTags,
 			decomposed:          deps.decomposed,
@@ -1178,7 +1251,7 @@ func sanitizeGroup(g string) string {
 // deploy with AGENT_HTTP_INGEST_ENABLED unset or no key is a fatal misconfig
 // (the agent would have no way to receive data). Auth discipline mirrors the
 // single-file front-door (enabled-but-keyless fails closed).
-func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httpingest.Sink, reg *prometheus.Registry, logger *slog.Logger) *http.Server {
+func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httpingest.Sink, link func(string, rawtag.Link), reg *prometheus.Registry, logger *slog.Logger) *http.Server {
 	if !getenvBool("AGENT_HTTP_INGEST_ENABLED", false) {
 		logger.Error("AGENT_TENANTS_DIR is set (multi-tenant) but AGENT_HTTP_INGEST_ENABLED is not true — multi-tenant mode has no other ingest front-door (rawmqtt is single-tenant/no-op)")
 		os.Exit(1)
@@ -1196,6 +1269,7 @@ func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httping
 	hi := httpingest.NewRouter(httpingest.Config{
 		APIKey:       key,
 		MaxBodyBytes: int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
+		Link:         link,
 	}, routes, ingestOutcomes, logger)
 	addr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 	srv := &http.Server{Addr: addr, Handler: hi.Handler()}
@@ -1871,4 +1945,45 @@ func getenvBool(k string, d bool) bool {
 	default:
 		return d
 	}
+}
+
+// startLinkHealth wires PLC link-health recording (silver.plc_link_minutes) for
+// the /v1/tags `link` field. Best-effort like capture: no DSN, an unreachable
+// DB or AGENT_LINK_HEALTH_ENABLED=false ⇒ nil (link reports ignored, ingest
+// unaffected). The returned func only enqueues — it never blocks ingest.
+func startLinkHealth(ctx context.Context, reg *prometheus.Registry, logger *slog.Logger) func(string, rawtag.Link) {
+	if !getenvBool("AGENT_LINK_HEALTH_ENABLED", true) {
+		logger.Info("plc link health recording disabled (AGENT_LINK_HEALTH_ENABLED=false)")
+		return nil
+	}
+	dsn, err := registerDSN()
+	if err != nil {
+		logger.Warn("no DB DSN for plc link health — recording OFF", "err", err)
+		return nil
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		logger.Warn("could not open the DB pool for plc link health — recording OFF", "err", err)
+		return nil
+	}
+	pctx, pcancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pcancel()
+	if err := pool.Ping(pctx); err != nil {
+		pool.Close()
+		logger.Warn("DB unreachable for plc link health — recording OFF", "err", err)
+		return nil
+	}
+	dropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_link_health_dropped_total",
+		Help: "PLC link reports dropped because the link-health queue was full.",
+	})
+	failed := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sparkplug_agent_link_health_flush_failed_total",
+		Help: "Failed flushes of PLC link health to silver.plc_link_minutes (rows are kept and retried).",
+	})
+	reg.MustRegister(dropped, failed)
+	rec := linkhealth.New(linkhealth.NewPGSink(pool), 15*time.Second, dropped, failed, logger)
+	go rec.Run(ctx)
+	logger.Info("plc link health recording ON (silver.plc_link_minutes)")
+	return rec.Observe
 }

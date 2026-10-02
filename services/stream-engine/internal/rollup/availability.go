@@ -66,6 +66,12 @@ type CountersAvail struct {
 	// lead_machine's cagg. See line_lead.go.
 	LineLeadEnabled     bool
 	LineLeadEnterprises []int // enterprises whose tp=3 lines derive from lead_machine
+	// Per-LINE overrides from the client's OEE settings (oee_profile.lines):
+	// LineLeadOptIn lines derive from their lead even when their enterprise is
+	// not opted in; LineLeadOptOut lines do NOT even when it is. Both empty ⇒
+	// the rendered SQL is byte-identical to the enterprise-only predicate.
+	LineLeadOptIn  []int
+	LineLeadOptOut []int
 
 	// ── ADR-0048 §Fault-2: availability count-floor ────────────────────────
 	// The state/downtime stream has GAPS: stretches with NO event where the
@@ -94,6 +100,10 @@ type CountersAvail struct {
 	// OFF → byte-identical (legacy top-down oee + residual oee_p). Load-bearing
 	// on availability, so sequence it AFTER AvailFloorEnabled. See oee.go.
 	OeeCanonicalAPQ bool
+	// AvailabilityExclusions (2026-10-01): subtract out-of-service windows and
+	// PLC no-data time from available_time after every writer (see
+	// availability_exclusions.go). Inert without windows / status-20 events.
+	AvailabilityExclusions bool
 }
 
 // engaged reports whether the fallback pass should run this tick. Requires the
@@ -106,7 +116,7 @@ func (c CountersAvail) engaged() bool {
 
 // engagedLineLead reports whether the line-from-lead derivation pass should run.
 func (c CountersAvail) engagedLineLead() bool {
-	return c.LineLeadEnabled && len(c.LineLeadEnterprises) > 0 && c.IdleTimeoutSec > 0
+	return c.LineLeadEnabled && c.LineLead().Any() && c.IdleTimeoutSec > 0
 }
 
 // engagedFloor reports whether the availability count-floor pass should run.
@@ -119,6 +129,9 @@ func (c CountersAvail) engagedFloor() bool {
 // the legacy top-down oee / residual oee_p. Purely a master flag — it reshapes
 // how every batch row's oee is stored, independent of the equipment opt-in.
 func (c CountersAvail) engagedCanonical() bool { return c.OeeCanonicalAPQ }
+
+// engagedExclusions reports whether the availability-exclusions step runs.
+func (c CountersAvail) engagedExclusions() bool { return c.AvailabilityExclusions }
 
 // pgIntArrayLiteral renders a []int as a Postgres bigint[] literal, e.g.
 // {91,92,93}. The ids come from config (config.CSVInts of an env var), never
@@ -185,9 +198,9 @@ const hourCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
+	       oee   = GREATEST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0), 1), 0), -- ADR-0037 clamp (#663)
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
@@ -247,14 +260,14 @@ const shiftCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
+	       oee   = GREATEST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0), 1), 0), -- ADR-0037 clamp (#663)
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(
 	             COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
 	             / NULLIF(
 	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0)
-	                 * COALESCE(e.net / NULLIF(e.gross, 0), 0), 0), 0), 1), 0) -- ADR-0037 clamp (#663)
+	                 * COALESCE(e.net / NULLIF(e.gross, 0), 0), 0), 0), 0) -- ADR-0037 clamp (#663)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
@@ -377,11 +390,11 @@ const hourAvailFloorSQL = `
 const shiftOeeReconcileSQL = `
 	UPDATE %[4]s.equipment_oee_shift e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM shift_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
@@ -389,11 +402,11 @@ const shiftOeeReconcileSQL = `
 const hourOeeReconcileSQL = `
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '6 hour'`
@@ -463,4 +476,34 @@ func plannedDowntimeExpr(changeoverAvailability bool) string {
 		return "ee.planned_downtime = true AND ee.change_over IS DISTINCT FROM true"
 	}
 	return "ee.planned_downtime = true"
+}
+
+// LineLeadScope is WHICH lines derive their counters/availability from their
+// lead machine: every line of an opted-in enterprise, minus per-line opt-outs,
+// plus per-line opt-ins (the client's per-line OEE settings).
+type LineLeadScope struct {
+	Enterprises []int
+	OptIn       []int
+	OptOut      []int
+}
+
+// LineLead returns this config's line-lead scope.
+func (c CountersAvail) LineLead() LineLeadScope {
+	return LineLeadScope{Enterprises: c.LineLeadEnterprises, OptIn: c.LineLeadOptIn, OptOut: c.LineLeadOptOut}
+}
+
+// Any reports whether at least one line can be in scope.
+func (s LineLeadScope) Any() bool { return len(s.Enterprises) > 0 || len(s.OptIn) > 0 }
+
+// Predicate renders the scope over the equipments alias "eq". entExpr is the
+// enterprise array expression (a literal or a bind like $2::int[]). With no
+// per-line overrides it is EXACTLY "eq.id_enterprise = ANY(<entExpr>)" — the
+// pre-override SQL, byte for byte — so tenants without overrides are unchanged.
+func (s LineLeadScope) Predicate(entExpr string) string {
+	base := "eq.id_enterprise = ANY(" + entExpr + ")"
+	if len(s.OptIn) == 0 && len(s.OptOut) == 0 {
+		return base
+	}
+	return "((" + base + " AND NOT eq.id_equipment = ANY(" + pgIntArrayLiteral(s.OptOut) +
+		")) OR eq.id_equipment = ANY(" + pgIntArrayLiteral(s.OptIn) + "))"
 }

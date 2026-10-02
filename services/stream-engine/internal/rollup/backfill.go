@@ -96,6 +96,10 @@ func widenHourWindows(sql string) string {
 	return strings.NewReplacer(
 		"now() - interval '65 minutes'", "now() - interval '10 days'",
 		"now() - interval '6 hour'", "now() - interval '10 days'",
+		// hourSpeedSQL's stable LOCF chunk bound: live rows are <= 65 min old
+		// (8 days = 7-day look-back + slack); backfilled rows are up to 10 days
+		// old, so the look-back needs 17 days to stay a no-op widening.
+		"now() - interval '8 days'", "now() - interval '17 days'",
 	).Replace(sql)
 }
 
@@ -151,9 +155,8 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 		{"events", widenHourWindows(fmtRD(hourEventsSQL, d, plannedDowntimeExpr(changeoverAvailability)))},
 	}
 	// #207: LINE-FROM-LEAD backfill. Same position as the live RunHour (after
-	// events, so it targets only the state-less tp=3 line rows the events pass left
-	// flagged) and BEFORE "clear" (its `e.recalc_needed = true` guard needs the flag
-	// still set — clear settles the whole batch). WIDENED to the 10-day horizon:
+	// events, which it overrides for line-lead lines — single writer, like the
+	// shift pass) and BEFORE "clear". WIDENED to the 10-day horizon:
 	// hourLineLeadSQL's live UPDATE guard is `e.ts_value >= now()-6 hour`, so an
 	// outage older than that lookback (e.g. the #196 Sept 1–5 CPACK gap) never had
 	// its tp=3 LINE hour grains recomputed by the backfill — they stayed 0/stranded.
@@ -164,10 +167,13 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
 	if ca.engagedLineLead() {
 		steps = append(steps, struct{ name, sql string }{"line-lead",
-			widenHourWindows(fmtRD(hourLineLeadSQL, d, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec))})
+			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))})
+	}
+	if ca.engagedExclusions() {
+		steps = append(steps, struct{ name, sql string }{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
 	}
 	steps = append(steps,
-		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(hourTargetsSQL, d, d.ConfigSchema))},
+		struct{ name, sql string }{"targets", widenHourWindows(fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema))},
 		struct{ name, sql string }{"clear", fmtRD(hourBackfillClearSQL, d)},
 	)
 	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q

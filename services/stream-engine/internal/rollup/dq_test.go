@@ -144,10 +144,18 @@ func TestDetectGrain_IdealSpeedTooLowBoundaries(t *testing.T) {
 	}
 }
 
-// net>gross must emit NET_GT_GROSS (error), observed=overshoot.
+// net>gross at the HOUR grain is units in transit (stored as-is since 2026-09-29)
+// and must NOT be flagged; from the shift grain up it is a meter disagreement and
+// must emit NET_GT_GROSS (error), observed=overshoot.
 func TestDetectGrain_NetGtGross(t *testing.T) {
-	got := DetectGrain(GrainMetrics{
+	if got := rulesOf(DetectGrain(GrainMetrics{
 		IDEnterprise: 3, IDEquipment: 7, Grain: "hour",
+		Gross: 100, Net: 130, IdealSpeed: ptr(60),
+	})); func() bool { _, ok := got[DQRuleNetGtGross]; return ok }() {
+		t.Fatalf("hour-grain transit must not emit NET_GT_GROSS, got %v", got)
+	}
+	got := DetectGrain(GrainMetrics{
+		IDEnterprise: 3, IDEquipment: 7, Grain: "shift",
 		Gross: 100, Net: 130, IdealSpeed: ptr(60),
 	})
 	byRule := rulesOf(got)

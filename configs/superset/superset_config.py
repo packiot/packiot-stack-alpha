@@ -147,10 +147,47 @@ TALISMAN_CONFIG = {
     "force_https": False,           # TLS terminates at nginx/CloudFront
     "frame_options": None,          # do NOT set X-Frame-Options (see above)
     "session_cookie_secure": True,
+    # Talisman's init_app OVERWRITES app.config["SESSION_COOKIE_SAMESITE"] with this
+    # (default "Lax") — so SESSION_COOKIE_SAMESITE below was dead config and the
+    # session cookie shipped Lax: never sent in a cross-SITE iframe (staging.packiot.com
+    # → bi.staging.packiot.app) → CSRF 400 on every chart. Must be set HERE.
+    "session_cookie_samesite": "None",
 }
 # Cross-site iframe → the Superset session cookie must be SameSite=None; Secure.
 SESSION_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_SECURE = True
+
+# CHIPS (Partitioned) session cookie — cross-SITE embedding (2026-09-24).
+# front4 is also served at staging.packiot.com (registrable domain packiot.com) while
+# Superset lives on bi.staging.packiot.app: a cross-SITE iframe. Chromium blocks
+# third-party cookies even with SameSite=None; Secure, so the Superset session cookie
+# never came back → Flask-WTF's CSRF token (stored in the session) was missing → EVERY
+# embedded chart POST 400'd "The CSRF session token is missing". Same-site hosts
+# (front.staging.packiot.app) were unaffected. A `Partitioned` cookie (CHIPS) is allowed
+# in a 3rd-party context, keyed by the top-level site. Flask 2.3 has no
+# SESSION_COOKIE_PARTITIONED (Flask 3.1+) and writes the session cookie in save_session
+# AFTER after_request hooks, so a tiny WSGI middleware appends the attribute to that
+# cookie's Set-Cookie (only when it is already SameSite=None; Secure).
+class _PartitionedSessionCookie:
+    def __init__(self, wsgi_app, cookie_name):
+        self._app = wsgi_app
+        self._prefix = cookie_name + "="
+
+    def __call__(self, environ, start_response):
+        def _start_response(status, headers, exc_info=None):
+            patched = []
+            for key, value in headers:
+                low = value.lower()
+                if (key.lower() == "set-cookie" and value.startswith(self._prefix)
+                        and "samesite=none" in low and "partitioned" not in low):
+                    value = value + "; Partitioned"
+                patched.append((key, value))
+            return start_response(status, patched, exc_info)
+        return self._app(environ, _start_response)
+
+
+def FLASK_APP_MUTATOR(app):  # noqa: N802 — Superset config hook name
+    app.wsgi_app = _PartitionedSessionCookie(app.wsgi_app, app.config.get("SESSION_COOKIE_NAME", "session"))
 
 # ── CORS (scoped to the front4 SPA origin) ────────────────────────────────────
 ENABLE_CORS = True

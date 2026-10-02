@@ -139,25 +139,38 @@ SELECT 'SANDBOX-CPACK data wiped: ent '||$SENT AS status,
   (SELECT count(*) FROM scanned_boxes    WHERE id_enterprise=$SENT) AS boxes_left;
 SQL
 
-# Analytics-plane transactional wipe (packiot_analytics). The operational wipe above
-# only clears the packiot DB, but gold.production_orders_runtime still held OPEN PO
-# windows from the legacy replay — so operator create-and-start 409'd RANGE_CONFLICT
-# (a stale window occupied the equipment even though the operator showed no running
-# PO). Clearing the twin's PO runtime here keeps BOTH planes consistently empty so a
-# fresh PO can be started. Scoped to sbx equipment (via the enterprise join / id).
-# Order: box_scans (FK to production_orders) → runtime → core POs. Analytics
-# reporting re-derives from the replay pipeline; this only clears the twin's rows.
+# Analytics-plane RESET = REFLECTION (packiot_analytics — where every frontend reads and
+# writes via edge-api/read-api). The config clone above only touches the `packiot` DB, so
+# on its own it never reset E2E mutations (2026-09-24: 14 leftover E2E areas, 0 downtime
+# reasons → operator justify had nothing to pick, 903 accumulated manual events). The
+# procedure (db/migrations/t-sandbox-reflection) makes the twin an exact, id-remapped
+# reflection of ent 3: config upsert + extras deleted; events in the last 14 days
+# restored from their CPACK twin (undoes justify/split); ALL manual events + POs +
+# runtimes reflected; then the resolved-downtime window is re-materialized. History
+# (years) is filled once by `CALL ops.sandbox_reflect(..., true)` and kept thereafter.
+# statement_timeout must be set BEFORE the CALL (armed at top-level statement start).
 read -r -d '' SQL_WIPE_ANALYTICS <<SQL || true
-SET session_replication_role = replica;
-DELETE FROM box_scans b USING core.production_orders p
-  WHERE b.id_production_order = p.id_production_order AND p.id_enterprise = $SENT;
-DELETE FROM gold.production_orders_runtime r USING core.equipments e
-  WHERE r.id_equipment = e.id_equipment AND e.id_enterprise = $SENT;
-DELETE FROM core.production_orders WHERE id_enterprise = $SENT;
-SET session_replication_role = DEFAULT;
-SELECT 'SANDBOX analytics PO wipe: ent '||$SENT AS status,
-  (SELECT count(*) FROM gold.production_orders_runtime r JOIN core.equipments e USING(id_equipment)
-     WHERE e.id_enterprise=$SENT AND upper(r.runtime_timerange) IS NULL) AS open_windows_left;
+SET statement_timeout = '20min';
+-- twin-native clients/products/families would fail the reflect's catalog upsert on a
+-- same-name row (t-sandbox-reflect-catalog-extras); no-op on a DB without it.
+DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_drop_catalog_extras(integer,integer,integer)') IS NOT NULL THEN
+  RAISE NOTICE '%', ops.sandbox_drop_catalog_extras($SRC_ENT, $SENT, $OFF); END IF; END \$\$;
+CALL ops.sandbox_reflect($SRC_ENT, $SENT, $OFF, interval '14 days', false);
+-- legacy-era gold history: replace every month whose fingerprint differs from CPACK's, so a
+-- repair of CPACK's history reaches the twin (t-sandbox-reflect-catalog-extras/02). A CALL
+-- (it commits per month) — guarded by existence so an older DB just skips it.
+SELECT CASE WHEN to_regprocedure('ops.sandbox_resync_gold_history(integer,integer,integer,date,boolean)') IS NOT NULL
+            THEN 'CALL ops.sandbox_resync_gold_history($SRC_ENT, $SENT, $OFF, ''2026-09-01'')' ELSE 'SELECT 1' END AS sbx_resync \\gset
+:sbx_resync;
+-- count attribution = CPACK's: line meter roles (gross/net/scrap_machine) + topic routing by topic
+-- (t-sandbox-attribution-sync; the reflect touches neither). No-op on a DB without it.
+DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_sync_attribution(integer,integer,integer,text,text)') IS NOT NULL THEN
+  RAISE NOTICE '%', ops.sandbox_sync_attribution($SRC_ENT, $SENT, $OFF); END IF; END \$\$;
+SELECT 'SANDBOX analytics reflected: ent '||$SENT AS status,
+  serving.refresh_downtime_events_resolved(now() - interval '15 days', now()) AS resolved_rows,
+  (SELECT count(*) FROM core.production_orders WHERE id_enterprise=$SENT) AS pos,
+  (SELECT count(*) FROM core.areas a JOIN core.sites s USING (id_site) WHERE s.id_enterprise=$SENT) AS areas,
+  (SELECT count(*) FROM core.downtime_reason WHERE id_enterprise=$SENT) AS reasons;
 SQL
 
 # CREATE. jsonb-override clone: to_jsonb(row) || overrides, then json_populate_record
@@ -386,6 +399,24 @@ ANALYTICS_SQL=""
 [ -n "$WIPE_ANALYTICS" ] && ANALYTICS_SQL="$SQL_WIPE_ANALYTICS"
 [ -n "$SEED_QA" ]        && ANALYTICS_SQL="$ANALYTICS_SQL $SQL_SEED_AN"
 
+# ── Hands-on session guard (db/migrations/t-sandbox-grace-hold) ───────────────
+# heal / reset-data WIPE the twin back to CPACK. While someone is working in it (a
+# change newer than the last heal, still inside its grace period) that would destroy
+# their session, so ops.sandbox_heal_begin refuses unless the hold is due or
+# SANDBOX_HEAL_FORCE=1 (scripts/sandbox-session.sh heal-now). A successful run records
+# the heal (ops.sandbox_heal_end), which releases the hold. Both are no-ops on a DB
+# without the migration.
+HEAL_GUARD_SQL=""
+if [ -n "$WIPE_ANALYTICS" ]; then
+  _force=false; [ "${SANDBOX_HEAL_FORCE:-0}" = "1" ] && _force=true
+  HEAL_GUARD_SQL="DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_heal_begin(integer,boolean)') IS NOT NULL THEN
+    PERFORM ops.sandbox_heal_begin($SENT, $_force); END IF; END \$\$;"
+  ANALYTICS_SQL="$ANALYTICS_SQL DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_heal_end(integer,boolean,text)') IS NOT NULL THEN
+    PERFORM ops.sandbox_heal_end($SENT, true, '$MODE'); END IF; END \$\$;"
+fi
+
+ANALYTICS_DB="${ANALYTICS_DB:-packiot_analytics}"
+
 # ── Execute via SSM -> staging app box -> dockerized psql ─────────────────────
 # run_remote_sql <base64-sql> <db>: run the SQL (dockerized psql) on the staging
 # app box — via SSM by default, or directly (sudo bash) under SANDBOX_LOCAL. It's
@@ -420,7 +451,15 @@ REMOTE
 }
 
 sql_b64=$(printf '%s' "$SQL" | base64 -w0)
-ANALYTICS_DB="${ANALYTICS_DB:-packiot_analytics}"
+if [ -n "$HEAL_GUARD_SQL" ]; then
+  echo "[$MODE] checking the hands-on session hold (force=${SANDBOX_HEAL_FORCE:-0})…"
+  guard_out=$(run_remote_sql "$(printf '%s' "$HEAL_GUARD_SQL" | base64 -w0)" "$ANALYTICS_DB" 2>&1) || guard_rc=$?
+  printf '%s\n' "$guard_out"
+  if [ -n "${guard_rc:-}" ] || printf '%s' "$guard_out" | grep -q 'ERROR:'; then
+    echo "[$MODE] REFUSED: the sandbox is held by a hands-on session (see above). Nothing was changed." >&2
+    exit 4
+  fi
+fi
 echo "[$MODE] provisioning SANDBOX-CPACK (ent $SENT) on staging…"
 run_remote_sql "$sql_b64" '$POSTGRES_DB'
 # Analytics-plane invocation (separate SSM call): PO-runtime wipe (heal/reset-data)
@@ -439,7 +478,9 @@ fi
 # Pure local file generation (no SSM, no DB) — safe to run every create/reset,
 # deterministic overwrite, never touches anything that isn't this twin's own
 # generated file.
-if [ "$MODE" = "create" ] || [ "$MODE" = "reset" ] || [ "$MODE" = "heal" ]; then
+# SKIP_FANOUT_EMIT=1: the installed copy (/opt/packiot/sandbox, the grace-heal timer)
+# has no checkout to write the static fan-out config into — nothing to re-emit there.
+if [ -z "${SKIP_FANOUT_EMIT:-}" ] && { [ "$MODE" = "create" ] || [ "$MODE" = "reset" ] || [ "$MODE" = "heal" ]; }; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   "$SCRIPT_DIR/emit-fanout-config.sh" "$SOURCE_GROUP" "$TARGET_GROUP"
 fi

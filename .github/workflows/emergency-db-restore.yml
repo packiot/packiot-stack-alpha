@@ -1,0 +1,248 @@
+name: "EMERGENCY – restore database (staging)"
+
+# The emergency button for catastrophic data loss on STAGING. Runbook:
+# docs/runbooks/emergency-db-restore.md
+#
+# One path only: terraform/staging/scripts/restore-db.sh (side DB → verify gate →
+# rename swap), exactly as installed on the target host. This workflow adds input
+# validation, the typed confirmation, stopping the writers that would race the
+# swap, restarting them, and a summary.
+#
+#   mode=drill   (default) restore into <db>__restoring, verify, DROP it. Never
+#                touches the live DB. Safe to run any time — run it to prove backups.
+#   mode=restore restore + verify into <db>__restoring, stop writers, swap it in,
+#                restart the Postgres container, start writers. The displaced live
+#                DB is KEPT as <db>_pre_emergency_<UTC timestamp> (connections
+#                disabled) for rollback. Only from the `staging` branch, and only
+#                with confirm == "RESTORE <database> ON STAGING".
+#
+# Where it runs: the self-hosted staging runner = the APP box. The historian
+# (hist-gateway) lives there and is restored locally. analytics / superset live
+# on the DB box and are driven through SSM — that needs the app role's
+# app_backup_ops grant (terraform/staging/backups.tf). Until it is applied the
+# SSM preflight fails with a clear message; use the runbook's manual commands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      database:
+        description: "Database to restore"
+        type: choice
+        options: [analytics, historian, superset]
+        default: analytics
+      backup:
+        description: "Backup: latest, or YYYY-MM-DD (daily), or daily|weekly|monthly/<name>.dump.gz"
+        type: string
+        default: latest
+      mode:
+        description: "drill = restore to a side DB, verify, drop (safe). restore = verify + SWAP into live."
+        type: choice
+        options: [drill, restore]
+        default: drill
+      confirm:
+        description: 'restore mode only: type exactly  RESTORE <database> ON STAGING'
+        type: string
+        default: ""
+      catalog_gate:
+        description: "strict = restored catalog must equal live (default). report = don't block on it (live itself is damaged)."
+        type: choice
+        options: [strict, report]
+        default: strict
+
+concurrency:
+  group: emergency-db-restore
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: [self-hosted, staging, linux, arm64]
+    timeout-minutes: 240
+    env:
+      IN_DATABASE: ${{ inputs.database }}
+      IN_BACKUP: ${{ inputs.backup }}
+      IN_MODE: ${{ inputs.mode }}
+      IN_CONFIRM: ${{ inputs.confirm }}
+      IN_CATALOG_GATE: ${{ inputs.catalog_gate }}
+      AWS_REGION: us-east-1
+      DB_BOX_TAG: packiot-staging-db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Validate inputs
+        id: v
+        run: |
+          set -euo pipefail
+          case "$IN_DATABASE" in
+            analytics) db=packiot_analytics; where=dbbox ;;
+            historian) db=packiot_historian; where=local ;;
+            superset)  db=superset;          where=dbbox ;;
+            *) echo "::error::unknown database '$IN_DATABASE'"; exit 1 ;;
+          esac
+          # Inputs are free text: whitelist, never interpolate unchecked.
+          if [[ "$IN_BACKUP" == latest ]]; then key=latest
+          elif [[ "$IN_BACKUP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then key="daily/$IN_BACKUP.dump.gz"
+          elif [[ "$IN_BACKUP" =~ ^(daily|weekly|monthly)/[0-9A-Za-z-]+\.dump\.gz$ ]]; then key="$IN_BACKUP"
+          else echo "::error::backup must be 'latest', YYYY-MM-DD or (daily|weekly|monthly)/<name>.dump.gz"; exit 1; fi
+          if [ "$IN_MODE" = restore ]; then
+            want="RESTORE $IN_DATABASE ON STAGING"
+            if [ "$IN_CONFIRM" != "$want" ]; then
+              echo "::error::restore mode needs confirm == '$want' (got '$IN_CONFIRM'). Nothing was done."; exit 1
+            fi
+            if [ "$GITHUB_REF" != refs/heads/staging ]; then
+              echo "::error::restore mode only runs from the staging branch (got $GITHUB_REF)"; exit 1
+            fi
+          fi
+          ts=$(date -u +%Y%m%d%H%M)
+          {
+            echo "db=$db"; echo "where=$where"; echo "key=$key"
+            echo "old=${db}_pre_emergency_${ts}"
+            echo "log=/var/log/packiot-restore/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
+          echo "database=$db host=$where backup=$key mode=$IN_MODE catalog_gate=$IN_CATALOG_GATE"
+
+      # run_on_target '<shell>' → runs on the host holding the DB, streams nothing,
+      # prints the tail of the host-side log and propagates the exit code.
+      - name: Write target runner helper
+        run: |
+          cat > "$RUNNER_TEMP/target.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # usage: target.sh <local|dbbox> <step-name> '<shell command>'
+          set -uo pipefail
+          where="$1"; step="$2"; cmd="$3"
+          L="$LOGDIR/$step.log"
+          wrapped="mkdir -p $LOGDIR; ( $cmd ) > $L 2>&1; rc=\$?; tail -c 20000 $L; echo \"exit=\$rc (full log on host: $L)\"; exit \$rc"
+          if [ "$where" = local ]; then bash -c "$wrapped"; exit $?; fi
+          params=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["10800"]}))' "$wrapped")
+          id=$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript \
+                 --targets "Key=tag:Name,Values=$DB_BOX_TAG" --max-concurrency 1 --max-errors 0 \
+                 --comment "emergency-db-restore run $GITHUB_RUN_ID $step" \
+                 --parameters "$params" --query Command.CommandId --output text) || {
+            echo "::error::ssm:SendCommand to the DB box was refused. The app role needs aws_iam_role_policy.app_backup_ops (terraform/staging/backups.tf): terraform apply -target=aws_iam_role_policy.app_backup_ops — or use the manual commands in docs/runbooks/emergency-db-restore.md" >&2
+            exit 1; }
+          echo "SSM command $id"
+          inst=""
+          for _ in $(seq 30); do
+            inst=$(aws ssm list-command-invocations --region "$AWS_REGION" --command-id "$id" --query 'CommandInvocations[].InstanceId' --output text)
+            [ -n "$inst" ] && [ "$inst" != None ] && break; sleep 2
+          done
+          [ "$(wc -w <<<"$inst")" = 1 ] || { echo "::error::expected exactly one DB box, got '$inst'" >&2; exit 1; }
+          while :; do
+            st=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$id" --instance-id "$inst" --query Status --output text 2>/dev/null || echo Pending)
+            case "$st" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 15
+          done
+          aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$id" --instance-id "$inst" \
+            --query '[StandardOutputContent,StandardErrorContent]' --output text
+          [ "$st" = Success ]
+          EOF
+          chmod +x "$RUNNER_TEMP/target.sh"
+
+      - name: Preflight — installed restore-db.sh == this commit's
+        env:
+          LOGDIR: ${{ steps.v.outputs.log }}
+        run: |
+          set -euo pipefail
+          want=$(sha256sum terraform/staging/scripts/restore-db.sh | cut -d' ' -f1)
+          out=$("$RUNNER_TEMP/target.sh" "${{ steps.v.outputs.where }}" preflight \
+                "sha256sum /opt/packiot/scripts/restore-db.sh; df -h /var/lib/packiot-backup | tail -1")
+          echo "$out"
+          grep -q "$want" <<<"$out" || {
+            echo "::error::restore-db.sh on the target differs from this commit ($want). Re-run the installer (install-backup-tooling.sh on the DB box / install-historian-backup.sh on the app box) first."
+            exit 1; }
+
+      - name: Restore into side DB + verify (${{ inputs.mode }})
+        env:
+          LOGDIR: ${{ steps.v.outputs.log }}
+        run: |
+          set -euo pipefail
+          flag=--drill; [ "$IN_MODE" = restore ] && flag=--no-swap
+          if [ "${{ steps.v.outputs.where }}" = local ]; then
+            envsrc='set -a; . /etc/packiot/historian-backup.env; set +a; export POSTGRES_CONTAINER=$GATEWAY_CONTAINER GLOBALS_KEY=${BACKUP_KEY_PREFIX}packiot_historian/globals/latest.sql.gz'
+          else
+            envsrc='set -a; . /etc/packiot/backup.env; set +a'
+          fi
+          "$RUNNER_TEMP/target.sh" "${{ steps.v.outputs.where }}" restore \
+            "$envsrc; CATALOG_GATE=$IN_CATALOG_GATE /opt/packiot/scripts/restore-db.sh --db ${{ steps.v.outputs.db }} ${{ steps.v.outputs.key }} --yes-i-am-sure $flag" \
+            | tee "$RUNNER_TEMP/restore.out"
+
+      - name: Stop writers that would race the swap
+        id: stop
+        if: inputs.mode == 'restore'
+        run: |
+          set -euo pipefail
+          # Queue consumers / background writers: stopped so their writes wait in
+          # RabbitMQ (or their next timer tick) instead of failing against a DB that
+          # is mid-rename. Request/response APIs stay up and retry on reconnect.
+          case "$IN_DATABASE" in
+            analytics) cands="stream-engine analytics-sync legacy-replicator legacy-replicator-sbx" ;;
+            superset)  cands="superset superset-worker" ;;
+            historian) cands="" ;;
+          esac
+          stopped=""
+          for c in $cands; do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ]; then
+              docker stop -t 60 "$c" && stopped="$stopped $c"
+            fi
+          done
+          timers=""
+          if [ "$IN_DATABASE" = historian ]; then
+            for t in historian-staging-append.timer historian-integrity-monitor.timer packiot-historian-backup.timer; do
+              systemctl is-active --quiet "$t" && systemctl stop "$t" && timers="$timers $t"
+            done
+            for s in historian-staging-append.service historian-integrity-monitor.service packiot-historian-backup.service; do
+              for _ in $(seq 120); do systemctl is-active --quiet "$s" || break; echo "waiting for $s to finish"; sleep 10; done
+              systemctl is-active --quiet "$s" && { echo "::error::$s still running after 20 min"; exit 1; }
+            done
+          fi
+          echo "containers=$stopped" >> "$GITHUB_OUTPUT"
+          echo "timers=$timers" >> "$GITHUB_OUTPUT"
+          echo "stopped containers:[$stopped] timers:[$timers]"
+
+      - name: SWAP restored DB into live (keeps ${{ steps.v.outputs.old }})
+        if: inputs.mode == 'restore'
+        env:
+          LOGDIR: ${{ steps.v.outputs.log }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.v.outputs.where }}" = local ]; then
+            envsrc='set -a; . /etc/packiot/historian-backup.env; set +a; export POSTGRES_CONTAINER=$GATEWAY_CONTAINER'
+          else
+            envsrc='set -a; . /etc/packiot/backup.env; set +a'
+          fi
+          "$RUNNER_TEMP/target.sh" "${{ steps.v.outputs.where }}" swap \
+            "$envsrc; /opt/packiot/scripts/restore-db.sh --db ${{ steps.v.outputs.db }} --swap-only --yes-i-am-sure --old-name ${{ steps.v.outputs.old }} --restart-container" \
+            | tee "$RUNNER_TEMP/swap.out"
+
+      - name: Restart writers
+        if: always() && inputs.mode == 'restore'
+        run: |
+          for c in ${{ steps.stop.outputs.containers }}; do docker start "$c"; done
+          for t in ${{ steps.stop.outputs.timers }}; do systemctl start "$t"; done
+          # hist-gateway / pgbouncer clients reconnect by name; give them a moment.
+          sleep 30
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'stream-engine|analytics-sync|legacy-replicator|superset|hist-gateway|read-api|stack-edge-api' || true
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## EMERGENCY – restore database: \`${IN_DATABASE}\` (${IN_MODE})"
+            echo
+            echo "| | |"; echo "|---|---|"
+            echo "| database | \`${{ steps.v.outputs.db }}\` |"
+            echo "| backup | \`${{ steps.v.outputs.key }}\` |"
+            echo "| mode | ${IN_MODE} (catalog gate: ${IN_CATALOG_GATE}) |"
+            if [ "$IN_MODE" = restore ]; then echo "| displaced live DB kept as | \`${{ steps.v.outputs.old }}\` (ALLOW_CONNECTIONS false) |"; fi
+            echo "| host log dir | \`${{ steps.v.outputs.log }}\` |"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP"/restore.out "$RUNNER_TEMP"/swap.out 2>/dev/null | grep -E 'SUMMARY|GATE|catalog|Key tables|^    |ERROR|Swap|ROLLBACK' | head -80 || true
+            echo '```'
+            if [ "$IN_MODE" = restore ]; then echo "Rollback: see the ROLLBACK block in the swap step log, or docs/runbooks/emergency-db-restore.md."; fi
+          } >> "$GITHUB_STEP_SUMMARY"

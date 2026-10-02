@@ -34,10 +34,19 @@ DB_ASSET = ("databases", "packiot_analytics.yaml")
 
 # Per-DB-asset password injections: (asset_path, env_var, placeholder).
 #   * packiot_analytics — the bi.* read-only superset_ro credential.
-#   * historian_union   — the hist-gateway (pg_duckdb) HIST_GW_PASSWORD.
+#   * historian_union   — the hist-gateway NOSUPERUSER service login historian_svc (T3):
+#     HIST_GW_SVC_PASSWORD (Secrets Manager packiot/staging/historian-svc via .env).
 DB_INJECTIONS = [
     (("databases", "packiot_analytics.yaml"), "SUPERSET_DB_RO_PASSWORD", "XXXXXXXXXXXX"),
-    (("databases", "historian_union.yaml"), "HIST_GW_PASSWORD", "YYYYYYYYYYYY"),
+    (("databases", "historian_union.yaml"), "HIST_GW_SVC_PASSWORD", "YYYYYYYYYYYY"),
+]
+
+
+# Environment templating (T5): values that differ per environment. Defaults = STAGING,
+# so an unset var reproduces the previous hardcoded URI byte-for-byte.
+TEMPLATE_VARS = [
+    ("__ANALYTICS_HOST__", "POSTGRES_HOST_UPSTREAM", "10.10.10.89"),
+    ("__ANALYTICS_DB__", "SUPERSET_ANALYTICS_DB", "packiot_analytics"),
 ]
 
 
@@ -65,6 +74,18 @@ def main() -> int:
             print(f"[import_bundle] WARN: {env_var} unset — {asset_path[-1]} keeps "
                   "the placeholder; that connection will fail to authenticate until "
                   "it is set.", file=sys.stderr)
+
+    for dbf in sorted(STAGED.joinpath("databases").glob("*.yaml")):
+        text = dbf.read_text()
+        for token, env_var, default in TEMPLATE_VARS:
+            if token in text:
+                text = text.replace(token, os.environ.get(env_var) or default)
+        # Check for the KNOWN tokens only — a bare "__" test would false-positive on a
+        # password containing a double underscore and (set -e) block superset-init.
+        if any(token in text for token, _, _ in TEMPLATE_VARS):
+            print(f"[import_bundle] ERROR: unresolved template token in {dbf.name}", file=sys.stderr)
+            return 1
+        dbf.write_text(text)
 
     # Zip with a single top-level `assets/` root (what the importer expects).
     if ZIP_PATH.exists():

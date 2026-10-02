@@ -12,7 +12,7 @@
 # Requires: awscli on the box + the box's instance profile granting
 #   s3:ListBucket + s3:GetObject on the wiki bucket/prefix (read-only).
 #
-# Install: see docs/wiki-deploy.md (systemd timer or cron every 5 min).
+# Install: see docs/wiki/components/wiki-pipeline.md (systemd timer or cron every 5 min).
 
 set -euo pipefail
 

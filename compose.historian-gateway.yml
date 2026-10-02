@@ -13,6 +13,25 @@ services:
     container_name: hist-gateway
     restart: unless-stopped
     networks: [packiot-net]
+    # OOM guard (2026-09-28 audit). pg_duckdb defaults to a 4 GB DuckDB memory
+    # budget PER BACKEND and one thread per core; read-api's pool opens up to 4
+    # backends, so a few wide cold scans could ask for ~16 GB on a 7.8 GB host
+    # shared with ~45 containers (the 09-25 incident class). DuckDB's own limit
+    # makes a heavy query spill to disk or fail on its own; mem_limit caps the
+    # whole gateway so the kernel kills THIS container, never the host.
+    # Command-line -c settings win over postgresql.conf and postgresql.auto.conf,
+    # so these are the single source of truth (no ALTER SYSTEM needed).
+    command:
+      - postgres
+      - -c
+      - duckdb.memory_limit=1024
+      - -c
+      - duckdb.max_memory=1024
+      - -c
+      - duckdb.threads=2
+      - -c
+      - duckdb.max_temp_directory_size=8GB
+    mem_limit: 2560m
     environment:
       POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:?set in .env}
       # Honest DB name (#274): the gateway's own DB is packiot_historian (was the
@@ -45,6 +64,9 @@ services:
       # db/migrations/t282-historian-gateway-glue/02-analytics-histgw-ro.sql; same secret
       # here. Unset ⇒ init falls back to the FDW superuser (logs a warning).
       HISTGW_RO_PASS: ${HISTGW_RO_PASS:-}
+      # T3 — historian_svc service login (read-api + Superset). Fresh-volume init creates
+      # it; a RUNNING gateway is brought to the same state by apply-hardening.sh.
+      HIST_GW_SVC_PASSWORD: ${HIST_GW_SVC_PASSWORD:-}
     volumes:
       - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
       - hist_gateway_data:/var/lib/postgresql/data

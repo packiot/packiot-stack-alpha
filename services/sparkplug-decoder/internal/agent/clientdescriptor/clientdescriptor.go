@@ -180,6 +180,13 @@ type Descriptor struct {
 	// customizations tab (their "z" is rewritten) so an exported node lands there
 	// regardless of the tab id it was exported from.
 	Customizations []map[string]any `yaml:"customizations,omitempty"`
+
+	// NodeRedHelper: the box reads PLCs with the Python reader, and a Node-RED
+	// "helper" beside it runs the customizations. The reader tees every batch to
+	// the helper (best-effort); the helper's generated tab exposes the same spot
+	// ids (tags in, publish out). When true, Generate emits the HELPER flow as the
+	// reader_flow artifact, so live apply and the inserter work unchanged.
+	NodeRedHelper bool `yaml:"nodered_helper,omitempty"`
 }
 
 // DescriptorPLC is the descriptor's PLC-connectivity + tag-map section. It maps
@@ -264,6 +271,10 @@ type PLCType struct {
 // — all pointers/omitempty so "absent" is distinguishable from a zero value.
 type DescriptorPLCEndpoint struct {
 	Name string `yaml:"name"`
+	// Enabled switches a PLC connection off WITHOUT deleting it (CS Admin's per-PLC
+	// on/off switch). nil or true ⇒ read; false ⇒ every generator skips it and its
+	// tag maps (see activePLC), while the configuration stays saved.
+	Enabled *bool `yaml:"enabled,omitempty"`
 	// Protocol ∈ {s7, modbus_tcp, opcua}. Selects the reader + gates which tag
 	// map may reference this endpoint. OPTIONAL when Type is set — an endpoint that
 	// references a plc type inherits the type's protocol (and rack/slot).
@@ -642,6 +653,9 @@ func (d *Descriptor) Validate() error {
 		// descriptor time, not fanned out. The RESOLVED form is re-validated by the
 		// generated profile (GenerateProfile → Profile.Validate).
 		for j, dm := range e.Derived {
+			if err := d.validateAbsoluteVars(i, e.Topic, j, dm); err != nil {
+				return err
+			}
 			if err := validateDerivedMetric(i, e.Topic, j, dm); err != nil {
 				return err
 			}
@@ -756,6 +770,46 @@ func checkFunctionBounds(i int, id, code string) error {
 var validTypes = map[string]bool{
 	"double": true, "float": true, "long": true,
 	"int": true, "bool": true, "string": true,
+}
+
+// validateAbsoluteVars checks the expr vars that read ANOTHER equipment. A var is
+// either RELATIVE ("/Admin/…", resolved under the rule's own equipment) or
+// ABSOLUTE: the full canonical topic, starting with the tenant prefix
+// ("BISPHARMA/SP/LINHAS/L01/S3/Admin/…"), resolved as-is — this is how a rule
+// combines two specific machines. An absolute var must name an equipment this
+// descriptor maps (a typo would otherwise be a rule that silently never fires)
+// and cannot use {idx} (whose count index would it be?).
+func (d *Descriptor) validateAbsoluteVars(i int, topic string, j int, dm DerivedMetric) error {
+	if dm.Expr == nil {
+		return nil
+	}
+	for name, v := range dm.Expr.Vars {
+		if strings.HasPrefix(v, "/") || strings.TrimSpace(v) == "" {
+			continue
+		}
+		if d.Canonical.Prefix == "" || !strings.HasPrefix(v, d.Canonical.Prefix+"/") {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q] = %q: use \"/Admin/…\" for this equipment, or the full topic starting with %q for another machine",
+				i, topic, j, name, v, d.Canonical.Prefix+"/")
+		}
+		if strings.Contains(v, tenantprofile.IdxPlaceholder) {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q]: {idx} is only allowed for this equipment's own tags — write the other machine's count index number", i, topic, j, name)
+		}
+		// Longest mapped topic that prefixes the var, and what follows must be a
+		// tag leaf — a LINE topic prefixes all its machines, so "…/L01/S9/Admin/…"
+		// would otherwise pass as "the line's tag" for a machine that doesn't exist.
+		best := ""
+		for _, e := range d.Equipment {
+			if e.Topic != "" && strings.HasPrefix(v, e.Topic+"/") && len(e.Topic) > len(best) {
+				best = e.Topic
+			}
+		}
+		rest := strings.TrimPrefix(v, best)
+		known := best != "" && (strings.HasPrefix(rest, "/Admin/") || strings.HasPrefix(rest, "/Status/") || strings.HasPrefix(rest, "/Derive/"))
+		if !known {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q] = %q: no mapped equipment has that topic", i, topic, j, name, v)
+		}
+	}
+	return nil
 }
 
 // validateDerivedMetric enforces the DerivedMetric shape at descriptor time:
