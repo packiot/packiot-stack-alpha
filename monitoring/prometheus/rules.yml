@@ -321,6 +321,16 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "the data-invariant job has not completed for >90 min (Timescale job ops.job_data_invariants) — the invariants are blind"
+      # Early warning before the 600 s statement_timeout kills the whole battery (which would
+      # also trip DataInvariantsStale). avg over 3 h = ~6 runs, so one slow run under a
+      # recompute does not page. Action: move the slowest checks
+      # (topk(5, pg_data_invariant_check_seconds)) into a second, less frequent job.
+      - alert: DataInvariantsSlow
+        expr: avg_over_time(pg_data_invariant_observed{datname="packiot_analytics",check_id="Z_invariants_run"}[3h]) > 400
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "data-invariant battery averages {{ $value | humanize }} s per run (budget 600 s) — split the slowest checks into a second job: topk(5, pg_data_invariant_check_seconds)"
       - alert: AnalyticsCaggRefreshLag
         expr: max by (datname,cagg) (pg_timescaledb_cagg_seconds_since_last_success{datname="packiot_analytics"} > clamp_min(2 * pg_timescaledb_cagg_schedule_seconds{datname="packiot_analytics"}, 900))
         for: 10m

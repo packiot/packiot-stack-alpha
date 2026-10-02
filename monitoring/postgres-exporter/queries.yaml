@@ -352,3 +352,18 @@ pg_data_invariant_run:
   metrics:
     - datname: { usage: LABEL, description: "Database" }
     - age_seconds: { usage: GAUGE, description: "Seconds since the in-DB invariant job last completed" }
+
+# Per-check runtime of the latest in-DB invariant run (ops.data_invariant_timing; migration
+# t-data-invariants-timing). Tells WHICH check to move to a slower job when the battery
+# approaches its 600 s budget (DataInvariantsSlow). Same query_to_xml guard as above.
+pg_data_invariant_check:
+  query: |
+    SELECT current_database() AS datname, x.check_id, x.seconds
+      FROM (SELECT xmlelement(name r, query_to_xml($$SELECT check_id, seconds::float8 AS seconds FROM ops.data_invariant_timing
+                                   WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result WHERE check_id = 'Z_invariants_run')$$, true, true, '')) AS q
+              FROM (SELECT 1) one WHERE to_regclass('ops.data_invariant_timing') IS NOT NULL) s,
+           XMLTABLE('/r/row' PASSING s.q COLUMNS check_id text PATH 'check_id', seconds float8 PATH 'seconds') x
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - check_id: { usage: LABEL, description: "Invariant id" }
+    - seconds: { usage: GAUGE, description: "Seconds this check took in the latest in-DB invariant run" }
