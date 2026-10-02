@@ -1586,3 +1586,73 @@ func TestGoldenLineLeadNoFillTotalizer(t *testing.T) {
 		cancel()
 	}
 }
+
+// TestGoldenShiftLineLeadBoundaryHours — CPACK shifts change at 02:10. The per-hour
+// buckets used to be selected by START time only, so the shift ending at :10 took the
+// whole boundary hour and the next shift none of it (live: CPACK shifts off 10.2 pct on
+// average vs the lead's own silver; L6 2026-08-31 18:00 gross 67,317 vs 60,000).
+// Lead 901 counts 1 unit/min; hourly buckets hold 60 each.
+//
+//	shift A [H-4h, H-2h+10m): hours H-4, H-3 full (120) + 10 min of H-2   → 130
+//	shift B [H-2h+10m, H-1h): the other 50 min of H-2                     → 50
+//	old SQL: A = 180 (whole H-2), B = 0 (H-2 starts before B)
+func TestGoldenShiftLineLeadBoundaryHours(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, s := range []string{goldenSchema, counterMatrixSchema} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	const fixture = `
+		SET search_path TO golden, public;
+		INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,scrap_machine)
+		VALUES (900,1,1,3,3,NULL,901,NULL,NULL), (901,1,1,3,1,100,NULL,NULL,NULL);
+		CREATE TEMP TABLE shift_elig (id_equipment int, ts_value timestamptz, ts_end timestamptz);
+		INSERT INTO shift_elig VALUES
+		  (900, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) - interval '110 minutes'),
+		  (900, date_trunc('hour', now()) - interval '110 minutes', date_trunc('hour', now()) - interval '1 hour');
+		INSERT INTO golden.equipment_oee_shift (id_equipment, ts_value, ts_end, ts_value_production, id_shift, recalc_needed, ideal_speed)
+		SELECT id_equipment, ts_value, ts_end, date_trunc('day', now()), 1, true, 0 FROM shift_elig;
+		INSERT INTO golden.equipment_categorical_1hour (id_equipment, ts_value, gross_production_incr, net_production_incr, scrap_incr)
+		SELECT 901, date_trunc('hour', now()) - make_interval(hours => h), 60, 60, 0 FROM generate_series(2,4) h;
+		INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+		SELECT 901, date_trunc('hour', now()) - interval '4 hours' + make_interval(mins => m), 1, 1 FROM generate_series(0,179) m;`
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	if _, err := conn.Exec(ctx, fmtRP(ShiftLineLeadSQLForParity(), "golden", pgIntArrayLiteral([]int{3}), 300)); err != nil {
+		t.Fatalf("line-lead: %v", err)
+	}
+	rows, err := conn.Query(ctx, `SELECT gross, net FROM golden.equipment_oee_shift WHERE id_equipment = 900 ORDER BY ts_value`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got [][2]float64
+	for rows.Next() {
+		var g, n float64
+		if err := rows.Scan(&g, &n); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, [2]float64{g, n})
+	}
+	want := [][2]float64{{130, 130}, {50, 50}}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("boundary hours: got %v, want %v (old start-only selection gives [[180 180] [0 0]])", got, want)
+	}
+}
