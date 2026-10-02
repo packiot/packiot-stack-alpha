@@ -29,12 +29,19 @@ package replicate
 //
 // It is idempotent (ON CONFLICT DO NOTHING + status guards), read-only on
 // legacy, and ships INERT (RECONCILE_PO_ENABLED=false) — enabled deliberately
-// after review, matching the migration's discipline. Runtime-window creation
-// for freshly-inserted POs is intentionally omitted: production_orders_runtime
-// carries a per-equipment no-overlap exclusion constraint, and stuck-open
-// windows on the twin routinely span the whole period, so a blind insert
-// aborts the batch. Counters still flow from recalc_needed; window fidelity for
-// non-telemetry lines is a documented limitation.
+// after review, matching the migration's discipline.
+//
+// Runtime windows (2026-10-02): a PO with a ts_start but NO runtime row gets one
+// here — both a PO this pass inserted and one already on the twin. The PO compute
+// reads ONLY production_orders_runtime, so a header without a window computes 0
+// forever (while staying flagged). Until 10-02 window creation was omitted here,
+// which was harmless while nearly every PO arrived through the replay; from 09-29
+// most CPACK starts reached the replay BEFORE the PO existed on the twin (the start
+// failed open: "update matched no rows"), the reconciler inserted the header 5 min
+// later, and 16/28 → 7/30 → 8/22 POs per day ran with no window. The insert carries
+// the same overlap guard as sqlOpenWindow (no-op instead of an exclusion-constraint
+// error), so a PO whose neighbour still holds a stale open window is simply retried
+// on a later pass, after the neighbour's finish has closed it.
 import (
 	"context"
 	"database/sql"
@@ -108,6 +115,51 @@ const sqlReconcileFillStart = `UPDATE core.production_orders
 	   SET ts_start = $1, recalc_needed = true, last_update = now()
 	 WHERE id_enterprise = $2 AND id_order = $3 AND ts_start IS NULL
 	   AND (ts_end IS NULL OR ts_end >= $1)`
+
+// sqlReconcileBackfillWindow gives a started PO with NO runtime row its window,
+// from the twin's own header: [ts_start, ts_end) when it ended, [ts_start, ∞) while
+// running. A PO that never started (no ts_start, status 1) or a zero-length run gets
+// none. Overlap-guarded per equipment exactly like sqlOpenWindow.
+const sqlReconcileBackfillWindow = `INSERT INTO gold.production_orders_runtime
+	       (id_production_order, id_equipment, runtime_timerange, recalc_needed)
+	SELECT po.id_production_order, po.id_equipment, tstzrange(po.ts_start, po.ts_end), true
+	  FROM core.production_orders po
+	 WHERE po.id_enterprise = $1 AND po.id_order = $2
+	   AND po.status IN (2, 3, 4) AND po.ts_start IS NOT NULL
+	   AND (po.ts_end IS NULL OR po.ts_end > po.ts_start)
+	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime r
+	        WHERE r.id_production_order = po.id_production_order)
+	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime x
+	        WHERE x.id_equipment = po.id_equipment
+	          AND x.runtime_timerange && tstzrange(po.ts_start, po.ts_end))`
+
+// sqlReconcileWindowGap reports whether a started PO still has no runtime row
+// after the backfill attempt — the overlap-blocked case, counted per pass so a
+// window that can never be created is visible in the logs instead of silent.
+const sqlReconcileWindowGap = `SELECT EXISTS (SELECT 1 FROM core.production_orders po
+	 WHERE po.id_enterprise = $1 AND po.id_order = $2
+	   AND po.status IN (2, 3, 4) AND po.ts_start IS NOT NULL
+	   AND (po.ts_end IS NULL OR po.ts_end > po.ts_start)
+	   AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime r
+	        WHERE r.id_production_order = po.id_production_order))`
+
+// ensureWindow runs the backfill for one PO; returns (opened, stillMissing).
+func (rc *POReconciler) ensureWindow(ctx context.Context, ent int, idOrder int64) (bool, bool) {
+	ct, err := rc.dest.Exec(ctx, sqlReconcileBackfillWindow, ent, idOrder)
+	if err != nil {
+		rc.logger.Warn("PO reconcile: window backfill failed",
+			slog.Int64("id_order", idOrder), slog.String("err", err.Error()))
+		return false, true
+	}
+	if ct.RowsAffected() > 0 {
+		return true, false
+	}
+	var missing bool
+	if err := rc.dest.QueryRow(ctx, sqlReconcileWindowGap, ent, idOrder).Scan(&missing); err != nil {
+		return false, false
+	}
+	return false, missing
+}
 
 type legacyPO struct {
 	idOrder              int64
@@ -187,6 +239,16 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 
 	inserted, finished, unresolved, skippedRunning := 0, 0, 0, 0
 	ent := rc.cfg.DstEnterprise
+	windowsOpened, windowsBlocked := 0, 0
+	window := func(idOrder int64) {
+		opened, missing := rc.ensureWindow(ctx, ent, idOrder)
+		if opened {
+			windowsOpened++
+		}
+		if missing {
+			windowsBlocked++
+		}
+	}
 	for i := range pos {
 		p := &pos[i]
 		eq, ok := rc.r.ResolveEquipment(p.idEquipment)
@@ -228,6 +290,7 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 				inserted++
 				rc.m.IncReconcileInserted()
 			}
+			window(p.idOrder)
 		case err != nil:
 			rc.logger.Warn("PO reconcile: twin lookup failed",
 				slog.Int64("id_order", p.idOrder), slog.String("err", err.Error()))
@@ -260,6 +323,8 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 					rc.m.IncReconcileFinished()
 				}
 			}
+			// After fill-start / finish, so the window uses the header's final bounds.
+			window(p.idOrder)
 		}
 	}
 	rc.logger.Info("PO reconcile pass done",
@@ -267,7 +332,9 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 		slog.Int("inserted", inserted),
 		slog.Int("finished", finished),
 		slog.Int("unresolved", unresolved),
-		slog.Int("skipped_running_conflict", skippedRunning))
+		slog.Int("skipped_running_conflict", skippedRunning),
+		slog.Int("windows_opened", windowsOpened),
+		slog.Int("windows_blocked_overlap", windowsBlocked))
 
 	if rc.cfg.ReconcileEnrichEnabled {
 		rc.runEnrich(ctx)
