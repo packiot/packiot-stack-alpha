@@ -288,6 +288,28 @@ jobs:
             docker restart postgres-exporter && echo "postgres-exporter restarted to load queries"
           fi
 
+      - name: Restart Loki when its config changed (config read only at startup)
+        # #1554 enabled compactor retention in loki-local-config.yaml on 10-02, but
+        # `up -d` never recreates Loki (its service spec is unchanged) and Loki reads
+        # -config.file only at startup, so the running container kept the pre-#1554
+        # config: retention stayed a no-op, loki-data grew to 17.8 GB, and the app host
+        # disk filled (ENOSPC failed the 10-06 build of #1558). Restart only when this
+        # push touched monitoring/loki/ (or always on workflow_dispatch / unknown
+        # 'before'). Promtail/Alloy buffer and retry, so a restart loses no logs.
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set +e
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             && git diff --quiet "$BEFORE" HEAD -- monitoring/loki/; then
+            echo "Loki config unchanged — no restart"
+          else
+            docker compose -f compose.staging.yml -f compose.superset.yml -p stack restart loki \
+              && echo "Loki restarted to load its config"
+          fi
+
       - name: Reload Alertmanager config (dir-mount makes new file content visible; reload re-reads it)
         # Task #41 — same inode trap as #39/#40, now on the NOTIFICATION path.
         # monitoring/alertmanager is now a DIRECTORY bind mount, so a git checkout
