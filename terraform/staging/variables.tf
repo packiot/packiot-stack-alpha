@@ -53,7 +53,9 @@ variable "db_volume_size_gb" {
 
 variable "app_volume_size_gb" {
   type    = number
-  default = 64 # gp3 → $5.12/mo. Grown from 32 → 64 after 2026-06-22 disk-full incident.
+  default = 128 # gp3 → $10.24/mo. 32 → 64 after the 2026-06-22 disk-full incident; 64 → 128 on 2026-10-06
+  # (disk 97 %: Loki retention never loaded + cold rebuild → ENOSPC). Resized online via
+  # `aws ec2 modify-volume` + growpart/xfs_growfs; this value keeps state in sync. EBS cannot shrink.
 }
 
 # ── DNS / Domain ───────────────────────────────────────────────────────────────
