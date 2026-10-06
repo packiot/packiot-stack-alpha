@@ -185,6 +185,20 @@ jobs:
           fi
           docker logout ghcr.io >/dev/null 2>&1 || true  # don't leave the token in ~/.docker/config.json
 
+      - name: Resolve compose profiles (.env COMPOSE_PROFILES + shared-tee)
+        # ONE profile set for every later compose call (Build, Deploy, the state gate,
+        # the Loki restart), via $GITHUB_ENV. An explicit `--profile` flag REPLACES
+        # COMPOSE_PROFILES from .env instead of adding to it: from 0ba14d09 (09-29) the
+        # deploy's `--profile shared-tee` silently dropped the `superset` profile that
+        # .env enables, so deploys stopped managing Superset while the state gate (no
+        # flag, reads .env) still expected its one-shots → gate red on 10-06 once
+        # superset-db-init/superset-init were gone. It would also have blocked the
+        # documented `alerting` switch. .env stays the switch; shared-tee is always on.
+        run: |
+          P=$(grep -E '^COMPOSE_PROFILES=' .env | tail -1 | cut -d= -f2- | tr -d "\"'")
+          echo "COMPOSE_PROFILES=shared-tee${P:+,$P}" >> "$GITHUB_ENV"
+          echo "compose profiles: shared-tee${P:+,$P}"
+
       - name: Build images
         # compose.superset.yml (W2 embedded BI) is a profile-gated overlay: every
         # service carries `profiles: ["superset"]`, so it is INERT unless
@@ -193,10 +207,11 @@ jobs:
         # the Deploy step's --remove-orphans never reaps a running Superset — the
         # whole overlay stays dark until the profile is deliberately enabled per
         # docs/superset-golive-runbook.md.
-        # --profile shared-tee: the shared multi-tenant agent (every client's cloud
-        # ingest) is profile-gated, so without it the deploy never rebuilt it —
-        # staging ran a 2026-09-01 agent image until 2026-09-29.
-        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack --profile shared-tee build
+        # shared-tee (the shared multi-tenant agent, every client's cloud ingest) is
+        # profile-gated; without it the deploy never rebuilt it (staging ran a
+        # 2026-09-01 agent image until 2026-09-29). It now comes from COMPOSE_PROFILES,
+        # resolved in the previous step together with the .env profiles.
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
@@ -206,9 +221,10 @@ jobs:
         # whole project — no other stack co-tenants on the host. The superset
         # overlay is profile-gated (see Build step) so this starts nothing extra
         # until COMPOSE_PROFILES=superset.
-        # --profile shared-tee recreates the shared agent when its image changed
-        # (seconds; readers retry/spool) so merged agent code actually goes live.
-        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack --profile shared-tee up -d --remove-orphans
+        # COMPOSE_PROFILES (resolved step) includes shared-tee, so the shared agent is
+        # recreated when its image changed (seconds; readers retry/spool), plus the
+        # .env profiles (superset: its one-shots re-run each deploy, idempotent).
+        run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
 
       - name: Prune old images + build cache
         # `docker image prune` never touches the BUILD CACHE, which grows every deploy:
