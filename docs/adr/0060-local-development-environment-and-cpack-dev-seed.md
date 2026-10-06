@@ -14,7 +14,7 @@ topology with Hasura / `oee-cron`). **Builds on:** [ADR-0056](0056-single-app-db
 
 | Env | Purpose | Scope | Data | External deps |
 |---|---|---|---|---|
-| **development** (this ADR) | build + unit/slice test one service | 1–N services on a laptop (16–32 GB) | anonymized CPACK seed, ~7 days | **all faked locally** |
+| **development** (this ADR) | build + unit/slice test one service | 1–N services on a laptop (16–32 GB) | anonymized CPACK seed, ~7 days | faked locally, except a dev Cognito pool for login |
 | **staging** | integration + e2e, the whole stack together | all 55 services (`compose.staging.yml`) | real staging DB `10.10.10.89` | real (Cognito, AWS) |
 | **production** | customers | all | real | real — *not yet implemented* |
 
@@ -57,7 +57,7 @@ the isolation spec. Each input must be satisfied by Tier 0, by another fragment,
 ### D2 — Tiers
 
 ```
-Tier 0  data plane   postgres+timescale (seeded), rabbitmq, mosquitto, redis, minio, mock-oidc
+Tier 0  data plane   postgres+timescale (seeded), rabbitmq (+ `oee` topology), mosquitto, redis, minio
 Tier 1  producers    replay (dev seed → MQTT/SparkPlug), simulator
 Tier 2  processors   sparkplug-decoder, stream-engine, mirror-worker-go, analytics-sync, ingest-shim
 Tier 3  APIs         edge-api, read-api, operator-gateway, barcode-service
