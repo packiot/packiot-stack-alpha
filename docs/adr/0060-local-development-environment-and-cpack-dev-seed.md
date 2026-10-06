@@ -73,7 +73,7 @@ Starting Tier 2 is only needed when the pipeline itself is under test.
 |---|---|---|
 | Cognito | **dedicated dev Cognito user pool** (Terraform-managed, seeded dev users); *decided 2026-10-06* | P0 (F6, `docs/dev/contracts.md`) showed the SPAs use Amplify with only pool id + client id: a local mock issuer would need an endpoint override in 4 SPAs. A real dev pool needs zero code change; APIs (`read-api`, `edge-api`, `barcode-service`) take its issuer from env. Cost: dev SPA login needs internet |
 | S3 / historian Parquet | MinIO | |
-| AWS Secrets Manager | `CREDS_SOURCE=env` + `dev/.env.dev`; *decided 2026-10-06* | stream-engine and operator-gateway already support `CREDS_SOURCE=env`; sparkplug-decoder, ingest-shim and oeecloud-fanout fetch secrets at boot and must gain the same path (small code change, P1) |
+| AWS Secrets Manager | `CREDS_SOURCE=env` + `dev/.env.dev`; *decided 2026-10-06* | every service that reads Secrets Manager already supports `CREDS_SOURCE=env` (decoder, ingest-shim and oeecloud-fanout since #1130: `RABBITMQ_USER`/`RABBITMQ_PASSWORD`, optional `RABBITMQ_HOST`/`RABBITMQ_PORT`). *Corrected 2026-10-06:* an earlier version said three services needed code; they only needed tests (P1). Dev fragments set `CREDS_SOURCE=env` |
 | AWS SSM | not faked | only edge-session-broker and edge-api's box-access features use it; out of dev scope |
 | Alertmanager / Slack | log sink | |
 | Ollama | omitted by default | opt-in fragment (heavy) |
@@ -160,7 +160,7 @@ shift boundaries. It reuses `simulator/` where it can.
 | Phase | Deliverable | Done when |
 |---|---|---|
 | **P0** | Contract inventory: one row per service (inputs, outputs, external deps, auth mechanism) derived from `compose.staging.yml` | table merged; every Cognito consumer known to accept a configurable issuer, or a gap is listed. **Done 2026-10-06:** `docs/dev/contracts.md` (#1557) |
-| **P1** | Seed pipeline (D4–D6) + Tier 0 + `grafana` slice; `CREDS_SOURCE=env` in decoder, ingest-shim, oeecloud-fanout | `make dev SVC=grafana` on a clean laptop shows CPACK-shaped (anonymized) dashboards |
+| **P1** | Seed pipeline (D4–D6) + Tier 0 + `grafana` slice; tests locking in `CREDS_SOURCE=env` for decoder, ingest-shim, oeecloud-fanout | `make dev SVC=grafana` on a clean laptop shows CPACK-shaped (anonymized) dashboards |
 | **P2** | dev Cognito pool (Terraform) + `read-api` + `front4` slice; delete `compose.development.yml` | log in as a dev user, Mission Control renders |
 | **P3** | Tier 1 replay + Tier 2 processors | live "now" data flows decoder → stream-engine → gold, invariants green |
 | **P4** | CI slice boots (D8); remaining fragments (csadmin, operator, customize, barcode, edge-api) | every service has a fragment and a CI smoke |
