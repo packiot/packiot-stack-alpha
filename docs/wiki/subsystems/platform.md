@@ -48,7 +48,7 @@ data; it makes sure the services that do are running, reachable and observable.
 
 | Environment | Definition | Hosts | Deployed by |
 |---|---|---|---|
-| Local | `compose.development.yml` (includes its own `postgres`, Hasura, simulator, `tests`) | your machine | `make up` (wraps `docker compose -f compose.development.yml`) |
+| Local | `the dev/ environment (ADR-0060; formerly compose.development.yml)` (includes its own `postgres`, Hasura, simulator, `tests`) | your machine | `make up` (wraps `docker compose -f the dev/ environment (ADR-0060; formerly compose.development.yml)`) |
 | **Staging** | `compose.staging.yml` + `compose.superset.yml` overlay, project name `stack` | AWS us-east-1: app EC2, DB EC2, NAT instance | push to `staging` → `deploy-staging.yml` |
 | New-stack production | `compose.production.yml` (top-level `name: stack`) | AWS us-east-1: app EC2 + DB EC2 (`terraform/production`) | push to `production` → `deploy-production.yml` |
 | Legacy production | `packiot40` (tsp12), Hasura, Node-RED oeecloud | legacy hosts | outside this repo |

@@ -100,8 +100,8 @@ flow is automatic end-to-end:
    ┌──────────────────────────────────────────────┐
    │ PR Validation (on parent, required)          │
    │  - docker compose config --no-interpolate    │
-   │  - validates both compose.staging.yml and    │
-   │    compose.development.yml                   │
+   │  - validates compose.staging.yml and the     │
+   │    dev/ environment (dev/compose.yml)        │
    └──────────┬───────────────────────────────────┘
               │ (green)
               ▼
@@ -147,10 +147,10 @@ git submodule update --remote --merge   # pull the freshest staging tip
                                           # of each submodule
 ```
 
-Then run the full stack locally:
+Then run what you need locally with the dev environment (ADR-0060, see `dev/README.md`):
 
 ```sh
-docker compose -f compose.development.yml up -d --build
+make dev SVC=<service>   # the service + its depends_on closure, on the anonymized dev seed
 ```
 
 (Each submodule also has its own `make test` / `npm test` / equivalent for
@@ -160,8 +160,8 @@ If you only need to validate that the compose files are well-formed
 (no actual containers):
 
 ```sh
-docker compose -f compose.development.yml config --no-interpolate -q
 docker compose -f compose.staging.yml config --no-interpolate -q
+docker compose -f dev/compose.yml --env-file dev/.env.dev config -q
 ```
 
 This is the same check that PR Validation runs in CI.
@@ -235,8 +235,8 @@ bump failed silently.
 2. Copy `.github/workflows/bump-stack-submodule.yml` from one of the
    existing submodules into the new repo. Change `SUBMODULE_PATH`.
 3. Set `PARENT_REPO_TOKEN` secret on the new submodule.
-4. Update `compose.staging.yml` and `compose.development.yml` to reference
-   the new service.
+4. Update `compose.staging.yml` to reference the new service, and add a dev fragment
+   `dev/services/<svc>.yml` (contract header first — see `dev/README.md`).
 5. Open a PR to parent `staging` adding the gitlink + compose changes.
 
 ---

@@ -7,7 +7,7 @@ name: PR Validation
 # whether the PR is safe to auto-merge.
 #
 # v0 is intentionally cheap — no submodule checkout, no PAT required, no docker
-# image builds. It validates that compose.staging.yml + compose.development.yml
+# image builds. It validates that compose.staging.yml + dev/compose.yml
 # are structurally well-formed via `docker compose config --no-interpolate`,
 # which parses the YAML and resolves $-references *without* needing .env or
 # the submodule build contexts to exist on disk. Catches:
@@ -44,5 +44,5 @@ jobs:
         # silent on success.
         run: docker compose -f compose.staging.yml config --no-interpolate -q
 
-      - name: Validate compose.development.yml
-        run: docker compose -f compose.development.yml config --no-interpolate -q
+      - name: Validate dev/ (ADR-0060 local environment)
+        run: docker compose -f dev/compose.yml --env-file dev/.env.dev config -q

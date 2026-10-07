@@ -6,6 +6,7 @@ service inputs/outputs: [docs/dev/contracts.md](../docs/dev/contracts.md).
 ```sh
 make dev                    # Tier 0: postgres, rabbitmq, mosquitto, redis, minio
 make dev SVC="grafana"      # a slice: grafana + its depends_on closure (postgres)
+make dev SVC="front4"       # read-api + CORS proxy + front4 (needs FRONT4_DIR, see "front4" below)
 make dev-ps                 # status (every port must read 127.0.0.1:…)
 make dev-down               # stop + remove containers; named volumes are kept
 docker compose -f dev/compose.yml --env-file dev/.env.dev down -v   # also wipe data
@@ -24,6 +25,8 @@ Nothing here talks to AWS or staging. Every host port binds `127.0.0.1`.
 | `.env.dev` | checked in, **fake values only**. Shell env overrides it (`POSTGRES_PASSWORD=x make dev`) |
 | `rabbitmq/` | dev definitions template + the script that renders it at boot |
 | `minio/entrypoint.sh` | starts MinIO and creates the historian bucket |
+| `read-api/cors.conf.template` | CORS proxy config for read-api (dev twin of staging's refdata vhost) |
+| `e2e/login-mission-control.py` | browser exit check: dev login → Mission Control with data |
 
 Adding a service: write `services/<svc>.yml` (contract header first, `depends_on` with
 `condition: service_healthy` on what it reads), add it to `compose.yml`'s `include:`, give it a
@@ -96,3 +99,25 @@ P1-B seed lands.
   unset per service (verify each one tolerates that) or add an obs fragment.
 - RabbitMQ users are created from definitions on **every** boot, so a new least-privilege user goes
   into both `monitoring/rabbitmq/definitions.template.json` (staging) and the dev template.
+
+## Login and the API slices (ADR-0060 P2)
+**Dev Cognito pool** (`terraform/staging/cognito_dev.tf`): pool/client ids are in `.env.dev` (public, they ship in
+every SPA bundle). Three users exist, matching the seed's synthetic `identity.users` (tenant 3):
+`dev-admin@`, `dev-engineer@`, `dev-viewer@example.com`. Passwords:
+`aws secretsmanager get-secret-value --secret-id packiot/dev/cognito --query SecretString --output text`.
+read-api links `identity.users.id_user_cognito` by e-mail on a user's first request. A dev token is useless
+against staging (different issuer).
+
+**read-api** (`services/read-api.yml`): `REFDATA_FLOW=f3`, `readapi_ro` (password `dev`, set by the seed), the dev
+pool's `COGNITO_ISSUER`/`COGNITO_CLIENT_ID` (without them every request 401s: the code defaults to the staging pool).
+It needs the seed's database `search_path` (carried by the seed since 2026-10-07: read-api's SQL uses unqualified
+names). **read-api-cors** answers CORS like staging's host nginx (read-api 401s the browser preflight on its own):
+`http://127.0.0.1:9104` → read-api, `Access-Control-Allow-Origin` = `DEV_CORS_ORIGIN` (default the front4 dev server).
+
+**front4** (`services/front4.yml`): Vite dev server on `http://localhost:5173`, hot reload from **your checkout**:
+`FRONT4_DIR=../front4-staging make dev SVC=front4` (the submodule pin is stale; clone the branch you work on,
+e.g. `git clone -b staging https://github.com/packiot/front4 ../front4-staging`). First start runs `yarn install`
+(~1 min). Legacy remote APIs (`dev.api4` / `edge-dev.api4`) are pinned to a closed local port: those calls fail soft
+(no enterprise switcher, bundled i18n) until an edge-api slice exists.
+
+**Exit check** (log in, Mission Control shows data): `dev/e2e/login-mission-control.py` (instructions inside).

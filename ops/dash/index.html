@@ -134,10 +134,10 @@
   <!-- DEVELOPMENT -->
   <section class="env">
     <h2>Development <span class="badge b-dev">branch</span></h2>
-    <div class="dom">Integration branch — <code>compose.development.yml</code></div>
+    <div class="dom">Integration branch — <code>dev/</code> (ADR-0060 local environment)</div>
     <div class="note">The <code>development</code> branch is now synced to the same git HEAD as staging &amp; production.
       There is no standing <code>*.dev.packiot.app</code> deployment; development runs locally via
-      <code>docker compose -f compose.development.yml up</code> (same service set as staging).</div>
+      <code>make dev SVC=&lt;service&gt;</code> (ADR-0060 slices on the anonymized dev seed).</div>
   </section>
 
   <footer>Packiot service directory · built for quick navigation across environments</footer>

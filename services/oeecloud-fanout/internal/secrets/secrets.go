@@ -10,7 +10,7 @@
 // the re-tenanted clone back to `oee`).
 //
 // A CREDS_SOURCE=env escape hatch reads RABBITMQ_USER/RABBITMQ_PASSWORD from the
-// environment for local compose.development where no IAM role is reachable.
+// environment for local dev/ (ADR-0060) where no IAM role is reachable.
 package secrets
 
 import (
