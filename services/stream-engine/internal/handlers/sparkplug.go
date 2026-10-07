@@ -60,6 +60,10 @@ type SparkplugHandler struct {
 	poControl       *pocontrol.Handler // nil = 10.3 disabled
 	logger          *slog.Logger
 	verifier        *birthverify.Verifier // ADR-0061 D7 (nil = off)
+	// ADR-0061 P2c per-tenant switch (nil/empty = every tenant on packml_register)
+	bbResolver *sparkplug.Resolver
+	bbSwitched map[int]bool
+	bbOutcomes *prometheus.CounterVec
 }
 
 // minPlausibleTsMs — metric timestamps before this (2015-01-01 UTC) are treated as
@@ -100,6 +104,17 @@ func NewSparkplugHandler(
 // SetLegacyIngest wires the 10.9 flag: false → unparseable messages
 // on the shared routing key are dropped (counted), not retried.
 func (h *SparkplugHandler) SetLegacyIngest(enabled bool) { h.legacyIngest = enabled }
+
+// SetBirthBound wires the ADR-0061 P2c per-tenant switch: for the switched
+// enterprises, counters resolve by the decoder's stamped id_equipment and
+// unstamped counters are quarantined. outcomes counts {tenant,result=bound|quarantined}.
+func (h *SparkplugHandler) SetBirthBound(r *sparkplug.Resolver, switched []int, outcomes *prometheus.CounterVec) {
+	h.bbResolver, h.bbOutcomes = r, outcomes
+	h.bbSwitched = make(map[int]bool, len(switched))
+	for _, id := range switched {
+		h.bbSwitched[id] = true
+	}
+}
 
 // SetVerifier wires the ADR-0061 D7 verification run (nil = off). Count-only.
 func (h *SparkplugHandler) SetVerifier(v *birthverify.Verifier) { h.verifier = v }
@@ -224,6 +239,23 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// ADR-0061 D7: compare the decoder's birth-bound stamps with packml_register.
 	// Measures only — every write below still resolves through the PackML resolver.
 	h.verifier.Check(ctx, p, tenant)
+	// ADR-0061 P2c: switched tenants' counters resolve by birth-bound id (writers
+	// read the decision through Resolver.ResolveMetric). A DB error retries the
+	// delivery, exactly like a PackML lookup error.
+	if h.bbResolver != nil && len(h.bbSwitched) > 0 {
+		o, err := h.bbResolver.ApplyBirthBound(ctx, p, h.bbSwitched)
+		if err != nil {
+			return fmt.Errorf("birth-bound resolve: %w", err)
+		}
+		if h.bbOutcomes != nil {
+			if o.Bound > 0 {
+				h.bbOutcomes.WithLabelValues(tenant, "bound").Add(float64(o.Bound))
+			}
+			if o.Quarantined > 0 {
+				h.bbOutcomes.WithLabelValues(tenant, "quarantined").Add(float64(o.Quarantined))
+			}
+		}
+	}
 
 	// Build phase — collect one Query per metric into the batch.
 	batch := &pgx.Batch{}

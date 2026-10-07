@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/birthverify"
+	"github.com/prometheus/client_golang/prometheus"
 	"io"
 	"log/slog"
 	"net/http"
@@ -536,6 +537,16 @@ func main() {
 	if cfg.BirthBindVerify {
 		sparkplugHandler.SetVerifier(birthverify.New(resolver, mx.Registry, logger))
 		logger.Info("birth-bound verification ENABLED (ADR-0061 D7): oeecloud_worker_birthbind_verify_total, count-only")
+	}
+	if switched := config.CSVInts(cfg.BirthBoundSwitchedEnterprises); len(switched) > 0 {
+		bbOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "oeecloud_worker_birthbound_resolve_total",
+			Help: "ADR-0061 P2c: counters of SWITCHED tenants resolved by birth-bound id (bound) or quarantined (no usable stamp).",
+		}, []string{"tenant", "result"})
+		mx.Registry.MustRegister(bbOutcomes)
+		sparkplugHandler.SetBirthBound(resolver, switched, bbOutcomes)
+		logger.Warn("birth-bound resolution SWITCHED ON for enterprises (ADR-0061 P2c) — their counters resolve by stamped id_equipment",
+			slog.Any("enterprises", switched))
 	}
 
 	if cfg.POControlEnabled {

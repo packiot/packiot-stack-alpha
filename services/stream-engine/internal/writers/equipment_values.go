@@ -193,7 +193,7 @@ func (w *EquipmentValues) BuildShiftFill(ctx context.Context, m *sparkplug.Metri
 		return nil, nil
 	}
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
@@ -310,7 +310,7 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	}
 
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
@@ -524,7 +524,7 @@ func (w *EquipmentValues) BuildEventMint(ctx context.Context, m *sparkplug.Metri
 	if m.Classify() != sparkplug.KindStateCurrent {
 		return nil, nil
 	}
-	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil || info == nil {
 		return nil, err
 	}
@@ -746,7 +746,7 @@ func (w *EquipmentValues) BuildRawAppend(ctx context.Context, m *sparkplug.Metri
 	if !w.CanWrite(kind) {
 		return nil, nil
 	}
-	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, err
 	}
@@ -846,7 +846,7 @@ func (w *EquipmentValues) BuildEventMintRaw(ctx context.Context, m *sparkplug.Me
 	if m.Classify() != sparkplug.KindStateCurrent {
 		return nil, nil
 	}
-	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil || info == nil {
 		return nil, err
 	}

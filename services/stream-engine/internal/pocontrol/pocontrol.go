@@ -371,7 +371,7 @@ func (h *Handler) Stats() Stats {
 // resolveOrNoop is the shared preamble of every executor: resolve the
 // topic; unregistered → count a noop and signal skip.
 func (h *Handler) resolveOrNoop(ctx context.Context, m *sparkplug.Metric) (*sparkplug.EquipmentInfo, bool, error) {
-	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := h.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, false, fmt.Errorf("resolve: %w", err)
 	}

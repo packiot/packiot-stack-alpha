@@ -283,9 +283,13 @@ type Config struct {
 	// SentinelEnterpriseIDs — CSV of enterprises the --identity-sentinel F3
 	// int-overflow deploy gate checks (env BAKE_ENTERPRISE_IDS, kept for compat).
 	// The bake COMPARATOR was retired in #252; the per-plane overflow gate survives.
-	SentinelEnterpriseIDs         string
-	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
-	BirthBindVerify               bool   // ADR-0061 D7 verification run (internal/birthverify): count-only, writes nothing
+	SentinelEnterpriseIDs string
+	LegacyIngestEnabled   bool // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
+	BirthBindVerify       bool // ADR-0061 D7 verification run (internal/birthverify): count-only, writes nothing
+	// BirthBoundSwitchedEnterprises (ADR-0061 P2c): csv enterprise ids whose counters resolve by the decoder's
+	// birth-bound id_equipment (unstamped counters quarantined). Empty ⇒ every tenant on packml_register.
+	// Add a tenant only after 7 days of 0 mismatch_* and 0 unbound (D7); remove it to roll back.
+	BirthBoundSwitchedEnterprises string
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
 	// TenantAllowlist — declarative environment scoping for tenant discovery.
@@ -504,6 +508,7 @@ func Load() (*Config, error) {
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
 		BirthBindVerify:                  getenv("BIRTHBIND_VERIFY", "true") == "true",
+		BirthBoundSwitchedEnterprises:    getenv("BIRTHBOUND_SWITCHED_ENTERPRISES", ""),
 		RollupMachineLevelEnterprises:    getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		TenantAllowlist:                  csvLower(getenv("WORKER_TENANT_ALLOWLIST", "")),
 		Sync06ReportEnabled:              getenv("SYNC06_REPORT_ENABLED", "false") == "true",
