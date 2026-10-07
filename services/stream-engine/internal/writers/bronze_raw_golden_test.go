@@ -46,6 +46,7 @@ CREATE TABLE br.equipment_values (
     tp_equipment int,
     net_production_incr real, net_production_val real, speed real,
     signal_quality int, faults jsonb, check_number bigint,
+    net_production_total double precision,
     UNIQUE (ts_value, id_equipment)
 );
 
@@ -56,6 +57,7 @@ CREATE TABLE br.equipment_values_raw (
     tp_equipment int,
     net_production_incr real, net_production_val real, speed real,
     signal_quality int, faults jsonb, check_number bigint,
+    net_production_total double precision,
     ingested_at timestamptz DEFAULT now(),
     source_seq bigint DEFAULT nextval('br.equipment_values_source_seq_seq') NOT NULL,
     PRIMARY KEY (id_equipment, ts_value, source_seq)
@@ -94,6 +96,11 @@ func brConnect(t *testing.T) (context.Context, *pgxpool.Pool) {
 
 func f64(v float64) *float64 { return &v }
 
+// bigTotalizer is the largest client's real gross totalizer magnitude (2026-10-07 probe). Above
+// 2^24 float4 can't hold every integer: around 3e8 the spacing is 32, so 297,922,487 is
+// stored in *_val as 297,922,496. The float8 *_total must keep it exactly.
+const bigTotalizer = 297_922_467
+
 // TestBronzeRawCollisionAndImmutability drives the SAME builders the handler uses —
 // buildProcessed (merged UPSERT) and buildRawAppend (Bronze append) — for two
 // intra-second samples, and asserts the collision + immutability contract.
@@ -115,11 +122,11 @@ func TestBronzeRawCollisionAndImmutability(t *testing.T) {
 		mergedTs := time.UnixMilli(s.ms).Truncate(time.Second).UTC() // :00 — Build's rule
 		rawTs := time.UnixMilli(s.ms).UTC()                          // full precision — BuildRawAppend's rule
 
-		mq := buildProcessed(mergedTs, info, 1, s.value, f64(1000+s.value), f64(5), nil, s.ms, "br", false, nil, nil)
+		mq := buildProcessed(mergedTs, info, 1, s.value, f64(bigTotalizer+s.value), f64(5), nil, s.ms, "br", false, nil, nil)
 		if _, err := pool.Exec(ctx, mq.SQL, mq.Args...); err != nil {
 			t.Fatalf("merged upsert (%v): %v", s, err)
 		}
-		rq := buildRawAppend(sparkplug.KindProdProcessedCount, rawTs, info, 1, s.value, f64(1000+s.value), f64(5), nil, nil, s.ms, "br")
+		rq := buildRawAppend(sparkplug.KindProdProcessedCount, rawTs, info, 1, s.value, f64(bigTotalizer+s.value), f64(5), nil, nil, s.ms, "br")
 		if _, err := pool.Exec(ctx, rq.SQL, rq.Args...); err != nil {
 			t.Fatalf("bronze append (%v): %v", s, err)
 		}
@@ -143,6 +150,27 @@ func TestBronzeRawCollisionAndImmutability(t *testing.T) {
 	}
 	if mergedSec != 0 {
 		t.Errorf("merged ts_value seconds = %d, want 0 (truncated to whole second)", mergedSec)
+	}
+
+	// ── exact totalizer: *_total is the 2nd sample's counter to the unit, *_val is not ──
+	var mergedTotal, mergedVal float64
+	if err := pool.QueryRow(ctx,
+		`SELECT net_production_total, net_production_val FROM br.equipment_values WHERE id_equipment=42`).
+		Scan(&mergedTotal, &mergedVal); err != nil {
+		t.Fatal(err)
+	}
+	if want := float64(bigTotalizer + 20); mergedTotal != want || mergedVal == want {
+		t.Errorf("merged totals: net_production_total=%v (want exactly %v), net_production_val=%v (float4, must differ)",
+			mergedTotal, want, mergedVal)
+	}
+	var rawExact int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM br.equipment_values_raw WHERE id_equipment=42
+		    AND net_production_total = $1::float8 + net_production_incr`, float64(bigTotalizer)).Scan(&rawExact); err != nil {
+		t.Fatal(err)
+	}
+	if rawExact != 2 {
+		t.Errorf("equipment_values_raw rows with an exact net_production_total = %d, want 2", rawExact)
 	}
 
 	// ── raw: exactly TWO rows, distinct source_seq, sub-second precision kept ──

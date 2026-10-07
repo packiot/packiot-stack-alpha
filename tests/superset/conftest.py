@@ -140,6 +140,7 @@ CREATE TABLE equipment_values (
     id_shift int, id_team int, id_production_order int,
     id_order text, state int, mode int,
     net_production_val real, gross_production_val real, scrap_val real,
+    net_production_total double precision, gross_production_total double precision, scrap_total double precision,
     net_production_incr real, gross_production_incr real, scrap_incr real
 );
 CREATE TABLE production_orders (
@@ -173,6 +174,11 @@ def _drop_roles(cur):
             cur.execute(f"DROP ROLE {role}")
 
 
+# t-counter-totals: the latest equipment_values row carries an exact float8 gross total above 2^24
+# (float4 would round it to 297,922,496); net/scrap totals stay NULL so the view must fall back to *_val.
+EXACT_GROSS_TOTAL = 297_922_487
+
+
 def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int):
     for eq in equip_ids:
         cur.execute(
@@ -198,10 +204,10 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
         # equipment_values: two rows per equipment (recent so live_status's 6h window
         # keeps the latest one) — feeds equipment_speed / live_status / production_by_team.
         cur.execute(
-            "INSERT INTO equipment_values (id_equipment,ts_value,id_enterprise,speed,ideal_production_speed,id_shift,id_team,id_production_order,id_order,state,mode,net_production_val,gross_production_val,scrap_val,net_production_incr,gross_production_incr,scrap_incr)"
-            " VALUES (%s,now()-interval '30min',%s,300,360,1,1,%s,'ORD-1',2,1,500,540,40,20,22,2),"
-            "        (%s,now()-interval '5min', %s,320,360,1,1,%s,'ORD-1',2,1,520,560,42,20,20,2)",
-            (eq, ent, base_po, eq, ent, base_po),
+            "INSERT INTO equipment_values (id_equipment,ts_value,id_enterprise,speed,ideal_production_speed,id_shift,id_team,id_production_order,id_order,state,mode,net_production_val,gross_production_val,scrap_val,net_production_incr,gross_production_incr,scrap_incr,gross_production_total)"
+            " VALUES (%s,now()-interval '30min',%s,300,360,1,1,%s,'ORD-1',2,1,500,540,40,20,22,2,NULL),"
+            "        (%s,now()-interval '5min', %s,320,360,1,1,%s,'ORD-1',2,1,520,560,42,20,20,2,%s)",
+            (eq, ent, base_po, eq, ent, base_po, EXACT_GROSS_TOTAL),
         )
         # production_targets: one target row per equipment (native id_enterprise).
         cur.execute(

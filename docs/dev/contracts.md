@@ -55,12 +55,12 @@ Tier per ADR-0060 D2. **Live** = observed connection on 2026-10-06. PG = `packio
 
 | Service | Staging | Tier | Postgres | RabbitMQ | MQTT | Other in | External deps (dev must fake) |
 |---|---|---|---|---|---|---|---|
-| sparkplug-decoder | running | 2 | direct `10.10.10.89` (code; idle at probe) | publishes `oee` / `sparkplug.data.<tenant>` (**live**) | subscribes `spBv1.0/#` (**live**) | read-api `/internal/resolve-device` (inactive) | Secrets Manager |
+| sparkplug-decoder | running | 2 | direct `10.10.10.89` (code; idle at probe) | publishes `oee` / `sparkplug.data.<tenant>` (**live**) | subscribes `spBv1.0/#` (**live**) | read-api `/internal/resolve-device` (inactive) | Secrets Manager on staging (`CREDS_SOURCE=env` supported) |
 | sparkplug-agent-shared | running | 1 | direct, `AGENT_REGISTER_DSN` (**live** ×2) | — | publishes (**live**) | HTTP ingest `:9104` from factory tees | inbound internet |
 | sparkplug-agent-cpack, plc-sim, s7-softplc, s7-reader | **not running** (profiles) | 1 | — | — | publish | — | — |
 | bispharma-twin | running, idle (flag) | 1 | — | — | (code) | — | — |
-| ingest-shim | running | 1 | — | publishes `sparkplug.data.incoplast` (**live** conn) | — | HTTPS `:8444` | Secrets Manager, host TLS certs |
-| oeecloud-fanout | running | 2 | — | consumes `sparkplug.data[.cpack]` → `sparkplug.data.sbxcpack` (**live**) | — | — | Secrets Manager |
+| ingest-shim | running | 1 | — | publishes `sparkplug.data.incoplast` (**live** conn) | — | HTTPS `:8444` | Secrets Manager on staging (`CREDS_SOURCE=env` supported), host TLS certs |
+| oeecloud-fanout | running | 2 | — | consumes `sparkplug.data[.cpack]` → `sparkplug.data.sbxcpack` (**live**) | — | — | Secrets Manager on staging (`CREDS_SOURCE=env` supported) |
 | stream-engine | running | 2 | direct (**live** ×14, app name `oeecloud-worker*`) | **declares** `oee`/`-retry`/`-failed`; consumes `stream-engine-q[-tenant]` (**live**) | — | — | (Secrets Manager bypassed by `CREDS_SOURCE=env`) |
 | mirror-worker-go | **not running** (retired profile) | — | — | — | — | — | Secrets Manager, legacy prod DB |
 | analytics-sync | running, idle (`SHADOW_MIRROR_ENABLED=false`) | 2 | (code) | — | — | — | — |
@@ -132,7 +132,7 @@ Most clients set no `application_name`, so attribution comes from the per-contai
      separate `pg_dumpall --roles-only` step with passwords stripped.
 2. **Auth (D3):** the mock OIDC issuer covers the **APIs** (read-api, edge-api verify; barcode-service issuer-only) but
    **not the SPAs** (F6). Needs a decision, see the PR.
-3. **Secrets Manager (D3):** decoder, ingest-shim and oeecloud-fanout fetch secrets at boot and fail if they can't.
+3. **Secrets Manager (D3):** on staging, decoder, ingest-shim and oeecloud-fanout fetch RabbitMQ credentials from Secrets Manager at boot. *Corrected 2026-10-06:* all three already support `CREDS_SOURCE=env` (`RABBITMQ_USER`/`RABBITMQ_PASSWORD`) since #1130, so dev needs only env vars, no code change. An earlier version of this item said otherwise.
    Dev needs `CREDS_SOURCE=env` support in all of them, or a local Secrets Manager stand-in.
 4. **RabbitMQ (D2):** only stream-engine declares the `oee` topology. Tier 0 must load it (definitions file) so a
    decoder-only slice still routes.
