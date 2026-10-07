@@ -16,6 +16,18 @@
 -- historical hashes are NOT restored — they were write-only and unverifiable).
 -- Idempotent via IF EXISTS. Run against packiot_analytics (and packiot if F1 still
 -- carries it — check first).
+--
+-- APPLIED LOG:
+--   - packiot_analytics (10.10.10.89): column already ABSENT (#219 confirmed).
+--   - packiot (legacy, Hasura-fronted, 10.10.10.89): APPLIED 2026-09-08 (#220).
+--     Dropped public.users.operator_pw_hash — was text/nullable, 5 non-null dead
+--     bcrypt hashes (id_user 2,4,120,2000002,2000005), no view dependency.
+--     HASURA GATE (see HASURA-GATE.md): the string 'operator_pw_hash' appears
+--     NOWHERE in hdb_metadata (14868-char blob), the users select-permission
+--     (role 'user') already projected it out, and no Hasura HTTP endpoint fronts
+--     the staging plane — so no untrack step was required and the drop introduced
+--     zero metadata inconsistency. back4-api / edge-api / read-api have no live
+--     reader (edge-api /session is Cognito-only; read-api projects it out).
 
 \set ON_ERROR_STOP on
 BEGIN;
