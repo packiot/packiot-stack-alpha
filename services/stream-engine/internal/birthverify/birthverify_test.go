@@ -32,7 +32,8 @@ const body = `{"timestamp":1,"gateway":"g","source_type":"refactored","id_enterp
  {"name":"CPACK/SC/LINHAS/L9/Admin/ProdConsumedCount/5/Unit","timestamp":1,"value":1,"id_equipment":90,"role":"counter.gross"},
  {"name":"CPACK/SC/LINHAS/ERR/Admin/ProdConsumedCount/6/Unit","timestamp":1,"value":1,"id_equipment":91,"role":"counter.gross"},
  {"name":"CPACK/SC/LINHAS/L8/Admin/ProdConsumedCount/7/Unit","timestamp":1,"value":1,"id_equipment":80,"role":"counter.gross"},
- {"name":"CPACK/SC/LINHAS/L5/Status/CurMachSpeed","timestamp":1,"value":3,"id_equipment":47}
+ {"name":"CPACK/SC/LINHAS/L5/Status/CurMachSpeed","timestamp":1,"value":3,"id_equipment":47,"role":"speed.current"},
+ {"name":"CPACK/SC/LINHAS/L5/Status/Parameter","timestamp":1,"value":3,"id":30701}
 ]}`
 
 func TestCheck_EveryOutcome(t *testing.T) {
@@ -51,7 +52,7 @@ func TestCheck_EveryOutcome(t *testing.T) {
 	v.Check(context.Background(), p, "cpack")
 
 	want := map[string]float64{
-		"match": 1, "mismatch_equipment": 1, "mismatch_role": 1, "unbound": 1,
+		"match": 2, "mismatch_equipment": 1, "mismatch_role": 1, "unbound": 1,
 		"legacy_unresolved": 1, "legacy_error": 1, "mismatch_enterprise": 1,
 	}
 	for result, n := range want {
@@ -59,7 +60,7 @@ func TestCheck_EveryOutcome(t *testing.T) {
 			t.Errorf("%s = %v, want %v", result, got, n)
 		}
 	}
-	// the speed metric (not a counter) is not counted at all
+	// the speed metric is verified (a declared role, ADR-0061 D2) — the parameter is not
 	if got := testutil.CollectAndCount(v.results); got != len(want) {
 		t.Errorf("series = %d, want %d", got, len(want))
 	}

@@ -3,12 +3,12 @@ package sparkplug
 // ADR-0061 P2c — the per-tenant switch from PackML resolution to birth-bound ids.
 //
 // For a SWITCHED enterprise (BIRTHBOUND_SWITCHED_ENTERPRISES), the decoder's
-// stamp is the identity: a stamped counter resolves BY id_equipment
-// (ResolveByID — no packml_topic involved) and an UNSTAMPED counter is
-// QUARANTINED (skipped + counted, never guessed — D1). Every other metric
-// keeps resolving through packml_register. Non-counter metrics (state, speed,
-// parameters) are not bound by the decoder yet (their roles are not declared at
-// birth), so they stay on the PackML resolver even for a switched tenant.
+// stamp is the identity: a stamped bindable metric (counters, state, mode,
+// current speed — the roles the agent declares at birth) resolves BY
+// id_equipment (ResolveByID — no packml_topic involved) and an UNSTAMPED one is
+// QUARANTINED (skipped + counted, never guessed — D1). Parameters (PO commands,
+// configuration) come from other producers and keep resolving through
+// packml_register until P4.
 //
 // Writers resolve through ResolveMetric, which honours the per-metric decision
 // the handler's pre-pass (ApplyBirthBound) recorded. Rollback = remove the
@@ -27,12 +27,19 @@ import (
 // BirthBoundOutcome counts one ApplyBirthBound pass (for metrics).
 type BirthBoundOutcome struct {
 	Bound       int // switched tenant, stamped, resolved by id
-	Quarantined int // switched tenant, counter without a usable stamp
+	Quarantined int // switched tenant, bindable metric without a usable stamp
 }
 
-// isCounter reports whether the leaf is one of the counters the decoder binds.
-func isCounter(k MetricKind) bool {
-	return k == KindProdConsumedCount || k == KindProdProcessedCount || k == KindProdDefectiveCount
+// isBindable reports whether the decoder binds this kind at birth (ADR-0061 D2/D9:
+// counters, state.current, mode.current, speed.current). Parameters (PO commands,
+// configuration) come from other producers and stay on packml_register until P4.
+func isBindable(k MetricKind) bool {
+	switch k {
+	case KindProdConsumedCount, KindProdProcessedCount, KindProdDefectiveCount,
+		KindStateCurrent, KindUnitModeCurrent, KindCurMachSpeed:
+		return true
+	}
+	return false
 }
 
 // ApplyBirthBound records, per counter metric of p, whether a SWITCHED tenant's
@@ -46,7 +53,7 @@ func (r *Resolver) ApplyBirthBound(ctx context.Context, p *Payload, switched map
 	ent, hasEnt := p.StampedEnterprise()
 	for i := range p.Metrics {
 		m := &p.Metrics[i]
-		if !isCounter(m.Classify()) {
+		if !isBindable(m.Classify()) {
 			continue
 		}
 		if id, ok := m.StampedEquipment(); ok && hasEnt {
@@ -66,7 +73,7 @@ func (r *Resolver) ApplyBirthBound(ctx context.Context, p *Payload, switched map
 			out.Bound++
 			continue
 		}
-		// Unstamped counter: quarantine it only if it belongs to a switched tenant.
+		// Unstamped bindable metric: quarantine it only if it belongs to a switched tenant.
 		info, err := r.Resolve(ctx, m.TopicForRegister())
 		if err != nil {
 			return out, err
