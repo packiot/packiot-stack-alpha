@@ -834,6 +834,7 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 	pub := session.New(res, aliases,
 		session.WithDefinitiveBirth(emitDefinitiveBirth),
 		session.WithDeviceKeys(deviceKeysFromTagMap(cfg)),
+		session.WithRoles(rolesFromTagMap(cfg)),
 		session.WithBirthAllMapped(birthAllMapped))
 	if birthAllMapped {
 		deps.logger.Info("birth-all-mapped ENABLED — NBIRTH covers the full raw_tag_map",
@@ -1806,6 +1807,18 @@ func deviceKeysFromTagMap(cfg *agentcfg.Config) map[string]string {
 			continue
 		}
 		m[e.FullName(cfg.Sparkplug.PackMLTopic)] = e.DeviceKey
+	}
+	return m
+}
+
+// rolesFromTagMap builds the full-metric-name → DECLARED role map (ADR-0061 D2/D9)
+// the session consults for definitive birth. Entries without a role are omitted.
+func rolesFromTagMap(cfg *agentcfg.Config) map[string]string {
+	m := make(map[string]string)
+	for _, e := range cfg.RawTagMap {
+		if e.Role != "" {
+			m[e.FullName(cfg.Sparkplug.PackMLTopic)] = e.Role
+		}
 	}
 	return m
 }

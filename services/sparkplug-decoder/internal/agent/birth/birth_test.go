@@ -429,3 +429,26 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// TestMetricProps_DeclaredRoles: every roled metric declares its role (ADR-0061 D2);
+// counters keep counter_role for the contract and default role to counter.<role>.
+func TestMetricProps_DeclaredRoles(t *testing.T) {
+	props := func(ps *sparkplug.PropertySet) map[string]string {
+		m := map[string]string{}
+		for i, k := range ps.GetKeys() {
+			m[k] = ps.GetValues()[i].GetStringValue()
+		}
+		return m
+	}
+	ps, ok := birth.MetricProps("CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount/1/Unit", testKeyLine, "")
+	if got := props(ps); !ok || got[birth.PropRole] != "counter.gross" || got[birth.PropCounterRole] != "gross" || got[birth.PropDeviceKey] != testKeyLine {
+		t.Errorf("counter props = %v", got)
+	}
+	ps, ok = birth.MetricProps("CPACK/SC/LINHAS/L5/Status/StateCurrent", testKeyLine, "state.current")
+	if got := props(ps); !ok || got[birth.PropRole] != "state.current" || got[birth.PropDeviceKey] != testKeyLine || got[birth.PropCounterRole] != "" {
+		t.Errorf("state props = %v", got)
+	}
+	if ps, ok := birth.MetricProps("CPACK/SC/LINHAS/L5/Status/Parameter30700", testKeyLine, ""); ok || ps != nil {
+		t.Errorf("a non-counter without a declared role must stay byte-clean, got %v", ps)
+	}
+}

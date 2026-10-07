@@ -338,9 +338,13 @@ type MetricTemplates struct {
 // TemplateEntry is one canonical metric leaf + SparkPlug type. Leaf may contain
 // the "{idx}" placeholder (count metrics); a leaf without it is index-free
 // (MachSpeed, StateCurrent, Parameter30700).
+//
+// Role (ADR-0061 D2/D9) declares the metric's meaning; empty ⇒ the onboarding
+// default for the leaf (DefaultRole). It rides in the agent tag map and the birth.
 type TemplateEntry struct {
 	Leaf string `yaml:"leaf"`
 	Type string `yaml:"type"`
+	Role string `yaml:"role,omitempty"`
 }
 
 // IdxPlaceholder is the token replaced by the resolved count index.
@@ -392,6 +396,9 @@ func (p *Profile) Validate() error {
 			if !validTypes[t.Type] {
 				return fmt.Errorf("metric_templates.%s[%d] (%s): type=%q must be double|float|long|int|bool|string",
 					class, i, t.Leaf, t.Type)
+			}
+			if r := strings.TrimSpace(t.Role); r != "" && !ValidRole(r) {
+				return fmt.Errorf("metric_templates.%s[%d] (%s): role=%q is not in the ADR-0061 D9 catalogue", class, i, t.Leaf, r)
 			}
 		}
 	}
@@ -555,6 +562,7 @@ func (p *Profile) templatesFor(class EquipClass) []TemplateEntry {
 type SynthMetric struct {
 	Suffix string
 	Type   string
+	Role   string // ADR-0061 D9 role ("" = none)
 }
 
 // SynthesizeEquipment expands one equipment (local segment + class + id) into
@@ -587,7 +595,7 @@ func (p *Profile) SynthesizeEquipment(localSegment string, class EquipClass, idE
 		}
 		suffix := localSegment + leaf
 		seen[suffix] = true
-		out = append(out, SynthMetric{Suffix: suffix, Type: t.Type})
+		out = append(out, SynthMetric{Suffix: suffix, Type: t.Type, Role: t.RoleOf()})
 	}
 	// Derived Emit leaves (already segment-qualified + {idx}-resolved) — add any
 	// not already produced by a template so the allowlist covers the deriver's
@@ -601,7 +609,7 @@ func (p *Profile) SynthesizeEquipment(localSegment string, class EquipClass, idE
 				continue
 			}
 			seen[suffix] = true
-			out = append(out, SynthMetric{Suffix: suffix, Type: r.Type})
+			out = append(out, SynthMetric{Suffix: suffix, Type: r.Type, Role: DefaultRole(suffix)})
 		}
 	}
 	return out, nil

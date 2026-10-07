@@ -147,14 +147,14 @@ metric_templates:
     - {leaf: "/Admin/ProdConsumedCount", type: double}
     - {leaf: "/Admin/ProdProcessedCount", type: double}
     - {leaf: "/Admin/ProdDefectiveCount", type: double}
-    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased
     - {leaf: "/Status/StateCurrent", type: long}
     - {leaf: "/Status/Parameter30700", type: string}
   member:
     - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
     - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
     - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
-    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased
     - {leaf: "/Status/StateCurrent", type: long}
 
 # ── OPEN ITEMS (CS-Admin / live-tee validation before cutover) ───────────────

@@ -29,13 +29,13 @@ metric_templates:
     - {leaf: "/Admin/ProdConsumedCount", type: double}
     - {leaf: "/Admin/ProdProcessedCount", type: double}
     - {leaf: "/Admin/ProdDefectiveCount", type: double}
-    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased (metric_aliases)
     - {leaf: "/Status/StateCurrent", type: long}
     - {leaf: "/Status/Parameter30700", type: string}
   member:
     - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
     - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
-    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased (metric_aliases)
     - {leaf: "/Status/StateCurrent", type: long}
 
 # Illustrative: 2 blister/cartoning lines, one member each.
