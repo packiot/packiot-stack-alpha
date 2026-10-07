@@ -240,6 +240,27 @@
     "argc": 1
   },
   {
+    "ref": "/v2/downtime-reasons",
+    "source": "route",
+    "kind": "function",
+    "name": "serving.downtime_reasons_by_equipment",
+    "argc": 1
+  },
+  {
+    "ref": "/v2/events-timeline",
+    "source": "route",
+    "kind": "function",
+    "name": "serving.events_timeline_by_equipment",
+    "argc": 1
+  },
+  {
+    "ref": "/v2/pending-downtime",
+    "source": "route",
+    "kind": "function",
+    "name": "serving.pending_downtime_by_equipment",
+    "argc": 1
+  },
+  {
     "ref": "current-shift",
     "source": "dataset",
     "kind": "relation",

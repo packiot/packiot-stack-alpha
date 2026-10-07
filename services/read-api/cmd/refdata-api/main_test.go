@@ -22,6 +22,10 @@ func TestContractCoverage(t *testing.T) {
 		"v_entities_per_user_role_operator",
 		"language_packs",
 		"packml_register", // downtime-reasons join
+		// ADR-0061 P3 /v2 operator routes (id-based siblings; v1 unchanged)
+		"serving.events_timeline_by_equipment",
+		"serving.pending_downtime_by_equipment",
+		"serving.downtime_reasons_by_equipment",
 	}
 	all := ""
 	for _, ep := range endpoints {
@@ -32,8 +36,27 @@ func TestContractCoverage(t *testing.T) {
 			t.Errorf("contract root %q not covered by any endpoint", root)
 		}
 	}
-	if len(endpoints) != 11 {
-		t.Errorf("expected 11 endpoints, got %d", len(endpoints))
+	if len(endpoints) != 14 { // 11 v1 + 3 ADR-0061 /v2
+		t.Errorf("expected 14 endpoints, got %d", len(endpoints))
+	}
+}
+
+func TestEquipmentIDsArg(t *testing.T) {
+	a, err := equipmentIDsArg(httptest.NewRequest("GET", "/v2/x?equipment=47,%2053", nil))
+	if err != nil || len(a) != 1 {
+		t.Fatalf("equipmentIDsArg: %v %v", a, err)
+	}
+	if got := a[0].([]int32); len(got) != 2 || got[0] != 47 || got[1] != 53 {
+		t.Errorf("parsed ids = %v, want [47 53]", got)
+	}
+	for _, bad := range []string{"", "?equipment=", "?equipment=1,x", "?equipment=0", "?equipment=-3", "?equipment=CPACK/SC/L5"} {
+		if _, err := equipmentIDsArg(httptest.NewRequest("GET", "/v2/x"+bad, nil)); err == nil {
+			t.Errorf("equipmentIDsArg(%q): want error", bad)
+		}
+	}
+	many := strings.Repeat("1,", maxEquipmentIDs) + "1"
+	if _, err := equipmentIDsArg(httptest.NewRequest("GET", "/v2/x?equipment="+many, nil)); err == nil {
+		t.Error("equipmentIDsArg: want error above the id cap")
 	}
 }
 
