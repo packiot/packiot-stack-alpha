@@ -54,7 +54,7 @@
     },
     {
       "id": 4, "type": "timeseries", "title": "SparkPlug sequence gaps by publisher (1h)",
-      "description": "increase(edge_transformer_sparkplug_seq_gaps_total[1h]) by group_id (UPPERCASE, e.g. CPACK). Bars = lost messages in transit for that publisher = a flaky edge link. Shows all publishers (group_id ≠ the lowercase tenant token).",
+      "description": "increase(edge_transformer_sparkplug_seq_gaps_total[1h]) by group_id (UPPERCASE, e.g. CPACK). Bars = lost messages in transit for that publisher = a flaky edge link. Shows all publishers (group_id ≠ the lowercase tenant token). Empty = healthy: the counter has no series until the first gap since the decoder started.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 11 },
       "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },
