@@ -166,6 +166,17 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "tenant {{ $labels.tenant }} is publishing a SparkPlug topic with no active packml_register row for 15m — its equipment_values are silently empty. Check onboarding / apply-register and the packml_register.active flag; the offending topic is in the stream-engine `topic not registered, skipping` log (sampled 1/32)."
+      # ADR-0061 D7 verification run: the decoder's birth-bound identity (declared
+      # dk_ key → core.device_bindings) disagrees with packml_register for a counter.
+      # Count-only (nothing is written through the birth-bound side), but a tenant
+      # can only switch after 0 mismatches for 7 days — every firing resets that clock.
+      # The disagreeing metric + both ids are in the stream-engine
+      # `birthverify: birth-bound identity disagrees` log. RETIRE-WHEN: ADR-0061 P5.
+      - alert: BirthBindVerifyMismatch
+        expr: sum by (tenant, result) (increase(oeecloud_worker_birthbind_verify_total{result=~"mismatch_.*"}[15m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }}: {{ $value }} counter metrics' birth-bound identity disagrees with packml_register ({{ $labels.result }}, 15m) — fix the binding or the register row before the switch; the 7-day zero-mismatch clock restarts."
       # Some seq gaps are normal on reconnect; a stream of them means
       # the PLC/broker is losing messages (SparkPlug seq is per-session).
       - alert: SparkplugSeqGapStream

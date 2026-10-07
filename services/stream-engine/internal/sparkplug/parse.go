@@ -39,6 +39,10 @@ type Payload struct {
 	// both paths can be compared row-by-row via shadow_diff.* views WITHOUT
 	// contaminating production data.
 	SourceType string `json:"source_type,omitempty"`
+	// IDEnterprise is the birth-bound tenant the decoder stamped (ADR-0061 P2,
+	// edge-transformer BIRTH_BOUND_ROUTING). nil ⇒ nothing bound. Verified
+	// against the PackML resolver (internal/birthverify) until the tenant switches.
+	IDEnterprise *jsonInt `json:"id_enterprise,omitempty"`
 }
 
 type Metric struct {
@@ -50,6 +54,26 @@ type Metric struct {
 	Alias     json.RawMessage `json:"alias,omitempty"`
 	Faults    json.RawMessage `json:"faults,omitempty"`
 	ID        *jsonInt        `json:"id,omitempty"`
+	// ADR-0061 P2 birth-bound identity stamped by the decoder: the equipment and
+	// D9 role (counter.gross|net|scrap). nil/"" ⇒ unbound.
+	IDEquipment *jsonInt `json:"id_equipment,omitempty"`
+	Role        string   `json:"role,omitempty"`
+}
+
+// StampedEquipment returns the decoder-stamped id_equipment (ok=false when unbound).
+func (m *Metric) StampedEquipment() (int, bool) {
+	if m.IDEquipment == nil || *m.IDEquipment <= 0 {
+		return 0, false
+	}
+	return int(*m.IDEquipment), true
+}
+
+// StampedEnterprise returns the decoder-stamped tenant (ok=false when absent).
+func (p *Payload) StampedEnterprise() (int, bool) {
+	if p.IDEnterprise == nil || *p.IDEnterprise <= 0 {
+		return 0, false
+	}
+	return int(*p.IDEnterprise), true
 }
 
 // Parse unmarshals the raw AMQP body. Returns an error caller can return
