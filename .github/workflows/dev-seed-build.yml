@@ -37,9 +37,12 @@ jobs:
     runs-on: [self-hosted, staging, linux, arm64]
     timeout-minutes: 90
     env:
-      OUT: ${{ runner.temp }}/devseed
       IMAGE: ghcr.io/packiot/devseed
     steps:
+      - name: Output dir
+        # the `runner` context isn't available in job-level env; RUNNER_TEMP is
+        run: echo "OUT=$RUNNER_TEMP/devseed" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -92,4 +95,4 @@ jobs:
 
       - name: Delete the build output (tokens + raw inventory)
         if: always()
-        run: rm -rf "$OUT"
+        run: '[ -n "$OUT" ] && rm -rf "$OUT"'
