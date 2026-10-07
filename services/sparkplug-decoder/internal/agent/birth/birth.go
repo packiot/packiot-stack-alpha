@@ -30,26 +30,20 @@
 // — and lift the physical <idx> into source_ref="idx:<n>" as LINEAGE only. The
 // index never appears in the routing path; the role does.
 //
-// DEVICE_KEY — DECLARED first, derivation as the bridge (ADR-0046 task #18)
-// ------------------------------------------------------------------------
-// clientdescriptor.Equipment now carries an explicit `device_key`
-// (Equipment.DeviceKey / ResolvedDeviceKey), bound in core.device_bindings (ADR-0061)
-// and stamped onto each agent tag-map entry (agentcfg.TagMapEntry.DeviceKey). When
-// that DECLARED key reaches here (session passes it to
-// CounterMetricPropsWithDeviceKey), it is AUTHORITATIVE — identity is DECLARED, not
-// string-derived (contract §2 "identity is DECLARED at birth, never derived").
+// DEVICE_KEY — DECLARED only (ADR-0061 P1)
+// ----------------------------------------
+// clientdescriptor.Equipment carries an explicit, opaque `device_key` (dk_<32 hex>) bound in
+// core.device_bindings and stamped onto each agent tag-map entry (agentcfg.TagMapEntry.DeviceKey). When that
+// DECLARED key reaches here (session → CounterMetricPropsWithDeviceKey) it is emitted as-is: identity is
+// declared at birth, never derived from a name (contract §2; ADR-0061 D1).
 //
-// When NO declared key is supplied (a descriptor that predates the field, or the
-// register-loader cutover path which does not yet carry it), we fall back to
-// DERIVING the device_key from the canonical topic embedded in the metric name:
-// strip the 4-segment count-leaf tail (`Admin/Prod<Kind>Count/<idx>/Unit`) and
-// dash-join the remaining topic segments —
-// `CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit` → device_key
-// `CPACK-SC-LINHAS-L5-BREYER`. Because the descriptors DECLARE exactly this dash
-// form, declared and derived agree byte-for-byte (and both match the golden
-// fixtures docs/reference/fixtures/*-birth-example.json). The derivation is the
-// transitional BRIDGE — the ONLY string-parse of a name, and it happens once at
-// birth, never on DDATA.
+// There is NO fallback any more. Until 2026-10-07 an undeclared key was DERIVED from the PackML topic in the
+// metric name (`CPACK/SC/LINHAS/L5/BREYER/…` → `CPACK-SC-LINHAS-L5-BREYER`) — the last place cloud identity
+// came from a name. Now a counter without a declared key still carries counter_role + source_ref but NO
+// device_key: the box keeps publishing (the cloud routes by topic until ADR-0061 P2), and the birth simply
+// declares no identity until its config is re-pushed with dk_ keys. The agent warns at startup
+// (cmd/sparkplug-agent warnUndeclaredDeviceKeys). Fail-closed happens at onboarding instead:
+// clientdescriptor.Validate rejects a descriptor whose equipment lacks an opaque key.
 package birth
 
 import (
@@ -91,7 +85,6 @@ var leafRole = map[string]string{
 // parsedLeaf is a canonical count-leaf name decomposed into the contract's
 // birth fields.
 type parsedLeaf struct {
-	deviceKey string // canonical topic → dash form (§2 device key)
 	role      string // counter_role (§4 closed enum)
 	sourceRef string // "idx:<n>" lineage (§3)
 }
@@ -119,52 +112,36 @@ func parseCounterLeaf(name string) (parsedLeaf, bool) {
 	if idx, err := strconv.Atoi(idxSeg); err != nil || idx < 0 {
 		return parsedLeaf{}, false
 	}
-	// device topic = everything before the 4-segment count-leaf tail
-	// (<group>/Prod<Kind>Count/<idx>/Unit). Dash-join → the device_key form the
-	// golden fixtures use.
-	topic := segs[:len(segs)-4]
 	return parsedLeaf{
-		deviceKey: strings.Join(topic, "-"),
 		role:      role,
 		sourceRef: "idx:" + idxSeg,
 	}, true
 }
 
-// CounterMetricProps builds the ADR-0046 definitive-birth PropertySet for a
-// canonical count-leaf metric name — counter_role (required), source_ref
-// (lineage), and device_key (node-scoped identity, §3). ok=false for a
-// non-counter metric (state, speed, bdSeq): those carry no role and get NO
-// properties, so the birth stays byte-clean for everything the contract does not
-// govern (counters only, §3). The agent calls this per NBIRTH metric only when
-// the EMIT_DEFINITIVE_BIRTH flag is set.
+// CounterMetricProps builds the ADR-0046 definitive-birth PropertySet for a canonical count-leaf metric
+// name with NO declared device_key: counter_role (required) + source_ref (lineage) only. ok=false for a
+// non-counter metric (state, speed, bdSeq): those carry no role and get NO properties, so the birth stays
+// byte-clean for everything the contract does not govern (counters only, §3).
 func CounterMetricProps(name string) (*sparkplug.PropertySet, bool) {
 	return CounterMetricPropsWithDeviceKey(name, "")
 }
 
-// CounterMetricPropsWithDeviceKey is CounterMetricProps with an explicitly DECLARED
-// device_key preferred over the topic derivation (ADR-0046 task #18: identity
-// DECLARED, not string-derived). A non-empty declaredKey is authoritative; an empty
-// one falls back to the dash-joined-topic derivation — the transitional bridge, so a
-// descriptor that predates the device_key field (or the register-loader path that
-// does not yet carry it) still emits the correct, fixture-matching key. ok=false for
-// a non-counter metric (state/speed/bdSeq), exactly like CounterMetricProps.
+// CounterMetricPropsWithDeviceKey adds the DECLARED device_key (ADR-0061: identity declared, never derived).
+// An empty declaredKey adds no device_key property at all — never a name-derived one.
 func CounterMetricPropsWithDeviceKey(name, declaredKey string) (*sparkplug.PropertySet, bool) {
 	leaf, ok := parseCounterLeaf(name)
 	if !ok {
 		return nil, false
 	}
-	deviceKey := leaf.deviceKey
-	if k := strings.TrimSpace(declaredKey); k != "" {
-		deviceKey = k
+	ps := &sparkplug.PropertySet{
+		Keys:   []string{PropCounterRole, PropSourceRef},
+		Values: []*sparkplug.PropertyValue{strProp(leaf.role), strProp(leaf.sourceRef)},
 	}
-	return &sparkplug.PropertySet{
-		Keys: []string{PropCounterRole, PropSourceRef, PropDeviceKey},
-		Values: []*sparkplug.PropertyValue{
-			strProp(leaf.role),
-			strProp(leaf.sourceRef),
-			strProp(deviceKey),
-		},
-	}, true
+	if k := strings.TrimSpace(declaredKey); k != "" {
+		ps.Keys = append(ps.Keys, PropDeviceKey)
+		ps.Values = append(ps.Values, strProp(k))
+	}
+	return ps, true
 }
 
 // strProp wraps a string as a SparkPlug PropertyValue (type=String).

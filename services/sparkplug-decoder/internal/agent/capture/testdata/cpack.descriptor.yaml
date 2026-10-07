@@ -31,15 +31,15 @@ metric_templates:
 
 equipment:
   # ── L6 (all confirmed) — the clean, cutover-READY line ──────────────────────
-  - {topic: CPACK/SC/LINHAS/L6, id_equipment: 50, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L6/BREYER, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/PTH, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/RMH, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/TEXA, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6, device_key: dk_6f0405bc78444b74aa7a995a9ef7c357, id_equipment: 50, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L6/BREYER, device_key: dk_4a6d35b87c97453ca0d5b32732d25c5c, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, device_key: dk_e99d70a7967d45cea4025f8e0f841591, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH, device_key: dk_7f6e20c3b31d4f06a19f7f9b5f164969, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH, device_key: dk_77535c6244e143c1a2715bf0ff8870d7, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA, device_key: dk_fecce6c8b92948b5ab123fb289c79e89, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
   # ── L8 (all inferred) — the line the capture step must resolve ──────────────
-  - {topic: CPACK/SC/LINHAS/L8, id_equipment: 51, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L8/DXL, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L8/PTH, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L8/TCX, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L8/TEXA, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8, device_key: dk_f4d568149edd47afb8fea37e1e67d860, id_equipment: 51, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L8/DXL, device_key: dk_14968bcd60ef4610b49199cf08cd2fd3, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/PTH, device_key: dk_a37e6fdf5c20410ab345fa458fd662c9, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TCX, device_key: dk_2cedf8e651b14b76a350bb6aa5a69370, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TEXA, device_key: dk_dd1a9ecd9ac04140827062f2a86289bc, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}

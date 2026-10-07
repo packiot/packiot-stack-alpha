@@ -144,9 +144,9 @@ func baseTypedDescriptor() *Descriptor {
 		},
 		Tee: TeeParams{IngestURL: "https://localhost:8444/v1/tags", TLSInsecure: true},
 		Equipment: []Equipment{
-			{Topic: "ACME/SP/LINHAS/L01", IDEquipment: 100, TPEquipment: 3},
-			{Topic: "ACME/SP/LINHAS/L01/S1INFEED", IDEquipment: 101, TPEquipment: 1, IDUnit: iptr(101)},
-			{Topic: "ACME/SP/LINHAS/L01/S6OUTPUT", IDEquipment: 106, TPEquipment: 1, IDUnit: iptr(106)},
+			{DeviceKey: "dk_0000000000000000000000000000a001", Topic: "ACME/SP/LINHAS/L01", IDEquipment: 100, TPEquipment: 3},
+			{DeviceKey: "dk_0000000000000000000000000000a002", Topic: "ACME/SP/LINHAS/L01/S1INFEED", IDEquipment: 101, TPEquipment: 1, IDUnit: iptr(101)},
+			{DeviceKey: "dk_0000000000000000000000000000a003", Topic: "ACME/SP/LINHAS/L01/S6OUTPUT", IDEquipment: 106, TPEquipment: 1, IDUnit: iptr(106)},
 		},
 		PLC: &DescriptorPLC{
 			Types: map[string]PLCType{
@@ -211,7 +211,7 @@ func TestPLCType_SensorKeyWithNoOffsetErrors(t *testing.T) {
 	iptr := func(i int) *int { return &i }
 	// S3 is a genuine sensor member, but the type only declares S1/S6.
 	d.Equipment = append(d.Equipment, Equipment{
-		Topic: "ACME/SP/LINHAS/L01/S3", IDEquipment: 103, TPEquipment: 1, IDUnit: iptr(103),
+		DeviceKey: "dk_0000000000000000000000000000a065", Topic: "ACME/SP/LINHAS/L01/S3", IDEquipment: 103, TPEquipment: 1, IDUnit: iptr(103),
 	})
 	err := d.Validate()
 	if err == nil {
@@ -230,7 +230,7 @@ func TestPLCType_DuplicateSensorKeyErrors(t *testing.T) {
 	iptr := func(i int) *int { return &i }
 	// A second S1-keyed member on the same line.
 	d.Equipment = append(d.Equipment, Equipment{
-		Topic: "ACME/SP/LINHAS/L01/S1RETURN", IDEquipment: 111, TPEquipment: 1, IDUnit: iptr(111),
+		DeviceKey: "dk_0000000000000000000000000000a066", Topic: "ACME/SP/LINHAS/L01/S1RETURN", IDEquipment: 111, TPEquipment: 1, IDUnit: iptr(111),
 	})
 	err := d.Validate()
 	if err == nil {
@@ -259,7 +259,7 @@ func TestPLCType_SkipsMemberWithNoSensorKey(t *testing.T) {
 	iptr := func(i int) *int { return &i }
 	// Add a SCRAP member — no leading S<n>, so no sensor key, so no tag.
 	d.Equipment = append(d.Equipment, Equipment{
-		Topic: "ACME/SP/LINHAS/L01/SCRAP", IDEquipment: 199, TPEquipment: 1, IDUnit: iptr(199),
+		DeviceKey: "dk_0000000000000000000000000000a067", Topic: "ACME/SP/LINHAS/L01/SCRAP", IDEquipment: 199, TPEquipment: 1, IDUnit: iptr(199),
 	})
 	if err := d.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
@@ -361,8 +361,8 @@ func TestPLCType_AmbiguousNameMatchIsRejected(t *testing.T) {
 	// A SECOND line whose final segment is ALSO "L01" (different parent), with an
 	// S1INFEED member — so endpoint name "L01" now matches members on two lines.
 	d.Equipment = append(d.Equipment,
-		Equipment{Topic: "ACME/SP/OTHER/L01", IDEquipment: 200, TPEquipment: 3},
-		Equipment{Topic: "ACME/SP/OTHER/L01/S1INFEED", IDEquipment: 201, TPEquipment: 1, IDUnit: iptr(201)},
+		Equipment{DeviceKey: "dk_0000000000000000000000000000a004", Topic: "ACME/SP/OTHER/L01", IDEquipment: 200, TPEquipment: 3},
+		Equipment{DeviceKey: "dk_0000000000000000000000000000a005", Topic: "ACME/SP/OTHER/L01/S1INFEED", IDEquipment: 201, TPEquipment: 1, IDUnit: iptr(201)},
 	)
 	err := d.Validate()
 	if err == nil {

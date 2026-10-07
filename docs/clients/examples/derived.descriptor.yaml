@@ -63,6 +63,7 @@ tee:
 equipment:
   # ── FLEXO: analog speed → virtual production counter (INTEGRAL) ──────────────
   - topic: ACME/SP/L5/FLEXO
+    device_key: dk_59ba4bdc19310ec49faad808c5368650
     id_equipment: 5001
     tp_equipment: 1
     id_unit: 5001
@@ -81,6 +82,7 @@ equipment:
 
   # ── PTH: two count registers summed into one gross count (SUM) ───────────────
   - topic: ACME/SP/L5/PTH
+    device_key: dk_eb1d59d5dfb37f299e2ccac01569c328
     id_equipment: 5002
     tp_equipment: 1
     id_unit: 5002
@@ -96,6 +98,7 @@ equipment:
 
   # ── SCRAP: defect count derived as gross − net (EXPR, ADR-0058) ──────────────
   - topic: ACME/SP/L5/SCRAP
+    device_key: dk_047adcb102e15036d985437ae2c0bd12
     id_equipment: 5003
     tp_equipment: 1
     id_unit: 5003

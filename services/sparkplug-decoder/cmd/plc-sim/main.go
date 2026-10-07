@@ -18,6 +18,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -349,9 +351,9 @@ func buildBirthMetrics(lines []line, states []simState, emitDefinitive bool) []s
 		base := uint64((i + 1) * 10)
 		defs := l.metrics(base)
 		ms = append(ms,
-			sparkplug.SimMetric{Name: defs[0].name, Alias: defs[0].alias, Double: states[i].consumed, Props: definitiveProps(defs[0].name, emitDefinitive)},
-			sparkplug.SimMetric{Name: defs[1].name, Alias: defs[1].alias, Double: states[i].processed, Props: definitiveProps(defs[1].name, emitDefinitive)},
-			sparkplug.SimMetric{Name: defs[2].name, Alias: defs[2].alias, Double: states[i].defective, Props: definitiveProps(defs[2].name, emitDefinitive)},
+			sparkplug.SimMetric{Name: defs[0].name, Alias: defs[0].alias, Double: states[i].consumed, Props: definitiveProps(defs[0].name, l.deviceKey(), emitDefinitive)},
+			sparkplug.SimMetric{Name: defs[1].name, Alias: defs[1].alias, Double: states[i].processed, Props: definitiveProps(defs[1].name, l.deviceKey(), emitDefinitive)},
+			sparkplug.SimMetric{Name: defs[2].name, Alias: defs[2].alias, Double: states[i].defective, Props: definitiveProps(defs[2].name, l.deviceKey(), emitDefinitive)},
 			sparkplug.SimMetric{Name: defs[3].name, Alias: defs[3].alias, Double: states[i].effSpeed(l.MachSpeed)},
 			sparkplug.SimMetric{Name: defs[4].name, Alias: defs[4].alias, Long: states[i].state, IsLong: true},
 		)
@@ -376,23 +378,28 @@ func buildBirthMetrics(lines []line, states []simState, emitDefinitive bool) []s
 	return ms
 }
 
+// deviceKey is the simulated equipment's DECLARED device_key (ADR-0061): an opaque dk_<32 hex>, like the
+// keys edge-api stamps from core.device_bindings. The sim has no binding rows, so it mints a deterministic
+// key per topic (sha256 of a sim-only namespace + topic) — stable across restarts, never name-shaped, and
+// never colliding with a real binding. A consumer only binds it when its resolver maps this key.
+func (l line) deviceKey() string {
+	sum := sha256.Sum256([]byte("plc-sim/device_key/" + l.topicPrefix()))
+	return "dk_" + hex.EncodeToString(sum[:16])
+}
+
 // definitiveProps returns the ADR-0046 definitive-birth PropertySet for a metric
 // NAME when emitDefinitive is on and the name is a canonical count-leaf, else nil.
 // It REUSES internal/agent/birth (the sparkplug-agent's producer) so the role
 // mapping (ProdConsumedCount→gross, ProdProcessedCount→net, ProdDefectiveCount→
-// scrap) and the device_key = dash-joined equipment topic derivation are never
-// duplicated in the sim. A non-counter metric (MachSpeed/StateCurrent/
-// Parameter30700) yields nil, and OFF yields nil — either way the metric stays
-// byte-clean, exactly like the agent's session.BuildNBIRTH.
-func definitiveProps(name string, emitDefinitive bool) *sparkplug.PropertySet {
+// scrap) is never duplicated in the sim; device_key is the line's DECLARED key
+// (ADR-0061 P1: never derived from the name). A non-counter metric (MachSpeed/
+// StateCurrent/Parameter30700) yields nil, and OFF yields nil — either way the
+// metric stays byte-clean, exactly like the agent's session.BuildNBIRTH.
+func definitiveProps(name, deviceKey string, emitDefinitive bool) *sparkplug.PropertySet {
 	if !emitDefinitive {
 		return nil
 	}
-	// Empty declared key ⇒ the birth package derives device_key by stripping the
-	// 4-segment count-leaf tail and dash-joining the remaining topic — i.e. the
-	// dash-joined equipment topic (CPACK/SC/LINHAS/L5/BREYER → CPACK-SC-LINHAS-L5-
-	// BREYER), which matches what the birth-bound consumer resolves against.
-	if ps, ok := birth.CounterMetricProps(name); ok {
+	if ps, ok := birth.CounterMetricPropsWithDeviceKey(name, deviceKey); ok {
 		return ps
 	}
 	return nil

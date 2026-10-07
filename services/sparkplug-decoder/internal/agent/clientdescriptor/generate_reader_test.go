@@ -35,16 +35,19 @@ tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
   - topic: CPACK/SC/LINHAS/L8/DXL
+    device_key: dk_9a5f54e2b661bffe17da26443d892a32
     id_equipment: 8001
     tp_equipment: 1
     id_unit: 8001
     count_index: {value: 219, confidence: confirmed}
   - topic: CPACK/SC/CELULA9/FLEXO
+    device_key: dk_99176a62e62a3c8c1e89542834922591
     id_equipment: 8002
     tp_equipment: 1
     id_unit: 8002
     count_index: {value: 557, confidence: confirmed}
   - topic: CPACK/SC/LINHAS/L6/PLC
+    device_key: dk_19fc5ada1879c0c2cbef67b1d80e638f
     id_equipment: 8003
     tp_equipment: 1
     id_unit: 8003
@@ -105,6 +108,7 @@ tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
   - topic: NOPLC/SP/LINE1/M1
+    device_key: dk_8d3dca827a4b1d82067015fd1d716b80
     id_equipment: 1
     tp_equipment: 1
     id_unit: 1
@@ -301,11 +305,11 @@ agent:
 tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
-  - {topic: CPACK/SC/LINHAS/L6/BREYER,   id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/PTH,      id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/RMH,      id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/TEXA,     id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/BREYER,   device_key: dk_aee86340b813d9d457db00f72fbae4be, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, device_key: dk_2b966ecda0a67f9957af00f134b0282a, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH,      device_key: dk_ce1be0bf352a69765a6a4cb2eaffb29f, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH,      device_key: dk_2b497d475690d87542fe2852fb74a3c7, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA,     device_key: dk_822678baf3802c1f4b4e2a1741748b6b, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
 plc:
   endpoints:
     - {name: PLC_L6, protocol: modbus_tcp, host_ref: "secret://packiot/staging/cpack/l6-host", unit_id: 1}

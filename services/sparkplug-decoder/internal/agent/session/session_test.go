@@ -33,11 +33,12 @@ func newPub() *session.Publisher {
 
 // TestDefinitiveBirth_DeclaredDeviceKey proves the ADR-0046 task-#18 wiring: with
 // definitive birth on and a WithDeviceKeys map, the NBIRTH count metric carries the
-// DECLARED device_key; with no map entry it derives from the topic (the bridge).
+// DECLARED device_key; with no map entry it carries none (ADR-0061 P1: never derived).
 func TestDefinitiveBirth_DeclaredDeviceKey(t *testing.T) {
 	const countName = parityPrefix + "/Admin/ProdProcessedCount/1/Unit"
 
-	deviceKeyOf := func(pub *session.Publisher) string {
+	// deviceKeyOf returns the count metric's device_key property and whether it is present.
+	deviceKeyOf := func(pub *session.Publisher) (string, bool) {
 		t.Helper()
 		pl, err := pub.BuildNBIRTH([]rawtag.RawTag{rt("/Admin/ProdProcessedCount/1/Unit", 42.0)})
 		if err != nil {
@@ -48,29 +49,33 @@ func TestDefinitiveBirth_DeclaredDeviceKey(t *testing.T) {
 				continue
 			}
 			ps := m.GetProperties()
+			if ps == nil {
+				t.Fatal("count metric carries no properties (counter_role expected)")
+			}
 			for i, k := range ps.GetKeys() {
 				if k == "device_key" {
-					return ps.GetValues()[i].GetStringValue()
+					return ps.GetValues()[i].GetStringValue(), true
 				}
 			}
-			t.Fatal("count metric carries no device_key property")
+			return "", false
 		}
 		t.Fatalf("count metric %q not in NBIRTH", countName)
-		return ""
+		return "", false
 	}
 
-	// Declared key wins.
+	// Declared key is emitted as-is.
+	const key = "dk_0123456789abcdef0123456789abcdef"
 	declared := session.New(newMapResolver(), aliasmap.New(),
 		session.WithDefinitiveBirth(true),
-		session.WithDeviceKeys(map[string]string{countName: "CPACK-DECLARED-L5-BREYER"}))
-	if got := deviceKeyOf(declared); got != "CPACK-DECLARED-L5-BREYER" {
-		t.Errorf("declared: device_key = %q, want CPACK-DECLARED-L5-BREYER", got)
+		session.WithDeviceKeys(map[string]string{countName: key}))
+	if got, ok := deviceKeyOf(declared); !ok || got != key {
+		t.Errorf("declared: device_key = %q (present=%v), want %s", got, ok, key)
 	}
 
-	// No map entry → topic-derived bridge (parityPrefix dash-joined).
-	derived := session.New(newMapResolver(), aliasmap.New(), session.WithDefinitiveBirth(true))
-	if got := deviceKeyOf(derived); got != "CPACK-SC-LINHAS-L5-BREYER" {
-		t.Errorf("derived: device_key = %q, want CPACK-SC-LINHAS-L5-BREYER", got)
+	// No map entry → NO device_key (ADR-0061 P1: never derived from the topic).
+	undeclared := session.New(newMapResolver(), aliasmap.New(), session.WithDefinitiveBirth(true))
+	if got, ok := deviceKeyOf(undeclared); ok {
+		t.Errorf("undeclared: device_key = %q, want none (no name-derived fallback)", got)
 	}
 }
 

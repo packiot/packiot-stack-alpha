@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/aliasmap"
@@ -34,18 +35,18 @@ func TestCounterMetricProps(t *testing.T) {
 	}{
 		// A line's role-typed count leaves (line_roles → /Admin/Prod<Kind>Count/<idx>/Unit).
 		{"line consumed→gross", "CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount/168/Unit",
-			true, birth.RoleGross, "idx:168", "CPACK-SC-LINHAS-L5"},
+			true, birth.RoleGross, "idx:168", ""},
 		{"line processed→net", "CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount/169/Unit",
-			true, birth.RoleNet, "idx:169", "CPACK-SC-LINHAS-L5"},
+			true, birth.RoleNet, "idx:169", ""},
 		// A member's count leaves (metric_templates).
 		{"member consumed→gross", "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit",
-			true, birth.RoleGross, "idx:61", "CPACK-SC-LINHAS-L5-BREYER"},
+			true, birth.RoleGross, "idx:61", ""},
 		{"member processed→net", "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdProcessedCount/62/Unit",
-			true, birth.RoleNet, "idx:62", "CPACK-SC-LINHAS-L5-BREYER"},
+			true, birth.RoleNet, "idx:62", ""},
 		{"member defective→scrap", "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdDefectiveCount/63/Unit",
-			true, birth.RoleScrap, "idx:63", "CPACK-SC-LINHAS-L5-BREYER"},
+			true, birth.RoleScrap, "idx:63", ""},
 		{"bisnago line", "BISNAGO/SP/LINHAS/L71/Admin/ProdConsumedCount/671/Unit",
-			true, birth.RoleGross, "idx:671", "BISNAGO-SP-LINHAS-L71"},
+			true, birth.RoleGross, "idx:671", ""},
 		// Non-counter / non-conformant metrics get NO properties (fail-closed).
 		{"speed metric", "CPACK/SC/LINHAS/L5/BREYER/Status/MachSpeed", false, "", "", ""},
 		{"state metric", "CPACK/SC/LINHAS/L5/BREYER/Status/StateCurrent", false, "", "", ""},
@@ -77,16 +78,16 @@ func TestCounterMetricProps(t *testing.T) {
 			if got[birth.PropSourceRef] != tc.wantSourceRef {
 				t.Errorf("source_ref: got %q, want %q", got[birth.PropSourceRef], tc.wantSourceRef)
 			}
-			if got[birth.PropDeviceKey] != tc.wantDeviceKey {
-				t.Errorf("device_key: got %q, want %q", got[birth.PropDeviceKey], tc.wantDeviceKey)
+			if dk, has := got[birth.PropDeviceKey]; has != (tc.wantDeviceKey != "") || dk != tc.wantDeviceKey {
+				t.Errorf("device_key: got %q (present=%v), want %q — never derived from the name (ADR-0061 P1)", dk, has, tc.wantDeviceKey)
 			}
 		})
 	}
 }
 
-// TestCounterMetricPropsWithDeviceKey pins the ADR-0046 task-#18 rule: a DECLARED
-// device_key is authoritative; an empty one falls back to the topic derivation
-// (the bridge), and role/source_ref are unaffected either way.
+// TestCounterMetricPropsWithDeviceKey pins the ADR-0061 P1 rule: a DECLARED device_key is
+// emitted as-is (trimmed); an empty one emits NO device_key property (the topic-derived
+// bridge is gone), and role/source_ref are unaffected either way.
 func TestCounterMetricPropsWithDeviceKey(t *testing.T) {
 	const metric = "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit"
 	cases := []struct {
@@ -94,9 +95,10 @@ func TestCounterMetricPropsWithDeviceKey(t *testing.T) {
 		declared      string
 		wantDeviceKey string
 	}{
-		{"declared wins", "CPACK-CUSTOM-KEY", "CPACK-CUSTOM-KEY"},
-		{"empty falls back to derivation", "", "CPACK-SC-LINHAS-L5-BREYER"},
-		{"whitespace-only falls back", "   ", "CPACK-SC-LINHAS-L5-BREYER"},
+		{"declared emitted", testKeyMember, testKeyMember},
+		{"declared trimmed", " " + testKeyMember + " ", testKeyMember},
+		{"empty emits no key", "", ""},
+		{"whitespace-only emits no key", "   ", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,8 +110,8 @@ func TestCounterMetricPropsWithDeviceKey(t *testing.T) {
 			for i, k := range ps.GetKeys() {
 				got[k] = ps.GetValues()[i].GetStringValue()
 			}
-			if got[birth.PropDeviceKey] != tc.wantDeviceKey {
-				t.Errorf("device_key: got %q, want %q", got[birth.PropDeviceKey], tc.wantDeviceKey)
+			if dk, has := got[birth.PropDeviceKey]; has != (tc.wantDeviceKey != "") || dk != tc.wantDeviceKey {
+				t.Errorf("device_key: got %q (present=%v), want %q", dk, has, tc.wantDeviceKey)
 			}
 			// role + source_ref are independent of the device_key source.
 			if got[birth.PropCounterRole] != birth.RoleGross {
@@ -141,6 +143,27 @@ var descriptorTagMap = map[string]sparkplug.DataType{
 }
 
 const testPrefix = "CPACK/SC"
+
+// The opaque dk_ keys edge-api stamps from core.device_bindings (ADR-0061), one per device.
+const (
+	testKeyLine   = "dk_00000000000000000000000000000a05"
+	testKeyMember = "dk_00000000000000000000000000000b05"
+)
+
+// declaredKeys is the full-metric-name → device_key map the agent builds from its tag map
+// (session.WithDeviceKeys): the line's leaves get the line key, the member's the member key.
+func declaredKeys() map[string]string {
+	m := map[string]string{}
+	for suffix := range descriptorTagMap {
+		if strings.Contains(suffix, "/BREYER/") {
+			m[testPrefix+suffix] = testKeyMember
+		} else {
+			m[testPrefix+suffix] = testKeyLine
+		}
+	}
+	return m
+}
+
 const testGroup = "CPACK"
 const testEdgeNode = "sparkplug-agent-cpack"
 
@@ -165,7 +188,8 @@ func birthSnapshot() []rawtag.RawTag {
 }
 
 func TestBuildDefinitiveBirth_ValidatesAndGroups(t *testing.T) {
-	pub := session.New(mapResolver{}, aliasmap.New(), session.WithDefinitiveBirth(true))
+	pub := session.New(mapResolver{}, aliasmap.New(), session.WithDefinitiveBirth(true),
+		session.WithDeviceKeys(declaredKeys()))
 	pub.NewConnection()
 
 	nbirth, err := pub.BuildNBIRTH(birthSnapshot())
@@ -188,11 +212,11 @@ func TestBuildDefinitiveBirth_ValidatesAndGroups(t *testing.T) {
 		t.Fatalf("device count: got %d (%v), want 2", len(byDevice), deviceKeys(decl))
 	}
 
-	assertRoles(t, byDevice, "CPACK-SC-LINHAS-L5", map[string]string{
+	assertRoles(t, byDevice, testKeyLine, map[string]string{
 		"idx:168": birth.RoleGross,
 		"idx:169": birth.RoleNet,
 	})
-	assertRoles(t, byDevice, "CPACK-SC-LINHAS-L5-BREYER", map[string]string{
+	assertRoles(t, byDevice, testKeyMember, map[string]string{
 		"idx:61": birth.RoleGross,
 		"idx:62": birth.RoleNet,
 		"idx:63": birth.RoleScrap,
@@ -208,6 +232,25 @@ func TestBuildDefinitiveBirth_ValidatesAndGroups(t *testing.T) {
 				t.Errorf("%s: metric %q datatype: got %q, want Double", dk, m.Name, m.Datatype)
 			}
 		}
+	}
+}
+
+// An UNDECLARED box (a config pushed before ADR-0061 P1, no dk_ keys) keeps publishing — the
+// birth still builds and still carries the roles — but declares NO identity, so its declaration
+// is non-conformant (device_key required). The agent warns at startup; nothing is derived.
+func TestBuildDefinitiveBirth_UndeclaredKeysAreNotDerived(t *testing.T) {
+	pub := session.New(mapResolver{}, aliasmap.New(), session.WithDefinitiveBirth(true))
+	pub.NewConnection()
+	nbirth, err := pub.BuildNBIRTH(birthSnapshot())
+	if err != nil {
+		t.Fatalf("BuildNBIRTH must not fail for an undeclared box: %v", err)
+	}
+	decl := birth.DeclarationFromNBIRTH(testGroup, testEdgeNode, nbirth)
+	if len(decl.Devices) != 1 || decl.Devices[0].DeviceKey != "" || len(decl.Devices[0].Metrics) != 5 {
+		t.Fatalf("want the 5 role metrics under ONE keyless device, got %+v", decl.Devices)
+	}
+	if err := decl.Validate(); err == nil || !strings.Contains(err.Error(), "device_key is required") {
+		t.Fatalf("a keyless declaration must be non-conformant, got %v", err)
 	}
 }
 
