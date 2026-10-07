@@ -79,6 +79,31 @@ func topicsArg(r *http.Request) ([]any, error) {
 	return []any{strings.Split(raw, ",")}, nil
 }
 
+// maxEquipmentIDs bounds ?equipment= (a line + its machines is tens; this is a DoS guard, not a quota).
+const maxEquipmentIDs = 500
+
+// equipmentIDsArg parses ?equipment=<id>,<id>,… (ADR-0061 P3 /v2 operator routes): identity is
+// id_equipment, never a topic. Positive integers only; the tenant fence stays the outer $1.
+func equipmentIDsArg(r *http.Request) ([]any, error) {
+	raw := r.URL.Query().Get("equipment")
+	if raw == "" {
+		return nil, fmt.Errorf("missing required query param: equipment")
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > maxEquipmentIDs {
+		return nil, fmt.Errorf("equipment: at most %d ids", maxEquipmentIDs)
+	}
+	ids := make([]int32, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 32)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("equipment: %q is not a positive integer id", p)
+		}
+		ids = append(ids, int32(n))
+	}
+	return []any{ids}, nil
+}
+
 func topicArg(r *http.Request) ([]any, error) {
 	t := r.URL.Query().Get("topic")
 	if t == "" {
@@ -156,6 +181,19 @@ var endpoints = []endpoint{
 	// the line's, so on lines that keep the tree on the line and are not
 	// downtime_from_lead_machine (CPACK: 20 line trees, 41 of 42 members NULL) it fell
 	// through to a member's empty tree — "No downtime reasons configured".
+	// ── ADR-0061 P3 /v2 operator routes: identity = id_equipment (?equipment=), the topic column becomes
+	// the D6 display_path (display only). The functions WRAP the v1 ones (same rules by construction;
+	// db/migrations/t-adr0061-p3a-operator-by-id, proven row-identical on the dev seed). v1 is unchanged.
+	{path: "/v2/events-timeline",
+		sql:   `SELECT * FROM serving.events_timeline_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
+	{path: "/v2/pending-downtime",
+		sql:   `SELECT * FROM serving.pending_downtime_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
+	// v2 downtime-reasons: one row per requested machine/line, no register join (same LINE-ONLY rule as v1).
+	{path: "/v2/downtime-reasons",
+		sql:   `SELECT * FROM serving.downtime_reasons_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
 	{path: "/v1/downtime-reasons",
 		sql: `SELECT e.id_equipment, r.downtime_reasons, e.scrap_reasons, p.packml_topic
 	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment
@@ -319,7 +357,7 @@ func main() {
 	// now resolves by id_user_cognito only (usersEnterpriseSQL).
 	cIss := getenv("COGNITO_ISSUER", defaultCognitoIssuer)
 	cClient := getenv("COGNITO_CLIENT_ID", defaultCognitoClientID)
-	cJWKS := os.Getenv("COGNITO_JWKS_URL") // "" → derived <issuer>/.well-known/jwks.json
+	cJWKS := os.Getenv("COGNITO_JWKS_URL")                     // "" → derived <issuer>/.well-known/jwks.json
 	cognitoCV := newCognitoVerifier(cIss, cClient, cJWKS, nil) // reused by the operator super-admin read escalation
 	var bv verifier = newMultiVerifier(
 		namedVerifier{idp: "cognito", iss: cIss, v: cognitoCV},
