@@ -40,10 +40,10 @@ metric_templates:
 
 # Illustrative: 2 blister/cartoning lines, one member each.
 equipment:
-  - {topic: BISPHARMA/SP/BLISTER1, id_equipment: 700, tp_equipment: 3}
-  - {topic: BISPHARMA/SP/BLISTER1/UHLMANN, id_equipment: 701, tp_equipment: 1, id_unit: 701, count_index: {value: 0, confidence: inferred}}
-  - {topic: BISPHARMA/SP/CARTONER1, id_equipment: 702, tp_equipment: 3}
-  - {topic: BISPHARMA/SP/CARTONER1/MARCHESINI, id_equipment: 703, tp_equipment: 1, id_unit: 703, count_index: {value: 0, confidence: inferred}}
+  - {topic: BISPHARMA/SP/BLISTER1, device_key: dk_098bacabf7dd11c12c6ade6292539bc2, id_equipment: 700, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/BLISTER1/UHLMANN, device_key: dk_990f70caa05c4f5b523a0c8ff1fb7ef7, id_equipment: 701, tp_equipment: 1, id_unit: 701, count_index: {value: 0, confidence: inferred}}
+  - {topic: BISPHARMA/SP/CARTONER1, device_key: dk_6270cae80ae3e618cba6d558af80abbb, id_equipment: 702, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/CARTONER1/MARCHESINI, device_key: dk_10b0ae5d101735777fd9edf7f512bae4, id_equipment: 703, tp_equipment: 1, id_unit: 703, count_index: {value: 0, confidence: inferred}}
 
 agent:
   edge_node_id: bispharma-edge

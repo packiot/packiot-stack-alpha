@@ -81,6 +81,9 @@ var s7Words = map[string]bool{"dint": true, "int": true, "real": true}
 // FLAT identity string, not a topic path (the dash form of the topic, ADR-0046 §2).
 var deviceKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// opaqueDeviceKey is the only accepted device_key (ADR-0061; the core.device_bindings CHECK).
+var opaqueDeviceKey = regexp.MustCompile(`^dk_[0-9a-f]{32}$`)
+
 // sensorKeyPattern extracts a member's SENSOR key from its topic's last segment
 // for ADR-0050 type expansion: the leading S<n> token. S1INFEED→S1, S3→S3,
 // S6OUTPUT→S6. A segment with no such prefix (e.g. "SCRAP") yields "" and the
@@ -333,13 +336,9 @@ type Equipment struct {
 
 	// DeviceKey is the equipment's STABLE identity — the ADR-0046 §2 device key
 	// that rides on every birth counter metric (properties["device_key"]) and
-	// keys packml_register.device_key. It is DECLARED, not string-derived: when
-	// set it is AUTHORITATIVE; when empty the birth side falls back to the
-	// dash-joined-topic derivation (the transitional bridge, see birth pkg), so
-	// nothing breaks for a descriptor that predates this field. Charset
-	// [A-Za-z0-9._-]+ (no "/" — it is the flat identity, not a topic path);
-	// unique per tenant. Use ResolvedDeviceKey() to read the declared-else-derived
-	// value — that is the single place the fallback rule lives.
+	// identity the agent declares at SparkPlug birth (ADR-0061 D1). It is the opaque key of the equipment's
+	// active core.device_bindings row (dk_<32 hex>), stamped by edge-api on every descriptor write/generate.
+	// REQUIRED (Validate): there is no derivation from the topic any more (ADR-0061 P1).
 	DeviceKey string `yaml:"device_key,omitempty"`
 
 	// IDEquipment is the register surrogate id (drives packml_register SQL + id
@@ -417,17 +416,12 @@ type DerivedMetric struct {
 	Expr *tenantprofile.ExprSource `yaml:"expr,omitempty"`
 }
 
-// ResolvedDeviceKey returns the equipment's DECLARED device_key, or — when none is
-// declared — the dash-joined-topic derivation (the transitional bridge form the
-// birth side and the golden fixtures use, e.g. "CPACK/SC/LINHAS/L5/BREYER" →
-// "CPACK-SC-LINHAS-L5-BREYER"). This is the single source of the declared-else-
-// derived rule; the register SQL, the agent tag-map, and (via them) the runtime
-// birth all read identity through here so producer and consumer cannot disagree.
+// ResolvedDeviceKey returns the equipment's DECLARED device_key (trimmed), or "" when none is
+// declared. ADR-0061 P1 removed the dash-joined-topic fallback ("CPACK/SC/LINHAS/L5/BREYER" →
+// "CPACK-SC-LINHAS-L5-BREYER"): identity is declared, never derived from a name. The agent tag-map and
+// (via it) the runtime birth read identity through here so producer and consumer cannot disagree.
 func (e Equipment) ResolvedDeviceKey() string {
-	if k := strings.TrimSpace(e.DeviceKey); k != "" {
-		return k
-	}
-	return strings.ReplaceAll(e.Topic, "/", "-")
+	return strings.TrimSpace(e.DeviceKey)
 }
 
 // LineRole binds one canonical count-leaf ROLE on a line to a specific PLC count
@@ -537,7 +531,15 @@ func Load(path string) (*Descriptor, error) {
 // Validate checks the descriptor is internally consistent BEFORE generation — a
 // bad descriptor should fail loudly here, not fan a silent error out to all four
 // artifacts (ADR-0045 §5 negative: "a generator bug fans out to all four").
-func (d *Descriptor) Validate() error {
+func (d *Descriptor) Validate() error { return d.validate(true) }
+
+// ValidateDraft is Validate without the device_key requirement, for a SCAFFOLD: a skeleton for a tenant whose
+// equipment does not exist yet has no core.device_bindings rows, so it cannot carry keys (like its placeholder
+// id_equipment values). edge-api stamps the keys when the real descriptor is saved; Parse/generate/push still
+// require them (Validate).
+func (d *Descriptor) ValidateDraft() error { return d.validate(false) }
+
+func (d *Descriptor) validate(requireDeviceKeys bool) error {
 	if strings.TrimSpace(d.Tenant) == "" {
 		return fmt.Errorf("tenant is required")
 	}
@@ -555,9 +557,8 @@ func (d *Descriptor) Validate() error {
 	}
 	seenTopic := map[string]bool{}
 	seenID := map[int]bool{}
-	// seenDeviceKey tracks every RESOLVED device key (declared or topic-derived) so
-	// a collision is caught here rather than at the packml_register partial-unique
-	// index (id_enterprise, device_key). Maps key → the topic that first claimed it.
+	// seenDeviceKey tracks every declared device key so a collision is caught here
+	// rather than at core.device_bindings' unique key. Maps key → the topic that first claimed it.
 	seenDeviceKey := map[string]string{}
 	// seenCountIndex tracks every count index claimed by a member (CountIndex) or a
 	// line role (LineRoles), so a collision is caught at descriptor-validate time
@@ -584,19 +585,17 @@ func (d *Descriptor) Validate() error {
 			return fmt.Errorf("equipment[%d] (%s): duplicate id_equipment %d", i, e.Topic, e.IDEquipment)
 		}
 		seenID[e.IDEquipment] = true
-		// device_key: when DECLARED it must be a non-empty, /-free identity string
-		// (the flat key, not a topic path). Uniqueness is enforced on the RESOLVED
-		// key (declared-else-derived) so a declared key that collides with another
-		// equipment's derived key is caught too — both land in the same
-		// packml_register.device_key column under one partial-unique index.
-		if e.DeviceKey != "" && !deviceKeyPattern.MatchString(e.DeviceKey) {
-			return fmt.Errorf("equipment[%d] (%s): device_key=%q must match [A-Za-z0-9._-]+ (no '/'; it is the flat identity, not a topic)",
+		// device_key (ADR-0061 P1): REQUIRED and opaque — the active core.device_bindings key (dk_<32 hex>).
+		// A name-derived key ('CPACK-SC-LINHAS-L5') is rejected: identity is declared, never derived. This is
+		// the fail-closed point (onboarding/generate), not the agent at runtime on a shipped box.
+		if (requireDeviceKeys || e.DeviceKey != "") && !opaqueDeviceKey.MatchString(e.DeviceKey) {
+			return fmt.Errorf("equipment[%d] (%s): device_key=%q must be the opaque dk_<32 hex> key of its core.device_bindings row (ADR-0061; edge-api stamps it)",
 				i, e.Topic, e.DeviceKey)
 		}
 		dk := e.ResolvedDeviceKey()
-		if prev, dup := seenDeviceKey[dk]; dup {
+		if prev, dup := seenDeviceKey[dk]; dup && dk != "" {
 			return fmt.Errorf("equipment[%d] (%s): device_key %q already claimed by %s "+
-				"(unique per tenant — it keys packml_register.device_key)", i, e.Topic, dk, prev)
+				"(unique per descriptor — one identity per equipment)", i, e.Topic, dk, prev)
 		}
 		seenDeviceKey[dk] = e.Topic
 		switch e.TPEquipment {

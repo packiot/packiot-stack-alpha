@@ -22,6 +22,7 @@ metric_templates:
     - {leaf: "/Status/MachSpeed", type: double}
 equipment:
   - topic: ACME/SP/L5/FLEXO
+    device_key: dk_6d1a1a325e256e186270525ab951d163
     id_equipment: 5001
     tp_equipment: 1
     id_unit: 5001

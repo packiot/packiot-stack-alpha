@@ -69,6 +69,7 @@ import (
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/agentcfg"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/aliasmap"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/birth"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/capture"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/counterderive"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/deriver"
@@ -826,7 +827,10 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 	aliases := aliasmap.New() // per-group alias space — never shared across tenants
 	// ADR-0046 task #18: the DECLARED device_key per full metric name, sourced from
 	// the tag map (client-descriptor origin). Passed to the session so definitive
-	// birth emits the declared identity; absent entries fall back to the derivation.
+	// birth emits the declared identity; absent entries emit none (ADR-0061 P1).
+	if emitDefinitiveBirth {
+		warnUndeclaredDeviceKeys(cfg, deps.logger)
+	}
 	pub := session.New(res, aliases,
 		session.WithDefinitiveBirth(emitDefinitiveBirth),
 		session.WithDeviceKeys(deviceKeysFromTagMap(cfg)),
@@ -1791,7 +1795,8 @@ type entry struct {
 
 // deviceKeysFromTagMap builds the full-metric-name → DECLARED device_key map the
 // session consults for definitive birth (ADR-0046 task #18). Entries with no
-// declared key are omitted, so the birth side derives them (the bridge). The full
+// declared key are omitted: their births carry NO device_key (ADR-0061 P1 — never a
+// name-derived one; see warnUndeclaredDeviceKeys). The full
 // name is resolved the same way the resolver does (packml_topic + suffix, or an
 // explicit Name), so the keys line up with what BuildNBIRTH looks up.
 func deviceKeysFromTagMap(cfg *agentcfg.Config) map[string]string {
@@ -1803,6 +1808,24 @@ func deviceKeysFromTagMap(cfg *agentcfg.Config) map[string]string {
 		m[e.FullName(cfg.Sparkplug.PackMLTopic)] = e.DeviceKey
 	}
 	return m
+}
+
+// warnUndeclaredDeviceKeys logs, once at startup, how many counter tags have no declared device_key. Their
+// births will declare no identity (ADR-0061 P1 removed the name derivation); the box keeps publishing, and the
+// fix is re-pushing this box's config from a descriptor stamped with dk_ keys (edge-api generate).
+func warnUndeclaredDeviceKeys(cfg *agentcfg.Config, logger *slog.Logger) {
+	missing := 0
+	for _, e := range cfg.RawTagMap {
+		if e.DeviceKey == "" {
+			if _, ok := birth.CounterMetricProps(e.FullName(cfg.Sparkplug.PackMLTopic)); ok {
+				missing++
+			}
+		}
+	}
+	if missing > 0 {
+		logger.Warn("counter tags without a declared device_key: their births declare no identity (ADR-0061) — re-push this box's config from a dk_-stamped descriptor",
+			"count", missing, "group_id", cfg.Sparkplug.GroupID)
+	}
 }
 
 func newResolver(cfg *agentcfg.Config) *resolver {

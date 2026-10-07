@@ -101,8 +101,8 @@ func WithDefinitiveBirth(on bool) Option {
 }
 
 // WithDeviceKeys supplies the DECLARED device_key per full metric name (ADR-0046
-// task #18). Only consulted when definitive birth is on; a name absent from the map
-// falls back to the topic-derived key. nil/empty ⇒ pure derivation (additive).
+// task #18, ADR-0061). Only consulted when definitive birth is on; a name absent from
+// the map gets NO device_key (ADR-0061 P1 removed the topic-derived fallback).
 func WithDeviceKeys(m map[string]string) Option {
 	return func(p *Publisher) { p.deviceKeys = m }
 }
@@ -201,8 +201,8 @@ func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, e
 				m.IsNull = boolp(true)
 			}
 			// ADR-0046 step 2 definitive-birth props apply identically here: a
-			// counter metric's role/lineage/device_key derive from the NAME, so a
-			// null (unseen) counter still declares its identity.
+			// counter metric's role/lineage derive from the NAME and its device_key
+			// from the declared map, so a null (unseen) counter still declares its identity.
 			if p.definitive {
 				if ps, ok := birth.CounterMetricPropsWithDeviceKey(mm.Name, p.deviceKeys[mm.Name]); ok {
 					m.Properties = ps

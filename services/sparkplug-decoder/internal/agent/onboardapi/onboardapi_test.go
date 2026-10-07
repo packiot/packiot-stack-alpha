@@ -333,7 +333,7 @@ func TestGenerate_JSONBody(t *testing.T) {
 		"canonical": {"prefix": "TESTCO/SP"},
 		"mapping": {"count_index_default_mode": "equipment_id"},
 		"equipment": [
-			{"topic": "TESTCO/SP/LINHAS/L1/M1", "id_equipment": 501, "tp_equipment": 1, "id_unit": 501}
+			{"topic": "TESTCO/SP/LINHAS/L1/M1", "device_key": "dk_000000000000000000000000000001f5", "id_equipment": 501, "tp_equipment": 1, "id_unit": 501}
 		]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/onboard/generate", bytes.NewReader(jsonDescriptor))
