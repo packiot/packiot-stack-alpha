@@ -81,6 +81,31 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           docker image inspect "$IMAGE:$TAG" --format 'image {{.Id}} size {{.Size}}'
 
+      - name: Boot test (the image must load, generated tables must be populated)
+        run: |
+          set -euo pipefail
+          C=devseed-boottest-$GITHUB_RUN_ID
+          trap 'docker rm -f "$C" >/dev/null 2>&1 || true' EXIT
+          docker run -d --name "$C" -e POSTGRES_PASSWORD=boottest "$IMAGE:${{ steps.build.outputs.tag }}" >/dev/null
+          for _ in $(seq 1 360); do   # up to 30 min for a full seed
+            if docker logs "$C" 2>&1 | grep -q 'PostgreSQL init process complete'; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' "$C")" != true ]; then
+              docker logs --tail 40 "$C"; echo "ABORT: seed container exited during init"; exit 1
+            fi
+            sleep 5
+          done
+          docker logs "$C" 2>&1 | grep -q 'PostgreSQL init process complete' || { docker logs --tail 40 "$C"; echo "ABORT: init timeout"; exit 1; }
+          for _ in $(seq 1 60); do docker exec "$C" pg_isready -U postgres -q && break; sleep 2; done
+          docker exec -i "$C" psql -U postgres -X -At -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT 'equipments', count(*) FROM core.equipments;
+          SELECT 'device_bindings (fresh dk_ keys)', count(*) FROM core.device_bindings WHERE device_key ~ '^dk_[0-9a-f]{32}$';
+          SELECT 'dev users', count(*) FROM identity.users WHERE user_email LIKE '%@example.com';
+          DO $$ BEGIN
+            IF (SELECT count(*) FROM core.device_bindings) = 0 THEN RAISE EXCEPTION 'boot test: no device_bindings generated'; END IF;
+            IF (SELECT count(*) FROM identity.users) <> 3 THEN RAISE EXCEPTION 'boot test: expected exactly the 3 synthetic users'; END IF;
+          END $$;
+          SQL
+
       - name: Push to GHCR (private)
         if: inputs.push
         run: |

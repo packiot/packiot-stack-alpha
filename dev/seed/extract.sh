@@ -44,7 +44,7 @@ ORDER BY 1,2,ic.ordinal_position;
 SQL
 psql_ro -At -F $'\t' -c "SELECT table_schema, table_name, column_name FROM information_schema.columns
   WHERE is_generated='ALWAYS' AND table_schema NOT IN ('pg_catalog','information_schema');" > "$OUT/private/generated.tsv"
-python3 "$HERE/validate.py" --columns "$OUT/private/columns.tsv" --manifest "$CONF/manifest.yml" --classification "$CONF/classification.yml"
+python3 "$HERE/validate.py" --columns "$OUT/private/columns.tsv" --manifest "$CONF/manifest.yml" --classification "$CONF/classification.yml" --generators "$CONF/generators"
 
 echo "== 2. snapshot window + tokens"
 SNAPSHOT_END=$(psql_ro -At -c "SELECT now()")
@@ -121,6 +121,8 @@ json.dump({'tenant': int(tenant), 'window_days': int(window), 'snapshot_end': en
 print(f'{len(counts)} tables, {sum(counts.values())} rows')
 PY
 echo "== 7. load plan (load.sql: run by the seed image at first start with -v delta_days=N)"
+# mode-replace tables are generated at load (validate.py rule 5 guarantees one generator per replace table)
+mkdir -p "$OUT/payload/generators" && cp "$CONF/generators/"*.sql "$OUT/payload/generators/"
 python3 - "$OUT" <<'PY'
 import json, sys, pathlib
 out = pathlib.Path(sys.argv[1]); meta = json.load(open(out / 'payload' / 'metadata.json'))
@@ -152,7 +154,9 @@ for table, n in meta['row_counts'].items():
           f'INSERT INTO "{s}"."{t}" ({cols}) OVERRIDING SYSTEM VALUE SELECT {", ".join(expr(c, types[c]) for c in header)} FROM _l;',
           'DROP TABLE _l;',
           f"DO $$ BEGIN IF (SELECT count(*) FROM \"{s}\".\"{t}\") <> {n} THEN RAISE EXCEPTION 'devseed: {table} row count mismatch'; END IF; END $$;"]
+gens = sorted(p.name for p in (out / 'payload' / 'generators').glob('*.sql'))
 L += ['SET session_replication_role = origin;',
+      *[f"\\i /seed/generators/{g}" for g in gens],
       "UPDATE core.enterprises SET api_key = 'dev-api-key-' || id_enterprise;",
       *[f"CALL refresh_continuous_aggregate('{c}', now() - interval '60 days', now() + interval '1 day');" for c in cagg],
       *[f"SELECT count(*) AS dropped_{i} FROM drop_chunks('{h}', older_than => now() - interval '35 days');" for i, h in enumerate(hyper)],
