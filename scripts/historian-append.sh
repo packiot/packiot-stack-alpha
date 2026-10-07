@@ -168,7 +168,31 @@ else
   ENTS="$(echo "$ENT_ARG" | tr ',' ' ')"
 fi
 
-echo "[historian-append] source=${PGDATABASE}@${PGHOST} tenants=[${ENTS}] window=[${START},${END}) overlap=${OVERLAP_DAYS}d spike_guard=${SPIKE_GUARD} dest=${DEST_BASE}"
+# ── 3b. Exact counter totals (t-counter-totals-float8[-public]) ─────────────────
+# The Parquet *_val columns have always been DOUBLE; only the SOURCE was float4 (rounds above 2^24). Where the
+# source has the float8 *_total columns, write COALESCE(*_total, *_val) into the SAME *_val columns: exact for
+# rows written since the dual-write, unchanged before it, and no Glue/Athena schema change. A source without
+# the columns (not migrated yet) keeps the old projection — never reference a column that isn't there.
+HAS_TOTALS="$("$DUCKDB" :memory: -noheader -list <<SQL
+INSTALL postgres; LOAD postgres;
+ATTACH '${CONNSTR}' AS src (TYPE postgres, READ_ONLY);
+SELECT n FROM postgres_query('src',
+  'SELECT count(*) AS n FROM pg_attribute
+    WHERE attrelid = to_regclass(''equipment_values'') AND attname = ''net_production_total'' AND NOT attisdropped');
+SQL
+)"
+HAS_TOTALS="$(echo "$HAS_TOTALS" | tr -dc '0-9')"; HAS_TOTALS="${HAS_TOTALS:-0}"
+counter() { # $1 = the column stem (net_production / gross_production / scrap / process_scrap)
+  if [ "$HAS_TOTALS" -ge 1 ]; then
+    echo "TRY_CAST(COALESCE(CAST($1_total AS DOUBLE), CAST($1_val AS DOUBLE)) AS DOUBLE)"
+  else
+    echo "TRY_CAST($1_val AS DOUBLE)"
+  fi
+}
+NET_VAL="$(counter net_production)"; GROSS_VAL="$(counter gross_production)"
+SCRAP_VAL="$(counter scrap)"; PROC_SCRAP_VAL="$(counter process_scrap)"
+
+echo "[historian-append] source=${PGDATABASE}@${PGHOST} tenants=[${ENTS}] window=[${START},${END}) overlap=${OVERLAP_DAYS}d spike_guard=${SPIKE_GUARD} exact_totals=$([ "$HAS_TOTALS" -ge 1 ] && echo yes || echo no) dest=${DEST_BASE}"
 
 # ── 4. Increment-spike backstop (optional) ────────────────────────────────────
 # Mirrors services/oeecloud-worker/internal/writers/increment_clamp.go: when an
@@ -230,9 +254,9 @@ COPY (
     CAST(faults AS VARCHAR)                         AS faults,
     CAST(analogs AS VARCHAR)                        AS analogs,
     TRY_CAST(signal_quality AS SMALLINT)            AS signal_quality,
-    TRY_CAST(net_production_val AS DOUBLE)          AS net_production_val,
-    TRY_CAST(gross_production_val AS DOUBLE)        AS gross_production_val,
-    TRY_CAST(scrap_val AS DOUBLE)                   AS scrap_val,
+    ${NET_VAL}                                      AS net_production_val,
+    ${GROSS_VAL}                                    AS gross_production_val,
+    ${SCRAP_VAL}                                    AS scrap_val,
     TRY_CAST(id_shift AS INTEGER)                   AS id_shift,
     TRY_CAST(id_team AS INTEGER)                    AS id_team,
     TRY_CAST(id_shift_hour AS INTEGER)              AS id_shift_hour,
@@ -264,7 +288,7 @@ COPY (
     TRY_CAST(is_equipment_line_infeed AS SMALLINT)  AS is_equipment_line_infeed,
     TRY_CAST(is_equipment_line_outfeed AS SMALLINT) AS is_equipment_line_outfeed,
     TRY_CAST(process_scrap_incr AS DOUBLE)         AS process_scrap_incr,
-    TRY_CAST(process_scrap_val AS DOUBLE)          AS process_scrap_val,
+    ${PROC_SCRAP_VAL}                               AS process_scrap_val,
     TRY_CAST(process_scrap_incr_quality AS SMALLINT) AS process_scrap_incr_quality,
     TRY_CAST(process_scrap_val_quality AS SMALLINT)  AS process_scrap_val_quality,
     TRY_CAST(tp_equipment AS SMALLINT)             AS tp_equipment,

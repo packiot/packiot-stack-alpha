@@ -270,6 +270,12 @@ func main() {
 	// every merged equipment_values UPSERT (and event mint) is shadowed by an
 	// append-only INSERT into the immutable equipment_values_raw/_events_raw.
 	equipmentValuesWriter.SetBronzeRawAppend(cfg.BronzeRawAppend)
+	// float8 *_total on the public route (COUNTER_TOTALS_PUBLIC). Default OFF; enable only after
+	// t-counter-totals-float8-public is applied to the main DB.
+	writers.SetPublicCounterTotals(cfg.CounterTotalsPublic)
+	if cfg.CounterTotalsPublic {
+		logger.Info("exact float8 *_total counters ENABLED on the public route (COUNTER_TOTALS_PUBLIC)")
+	}
 	if cfg.BronzeRawAppend {
 		logger.Info("Bronze raw append ENABLED (ADR-0036 B1) — dual-write to *_raw immutable landing zone")
 	}

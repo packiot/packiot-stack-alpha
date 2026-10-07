@@ -118,3 +118,29 @@ func TestSeedExprPrefersExactTotal(t *testing.T) {
 		}
 	}
 }
+
+// COUNTER_TOTALS_PUBLIC: the public route names *_total only when enabled (prod forward-port).
+func TestCounterTotalsPublicFlag(t *testing.T) {
+	ts := time.UnixMilli(1_700_000_000_000).Truncate(time.Second).UTC()
+	info := &sparkplug.EquipmentInfo{IDEnterprise: 1, IDSite: 2, IDArea: 3, IDEquipment: 42}
+	counter := 297_922_487.0
+	t.Cleanup(func() { SetPublicCounterTotals(false) })
+
+	if q := buildConsumed(ts, info, 1, 5, &counter, nil, nil, ts.UnixMilli(), "public", false, nil, nil); strings.Contains(q.SQL, "_total") {
+		t.Fatalf("flag off: public must not name *_total")
+	}
+	if got := seedExpr("public", "gross_production_val"); got != "gross_production_val" {
+		t.Fatalf("flag off: seed reads *_val only, got %q", got)
+	}
+	SetPublicCounterTotals(true)
+	q := buildConsumed(ts, info, 1, 5, &counter, nil, nil, ts.UnixMilli(), "public", false, nil, nil)
+	if !strings.Contains(q.SQL, "check_number, gross_production_total") || len(q.Args) != 13 {
+		t.Fatalf("flag on: public must dual-write gross_production_total (args=%d)\nSQL:\n%s", len(q.Args), q.SQL)
+	}
+	if raw := buildRawAppend(sparkplug.KindProdProcessedCount, ts, info, 1, 5, &counter, nil, nil, nil, 1, "public"); !strings.Contains(raw.SQL, "net_production_total") {
+		t.Fatalf("flag on: public raw append must carry net_production_total")
+	}
+	if got := seedExpr("public", "gross_production_val"); got != "COALESCE(gross_production_total, gross_production_val)" {
+		t.Fatalf("flag on: seed prefers the exact total, got %q", got)
+	}
+}

@@ -32,7 +32,7 @@ ENT=3
 cleanup() { docker rm -f "$CNAME" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-echo "== [1/6] start throwaway TimescaleDB (:$PORT) =="
+echo "== [1/7] start throwaway TimescaleDB (:$PORT) =="
 docker run -d --name "$CNAME" -e POSTGRES_PASSWORD=verify -p "${PORT}:5432" \
   timescale/timescaledb:2.25.2-pg16 >/dev/null
 # The timescaledb image double-boots (temp init server, then a restart). Require
@@ -48,7 +48,7 @@ for i in $(seq 1 60); do
 done
 [ "$ok" -ge 3 ] || { echo "FAIL: DB did not become ready"; exit 1; }
 
-echo "== [2/6] load F3 equipment_values schema + synthetic day =="
+echo "== [2/7] load F3 equipment_values schema + synthetic day =="
 docker exec -i "$CNAME" psql -U postgres -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 -- Exact F3 shape (incl. trailing ingested_at/source_seq the projection drops,
@@ -109,14 +109,14 @@ run_append() { # $@ extra env
       bash "$HERE/historian-append.sh" "$ENT" "$DAY" "$NEXT"
 }
 
-echo "== [3/6] run the REAL append script (spike guard OFF) =="
+echo "== [3/7] run the REAL append script (spike guard OFF) =="
 run_append
 
 PARQUET="$WORK/out/equipment_values/enterprise=3/year=2026/month=8/data-$DAY.parquet"
 [ -f "$PARQUET" ] || { echo "FAIL: parquet not written at $PARQUET"; exit 1; }
 echo "   wrote $(du -h "$PARQUET" | cut -f1) parquet"
 
-echo "== [4/6] reconcile via DuckDB hive read (Athena stand-in) =="
+echo "== [4/7] reconcile via DuckDB hive read (Athena stand-in) =="
 ATHENA_COUNT=$("$DUCKDB" :memory: -noheader -list <<SQL
 SELECT count(*) FROM read_parquet('$WORK/out/equipment_values/**/*.parquet',
   hive_partitioning=true) WHERE enterprise=3 AND year=2026 AND month=8;
@@ -130,7 +130,7 @@ echo "   athena-equivalent count = $ATHENA_COUNT ; source = $SRC_COUNT ; in-file
 [ "$ATHENA_COUNT" = "$SRC_COUNT" ] || { echo "FAIL: count mismatch"; exit 1; }
 [ "$NCOLS" = "56" ] || { echo "FAIL: expected 56 projected columns, got $NCOLS"; exit 1; }
 
-echo "== [5/6] idempotency: re-run, count must stay identical =="
+echo "== [5/7] idempotency: re-run, count must stay identical =="
 run_append >/dev/null
 ATHENA_COUNT2=$("$DUCKDB" :memory: -noheader -list <<SQL
 SELECT count(*) FROM read_parquet('$WORK/out/equipment_values/**/*.parquet',
@@ -140,7 +140,7 @@ SQL
 echo "   after re-run count = $ATHENA_COUNT2 (expect $SRC_COUNT — overwrite, not append)"
 [ "$ATHENA_COUNT2" = "$SRC_COUNT" ] || { echo "FAIL: not idempotent"; exit 1; }
 
-echo "== [6/6] spike guard: HISTORIAN_SPIKE_GUARD=true must zero the spike incr =="
+echo "== [6/7] spike guard: HISTORIAN_SPIKE_GUARD=true must zero the spike incr =="
 SPIKE_BEFORE=$("$DUCKDB" :memory: -noheader -list <<SQL
 SELECT count(*) FROM read_parquet('$PARQUET') WHERE net_production_incr >= 250000;
 SQL
@@ -159,7 +159,31 @@ echo "   total rows with guard ON = $GUARD_TOTAL (expect $SRC_COUNT — row kept
 [ "$SPIKE_BEFORE" = "1" ] && [ "$SPIKE_AFTER" = "0" ] && [ "$GUARD_TOTAL" = "$SRC_COUNT" ] \
   || { echo "FAIL: spike guard did not behave as expected"; exit 1; }
 
+echo "== [7/7] exact totals: a source with float8 *_total writes COALESCE(*_total, *_val) into *_val =="
+# t-counter-totals-float8: float4 *_val stores 297,922,487 as 297,922,496; the float8 *_total keeps it exact.
+docker exec -i "$CNAME" psql -U postgres -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+ALTER TABLE public.equipment_values
+  ADD COLUMN gross_production_total double precision, ADD COLUMN net_production_total double precision,
+  ADD COLUMN scrap_total double precision, ADD COLUMN process_scrap_total double precision;
+INSERT INTO public.equipment_values
+  (id_equipment, ts_value, id_enterprise, gross_production_incr, gross_production_val, gross_production_total, tp_equipment)
+VALUES (81, TIMESTAMPTZ '2026-08-10 12:34:56+00', 3, 7, 297922487, 297922487, 1);
+SQL
+run_append >/dev/null
+read -r EXACT OLDROW ROWS <<<"$("$DUCKDB" :memory: -noheader -list -separator ' ' <<SQL
+SELECT (SELECT gross_production_val FROM read_parquet('$PARQUET') WHERE id_equipment = 81 AND gross_production_incr = 7),
+       (SELECT net_production_val FROM read_parquet('$PARQUET') WHERE ts_value = TIMESTAMP '2026-08-10 00:00:00'),
+       (SELECT count(*) FROM read_parquet('$PARQUET'));
+SQL
+)"
+echo "   exact-total row gross_production_val = $EXACT (expect 297922487, not the float4 297922496)"
+echo "   pre-totals row net_production_val = $OLDROW (expect 100 — unchanged); rows = $ROWS (expect $((SRC_COUNT + 1)))"
+[ "$EXACT" = "297922487.0" ] || [ "$EXACT" = "297922487" ] || { echo "FAIL: exact total not carried into the Parquet *_val"; exit 1; }
+[ "$OLDROW" = "100.0" ] || [ "$OLDROW" = "100" ] || { echo "FAIL: a row without *_total changed"; exit 1; }
+[ "$ROWS" = "$((SRC_COUNT + 1))" ] || { echo "FAIL: row count"; exit 1; }
+
 echo
 echo "✅ ALL CHECKS PASSED — incremental append writes the right partition, projects"
-echo "   to 56 Glue columns, reconciles to source, is idempotent, and the spike"
-echo "   backstop zeroes first-boot spikes while preserving the row."
+echo "   to 56 Glue columns, reconciles to source, is idempotent, the spike"
+echo "   backstop zeroes first-boot spikes while preserving the row, and exact float8"
+echo "   totals land in the existing *_val columns when the source has them."

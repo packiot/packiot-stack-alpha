@@ -242,11 +242,19 @@ func shiftFold(withShift bool, idShift, idShiftHour *int, baseArgs int) (cols, v
 	return cols, vals, set, []any{idShift, idShiftHour}
 }
 
+// publicCounterTotals: the public route (main pool, prod single-flow; see routeForSource) names the *_total
+// columns only after t-counter-totals-float8-public added them there AND COUNTER_TOTALS_PUBLIC=true. Set once at
+// startup (SetPublicCounterTotals) before any message is handled; atomic so tests can toggle it safely.
+var publicCounterTotals atomic.Bool
+
+// SetPublicCounterTotals enables the exact float8 *_total dual-write on the public route (COUNTER_TOTALS_PUBLIC).
+func SetPublicCounterTotals(on bool) { publicCounterTotals.Store(on) }
+
 // writesTotals reports whether schema carries the exact float8 *_total counter columns
-// (t-counter-totals-float8: silver.equipment_values + bronze.equipment_values_raw). The
-// legacy "public" route (main pool, see routeForSource) keeps its pre-migration shape until
-// the prod forward-port adds the columns there, so it must never name them.
-func writesTotals(schema string) bool { return schema != "public" }
+// (t-counter-totals-float8: silver.equipment_values + bronze.equipment_values_raw; the public
+// route once t-counter-totals-float8-public is applied and COUNTER_TOTALS_PUBLIC is on). Naming
+// them where they don't exist would fail every insert.
+func writesTotals(schema string) bool { return schema != "public" || publicCounterTotals.Load() }
 
 // totalFold is the exact-totalizer companion to shiftFold: it appends col (the float8
 // *_total next to the float4 *_val) bound to the SAME counter, so the merged row carries the
