@@ -10,8 +10,8 @@ columns:
   bronze.equipment_events_raw.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
   bronze.equipment_events_raw.idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
   bronze.equipment_events_raw.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
-  bronze.equipment_events_raw.cd_category: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
-  bronze.equipment_events_raw.cd_subcategory: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.cd_category: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.cd_subcategory: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [0, 0, 0, 0, 0]}
   bronze.equipment_events_raw.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
   bronze.equipment_events_raw.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
   bronze.equipment_values_raw.id_order: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
@@ -127,9 +127,9 @@ columns:
   serving.downtime_events_resolved.nm_equipment: {class: pseudonym, why: "identifying name/code", scan: [20000, 6088, 0, 0, 20]}
   serving.downtime_events_resolved.sector: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
   serving.downtime_events_resolved.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [63, 19, 0, 0, 10]}
-  serving.downtime_events_resolved.cd_category: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [63, 0, 0, 0, 14]}
+  serving.downtime_events_resolved.cd_category: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [63, 0, 0, 0, 14]}
   serving.downtime_events_resolved.txt_category: {class: scrub, why: "structured/label text that can embed names", scan: [63, 38, 0, 0, 13]}
-  serving.downtime_events_resolved.cd_subcategory: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [43, 0, 0, 0, 18]}
+  serving.downtime_events_resolved.cd_subcategory: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [43, 0, 0, 0, 18]}
   serving.downtime_events_resolved.txt_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [43, 0, 0, 0, 18]}
   serving.downtime_events_resolved.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [45, 2, 0, 0, 41]}
   serving.downtime_events_resolved.timezone: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [20000, 0, 0, 0, 1]}
@@ -141,29 +141,29 @@ columns:
   silver.equipment_events.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [727, 169, 0, 0, 643]}
   silver.equipment_events.idle: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1476, 0, 0, 0, 2]}
   silver.equipment_events.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [977, 187, 0, 0, 10]}
-  silver.equipment_events.cd_category: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [977, 0, 0, 0, 25]}
-  silver.equipment_events.cd_subcategory: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [689, 0, 0, 0, 88]}
+  silver.equipment_events.cd_category: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [977, 0, 0, 0, 25]}
+  silver.equipment_events.cd_subcategory: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [689, 0, 0, 0, 88]}
   silver.equipment_events.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [977, 563, 0, 0, 28]}
   silver.equipment_events.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [689, 0, 0, 0, 87]}
   silver.equipment_events_cpac_shadow.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_cpac_shadow.idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_cpac_shadow.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
-  silver.equipment_events_cpac_shadow.cd_category: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
-  silver.equipment_events_cpac_shadow.cd_subcategory: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.cd_category: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.cd_subcategory: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_cpac_shadow.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_cpac_shadow.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_low_speed.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_low_speed.idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_low_speed.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
-  silver.equipment_events_low_speed.cd_category: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
-  silver.equipment_events_low_speed.cd_subcategory: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.cd_category: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.cd_subcategory: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_low_speed.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_low_speed.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
   silver.equipment_events_man.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [3122, 645, 0, 0, 2636]}
   silver.equipment_events_man.idle: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [5872, 0, 0, 0, 2]}
   silver.equipment_events_man.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [6123, 112, 0, 0, 10]}
-  silver.equipment_events_man.cd_category: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [6123, 0, 0, 0, 27]}
-  silver.equipment_events_man.cd_subcategory: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [5585, 0, 0, 0, 195]}
+  silver.equipment_events_man.cd_category: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [6123, 0, 0, 0, 27]}
+  silver.equipment_events_man.cd_subcategory: {class: scrub, why: "downtime code; scrubbed like core.downtime_reason.code so codes still join (a 2026-10-07 full seed found an area name inside one)", scan: [5585, 0, 0, 0, 195]}
   silver.equipment_events_man.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [5473, 699, 0, 0, 36]}
   silver.equipment_events_man.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [5527, 0, 0, 0, 184]}
   silver.equipment_live_day.last_30_days: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
