@@ -63,6 +63,8 @@ x-superset-env: &superset-env
   # dashboard's bundle-uuid gets that embed (defaulted in the init command to the current one).
   SUPERSET_OEE_DASHBOARD_UUID: ${SUPERSET_OEE_DASHBOARD_UUID:-}
   SUPERSET_EMBED_TARGET_DASHBOARD: ${SUPERSET_EMBED_TARGET_DASHBOARD:-}
+  # Admin identity sync_assets.py imports as (default: SUPERSET_ADMIN_USER, else the oldest Admin).
+  SUPERSET_ASSET_SYNC_USER: ${SUPERSET_ASSET_SYNC_USER:-}
   SUPERSET_REDIS_HOST: superset-redis
   PYTHONPATH: /app/pythonpath
 
@@ -202,18 +204,26 @@ services:
         # the anon /api/v1/dashboard/ metadata leak), and scope the minter service
         # account off Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
         python /app/pythonpath/bootstrap_guest_role.py
-        # Import the dashboards-as-code bundle (configs/superset/assets/**). IDEMPOTENT:
+        # Import the dashboards-as-code bundle (configs/superset/assets/**).
         # import_bundle.py stages the assets and injects SUPERSET_DB_RO_PASSWORD (from
         # .env, Secrets Manager) into the packiot_analytics connection URI — the git
-        # copy carries only a placeholder, no secret. `import-dashboards` runs the
-        # ImportDashboardsCommand with overwrite=True (hardcoded in the CLI), so every
-        # boot re-applies the bundle onto the same stable UUIDs in place — no dupes,
-        # no drift. Without this the metadata DB is an empty shell (0 dashboards).
+        # copy carries only a placeholder, no secret. `import-dashboards` CREATES what
+        # is missing on a fresh metadata DB but does NOT update existing assets: its
+        # overwrite reaches only the dashboard row (datasets/charts are imported with a
+        # hardcoded overwrite=False), and it runs as the minter, which has no can_write
+        # once scoped. sync_assets.py below is what makes the YAML win on every boot.
         python /app/pythonpath/import_bundle.py
         superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
         # Apply EVERY database asset (URI + safety flags), dashboard-referenced or not —
         # see configs/superset/sync_databases.py (historian_union was never imported).
         python /app/pythonpath/sync_databases.py
+        # The YAML always wins: re-import EVERY dataset, chart and dashboard with
+        # overwrite=True as an Admin user, then verify each one against its YAML (exit 1
+        # on any difference). UI edits to an as-code asset are reverted here. Must run
+        # after sync_databases (connections) and before normalize_query_context (which
+        # rebuilds query_context against the final dataset ids). See
+        # configs/superset/sync_assets.py.
+        python /app/pythonpath/sync_assets.py
         # Repair each chart's query_context (import-dashboards drops it — the baked
         # numeric datasource id does not survive the UUID dataset remap). Re-derives it
         # from the asset YAMLs against the live dataset ids so the stored-context path
