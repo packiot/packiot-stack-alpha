@@ -177,6 +177,15 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "tenant {{ $labels.tenant }}: {{ $value }} counter metrics' birth-bound identity disagrees with packml_register ({{ $labels.result }}, 15m) — fix the binding or the register row before the switch; the 7-day zero-mismatch clock restarts."
+      # ADR-0061 P2c: a SWITCHED tenant's counter arrived without a usable birth stamp
+      # (unstamped, or a stamped id that is inactive / of another tenant) and was
+      # QUARANTINED — its equipment_values row was NOT written. Roll back by removing
+      # the enterprise from BIRTHBOUND_SWITCHED_ENTERPRISES, or fix the box's birth.
+      - alert: BirthBoundQuarantine
+        expr: sum by (tenant) (increase(oeecloud_worker_birthbound_resolve_total{result="quarantined"}[10m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is switched to birth-bound ids and {{ $value }} counter metrics were quarantined in 10m (not written). Check the edge box's NBIRTH (dk_ keys, EMIT_DEFINITIVE_BIRTH) or roll back via BIRTHBOUND_SWITCHED_ENTERPRISES."
       # Some seq gaps are normal on reconnect; a stream of them means
       # the PLC/broker is losing messages (SparkPlug seq is per-session).
       - alert: SparkplugSeqGapStream

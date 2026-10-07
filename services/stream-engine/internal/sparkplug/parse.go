@@ -58,6 +58,10 @@ type Metric struct {
 	// D9 role (counter.gross|net|scrap). nil/"" ⇒ unbound.
 	IDEquipment *jsonInt `json:"id_equipment,omitempty"`
 	Role        string   `json:"role,omitempty"`
+
+	// P2c per-metric decision recorded by Resolver.ApplyBirthBound (never JSON).
+	bound       *EquipmentInfo
+	quarantined bool
 }
 
 // StampedEquipment returns the decoder-stamped id_equipment (ok=false when unbound).
