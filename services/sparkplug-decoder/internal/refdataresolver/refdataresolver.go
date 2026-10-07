@@ -1,8 +1,8 @@
 // Package refdataresolver is the DB-backed birthbind.DeviceResolver (ADR-0046
 // #19a). It resolves a producer-asserted device_key → id_equipment by asking
 // refdata-api's internal endpoint (GET /internal/resolve-device), so the
-// edge-transformer keeps its pgx-free default — the packml_register lookup (the
-// identity SSoT, ADR-0009) stays behind refdata's pool, reached over HTTP.
+// edge-transformer keeps its pgx-free default — the core.device_bindings lookup (the
+// declared identity, ADR-0061 step c) stays behind refdata's pool, reached over HTTP.
 //
 // It satisfies birthbind.DeviceResolver structurally (Resolve(string)(int,bool))
 // — no import of birthbind, so the seam stays decoupled and this package is

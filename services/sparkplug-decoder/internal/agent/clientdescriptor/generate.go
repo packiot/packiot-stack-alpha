@@ -536,7 +536,10 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 	fmt.Fprintf(&b, "-- packml_register rows for tenant %s (enterprise %d) — generated from the\n",
 		d.Tenant, d.EnterpriseID)
 	fmt.Fprintf(&b, "-- client descriptor (ADR-0045 P1). DO NOT hand-edit; edit the descriptor + regenerate.\n")
-	b.WriteString("INSERT INTO packml_register (id_enterprise, id_equipment, packml_topic, active, id_unit, device_key)\nVALUES\n")
+	// No device_key (ADR-0061 step c): identity is core.device_bindings, minted by edge-api and read by
+	// read-api's resolver. Writing the descriptor's key here would put dk_ keys into topic_routing (whose
+	// global unique index and t-device-bindings verify V4 forbid a binding key there).
+	b.WriteString("INSERT INTO packml_register (id_enterprise, id_equipment, packml_topic, active, id_unit)\nVALUES\n")
 	for i, e := range d.Equipment {
 		idUnit := "NULL"
 		if e.IDUnit != nil {
@@ -546,11 +549,8 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 		if i == len(d.Equipment)-1 {
 			sep = ""
 		}
-		// device_key is the DECLARED-else-derived stable identity (ADR-0046 §2),
-		// persisted so the register loader + birth resolution key off it instead of
-		// re-parsing the topic string.
-		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s, %s)%s\n",
-			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sqlQuote(e.ResolvedDeviceKey()), sep)
+		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s)%s\n",
+			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sep)
 	}
 	b.WriteString("ON CONFLICT (packml_topic) WHERE active DO NOTHING;\n")
 	// Populate id_site/id_area from the equipment. The stream-engine registry

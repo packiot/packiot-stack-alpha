@@ -235,7 +235,7 @@ type Config struct {
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
 	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
 	// — properties["counter_role"] + device_key → id_equipment via
-	// packml_register — and cached as (edge_node, alias) → (id_equipment, role).
+	// core.device_bindings (ADR-0061) — and cached as (edge_node, alias) → (id_equipment, role).
 	// On DDATA a bound alias routes DIRECTLY to Calc with NO metric-name string
 	// parsing; an unbound alias fails closed (rebirth + drop, ADR-0042). OFF
 	// (default) keeps the legacy string-parse path byte-identical — a no-op
@@ -244,10 +244,9 @@ type Config struct {
 	// BirthBoundDeviceMap is the operator-supplied device_key → id_equipment
 	// resolver used by the birth binder. It is the INTERIM edge seam (like
 	// COUNTERS_ONLY_IDEAL_RATES) until edge-transformer can resolve device_key
-	// against packml_register directly — the transformer has no DB pool today,
-	// and the current packml_register keys on packml_topic (slash-delimited),
-	// NOT the ADR-0046 device_key (hyphen-delimited), so no automatic mapping is
-	// invented here. Parsed from JSON env BIRTH_BOUND_DEVICE_MAP, e.g.
+	// itself — the transformer has no DB pool (by design); BIRTH_BOUND_RESOLVER=refdata
+	// asks read-api, which reads core.device_bindings (ADR-0061 step c). No automatic
+	// mapping is invented here. Parsed from JSON env BIRTH_BOUND_DEVICE_MAP, e.g.
 	//   {"CPACK-SC-LINHAS-L5":40004,"CPACK-SC-LINHAS-L5-BREYER":40010}
 	// A device_key absent from this map does NOT resolve → its counters fail
 	// closed (explicit config, never guessed).
@@ -258,7 +257,7 @@ type Config struct {
 	// existing transitional behaviour byte-identical — the operator-supplied
 	// BIRTH_BOUND_DEVICE_MAP above. "refdata" swaps in the HTTP resolver that
 	// asks refdata-api's /internal/resolve-device to resolve device_key →
-	// id_equipment against packml_register (the SSoT), so the map no longer has
+	// id_equipment against core.device_bindings (ADR-0061), so the map no longer has
 	// to be hand-maintained per tenant. The transformer keeps its pgx-free
 	// default — the DB lookup lives behind refdata's pool, reached over HTTP.
 	// Unknown values fall back to "map" (fail-safe, never a boot crash).

@@ -9,8 +9,8 @@
 //   - properties["counter_role"] ∈ {gross, net, scrap}   (§4, the closed enum)
 //   - a device_key = properties["device_key"] || <device_id>  (§3)
 //
-// This package resolves device_key → id_equipment via packml_register (the
-// identity SSoT, ADR-0009 — injected as a DeviceResolver seam) and caches
+// This package resolves device_key → id_equipment via core.device_bindings (the
+// declared identity, ADR-0061 — injected as a DeviceResolver seam) and caches
 //
 //	(edge_node, alias) → (id_equipment, counter_role)
 //
@@ -74,7 +74,7 @@ type Binding struct {
 }
 
 // DeviceResolver resolves a producer-asserted device_key to the stack's
-// id_equipment via packml_register (the identity SSoT, ADR-0009). It is a SEAM:
+// id_equipment via core.device_bindings (ADR-0061; read through read-api). It is a SEAM:
 // unit tests inject an in-memory MapResolver; a DB-backed implementation is
 // wired only when a tenant opts in (keeping edge-transformer's pgx-free default).
 //
