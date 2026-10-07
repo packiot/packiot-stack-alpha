@@ -4,8 +4,8 @@
 // resolver (packml_register) says for the same metric. It writes NOTHING —
 // the PackML resolver stays the only writer until a tenant is switched (P2c).
 //
-// Per counter metric (the only metrics the decoder binds today) it counts one
-// result per tenant:
+// Per bindable metric (counters, state, mode, current speed — the roles the edge
+// agent declares at birth, ADR-0061 D2/D9) it counts one result per tenant:
 //
 //	match               — stamped id_equipment, tenant and role all agree
 //	mismatch_equipment  — stamped id_equipment ≠ packml_register's
@@ -48,7 +48,7 @@ func New(res Resolver, reg prometheus.Registerer, logger *slog.Logger) *Verifier
 		res: res,
 		results: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "oeecloud_worker_birthbind_verify_total",
-			Help: "ADR-0061 D7 verification: counter metrics by birth-bound vs packml_register outcome " +
+			Help: "ADR-0061 D7 verification: bindable metrics (counters, state, mode, speed) by birth-bound vs packml_register outcome " +
 				"(match|mismatch_equipment|mismatch_enterprise|mismatch_role|unbound|legacy_unresolved|legacy_error). " +
 				"tenant=lowercased group_id. A tenant switches after 0 mismatch_* for 7 days.",
 		}, []string{"tenant", "result"}),
@@ -59,7 +59,8 @@ func New(res Resolver, reg prometheus.Registerer, logger *slog.Logger) *Verifier
 }
 
 // legacyRole is the role the PackML leaf name implies (the classification the
-// declared role replaces, ADR-0061 D2/D9). "" ⇒ not a counter.
+// declared role replaces, ADR-0061 D2/D9). "" ⇒ not a metric the decoder binds.
+// Mirrors sparkplug-decoder internal/agent/tenantprofile/roles.go defaults.
 func legacyRole(k sparkplug.MetricKind) string {
 	switch k {
 	case sparkplug.KindProdConsumedCount:
@@ -68,6 +69,12 @@ func legacyRole(k sparkplug.MetricKind) string {
 		return "counter.net"
 	case sparkplug.KindProdDefectiveCount:
 		return "counter.scrap"
+	case sparkplug.KindStateCurrent:
+		return "state.current"
+	case sparkplug.KindUnitModeCurrent:
+		return "mode.current"
+	case sparkplug.KindCurMachSpeed:
+		return "speed.current"
 	}
 	return ""
 }

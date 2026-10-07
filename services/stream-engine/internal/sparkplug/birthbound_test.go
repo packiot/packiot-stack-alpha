@@ -25,7 +25,9 @@ func TestApplyBirthBound_PerTenantSwitch(t *testing.T) {
 	 {"name":"CPACK/SC/LINHAS/L5/Admin/ProdProcessedCount/2/Unit","value":1,"id_equipment":90,"role":"counter.net"},
 	 {"name":"CPACK/SC/LINHAS/L5/Admin/ProdDefectiveCount/3/Unit","value":1,"id_equipment":91,"role":"counter.scrap"},
 	 {"name":"CPACK/SC/LINHAS/L7/Admin/ProdConsumedCount/4/Unit","value":1},
-	 {"name":"CPACK/SC/LINHAS/L5/Status/StateCurrent","value":6}
+	 {"name":"CPACK/SC/LINHAS/L5/Status/StateCurrent","value":6},
+	 {"name":"CPACK/SC/LINHAS/L5/Status/CurMachSpeed","value":3,"id_equipment":48,"role":"speed.current"},
+	 {"name":"CPACK/SC/LINHAS/L5/Status/Parameter","value":3,"id":30701}
 	]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -34,23 +36,27 @@ func TestApplyBirthBound_PerTenantSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Bound != 1 || o.Quarantined != 3 {
-		t.Fatalf("outcome = %+v, want 1 bound / 3 quarantined", o)
+	if o.Bound != 2 || o.Quarantined != 4 {
+		t.Fatalf("outcome = %+v, want 2 bound / 4 quarantined", o)
 	}
 	ctx := context.Background()
 	// bound: the BIRTH identity wins over the PackML row (48, not 47)
 	if info, _ := r.ResolveMetric(ctx, &p.Metrics[0]); info == nil || info.IDEquipment != 48 || info.IDArea != 9 {
 		t.Errorf("bound metric resolved to %+v, want equipment 48 by id", info)
 	}
-	// quarantined: other-tenant id, unknown id, unstamped counter of a switched tenant
-	for i := 1; i <= 3; i++ {
+	// quarantined: other-tenant id, unknown id, unstamped counter, unstamped state of a switched tenant
+	for i := 1; i <= 4; i++ {
 		if info, _ := r.ResolveMetric(ctx, &p.Metrics[i]); info != nil {
 			t.Errorf("metric %d must be quarantined (skip), got %+v", i, info)
 		}
 	}
-	// non-counter: still PackML (roles for state/speed are not declared at birth yet)
-	if info, _ := r.ResolveMetric(ctx, &p.Metrics[4]); info == nil || info.IDEquipment != 47 {
-		t.Errorf("state metric = %+v, want the PackML row (47)", info)
+	// a stamped speed metric binds by id like a counter (declared role, D2)
+	if info, _ := r.ResolveMetric(ctx, &p.Metrics[5]); info == nil || info.IDEquipment != 48 {
+		t.Errorf("speed metric = %+v, want equipment 48 by id", info)
+	}
+	// a parameter is not bindable: still packml_register (PO commands move in P4)
+	if p.Metrics[6].bound != nil || p.Metrics[6].quarantined {
+		t.Errorf("parameter metric must be untouched by the switch")
 	}
 }
 
