@@ -11,7 +11,7 @@
         stress-db sim-seed test-integration \
         reset-events reset-sim \
         tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate \
-        staging-deploy-key
+        staging-deploy-key dev dev-down dev-ps
 
 COMPOSE     = docker compose -f compose.development.yml
 ENV_FILE    = .env.local
@@ -19,12 +19,20 @@ ENV_FILE    = .env.local
 TF_DIR      = terraform/staging
 TF_BOOT_DIR = terraform/staging/bootstrap
 GITHUB_REPO = packiot/packiot-stack-alpha
-# Account ID is resolved once and reused — avoids repeated aws sts calls.
-AWS_ACCOUNT_ID  := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
-TF_STATE_BUCKET := packiot-terraform-state-$(AWS_ACCOUNT_ID)
+# Account ID is resolved lazily, at most once: the first expansion runs
+# `aws sts` and re-defines the variable as its result. Was `:=` (resolved at
+# parse time), which made EVERY make target — `make dev` included — call AWS.
+AWS_ACCOUNT_ID  = $(eval AWS_ACCOUNT_ID := $$(shell aws sts get-caller-identity --query Account --output text 2>/dev/null))$(AWS_ACCOUNT_ID)
+TF_STATE_BUCKET = packiot-terraform-state-$(AWS_ACCOUNT_ID)
 
 INFRA_SVCS  = rabbitmq postgres
 WORKER_SVCS = oeecloud-worker mirror-worker-go
+
+# ADR-0060 local dev environment (dev/). Independent of COMPOSE/ENV_FILE above.
+DEV_COMPOSE = docker compose -f dev/compose.yml --env-file dev/.env.dev
+# Tier 0 = every service in dev/base.yml (derived, so the list never drifts).
+DEV_TIER0   = $(shell docker compose -f dev/base.yml --env-file dev/.env.dev config --services 2>/dev/null)
+SVC        ?=
 
 # ── Default ───────────────────────────────────────────────────────────────────
 help:
@@ -36,6 +44,12 @@ help:
 	@echo "    dev-setup        First-time dev setup: checkout submodule development branches + wipe volumes"
 	@echo "    setup            Copy .env.example → .env.local (safe, won't overwrite)"
 	@echo "    update           Pull latest commit for all submodules"
+	@echo ""
+	@echo "  Local dev environment (ADR-0060, dev/)"
+	@echo "    dev              Tier 0 (postgres, rabbitmq, mosquitto, redis, minio)"
+	@echo "    dev SVC=\"grafana\" A slice: the service(s) + their depends_on closure"
+	@echo "    dev-ps           Show dev containers"
+	@echo "    dev-down         Stop + remove dev containers (volumes kept)"
 	@echo ""
 	@echo "  Full stack"
 	@echo "    up               Start all services"
@@ -139,6 +153,19 @@ setup:
 
 update:
 	git submodule update --remote --merge
+
+# ── Local dev environment (ADR-0060) ──────────────────────────────────────────
+# make dev                  → Tier 0 only
+# make dev SVC="grafana"    → grafana + its depends_on closure
+# --wait blocks until every started service is healthy (one-shots: exited 0).
+dev:
+	$(DEV_COMPOSE) up -d --wait $(if $(strip $(SVC)),$(SVC),$(DEV_TIER0))
+
+dev-ps:
+	$(DEV_COMPOSE) ps -a
+
+dev-down:
+	$(DEV_COMPOSE) down --remove-orphans
 
 # ── Full stack ────────────────────────────────────────────────────────────────
 up:
