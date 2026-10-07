@@ -36,14 +36,16 @@ class AnonymizeTest(unittest.TestCase):
     def test_pseudonym_is_deterministic_and_shared_across_columns(self):
         a = A.Anonymizer(KEY, [])
         self.assertEqual(a.apply("pseudonym", "cd_machine", "L01-XYZ"), a.apply("pseudonym", "cd_equipment", "L01-XYZ"))
-        self.assertEqual(a.apply("pseudonym", "cd_machine", "L01-XYZ"), a.apply("pseudonym", "cd_machine", " l01-xyz "))
+        # values the source treats as distinct stay distinct (unique constraints survive the seed)
+        self.assertNotEqual(a.apply("pseudonym", "cd_machine", "L01-XYZ"), a.apply("pseudonym", "cd_machine", " l01-xyz "))
         self.assertNotEqual(A.Anonymizer(b"other", []).pseudo("L01-XYZ", "EQ"), a.pseudo("L01-XYZ", "EQ"))
-        self.assertRegex(a.pseudo("Line 1", "Equipment"), r"^Equipment [0-9a-f]{6}$")
+        self.assertRegex(a.pseudo("Line 1", "Equipment"), r"^Equipment [0-9a-f]{10}$")
 
     def test_scrub_longest_first_and_case_insensitive(self):
         a = A.Anonymizer(KEY, TOKENS)
         out = a.scrub("spBv1.0/acme corp/LINE 10/node")
-        self.assertNotIn("10", out.replace(a.pseudo("Line 10", "Equipment"), ""))
+        # exact: "LINE 10" replaced whole (longest first), case-insensitively; nothing else touched
+        self.assertEqual(out, f"spBv1.0/{a.pseudo('Acme Corp', 'Client')}/{a.pseudo('Line 10', 'Equipment')}/node")
         self.assertIn(a.pseudo("Line 10", "Equipment"), out)      # not "<Line 1 pseudo>0"
         self.assertIn(a.pseudo("Acme Corp", "Client"), out)
         self.assertNotIn("acme", out.lower().replace(a.pseudo("Acme Corp", "Client").lower(), ""))
@@ -62,6 +64,13 @@ class AnonymizeTest(unittest.TestCase):
         self.assertEqual(lines[1], "\\N,,\\N,A1,7")                      # NULL stays NULL, "" stays "", null class → NULL
         a = A.Anonymizer(KEY, TOKENS)
         self.assertEqual(lines[2], f"{a.pseudo('Line 1', 'Equipment')},x/{a.pseudo('Line 1', 'Equipment')},\\N,B2,\\N")
+
+    def test_case_and_space_variants_keep_their_uniqueness(self):
+        # the 2026-10-07 load failure: (id_enterprise, nm_product_family) unique, names differing only by case/space
+        a = A.Anonymizer(KEY, [])
+        names = ["Tampas", "TAMPAS", "tampas", "Tampas ", " Tampas", "Rótulos", "rótulos"]
+        out = [a.apply("pseudonym", "nm_product_family", n) for n in names]
+        self.assertEqual(len(set(out)), len(names))
 
     def test_missing_key_refuses(self):
         with self.assertRaises(SystemExit):

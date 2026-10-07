@@ -8,7 +8,7 @@ Reads one table's `COPY … TO STDOUT (FORMAT csv, HEADER)` on stdin, writes the
 
 Per column (from classification.yml; non-text columns are `keep` by type):
   keep       copied as-is
-  pseudonym  "<Prefix> <hex6>" from HMAC-SHA256(key, value) — same value → same pseudonym in every table,
+  pseudonym  "<Prefix> <hex10>" from HMAC-SHA256(key, EXACT value) — same value → same pseudonym in every table,
              so cd_machine and cd_equipment still join, and "Line 01" reads as "Equipment 3f9a1c"
   scrub      every known sensitive token inside the string replaced (case-insensitive, longest first)
              by the same pseudonym the name column gets
@@ -67,9 +67,13 @@ class Anonymizer:
         alts = sorted(pairs, key=len, reverse=True)          # longest first: "Line 10" before "Line 1"
         self.rx = re.compile("|".join(re.escape(a) for a in alts), re.I) if alts else None
 
+    # The EXACT value is hashed: equal values (the same machine code in two tables) still join, and values the
+    # source treats as distinct stay distinct. Normalizing first (strip/lower, the original version) merged real
+    # rows — tenant 3 had 182 product families but 145 after lower(trim()), 324 clients → 226 — and the seed
+    # failed its unique constraints at load. 10 hex = 40 bits: a random collision among ~6.6k products ≈ 2e-5.
     def pseudo(self, value: str, prefix: str) -> str:
-        h = hmac.new(self.key, value.strip().lower().encode(), hashlib.sha256).hexdigest()
-        return f"{prefix} {h[:6]}"
+        h = hmac.new(self.key, value.encode(), hashlib.sha256).hexdigest()
+        return f"{prefix} {h[:10]}"
 
     def scrub(self, value: str) -> str:
         if not self.rx:
