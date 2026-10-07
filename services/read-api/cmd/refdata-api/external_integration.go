@@ -279,7 +279,10 @@ func runShiftValidation(ctx context.Context, deps shimDeps, cid int, r *http.Req
 	// 3) findByTopic — column order = the DAO's object-literal order; back4's
 	// `interval '${days}day'` and `like '%${topic}%'` string-interpolations are
 	// parameterized (di * interval '1 day', and $2 = '%'||topic||'%').
-	data := deps.query(ctx, sqlShiftValidation, di, "%"+topic+"%")
+	// $3 = cid: explicit tenant fence. The substring match alone would also match ANOTHER tenant whose
+	// topic contains this one (`%CPACK/SC%` ⊂ `SBXCPACK/SC/…`); today RLS (readapi_ro, no tenant GUC on
+	// the shim path) hides other tenants' register rows, but the result must not depend on the DB role.
+	data := deps.query(ctx, sqlShiftValidation, di, "%"+topic+"%", cid)
 	return envShiftData{ShiftData: data.withDateOnlyColumns("ts_value_production")}, nil
 }
 
@@ -391,7 +394,8 @@ const sqlJobReport = `
 // id_site, shift_hrs, ts_value_production, cd_shift, validation, id_order,
 // txt_validation_notes, nm_user_validation, ts_user_validation, shift_start_time,
 // to_delete). back4's `interval '${days_interval} day'` → `$1 * interval '1 day'`;
-// `packml_topic like '%${topic}%'` → `like $2` (the caller passes '%'||topic||'%').
+// `packml_topic like '%${topic}%'` → `like $2` (the caller passes '%'||topic||'%'), plus the
+// `pr.id_enterprise = $3` tenant fence (cid) that back4 never had.
 const sqlShiftValidation = `
         select
             evs.index1,
@@ -413,5 +417,6 @@ const sqlShiftValidation = `
         ts_value_production >= now() - ($1 * interval '1 day')
         and to_delete is FALSE
         and pr.packml_topic like $2
+        and pr.id_enterprise = $3
         order by ts_value_production desc, shift_hrs desc LIMIT 1000;
         `
