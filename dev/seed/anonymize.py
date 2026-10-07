@@ -100,7 +100,9 @@ def run(table, classification, tokens_path, key, inp, out):
                 tokens.append((cat, raw))
     anon = Anonymizer(key, tokens)
     reader = csv.reader(inp)
-    header = next(reader)
+    header = next(reader, None)
+    if header is None:   # the upstream COPY failed (its error is printed above); don't hide it behind StopIteration
+        raise SystemExit(f"anonymize: no CSV header on stdin for {table} (did the COPY fail?)")
     cls_for = [classes.get(c, "keep") for c in header]   # unlisted = non-text by validate.py's contract
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(header)

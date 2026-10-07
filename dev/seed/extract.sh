@@ -96,7 +96,7 @@ for l in open(manifest):
 PY
 while IFS=$'\t' read -r table query; do
   printf '%s\n' "COPY ($query) TO STDOUT WITH (FORMAT csv, HEADER, NULL '\\N');" \
-    | psql_ro -v tenant="$TENANT" -v since="'$SINCE'" -f - \
+    | psql_ro -v tenant="$TENANT" -v since="'$SINCE'::timestamptz" -f - \
     | python3 "$HERE/anonymize.py" --table "$table" --tokens "$OUT/private/tokens.tsv" --classification "$CONF/classification.yml" \
     | gzip -6 > "$OUT/payload/data/$table.csv.gz"
 done < "$OUT/private/copies.tsv"
