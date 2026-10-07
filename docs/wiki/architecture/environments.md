@@ -13,7 +13,7 @@ last_verified: 2026-09-28
 
 | Environment | What runs | Where | Deployed by |
 |---|---|---|---|
-| **Local** | The stack in Docker Compose (`compose.development.yml`) with simulators | your machine | `make` / `docker compose` |
+| **Local** | The stack in Docker Compose (`the dev/ environment (ADR-0060; formerly compose.development.yml)`) with simulators | your machine | `make` / `docker compose` |
 | **Staging** | The full new stack with real client data (CPACK co-tee, Bispharma live box, sandbox 2000003) | AWS us-east-1, EC2 (app host + DB host + NAT) | push/merge to `staging` → `deploy-staging.yml` |
 | **Production (legacy)** | `packiot40` (tsp12): Postgres + Hasura + Node-RED oeecloud | legacy production hosts | outside this repo |
 | **Production (new stack)** | Single-flow deployment (`compose.production.yml`, `public` schema) | AWS, production account resources in `terraform/production` | `production` branch; promotion is gated |

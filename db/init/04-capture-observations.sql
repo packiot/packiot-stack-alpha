@@ -16,7 +16,7 @@
 -- the earliest sighting. Best-effort DQ evidence — never on the hot data path.
 --
 -- Like the rest of db/init/, this file is the DEV-ONLY bootstrap DDL (mounted by
--- compose.development.yml on first Postgres boot). Staging/prod apply the same
+-- the dev/ environment (ADR-0060; formerly compose.development.yml) on first Postgres boot). Staging/prod apply the same
 -- CREATE via their own migration lineage (edge-node-red), exactly as packml_register
 -- is managed — the DDL below is the contract both environments must match.
 

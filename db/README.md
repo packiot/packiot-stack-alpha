@@ -1,5 +1,8 @@
 # db — the PostgreSQL / TimescaleDB layer
 
+> **2026-10-07:** the legacy local harness that mounted `db/init/` (compose.development.yml) was removed (ADR-0060 P2). The dev DB is now the anonymized seed image (`dev/seed`); `db/init/*` has no runner left and is kept for reference only — ORPHANED.
+
+
 Everything needed to **build the stack's single production database** lives here:
 the Docker image (Postgres 15 + TimescaleDB + `pg_cron`), the first-boot init
 scripts, the local-dev bootstrap schema, and the greenfield-prod **F3 schema
@@ -33,7 +36,7 @@ db/
 │
 ├── init/                              LOCAL-DEV bootstrap schema + a set of F3/F2 migration & hardening fixups
 │   ├── README.md
-│   ├── 00-schema.sql                  core OEE hierarchy + production tables (dev; mounted by compose.development.yml)
+│   ├── 00-schema.sql                  core OEE hierarchy + production tables (dev; mounted by the dev/ environment (ADR-0060; formerly compose.development.yml))
 │   ├── 01-seed.sql                    demo enterprise (id=1), sample machines, packml topics, downtime reasons
 │   ├── 02-refactored-rollup-bigint-widen.sql   widen week/month rollup int4→bigint (int4 SUM overflow denial guard)
 │   ├── 03-purge-nonstate-event-pollution.sql   one-time cleanup of stray open (ts_end NULL) events
@@ -65,7 +68,7 @@ db/
 
 There are **three** build paths — one per environment.
 
-### 1. Local dev (`make up` / `compose.development.yml`)
+### 1. Local dev (`make up` / `the dev/ environment (ADR-0060; formerly compose.development.yml)`)
 
 The `postgres` service runs the plain **`timescale/timescaledb:2.25.2-pg16`**
 image and mounts the SQL files into `/docker-entrypoint-initdb.d/`, which the
@@ -173,7 +176,7 @@ CANDIDATE_DSN=<dsn> ./scripts/prod-f3-schema-parity-check.sh gate   # PASS ⇔ F
 
 ## Working with it locally
 
-All targets are on the root `Makefile` (uses `compose.development.yml`):
+All targets are on the root `Makefile` (uses `the dev/ environment (ADR-0060; formerly compose.development.yml)`):
 
 ```sh
 make up                 # bring the dev stack up (runs init scripts on first boot)

@@ -107,7 +107,7 @@
     },
     {
       "id": 11, "type": "timeseries", "title": "SparkPlug sequence gaps by publisher (lost messages)",
-      "description": "increase(edge_transformer_sparkplug_seq_gaps_total[1h]) by group_id/edge_node/device. A gap = the transformer saw a non-contiguous SparkPlug seq = messages were lost in transit. Sustained gaps for a client = a flaky edge link.",
+      "description": "increase(edge_transformer_sparkplug_seq_gaps_total[1h]) by group_id/edge_node/device. A gap = the transformer saw a non-contiguous SparkPlug seq = messages were lost in transit. Sustained gaps for a client = a flaky edge link. Empty = healthy: the counter has no series until the first gap since the decoder started.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
       "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },

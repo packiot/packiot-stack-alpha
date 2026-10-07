@@ -111,7 +111,7 @@ one high-blast-radius bug and a few smaller ones:
 - **All three `compose.*.yml`** referenced a `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`
   pointing at a v1 board file (`grafana/dashboards/01-oee-pipeline.json`) that
   was deleted from the repo when v1 retired in July — a month-old dead setting.
-  Worse, **`compose.production.yml` and `compose.development.yml` never had the
+  Worse, **`compose.production.yml` and `the dev/ environment (ADR-0060; formerly compose.development.yml)` never had the
   `dashboards-v2` bind mount at all** (only `compose.staging.yml` got that fix,
   2026-07-15) — meaning production Grafana has been provisioning **zero** of
   these 18 boards. Fixed all three: home path now points at `00-overview.json`,

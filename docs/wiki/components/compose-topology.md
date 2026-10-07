@@ -21,7 +21,7 @@ of these files (or started by a host script named below), it is drift.
 
 | Item | Value |
 |---|---|
-| Files | `compose.staging.yml` (3,544 lines), `compose.superset.yml`, `compose.historian-gateway.yml`, `compose.production.yml`, `compose.onprem-edge.yml`, `compose.development.yml` |
+| Files | `compose.staging.yml` (3,544 lines), `compose.superset.yml`, `compose.historian-gateway.yml`, `compose.production.yml`, `compose.onprem-edge.yml`, `the dev/ environment (ADR-0060; formerly compose.development.yml)` |
 | Staging project name | `stack` (passed as `-p stack` by `deploy-staging.yml`) |
 | Staging network | `packiot-net` → Docker name `stack_packiot-net`, bridge `172.18.0.0/24`; dynamic IPs confined to `172.18.0.128/26` |
 | Host (staging) | all services in `compose.staging.yml` + overlay run on `packiot-staging-app`; the DB (`timescaledb`) runs on `packiot-staging-db`, outside Compose |
@@ -235,12 +235,14 @@ an internet outage. Runs next to the client's `packiot-edge-reader`; no custom n
 
 Start: `docker compose -f compose.onprem-edge.yml --env-file .env.onprem up -d --build`.
 
-### `compose.development.yml` (local)
+### `dev/` (local, ADR-0060 — replaced compose.development.yml)
 
-Services: `rabbitmq`, `mosquitto`, `postgres` (local), `grafana`, `adminer`, `hasura`,
-`hasura-init`, `edge-api`, `edge-nodered`, `operator`, `stream-engine`, `mirror-worker-go`,
-`oee-cron`, `loki`, `promtail`, `simulator`, `tests`. Driven by `make` (`COMPOSE =
-docker compose -f compose.development.yml`). It lags staging; do not assume parity.
+Tier 0 (`dev/base.yml`): `postgres` (the anonymized seed image `ghcr.io/packiot/devseed`), `rabbitmq`, `mosquitto`,
+`redis` (alias `app-redis`), `minio`. Slices (`dev/services/*.yml`): `grafana`, `read-api` + `read-api-cors`,
+`front4` (Vite dev server from your checkout, dev Cognito pool). Driven by `make dev SVC=<service>`
+(= `docker compose -f dev/compose.yml --env-file dev/.env.dev up -d --wait <service>`); every port binds 127.0.0.1.
+See `dev/README.md`. The former `compose.development.yml` (Hasura, edge-nodered, simulator, `tests`, …) was removed
+2026-10-07; its README is archived at `docs/archive/legacy-local-harness-README.md`.
 
 ## Configuration
 
@@ -300,7 +302,7 @@ docker compose -p stack -f compose.staging.yml -f compose.superset.yml ps -a
 | `compose.historian-gateway.yml` | historian gateway (`hist-gateway`) |
 | `compose.production.yml` | new-stack production |
 | `compose.onprem-edge.yml` | on-prem fat edge |
-| `compose.development.yml`, `Makefile` | local stack |
+| `dev/`, `Makefile` | local stack (ADR-0060) |
 | `configs/` | mosquitto, CloudBeaver, Superset, pgbackrest, fanout configs |
 | `monitoring/`, `grafana/` | observability configs mounted into the stack |
 | `terraform/staging/user_data/nginx_setup.sh` | host nginx vhosts → container ports |

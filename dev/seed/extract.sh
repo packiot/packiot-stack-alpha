@@ -68,6 +68,18 @@ EXCL=()
 for s in $(cut -f1 "$OUT/private/columns.tsv" | sort -u) _timescaledb_internal; do EXCL+=(--exclude-table-data="$s.*"); done
 docker run --rm --network host -e PGOPTIONS="$RO" "$IMG" pg_dump "$PGURL" -Fc "${EXCL[@]}" > "$OUT/payload/schema.dump"
 docker run --rm --network host -e PGOPTIONS="$RO" "$IMG" pg_dumpall -d "$PGURL" --roles-only --no-role-passwords > "$OUT/payload/roles.sql"
+# database-wide settings (ALTER DATABASE … SET): pg_dump -Fc without --create drops them, and read-api's
+# unqualified names need the source search_path (2026-10-07: dev search_path was "$user", public). ALLOWLIST
+# only — a database setting can hold anything; per-role settings are not copied (staging's histgw_ro
+# app.tenant_id=-1 is an all-tenant sentinel the dev stack must not inherit).
+psql_ro -At -f - > "$OUT/payload/db_settings.sql" <<'SQL'
+SELECT format('ALTER DATABASE packiot_analytics SET %s = %s;', split_part(c, '=', 1), substr(c, strpos(c, '=') + 1))
+  FROM pg_db_role_setting s, unnest(s.setconfig) c
+ WHERE s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) AND s.setrole = 0
+   AND lower(split_part(c, '=', 1)) IN ('search_path', 'track_functions', 'timezone', 'datestyle', 'intervalstyle')
+ ORDER BY 1;
+SQL
+echo "db settings carried: $(wc -l < "$OUT/payload/db_settings.sql")"
 docker run --rm -i "$IMG" pg_restore -f - < "$OUT/payload/schema.dump" > "$OUT/private/schema.sql"
 if grep -Eqi "password[[:space:]]*=|postgres(ql)?://[^ ]*@|(^|[^a-z_])(host|hostaddr)[[:space:]]*=" "$OUT/private/schema.sql" "$OUT/payload/roles.sql"; then
   echo "ABORT: DDL secret scan matched (connection string / password in schema or roles)"; exit 1

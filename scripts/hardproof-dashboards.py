@@ -47,6 +47,9 @@ EXPECT_EMPTY = [
     "operator_adapter_requests_total",      # no operator actions run on staging
     "po_gate_degraded_total",               # PO gate never degraded = healthy
     'route=~"/api/production-orders',       # no PO-route traffic to edge-api yet
+    # CounterVec with no series until the FIRST gap (internal/metrics/collectors.go): empty after every decoder
+    # restart with no lost messages since — the healthy state. Flaked red on 2026-10-07 after a day of deploys.
+    "edge_transformer_sparkplug_seq_gaps_total",
 ]
 
 

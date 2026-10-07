@@ -17,3 +17,7 @@ include:
     env_file: .env.dev
   - path: services/grafana.yml
     env_file: .env.dev
+  - path: services/read-api.yml
+    env_file: .env.dev
+  - path: services/front4.yml
+    env_file: .env.dev

@@ -171,7 +171,7 @@ and both emit identical suffixes.
 |---|---|
 | `edge-node-red/flows/*.json` | Legacy tabs (API, Sparkplug, GraphQL, Configuration, PLCs, Health, plc-normalized) |
 | `edge-node-red/Dockerfile`, `entrypoint.sh`, `settings.js` | Legacy image and boot |
-| `edge-node-red/db/*.sql` | DB bootstrap SQL still consumed by `compose.development.yml` (initdb mounts) and the root `Makefile`; unrelated to the flows |
+| `edge-node-red/db/*.sql` | DB bootstrap SQL still consumed by `the dev/ environment (ADR-0060; formerly compose.development.yml)` (initdb mounts) and the root `Makefile`; unrelated to the flows |
 | `compose.staging.yml` (`edge-nodered`) | Retired staging service |
 | `services/sparkplug-decoder/internal/agent/clientdescriptor/generate_reader.go` | Reader-flow generator |
 | `services/sparkplug-decoder/cmd/onboard-gen/main.go` | Emits `<tenant>-reader-flow.json` |

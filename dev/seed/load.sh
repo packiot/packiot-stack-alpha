@@ -19,6 +19,8 @@ grep -vE '^(CREATE|ALTER) ROLE postgres[ ;]' "$SEED/roles.sql" | "${PSQL[@]}" -d
 if ! "${PSQL[@]}" -d postgres -At -c "SELECT 1 FROM pg_database WHERE datname = '$DB'" | grep -q 1; then
   createdb --username "$POSTGRES_USER" "$DB"
 fi
+# the source database's own settings (search_path!) — read-api's SQL uses unqualified names
+[ ! -s "$SEED/db_settings.sql" ] || "${PSQL[@]}" -d postgres -f "$SEED/db_settings.sql" >/dev/null
 "${PSQL[@]}" -d "$DB" -c "CREATE EXTENSION IF NOT EXISTS timescaledb; SELECT timescaledb_pre_restore();" >/dev/null
 # pg_restore reports benign "already exists" for the extension; anything else fails the init
 if ! pg_restore --username "$POSTGRES_USER" -d "$DB" "$SEED/schema.dump" 2> /tmp/restore.err; then

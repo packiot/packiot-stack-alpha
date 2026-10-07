@@ -10,7 +10,7 @@
 #   loki              (internal)  — Log aggregation (Grafana datasource)
 #   promtail          (internal)  — Docker log collector → Loki
 #
-# Differences from compose.development.yml:
+# Differences from the former compose.development.yml (removed 2026-10-07; local dev is now dev/, ADR-0060):
 #   - No postgres: DB runs on a separate private-subnet EC2
 #   - No tests (dev-only)
 #   - All ports bound to 127.0.0.1 — Nginx terminates TLS externally
