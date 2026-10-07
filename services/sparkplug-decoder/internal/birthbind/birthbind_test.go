@@ -115,7 +115,7 @@ type routed struct {
 func TestBirthBoundRouting_CPACK(t *testing.T) {
 	fx := loadFixture(t, "cpack-birth-example.json")
 
-	// device_key → id_equipment, as packml_register (the SSoT) would resolve.
+	// device_key → id_equipment, as core.device_bindings would resolve (ADR-0061).
 	// L5 = 40004 is the contract's worked example (Appendix B).
 	resolver := birthbind.MapResolver{
 		"CPACK-SC-LINHAS-L5":        40004,

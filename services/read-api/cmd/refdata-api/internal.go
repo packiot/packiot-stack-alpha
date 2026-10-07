@@ -4,8 +4,8 @@
 // WHY IT EXISTS
 // -------------
 // The edge-transformer's birth-bound routing (ADR-0046 step 1) resolves a
-// producer-asserted device_key to id_equipment via packml_register — the
-// identity SSoT (ADR-0009). The transformer has no DB pool of its own (and must
+// producer-asserted device_key to id_equipment via core.device_bindings — the
+// declared identity (ADR-0061; was packml_register until step c). The transformer has no DB pool of its own (and must
 // not grow one — it stays pgx-free by design), so the lookup is delegated to
 // refdata-api, the read plane that already owns the pool + the reference tables.
 // This endpoint is the seam behind edge-transformer's birthbind.DeviceResolver:
@@ -34,6 +34,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -44,17 +45,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// resolveDeviceSQL is the identity lookup — packml_register is the SSoT
-// (ADR-0009). device_key is tenant-prefixed (CPACK-…, BISNAGO-…) hence GLOBALLY
-// unique — the global unique index db/init/10 adds (WHERE device_key IS NOT NULL)
-// guarantees ≤1 active row for `device_key` alone, so a single multi-tenant
-// edge-transformer resolves any tenant's key without knowing the enterprise
-// (ADR-0046: resolve-by-device_key). `enterprise` remains an OPTIONAL
-// belt-and-suspenders filter for a per-tenant caller. `active` fences
-// soft-deleted registrations. Simple protocol (QueryExecModeSimpleProtocol is
-// set pool-wide) so binds work under pgbouncer transaction pooling.
-const resolveByKeySQL = `SELECT id_equipment FROM packml_register WHERE device_key = $1 AND active`
-const resolveByKeyEntSQL = `SELECT id_equipment FROM packml_register WHERE device_key = $1 AND id_enterprise = $2 AND active`
+// The identity lookup (ADR-0061 step c): core.resolve_device_key, a SECURITY DEFINER function over
+// core.device_bindings (db/migrations/t-device-key-resolver). It exists because device_bindings has RLS
+// FORCED and this route has no tenant to set: device_key is random and globally unique, so it IS the
+// identity. The function is the one narrow cross-tenant door (exact key in, one id_equipment or NULL out).
+// `enterprise` stays an OPTIONAL belt-and-suspenders filter. Simple protocol (set pool-wide) so binds
+// work under pgbouncer transaction pooling; explicit casts because simple protocol sends untyped text.
+const resolveByKeySQL = `SELECT core.resolve_device_key($1::text, NULL::integer)`
+const resolveByKeyEntSQL = `SELECT core.resolve_device_key($1::text, $2::integer)`
+
+// deviceKeyRe is the only accepted key shape (the device_bindings CHECK): a name-derived key
+// (CPACK-SC-LINHAS-…) is rejected before the DB, so nothing can resolve identity from a name again.
+var deviceKeyRe = regexp.MustCompile(`^dk_[0-9a-f]{32}$`)
 
 // internalResolveTotal counts resolver outcomes so ops can graph hit/miss/deny
 // rates alongside the RED metrics httpmetrics already emits for the route.
@@ -91,9 +93,9 @@ func registerInternalAPI(mux *http.ServeMux, pool *pgxpool.Pool, logger *slog.Lo
 
 // resolveDeviceHandler serves GET /internal/resolve-device?enterprise=<id>&device_key=<k>.
 //
-//	200 {"id_equipment": <n>}  — a single active packml_register match.
-//	404 {"error": "..."}       — no active mapping for (enterprise, device_key).
-//	400                        — missing/invalid enterprise or device_key.
+//	200 {"id_equipment": <n>}  — the active core.device_bindings row for the key.
+//	404 {"error": "..."}       — no active binding for (enterprise, device_key).
+//	400                        — missing/invalid enterprise, or device_key not an opaque dk_ key.
 //	401                        — missing/mismatched X-Internal-Key (or key unset).
 //	405                        — non-GET.
 //	500                        — DB error.
@@ -122,6 +124,12 @@ func resolveDeviceHandler(pool *pgxpool.Pool, internalKey string, logger *slog.L
 			http.Error(w, `{"error":"device_key is required"}`, http.StatusBadRequest)
 			return
 		}
+		if !deviceKeyRe.MatchString(deviceKey) {
+			internalResolveTotal.WithLabelValues("bad_request").Inc()
+			failed.Add(1)
+			http.Error(w, `{"error":"device_key must be an opaque dk_<32 hex> key (ADR-0061)"}`, http.StatusBadRequest)
+			return
+		}
 		// enterprise is OPTIONAL (ADR-0046 resolve-by-device_key). If present it
 		// must be a positive int (belt-and-suspenders filter for a per-tenant
 		// caller); if absent we resolve by the globally-unique device_key alone.
@@ -140,14 +148,14 @@ func resolveDeviceHandler(pool *pgxpool.Pool, internalKey string, logger *slog.L
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		var idEquipment int
+		var id *int // the function returns NULL for "no active binding"
 		var err error
 		if ent > 0 {
-			err = pool.QueryRow(ctx, resolveByKeyEntSQL, deviceKey, ent).Scan(&idEquipment)
+			err = pool.QueryRow(ctx, resolveByKeyEntSQL, deviceKey, ent).Scan(&id)
 		} else {
-			err = pool.QueryRow(ctx, resolveByKeySQL, deviceKey).Scan(&idEquipment)
+			err = pool.QueryRow(ctx, resolveByKeySQL, deviceKey).Scan(&id)
 		}
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && id == nil) {
 			// Fail-closed on the transformer side: an unmapped key drops the
 			// counter into a rebirth. A 404 is the expected, non-error miss.
 			internalResolveTotal.WithLabelValues("miss").Inc()
@@ -167,6 +175,6 @@ func resolveDeviceHandler(pool *pgxpool.Pool, internalKey string, logger *slog.L
 		internalResolveTotal.WithLabelValues("hit").Inc()
 		served.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]int{"id_equipment": idEquipment})
+		_ = json.NewEncoder(w).Encode(map[string]int{"id_equipment": *id})
 	}
 }
