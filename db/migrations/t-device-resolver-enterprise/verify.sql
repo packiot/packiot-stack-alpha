@@ -11,8 +11,8 @@ SET ROLE readapi_ro;
 RESET app.tenant_id;
 SELECT 'V3 readapi_ro resolves (id, tenant) with no tenant set: t', (SELECT (id_equipment, id_enterprise) = (:want, :ent) FROM core.resolve_device(:'k'));
 SELECT 'V4 wrong enterprise filter: 0 rows', count(*) FROM core.resolve_device(:'k', :ent + 1000000000);
-SELECT 'V5 unknown / derived key: 0 rows', count(*) FROM core.resolve_device('dk_00000000000000000000000000000000')
-       UNION ALL SELECT count(*) FROM core.resolve_device('CPACK-SC-LINHAS-L5');
+SELECT 'V5 unknown / derived key rows: 0|0', (SELECT count(*) FROM core.resolve_device('dk_00000000000000000000000000000000')),
+       (SELECT count(*) FROM core.resolve_device('CPACK-SC-LINHAS-L5'));
 RESET ROLE;
 SELECT 'V6 every active binding resolves to its own (equipment, enterprise) (mismatches): 0',
        count(*) FROM core.device_bindings b

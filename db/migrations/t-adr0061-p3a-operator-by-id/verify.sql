@@ -1,5 +1,9 @@
 -- verify for t-adr0061-p3a-operator-by-id. label|value, expected in the label. Read-only.
 \set ON_ERROR_STOP 1
+-- 2 × (v1 + v2) per line scope in one statement: lift the role's statement_timeout for this session only.
+-- Staging (70 line scopes, ~3 s per v1 call) takes ~14 min — longer than an SSM session; run it detached or
+-- in OFFSET/LIMIT batches of the scopes table (2026-10-07 apply did 4 × 18).
+SET statement_timeout = '10min';
 -- For every LINE: the topic set the operator sends (its base topic + every topic under it, operator
 -- childTopics) vs the ids behind those topics. v2 must return exactly v1's rows, in v1's order.
 CREATE TEMP TABLE scopes AS
