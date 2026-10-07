@@ -2,7 +2,7 @@
 # fails on an unlisted table: fail-closed at table level). Modes:
 #   rows        COPY (SELECT … WHERE <where>) — then column classification (classification.yml) applies
 #   full        all rows (global reference data, no tenant) — classification still applies
-#   replace     rows generated synthetically at load (never extracted)
+#   replace     rows generated synthetically at load by generators/<schema>.<table>.sql (never extracted)
 #   schema_only table created from the schema dump, no rows
 # Parameters bound at extract time: :tenant (enterprise id), :since (snapshot_end - 7 days).
 # Views, matviews and continuous aggregates come from the schema dump; caggs are refreshed after load.
@@ -29,6 +29,7 @@ tables:
   core.box_production_bridges: {mode: rows, where: "id_enterprise = :tenant"}
   core.client_descriptors: {mode: schema_only}  # edge onboarding descriptors (hosts, PLC config); revisit for P3 decoder slice
   core.clients: {mode: rows, where: "id_enterprise = :tenant"}
+  core.device_bindings: {mode: replace}  # fresh random dk_ keys at load (generators/); real keys are promoted to prod, never copied
   core.downtime_reason: {mode: rows, where: "id_enterprise = :tenant"}
   core.enterprises: {mode: rows, where: "id_enterprise = :tenant"}
   core.equipment_downtime_reason: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}

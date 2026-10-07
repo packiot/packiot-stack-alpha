@@ -9,7 +9,8 @@ Exit 0 only if:
   1. every base table (table / hypertable) in the inventory is listed in manifest.yml, and nothing stale is listed;
   2. every text/json/array column of a table whose rows are copied (mode rows|full) is classified, and nothing stale is;
   3. every other column of a copied table has a type on the keep-by-type list (a NEW type fails);
-  4. `where:` clauses only use :tenant / :since and contain no statement separators or DML/DDL keywords.
+  4. `where:` clauses only use :tenant / :since and contain no statement separators or DML/DDL keywords;
+  5. every mode-replace table has generators/<schema>.<table>.sql (rows made at load), and no generator is stale.
 Lines the parser does not understand are errors, never skipped: a lenient validator would be fail-open.
 Stdlib only, so the seed job needs no dependencies.
 """
@@ -54,6 +55,7 @@ def main():
     ap.add_argument("--columns", type=Path, default=HERE / "schema-columns.tsv")
     ap.add_argument("--manifest", type=Path, default=HERE / "manifest.yml")
     ap.add_argument("--classification", type=Path, default=HERE / "classification.yml")
+    ap.add_argument("--generators", type=Path, default=HERE / "generators")
     a = ap.parse_args()
     errors = []
 
@@ -90,6 +92,15 @@ def main():
         errors.append(f"manifest: table {st[0]}.{st[1]} is not listed (fail-closed: every base table needs a mode)")
     for st in sorted(set(modes) - base):
         errors.append(f"manifest: {st[0]}.{st[1]} is listed but not a base table in the inventory (stale?)")
+
+    # rule 5: a replace table without a generator would load EMPTY (silently); a stray generator would run for a
+    # table the manifest no longer replaces.
+    replaced = {f"{s}.{t}" for (s, t), m in modes.items() if m == "replace"}
+    gens = {p.name[:-4] for p in a.generators.glob("*.sql")} if a.generators.is_dir() else set()
+    for name in sorted(replaced - gens):
+        errors.append(f"generators: {name} is mode replace but has no generators/{name}.sql (it would load empty)")
+    for name in sorted(gens - replaced):
+        errors.append(f"generators: generators/{name}.sql exists but {name} is not mode replace (stale?)")
 
     entries, e = parse(a.classification, CLASS_LINE, ("columns:",))
     errors += e

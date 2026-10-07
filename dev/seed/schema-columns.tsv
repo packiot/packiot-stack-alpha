@@ -406,6 +406,16 @@ core	client_descriptors	table	updated_by	text
 core	clients	table	id_client	bigint
 core	clients	table	nm_client	character varying
 core	clients	table	id_enterprise	integer
+core	device_bindings	table	id_device_binding	bigint
+core	device_bindings	table	id_enterprise	integer
+core	device_bindings	table	id_equipment	integer
+core	device_bindings	table	device_key	text
+core	device_bindings	table	edge_node	text
+core	device_bindings	table	device	text
+core	device_bindings	table	bound_at	timestamp with time zone
+core	device_bindings	table	active	boolean
+core	device_bindings	table	created_at	timestamp with time zone
+core	device_bindings	table	updated_at	timestamp with time zone
 core	downtime_reason	table	id	bigint
 core	downtime_reason	table	id_enterprise	integer
 core	downtime_reason	table	code	character varying
