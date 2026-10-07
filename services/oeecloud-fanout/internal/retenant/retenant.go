@@ -68,7 +68,10 @@ type Config struct {
 // so the target worker re-resolves against its own register. `id` is
 // intentionally NOT in this list — it is the PackML parameter id, not an
 // equipment id.
-var equipmentIDFields = []string{"id_equipment", "equipment_id", "idequipment"}
+//
+// id_enterprise joined in ADR-0061 P2: the decoder stamps the birth-bound tenant
+// on the envelope, and a clone must never carry the SOURCE tenant's id.
+var equipmentIDFields = []string{"id_equipment", "equipment_id", "idequipment", "id_enterprise"}
 
 // tenantFields are top-level keys that, IF present, name the tenant/group and
 // must be rewritten to the target so a downstream consumer that trusts the

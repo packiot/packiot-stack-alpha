@@ -310,8 +310,8 @@ func TestGoldenFixturesConform(t *testing.T) {
 		group     string
 		deviceKey string
 	}{
-		{"cpack-birth-example.json", "CPACK", "CPACK-SC-LINHAS-L5"},
-		{"bisnago-birth-example.json", "BISNAGO", "BISNAGO-SP-LINHAS-L71"},
+		{"cpack-birth-example.json", "CPACK", "dk_00000000000000000000000000040004"},
+		{"bisnago-birth-example.json", "BISNAGO", "dk_00000000000000000000000000040071"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
@@ -382,7 +382,7 @@ func TestSchemaEnumsInSync(t *testing.T) {
 	for _, dt := range schema.Defs.Metric.Properties.Datatype.Enum {
 		var decl = birth.Declaration{
 			GroupID: "g", EdgeNodeID: "n",
-			Devices: []birth.Device{{DeviceKey: "d", Metrics: []birth.BirthMetric{
+			Devices: []birth.Device{{DeviceKey: testKeyLine, Metrics: []birth.BirthMetric{
 				{Alias: 1, CounterRole: birth.RoleGross, Datatype: dt},
 			}}},
 		}

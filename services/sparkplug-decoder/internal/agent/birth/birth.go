@@ -48,6 +48,7 @@ package birth
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -277,6 +278,9 @@ var validDatatypes = map[string]bool{
 // validRoles mirrors the schema's metric.counter_role enum (§4 closed enum).
 var validRoles = map[string]bool{RoleGross: true, RoleNet: true, RoleScrap: true}
 
+// opaqueDeviceKey mirrors the schema's device_key pattern (ADR-0061 D1).
+var opaqueDeviceKey = regexp.MustCompile(`^dk_[0-9a-f]{32}$`)
+
 // Validate enforces the birth-declaration schema's structural rules in Go
 // (required fields, the counter_role + datatype closed enums, alias>=1,
 // non-empty device metric sets). It is the code mirror of
@@ -296,6 +300,9 @@ func (d Declaration) Validate() error {
 	for i, dev := range d.Devices {
 		if strings.TrimSpace(dev.DeviceKey) == "" {
 			return fmt.Errorf("devices[%d]: device_key is required", i)
+		}
+		if !opaqueDeviceKey.MatchString(dev.DeviceKey) {
+			return fmt.Errorf("devices[%d]: device_key=%q must be an opaque dk_<32 hex> key (ADR-0061)", i, dev.DeviceKey)
 		}
 		if len(dev.Metrics) == 0 {
 			return fmt.Errorf("devices[%d] (%s): metrics is required", i, dev.DeviceKey)

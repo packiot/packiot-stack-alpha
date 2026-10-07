@@ -131,7 +131,7 @@ func TestRetenant_PreservesPackMLParameterID(t *testing.T) {
 // A pre-resolved equipment id (should it ever appear) is cleared so the target
 // worker re-resolves against its own SBXCPACK register.
 func TestRetenant_ClearsResolvedEquipmentID(t *testing.T) {
-	body := []byte(`{"timestamp":1,"id_equipment":57,"metrics":[{"name":"CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount/61/Unit","timestamp":1,"value":1,"id_equipment":57,"equipment_id":57}]}`)
+	body := []byte(`{"timestamp":1,"id_equipment":57,"id_enterprise":3,"metrics":[{"name":"CPACK/SC/LINHAS/L5/Admin/ProdConsumedCount/61/Unit","timestamp":1,"value":1,"id_equipment":57,"equipment_id":57}]}`)
 	out, ours, err := Retenant(body, cpackToSbx)
 	if err != nil || !ours {
 		t.Fatalf("ours=%v err=%v", ours, err)
@@ -139,6 +139,9 @@ func TestRetenant_ClearsResolvedEquipmentID(t *testing.T) {
 	env := decode(t, out)
 	if _, present := env["id_equipment"]; present {
 		t.Error("top-level id_equipment should have been cleared")
+	}
+	if _, present := env["id_enterprise"]; present {
+		t.Error("top-level id_enterprise (the SOURCE tenant, ADR-0061 P2) should have been cleared")
 	}
 	m := env["metrics"].([]any)[0].(map[string]any)
 	if _, present := m["id_equipment"]; present {

@@ -797,7 +797,7 @@ func main() {
 		if perTenantRouting {
 			logger.Info("F3_PER_TENANT_ROUTING=true: publishing analytics envelopes to per-tenant routing key sparkplug.data.<tenant> (stream-engine per-tenant queues)")
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, localStateStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, localStateStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, newBirthBinder(cfg, mx.Registry, logger), logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -1824,7 +1824,7 @@ func analyticsRoutingKey(perTenant bool, tenant string) string {
 	return "sparkplug.data"
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, binder *birthBinder, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1870,6 +1870,8 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 			return fmt.Errorf("ingest: %w", err)
 		}
 		if resolved == nil {
+			// ADR-0061 P2: bind the birth's declared device_keys (no-op when OFF).
+			binder.onBirth(topic, payload)
 			// BIRTH/DEATH/CMD — state updated, no downstream output.
 			// EXCEPTION for Phase 3 shadow: seed non-counter parameters from
 			// NBIRTH so subsequent NDATA has the parameter context (MachSpeed,
@@ -2044,6 +2046,8 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 						SourceType:      st,
 					})
 				}
+				// ADR-0061 P2: stamp the birth-bound ids (no-op when OFF).
+				binder.stamp(&env, topic.GroupID, topic.EdgeNodeID)
 				body, err := json.Marshal(env)
 				if err != nil {
 					logger.Warn("outbox: marshal envelope failed",
