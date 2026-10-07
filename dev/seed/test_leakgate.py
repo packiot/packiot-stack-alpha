@@ -45,6 +45,24 @@ class LeakGateTest(unittest.TestCase):
             self.assertIn("x.csv.gz :: a", out.getvalue())
 
 
+    def test_nameless_column_types_are_skipped_text_still_scanned(self):
+        # 2026-10-07 full seed: a numeric product name ("4021335") "occurred" inside integer ids by coincidence
+        with tempfile.TemporaryDirectory() as d:
+            p = gz(d, "silver.t.csv.gz", "check_number,label\n9940213357,lot 4021335 ok\n")
+            types = {("silver.t", "check_number"): "bigint", ("silver.t", "label"): "text"}
+            hits = L.scan([p], ["4021335"], io.StringIO(), types=types)
+            self.assertEqual(set(hits), {("silver.t.csv.gz", "label", "token")})   # bigint skipped, text caught
+            # without the inventory the gate stays maximally strict (old behaviour)
+            hits = L.scan([p], ["4021335"], io.StringIO())
+            self.assertEqual(len(hits), 2)
+
+    def test_load_types_reads_the_extract_inventory(self):
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d, "columns.tsv")
+            inv.write_text("silver\tt\thypertable\tcheck_number\tbigint\nsilver\tt\thypertable\tlabel\ttext\n")
+            self.assertEqual(L.load_types(str(inv)), {("silver.t", "check_number"): "bigint", ("silver.t", "label"): "text"})
+            self.assertEqual(L.load_types(None), {})
+
 class TokenIndexEquivalence(unittest.TestCase):
     """The prefix index must answer exactly what the old one-big-regex answered (case-insensitive substring)."""
 

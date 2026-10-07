@@ -102,7 +102,7 @@ while IFS=$'\t' read -r table query; do
 done < "$OUT/private/copies.tsv"
 
 echo "== 5. leak gate"
-python3 "$HERE/leakgate.py" --tokens "$OUT/private/tokens.tsv" "$OUT"/payload/data/*.csv.gz
+python3 "$HERE/leakgate.py" --tokens "$OUT/private/tokens.tsv" --columns "$OUT/private/columns.tsv" "$OUT"/payload/data/*.csv.gz
 
 echo "== 6. metadata"
 python3 - "$OUT" "$TENANT" "$WINDOW" "$SNAPSHOT_END" "$SINCE" "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)" <<'PY'
