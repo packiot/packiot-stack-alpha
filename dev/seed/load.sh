@@ -27,9 +27,15 @@ if ! pg_restore --username "$POSTGRES_USER" -d "$DB" "$SEED/schema.dump" 2> /tmp
   fi
 fi
 "${PSQL[@]}" -d "$DB" -c "SELECT timescaledb_post_restore();" >/dev/null
+# post_restore restarts Timescale's job scheduler: pause every scheduled job until the data is in, or jobs run
+# against a half-loaded DB (2026-10-07: the invariants job and a rollup errored mid-load). Resumed below.
+PAUSED=$("${PSQL[@]}" -d "$DB" -At -c "SELECT coalesce(string_agg(job_id::text, ','), '') FROM timescaledb_information.jobs WHERE scheduled")
+[ -z "$PAUSED" ] || "${PSQL[@]}" -d "$DB" -c "SELECT alter_job(j, scheduled => false) FROM unnest('{$PAUSED}'::int[]) j" >/dev/null
 
 END=$(sed -n 's/.*"snapshot_end": *"\([^"]*\)".*/\1/p' "$SEED/metadata.json")
 DELTA=$("${PSQL[@]}" -d "$DB" -At -c "SELECT (floor(extract(epoch FROM now() - '$END'::timestamptz) / 604800) * 7)::int")
 echo "devseed: snapshot_end=$END → shifting all timestamps by $DELTA days"
 "${PSQL[@]}" -d "$DB" -v delta_days="$DELTA" -f "$SEED/load.sql"
+[ -z "$PAUSED" ] || "${PSQL[@]}" -d "$DB" -c "SELECT alter_job(j, scheduled => true) FROM unnest('{$PAUSED}'::int[]) j" >/dev/null
+echo "devseed: $(echo "$PAUSED" | tr ',' '\n' | grep -c . ) scheduled job(s) paused during the load and resumed"
 echo "devseed: loaded $(sed -n 's/.*"tenant": *\([0-9]*\).*/tenant \1/p' "$SEED/metadata.json") into $DB"

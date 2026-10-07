@@ -28,7 +28,10 @@ services:
       - postgres-data:/var/lib/postgresql/data
     shm_size: 256m
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary
+      # server that listens on the Unix socket ONLY, so a socket check reported "healthy" while the dev
+      # seed was still loading and `make dev --wait` returned early (2026-10-07).
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 20
