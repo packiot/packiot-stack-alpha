@@ -285,6 +285,7 @@ type Config struct {
 	// The bake COMPARATOR was retired in #252; the per-plane overflow gate survives.
 	SentinelEnterpriseIDs         string
 	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
+	BirthBindVerify               bool   // ADR-0061 D7 verification run (internal/birthverify): count-only, writes nothing
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
 	// TenantAllowlist — declarative environment scoping for tenant discovery.
@@ -502,6 +503,7 @@ func Load() (*Config, error) {
 		SentinelEnterpriseIDs:            getenv("BAKE_ENTERPRISE_IDS", "3"),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
+		BirthBindVerify:                  getenv("BIRTHBIND_VERIFY", "true") == "true",
 		RollupMachineLevelEnterprises:    getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		TenantAllowlist:                  csvLower(getenv("WORKER_TENANT_ALLOWLIST", "")),
 		Sync06ReportEnabled:              getenv("SYNC06_REPORT_ENABLED", "false") == "true",

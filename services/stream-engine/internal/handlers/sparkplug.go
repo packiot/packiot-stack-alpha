@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/birthverify"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -58,6 +59,7 @@ type SparkplugHandler struct {
 	poParameter     *writers.POParameter
 	poControl       *pocontrol.Handler // nil = 10.3 disabled
 	logger          *slog.Logger
+	verifier        *birthverify.Verifier // ADR-0061 D7 (nil = off)
 }
 
 // minPlausibleTsMs — metric timestamps before this (2015-01-01 UTC) are treated as
@@ -98,6 +100,9 @@ func NewSparkplugHandler(
 // SetLegacyIngest wires the 10.9 flag: false → unparseable messages
 // on the shared routing key are dropped (counted), not retried.
 func (h *SparkplugHandler) SetLegacyIngest(enabled bool) { h.legacyIngest = enabled }
+
+// SetVerifier wires the ADR-0061 D7 verification run (nil = off). Count-only.
+func (h *SparkplugHandler) SetVerifier(v *birthverify.Verifier) { h.verifier = v }
 
 // SetWriteMetric wires the per-destination write counter (flow boards).
 func (h *SparkplugHandler) SetWriteMetric(vec *prometheus.CounterVec) { h.batchWrites = vec }
@@ -216,6 +221,9 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	r := h.routeForSource(p.SourceType)
 	pool, schema := r.pool, r.ev
 	tenant := tenantOf(p)
+	// ADR-0061 D7: compare the decoder's birth-bound stamps with packml_register.
+	// Measures only — every write below still resolves through the PackML resolver.
+	h.verifier.Check(ctx, p, tenant)
 
 	// Build phase — collect one Query per metric into the batch.
 	batch := &pgx.Batch{}

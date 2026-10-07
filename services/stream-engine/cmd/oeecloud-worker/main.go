@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/birthverify"
 	"io"
 	"log/slog"
 	"net/http"
@@ -532,6 +533,10 @@ func main() {
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
 	sparkplugHandler.SetLegacyIngest(cfg.LegacyIngestEnabled)
+	if cfg.BirthBindVerify {
+		sparkplugHandler.SetVerifier(birthverify.New(resolver, mx.Registry, logger))
+		logger.Info("birth-bound verification ENABLED (ADR-0061 D7): oeecloud_worker_birthbind_verify_total, count-only")
+	}
 
 	if cfg.POControlEnabled {
 		pc := pocontrol.NewHandler(resolver, logger)
