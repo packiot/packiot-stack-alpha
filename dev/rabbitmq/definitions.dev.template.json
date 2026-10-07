@@ -1,0 +1,322 @@
+{
+  "rabbit_version": "3.13.7",
+  "users": [
+    {
+      "name": "__ADMIN__",
+      "password": "__ADMIN_PASS__",
+      "tags": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "stream-engine",
+      "password": "__OEE_PASS__",
+      "tags": []
+    },
+    {
+      "name": "sparkplug-decoder",
+      "password": "__SD_PASS__",
+      "tags": []
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "__ADMIN__",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "stream-engine",
+      "vhost": "/",
+      "configure": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$",
+      "write": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$",
+      "read": "^(oee|oee-retry|oee-failed|stream-engine-q.*|oeecloud-fanout.*)$"
+    },
+    {
+      "user": "sparkplug-decoder",
+      "vhost": "/",
+      "configure": "^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|dlx\\.edge\\.plc-normalized.*)$",
+      "write": "^(edge-transformer.*|outbox.*|edge\\.plc-normalized.*|oee)$",
+      "read": "^(edge\\.plc-normalized.*|dlx\\.edge\\.plc-normalized.*|edge-transformer.*|outbox.*|oee)$"
+    }
+  ],
+  "topic_permissions": [],
+  "parameters": [],
+  "global_parameters": [],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "oee-ae",
+      "pattern": "^oee$",
+      "apply-to": "exchanges",
+      "priority": 0,
+      "definition": {
+        "alternate-exchange": "oee-unroutable"
+      }
+    }
+  ],
+  "queues": [
+    {
+      "name": "oee-unroutable-q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "stream-engine-q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "oee-retry"
+      }
+    },
+    {
+      "name": "stream-engine-q-retry-30s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "oee"
+      }
+    },
+    {
+      "name": "stream-engine-q-failed",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "stream-engine-q-cpack",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "oee-retry"
+      }
+    },
+    {
+      "name": "stream-engine-q-cpack-retry-30s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "oee"
+      }
+    },
+    {
+      "name": "stream-engine-q-cpack-failed",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "stream-engine-q-sbxcpack",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "oee-retry"
+      }
+    },
+    {
+      "name": "stream-engine-q-sbxcpack-retry-30s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "oee"
+      }
+    },
+    {
+      "name": "stream-engine-q-sbxcpack-failed",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "stream-engine-q-bispharmastaging",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "oee-retry"
+      }
+    },
+    {
+      "name": "stream-engine-q-bispharmastaging-retry-30s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "oee"
+      }
+    },
+    {
+      "name": "stream-engine-q-bispharmastaging-failed",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "oee",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "oee-retry",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "oee-failed",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "oee-unroutable",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "oee-unroutable",
+      "vhost": "/",
+      "destination": "oee-unroutable-q",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "oee",
+      "vhost": "/",
+      "destination": "stream-engine-q",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data",
+      "arguments": {}
+    },
+    {
+      "source": "oee-retry",
+      "vhost": "/",
+      "destination": "stream-engine-q-retry-30s",
+      "destination_type": "queue",
+      "routing_key": "#",
+      "arguments": {}
+    },
+    {
+      "source": "oee-failed",
+      "vhost": "/",
+      "destination": "stream-engine-q-failed",
+      "destination_type": "queue",
+      "routing_key": "#",
+      "arguments": {}
+    },
+    {
+      "source": "oee",
+      "vhost": "/",
+      "destination": "stream-engine-q-cpack",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.cpack",
+      "arguments": {}
+    },
+    {
+      "source": "oee-retry",
+      "vhost": "/",
+      "destination": "stream-engine-q-cpack-retry-30s",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.cpack",
+      "arguments": {}
+    },
+    {
+      "source": "oee-failed",
+      "vhost": "/",
+      "destination": "stream-engine-q-cpack-failed",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.cpack",
+      "arguments": {}
+    },
+    {
+      "source": "oee",
+      "vhost": "/",
+      "destination": "stream-engine-q-sbxcpack",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.sbxcpack",
+      "arguments": {}
+    },
+    {
+      "source": "oee-retry",
+      "vhost": "/",
+      "destination": "stream-engine-q-sbxcpack-retry-30s",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.sbxcpack",
+      "arguments": {}
+    },
+    {
+      "source": "oee-failed",
+      "vhost": "/",
+      "destination": "stream-engine-q-sbxcpack-failed",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.sbxcpack",
+      "arguments": {}
+    },
+    {
+      "source": "oee",
+      "vhost": "/",
+      "destination": "stream-engine-q-bispharmastaging",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.bispharmastaging",
+      "arguments": {}
+    },
+    {
+      "source": "oee-retry",
+      "vhost": "/",
+      "destination": "stream-engine-q-bispharmastaging-retry-30s",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.bispharmastaging",
+      "arguments": {}
+    },
+    {
+      "source": "oee-failed",
+      "vhost": "/",
+      "destination": "stream-engine-q-bispharmastaging-failed",
+      "destination_type": "queue",
+      "routing_key": "sparkplug.data.bispharmastaging",
+      "arguments": {}
+    }
+  ]
+}
