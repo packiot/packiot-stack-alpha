@@ -1,0 +1,147 @@
+# dev/seed/manifest.yml — ADR-0060 D4/D5. EVERY base table in packiot_analytics must be listed (validate.py
+# fails on an unlisted table: fail-closed at table level). Modes:
+#   rows        COPY (SELECT … WHERE <where>) — then column classification (classification.yml) applies
+#   full        all rows (global reference data, no tenant) — classification still applies
+#   replace     rows generated synthetically at load (never extracted)
+#   schema_only table created from the schema dump, no rows
+# Parameters bound at extract time: :tenant (enterprise id), :since (snapshot_end - 7 days).
+# Views, matviews and continuous aggregates come from the schema dump; caggs are refreshed after load.
+tenant: 3
+window_days: 7
+tables:
+  bronze.box_scans: {mode: rows, where: "id_enterprise = :tenant AND ts_value >= :since"}
+  bronze.equipment_events_raw: {mode: rows, where: "id_enterprise = :tenant AND (ts_event >= :since OR ts_end IS NULL OR ts_end >= :since)"}
+  bronze.equipment_values_raw: {mode: rows, where: "id_enterprise = :tenant AND ts_value >= :since"}
+  bronze.sample_boxes: {mode: rows, where: "id_enterprise = :tenant AND ts_value >= :since"}
+  bronze.scanned_boxes: {mode: rows, where: "id_enterprise = :tenant AND ts_value >= :since"}
+  config.dashboard_config: {mode: rows, where: "id_enterprise = :tenant"}
+  config.equipment_out_of_service: {mode: rows, where: "id_enterprise = :tenant"}
+  config.label_formats: {mode: rows, where: "id_enterprise = :tenant"}
+  config.labels: {mode: rows, where: "id_enterprise = :tenant"}
+  config.language_packs: {mode: full}  # global UI language packs
+  config.oee_targets: {mode: rows, where: "id_enterprise = :tenant"}
+  config.pages: {mode: full}  # global page registry
+  config.production_targets: {mode: rows, where: "id_enterprise = :tenant"}
+  config.scrap_targets: {mode: rows, where: "id_enterprise = :tenant"}
+  config.tenant_translations: {mode: rows, where: "id_enterprise = :tenant"}
+  config.translations: {mode: full}  # global UI strings
+  core.areas: {mode: rows, where: "id_enterprise = :tenant"}
+  core.box_production_bridges: {mode: rows, where: "id_enterprise = :tenant"}
+  core.client_descriptors: {mode: schema_only}  # edge onboarding descriptors (hosts, PLC config); revisit for P3 decoder slice
+  core.clients: {mode: rows, where: "id_enterprise = :tenant"}
+  core.downtime_reason: {mode: rows, where: "id_enterprise = :tenant"}
+  core.enterprises: {mode: rows, where: "id_enterprise = :tenant"}
+  core.equipment_downtime_reason: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}
+  core.equipment_scrap_reason: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}
+  core.equipment_validation_shift: {mode: rows, where: "id_enterprise = :tenant AND ts_value_production >= :since"}
+  core.equipments: {mode: rows, where: "id_enterprise = :tenant"}
+  core.product_families: {mode: rows, where: "id_enterprise = :tenant"}
+  core.production_orders: {mode: rows, where: "id_enterprise = :tenant AND (ts_end IS NULL OR ts_end >= :since)"}  # POs open or ending inside the window
+  core.products: {mode: rows, where: "id_enterprise = :tenant"}
+  core.scrap_reason: {mode: rows, where: "id_enterprise = :tenant"}
+  core.shift_hours: {mode: rows, where: "id_enterprise = :tenant"}
+  core.shifts: {mode: rows, where: "id_enterprise = :tenant"}
+  core.shifts_exception_period: {mode: rows, where: "id_enterprise = :tenant"}
+  core.sites: {mode: rows, where: "id_enterprise = :tenant"}
+  core.teams: {mode: rows, where: "id_enterprise = :tenant"}
+  core.topic_routing: {mode: rows, where: "id_enterprise = :tenant"}
+  customer_reports.boxes: {mode: schema_only}  # external sync state
+  customer_reports.production_data_sync: {mode: schema_only}  # external sync state
+  customer_reports.sap_data_sync: {mode: schema_only}  # external sync state
+  customer_reports.shift: {mode: schema_only}  # external sync state
+  gold.area_oee_daily: {mode: rows, where: "id_area IN (SELECT id_area FROM core.areas WHERE id_enterprise = :tenant) AND ts_value >= :since"}
+  gold.area_oee_shift: {mode: rows, where: "id_area IN (SELECT id_area FROM core.areas WHERE id_enterprise = :tenant) AND ts_value >= :since"}
+  gold.equipment_oee_daily: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= :since"}
+  gold.equipment_oee_hourly: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= :since"}
+  gold.equipment_oee_monthly: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= date_trunc('month', :since)"}
+  gold.equipment_oee_shift: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= :since"}
+  gold.equipment_oee_shift_monthly: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= date_trunc('month', :since)"}
+  gold.equipment_oee_shift_weekly: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= date_trunc('week', :since)"}
+  gold.equipment_oee_weekly: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant) AND ts_value >= date_trunc('week', :since)"}
+  gold.po_box_counter: {mode: rows, where: "id_enterprise = :tenant"}
+  gold.production_orders_runtime: {mode: rows, where: "id_production_order IN (SELECT id_production_order FROM core.production_orders WHERE id_enterprise = :tenant AND (ts_end IS NULL OR ts_end >= :since))"}  # runtime rows of extracted POs
+  gold.site_oee_shift: {mode: rows, where: "id_site IN (SELECT id_site FROM core.sites WHERE id_enterprise = :tenant) AND ts_value >= :since"}
+  identity.user_logs: {mode: schema_only}  # audit log: user names, payloads
+  identity.user_roles: {mode: rows, where: "id_enterprise = :tenant"}
+  identity.user_screen_config: {mode: schema_only}  # per-user UI state
+  identity.users: {mode: replace}  # synthetic dev users (emails, phones, names)
+  ops._bkp_bis_l58_open_event_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_bis_l60_cfg_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_bis_l60_sim_events_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_bis_l60_sim_silver_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_bis_orphan_events_2000109_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_bis_twin_silver_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_cpack_reason_catalog_dr: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_cpack_reason_catalog_edr: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_cpack_reason_catalog_eq: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_ent5_csadmin_fixes_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_ent5_demo_20260924: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_ent5_production_speed: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_gold_shift_boundary_20261002: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_gold_unbacked_20261001_daily: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_gold_unbacked_20261001_hourly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_gold_unbacked_20261001_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_area_oee_daily: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_area_oee_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_equipment_oee_daily: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_equipment_oee_hourly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_equipment_oee_monthly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_equipment_oee_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_equipment_oee_weekly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_hist_replace_site_oee_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_history_uncap_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_phantom_rechain_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_phantom_running_live_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_phantom_running_shadow_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_25126_open_run_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_hdr_stranded_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_machine_to_line_po_20260930: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_machine_to_line_rt_20260930: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_runtime_legacy_restore_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_twin_repair_po_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_twin_repair_rt_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_po_unbacked_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_pth_silver_20260929: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_user_roles_perms_bispharma: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_user_roles_perms_menuleak: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._ev_reconcile_leg: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._fix_unbacked_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._po_flag_snap_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_area_oee_daily: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_area_oee_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_equipment_oee_daily: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_equipment_oee_hourly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_equipment_oee_monthly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_equipment_oee_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_equipment_oee_weekly: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_silver_values: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf2_site_oee_shift: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.bf_pth_silver_values: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.capture_observations: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.data_invariant_result: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.idempotency_keys: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.legacy_manual_event_link: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.mirror_replay_cursor: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.mirror_replay_dlq: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.retention_policy: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.retention_run: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops.sandbox_state: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  public.knex_migrations: {mode: full}  # edge-api migration ledger
+  public.knex_migrations_lock: {mode: full}  # edge-api migration lock
+  serving.downtime_events_resolved: {mode: rows, where: "id_enterprise = :tenant AND (ts_event >= :since OR ts_end IS NULL OR ts_end >= :since)"}
+  serving.downtime_events_resolved_meta: {mode: full}  # coverage watermark row
+  silver.area_live_day: {mode: rows, where: "id_area IN (SELECT id_area FROM core.areas WHERE id_enterprise = :tenant)"}  # live snapshot
+  silver.area_live_shift: {mode: rows, where: "id_enterprise = :tenant"}
+  silver.data_quality_event: {mode: rows, where: "id_enterprise = :tenant AND bucket_ts >= :since"}
+  silver.equipment_events: {mode: rows, where: "id_enterprise = :tenant AND (ts_event >= :since OR ts_end IS NULL OR ts_end >= :since)"}
+  silver.equipment_events_cpac_shadow: {mode: rows, where: "id_enterprise = :tenant AND (ts_event >= :since OR ts_end IS NULL OR ts_end >= :since)"}
+  silver.equipment_events_low_speed: {mode: rows, where: "id_enterprise = :tenant AND (ts_event >= :since OR ts_end IS NULL OR ts_end >= :since)"}
+  silver.equipment_events_man: {mode: rows, where: "id_enterprise = :tenant AND (ts_event >= :since OR ts_end IS NULL OR ts_end >= :since)"}
+  silver.equipment_live_day: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}
+  silver.equipment_live_job: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}
+  silver.equipment_live_metrics: {mode: rows, where: "id_enterprise = :tenant"}
+  silver.equipment_live_month: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}
+  silver.equipment_live_shift: {mode: rows, where: "id_equipment IN (SELECT id_equipment FROM core.equipments WHERE id_enterprise = :tenant)"}
+  silver.equipment_values: {mode: rows, where: "id_enterprise = :tenant AND ts_value >= :since"}
+  silver.machine_state: {mode: full}  # state lookup (no tenant)
+  silver.plc_link_minutes: {mode: rows, where: "id_enterprise = :tenant AND ts_minute >= :since"}

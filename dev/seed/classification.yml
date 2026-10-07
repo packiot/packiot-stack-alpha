@@ -1,0 +1,197 @@
+# dev/seed/classification.yml — ADR-0060 D5. Fail-closed: every text/json/array column of a table whose rows are
+# copied (manifest mode rows|full) MUST appear here; validate.py fails otherwise. Numeric, boolean, uuid, date/time and
+# range columns are `keep` by type (timestamps/dates/tstzranges are additionally time-rebased at load).
+# Classes: keep | pseudonym (keyed HMAC, deterministic) | scrub (replace known sensitive tokens inside the string) |
+#          null (dropped) .  scan = [sampled, name_hits, email_hits, ip_hits, distinct] from the 2026-10-06 read-only leak scan.
+columns:
+  bronze.box_scans.scan_type: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  bronze.box_scans.raw_barcode: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  bronze.box_scans.scanned_by: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.cd_category: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.cd_subcategory: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_events_raw.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.id_order: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.faults: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.analogs: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.box_code: {class: pseudonym, why: "box / equipment code; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.transaction_code: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.id_order_quality: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  bronze.equipment_values_raw.sub_mode: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.dashboard_config.dashboard_id: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  config.dashboard_config.config: {class: scrub, why: "structured/label text that can embed names", scan: [1, 1, 0, 0, 1]}
+  config.equipment_out_of_service.reason: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  config.equipment_out_of_service.created_by: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  config.equipment_out_of_service.updated_by: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.label_key: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.archetype: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.order_field: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.qty_field: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.workcenter_field: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.date_field: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.time_field: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.label_formats.tz: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.labels.name: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  config.labels.template: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  config.language_packs.language_tag: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [5, 0, 0, 0, 5]}
+  config.language_packs.language_pack_desktop: {class: scrub, why: "structured/label text that can embed names", scan: [5, 5, 0, 0, 5]}
+  config.language_packs.language_pack_mobile: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  config.language_packs.language_pack_operator: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  config.language_packs.language_pack_overview: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  config.language_packs.language_pack_operator40: {class: scrub, why: "structured/label text that can embed names", scan: [2, 0, 0, 0, 2]}
+  config.pages.list_of_enterprises: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [67, 0, 0, 0, 2]}
+  config.pages.page_info: {class: scrub, why: "structured/label text that can embed names", scan: [67, 3, 0, 0, 66]}
+  config.tenant_translations.language_tag: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.tenant_translations.app: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.tenant_translations.namespace: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  config.tenant_translations.key: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  config.tenant_translations.value: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  config.tenant_translations.updated_by: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  config.translations.language_tag: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [2144, 0, 0, 0, 5]}
+  config.translations.app: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [2144, 0, 0, 0, 2]}
+  config.translations.namespace: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [2144, 0, 0, 0, 1]}
+  config.translations.key: {class: scrub, why: "structured/label text that can embed names", scan: [2144, 40, 0, 0, 406]}
+  config.translations.value: {class: scrub, why: "structured/label text that can embed names", scan: [2144, 19, 0, 0, 1926]}
+  config.translations.updated_by: {class: null, why: "identifies a person", scan: [2144, 0, 0, 0, 4]}
+  core.areas.nm_area: {class: pseudonym, why: "identifying name/code", scan: [5, 5, 0, 0, 5]}
+  core.box_production_bridges.source_cd: {class: pseudonym, why: "box / equipment code; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  core.box_production_bridges.target_cd: {class: pseudonym, why: "box / equipment code; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  core.box_production_bridges.label_key: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.clients.nm_client: {class: pseudonym, why: "identifying name/code", scan: [323, 305, 0, 0, 230]}
+  core.downtime_reason.code: {class: scrub, why: "structured/label text that can embed names", scan: [570, 1, 0, 0, 567]}
+  core.downtime_reason.label: {class: scrub, why: "structured/label text that can embed names", scan: [569, 10, 0, 0, 393]}
+  core.downtime_reason.label_i18n: {class: scrub, why: "structured/label text that can embed names", scan: [570, 10, 0, 0, 394]}
+  core.downtime_reason.category: {class: scrub, why: "structured/label text that can embed names", scan: [538, 0, 0, 0, 6]}
+  core.enterprises.nm_enterprise: {class: pseudonym, why: "identifying name/code", scan: [1, 1, 0, 0, 1]}
+  core.enterprises.api_key: {class: null, why: "credential (edge API key); loader sets a known dev key", scan: [1, 0, 0, 0, 1]}
+  core.enterprises.timezone: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  core.enterprises.logo_url: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  core.enterprises.basic_menu: {class: scrub, why: "JSON config that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.enterprises.custom_menu: {class: scrub, why: "JSON config that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.enterprises.language_packs: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.index1: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.cd_equipment: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.cd_shift: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.shift_hrs: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.txt_validation_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.nm_user_validation: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
+  core.equipment_validation_shift.index2: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipments.cd_equipment: {class: pseudonym, why: "identifying name/code", scan: [62, 56, 0, 0, 50]}
+  core.equipments.nm_equipment: {class: pseudonym, why: "identifying name/code", scan: [62, 56, 0, 0, 50]}
+  core.equipments.alerts: {class: scrub, why: "JSON config that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.equipments.cd_sector: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipments.downtime_reasons: {class: scrub, why: "structured/label text that can embed names", scan: [22, 21, 0, 0, 16]}
+  core.equipments.custom: {class: scrub, why: "JSON config that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.equipments.scrap_reasons: {class: scrub, why: "JSON config that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.equipments.overview_events_filter_by_idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipments.overview_version: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.equipments.gross_counter: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  core.equipments.net_counter: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  core.product_families.nm_product_family: {class: pseudonym, why: "identifying name/code", scan: [181, 43, 0, 0, 154]}
+  core.production_orders.equipment_setup: {class: scrub, why: "structured/label text that can embed names", scan: [776, 1, 0, 0, 17]}
+  core.production_orders.txt_production_order_notes: {class: null, why: "free text / personal data", scan: [14022, 95, 0, 0, 5174]}
+  core.production_orders.txt_production_order_description: {class: null, why: "free text / personal data", scan: [80, 73, 0, 0, 62]}
+  core.production_orders.id_order_text: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [13972, 0, 0, 0, 13971]}
+  core.production_orders.nm_production_order: {class: pseudonym, why: "identifying name/code", scan: [399, 11, 0, 0, 399]}
+  core.production_orders.custom_field: {class: null, why: "free-form, content not guaranteed", scan: [540, 0, 0, 0, 1]}
+  core.products.nm_product: {class: pseudonym, why: "identifying name/code", scan: [6621, 32, 0, 0, 6613]}
+  core.products.txt_product: {class: null, why: "free text / personal data", scan: [6403, 5908, 0, 0, 4328]}
+  core.products.equipment_setup: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.products.cd_product: {class: pseudonym, why: "identifying name/code", scan: [243, 1, 0, 0, 243]}
+  core.scrap_reason.code: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.scrap_reason.label: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.scrap_reason.label_i18n: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.scrap_reason.category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.shift_hours.cd_shift: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [105, 0, 0, 0, 3]}
+  core.shift_hours.day_week: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [105, 0, 0, 0, 7]}
+  core.shifts.cd_shift: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [15, 0, 0, 0, 3]}
+  core.sites.nm_site: {class: pseudonym, why: "identifying name/code", scan: [1, 0, 0, 0, 1]}
+  core.sites.timezone: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  core.sites.language_tag: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  core.sites.email_alert_users: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
+  core.teams.cd_team: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.topic_routing.packml_topic: {class: scrub, why: "structured/label text that can embed names", scan: [156, 156, 0, 0, 156]}
+  core.topic_routing.value: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.topic_routing.mqtt_topic: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.topic_routing.sparkplug_json: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  core.topic_routing.line_unit_seq: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  core.topic_routing.device_nm: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  core.topic_routing.device_key: {class: scrub, why: "structured/label text that can embed names", scan: [113, 113, 0, 0, 113]}
+  gold.equipment_oee_shift.cd_shift: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [4254, 0, 0, 0, 7]}
+  identity.user_roles.nm_user_role: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [1, 1, 0, 0, 1]}
+  identity.user_roles.permissions: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1, 0, 0, 0, 1]}
+  public.knex_migrations.name: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [56, 0, 0, 0, 56]}
+  serving.downtime_events_resolved.nm_equipment: {class: pseudonym, why: "identifying name/code", scan: [20000, 6088, 0, 0, 20]}
+  serving.downtime_events_resolved.sector: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  serving.downtime_events_resolved.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [63, 19, 0, 0, 10]}
+  serving.downtime_events_resolved.cd_category: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [63, 0, 0, 0, 14]}
+  serving.downtime_events_resolved.txt_category: {class: scrub, why: "structured/label text that can embed names", scan: [63, 38, 0, 0, 13]}
+  serving.downtime_events_resolved.cd_subcategory: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [43, 0, 0, 0, 18]}
+  serving.downtime_events_resolved.txt_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [43, 0, 0, 0, 18]}
+  serving.downtime_events_resolved.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [45, 2, 0, 0, 41]}
+  serving.downtime_events_resolved.timezone: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [20000, 0, 0, 0, 1]}
+  serving.downtime_events_resolved.cd_shift: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [19903, 0, 0, 0, 3]}
+  silver.area_live_shift.nm_area: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
+  silver.data_quality_event.grain: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [20000, 0, 0, 0, 13]}
+  silver.data_quality_event.rule: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [20000, 0, 0, 0, 11]}
+  silver.data_quality_event.severity: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [20000, 0, 0, 0, 2]}
+  silver.equipment_events.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [727, 169, 0, 0, 643]}
+  silver.equipment_events.idle: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [1476, 0, 0, 0, 2]}
+  silver.equipment_events.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [977, 187, 0, 0, 10]}
+  silver.equipment_events.cd_category: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [977, 0, 0, 0, 25]}
+  silver.equipment_events.cd_subcategory: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [689, 0, 0, 0, 88]}
+  silver.equipment_events.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [977, 563, 0, 0, 28]}
+  silver.equipment_events.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [689, 0, 0, 0, 87]}
+  silver.equipment_events_cpac_shadow.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.cd_category: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.cd_subcategory: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_cpac_shadow.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.idle: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.cd_category: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.cd_subcategory: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_low_speed.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_events_man.txt_downtime_notes: {class: null, why: "free text / personal data", scan: [3122, 645, 0, 0, 2636]}
+  silver.equipment_events_man.idle: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [5872, 0, 0, 0, 2]}
+  silver.equipment_events_man.cd_machine: {class: pseudonym, why: "identifying name/code", scan: [6123, 112, 0, 0, 10]}
+  silver.equipment_events_man.cd_category: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [6123, 0, 0, 0, 27]}
+  silver.equipment_events_man.cd_subcategory: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [5585, 0, 0, 0, 195]}
+  silver.equipment_events_man.desc_category: {class: scrub, why: "structured/label text that can embed names", scan: [5473, 699, 0, 0, 36]}
+  silver.equipment_events_man.desc_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [5527, 0, 0, 0, 184]}
+  silver.equipment_live_day.last_30_days: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_job.id_order: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [28, 0, 0, 0, 14]}
+  silver.equipment_live_job.nm_client: {class: pseudonym, why: "identifying name/code", scan: [22, 20, 0, 0, 7]}
+  silver.equipment_live_job.nm_product: {class: pseudonym, why: "identifying name/code", scan: [22, 0, 0, 0, 11]}
+  silver.equipment_live_job.nm_product_family: {class: pseudonym, why: "identifying name/code", scan: [22, 0, 0, 0, 9]}
+  silver.equipment_live_job.cd_setup: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_metrics.status: {class: scrub, why: "structured/label text that can embed names", scan: [46, 0, 0, 0, 2]}
+  silver.equipment_live_metrics.downtime_category: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_metrics.downtime_subcategory: {class: scrub, why: "descriptive label; scrub is cheap insurance", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_metrics.nm_equipment: {class: pseudonym, why: "identifying name/code", scan: [62, 56, 0, 0, 50]}
+  silver.equipment_live_metrics.nm_area: {class: pseudonym, why: "identifying name/code", scan: [62, 62, 0, 0, 5]}
+  silver.equipment_live_metrics.nm_site: {class: pseudonym, why: "identifying name/code", scan: [62, 0, 0, 0, 1]}
+  silver.equipment_live_metrics.status_24h: {class: scrub, why: "structured/label text that can embed names", scan: [59, 0, 0, 0, 7]}
+  silver.equipment_live_metrics.ideal_speed: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_shift.prev2_shift_name: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_shift.prev1_shift_name: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [63, 0, 0, 0, 2]}
+  silver.equipment_live_shift.prev3_shift_name: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_live_shift.shift_name: {class: keep, why: "no names/e-mails/IPs in sampled data", scan: [64, 0, 0, 0, 3]}
+  silver.equipment_values.id_order: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_values.faults: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_values.analogs: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_values.box_code: {class: pseudonym, why: "box / equipment code; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_values.transaction_code: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_values.id_order_quality: {class: pseudonym, why: "ERP order number; same HMAC keeps joins", scan: [0, 0, 0, 0, 0]}
+  silver.equipment_values.sub_mode: {class: keep, why: "PLC numeric arrays / state codes (semantic override: sample was not windowed)", scan: [0, 0, 0, 0, 0]}
+  silver.machine_state.label: {class: scrub, why: "structured/label text that can embed names", scan: [5, 0, 0, 0, 3]}
+  silver.machine_state.note: {class: null, why: "free text / personal data", scan: [5, 0, 0, 0, 5]}
+  silver.plc_link_minutes.endpoint: {class: null, why: "empty for this tenant in sample", scan: [0, 0, 0, 0, 0]}
+  silver.plc_link_minutes.last_error: {class: null, why: "free text / personal data", scan: [0, 0, 0, 0, 0]}
