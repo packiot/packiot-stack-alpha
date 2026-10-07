@@ -45,5 +45,32 @@ class LeakGateTest(unittest.TestCase):
             self.assertIn("x.csv.gz :: a", out.getvalue())
 
 
+class TokenIndexEquivalence(unittest.TestCase):
+    """The prefix index must answer exactly what the old one-big-regex answered (case-insensitive substring)."""
+
+    def test_matches_the_regex_on_random_strings(self):
+        import random, re
+        rnd = random.Random(7)
+        alpha = "abcdeLINE 10-xyz/ÁÉçãXYZ"
+        tokens = sorted({"".join(rnd.choice(alpha) for _ in range(rnd.randint(4, 9))).lower() for _ in range(300)},
+                        key=len, reverse=True)
+        tokens = [t for t in tokens if len(t) >= L.MIN_TOKEN]
+        rx = re.compile("|".join(re.escape(t) for t in tokens), re.I)
+        idx = L.TokenIndex(tokens)
+        for _ in range(20000):
+            v = "".join(rnd.choice(alpha) for _ in range(rnd.randint(0, 40)))
+            if rnd.random() < 0.3:   # plant a token, sometimes upper-cased, at a random position
+                t = rnd.choice(tokens)
+                t = t.upper() if rnd.random() < 0.5 else t
+                k = rnd.randint(0, len(v))
+                v = v[:k] + t + v[k:]
+            self.assertEqual(bool(rx.search(v)), idx.search(v), v)
+
+    def test_empty_index_and_short_strings(self):
+        self.assertFalse(L.TokenIndex([]).search("anything"))
+        self.assertFalse(L.TokenIndex(["acme"]).search("acm"))
+        self.assertTrue(L.TokenIndex(["acme corp"]).search("x/ACME CORP/y"))
+
+
 if __name__ == "__main__":
     unittest.main()

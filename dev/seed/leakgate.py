@@ -31,8 +31,34 @@ def load_tokens(path):
     return sorted(toks, key=len, reverse=True)
 
 
+class TokenIndex:
+    """Case-insensitive "does any token occur in this string" in O(len(string)).
+
+    The first version compiled every token into ONE alternation regex and ran it on every cell. Python's
+    backtracking re tries each alternative at each position, so the full seed (7,239 tokens, 1.2M bronze rows)
+    spent > 50 min in this gate and hit the job timeout. Every token is >= MIN_TOKEN chars, so index the tokens
+    by their first MIN_TOKEN chars: at each position of the lowered string, one dict lookup yields the few
+    candidates that can start there. Same semantics as the regex (proven in test_leakgate.py)."""
+
+    def __init__(self, tokens):
+        self.by_prefix = {}
+        for t in tokens:
+            self.by_prefix.setdefault(t[:MIN_TOKEN], []).append(t)
+
+    def search(self, value):
+        if not self.by_prefix:
+            return False
+        v = value.lower()
+        get = self.by_prefix.get
+        for i in range(len(v) - MIN_TOKEN + 1):
+            cands = get(v[i:i + MIN_TOKEN])
+            if cands and any(v.startswith(t, i) for t in cands):
+                return True
+        return False
+
+
 def scan(paths, tokens, out=sys.stdout):
-    rx = re.compile("|".join(re.escape(t) for t in tokens), re.I) if tokens else None
+    rx = TokenIndex(tokens) if tokens else None
     hits = Counter()
     for p in paths:
         with gzip.open(p, "rt", newline="") as f:
