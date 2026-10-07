@@ -368,7 +368,13 @@ SELECT DISTINCT ON (s.id_equipment)
     -- Track A: state enum 6=Running, 10=Stopped (NULL/other = no fresh signal).
     -- Gives the live-status card a legible status instead of a bare int/blank.
     CASE s.state WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
-         ELSE 'Idle / no signal' END AS state_label
+         ELSE 'Idle / no signal' END AS state_label,
+    -- Exact float8 totalizers (t-counter-totals-readers, 2026-10-07). Appended LAST on purpose:
+    -- CREATE OR REPLACE VIEW can only add columns at the end, and the live view already has them.
+    -- *_val above is float4 (exact only to 2^24); chart these instead.
+    s.net_production_total,
+    s.gross_production_total,
+    s.scrap_total
 FROM (
     SELECT
         eq.id_enterprise,
@@ -390,7 +396,11 @@ FROM (
         ev.id_order,
         ev.net_production_val,
         ev.gross_production_val,
-        ev.scrap_val
+        ev.scrap_val,
+        -- exact when stream-engine wrote *_total (dual-write since 2026-10-07), else the float4 value
+        COALESCE(ev.net_production_total, ev.net_production_val::double precision) AS net_production_total,
+        COALESCE(ev.gross_production_total, ev.gross_production_val::double precision) AS gross_production_total,
+        COALESCE(ev.scrap_total, ev.scrap_val::double precision) AS scrap_total
     FROM equipment_values ev
     JOIN equipments eq ON eq.id_equipment = ev.id_equipment
     WHERE ev.ts_value > now() - interval '6 hours'
