@@ -422,6 +422,10 @@ type Config struct {
 	// holds). Enable only where the *_raw hypertables exist in the target
 	// schema/DB (currently packiot_analytics.public) — a separate gated step.
 	BronzeRawAppend bool
+	// CounterTotalsPublic (COUNTER_TOTALS_PUBLIC): the public route also dual-writes the exact float8
+	// *_total counter columns. Default OFF → byte-identical. Enable only after
+	// db/migrations/t-counter-totals-float8-public is applied to that DB (the columns must exist).
+	CounterTotalsPublic bool
 }
 
 func Load() (*Config, error) {
@@ -534,6 +538,8 @@ func Load() (*Config, error) {
 		ProvisionalSpeedFloor:       getenvFloat("PROVISIONAL_SPEED_FLOOR", 1.0),
 		// Bronze raw append (ADR-0036 B1) — default OFF → byte-identical no-op.
 		BronzeRawAppend: getenv("BRONZE_RAW_APPEND", "false") == "true",
+		// float8 *_total on the public route (prod forward-port) — default OFF.
+		CounterTotalsPublic: getenv("COUNTER_TOTALS_PUBLIC", "false") == "true",
 	}, nil
 }
 
