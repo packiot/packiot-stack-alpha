@@ -99,7 +99,8 @@ jobs:
           done
           docker logs "$C" 2>&1 | grep 'PostgreSQL init process complete' >/dev/null || { docker logs --tail 40 "$C"; echo "ABORT: init timeout"; exit 1; }
           for _ in $(seq 1 60); do docker exec "$C" pg_isready -U postgres -q && break; sleep 2; done
-          docker exec -i "$C" psql -U postgres -X -At -v ON_ERROR_STOP=1 <<'SQL'
+          # the seed lives in its own database (load.sh createdb), not the default `postgres`
+          docker exec -i "$C" psql -U postgres -d packiot_analytics -X -At -v ON_ERROR_STOP=1 <<'SQL'
           SELECT 'equipments', count(*) FROM core.equipments;
           SELECT 'device_bindings (fresh dk_ keys)', count(*) FROM core.device_bindings WHERE device_key ~ '^dk_[0-9a-f]{32}$';
           SELECT 'dev users', count(*) FROM identity.users WHERE user_email LIKE '%@example.com';
