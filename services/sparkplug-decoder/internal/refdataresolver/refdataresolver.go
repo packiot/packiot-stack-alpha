@@ -4,9 +4,10 @@
 // edge-transformer keeps its pgx-free default — the core.device_bindings lookup (the
 // declared identity, ADR-0061 step c) stays behind refdata's pool, reached over HTTP.
 //
-// It satisfies birthbind.DeviceResolver structurally (Resolve(string)(int,bool))
-// — no import of birthbind, so the seam stays decoupled and this package is
-// trivially unit-testable against an httptest server.
+// It implements birthbind.DeviceResolver: device_key → birthbind.Device
+// (id_equipment + id_enterprise — the tenant comes from the binding, ADR-0061 D3).
+// birthbind is dependency-light, so this package stays trivially unit-testable
+// against an httptest server.
 //
 // Caching. Birth is infrequent, but a device with many counter metrics triggers
 // one Resolve per alias at each birth, and a rebirth storm (ADR-0042) can repeat
@@ -31,6 +32,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/birthbind"
 )
 
 // Config is the resolver's construction input. All fields come from config.go.
@@ -59,10 +62,10 @@ type Resolver struct {
 	cache map[string]entry
 }
 
-// entry is one cached resolution: the id (valid only when ok), whether it
+// entry is one cached resolution: the device (valid only when ok), whether it
 // resolved, and when the cache line expires.
 type entry struct {
-	id      int
+	dev     birthbind.Device
 	ok      bool
 	expires time.Time
 }
@@ -105,51 +108,53 @@ func New(cfg Config) *Resolver {
 
 // resolveResponse is the /internal/resolve-device 200 body.
 type resolveResponse struct {
-	IDEquipment int `json:"id_equipment"`
+	IDEquipment  int `json:"id_equipment"`
+	IDEnterprise int `json:"id_enterprise"` // 0 from a read-api that predates t-device-resolver-enterprise
 }
 
-// Resolve implements birthbind.DeviceResolver: device_key → (id_equipment, ok).
+// Resolve implements birthbind.DeviceResolver: device_key → (device, ok).
 // Cache-first; on a miss it calls refdata and caches the outcome (positive or
 // negative). Fail-closed on every error path.
-func (r *Resolver) Resolve(deviceKey string) (int, bool) {
+func (r *Resolver) Resolve(deviceKey string) (birthbind.Device, bool) {
 	if deviceKey == "" {
-		return 0, false
+		return birthbind.Device{}, false
 	}
-	if id, ok, hit := r.fromCache(deviceKey); hit {
-		return id, ok
+	if dev, ok, hit := r.fromCache(deviceKey); hit {
+		return dev, ok
 	}
-	id, ok := r.fetch(deviceKey)
-	r.store(deviceKey, id, ok)
-	return id, ok
+	dev, ok := r.fetch(deviceKey)
+	r.store(deviceKey, dev, ok)
+	return dev, ok
 }
 
 // fromCache returns a live cache line, if any. hit=false ⇒ caller must fetch.
-func (r *Resolver) fromCache(deviceKey string) (id int, ok, hit bool) {
+func (r *Resolver) fromCache(deviceKey string) (dev birthbind.Device, ok, hit bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e, present := r.cache[deviceKey]
 	if !present || time.Now().After(e.expires) {
-		return 0, false, false
+		return birthbind.Device{}, false, false
 	}
-	return e.id, e.ok, true
+	return e.dev, e.ok, true
 }
 
 // store caches an outcome with the TTL appropriate to its polarity.
-func (r *Resolver) store(deviceKey string, id int, ok bool) {
+func (r *Resolver) store(deviceKey string, dev birthbind.Device, ok bool) {
 	ttl := r.negTTL
 	if ok {
 		ttl = r.posTTL
 	}
 	r.mu.Lock()
-	r.cache[deviceKey] = entry{id: id, ok: ok, expires: time.Now().Add(ttl)}
+	r.cache[deviceKey] = entry{dev: dev, ok: ok, expires: time.Now().Add(ttl)}
 	r.mu.Unlock()
 }
 
 // fetch performs the actual HTTP GET. Any non-200-with-id outcome ⇒ ok=false.
-func (r *Resolver) fetch(deviceKey string) (int, bool) {
+func (r *Resolver) fetch(deviceKey string) (birthbind.Device, bool) {
+	none := birthbind.Device{}
 	if r.baseURL == "" {
 		r.logger.Warn("refdataresolver: no REFDATA_URL — cannot resolve", slog.String("device_key", deviceKey))
-		return 0, false
+		return none, false
 	}
 	// ADR-0046 resolve-by-device_key: device_key is globally unique (tenant-
 	// prefixed), so a multi-tenant edge-transformer resolves ANY tenant's key
@@ -166,7 +171,7 @@ func (r *Resolver) fetch(deviceKey string) (int, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		r.logger.Warn("refdataresolver: build request failed", slog.String("device_key", deviceKey), slog.String("err", err.Error()))
-		return 0, false
+		return none, false
 	}
 	if r.internalKey != "" {
 		req.Header.Set("X-Internal-Key", r.internalKey)
@@ -175,7 +180,7 @@ func (r *Resolver) fetch(deviceKey string) (int, bool) {
 	resp, err := r.client.Do(req)
 	if err != nil {
 		r.logger.Warn("refdataresolver: request failed (fail-closed)", slog.String("device_key", deviceKey), slog.String("err", err.Error()))
-		return 0, false
+		return none, false
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
@@ -186,23 +191,24 @@ func (r *Resolver) fetch(deviceKey string) (int, bool) {
 		if err := json.Unmarshal(body, &out); err != nil || out.IDEquipment <= 0 {
 			r.logger.Warn("refdataresolver: 200 with unusable body (fail-closed)",
 				slog.String("device_key", deviceKey), slog.String("body", string(body)))
-			return 0, false
+			return none, false
 		}
 		r.logger.Debug("refdataresolver: resolved",
-			slog.String("device_key", deviceKey), slog.Int("id_equipment", out.IDEquipment))
-		return out.IDEquipment, true
+			slog.String("device_key", deviceKey), slog.Int("id_equipment", out.IDEquipment),
+			slog.Int("id_enterprise", out.IDEnterprise))
+		return birthbind.Device{IDEquipment: out.IDEquipment, IDEnterprise: out.IDEnterprise}, true
 	case http.StatusNotFound:
 		// Expected miss: no active mapping. Negative-cached briefly.
 		r.logger.Info("refdataresolver: device_key not mapped (rebirth on DDATA)",
 			slog.String("device_key", deviceKey), slog.Int("enterprise", r.enterpriseID))
-		return 0, false
+		return none, false
 	case http.StatusUnauthorized:
 		r.logger.Warn("refdataresolver: 401 from refdata — check REFDATA_INTERNAL_KEY", slog.String("device_key", deviceKey))
-		return 0, false
+		return none, false
 	default:
 		r.logger.Warn("refdataresolver: unexpected status (fail-closed)",
 			slog.String("device_key", deviceKey), slog.Int("status", resp.StatusCode))
-		return 0, false
+		return none, false
 	}
 }
 

@@ -233,13 +233,14 @@ type Config struct {
 	CountersOnlyRefreshSeconds int
 
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
-	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
-	// — properties["counter_role"] + device_key → id_equipment via
-	// core.device_bindings (ADR-0061) — and cached as (edge_node, alias) → (id_equipment, role).
-	// On DDATA a bound alias routes DIRECTLY to Calc with NO metric-name string
-	// parsing; an unbound alias fails closed (rebirth + drop, ADR-0042). OFF
-	// (default) keeps the legacy string-parse path byte-identical — a no-op
-	// deploy. Mirrors the SHADOW_EMIT_*/CALC_CUTOVER_* reversible-flip discipline.
+	// When ON (ADR-0061 P2), every (N/D)BIRTH's counters are bound through their
+	// DECLARED device_key → (id_equipment, id_enterprise) via core.device_bindings,
+	// cached per (group_id, edge_node), and every outbox analytics envelope is
+	// STAMPED with metrics[].id_equipment/role + id_enterprise
+	// (cmd/edge-transformer/birthbind_wiring.go). Stamping changes no write:
+	// stream-engine verifies the ids against its current resolver until a tenant
+	// is switched. Unbound metrics carry no ids (never guessed). OFF (default)
+	// keeps the envelope byte-identical — a no-op deploy.
 	BirthBoundRouting bool
 	// BirthBoundDeviceMap is the operator-supplied device_key → id_equipment
 	// resolver used by the birth binder. It is the INTERIM edge seam (like

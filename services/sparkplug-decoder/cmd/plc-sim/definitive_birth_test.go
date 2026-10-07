@@ -56,7 +56,8 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 	// CONSUMER side: bind the node-scoped birth (deviceID empty; device_key rides
 	// as a metric property, contract §3).
 	table := birthbind.NewTable(resolver)
-	bound, skipped := table.ApplyBirth(edgeNode, "", pl, nil)
+	res := table.ApplyBirth(groupID, edgeNode, "", true, pl, nil)
+	bound, skipped := res.Bound, res.Skipped()
 	// Three counters × three resolvable device_keys = 9 bindings. Counters whose
 	// device_key is NOT in the resolver (the other lines/members) fail closed →
 	// skipped, never guessed.
@@ -82,7 +83,7 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 		{aliasFor(lineIdx["CPACK/SC/LINHAS/L3/PTH"], 3), 61, birthbind.RoleScrap},
 	}
 	for _, c := range cases {
-		b, ok := table.Lookup(edgeNode, c.alias)
+		b, ok := table.Lookup(groupID, edgeNode, c.alias)
 		if !ok {
 			t.Errorf("Lookup(alias=%d): no binding — a birth-bound flip would DROP this counter", c.alias)
 			continue
@@ -110,7 +111,7 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 	if m.GetName() != "" || m.GetProperties() != nil {
 		t.Fatalf("DDATA metric must be alias+value only (name=%q, props=%v)", m.GetName(), m.GetProperties())
 	}
-	b, ok := table.Lookup(edgeNode, m.GetAlias())
+	b, ok := table.Lookup(groupID, edgeNode, m.GetAlias())
 	if !ok || b.IDEquipment != 53 || b.Role != birthbind.RoleGross {
 		t.Fatalf("DDATA alias=%d routed to (id=%d, role=%s, ok=%v), want (53, gross, true)",
 			m.GetAlias(), b.IDEquipment, b.Role, ok)
@@ -133,7 +134,7 @@ func TestDefinitiveBirth_FlagOffNoProperties(t *testing.T) {
 	body, _ := sparkplug.EncodeSim(ms, &seq, true)
 	pl, _ := sparkplug.Decode(body)
 	table := birthbind.NewTable(birthbind.MapResolver{"CPACK-SC-LINHAS-L5-BREYER": 53})
-	if bound, _ := table.ApplyBirth("plc-sim", "", pl, nil); bound != 0 {
+	if bound := table.ApplyBirth(groupID, "plc-sim", "", true, pl, nil).Bound; bound != 0 {
 		t.Fatalf("flag OFF: ApplyBirth bound = %d, want 0 (no role properties to bind)", bound)
 	}
 }
