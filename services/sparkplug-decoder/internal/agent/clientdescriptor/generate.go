@@ -682,6 +682,7 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 				MetricSuffix: m.Suffix,
 				Type:         m.Type,
 				DeviceKey:    dk,
+				Role:         m.Role,
 			})
 		}
 		// A line's line_roles add indexed count leaves the class template can't
@@ -787,6 +788,7 @@ func lineRoleMetrics(seg, deviceKey string, roles []LineRole) []agentcfg.TagMapE
 			MetricSuffix: fmt.Sprintf("%s/Admin/%s/%d/Unit", seg, leaf, r.CountIndex),
 			Type:         "double",
 			DeviceKey:    deviceKey,
+			Role:         tenantprofile.DefaultRole(leaf),
 		})
 	}
 	return out

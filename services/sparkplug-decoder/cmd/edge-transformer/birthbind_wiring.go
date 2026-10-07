@@ -113,7 +113,7 @@ func (b *birthBinder) stamp(env *analyticspub.Envelope, group, edgeNode string) 
 		}
 		id := bd.IDEquipment
 		m.IDEquipment = &id
-		m.Role = "counter." + string(bd.Role)
+		m.Role = bd.Declared
 		stamped++
 		switch {
 		case bd.IDEnterprise == 0:

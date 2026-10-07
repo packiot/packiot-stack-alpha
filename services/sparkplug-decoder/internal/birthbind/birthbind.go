@@ -31,6 +31,7 @@ package birthbind
 
 import (
 	"log/slog"
+	"regexp"
 	"sync"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
@@ -42,6 +43,7 @@ import (
 const (
 	PropCounterRole = "counter_role"
 	PropDeviceKey   = "device_key"
+	PropRole        = "role" // ADR-0061 D2: the declared meaning of ANY metric
 )
 
 // Role is the closed counter-role enum (contract §4). It is the ONLY place
@@ -70,13 +72,18 @@ func ParseRole(s string) (Role, bool) {
 	}
 }
 
+// roleShape is the D9 role syntax (dot-separated lowercase words). The catalogue
+// itself is enforced at onboarding (tenantprofile.ValidRole) and by consumers.
+var roleShape = regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`)
+
 // Binding is the birth-declared routing target for one metric: which equipment
 // (and so which tenant) the counter belongs to and its semantic role. This is
 // what a DATA metric resolves to — no name parsing, no index, no positional logic.
 type Binding struct {
 	IDEquipment  int
-	IDEnterprise int // 0 = the resolver did not say (MapResolver); never guessed
-	Role         Role
+	IDEnterprise int    // 0 = the resolver did not say (MapResolver); never guessed
+	Role         Role   // counter role (gross|net|scrap); "" for a non-counter
+	Declared     string // ADR-0061 D9 role (counter.gross, state.current, …)
 }
 
 // Device is what a device_key resolves to: the active core.device_bindings row.
@@ -176,16 +183,30 @@ func (t *Table) ApplyBirth(group, edgeNode, deviceID string, nbirth bool, p *spa
 	}
 
 	for _, m := range p.GetMetrics() {
-		roleStr, ok := sparkplug.StringProperty(m, PropCounterRole)
-		if !ok {
-			continue
+		declared, _ := sparkplug.StringProperty(m, PropRole)
+		roleStr, isCounter := sparkplug.StringProperty(m, PropCounterRole)
+		if !isCounter && declared == "" {
+			continue // not contract-governed: no role declared
 		}
-		role, ok := ParseRole(roleStr)
-		if !ok {
+		var role Role
+		if isCounter {
+			var ok bool
+			if role, ok = ParseRole(roleStr); !ok {
+				res.BadRole++
+				logf(logger).Warn("birthbind: metric declares unknown counter_role — not bound",
+					slog.String("group_id", group), slog.String("edge_node", edgeNode),
+					slog.String("metric", m.GetName()), slog.String("counter_role", roleStr))
+				continue
+			}
+			if declared == "" {
+				declared = "counter." + string(role)
+			}
+		}
+		if !roleShape.MatchString(declared) {
 			res.BadRole++
-			logf(logger).Warn("birthbind: metric declares unknown counter_role — not bound",
+			logf(logger).Warn("birthbind: metric declares a malformed role — not bound",
 				slog.String("group_id", group), slog.String("edge_node", edgeNode),
-				slog.String("metric", m.GetName()), slog.String("counter_role", roleStr))
+				slog.String("metric", m.GetName()), slog.String("role", declared))
 			continue
 		}
 		if m.Alias == nil {
@@ -209,7 +230,7 @@ func (t *Table) ApplyBirth(group, edgeNode, deviceID string, nbirth bool, p *spa
 				slog.String("device_key", deviceKey), slog.String("metric", m.GetName()))
 			continue
 		}
-		b := Binding{IDEquipment: dev.IDEquipment, IDEnterprise: dev.IDEnterprise, Role: role}
+		b := Binding{IDEquipment: dev.IDEquipment, IDEnterprise: dev.IDEnterprise, Role: role, Declared: declared}
 		nb.byAlias[m.GetAlias()] = b
 		if name := m.GetName(); name != "" {
 			nb.byName[name] = b

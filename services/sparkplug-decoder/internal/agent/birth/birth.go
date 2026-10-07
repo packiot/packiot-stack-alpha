@@ -69,6 +69,9 @@ const (
 	PropCounterRole = "counter_role"
 	PropSourceRef   = "source_ref"
 	PropDeviceKey   = "device_key"
+	// PropRole is the DECLARED meaning of any metric (ADR-0061 D2/D9: counter.gross,
+	// state.current, speed.nominal, …), from the descriptor's metric template.
+	PropRole = "role"
 )
 
 // leafRole maps the canonical count-leaf kind (the `Prod<Kind>Count` segment) to
@@ -130,14 +133,30 @@ func CounterMetricProps(name string) (*sparkplug.PropertySet, bool) {
 // CounterMetricPropsWithDeviceKey adds the DECLARED device_key (ADR-0061: identity declared, never derived).
 // An empty declaredKey adds no device_key property at all — never a name-derived one.
 func CounterMetricPropsWithDeviceKey(name, declaredKey string) (*sparkplug.PropertySet, bool) {
-	leaf, ok := parseCounterLeaf(name)
-	if !ok {
+	return MetricProps(name, declaredKey, "")
+}
+
+// MetricProps builds the definitive-birth PropertySet for any metric (ADR-0061 D1/D2):
+//   - a canonical count leaf: counter_role + source_ref (contract §3) + role (the declared one, else
+//     counter.<counter_role>);
+//   - any other metric with a DECLARED role (state.current, speed.nominal, …): role;
+//   - plus device_key whenever one is declared.
+//
+// A non-counter with no declared role gets NO properties (ok=false) — byte-clean.
+func MetricProps(name, declaredKey, declaredRole string) (*sparkplug.PropertySet, bool) {
+	role := strings.TrimSpace(declaredRole)
+	ps := &sparkplug.PropertySet{}
+	if leaf, ok := parseCounterLeaf(name); ok {
+		if role == "" {
+			role = "counter." + leaf.role
+		}
+		ps.Keys = append(ps.Keys, PropCounterRole, PropSourceRef)
+		ps.Values = append(ps.Values, strProp(leaf.role), strProp(leaf.sourceRef))
+	} else if role == "" {
 		return nil, false
 	}
-	ps := &sparkplug.PropertySet{
-		Keys:   []string{PropCounterRole, PropSourceRef},
-		Values: []*sparkplug.PropertyValue{strProp(leaf.role), strProp(leaf.sourceRef)},
-	}
+	ps.Keys = append(ps.Keys, PropRole)
+	ps.Values = append(ps.Values, strProp(role))
 	if k := strings.TrimSpace(declaredKey); k != "" {
 		ps.Keys = append(ps.Keys, PropDeviceKey)
 		ps.Values = append(ps.Values, strProp(k))

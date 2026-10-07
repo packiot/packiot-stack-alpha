@@ -266,3 +266,32 @@ func metricWithRole(name string, alias uint64, role, deviceKey string) *sparkplu
 	}
 	return &sparkplug.Metric{Name: ptr(name), Alias: ptr(alias), Properties: ps}
 }
+
+// TestApplyBirth_DeclaredRolesBeyondCounters: a non-counter with a declared role and
+// key binds (ADR-0061 D2), a counter's Declared defaults to counter.<role>, and a
+// malformed role is rejected.
+func TestApplyBirth_DeclaredRolesBeyondCounters(t *testing.T) {
+	const k = "dk_000000000000000000000000000000d1"
+	table := birthbind.NewTable(birthbind.MapResolver{k: 7})
+	withRole := func(name string, alias uint64, role string) *sparkplug.Metric {
+		sv := func(v string) *sparkplug.PropertyValue {
+			return &sparkplug.PropertyValue{Value: &sparkplug.PropertyValue_StringValue{StringValue: v}}
+		}
+		return &sparkplug.Metric{Name: ptr(name), Alias: ptr(alias), Properties: &sparkplug.PropertySet{
+			Keys: []string{birthbind.PropRole, birthbind.PropDeviceKey}, Values: []*sparkplug.PropertyValue{sv(role), sv(k)}}}
+	}
+	res := table.ApplyBirth("G", "n", "", true, &sparkplug.Payload{Metrics: []*sparkplug.Metric{
+		withRole("L/Status/StateCurrent", 1, "state.current"),
+		withRole("L/Status/Weird", 2, "Not A Role"),
+		metricWithRole("L/Admin/ProdConsumedCount/1/Unit", 3, "gross", k),
+	}}, nil)
+	if res.Bound != 2 || res.BadRole != 1 {
+		t.Fatalf("ApplyBirth = %+v, want 2 bound / 1 bad_role", res)
+	}
+	if b, _ := table.Lookup("G", "n", 1); b.Declared != "state.current" || b.Role != "" || b.IDEquipment != 7 {
+		t.Errorf("state binding = %+v", b)
+	}
+	if b, _ := table.Lookup("G", "n", 3); b.Declared != "counter.gross" || b.Role != birthbind.RoleGross {
+		t.Errorf("counter binding = %+v", b)
+	}
+}
