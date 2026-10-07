@@ -33,7 +33,7 @@
 // DEVICE_KEY — DECLARED first, derivation as the bridge (ADR-0046 task #18)
 // ------------------------------------------------------------------------
 // clientdescriptor.Equipment now carries an explicit `device_key`
-// (Equipment.DeviceKey / ResolvedDeviceKey), persisted to packml_register.device_key
+// (Equipment.DeviceKey / ResolvedDeviceKey), bound in core.device_bindings (ADR-0061)
 // and stamped onto each agent tag-map entry (agentcfg.TagMapEntry.DeviceKey). When
 // that DECLARED key reaches here (session passes it to
 // CounterMetricPropsWithDeviceKey), it is AUTHORITATIVE — identity is DECLARED, not

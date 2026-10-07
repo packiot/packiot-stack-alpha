@@ -176,17 +176,16 @@ func TestGenerateRegisterSQL(t *testing.T) {
 		!strings.Contains(sql, "FROM equipments e") {
 		t.Errorf("register SQL must backfill id_site/id_area from equipments; got:\n%s", sql)
 	}
-	// The INSERT must carry the device_key column (ADR-0046 §2 declared identity).
-	if !strings.Contains(sql, "device_key)") {
-		t.Errorf("register INSERT must include the device_key column; got:\n%s", sql)
+	// ADR-0061 step c: the register never carries device_key (identity = core.device_bindings).
+	if strings.Contains(sql, "device_key") {
+		t.Errorf("register SQL must not write device_key (ADR-0061 step c); got:\n%s", sql)
 	}
-	// A line (tp=3) → id_unit NULL; a member (tp=1) → id_unit = its id. Each row now
-	// ends with the resolved device_key (dash form of the topic).
-	if !strings.Contains(sql, "(3, 47, 'CPACK/SC/LINHAS/L5', true, NULL, 'CPACK-SC-LINHAS-L5')") {
-		t.Errorf("expected L5 line row with NULL id_unit + device_key; got:\n%s", sql)
+	// A line (tp=3) → id_unit NULL; a member (tp=1) → id_unit = its id.
+	if !strings.Contains(sql, "(3, 47, 'CPACK/SC/LINHAS/L5', true, NULL)") {
+		t.Errorf("expected L5 line row with NULL id_unit; got:\n%s", sql)
 	}
-	if !strings.Contains(sql, "(3, 53, 'CPACK/SC/LINHAS/L5/BREYER', true, 53, 'CPACK-SC-LINHAS-L5-BREYER')") {
-		t.Errorf("expected L5/BREYER member row id_unit=53 + device_key; got:\n%s", sql)
+	if !strings.Contains(sql, "(3, 53, 'CPACK/SC/LINHAS/L5/BREYER', true, 53)") {
+		t.Errorf("expected L5/BREYER member row id_unit=53; got:\n%s", sql)
 	}
 	// One VALUES row per equipment.
 	rows := strings.Count(sql, "true,")
