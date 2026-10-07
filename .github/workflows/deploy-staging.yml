@@ -143,11 +143,11 @@ jobs:
         # deploy-mounted file (slack_api_url_file in alertmanager.yml). Build it
         # from packiot/staging/app.slack_api_url when that key is set; otherwise
         # write nothing — the `alerting` compose profile stays parked, so the
-        # missing file is harmless. TO GO LIVE (no code change): (1) put the
-        # webhook URL in the packiot/staging/app secret under `slack_api_url`,
-        # (2) add `alerting` to COMPOSE_PROFILES in /opt/packiot/.env. Next deploy
-        # materializes the file and starts alertmanager; Prometheus is already
-        # wired to it.
+        # missing file is harmless. TO GO LIVE: put the webhook URL in the
+        # packiot/staging/app secret under `slack_api_url`. That is the only step:
+        # "Resolve compose profiles" adds `alerting` whenever this file exists, so
+        # the next deploy materializes it and starts alertmanager (Prometheus is
+        # already wired to alertmanager:9093). Removing the key parks it again.
         run: |
           set -euo pipefail
           URL=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app --region us-east-1 --query SecretString --output text | jq -r '.slack_api_url // ""')
@@ -194,8 +194,14 @@ jobs:
         # flag, reads .env) still expected its one-shots → gate red on 10-06 once
         # superset-db-init/superset-init were gone. It would also have blocked the
         # documented `alerting` switch. .env stays the switch; shared-tee is always on.
+        # `alerting` follows the webhook: on when the Materialize step wrote a non-empty
+        # monitoring/alertmanager/slack_api_url (an alertmanager without it can't start
+        # and would redden the deploy), off otherwise.
         run: |
           P=$(grep -E '^COMPOSE_PROFILES=' .env | tail -1 | cut -d= -f2- | tr -d "\"'")
+          if [ -s monitoring/alertmanager/slack_api_url ] && ! echo ",$P," | grep -q ',alerting,'; then
+            P="${P:+$P,}alerting"
+          fi
           echo "COMPOSE_PROFILES=shared-tee${P:+,$P}" >> "$GITHUB_ENV"
           echo "compose profiles: shared-tee${P:+,$P}"
 
