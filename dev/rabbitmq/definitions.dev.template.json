@@ -235,7 +235,7 @@
       "vhost": "/",
       "destination": "stream-engine-q-retry-30s",
       "destination_type": "queue",
-      "routing_key": "#",
+      "routing_key": "sparkplug.data",
       "arguments": {}
     },
     {
@@ -243,7 +243,7 @@
       "vhost": "/",
       "destination": "stream-engine-q-failed",
       "destination_type": "queue",
-      "routing_key": "#",
+      "routing_key": "sparkplug.data",
       "arguments": {}
     },
     {
