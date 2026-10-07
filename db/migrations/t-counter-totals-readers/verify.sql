@@ -35,4 +35,13 @@ SELECT 'V8 dual-written rows where total and val disagree beyond float4 spacing:
 SELECT 'V9 bronze rows in the last 10 min with *_total written (after F1b deploy, if BRONZE_RAW_APPEND: > 0)',
        count(*) FILTER (WHERE coalesce(net_production_total, gross_production_total, scrap_total) IS NOT NULL)
   FROM bronze.equipment_values_raw WHERE ts_value > now() - interval '10 minutes';
-SELECT 'V10 live_status rows (sanity: > 0)', count(*) FROM bi.live_status;
+-- bi.live_status runs as its owner bi_owner and joins the RLS-fenced core.equipments, so an unscoped session sees
+-- 0 rows by design ("tenant fence external"); count as one tenant. Tenant 3 = the largest client.
+SET app.tenant_id = '3';
+SELECT 'V10 live_status rows for tenant 3 (sanity: > 0)', count(*) FROM bi.live_status;
+SELECT 'V11 live_status tenant-3 rows whose total is not exact-or-fallback: 0',
+       count(*) FROM bi.live_status
+        WHERE gross_production_total IS DISTINCT FROM gross_production_val::float8
+          AND abs(gross_production_total - gross_production_val) > greatest(1, abs(gross_production_total) * 2^(-23));
+RESET app.tenant_id;
+SELECT 'V12 unscoped live_status rows (tenant fence holds): 0', count(*) FROM bi.live_status;
