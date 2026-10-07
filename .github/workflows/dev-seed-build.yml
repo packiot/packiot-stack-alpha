@@ -1,0 +1,98 @@
+name: Dev seed build
+
+# ADR-0060 phase D: build the anonymized dev-database seed image on the staging runner and push it to the
+# private GHCR package ghcr.io/packiot/devseed. Raw data never leaves the box: dev/seed/extract.sh reads
+# staging read-only (default_transaction_read_only), anonymizes with the HMAC key from Secrets Manager
+# (packiot/staging/devseed), and leakgate.py must pass before anything is packaged. Only the anonymized
+# payload goes into the image; $OUT/private (tenant tokens, raw inventory) is deleted on every exit.
+#
+# Developers pull it with their own GitHub login (read:packages); no shared token. The push uses this
+# workflow's GITHUB_TOKEN (packages: write), same as build-postgres.yml.
+#
+#   gh workflow run dev-seed-build.yml                      # full build + push
+#   gh workflow run dev-seed-build.yml -f row_limit=50 -f push=false   # smoke test, nothing pushed
+
+on:
+  workflow_dispatch:
+    inputs:
+      row_limit:
+        description: 'LIMIT per table for a smoke test (empty = full seed)'
+        required: false
+        default: ''
+      push:
+        description: 'push the image to GHCR'
+        type: boolean
+        default: true
+
+concurrency:
+  group: dev-seed-build
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: [self-hosted, staging, linux, arm64]
+    timeout-minutes: 90
+    env:
+      IMAGE: ghcr.io/packiot/devseed
+    steps:
+      - name: Output dir
+        # the `runner` context isn't available in job-level env; RUNNER_TEMP is
+        run: echo "OUT=$RUNNER_TEMP/devseed" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Validate classification against the committed snapshot
+        run: python3 dev/seed/validate.py
+
+      - name: Extract → anonymize → leak gate (read-only on staging)
+        env:
+          DEVSEED_ROW_LIMIT: ${{ inputs.row_limit }}
+        run: |
+          set -euo pipefail
+          KEY=$(aws secretsmanager get-secret-value --secret-id packiot/staging/devseed --region us-east-1 \
+                  --query SecretString --output text | jq -r '.hmac_key // ""')
+          [ -n "$KEY" ] || { echo "ABORT: packiot/staging/devseed has no hmac_key"; exit 1; }
+          echo "::add-mask::$KEY"
+          envget() { grep -E "^$1=" /opt/packiot/.env | tail -1 | cut -d= -f2- | tr -d "\"'"; }
+          U=$(envget POSTGRES_USER); P=$(envget POSTGRES_PASSWORD); H=$(envget POSTGRES_HOST_UPSTREAM)
+          [ -n "$U" ] && [ -n "$P" ] && [ -n "$H" ] || { echo "ABORT: POSTGRES_* missing in /opt/packiot/.env"; exit 1; }
+          echo "::add-mask::$P"
+          [ -n "$DEVSEED_ROW_LIMIT" ] || unset DEVSEED_ROW_LIMIT
+          PGURL="postgresql://$U:$(jq -rn --arg p "$P" '$p|@uri')@$H:5432/packiot_analytics" \
+            DEVSEED_HMAC_KEY="$KEY" bash dev/seed/extract.sh
+          jq '{snapshot_end, since, tenant, tables: (.row_counts|length), rows: ([.row_counts[]]|add)}' "$OUT/payload/metadata.json"
+
+      - name: Build the seed image
+        id: build
+        run: |
+          set -euo pipefail
+          CTX="$OUT/payload"
+          cp dev/seed/load.sh dev/seed/Dockerfile "$CTX/"
+          TAG=$(jq -r '.snapshot_end[0:10]' "$CTX/metadata.json")
+          [ -z "${{ inputs.row_limit }}" ] || TAG="$TAG-smoke"
+          docker build -t "$IMAGE:$TAG" "$CTX"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          docker image inspect "$IMAGE:$TAG" --format 'image {{.Id}} size {{.Size}}'
+
+      - name: Push to GHCR (private)
+        if: inputs.push
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:${{ steps.build.outputs.tag }}"
+          if [ -z "${{ inputs.row_limit }}" ]; then
+            docker tag "$IMAGE:${{ steps.build.outputs.tag }}" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
+
+      - name: Delete the build output (tokens + raw inventory)
+        if: always()
+        run: '[ -n "$OUT" ] && rm -rf "$OUT"'
