@@ -73,13 +73,18 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          CTX="$OUT/payload"
+          # context = the anonymized payload + load.sh ONLY ($OUT/private never enters the build context)
+          CTX="$OUT/ctx"; mkdir -p "$CTX"; mv "$OUT/payload" "$CTX/payload"
           cp dev/seed/load.sh dev/seed/Dockerfile "$CTX/"
-          TAG=$(jq -r '.snapshot_end[0:10]' "$CTX/metadata.json")
+          echo "CTX=$CTX" >> "$GITHUB_ENV"
+          TAG=$(jq -r '.snapshot_end[0:10]' "$CTX/payload/metadata.json")
           [ -z "${{ inputs.row_limit }}" ] || TAG="$TAG-smoke"
-          docker build -t "$IMAGE:$TAG" "$CTX"
+          # multi-arch needs the docker-container driver; COPY-only Dockerfile → no QEMU for the foreign arch
+          docker buildx inspect devseed >/dev/null 2>&1 || docker buildx create --name devseed --driver docker-container >/dev/null
+          # native (arm64) image into the local daemon for the boot test; the multi-arch push reuses its cache
+          docker buildx build --builder devseed --platform linux/arm64 --load -t "$IMAGE:$TAG" "$CTX"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          docker image inspect "$IMAGE:$TAG" --format 'image {{.Id}} size {{.Size}}'
+          docker image inspect "$IMAGE:$TAG" --format 'image {{.Id}} {{.Architecture}} size {{.Size}}'
 
       - name: Boot test (the image must load, generated tables must be populated)
         run: |
@@ -115,11 +120,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$IMAGE:${{ steps.build.outputs.tag }}"
-          if [ -z "${{ inputs.row_limit }}" ]; then
-            docker tag "$IMAGE:${{ steps.build.outputs.tag }}" "$IMAGE:latest"
-            docker push "$IMAGE:latest"
-          fi
+          # one manifest list for linux/amd64 (most dev laptops) + linux/arm64 (Graviton, Apple Silicon): the
+          # first published seed was arm64-only and died with "exec format error" on an amd64 laptop
+          TAGS=(-t "$IMAGE:${{ steps.build.outputs.tag }}")
+          [ -n "${{ inputs.row_limit }}" ] || TAGS+=(-t "$IMAGE:latest")
+          docker buildx build --builder devseed --platform linux/amd64,linux/arm64 --push "${TAGS[@]}" "$CTX"
+          docker buildx imagetools inspect "$IMAGE:${{ steps.build.outputs.tag }}" | grep -E 'Platform:' 
           docker logout ghcr.io >/dev/null 2>&1 || true
 
       - name: Delete the build output (tokens + raw inventory)

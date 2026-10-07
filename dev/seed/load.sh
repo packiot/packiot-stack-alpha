@@ -15,7 +15,10 @@ grep -vE '^(CREATE|ALTER) ROLE postgres[ ;]' "$SEED/roles.sql" | "${PSQL[@]}" -d
   FOR r IN SELECT rolname FROM pg_roles WHERE rolcanlogin AND rolname <> current_user LOOP
     EXECUTE format('ALTER ROLE %I PASSWORD %L', r.rolname, 'dev'); END LOOP; END \$\$;"
 
-createdb --username "$POSTGRES_USER" "$DB"
+# the dev env sets POSTGRES_DB=packiot_analytics, so the image entrypoint may have created it (empty) already
+if ! "${PSQL[@]}" -d postgres -At -c "SELECT 1 FROM pg_database WHERE datname = '$DB'" | grep -q 1; then
+  createdb --username "$POSTGRES_USER" "$DB"
+fi
 "${PSQL[@]}" -d "$DB" -c "CREATE EXTENSION IF NOT EXISTS timescaledb; SELECT timescaledb_pre_restore();" >/dev/null
 # pg_restore reports benign "already exists" for the extension; anything else fails the init
 if ! pg_restore --username "$POSTGRES_USER" -d "$DB" "$SEED/schema.dump" 2> /tmp/restore.err; then
