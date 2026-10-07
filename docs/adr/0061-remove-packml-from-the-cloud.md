@@ -110,6 +110,46 @@ Decision (user, 2026-10-07).
   (`services/**`, `edge-api/src`, `csadmin/src`, `operator/src`, `db/migrations` newer than P5). Explicit allowlist:
   v1 deprecation shims until they expire, and historical docs.
 
+### D9 — Role catalogue (decided 2026-10-07)
+Roles are only for **telemetry and commands**. Per-equipment **configuration** lives in `core.equipments` / the descriptor
+and reaches the edge in agent config, never as metrics (user decision). Every row was mapped from the code that dispatches
+on it today (ADR-0061 P0 research).
+
+| Role | Replaces (inferred today) | Today's consumer |
+|---|---|---|
+| `counter.gross` / `counter.net` / `counter.scrap` | leaf `ProdConsumedCount` / `ProdProcessedCount` / `ProdDefectiveCount` | `writers/equipment_values.go`, rollups |
+| `counter.custom` | 30770 (enable) + 30772 (value) | decoder calc |
+| `state.current` | leaf `StateCurrent` from the PLC | events deriver, availability |
+| `state.derived_running` | `StateCurrent = 6` synthesized by the decoder calc | same consumers, now distinguishable |
+| `mode.current` | leaf `UnitModeCurrent` | `equipment_values.mode/sub_mode` |
+| `speed.current` / `speed.nominal` | leaf `CurMachSpeed` / `MachSpeed` | UNS live metrics / decoder calc |
+| `po.create` | 30805 | `pocontrol/createpo.go` |
+| `po.start` (`previous = finish`) | 30800 | `pocontrol` |
+| `po.start` (`previous = pause`) | 30802 (user: keep behaviour; the "resume" doc comment is wrong) | `pocontrol/decide.go` |
+| `po.stop` / `po.pause` | 30801 / 30803 | `pocontrol` |
+| `po.setup.begin` / `po.setup.end` | 30861 / 30862 | `pocontrol/setup_userlog.go` |
+| `event.justify` | 30810 | `pocontrol/events_justify.go` |
+| `event.manual.create` / `event.manual.update` | 30811 / 30812 | same |
+| `event.trim.first` / `event.trim.second` | 30813 / 30814 | same |
+| `counter.scrap.reset` | 30820 | same |
+| `analog.values` | 30850 | `writers/po_parameter.go` |
+| `audit.user_log` | 30880 | `pocontrol/setup_userlog.go` |
+
+**Configuration, not roles (moved to columns / agent config):** 30701 ideal speed (`equipments.production_speed` / PO
+ideal speed), 30702 lead machine (`equipments.lead_machine`, already the cloud's source), 30751 stop threshold time
+(`equipments.stop_threshold_time`, already the cloud's source), 30710 counter multiplier, 30750 speed threshold %,
+30758 threshold mode, 30761 external speed source, 30763 auto-status off, `CounterMax`.
+**Dropped:** 30700 (machine order = `equipments.position`; today it has two incompatible payloads), and the ids with no
+cloud handler: 30752, 30753, 30804, 30806–30809, 30815, 30860, 30863, 30870, 30871.
+
+**Descriptor key flow (P0b order, each step safe before the next):** mint a binding when an equipment is created or
+reactivated (edge-api, same transaction; promotion carries the staging key) → key consumers read `core.device_bindings`
+(read-api resolver, decoder birth-binding; register SQL stops writing `device_key`) → the server stamps descriptor keys
+from bindings on every write and before every generate (csadmin carries `device_key` and `line_roles` forward: today a
+Review save drops both) → coverage gate (every descriptor key = its active binding) → agent configs re-pushed with `dk_`
+keys and definitive births enabled (P1) → only then `Validate()` requires `dk_` keys and both name-derivation fallbacks
+are deleted.
+
 ## 3. Phases
 
 | Phase | Deliverable | Unblocks | Done when |
