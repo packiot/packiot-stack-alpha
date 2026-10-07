@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,7 +36,7 @@ func PGTotalizerSeeder(pick func(schema string) *pgxpool.Pool, logger *slog.Logg
 		err := pool.QueryRow(ctx, fmt.Sprintf(`
 			SELECT %[2]s FROM %[1]s.equipment_values
 			 WHERE id_equipment = $1 AND ts_value < $2 AND ts_value >= $3 AND %[2]s IS NOT NULL
-			 ORDER BY ts_value DESC LIMIT 1`, schema, col),
+			 ORDER BY ts_value DESC LIMIT 1`, schema, seedExpr(schema, col)),
 			idEquipment, ts, ts.Add(-seedLookback)).Scan(&abs)
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) && logger != nil {
@@ -59,4 +60,16 @@ func totalizerColumn(kind sparkplug.MetricKind) string {
 		return "scrap_val"
 	}
 	return ""
+}
+
+// seedExpr is the stored totalizer the seed reads. Where the exact float8 *_total exists
+// (writesTotals) it wins, falling back to the float4 *_val for rows written before the
+// dual-write: a float4 seed above 2^24 is off by up to ±16 on today's largest totalizers,
+// and that error became the first increment after every restart. The public route has
+// only *_val.
+func seedExpr(schema, valCol string) string {
+	if !writesTotals(schema) {
+		return valCol
+	}
+	return fmt.Sprintf("COALESCE(%s, %s)", strings.TrimSuffix(valCol, "_val")+"_total", valCol)
 }

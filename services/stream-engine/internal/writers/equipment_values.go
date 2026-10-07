@@ -242,6 +242,26 @@ func shiftFold(withShift bool, idShift, idShiftHour *int, baseArgs int) (cols, v
 	return cols, vals, set, []any{idShift, idShiftHour}
 }
 
+// writesTotals reports whether schema carries the exact float8 *_total counter columns
+// (t-counter-totals-float8: silver.equipment_values + bronze.equipment_values_raw). The
+// legacy "public" route (main pool, see routeForSource) keeps its pre-migration shape until
+// the prod forward-port adds the columns there, so it must never name them.
+func writesTotals(schema string) bool { return schema != "public" }
+
+// totalFold is the exact-totalizer companion to shiftFold: it appends col (the float8
+// *_total next to the float4 *_val) bound to the SAME counter, so the merged row carries the
+// totalizer exactly (float4 rounds above 2^24 = 16,777,216). The *_val column is still
+// written (dual-write) until every reader is on *_total. Returns empty for the public route.
+func totalFold(schema, col string, counter *float64, baseArgs int) (cols, vals, set string, args []any) {
+	if !writesTotals(schema) {
+		return "", "", "", nil
+	}
+	cols = ", " + col
+	vals = fmt.Sprintf(", $%d", baseArgs+1)
+	set = fmt.Sprintf(",\n\t\t\t%[1]s = COALESCE(EXCLUDED.%[1]s, equipment_values.%[1]s)", col)
+	return cols, vals, set, []any{counter}
+}
+
 // CanWrite returns true for kinds whose values land in equipment_values.
 // State/Mode/Counters share the same UPSERT key (ts_value, id_equipment).
 //
@@ -536,24 +556,26 @@ func buildProcessed(
 	faults *string, checkNumber int64, schema string,
 	withShift bool, idShift, idShiftHour *int,
 ) *Query {
-	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12)
+	tCols, tVals, tSet, tArgs := totalFold(schema, "net_production_total", counter, 12)
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12+len(tArgs))
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality, faults, check_number%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s)
+			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality, faults, check_number%s%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			net_production_incr = EXCLUDED.net_production_incr,
 			net_production_val  = COALESCE(EXCLUDED.net_production_val, equipment_values.net_production_val),
 			speed               = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality      = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults              = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number        = EXCLUDED.check_number%s
-	`, schema, sCols, sVals, sSet)
+			check_number        = EXCLUDED.check_number%s%s
+	`, schema, tCols, sCols, tVals, sVals, tSet, sSet)
 	args := []any{
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
 	}
+	args = append(args, tArgs...)
 	args = append(args, sArgs...)
 	return &Query{
 		SQL:  sql,
@@ -569,24 +591,26 @@ func buildConsumed(
 	faults *string, checkNumber int64, schema string,
 	withShift bool, idShift, idShiftHour *int,
 ) *Query {
-	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12)
+	tCols, tVals, tSet, tArgs := totalFold(schema, "gross_production_total", counter, 12)
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12+len(tArgs))
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s)
+			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number%s%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			gross_production_incr = EXCLUDED.gross_production_incr,
 			gross_production_val  = COALESCE(EXCLUDED.gross_production_val, equipment_values.gross_production_val),
 			speed                 = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality        = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults                = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number          = EXCLUDED.check_number%s
-	`, schema, sCols, sVals, sSet)
+			check_number          = EXCLUDED.check_number%s%s
+	`, schema, tCols, sCols, tVals, sVals, tSet, sSet)
 	args := []any{
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
 	}
+	args = append(args, tArgs...)
 	args = append(args, sArgs...)
 	return &Query{
 		SQL:  sql,
@@ -602,23 +626,25 @@ func buildDefective(
 	faults *string, checkNumber int64, schema string,
 	withShift bool, idShift, idShiftHour *int,
 ) *Query {
-	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 11)
+	tCols, tVals, tSet, tArgs := totalFold(schema, "scrap_total", counter, 11)
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 11+len(tArgs))
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, scrap_incr, scrap_val, signal_quality, faults, check_number%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11%s)
+			 tp_equipment, scrap_incr, scrap_val, signal_quality, faults, check_number%s%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11%s%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			scrap_incr     = EXCLUDED.scrap_incr,
 			scrap_val      = COALESCE(EXCLUDED.scrap_val, equipment_values.scrap_val),
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults         = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number   = EXCLUDED.check_number%s
-	`, schema, sCols, sVals, sSet)
+			check_number   = EXCLUDED.check_number%s%s
+	`, schema, tCols, sCols, tVals, sVals, tSet, sSet)
 	args := []any{
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		tpEquipment, value, counter, info.SignalQuality, faults, checkNumber,
 	}
+	args = append(args, tArgs...)
 	args = append(args, sArgs...)
 	return &Query{
 		SQL:  sql,
@@ -765,12 +791,15 @@ func buildRawAppend(
 	case sparkplug.KindProdProcessedCount:
 		cols += ", net_production_incr, net_production_val, speed, signal_quality, faults, check_number"
 		args = append(args, value, counter, curspeed, info.SignalQuality, faults, checkNumber)
+		cols, args = appendTotal(cols, args, schema, "net_production_total", counter)
 	case sparkplug.KindProdConsumedCount:
 		cols += ", gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number"
 		args = append(args, value, counter, curspeed, info.SignalQuality, faults, checkNumber)
+		cols, args = appendTotal(cols, args, schema, "gross_production_total", counter)
 	case sparkplug.KindProdDefectiveCount:
 		cols += ", scrap_incr, scrap_val, signal_quality, faults, check_number"
 		args = append(args, value, counter, info.SignalQuality, faults, checkNumber)
+		cols, args = appendTotal(cols, args, schema, "scrap_total", counter)
 	case sparkplug.KindStateCurrent:
 		cols += ", state, signal_quality, faults, check_number"
 		args = append(args, int(value), info.SignalQuality, faults, checkNumber)
@@ -787,6 +816,14 @@ func buildRawAppend(
 		Desc: fmt.Sprintf("bronze-append %s.equipment_values_raw (%s) eq=%d ts=%s",
 			schema, kind.String(), info.IDEquipment, ts.Format(time.RFC3339Nano)),
 	}
+}
+
+// appendTotal adds the exact float8 *_total column to a Bronze append (same rule as totalFold).
+func appendTotal(cols string, args []any, schema, col string, counter *float64) (string, []any) {
+	if !writesTotals(schema) {
+		return cols, args
+	}
+	return cols + ", " + col, append(args, counter)
 }
 
 // BuildEventMintRaw is the Bronze append companion to BuildEventMint (ADR-0036 B1).
