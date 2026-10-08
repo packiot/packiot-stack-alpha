@@ -15,7 +15,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Queued runs can execute OUT OF ORDER relative to the commits they deploy: on 2026-10-08 the run for an
+  # OLDER commit (5d0742c8, edge-api pin f314057e) executed after the run for the NEWER tip (b91c2ce8, pin
+  # 60c6ad08) and rolled edge-api back — both runs "success", the merged fix silently not running. Each run
+  # deploys its own github.sha, so the last one to finish wins. Gate: when this run starts (after the previous
+  # one finished — workflow-level concurrency), skip it if staging has moved past its commit; the newer
+  # commit's own run owns the deploy. Manual dispatches always deploy.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "push" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          tip=$(gh api "repos/${{ github.repository }}/commits/staging" --jq .sha)
+          status=$(gh api "repos/${{ github.repository }}/compare/${{ github.sha }}...${tip}" --jq .status)
+          echo "this run: ${{ github.sha }}  staging tip: ${tip}  (${status})"
+          if [ "$tip" != "${{ github.sha }}" ] && [ "$status" = "ahead" ]; then
+            echo "::notice::Superseded by ${tip}: that commit's own deploy run owns staging; skipping this one."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true'
     runs-on: [self-hosted, staging, linux, arm64]
 
     steps:
