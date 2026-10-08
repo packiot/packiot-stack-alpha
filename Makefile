@@ -1,4 +1,4 @@
-.PHONY: help init update dev dev-ps dev-down \
+.PHONY: help init update dev dev-ps dev-down dev-reset dev-smoke \
         tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate \
         staging-deploy-key
 
@@ -31,6 +31,7 @@ help:
 	@echo "    dev SVC=\"grafana\" A slice: the service(s) + their depends_on closure"
 	@echo "    dev-ps           Show dev containers"
 	@echo "    dev-down         Stop + remove dev containers (volumes kept)"
+	@echo "    dev-smoke SVC=.. Smoke-check running slices: health + one real request each"
 	@echo ""
 	@echo "  Staging one-time setup"
 	@echo "    staging-deploy-key  Generate + register GitHub deploy key → Secrets Manager"
@@ -73,6 +74,10 @@ dev-down:
 dev-reset:
 	$(DEV_COMPOSE) down --remove-orphans -v
 	$(DEV_COMPOSE) up -d --wait $(if $(strip $(SVC)),$(SVC),$(DEV_TIER0))
+
+# Health + one real request per service (ADR-0060 D8; the same script CI runs). No SVC → Tier 0.
+dev-smoke:
+	bash dev/e2e/smoke.sh $(SVC)
 
 # ── Terraform — staging infrastructure ────────────────────────────────────────
 # Requires: terraform >= 1.10, aws CLI configured with the packiot account.

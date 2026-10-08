@@ -27,3 +27,13 @@ include:
     env_file: .env.dev
   - path: services/seed-replay.yml
     env_file: .env.dev
+  - path: services/edge-api.yml
+    env_file: .env.dev
+  - path: services/barcode-service.yml
+    env_file: .env.dev
+  - path: services/csadmin.yml
+    env_file: .env.dev
+  - path: services/customize.yml
+    env_file: .env.dev
+  - path: services/operator.yml
+    env_file: .env.dev

@@ -31,6 +31,9 @@ services:
       REDIS_URL: redis://app-redis:6379/0
       # /internal/resolve-device for the decoder (device_key → equipment); fail-closed when unset
       INTERNAL_API_KEY: ${DEV_INTERNAL_API_KEY:?set in dev/.env.dev}
+      # Opaque tenant read keys (key:tenant), as staging's QUERY_API_KEYS: the operator's nginx injects one on /v1 and
+      # /v2, and the dev smoke uses it to query without a Cognito login. Fake, dev-only.
+      QUERY_API_KEYS: ${DEV_QUERY_API_KEYS:-dev-read-key-3:3}
     networks:
       default:
         aliases: ["refdata-api"] # SPA nginx templates still use refdata-api:9104

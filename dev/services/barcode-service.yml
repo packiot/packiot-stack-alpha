@@ -1,0 +1,33 @@
+# ── barcode-service (Tier 3) — ADR-0060 P4 ───────────────────────────────────
+# contract (docs/dev/contracts.md §2, contracts/go-services.md §barcode-service):
+#   inputs:   postgres packiot_analytics (production_orders, equipments, box_scans, po_box_counter);
+#             dev Cognito pool JWKS (tenant = the token's custom:id_enterprise)
+#   outputs:  HTTP :8446 (POST /v1/scans, GET /v1/scans/stream SSE, /healthz); writes box_scans + po_box_counter
+#   external: dev Cognito pool (internet). Firebase OFF (FIREBASE_PROJECT_ID="" — F1, fixed in #1558).
+# Mirrors compose.staging.yml `barcode-service`; dev connects to postgres directly (staging: pgbouncer; the service
+# already uses pgx's simple protocol for that, so both paths behave alike).
+services:
+  barcode-service:
+    build: ../../services/barcode-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      DB_NAME: packiot_analytics
+      HTTP_PORT: "8446"
+      FIREBASE_PROJECT_ID: ""
+      COGNITO_ISSUER: ${DEV_COGNITO_ISSUER:?set in dev/.env.dev}
+      COGNITO_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
+      LOG_LEVEL: info
+    ports:
+      - "127.0.0.1:${DEV_BARCODE_PORT:-8446}:8446"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/barcode-service", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
