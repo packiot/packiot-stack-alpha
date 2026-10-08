@@ -1,0 +1,79 @@
+# ── sparkplug-decoder (Tier 2) — ADR-0060 P3 ─────────────────────────────────
+# contract (docs/dev/contracts.md §2):
+#   inputs:   MQTT spBv1.0/# (mosquitto); read-api /internal/resolve-device (device_key → equipment, X-Internal-Key);
+#             postgres (OEE profile, OEE_PROFILE_FROM_DB)
+#   outputs:  RabbitMQ exchange `oee`, routing key `sparkplug.data` (the firehose: tenant rides in the envelope)
+#   external: none in dev — Secrets Manager replaced by CREDS_SOURCE=env, tracing off (no OTEL endpoint)
+# Differences from compose.staging.yml, on purpose:
+#   - F3_PER_TENANT_ROUTING=false: per-tenant keys are the lowercased SparkPlug group id, and the per-tenant queues are
+#     declared from packml_register (ADR-0061 removes it); the firehose needs neither.
+#   - COUNTERS_ONLY_IDEAL_RATES unset: staging keys it by real topic names.
+#   - ONBOARD_API / EDGE_COMMANDS off: no box to onboard or command in dev.
+services:
+  sparkplug-decoder:
+    build: ../../services/sparkplug-decoder
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+      read-api:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: info
+      EDGE_TRANSFORMER_MODE: factory
+      PHASE9_LINE_AGG_ENABLED: "true"
+      CREDS_SOURCE: env
+      RABBITMQ_USER: sparkplug-decoder
+      RABBITMQ_PASSWORD: ${RABBITMQ_SPARKPLUG_DECODER_PASSWORD:?set in dev/.env.dev}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: edge.plc-normalized
+      WORKER_QUEUE: edge-transformer-q
+      RETRY_EXCHANGE: edge.plc-normalized-retry
+      RETRY_QUEUE: edge-transformer-q-retry-30s
+      FAILED_EXCHANGE: dlx.edge.plc-normalized
+      FAILED_QUEUE: edge-transformer-q-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      HEALTH_PORT: "9102"
+      CLIENT_YAML_PATH: /etc/packiot/client.yaml
+      BIRTH_BOUND_RESOLVER: refdata
+      REFDATA_URL: http://read-api:9104
+      REFDATA_INTERNAL_KEY: ${DEV_INTERNAL_API_KEY:?set in dev/.env.dev}
+      MQTT_ENABLED: "true"
+      AMQP_SOURCE_ENABLED: "false"
+      SHADOW_EMIT_PRODUCTION: "false"
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_CLIENT_ID: edge-transformer-dev
+      MQTT_USERNAME: ""
+      MQTT_PASSWORD: ""
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      USE_GO_PORT: "true"
+      ONBOARD_API_ENABLED: "false"
+      OUTBOX_ENABLED: "true"
+      OUTBOX_PATH: /var/lib/edge-transformer/outbox.db
+      OUTBOX_CAP: "100000"
+      SHADOW_EMIT_REFACTORED: "true"
+      SHADOW_EMIT_GO: "false"
+      CALC_CUTOVER_REFACTORED: "true"
+      CALC_NO_SPEED_GUARD_FALLBACK: "true"
+      F3_PER_TENANT_ROUTING: "false"
+      POSTGRES_DB: packiot_analytics
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/packiot_analytics
+      COUNTERS_ONLY_OEE_ENABLED: "true"
+      CALC_COUNTER_SPIKE_MARGIN: "0"
+      OEE_PROFILE_FROM_DB: "true"
+      OEE_PROFILE_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/packiot_analytics
+      EDGE_COMMANDS_ENABLED: "false"
+    volumes:
+      - ../decoder/client.yaml:/etc/packiot/client.yaml:ro
+      - decoder-outbox:/var/lib/edge-transformer
+    healthcheck:
+      # distroless: no shell/curl. The binary has no healthcheck flag, so rely on the restart policy + logs.
+      disable: true
+    restart: unless-stopped
+
+volumes:
+  decoder-outbox:

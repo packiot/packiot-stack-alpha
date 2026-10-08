@@ -118,6 +118,7 @@ Most clients set no `application_name`, so attribution comes from the per-contai
 | F7 | stream-engine identifies itself to Postgres as `oeecloud-worker*` (legacy name) | live: §3 |
 | F8 | `db/migrations/` (creates `core`, `config`, `gold`, `silver`, `bronze`, `serving`, `bi`) has **no runner**; `db-migrate` runs only `edge-api/migrations/` (knex, 56 files) | code: [`ui-services.md`](contracts/ui-services.md) §db-migrate; no CI/Makefile reference applies them |
 | F9 | Grafana's default datasource points at `$POSTGRES_DB` = `packiot` (retired F1 DB); no panel uses it | code: [`ui-services.md`](contracts/ui-services.md) §grafana |
+| F10 | **Line L6 (eq 50) scrap does not follow gross − net on staging** (found by the P3 replay parity check, 2026-10-08). Other lines match to < 0.1 %; L6's `scrap_incr` runs 2–7× gross − net (10-08: 56,855 vs 8,308), and one row stores a counter reset as a **−344,396** increment (10-06 16:32:58Z). Replaying the same gross/net through the current decoder + stream-engine gives scrap ≈ gross − net, so the excess comes from L6's own scrap feed, not the computation. Not fixed here | live (read-only): `silver.equipment_values` eq 50 vs 51 per day, 09-28..10-08; dev: `dev/e2e/replay-parity.sql` |
 
 ## 5. What this changes in ADR-0060
 

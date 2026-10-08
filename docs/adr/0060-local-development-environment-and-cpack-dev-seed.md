@@ -162,7 +162,7 @@ shift boundaries. It reuses `simulator/` where it can.
 | **P0** | Contract inventory: one row per service (inputs, outputs, external deps, auth mechanism) derived from `compose.staging.yml` | table merged; every Cognito consumer known to accept a configurable issuer, or a gap is listed. **Done 2026-10-06:** `docs/dev/contracts.md` (#1557) |
 | **P1** | Seed pipeline (D4–D6) + Tier 0 + `grafana` slice; tests locking in `CREDS_SOURCE=env` for decoder, ingest-shim, oeecloud-fanout | `make dev SVC=grafana` on a clean laptop shows CPACK-shaped (anonymized) dashboards |
 | **P2** | dev Cognito pool (Terraform) + `read-api` + `front4` slice; delete `compose.development.yml` | log in as a dev user, Mission Control renders |
-| **P3** | Tier 1 replay + Tier 2 processors | live "now" data flows decoder → stream-engine → gold, invariants green |
+| **P3** | Tier 1 replay + Tier 2 processors | live "now" data flows decoder → stream-engine → gold, invariants green. **Done 2026-10-08:** `seed-replay` + decoder/stream-engine fragments; `dev/e2e/replay-parity.sql` PASS 39/39 equipments (gross/net = the seed one week earlier); critical invariants green. Found F10 (L6 scrap on staging) |
 | **P4** | CI slice boots (D8); remaining fragments (csadmin, operator, customize, barcode, edge-api) | every service has a fragment and a CI smoke |
 
 ## 4. Consequences

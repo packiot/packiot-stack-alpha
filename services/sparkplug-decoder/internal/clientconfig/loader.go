@@ -408,11 +408,11 @@ func (c *Config) validate() error {
 		return fmt.Errorf("customer is required")
 	}
 	switch strings.ToLower(c.Environment) {
-	case "staging", "production":
+	case "staging", "production", "dev": // dev = the local dev environment (ADR-0060); the value is only logged
 	case "":
-		return fmt.Errorf("environment is required (staging|production)")
+		return fmt.Errorf("environment is required (staging|production|dev)")
 	default:
-		return fmt.Errorf("environment=%q: must be staging or production", c.Environment)
+		return fmt.Errorf("environment=%q: must be staging, production or dev", c.Environment)
 	}
 	return c.validateV11()
 }

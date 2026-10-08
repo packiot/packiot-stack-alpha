@@ -272,6 +272,17 @@ environment: production
 	}
 }
 
+// The local dev environment (ADR-0060, dev/decoder/client.yaml) declares environment: dev; anything else that is
+// not staging/production still fails.
+func TestEnvironmentValues(t *testing.T) {
+	for env, ok := range map[string]bool{"staging": true, "production": true, "dev": true, "Dev": true, "prod": false, "": false} {
+		_, err := Load(writeConfig(t, "tenant_id: t\ncustomer: c\nenvironment: "+env+"\n"))
+		if (err == nil) != ok {
+			t.Errorf("environment=%q: err=%v, want ok=%v", env, err, ok)
+		}
+	}
+}
+
 // s7Valid is a minimal S7 tenant descriptor: one endpoint + a tag map.
 const s7Valid = `
 schema_version: "1.1"

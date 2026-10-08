@@ -122,3 +122,39 @@ e.g. `git clone -b staging https://github.com/packiot/front4 ../front4-staging`)
 (no enterprise switcher, bundled i18n) until an edge-api slice exists.
 
 **Exit check** (log in, Mission Control shows data): `dev/e2e/login-mission-control.py` (instructions inside).
+
+## The live pipeline (ADR-0060 P3)
+
+```sh
+make dev SVC="seed-replay stream-engine"   # replay → decoder → stream-engine (read-api comes via depends_on)
+docker compose -f dev/compose.yml --env-file dev/.env.dev up -d --build seed-replay sparkplug-decoder   # after Go edits
+```
+
+`make dev` never rebuilds an image it already has: after changing Go code, pass `--build` as above.
+
+| Service | Tier | What it does in dev |
+|---|---|---|
+| `seed-replay` (`services/seed-replay.yml`) | 1 | At wall-clock T, publishes the seed's silver rows for T − 7 days as SparkPlug B on `spBv1.0/DEV/…/seed-replay` |
+| `sparkplug-decoder` (`services/sparkplug-decoder.yml`) | 2 | Decodes, computes increments, publishes envelopes to `oee` with routing key `sparkplug.data` |
+| `stream-engine` (`services/stream-engine.yml`) | 2 | Consumes `stream-engine-q`, writes silver/gold at T (events, rollups, PO runtimes, UNS) |
+
+How replay stays faithful (`services/sparkplug-decoder/cmd/seed-replay/main.go`):
+- **Names** are the seed's own anonymized `packml_register` topics (registered counter paths verbatim), because
+  stream-engine still resolves equipment by topic until ADR-0061 removes it. Every metric also declares the seed's
+  `device_key` (random, minted at seed build), so it keeps working when routing moves to declared identity.
+- **Counters** are cumulative running sums of the seed's `*_incr`. A field that is NULL in a seed row is not sent,
+  and a counter the seed never carries for an equipment is never born. A constant-0 net next to a rising gross reads
+  downstream as scrap (found 2026-10-08: 53/54 showed scrap = gross).
+- **Laps**: next week, replay reads the rows the pipeline wrote this week, so it never runs dry.
+
+Dev differs from staging on purpose: the decoder publishes to the firehose (`F3_PER_TENANT_ROUTING=false`) and
+stream-engine has `LEGACY_INGEST_ENABLED=false`. The per-tenant queues are named after the SparkPlug group and
+declared from `packml_register`, and the anonymized tenant name (`Client …`) is not a usable routing key.
+Customer report jobs (SHIFT06/SAP13/BOXES13/SYNC06) are off.
+
+**Exit check** (`dev/e2e/replay-parity.sql`): after ≥ 10 min of replay, per equipment, the gross produced at "now"
+equals the seed's gross for the same window one week earlier.
+
+```sh
+docker exec -i packiot-dev-postgres-1 psql -U postgres -d packiot_analytics -f - < dev/e2e/replay-parity.sql
+```
