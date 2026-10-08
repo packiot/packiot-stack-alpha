@@ -1,6 +1,6 @@
 # ADR-0062 — Production-order identity: a text client number, one internal key, a UUIDv7 handle
 
-**Status:** Proposed · **Date:** 2026-10-07 · **Decision owner:** user
+**Status:** Accepted (P1 applied on staging 2026-10-08) · **Date:** 2026-10-07 · **Decision owner:** user
 **Trigger (user, 2026-10-07):** "the po id number that shows for the client is alphanumeric … the alphanumeric is for
 the whole stack. it needs to accept that." Decisions taken so far: the client number is text everywhere; when the stack
 itself must invent a number it uses a UUID; the client number is unique per enterprise; the legacy duplicate is fixed
@@ -119,10 +119,9 @@ which remains available as a later phase (Buildkite's path). Option 2 is dominat
   only — never re-formatted: `08396260` ≠ `8396260`), NOT NULL, `UNIQUE (id_enterprise, id_order_text)`.
 - **D2 Internal identity.** `id_production_order` (bigint) stays the PK and the only join key. The integer `id_order`
   is retired: kept and filled during the transition, never read for meaning, dropped in the contract phase.
-- **D3 Contracts.** The user chose (2026-10-07) "switch `id_order` to text". AIP-180 classes a type change as breaking
-  even with the same meaning. **D3a (recommended refinement, needs confirmation):** add `order_number` (string) to every
-  API/report/PLC contract now, keep `id_order` until clients move, then contract. **D3b (as chosen):** change `id_order`
-  to the string number in place, coordinated per integration client.
+- **D3 Contracts (decided 2026-10-08: `order_number`).** Every API / report / PLC contract gains **`order_number`**
+  (string, the client's number). `id_order` keeps its current integer meaning and type until every client has moved
+  (AIP-180: no type change in place), then is removed in the contract step.
 - **D4 Handle.** `po_uuid uuid NOT NULL DEFAULT <uuidv7> UNIQUE` — for ids minted outside the DB (offline operator
   writes, edge boxes, cross-environment). A number the stack must invent (auto-created POs) = this UUID's text.
 - **D5 Legacy duplicate.** PO 101585550 (and its twin 601585550): client number `889185` → `889583` (its own integer;
@@ -137,6 +136,6 @@ which remains available as a later phase (Buildkite's path). Option 2 is dominat
    (numeric number → that integer, else a fresh value from a negative sequence so the old int key never collides).
 2. **Writers to text:** edge-api DTOs/DAOs/CSV, stream-engine pocontrol (30805 + lifecycle by text), operator-gateway,
    operator SPA inputs, edge-node-red.
-3. **Readers + contracts (D3a/D3b):** read-api (incl. Incoplast/Montebello/job_report/sync06), front4, serving
+3. **Readers + contracts (D3: add `order_number`):** read-api (incl. Incoplast/Montebello/job_report/sync06), front4, serving
    functions; integer copies (box tables, validation shift, sync06, downtime functions) join on `id_production_order`.
 4. **Contract:** drop the integer key/column after every writer and reader moved.
