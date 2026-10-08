@@ -5,8 +5,10 @@ SELECT 'V2 duplicate (enterprise, number): 0', count(*) FROM (SELECT 1 FROM core
 SELECT 'V3 numbers that lost information vs the old text (corrections excepted): 0', count(*) FROM core.production_orders p
  WHERE p.id_order_text <> p.id_order::text AND NOT EXISTS (SELECT 1 FROM core.po_number_corrections c WHERE c.id_production_order = p.id_production_order)
    AND p.id_order_text ~ '^[0-9]+$' AND p.id_order_text::numeric = p.id_order AND p.id_order_text !~ '^0';
-SELECT 'V4 D5 applied (101585550, 601585550 → 889583): 889583|889583', string_agg(id_order_text, '|' ORDER BY id_production_order)
-  FROM core.production_orders WHERE id_production_order IN (101585550, 601585550);
+SELECT 'V4 D5 applied (business key: own int 889583, legacy text 889185) — want corrections>=1 and stale=0',
+       (SELECT count(*) FROM core.po_number_corrections c JOIN core.production_orders p USING (id_production_order)
+         WHERE c.from_text = '889185' AND p.id_order_text = '889583'),
+       (SELECT count(*) FROM core.production_orders WHERE id_order = 889583 AND id_order_text = '889185');
 SELECT 'V5 po_uuid present, unique, version 7: 0|t|t', count(*) FILTER (WHERE po_uuid IS NULL), count(DISTINCT po_uuid) = count(*),
        bool_and(substring(po_uuid::text, 15, 1) = '7') FROM core.production_orders;
 SELECT 'V6 po_uuid time-ordered by creation (rank correlation): t', corr(r1, r2) > 0.99 FROM (

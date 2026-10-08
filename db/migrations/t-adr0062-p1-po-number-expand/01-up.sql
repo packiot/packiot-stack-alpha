@@ -5,7 +5,7 @@
 --   * core.uuidv7(ts)             RFC 9562 UUIDv7 (PG 15 has no uuidv7()): 48-bit unix-ms timestamp + random.
 --   * core.po_number_corrections  reviewed, data-driven number fixes, applied by the trigger on every write
 --                                 (so the legacy replicator and the sandbox twin pick them up without code).
---                                 D5: PO 101585550 (+ twin 601585550) 889185 → 889583.
+--                                 D5: the CPACK PO whose own int is 889583 (staging 101585550, prod 1585550, twin 601585550): 889185 → 889583.
 --   * trigger production_orders_po_number (BEFORE INSERT/UPDATE OF id_order, id_order_text):
 --       - the number is trimmed (never re-formatted: '08396260' stays '08396260');
 --       - a writer that sends only the integer gets id_order_text = id_order::text;
@@ -43,9 +43,14 @@ CREATE TABLE IF NOT EXISTS core.po_number_corrections (
 );
 COMMENT ON TABLE core.po_number_corrections IS
   'ADR-0062: reviewed client-PO-number fixes; the production_orders trigger rewrites from_text → to_text for that PO on every write.';
-INSERT INTO core.po_number_corrections (id_production_order, from_text, to_text, reason) VALUES
-  (101585550, '889185', '889583', 'ADR-0062 D5: legacy text duplicated PO 101574989; 889583 is this PO''s own number (user 2026-10-07)'),
-  (601585550, '889185', '889583', 'ADR-0062 D5: sandbox twin of 101585550')
+-- D5 resolved by BUSINESS KEY, not by id: surrogate ids differ per environment (staging's replicated CPACK POs
+-- carry a +100,000,000 offset — 101585550 — prod has 1585550, the sandbox twin 601585550). The PO whose own
+-- integer is 889583 but whose legacy text says 889185 gets 889583, in every enterprise (incl. the twin).
+INSERT INTO core.po_number_corrections (id_production_order, from_text, to_text, reason)
+SELECT p.id_production_order, '889185', '889583',
+       'ADR-0062 D5: legacy text 889185 duplicated another CPACK PO; 889583 is this PO''s own number (user 2026-10-07)'
+  FROM core.production_orders p
+ WHERE p.id_order = 889583 AND btrim(p.id_order_text) = '889185'
 ON CONFLICT (id_production_order) DO NOTHING;
 
 CREATE SEQUENCE IF NOT EXISTS core.production_orders_internal_id_order_seq
