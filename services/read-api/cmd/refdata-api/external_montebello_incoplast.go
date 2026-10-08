@@ -213,6 +213,11 @@ func runIncoplastJobs(ctx context.Context, deps shimDeps, cid int, r *http.Reque
 // UPPER('${site}') in back4 is the ONE thing NOT copied — it is parameterized in
 // the dynamic-filter shims above; these two functions have no user filter.
 
+// DEVIATION from back4 (2026-10-08): the two `select *` legs of the event UNION are an explicit list of the
+// 24 columns both tables share, in back4's order. equipment_events has since gained ingested_at/source_seq
+// (bronze ingest) and equipment_events_man did not, so `select * … union all select *` failed with "each
+// UNION query must have the same number of columns" on every call. Same columns, same name resolution as
+// back4 saw; no new ones.
 const sqlIncoplastEvents = `
             select * from (
                 select
@@ -286,11 +291,21 @@ const sqlIncoplastEvents = `
                             ee.cd_category_client, ee.cd_subcategory_client,
                             ee.last_update
                         from
-                            (select * from equipment_events
+                            (select id_equipment, ts_event, status, id_equipment_event, txt_downtime_notes, idle,
+                                    idle_processed, forced_creation_system, fault, fault_processed, cd_machine,
+                                    cd_category, cd_subcategory, change_over, planned_downtime, ts_end, duration,
+                                    id_enterprise, desc_category, desc_subcategory, cd_category_client,
+                                    cd_subcategory_client, last_update, ignore_cost
+                                from equipment_events
                                 where id_enterprise = $1
                                 and ts_event >= now() - interval '1 month'
                                 union all
-                                select * from equipment_events_man
+                                select id_equipment, ts_event, status, id_equipment_event, txt_downtime_notes, idle,
+                                    idle_processed, forced_creation_system, fault, fault_processed, cd_machine,
+                                    cd_category, cd_subcategory, change_over, planned_downtime, ts_end, duration,
+                                    id_enterprise, desc_category, desc_subcategory, cd_category_client,
+                                    cd_subcategory_client, last_update, ignore_cost
+                                from equipment_events_man
                                 where id_enterprise = $1
                                 and ts_event >= now() - interval '2 month' ) ee
                             left join equipments eq on eq.id_equipment = ee.id_equipment
