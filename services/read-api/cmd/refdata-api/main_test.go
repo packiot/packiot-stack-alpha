@@ -26,6 +26,7 @@ func TestContractCoverage(t *testing.T) {
 		"serving.events_timeline_by_equipment",
 		"serving.pending_downtime_by_equipment",
 		"serving.downtime_reasons_by_equipment",
+		"serving.operator_po_list_by_equipment",
 	}
 	all := ""
 	for _, ep := range endpoints {
@@ -36,8 +37,8 @@ func TestContractCoverage(t *testing.T) {
 			t.Errorf("contract root %q not covered by any endpoint", root)
 		}
 	}
-	if len(endpoints) != 14 { // 11 v1 + 3 ADR-0061 /v2
-		t.Errorf("expected 14 endpoints, got %d", len(endpoints))
+	if len(endpoints) != 15 { // 11 v1 + 4 ADR-0061 /v2
+		t.Errorf("expected 15 endpoints, got %d", len(endpoints))
 	}
 }
 

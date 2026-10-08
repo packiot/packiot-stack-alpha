@@ -156,6 +156,12 @@ var endpoints = []endpoint{
 	{path: "/v1/operator-po-list",
 		sql:   `SELECT * FROM v_operator_po_list_setup_4 WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: nil},
+	// ADR-0061 P3: the PO list by id_equipment (the selected line/sector + its parent). Wraps
+	// v_operator_po_list_setup_4 (db/migrations/t-adr0061-p3c-po-list-by-id); display_path replaces the
+	// unstable LIMIT-1 topic. Details stay on /v1/operator-po-details (keyed by id_production_order, no topic).
+	{path: "/v2/operator-po-list",
+		sql:   `SELECT * FROM serving.operator_po_list_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
 	{path: "/v1/operator-po-details",
 		sql:   `SELECT * FROM v_operator_po_details_3 WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: nil},
