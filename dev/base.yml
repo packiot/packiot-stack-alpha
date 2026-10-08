@@ -19,6 +19,7 @@ services:
   postgres:
     image: ${DEVDB_IMAGE:-timescale/timescaledb:2.27.0-pg15}
     environment:
+      DEVDB_EXPECT_SEED: ${DEVDB_EXPECT_SEED:-1}   # healthcheck: require seed data (0 = plain DB)
       POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
       POSTGRES_DB: ${POSTGRES_DB:-packiot_analytics}
@@ -31,7 +32,11 @@ services:
       # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary
       # server that listens on the Unix socket ONLY, so a socket check reported "healthy" while the dev
       # seed was still loading and `make dev --wait` returned early (2026-10-07).
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      # Healthy = the SEED IS LOADED, not just "accepts connections" (2026-10-08): a named volume left from an earlier
+      # run (empty or half-loaded packiot_analytics) makes the entrypoint print "Skipping initialization", the seed never
+      # loads, and a connection-only check still says healthy — every dependent then fails on missing tables.
+      # Fix a stale volume with `make dev-reset`. DEVDB_EXPECT_SEED=0 relaxes this for a non-seed DEVDB_IMAGE.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" && { [ \"$${DEVDB_EXPECT_SEED:-1}\" = 0 ] || psql -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -tAc 'SELECT 1 FROM silver.equipment_values LIMIT 1' | grep -q 1; }"]
       interval: 5s
       timeout: 5s
       retries: 20

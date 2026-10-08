@@ -69,6 +69,11 @@ dev-ps:
 dev-down:
 	$(DEV_COMPOSE) down --remove-orphans
 
+# A stale dev volume ("Skipping initialization") never reloads the seed: wipe the dev volumes and start again.
+dev-reset:
+	$(DEV_COMPOSE) down --remove-orphans -v
+	$(DEV_COMPOSE) up -d --wait $(if $(strip $(SVC)),$(SVC),$(DEV_TIER0))
+
 # ── Terraform — staging infrastructure ────────────────────────────────────────
 # Requires: terraform >= 1.10, aws CLI configured with the packiot account.
 # Run tf-bootstrap once per account, then tf-init, tf-plan, tf-apply.
