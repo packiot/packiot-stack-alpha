@@ -11,6 +11,7 @@ make dev-ps                 # status (every port must read 127.0.0.1:…)
 make dev-down               # stop + remove containers; named volumes are kept
 docker compose -f dev/compose.yml --env-file dev/.env.dev down -v   # also wipe data
 make dev-reset [SVC=...]   # wipe the dev volumes and reload the seed (fixes an empty/stale DB: postgres stays unhealthy)
+make dev-smoke SVC="edge-api"   # health + one real request per service (the same check CI runs)
 ```
 
 `make dev` uses `up -d --wait`, so it returns only when every started service is healthy.
@@ -28,10 +29,13 @@ Nothing here talks to AWS or staging. Every host port binds `127.0.0.1`.
 | `minio/entrypoint.sh` | starts MinIO and creates the historian bucket |
 | `read-api/cors.conf.template` | CORS proxy config for read-api (dev twin of staging's refdata vhost) |
 | `e2e/login-mission-control.py` | browser exit check: dev login → Mission Control with data |
+| `e2e/replay-parity.sql` | P3 exit check: replayed gross = the seed's gross one week earlier |
+| `e2e/smoke.sh` | per-service smoke (`make dev-smoke SVC=…`), also run by CI (`.github/workflows/dev-slices.yml`) |
+| `seed/sync-sequences.sql` | init hook after the seed load: id sequences past the seed's rows (F11) |
 
 Adding a service: write `services/<svc>.yml` (contract header first, `depends_on` with
 `condition: service_healthy` on what it reads), add it to `compose.yml`'s `include:`, give it a
-healthcheck. Paths in a fragment resolve relative to the fragment's own directory (`../../`).
+healthcheck, add a `smoke` case to `e2e/smoke.sh` and put it in a slice of `.github/workflows/dev-slices.yml`. Paths in a fragment resolve relative to the fragment's own directory (`../../`).
 
 ## Tier 0
 
@@ -96,8 +100,8 @@ P1-B seed lands.
 - **read-api** must carry the network alias `refdata-api` (port 9104). The csadmin/customize/operator
   nginx templates hard-code `refdata-api:9104` (contracts.md §5.5). The alias goes on the read-api
   service's `networks.default.aliases`, the same way redis carries `app-redis` here.
-- Six services export OTLP to `tempo:4317`. Dev has no Tempo, so leave `OTEL_EXPORTER_OTLP_ENDPOINT`
-  unset per service (verify each one tolerates that) or add an obs fragment.
+- Six services export OTLP to `tempo:4317`. Dev has no Tempo, so `OTEL_EXPORTER_OTLP_ENDPOINT` stays unset in
+  every fragment (decoder, stream-engine, read-api, edge-api verified to run without it).
 - RabbitMQ users are created from definitions on **every** boot, so a new least-privilege user goes
   into both `monitoring/rabbitmq/definitions.template.json` (staging) and the dev template.
 
@@ -158,3 +162,56 @@ equals the seed's gross for the same window one week earlier.
 ```sh
 docker exec -i packiot-dev-postgres-1 psql -U postgres -d packiot_analytics -f - < dev/e2e/replay-parity.sql
 ```
+
+## API + admin slices (ADR-0060 P4)
+
+```sh
+make dev SVC="edge-api"                              # API on :8080, runs edge-api's knex migrations first
+make dev SVC="csadmin customize operator"            # the three SPAs (edge-api + read-api come via depends_on)
+make dev SVC="barcode-service"                       # :8446
+```
+
+| Service | Host port | Source | What dev does differently from staging |
+|---|---|---|---|
+| `edge-api-migrate` (one-shot) | — | `edge-api` submodule, target `migrate` | = staging's `db-migrate`: knex `migrate:latest` on `packiot_analytics`. The seed carries the knex ledger, so only migrations newer than the snapshot run |
+| `edge-api` | 8080 | `edge-api` submodule, target `production` | direct to postgres (staging: pgbouncer); dev Cognito pool; no AWS at all (`AWS_EC2_METADATA_DISABLED`, no keys) → box ops / SSM / Cognito user admin answer errors; no Superset, Power BI, RabbitMQ commands |
+| `barcode-service` | 8446 | `services/barcode-service` | direct to postgres; dev Cognito pool; Firebase off |
+| `csadmin` | 8084 | `csadmin` submodule, `Dockerfile.staging` | dev pool ids baked at build (rebuild with `--build` after changing them) |
+| `customize` | 8086 | `customize/` (in-tree), `Dockerfile.staging` | same |
+| `operator` | 8083 | `operator` submodule, `Dockerfile.staging` | nginx injects the fake keys `dev-api-key-3` (edge-api) and `dev-read-key-3` (read-api) |
+
+Credentials without a login: the seed sets `core.enterprises.api_key = dev-api-key-<id>`, and read-api maps the read
+key `dev-read-key-3` to tenant 3 (`QUERY_API_KEYS`). Both are fakes.
+
+```sh
+KEY=dev-api-key-3   # the seed's fake enterprises.api_key for tenant 3
+curl -s -H "x-api-key: $KEY" http://127.0.0.1:8080/api/lines | jq length
+```
+
+The SPAs are the staging images (nginx, static build): use them to check a whole flow. For UI work, run the SPA's own
+dev server against this slice's edge-api. Logging in to csadmin/customize works with the dev users, but the dev pool
+has no `cs-admin` group, so CS-Admin routes (cross-tenant, onboarding) are refused (contracts.md F12). front4 can use the edge-api slice
+too: `DEV_FRONT4_EDGE_API=http://localhost:8080 make dev SVC="front4 edge-api"`.
+
+## Smoke checks and CI (ADR-0060 D8)
+
+`make dev-smoke SVC="…"` (`e2e/smoke.sh`) checks each named service: health plus one real request that reaches its
+data (edge-api `GET /api/lines` with the seed's key, read-api `/v1/operator-entities` with the read key, Grafana a SQL
+query through its datasource, the SPAs' nginx proxies to edge-api/read-api with the dev pool id baked in the bundle,
+barcode-service fail-closed 401 + its write-path tables, the pipeline fresh silver rows at "now"). Services with no
+host port are probed from inside the compose network. Exit code = number of failed services.
+
+`.github/workflows/dev-slices.yml` runs on every PR into `staging` that touches `dev/`, `db/migrations/`,
+`services/`, `customize/`, `grafana/` or a submodule pin. Each slice is one ubuntu-latest runner with a clean
+Docker, the published seed and `make dev SVC=… && make dev-smoke SVC=…`:
+
+| Slice | `make dev SVC=` | Smoke |
+|---|---|---|
+| tier0-grafana | Tier 0 + grafana | postgres rabbitmq mosquitto redis minio grafana |
+| pipeline | seed-replay stream-engine read-api-cors | + read-api, decoder, stream-engine, live rows |
+| barcode | barcode-service | postgres barcode-service |
+| edge | edge-api csadmin customize operator front4 | + read-api, read-api-cors |
+
+The edge slice needs the private repos edge-api, csadmin, operator4 and front4. `GITHUB_TOKEN` reads only this
+repository, so it uses the repository secret `DEV_SUBMODULES_TOKEN` (read-only Contents on those four). Without it the
+slice is skipped with a warning in the run summary.

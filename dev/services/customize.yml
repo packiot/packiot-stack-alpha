@@ -1,0 +1,27 @@
+# ── customize (Tier 4) — ADR-0060 P4 ─────────────────────────────────────────
+# contract (contracts/ui-services.md §customize):
+#   inputs:   edge-api /api/* (Bearer = Cognito ID token, forwarded unchanged by the image's nginx)
+#   outputs:  SPA + same-origin proxy on http://127.0.0.1:8086
+#   external: dev Cognito pool (Amplify login in the browser, internet); same cs-admin gap as csadmin (F12)
+# In-tree (customize/), a csadmin clone. Mirrors compose.staging.yml `customize`: same Dockerfile.staging + nginx
+# template; only the baked Cognito ids differ (compile-time: rebuild after changing them).
+services:
+  customize:
+    build:
+      context: ../../customize
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_AUTH_COGNITO_ENABLED: "true"
+        VITE_COGNITO_USER_POOL_ID: ${DEV_COGNITO_USER_POOL_ID:?set in dev/.env.dev}
+        VITE_COGNITO_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
+    depends_on:
+      edge-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${DEV_CUSTOMIZE_PORT:-8086}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 10s

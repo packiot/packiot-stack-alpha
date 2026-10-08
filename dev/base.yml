@@ -27,6 +27,8 @@ services:
       - "127.0.0.1:${DEV_PG_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # runs once on a fresh volume, after the seed loader (50-devseed.sh): sequences past the seed's ids (F11)
+      - ./seed/sync-sequences.sql:/docker-entrypoint-initdb.d/60-devseed-sequences.sql:ro
     shm_size: 256m
     healthcheck:
       # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary

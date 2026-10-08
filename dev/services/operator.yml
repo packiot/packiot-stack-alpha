@@ -1,0 +1,34 @@
+# ── operator (Tier 4) — ADR-0060 P4 ──────────────────────────────────────────
+# contract (contracts/ui-services.md §operator):
+#   inputs:   edge-api /api/* + /session (nginx injects x-api-key = EDGE_API_KEY and strips the browser's Bearer);
+#             read-api /v1/* + /v2/* via refdata-api:9104 (nginx injects x-api-key = REFDATA_API_KEY)
+#   outputs:  SPA + same-origin proxy on http://127.0.0.1:8083
+#   external: dev Cognito pool (Amplify login in the browser, internet)
+# Mirrors compose.staging.yml `operator`: same Dockerfile.staging + nginx template. Dev keys are fakes:
+#   EDGE_API_KEY    = the seed's core.enterprises.api_key for tenant 3 (dev/seed/extract.sh sets dev-api-key-<id>)
+#   REFDATA_API_KEY = a read key read-api maps to tenant 3 (QUERY_API_KEYS in services/read-api.yml)
+services:
+  operator:
+    build:
+      context: ../../operator
+      dockerfile: Dockerfile.staging
+      args:
+        VITE_PO_WRITE_QUEUE_ENABLED: "true"
+        VITE_COGNITO_USER_POOL_ID: ${DEV_COGNITO_USER_POOL_ID:?set in dev/.env.dev}
+        VITE_COGNITO_USER_POOL_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
+    depends_on:
+      edge-api:
+        condition: service_healthy
+      read-api:
+        condition: service_healthy
+    environment:
+      EDGE_API_KEY: ${DEV_OPERATOR_EDGE_API_KEY:-dev-api-key-3}
+      REFDATA_API_KEY: ${DEV_OPERATOR_READ_KEY:-dev-read-key-3}
+    ports:
+      - "127.0.0.1:${DEV_OPERATOR_PORT:-8083}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 10s

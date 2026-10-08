@@ -67,12 +67,21 @@ services:
       OEE_PROFILE_FROM_DB: "true"
       OEE_PROFILE_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/packiot_analytics
       EDGE_COMMANDS_ENABLED: "false"
+      # read only by the healthcheck below (edge-dashboard --healthcheck probes 127.0.0.1:$DASHBOARD_PORT/healthz)
+      DASHBOARD_PORT: "9102"
     volumes:
       - ../decoder/client.yaml:/etc/packiot/client.yaml:ro
       - decoder-outbox:/var/lib/edge-transformer
     healthcheck:
-      # distroless: no shell/curl. The binary has no healthcheck flag, so rely on the restart policy + logs.
-      disable: true
+      # distroless: no shell/curl, and the decoder binary has no --healthcheck flag. The same image ships
+      # edge-dashboard, whose --healthcheck GETs 127.0.0.1:$DASHBOARD_PORT/healthz → exit 0/1: pointed at the
+      # decoder's health port (9102). Needed for `up --wait`: compose v2 refuses to wait on `disable: true`
+      # ("has no healthcheck configured"; found by CI 2026-10-08, compose 5.x tolerated it).
+      test: ["CMD", "/usr/local/bin/edge-dashboard", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
