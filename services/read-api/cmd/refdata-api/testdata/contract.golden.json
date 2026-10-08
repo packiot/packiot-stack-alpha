@@ -1057,6 +1057,36 @@
     ]
   },
   {
+    "ref": "sap-report",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments"
+  },
+  {
+    "ref": "sap-report",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "production_orders"
+  },
+  {
+    "ref": "sap-report",
+    "source": "dataset",
+    "kind": "function",
+    "name": "serving.sap_site_report",
+    "argc": 2
+  },
+  {
+    "ref": "sap-report-lines",
+    "source": "dataset",
+    "kind": "relation",
+    "name": "equipments",
+    "columns": [
+      "id_equipment",
+      "cd_equipment",
+      "nm_equipment"
+    ]
+  },
+  {
     "ref": "scrap-capability",
     "source": "dataset",
     "kind": "function",

@@ -986,6 +986,55 @@ var datasets = map[string]dataset{
 		params: []dsParam{pEnt, pDate("datetime")},
 	},
 
+	// ── SAP shift report (Neopac) — the front4 port of the legacy "SAP report" page ──
+	// Legacy front4 called back4 GET /api/v1/neopac/sap-report with an enterprise
+	// api_key HARD-CODED in the browser bundle; back4 then checked `id_enterprise
+	// != 13` and read the frozen view v_13_site_deb_sap_report. Here the tenant is
+	// the caller's credential ($1, injected by the Cognito/tenant middleware) and
+	// the body is the generic, config-driven serving.sap_site_report (t244), the
+	// same function the /ext/neopac/sap-report shim reads. No client literal.
+	//
+	// GATE: a tenant sees SAP data only when its report config opts in
+	// (core.client_descriptors.descriptor->'reports'->>'family' = 'sap_de', via
+	// serving.report_config). sap_site_report is generic, so without the gate any
+	// tenant with a report site_scope (Montebello) would get a SAP-shaped report it
+	// never asked for. Non-SAP tenants get zero rows — front4 uses the empty line
+	// list to hide the page.
+	"sap-report-lines": {
+		group: "tenant-custom", doc: "Lines (tp=3) the tenant's SAP shift report covers; empty unless the tenant's report family is sap_de",
+		sql: `SELECT e.id_equipment, e.cd_equipment, e.nm_equipment
+			FROM equipments e
+			WHERE e.id_enterprise = $1 AND e.active AND e.tp_equipment = 3
+			AND e.id_site = ANY(serving.report_sites($1))
+			AND serving.report_config($1)->>'family' = 'sap_de'
+			ORDER BY e.cd_equipment`,
+		params: []dsParam{pEnt},
+	},
+	// sap-report — one line's SAP shift rows (serving.sap_site_report's fixed
+	// window: the last ~3 report-timezone days; the function takes no dates, the
+	// legacy page's `date` query param was ignored by back4 too). Projection-shaped
+	// (ADR-0027 rule #2). `job` is the integer PO number the function carries;
+	// `order_number` is the CLIENT's PO number (ADR-0062, production_orders.
+	// id_order_text) joined on (id_enterprise, id_order) — the same key P3a uses
+	// for serving.data_sync — falling back to job::text for a label with no PO row.
+	// Short TTL: the rows move with the shift rollup, and the page has a refresh
+	// button (legacy had one too).
+	"sap-report": {
+		group: "tenant-custom", doc: "SAP shift report rows for one line (serving.sap_site_report) + ADR-0062 order_number; sap_de tenants only",
+		sql: `SELECT r.line, r.shift, r.shift_hrs, r.day, r.job,
+			COALESCE(po.id_order_text, r.job::text) AS order_number,
+			r.gross, r.net, r.gyartasi_ido, r.beallitasi_ido, r.muszaki_hiba, r.tervezett_karb,
+			r.anyagproblema, r.nem_indokolt_ido, r.total_dt, r.job_start, r.shift_start_time,
+			r.shift_number, r.id_equipment
+			FROM serving.sap_site_report($1, $2) r
+			LEFT JOIN production_orders po ON po.id_enterprise = $1 AND po.id_order = r.job
+			WHERE serving.report_config($1)->>'family' = 'sap_de'
+			AND EXISTS (SELECT 1 FROM equipments e WHERE e.id_equipment = $2 AND e.id_enterprise = $1 AND e.active)
+			ORDER BY r.shift_start_time DESC, r.job_start`,
+		params:   []dsParam{pEnt, pEquip},
+		cacheTTL: 60 * time.Second,
+	},
+
 	// ── front4 Category C (front4 PR #210 §C — net-new datasets) ─────────────
 	// The seven reads below are the LAST Hasura-only front4 sites with NO refdata
 	// dataset (PR #210 "Category C" table). Wave-B rewires the sites that already
