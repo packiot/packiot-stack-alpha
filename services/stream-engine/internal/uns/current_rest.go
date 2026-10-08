@@ -100,9 +100,12 @@ const refreshShiftAreaSQL = `
 // Stamps last_updated = now() (the equipment-grain freshness signal —
 // see the hour/week/month note in uns.go); without it the current_job
 // tile reads frozen at Provision-seed time even as its numbers advance.
+// id_order here is the client-facing number (varchar, ADR-0062): it is written
+// from id_order_text — the integer id_order is an internal placeholder (negative)
+// for alphanumeric numbers and must never reach Mission Control.
 const refreshJobsSQL = `
 	WITH po AS (
-	    SELECT po.id_production_order, po.id_order, po.net_production, po.gross_production,
+	    SELECT po.id_production_order, po.id_order_text, po.net_production, po.gross_production,
 	           (po.gross_production - po.net_production) AS scrap_incr, po.speed,
 	           e.id_equipment, p.nm_product, pf.nm_product_family, c.nm_client,
 	           po.production_programmed, po.ts_start,
@@ -115,7 +118,7 @@ const refreshJobsSQL = `
 	     WHERE e.tp_equipment = 3
 	)
 	UPDATE %[3]s.equipment_live_job u SET
-	       id_production_order = p.id_production_order, id_order = p.id_order,
+	       id_production_order = p.id_production_order, id_order = p.id_order_text,
 	       nm_product = p.nm_product, nm_client = p.nm_client,
 	       nm_product_family = p.nm_product_family,
 	       gross_production = p.gross_production, net_production = p.net_production,

@@ -158,7 +158,7 @@ Routing: `id_param` 30810/30811 → **create-manual-event**; 30812/30813/30814 �
 | Incoplast field | edge-api field | Notes |
 |-----------------|----------------|-------|
 | `packml_topic` | — | **required** — the adapter resolves it → `idEquipment` + `idArea` + `idSite` |
-| `id_order` (`msg.payload.new_po`, the order number) | `idOrder` | **required** |
+| `id_order` (`msg.payload.new_po`, the client's order number — JSON string or number, ADR-0062) | `idOrder` + `orderNumber` | **required**; forwarded as a **string**, verbatim (trimmed only: `"08396260"`, `"ORD-7"`, `834.058` → `"834.058"`) |
 | _(resolved)_ `id_equipment` | `idEquipment` | filled by the adapter from `packml_topic` |
 | _(resolved)_ `id_site` | `idSite` | filled by the adapter from the topic hierarchy (`areas → sites`) |
 | _(resolved)_ `id_area` | `idArea` | filled by the adapter from the topic hierarchy (`equipments.id_area`) |
