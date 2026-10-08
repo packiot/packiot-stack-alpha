@@ -68,18 +68,18 @@ type POStopRequest struct {
 // open the next" — the workhorse behind Incoplast's `change po - open e close`.
 type POSetupRequest struct {
 	operatorScope
-	Timestamp                   string `json:"timestamp"`                       // REQUIRED
-	ShouldOpenNewPo             *bool  `json:"should_open_new_po"`              // REQUIRED (non-nil)
-	StopType                    string `json:"stop_type"`                       // pause|finish; REQUIRED
-	OldIDProductionOrder        *int   `json:"old_id_production_order"`         // PO being closed; REQUIRED
-	OldProductionOrderProdFinal *int   `json:"old_production_order_prod_final"` // its final good count; REQUIRED
-	ShouldCreatePo              *bool  `json:"should_create_po"`                // open-next needs a fresh PO row?
-	IDOrder                     *int   `json:"id_order"`                        // new order number (when creating)
-	IDProductionOrder           *int   `json:"id_production_order"`             // new internal PO id (when reusing)
-	ProductionOrderQuantity     *int   `json:"production_order_quantity"`       // new PO programmed quantity
-	IDLabel                     *int   `json:"id_label"`                        // optional
-	NmProductionOrder           string `json:"nm_production_order"`             // optional
-	Notes                       string `json:"notes"`                           // optional
+	Timestamp                   string      `json:"timestamp"`                       // REQUIRED
+	ShouldOpenNewPo             *bool       `json:"should_open_new_po"`              // REQUIRED (non-nil)
+	StopType                    string      `json:"stop_type"`                       // pause|finish; REQUIRED
+	OldIDProductionOrder        *int        `json:"old_id_production_order"`         // PO being closed; REQUIRED
+	OldProductionOrderProdFinal *int        `json:"old_production_order_prod_final"` // its final good count; REQUIRED
+	ShouldCreatePo              *bool       `json:"should_create_po"`                // open-next needs a fresh PO row?
+	IDOrder                     OrderNumber `json:"id_order"`                        // new client order number, string or number (when creating; ADR-0062)
+	IDProductionOrder           *int        `json:"id_production_order"`             // new internal PO id (when reusing)
+	ProductionOrderQuantity     *int        `json:"production_order_quantity"`       // new PO programmed quantity
+	IDLabel                     *int        `json:"id_label"`                        // optional
+	NmProductionOrder           string      `json:"nm_production_order"`             // optional
+	Notes                       string      `json:"notes"`                           // optional
 }
 
 // POReplaceRequest → /operator/po/replace. Stop the running PO and start an
@@ -128,12 +128,16 @@ type edgeSetupPO struct {
 	OldIDProductionOrder        int    `json:"oldIdProductionOrder"`
 	OldProductionOrderProdFinal int    `json:"oldProductionOrderProdFinal"`
 	ShouldCreatePo              bool   `json:"shouldCreatePo"`
-	IDOrder                     int    `json:"idOrder"`
-	IDProductionOrder           int    `json:"idProductionOrder"`
-	ProductionOrderQuantity     int    `json:"productionOrderQuantity"`
-	IDLabel                     *int   `json:"idLabel,omitempty"`
-	NmProductionOrder           string `json:"nmProductionOrder,omitempty"`
-	TxtProductionOrderNotes     string `json:"txtProductionOrderNotes,omitempty"`
+	// ADR-0062: the new PO's client number as TEXT (idOrder accepts string|number
+	// in edge-api; orderNumber is the D3 field). Omitted when not creating —
+	// idOrder is @IsOptional in SetupProductionOrderDto.
+	IDOrder                 string `json:"idOrder,omitempty"`
+	OrderNumber             string `json:"orderNumber,omitempty"`
+	IDProductionOrder       int    `json:"idProductionOrder"`
+	ProductionOrderQuantity int    `json:"productionOrderQuantity"`
+	IDLabel                 *int   `json:"idLabel,omitempty"`
+	NmProductionOrder       string `json:"nmProductionOrder,omitempty"`
+	TxtProductionOrderNotes string `json:"txtProductionOrderNotes,omitempty"`
 }
 
 // edgeReplacePO → POST /api/production-orders/replace (ReplaceProductionOrderDto)
@@ -234,7 +238,7 @@ func mapPOSetup(req *POSetupRequest, res Resolved, idEnterprise int) (*edgeCall,
 	// reusing an existing PO row it needs the internal id. Require the relevant
 	// one so a half-specified "open next" cannot silently open nothing.
 	if *req.ShouldOpenNewPo {
-		if derefBool(req.ShouldCreatePo) && req.IDOrder == nil {
+		if derefBool(req.ShouldCreatePo) && req.IDOrder.IsZero() {
 			return nil, unmapped("id_order is required when should_open_new_po and should_create_po are true (the new order number)")
 		}
 		if !derefBool(req.ShouldCreatePo) && req.IDProductionOrder == nil {
@@ -252,7 +256,8 @@ func mapPOSetup(req *POSetupRequest, res Resolved, idEnterprise int) (*edgeCall,
 		OldIDProductionOrder:        *req.OldIDProductionOrder,
 		OldProductionOrderProdFinal: *req.OldProductionOrderProdFinal,
 		ShouldCreatePo:              derefBool(req.ShouldCreatePo),
-		IDOrder:                     derefInt(req.IDOrder),
+		IDOrder:                     req.IDOrder.String(),
+		OrderNumber:                 req.IDOrder.String(),
 		IDProductionOrder:           derefInt(req.IDProductionOrder),
 		ProductionOrderQuantity:     derefInt(req.ProductionOrderQuantity),
 		IDLabel:                     req.IDLabel,

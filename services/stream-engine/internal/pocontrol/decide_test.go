@@ -1,6 +1,7 @@
 package pocontrol
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -55,9 +56,9 @@ func TestDecideStartMatrix(t *testing.T) {
 // regression fails without a DB.
 func TestCloseFirstGuardShape(t *testing.T) {
 	for _, m := range []string{
-		"id_equipment = $2",                  // scoped to equipment, not PO (#37)
-		"upper(runtime_timerange) IS NULL",   // only OPEN segments
-		"lower(runtime_timerange) < $1",      // inversion / EXCLUDE guard (mirrors F2)
+		"id_equipment = $2",                // scoped to equipment, not PO (#37)
+		"upper(runtime_timerange) IS NULL", // only OPEN segments
+		"lower(runtime_timerange) < $1",    // inversion / EXCLUDE guard (mirrors F2)
 	} {
 		if !strings.Contains(sqlCloseOpenSegmentOnEquipment, m) {
 			t.Errorf("close-first guard lost %q", m)
@@ -126,7 +127,7 @@ func TestCreatePOShape(t *testing.T) {
 		cpFamilyUpsert:  {"ON CONFLICT (id_enterprise, nm_product_family)", "RETURNING id_product_family"},
 		cpProductInsert: {"WHERE NOT EXISTS", "cd_product = $5 AND id_enterprise = $4"},
 		cpClientUpsert:  {"ON CONFLICT (nm_client, id_enterprise) DO NOTHING"},
-		cpInsertPO:      {"ON CONFLICT (id_enterprise, id_order)", "custom_field = EXCLUDED.custom_field"},
+		cpInsertPO:      {"ON CONFLICT (id_enterprise, id_order_text)", "custom_field = EXCLUDED.custom_field", "$7, $7, NULL, $8"},
 	} {
 		for _, m := range must {
 			if !strings.Contains(sql, m) {
@@ -136,6 +137,63 @@ func TestCreatePOShape(t *testing.T) {
 	}
 	if strings.Contains(cpInsertPO, "ts_start") {
 		t.Error("status=1 insert must not set ts_start (CHECK constraint semantics)")
+	}
+	if strings.Contains(cpInsertPO, "(id_enterprise, id_order)") {
+		t.Error("ADR-0062: 30805 must upsert on the text key (id_enterprise, id_order_text), not the integer")
+	}
+}
+
+// ADR-0062 step 2: the lifecycle natural-key fallback matches the client's
+// text number first; the integer is only a NULL-able transition shim.
+func TestLifecycleTargetByNumberShape(t *testing.T) {
+	for _, m := range []string{
+		"id_equipment = $1",
+		"id_order_text = $2 OR id_order = $3",
+		"ORDER BY (id_order_text = $2) DESC",
+		"LIMIT 1",
+	} {
+		if !strings.Contains(lcTargetByNumber, m) {
+			t.Errorf("lifecycle target lookup lost %q", m)
+		}
+	}
+	for in, want := range map[OrderNumber]*int32{
+		"218300": ptr32(218300), "08396260": ptr32(8396260), "-7": ptr32(-7),
+		"ORD-1": nil, "834.058": nil, "2147483648": nil, "1e3": nil,
+	} {
+		got := legacyIntOrder(in)
+		if (got == nil) != (want == nil) || (got != nil && *got != *want) {
+			t.Errorf("legacyIntOrder(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func ptr32(v int32) *int32 { return &v }
+
+// The createPO payload decodes an alphanumeric / zero-padded / decimal number
+// as text, and the whole payload survives (no json.Number rejection).
+func TestCreatePOPayloadOrderNumber(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"id_order":"ORD-1","order_quantity":10,"cd_product":"P"}`:    "ORD-1",
+		`{"id_order":"08396260","order_quantity":10,"cd_product":"P"}`: "08396260",
+		`{"id_order":834.058,"order_quantity":10,"cd_product":"P"}`:    "834.058",
+		`{"id_order":218300,"order_quantity":10,"cd_product":"P"}`:     "218300",
+	} {
+		var p createPOPayload
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if p.IDOrder.String() != want || p.CdProduct != "P" {
+			t.Errorf("%s: id_order=%q cd_product=%q", raw, p.IDOrder, p.CdProduct)
+		}
+	}
+	// Lifecycle payload: an alphanumeric id_order no longer breaks the object
+	// decode (json.Number rejected it → scalar fallback lost timestamp/note).
+	var lp paramPayload
+	if err := json.Unmarshal([]byte(`{"id_order":"OP-77/A","timestamp":1720000000000,"note":"x"}`), &lp); err != nil {
+		t.Fatal(err)
+	}
+	if lp.IDOrder != "OP-77/A" || lp.Timestamp.String() != "1720000000000" || lp.Note != "x" {
+		t.Errorf("lifecycle payload decoded wrong: %+v", lp)
 	}
 }
 
