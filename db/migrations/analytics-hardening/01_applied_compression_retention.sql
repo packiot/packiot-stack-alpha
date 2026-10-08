@@ -17,4 +17,9 @@ FROM unnest(ARRAY[
   'agg_equipment_values_1min','agg_equipment_values_10min',
   'agg_area_values_1min','agg_site_values_1min']::regclass[]) c;
 -- Chunk sizing:
-SELECT set_chunk_time_interval('lab_equipment_values', INTERVAL '1 day');
+-- (replay-safe 2026-10-08: lab_equipment_values is a staging-only table; prod has none)
+DO $$ BEGIN
+  IF to_regclass('lab_equipment_values') IS NOT NULL THEN
+    PERFORM set_chunk_time_interval('lab_equipment_values', INTERVAL '1 day');
+  END IF;
+END $$;

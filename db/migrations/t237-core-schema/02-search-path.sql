@@ -11,5 +11,6 @@
 -- default (transaction pooling caches the connect-time search_path; a client-app restart alone would
 -- not recycle the pooled server conns).
 
-ALTER DATABASE packiot_analytics
-  SET search_path = "$user", gold, silver, bronze, barcode, app, serving, customer_reports, core, public;
+-- (replay-safe 2026-10-08: the database name is the target's own, not staging's packiot_analytics)
+DO $db$ BEGIN EXECUTE format('ALTER DATABASE %I', current_database()) || $q$
+  SET search_path = "$user", gold, silver, bronze, barcode, app, serving, customer_reports, core, public$q$; END $db$;

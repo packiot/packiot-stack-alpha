@@ -4,14 +4,14 @@
 BEGIN;
 
 -- ── Top-level map + naming convention (psql: \l+) ────────────────────────────
-COMMENT ON DATABASE packiot_analytics IS
-$$Analytics hot store. Schema taxonomy — each schema answers ONE question:
+-- (replay-safe 2026-10-08: comment the target's own database, not staging's packiot_analytics)
+DO $db$ BEGIN EXECUTE format('COMMENT ON DATABASE %I IS %L', current_database(), $c$Analytics hot store. Schema taxonomy — each schema answers ONE question:
  MATURITY (medallion pipeline): bronze=raw immutable · silver=merged facts+rollups+live grains · gold=computed OEE grains.
  CONTEXT: core=conformed dimensions (Kimball) · auth=identity · config=i18n/labels · ops=operational plumbing.
  SECURITY/CONSUMER: serving=security_invoker API (read-api) · bi=security_definer+RLS (Superset).
  CUSTOMER: customer_reports / customer_dashboards=per-tenant surfaces.
  public=transactional tables (Samples, PO control) + knex ledger + auto-updatable compat shim views into the domain schemas.
-Naming convention: LEGACY tables keep Hungarian-ish prefixes id_/nm_/cd_/tp_/ts_/vl_/dt_/txt_ (id_=identifier, nm_/txt_=name/text, cd_=code, tp_=type, ts_=timestamp, vl_=value, dt_=date). NEW tables use the clean core.downtime_reason style (id/code/label/category/active). Do not mix within one table.$$;
+Naming convention: LEGACY tables keep Hungarian-ish prefixes id_/nm_/cd_/tp_/ts_/vl_/dt_/txt_ (id_=identifier, nm_/txt_=name/text, cd_=code, tp_=type, ts_=timestamp, vl_=value, dt_=date). NEW tables use the clean core.downtime_reason style (id/code/label/category/active). Do not mix within one table.$c$); END $db$;
 
 -- ── Domain-schema descriptions (psql: \dn+) ──────────────────────────────────
 COMMENT ON SCHEMA bronze  IS 'Medallion BRONZE — immutable append-only raw landing: equipment_values_raw/events_raw (ADR-0036, flag-gated BRONZE_RAW_APPEND), box_scans (barcode scan ledger, no_mutate trigger). Never UPDATE/DELETE.';

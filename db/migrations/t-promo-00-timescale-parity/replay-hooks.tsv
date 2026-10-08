@@ -1,0 +1,4 @@
+analytics-clean-schema/04_p1_silver_metrics_family.sql	ALTER TABLE public.equipment_values DISABLE ROW LEVEL SECURITY, NO FORCE ROW LEVEL SECURITY	ALTER TABLE public.equipment_values ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY
+analytics-clean-schema/10_p3pre_silver_float8_partials.sql	ALTER TABLE public.equipment_values DISABLE ROW LEVEL SECURITY, NO FORCE ROW LEVEL SECURITY	ALTER TABLE public.equipment_values ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY
+analytics-clean-schema/11a_p3_silver_categorical_family.sql	ALTER TABLE public.equipment_values DISABLE ROW LEVEL SECURITY, NO FORCE ROW LEVEL SECURITY	ALTER TABLE public.equipment_values ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY
+analytics-clean-schema/13_p3_repoint_mission_control_silver.sql	ALTER TABLE public.equipment_values DISABLE ROW LEVEL SECURITY, NO FORCE ROW LEVEL SECURITY	ALTER TABLE public.equipment_values ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY

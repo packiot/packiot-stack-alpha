@@ -66,5 +66,6 @@ COMMIT;
 -- Widen the DB search_path: replace `app` with `auth, config, ops` (ahead of the
 -- read/serving schemas so bare identity/i18n/plumbing names resolve to the new homes
 -- once pools recycle). No cross-schema name collision among the 16 → unambiguous.
-ALTER DATABASE packiot_analytics
-  SET search_path = "$user", gold, silver, bronze, auth, config, ops, serving, customer_reports, core, public;
+-- (replay-safe 2026-10-08: the database name is the target's own, not staging's packiot_analytics)
+DO $db$ BEGIN EXECUTE format('ALTER DATABASE %I', current_database()) || $q$
+  SET search_path = "$user", gold, silver, bronze, auth, config, ops, serving, customer_reports, core, public$q$; END $db$;

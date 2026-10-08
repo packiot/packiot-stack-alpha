@@ -1,0 +1,10 @@
+analytics-cruft-drop/02_restore_dropped_tables.sql	undo of 02_drop_orphan_tables
+analytics-hardening/04_REVIEW_cagg_redesign_DECISION_NEEDED.sql	header: do NOT auto-apply (decision document)
+t-downtime-events-materialization/02-down.sql	rollback
+analytics-clean-schema/08b_p2_serving_functions_drop.sql	header: "Reverse of 08_p2" — drops everything 08_p2 ports
+t271-historian-promoted-allowlist/01-up.sql	TARGET hist-gateway DB, not packiot → historian step
+t282-historian-gateway-glue/01-gateway.sql	TARGET hist-gateway DB, not packiot → historian step
+t287-historian-cold-schema/01-cold-schema.sql	TARGET hist-gateway DB, not packiot → historian step
+t-historian-serving-guards/02-gateway-guards.sql	TARGET historian gateway DB → historian step
+t-historian-serving-guards/03-gateway-daily-view.sql	TARGET historian gateway DB → historian step
+t-histdb-object-docs/01-comments.sql	TARGET historian gateway DB (header: do NOT run against analytics) → historian step

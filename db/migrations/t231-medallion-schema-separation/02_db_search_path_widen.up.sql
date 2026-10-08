@@ -19,4 +19,5 @@
 -- Pooled connections (pgbouncer, read-api, stream-engine) cache the old path —
 -- recycle them as a gate step at the phase where their resolution actually
 -- changes (gold contract / silver).
-ALTER DATABASE packiot_analytics SET search_path = "$user", gold, silver, bronze, public;
+-- (replay-safe 2026-10-08: the database name is the target's own, not staging's packiot_analytics)
+DO $db$ BEGIN EXECUTE format('ALTER DATABASE %I', current_database()) || $q$ SET search_path = "$user", gold, silver, bronze, public$q$; END $db$;

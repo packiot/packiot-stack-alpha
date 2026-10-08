@@ -161,5 +161,5 @@ UNION
   WHERE ee.ts_value < now();
 
 GRANT SELECT ON public.v_events_2 TO superset_ro, bi_owner;
-cho === v_events_2 restored; smoke test ===
+\echo === v_events_2 restored; smoke test ===
 SELECT 'v_events_2 rows(ent3, last 40d): '||count(*) FROM public.v_events_2 WHERE id_enterprise=3 AND ts_event > now()-interval '40 days';

@@ -6,5 +6,6 @@
 --
 -- Observed by NEW sessions only. Gate step: restart stack-pgbouncer-1 (transaction
 -- pooling → server conns cache the connect-time default) so every client recycles.
-ALTER DATABASE packiot_analytics
-  SET search_path = "$user", gold, silver, bronze, barcode, app, serving, customer_reports, public;
+-- (replay-safe 2026-10-08: the database name is the target's own, not staging's packiot_analytics)
+DO $db$ BEGIN EXECUTE format('ALTER DATABASE %I', current_database()) || $q$
+  SET search_path = "$user", gold, silver, bronze, barcode, app, serving, customer_reports, public$q$; END $db$;

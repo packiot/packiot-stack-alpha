@@ -4,5 +4,6 @@
 -- NOTE: mirror_replay_cursor / user_screen_config still live in `gold` until P-app.2
 -- — with `gold` ahead of `app` on the path, unqualified refs to those two keep
 -- resolving to the live gold copy until P-app.2 moves them.
-ALTER DATABASE packiot_analytics
-  SET search_path = "$user", gold, silver, bronze, barcode, app, public;
+-- (replay-safe 2026-10-08: the database name is the target's own, not staging's packiot_analytics)
+DO $db$ BEGIN EXECUTE format('ALTER DATABASE %I', current_database()) || $q$
+  SET search_path = "$user", gold, silver, bronze, barcode, app, public$q$; END $db$;
