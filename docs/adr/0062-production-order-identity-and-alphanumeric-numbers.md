@@ -1,6 +1,6 @@
 # ADR-0062 — Production-order identity: a text client number, one internal key, a UUIDv7 handle
 
-**Status:** Accepted (P1 applied on staging 2026-10-08) · **Date:** 2026-10-07 · **Decision owner:** user
+**Status:** Accepted — steps 1–3 live on staging (2026-10-08); step 4 (contract) pending client moves · **Date:** 2026-10-07 · **Decision owner:** user
 **Trigger (user, 2026-10-07):** "the po id number that shows for the client is alphanumeric … the alphanumeric is for
 the whole stack. it needs to accept that." Decisions taken so far: the client number is text everywhere; when the stack
 itself must invent a number it uses a UUID; the client number is unique per enterprise; the legacy duplicate is fixed
@@ -139,3 +139,23 @@ which remains available as a later phase (Buildkite's path). Option 2 is dominat
 3. **Readers + contracts (D3: add `order_number`):** read-api (incl. Incoplast/Montebello/job_report/sync06), front4, serving
    functions; integer copies (box tables, validation shift, sync06, downtime functions) join on `id_production_order`.
 4. **Contract:** drop the integer key/column after every writer and reader moved.
+
+## 7. Progress log (staging)
+
+| Step | PRs | State (2026-10-08) |
+|---|---|---|
+| 1 expand | #1622 (+ edge-api knex `20261008000001`) | applied; trigger, UNIQUE text key, `po_uuid` v7, D5 correction |
+| 2 writers | edge-api #291 #292, #1623, operator4 #135 | live; E2E on ent 120: alphanumeric, leading zero, duplicate → 400 |
+| 3a readers | #1627 | applied + merged: 8 serving functions wrapped (`<fn>_base` + `order_number`), read-api externals/datasets add `order_number`, `equipment_live_job.id_order` written from text. Verify on staging: 15,244 rows wrapper ≡ base |
+| 3b reports | #1628 | applied + merged: box-label casts → `core.try_int4/try_int8` (62,746 live samples ≡ cast); old bodies kept as `<fn>_pre_p3b` |
+| 3 UI | front4 #296 | merged: `poNumber()` = `order_number` ‖ `id_order_text` ‖ `id_order` |
+| fix | #1629 | the sandbox twin cloner copied the new UNIQUE `po_uuid` (nightly heal failed since step 1) → twin handle = source v7 with a hashed tail |
+
+**Step 4 (contract) gates:** external clients (Incoplast, Montebello, Neopac SAP, sync06) read `order_number`;
+edge boxes run the text-writing operator/agent (box rollout, user sign-off); prod promoted through steps 1–3.
+Then: drop `UNIQUE (id_enterprise, id_order)` and the column, remove the pocontrol integer fallback, rekey the
+label reports on `id_production_order`, drop `<fn>_base` / `<fn>_pre_p3b`, and move legacy-replicator /
+mirror-worker matching to the text key.
+
+**Lesson for any new UNIQUE column:** grep row cloners (`to_jsonb(x) || …`, `jsonb_populate_record`,
+`INSERT … SELECT *`) — they copy every future column.
