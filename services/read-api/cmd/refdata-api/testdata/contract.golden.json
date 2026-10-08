@@ -254,6 +254,13 @@
     "argc": 1
   },
   {
+    "ref": "/v2/operator-po-list",
+    "source": "route",
+    "kind": "function",
+    "name": "serving.operator_po_list_by_equipment",
+    "argc": 1
+  },
+  {
     "ref": "/v2/pending-downtime",
     "source": "route",
     "kind": "function",
