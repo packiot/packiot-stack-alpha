@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,7 @@ func NewHandler(r *sparkplug.Resolver, logger *slog.Logger) *Handler {
 // the lifecycle commands read.
 type paramPayload struct {
 	Value     json.Number `json:"value"`      // id_production_order (may be absent)
-	IDOrder   json.Number `json:"id_order"`   // natural-key fallback
+	IDOrder   OrderNumber `json:"id_order"`   // natural-key fallback: client PO number, string or number (ADR-0062)
 	Timestamp json.Number `json:"timestamp"`  // ms
 	Note      string      `json:"note"`       // URI-encoded in prod; stored decoded upstream
 	ProdFinal json.Number `json:"prod_final"` // optional final production count
@@ -47,11 +48,13 @@ type paramPayload struct {
 // Schemas carries the medallion homes for the PO-control write path (#251 P2).
 // The former single `schema` (the public/shim "ev" plane) is fractured into the
 // real per-table homes so the public compat shims can be dropped:
-//   Core     — production_orders + dims: products, product_families, clients, packml_register
-//   Gold     — production_orders_runtime
-//   Silver   — equipment_values, equipment_events, equipment_live_job (current-state grain)
-//   Ev       — equipment_events_man (a GENUINE public table, NOT a shim) + shadow-swallow key
-//   Identity — user_logs
+//
+//	Core     — production_orders + dims: products, product_families, clients, packml_register
+//	Gold     — production_orders_runtime
+//	Silver   — equipment_values, equipment_events, equipment_live_job (current-state grain)
+//	Ev       — equipment_events_man (a GENUINE public table, NOT a shim) + shadow-swallow key
+//	Identity — user_logs
+//
 // On the prod/default route all five collapse to "public" (prod is not yet
 // medallion-split), so behaviour there is byte-identical until the forward-port.
 type Schemas struct {
@@ -194,22 +197,47 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 
 // resolveTargetID: prod used msg value (id_po) or a subselect by
 // id_order. Same tx here (equivalent, injection-safe).
+//
+// ADR-0062 step 2: the natural-key fallback matches the client's TEXT number
+// (id_order_text). Transition shim: when no PO carries that text but the
+// number is an int4 integer, the deprecated integer id_order still matches —
+// a text match always wins — so a PLC that sends 8396260 keeps resolving the
+// legacy PO whose client text is "08396260" (behaviour identical to the
+// integer lookup). The shim goes with id_order in the contract step.
 func (h *Handler) resolveTargetID(ctx context.Context, tx pgx.Tx, schema string, eq int, p paramPayload) (int64, error) {
 	if id, err := p.Value.Int64(); err == nil && id > 0 {
 		return id, nil
 	}
-	idOrder, err := p.IDOrder.Int64()
-	if err != nil {
+	if p.IDOrder.IsZero() {
 		return 0, nil // neither id_po nor id_order — lifecycle no-op
 	}
 	var id int64
-	err = tx.QueryRow(ctx, fmt.Sprintf(
-		`SELECT id_production_order FROM %s.production_orders WHERE id_equipment=$1 AND id_order=$2`,
-		schema), eq, idOrder).Scan(&id)
+	err := tx.QueryRow(ctx, fmt.Sprintf(lcTargetByNumber, schema),
+		eq, p.IDOrder.String(), legacyIntOrder(p.IDOrder)).Scan(&id)
 	if err == pgx.ErrNoRows {
 		return 0, nil
 	}
 	return id, err
+}
+
+// lcTargetByNumber resolves a lifecycle target on the equipment by the client
+// number text ($2), falling back to the deprecated integer ($3, NULL when the
+// number is not an int4) — text match first.
+const lcTargetByNumber = `
+	SELECT id_production_order FROM %s.production_orders
+	 WHERE id_equipment = $1 AND (id_order_text = $2 OR id_order = $3)
+	 ORDER BY (id_order_text = $2) DESC, id_production_order DESC
+	 LIMIT 1`
+
+// legacyIntOrder returns the number as an int4 for the transition-shim
+// integer match, or nil when the text is not a plain int4 integer.
+func legacyIntOrder(o OrderNumber) *int32 {
+	n, err := strconv.ParseInt(o.String(), 10, 32)
+	if err != nil {
+		return nil
+	}
+	v := int32(n)
+	return &v
 }
 
 func (h *Handler) runningPO(ctx context.Context, tx pgx.Tx, s Schemas, eq int) (*RunningPO, error) {

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -166,7 +167,8 @@ func TestPOSetup_Mapping_OpenNext_Create(t *testing.T) {
 		OldIDProductionOrder:        90012,
 		OldProductionOrderProdFinal: 4800,
 		ShouldCreatePo:              true,
-		IDOrder:                     218300,
+		IDOrder:                     "218300",
+		OrderNumber:                 "218300",
 		ProductionOrderQuantity:     6000,
 		NmProductionOrder:           "FILME OPACO",
 		TxtProductionOrderNotes:     "shift change",
@@ -190,6 +192,43 @@ func TestPOSetup_Mapping_CloseOnly(t *testing.T) {
 	}
 	if got := fp.last.body.(edgeSetupPO).ShouldOpenNewPo; got != false {
 		t.Fatalf("shouldOpenNewPo should be false")
+	}
+	// No order number when not creating: idOrder/orderNumber are omitted (the
+	// edge DTO's idOrder is @IsOptional) instead of the old integer 0.
+	wire, _ := json.Marshal(fp.last.body)
+	if strings.Contains(string(wire), "idOrder") || strings.Contains(string(wire), "orderNumber") {
+		t.Fatalf("close-only setup must omit idOrder/orderNumber, got %s", wire)
+	}
+}
+
+// ADR-0062: opening a fresh PO with an alphanumeric client number forwards it
+// verbatim as a string in idOrder + orderNumber.
+func TestPOSetup_Mapping_OpenNext_AlphanumericOrder(t *testing.T) {
+	fp := &fakePoster{result: &edgeResult{statusCode: 200, body: []byte(`{}`)}}
+	srv, _, _ := newTestServer(t, fp)
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","timestamp":"t","should_open_new_po":true,"should_create_po":true,"stop_type":"finish","old_id_production_order":1,"old_production_order_prod_final":50,"id_order":"OP-0042/B","production_order_quantity":10}`
+	rec := do(t, srv, "/operator/po/setup", testKey, body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	got := fp.last.body.(edgeSetupPO)
+	if got.IDOrder != "OP-0042/B" || got.OrderNumber != "OP-0042/B" {
+		t.Fatalf("idOrder=%q orderNumber=%q", got.IDOrder, got.OrderNumber)
+	}
+	wire, _ := json.Marshal(got)
+	if !strings.Contains(string(wire), `"idOrder":"OP-0042/B","orderNumber":"OP-0042/B"`) {
+		t.Fatalf("wire body: %s", wire)
+	}
+}
+
+// A blank order number counts as missing when creating → 422 (fail closed).
+func TestPOSetup_422_OpenCreateBlankOrder(t *testing.T) {
+	fp := &fakePoster{}
+	srv, _, _ := newTestServer(t, fp)
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","timestamp":"t","should_open_new_po":true,"should_create_po":true,"stop_type":"finish","old_id_production_order":1,"old_production_order_prod_final":50,"id_order":"  "}`
+	rec := do(t, srv, "/operator/po/setup", testKey, body)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "id_order") {
+		t.Fatalf("want 422 naming id_order, got %d (%s)", rec.Code, rec.Body.String())
 	}
 }
 
