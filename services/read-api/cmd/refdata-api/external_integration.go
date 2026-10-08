@@ -342,6 +342,7 @@ const sqlJobReport = `
           po.id_area,
           po.id_site,
           po.id_order,
+          po.id_order_text as order_number,
           lower(porun.runtime_timerange)  as job_start,
           case when upper(porun.runtime_timerange) is null then now()  else upper(porun.runtime_timerange)  end as job_end
         from production_orders_runtime porun, production_orders po
@@ -356,6 +357,7 @@ const sqlJobReport = `
           shi.cd_shift,
           shi.ts_value_production,
           po.id_order,
+          po.order_number,
           case when tz_value > job_start then tz_value else job_start end as ts_start,
           case when tz_end < job_end then tz_end else job_end end as ts_end,
           po.id_site,
@@ -375,7 +377,8 @@ const sqlJobReport = `
           bfs.id_order,
           sum(pc.gross_production_incr) as presscount,
           bfs.ts_start,
-          packml_topic
+          packml_topic,
+          bfs.order_number
         from base_for_splits bfs
         left join presscount pc
         on pc.tz_value between bfs.ts_start and bfs.ts_end
@@ -385,7 +388,7 @@ const sqlJobReport = `
         left join packml_register pr
         on pc.id_equipment = pr.id_equipment
         where pc.id_equipment = ANY($2::int[])
-        group by 1,2,3,4,6,7
+        group by 1,2,3,4,6,7,8
         order by 1,6 desc
         `
 
@@ -410,7 +413,9 @@ const sqlShiftValidation = `
             evs.nm_user_validation,
             evs.ts_user_validation,
             evs.shift_start_time,
-            evs.to_delete
+            evs.to_delete,
+            (select po.id_order_text from production_orders po
+              where po.id_enterprise = $3 and po.id_order = evs.id_order) as order_number
         from equipment_validation_shift evs
         left join packml_register pr on pr.id_equipment = evs.id_equipment
         where
