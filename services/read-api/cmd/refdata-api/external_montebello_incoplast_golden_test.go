@@ -259,10 +259,11 @@ func TestIncoplastEventsGoldenShape(t *testing.T) {
 			// node-pg's stored key order (rawJSON, the reader's reserialized form —
 			// this is a REAL production_orders.custom_field shape). duration (int4) is
 			// not in this envelope.
-			cols: []string{"id_order", "nm_site", "nm_equipment", "cd_shift", "ts_event", "ts_end", "pack_id", "custom_field", "packml_topic", "last_update"},
+			// order_number (ADR-0062 D3, additive, last) = the client's PO number as text.
+			cols: []string{"id_order", "nm_site", "nm_equipment", "cd_shift", "ts_event", "ts_end", "pack_id", "custom_field", "packml_topic", "last_update", "order_number"},
 			rows: [][]any{{5501, "INCO-SITE", "Extrusora 2", "T1", tsUTC(6, 0, 0), tsUTC(6, 10, 0), "1234",
 				rawJSON([]byte(`{"STATUS":1,"id_order":357226,"priority":10,"cd_client":34407,"scrap_factor":44.32910965352669,"PRODUCTION_STEP":62,"VERSION_PRODUCT":"9"}`)),
-				"spBv1.0/inco/DDATA/EX2", tsUTC(6, 11, 0)}},
+				"spBv1.0/inco/DDATA/EX2", tsUTC(6, 11, 0), "5501"}},
 		}, nil
 	}}
 	req := httptest.NewRequest("GET", "/ext/incoplast/events?api_key="+incoplastKey, nil)
@@ -307,10 +308,12 @@ func TestIncoplastJobsGoldenShape(t *testing.T) {
 			// both drivers, no stringify): net_production 1234.5 stays unquoted here,
 			// proving the numeric fix is scoped to numeric/int8 and does NOT touch
 			// float8. custom_field is JSONB → an OBJECT in node-pg's stored key order.
-			cols: []string{"id_production_order", "id_order", "net_production", "gross_production", "ts_start", "ts_end", "id_equipment", "status", "topic", "custom_field", "last_update"},
-			rows: [][]any{{"9001", "OP-778", 1234.5, 1300.0, tsUTC(6, 0, 0), tsUTC(14, 0, 0), 42, 3, "spBv1.0/inco/DDATA/EX2",
+			// ADR-0062: an alphanumeric client number — id_order (int4) holds the internal
+			// negative placeholder; order_number (additive, last) carries "OP-778".
+			cols: []string{"id_production_order", "id_order", "net_production", "gross_production", "ts_start", "ts_end", "id_equipment", "status", "topic", "custom_field", "last_update", "order_number"},
+			rows: [][]any{{"9001", -7, 1234.5, 1300.0, tsUTC(6, 0, 0), tsUTC(14, 0, 0), 42, 3, "spBv1.0/inco/DDATA/EX2",
 				rawJSON([]byte(`{"STATUS":1,"id_order":356337,"priority":10,"cd_client":542113,"scrap_factor":20.895905129091858,"PRODUCTION_STEP":62,"VERSION_PRODUCT":"5"}`)),
-				tsUTC(14, 0, 5)}},
+				tsUTC(14, 0, 5), "OP-778"}},
 		}, nil
 	}}
 	req := httptest.NewRequest("GET", "/ext/incoplast/jobs?api_key="+incoplastKey, nil)

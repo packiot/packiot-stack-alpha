@@ -127,8 +127,9 @@ func TestIntegrationShimEndToEndThroughMiddleware(t *testing.T) {
 		// (float8 matches node-pg + pgx; the numeric fix does NOT touch it). Same row
 		// as TestJobReportGoldenShape so both share the incoplast/job_report golden.
 		return externalRows{
-			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "presscount", "ts_start", "packml_topic"},
-			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), "OP-901", 4200.5, tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2"}},
+			// ADR-0062: id_order is the int4 placeholder of an alphanumeric number; order_number (last) is the client's.
+			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "presscount", "ts_start", "packml_topic", "order_number"},
+			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), -12, 4200.5, tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2", "OP-901"}},
 		}, nil
 	}}
 	mux := http.NewServeMux()
@@ -297,8 +298,9 @@ func TestJobReportGoldenShape(t *testing.T) {
 		// presscount = sum(gross_production_incr) → DOUBLE PRECISION → a JSON number
 		// (job_report is numeric-CLEAN). Identical row to the e2e test above.
 		return externalRows{
-			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "presscount", "ts_start", "packml_topic"},
-			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), "OP-901", 4200.5, tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2"}},
+			// ADR-0062: id_order is the int4 placeholder of an alphanumeric number; order_number (last) is the client's.
+			cols: []string{"id_equipment", "cd_shift", "ts_value_production", "id_order", "presscount", "ts_start", "packml_topic", "order_number"},
+			rows: [][]any{{42, "T1", tsUTC(6, 0, 0), -12, 4200.5, tsUTC(6, 0, 0), "spBv1.0/inco/DDATA/EX2", "OP-901"}},
 		}, nil
 	}}
 	// id_equipment as a bracketed list to exercise the strip+split+int parse.
@@ -366,10 +368,11 @@ func TestShiftValidationGoldenShape(t *testing.T) {
 			// {LastConfirm:{note,user,approved,ip_adress,ts_confirm}}, with an embedded
 			// \n in note preserved).
 			return externalRows{
-				cols: []string{"index1", "packml_topic", "id_site", "ts_value_production", "cd_shift", "id_order", "txt_validation_notes", "to_delete"},
+				// order_number (ADR-0062, last): NULL when the validation's id_order names no PO.
+				cols: []string{"index1", "packml_topic", "id_site", "ts_value_production", "cd_shift", "id_order", "txt_validation_notes", "to_delete", "order_number"},
 				rows: [][]any{{"7", "spBv1.0/mtb/DDATA/L01", 14, tsUTC(6, 0, 0), "T1", "5000000001",
 					rawJSON([]byte(`{"LastConfirm":{"note":"BC should be 21344\nPP should be 19872","user":"Hmoujib","approved":true,"ip_adress":"","ts_confirm":"2026-07-17T04:18:38.010Z"}}`)),
-					false}},
+					false, nil}},
 			}, nil
 		case strings.Contains(sql, "LIMIT 1"): // getEnterpriseTopic, fenced by $1 = cid
 			if len(args) < 1 || args[0] != montebelloOwner {

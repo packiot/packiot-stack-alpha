@@ -725,7 +725,7 @@ var datasets = map[string]dataset{
 	// fence + row cap are unchanged. Net: +4 projected columns, zero new filters.
 	"production-orders-by-equipment": {
 		group: "production-orders", doc: "Raw production orders for one equipment, newest-first (production_orders + product/client names, front4 previousJob + job-selectors + familyB GET_JOB_INFO)",
-		sql: `SELECT po.id_order, po.id_production_order, po.id_order_text, po.status, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, po.txt_production_order_description, pr.nm_product, pr.cd_product, pr.txt_product, cl.nm_client
+		sql: `SELECT po.id_order, po.id_production_order, po.id_order_text, po.id_order_text AS order_number, po.status, po.production_programmed, po.net_production, po.ts_start, po.ts_end, po.id_equipment, po.txt_production_order_description, pr.nm_product, pr.cd_product, pr.txt_product, cl.nm_client
 			FROM production_orders po
 			LEFT JOIN products pr ON pr.id_product = po.id_product
 			LEFT JOIN clients cl ON cl.id_client = po.id_client
@@ -1095,7 +1095,7 @@ var datasets = map[string]dataset{
 		// are kept ONLY because front4's refdata adapter (and any Superset dataset)
 		// may still read the long keys. Drop the aliases (project po.oee_a/oee_p/oee_q
 		// bare) once the parent confirms no downstream consumer needs the long names.
-		sql: `SELECT po.id_production_order, po.id_order, po.id_order_text, po.id_equipment, po.id_equipment_executed,
+		sql: `SELECT po.id_production_order, po.id_order, po.id_order_text, po.id_order_text AS order_number, po.id_equipment, po.id_equipment_executed,
 			po.id_product, po.id_user_operator, po.status, po.available_time, po.conversion_factor,
 			po.gross_production, po.ideal_production, po.ideal_production_speed, po.net_production,
 			po.oee, po.oee_a AS oee_availability, po.oee_p AS oee_performance, po.oee_q AS oee_quality, po.planned_downtime,

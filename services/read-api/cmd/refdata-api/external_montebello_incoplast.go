@@ -227,7 +227,9 @@ const sqlIncoplastEvents = `
                     packml_topic,
                     cd_category_client,
                     cd_subcategory_client,
-                    last_update
+                    last_update,
+                    (select pon.id_order_text from production_orders pon
+                      where pon.id_enterprise = manual_stop.id_enterprise and pon.id_order = manual_stop.id_order) as order_number
                 from
                     (
                         select
@@ -323,7 +325,8 @@ const sqlIncoplastJobs = `
             po.id_enterprise,
             pr.packml_topic as topic,
             po.custom_field,
-            po.last_update at time zone 'utc' as last_update
+            po.last_update at time zone 'utc' as last_update,
+            po.id_order_text as order_number
         FROM production_orders po
             JOIN packml_register pr on pr.id_equipment = po.id_equipment
         WHERE (po.status = ANY (ARRAY[2, 3, 4])) and ts_start >= $2 and po.id_enterprise = $1 order by po.last_update desc limit $3;
