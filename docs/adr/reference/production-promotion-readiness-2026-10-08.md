@@ -65,6 +65,19 @@ migrations known to have been hand-applied on prod (the 09-07 cutover, `analytic
 Not every staging migration belongs on prod. Tenant-specific data fixes (`t-ent5-*`/Bispharma, `t-sandbox-*`, CPACK
 data repairs computed from staging's replicated rows) need a per-item decision.
 
+### 2b. Hard-coded surrogate ids (do the staging migrations travel?)
+Every `id_* = <literal>` / `IN (…)` in the 187 migrations (11 migrations). Prod has enterprises 1 and 3 only.
+| Migration | Literal ids | On prod |
+|---|---|---|
+| `t-adr0062-p1-po-number-expand` | PO `101585550` (staging +100 M replica offset) | **would have failed** (prod PO is `1585550`) → fixed by #1635 (business key) |
+| `t-ideal-speed-best-demonstrated` | equipment 90, 107 (+ Bispharma 2000xxx) | **applies correctly**: prod 90 = ISIMAT, 107 = SLEEVE1 (same CPACK ids), still at the old speeds 70/90, and each UPDATE is compare-and-set |
+| `t-ent5-l90-lead-display` | Bispharma 2000329/2000330 | no-op (no ent 5 on prod): staging-only |
+| `t-data-invariants*` (8) | sandbox ent 2000003 | harmless exclusion (no twin on prod) |
+| `t244c-serving-self-containment` | ent 13 (Neopac) | frozen legacy SQL; stable tenant id |
+
+Side finding: `core.equipments.cd_equipment` is **empty on prod** (staging: `ISIMAT`, `SLEEVE1`) →
+`t-backfill-cd-equipment` (graded *unknown*: data-only) is needed there.
+
 ## 3. ADR-0061 / ADR-0062 prod preflight (read-only, 2026-10-08)
 | Check | Prod | Consequence |
 |---|---|---|
