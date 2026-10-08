@@ -1,7 +1,7 @@
 -- sap13_body.sql — verbatim embed of prod's
 -- upsert_sap_report_data_sync_customer_13() (capture:
 -- docs/adr/reference/captures/0012-wave2-prod-writer-funcs.sql:876-1461).
--- ADR-0012 Wave 2 Family C. Four surgical transforms ONLY:
+-- ADR-0012 Wave 2 Family C. Five surgical transforms ONLY:
 --   1. write target -> customer_reports.sap_data_sync (pool)
 --   2. customer_id injected into projection (__CUSTOMER_ID__ placeholder,
 --      substituted from config -- no hardcoded tenant in new code)
@@ -12,6 +12,10 @@
 --      customer_reports.boxes (t244c/#1180 dropped the per-tenant table +
 --      folded it into the pool), fenced on customer_id=__CUSTOMER_ID__ and
 --      label_key='Label_Neopac' -- mirrors serving.sap_report_data_sync (#247).
+--   5. ADR-0062 P3b: the box-label casts (label_Job→integer, label_job→bigint,
+--      fl.id_order→int) are core.try_int4/try_int8 — the same value wherever the
+--      cast succeeds, NULL (no match) where it would raise; one alphanumeric
+--      label no longer aborts the whole run (needs t-adr0062-p3b applied).
 -- Everything else is FROZEN legacy SQL, tenant literals included --
 -- legacy names (frozen) per docs/adr/reference/naming-ledger.md.
   INSERT INTO customer_reports.sap_data_sync (
@@ -154,7 +158,7 @@ select l.*, po.job_end,
 	case when po.job_end is null then 0 else ((date_part('epoch'::text, l.tz_value -po.job_end)))::bigint end as diff_s
 from labels_extract l
 left join prod_orders po
-on cast(l.label_Job as integer) = po.id_order
+on core.try_int4(l.label_Job) = po.id_order
 ), labels as (
 select distinct tz_value,id_equipment,label_job,label_amount
 --, diff_s
@@ -378,13 +382,13 @@ left join packed_quantity pack
 on f.inicio = pack.inicio
 and f.fim = pack.fim
 and f.id_equipment = pack.id_equipment
-and f.id_order = pack.label_job::bigint
+and f.id_order = core.try_int8(pack.label_job)
 union all 
 select 
 	f.id_equipment,
 	f.cd_shift,
 	f.ts_value_production,
-	pack.label_job::bigint as id_order,
+	core.try_int8(pack.label_job) as id_order,
 	0 as shift_duration, 
 	0 as press_count,
 	0 as net_sensor,
@@ -407,7 +411,7 @@ and f.fim = pack.fim
 and f.id_equipment = pack.id_equipment
 and pack.net_label is not null
 and pack.net_label != 0
-and f.id_order != pack.label_job::bigint
+and f.id_order != core.try_int8(pack.label_job)
 order by id_equipment,ts_value_production, cd_shift
 --FUNCIONANDO ATEH AQUI
 ), shift_report as (
@@ -496,7 +500,7 @@ select fl.id_order,fl.sum_labels,fj.*
 from final_jobs fj
 left join final_labels fl
 on fl.cd_equipment = fj.linie
-and fl.id_order::int = fj.auftrag
+and core.try_int4(fl.id_order) = fj.auftrag
 and fl.ts_value_production = fj.tag
 and fl.cd_shift = fj.shicht
 ), missing_jobs_labels as (
@@ -504,7 +508,7 @@ select fl.*,f1.id_order as job
 from final_labels fl
 left join final1 f1
 on fl.cd_equipment = f1.linie
-and fl.id_order::int = f1.auftrag
+and core.try_int4(fl.id_order) = f1.auftrag
 and fl.ts_value_production = f1.tag
 and fl.cd_shift = f1.shicht
 where fl.sum_labels is not null
