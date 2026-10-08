@@ -1,0 +1,2 @@
+# ADR-0061 packml ratchet — files allowed to ADD packml references, one path per line, then a reason.
+# Intended for P5: migrations that drop PackML objects, and expiring v1 deprecation shims.
