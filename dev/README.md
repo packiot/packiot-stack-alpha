@@ -10,6 +10,7 @@ make dev SVC="front4"       # read-api + CORS proxy + front4 (needs FRONT4_DIR, 
 make dev-ps                 # status (every port must read 127.0.0.1:…)
 make dev-down               # stop + remove containers; named volumes are kept
 docker compose -f dev/compose.yml --env-file dev/.env.dev down -v   # also wipe data
+make dev-reset [SVC=...]   # wipe the dev volumes and reload the seed (fixes an empty/stale DB: postgres stays unhealthy)
 ```
 
 `make dev` uses `up -d --wait`, so it returns only when every started service is healthy.
