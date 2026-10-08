@@ -21,3 +21,9 @@ include:
     env_file: .env.dev
   - path: services/front4.yml
     env_file: .env.dev
+  - path: services/sparkplug-decoder.yml
+    env_file: .env.dev
+  - path: services/stream-engine.yml
+    env_file: .env.dev
+  - path: services/seed-replay.yml
+    env_file: .env.dev

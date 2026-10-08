@@ -56,6 +56,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/edge-dashboard ./cmd/edge-dashboar
 # + compose profile "bispharma-twin" — STAGING ONLY, disable when a real feed
 # returns (double-source guard). CGo-free (paho + internal/sparkplug).
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/bispharma-twin ./cmd/bispharma-twin
+# seed-replay: ADR-0060 D7 dev-only producer — replays the dev seed's own week (T − 7 d) as SparkPlug B over
+# local MQTT so the dev pipeline runs on "now" data. Dev compose only (dev/services/seed-replay.yml).
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/seed-replay ./cmd/seed-replay
 
 # Intermediate stage: create the outbox directory with nonroot ownership.
 # Docker's named-volume mount copies file+dir OWNERSHIP from the container
@@ -79,6 +82,7 @@ COPY --from=builder /out/s7-softplc /usr/local/bin/s7-softplc
 COPY --from=builder /out/sparkplug-agent /usr/local/bin/sparkplug-agent
 COPY --from=builder /out/edge-dashboard /usr/local/bin/edge-dashboard
 COPY --from=builder /out/bispharma-twin /usr/local/bin/bispharma-twin
+COPY --from=builder /out/seed-replay /usr/local/bin/seed-replay
 COPY --from=outbox-dir /out/var/lib /var/lib
 USER nonroot:nonroot
 

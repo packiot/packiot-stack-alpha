@@ -29,6 +29,8 @@ services:
       COGNITO_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
       REDIS_CACHE_ENABLED: "true"
       REDIS_URL: redis://app-redis:6379/0
+      # /internal/resolve-device for the decoder (device_key → equipment); fail-closed when unset
+      INTERNAL_API_KEY: ${DEV_INTERNAL_API_KEY:?set in dev/.env.dev}
     networks:
       default:
         aliases: ["refdata-api"] # SPA nginx templates still use refdata-api:9104
